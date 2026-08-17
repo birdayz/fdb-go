@@ -98,6 +98,7 @@ go_test(
         "aggregate_group_key_call_site_guard_test.go",
         "aggregate_group_key_nested_path_test.go",
         "aggregate_group_key_reachability_test.go",
+        "aggregate_having_no_double_projection_test.go",
         "aggregate_native_slot_root_test.go",
         "aggregate_output_slot_domain_test.go",
         "aggregate_output_slot_recorded_test.go",
@@ -402,6 +403,7 @@ go_test(
         "merged_rv_order_test.go",
         "vector_limit_projection_test.go",
         "union_limit_covering_test.go",
+        "aggregate_having_no_double_projection_test.go",
     ],
     deps = [
         "//gen",

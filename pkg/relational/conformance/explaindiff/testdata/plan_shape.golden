@@ -620,13 +620,12 @@ shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === aggregate_index_having.yaml#1
 sql:   SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) > 500 ORDER BY customer_id
-plan:  Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0)), [1 preds]))
+plan:  Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_CUSTOMER__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, SUM_BY_CUSTOMER, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryMultiIntersectionOnValuesPlan
-shape:         RecordQueryAggregateIndexPlan
-shape:         RecordQueryAggregateIndexPlan
+shape:     RecordQueryMultiIntersectionOnValuesPlan
+shape:       RecordQueryAggregateIndexPlan
+shape:       RecordQueryAggregateIndexPlan
 === aggregate_index_multi_group.yaml#0
 sql:   SELECT category, severity, COUNT(*) FROM events GROUP BY category, severity ORDER BY category, severity
 plan:  Project([_current.CATEGORY#0, _current.SEVERITY#1, _current.COUNT(*)#2], AggregateIndex(COUNT, COUNT_BY_CAT_SEV, [CATEGORY SEVERITY], EVENTS, live_groups_only))
@@ -2725,22 +2724,20 @@ shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#3
 sql:   SELECT customer_id, COUNT(amount) FROM orders GROUP BY customer_id HAVING COUNT(amount) > 1 ORDER BY customer_id
-plan:  Project([_current.CUSTOMER_ID#0, _current.COUNT(AMOUNT)#1], PredicatesFilter(Project([_current.CUSTOMER_ID#0, _current.COUNT(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0)), [1 preds]))
+plan:  Project([_current.CUSTOMER_ID#0, _current.COUNT(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryMultiIntersectionOnValuesPlan
-shape:         RecordQueryAggregateIndexPlan
-shape:         RecordQueryAggregateIndexPlan
+shape:     RecordQueryMultiIntersectionOnValuesPlan
+shape:       RecordQueryAggregateIndexPlan
+shape:       RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#4
 sql:   SELECT customer_id, SUM(amount) FROM orders GROUP BY customer_id HAVING SUM(amount) >= 600 ORDER BY customer_id
-plan:  Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0)), [1 preds]))
+plan:  Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1], PredicatesFilter(GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryProjectionPlan
-shape:       RecordQueryMultiIntersectionOnValuesPlan
-shape:         RecordQueryAggregateIndexPlan
-shape:         RecordQueryAggregateIndexPlan
+shape:     RecordQueryMultiIntersectionOnValuesPlan
+shape:       RecordQueryAggregateIndexPlan
+shape:       RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#5
 sql:   SELECT customer_id, SUM(amount), COUNT(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
 plan:  Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1, _current.COUNT(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0))
@@ -2751,13 +2748,12 @@ shape:     RecordQueryAggregateIndexPlan
 shape:     RecordQueryAggregateIndexPlan
 === composite_aggregate_intersection.yaml#6
 sql:   SELECT customer_id, SUM(amount) / COUNT(amount) FROM orders GROUP BY customer_id ORDER BY customer_id
-plan:  Project([_current.CUSTOMER_ID#0, (_current.SUM(AMOUNT)#1 / _current.COUNT(AMOUNT)#2)], Project([_current.CUSTOMER_ID#0, _current.SUM(AMOUNT)#1, _current.COUNT(AMOUNT)#2], GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0)))
+plan:  Project([_current.CUSTOMER_ID#0, (_current.SUM(AMOUNT)#1 / _current.COUNT(AMOUNT)#2)], GroupExistenceMerge(AggregateIndex(COUNT, IDX_SUM_AMOUNT__GROUP_COUNT, [CUSTOMER_ID], ORDERS, live_groups_only), AggregateIndex(SUM, IDX_SUM_AMOUNT, [CUSTOMER_ID], ORDERS), AggregateIndex(COUNT, IDX_COUNT_AMOUNT, [CUSTOMER_ID], ORDERS); keys=[CUSTOMER_ID#0], driving=0))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryProjectionPlan
-shape:     RecordQueryMultiIntersectionOnValuesPlan
-shape:       RecordQueryAggregateIndexPlan
-shape:       RecordQueryAggregateIndexPlan
-shape:       RecordQueryAggregateIndexPlan
+shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
 === composite_pk.yaml#0
 sql:   SELECT b, label FROM t WHERE a = 1 ORDER BY b
 plan:  Project([_current.B#1, _current.LABEL#2], Scan(T, [=]))

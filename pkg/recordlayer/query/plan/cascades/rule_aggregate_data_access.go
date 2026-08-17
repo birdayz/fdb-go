@@ -151,11 +151,11 @@ func (r *AggregateDataAccessRule) OnMatch(call *ExpressionRuleCall) {
 			return
 		}
 
-		// The aggregate-index cursor emits canonical physical column names such as
-		// COUNT(*) and SUM(AMOUNT). A GroupBy owns its logical output names, including
-		// aggregate aliases. Keep the leaf canonical for execution and publish the
-		// GroupBy row through an ordinal projection so the yielded member states the
-		// exact same result type as the Reference it joins.
+		// The yielded member must state the exact result type of the Reference it
+		// joins. projectAggregateResultToGroupBy is what guarantees that, and it
+		// publishes the GroupBy row through an ordinal projection ONLY when the
+		// leaf's own row does not already carry those column names — which, on this
+		// corpus, it always does. See its doc for the census.
 		call.Yield(logicalPlan)
 		singleMatched = true
 	}
@@ -179,6 +179,17 @@ func projectAggregateResultToGroupBy(
 	}
 	outputNames := expressions.GroupByOutputColumnNames(
 		groupBy.GetGroupingKeys(), groupBy.GetAggregates())
+	if aggregateLeafPublishesGroupByRow(root, outputNames) {
+		// Nothing to publish: the leaf's row already IS the GroupBy's row, so the
+		// projection would map ordinal i to ordinal i under the name the column
+		// already has. Wrapping it anyway put a per-group operator in the plan for
+		// a rename that is not happening, and it is not free downstream either: a
+		// HAVING filter above it then reads the PROJECTION's row, which forces the
+		// projection to be materialized BELOW the filter and the same list to be
+		// projected again above it. Measured on the 1M stress suite,
+		// `GROUP BY customer HAVING SUM(amount) > n` ran 1.88x that way.
+		return aggPlan, nil
+	}
 	projected := make([]values.Value, len(outputNames))
 	for i := range projected {
 		projected[i], err = values.ResolveFieldOrdinals(root, []int{i})
@@ -188,6 +199,42 @@ func projectAggregateResultToGroupBy(
 	}
 	return plans.NewRecordQueryProjectionPlanFromQuantifierWithOutputSchema(
 		projected, nil, nil, outputNames, innerQ)
+}
+
+// aggregateLeafPublishesGroupByRow reports whether the aggregate leaf's own row
+// is already, column for column, the row the GroupBy publishes.
+//
+// The projection this decides against is an ORDINAL identity — slot i reads
+// ordinal i — so the only thing it can change is the column NAMES. Equal names in
+// equal order therefore make it a no-op, and the comparison is EXACT rather than
+// case-insensitive on purpose: a case-only difference is still a difference the
+// driver's column labels would show, and eliding it would answer a query with
+// names the GroupBy did not choose.
+//
+// THE RENAME ARM IS NOT REACHED BY THE CORPUS. Censused over the explain-differ
+// dump at 2540 queries, the guard is consulted 32 times and answers "already
+// published" every time: an aggregate ALIAS and a reordered select list are both
+// applied by the OUTER projection, so the GroupBy's own output names stay the
+// canonical ones the leaf already carries. The arm is kept rather than made an
+// error because a name mismatch would otherwise cost the query its columns'
+// labels, which is worse than an extra operator — but it is untested by the
+// corpus, so aggregate_projection_elision_test.go drives BOTH directions of this
+// predicate directly. If that census ever reports a non-identity firing, this arm
+// is what will run, and it has not run in anger.
+func aggregateLeafPublishesGroupByRow(
+	root values.QuantifiedObjectValue,
+	outputNames []string,
+) bool {
+	record, isRecord := values.SharedFlowedType(root).(*values.RecordType)
+	if !isRecord || record == nil || len(record.Fields) != len(outputNames) {
+		return false
+	}
+	for i := range outputNames {
+		if record.Fields[i].Name != outputNames[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // dropsVacatedGroups reports whether a scan of this candidate may drop entries

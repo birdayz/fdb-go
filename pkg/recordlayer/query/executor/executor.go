@@ -3131,9 +3131,10 @@ func compKeyEvalArg(qr QueryResult, edges ...values.QuantifiedObjectValue) (any,
 }
 
 func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
+	var programs comparisonKeyPrograms
 	return func(qr QueryResult) (tuple.Tuple, error) {
 		if len(keyVals) > 0 {
-			evalKeys, inputEdges, err := comparisonKeyProgramForRow(keyVals, qr.Positional)
+			evalKeys, inputEdges, err := programs.forRow(keyVals, qr.Positional)
 			if err != nil {
 				return nil, fmt.Errorf("intersection comparison key program: %w", err)
 			}
@@ -3183,6 +3184,60 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 	}
 }
 
+// comparisonKeyPrograms specializes a comparison-key program per distinct stream
+// ROW SHAPE instead of per row.
+//
+// comparisonKeyProgramForRow's answer depends on the row only through its Type and
+// its selected Layout — every other input is the plan's own key list — and a merge
+// presents ONE fixed pair per LEG, two or three for a whole cursor. Specializing
+// per row therefore rebuilt the same two or three programs for every row that
+// flowed: measured on a 2000-group aggregate merge, 37 allocations per group, the
+// largest single item in that path. The programs are immutable value trees, so one
+// answer serves every row of its leg.
+//
+// Keyed on the two POINTERS rather than on type equality, which is strictly finer:
+// a leg whose row type is a fresh object per row simply rebuilds, as it did before.
+// The entries are a list scanned linearly — a merge has as many as it has legs —
+// and the list STOPS GROWING at a small cap so that a producer minting a fresh
+// type per row cannot turn this into a leak; past the cap every row rebuilds,
+// which is exactly the old behaviour.
+type comparisonKeyPrograms struct {
+	entries []comparisonKeyProgram
+}
+
+type comparisonKeyProgram struct {
+	layout values.OrdinalLayout
+	typ    *values.RecordType
+	keys   []values.Value
+	edges  []values.QuantifiedObjectValue
+}
+
+const comparisonKeyProgramCap = 8
+
+func (c *comparisonKeyPrograms) forRow(
+	keyVals []values.Value,
+	row *PositionalRow,
+) ([]values.Value, []values.QuantifiedObjectValue, error) {
+	if row == nil {
+		return comparisonKeyProgramForRow(keyVals, row)
+	}
+	for i := range c.entries {
+		if c.entries[i].layout == row.Layout && c.entries[i].typ == row.Type {
+			return c.entries[i].keys, c.entries[i].edges, nil
+		}
+	}
+	keys, edges, err := comparisonKeyProgramForRow(keyVals, row)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(c.entries) < comparisonKeyProgramCap {
+		c.entries = append(c.entries, comparisonKeyProgram{
+			layout: row.Layout, typ: row.Type, keys: keys, edges: edges,
+		})
+	}
+	return keys, edges, nil
+}
+
 // comparisonKeyProgramForRow specializes a comparison-key program to one
 // concrete stream row. Multi-intersection uses one key program for child rows
 // whose grouping prefix agrees but whose aggregate payload field differs. The
@@ -3219,7 +3274,8 @@ func comparisonKeyProgramForRow(
 	edges = comparisonKeyInputEdges(rebuilt)
 	needsRebuild := false
 	for _, edge := range edges {
-		if !edge.FlowedType().Equals(row.Type) {
+		// Shared graph: compared against the row shape and never retained.
+		if !values.SharedFlowedType(edge).Equals(row.Type) {
 			needsRebuild = true
 			break
 		}
@@ -3307,12 +3363,18 @@ func comparisonKeyInputEdges(keyVals []values.Value) []values.QuantifiedObjectVa
 			if qov.Correlation() == values.CurrentCorrelation() {
 				return true
 			}
+			// Shared graphs: the type is only compared here and the map dies with
+			// the call. FlowedType would thaw a fresh graph per QOV node — and this
+			// walk runs once per ROW of every merge stream, so on a 2000-group
+			// aggregate merge it was thawing 35 Type graphs per group to answer a
+			// question about types that do not change.
+			flowed := values.SharedFlowedType(qov)
 			for _, typ := range seen[qov.Correlation()] {
-				if typ.Equals(qov.FlowedType()) {
+				if typ.Equals(flowed) {
 					return true
 				}
 			}
-			seen[qov.Correlation()] = append(seen[qov.Correlation()], qov.FlowedType())
+			seen[qov.Correlation()] = append(seen[qov.Correlation()], flowed)
 			result = append(result, qov)
 			return true
 		})

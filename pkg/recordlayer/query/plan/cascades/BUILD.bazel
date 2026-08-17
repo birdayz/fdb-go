@@ -228,6 +228,7 @@ go_test(
         "aggregate_group_existence_test.go",
         "aggregate_index_shortcut_gate_test.go",
         "aggregate_index_unknown_key_type_test.go",
+        "aggregate_projection_elision_test.go",
         "alias_aware_interning_shadow_delta_test.go",
         "alias_map_test.go",
         "asymmetric_union_planning_test.go",
@@ -1128,6 +1129,7 @@ go_test(
         "test_helpers_shared_test.go",
         "predicate_push_decline_test.go",
         "requested_ordering_current_space_test.go",
+        "aggregate_projection_elision_test.go",
     ],
     deps = [
         "//gen",

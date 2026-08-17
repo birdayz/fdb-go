@@ -215,6 +215,9 @@ func executeAggregateIndexScan(
 		posType:       posType,
 		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
 		liveGroupsOnly: p.IsLiveGroupsOnly(),
+		// Stamped at mint time so the output boundary checks the row instead of
+		// copying it to attach the layout — see mintedRowLayout.
+		layout: mintedRowLayout(p),
 	}
 	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
 }
@@ -381,6 +384,9 @@ type aggregateIndexCursor struct {
 	// existence here rather than at plan time would make the plan a lie.
 	liveGroupsOnly bool
 	closed         bool
+	// layout is the plan's provided output layout, carried by every row this
+	// cursor mints.
+	layout values.OrdinalLayout
 }
 
 func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -433,7 +439,10 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 		}
 	}
 
-	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
+	// The row is minted here and has one owner, so it carries the layout its
+	// output boundary will hold it to rather than being copied to acquire it —
+	// see mintedRowLayout.
+	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots, Layout: c.layout}}
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
@@ -578,9 +587,10 @@ func absentAggregateRow(width int) QueryResult {
 }
 
 func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
+	var programs comparisonKeyPrograms
 	return func(qr QueryResult) (tuple.Tuple, error) {
 		if len(keyVals) > 0 {
-			evalKeys, inputEdges, err := comparisonKeyProgramForRow(keyVals, qr.Positional)
+			evalKeys, inputEdges, err := programs.forRow(keyVals, qr.Positional)
 			if err != nil {
 				return nil, fmt.Errorf("multi-intersection comparison key program: %w", err)
 			}
@@ -1977,9 +1987,12 @@ func (s *mergeSortChildState) consume() {
 type mergeSortCursor struct {
 	states   []*mergeSortChildState
 	compKeys []values.Value
-	reverse  bool
-	dedup    bool
-	closed   bool
+	// compKeyPrograms holds the comparison-key program specialized per leg row
+	// shape, so a merge builds one per LEG rather than one per row.
+	compKeyPrograms comparisonKeyPrograms
+	reverse         bool
+	dedup           bool
+	closed          bool
 	// lastNoNext caches a terminal result (Java MergeCursor.onNext:291-293:
 	// once stopped, every later onNext returns the same result).
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
@@ -2350,7 +2363,7 @@ func (m *mergeSortCursor) stopWith(reason recordlayer.NoNextReason) recordlayer.
 // planner invariant violation surfaced as a loud cursor error.
 func (m *mergeSortCursor) evalCompKeys(qr QueryResult) ([]any, error) {
 	kv := make([]any, len(m.compKeys))
-	evalKeys, inputEdges, err := comparisonKeyProgramForRow(m.compKeys, qr.Positional)
+	evalKeys, inputEdges, err := m.compKeyPrograms.forRow(m.compKeys, qr.Positional)
 	if err != nil {
 		return nil, fmt.Errorf("merge comparison key program: %w", err)
 	}
