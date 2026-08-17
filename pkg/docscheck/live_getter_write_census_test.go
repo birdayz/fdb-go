@@ -55,10 +55,35 @@ import (
 
 // liveIdentityGetters are accessors that return a live slice which is folded into
 // the receiver's structural key. Writing through one rewrites plan identity.
+//
+// The DETECTOR matches on name alone, deliberately. It over-approximates — a
+// same-named method on some other type reports too — and that is the safe direction
+// for a ratchet at zero, since it also happens to cover
+// `LogicalSortExpression.GetSortKeys`, whose keys are identity-bearing in the same
+// way.
 var liveIdentityGetters = map[string]bool{
 	"GetSortKeys":  true,
 	"GetInValues":  true,
 	"GetInSources": true,
+}
+
+// liveIdentityGetterOwners keys the VACUITY GUARD on the receiver type, which the
+// detector deliberately ignores.
+//
+// Name alone is not enough here, and the failure was live rather than theoretical:
+// `GetSortKeys` is defined TWICE — on `RecordQueryInMemorySortPlan` and on
+// `LogicalSortExpression` — so a guard asking merely "does some method of this name
+// exist" was satisfied by the unrelated one. Renaming the PLAN's getter, the very
+// accessor this gate was built for, left the gate reporting a confident zero. The
+// single-definition getters (`GetInValues`, `GetInSources`) fired correctly, so the
+// guard looked verified because the case that was checked was the case that worked.
+//
+// That is the guard's own failure mode turned on itself: an instrument that cannot
+// tell "nothing wrong" from "nothing to look at".
+var liveIdentityGetterOwners = map[string]string{
+	"GetSortKeys":  "RecordQueryInMemorySortPlan",
+	"GetInValues":  "RecordQueryInJoinPlan",
+	"GetInSources": "RecordQueryInUnionPlan",
 }
 
 // rootGetterCall reports the method name when e is ultimately rooted at a CALL to
@@ -157,9 +182,16 @@ func TestNothingWritesThroughALiveIdentityGetter(t *testing.T) {
 			continue
 		}
 		for _, decl := range f.Decls {
-			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv != nil && liveIdentityGetters[fn.Name.Name] {
-				defined[fn.Name.Name] = true
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv == nil || len(fn.Recv.List) == 0 {
+				continue
 			}
+			if liveIdentityGetterOwners[fn.Name.Name] == "" {
+				continue
+			}
+			// Qualified by receiver type: a same-named getter on another type must
+			// not satisfy the guard for this one.
+			defined[receiverTypeName(fn.Recv.List[0].Type)+"."+fn.Name.Name] = true
 		}
 		scanLiveGetterWrites(f, func(pos token.Pos, getter string) {
 			findings = append(findings, fmt.Sprintf("%s:%d: writes through %s()",
@@ -171,12 +203,15 @@ func TestNothingWritesThroughALiveIdentityGetter(t *testing.T) {
 	// names. Rename a getter and the gate keeps reporting a confident zero over a name
 	// nothing calls any more — a green that means "nothing to look at" instead of
 	// "nothing wrong". Require every watched name to still be defined.
-	for getter := range liveIdentityGetters {
-		if !defined[getter] {
-			t.Errorf("no method named %s is defined in the tree, so this gate is watching a "+
-				"name that no longer exists. Either it was renamed (update "+
-				"liveIdentityGetters in the same change) or it now returns a copy and can be "+
-				"dropped from the watch list.", getter)
+	for getter, owner := range liveIdentityGetterOwners {
+		if !defined[owner+"."+getter] {
+			t.Errorf("%s.%s is not defined in the tree, so this gate is watching an accessor "+
+				"that no longer exists. Either it was renamed (update liveIdentityGetters and "+
+				"liveIdentityGetterOwners in the same change) or it now returns a copy and can "+
+				"be dropped from the watch list.\n"+
+				"Note this is checked per RECEIVER TYPE on purpose: %s is also defined on other "+
+				"types, and a name-only check was satisfied by one of those while the accessor "+
+				"this gate exists for had been renamed away.", owner, getter, getter)
 		}
 	}
 
@@ -216,8 +251,13 @@ func TestLiveGetterDetectorFiresOnEveryWriteShape(t *testing.T) {
 		{"whole element replaced", `plan.GetSortKeys()[0] = k`},
 		{"element of a scalar list", `plan.GetInValues()[2] = 7`},
 		{"nested index", `plan.GetInSources()[0][1] = 9`},
-		{"compound assign", `plan.GetInValues()[0] = 1`},
-		{"increment through the getter", `plan.GetSortKeys()[0].Field += "x"`},
+		// These two arms were previously mislabelled: an assignment called "compound
+		// assign" (a duplicate of the arm above) and a compound assign called
+		// "increment". The word "increment" appearing made the IncDecStmt branch READ as
+		// covered while nothing drove it — deleting that whole branch left every arm and
+		// the tree ratchet green.
+		{"compound assign", `plan.GetSortKeys()[0].Field += "x"`},
+		{"increment", `plan.GetInValues()[0]++`},
 		// A slice of the live array still aliases it.
 		{"write through a reslice", `plan.GetInValues()[1:][0] = 3`},
 		// Not in first position of a multi-assign.
