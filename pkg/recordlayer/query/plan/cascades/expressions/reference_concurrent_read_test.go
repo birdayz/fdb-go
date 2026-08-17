@@ -28,9 +28,14 @@ import (
 //
 // Both shapes were measured against the mutation this pins — the memo's
 // atomic.Pointer reverted to a plain *flowedTypeMemo, which is the shape that
-// shipped the race — and on this machine both reddened 15 runs in 15. So the
-// restructure buys robustness, not a red rate: the number to state is that the
-// mutation is caught 15/15 at goroutines=8, rounds=32.
+// shipped the race — and both reddened 15 runs in 15, reproduced independently on a
+// second machine. So the restructure buys robustness, not a red rate: the number to
+// state is that the mutation is caught 15/15 at goroutines=8, rounds=32.
+//
+// Unlike the interner's concurrency detector, this rate is NOT scheduler-dependent,
+// and the fresh-reference-per-round shape is why: there are 32 first-write windows
+// instead of one, so the detector does not need the scheduler to cooperate on any
+// particular one of them.
 //
 // It is worth nothing without -race — the whole point is the detector.
 func TestSharedReferenceSurvivesConcurrentFlowedTypeReads(t *testing.T) {

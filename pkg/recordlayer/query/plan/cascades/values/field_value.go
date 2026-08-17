@@ -716,6 +716,16 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 	// Interned like every other exact node, because the probe compares CHILDREN BY
 	// POINTER: a widened record built outside the table would compare unequal to
 	// an identical interned one and defeat the sharing of everything above it.
+	//
+	// These two slices are heap-allocated per call, where snapshotExactType's record
+	// arm deliberately gathers its children into a stack array "so the common call
+	// allocates NOTHING". The arms differ on purpose. The common call HERE is a
+	// primitive — nullability widening on a resolved field path — and a primitive has
+	// no fields, so both makes are length zero and allocate nothing. Only widening a
+	// RECORD pays the two slices, and that is rare next to snapshotting one:
+	// exactWithNullability never appeared as a term in the allocation profiles that
+	// drove this campaign, while snapshotExactType ran 243.8 million times. Copy the
+	// stack-buffer trick over if a profile ever disagrees; do not do it for symmetry.
 	srcFields := make([]Field, len(source.fields))
 	children := make([]*exactType, len(source.fields))
 	for i := range source.fields {

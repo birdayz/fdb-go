@@ -18237,13 +18237,26 @@ which is where the superseded block's numbers were taken.
 Whole-suite wall clock on the 1M stress test: **master 175.52s, branch 180.14s =
 1.026x** — also against the old `9a39b5006` baseline, not the merge-base.
 
-Allocation COUNTS are below master on **6 of the 9** sqlhunt benchmarks. An earlier
-draft of this entry said 7 of 9; the re-measurement above refuted it. The two that
-remain above are `ScanFilterSparse` and `InListExecution`, and they are also the two
-worst time ratios (1.53x, 1.56x) — which is one story, not two: both are dominated
-by PLANNING rather than by row throughput, so the row-path work in this campaign
-could not touch them. They are the workloads the plan-time-rebind milestone below is
-aimed at. What closed the rest: minting a scan/projection row already carrying its plan's layout so the
+Allocation COUNTS are below master on **7 of the 9** sqlhunt benchmarks — which is
+what the table above shows, row by row. Read the count off the table, not off this
+sentence.
+
+One of those seven is not worth leaning on: `AggregateGroupsHaving` is 176k vs 177k,
+a 0.6% gap, well inside the `±0%`/`~` noise this entry declares two paragraphs up.
+So **six** are below by a margin that means anything, and the seventh is below only
+by sign. State it that way rather than picking one number.
+
+A draft of this entry said "6 of 9" and claimed the re-measurement had REFUTED an
+earlier 7-of-9. That was wrong in both halves: the count is 7, and the earlier 7 was
+never refuted — the noise-margin judgement about `AggregateGroupsHaving` was being
+silently folded into a count while the table beside it still said "below". The
+correction was the error, not the thing it corrected.
+
+The two genuinely above are `ScanFilterSparse` and `InListExecution`, and they are
+also the two worst time ratios (1.53x, 1.56x) — which is one story, not two: both are
+dominated by PLANNING rather than by row throughput, so the row-path work in this
+campaign could not touch them. They are the workloads the plan-time-rebind milestone
+below is aimed at. What closed the rest: minting a scan/projection row already carrying its plan's layout so the
 output boundary takes an identity fast path instead of copying every row; one
 per-row allocation for the frontier binding holder instead of three; a
 `RecordCursorResult` that holds its value inline instead of boxing it once per row

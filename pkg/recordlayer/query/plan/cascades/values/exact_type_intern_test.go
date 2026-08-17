@@ -99,11 +99,16 @@ func TestExactInterningKeepsRecordNamesApart(t *testing.T) {
 // storeInternedExactType, DETERMINISTICALLY.
 //
 // The re-check exists for a race, and the concurrent test below does detect its
-// removal — measured at 10 RED / 12 runs under -race with the re-check deleted.
-// That is a detector, not a gate: the two remaining greens are runs where the
-// scheduler let only one goroutine miss under the read lock, and a pointer-
-// identity invariant that reports correct 2 times in 12 is the flake class this
-// repo treats as a latent bug rather than a safety net.
+// removal — but only at a SCHEDULER-DEPENDENT rate, so the rate is not a number to
+// compare against. With the re-check deleted it measured 10 RED / 12 runs on one
+// machine and 6 RED / 12 on another; the control with the re-check present is
+// 0 RED / 12 on both, which is what attributes those reds to the mutation rather
+// than to baseline flakiness. Do not read a lower rate elsewhere as a regression.
+//
+// Either way it is a detector, not a gate: the greens are runs where the scheduler
+// let only one goroutine miss under the read lock, and a pointer-identity invariant
+// that reports correct in a third to a sixth of runs is the flake class this repo
+// treats as a latent bug rather than a safety net.
 //
 // So drive the miss path directly as well. Calling storeInternedExactType twice
 // with equal probes IS the interleaving the re-check handles: the first stores,
@@ -180,10 +185,13 @@ func TestInterningRechecksUnderTheWriteLock(t *testing.T) {
 // under -race. The planner snapshots from many goroutines, so the failure it
 // guards is a torn table or two winners for one type.
 //
-// It is a DETECTOR, not the gate. Deleting the write-lock re-check reddens it 10
-// times in 12 runs (measured under -race at goroutines=16); the other 2 are runs
-// where only one goroutine missed under the read lock, so no duplicate was ever
-// appended. TestInterningRechecksUnderTheWriteLock is the deterministic half.
+// It is a DETECTOR, not the gate. Deleting the write-lock re-check reddens it at a
+// SCHEDULER-DEPENDENT rate — 10 of 12 runs on one machine, 6 of 12 on another, both
+// under -race at goroutines=16, against a 0-of-12 control with the re-check present.
+// The greens are runs where only one goroutine missed under the read lock, so no
+// duplicate was ever appended. A lower rate on other hardware is not a regression;
+// the rate is a property of the scheduler, not of the code. This is why
+// TestInterningRechecksUnderTheWriteLock exists — it is the deterministic half.
 func TestExactInterningConvergesUnderConcurrency(t *testing.T) {
 	t.Parallel()
 
