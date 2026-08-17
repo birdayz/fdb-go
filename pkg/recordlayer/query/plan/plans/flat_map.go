@@ -293,8 +293,8 @@ func flatMapBaseWithRetainedSources(
 			var outputValue values.Value
 			if resultRoot, identityResult := values.AsQuantifiedObjectValue(resultValue); identityResult {
 				// A bare QOV result is an explicit identity edge, not a
-				// RecordConstructor producer. ReanchorValueThroughProducer has no
-				// fields to inspect in that case and correctly leaves childValue on
+				// RecordConstructor producer. The producer bridge has no fields to
+				// inspect in that case and correctly leaves childValue on
 				// the declared FlatMap binding. Translate that exact declaration to
 				// the admitted output carrier directly so retained scalar windows
 				// survive an identity existential wrapper. Correlation + exact type
@@ -597,7 +597,10 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 		// A declared FlatMap binding is direct lineage authority. Do not send an
 		// inner-owned value through the outer producer (or vice versa): a projection
 		// on the wrong leg can have a uniquely named field and would otherwise claim
-		// it through ReanchorValueThroughProducer's intentional unique-slot fallback.
+		// it through the producer bridge's unique-slot match. That match now runs
+		// only for roots the producer OWNS, so this guard is no longer the sole
+		// thing standing between a wrong-leg projection and a same-named slot — it
+		// is what keeps the value from being offered to the wrong lineage at all.
 		// Values owned by both legs still traverse both; a buried descendant that
 		// names neither direct binding also probes both so a nested producer can
 		// recover its source window.

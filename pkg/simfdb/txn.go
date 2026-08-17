@@ -962,11 +962,15 @@ func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []
 //     resolution, which is index-based over the merged view, with GetKey's own clamps: the
 //     empty key before the first key, endKeyMarker past the last.
 func resolveRangeBound(view []fdb.KeyValue, ks fdb.KeySelector) []byte {
-	if !ks.OrEqual && ks.Offset == 1 { // FirstGreaterOrEqual — trivial
-		return []byte(ks.Key.FDBKey())
-	}
-	if ks.OrEqual && ks.Offset == 1 { // FirstGreaterThan(k) == FirstGreaterOrEqual(k+\x00)
-		return keyAfter([]byte(ks.Key.FDBKey()))
+	// The two trivial arms are gated on selectorResolvesViaGetKey rather than on a
+	// second copy of its predicates: getRange SKIPS building the view when that
+	// function reports false for both bounds, so a drift between the two would not
+	// be a wrong answer, it would be a nil view reaching the index walk below.
+	if !selectorResolvesViaGetKey(ks) {
+		if ks.OrEqual { // FirstGreaterThan(k) == FirstGreaterOrEqual(k+\x00)
+			return keyAfter([]byte(ks.Key.FDBKey()))
+		}
+		return []byte(ks.Key.FDBKey()) // FirstGreaterOrEqual — the key itself
 	}
 	switch idx := resolveSelector(view, ks); {
 	case idx < 0:

@@ -620,9 +620,19 @@ func leafAccessorName(v Value) (string, bool) {
 // evidence" and "this producer owns that source, so the correct slot is here
 // and ownership is what finds it". In the second case a same-named slot from a
 // DIFFERENT source is not weaker evidence, it is the wrong column.
+// The walk goes through the WHOLE slot expression, not just its root. A slot
+// spelled `10 + A.ID` carries A as surely as a slot spelled `A.ID` does, and
+// reading only the top level answered "no opinion" for it — which handed the
+// decision back to the cross-source name path for a source this producer
+// demonstrably reads. That is the same shape as the wrong-column bug the
+// discriminator exists to prevent, just reached through an expression instead
+// of directly.
 func producesSource(rc *RecordConstructorValue, correlation CorrelationIdentifier) bool {
-	for _, output := range rc.Fields {
-		switch candidate := output.Value.(type) {
+	var carries func(Value) bool
+	carries = func(node Value) bool {
+		switch candidate := node.(type) {
+		case nil:
+			return false
 		case *fieldValue:
 			if root, isRoot := candidate.Child.(*quantifiedObjectValue); isRoot &&
 				root.correlation == correlation {
@@ -632,6 +642,17 @@ func producesSource(rc *RecordConstructorValue, correlation CorrelationIdentifie
 			if candidate.correlation == correlation {
 				return true
 			}
+		}
+		for _, child := range node.Children() {
+			if carries(child) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, output := range rc.Fields {
+		if output.Value != nil && carries(output.Value) {
+			return true
 		}
 	}
 	return false

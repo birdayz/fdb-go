@@ -114,9 +114,11 @@ func (r *ProjectionMergeRule) OnMatch(call *ExpressionRuleCall) {
 	// The raw alias list is NOT enough: an outer output named by its VALUE's
 	// own field name (a lazy `SELECT "AK"` read — alias empty) loses that
 	// name when composition substitutes the inner's value (the field name
-	// rides the replaced value). Pin every slot's effective name —
-	// OutputColumnName(outerVal, outerAlias), the same authority the
-	// runtime applies — as the merged alias, so `WITH c AS (SELECT k AS ak
+	// rides the replaced value). Pin every slot's effective name — the outer's
+	// PUBLISHED output schema, read back rather than recomputed, because the
+	// schema is what the enclosing scope resolves against and recomputing a
+	// name here is how two authorities come to disagree about one row — as the
+	// merged alias, so `WITH c AS (SELECT k AS ak
 	// ...) SELECT ak FROM c` keeps AK after the CTE-consumer projection
 	// merges into the body (dup inner names like [K, K] must never leak as
 	// the output schema; the RFC-186 winner-flip triage caught exactly that

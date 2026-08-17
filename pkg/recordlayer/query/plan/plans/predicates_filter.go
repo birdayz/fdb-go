@@ -370,6 +370,15 @@ func reanchorPredicateForInputWithAlias(
 // still requires the declaration's exact whole-row type, field path, leaf type,
 // and unique producer lineage, so a same-spelled wrong-type root remains
 // unchanged and is rejected by the runtime binder rather than guessed.
+//
+// The chain this follows now includes RecordQueryDefaultOnEmptyPlan, which
+// became a materializer when the null-extension crossing was stated explicitly.
+// So a filter above an outer join now admits the legs BURIED INSIDE the
+// null-supplying side, where before the walk stopped at the wrapper and those
+// legs were absent from the map. That widening is the same change and is
+// intended: it is what lets `b.bid` resolve under
+// `mb JOIN mc RIGHT JOIN ma`. It admits nothing unchecked — every added
+// correlation still has to survive the exact rewrite above.
 func addSelectedMaterializerRetainedCorrelations(
 	plan RecordQueryPlan,
 	owned map[values.CorrelationIdentifier]struct{},

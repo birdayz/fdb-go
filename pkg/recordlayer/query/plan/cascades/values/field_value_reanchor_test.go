@@ -171,7 +171,7 @@ func TestReanchorFieldValueFieldWindowPreservesNestedSuffix(t *testing.T) {
 	}
 }
 
-func TestReanchorValueThroughProducerUsesOwnedOrUniqueLineageOnly(t *testing.T) {
+func TestUnownedProducerBridgeUsesOwnedOrUniqueLineageOnly(t *testing.T) {
 	t.Parallel()
 	outerExact := NewRecordType("CUST", false, []Field{
 		{Name: "CID", Ordinal: 0, FieldType: NotNullLong},
@@ -308,7 +308,7 @@ func TestReanchorValueThroughProducerUsesOwnedOrUniqueLineageOnly(t *testing.T) 
 	}
 }
 
-func TestReanchorValueThroughProducerPrefersExactOwnerOrdinalPath(t *testing.T) {
+func TestUnownedProducerBridgePrefersExactOwnerOrdinalPath(t *testing.T) {
 	t.Parallel()
 	// This is the shape produced by a gathered join: one exact materialized
 	// source has two same-named, same-typed ID fields at different ordinals.
@@ -423,7 +423,7 @@ func TestReanchorValueThroughProducerPrefersExactOwnerOrdinalPath(t *testing.T) 
 	}
 }
 
-func TestReanchorValueThroughProducerMapsUniqueBareObjectSlot(t *testing.T) {
+func TestUnownedProducerBridgeMapsUniqueBareObjectSlot(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -528,7 +528,7 @@ func TestReanchorValueThroughProducerMapsUniqueBareObjectSlot(t *testing.T) {
 	}
 }
 
-func TestReanchorValueThroughProducerCarriesNestedCurrentSuffixExactly(t *testing.T) {
+func TestUnownedProducerBridgeCarriesNestedCurrentSuffixExactly(t *testing.T) {
 	t.Parallel()
 	legType := NewRecordType("LEG", false, []Field{
 		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
