@@ -109,8 +109,15 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	// Top-down: push ordering constraint to inner reference so
-	// downstream rules (index scans) can satisfy it.
-	requestedOrdering := sortExpressionToRequestedOrdering(s)
+	// downstream rules (index scans) can satisfy it. It crosses into the inner
+	// reference's own current-row space first, exactly as the dedicated push
+	// rule does — see requestedOrderingAtInnerCurrent.
+	requestedOrdering, err := requestedOrderingAtInnerCurrent(
+		sortExpressionToRequestedOrdering(s), s.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
 
 	// Guard: only yield the sort if the inner group has a physical plan to sort.

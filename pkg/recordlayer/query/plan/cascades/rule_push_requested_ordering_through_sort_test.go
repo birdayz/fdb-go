@@ -52,7 +52,8 @@ func TestPushRequestedOrderingThroughSort_PushesConstraint(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("expected 1 ordering part, got %d", len(parts))
 	}
-	assertRequestedOrderingField(t, parts[0].Value, col1)
+	assertRequestedOrderingField(t, parts[0].Value,
+		requestedOrderingCurrentField(scanQ, "COL1"))
 	if parts[0].SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatal("expected ASC sort order")
 	}
@@ -187,8 +188,8 @@ func TestPushRequestedOrderingThroughSort_MultipleSortKeys(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 ordering parts, got %d", len(parts))
 	}
-	assertRequestedOrderingField(t, parts[0].Value, a)
-	assertRequestedOrderingField(t, parts[1].Value, b)
+	assertRequestedOrderingField(t, parts[0].Value, requestedOrderingCurrentField(scanQ, "A"))
+	assertRequestedOrderingField(t, parts[1].Value, requestedOrderingCurrentField(scanQ, "B"))
 	if parts[0].SortOrder != properties.RequestedSortOrderAscending ||
 		parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("sort directions = [%v, %v], want [ASC, DESC]",

@@ -404,6 +404,7 @@ go_test(
         "rebase_ordinal_layout_test.go",
         "reference_winner_test.go",
         "referenced_fields_readers_test.go",
+        "requested_ordering_current_space_test.go",
         "restricted_final_reference_test.go",
         "restricted_inner_reference_test.go",
         "restricted_ordering_fetch_property_test.go",
@@ -1126,6 +1127,7 @@ go_test(
         "memo_admission_wiring_test.go",
         "test_helpers_shared_test.go",
         "predicate_push_decline_test.go",
+        "requested_ordering_current_space_test.go",
     ],
     deps = [
         "//gen",

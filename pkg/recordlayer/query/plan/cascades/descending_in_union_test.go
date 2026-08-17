@@ -303,11 +303,12 @@ func TestSelectRulePushesOrderingWhenResultIsOneChildsRow(t *testing.T) {
 	)
 	selRef := expressions.InitialOf(sel)
 
-	// RFC-232 makes the translator's resolved sort key explicitly owned by the
-	// passthrough child. The result-is-child-row arm must retain that exact key.
+	// The request names the SELECT.s own output row, which is the reserved-current
+	// carrier: the sort above rebased it there before pushing. The
+	// result-is-child-row arm must carry it through to the passthrough child.
 	parentOrdering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value:     descendingInUnionField(t, innerRow, 0),
+			Value:     descendingInUnionCurrentField(t, innerRow, 0),
 			SortOrder: properties.RequestedSortOrderDescending,
 		}},
 		properties.DistinctnessNotDistinct,
@@ -643,4 +644,27 @@ func TestDistinctUnionMergedOrderingCarriesNoEqualityBoundKeys(t *testing.T) {
 				values.ExplainValue(key))
 		}
 	}
+}
+
+// descendingInUnionCurrentField is descendingInUnionField on the RESERVED-CURRENT
+// carrier for the same row. A requested ordering names the row of the group it
+// is attached to, and that row is always the reserved-current one — Java rebases
+// every part onto Quantifier.current() before pushing (see
+// requestedOrderingAtInnerCurrent).
+func descendingInUnionCurrentField(
+	t testing.TB,
+	root values.Value,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	rootQOV, ok := values.AsQuantifiedObjectValue(root)
+	if !ok {
+		t.Fatalf("root %T is not a quantified object value", root)
+	}
+	carrier, err := values.CurrentPhaseCarrierForEdge(rootQOV)
+	if err != nil {
+		t.Fatalf("current carrier: %v", err)
+	}
+	field, err := values.ResolveFieldOrdinals(carrier, []int{ordinal})
+	return mustConstruct(t, field, err)
 }

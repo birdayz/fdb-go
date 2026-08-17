@@ -78,6 +78,34 @@ func TranslateDeclaredEdgeRoot(
 	})
 }
 
+// CurrentPhaseCarrierForEdge returns the reserved-current carrier that denotes
+// the row phase a declared physical edge delivers. The edge's exact flowed type
+// is carried over unchanged, so the result is the exact QOV a selected child's
+// layout would publish for that same phase — TranslateDeclaredEdgeRoot's own
+// precondition is that declaration and target agree on the exact shape.
+//
+// It exists for the alias-to-current rebases Java spells as
+// AliasMap.ofAliases(quantifier.getAlias(), Quantifier.current()): a value an
+// expression states over one of its own child EDGES, handed to that child's
+// Reference, has to arrive in the reference's own row space, because the
+// reference has never heard of the parent's alias for it. Pair it with
+// TranslateDeclaredEdgeRoot, whose precondition it satisfies by construction.
+//
+// The exact type is what makes the target well-defined: every member of a
+// Reference carries that Reference's result type (memo admission enforces it),
+// so the carrier derived from the edge describes the row every member of that
+// group delivers, not one alternative's.
+func CurrentPhaseCarrierForEdge(edge QuantifiedObjectValue) (QuantifiedObjectValue, error) {
+	exact, err := exactLayoutQOV(edge, "edge.declaration")
+	if err != nil {
+		return nil, err
+	}
+	if exact.correlation.isCurrent() {
+		return exact, nil
+	}
+	return &quantifiedObjectValue{correlation: CurrentCorrelation(), flowed: exact.flowed}, nil
+}
+
 // TranslateLogicalSourceRoot moves one explicitly declared logical source onto
 // the exact physical QOV selected for that source. Logical join seeds retain a
 // nominal record identity (for example B RECORD<...>) while stored-row plans

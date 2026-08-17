@@ -69,8 +69,20 @@ func (r *PushRequestedOrderingThroughSelectRule) OnMatch(call *ImplementationRul
 			if o.IsPreserve() {
 				toBePushed = append(toBePushed, properties.PreserveOrdering())
 			} else {
-				pushed := pushRequestedOrderingToSelectChild(
-					o, resultValue, innerQuantifier.GetAlias(), localAliases)
+				// Java's pushDown finishes with rebase(childAlias -> current) and
+				// keeps only the parts that land entirely in current space
+				// (RequestedOrdering.java:220-232). The child-space result above
+				// is the half before that rebase; a constraint attached to the
+				// child REFERENCE is read there in the child's own current-row
+				// space, so it has to cross.
+				pushed, err := requestedOrderingAtInnerCurrent(
+					pushRequestedOrderingToSelectChild(
+						o, resultValue, innerQuantifier.GetAlias(), localAliases),
+					innerQuantifier)
+				if err != nil {
+					call.Fail(err)
+					return
+				}
 				toBePushed = append(toBePushed, pushed)
 				hasConcrete = hasConcrete || !pushed.IsPreserve()
 			}
@@ -95,6 +107,13 @@ func (r *PushRequestedOrderingThroughSelectRule) OnMatch(call *ImplementationRul
 // Value.PushDownThroughValue handles the projection shape; this local-alias
 // filter supplies Java's alias-map/constant-alias discipline that the direct Go
 // value algorithm does not otherwise carry.
+//
+// The request arrives expressed over the SELECT's own output row, which is the
+// reserved-current handle — Java passes Quantifier.current() as the upper base
+// of the same push-down (RequestedOrdering.pushDown, called with
+// Quantifier.current()). Passing the CHILD's alias there instead asks the
+// push-down to interpret the request in the space it is trying to reach, so
+// every part declines and the whole request degrades to Preserve.
 func pushRequestedOrderingToSelectChild(
 	ordering *properties.RequestedOrdering,
 	resultValue values.Value,
@@ -102,7 +121,7 @@ func pushRequestedOrderingToSelectChild(
 	localAliases map[values.CorrelationIdentifier]struct{},
 ) *properties.RequestedOrdering {
 	return pushRequestedOrderingToSelectChildThroughOutput(
-		ordering, resultValue, childAlias, childAlias, localAliases)
+		ordering, resultValue, values.CurrentCorrelation(), childAlias, localAliases)
 }
 
 // pushRequestedOrderingToSelectChildThroughOutput separates the alias that

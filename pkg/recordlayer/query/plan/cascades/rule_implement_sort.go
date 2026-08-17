@@ -47,8 +47,17 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	// Top-down: push ordering constraint to inner reference so
-	// downstream rules (index scans) can satisfy it.
-	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
+	// downstream rules (index scans) can satisfy it. The constraint crosses into
+	// the inner reference's own current-row space, exactly as the dedicated
+	// push rule does; `requestedOrdering` itself stays in the sort's space
+	// below, because the satisfaction checks compare it against orderings
+	// derived from this expression's children.
+	pushedOrdering, err := requestedOrderingAtInnerCurrent(requestedOrdering, s.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.PushConstraint(innerRef, []*properties.RequestedOrdering{pushedOrdering})
 
 	if requestedOrdering.IsPreserve() {
 		for _, m := range innerRef.AllMembers() {

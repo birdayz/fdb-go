@@ -250,3 +250,27 @@ func TestPushRequestedOrderingThroughDelete_NoYield(t *testing.T) {
 		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
 	}
 }
+
+// requestedOrderingCurrentField builds an ordering value on the RESERVED-CURRENT
+// carrier for a row type — the space a requested ordering lives in at the
+// reference it is attached to (Java rebases every pushed part onto
+// Quantifier.current(); see requestedOrderingAtInnerCurrent). Expectations use
+// it wherever a rule's output is read back out of the constraint map.
+func requestedOrderingCurrentField(q expressions.Quantifier, field string) values.Value {
+	edge := mustRequestedOrderingConstruct(q.RequireFlowedObjectValue())
+	carrier := mustRequestedOrderingConstruct(values.CurrentPhaseCarrierForEdge(edge))
+	request := mustRequestedOrderingConstruct(values.FieldByName(field))
+	return mustRequestedOrderingConstruct(values.ResolveFieldAccess(
+		carrier, []values.FieldRequest{request}))
+}
+
+// requestedOrderingCurrentOutputField is requestedOrderingCurrentField for a
+// row described by a result VALUE rather than by a quantifier: the ordering a
+// parent attaches to a group names that group's own output row, which is the
+// reserved-current carrier for the result type.
+func requestedOrderingCurrentOutputField(resultValue values.Value, ordinal int) values.Value {
+	edge := mustRequestedOrderingConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("requested_ordering_output"), resultValue.Type()))
+	carrier := mustRequestedOrderingConstruct(values.CurrentPhaseCarrierForEdge(edge))
+	return mustRequestedOrderingConstruct(values.ResolveFieldOrdinals(carrier, []int{ordinal}))
+}

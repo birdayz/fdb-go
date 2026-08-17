@@ -59,8 +59,7 @@ func TestPushRequestedOrderingThroughSelectRule_TranslatesToChild(t *testing.T) 
 	selectRef := expressions.InitialOf(selectExpr)
 	parentOrdering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value: requestedOrderingOutputField(
-				child.GetAlias(), selectExpr.GetResultValue(), 0),
+			Value:     requestedOrderingCurrentOutputField(selectExpr.GetResultValue(), 0),
 			SortOrder: properties.RequestedSortOrderDescending,
 		}},
 		properties.DistinctnessNotDistinct,
@@ -78,7 +77,7 @@ func TestPushRequestedOrderingThroughSelectRule_TranslatesToChild(t *testing.T) 
 	if len(parts) != 1 {
 		t.Fatalf("pushed ordering has %d parts, want one", len(parts))
 	}
-	assertRequestedOrderingField(t, parts[0].Value, childID)
+	assertRequestedOrderingField(t, parts[0].Value, requestedOrderingCurrentField(child, "ID"))
 	if parts[0].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("pushed sort order = %v, want descending", parts[0].SortOrder)
 	}
