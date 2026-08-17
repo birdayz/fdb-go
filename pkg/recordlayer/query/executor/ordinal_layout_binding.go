@@ -51,12 +51,17 @@ func (b *evaluationObjectBinder) GetQuantifiedBinding(qov values.QuantifiedObjec
 // receives the sole slot of its executor carrier. It is deliberately keyed by
 // exact QOV (correlation plus exact type), not by an ambient alias lookup.
 // The bindings are a LIST, scanned linearly. A binder is built once per ROW and
-// holds one entry per physical edge — one for a scan, two for a join — so a map
-// paid its bucket allocation and its hashing on every row to hold a pair. On a
-// 20k-row wide scan that was 410MB, the largest single allocator in the whole
-// benchmark. Keep it a list; if an operator ever flows enough edges for the
-// linear scan to matter, that is the signal to reconsider, not the entry count
-// of any operator that exists today.
+// holds one entry per physical edge the operator flows: one for a filter or
+// projection over a single child, two where the plan also flows an alias root
+// alongside its input — which is what the inline array is sized for. An operator
+// that flows NONE never gets here at all; initEdgeObjectBinder returns the base
+// binder untouched at its first line, so a scan builds no edge binding.
+//
+// So a map paid its bucket allocation and its hashing on every row to hold one or
+// two entries. On a 20k-row wide scan that was 410MB, the largest single allocator
+// in the whole benchmark. Keep it a list; if an operator ever flows enough edges
+// for the linear scan to matter, that is the signal to reconsider, not the entry
+// count of any operator that exists today.
 type edgeObjectBinder struct {
 	base     values.QuantifiedObjectBinder
 	bindings []edgeObjectBinding

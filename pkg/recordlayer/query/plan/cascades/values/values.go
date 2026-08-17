@@ -372,11 +372,6 @@ func OrdinalDomainOfColumnNames(cols []string) OrdinalDomain {
 	return OrdinalDomain{sig: b.String()}
 }
 
-// OrdinalDomainOfType derives the token for a layout given as a flowed record
-// type — the shape match candidates, seeds and the executor hold. Anything but
-// a *RecordType (UnknownType, a primitive, a multi-record-type index's
-// degraded row type) has no single column order and yields the UNKNOWN token,
-// so a caller that cannot name its layout fails closed by construction.
 // OrdinalDomainOfQuantified is OrdinalDomainOfType for a quantifier's flowed
 // row, taking the token off the value's own exact handle. The spelling through
 // FlowedType() thaws a whole ordinary Type graph and then walks it to build a
@@ -406,6 +401,11 @@ func ordinalDomainOfExact(e *exactType) OrdinalDomain {
 	return domain
 }
 
+// OrdinalDomainOfType derives the token for a layout given as a flowed record
+// type — the shape match candidates, seeds and the executor hold. Anything but
+// a *RecordType (UnknownType, a primitive, a multi-record-type index's
+// degraded row type) has no single column order and yields the UNKNOWN token,
+// so a caller that cannot name its layout fails closed by construction.
 func OrdinalDomainOfType(t Type) OrdinalDomain {
 	rt, ok := t.(*RecordType)
 	if !ok || len(rt.Fields) == 0 {
@@ -1431,14 +1431,6 @@ func (f *fieldValue) OrdinalIn(frontier OrdinalDomain) (int, bool) {
 	return f.Resolved.OrdinalIn(frontier)
 }
 
-// WalkValue applies visit to every node in v's subtree, pre-order.
-// If visit returns false, descent into that node's children is
-// skipped (siblings + ancestors continue). Rule authors use this
-// for tree-wide searches — e.g. "does any sub-expression reference
-// this correlation?" or "does this Value tree contain an aggregate?".
-//
-// Safe on nil: returns immediately. Mirrors WalkPredicate over the
-// Value side of the hierarchy.
 // valueChildren answers v's children without allocating for the SINGLE-child
 // shapes, writing the answer into caller-owned scratch.
 //
@@ -1479,6 +1471,14 @@ func valueChildren(v Value, scratch *[1]Value) []Value {
 	return v.Children()
 }
 
+// WalkValue applies visit to every node in v's subtree, pre-order.
+// If visit returns false, descent into that node's children is
+// skipped (siblings + ancestors continue). Rule authors use this
+// for tree-wide searches — e.g. "does any sub-expression reference
+// this correlation?" or "does this Value tree contain an aggregate?".
+//
+// Safe on nil: returns immediately. Mirrors WalkPredicate over the
+// Value side of the hierarchy.
 func WalkValue(v Value, visit func(Value) bool) {
 	if v == nil {
 		return

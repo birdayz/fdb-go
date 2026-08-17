@@ -18,11 +18,20 @@ func exactShortcutRecordType(name string) Type {
 }
 
 // TestExactTypeForValueIsTheRoundTripItReplaces drives the equivalence over the
-// shapes whose identity is FINER than canonical equality. The intern table keys
-// on the record/enum NAME as well as the shape, because thaw rebuilds the name
-// from the node — so a same-shape different-name pair is exactly where a
-// shortcut that returned "an equal handle" rather than "the same handle" would
-// start reporting the wrong name.
+// composite and primitive shapes a QOV can flow.
+//
+// It pins the CONTRACT, not the mechanism, and the distinction matters because
+// both halves route through the interner: with the shortcut disabled outright,
+// SnapshotExactType(value.Type()) lands back on the same interned node and every
+// assertion here still holds. The mechanism is pinned separately by
+// TestTheShortcutReadsTheHandleRatherThanDerivingIt below.
+//
+// The differently-named rows here are shape coverage, NOT the name axis. Dropping
+// the record name from the intern key leaves this test green — measured; it
+// reddens TestExactInterningKeepsRecordNamesApart,
+// TestRFC232QOVSnapshotsAndDefensivelyThawsItsType and one arm of
+// TestTranslateProjectionInputNameNormalizationToCorrelationIsExactAndFailClosed,
+// which are where that axis actually lives.
 func TestExactTypeForValueIsTheRoundTripItReplaces(t *testing.T) {
 	t.Parallel()
 
@@ -325,5 +334,49 @@ func assertInterned(t *testing.T, what string, node *exactType) {
 	}
 	if node.element != nil {
 		assertInterned(t, what+".element", node.element)
+	}
+}
+
+// TestTheShortcutReadsTheHandleRatherThanDerivingIt pins the MECHANISM the test
+// above cannot see.
+//
+// ExactTypeForValue's saving is entirely in not calling value.Type(): that thaws a
+// whole ordinary Type graph and then walks it to rebuild a node the value is
+// already holding. Interning makes the long way round land on the same object, so
+// no comparison of the two answers can tell whether the shortcut ran — disable it
+// and the equivalence test stays green. exactTypeOfValue IS the shortcut, so pin
+// it directly: it must recognize a QOV and hand back the value's own field.
+//
+// The failure this guards is pure cost, and therefore silent by construction: the
+// derivation is correct, just per-call. On a 200-plan IN-list sweep the shortcut's
+// callers ask once per baked field resolution.
+func TestTheShortcutReadsTheHandleRatherThanDerivingIt(t *testing.T) {
+	t.Parallel()
+
+	qov, err := NewQuantifiedObjectValue(
+		NamedCorrelationIdentifier("q"), exactShortcutRecordType("SHORTCUT_MECHANISM"))
+	if err != nil {
+		t.Fatalf("QOV: %v", err)
+	}
+	carried, ok := exactTypeOfValue(qov)
+	if !ok {
+		t.Fatal("the shortcut declined a QOV that carries a handle, so every caller " +
+			"thaws the type graph and re-snapshots it to learn what the value already knows")
+	}
+	if carried != qov.(*quantifiedObjectValue).flowed {
+		t.Error("the shortcut answered something other than the value's own handle")
+	}
+	answer, err := ExactTypeForValue(qov)
+	if err != nil {
+		t.Fatalf("ExactTypeForValue: %v", err)
+	}
+	if answer != carried {
+		t.Error("ExactTypeForValue did not return what the shortcut found")
+	}
+
+	// And it declines what it cannot answer from a handle, rather than guessing:
+	// a non-QOV has to fall through to the derivation.
+	if _, ok := exactTypeOfValue(&ConstantValue{Value: int64(3), Typ: NotNullLong}); ok {
+		t.Error("the shortcut claimed a handle on a value that carries none")
 	}
 }

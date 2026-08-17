@@ -2,17 +2,23 @@ package recordlayer
 
 import "testing"
 
-// RecordCursorResult holds its value BY VALUE. These pin the two facts that make
-// that representation safe, because both are load-bearing and neither is visible
-// in a type signature:
+// RecordCursorResult holds its value BY VALUE. These pin the facts that make that
+// representation safe, because they are load-bearing and not visible in a type
+// signature:
 //
 //   - hasNext, not a nil pointer, is what says "there is a value". A no-next
 //     result now carries a zero T where it used to carry nil, so anything that
 //     read the value without checking would get a plausible zero instead of a
 //     panic — GetValue must keep refusing.
-//   - a result's value is INDEPENDENT of the variable it was built from, so a
-//     producer that reuses one variable across rows cannot rewrite a result it
-//     already handed out.
+//   - every transform that REBUILDS a result carries the value across rather than
+//     dropping it. With the value inline there is no pointer to copy by accident,
+//     so a rebuild that forgets the field compiles and yields a zero.
+//
+// What is deliberately NOT pinned here is independence from the caller's variable.
+// It reads like the interesting property of the change and it is a Go tautology in
+// both representations: the old code stored &value, the address of the by-value
+// PARAMETER, never of the caller's variable. A test for it passes with the change
+// fully reverted, so it would be coverage of the language rather than of this file.
 //
 // The representation exists because boxing cost one allocation per emitted row
 // per cursor level, and a plan is a stack of cursors.
@@ -33,21 +39,12 @@ func TestNoNextResultStillRefusesToAnswerWithItsZeroValue(t *testing.T) {
 	_ = result.GetValue()
 }
 
-func TestResultValueIsIndependentOfTheVariableItWasBuiltFrom(t *testing.T) {
+func TestEveryRebuildOfAResultCarriesItsValue(t *testing.T) {
 	t.Parallel()
 
 	continuation := &BytesContinuation{bytes: []byte{1}}
-	row := 1
-	first := NewResultWithValue(row, continuation)
-	row = 2
-	second := NewResultWithValue(row, continuation)
-
-	if got := first.GetValue(); got != 1 {
-		t.Errorf("first result value = %d, want 1 — the result tracked the caller's variable", got)
-	}
-	if got := second.GetValue(); got != 2 {
-		t.Errorf("second result value = %d, want 2", got)
-	}
+	first := NewResultWithValue(1, continuation)
+	second := NewResultWithValue(2, continuation)
 
 	// WithContinuation and MapResult must carry the value across, not drop it.
 	moved := first.WithContinuation(&BytesContinuation{bytes: []byte{2}})

@@ -88,8 +88,14 @@ func TranslateDeclaredEdgeRoot(
 // AliasMap.ofAliases(quantifier.getAlias(), Quantifier.current()): a value an
 // expression states over one of its own child EDGES, handed to that child's
 // Reference, has to arrive in the reference's own row space, because the
-// reference has never heard of the parent's alias for it. Pair it with
-// TranslateDeclaredEdgeRoot, whose precondition it satisfies by construction.
+// reference has never heard of the parent's alias for it.
+//
+// Pair it with TranslateDeclaredEdgeRoot as the TARGET, never as the declaration.
+// The shape precondition — declaration and target agree on the exact object — is
+// satisfied by construction, since the edge's exact type is carried over
+// unchanged. The result is a CURRENT correlation, though, and
+// TranslateDeclaredEdgeRoot rejects a current declaration outright, so passing it
+// on the other side is an error rather than a no-op.
 //
 // The exact type is what makes the target well-defined: every member of a
 // Reference carries that Reference's result type (memo admission enforces it),

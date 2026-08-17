@@ -90,9 +90,19 @@ func requestedOrderingAtInnerCurrent(
 	}
 	edge, err := inner.RequireFlowedObjectValue()
 	if err != nil {
-		// A quantifier that cannot state a flowed object value has no exact row
-		// phase to name, so there is no alias to rebase away from.
-		return requested, nil //nolint:nilerr // the error IS the "nothing to rebase" answer
+		// This used to answer the UNREBASED request, on the reasoning that a
+		// quantifier with no exact row phase has no alias to rebase away from.
+		// That is the one answer the function exists to prevent: the parts are
+		// still rooted at the parent's alias for the child, so declining to
+		// rebase them publishes exactly the wrong-space constraint, and it
+		// publishes it on the path where the shape is already broken.
+		//
+		// Every way GetFlowedObjectType fails is a structural defect of the
+		// Reference — no Reference, no members, a nil member, a member with no
+		// result Value, a member result missing its relation wrapper. None of
+		// those is a state a quantifier under a sort or a select is allowed to
+		// reach, so the error is the answer; the caller fails the rule.
+		return nil, err
 	}
 	target, err := values.CurrentPhaseCarrierForEdge(edge)
 	if err != nil {

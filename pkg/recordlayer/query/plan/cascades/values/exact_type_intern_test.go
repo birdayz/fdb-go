@@ -95,9 +95,95 @@ func TestExactInterningKeepsRecordNamesApart(t *testing.T) {
 	}
 }
 
-// TestExactInterningConvergesUnderConcurrency drives the double-checked store.
-// The planner snapshots from many goroutines, so the failure this guards is a
-// torn table or two winners for one type — run it under -race.
+// TestInterningRechecksUnderTheWriteLock pins the second lookup in
+// storeInternedExactType, DETERMINISTICALLY.
+//
+// The re-check exists for a race, and the concurrent test below does detect its
+// removal — measured at 10 RED / 12 runs under -race with the re-check deleted.
+// That is a detector, not a gate: the two remaining greens are runs where the
+// scheduler let only one goroutine miss under the read lock, and a pointer-
+// identity invariant that reports correct 2 times in 12 is the flake class this
+// repo treats as a latent bug rather than a safety net.
+//
+// So drive the miss path directly as well. Calling storeInternedExactType twice
+// with equal probes IS the interleaving the re-check handles: the first stores,
+// the second arrives as though it had just missed under the read lock. No
+// scheduler is involved, so it is 12/12.
+//
+// Without the re-check the second call builds a second equal node and appends
+// it, and its caller walks away holding an object no later lookup returns
+// again. Nothing is a wrong TYPE, so nothing fails — children compare by
+// pointer, so every composite built over the loser silently stops sharing.
+func TestInterningRechecksUnderTheWriteLock(t *testing.T) {
+	t.Parallel()
+
+	source := internTestRecord("RECHECK_R", false, "ID", NewPrimitiveType(TypeCodeLong, false))
+	child, err := SnapshotExactType(source.Fields[0].FieldType)
+	if err != nil {
+		t.Fatalf("child snapshot: %v", err)
+	}
+	newProbe := func() *exactProbe {
+		return &exactProbe{
+			code:      TypeCodeRecord,
+			name:      source.RecordName,
+			srcFields: source.Fields,
+			children:  []*exactType{child.(*exactType)},
+		}
+	}
+	build := func() *exactType {
+		return &exactType{
+			code: TypeCodeRecord,
+			name: source.RecordName,
+			fields: []exactField{{
+				name: source.Fields[0].Name,
+				typ:  child.(*exactType),
+			}},
+		}
+	}
+
+	first := newProbe()
+	hash := first.internHash()
+	shard := &exactInterned[hash%exactInternShards]
+	stored := storeInternedExactType(shard, hash, first, build)
+	if stored == nil {
+		t.Fatal("the first store produced nothing")
+	}
+
+	// Non-vacuity: the bucket must actually hold it, or the second call below
+	// would be reaching the build path for a reason this test does not name.
+	shard.mu.RLock()
+	depth := len(shard.buckets[hash])
+	shard.mu.RUnlock()
+	if depth != 1 {
+		t.Fatalf("bucket depth after one store = %d, want 1", depth)
+	}
+
+	second := storeInternedExactType(shard, hash, newProbe(), func() *exactType {
+		t.Error("the write-lock re-check was skipped: an equal node was already in " +
+			"the bucket and the store built a second one anyway")
+		return build()
+	})
+	if second != stored {
+		t.Error("the miss path admitted two objects for one type; children compare by " +
+			"POINTER, so every composite over the loser stops sharing — and neither " +
+			"node is a wrong type, so nothing else fails")
+	}
+	shard.mu.RLock()
+	depth = len(shard.buckets[hash])
+	shard.mu.RUnlock()
+	if depth != 1 {
+		t.Errorf("bucket depth after a second equal store = %d, want 1", depth)
+	}
+}
+
+// TestExactInterningConvergesUnderConcurrency drives the double-checked store
+// under -race. The planner snapshots from many goroutines, so the failure it
+// guards is a torn table or two winners for one type.
+//
+// It is a DETECTOR, not the gate. Deleting the write-lock re-check reddens it 10
+// times in 12 runs (measured under -race at goroutines=16); the other 2 are runs
+// where only one goroutine missed under the read lock, so no duplicate was ever
+// appended. TestInterningRechecksUnderTheWriteLock is the deterministic half.
 func TestExactInterningConvergesUnderConcurrency(t *testing.T) {
 	t.Parallel()
 

@@ -151,3 +151,49 @@ func TestRebasingAnOrderingKeepsItsExhaustiveFlag(t *testing.T) {
 		requireCurrentSpaceOrdering(t, "the rebased request", rebased)
 	}
 }
+
+// TestRebaseRefusesRatherThanPushingAnUnrebasedRequest pins the error path, which
+// used to be the one answer this function exists to prevent.
+//
+// It returned the request UNREBASED when the inner quantifier could not state a
+// flowed object value, reasoning that a quantifier with no exact row phase has no
+// alias to rebase away from. The parts are still rooted at the parent's alias for
+// the child, so that published exactly the wrong-space constraint — on the path
+// where the shape is already broken. Every way the derivation fails is a
+// structural defect of the Reference (no Reference, no members, a nil member, a
+// member with no result Value, a member result missing its relation wrapper), so
+// the error is the answer and all four call sites turn it into call.Fail.
+//
+// The failure this guards is silent in the same way the exhaustive drop was: a
+// parent-space part cannot be expressed over the child, so push-down declines and
+// answers Preserve, and Preserve is satisfied by EVERY access path.
+func TestRebaseRefusesRatherThanPushingAnUnrebasedRequest(t *testing.T) {
+	t.Parallel()
+
+	rowType := descendingInUnionRowType("TBL")
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(
+		descendingInUnionFullScan(t, []string{"TBL"}, rowType)))
+	key := descendingInUnionField(t, descendingInUnionFlowedObject(t, scanQ), 0)
+	request := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: key, SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, true)
+
+	// A quantifier over no Reference is the cheapest structural defect to build,
+	// and it is the first thing GetFlowedObjectType rejects.
+	broken := expressions.ForEachQuantifier(nil)
+	if _, err := broken.RequireFlowedObjectValue(); err == nil {
+		t.Fatal("a quantifier over no Reference stated a flowed object value, so this " +
+			"test no longer reaches the branch it was written for")
+	}
+
+	rebased, err := requestedOrderingAtInnerCurrent(request, broken)
+	if err == nil {
+		t.Fatalf("rebase answered %v instead of refusing; a request whose parts could "+
+			"not be moved into the child's space must not be pushed to that child",
+			rebased)
+	}
+	if rebased != nil {
+		t.Errorf("rebase returned both an error and a request (%v); a caller that "+
+			"checks the request first would push the unrebased parts", rebased)
+	}
+}

@@ -36,10 +36,13 @@ import "sync"
 // costing correctness of the sharing (never of the type), so route every kind
 // through internedExactType.
 //
-// The table never evicts. That is bounded in practice by the distinct
-// (shape, name) types a process has planned against — 170 for a whole conformance
-// sweep — and each entry is small. TWO axes grow it, not one: the schemas in play,
-// and the QUERIES, because a projection result type is a select-list shape and an
+// The table never evicts. It is bounded by the distinct (shape, NAME) types a
+// process has planned against, and each entry is small. The 170 measured above is
+// NOT that bound and must not be read as one: it counts distinct CANONICAL types
+// over the pure-planner sweep, while this table keys finer than canonical, so the
+// entry count over that same sweep is >= 170 — an unmeasured number over a
+// different population. TWO axes grow it, not one: the schemas in play, and the
+// QUERIES, because a projection result type is a select-list shape and an
 // ad-hoc-SQL server mints those per statement. Either axis running unbounded is
 // the condition to watch, not the entry count of any workload that exists today.
 const exactInternShards = 64
@@ -135,10 +138,30 @@ func internedExactType(probe *exactProbe, build func() *exactType) *exactType {
 	if existing != nil {
 		return existing
 	}
+	return storeInternedExactType(shard, hash, probe, build)
+}
+
+// storeInternedExactType is internedExactType's miss path: it RE-CHECKS under the
+// write lock before building, because another goroutine may have stored an equal
+// type between the read unlock above and this lock.
+//
+// Skipping the re-check would not corrupt the table and would not produce a wrong
+// TYPE — it would append a SECOND equal node, and the loser's caller would walk
+// away holding an object no later lookup ever returns again. Since children
+// compare BY POINTER (see the file doc), that silently defeats the sharing of
+// every composite built over it, which is the whole reason this table exists.
+//
+// It is split out so the re-check can be driven directly rather than raced at:
+// calling it twice with equal probes reaches the second lookup deterministically,
+// which is what TestInterningRechecksUnderTheWriteLock does.
+func storeInternedExactType(
+	shard *exactInternShard,
+	hash uint64,
+	probe *exactProbe,
+	build func() *exactType,
+) *exactType {
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	// Re-check: another goroutine may have stored an equal type between the
-	// read unlock and the write lock.
 	if existing := lookupInternedLocked(shard, hash, probe); existing != nil {
 		return existing
 	}

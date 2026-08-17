@@ -15,15 +15,22 @@ import (
 //
 // The alarm here is GROWTH. A new payload field on `part` costs every part of
 // every key, whether or not any plan folds that kind; the ceilings below are
-// what says "put it in ref/list instead". They are not tight bounds — they sit
-// a little above the current values so a field reordering does not fail the
-// build — and they are not a target to grow into.
+// what says "put it in ref/list instead".
+//
+// They are TIGHT, and they have to be. Measured at part=96, structuralKey=408
+// with structuralKeyInlineParts=4: the previous 112 admitted exactly one new
+// `any` field on `part` (96 -> 112), the precise growth the first message exists
+// to stop, and the previous 1024 admitted structuralKeyInlineParts=10 (984) —
+// a 2.5x rise in the constant the second message tells you to LOWER. A ceiling
+// that permits the change it warns about is not a guard. 448 leaves less than one
+// part of headroom (a fifth inline part is 504), which is the point: field
+// reordering cannot change these sizes, so there is nothing to leave slack for.
 func TestStructuralKeyStaysSmall(t *testing.T) {
 	t.Parallel()
 
 	const (
-		maxPartSize = 112
-		maxKeySize  = 1024
+		maxPartSize = 96
+		maxKeySize  = 448
 	)
 	if got := unsafe.Sizeof(part{}); got > maxPartSize {
 		t.Errorf("sizeof(part) = %d, want <= %d.\n"+

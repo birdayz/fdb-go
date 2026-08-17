@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -137,32 +140,77 @@ func TestUnstampedRowIsCopiedWithIndependentSlots(t *testing.T) {
 	}
 }
 
-// TestScanRowsAreStampedAtMintTime pins the scan producer's half: the row a scan
-// builds carries the handle from birth, and a scan whose boundary publishes
-// nothing leaves the row exactly as FromStoredRecord built it.
+// TestScanRowsAreStampedAtMintTime pins the scan producer's half END TO END,
+// through the actual row factory rather than through stampRowLayout.
+//
+// The distinction is the whole test. An earlier version called stampRowLayout
+// directly, which pins only that a setter sets: returning bare FromStoredRecord
+// from storedRecordToQueryResult — the exact regression that costs a copy per row
+// at every boundary — left it green. So this drives
+// storedRecordToQueryResult(layout) over a real stored record, which is what
+// executeScanWithRowLayout hands to the cursor, and then crosses the boundary with
+// the row it produced.
+//
+// It also pins the nil arm, which is not a degenerate case but a load-bearing one:
+// executeScanUnstamped exists so a TypeFilter fused over a primary scan takes its
+// rows UNSTAMPED, because that stage deliberately bypasses the scan's output
+// boundary and a foreign descriptor from an intermingled store would otherwise
+// carry a layout that lies about it.
 func TestScanRowsAreStampedAtMintTime(t *testing.T) {
 	t.Parallel()
 
-	rowType := values.NewRecordType("plan_output", false, []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
-	})
-	_, layout := scanPlanWithLayout(t, rowType)
+	stored := &recordlayer.FDBStoredRecord[proto.Message]{
+		Record: &wrapperspb.StringValue{Value: "x"},
+	}
+	// The plan's row type is taken from the factory itself, so the layout the scan
+	// publishes really is the one this row belongs to — the stamp is then the same
+	// claim the boundary makes, one step earlier.
+	shape := FromStoredRecord(stored)
+	if shape.Positional == nil || shape.Positional.Type == nil {
+		t.Fatal("the stored-record factory produced no typed row")
+	}
+	if shape.Positional.Layout != nil {
+		t.Fatal("FromStoredRecord stamped a layout on its own; this test cannot then " +
+			"distinguish the stamping factory from the plain one")
+	}
+	plan, layout := scanPlanWithLayout(t, shape.Positional.Type)
 
-	// storedRecordToQueryResult is the scan's row factory. Driving it with a nil
-	// record isolates the stamping from proto materialization: a nil stored
-	// record yields a nil row, and the stamp must not invent one.
-	if got := storedRecordToQueryResult(layout); got == nil {
+	stamping := storedRecordToQueryResult(layout)
+	if stamping == nil {
 		t.Fatal("storedRecordToQueryResult returned no factory")
 	}
-
-	row := &PositionalRow{Type: rowType, Slots: []any{int64(9)}}
-	stamped := stampRowLayout(QueryResult{Positional: row}, layout)
-	if stamped.Positional.Layout != layout {
-		t.Error("the scan's row factory did not stamp the plan's layout handle")
+	minted := stamping(stored)
+	if minted.Positional == nil {
+		t.Fatal("the stamping factory produced no row")
 	}
-	unstamped := stampRowLayout(QueryResult{Positional: &PositionalRow{Type: rowType, Slots: []any{int64(9)}}}, nil)
-	if unstamped.Positional.Layout != nil {
-		t.Error("a scan whose boundary publishes no layout must leave the row unstamped")
+	if minted.Positional.Layout != layout {
+		t.Fatalf("the scan's row factory did not stamp the plan's layout handle "+
+			"(got %v); every scanned row is then copied at the output boundary to "+
+			"acquire a handle it could have been born with", minted.Positional.Layout)
+	}
+
+	// End to end: the row the factory minted crosses the boundary as itself.
+	cursor, err := attachProvidedOutputLayout(plan, recordlayer.FromList([]QueryResult{minted}))
+	if err != nil {
+		t.Fatalf("attach output layout: %v", err)
+	}
+	result, err := cursor.OnNext(context.Background())
+	if err != nil || !result.HasNext() {
+		t.Fatalf("next = (%v, %v), want row", result, err)
+	}
+	if result.GetValue().Positional != minted.Positional {
+		t.Error("a factory-stamped scan row was still copied at the output boundary")
+	}
+
+	// The nil arm: no layout published means the factory is FromStoredRecord and
+	// the row stays exactly as it was built.
+	plainRow := storedRecordToQueryResult(nil)(stored)
+	if plainRow.Positional == nil {
+		t.Fatal("the plain factory produced no row")
+	}
+	if plainRow.Positional.Layout != nil {
+		t.Error("a scan whose boundary publishes no layout must leave the row " +
+			"unstamped; executeScanUnstamped depends on it")
 	}
 }
 
