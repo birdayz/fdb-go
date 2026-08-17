@@ -18207,6 +18207,17 @@ rather than assumed. Caveat on the statistics: at n=3 benchstat reports `~` for
 every row because p=0.100 is the floor for a 3+3 Mann-Whitney, so the evidence
 here is the tight spread (time ±1-3%, alloc/op ±0%), not a significance test.
 
+**That re-measurement covers the nine `Benchmark*` rows ONLY.** The two 1M stress
+figures — the `group_by_customer_having` row and the whole-suite wall clock — are
+still from the OLD `9a39b5006` baseline and therefore still carry the Go
+1.26.5-vs-1.26.6 confound described above. They are quoted here because the
+conclusion survives it: a 0.04 shift of the kind the nine micro-benchmarks showed
+would move 1.026x into roughly 0.99-1.07x, which is parity either way. But the
+NUMBERS are not merge-base numbers, and this paragraph exists so nobody reads the
+population sentence above as covering them. Re-run both sides at `7d0435536` on an
+otherwise-idle machine — the stress test spins Docker containers, so a run that
+contends with another suite measures the contention.
+
 Ratios are branch / master. "Before" is the head at the start of this campaign,
 which is where the superseded block's numbers were taken.
 
@@ -18221,10 +18232,10 @@ which is where the superseded block's numbers were taken.
 | `BenchmarkAggregateGroupsHaving` | 2.03x | **1.35x** | 176k vs 177k — below |
 | `BenchmarkScanFilterSparse` | 1.63x | **1.53x** | 14.3k vs 9.3k — **ABOVE** |
 | `BenchmarkInListExecution` | 1.70x | **1.56x** | 82.9k vs 57.3k — **ABOVE** |
-| `group_by_customer_having` (1M stress) | 1.88x | **0.98x** | — |
+| `group_by_customer_having` (1M stress) | 1.88x | **0.98x** (old baseline) | — |
 
 Whole-suite wall clock on the 1M stress test: **master 175.52s, branch 180.14s =
-1.026x**.
+1.026x** — also against the old `9a39b5006` baseline, not the merge-base.
 
 Allocation COUNTS are below master on **6 of the 9** sqlhunt benchmarks. An earlier
 draft of this entry said 7 of 9; the re-measurement above refuted it. The two that
@@ -18269,3 +18280,15 @@ flight on the campaign above.
       so `ordinal_join.go`'s per-row permutation gather can be deleted. Read
       `Value.translateCorrelations` and `TranslationMap` first; the Go seed sites
       are the gated-join leg constructors. Gated on a Graefe ACK of the design.
+
+- [ ] Re-measure the two 1M stress figures in "RFC-232 overhead after the row-path
+      and merge campaign" against the true merge-base `7d0435536`. The nine
+      micro-benchmark rows were re-measured there; these two were not and still
+      carry the Go 1.26.5-vs-1.26.6 confound. The conclusion (parity on the full
+      suite) survives either way, so this is about the NUMBERS being what the entry
+      says they are. Must run on an otherwise-idle machine: the stress test spins
+      Docker containers and `.bazelrc` caps `--local_test_jobs=4`, so a contended
+      run measures the contention. Baseline rig: worktree at
+      `/home/birdy/projects/fdb-baseline`, detached at the merge-base with the two
+      `pkg/simfdb` allocation commits applied as a patch and the sqlhunt bench files
+      gazelle-wired.
