@@ -18187,29 +18187,52 @@ What is left, in order, all of it branch-only unless noted:
 ## RFC-232 overhead after the row-path and merge campaign
 
 Supersedes the ratios in "RFC-232 still costs 1.26-1.7x master on three
-benchmarks" above. Both sides measured with the SIMULATOR EQUALISED (master
-carrying this branch's two `pkg/simfdb` allocation commits), so the comparison is
-of the engine and not of the harness.
+benchmarks" above.
+
+**Population of the "now" column, because the first attempt at this table was
+confounded and the confound was invisible:** baseline is the branch's true
+MERGE-BASE `7d0435536`, not an older master — an earlier baseline sat at
+`9a39b5006`, three commits behind, which put the branch side on Go 1.26.6 and the
+master side on 1.26.5. `MODULE.bazel` derives the Bazel Go SDK with
+`go_sdk.from_file(go_mod = "//:go.mod")`, so a `go.mod` version bump reaches the
+benchmark binaries and that was a compiler difference sitting inside the ratio.
+Both sides are now Go 1.26.6, with the SIMULATOR EQUALISED (the baseline carrying
+this branch's two `pkg/simfdb` allocation commits) so the comparison is of the
+engine, built sequentially from distinct binaries (md5-checked distinct) and run
+sequentially at `-test.benchtime=1s -test.count=3`.
+
+Re-measured that way, every ratio below held to within 0.04 of the confounded
+first attempt — so the confound was real but not material. That is now measured
+rather than assumed. Caveat on the statistics: at n=3 benchstat reports `~` for
+every row because p=0.100 is the floor for a 3+3 Mann-Whitney, so the evidence
+here is the tight spread (time ±1-3%, alloc/op ±0%), not a significance test.
 
 Ratios are branch / master. "Before" is the head at the start of this campaign,
 which is where the superseded block's numbers were taken.
 
-| benchmark | ratio before | ratio now |
-|---|---|---|
-| `BenchmarkScanAllWide` | 1.31x | **1.18x** |
-| `BenchmarkPlanInList` | 1.39x | **1.25x** |
-| `BenchmarkInListExecution` | 1.70x | **1.52x** |
-| `BenchmarkIndexRange` | 1.33x | **1.26x** |
-| `BenchmarkScanFilterSparse` | 1.63x | **1.54x** |
-| `BenchmarkAggregateGroupsPlain` | 2.07x | **1.25x** |
-| `BenchmarkAggregateGroupsHaving` | 2.03x | **1.34x** |
-| `group_by_customer_having` (1M stress) | 1.88x | **0.98x** |
+| benchmark | ratio before | ratio now | branch allocs/op vs master |
+|---|---|---|---|
+| `BenchmarkScanAllWide` | 1.31x | **1.17x** | 645k vs 684k — below |
+| `BenchmarkScanOneColumn` | — | **1.17x** | 645k vs 684k — below |
+| `BenchmarkScanOrdered` | — | **1.17x** | 648k vs 686k — below |
+| `BenchmarkPlanInList` | 1.39x | **1.25x** | 750k vs 778k — below |
+| `BenchmarkIndexRange` | 1.33x | **1.25x** | 232k vs 257k — below |
+| `BenchmarkAggregateGroupsPlain` | 2.07x | **1.26x** | 161k vs 168k — below |
+| `BenchmarkAggregateGroupsHaving` | 2.03x | **1.35x** | 176k vs 177k — below |
+| `BenchmarkScanFilterSparse` | 1.63x | **1.53x** | 14.3k vs 9.3k — **ABOVE** |
+| `BenchmarkInListExecution` | 1.70x | **1.56x** | 82.9k vs 57.3k — **ABOVE** |
+| `group_by_customer_having` (1M stress) | 1.88x | **0.98x** | — |
 
 Whole-suite wall clock on the 1M stress test: **master 175.52s, branch 180.14s =
 1.026x**.
 
-Allocation COUNTS are now below master on 7 of the 9 sqlhunt benchmarks. What
-closed it: minting a scan/projection row already carrying its plan's layout so the
+Allocation COUNTS are below master on **6 of the 9** sqlhunt benchmarks. An earlier
+draft of this entry said 7 of 9; the re-measurement above refuted it. The two that
+remain above are `ScanFilterSparse` and `InListExecution`, and they are also the two
+worst time ratios (1.53x, 1.56x) — which is one story, not two: both are dominated
+by PLANNING rather than by row throughput, so the row-path work in this campaign
+could not touch them. They are the workloads the plan-time-rebind milestone below is
+aimed at. What closed the rest: minting a scan/projection row already carrying its plan's layout so the
 output boundary takes an identity fast path instead of copying every row; one
 per-row allocation for the frontier binding holder instead of three; a
 `RecordCursorResult` that holds its value inline instead of boxing it once per row
