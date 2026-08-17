@@ -30,10 +30,24 @@ type AliasMap struct {
 	view    values.AliasMap
 }
 
-// EmptyAliasMap returns the unique empty AliasMap singleton-equivalent.
-// Equal AliasMaps are considered equal regardless of identity, so a fresh
-// empty map is fine.
-func EmptyAliasMap() *AliasMap {
+// EmptyAliasMap returns the empty AliasMap. It is a genuine SINGLETON: an
+// AliasMap has no exported mutator, and equal AliasMaps are equal regardless of
+// identity, so every reader can share one.
+//
+// It was a fresh three-allocation value per call — a struct plus two maps plus
+// a view — and the memo asks for it on every plan-level equality: 2.5GB over
+// the pure-planner sweep to hand out something with nothing in it.
+//
+// The BUILDERS below (AliasMapOf, Compose, With) use the empty map as a
+// mutable accumulator, which is why they take newMutableAliasMap instead. That
+// distinction is the whole safety argument here: if a future builder reaches
+// for EmptyAliasMap and writes into it, it corrupts every reader in the
+// process. Start from newMutableAliasMap.
+func EmptyAliasMap() *AliasMap { return emptyAliasMap }
+
+var emptyAliasMap = newMutableAliasMap()
+
+func newMutableAliasMap() *AliasMap {
 	return &AliasMap{
 		forward: map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
 		reverse: map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
@@ -48,7 +62,7 @@ func AliasMapOf(pairs ...values.CorrelationIdentifier) *AliasMap {
 	if len(pairs)%2 != 0 {
 		panic("AliasMapOf requires an even number of arguments")
 	}
-	m := EmptyAliasMap()
+	m := newMutableAliasMap()
 	for i := 0; i < len(pairs); i += 2 {
 		s, t := pairs[i], pairs[i+1]
 		if _, exists := m.forward[s]; exists {
@@ -120,7 +134,7 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 	if other.IsEmpty() {
 		return a
 	}
-	out := EmptyAliasMap()
+	out := newMutableAliasMap()
 	for s, t := range a.forward {
 		out.forward[s] = t
 		out.reverse[t] = s
@@ -166,7 +180,7 @@ func (a *AliasMap) With(source, target values.CorrelationIdentifier) (*AliasMap,
 	if existingS, ok := a.reverse[target]; ok && existingS != source {
 		return a, false
 	}
-	out := EmptyAliasMap()
+	out := newMutableAliasMap()
 	for s, t := range a.forward {
 		out.forward[s] = t
 		out.reverse[t] = s

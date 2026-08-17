@@ -102,17 +102,23 @@ func (p part) eqHash() []byte { h, _ := p.list.([]byte); return h }
 // A key is rebuilt on every dedup comparison — memo admission tests each intent
 // against each existing member, and both EqualsWithoutChildren and
 // HashCodeWithoutChildren build one — so the builder is one of the hottest
-// allocators in planning. Growing `parts` from nil costs four reallocations for
-// the six-to-eight parts a typical plan folds, on top of the struct itself.
-// Backing it with an inline array makes the common key exactly ONE allocation.
-// A key with more parts than the array holds simply appends onto the heap as
-// before, so nothing is capped.
+// allocators in planning. Growing `parts` from nil costs several reallocations
+// on top of the struct itself; backing it with an inline array makes the common
+// key exactly ONE allocation. A key with more parts than the array holds simply
+// appends onto the heap as before, so nothing is capped.
+//
+// FOUR is where the measured distribution sits, not a guess. Over the
+// pure-planner sweep (7.95M keys compared): 84.1% fold four parts or fewer,
+// 89.2% fold six or fewer, and the remaining 10.8% fold ELEVEN — a tail no
+// inline size short of eleven covers, and sizing for it would make the 84% pay
+// for the 11%. Re-measure before changing it; the previous value of eight was
+// chosen from an unmeasured "six-to-eight parts a typical plan folds".
 //
 // The inline array is only a win while `part` is small, and that is not a
 // stylistic preference: at 312 bytes per part this struct was 2520 bytes and
 // allocating MORE than the growing-slice version it replaced. See part's own
 // comment. Any new payload field belongs in `ref`/`list`, not beside them.
-const structuralKeyInlineParts = 8
+const structuralKeyInlineParts = 4
 
 type structuralKey struct {
 	parts  []part
