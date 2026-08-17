@@ -18071,23 +18071,52 @@ semantic EQUALITY on the type axis (both ignoring the exact type entirely and
 using `exactRowShapesAgree` changed it by ZERO). The over-discrimination is not
 Value-level type identity.
 
-Where it actually sits: `RecordQueryProjectionPlan.structuralKey()` folds
-`partValue` through alias-INVARIANT `SemanticHashCode` for the hash and
-alias-SENSITIVE `semanticValueEquals` for equality. That asymmetry is by design
-— the hash buckets, equality decides — so the defect is UPSTREAM: the branch
-mints projections whose values differ only in anchoring/correlation spelling
-(`ID#0` vs `_current.ID#0`), which collide into one bucket and then refuse to
-merge, so both survive as members.
+RESOLVED — and the duplicate-member reading above was the SYMPTOM, not the
+cause. The projection duplicates are real (198 distinct hash-equal-but-unequal
+projection pairs on the small reproducer, zero on master), but canonicalising
+their anchoring removes all 198 and moves the benchmark by ~4%. They were
+downstream of a much larger population.
 
-- [ ] Canonicalise projection value anchoring at construction so the two
-      spellings never coexist. Note the alternative — threading an AliasMap
+The cause is an ordering-space mismatch that RFC-232 exposed. Java rebases a
+sort's ordering values from the inner quantifier's alias onto
+`Quantifier.current()` before pushing the constraint
+(`PushRequestedOrderingThroughSortRule.java:77-85`, and again inside
+`RequestedOrdering.pushDown`); Go pushed the sort keys verbatim. That was
+invisible while Go's sort keys carried no correlation — an unrooted key rebases
+to nothing and pushes down through anything — and became live the moment
+FieldValues carried an exact root.
+
+The request then arrived at the child rooted at a correlation nothing below the
+sort has heard of, the select below could not express it over its result,
+declined every part, and returned **Preserve**. A Preserve request is satisfied
+by EVERY access path, so the zero-prefix gate in data access stopped discarding
+useless full index scans: `WHERE cat IN (...) ORDER BY id` kept IDX_VAL — an
+index on a column the query neither orders by nor filters on — as a candidate
+beside IDX_CAT and the primary scan.
+
+- [x] Fixed in `requestedOrderingAtInnerCurrent`, applied at all three push
+      sites (`PushRequestedOrderingThroughSortRule`, `ImplementSortRule`,
+      `ImplementInMemorySortRule`), plus the select push-down's mirror-image
+      half: it passed the CHILD's alias as the upper base of `Value.pushDown`
+      where Java passes `Quantifier.current()`. Measured on the IN-list shape:
+      planner tasks 2247 -> 829 (master 734), memo members 42 -> 26 (master 25),
+      IDX_VAL kept 58 -> 0 (master 0), wall clock 39.5ms -> 9.9ms (master 5.25).
+      `TestOrderingRequestSurvivesSortThroughSelectToScan` drives sort ->
+      select -> scan in one test and mutation-checks every arm.
+- [ ] The projection-anchoring duplicates remain, unfixed and now small. The
+      obvious fix — canonicalising an unselected input program onto the
+      reserved-current handle in `reanchorCurrentValueForInput` — was built and
+      REVERTED: it contradicts
+      `TestInMemorySortPlan_SelectedFlatMapOutputRelinkKeepsExactOutputOrdinal`,
+      which pins that exploratory construction preserves the pointer-exact
+      edge-bound key for the relink path to translate. Reconcile those two
+      before trying it again. The other alternative — threading an AliasMap
       through `planEqualsAsExpression` — CANNOT fire as-is: the memo passes
       `EmptyAliasMap()` to plans, and reaching a real map requires opting plans
       into `InternsAliasAware`, whose own doc calls that a landmine for
       expressions whose aliases are externally resolved. A plan's quantifier
       alias IS resolved at execution, so that route trades a perf bug for a
-      wrong-bindings bug. `structuralKey.EqualUnderAliases` is already built and
-      wired by exactly 2 of 44 plan types (flat_map.go, nested_loop_join.go).
+      wrong-bindings bug.
 - [ ] Separately: make the plan cache survive `ResetSession`. The cache key
       already carries DBPath, schema, metadata version and planner options, so
       the blanket invalidation looks redundant with the key rather than

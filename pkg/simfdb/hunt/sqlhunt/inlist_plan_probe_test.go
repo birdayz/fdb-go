@@ -56,11 +56,13 @@ func TestInListPlanShape(t *testing.T) {
 	// identical query re-plans every time, on BOTH trees. That last fact is its
 	// own defect and is not this branch's.
 	//
-	// WHERE inside planning is NOT established. Call-count instrumentation
-	// pointed at data-access matching, but two probes in that attempt were
-	// mis-attributed (one grep truncated, one edit landed in a neighbouring
-	// function), so the counts are withdrawn rather than recorded — the timings
-	// above are re-runnable and the counts were not.
+	// WHERE inside planning it sat has since been established, and the answer is
+	// data-access matching after all: the sort's ordering request reached this
+	// group in the wrong correlation space, degraded to Preserve, and a Preserve
+	// request is satisfied by every access path — so a full scan of the
+	// unrelated IDX_VAL survived as a candidate beside IDX_CAT and the primary
+	// scan. See requestedOrderingAtInnerCurrent. The branch now measures 9.5
+	// ms/op here against master's 5.25.
 	//
 	// If the planner ever stops choosing an InUnion here, the comparison above
 	// needs re-taking and this fails rather than going quietly stale.
