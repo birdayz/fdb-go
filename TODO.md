@@ -18617,3 +18617,47 @@ construction for plans that are compared once, and that is not memoizable; it is
       `TestEveryPlanRoutesItsStructuralHashThroughTheMemo` (docscheck) ratchets 42 of 42
       plan types, because the wiring was hand-applied at 42 sites and an unrouted type
       returns a CORRECT hash — a pure performance regression a green suite cannot see.
+
+- [ ] **Stop thawing a whole Type graph to answer a boolean.** MEASURED, not
+      suspected: `exactType.thaw` is the SINGLE LARGEST allocator in the planner at
+      **8.87 GB of 112.01 GB (7.92%)** over `TestStatsInvariant_PurePlannerSweep`
+      (`go test -memprofile`, 171s run, branch `perf/plan-structural-hash-memo`
+      @ `ed4045adb`). For context the next two are `GetCorrelatedToOfValue.func1`
+      at 8.17 GB and `newStructuralKey` at 8.10 GB.
+
+      The planner is ALLOCATION-BOUND, which is why this is the right target and why
+      the diffuse CPU profile found nothing: on the same run `runtime.gcDrain` is
+      **42.72% cumulative**, `scanSpan` 31.61%, `mallocgc` 16.78%. No application
+      node exceeds ~2.3% flat. Cutting allocation is the only lever that moves a
+      profile shaped like that.
+
+      `thaw` rebuilds an ordinary Type graph from an INTERNED, immutable exact
+      handle — an identical graph every time. Its callers are the hot ones:
+      `QOV.FlowedType` (28.5% of thaw), `exactType.Type` (28.0%),
+      `physicalFlowedRecordType` (14.5%), `LayoutWithSeedLegs` (12.1%),
+      `fieldValue.Type` (9.8%).
+
+      **The waste is concentrated in comparisons.** 62 of the 141 non-test
+      `.FlowedType()` call sites are comparison-shaped — `Equals(`, `== nil`,
+      `!= nil`, `QuantifiedRowShapesAgree`. Each `a.FlowedType().Equals(b.FlowedType())`
+      allocates TWO complete graphs to produce one bool. Because the exact table
+      interns, `handleA == handleB` answers the same question by pointer, with zero
+      allocation — and that equivalence is not an approximation: `ExactTypeForValue`'s
+      doc already states the long way round returns the same OBJECT.
+
+      **Do NOT try to memoize `thaw` itself.** Its freshness is a PINNED contract, not
+      a defensive habit: `rfc232_qov_exact_identity_test.go` mutates a `Type()` result
+      (`first.RecordName`, `first.Fields[0].Name`) and requires a later `Type()` to be
+      unaffected. Caching the graph breaks that test deliberately. The fix is to stop
+      CALLING thaw on the comparison paths, not to make thaw cheaper.
+
+      The pattern to follow already exists in this file's own neighbourhood:
+      `OrdinalDomainOfQuantified` takes the handle via `exactTypeOfValue`, answers from
+      it, memoizes on the node (`exactType.ordinalDomain`), and falls back to the long
+      way only for a foreign QOV view. `thawShared()` exists for the internal
+      non-allocating case. So this is extending an established mechanism, not inventing
+      one.
+
+      Query-engine change: needs an RFC and a Graefe ACK on both RFC and
+      implementation before merge, per the review-cadence rule. Not for PR #754, which
+      is green and already ACK'd by three gates — this is its own change.
