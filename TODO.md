@@ -18362,6 +18362,14 @@ Unavailable** as well as 429s. GitHub's own GraphQL API was returning 503s in th
 window (a `gh pr comment` failed that way), so the TRIGGER was a platform-wide
 degradation rather than a steady-state rate limit on this repo.
 
+EXPOSURE SCALES WITH HOW MANY ACTIONS A JOB FETCHES, which is why one job kept
+looking like the "real" failure while its siblings passed. `ci.yml` has 8 `uses:`
+against 2 each in `claude.yml` and `hosted-smoke.yml`, and its `Build, Lint & Test`
+job pulls `checkout` + `setup-go` + `upload-artifact` — three independent chances to
+lose the dice roll. Observed exactly that: one run cleared `checkout`, cleared
+`setup-go` on a retry, then died on `upload-artifact`. So a job dying while its
+siblings pass is NOT evidence that the failure is specific to that job's work.
+
 That does not change the fix, and it is the reason the fix is worth doing: a runner
 with a local action cache is immune to a codeload incident, whereas one that refetches
 per job fails every job for the duration. Do not expect the 21-line log as a
