@@ -79,7 +79,12 @@ func (p *RecordQueryUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) 
 
 // HashCodeWithoutChildren is a constant for the type discriminator.
 func (p *RecordQueryUnionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("unionplan")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("unionplan")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Union(inner1, inner2, ...).

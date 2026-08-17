@@ -120,7 +120,12 @@ func (p *RecordQueryScoreForRankPlan) EqualsPlanWithoutChildren(other RecordQuer
 
 // HashCodeWithoutChildren mixes the class discriminator + ranks.
 func (p *RecordQueryScoreForRankPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("scoreforrank|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("scoreforrank|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders ScoreForRank([rank1, rank2], inner).

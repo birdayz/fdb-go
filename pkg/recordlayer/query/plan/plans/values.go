@@ -71,7 +71,12 @@ func (p *RecordQueryValuesPlan) EqualsPlanWithoutChildren(other RecordQueryPlan)
 }
 
 func (p *RecordQueryValuesPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("valuesplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("valuesplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryValuesPlan) Explain() string {

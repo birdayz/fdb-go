@@ -267,7 +267,12 @@ func (p *RecordQueryAggregateIndexPlan) EqualsPlanWithoutChildren(other RecordQu
 // HashCodeWithoutChildren mixes index plan hash, record type, and
 // aggregate function.
 func (p *RecordQueryAggregateIndexPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("aggregateindexplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("aggregateindexplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders AggregateIndex(function, indexName, [groupCols], recordType),

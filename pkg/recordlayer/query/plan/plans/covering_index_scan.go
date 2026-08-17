@@ -172,7 +172,12 @@ func (p *RecordQueryCoveringIndexPlan) EqualsPlanWithoutChildren(other RecordQue
 }
 
 func (p *RecordQueryCoveringIndexPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("coveringindexplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("coveringindexplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders the inner scan's label carrying the COVERING marker, so a

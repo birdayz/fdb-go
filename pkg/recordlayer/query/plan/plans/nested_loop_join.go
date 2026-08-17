@@ -629,7 +629,12 @@ func (p *RecordQueryNestedLoopJoinPlan) EqualsPlanWithoutChildren(other RecordQu
 // compares via semanticEqualsForResults; two joins differing only in the
 // combined-row shape they emit are not interchangeable.
 func (p *RecordQueryNestedLoopJoinPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("nljoin|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("nljoin|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryNestedLoopJoinPlan) Explain() string {

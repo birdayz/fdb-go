@@ -94,7 +94,12 @@ func (p *RecordQueryDeletePlan) EqualsPlanWithoutChildren(other RecordQueryPlan)
 
 // HashCodeWithoutChildren mixes class + targetRecordType.
 func (p *RecordQueryDeletePlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("deleteplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("deleteplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Delete(target, inner).

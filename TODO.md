@@ -18484,3 +18484,41 @@ next lever for the PLANNING-dominated benchmarks (`ScanFilterSparse` 1.53x,
 `InListExecution` 1.56x, whose allocation counts are ABOVE master), but it should not be
 expected to close `group_by_customer_having`, which is execution-dominated and diffuse.
 Those are two different problems and this entry exists so they are not conflated.
+
+### Structural-hash memo: rolled out to all 42 plan types, measured on the right population
+
+Design ACK'd (helper-free variant: a constructor-allocated cell reached by pointer,
+owner-checked on read AND write). All 42 `HashCodeWithoutChildren` declarations in
+`plans` now route through it — verified by walking each declaration body, not by a grep
+count, since a looser grep reports 46 by counting doc-comment lines.
+
+Measured on `TestStatsInvariant_PurePlannerSweep`, which is the population this term was
+measured over in the first place — the SQL benchmarks under-show it because the cost
+lives in the memo's member loop, not in any one query. Same machine, sequential,
+`--nocache_test_results`:
+
+| tree | samples | mean | vs master |
+|---|---|---|---|
+| master (merge-base `7d0435536`) | 149.04, 149.95 | **149.50s** | — |
+| branch, pre-memo (`f4f7d7bc5`) | 177.14, 176.79 | **176.97s** | 1.184x |
+| branch, all 42 memoized | 172.51, 171.48, 171.85 | **171.95s** | **1.150x** |
+
+Within-group spreads are 0.2-0.6%, well under the 2.8% the memo moves, so this is signal
+rather than noise. The planner-sweep ratio goes 1.184x -> 1.150x.
+
+Why it is only 2.8% when `newStructuralKey` was measured at 8.9GB: the memo removes the
+key rebuild on a HIT, and a hit requires the same plan OBJECT to be hashed twice. The
+memo's member loop does exactly that — it re-hashes each stored member against every
+probe — but a plan that is hashed once and discarded, which is most of what a planner
+sweep constructs, never gets a second read. The remaining term is therefore key
+construction for plans that are compared once, and that is not memoizable; it is the
+`part`/`structuralKey` size work this campaign already did.
+
+- [ ] Next lever for the planner sweep, if one is wanted: the copies. A `cp := *p`
+      rebuild shares its original's cell and therefore never memoizes (deliberate — see
+      the write-side owner check). Every `WithXxx` in a rule path produces such a copy,
+      so the memo is dark on exactly the plans a rewrite rule touches most. Giving a
+      copy its own cell needs a hook `cp := *p` does not have; the shape to investigate
+      is whether the base constructor can be re-entered on the rebuild paths that
+      already build a fresh `PlanExprBase` (e.g. `WithInner`), which get a fresh cell
+      today and are the cheap half of this.

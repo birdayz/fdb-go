@@ -93,7 +93,12 @@ func (p *RecordQueryTypeFilterPlan) EqualsPlanWithoutChildren(other RecordQueryP
 
 // HashCodeWithoutChildren mixes class + record-type set.
 func (p *RecordQueryTypeFilterPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("typefilterplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("typefilterplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders TypeFilter([T1, T2], inner).

@@ -124,7 +124,12 @@ func (p *RecordQueryInsertPlan) EqualsPlanWithoutChildren(other RecordQueryPlan)
 
 // HashCodeWithoutChildren mixes class + targetRecordType.
 func (p *RecordQueryInsertPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("insertplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("insertplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Insert(target, inner).

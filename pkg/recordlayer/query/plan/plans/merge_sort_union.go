@@ -101,7 +101,12 @@ func (p *RecordQueryMergeSortUnionPlan) EqualsPlanWithoutChildren(other RecordQu
 }
 
 func (p *RecordQueryMergeSortUnionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("mergesortunionplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("mergesortunionplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryMergeSortUnionPlan) Explain() string {
