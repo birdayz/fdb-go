@@ -27,8 +27,14 @@ import (
 // That is the same failure the memo's owner check cannot detect — content changing
 // under a stable identity — reached from the read end instead of the write end. The
 // write end is closed by copying in the constructors and builders, so no two plans
-// share one array. This closes the read end, and it is the cheaper half: the writes
-// simply do not exist, and a static check keeps it that way at no runtime cost.
+// share one array.
+//
+// This gate closes the read-end writes it can see STATICALLY, within one function:
+// those rooted at the getter call itself, and those rooted at a local the call was
+// assigned to. It does not "close the read end" outright, and the difference is worth
+// stating precisely rather than generously — an over-broad scope claim in this very
+// header is what let two fail-open instruments through review, so the NOT-covered
+// list below is load-bearing rather than decoration.
 //
 // # Why a gate rather than the doc note that was there
 //
@@ -52,6 +58,13 @@ import (
 // passes through a watched name, and a gate that fires on legal code gets read past.
 // The element WRITE, by contrast, is now detected even though the element COPY is
 // not closed — those are two different halves and only the copy is open.
+//
+// ALIASING ACROSS A FUNCTION BOUNDARY. The taint is per-function, so handing the
+// slice to a helper that writes it — `mutate(p.GetSortKeys())` — is invisible. Closing
+// that needs interprocedural analysis, which is far past what a docscheck gate should
+// carry; the single-function form is where the hazard would realistically be written,
+// and it is covered. Aliasing through a struct field or a map value is unhandled for
+// the same reason: the taint tracks identifiers only.
 
 // liveIdentityGetters are accessors that return a live slice which is folded into
 // the receiver's structural key. Writing through one rewrites plan identity.
@@ -131,26 +144,103 @@ func rootGetterCall(e ast.Expr) string {
 	}
 }
 
-// scanLiveGetterWrites reports every assignment whose target is rooted at a call to
-// a live-identity getter.
-func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)) {
-	ast.Inspect(f, func(n ast.Node) bool {
-		var targets []ast.Expr
-		switch s := n.(type) {
-		case *ast.AssignStmt:
-			targets = s.Lhs
-		case *ast.IncDecStmt:
-			targets = []ast.Expr{s.X}
+// rootLocalIdent walks an assignment target down to the identifier it is rooted at,
+// descending the same shapes as rootGetterCall. It is how a write THROUGH a local
+// alias is traced back to the local.
+func rootLocalIdent(e ast.Expr) (string, bool) {
+	depth := 0
+	for {
+		switch t := e.(type) {
+		case *ast.IndexExpr:
+			e, depth = t.X, depth+1
+		case *ast.IndexListExpr:
+			e, depth = t.X, depth+1
+		case *ast.SelectorExpr:
+			e, depth = t.X, depth+1
+		case *ast.StarExpr:
+			e, depth = t.X, depth+1
+		case *ast.ParenExpr:
+			e = t.X
+		case *ast.SliceExpr:
+			e, depth = t.X, depth+1
+		case *ast.TypeAssertExpr:
+			e, depth = t.X, depth+1
+		case *ast.Ident:
+			// depth 0 is a bare rebinding (`keys = other`), which replaces the alias
+			// rather than writing through it.
+			return t.Name, depth > 0
 		default:
-			return true
+			return "", false
 		}
-		for _, target := range targets {
-			if getter := rootGetterCall(target); getter != "" {
-				report(target.Pos(), getter)
+	}
+}
+
+// scanLiveGetterWrites reports writes that reach a live-identity slice, in both the
+// shapes that occur: rooted DIRECTLY at the getter call, and rooted at a LOCAL the
+// getter's result was assigned to.
+//
+// The aliased form is not an exotic variant — it is what anyone performing more than
+// one write naturally writes, and the gate was blind to it while its own precision
+// table asserted silence on the very assignment that creates the alias:
+//
+//	keys := p.GetSortKeys()
+//	keys[0].Desc = true      // rewrites p's structural key, pointer unchanged
+//
+// The taint is per-function and deliberately simple. An identifier becomes tainted
+// when it is assigned an expression rooted at a watched getter, and untainted when it
+// is rebound to anything else. Only writes THROUGH a tainted identifier report; a
+// bare rebinding does not, because it replaces the alias rather than mutating what it
+// points at. A `range` variable is a copy in Go and is never tainted, so mutating it
+// is correctly silent.
+func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)) {
+	scan := func(body *ast.BlockStmt) {
+		tainted := map[string]string{} // local ident -> the getter it aliases
+
+		ast.Inspect(body, func(n ast.Node) bool {
+			var targets []ast.Expr
+			var rhs []ast.Expr
+			switch s := n.(type) {
+			case *ast.AssignStmt:
+				targets, rhs = s.Lhs, s.Rhs
+			case *ast.IncDecStmt:
+				targets = []ast.Expr{s.X}
+			default:
+				return true
 			}
+
+			for i, target := range targets {
+				// Rooted directly at the getter call.
+				if getter := rootGetterCall(target); getter != "" {
+					report(target.Pos(), getter)
+					continue
+				}
+				// Rooted at a local that aliases one.
+				if name, through := rootLocalIdent(target); through {
+					if getter, ok := tainted[name]; ok {
+						report(target.Pos(), getter)
+					}
+					continue
+				}
+				// A bare identifier target: taint it, or clear a stale taint.
+				id, ok := target.(*ast.Ident)
+				if !ok || i >= len(rhs) {
+					continue
+				}
+				if getter := rootGetterCall(rhs[i]); getter != "" {
+					tainted[id.Name] = getter
+				} else {
+					delete(tainted, id.Name)
+				}
+			}
+			return true
+		})
+	}
+
+	for _, decl := range f.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
+			scan(fn.Body)
 		}
-		return true
-	})
+	}
 }
 
 // TestNothingWritesThroughALiveIdentityGetter is the ratchet. Zero, no allowlist: a
@@ -260,6 +350,13 @@ func TestLiveGetterDetectorFiresOnEveryWriteShape(t *testing.T) {
 		{"increment", `plan.GetInValues()[0]++`},
 		// A slice of the live array still aliases it.
 		{"write through a reslice", `plan.GetInValues()[1:][0] = 3`},
+		// Aliased through a local: the two-statement form, which anyone doing more
+		// than one write reaches for. The gate was blind to this while its own
+		// precision table asserted silence on the assignment that creates the alias.
+		{"aliased through a local", "keys := plan.GetSortKeys()\nkeys[0].Desc = true"},
+		{"aliased nested index", "src := plan.GetInSources()\nsrc[0][0] = 1"},
+		{"aliased element via type assertion", "b := plan.GetInValues()[0].([]byte)\nb[0] = 1"},
+		{"aliased then incremented", "v := plan.GetInValues()\nv[0]++"},
 		// Not in first position of a multi-assign.
 		{"multi-assign", `a, plan.GetInValues()[0] = 1, 2`},
 		// The ONLY spelling of an element write, since IN values are `any`. Verified
@@ -292,6 +389,11 @@ func TestLiveGetterDetectorStaysSilentOnReads(t *testing.T) {
 		// accepted over-approximation, so pin the shape that must NOT report: a
 		// bare call with no write.
 		{"call with no assignment", `plan.GetSortKeys()`},
+		// A range variable is a COPY in Go, so mutating it cannot reach the plan.
+		{"range variable is a copy", `for _, k := range plan.GetSortKeys() { k.Desc = true }`},
+		{"read through an alias", "keys := plan.GetSortKeys()\n_ = keys[0].Desc"},
+		{"alias rebound before the write", "keys := plan.GetSortKeys()\nkeys = other\nkeys[0].Desc = true"},
+		{"local from an unwatched source", "keys := thing.Whatever()\nkeys[0] = 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
