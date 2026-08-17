@@ -89,7 +89,7 @@ func TestPlanInvariants_ChildlessClassification(t *testing.T) {
 // of the claim (like HintOrdering) shipped visibly wrong rows.
 //
 // RED PROOF: reverting the sortInJoinValues call in
-// rule_implement_in_join.go's OnMatch (so SetInValues gets the raw unsorted
+// rule_implement_in_join.go's OnMatch (so WithInValues gets the raw unsorted
 // extractInValues() result while sorted stays true) makes this test fail —
 // verified by hand while writing this fix, not asserted here as a tautology.
 func TestValidatePlanInvariants_InJoinSortedClaim(t *testing.T) {
@@ -100,7 +100,7 @@ func TestValidatePlanInvariants_InJoinSortedClaim(t *testing.T) {
 	mk := func(sorted, reverse bool, vals []any) *plans.RecordQueryInJoinPlan {
 		p := mustInvariantConstruct(plans.NewRecordQueryInJoinPlan(
 			scan, "__in_value", sorted, reverse))
-		p.SetInValues(vals)
+		p = p.WithInValues(vals)
 		return p
 	}
 

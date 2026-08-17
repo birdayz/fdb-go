@@ -121,7 +121,7 @@ func NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
 // inner may be a SHARED multi-member group (the unordered path) whose per-ordering
 // winner resolves at extraction via ref.Winner() (planFromQuantifier) — the
 // deferred-winner case. The plan carries the inner edge once, with no wrapper
-// snapshot (RFC-184 W2). Callers still replay SetInSources afterward.
+// snapshot (RFC-184 W2). Callers still replay WithInSources afterward.
 func NewRecordQueryInUnionPlanFromQuantifier(
 	innerQ expressions.Quantifier,
 	bindingNames []string,
@@ -205,7 +205,21 @@ func (p *RecordQueryInUnionPlan) GetComparisonKeys() []values.Value { return p.c
 func (p *RecordQueryInUnionPlan) IsReverse() bool                   { return p.reverse }
 func (p *RecordQueryInUnionPlan) GetMaxSize() int                   { return p.maxSize }
 func (p *RecordQueryInUnionPlan) GetInSources() [][]any             { return p.inSources }
-func (p *RecordQueryInUnionPlan) SetInSources(sources [][]any)      { p.inSources = sources }
+
+// WithInSources returns a COPY carrying the materialized IN sources, because a plan
+// method must never write through its receiver.
+//
+// inSources is in this plan's structuralKey, so writing it in place rewrites the
+// identity of a plan that may already be in the memo — and since the structural-hash
+// memo landed, under an UNCHANGED owner, which is the one staleness the memo's owner
+// check cannot see: it compares identity, not content. Every caller happened to set
+// before yielding, so nothing was ever wrong; that is exactly the "guarded by
+// accident" shape, at five call sites, with no rule keeping it true.
+func (p *RecordQueryInUnionPlan) WithInSources(sources [][]any) *RecordQueryInUnionPlan {
+	cp := *p
+	cp.inSources = sources
+	return &cp
+}
 
 // LiteralFanout returns the exact number of child executions represented by
 // the plan-time IN sources. Each source is one binding dimension, so the

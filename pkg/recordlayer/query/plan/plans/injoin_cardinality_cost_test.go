@@ -55,7 +55,7 @@ func TestInJoinHintCost_ScalesOffChildCardinalityWhenNotAPointProbe(t *testing.T
 			inJoin := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
 				return NewRecordQueryInJoinPlan(inner, "x", false, false)
 			})
-			inJoin.SetInValues(test.inValues)
+			inJoin = inJoin.WithInValues(test.inValues)
 
 			got := inJoin.HintCost([]properties.Cost{childCost}, stats)
 
@@ -106,7 +106,7 @@ func TestInJoinHintCost_StaysInValuesLenForProvableUniqueBind(t *testing.T) {
 			inJoin := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
 				return NewRecordQueryInJoinPlan(inner, "x", false, false)
 			})
-			inJoin.SetInValues(test.inValues)
+			inJoin = inJoin.WithInValues(test.inValues)
 
 			// Child cost deliberately bogus/large: a proven point probe must
 			// ignore it entirely, not scale by it.
@@ -150,13 +150,13 @@ func TestInJoinInUnion_AgreeOnCardinalityForSameNonUniqueChild(t *testing.T) {
 	inJoin := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
 		return NewRecordQueryInJoinPlan(newInner(), "x", false, false)
 	})
-	inJoin.SetInValues([]any{int64(1), int64(2), int64(3)})
+	inJoin = inJoin.WithInValues([]any{int64(1), int64(2), int64(3)})
 	inJoinCost := inJoin.HintCost([]properties.Cost{childCost}, stats)
 
 	inUnion := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
 		return NewRecordQueryInUnionPlan(newInner(), []string{"x"}, nil, false)
 	})
-	inUnion.SetInSources([][]any{{int64(1), int64(2), int64(3)}})
+	inUnion = inUnion.WithInSources([][]any{{int64(1), int64(2), int64(3)}})
 	inUnionCost := inUnion.HintCost([]properties.Cost{childCost}, stats)
 
 	if inJoinCost.Cardinality != inUnionCost.Cardinality {

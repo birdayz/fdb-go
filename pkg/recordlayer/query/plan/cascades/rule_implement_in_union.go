@@ -381,7 +381,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 					call.Fail(err)
 					return
 				}
-				inUnionPlan.SetInSources(inSources)
+				inUnionPlan = inUnionPlan.WithInSources(inSources)
 				call.YieldFinalExpression(inUnionPlan)
 			}
 		}
@@ -399,7 +399,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				call.Fail(err)
 				return
 			}
-			inUnionPlan.SetInSources(inSources)
+			inUnionPlan = inUnionPlan.WithInSources(inSources)
 			call.YieldFinalExpression(inUnionPlan)
 		}
 	}

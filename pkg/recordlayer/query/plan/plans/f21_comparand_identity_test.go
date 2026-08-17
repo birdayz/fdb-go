@@ -199,7 +199,7 @@ func TestRecordQueryInJoinPlan_InValuesIdentity(t *testing.T) {
 		p := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
 			return NewRecordQueryInJoinPlan(inner, alias, true, false)
 		})
-		p.SetInValues(vals)
+		p = p.WithInValues(vals)
 		return p
 	}
 

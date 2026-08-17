@@ -213,7 +213,7 @@ func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 			if err != nil {
 				return nil, err
 			}
-			np.SetInSources(old.GetInSources())
+			np = np.WithInSources(old.GetInSources())
 			return np, nil
 		},
 		buildWrapper: func(_ plans.RecordQueryPlan, qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
@@ -229,7 +229,7 @@ func (r *PushInUnionThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 			if err != nil {
 				return nil, err
 			}
-			np.SetInSources(old.GetInSources())
+			np = np.WithInSources(old.GetInSources())
 			return np, nil
 		},
 	})

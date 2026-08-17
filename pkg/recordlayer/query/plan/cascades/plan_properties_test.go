@@ -485,7 +485,7 @@ func TestComputeCardinalities_InUnionLiteralFanout(t *testing.T) {
 				nil,
 				false,
 			))
-			inUnion.SetInSources(test.sources)
+			inUnion = inUnion.WithInSources(test.sources)
 			got := computeCardinalities(inUnion, inUnion)
 			if !got.Equal(test.want) {
 				t.Fatalf("computeCardinalities() = %+v, want %+v", got, test.want)
@@ -501,7 +501,7 @@ func TestComputeCardinalities_InUnionMultipliesChildAndDegradesOverflow(t *testi
 	newInUnion := func(bindings []string, sources [][]any, childCardinality int64) *plans.RecordQueryInUnionPlan {
 		inUnion := mustPropertiesConstruct(plans.NewRecordQueryInUnionPlan(
 			child, bindings, nil, false))
-		inUnion.SetInSources(sources)
+		inUnion = inUnion.WithInSources(sources)
 		childRef := inUnion.GetInnerQuantifier().GetRangesOver()
 		pm := NewPlanPropertiesMap()
 		pm.props[child] = properties.PropertyMap{

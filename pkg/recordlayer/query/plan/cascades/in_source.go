@@ -20,7 +20,7 @@ import (
 // literal-list shape today — every SQL path that reaches this rule's match
 // (InComparisonToExplodeRule, `col IN (v1,...,vn)`) wraps the list as a
 // ConstantValue, so extractInValues always has a concrete slice to sort
-// before RecordQueryInJoinPlan.SetInValues. This is called once, right
+// before RecordQueryInJoinPlan.WithInValues. This is called once, right
 // there, mirroring SortedInValuesSource's planning-time sort. The
 // InSourceParameter/InSourceComparand classification exists
 // (classifyInSourceKind) for a QuantifiedObjectValue/constant-expression

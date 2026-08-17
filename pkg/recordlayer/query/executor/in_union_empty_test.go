@@ -34,7 +34,7 @@ func TestExecuteInUnion_KnownEmptySourceSkipsInner(t *testing.T) {
 				nil,
 				false,
 			))
-			inUnion.SetInSources(test.sources)
+			inUnion = inUnion.WithInSources(test.sources)
 
 			ctx := context.Background()
 			cursor, err := executeInUnion(
@@ -78,7 +78,7 @@ func TestExecuteInUnion_MultiBindingSingletonBindsCompleteContext(t *testing.T) 
 		nil,
 		false,
 	))
-	inUnion.SetInSources([][]any{{int64(11)}, {int64(22)}})
+	inUnion = inUnion.WithInSources([][]any{{int64(11)}, {int64(22)}})
 
 	ctx := context.Background()
 	cursor, err := executeInUnion(
@@ -113,7 +113,7 @@ func TestExecuteInUnion_PreservesUniqueBindingIdentity(t *testing.T) {
 	}))
 	inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlanWithBindingAliases(
 		inner, []values.CorrelationIdentifier{binding}, nil, false))
-	inUnion.SetInSources([][]any{{int64(11), int64(22)}})
+	inUnion = inUnion.WithInSources([][]any{{int64(11), int64(22)}})
 	aliases := inUnion.GetBindingAliases()
 	if len(aliases) != 1 || aliases[0] != binding {
 		t.Fatalf("binding aliases = %v, want exact unique alias %v", aliases, binding)
@@ -172,7 +172,7 @@ func TestExecuteInUnion_SingletonAppliesSkip(t *testing.T) {
 				nil,
 				false,
 			))
-			inUnion.SetInSources(test.sources)
+			inUnion = inUnion.WithInSources(test.sources)
 
 			ctx := context.Background()
 			cursor, err := executeInUnion(
@@ -226,7 +226,7 @@ func TestExecuteInUnion_RejectsMismatchedDimensions(t *testing.T) {
 				nil,
 				false,
 			))
-			inUnion.SetInSources(test.sources)
+			inUnion = inUnion.WithInSources(test.sources)
 			if _, err := executeInUnion(
 				context.Background(),
 				inUnion,

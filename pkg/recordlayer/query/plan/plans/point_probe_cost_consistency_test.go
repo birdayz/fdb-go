@@ -132,7 +132,7 @@ func TestInJoinHintCost_BothTermsAreFetchRate(t *testing.T) {
 	plan := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
 		return NewRecordQueryInJoinPlan(inner, "x", false, false)
 	})
-	plan.SetInValues([]any{int64(1), int64(2), int64(3)})
+	plan = plan.WithInValues([]any{int64(1), int64(2), int64(3)})
 	// The child cost passed here is deliberately NOT what inner.HintCost would
 	// actually produce (Cardinality 1) — a genuine point probe ignores the
 	// child cost entirely, so an absurd child cardinality must not leak

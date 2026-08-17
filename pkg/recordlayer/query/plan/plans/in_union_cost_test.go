@@ -97,7 +97,7 @@ func TestInUnionHintCost_UsesValueCombinationCount(t *testing.T) {
 					false,
 				)
 			})
-			plan.SetInSources(test.sources)
+			plan = plan.WithInSources(test.sources)
 
 			got := plan.HintCost([]properties.Cost{child}, properties.DefaultStatistics{})
 			var want properties.Cost
@@ -142,7 +142,7 @@ func TestInUnionHintCost_SaturatesUnknownFanoutOverflow(t *testing.T) {
 			false,
 		)
 	})
-	plan.SetInSources(sources)
+	plan = plan.WithInSources(sources)
 	if _, known := plan.LiteralFanout(); known {
 		t.Fatal("overflowing literal fanout unexpectedly reported exact")
 	}
@@ -200,7 +200,7 @@ func TestLiteralFanout_RejectsMismatchedDimensions(t *testing.T) {
 					false,
 				)
 			})
-			plan.SetInSources(test.sources)
+			plan = plan.WithInSources(test.sources)
 			if fanout, known := plan.LiteralFanout(); known {
 				t.Fatalf("LiteralFanout() = (%d, true), want unknown mismatch", fanout)
 			}

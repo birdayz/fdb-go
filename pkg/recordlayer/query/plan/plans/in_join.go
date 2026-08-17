@@ -62,7 +62,7 @@ func NewRecordQueryInJoinPlanWithBindingAlias(
 // inner is a SHARED group whose per-ordering winner resolves at extraction via
 // ref.Winner() (planFromQuantifier) — the deferred-winner case. The plan carries
 // the inner edge once, with no wrapper snapshot (RFC-184 W2). Callers still
-// replay SetInValues / SetSourceKind afterward (the constructor drops them).
+// replay WithInValues / WithSourceKind afterward (the constructor drops them).
 func NewRecordQueryInJoinPlanFromQuantifier(
 	innerQ expressions.Quantifier,
 	bindingName string,
@@ -137,12 +137,31 @@ func (p *RecordQueryInJoinPlan) GetBindingName() string { return p.bindingAlias.
 func (p *RecordQueryInJoinPlan) GetBindingAlias() values.CorrelationIdentifier {
 	return p.bindingAlias
 }
-func (p *RecordQueryInJoinPlan) IsSorted() bool               { return p.sorted }
-func (p *RecordQueryInJoinPlan) IsReverse() bool              { return p.reverse }
-func (p *RecordQueryInJoinPlan) GetInValues() []any           { return p.inValues }
-func (p *RecordQueryInJoinPlan) SetInValues(vals []any)       { p.inValues = vals }
-func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind  { return p.sourceKind }
-func (p *RecordQueryInJoinPlan) SetSourceKind(k InSourceKind) { p.sourceKind = k }
+func (p *RecordQueryInJoinPlan) IsSorted() bool              { return p.sorted }
+func (p *RecordQueryInJoinPlan) IsReverse() bool             { return p.reverse }
+func (p *RecordQueryInJoinPlan) GetInValues() []any          { return p.inValues }
+func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind { return p.sourceKind }
+
+// WithInValues and WithSourceKind return COPIES, because a plan method must never
+// write through its receiver.
+//
+// inValues is in this plan's structuralKey, so an in-place write rewrites the identity
+// of a plan the memo may already hold — under an UNCHANGED owner, which the
+// structural-hash memo's owner check cannot detect, because it compares identity and
+// not content. sourceKind is NOT in the key and was therefore harmless; it copies too,
+// so the rule is "a plan method does not write its receiver" with no per-field
+// exception a reader has to look up.
+func (p *RecordQueryInJoinPlan) WithInValues(vals []any) *RecordQueryInJoinPlan {
+	cp := *p
+	cp.inValues = vals
+	return &cp
+}
+
+func (p *RecordQueryInJoinPlan) WithSourceKind(k InSourceKind) *RecordQueryInJoinPlan {
+	cp := *p
+	cp.sourceKind = k
+	return &cp
+}
 
 func (p *RecordQueryInJoinPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 

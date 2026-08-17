@@ -128,8 +128,8 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 	c := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
 		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
 	})
-	a.SetInSources([][]any{{int64(1), int64(2)}})
-	c.SetInSources([][]any{{int64(1), int64(3)}})
+	a = a.WithInSources([][]any{{int64(1), int64(2)}})
+	c = c.WithInSources([][]any{{int64(1), int64(3)}})
 	if a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("in-union plans with different IN-literals must NOT compare equal")
 	}
@@ -138,7 +138,7 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 	d := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
 		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
 	})
-	d.SetInSources([][]any{{int64(1), int64(2)}})
+	d = d.WithInSources([][]any{{int64(1), int64(2)}})
 	if !a.EqualsPlanWithoutChildren(d) {
 		t.Fatal("identical in-union plans must compare equal")
 	}
