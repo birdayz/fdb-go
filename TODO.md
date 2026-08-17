@@ -18317,8 +18317,10 @@ flight on the campaign above.
       allocates nothing. **Go has 132 non-test `structuralKey()` call sites and ZERO
       memoization** (measured: `grep -rn 'structuralKey()' pkg/ --include='*.go' |
       grep -v _test.go | wc -l` = 132; `sync.Once|cachedHash|hashOnce|memoHash` in
-      `pkg/recordlayer/query/plan/plans/` = 0, positive control 27 `sync.Once` in
-      `pkg/recordlayer/`). Every `Equal()` and every `Hash()` rebuilds a key.
+      `pkg/recordlayer/query/plan/plans/` = 0 non-test, positive control 23 non-test
+      `sync.Once` in `pkg/recordlayer/` — 27 if tests are counted, and the two numbers
+      are over different populations, so the non-test one is the control that matches
+      the zero). Every `Equal()` and every `Hash()` rebuilds a key.
 
       This campaign's answer to that term was to SHRINK the key — `part` 312 -> 96
       bytes, `structuralKeyInlineParts` 8 -> 4 — a real ~6x win on a cost **Java does
@@ -18334,3 +18336,48 @@ flight on the campaign above.
       paragraph, and `alias_map_singleton_test.go` pins its IDENTITY rather than its
       immutability — so a future writer through the singleton is caught by nothing. Any
       mutation of the shared empty map corrupts every alias map in the process.
+
+## Every self-hosted CI job dies at `actions/checkout` with HTTP 429, nightlies included
+
+Found while trying to get PR #752 green; it is repo-wide and not specific to that
+branch. **Not a test failure** — the jobs never reach a build step. Each failing job
+log is 21 lines, three `429 (Too Many Requests)` warnings from
+`codeload.github.com`, then `Failed to download archive '.../actions/checkout/tar.gz/...'
+after 3 attempts`. Zero `DATA RACE`, zero test output, no code executed.
+
+The split is by RUNNER, measured over the workflow files:
+
+| workflow | `runs-on` | outcome |
+|---|---|---|
+| `hosted-smoke.yml` | `ubuntu-latest` | green on every run |
+| `ci.yml`, `claude.yml`, `nightly-*.yml` | `hetzner-fdb-vm` | 429 at checkout |
+
+GitHub-hosted runners resolve actions through an internal cache; the self-hosted
+Hetzner VM re-downloads every action tarball from codeload on every job, so one
+rate-limit window takes out all four CI jobs at once. Six sequential `gh run rerun
+--failed` attempts produced 24 consecutive job failures, and it got WORSE rather than
+clearing, so retrying is not the remedy — each attempt is another codeload request.
+
+**Three consequences, and the second and third are the expensive ones.**
+
+1. PR CI cannot go green on any branch while the window is open.
+2. **The `@claude` review gate is silently unavailable.** `claude.yml` is
+   `issue_comment`-triggered and runs on the self-hosted VM, so a review request posts
+   the comment, the workflow fires, and it dies at checkout — leaving a PR comment with
+   no reply. That reads exactly like "the reviewer has not got to it yet". Confirmed on
+   run 32036682884: fired, `completed/failure`, 22-line log, 3 429s.
+3. **Every nightly safety net is down** — fuzz, rowdiff, factory, oracles, coverage,
+   stress, libfdbc differential are all `hetzner-fdb-vm`. A green-looking absence of
+   nightly failures currently means the nightlies are not running, which is the
+   fail-open direction.
+
+- [ ] Give the `hetzner-fdb-vm` runner an action-archive cache so it stops re-fetching
+      action tarballs from codeload per job — the runner reads
+      `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE` for exactly this. The runner is provisioned
+      from `infra/main.tf`, so this is a terraform change plus an apply, which is why it
+      is booked rather than done inline. Verify by re-running any `hetzner-fdb-vm` job
+      and confirming its log passes the "Download action repository" step.
+- [ ] While there: a job that dies before its first real step should be
+      distinguishable from a job whose tests failed. Right now both render as a red
+      check, and the only way to tell them apart is a 21-line log — which is how this
+      spent a while looking like a code regression.
