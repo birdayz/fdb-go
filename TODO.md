@@ -18331,6 +18331,33 @@ flight on the campaign above.
       are over different populations, so the non-test one is the control that matches
       the zero). Every `Equal()` and every `Hash()` rebuilds a key.
 
+      **PREREQUISITE NOBODY HAD BOOKED, found by checking the precondition rather than
+      accepting it: Go's plans are NOT uniformly immutable after construction, and the
+      memo cannot be a plain field on the shared base.** Two `RecordQueryAggregateIndexPlan`
+      builders wrote to the receiver and returned it, alone among 57 siblings that do
+      `cp := *p` — and one of them, `WithLiveGroupsOnly`, writes a field that IS folded
+      into `structuralKey`. Fixed to copy, pinned by
+      `TestAggregateIndexBuildersCopyRatherThanMutateIdentity`, but the shape of the
+      problem is what matters here:
+
+      Those 57 `cp := *p` copies are the real obstacle. A memo held on `PlanExprBase`
+      would be inherited by every shallow copy — and `WithXxx` exists precisely to
+      change identity-bearing fields (`scanComparisons`, `liveGroupsOnly`,
+      `keyComponentTypes`), so the copy's inherited key would describe the pre-change
+      plan. The memo would then serve a stale identity and the dedup would intern two
+      structurally different plans as one, which is exactly the failure the
+      `liveGroupsOnly` key comment warns about. There is no compiler help: forget one
+      copy site and it fails silently. An `atomic.Pointer` memo makes it louder but not
+      safer — `go vet`'s copylocks would reject all 57 copies, and the package imports
+      no `sync/atomic` today.
+
+      Java does not face this because its plans have no `WithXxx` mutators at all;
+      `Suppliers.memoize` sits on an object built once by a constructor. So the design
+      question to settle FIRST is whether Go routes every plan copy through one helper
+      that clears the memo, or drops the copy-builders in favour of constructors. That
+      is a Cascades design change and needs a Graefe ACK before implementation, per the
+      review-cadence rule.
+
       This campaign's answer to that term was to SHRINK the key — `part` 312 -> 96
       bytes, `structuralKeyInlineParts` 8 -> 4 — a real ~6x win on a cost **Java does
       not pay at all**. Go's plans are immutable after construction, which is the same

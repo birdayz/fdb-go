@@ -128,8 +128,9 @@ func (p *RecordQueryAggregateIndexPlan) WithGroupColumns(groupCols []string, agg
 // Only HintOrdering reads it, to decide whether a grouping column may extend
 // the group-order claim this plan makes.
 func (p *RecordQueryAggregateIndexPlan) WithGroupColumnLayout(layout values.Type) *RecordQueryAggregateIndexPlan {
-	p.groupColLayout = layout
-	return p
+	cp := *p
+	cp.groupColLayout = layout
+	return &cp
 }
 
 // GetGroupColumnLayout returns the declared layout the grouping-column names
@@ -138,9 +139,20 @@ func (p *RecordQueryAggregateIndexPlan) GetGroupColumnLayout() values.Type { ret
 
 // WithLiveGroupsOnly marks this scan as dropping zero-valued entries — see the
 // liveGroupsOnly field. Only a grouped COUNT(*) index may carry it.
+// It COPIES, like every other WithXxx on a plan. Mutating in place would be
+// mutating plan IDENTITY: liveGroupsOnly is folded into structuralKey precisely
+// because a scan that drops vacated groups is a different plan from one that does
+// not (see structuralKey below). An in-place write therefore changes the identity of
+// an object the memo may already hold, and the memo would keep serving it under its
+// former key.
+//
+// That was latent rather than live only because every caller happens to invoke a
+// COPYING builder first (WithGroupColumns), so the in-place write landed on a fresh
+// copy. Reordering one chain would have armed it.
 func (p *RecordQueryAggregateIndexPlan) WithLiveGroupsOnly(v bool) *RecordQueryAggregateIndexPlan {
-	p.liveGroupsOnly = v
-	return p
+	cp := *p
+	cp.liveGroupsOnly = v
+	return &cp
 }
 
 // IsLiveGroupsOnly reports whether the scan drops zero-valued entries.
