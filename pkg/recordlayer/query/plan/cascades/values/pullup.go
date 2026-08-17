@@ -28,7 +28,7 @@ func PullUpValue(v Value, resultValue Value, alias CorrelationIdentifier) (Value
 
 	// Case 1: v semantically equals the entire result value.
 	if semanticEqual(v, resultValue) {
-		return newPullUpOutputQOV(alias, resultValue.Type())
+		return newPullUpOutputQOVForSource(alias, resultValue)
 	}
 
 	// Case 2: resultValue is a RecordConstructorValue — check whether
@@ -158,7 +158,7 @@ func pullUpThroughPassthrough(
 		!ValuesStructurallyEqual(fv.Child, resultValue) {
 		return nil, nil
 	}
-	child, err := newPullUpOutputQOV(alias, resultValue.Type())
+	child, err := newPullUpOutputQOVForSource(alias, resultValue)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +184,48 @@ func newPullUpOutputQOV(alias CorrelationIdentifier, typ Type) (QuantifiedObject
 		return newCurrentQOVForLayout(typ)
 	}
 	return NewQuantifiedObjectValue(alias, typ)
+}
+
+// newPullUpOutputQOVForSource is newPullUpOutputQOV given the VALUE whose type
+// the output carries, so a source that already holds an exact handle hands it
+// over instead of being thawed and re-snapshotted.
+//
+// The round trip was pure waste and the single largest planner allocator on this
+// branch: Type() builds a fresh ordinary graph out of the handle — deliberately,
+// so no caller can mutate the identity a QOV depends on — and SnapshotExactType
+// then walks that graph back to the interned node it started from. Interning is
+// what makes the shortcut exactly equivalent rather than merely equivalent-looking:
+// the long way round is now guaranteed to return the same object.
+//
+// The dropped half is the source layout, which the long way round also dropped:
+// thaw does not restore .Legs, so snapshotQOVRecordLayout over a thawed graph
+// always answered nil.
+func newPullUpOutputQOVForSource(alias CorrelationIdentifier, source Value) (QuantifiedObjectValue, error) {
+	exact, ok := exactTypeOfValue(source)
+	if !ok {
+		return newPullUpOutputQOV(alias, source.Type())
+	}
+	if exact.code == TypeCodeNull || exact.code == TypeCodeRelation {
+		return nil, resolutionError(TypeMalformedCode, "qov.flowed", "QOV root must be an object or scalar exact type")
+	}
+	if alias.isCurrent() {
+		return &quantifiedObjectValue{correlation: CurrentCorrelation(), flowed: exact}, nil
+	}
+	if alias.IsZero() {
+		return nil, resolutionError(CorrelationZero, "qov.correlation", "correlation is zero")
+	}
+	return &quantifiedObjectValue{correlation: alias, flowed: exact}, nil
+}
+
+// exactTypeOfValue returns the exact handle a values-owned value already carries,
+// without thawing it. Only the exact QOV carries one; every other value derives
+// its type and must be asked for it.
+func exactTypeOfValue(value Value) (*exactType, bool) {
+	qov, isQOV := value.(*quantifiedObjectValue)
+	if !isQOV || qov == nil || qov.flowed == nil {
+		return nil, false
+	}
+	return qov.flowed, true
 }
 
 // PushDownValue rewrites v (which references the output of resultValue)

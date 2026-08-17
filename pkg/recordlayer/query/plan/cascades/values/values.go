@@ -377,6 +377,35 @@ func OrdinalDomainOfColumnNames(cols []string) OrdinalDomain {
 // a *RecordType (UnknownType, a primitive, a multi-record-type index's
 // degraded row type) has no single column order and yields the UNKNOWN token,
 // so a caller that cannot name its layout fails closed by construction.
+// OrdinalDomainOfQuantified is OrdinalDomainOfType for a quantifier's flowed
+// row, taking the token off the value's own exact handle. The spelling through
+// FlowedType() thaws a whole ordinary Type graph and then walks it to build a
+// string the handle can already answer with; a foreign QOV view still goes the
+// long way round.
+func OrdinalDomainOfQuantified(qov QuantifiedObjectValue) OrdinalDomain {
+	if exact, ok := exactTypeOfValue(qov); ok {
+		return ordinalDomainOfExact(exact)
+	}
+	if qov == nil {
+		return OrdinalDomain{}
+	}
+	return OrdinalDomainOfType(qov.FlowedType())
+}
+
+// ordinalDomainOfExact is OrdinalDomainOfType for an interned exact node, with
+// the answer memoized on the node — see exactType.ordinalDomain.
+func ordinalDomainOfExact(e *exactType) OrdinalDomain {
+	if e == nil {
+		return OrdinalDomain{}
+	}
+	if cached := e.ordinalDomain.Load(); cached != nil {
+		return *cached
+	}
+	domain := OrdinalDomainOfType(e.thawShared())
+	e.ordinalDomain.Store(&domain)
+	return domain
+}
+
 func OrdinalDomainOfType(t Type) OrdinalDomain {
 	rt, ok := t.(*RecordType)
 	if !ok || len(rt.Fields) == 0 {
@@ -1410,6 +1439,46 @@ func (f *fieldValue) OrdinalIn(frontier OrdinalDomain) (int, bool) {
 //
 // Safe on nil: returns immediately. Mirrors WalkPredicate over the
 // Value side of the hierarchy.
+// valueChildren answers v's children without allocating for the SINGLE-child
+// shapes, writing the answer into caller-owned scratch.
+//
+// Children() has to return a slice, so a one-child node allocates one to say so —
+// and the package's own recursive walks (WalkValue, ValueSize,
+// SemanticEqualsUnderAliasMap, writeSemanticHash) call it on every node of every
+// value tree they visit. Measured over a 200-plan IN-list sweep, fieldValue's
+// one-element slice alone was 3,277 allocations per plan, and a fused FieldValue
+// path is the commonest interior node in a planner value tree.
+//
+// The returned slice ALIASES scratch, so it is valid only until the caller reuses
+// that storage, and a caller that needs to RETAIN the children must ask
+// Children() for a slice it owns.
+//
+// What makes the aliasing safe under recursion is the LENGTH, not per-frame
+// storage: the scratch-backed answer is always exactly ONE element, so a `range`
+// over it copies that element out before the body can run at all, and a
+// recursive call that overwrites the storage cannot change which child the
+// caller is holding. A shared scratch was tried as a mutation and every walk
+// still visited every node exactly once. That argument expires the moment an arm
+// below writes a SECOND element, so the arms are one-child kinds only and
+// scratch is a [1]Value rather than a wider array — the type is the guard.
+func valueChildren(v Value, scratch *[1]Value) []Value {
+	switch typed := v.(type) {
+	case *fieldValue:
+		if typed.Child == nil {
+			return nil
+		}
+		scratch[0] = typed.Child
+		return scratch[:]
+	case *CastValue:
+		scratch[0] = typed.Child
+		return scratch[:]
+	case *PromoteValue:
+		scratch[0] = typed.Child
+		return scratch[:]
+	}
+	return v.Children()
+}
+
 func WalkValue(v Value, visit func(Value) bool) {
 	if v == nil {
 		return
@@ -1417,7 +1486,8 @@ func WalkValue(v Value, visit func(Value) bool) {
 	if !visit(v) {
 		return
 	}
-	for _, c := range v.Children() {
+	var scratch [1]Value
+	for _, c := range valueChildren(v, &scratch) {
 		WalkValue(c, visit)
 	}
 }
@@ -1431,7 +1501,8 @@ func ValueSize(v Value) int {
 		return 0
 	}
 	n := 1
-	for _, c := range v.Children() {
+	var scratch [1]Value
+	for _, c := range valueChildren(v, &scratch) {
 		n += ValueSize(c)
 	}
 	return n

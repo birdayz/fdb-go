@@ -3418,7 +3418,7 @@ func TestBuildCoveringLogicalRow_WidensFloat32(t *testing.T) {
 	pos := buildCoveringLogicalRow(
 		[]string{"F"}, []string{"ID"},
 		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
-		logicalType, []int{1, 0})
+		logicalType, []int{1, 0}, nil)
 	if got := pos.Slots[1]; got != float64(2.5) {
 		t.Fatalf("covering FLOAT slot = %T:%v, want float64:2.5 (base-record domain)", got, got)
 	}
@@ -3440,7 +3440,7 @@ func TestDistinctKey_CoveringAndBaseFloatRowsDedup(t *testing.T) {
 	covering := QueryResult{Positional: buildCoveringLogicalRow(
 		[]string{"F"}, []string{"ID"},
 		tuple.Tuple{float32(2.5)}, tuple.Tuple{int64(1)},
-		logicalType, []int{1, 0})}
+		logicalType, []int{1, 0}, nil)}
 	// The base-record path widens FLOAT to float64 (ProtoScalarKindToRowValue).
 	base := QueryResult{Positional: &PositionalRow{
 		Type:  logicalType,

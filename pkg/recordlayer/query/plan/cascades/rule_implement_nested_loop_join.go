@@ -4277,7 +4277,7 @@ func legSlotIdentity(fv values.FieldValue) (values.ColumnIdentity, bool) {
 	if !isQOV {
 		return values.ColumnIdentity{}, false
 	}
-	return values.CorrelatedFieldIdentityIn(fv, values.OrdinalDomainOfType(qov.FlowedType()))
+	return values.CorrelatedFieldIdentityIn(fv, values.OrdinalDomainOfQuantified(qov))
 }
 
 // legRowTypeSource is one join leg as this derivation sees it: the QUANTIFIER —

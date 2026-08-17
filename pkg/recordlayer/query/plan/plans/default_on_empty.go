@@ -59,7 +59,7 @@ func newDefaultOnEmptyPlanExprBase(
 		return PlanExprBase{}, err
 	}
 	childType := childBase.GetResultValue().Type()
-	defaultTypeHandle, err := values.SnapshotExactType(defaultValue.Type())
+	defaultTypeHandle, err := values.ExactTypeForValue(defaultValue)
 	if err != nil {
 		return PlanExprBase{}, fmt.Errorf("%s default Value: %w", owner, err)
 	}

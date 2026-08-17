@@ -571,6 +571,7 @@ func executeCoveringIndexScan(
 		pkColumns:   pkCols,
 		logicalType: logicalType,
 		logicalOrds: logicalOrds,
+		layout:      mintedRowLayout(p),
 	}, props.Skip, props.ReturnedRowLimit), nil
 }
 
@@ -1432,7 +1433,11 @@ type coveringIndexCursor struct {
 	// construction, so logicalOrds is always non-nil here.
 	logicalType *values.RecordType
 	logicalOrds []int
-	closed      bool
+	// layout is the plan's provided output layout, stamped on every row this
+	// cursor mints so the output boundary checks it instead of copying the row
+	// to attach it — see mintedRowLayout.
+	layout values.OrdinalLayout
+	closed bool
 	// lastNoNext replays the terminal result on a contract-violating re-call
 	// (Java's cached no-next result) — never re-pulls the inner entry scan.
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
@@ -1465,7 +1470,8 @@ func (c *coveringIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCur
 	if len(entry.Value) > 0 {
 		vals = append(append(tuple.Tuple{}, vals...), entry.Value...)
 	}
-	pos := buildCoveringLogicalRow(c.columns, c.pkColumns, vals, primaryKey, c.logicalType, c.logicalOrds)
+	pos := buildCoveringLogicalRow(
+		c.columns, c.pkColumns, vals, primaryKey, c.logicalType, c.logicalOrds, c.layout)
 	return recordlayer.NewResultWithValue(
 		QueryResult{
 			Positional: pos,
@@ -1500,7 +1506,13 @@ func coveringLogicalOrdinals(posNames []string, logicalType *values.RecordType) 
 // unset partial-record fields; the planner's covering gate guarantees they
 // are never referenced). A value-column/PK-column name collision lands on the
 // SAME logical slot with the same value — the logical row has one column.
-func buildCoveringLogicalRow(columns, pkColumns []string, vals, pk tuple.Tuple, logicalType *values.RecordType, logicalOrds []int) *PositionalRow {
+func buildCoveringLogicalRow(
+	columns, pkColumns []string,
+	vals, pk tuple.Tuple,
+	logicalType *values.RecordType,
+	logicalOrds []int,
+	layout values.OrdinalLayout,
+) *PositionalRow {
 	slots := make([]any, len(logicalType.Fields))
 	for i := range columns {
 		if i < len(vals) {
@@ -1519,7 +1531,10 @@ func buildCoveringLogicalRow(columns, pkColumns []string, vals, pk tuple.Tuple, 
 			slots[logicalOrds[len(columns)+i]] = tupleElementToRowValue(pk[idx])
 		}
 	}
-	return &PositionalRow{Type: logicalType, Slots: slots}
+	// The row is minted here and has one owner, so it carries the layout its
+	// output boundary will hold it to rather than being copied to acquire it —
+	// see mintedRowLayout. A nil layout means the boundary publishes none.
+	return &PositionalRow{Type: logicalType, Slots: slots, Layout: layout}
 }
 
 func (c *coveringIndexCursor) Close() error {

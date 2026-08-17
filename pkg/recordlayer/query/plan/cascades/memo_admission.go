@@ -490,11 +490,14 @@ func admitMemoExpression(expression expressions.RelationalExpression) (values.Ex
 	if result == nil {
 		return nil, memoAdmissionError(values.MemoResultTypeMismatch, "memo.member.result", "expression returned a nil result Value")
 	}
-	objectType := result.Type()
-	if _, alreadyRelation := objectType.(*values.RelationType); alreadyRelation {
+	objectType, err := values.ExactTypeForValue(result)
+	if err != nil {
+		return nil, fmt.Errorf("memo member result type: %w", err)
+	}
+	if _, alreadyRelation := objectType.RelationInner(); alreadyRelation {
 		return nil, memoAdmissionError(values.MemoDoubleRelationWrapper, "memo.member.resultType", "expression result Value already has a RELATION type")
 	}
-	relationType, err := values.ExactRelationOf(objectType)
+	relationType, err := values.ExactRelationOfHandle(objectType)
 	if err != nil {
 		return nil, fmt.Errorf("memo member result type: %w", err)
 	}

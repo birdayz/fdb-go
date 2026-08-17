@@ -67,6 +67,19 @@ type exactType struct {
 	// another descriptor's answer.
 	protoShape atomic.Pointer[protoShapeVerdict]
 
+	// ordinalDomain memoizes this node's OrdinalDomain token, and it is a memo
+	// for the same reason protoShape is: the token is a pure function of the
+	// node's column NAMES, every field the derivation reads is fixed at
+	// construction, and the node is interned so one answer serves every value
+	// that flows the type.
+	//
+	// The derivation is not free — it upper-cases every name into a
+	// length-prefixed signature — and every baked field resolution asks for it,
+	// so it ran once per RESOLUTION rather than once per type: 2,239 allocations
+	// per plan on a 200-plan IN-list sweep, all of them re-deriving the same
+	// handful of strings.
+	ordinalDomain atomic.Pointer[OrdinalDomain]
+
 	// thawCache holds the thawed ordinary Type graph for SHARED readers.
 	//
 	// thaw() builds a fresh graph on every call, and that is the right default
@@ -172,6 +185,36 @@ func ExactRelationOf(object Type) (ExactTypeHandle, error) {
 	}
 	inner := handle.(*exactType)
 	return internedRelationExactType(inner), nil
+}
+
+// ExactTypeForValue returns the exact handle describing value's type, taking the
+// one value already carries rather than deriving it again.
+//
+// It exists because the derivation is not cheap and the round trip was pure
+// waste. Type() builds a fresh ordinary graph on every call — deliberately, so no
+// caller can mutate the identity a QOV and every memo boundary depend on — and a
+// caller that immediately re-snapshots that graph walks it all the way back to the
+// interned node it started from. Measured over a 200-plan IN-list sweep, that
+// round trip was the largest single planner allocator on this branch.
+//
+// Interning is what makes the shortcut exactly equivalent rather than merely
+// equivalent-looking: the long way round now provably returns the same object, so
+// this is the same handle by identity and not just by content.
+func ExactTypeForValue(value Value) (ExactTypeHandle, error) {
+	if exact, ok := exactTypeOfValue(value); ok {
+		return exact, nil
+	}
+	return SnapshotExactType(value.Type())
+}
+
+// ExactRelationOfHandle is ExactRelationOf for a caller that already holds the
+// object handle: it wraps it in exactly one RELATION layer without thawing.
+func ExactRelationOfHandle(object ExactTypeHandle) (ExactTypeHandle, error) {
+	inner, ok := AsExactTypeHandle(object)
+	if !ok {
+		return nil, resolutionError(TypeMalformedCode, "type", "relation inner is not a values-owned exact type")
+	}
+	return internedRelationExactType(inner.(*exactType)), nil
 }
 
 // AsExactTypeHandle exact-recognizes the package-owned immutable handle. An

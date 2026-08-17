@@ -64,7 +64,8 @@ func SemanticEqualsUnderAliasMap(a, b Value, aliases AliasMap) bool {
 	if !EqualsWithoutChildren(a, b) {
 		return false
 	}
-	ac, bc := a.Children(), b.Children()
+	var aScratch, bScratch [1]Value
+	ac, bc := valueChildren(a, &aScratch), valueChildren(b, &bScratch)
 	if len(ac) != len(bc) {
 		return false
 	}

@@ -227,7 +227,7 @@ func streamingAggregationOutputRecordType(
 		if key == nil {
 			return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan grouping key %d is nil", i)
 		}
-		if _, err := values.SnapshotExactType(key.Type()); err != nil {
+		if _, err := values.ExactTypeForValue(key); err != nil {
 			return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan grouping key %d: %w", i, err)
 		}
 		fields = append(fields, values.Field{Name: names[i], FieldType: key.Type(), Ordinal: i})

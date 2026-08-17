@@ -495,7 +495,7 @@ func resolveAgainstQOV(
 		// discarded on the next line. A defensive copy here allocated a whole
 		// Type graph per resolution to answer a question about an immutable
 		// handle, and field resolution is on the planner's inner loop.
-		Domain: OrdinalDomainOfType(root.thawShared()),
+		Domain: ordinalDomainOfExact(root),
 	}
 	return &fieldValue{
 		Field:      accessors[len(accessors)-1].Field,

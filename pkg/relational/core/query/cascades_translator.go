@@ -10117,7 +10117,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 			"recursive CTE seed has no exact result type"))
 		return nil
 	}
-	seedHandle, seedTypeErr := values.SnapshotExactType(seedResult.Type())
+	seedHandle, seedTypeErr := values.ExactTypeForValue(seedResult)
 	if seedTypeErr != nil {
 		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
 			"recursive CTE seed has no exact result type: %v", seedTypeErr))

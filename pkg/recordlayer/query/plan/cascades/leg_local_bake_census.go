@@ -609,7 +609,7 @@ func describeLegIdentityDecline(fv values.FieldValue, qov values.QuantifiedObjec
 	}
 	pathDomain := path.RootDomain()
 	parts = append(parts, fmt.Sprintf("pathDomainKnown=%t", pathDomain.IsKnown()))
-	qovDomain := values.OrdinalDomainOfType(qov.FlowedType())
+	qovDomain := values.OrdinalDomainOfQuantified(qov)
 	parts = append(parts, fmt.Sprintf("qovTypeDomainKnown=%t", qovDomain.IsKnown()))
 	if qovDomain.IsKnown() && pathDomain.IsKnown() {
 		parts = append(parts, fmt.Sprintf("qovDomainMatches=%t", qovDomain == pathDomain))

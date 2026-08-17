@@ -42,7 +42,7 @@ func TestBuildCoveringLogicalRow(t *testing.T) {
 	row := buildCoveringLogicalRow(
 		[]string{"a", "b"}, []string{"id"},
 		tuple.Tuple{"x", int64(20)}, tuple.Tuple{int64(7), int64(5)},
-		logical, ords)
+		logical, ords, nil)
 
 	if row.Type != logical {
 		t.Fatal("covering row must carry the LOGICAL record type")
@@ -95,7 +95,7 @@ func TestBuildCoveringLogicalRowDoesNotGuessUnsafePrimaryKeyNames(t *testing.T) 
 	row := buildCoveringLogicalRow(
 		[]string{"ID"}, nil,
 		tuple.Tuple{int64(42)}, tuple.Tuple{int64(42), int64(7)},
-		logical, ords,
+		logical, ords, nil,
 	)
 	if id, _ := row.Get(0); id != int64(42) {
 		t.Fatalf("unsafe PK tail overwrote covered ID with %v, want 42", id)

@@ -5624,7 +5624,7 @@ func explodeElementTypeName(exp *plans.RecordQueryExplodePlan, leg plans.RecordQ
 	if !isQOV {
 		return ""
 	}
-	id, ok := values.CorrelatedFieldIdentityIn(fv, values.OrdinalDomainOfType(qov.FlowedType()))
+	id, ok := values.CorrelatedFieldIdentityIn(fv, values.OrdinalDomainOfQuantified(qov))
 	if !ok {
 		return ""
 	}

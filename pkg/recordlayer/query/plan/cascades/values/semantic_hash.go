@@ -229,7 +229,8 @@ func writeSemanticHash(h io.Writer, v Value) {
 			_, _ = io.WriteString(h, "v:"+v.Name())
 		}
 	}
-	children := v.Children()
+	var scratch [1]Value
+	children := valueChildren(v, &scratch)
 	_, _ = io.WriteString(h, "(")
 	// Appended into a stack array rather than strconv.Itoa: the child count is
 	// written once per NODE, so its string allocation scaled with the whole tree.

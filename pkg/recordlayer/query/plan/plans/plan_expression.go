@@ -58,7 +58,7 @@ func newPlanExprBaseWithProperties(
 	if resultValue == nil {
 		return PlanExprBase{}, fmt.Errorf("%s result Value: value is nil", owner)
 	}
-	resultType, err := values.SnapshotExactType(resultValue.Type())
+	resultType, err := values.ExactTypeForValue(resultValue)
 	if err != nil {
 		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
 	}
@@ -222,7 +222,7 @@ func newPlanExprBaseForValue(owner string, resultValue values.Value) (PlanExprBa
 	if resultValue == nil {
 		return PlanExprBase{}, fmt.Errorf("%s result Value: value is nil", owner)
 	}
-	exactType, err := values.SnapshotExactType(resultValue.Type())
+	exactType, err := values.ExactTypeForValue(resultValue)
 	if err != nil {
 		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
 	}
@@ -253,7 +253,7 @@ func newPlanExprBaseForProvidedLayout(
 	if err := values.ValidateOrdinalLayoutAdmission(layout); err != nil {
 		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
 	}
-	resultType, err := values.SnapshotExactType(resultValue.Type())
+	resultType, err := values.ExactTypeForValue(resultValue)
 	if err != nil {
 		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
 	}
