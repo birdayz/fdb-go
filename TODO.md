@@ -18375,22 +18375,38 @@ with a local action cache is immune to a codeload incident, whereas one that ref
 per job fails every job for the duration. Do not expect the 21-line log as a
 fingerprint — match on the download failure, whichever action it names.
 
-The split is by RUNNER, measured over the workflow files:
+**IT IS NOT A CLEAN RUNNER SPLIT, and an earlier draft of this entry said it was.** That
+draft claimed `ubuntu-latest` jobs were "green on every run" because "GitHub-hosted
+runners resolve actions through an internal cache". Refuted: `hosted-smoke.yml`, which
+is `runs-on: ubuntu-latest`, died on `actions/setup-go` with the same three 429s at 36
+log lines. **GitHub-hosted runners fetch action tarballs from codeload too.** The
+observation behind the wrong claim was real — hosted jobs did pass far more often — but
+the explanation was too strong, and it was built from a run-level status list that
+happened to show successes.
 
-| workflow | `runs-on` | outcome |
-|---|---|---|
-| `hosted-smoke.yml` | `ubuntu-latest` | green on every run |
-| `ci.yml`, `claude.yml`, `nightly-*.yml` | `hetzner-fdb-vm` | 429 at checkout |
+| workflow | `runs-on` | `uses:` per file | observed |
+|---|---|---|---|
+| `hosted-smoke.yml` | `ubuntu-latest` | 2 | mostly green, **but has died on the 429** |
+| `claude.yml` | `hetzner-fdb-vm` | 2 | dies |
+| `ci.yml`, `nightly-*.yml` | `hetzner-fdb-vm` | 8 | dies most often |
 
-GitHub-hosted runners resolve actions through an internal cache; the self-hosted
-Hetzner VM re-downloads every action tarball from codeload on every job, so one
-rate-limit window takes out all four CI jobs at once. Six sequential `gh run rerun
---failed` attempts produced 24 consecutive job failures, and it got WORSE rather than
-clearing, so retrying is not the remedy — each attempt is another codeload request.
+What actually predicts exposure is the NUMBER of action tarballs a job fetches, not the
+runner. Six sequential `gh run rerun --failed` attempts produced 24 consecutive job
+failures and got WORSE rather than clearing, so retrying is not the remedy — each
+attempt is another codeload request. What eventually worked was retrying patiently
+across ~40 minutes as the platform recovered.
+
+The fix below is therefore justified more narrowly than that draft implied: it is not
+"self-hosted is uniquely broken", it is that **a self-hosted runner is the only one we
+can give a local action cache to.** GitHub's runners are not ours to configure.
 
 **Three consequences, and the second and third are the expensive ones.**
 
-1. PR CI cannot go green on any branch while the window is open.
+1. PR CI cannot go green on any branch while the window is open. It DID go green on
+   this branch once the platform recovered — 6/6 checks on eec351505 — so the outage is
+   transient rather than permanent; the point is that it consumed most of a shift and
+   the retries had to be classified by hand to avoid reading an infra death as a test
+   failure.
 2. **The `@claude` review gate is silently unavailable.** `claude.yml` is
    `issue_comment`-triggered and runs on the self-hosted VM, so a review request posts
    the comment, the workflow fires, and it dies at checkout — leaving a PR comment with
