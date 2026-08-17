@@ -17978,3 +17978,58 @@ a runner-level resource limit. Both are checkable; neither was checked.
   running. Expect populating the map to newly ENABLE gates on a broad class of
   CTE queries, so budget a full-suite lap for shapes that currently pass only
   because the gate is silent.
+
+## The cost model decides blocking-vs-streaming on a criterion that never reads a cardinality
+
+`PlanningCostModel` criterion #2 (max data-access cardinality) is GATED on at
+least one operand having a KNOWN whole-plan maximum. Two full scans have none,
+so it abstains and criterion #3 — residual predicate count — decides instead. A
+sorted plan that sargs its predicate into an index range carries 0 residuals; a
+streaming plan that reads an ordered index and filters carries 1. So a BLOCKING
+operator is ranked against a STREAMING one by how much of the predicate reached
+the access path, which is a category error between plans of different shape even
+with perfect statistics.
+
+MEASURED, and the population matters because both halves are needed to read it:
+`statsNil=true` on 82 of 82 comparisons on `refactor/rfc197-mandatory-resolved`
+and 23 of 23 on master, at `9a39b5006`. So NO cardinality is supplied on this
+path in EITHER tree — the blindness is pre-existing, not introduced by RFC-232.
+At the deciding comparison: `cardGate=false residA=0 residB=1`.
+
+IT IS A COIN FLIP, NOT A REGRESSION, and the correction is worth keeping because
+the first reading of it was wrong. `SELECT DISTINCT cat FROM t WHERE val > 0
+ORDER BY cat` plans as `InMemorySort(IndexScan(IDX_VAL, [<>]))` on the branch and
+`PredicatesFilter(IndexScan(IDX_CAT, [*]))` on master. Sweeping the threshold
+over 300 rows showed each tree's plan is INVARIANT to selectivity — which says
+neither reads a cardinality, NOT that either is better. Read the access bounds:
+`[<>]` is bounded and `[*]` is not, so at 9/300 matching rows the BRANCH plan
+reads 9 where master reads 300, and at 300/300 master's avoids a sort the branch
+pays for. Each tree is right at one end of the range and blind at both.
+
+THREE SHAPES WHERE SUPPRESSING THE FALLBACK IS WRONG, kept because they are the
+acceptance tests for any fix and they refute the obvious one. Declining the
+in-memory sort whenever a satisfying streaming alternative exists gives:
+
+    SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
+      InMemorySort(IndexScan(IDX_REGION_PLAN, [=, <>]))  ->  PredicatesFilter(Scan(RP))
+    SELECT a, b, c FROM ab WHERE a = 1 ORDER BY c
+      InMemorySort(Scan(AB, [=]))  ->  PredicatesFilter(IndexScan(IDX_AB_C, [*] COVERING))
+    SELECT id, v, name FROM t WHERE v >= 20 ORDER BY name
+      InMemorySort(IndexScan(IDX_V, [<>]))  ->  PredicatesFilter(IndexScan(IDX_NAME, [*]))
+
+Each trades a tightly bounded access plus a small sort for reading everything.
+Corpus-wide that rule gives 52 "improvements" and 3 red `plan_contains` targets;
+the 52 are coin flips landing better, not decisions made correctly. An
+access-BOUNDEDNESS rule does not fix it either: in the DISTINCT case above the
+SORTED plan is the more bounded one, so boundedness declines to suppress exactly
+where suppression was wanted.
+
+- [ ] Port Java's `CardinalitiesProperty` and supply criterion #2. This is the
+      only fix that decides all four shapes correctly at both ends of the range.
+      It is filling an input the cost model ALREADY asks for and abstains
+      without — not a new mechanism, and explicitly NOT part of RFC-232.
+- [ ] Interim, if the preorder survives it: forbid criterion #3 from being
+      reached when the operands differ in blocking-ness, falling through to a
+      shape-neutral criterion. `cost_model_total_preorder_test.go` maintains
+      total-preorder as an invariant, so "incomparable" may not be expressible;
+      verify the fall-through leaves the preorder total before shipping.
