@@ -119,7 +119,14 @@ func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout, carrier
 	// one, RawEqual is reflexive, and here the two are the same object — so it
 	// would preserve presence exactly as this does. Asserting presence is nil here
 	// instead would forbid a legitimate state: a row that carries presence FOR THIS
-	// LAYOUT must keep it. See TestIdentityAttachIsPresenceEquivalent.
+	// LAYOUT must keep it.
+	//
+	// What GUARDS that is TestFirstOrDefault_RecordNullKeepsExactCarrierAndAbsence
+	// and TestFirstOrDefaultAsFlatMapOuterPreservesWholeObjectPresence: clearing
+	// presence here reddens both, with an absent record reading as PRESENT — a wrong
+	// outer-join answer, not a crash. TestIdentityAttachIsPresenceEquivalent states
+	// the reflexivity argument but never sets LayoutPresence, so it survives that
+	// mutation and is not the guard; cite these two.
 	if r.Layout == layout {
 		return r, nil
 	}

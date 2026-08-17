@@ -30,11 +30,22 @@ import "sync"
 // carries the name. Two types that are exactTypesEqual may still be two
 // objects; nothing depends on the converse.
 //
-// CHILDREN COMPARE BY POINTER, which is exact precisely because every snapshot
-// path — primitive table included — yields an interned node. A new kind that
-// bypassed interning would silently make equal types compare unequal here,
-// costing correctness of the sharing (never of the type), so route every kind
-// through internedExactType.
+// CHILDREN COMPARE BY POINTER, so what every path must yield is THE shared object
+// for its content. There are TWO tables that own that word, and conflating them is
+// how the invariant broke once already: composites are owned by the shards below,
+// primitives by the static sharedPrimitiveExactTypes map, whose nodes are never
+// inserted here. A path that probes the SHARDS for a primitive therefore mints a
+// duplicate of a node the static table already owns — same intern hash, canonically
+// equal, different pointer — and every composite built over it silently stops
+// matching the identical composite built over the shared node.
+//
+// That is exactly what exactWithNullability did for primitives, which is the hot
+// widening case. So the rule is not "route every kind through internedExactType";
+// it is route every kind to WHICHEVER table owns it, and never build a node that
+// bypasses both. The cost of getting it wrong is correctness of the sharing, never
+// of the type, so nothing fails — see TestEveryExactNodeIsInterned, whose witness is
+// pointer identity against the owning table for precisely this reason. An
+// internHashValue is NOT a witness: both tables stamp it.
 //
 // The table never evicts. It is bounded by the distinct (shape, NAME) types a
 // process has planned against, and each entry is small. The 170 measured above is

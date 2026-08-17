@@ -18305,3 +18305,32 @@ flight on the campaign above.
       `/home/birdy/projects/fdb-baseline`, detached at the merge-base with the two
       `pkg/simfdb` allocation commits applied as a patch and the sqlhunt bench files
       gazelle-wired.
+
+### Two more milestones the review surfaced, both port-faithful
+
+- [ ] **Memoize the structural key / structural hash per plan object.** Java computes
+      each expression's structural hash ONCE per object —
+      `Suppliers.memoize(this::computeHashCodeWithoutChildren)` at
+      `cascades/expressions/AbstractRelationalExpression.java:43`, exposed as
+      `final int hashCodeWithoutChildren()` (`:58`), with `RelationalExpression`
+      short-circuiting `semanticEquals` on it — and its `equalsWithoutChildren`
+      allocates nothing. **Go has 132 non-test `structuralKey()` call sites and ZERO
+      memoization** (measured: `grep -rn 'structuralKey()' pkg/ --include='*.go' |
+      grep -v _test.go | wc -l` = 132; `sync.Once|cachedHash|hashOnce|memoHash` in
+      `pkg/recordlayer/query/plan/plans/` = 0, positive control 27 `sync.Once` in
+      `pkg/recordlayer/`). Every `Equal()` and every `Hash()` rebuilds a key.
+
+      This campaign's answer to that term was to SHRINK the key — `part` 312 -> 96
+      bytes, `structuralKeyInlineParts` 8 -> 4 — a real ~6x win on a cost **Java does
+      not pay at all**. Go's plans are immutable after construction, which is the same
+      precondition `Suppliers.memoize` relies on, so the port-faithful fix is
+      available and is strictly better than shrinking. Do NOT delete
+      `plan_structural_key_size_test.go` when this lands: a memoized key still gets
+      built once per object, so its size still matters, just less.
+
+- [ ] **Make the empty `AliasMap` singleton immutable by TYPE, not by doc.** Java's is
+      backed by `ImmutableBiMap` (`AliasMap.java:169`), so a write is a compile/runtime
+      error at the type. Go's is a plain map whose read-only-ness is asserted in a doc
+      paragraph, and `alias_map_singleton_test.go` pins its IDENTITY rather than its
+      immutability — so a future writer through the singleton is caught by nothing. Any
+      mutation of the shared empty map corrupts every alias map in the process.

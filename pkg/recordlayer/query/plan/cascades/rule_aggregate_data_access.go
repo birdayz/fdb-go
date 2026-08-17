@@ -27,8 +27,18 @@ import (
 // result row picks grouping values from any stream (they're identical)
 // plus each aggregate from its respective stream.
 //
-// Mirrors Java's AggregateDataAccessRule including
+// Mirrors Java's AggregateDataAccessRule, including the structure of
 // createIntersectionAndCompensation().
+//
+// The compensation-projection ELISION is a Go-only read-side extension, not a
+// mirrored behaviour, and the header used to imply otherwise. Java's equivalent gate
+// cannot fire for a grouped aggregate: AggregateIndexExpansionVisitor publishes
+// Column.unnamedOf(...) — a flat unnamed (_0.._n, agg) row whose getAvailableFields()
+// is NO_FIELDS — so Java always compensates, which is why nearly every AISCAN in its
+// yaml-tests is followed by a MAP. Go's aggregate-index leaf publishes NAMED columns
+// instead, a pre-existing divergence, and that is what makes the elision expressible
+// here at all. Allowed as an extension because wire format is untouched and the
+// elision is checked end to end; do not read it as parity.
 type AggregateDataAccessRule struct {
 	matcher matching.BindingMatcher
 }

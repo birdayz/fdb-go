@@ -713,19 +713,37 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 	// zero memos for the same reason, and sharing one node per distinct
 	// (shape, nullability) is what makes filling them once enough.
 	//
-	// Interned like every other exact node, because the probe compares CHILDREN BY
-	// POINTER: a widened record built outside the table would compare unequal to
-	// an identical interned one and defeat the sharing of everything above it.
+	// A PRIMITIVE'S SHARED NODE LIVES IN THE STATIC TABLE, which is deliberately
+	// never inserted into the intern shards. Probing the dynamic table for one
+	// therefore mints a SECOND object for a (code, nullable) sharedPrimitiveExactTypes
+	// already owns — same intern hash, exactTypesEqual, different pointer. That is
+	// not a wrong type, and it is worse than it looks: children compare BY POINTER,
+	// so a record whose field child came from here stops matching the identical
+	// record whose child came from snapshotExactType, and the duplication propagates
+	// upward through every composite built over it.
+	//
+	// Widening a resolved field path is exactly where primitives arrive, so this was
+	// the hot case, not an edge one. Route them back to the same table
+	// snapshotExactType's primitive arm uses. The structural guards are belt and
+	// braces: a code in that table cannot carry fields, an element or enum values.
+	if _, isPrimitive := sharedPrimitiveExactTypes[source.code]; isPrimitive &&
+		len(source.fields) == 0 && source.element == nil &&
+		len(source.enumValues) == 0 && !source.anyRecord {
+		return sharedPrimitiveExactType(source.code, nullable)
+	}
+	// Everything below is a composite. Interned like every other exact node, because
+	// the probe compares CHILDREN BY POINTER: a widened record built outside the
+	// table would compare unequal to an identical interned one and defeat the
+	// sharing of everything above it.
 	//
 	// These two slices are heap-allocated per call, where snapshotExactType's record
 	// arm deliberately gathers its children into a stack array "so the common call
-	// allocates NOTHING". The arms differ on purpose. The common call HERE is a
-	// primitive — nullability widening on a resolved field path — and a primitive has
-	// no fields, so both makes are length zero and allocate nothing. Only widening a
-	// RECORD pays the two slices, and that is rare next to snapshotting one:
-	// exactWithNullability never appeared as a term in the allocation profiles that
-	// drove this campaign, while snapshotExactType ran 243.8 million times. Copy the
-	// stack-buffer trick over if a profile ever disagrees; do not do it for symmetry.
+	// allocates NOTHING". The arms differ on purpose, and now defensibly: with
+	// primitives returning above, every call that reaches here is widening a
+	// COMPOSITE, which is rare next to snapshotting one — exactWithNullability never
+	// appeared as a term in the allocation profiles that drove this campaign, while
+	// snapshotExactType ran 243.8 million times. Copy the stack-buffer trick over if
+	// a profile ever disagrees; do not do it for symmetry.
 	srcFields := make([]Field, len(source.fields))
 	children := make([]*exactType, len(source.fields))
 	for i := range source.fields {

@@ -338,15 +338,63 @@ func TestEveryExactNodeIsInterned(t *testing.T) {
 	}
 }
 
+// assertInterned requires that node is THE shared object for its content — the one
+// a fresh lookup returns — not merely that it looks interned.
+//
+// It used to check `internHashValue != 0` and its doc claimed that field is the
+// witness because "only internedExactType stamps it". That was false: the static
+// primitive table stamps it directly too (see sharedPrimitiveExactTypes), and so
+// does sharedPrimitiveExactType's fail-closed fallback. The consequence was not
+// theoretical — this helper was called on a widened primitive, which WAS a duplicate
+// object, and passed, because the duplicate carries a perfectly good hash. A witness
+// that any construction path can forge is not a witness.
+//
+// So look the node up and require POINTER IDENTITY, against whichever table owns its
+// kind. That is the property the sharing actually rests on, and it is the only one
+// that can distinguish "interned" from "equal to something interned".
 func assertInterned(t *testing.T, what string, node *exactType) {
 	t.Helper()
 	if node == nil {
 		t.Fatalf("%s: nil node", what)
 	}
 	if node.internHashValue == 0 {
-		t.Errorf("%s: node was built outside the intern table (internHashValue is 0), "+
-			"so an equal type can exist as a second object and the pointer-compared "+
-			"children of everything above it stop matching", what)
+		t.Errorf("%s: node carries no intern hash at all", what)
+	}
+	if _, isPrimitive := sharedPrimitiveExactTypes[node.code]; isPrimitive &&
+		len(node.fields) == 0 && node.element == nil &&
+		len(node.enumValues) == 0 && !node.anyRecord {
+		// Primitives are owned by the STATIC table, which is never in the shards.
+		if shared := sharedPrimitiveExactType(node.code, node.nullable); shared != node {
+			t.Errorf("%s: primitive %v/nullable=%v is a DUPLICATE of the shared static "+
+				"node (%p vs %p); it is exactTypesEqual and carries the same intern "+
+				"hash, so only pointer identity can see this — and every composite "+
+				"built over it stops matching the identical composite built over the "+
+				"shared node, because children compare by POINTER",
+				what, node.code, node.nullable, node, shared)
+		}
+	} else {
+		// Composites are owned by the intern shards. Rebuild the probe and require
+		// the lookup to return this very object.
+		probe := exactProbe{
+			code: node.code, nullable: node.nullable, anyRecord: node.anyRecord,
+			name: node.name, element: node.element, enumValues: node.enumValues,
+		}
+		for i := range node.fields {
+			probe.srcFields = append(probe.srcFields,
+				Field{Name: node.fields[i].name, Ordinal: node.fields[i].ordinal})
+			probe.children = append(probe.children, node.fields[i].typ)
+		}
+		hash := probe.internHash()
+		shard := &exactInterned[hash%exactInternShards]
+		shard.mu.RLock()
+		found := lookupInternedLocked(shard, hash, &probe)
+		shard.mu.RUnlock()
+		if found != node {
+			t.Errorf("%s: the intern table does not return this object for its own "+
+				"content (%p, table has %p); an equal type can therefore exist twice "+
+				"and the pointer-compared children of everything above it stop matching",
+				what, node, found)
+		}
 	}
 	for i := range node.fields {
 		assertInterned(t, what+".field["+node.fields[i].name+"]", node.fields[i].typ)

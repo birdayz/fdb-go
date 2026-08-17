@@ -123,9 +123,15 @@ func requestedOrderingAtInnerCurrent(
 	// rules, whose own requests are never exhaustive — but the select push-down
 	// feeds its result through here and DOES preserve the flag, and a union pushes
 	// exhaustive requests into its first branch. Dropping it there narrows
-	// enumeration silently: exhaustive only drives subsumption and constraint
-	// equality, so no ordering comes out wrong, the ordered-leg alternatives just
-	// stop being generated.
+	// enumeration silently.
+	//
+	// Nothing comes out wrongly ORDERED, and the reason is that no reader of the flag
+	// decides satisfaction. RichOrdering.Satisfies never consults it. Its readers are
+	// Combine's subsumption and dedup, constraint-change detection in the planner,
+	// and the nested-loop-join rule's plan-partition roll-up granularity, where the
+	// eligibility predicate runs Satisfies unconditionally and the flag only controls
+	// whether partitions are retained. All of those decide WHICH alternatives get
+	// generated, so losing the flag costs enumeration and never correctness.
 	return properties.NewRequestedOrdering(
 		rebased, requested.GetDistinctness(), requested.IsExhaustive()), nil
 }

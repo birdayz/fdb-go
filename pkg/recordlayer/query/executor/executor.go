@@ -3237,12 +3237,21 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 // largest single item in that path. The programs are immutable value trees, so one
 // answer serves every row of its leg.
 //
-// NOT SYNCHRONIZED, and it does not need to be: a cursor's OnNext is driven
+// NOT SYNCHRONIZED, and it does not need to be TODAY: a cursor's OnNext is driven
 // sequentially by its consumer and no executor cursor advances its children on
 // another goroutine, so the read and the append below are single-threaded per
-// cursor. An operator that ever pulls its legs concurrently must give each puller
-// its own instance rather than lock this one — the entries are per-leg and a lock
-// would serialise the row path to protect a two-entry list.
+// cursor.
+//
+// KNOW THAT JAVA'S MERGE CURSOR IS THE INVERSE OF THIS CONTRACT. Java's
+// MergeCursor.onNext builds CompletableFuture.allOf over every leg's onNext, and
+// KeyedMergeCursorState applies the comparison-key function INSIDE each leg's
+// per-completion lambda — so Java computes leg comparison keys on different threads,
+// concurrently. Porting that async model is what will break this, and the symptom is
+// not a crash: an unsynchronized append racing a read gives a torn program slice, a
+// wrong comparison key, and wrong merge/intersection ROWS. Whoever ports it must give
+// each puller its own instance rather than lock this one — the entries are per-leg,
+// so a lock would serialise the row path to protect a list of at most
+// comparisonKeyProgramCap entries.
 //
 // Keyed on the two POINTERS rather than on type equality, which is strictly finer:
 // a leg whose row type is a fresh object per row simply rebuilds, as it did before.
