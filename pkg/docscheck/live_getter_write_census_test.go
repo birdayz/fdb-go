@@ -45,6 +45,13 @@ import (
 // here and to every other gate. There is no writer today and closing it would mean
 // type-switching on `any` in a planner path, so it is documented at
 // `copyPreservingNil` rather than gated.
+//
+// A METHOD CALL in the chain is also not descended — `GetSortKeys()[0].Norm().F = x`
+// goes unreported. That is deliberate and not the same judgement as the element
+// level: descending arbitrary calls would flag any `f(x).field = v` whose root merely
+// passes through a watched name, and a gate that fires on legal code gets read past.
+// The element WRITE, by contrast, is now detected even though the element COPY is
+// not closed — those are two different halves and only the copy is open.
 
 // liveIdentityGetters are accessors that return a live slice which is folded into
 // the receiver's structural key. Writing through one rewrites plan identity.
@@ -75,6 +82,14 @@ func rootGetterCall(e ast.Expr) string {
 		case *ast.ParenExpr:
 			e = t.X
 		case *ast.SliceExpr:
+			e = t.X
+		case *ast.TypeAssertExpr:
+			// IN values are `any`, so a type assertion is not an exotic spelling of
+			// an element write — it is the ONLY one. `p.GetInValues()[0].([]byte)[0] = 1`
+			// compiles, and because the copy is deep to the slice level and not the
+			// element level, it mutates the payload shared by a plan and its copy:
+			// both read back the modified bytes. Without this arm the gate was blind
+			// to the single form the hazard can take.
 			e = t.X
 		case *ast.CallExpr:
 			sel, ok := t.Fun.(*ast.SelectorExpr)
@@ -207,6 +222,9 @@ func TestLiveGetterDetectorFiresOnEveryWriteShape(t *testing.T) {
 		{"write through a reslice", `plan.GetInValues()[1:][0] = 3`},
 		// Not in first position of a multi-assign.
 		{"multi-assign", `a, plan.GetInValues()[0] = 1, 2`},
+		// The ONLY spelling of an element write, since IN values are `any`. Verified
+		// to compile and to mutate the payload shared by a plan and its copy.
+		{"element write through a type assertion", `plan.GetInValues()[0].([]byte)[0] = 1`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

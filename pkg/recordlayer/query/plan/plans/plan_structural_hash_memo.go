@@ -123,8 +123,9 @@ func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) bool {
 // The hazard is not a `prev` the caller never observed — an unobserved `prev` is
 // almost never current, so the CAS fails and the call fails closed. It is a `prev`
 // the caller DID observe and did not VALIDATE. Concretely, this refactor keeps a
-// genuine CompareAndSwap, passes every test in this package, and fully restores the
-// eviction the CAS exists to prevent:
+// genuine CompareAndSwap, passes every test in this package, and WOULD fully restore
+// the eviction the CAS exists to prevent — the conditional below is the only thing
+// stopping it, so read the hazard as live for anyone who removes that:
 //
 //	return b.hashMemo.commit(b.hashMemo.state.Load(), owner, hash)  // re-load: WRONG
 //
@@ -132,6 +133,17 @@ func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) bool {
 // sharer has since claimed, and CAS successfully over it. Reading "re-load so we
 // swap against something fresh" as a fix is exactly how someone would arrive there.
 // With the check below, that caller is refused instead.
+//
+// The guarantee is total over `prev`, which is what makes this a safe primitive
+// rather than a well-used one: a nil prev can only win against a nil cell (nothing to
+// evict), and a non-nil prev must be owned by `owner` and still current (a
+// self-refresh). No input from any caller evicts a foreign owner.
+//
+// It bounds calls through THIS method only. `state` is an unexported atomic on an
+// unexported type, so the blast radius is package plans, but a direct
+// `c.state.Store(...)` added here would bypass the check entirely — and being a call
+// rather than an assignment, no gate in pkg/docscheck would see it either. Route
+// writes through commit.
 func (c *hashMemoCell) commit(prev *hashMemoState, owner any, hash uint64) bool {
 	if prev != nil && prev.owner != owner {
 		return false
