@@ -78,6 +78,14 @@ type Reference struct {
 	// lifetime is the memo's: nothing survives the query, and no expression type
 	// grows a mutable field that a shallow copy could carry across to a value
 	// whose hash inputs differ.
+	//
+	// This one stays a PLAIN MAP where flowedType below had to become an atomic,
+	// and the difference is reach, not risk appetite. MemberHashes is called from
+	// prepareReferenceMemberBatch only, which runs inside the planner's
+	// sequential task loop; flowedType's derivation sits under
+	// RequireFlowedObjectValue, which nearly every expression CONSTRUCTOR calls,
+	// so anything holding a Reference can reach it. If a second caller ever
+	// appears, this needs the same treatment.
 	memberHash map[RelationalExpression]uint64
 
 	// flowedType memoizes GetFlowedObjectType's SUCCESSFUL answer, keyed by
@@ -95,9 +103,22 @@ type Reference struct {
 	// quantifiers can range over one Reference, so a cached error would report
 	// the wrong alias to the second one. Failures are rare and short-circuit
 	// the loop anyway, so re-deriving them costs nothing worth having.
-	flowedType        values.Type
-	flowedTypeVersion uint64
-	flowedTypeValid   bool
+	//
+	// PUBLISHED AS ONE IMMUTABLE VALUE, not as three plain fields, because a
+	// Reference is not private to a goroutine the way a Memo is. Nothing in the
+	// planner shares one — the task loop is sequential — but a Reference is an
+	// ordinary handle that tests and helpers pass around, and one of them
+	// (TestRelationalAliasCompleteness) builds quantifiers over a single shared
+	// scanRef from parallel subtests. That was safe until this memo existed:
+	// before it, the derivation only READ the member list. Three separate fields
+	// made every such reader a writer, and -race caught it intermittently — 4
+	// runs in 6 — which is the worst possible way to own a data race.
+	//
+	// An atomic pointer restores "reading a Reference does not write to it" at
+	// the only place that broke it. Two goroutines racing to derive the same
+	// answer both store a self-consistent (type, version) pair, so a duplicate
+	// derivation is wasted work and never a wrong answer.
+	flowedType atomic.Pointer[flowedTypeMemo]
 
 	plannerStage PlannerStage
 	explState    explorationState
@@ -689,21 +710,33 @@ func (r *Reference) Insert(e RelationalExpression) bool {
 	return true
 }
 
+// flowedTypeMemo pairs the memoized answer with the member version it was
+// derived at, so the two are published and read as ONE value — see the
+// flowedType field.
+type flowedTypeMemo struct {
+	typ     values.Type
+	version uint64
+}
+
 // cachedFlowedType returns the memoized GetFlowedObjectType answer when it was
 // derived from the CURRENT member set. Every mutation of the member sets bumps
 // memberVersion, so a stale entry cannot be observed.
 func (r *Reference) cachedFlowedType() (values.Type, bool) {
-	if r == nil || !r.flowedTypeValid || r.flowedTypeVersion != r.memberVersion {
+	if r == nil {
 		return nil, false
 	}
-	return r.flowedType, true
+	memo := r.flowedType.Load()
+	if memo == nil || memo.version != r.memberVersion {
+		return nil, false
+	}
+	return memo.typ, true
 }
 
 func (r *Reference) setCachedFlowedType(typ values.Type) {
 	if r == nil || typ == nil {
 		return
 	}
-	r.flowedType, r.flowedTypeVersion, r.flowedTypeValid = typ, r.memberVersion, true
+	r.flowedType.Store(&flowedTypeMemo{typ: typ, version: r.memberVersion})
 }
 
 // MemberHashes returns HashCodeWithoutChildren for each member, memoized on
