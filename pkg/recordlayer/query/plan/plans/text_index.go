@@ -90,7 +90,12 @@ func (p *RecordQueryTextIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPl
 
 // HashCodeWithoutChildren mixes index name + text scan + reverse.
 func (p *RecordQueryTextIndexPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("textindexplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("textindexplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders TextIndexScan(indexName, textComparison).

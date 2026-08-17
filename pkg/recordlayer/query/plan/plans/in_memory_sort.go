@@ -271,7 +271,12 @@ func sortKeyEqual(a, b SortKey) bool {
 }
 
 func (p *RecordQueryInMemorySortPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("inmemsort|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("inmemsort|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryInMemorySortPlan) Explain() string {

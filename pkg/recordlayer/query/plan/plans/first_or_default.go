@@ -135,7 +135,12 @@ func (p *RecordQueryFirstOrDefaultPlan) EqualsPlanWithoutChildren(other RecordQu
 }
 
 func (p *RecordQueryFirstOrDefaultPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("firstordefaultplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("firstordefaultplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders FirstOrDefault(inner) (StrictFirstOrDefault when strict).

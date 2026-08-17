@@ -106,7 +106,12 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsPlanWithoutChildren(o
 // HashCodeWithoutChildren mirrors Java's
 // BASE_HASH("Record-Query-Unordered-Primary-Key-Distinct-Plan").
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("unorderedprimarykeyDistinctplan")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("unorderedprimarykeyDistinctplan")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders UnorderedPrimaryKeyDistinct(inner).

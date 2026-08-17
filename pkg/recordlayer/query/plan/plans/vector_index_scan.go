@@ -260,7 +260,12 @@ func (p *RecordQueryVectorIndexPlan) EqualsPlanWithoutChildren(other RecordQuery
 
 // HashCodeWithoutChildren mixes index name + prefix comparison shape.
 func (p *RecordQueryVectorIndexPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("vectorindexplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("vectorindexplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders a one-line label. The "VectorIndexScan" token is the

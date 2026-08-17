@@ -182,7 +182,12 @@ func (p *RecordQueryInJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan)
 }
 
 func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("injoinplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("injoinplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // inValuesEqual compares two static IN-list comparands element-wise. The lists

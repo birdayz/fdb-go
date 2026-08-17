@@ -288,7 +288,12 @@ func (p *RecordQueryStreamingAggregationPlan) EqualsPlanWithoutChildren(other Re
 }
 
 func (p *RecordQueryStreamingAggregationPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("streamagg|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("streamagg|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryStreamingAggregationPlan) Explain() string {

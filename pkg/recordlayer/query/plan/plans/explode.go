@@ -127,7 +127,12 @@ func (p *RecordQueryExplodePlan) EqualsPlanWithoutChildren(other RecordQueryPlan
 }
 
 func (p *RecordQueryExplodePlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("explodeplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("explodeplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryExplodePlan) Explain() string {

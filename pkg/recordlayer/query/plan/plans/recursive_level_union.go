@@ -150,7 +150,12 @@ func (p *RecordQueryRecursiveLevelUnionPlan) EqualsPlanWithoutChildren(other Rec
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("recursivelevel|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("recursivelevel|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) Explain() string {

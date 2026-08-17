@@ -376,7 +376,12 @@ func (p *RecordQueryProjectionPlan) EqualsPlanWithoutChildren(other RecordQueryP
 }
 
 func (p *RecordQueryProjectionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("projplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("projplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryProjectionPlan) Explain() string {

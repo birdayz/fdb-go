@@ -163,7 +163,12 @@ func (p *RecordQuerySelectorPlan) EqualsPlanWithoutChildren(other RecordQueryPla
 
 // HashCodeWithoutChildren mixes reverse flag and plan selector label.
 func (p *RecordQuerySelectorPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("selectorplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("selectorplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Selector(child1, child2, ..., selector).

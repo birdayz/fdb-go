@@ -199,7 +199,12 @@ func (p *RecordQueryDefaultOnEmptyPlan) EqualsPlanWithoutChildren(other RecordQu
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("defaultonemptyplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("defaultonemptyplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryDefaultOnEmptyPlan) Explain() string {

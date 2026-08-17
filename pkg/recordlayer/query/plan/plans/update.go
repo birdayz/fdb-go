@@ -156,7 +156,12 @@ func (p *RecordQueryUpdatePlan) EqualsPlanWithoutChildren(other RecordQueryPlan)
 // FieldPath and NewValue (semantic hash), pairing with the by-value equality
 // above so equal⟹same-hash holds.
 func (p *RecordQueryUpdatePlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("updateplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("updateplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Update(target, [N transforms], inner).

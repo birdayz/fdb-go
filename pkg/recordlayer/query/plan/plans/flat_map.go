@@ -909,7 +909,12 @@ func (p *RecordQueryFlatMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("flatmap|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("flatmap|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders both legs UNGUARDED, exactly as the raw-pointer form did: a

@@ -229,7 +229,12 @@ func (p *RecordQueryDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPla
 
 // HashCodeWithoutChildren discriminates on type and the Streaming mode.
 func (p *RecordQueryDistinctPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("distinctplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("distinctplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Distinct(inner), plus the R3 narrowing when present.

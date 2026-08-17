@@ -296,7 +296,12 @@ func (p *RecordQueryInUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan
 }
 
 func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("inunionplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("inunionplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryInUnionPlan) Explain() string {

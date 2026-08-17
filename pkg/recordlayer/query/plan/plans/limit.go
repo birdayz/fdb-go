@@ -117,7 +117,12 @@ func (p *RecordQueryLimitPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) 
 }
 
 func (p *RecordQueryLimitPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("limit|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("limit|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryLimitPlan) Explain() string {
