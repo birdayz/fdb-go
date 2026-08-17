@@ -471,6 +471,52 @@ func TestOnlyOneSharerWinsAnEmptyCell(t *testing.T) {
 	}
 }
 
+// TestCommitRefusesAForeignOwnedPrev pins the guard inside commit, which is what
+// makes the primitive safe rather than merely used safely.
+//
+// It closes a refactor that keeps a genuine CompareAndSwap and defeats every other
+// test here: having storeStructuralHash re-load rather than pass the state its owner
+// check was based on. A sharer whose check saw an EMPTY cell would then swap over a
+// cell another sharer had since claimed — the exact eviction the CAS prevents,
+// reintroduced by an edit that reads like a tidy-up.
+//
+// The guard is deliberately not a no-op for the deterministic winner test either:
+// there all four sharers commit against a nil prev, so it does not fire, and
+// TestOnlyOneSharerWinsAnEmptyCell keeps its teeth. The two properties are
+// orthogonal, which is why one does not mask the other.
+func TestCommitRefusesAForeignOwnedPrev(t *testing.T) {
+	t.Parallel()
+
+	owner := memoTestIndexPlan(t)
+	foreign := memoTestIndexPlan(t)
+	cell := owner.hashMemo
+
+	// The cell belongs to `foreign`.
+	foreignHash := foreign.structuralKey().Hash("indexplan|")
+	if !cell.commit(nil, foreign, foreignHash) {
+		t.Fatal("could not seed the cell")
+	}
+	seeded := cell.state.Load()
+
+	// `owner` commits against the state it just read — observed, but belonging to
+	// someone else. Under a bare CAS this succeeds and evicts `foreign`.
+	if cell.commit(seeded, owner, owner.structuralKey().Hash("indexplan|")) {
+		t.Error("commit accepted a prev owned by another plan; a caller that observed a " +
+			"foreign-owned cell can now swap over it, which is the eviction the " +
+			"conditional store exists to prevent")
+	}
+
+	state := cell.state.Load()
+	if state == nil || state.owner != any(foreign) || state.hash != foreignHash {
+		t.Errorf("the foreign owner lost its entry: %+v", state)
+	}
+
+	// And the owner may still claim a cell that is genuinely its own.
+	if !cell.commit(state, foreign, foreignHash) {
+		t.Error("commit refused the cell's own owner")
+	}
+}
+
 // TestMemoCensusObserverCanSeeAllThreeOutcomes guards the instrument rather than
 // the memo. The census above asserts exact counts, so an observer that could only
 // ever report one outcome would fail loudly — except in the one case that matters:

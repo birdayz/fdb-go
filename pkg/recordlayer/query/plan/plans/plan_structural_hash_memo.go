@@ -117,7 +117,25 @@ func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) bool {
 // empty→first-store transition reproducible: N callers committing against the same
 // observed `prev` must yield exactly one winner, and under a plain Store they all
 // win.
+// The owner check is repeated HERE and not left to the caller, which is the
+// difference between a primitive that is safe and one that is merely used safely.
+//
+// The hazard is not a `prev` the caller never observed — an unobserved `prev` is
+// almost never current, so the CAS fails and the call fails closed. It is a `prev`
+// the caller DID observe and did not VALIDATE. Concretely, this refactor keeps a
+// genuine CompareAndSwap, passes every test in this package, and fully restores the
+// eviction the CAS exists to prevent:
+//
+//	return b.hashMemo.commit(b.hashMemo.state.Load(), owner, hash)  // re-load: WRONG
+//
+// A sharer whose owner check saw an EMPTY cell would then re-load a cell another
+// sharer has since claimed, and CAS successfully over it. Reading "re-load so we
+// swap against something fresh" as a fix is exactly how someone would arrive there.
+// With the check below, that caller is refused instead.
 func (c *hashMemoCell) commit(prev *hashMemoState, owner any, hash uint64) bool {
+	if prev != nil && prev.owner != owner {
+		return false
+	}
 	return c.state.CompareAndSwap(prev, &hashMemoState{owner: owner, hash: hash})
 }
 
