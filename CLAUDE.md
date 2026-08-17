@@ -238,15 +238,33 @@ Run a specific Ginkgo test: `bazelisk test //pkg/recordlayer:recordlayer_test --
 # disk measures the DISKS, not the change. Check free space first: ext4 point-lookup
 # latency degrades sharply above ~95% utilisation and reports as a planner regression.
 df -h .
-git worktree add ../fdb-baseline master     # sibling path, same fs as this tree
+
+# BASELINE AT THE MERGE-BASE, NEVER AT `master`. If master has moved since the branch
+# forked, `master` puts commits on the baseline side that the branch does not have —
+# and one of them bumping `go.mod` silently changes the COMPILER, because MODULE.bazel
+# derives the Bazel Go SDK with `go_sdk.from_file(go_mod = "//:go.mod")`. A 3-commit
+# stale baseline produced a ratio of 0.98x for a query that is really 1.54x.
+git worktree add --detach ../fdb-baseline "$(git merge-base HEAD origin/master)"
 cd ../fdb-baseline && bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+  --nocache_test_results \
   --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"
 git worktree remove ../fdb-baseline --force
 
-# Current branch:
-bazelisk test //pkg/relational/sqldriver/stress:stress_test \
+# Current branch — run it AFTER the baseline finishes, never concurrently. Sequential
+# execution is what makes the ratio valid under non-zero background load: both sides
+# then see the same machine. Record the load average with the numbers.
+bazelisk test //pkg/relational/sqldriver/stress:stress_test --nocache_test_results \
   --test_output=streamed --test_arg="--test.run=TestFDB_Stress_1M$" --test_arg="--test.v"
 ```
+Confirm both sides report the same `=== RUN` count before comparing anything, and take
+**n >= 2 per side** for any figure you intend to write down — a single sample flipped a
+booked "parity with master" into a 1.5x regression once already.
+
+**A confound is not a bounded error term.** Do not reason "the other rows moved by 0.04
+so this one can only move by 0.04". A stale baseline moved ONE row by 0.56x while
+leaving nine within 0.04, and the nine told you nothing about the one. Re-measure;
+don't extrapolate.
+
 Compare row counts + durations. Record results in `TODO.md` "Stress test 1M baseline" table. Key thresholds: point lookups <5ms, full scans ~3s/1M, index equality <10ms.
 
 ## Java compatibility — non-negotiable
