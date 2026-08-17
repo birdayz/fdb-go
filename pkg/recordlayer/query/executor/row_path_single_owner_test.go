@@ -165,3 +165,42 @@ func TestScanRowsAreStampedAtMintTime(t *testing.T) {
 		t.Error("a scan whose boundary publishes no layout must leave the row unstamped")
 	}
 }
+
+// TestIdentityAttachIsPresenceEquivalent pins why the identity fast path may skip
+// finishAttach.
+//
+// finishAttach clears LayoutPresence when the prior layout is not RawEqual to the
+// one being attached — it is discarding another address space's matched/unmatched
+// bits. The fast path returns the row untouched, so the two agree only while
+// pointer equality implies RawEqual, i.e. while RawEqual is REFLEXIVE. Nothing
+// else states that, and if it stopped holding the fast path would start preserving
+// presence the copy path would have dropped: an unmatched null-supplying source
+// would read as matched, which is a wrong answer for an outer join and not a
+// crash.
+func TestIdentityAttachIsPresenceEquivalent(t *testing.T) {
+	t.Parallel()
+
+	rowType := values.NewRecordType("plan_output", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	_, layout := scanPlanWithLayout(t, rowType)
+
+	if !layout.RawEqual(layout) {
+		t.Fatal("RawEqual is not reflexive, so the identity fast path no longer " +
+			"agrees with finishAttach about LayoutPresence")
+	}
+
+	// And the fast path is what runs for an already-carrying row: same pointer out,
+	// so whatever presence the row held is still the presence of THIS layout.
+	row, err := NewLayoutPositionalRow(rowType, layout)
+	if err != nil {
+		t.Fatalf("layout row: %v", err)
+	}
+	attached, err := row.AttachOrdinalLayout(layout, layout.Carrier().FlowedType())
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if attached != row {
+		t.Error("a row already carrying the layout was not returned as itself")
+	}
+}

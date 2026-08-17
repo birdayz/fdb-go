@@ -195,7 +195,9 @@ func newPullUpOutputQOV(alias CorrelationIdentifier, typ Type) (QuantifiedObject
 // so no caller can mutate the identity a QOV depends on — and SnapshotExactType
 // then walks that graph back to the interned node it started from. Interning is
 // what makes the shortcut exactly equivalent rather than merely equivalent-looking:
-// the long way round is now guaranteed to return the same object.
+// the long way round returns the same OBJECT — which holds only while every path
+// that builds an exact node routes through the intern table, and is checked by
+// TestEveryExactNodeIsInterned rather than assumed.
 //
 // The dropped half is the source layout, which the long way round also dropped:
 // thaw does not restore .Legs, so snapshotQOVRecordLayout over a thawed graph

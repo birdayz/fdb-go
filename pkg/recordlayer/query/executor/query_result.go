@@ -89,6 +89,16 @@ func storedRecordToQueryResult(
 
 // stampRowLayout records layout on a row that was just built and has not
 // escaped. A nil layout, or a result with no row, is returned untouched.
+//
+// A STAMPING PRODUCER MUST NOT SET LayoutPresence unless it is presence for this
+// exact layout. The stamp makes the output boundary take its identity fast path,
+// and that path keeps presence where the copying path would have cleared it — for
+// an unstamped row the prior layout is nil, so finishAttach discards presence,
+// while a stamped row is already in its layout's own address space and keeps it.
+// Keeping it is correct there and the difference is invisible today because no
+// stamping producer sets presence; a future one that did, with presence computed
+// for a DIFFERENT layout, would carry another address space's matched/unmatched
+// bits past the boundary. See TestIdentityAttachIsPresenceEquivalent.
 func stampRowLayout(result QueryResult, layout values.OrdinalLayout) QueryResult {
 	if layout != nil && result.Positional != nil {
 		result.Positional.Layout = layout

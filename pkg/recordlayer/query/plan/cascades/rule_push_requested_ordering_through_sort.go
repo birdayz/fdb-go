@@ -107,7 +107,17 @@ func requestedOrderingAtInnerCurrent(
 		}
 		rebased[i] = properties.RequestedOrderingPart{Value: value, SortOrder: part.SortOrder}
 	}
-	return properties.NewRequestedOrdering(rebased, requested.GetDistinctness(), false), nil
+	// Both the distinctness and the EXHAUSTIVE flag cross unchanged: this rebases
+	// the parts into another correlation space and decides nothing about what the
+	// request means. Hard-coding exhaustive=false here is invisible from the sort
+	// rules, whose own requests are never exhaustive — but the select push-down
+	// feeds its result through here and DOES preserve the flag, and a union pushes
+	// exhaustive requests into its first branch. Dropping it there narrows
+	// enumeration silently: exhaustive only drives subsumption and constraint
+	// equality, so no ordering comes out wrong, the ordered-leg alternatives just
+	// stop being generated.
+	return properties.NewRequestedOrdering(
+		rebased, requested.GetDistinctness(), requested.IsExhaustive()), nil
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughSortRule)(nil)

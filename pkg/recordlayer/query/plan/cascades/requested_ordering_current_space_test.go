@@ -101,3 +101,53 @@ func requireCurrentSpaceOrdering(
 		}
 	}
 }
+
+// TestRebasingAnOrderingKeepsItsExhaustiveFlag pins the half of the rebase that is
+// NOT about correlation space.
+//
+// requestedOrderingAtInnerCurrent moves an ordering's parts between correlation
+// spaces and decides nothing about what the request MEANS, so distinctness and the
+// exhaustive flag must both cross unchanged. It hard-coded exhaustive=false, which
+// is invisible from the sort rules — their own requests are never exhaustive — but
+// the select push-down feeds its result through here and deliberately preserves
+// the flag (it reads pushed.IsExhaustive()), and a union pushes EXHAUSTIVE requests
+// into its first branch. So `union → select` lost the flag on the way down.
+//
+// Nothing comes out wrongly ordered: exhaustive drives only subsumption and
+// constraint equality. What it costs is enumeration — the ordered-leg alternatives
+// simply stop being generated — which is why no correctness test could see it.
+func TestRebasingAnOrderingKeepsItsExhaustiveFlag(t *testing.T) {
+	t.Parallel()
+
+	rowType := descendingInUnionRowType("TBL")
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(
+		descendingInUnionFullScan(t, []string{"TBL"}, rowType)))
+	key := descendingInUnionField(t, descendingInUnionFlowedObject(t, scanQ), 0)
+
+	for _, exhaustive := range []bool{false, true} {
+		request := properties.NewRequestedOrdering(
+			[]properties.RequestedOrderingPart{{Value: key, SortOrder: properties.RequestedSortOrderAscending}},
+			properties.DistinctnessPreserveDistinctness, exhaustive)
+		if request.IsExhaustive() != exhaustive {
+			t.Fatalf("the fixture request does not carry exhaustive=%v", exhaustive)
+		}
+
+		rebased, err := requestedOrderingAtInnerCurrent(request, scanQ)
+		if err != nil {
+			t.Fatalf("rebase (exhaustive=%v): %v", exhaustive, err)
+		}
+		if rebased.IsExhaustive() != exhaustive {
+			t.Errorf("rebasing an exhaustive=%v request produced exhaustive=%v — the "+
+				"rebase changes correlation space, not what the request means; dropping "+
+				"the flag narrows enumeration silently under union -> select",
+				exhaustive, rebased.IsExhaustive())
+		}
+		if rebased.GetDistinctness() != request.GetDistinctness() {
+			t.Errorf("rebasing changed distinctness from %v to %v",
+				request.GetDistinctness(), rebased.GetDistinctness())
+		}
+		// And it really did rebase: the pin above must not pass by returning the
+		// input untouched.
+		requireCurrentSpaceOrdering(t, "the rebased request", rebased)
+	}
+}

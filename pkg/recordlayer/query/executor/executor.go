@@ -264,13 +264,50 @@ func executePlanUnwrapped(
 	}
 }
 
+// executeScan stamps each minted row with the layout the scan's output boundary
+// will hold it to. Its rows therefore assert that layout from birth, which is only
+// true where that boundary actually runs — see executeScanUnstamped for the one
+// caller where it does not.
 func executeScan(
+	ctx context.Context,
+	p *plans.RecordQueryScanPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	return executeScanWithRowLayout(ctx, p, store, evalCtx, continuation, props, mintedRowLayout(p))
+}
+
+// executeScanUnstamped is executeScan for a consumer that will read the scan's
+// rows BEFORE the scan's layout is true of them, and whose own boundary therefore
+// replaces it: a TypeFilter fused over a primary scan on an INTERMINGLED store.
+//
+// That caller already bypasses the scan's output boundary, and for exactly this
+// reason: a PK range there can legitimately surface another record descriptor, and
+// the scan's single-type layout would reject it before the load-bearing predicate
+// discards it. Stamping is the same assertion made one step earlier, so it has to
+// be withheld in the same place — otherwise a foreign row carries a layout that
+// lies about it through a stage whose boundary is skipped by design.
+func executeScanUnstamped(
+	ctx context.Context,
+	p *plans.RecordQueryScanPlan,
+	store *recordlayer.FDBRecordStore,
+	evalCtx *EvaluationContext,
+	continuation []byte,
+	props recordlayer.ExecuteProperties,
+) (recordlayer.RecordCursor[QueryResult], error) {
+	return executeScanWithRowLayout(ctx, p, store, evalCtx, continuation, props, nil)
+}
+
+func executeScanWithRowLayout(
 	_ context.Context,
 	p *plans.RecordQueryScanPlan,
 	store *recordlayer.FDBRecordStore,
 	evalCtx *EvaluationContext,
 	continuation []byte,
 	props recordlayer.ExecuteProperties,
+	rowLayout values.OrdinalLayout,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	scanProps := recordlayer.ScanProperties{
 		ExecuteProperties:   props,
@@ -363,7 +400,7 @@ func executeScan(
 		if err != nil {
 			return nil, err
 		}
-		mapped := recordlayer.MapCursor(stored, storedRecordToQueryResult(mintedRowLayout(p)))
+		mapped := recordlayer.MapCursor(stored, storedRecordToQueryResult(rowLayout))
 		return applySkipLimit(mapped, props.Skip, props.ReturnedRowLimit), nil
 	}
 
@@ -375,7 +412,7 @@ func executeScan(
 		inner = store.ScanRecords(continuation, scanProps)
 	}
 
-	return recordlayer.MapCursor(inner, storedRecordToQueryResult(mintedRowLayout(p))), nil
+	return recordlayer.MapCursor(inner, storedRecordToQueryResult(rowLayout)), nil
 }
 
 // openIndexEntryCursor opens the physical index-entry cursor for an index scan:
@@ -1557,7 +1594,7 @@ func executeTypeFilter(
 	inner := p.GetInner()
 	var innerCursor recordlayer.RecordCursor[QueryResult]
 	var err error
-	if _, directScan := inner.(*plans.RecordQueryScanPlan); directScan {
+	if scanPlan, directScan := inner.(*plans.RecordQueryScanPlan); directScan {
 		// A TypeFilter over a primary scan is the physical boundary that makes a
 		// single logical record type safe on an intermingled store. A PK range on
 		// such a store can legitimately encounter another record descriptor before
@@ -1566,8 +1603,13 @@ func executeTypeFilter(
 		// Consume only this direct scan's raw cursor; the enclosing ExecutePlan call
 		// publishes and validates the TypeFilter's exact layout after filtering.
 		// Other child operators retain their ordinary boundary attachment.
-		innerCursor, err = executePlanUnwrapped(
-			ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
+		//
+		// The rows come UNSTAMPED for the same reason. A stamp is that same
+		// single-type assertion made at mint time, so leaving it on while skipping
+		// the boundary would let a foreign row carry a layout that lies about it
+		// through the one stage whose boundary is deliberately absent.
+		innerCursor, err = executeScanUnstamped(
+			ctx, scanPlan, store, evalCtx, continuation, props.ClearSkipAndLimit())
 	} else {
 		innerCursor, err = ExecutePlan(
 			ctx, inner, store, evalCtx, continuation, props.ClearSkipAndLimit())
@@ -3194,6 +3236,13 @@ func intersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFu
 // flowed: measured on a 2000-group aggregate merge, 37 allocations per group, the
 // largest single item in that path. The programs are immutable value trees, so one
 // answer serves every row of its leg.
+//
+// NOT SYNCHRONIZED, and it does not need to be: a cursor's OnNext is driven
+// sequentially by its consumer and no executor cursor advances its children on
+// another goroutine, so the read and the append below are single-threaded per
+// cursor. An operator that ever pulls its legs concurrently must give each puller
+// its own instance rather than lock this one — the entries are per-leg and a lock
+// would serialise the row path to protect a two-entry list.
 //
 // Keyed on the two POINTERS rather than on type equality, which is strictly finer:
 // a leg whose row type is a fresh object per row simply rebuilds, as it did before.

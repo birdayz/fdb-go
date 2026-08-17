@@ -236,3 +236,94 @@ func TestPullUpOutputRootMatchesTheRoundTrip(t *testing.T) {
 		t.Error("the two roots carry different exact handles")
 	}
 }
+
+// TestEveryExactNodeIsInterned is the invariant ExactTypeForValue's shortcut
+// rests on, made checkable.
+//
+// The shortcut is only equivalent to the round trip because a QOV's handle is
+// the SAME OBJECT the round trip would land on, and that is true only while every
+// path that builds an exact node routes through the intern table. Two paths did
+// not — the record-constructor type and the nullability-widened copy — and the
+// consequence was invisible: an un-interned node is a correct TYPE, so nothing
+// answers wrongly; it just compares unequal (children compare by pointer) to an
+// identical interned one, silently defeating the sharing of everything above it,
+// and folds a zero intern hash into one hot bucket.
+//
+// internHashValue is the witness: internedExactType stamps it, and only it does.
+func TestEveryExactNodeIsInterned(t *testing.T) {
+	t.Parallel()
+
+	record := NewRecordType("T", false, []Field{
+		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "NESTED", FieldType: NewRecordType("N", true, []Field{
+			{Name: "X", FieldType: NullableString, Ordinal: 0},
+		}), Ordinal: 1},
+	})
+
+	handle, err := SnapshotExactType(record)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	assertInterned(t, "snapshot", handle.(*exactType))
+
+	relation, err := ExactRelationOf(record)
+	if err != nil {
+		t.Fatalf("relation: %v", err)
+	}
+	assertInterned(t, "relation", relation.(*exactType))
+
+	// A record-constructor type: built from already-exact children rather than
+	// from an ordinary Type graph.
+	qov, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("q"), record)
+	if err != nil {
+		t.Fatalf("QOV: %v", err)
+	}
+	field, err := ResolveFieldAccess(qov, []FieldRequest{mustFieldByName(t, "ID")})
+	if err != nil {
+		t.Fatalf("resolve ID: %v", err)
+	}
+	constructor := NewRecordConstructorValue(RecordConstructorField{Name: "ID", Value: field})
+	constructed, err := exactRecordConstructorType(constructor)
+	if err != nil {
+		t.Fatalf("exactRecordConstructorType: %v", err)
+	}
+	assertInterned(t, "record constructor", constructed)
+
+	// A nullability-widened copy, on a record and on a primitive.
+	assertInterned(t, "widened record", exactWithNullability(handle.(*exactType), true))
+	primitive, err := SnapshotExactType(NotNullLong)
+	if err != nil {
+		t.Fatalf("primitive snapshot: %v", err)
+	}
+	assertInterned(t, "widened primitive", exactWithNullability(primitive.(*exactType), true))
+
+	// And the widened copy is SHARED: asking twice yields one object, which is what
+	// the intern table buys and what a bypassing path loses.
+	first := exactWithNullability(handle.(*exactType), true)
+	second := exactWithNullability(handle.(*exactType), true)
+	if first != second {
+		t.Error("two widened copies of one handle are two objects, so the widened " +
+			"node is not interned")
+	}
+	if first.nullable == handle.(*exactType).nullable {
+		t.Error("widening did not change nullability, so this test proves nothing")
+	}
+}
+
+func assertInterned(t *testing.T, what string, node *exactType) {
+	t.Helper()
+	if node == nil {
+		t.Fatalf("%s: nil node", what)
+	}
+	if node.internHashValue == 0 {
+		t.Errorf("%s: node was built outside the intern table (internHashValue is 0), "+
+			"so an equal type can exist as a second object and the pointer-compared "+
+			"children of everything above it stop matching", what)
+	}
+	for i := range node.fields {
+		assertInterned(t, what+".field["+node.fields[i].name+"]", node.fields[i].typ)
+	}
+	if node.element != nil {
+		assertInterned(t, what+".element", node.element)
+	}
+}

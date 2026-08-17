@@ -640,7 +640,8 @@ func resolveAgainstRecordConstructor(constructor *RecordConstructorValue, reques
 }
 
 func exactRecordConstructorType(constructor *RecordConstructorValue) (*exactType, error) {
-	fields := make([]exactField, len(constructor.Fields))
+	srcFields := make([]Field, len(constructor.Fields))
+	children := make([]*exactType, len(constructor.Fields))
 	for i := range constructor.Fields {
 		fieldType, err := exactTypeOfKnownValue(constructor.Fields[i].Value)
 		if err != nil {
@@ -650,11 +651,27 @@ func exactRecordConstructorType(constructor *RecordConstructorValue) (*exactType
 		if name == "" {
 			name = OrdinalFieldName(i)
 		}
-		fields[i] = exactField{name: name, ordinal: i, typ: fieldType}
+		srcFields[i] = Field{Name: name, Ordinal: i, FieldType: nil}
+		children[i] = fieldType
 	}
-	root := &exactType{code: TypeCodeRecord, name: constructor.typeName, fields: fields}
-	root.finishCanonical()
-	return root, nil
+	// Interned like every other exact node. It is not merely an optimisation
+	// here: the intern probe compares CHILDREN BY POINTER, which is only exact
+	// while every path yields an interned node, so a record built outside the
+	// table would compare unequal to an identical interned one and silently
+	// defeat the sharing of everything above it.
+	probe := exactProbe{
+		code:      TypeCodeRecord,
+		name:      constructor.typeName,
+		srcFields: srcFields,
+		children:  children,
+	}
+	return internedExactType(&probe, func() *exactType {
+		fields := make([]exactField, len(srcFields))
+		for i := range srcFields {
+			fields[i] = exactField{name: srcFields[i].Name, ordinal: i, typ: children[i]}
+		}
+		return &exactType{code: TypeCodeRecord, name: constructor.typeName, fields: fields}
+	}), nil
 }
 
 func exactTypeOfKnownValue(value Value) (*exactType, error) {
@@ -688,23 +705,44 @@ func exactWithNullability(source *exactType, nullable bool) *exactType {
 	if source == nil || source.nullable == nullable || source.code == TypeCodeRelation {
 		return source
 	}
-	// Field-by-field rather than `*source`: the struct carries a memo whose key
-	// is a descriptor and whose answer belongs to the handle that derived it.
-	// Copying it wholesale would hand the derived handle an answer it never
-	// computed — and this function exists precisely to produce a handle that
-	// DIFFERS from its source, so the two are not interchangeable by
-	// construction. Leaving the memo zero costs one recomputation.
-	derived := &exactType{
+	// Field-by-field rather than `*source`: the struct carries memos whose answers
+	// belong to the handle that derived them. Copying them wholesale would hand
+	// the derived handle an answer it never computed — and this function exists
+	// precisely to produce a handle that DIFFERS from its source, so the two are
+	// not interchangeable by construction. The interned build below starts from
+	// zero memos for the same reason, and sharing one node per distinct
+	// (shape, nullability) is what makes filling them once enough.
+	//
+	// Interned like every other exact node, because the probe compares CHILDREN BY
+	// POINTER: a widened record built outside the table would compare unequal to
+	// an identical interned one and defeat the sharing of everything above it.
+	srcFields := make([]Field, len(source.fields))
+	children := make([]*exactType, len(source.fields))
+	for i := range source.fields {
+		srcFields[i] = Field{Name: source.fields[i].name, Ordinal: source.fields[i].ordinal}
+		children[i] = source.fields[i].typ
+	}
+	probe := exactProbe{
 		code:       source.code,
 		nullable:   nullable,
 		anyRecord:  source.anyRecord,
 		name:       source.name,
-		fields:     source.fields,
+		srcFields:  srcFields,
+		children:   children,
 		element:    source.element,
 		enumValues: source.enumValues,
 	}
-	derived.finishCanonical()
-	return derived
+	return internedExactType(&probe, func() *exactType {
+		return &exactType{
+			code:       source.code,
+			nullable:   nullable,
+			anyRecord:  source.anyRecord,
+			name:       source.name,
+			fields:     source.fields,
+			element:    source.element,
+			enumValues: source.enumValues,
+		}
+	})
 }
 
 // RebuildFieldValue resolves an admitted FieldValue's complete ordinal path on

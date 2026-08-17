@@ -113,6 +113,13 @@ func (r *PositionalRow) AttachOrdinalLayout(layout values.OrdinalLayout, carrier
 	if err := r.checkLayoutAttachable(layout, carrierType); err != nil {
 		return nil, err
 	}
+	// The identity fast path returns the row WITHOUT going through finishAttach,
+	// and that is presence-EQUIVALENT rather than presence-skipping: finishAttach
+	// clears LayoutPresence only when the prior layout is not RawEqual to the new
+	// one, RawEqual is reflexive, and here the two are the same object — so it
+	// would preserve presence exactly as this does. Asserting presence is nil here
+	// instead would forbid a legitimate state: a row that carries presence FOR THIS
+	// LAYOUT must keep it. See TestIdentityAttachIsPresenceEquivalent.
 	if r.Layout == layout {
 		return r, nil
 	}

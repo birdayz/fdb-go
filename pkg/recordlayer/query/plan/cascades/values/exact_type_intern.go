@@ -37,10 +37,11 @@ import "sync"
 // through internedExactType.
 //
 // The table never evicts. That is bounded in practice by the distinct
-// (shape, name) types of the schemas a process has planned against — 170 for a
-// whole conformance sweep — and each entry is small. A process that generates
-// unboundedly many DISTINCT schemas would grow it without bound; that is the
-// condition to watch, not the entry count of any workload that exists today.
+// (shape, name) types a process has planned against — 170 for a whole conformance
+// sweep — and each entry is small. TWO axes grow it, not one: the schemas in play,
+// and the QUERIES, because a projection result type is a select-list shape and an
+// ad-hoc-SQL server mints those per statement. Either axis running unbounded is
+// the condition to watch, not the entry count of any workload that exists today.
 const exactInternShards = 64
 
 type exactInternShard struct {

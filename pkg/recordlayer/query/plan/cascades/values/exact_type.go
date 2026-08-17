@@ -198,8 +198,15 @@ func ExactRelationOf(object Type) (ExactTypeHandle, error) {
 // round trip was the largest single planner allocator on this branch.
 //
 // Interning is what makes the shortcut exactly equivalent rather than merely
-// equivalent-looking: the long way round now provably returns the same object, so
-// this is the same handle by identity and not just by content.
+// equivalent-looking: the long way round returns the same OBJECT, so this is the
+// same handle by identity and not just by content.
+//
+// That rests on every path building an exact node routing through the intern
+// table, which is not self-evident and was not true — the record-constructor type
+// and the nullability-widened copy each built one directly. TestEveryExactNodeIsInterned
+// is the check, because the failure is silent: an un-interned node is a correct
+// TYPE and answers nothing wrongly, it merely compares unequal to an identical
+// interned one wherever children are compared by pointer.
 func ExactTypeForValue(value Value) (ExactTypeHandle, error) {
 	if exact, ok := exactTypeOfValue(value); ok {
 		return exact, nil
