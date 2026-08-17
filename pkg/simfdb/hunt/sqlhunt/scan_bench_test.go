@@ -78,9 +78,12 @@ const scanBenchRows = 20_000
 
 func benchScan(b *testing.B, query string, wantRows int) {
 	db := benchHarness(b, scanBenchRows)
-	// One drain outside the timer: the first execution plans the query and
-	// warms the plan cache, and planning is a PER-QUERY cost being measured
-	// separately. Leaving it inside would blend the two regressions.
+	// One drain outside the timer: the first execution pays any one-off cost of
+	// reaching the data. It does NOT warm the plan cache — ResetSession
+	// invalidates it on every pooled-connection reuse — so planning is still
+	// inside the timed loop. It is amortised here rather than excluded: a
+	// 20000-row drain dwarfs one plan, which is what makes this a per-ROW
+	// instrument while BenchmarkInListExecution is a planning one.
 	if got := drain(b, db, query); got != wantRows {
 		b.Fatalf("warmup returned %d rows, want %d — the benchmark is not measuring the shape it names", got, wantRows)
 	}
@@ -125,32 +128,49 @@ func BenchmarkIndexRange(b *testing.B) {
 }
 
 // BenchmarkPlanInList is the IN-list shape, which regressed 4.37× on FORTY-SIX
-// rows — far too few for a per-row cause. Its cost is planning, so this one
-// deliberately does NOT warm the plan cache: each iteration opens a fresh
-// statement text so the planner runs every time.
+// rows — far too few for a per-row cause. Its cost is planning, so each
+// iteration varies the literal to defeat the plan cache. That is belt AND
+// braces rather than the load-bearing part: ResetSession invalidates the cache
+// on every pooled-connection reuse, so the planner would run every time here
+// regardless. The variation stays because it keeps the benchmark honest if the
+// cache ever starts surviving a round trip.
 func BenchmarkPlanInList(b *testing.B) {
 	db := benchHarness(b, scanBenchRows)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// Vary the literal so the plan cache cannot serve the answer; the cost
-		// under test is producing the plan, not executing it.
+		// Vary the literal so the plan cache cannot serve the answer even if it
+		// starts surviving a round trip; the cost under test is producing the
+		// plan, not executing it.
 		q := fmt.Sprintf("SELECT id, val FROM t WHERE cat IN (0,1,2,3,4) AND id > %d ORDER BY id", i%17)
 		drain(b, db, q)
 	}
 }
 
-// BenchmarkInListExecution isolates PER-EXECUTION cost from planning and from
-// per-row cost. The stress suite's IN-list query returns 46 rows out of 1M and
-// regressed 4.4x, which 46 rows cannot pay for — and the plan is byte-identical
-// between the trees (InUnion over an index probe), so it is neither planning
-// choice nor row volume. What an InUnion does is re-execute its inner plan ONCE
-// PER BINDING, so any fixed per-execution setup is multiplied by the IN-list
-// length. This query has 5 bindings and returns few rows, so what it measures
-// is that setup.
+// BenchmarkInListExecution isolates PER-EXECUTION cost from per-row cost. The
+// stress suite's IN-list query returns 46 rows out of 1M and regressed 4.4x,
+// which 46 rows cannot pay for, and the plan is byte-identical between the
+// trees (InUnion over an index probe), so it is not row volume and not a
+// different plan.
+//
+// It was believed to isolate execution from PLANNING as well, on the strength
+// of the warm-up drain below. It does not, and the correction matters because
+// it inverts what this benchmark measures: the plan cache is invalidated by
+// ResetSession, which database/sql calls on every pooled-connection reuse, so
+// the warm-up warms nothing and every iteration re-plans. Measured with the
+// simulator equalized across both trees, the timed loop here is ~100% planner.
+// Read it as the PLANNING benchmark for this shape — 5.4-6.6ms/op on master
+// versus 39.5ms on this branch, master carrying this branch's pkg/simfdb
+// allocation fixes so the comparison is of the ENGINE — and read
+// BenchmarkScanAllWide for per-row cost, where planning really is amortised
+// because a 20000-row drain dwarfs it.
+//
+// What an InUnion does is re-execute its inner plan once per binding, so a
+// genuine per-execution cost would be multiplied by the IN-list length here.
+// That axis is still worth having; it is simply not what currently dominates.
 func BenchmarkInListExecution(b *testing.B) {
 	db := benchHarness(b, scanBenchRows)
 	// val is i*3 and idx_val exists, so five bindings return FIVE rows out of
-	// 20000 — the stress shape (46 of 1M), where setup dominates row work.
+	// 20000 — the stress shape (46 of 1M), where fixed cost dominates row work.
 	const query = "SELECT id, val FROM t WHERE val IN (0, 3, 6, 9, 12) ORDER BY id"
 	warm := drain(b, db, query)
 	if warm == 0 {

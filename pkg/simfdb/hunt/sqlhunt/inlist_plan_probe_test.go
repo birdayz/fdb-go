@@ -10,6 +10,7 @@ import (
 //
 // That query — 46 rows out of 1M — regressed 4.37x on real FDB while every
 // per-row fix left it untouched, which is what says its cost is not per-row.
+// It is PLANNING cost: see the correction on the pin below.
 // The corpus shows the mechanism on a neighbouring shape: a plain
 // `PredicatesFilter(Scan)` became `InUnion(PredicatesFilter(Scan), bindings=1)`,
 // and an InUnion re-executes its inner plan ONCE PER BINDING. Five IN values
@@ -32,13 +33,37 @@ func TestInListPlanShape(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// The shape is PINNED, not merely printed, because the pin is what makes the
-	// diagnosis falsifiable: it was measured identical on master and on this
-	// branch (`InUnion(IndexScan(IDX_CAT, [=]), bindings=1, ASC)` modulo the
-	// `_current.` rendering), which is what rules the planner OUT as the cause of
-	// the 4.4x and leaves per-execution setup as the explanation. If the planner
-	// ever stops choosing an InUnion here, that conclusion needs re-taking and
-	// this fails rather than going quietly stale.
+	// The shape is PINNED, not merely printed, so the diagnosis stays falsifiable.
+	// It was measured identical on master and on this branch
+	// (`InUnion(IndexScan(IDX_CAT, [=]), bindings=1, ASC)` modulo the `_current.`
+	// rendering).
+	//
+	// That identity once read as "the planner is ruled out, so the cost is
+	// per-execution setup". THAT READING IS WRONG and the correction is kept here
+	// because the wrong version is the one a reader would otherwise inherit: an
+	// identical CHOSEN PLAN says nothing about the cost of CHOOSING it.
+	//
+	// Reproduced, both trees, simulator equalized (master carrying this branch's
+	// two pkg/simfdb allocation fixes so the comparison is of the ENGINE), 60
+	// executions of one query via BenchmarkInListExecution:
+	//
+	//	master 5.4-6.6 ms/op   this branch 39.5 ms/op   (~6-7x)
+	//
+	// and under pprof the branch's timed loop is ~100% `cascadesGenerator.Plan`,
+	// with `Planner.plan` at 2.56s of samples against master's 0.44s. Planning is
+	// on the timed path at all because ResetSession invalidates the plan cache and
+	// database/sql calls it on every pooled-connection reuse — so a repeated
+	// identical query re-plans every time, on BOTH trees. That last fact is its
+	// own defect and is not this branch's.
+	//
+	// WHERE inside planning is NOT established. Call-count instrumentation
+	// pointed at data-access matching, but two probes in that attempt were
+	// mis-attributed (one grep truncated, one edit landed in a neighbouring
+	// function), so the counts are withdrawn rather than recorded — the timings
+	// above are re-runnable and the counts were not.
+	//
+	// If the planner ever stops choosing an InUnion here, the comparison above
+	// needs re-taking and this fails rather than going quietly stale.
 	for _, probe := range []struct {
 		query string
 		want  string
@@ -55,7 +80,7 @@ func TestInListPlanShape(t *testing.T) {
 			t.Errorf("IN-list plan for %q is %q, want a %s.\n"+
 				"  The per-binding re-execution shape is what makes a 46-row query cost "+
 				"5 executions, and it was measured IDENTICAL on master — so a change here "+
-				"moves the IN-list regression from per-execution setup to a planner choice.",
+				"moves the IN-list regression from planning COST to a planner CHOICE.",
 				probe.query, plan, probe.want)
 		}
 	}
