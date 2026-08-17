@@ -18131,6 +18131,11 @@ FIRST function that matches, which is not always the intended one.
 
 ## RFC-232 still costs 1.26-1.7x master on three benchmarks, and what is left is measured
 
+**SUPERSEDED for the RATIOS — read "RFC-232 overhead after the row-path and merge
+campaign" at the end of this file for the current numbers, which cover nine
+benchmarks and the 1M stress suite rather than three benchmarks. The "what is
+left" list below is still live: those items were not what the campaign closed.**
+
 The branch's planning and per-row overhead was ground down from up to 7.5x to
 the numbers below. Each side was measured with the SIMULATOR EQUALISED (master
 carrying this branch's two `pkg/simfdb` allocation commits), so the comparison
@@ -18178,3 +18183,66 @@ What is left, in order, all of it branch-only unless noted:
 - `physicalFlowedRecordType` (1.65GB) and `LayoutWithSeedLegs` (1.32GB) MUTATE
   the graph they thaw, so they are correctly excluded from the shared-graph
   treatment. Do not "fix" them.
+
+## RFC-232 overhead after the row-path and merge campaign
+
+Supersedes the ratios in "RFC-232 still costs 1.26-1.7x master on three
+benchmarks" above. Both sides measured with the SIMULATOR EQUALISED (master
+carrying this branch's two `pkg/simfdb` allocation commits), so the comparison is
+of the engine and not of the harness.
+
+Ratios are branch / master. "Before" is the head at the start of this campaign,
+which is where the superseded block's numbers were taken.
+
+| benchmark | ratio before | ratio now |
+|---|---|---|
+| `BenchmarkScanAllWide` | 1.31x | **1.18x** |
+| `BenchmarkPlanInList` | 1.39x | **1.25x** |
+| `BenchmarkInListExecution` | 1.70x | **1.52x** |
+| `BenchmarkIndexRange` | 1.33x | **1.26x** |
+| `BenchmarkScanFilterSparse` | 1.63x | **1.54x** |
+| `BenchmarkAggregateGroupsPlain` | 2.07x | **1.25x** |
+| `BenchmarkAggregateGroupsHaving` | 2.03x | **1.34x** |
+| `group_by_customer_having` (1M stress) | 1.88x | **0.98x** |
+
+Whole-suite wall clock on the 1M stress test: **master 175.52s, branch 180.14s =
+1.026x**.
+
+Allocation COUNTS are now below master on 7 of the 9 sqlhunt benchmarks. What
+closed it: minting a scan/projection row already carrying its plan's layout so the
+output boundary takes an identity fast path instead of copying every row; one
+per-row allocation for the frontier binding holder instead of three; a
+`RecordCursorResult` that holds its value inline instead of boxing it once per row
+per cursor level; a two-entry comparison-key program cache on the merge legs; and
+eliding the compensation projection when an aggregate leaf already publishes the
+GROUP BY row.
+
+Those nine benchmarks are the instrument this whole campaign was measured with, and
+until `bench-ci` gained `//pkg/simfdb/hunt/sqlhunt:sqlhunt_test` NOTHING ran them —
+`bazelisk test` never passes `-test.bench`. They are gating there now.
+
+### The next milestone is plan-time rebinding, and it needs a Graefe gate
+
+The residual is not a list of allocation sites; it is one architectural fact.
+**Go reconciles logical to physical ordinals per ROW at runtime, where Java rebinds
+once at PLAN time.** Java's planner rebinds every FieldValue ordinal against the
+physical quantifier's actual flowed type (`Value.translateCorrelations`,
+`Value.java:339`), so a baked ordinal IS the physical slot and no runtime adapter
+exists. Go seeds gated-join legs with the LOGICAL table-shaped leg type while a
+physical leg may emit a row typed by its own plan output, so the two layouts can be
+permutations of each other and the boundary gathers slots into leg order on every
+row. The divergence is already documented at the fix site —
+`pkg/recordlayer/query/executor/ordinal_join.go:1042` — which is the durable half
+of this entry; this entry is the other half, and neither is complete without the
+other.
+
+Retiring the per-row gather means making Go's seed bake against the CHOSEN physical
+leg layout, which is a change to RFC-232's runtime half rather than a local
+optimisation. It is deliberately NOT started: it needs a Graefe ACK on the design
+before implementation, and starting it would have invalidated the review laps in
+flight on the campaign above.
+
+- [ ] Bake join-leg FieldValue ordinals against the selected physical leg layout,
+      so `ordinal_join.go`'s per-row permutation gather can be deleted. Read
+      `Value.translateCorrelations` and `TranslationMap` first; the Go seed sites
+      are the gated-join leg constructors. Gated on a Graefe ACK of the design.
