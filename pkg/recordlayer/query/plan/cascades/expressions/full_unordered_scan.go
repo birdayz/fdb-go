@@ -20,6 +20,13 @@ import (
 type FullUnorderedScanExpression struct {
 	recordTypes []string // sorted, deduped — canonical form for equality + hash
 	flowedType  values.ExactTypeHandle
+	// resultValue is derived once at construction rather than per call. It is a
+	// pure function of the two fields above, both fixed here, and a scan.s
+	// result value is read on nearly every visit to the leaf: rebuilding it
+	// thawed the whole flowed type graph each time, 1GB over the pure-planner
+	// sweep. Sharing one immutable QueriedValue is also strictly stronger than
+	// the equal-but-distinct values it replaces.
+	resultValue values.Value
 }
 
 // NewFullUnorderedScanExpression builds a scan over the given record-
@@ -31,9 +38,11 @@ func NewFullUnorderedScanExpression(recordTypes []string, flowedType values.Type
 	if err != nil {
 		return nil, err
 	}
+	canonicalTypes := dedupSortedStrings(recordTypes)
 	return &FullUnorderedScanExpression{
-		recordTypes: dedupSortedStrings(recordTypes),
+		recordTypes: canonicalTypes,
 		flowedType:  exactType,
+		resultValue: values.NewQueriedValue(canonicalTypes, exactType.Type()),
 	}, nil
 }
 
@@ -75,7 +84,7 @@ func (e *FullUnorderedScanExpression) GetFlowedType() values.Type {
 // nil/UnknownType flowedType still degrades cleanly (NewQueriedValue falls
 // back to UnknownType) rather than panicking.
 func (e *FullUnorderedScanExpression) GetResultValue() values.Value {
-	return values.NewQueriedValue(e.recordTypes, e.flowedType.Type())
+	return e.resultValue
 }
 
 // GetQuantifiers returns the empty list — leaf.
