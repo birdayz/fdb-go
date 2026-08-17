@@ -147,30 +147,38 @@ func rootGetterCall(e ast.Expr) string {
 // rootLocalIdent walks an assignment target down to the identifier it is rooted at,
 // descending the same shapes as rootGetterCall. It is how a write THROUGH a local
 // alias is traced back to the local.
-func rootLocalIdent(e ast.Expr) (string, bool) {
+// It also reports whether the descent crossed a SHARING node — a pointer
+// dereference, an index, or a type assertion. That distinction is what makes range
+// variables tractable: `for _, k := range p.GetSortKeys()` copies each element, so
+// writing a value field of the copy cannot reach the plan, but the copy still shares
+// anything the element merely POINTS at. `SortKey.ValueExpr` is an interface and
+// `GetInValues()` yields `any`, so `v.([]byte)[0] = 1` inside a range writes the
+// payload both the copy and the plan hold.
+func rootLocalIdent(e ast.Expr) (name string, through, viaSharing bool) {
 	depth := 0
+	shared := false
 	for {
 		switch t := e.(type) {
 		case *ast.IndexExpr:
-			e, depth = t.X, depth+1
+			e, depth, shared = t.X, depth+1, true
 		case *ast.IndexListExpr:
-			e, depth = t.X, depth+1
+			e, depth, shared = t.X, depth+1, true
 		case *ast.SelectorExpr:
 			e, depth = t.X, depth+1
 		case *ast.StarExpr:
-			e, depth = t.X, depth+1
+			e, depth, shared = t.X, depth+1, true
 		case *ast.ParenExpr:
 			e = t.X
 		case *ast.SliceExpr:
-			e, depth = t.X, depth+1
+			e, depth, shared = t.X, depth+1, true
 		case *ast.TypeAssertExpr:
-			e, depth = t.X, depth+1
+			e, depth, shared = t.X, depth+1, true
 		case *ast.Ident:
 			// depth 0 is a bare rebinding (`keys = other`), which replaces the alias
 			// rather than writing through it.
-			return t.Name, depth > 0
+			return t.Name, depth > 0, shared
 		default:
-			return "", false
+			return "", false, false
 		}
 	}
 }
@@ -190,8 +198,22 @@ func rootLocalIdent(e ast.Expr) (string, bool) {
 // when it is assigned an expression rooted at a watched getter, and untainted when it
 // is rebound to anything else. Only writes THROUGH a tainted identifier report; a
 // bare rebinding does not, because it replaces the alias rather than mutating what it
-// points at. A `range` variable is a copy in Go and is never tainted, so mutating it
-// is correctly silent.
+// points at.
+//
+// A `range` variable is tainted SEPARATELY, as a copy, because "it is a copy so
+// mutating it is silent" was an incomplete scope claim of exactly the kind this file
+// keeps producing. `for _, k := range p.GetSortKeys()` copies the struct and the
+// interface header — not the pointee and not a backing array. So a value-field write
+// on the copy really is silent and must stay so, while a write that crosses a
+// SHARING node reaches state the plan still holds:
+//
+//	for _, k := range p.GetSortKeys() { k.Desc = true }        // copy, silent
+//	for _, v := range p.GetInValues() { v.([]byte)[0] = 1 }    // shared payload, reported
+//
+// `GetInValues` yields `any` and `SortKey.ValueExpr` is an interface, so the second
+// shape is reachable in this tree rather than hypothetical. The copy taint therefore
+// reports only when rootLocalIdent says the descent crossed a pointer dereference,
+// an index, or a type assertion.
 //
 // Exactly which spellings it follows, because "assigned to a local" turned out to
 // cover less than it sounded like:
@@ -207,7 +229,8 @@ func rootLocalIdent(e ast.Expr) (string, bool) {
 //     rather than merely failing to extend it.
 func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)) {
 	scan := func(body *ast.BlockStmt) {
-		tainted := map[string]string{} // local ident -> the getter it aliases
+		tainted := map[string]string{}     // local ident -> the getter it aliases
+		copyTainted := map[string]string{} // range COPY -> the getter it was copied from
 
 		// taint records name as aliasing whatever src aliases: either src is rooted at
 		// a watched getter, or src is itself an already-tainted identifier. The second
@@ -227,11 +250,22 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 		ast.Inspect(body, func(n ast.Node) bool {
 			var targets []ast.Expr
 			var rhs []ast.Expr
+			assignTok := token.ILLEGAL
 			switch s := n.(type) {
 			case *ast.AssignStmt:
-				targets, rhs = s.Lhs, s.Rhs
+				targets, rhs, assignTok = s.Lhs, s.Rhs, s.Tok
 			case *ast.IncDecStmt:
 				targets = []ast.Expr{s.X}
+			case *ast.RangeStmt:
+				// Ranging over a watched getter copies each element. The copy shares
+				// whatever the element points at, so the value variable is tainted as a
+				// COPY: writes through it report only when they cross a sharing node.
+				if getter := rootGetterCall(s.X); getter != "" {
+					if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
+						copyTainted[id.Name] = getter
+					}
+				}
+				return true
 			case *ast.DeclStmt:
 				// `var keys = p.GetSortKeys()` is a ValueSpec, not an AssignStmt, so
 				// without this arm the most ordinary alternative spelling of `:=` never
@@ -266,8 +300,13 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 					continue
 				}
 				// Rooted at a local that aliases one.
-				if name, through := rootLocalIdent(target); through {
+				if name, through, viaSharing := rootLocalIdent(target); through {
 					if getter, ok := tainted[name]; ok {
+						report(target.Pos(), getter)
+					} else if getter, ok := copyTainted[name]; ok && viaSharing {
+						// A range COPY: only a write that crosses a pointer, index or
+						// type assertion reaches state the plan still holds. A plain
+						// field write on the copy is correctly silent.
 						report(target.Pos(), getter)
 					}
 					continue
@@ -279,7 +318,11 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 				}
 				if getter, ok := taint(id.Name, rhs[i]); ok {
 					tainted[id.Name] = getter
-				} else {
+				} else if assignTok != token.DEFINE {
+					// `:=` DECLARES. When the name is already tainted this can only be an
+					// inner-scope shadow, and the outer alias is still live — so clearing
+					// here would untaint a variable that is still aliasing the plan. The
+					// taint map is flat, which is what makes the distinction necessary.
 					delete(tainted, id.Name)
 				}
 			}
@@ -287,10 +330,21 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 		})
 	}
 
+	// FuncDecl bodies AND package-level function literals (`var f = func() {…}` is a
+	// GenDecl, so a FuncDecl-only walk skipped it entirely — defeating not just the
+	// taint layer but the direct getter detection too). FuncLits nested inside a
+	// FuncDecl are already reached, since ast.Inspect descends into them.
 	for _, decl := range f.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil {
 			scan(fn.Body)
+			continue
 		}
+		ast.Inspect(decl, func(n ast.Node) bool {
+			if lit, ok := n.(*ast.FuncLit); ok && lit.Body != nil {
+				scan(lit.Body)
+			}
+			return true
+		})
 	}
 }
 
@@ -412,6 +466,13 @@ func TestLiveGetterDetectorFiresOnEveryWriteShape(t *testing.T) {
 		{"aliased via var declaration", "var keys = plan.GetSortKeys()\nkeys[0].Desc = true"},
 		// Alias of an alias: the RHS is a bare ident, which previously UNTAINTED.
 		{"alias of an alias", "k1 := plan.GetSortKeys()\nk2 := k1\nk2[0].NullsFirst = true"},
+		// An inner-scope `:=` on a shadowing name must not clear the OUTER alias.
+		// The taint map is flat, so an unconditional delete untainted a live alias.
+		{"outer alias survives an inner shadow", "keys := plan.GetSortKeys()\nif c { keys := other()\n_ = keys }\nkeys[0].Desc = true"},
+		// A range COPY shares whatever the element points at. GetInValues yields
+		// `any`, so the payload is shared even though the interface header is copied.
+		{"range copy written through its interface payload", "for _, v := range plan.GetInValues() { v.([]byte)[0] = 1 }"},
+		{"range copy written through a pointer field", "for _, k := range plan.GetSortKeys() { *k.Ptr = true }"},
 		// Not in first position of a multi-assign.
 		{"multi-assign", `a, plan.GetInValues()[0] = 1, 2`},
 		// The ONLY spelling of an element write, since IN values are `any`. Verified
@@ -457,5 +518,34 @@ func TestLiveGetterDetectorStaysSilentOnReads(t *testing.T) {
 					"gets read past:\n\t%s", got, tc.body)
 			}
 		})
+	}
+}
+
+// TestLiveGetterGateScansPackageLevelClosures pins that a function literal assigned
+// at package level is scanned at all.
+//
+// `var mutate = func() { … }` is a GenDecl, not a FuncDecl, so a walk over
+// `f.Decls` looking only for FuncDecl skipped its body entirely — defeating not just
+// the taint layer but the original direct-getter detection, which is the oldest and
+// most basic thing this gate does. It needs its own test because every other arm
+// goes through a snippet wrapper that puts the body inside a FuncDecl, so none of
+// them could ever have exercised this path.
+func TestLiveGetterGateScansPackageLevelClosures(t *testing.T) {
+	t.Parallel()
+
+	const src = `package p
+
+var mutate = func() { plan.GetSortKeys()[0].Desc = true }
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "snippet.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var got []string
+	scanLiveGetterWrites(f, func(_ token.Pos, getter string) { got = append(got, getter) })
+	if len(got) == 0 {
+		t.Error("a write inside a package-level closure was not reported; the walker only " +
+			"descended FuncDecl bodies, so this shape bypassed even the direct-getter check")
 	}
 }
