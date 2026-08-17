@@ -18033,3 +18033,69 @@ where suppression was wanted.
       shape-neutral criterion. `cost_model_total_preorder_test.go` maintains
       total-preorder as an invariant, so "incomparable" may not be expressible;
       verify the fall-through leaves the preorder total before shipping.
+
+## RFC-232 plans an IN-list query ~7x slower than master, and the memo is why
+
+Not per-row and not the chosen plan: `SELECT id, val FROM t WHERE val IN (…)
+ORDER BY id` produces a byte-identical plan on both trees, and the branch takes
+**37.3 ms/op against master's 5.3** on `BenchmarkInListExecution`
+(pkg/simfdb/hunt/sqlhunt, file byte-identical on both trees). Measured with the
+SIMULATOR EQUALISED — master carrying this branch's two pkg/simfdb allocation
+commits — so the difference is the engine.
+
+Planning is on the hot path at all because **the plan cache never survives a
+`database/sql` round trip**: `ResetSession` invalidates it and the pool calls
+that on every connection reuse, so every query re-plans. True on BOTH trees.
+That is a separate, pre-existing defect and a large one; it is what makes
+planning cost user-visible at all.
+
+The chain, each step reproducible:
+
+- pprof: the branch's timed loop is ~100% `cascadesGenerator.Plan`.
+- The planner's OWN counter (`p.tasksRun`): the SELECT runs **2271 tasks vs
+  master's 734** (3.09x). The INSERT in the same run is **41 on both** — a
+  built-in control showing this is shape-specific, not global.
+- Task mix scales uniformly (TransformExpr 1989/825, ExploreGroup 1745/494,
+  OptimizeGroup 612/129, InitiatePlannerPhase 8/8), which is the signature of a
+  bigger memo rather than one rule misfiring.
+- Memo members that HASH EQUAL but compare UNEQUAL, counted in
+  `PreparedMemberDuplicateWithHashes` on both trees (probe presence verified on
+  each): branch **1203**, master **105**. By type, branch/master —
+  ProjectionPlan 828/45, InJoinPlan 144/0, InMemorySortPlan 108/18,
+  PredicatesFilterPlan 90/0, FetchFromPartialRecord 33/0, LogicalFilter 0/42.
+  Projections are 69% of the branch's.
+
+RULED OUT by experiment, each reverted: semantic HASH granularity (coarsening
+the QOV hash to master's bare tag changed the task count by ZERO), and QOV
+semantic EQUALITY on the type axis (both ignoring the exact type entirely and
+using `exactRowShapesAgree` changed it by ZERO). The over-discrimination is not
+Value-level type identity.
+
+Where it actually sits: `RecordQueryProjectionPlan.structuralKey()` folds
+`partValue` through alias-INVARIANT `SemanticHashCode` for the hash and
+alias-SENSITIVE `semanticValueEquals` for equality. That asymmetry is by design
+— the hash buckets, equality decides — so the defect is UPSTREAM: the branch
+mints projections whose values differ only in anchoring/correlation spelling
+(`ID#0` vs `_current.ID#0`), which collide into one bucket and then refuse to
+merge, so both survive as members.
+
+- [ ] Canonicalise projection value anchoring at construction so the two
+      spellings never coexist. Note the alternative — threading an AliasMap
+      through `planEqualsAsExpression` — CANNOT fire as-is: the memo passes
+      `EmptyAliasMap()` to plans, and reaching a real map requires opting plans
+      into `InternsAliasAware`, whose own doc calls that a landmine for
+      expressions whose aliases are externally resolved. A plan's quantifier
+      alias IS resolved at execution, so that route trades a perf bug for a
+      wrong-bindings bug. `structuralKey.EqualUnderAliases` is already built and
+      wired by exactly 2 of 44 plan types (flat_map.go, nested_loop_join.go).
+- [ ] Separately: make the plan cache survive `ResetSession`. The cache key
+      already carries DBPath, schema, metadata version and planner options, so
+      the blanket invalidation looks redundant with the key rather than
+      load-bearing — but prove that before removing it.
+
+INSTRUMENTATION NOTE, because it cost several false readings here: `go test`
+SWALLOWS a passing test's stdout unless `-v` is given. Every "the probe printed
+nothing" conclusion in this area was wrong for that reason. Always run probes
+with `-count=1 -v`, and verify the probe is present in the file it is supposed
+to be in — a `perl -0pi` substitution matching a common pattern lands in the
+FIRST function that matches, which is not always the intended one.
