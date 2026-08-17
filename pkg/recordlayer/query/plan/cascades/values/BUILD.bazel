@@ -149,6 +149,7 @@ go_test(
         "dotted_witness_attribution_census_test.go",
         "equals_without_children_test.go",
         "eval_must_test.go",
+        "exact_primitive_sharing_test.go",
         "exact_type_name_identity_test.go",
         "exact_type_path_test.go",
         "field_value_mint_census_test.go",

@@ -73,7 +73,8 @@ func newPlanExprBaseWithProperties(
 	// silently, because the type is the right width either way.
 	provided = values.LayoutWithSeedLegs(provided, resultValue)
 	carrier := provided.Carrier()
-	if !resultType.Type().Equals(carrier.FlowedType()) {
+	// Shared graphs on both sides: this compares two rows and keeps neither.
+	if !values.SharedExactType(resultType).Equals(values.SharedFlowedType(carrier)) {
 		return PlanExprBase{}, fmt.Errorf(
 			"%s ordinal physical properties: carrier type %s disagrees with result type %s",
 			owner, carrier.FlowedType(), resultType.Type())

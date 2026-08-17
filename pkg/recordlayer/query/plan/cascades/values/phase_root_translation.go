@@ -350,7 +350,11 @@ func TranslateLogicalSourceNameNormalizationInValue(
 		if !ok || candidate.Correlation() != source {
 			return true
 		}
-		if target != nil && !target.FlowedType().Equals(candidate.FlowedType()) {
+		// Shared graphs: this asks the two rows a question and keeps neither.
+		// FlowedType here rebuilt BOTH whole type graphs per candidate node of
+		// every authority walk — 6.2GB on the pure-planner sweep, the single
+		// largest consumer of the defensive copy.
+		if target != nil && !SharedFlowedType(target).Equals(SharedFlowedType(candidate)) {
 			conflict = true
 			return false
 		}

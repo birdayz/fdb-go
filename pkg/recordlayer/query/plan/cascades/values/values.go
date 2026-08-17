@@ -5090,6 +5090,17 @@ func SharedFlowedType(value QuantifiedObjectValue) Type {
 	return exact.flowed.thawShared()
 }
 
+// SharedExactType is SharedFlowedType for a bare exact handle: the thawed
+// graph WITHOUT the defensive copy, for readers that only ask it a question.
+// Same read-only contract, same reason — see SharedFlowedType.
+func SharedExactType(handle ExactTypeHandle) Type {
+	exact, ok := handle.(*exactType)
+	if !ok || exact == nil {
+		return nil
+	}
+	return exact.thawShared()
+}
+
 // Children returns an empty slice — the quantifier is a leaf in
 // the Value tree, with its correlation link being external metadata
 // (not a child Value).

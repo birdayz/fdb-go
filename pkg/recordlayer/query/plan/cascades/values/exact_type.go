@@ -205,6 +205,65 @@ func prefixExactPath(err error, segment string) error {
 	}
 }
 
+// exactPrimitiveCodes is the admitted primitive set — the same list
+// snapshotExactType checks a *PrimitiveType against, kept beside the table it
+// builds so the two cannot drift.
+var exactPrimitiveCodes = [...]TypeCode{
+	TypeCodeNull, TypeCodeBoolean, TypeCodeInt, TypeCodeLong,
+	TypeCodeFloat, TypeCodeDouble, TypeCodeString, TypeCodeBytes,
+	TypeCodeVersion, TypeCodeUuid, TypeCodeDate, TypeCodeTimestamp,
+}
+
+// sharedPrimitiveExactTypes holds the ENTIRE population of exact primitive
+// types — (admitted code × nullable), two dozen values — built once at init.
+//
+// An exact type is content-addressed and immutable by construction, so two
+// snapshots of the same primitive were always the same value; they were just
+// two objects. That mattered because primitives are where the volume is: a
+// record's snapshot recurses once per field, so a twelve-column row is one
+// record node and eleven primitive leaves. Measured over the pure-planner
+// sweep, snapshotExactType ran 243.8 MILLION times and produced 170 distinct
+// canonical types, allocating 52.65GB — 22% of everything the planner
+// allocated — to rebuild the same handful of leaves.
+//
+// Sharing is safe precisely because nothing mutates an exact type after
+// finishCanonical: the only post-construction write is thawCache, which is
+// atomic and holds a value derived from the same immutable state. Sharing that
+// cache across every user of a primitive is a second win, not a hazard.
+//
+// The table is COMPLETE, so a miss is a caller that got past the admitted-code
+// check with a code the table does not know — a contradiction, and it fails
+// closed by falling back to a fresh node rather than returning nil.
+var sharedPrimitiveExactTypes = func() map[TypeCode][2]*exactType {
+	table := make(map[TypeCode][2]*exactType, len(exactPrimitiveCodes))
+	for _, code := range exactPrimitiveCodes {
+		var pair [2]*exactType
+		for _, nullable := range [2]bool{false, true} {
+			exact := &exactType{code: code, nullable: nullable}
+			exact.finishCanonical()
+			pair[boolIndex(nullable)] = exact
+		}
+		table[code] = pair
+	}
+	return table
+}()
+
+func boolIndex(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func sharedPrimitiveExactType(code TypeCode, nullable bool) *exactType {
+	if pair, known := sharedPrimitiveExactTypes[code]; known {
+		return pair[boolIndex(nullable)]
+	}
+	exact := &exactType{code: code, nullable: nullable}
+	exact.finishCanonical()
+	return exact
+}
+
 // snapshotExactType walks typ into its immutable exact form.
 //
 // active is the ANCESTOR chain, carried as a slice rather than a map with a
@@ -274,7 +333,7 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 		default:
 			return nil, resolutionError(TypeMalformedCode, path, "primitive carries a structured or unknown code")
 		}
-		exact = &exactType{code: typed.TypeCode, nullable: typed.Nullable}
+		return sharedPrimitiveExactType(typed.TypeCode, typed.Nullable), nil
 	case *RecordType:
 		fields := make([]exactField, len(typed.Fields))
 		for i, field := range typed.Fields {
