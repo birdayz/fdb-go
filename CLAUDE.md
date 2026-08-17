@@ -151,6 +151,14 @@ If you're tempted to add a 5-line note explaining a divergence, write it as a co
 
 The defence is always the same and it is cheap: **confirm the population is non-empty before interpreting the verdict.** Count the `=== RUN` lines, count the checks, count the rows. A gate must separate three states — passed, failed, and never-ran — because collapsing the third into the first fails OPEN, which is the direction that ships bugs. When you report a green, you are implicitly claiming something ran; make that claim checkable.
 
+**A GATE'S SCOPE SENTENCE MUST BE WRITTEN BY PROBING WHAT IT CATCHES, NOT BY DESCRIBING WHAT YOU JUST WROTE.** This is the fifteenth face's discipline applied to documentation, and it is the failure mode that survives every other check: the algorithm is right, the arms all pass, the ratchet sits at zero — and the sentence saying what it covers is broader than the code. Nothing fails, because a comment cannot fail.
+
+Measured here across six review rounds on one gate: **every single finding was a scope claim exceeding coverage, and not once a wrong algorithm.** "This closes the read end" caught 2 of 9 write spellings. "A local the call was assigned to" missed `var x = …` and alias-of-an-alias. "A range variable is a copy so mutating it is correctly silent" was false for interface payloads and pointees. Each of those sentences was written by describing the code just added, and each was true of that code and false of the claim.
+
+The compounding version is worse: a layer added to fix one over-claim arrives with its own. Three of the six findings were in code written to close the previous finding.
+
+So when a layer lands, enumerate the spellings it follows rather than characterising them — a list can be checked against reality and a characterisation cannot — and write the NOT-covered list FIRST, from shapes you actually ran, before the covered one. If a shape sits inside what the positive claim asserts, it is not a documentation gap, it is a bug in the gate.
+
 **EVERY PROOF GETS COMMITTED AS A TEST — never as a throwaway probe you delete.** If you wrote a scratch probe to establish a fact, and that fact justified a decision, the probe becomes a test. No exceptions. The instinct is to delete it once it has "done its job", and that is exactly backwards: the conclusion outlives the measurement, so the measurement is what has to survive. A deleted probe is the same failure as a filed-instead-of-fixed finding — the knowledge evaporates, and the next person either re-derives it or silently breaks the assumption it rested on.
 
 This applies with FULL force to two cases that feel exempt:

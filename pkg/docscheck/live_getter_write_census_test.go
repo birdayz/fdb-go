@@ -260,7 +260,24 @@ func scanLiveGetterWrites(f *ast.File, report func(pos token.Pos, getter string)
 				// Ranging over a watched getter copies each element. The copy shares
 				// whatever the element points at, so the value variable is tainted as a
 				// COPY: writes through it report only when they cross a sharing node.
-				if getter := rootGetterCall(s.X); getter != "" {
+				// Resolve the range SOURCE through the taint maps, not just as a direct
+				// call. `vals := p.GetInValues(); for _, v := range vals` is the second
+				// category this file's header positively claims to cover — a write
+				// rooted at a local the call was assigned to — and matching only
+				// `rootGetterCall(s.X)` missed it. Falling through copyTainted covers
+				// the nested case: an outer range copy shares the inner slice's backing
+				// array, so its elements are shared too.
+				getter := rootGetterCall(s.X)
+				if getter == "" {
+					if id, ok := s.X.(*ast.Ident); ok {
+						if g, found := tainted[id.Name]; found {
+							getter = g
+						} else if g, found := copyTainted[id.Name]; found {
+							getter = g
+						}
+					}
+				}
+				if getter != "" {
 					if id, ok := s.Value.(*ast.Ident); ok && id.Name != "_" {
 						copyTainted[id.Name] = getter
 					}
@@ -473,6 +490,11 @@ func TestLiveGetterDetectorFiresOnEveryWriteShape(t *testing.T) {
 		// `any`, so the payload is shared even though the interface header is copied.
 		{"range copy written through its interface payload", "for _, v := range plan.GetInValues() { v.([]byte)[0] = 1 }"},
 		{"range copy written through a pointer field", "for _, k := range plan.GetSortKeys() { *k.Ptr = true }"},
+		// Ranging over an ALIAS rather than over the call. This sits inside what the
+		// header positively claims — a write rooted at a local the call was assigned to.
+		{"range over a tainted alias", "vals := plan.GetInValues()\nfor _, v := range vals { v.([]byte)[0] = 1 }"},
+		// An outer range copy shares the inner slice, so its elements are shared too.
+		{"inner range over an outer range copy", "for _, src := range plan.GetInSources() { for _, v := range src { v.([]byte)[0] = 1 } }"},
 		// Not in first position of a multi-assign.
 		{"multi-assign", `a, plan.GetInValues()[0] = 1, 2`},
 		// The ONLY spelling of an element write, since IN values are `any`. Verified
