@@ -18340,10 +18340,23 @@ flight on the campaign above.
 ## Every self-hosted CI job dies at `actions/checkout` with HTTP 429, nightlies included
 
 Found while trying to get PR #752 green; it is repo-wide and not specific to that
-branch. **Not a test failure** — the jobs never reach a build step. Each failing job
-log is 21 lines, three `429 (Too Many Requests)` warnings from
-`codeload.github.com`, then `Failed to download archive '.../actions/checkout/tar.gz/...'
-after 3 attempts`. Zero `DATA RACE`, zero test output, no code executed.
+branch. **Not a test failure** — the jobs never reach a build step. Zero `DATA RACE`,
+zero test output, no code executed.
+
+The signature is "died at an ACTION-TARBALL download", not a fixed log length, and
+that distinction matters because the first shape found was uniform and the second was
+not. Most failures are a 21-line log: three `429 (Too Many Requests)` from
+`codeload.github.com` for `actions/checkout`, then `Failed to download archive ...
+after 3 attempts`. But a 24-line variant *cleared* `actions/checkout` on retry and then
+died the same way on `actions/setup-go`, and its warnings include a **503 Service
+Unavailable** as well as 429s. GitHub's own GraphQL API was returning 503s in the same
+window (a `gh pr comment` failed that way), so the TRIGGER was a platform-wide
+degradation rather than a steady-state rate limit on this repo.
+
+That does not change the fix, and it is the reason the fix is worth doing: a runner
+with a local action cache is immune to a codeload incident, whereas one that refetches
+per job fails every job for the duration. Do not expect the 21-line log as a
+fingerprint — match on the download failure, whichever action it names.
 
 The split is by RUNNER, measured over the workflow files:
 
