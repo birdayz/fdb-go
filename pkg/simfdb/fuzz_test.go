@@ -69,11 +69,13 @@ func FuzzSimFDB_RYW(f *testing.F) {
 		}
 
 		// maxOps bounds the op stream so one input stays well inside the fuzzer's per-input
-		// budget. The oracle checks fifteen reads after EVERY op, and each read rebuilds the
-		// write map from the buffer (buildWriteMap is deliberately recomputed per conflict
-		// decision — see ryw_conflict.go), so the body is quadratic in the op count. An
-		// unbounded stream reached ~1250 ops and 5.7s for a single input, which the fuzzer
-		// reports as a hung worker rather than as the timing artefact it is.
+		// budget. The oracle checks fifteen reads after EVERY op, and each read replays the
+		// buffer to classify its conflict (conflictForKeyDirect — see ryw_conflict.go), so
+		// the body is quadratic in the op count. An unbounded stream reached ~1250 ops and
+		// 5.7s for a single input, which the fuzzer reports as a hung worker rather than as
+		// the timing artefact it is. The replay no longer builds a map per read, which cut
+		// the constant sharply but not the quadratic shape, so the bound still earns its
+		// keep.
 		//
 		// The bound costs nothing the target was buying: the interesting axis is the op
 		// SEQUENCE (mutation ordering, clear coverage, atomic accumulation over a key), and

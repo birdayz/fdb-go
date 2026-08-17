@@ -47,10 +47,13 @@ type writeMap struct {
 
 // buildWriteMap replays tx.buffer in issue order into a writeMap.
 //
-// It is rebuilt per conflict decision rather than maintained incrementally. The sim's buffers
-// are small and its reads are synchronous, so the cost is irrelevant here — unlike in the
-// client, where routing the hot single-key Get path through the range walk made a write-heavy
-// transaction quadratic and is why conflictForKeyLocked exists as a separate fast path.
+// It is rebuilt per RANGE conflict decision rather than maintained incrementally: a range walk
+// genuinely needs every operation key in the window, so there is nothing to narrow it to.
+//
+// The single-key decision does NOT come through here — conflictForKeyDirect answers that one
+// without allocating, mirroring the client's conflictForKeyLocked. Routing it through this
+// build is exactly the quadratic the client has its own fast path to avoid, and it measured
+// 31% of total CPU before being split out.
 func (tx *simTxn) buildWriteMap() writeMap {
 	wm := writeMap{ops: make(map[string]writeEntry, len(tx.buffer))}
 	for _, m := range tx.buffer {
@@ -211,10 +214,51 @@ func (tx *simTxn) addFilteredReadConflictKey(key []byte) {
 		tx.addReadConflict(key, keyAfter(key))
 		return
 	}
-	wm := tx.buildWriteMap()
-	if wm.conflictForKey(key) {
+	if tx.conflictForKeyDirect(key) {
 		tx.addReadConflict(key, keyAfter(key))
 	}
+}
+
+// conflictForKeyDirect answers conflictForKey for ONE key by replaying the buffer for that
+// key alone, allocating nothing.
+//
+// This is the sim's counterpart to the client's conflictForKeyLocked, and it exists for the
+// same reason: routing the single-key decision through the whole-buffer build made a
+// write-heavy transaction quadratic. buildWriteMap's own comment used to say the cost was
+// "irrelevant here" because the sim's buffers are small and its reads synchronous. That was
+// measured wrong — 31% of total CPU, ahead of every record-layer function, on a benchmark
+// whose ingest batches 500 rows per transaction while each read inside it rebuilt the map.
+// The map, its string keys and its allocation were all discarded after reading one entry.
+//
+// The state machine is buildWriteMap's, narrowed to one key rather than restated: the cleared
+// set only ever GROWS (addCleared merges, never removes), so tracking membership as a single
+// monotone flag is the same answer isCleared would give at any point in the replay.
+func (tx *simTxn) conflictForKeyDirect(key []byte) bool {
+	var hasOp, dependent, cleared bool
+	for _, m := range tx.buffer {
+		switch m.kind {
+		case mutSet, mutVersionstampedKey, mutVersionstampedValue:
+			if bytes.Equal(m.key, key) {
+				hasOp, dependent = true, false
+			}
+		case mutClear:
+			if bytes.Equal(m.key, key) {
+				hasOp, dependent, cleared = false, false, true
+			}
+		case mutClearRange:
+			if bytes.Compare(key, m.key) >= 0 && bytes.Compare(key, m.end) < 0 {
+				hasOp, dependent, cleared = false, false, true
+			}
+		case mutAtomic:
+			if bytes.Equal(m.key, key) && !hasOp {
+				hasOp, dependent = true, !cleared
+			}
+		}
+	}
+	if hasOp {
+		return dependent
+	}
+	return !cleared
 }
 
 // addFilteredReadConflict records a range read conflict, filtered through the write map.
