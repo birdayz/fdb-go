@@ -34,6 +34,12 @@ type exactType struct {
 	enumValues []EnumValue
 	canonical  []byte
 	hash       uint64
+	// internHashValue buckets this node in the intern table. It is NOT the
+	// canonical hash above: the intern probe has to be computable BEFORE the
+	// node exists, so it folds the source shape plus the children's intern
+	// hashes rather than a canonical encoding nothing has built yet. It also
+	// folds the record/enum NAME, which canonical identity excludes.
+	internHashValue uint64
 
 	// protoShape memoizes "can this protobuf descriptor read the shape I
 	// captured" — see protoRecordShapeCompatible, which is the answer being
@@ -165,9 +171,7 @@ func ExactRelationOf(object Type) (ExactTypeHandle, error) {
 		return nil, err
 	}
 	inner := handle.(*exactType)
-	relation := &exactType{code: TypeCodeRelation, element: inner}
-	relation.finishCanonical()
-	return relation, nil
+	return internedRelationExactType(inner), nil
 }
 
 // AsExactTypeHandle exact-recognizes the package-owned immutable handle. An
@@ -239,7 +243,9 @@ var sharedPrimitiveExactTypes = func() map[TypeCode][2]*exactType {
 	for _, code := range exactPrimitiveCodes {
 		var pair [2]*exactType
 		for _, nullable := range [2]bool{false, true} {
+			probe := exactProbe{code: code, nullable: nullable}
 			exact := &exactType{code: code, nullable: nullable}
+			exact.internHashValue = probe.internHash()
 			exact.finishCanonical()
 			pair[boolIndex(nullable)] = exact
 		}
@@ -259,7 +265,9 @@ func sharedPrimitiveExactType(code TypeCode, nullable bool) *exactType {
 	if pair, known := sharedPrimitiveExactTypes[code]; known {
 		return pair[boolIndex(nullable)]
 	}
+	probe := exactProbe{code: code, nullable: nullable}
 	exact := &exactType{code: code, nullable: nullable}
+	exact.internHashValue = probe.internHash()
 	exact.finishCanonical()
 	return exact
 }
@@ -318,10 +326,12 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 	}
 	active = append(active, identity)
 
-	var exact *exactType
 	switch typed := typ.(type) {
 	case anyRecordType:
-		exact = &exactType{code: TypeCodeRecord, nullable: typed.nullable, anyRecord: true}
+		probe := exactProbe{code: TypeCodeRecord, nullable: typed.nullable, anyRecord: true}
+		return internedExactType(&probe, func() *exactType {
+			return &exactType{code: TypeCodeRecord, nullable: typed.nullable, anyRecord: true}
+		}), nil
 	case *PrimitiveType:
 		switch typed.TypeCode {
 		case TypeCodeUnknown, TypeCodeAny, TypeCodeNone:
@@ -335,7 +345,16 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 		}
 		return sharedPrimitiveExactType(typed.TypeCode, typed.Nullable), nil
 	case *RecordType:
-		fields := make([]exactField, len(typed.Fields))
+		// The child handles are collected into a small stack array before the
+		// probe runs. They are all this arm needs to identify the record, and
+		// they are 8 bytes each against the 32 an exactField costs — which
+		// matters because the whole point of probing first is that the common
+		// call allocates NOTHING.
+		var childBuf [16]*exactType
+		children := childBuf[:0]
+		if len(typed.Fields) > cap(children) {
+			children = make([]*exactType, 0, len(typed.Fields))
+		}
 		for i, field := range typed.Fields {
 			if field.Ordinal != i {
 				return nil, resolutionError(TypeMalformedOrdinal, path, "record field ordinal does not equal its position")
@@ -344,14 +363,27 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 			if err != nil {
 				return nil, prefixExactPath(err, ".field["+uitoa(uint64(i))+"]")
 			}
-			fields[i] = exactField{name: field.Name, ordinal: i, typ: fieldType}
+			children = append(children, fieldType)
 		}
-		exact = &exactType{
-			code:     TypeCodeRecord,
-			nullable: typed.Nullable,
-			name:     typed.RecordName,
-			fields:   fields,
+		probe := exactProbe{
+			code:      TypeCodeRecord,
+			nullable:  typed.Nullable,
+			name:      typed.RecordName,
+			srcFields: typed.Fields,
+			children:  children,
 		}
+		return internedExactType(&probe, func() *exactType {
+			fields := make([]exactField, len(typed.Fields))
+			for i, field := range typed.Fields {
+				fields[i] = exactField{name: field.Name, ordinal: i, typ: children[i]}
+			}
+			return &exactType{
+				code:     TypeCodeRecord,
+				nullable: typed.Nullable,
+				name:     typed.RecordName,
+				fields:   fields,
+			}
+		}), nil
 	case *ArrayType:
 		if typed.ElementType == nil {
 			return nil, resolutionError(TypeErased, path, "array element type is erased")
@@ -360,12 +392,17 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 		if err != nil {
 			return nil, prefixExactPath(err, ".element")
 		}
-		exact = &exactType{code: TypeCodeArray, nullable: typed.Nullable, element: element}
+		probe := exactProbe{code: TypeCodeArray, nullable: typed.Nullable, element: element}
+		return internedExactType(&probe, func() *exactType {
+			return &exactType{code: TypeCodeArray, nullable: typed.Nullable, element: element}
+		}), nil
 	case *EnumType:
-		values := append([]EnumValue(nil), typed.Values...)
-		seenNames := make(map[string]struct{}, len(values))
-		seenNumbers := make(map[int32]struct{}, len(values))
-		for _, value := range values {
+		// The duplicate checks run on EVERY call, not only on a miss: they are
+		// admission, and an invalid enum must be refused whether or not an equal
+		// valid one has been interned before it.
+		seenNames := make(map[string]struct{}, len(typed.Values))
+		seenNumbers := make(map[int32]struct{}, len(typed.Values))
+		for _, value := range typed.Values {
 			if _, duplicate := seenNames[value.Name]; duplicate {
 				return nil, resolutionError(TypeMalformedCode, path, "duplicate enum value name")
 			}
@@ -375,7 +412,20 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 			seenNames[value.Name] = struct{}{}
 			seenNumbers[value.Number] = struct{}{}
 		}
-		exact = &exactType{code: TypeCodeEnum, nullable: typed.Nullable, name: typed.EnumName, enumValues: values}
+		probe := exactProbe{
+			code:       TypeCodeEnum,
+			nullable:   typed.Nullable,
+			name:       typed.EnumName,
+			enumValues: typed.Values,
+		}
+		return internedExactType(&probe, func() *exactType {
+			return &exactType{
+				code:       TypeCodeEnum,
+				nullable:   typed.Nullable,
+				name:       typed.EnumName,
+				enumValues: append([]EnumValue(nil), typed.Values...),
+			}
+		}), nil
 	case *RelationType:
 		if typed.InnerType == nil {
 			return nil, resolutionError(TypeErased, path, "relation inner type is erased")
@@ -384,10 +434,19 @@ func snapshotExactType(typ Type, active []any) (*exactType, error) {
 		if err != nil {
 			return nil, prefixExactPath(err, ".inner")
 		}
-		exact = &exactType{code: TypeCodeRelation, element: inner}
+		return internedRelationExactType(inner), nil
 	}
-	exact.finishCanonical()
-	return exact, nil
+	return nil, resolutionError(TypeMalformedCode, path, "unsupported concrete Type implementation")
+}
+
+// internedRelationExactType is the RELATION wrapper as its own entry point,
+// because ExactRelationOf builds one from an already-snapshotted inner handle
+// rather than from a *RelationType.
+func internedRelationExactType(inner *exactType) *exactType {
+	probe := exactProbe{code: TypeCodeRelation, element: inner}
+	return internedExactType(&probe, func() *exactType {
+		return &exactType{code: TypeCodeRelation, element: inner}
+	})
 }
 
 func (e *exactType) finishCanonical() {
