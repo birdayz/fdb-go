@@ -81,7 +81,7 @@ func TestReanchorCrossesANullabilityWidenedLegRoot(t *testing.T) {
 	// crossing declined and left the read on its own root.
 	carrierOrdinal := func(t *testing.T, read Value) int {
 		t.Helper()
-		reanchored, reanchorErr := ReanchorValueThroughProducer(read, producer, carrier)
+		reanchored, reanchorErr := reanchorUnowned(read, producer, carrier)
 		if reanchorErr != nil {
 			t.Fatalf("reanchor %s: %v", ExplainValue(read), reanchorErr)
 		}
@@ -331,7 +331,7 @@ func TestReanchorCrossesANullabilityWidenedLegRootIntoANestedPath(t *testing.T) 
 	// crossing declined and left the read on its own root.
 	carrierPath := func(t *testing.T, read Value) []int {
 		t.Helper()
-		reanchored, reanchorErr := ReanchorValueThroughProducer(read, producer, carrier)
+		reanchored, reanchorErr := reanchorUnowned(read, producer, carrier)
 		if reanchorErr != nil {
 			t.Fatalf("reanchor %s: %v", ExplainValue(read), reanchorErr)
 		}

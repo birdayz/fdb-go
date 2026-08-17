@@ -67,7 +67,7 @@ func TestReanchorDoesNotBindOneSourceToAnothersSlot(t *testing.T) {
 	}
 
 	// B.VAL — the read whose only NAME match is A's slot.
-	reanchored, err := ReanchorValueThroughProducer(field(right, 1), producer, target.Carrier())
+	reanchored, err := reanchorUnowned(field(right, 1), producer, target.Carrier())
 	if err != nil {
 		t.Fatalf("reanchor B.VAL: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestReanchorStillBridgesANominallyRenamedSource(t *testing.T) {
 		t.Fatalf("target layout: %v", err)
 	}
 
-	reanchored, err := ReanchorValueThroughProducer(field(logical, 1), producer, target.Carrier())
+	reanchored, err := reanchorUnowned(field(logical, 1), producer, target.Carrier())
 	if err != nil {
 		t.Fatalf("reanchor: %v", err)
 	}

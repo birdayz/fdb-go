@@ -249,8 +249,9 @@ func nestedLoopJoinBaseWithRetainedScalarSources(
 				return PlanExprBase{}, fmt.Errorf(
 					"RecordQueryNestedLoopJoinPlan retained scalar leg binding: %w", reanchorErr)
 			}
-			outputValue, reanchorErr := values.ReanchorValueThroughProducer(
-				childValue, resultValue, baseLayout.Carrier())
+			outputValue, reanchorErr := values.ReanchorOwnedValueThroughProducer(
+				childValue, resultValue, baseLayout.Carrier(),
+				producerOwnedCorrelations(resultValue))
 			if reanchorErr != nil {
 				return PlanExprBase{}, fmt.Errorf(
 					"RecordQueryNestedLoopJoinPlan retained scalar output: %w", reanchorErr)
@@ -408,8 +409,9 @@ func (p *RecordQueryNestedLoopJoinPlan) reanchorInputValueToOutput(value values.
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryNestedLoopJoinPlan child lineage: %w", err)
 	}
-	normalized, err = values.ReanchorValueThroughProducer(
-		normalized, p.resultValue, layout.Carrier())
+	normalized, err = values.ReanchorOwnedValueThroughProducer(
+		normalized, p.resultValue, layout.Carrier(),
+		producerOwnedCorrelations(p.resultValue))
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryNestedLoopJoinPlan result lineage: %w", err)
 	}

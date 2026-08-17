@@ -98,6 +98,58 @@ func (p *RecordQueryDefaultOnEmptyPlan) GetInner() RecordQueryPlan {
 	return planFromQuantifier(p.innerQ)
 }
 
+// reanchorInputValueToOutput carries a value across the null-extension.
+//
+// This plan is the operator that makes an outer join's null-supplying side
+// null-supplying: it republishes its child's row widened to nullable, so its
+// carrier is a DIFFERENT handle with a DIFFERENT exact type. The generic
+// descendant walk therefore stops here — correctly, since it may only cross
+// wrappers that preserve the layout exactly — and a value naming a source
+// buried inside the child (`b.bid` under `mb JOIN mc RIGHT JOIN ma`) reached the
+// enclosing producer with no ownership proof available for it. Before the
+// ownership gate, one output slot carrying the same accessor name answered on
+// its behalf; that is right when the names are unique and a coin flip when they
+// are not.
+//
+// So the crossing is stated instead of guessed: descend to the child's own
+// lineage authority, then move the resulting root from the child's row onto this
+// plan's widened row. Both halves are checked — a child with no materializer or
+// a value the child cannot place comes back untouched, and the widening itself
+// refuses anything that is not the same row.
+func (p *RecordQueryDefaultOnEmptyPlan) reanchorInputValueToOutput(
+	value values.Value,
+) (values.Value, error) {
+	inner := p.GetInner()
+	if value == nil || inner == nil {
+		return value, nil
+	}
+	materializer, ok := descendantValueMaterializer(inner)
+	if !ok {
+		return value, nil
+	}
+	crossed, err := materializer.reanchorInputValueToOutput(value)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan inner lineage: %w", err)
+	}
+	innerLayout, err := inner.ProvidedOutputLayout()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan inner layout: %w", err)
+	}
+	outputLayout, err := p.ProvidedOutputLayout()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan output layout: %w", err)
+	}
+	if innerLayout.Carrier() == outputLayout.Carrier() {
+		return crossed, nil
+	}
+	widened, err := values.TranslateNullExtendedPhaseRoot(
+		crossed, innerLayout.Carrier(), outputLayout.Carrier())
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryDefaultOnEmptyPlan null extension: %w", err)
+	}
+	return widened, nil
+}
+
 // GetInnerQuantifier returns the live child quantifier — the single memo edge the
 // default-on-empty ranges over. derivationsForDefaultOnEmpty reads its alias to
 // translate the default value's correlation; since RFC-184 W2 the memo holds the

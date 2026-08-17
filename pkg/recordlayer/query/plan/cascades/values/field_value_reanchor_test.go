@@ -214,7 +214,7 @@ func TestReanchorValueThroughProducerUsesOwnedOrUniqueLineageOnly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	mappedCID, err := ReanchorValueThroughProducer(logicalCID, producer, output.Carrier())
+	mappedCID, err := reanchorUnowned(logicalCID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestReanchorValueThroughProducerUsesOwnedOrUniqueLineageOnly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	mappedCurrent, err := ReanchorValueThroughProducer(currentCID, producer, output.Carrier())
+	mappedCurrent, err := reanchorUnowned(currentCID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestReanchorValueThroughProducerUsesOwnedOrUniqueLineageOnly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchangedCurrent, err := ReanchorValueThroughProducer(
+	unchangedCurrent, err := reanchorUnowned(
 		foreignCurrentCID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +284,7 @@ func TestReanchorValueThroughProducerUsesOwnedOrUniqueLineageOnly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	mappedOID, err := ReanchorValueThroughProducer(edgeOID, producer, output.Carrier())
+	mappedOID, err := reanchorUnowned(edgeOID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +299,7 @@ func TestReanchorValueThroughProducerUsesOwnedOrUniqueLineageOnly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	ambiguous, err := ReanchorValueThroughProducer(edgeCID, producer, output.Carrier())
+	ambiguous, err := reanchorUnowned(edgeCID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestReanchorValueThroughProducerPrefersExactOwnerOrdinalPath(t *testing.T) 
 		{"second duplicate ID", secondID, 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			mapped, mapErr := ReanchorValueThroughProducer(
+			mapped, mapErr := reanchorUnowned(
 				test.requested, producer, output.Carrier())
 			if mapErr != nil {
 				t.Fatalf("reanchor duplicate owner field: %v", mapErr)
@@ -376,7 +376,7 @@ func TestReanchorValueThroughProducerPrefersExactOwnerOrdinalPath(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err := ReanchorValueThroughProducer(foreignID, producer, output.Carrier())
+	unchanged, err := reanchorUnowned(foreignID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,14 +396,14 @@ func TestReanchorValueThroughProducerPrefersExactOwnerOrdinalPath(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err = ReanchorValueThroughProducer(wrongID, producer, output.Carrier())
+	unchanged, err = reanchorUnowned(wrongID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if unchanged != wrongID {
 		t.Fatal("same-alias different exact row type borrowed the ordinal match tier")
 	}
-	unchanged, err = ReanchorValueThroughProducer(absentHID, producer, output.Carrier())
+	unchanged, err = reanchorUnowned(absentHID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestReanchorValueThroughProducerMapsUniqueBareObjectSlot(t *testing.T) {
 			if requested == producerRoot {
 				t.Fatal("fixture did not mint independent logical and producer QOVs")
 			}
-			mapped, err := ReanchorValueThroughProducer(requested, producer, output.Carrier())
+			mapped, err := reanchorUnowned(requested, producer, output.Carrier())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -471,7 +471,7 @@ func TestReanchorValueThroughProducerMapsUniqueBareObjectSlot(t *testing.T) {
 			}
 
 			foreign := mustLayoutSourceQOV(t, "FOREIGN", tc.typ)
-			unchanged, err := ReanchorValueThroughProducer(foreign, producer, output.Carrier())
+			unchanged, err := reanchorUnowned(foreign, producer, output.Carrier())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -480,7 +480,7 @@ func TestReanchorValueThroughProducerMapsUniqueBareObjectSlot(t *testing.T) {
 			}
 
 			wrongType := mustLayoutSourceQOV(t, "VAL", NullableString)
-			unchanged, err = ReanchorValueThroughProducer(wrongType, producer, output.Carrier())
+			unchanged, err = reanchorUnowned(wrongType, producer, output.Carrier())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -500,7 +500,7 @@ func TestReanchorValueThroughProducerMapsUniqueBareObjectSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	foreignCurrent := mustLayoutCurrentQOV(t, NotNullInt)
-	unchanged, err := ReanchorValueThroughProducer(foreignCurrent, currentRC, currentOutput.Carrier())
+	unchanged, err := reanchorUnowned(foreignCurrent, currentRC, currentOutput.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func TestReanchorValueThroughProducerMapsUniqueBareObjectSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	ambiguous := mustLayoutSourceQOV(t, "VAL", NotNullInt)
-	unchanged, err = ReanchorValueThroughProducer(ambiguous, duplicateRC, duplicateOutput.Carrier())
+	unchanged, err = reanchorUnowned(ambiguous, duplicateRC, duplicateOutput.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +559,7 @@ func TestReanchorValueThroughProducerCarriesNestedCurrentSuffixExactly(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	mapped, err := ReanchorValueThroughProducer(requested, producer, output.Carrier())
+	mapped, err := reanchorUnowned(requested, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +581,7 @@ func TestReanchorValueThroughProducerCarriesNestedCurrentSuffixExactly(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err := ReanchorValueThroughProducer(foreignField, producer, output.Carrier())
+	unchanged, err := reanchorUnowned(foreignField, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestReanchorValueThroughProducerCarriesNestedCurrentSuffixExactly(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err = ReanchorValueThroughProducer(wrongTypedField, producer, output.Carrier())
+	unchanged, err = reanchorUnowned(wrongTypedField, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func TestReanchorValueThroughProducerCarriesNestedCurrentSuffixExactly(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	unchanged, err = ReanchorValueThroughProducer(wrongPath, producer, output.Carrier())
+	unchanged, err = reanchorUnowned(wrongPath, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +667,7 @@ func TestReanchorOwnedValueThroughProducerRejectsForeignUniqueSlot(t *testing.T)
 		t.Fatal("foreign outer A.ID was captured by a one-slot A.ID producer")
 	}
 
-	ordinary, err := ReanchorValueThroughProducer(outerID, producer, output.Carrier())
+	ordinary, err := reanchorUnowned(outerID, producer, output.Carrier())
 	if err != nil {
 		t.Fatal(err)
 	}

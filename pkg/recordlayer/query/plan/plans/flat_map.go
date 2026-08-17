@@ -237,6 +237,9 @@ func flatMapBaseWithRetainedSources(
 			}
 		}
 	}
+	// Hoisted out of the leg loop: the set is a property of the result program,
+	// which does not change per leg.
+	ownedByResult := producerOwnedCorrelations(resultValue)
 	var additional []values.OrdinalOutputSource
 	for _, leg := range legs {
 		if leg.alias.IsZero() || leg.nullSupplying {
@@ -300,8 +303,8 @@ func flatMapBaseWithRetainedSources(
 				outputValue, reanchorErr = values.TranslateDeclaredEdgeRoot(
 					childValue, resultRoot, baseLayout.Carrier())
 			} else {
-				outputValue, reanchorErr = values.ReanchorValueThroughProducer(
-					childValue, resultValue, baseLayout.Carrier())
+				outputValue, reanchorErr = values.ReanchorOwnedValueThroughProducer(
+					childValue, resultValue, baseLayout.Carrier(), ownedByResult)
 			}
 			if reanchorErr != nil {
 				return PlanExprBase{}, fmt.Errorf(
@@ -520,11 +523,15 @@ func relinkFlatMapResultSource(
 	return values.TranslateLogicalSourceRoot(resultValue, declaration, target)
 }
 
-func (p *RecordQueryFlatMapPlan) GetOuter() RecordQueryPlan                   { return planFromQuantifier(p.outerQ) }
-func (p *RecordQueryFlatMapPlan) GetInner() RecordQueryPlan                   { return planFromQuantifier(p.innerQ) }
+func (p *RecordQueryFlatMapPlan) GetOuter() RecordQueryPlan { return planFromQuantifier(p.outerQ) }
+
+func (p *RecordQueryFlatMapPlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
+
 func (p *RecordQueryFlatMapPlan) GetOuterAlias() values.CorrelationIdentifier { return p.outerAlias }
+
 func (p *RecordQueryFlatMapPlan) GetInnerAlias() values.CorrelationIdentifier { return p.innerAlias }
-func (p *RecordQueryFlatMapPlan) GetResultValue() values.Value                { return p.resultValue }
+
+func (p *RecordQueryFlatMapPlan) GetResultValue() values.Value { return p.resultValue }
 
 func (p *RecordQueryFlatMapPlan) InheritOuterRecordProperties() bool {
 	return p.inheritOuterRecordProperties
@@ -644,8 +651,13 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 				// output ordinal 0. Without this step an identity FlatMap and a
 				// materializing sort discard O's source window while a parent keeps
 				// the now-unbindable O root.
-				reanchored, err = values.ReanchorValueThroughProducer(
-					reanchored, outer.GetResultValue(), outerLayout.Carrier())
+				// The ownership set comes from the CHILD's result program, which is
+				// the producer here. This FlatMap's own outer edge is deliberately
+				// not in it: that edge denotes the child's finished OUTPUT row, and
+				// crossing it is translateFlatMapChildOutputToBinding's job below.
+				reanchored, err = values.ReanchorOwnedValueThroughProducer(
+					reanchored, outer.GetResultValue(), outerLayout.Carrier(),
+					producerOwnedCorrelations(outer.GetResultValue()))
 				if err != nil {
 					return nil, fmt.Errorf("RecordQueryFlatMapPlan outer producer lineage: %w", err)
 				}
@@ -724,8 +736,9 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 	// O is normalized to physical _1 before consulting this program, the generic
 	// producer matcher can mistake it for the authored element named _1.
 	beforeResult := reanchored
-	reanchored, err = values.ReanchorValueThroughProducer(
-		reanchored, p.resultValue, layout.Carrier())
+	reanchored, err = values.ReanchorOwnedValueThroughProducer(
+		reanchored, p.resultValue, layout.Carrier(),
+		producerOwnedCorrelations(p.resultValue))
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan result lineage: %w", err)
 	}
@@ -747,8 +760,9 @@ func (p *RecordQueryFlatMapPlan) reanchorInputValueToOutput(value values.Value) 
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan inner ordinality lineage: %w", err)
 		}
-		reanchored, err = values.ReanchorValueThroughProducer(
-			reanchored, p.resultValue, layout.Carrier())
+		reanchored, err = values.ReanchorOwnedValueThroughProducer(
+			reanchored, p.resultValue, layout.Carrier(),
+			producerOwnedCorrelations(p.resultValue))
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryFlatMapPlan normalized result lineage: %w", err)
 		}

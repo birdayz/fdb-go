@@ -180,31 +180,27 @@ func ReanchorValueForLayout(
 	return visit(value)
 }
 
-// ReanchorValueThroughProducer rewrites fields supplied by a record-producing
-// Value onto that producer's exact output carrier. This is the checked lineage
-// bridge used before a materializer discards its input layout's source windows.
+// ReanchorOwnedValueThroughProducer rewrites fields supplied by a
+// record-producing Value onto that producer's exact output carrier. This is the
+// checked lineage bridge used before a materializer discards its input layout's
+// source windows, and it is the ONLY exported way in: an ownership set is
+// mandatory, because the bridge's name fallback is a false-accept machine
+// without one.
 //
-// A field is selected by its complete accessor-name path and exact result type.
-// A matching source correlation wins when duplicate column names exist; absent
-// that ownership proof, exactly one matching producer slot is required. Thus a
-// parent edge spelling may cross into a uniquely identified OID slot, while an
-// unowned CID in a two-leg join remains unchanged instead of guessing. The
-// producer's output ordinal—not a copied input ordinal—is the address installed
-// on target.
-func ReanchorValueThroughProducer(
-	value Value,
-	producer Value,
-	target QuantifiedObjectValue,
-) (Value, error) {
-	return reanchorValueThroughProducer(value, producer, target, nil)
-}
-
-// ReanchorOwnedValueThroughProducer is the predicate-safe producer bridge.
-// Only exact FieldValue roots listed in owned may be claimed by producer;
-// foreign/outer roots remain byte-for-byte unchanged even when a one-slot
-// producer exposes the same accessor name and leaf type. The ordinary bridge
-// intentionally retains its unique-slot fallback for projection and ordering
-// programs whose extraction edge no longer carries the logical owner alias.
+// Only roots listed in owned may be claimed by producer. A foreign or outer
+// root comes back BYTE-FOR-BYTE UNCHANGED even when a one-slot producer exposes
+// the same accessor name and leaf type, and an unresolved root then fails
+// loudly downstream instead of silently reading a neighbouring column. Three
+// wrong-answer bugs came out of the name-only path — A.VAL and B.VAL both
+// reading A's slot, an EXISTS answering on another leg's ID, a sort key read
+// under an aliased column's label — so the caller must state what the producer
+// owns rather than let the match decide.
+//
+// Within the owned set a field is selected by its complete accessor-name path
+// and exact result type: a matching source correlation wins when duplicate
+// column names exist, and absent that ownership proof exactly one matching
+// producer slot is required. The producer's output ordinal — not a copied input
+// ordinal — is the address installed on target.
 func ReanchorOwnedValueThroughProducer(
 	value Value,
 	producer Value,

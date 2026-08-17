@@ -482,3 +482,119 @@ func projectionInputNamesOnlyCompatible(declaration, target *exactType) bool {
 	}
 	return true
 }
+
+// TranslateNullExtendedPhaseRoot crosses the ONE phase boundary where a row's
+// exact type legitimately changes: an operator that may emit NO row for its
+// child republishes the child's row widened to nullable. Ordinals, arity, field
+// names, record names and every NESTED nullability are unchanged — only the
+// top-level bit moves, and only in the widening direction.
+//
+// This exists because that boundary is otherwise IMPASSABLE by construction and
+// was being crossed by guesswork instead. A lineage walk stops at any wrapper
+// whose layout differs from its child's, which is right in general — provenance
+// must not leak through a reshaping operator — but a null-extension wrapper is
+// not reshaping anything. The value then arrived at the enclosing producer still
+// rooted on the child's row, no ownership proof could place it, and the only
+// thing that ever resolved it was one output slot happening to carry the same
+// accessor name. On `SELECT ma.id, b.bid, c.cid FROM mb b JOIN mc c ON b.ref =
+// c.cid RIGHT JOIN ma ON ma.id = b.bid` that name match is correct; give the box
+// two same-named columns and it is a coin flip that reads the wrong one.
+//
+// The widening direction is asserted rather than tolerated in both directions.
+// Narrowing a nullable row onto a NOT NULL phase would be a claim that a row
+// which may be absent is always present, which is exactly the fact an outer
+// join exists to record.
+func TranslateNullExtendedPhaseRoot(
+	value Value,
+	source QuantifiedObjectValue,
+	target QuantifiedObjectValue,
+) (Value, error) {
+	if value == nil {
+		return nil, resolutionError(RewriteNilReplacement, "null-extended.value", "phase Value is nil")
+	}
+	exactSource, err := exactLayoutQOV(source, "null-extended.source")
+	if err != nil {
+		return nil, err
+	}
+	exactTarget, err := exactLayoutQOV(target, "null-extended.target")
+	if err != nil {
+		return nil, err
+	}
+	if exactSource == exactTarget {
+		return value, nil
+	}
+	if !QuantifiedRowShapesAgree(exactSource.flowed.Type(), exactTarget.flowed.Type()) {
+		return nil, resolutionError(LayoutTypeMismatch, "null-extended.target",
+			"source and target are not the same row: source "+describeExactType(exactSource.flowed)+
+				", target "+describeExactType(exactTarget.flowed))
+	}
+	if exactSource.flowed.Type().IsNullable() || !exactTarget.flowed.Type().IsNullable() {
+		return nil, resolutionError(LayoutTypeMismatch, "null-extended.target",
+			"a null-extension widens a present row to an absent-capable one; source nullable="+
+				boolText(exactSource.flowed.Type().IsNullable())+", target nullable="+
+				boolText(exactTarget.flowed.Type().IsNullable()))
+	}
+
+	var visit func(Value) (Value, error)
+	visit = func(node Value) (Value, error) {
+		if node == nil {
+			return nil, resolutionError(RewriteNilReplacement, "null-extended.value", "value tree contains nil")
+		}
+		if field, isField := node.(*fieldValue); isField && isAdmittedFieldValue(field) {
+			if field.Child.(*quantifiedObjectValue) != exactSource {
+				// Preserve the complete FieldValue rather than descending into its
+				// root; a separately retargeted child would carry the old resolved
+				// path into a different domain.
+				return node, nil
+			}
+			rebuilt, rebuildErr := RebuildFieldValue(field, exactTarget)
+			if rebuildErr != nil {
+				return nil, resolutionError(ReanchorInvalidMappedPath, "null-extended.field", rebuildErr.Error())
+			}
+			retargeted, ok := rebuilt.(*fieldValue)
+			if !ok || !isAdmittedFieldValue(retargeted) {
+				return nil, resolutionError(ReanchorInvalidMappedPath, "null-extended.field",
+					"resolved path did not produce an exact FieldValue")
+			}
+			// Reading INTO the row is unaffected by whether the row may be absent,
+			// so a leaf whose exact type moved means the two rows were not the same
+			// row after all and the shape check above was not strong enough.
+			if !exactTypesEqual(field.resultType, retargeted.resultType) {
+				return nil, resolutionError(ReanchorResultTypeMismatch, "null-extended.field",
+					"crossing the null-extension changed a leaf's exact type")
+			}
+			return retargeted, nil
+		}
+		if root, isQOV := node.(*quantifiedObjectValue); isQOV && root == exactSource {
+			// The whole-row read is the one place the type is SUPPOSED to change:
+			// the caller asked for the row this operator emits, which may be absent.
+			return exactTarget, nil
+		}
+
+		children := node.Children()
+		if len(children) == 0 {
+			return node, nil
+		}
+		var rebuiltChildren []Value
+		for i, child := range children {
+			rebuilt, childErr := visit(child)
+			if childErr != nil {
+				return nil, childErr
+			}
+			if rebuilt != child {
+				if rebuiltChildren == nil {
+					rebuiltChildren = make([]Value, len(children))
+					copy(rebuiltChildren[:i], children[:i])
+				}
+				rebuiltChildren[i] = rebuilt
+			} else if rebuiltChildren != nil {
+				rebuiltChildren[i] = child
+			}
+		}
+		if rebuiltChildren == nil {
+			return node, nil
+		}
+		return withChildrenChecked(node, rebuiltChildren)
+	}
+	return visit(value)
+}

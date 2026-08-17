@@ -289,50 +289,62 @@ func TestInMemorySortPlan_ProducerBoundaryReanchorsLegFieldsBeforeWindowsDisappe
 		return NewRecordQueryInMemorySortPlan(join, nil)
 	})
 
-	// C retains its logical owner alias but not the storage record name. OID
-	// carries an extraction edge alias instead of the logical O alias. The
-	// producer RC is authoritative for both: owner+name selects C.CID, while
-	// globally unique name selects O.OID.
+	// C retains its logical owner alias but not the storage record name. The
+	// producer RC is authoritative: the join OWNS C, so owner+name selects
+	// C.CID across the nominal rename. This is the case a rename must still
+	// cross, and it crosses on an ownership proof rather than on the spelling.
 	logicalOuter := mustOrdinalLayoutQOV(t, fixture.outerAlias,
 		values.NewRecordType("", false, outerType.Fields))
 	logicalCID, err := values.ResolveFieldOrdinals(logicalOuter, []int{0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	physicalInner := mustOrdinalLayoutQOV(t,
-		values.NamedCorrelationIdentifier("physical_projection_edge"), innerType)
-	physicalOID, err := values.ResolveFieldOrdinals(physicalInner, []int{0})
-	if err != nil {
-		t.Fatal(err)
-	}
 	projection := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
-		return NewRecordQueryProjectionPlan([]values.Value{logicalCID, physicalOID}, sortPlan)
+		return NewRecordQueryProjectionPlan([]values.Value{logicalCID}, sortPlan)
 	})
 	sortLayout := requireProvidedLayout(t, sortPlan)
-	for i, wantPath := range [][]int{{0}, {2}} {
-		field, ok := values.AsFieldValue(projection.GetProjections()[i])
-		if !ok || field.ChildValue() != sortLayout.Carrier() {
-			t.Fatalf("projection %d root = %T/%v, want exact sort carrier %p",
-				i, projection.GetProjections()[i], field, sortLayout.Carrier())
-		}
-		gotPath := field.Path().Ordinals()
-		if len(gotPath) != 1 || gotPath[0] != wantPath[0] {
-			t.Fatalf("projection %d path = %v, want %v", i, gotPath, wantPath)
-		}
+	field, ok := values.AsFieldValue(projection.GetProjections()[0])
+	if !ok || field.ChildValue() != sortLayout.Carrier() {
+		t.Fatalf("owned C.CID root = %T/%v, want exact sort carrier %p",
+			projection.GetProjections()[0], field, sortLayout.Carrier())
+	}
+	if gotPath := field.Path().Ordinals(); len(gotPath) != 1 || gotPath[0] != 0 {
+		t.Fatalf("owned C.CID path = %v, want [0]", gotPath)
 	}
 
-	// CID exists on both producer legs. A foreign owner cannot select either
-	// slot merely because its display path and scalar type match.
-	ambiguousCID, err := values.ResolveFieldOrdinals(physicalInner, []int{1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	unchanged, err := sortPlan.reanchorInputValueToOutput(ambiguousCID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unchanged != ambiguousCID {
-		t.Fatal("ambiguous foreign CID was guessed into a producer output slot")
+	// The other half, and the one that decides correctness: a root this
+	// producer does NOT own is left alone even when the accessor name picks
+	// out exactly one slot. OID is globally unique in the producer RC, so the
+	// name fallback would resolve it to output ordinal 2 with complete
+	// confidence — and it has no evidence whatsoever that this alias denotes
+	// the O leg. A value the producer cannot place is unknown, not "whatever
+	// is next door"; leaving it untouched makes it fail loudly downstream
+	// instead of silently reading another leg's column at execution.
+	physicalInner := mustOrdinalLayoutQOV(t,
+		values.NamedCorrelationIdentifier("physical_projection_edge"), innerType)
+	for _, foreign := range []struct {
+		what    string
+		ordinal int
+	}{
+		// Unique name: the fallback's strongest case, and still not a proof.
+		{"globally unique OID", 0},
+		// Duplicate name: CID exists on both legs, so even the fallback
+		// declines. Keeping both arms is what shows the decline above is the
+		// ownership gate rather than the ambiguity guard.
+		{"ambiguous CID", 1},
+	} {
+		requested, resolveErr := values.ResolveFieldOrdinals(physicalInner, []int{foreign.ordinal})
+		if resolveErr != nil {
+			t.Fatal(resolveErr)
+		}
+		unchanged, reanchorErr := sortPlan.reanchorInputValueToOutput(requested)
+		if reanchorErr != nil {
+			t.Fatal(reanchorErr)
+		}
+		if unchanged != requested {
+			t.Fatalf("%s on an unowned extraction edge was claimed by the producer; "+
+				"a false accept here reads the wrong column at execution", foreign.what)
+		}
 	}
 }
 

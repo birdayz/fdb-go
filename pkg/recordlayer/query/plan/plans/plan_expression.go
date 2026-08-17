@@ -693,7 +693,15 @@ func reanchorCurrentValueForInput(
 	if retained, ok := descendantRetainedResultProducer(selectedChild); ok {
 		producer = retained
 	}
-	normalized, err = values.ReanchorValueThroughProducer(normalized, producer, target)
+	// The producer may be a layout-preserving DESCENDANT's result program, not
+	// selectedChild's own, so the owned set is derived from the producer itself
+	// rather than from selectedChild's quantifiers — those are the wrong legs
+	// the moment the walk descends. Anything else arriving here is an outer
+	// binding or a declared edge the operator-specific admission path validates,
+	// and this producer has no evidence for it; the ownership set is what keeps
+	// a same-named slot from answering on its behalf.
+	normalized, err = values.ReanchorOwnedValueThroughProducer(
+		normalized, producer, target, producerOwnedCorrelations(producer))
 	if err != nil {
 		return nil, err
 	}

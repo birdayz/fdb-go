@@ -26,10 +26,17 @@ go_test(
         "indexhunt_test.go",
         "inlist_plan_probe_test.go",
         "nullhunt_test.go",
+        "outer_join_clustered_box_test.go",
         "querycorrectness_test.go",
         "scan_bench_test.go",
         "sqlhunt_test.go",
     ],
     embed = [":sqlhunt"],
-    deps = ["//pkg/simfdb/hunt"],
+    deps = [
+        "//pkg/dst",
+        "//pkg/recordlayer",
+        "//pkg/relational/sqldriver",
+        "//pkg/simfdb",
+        "//pkg/simfdb/hunt",
+    ],
 )
