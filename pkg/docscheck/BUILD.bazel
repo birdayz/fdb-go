@@ -48,6 +48,8 @@ go_test(
         "precommit_hook_message_test.go",
         "qualifier_recovery_gate_test.go",
         "race_lane_scope_test.go",
+        "receiver_write_census_test.go",
+        "receiver_write_detector_test.go",
         "result_type_stub_census_test.go",
         "rowdiff_sweep_budget_test.go",
         "rowvalue_map_expectation_test.go",
