@@ -83,12 +83,16 @@ func distinctFixture(t *testing.T, n, distinct int) (*EvaluationContext, plans.R
 	alias := values.NamedCorrelationIdentifier(fmt.Sprintf("distinct_%s", t.Name()))
 	evalCtx := EmptyEvaluationContext()
 	table := evalCtx.GetOrCreateTempTable(alias, nil)
+	rowType := exactTestRowType(values.Field{Name: "V", FieldType: values.NullableLong})
 	for i := 0; i < n; i++ {
-		if err := table.Add(dmap(map[string]any{"V": int64(i % distinct)})); err != nil {
+		if err := table.Add(QueryResult{Positional: &PositionalRow{
+			Type:  rowType,
+			Slots: []any{int64(i % distinct)},
+		}}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	return evalCtx, plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryTempTableScanPlan(alias))
+	return evalCtx, mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(mustTempTableScan(t, evalCtx, alias)))
 }
 
 // TestDistinctHashContinuationSizeIsBoundedWithScratch pins that the unordered

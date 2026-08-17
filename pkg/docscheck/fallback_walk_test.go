@@ -234,7 +234,7 @@ func TestTrackedEnumerationReportsWhichBranchIsLive(t *testing.T) {
 	root := sourceTreeRoot(t)
 
 	gitPath, lookErr := exec.LookPath("git")
-	out, runErr := exec.Command("git", "-C", root, "ls-files", "-z", "--", "*.go").Output()
+	out, runErr := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.go").Output()
 	live := "fallback filesystem walk"
 	if runErr == nil && len(out) > 0 {
 		live = "git ls-files"
@@ -247,5 +247,70 @@ func TestTrackedEnumerationReportsWhichBranchIsLive(t *testing.T) {
 	if len(files) == 0 {
 		t.Fatalf("BRANCH-PROBE: %s enumerated zero Go files under %s; a gate scanning an empty set "+
 			"reports green while checking nothing", live, root)
+	}
+}
+
+// TestGitGoFilesIncludesTheWholeDeliverable pins the shared-worktree seam: a
+// new source file is part of the build before it is staged, so it must already
+// be part of every docs census. The fixture also proves ignored scratch stays
+// out and the union cannot report one path twice.
+//
+// A FAILING `git init` IS A HARD FAILURE HERE, not a skip, and the distinction
+// is the whole reason this test exists. gitGoFiles IS the subject; without git
+// there is nothing left to exercise, so a skip would report the seam as covered
+// while covering nothing — the same green-from-an-empty-set the sibling probe
+// above guards against, only quieter, because a skipped test still leaves the
+// target green. Measured under bazel on this tree: the test RUNS (`--- PASS`,
+// not `--- SKIP`), so git is reachable from the sandbox and the skip arm was
+// dead weight that would only ever have fired by hiding a real breakage.
+//
+// This does NOT contradict TestTrackedEnumerationReportsWhichBranchIsLive
+// declining to require git. That test asks which enumeration branch is live and
+// must stay honest on a minimal image, because the fallback walk exists for
+// exactly that image. This one tests the git branch itself.
+func TestGitGoFilesIncludesTheWholeDeliverable(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if out, err := exec.Command("git", "-C", root, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("git init unavailable: %v (%s); gitGoFiles is the subject of this test, "+
+			"so no git means the tracked+untracked union ships unexercised", err, strings.TrimSpace(string(out)))
+	}
+	write := func(rel, contents string) {
+		t.Helper()
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(abs, []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	write(".gitignore", "ignored/\n")
+	write("pkg/tracked.go", "package pkg\n")
+	write("pkg/deleted.go", "package pkg\n")
+	write("pkg/untracked.go", "package pkg\n")
+	write("ignored/scratch.go", "package ignored\n")
+	write("pkg/not_go.txt", "not go\n")
+	if out, err := exec.Command("git", "-C", root, "add", ".gitignore", "pkg/tracked.go", "pkg/deleted.go").CombinedOutput(); err != nil {
+		t.Fatalf("git add fixture: %v (%s)", err, strings.TrimSpace(string(out)))
+	}
+	if err := os.Remove(filepath.Join(root, "pkg/deleted.go")); err != nil {
+		t.Fatalf("delete tracked fixture: %v", err)
+	}
+
+	got, err := gitGoFiles(root)
+	if err != nil {
+		t.Fatalf("gitGoFiles: %v", err)
+	}
+	want := []string{"pkg/tracked.go", "pkg/untracked.go"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("tracked + untracked non-ignored union = %v, want %v", got, want)
+	}
+	seen := map[string]bool{}
+	for _, rel := range got {
+		if seen[rel] {
+			t.Fatalf("gitGoFiles returned duplicate %q in %v", rel, got)
+		}
+		seen[rel] = true
 	}
 }

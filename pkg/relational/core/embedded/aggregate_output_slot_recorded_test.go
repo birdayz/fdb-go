@@ -1,40 +1,23 @@
 package embedded
 
-// The DECISION, not the answer.
-//
-// The FDB scenarios for this conversion
-// (sqldriver/aggregate_output_slot_recorded_fdb_test.go) are byte-identical
-// with and without it: measured across same-leaf operands, expression operands,
-// aliases, ORDER BY and HAVING, every row is the same. That is a real result and
-// it is recorded there, but it means no row assertion can detect the conversion's
-// absence — the name channel happened to recover the right slot on every shape
-// that could be constructed for it.
-//
-// What DID change is where the slot comes from, and that is the thing worth
-// pinning: a post-aggregate reference to an aggregate now leaves
-// `rewriteAggregateValue` carrying the ordinal its composition chose
-// (`aggregateCallOutputSlot`), instead of leaving as a bare rendered name for
-// `groupByOutputBaker` to look up in a map keyed by a SECOND rendering produced
-// by different code from a different input (`AggregateResultColumnName` over the
-// parse text, versus `canonicalAggName` over the resolved Value).
-//
-// So these assertions are on the reference's STRUCTURE. Revert the conversion
-// and every one of them goes red on `Resolved == nil` — the reference is a bare
-// name again — which is exactly the state that made the previous eight bugs of
-// this class possible while the suite stayed green.
+// Post-aggregate Values remain structural in the logical draft. The translated
+// HAVING filter is the first layer that owns the aggregate output quantifier,
+// and therefore the first layer allowed to mint its exact FieldValues. These
+// tests inspect that real owner and its native [group keys..., calls...] layout.
 
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/parser"
+	"fdb.dev/pkg/relational/core/query"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// aggregateFor builds the logical plan for sql against ddl and returns the
-// LogicalAggregate it contains, or fails.
-func aggregateFor(t *testing.T, sql, ddl string) *logical.LogicalAggregate {
+func aggregateFixtureFor(t *testing.T, sql, ddl string) (logical.LogicalOperator, *logical.LogicalAggregate, *recordlayer.RecordMetaData) {
 	t.Helper()
 	tmpl, err := buildSchemaTemplateFromDDL(ddl)
 	if err != nil {
@@ -69,34 +52,93 @@ func aggregateFor(t *testing.T, sql, ddl string) *logical.LogicalAggregate {
 	if found == nil {
 		t.Fatalf("no aggregate in the logical plan for %q", sql)
 	}
-	return found
+	return op, found, tmpl.Underlying()
 }
 
-// recordedSlots collects, for every flat FieldValue in a predicate's value
-// trees, its display name and the ordinal it carries — reporting -1 for a
-// reference that carries no recorded ordinal at all (a bare name), which is the
-// pre-conversion shape.
-func recordedSlots(t *testing.T, pred predicates.QueryPredicate) map[string]int {
+// translatedHavingFor returns the logical aggregate together with the HAVING
+// predicate after translation and the exact QOV that owns its output row.
+func translatedHavingFor(t *testing.T, sql, ddl string) (*logical.LogicalAggregate, predicates.QueryPredicate, values.QuantifiedObjectValue) {
+	t.Helper()
+	op, aggregate, md := aggregateFixtureFor(t, sql, ddl)
+	ref, _, err := query.TranslateToCascadesWithError(op, md)
+	if err != nil {
+		t.Fatalf("translate %q: %v", sql, err)
+	}
+	if ref == nil {
+		t.Fatalf("translate %q returned no reference", sql)
+	}
+
+	var having *expressions.LogicalFilterExpression
+	seen := map[*expressions.Reference]bool{}
+	var walkRef func(*expressions.Reference)
+	walkRef = func(r *expressions.Reference) {
+		if r == nil || seen[r] {
+			return
+		}
+		seen[r] = true
+		for _, member := range r.Members() {
+			if filter, ok := member.(*expressions.LogicalFilterExpression); ok {
+				inner := filter.GetInner().GetRangesOver()
+				if inner != nil {
+					for _, innerMember := range inner.Members() {
+						if _, isGroupBy := innerMember.(*expressions.GroupByExpression); isGroupBy {
+							having = filter
+						}
+					}
+				}
+			}
+			for _, quantifier := range member.GetQuantifiers() {
+				walkRef(quantifier.GetRangesOver())
+			}
+		}
+	}
+	walkRef(ref)
+	if having == nil {
+		t.Fatalf("no translated HAVING filter over a GroupBy for %q", sql)
+	}
+	preds := having.GetPredicates()
+	if len(preds) != 1 || preds[0] == nil {
+		t.Fatalf("translated HAVING predicates = %v, want one", preds)
+	}
+	owner, err := having.GetInner().RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatalf("translated HAVING owner: %v", err)
+	}
+	return aggregate, preds[0], owner
+}
+
+// translatedSlots collects every aggregate-output FieldValue and checks the
+// part no logical draft can honestly state: the field is owned by the HAVING
+// quantifier and its ordinal domain is that owner's exact output row.
+func translatedSlots(t *testing.T, pred predicates.QueryPredicate, owner values.QuantifiedObjectValue) map[string]int {
 	t.Helper()
 	got := map[string]int{}
 	var visitValue func(values.Value)
 	visitValue = func(v values.Value) {
 		values.WalkValue(v, func(n values.Value) bool {
-			fv, ok := n.(*values.FieldValue)
+			fv, ok := values.AsFieldValue(n)
 			if !ok {
 				return true
 			}
-			slot := -1
-			if fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
-				slot = fv.Resolved.Accessors[0].Ordinal
-				if !fv.Resolved.FrontierPinned {
-					// An UNPINNED ordinal is source-relative and dead on the
-					// aggregate's output row; recording it as such keeps the
-					// two bake kinds distinguishable in the assertion.
-					slot = -2 - slot
-				}
+			fieldOwner, hasOwner := values.AsQuantifiedObjectValue(fv.ChildValue())
+			if !hasOwner || fieldOwner.Correlation() != owner.Correlation() ||
+				!fieldOwner.FlowedType().Equals(owner.FlowedType()) {
+				t.Errorf("translated HAVING field %q is owned by %v, want aggregate output owner %v",
+					fv.DisplayName(), fieldOwner, owner.Correlation())
+				return true
 			}
-			got[fv.Field] = slot
+			path := fv.Path()
+			if path == nil || path.Len() != 1 {
+				t.Errorf("translated HAVING field %q has path %v, want one exact native slot",
+					fv.DisplayName(), path)
+				return true
+			}
+			wantDomain := values.OrdinalDomainOfType(owner.FlowedType())
+			if !wantDomain.IsKnown() || path.RootDomain() != wantDomain {
+				t.Errorf("translated HAVING field %q domain = %v, want owner layout %v",
+					fv.DisplayName(), path.RootDomain(), wantDomain)
+			}
+			got[fv.DisplayName()] = path.Ordinals()[0]
 			return true
 		})
 	}
@@ -206,32 +248,15 @@ func TestHavingAggregateReferenceCarriesTheSlotItsCompositionChose(t *testing.T)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			agg := aggregateFor(t, c.sql, ddl)
-			if agg.HavingPredicate == nil {
-				t.Fatalf("%s: no HAVING predicate was built", c.sql)
-			}
-			slots := recordedSlots(t, agg.HavingPredicate)
+			_, having, owner := translatedHavingFor(t, c.sql, ddl)
+			slots := translatedSlots(t, having, owner)
 			got, present := slots[c.field]
 			switch {
 			case !present:
-				t.Fatalf("%s\n  query: %s\n  no reference named %q in the HAVING predicate; saw %v",
+				t.Fatalf("%s\n  query: %s\n  no translated aggregate-output reference named %q; saw %v",
 					c.name, c.sql, c.field, slots)
-			case got == -1:
-				t.Errorf("%s\n  query: %s\n  the HAVING reference %q carries NO recorded ordinal.\n"+
-					"  %s\n"+
-					"  It left rewriteAggregateValue as a bare rendered name, so the slot has to be "+
-					"recovered downstream from groupByOutputBaker's output-name map — a second "+
-					"rendering, produced by different code from a different input, that is "+
-					"last-wins on collision (RFC-197 item 5: aggregateCallOutputSlot).",
-					c.name, c.sql, c.field, c.why)
-			case got < -1:
-				t.Errorf("%s\n  query: %s\n  the HAVING reference %q carries an UNPINNED ordinal %d.\n"+
-					"  An unpinned ordinal is SOURCE-relative and dead on the aggregate's output "+
-					"row; the binder will re-key it by name. The slot is final against the "+
-					"executor's assembled row and must say so.",
-					c.name, c.sql, c.field, -2-got)
 			case got != c.want:
-				t.Errorf("%s\n  query: %s\n  the HAVING reference %q records slot %d, want %d.\n  %s\n"+
+				t.Errorf("%s\n  query: %s\n  the translated HAVING reference %q addresses slot %d, want %d.\n  %s\n"+
 					"  The output row is [group keys in GROUP BY order..., calls in call order...] "+
 					"(GroupByOutputColumnNames).",
 					c.name, c.sql, c.field, got, c.want, c.why)
@@ -270,22 +295,17 @@ func TestHavingGroupKeyReferenceCarriesTheSlotItsCompositionChose(t *testing.T) 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			agg := aggregateFor(t, c.sql, ddl)
-			if agg.HavingPredicate == nil {
-				t.Fatalf("%s: no HAVING predicate was built", c.sql)
-			}
-			slots := recordedSlots(t, agg.HavingPredicate)
+			_, having, owner := translatedHavingFor(t, c.sql, ddl)
+			slots := translatedSlots(t, having, owner)
 			got, present := slots[c.field]
 			if !present {
-				t.Fatalf("%s\n  query: %s\n  no reference named %q in the HAVING predicate; saw %v",
+				t.Fatalf("%s\n  query: %s\n  no translated aggregate-output reference named %q; saw %v",
 					c.name, c.sql, c.field, slots)
 			}
 			if got != c.want {
-				t.Errorf("%s\n  query: %s\n  the HAVING group-key reference %q records slot %v, want %d.\n"+
-					"  A negative value means no recorded ordinal (-1) or an UNPINNED, "+
-					"source-relative one (-2-ordinal). The key's INDEX in GROUP BY order is its "+
-					"output slot; recovering it from the rendered output name instead is what "+
-					"bound two same-leaf keys to one slot (RFC-197 item 5).",
+				t.Errorf("%s\n  query: %s\n  the translated HAVING group-key reference %q addresses slot %v, want %d.\n"+
+					"  The key's INDEX in GROUP BY order is its output slot; the translated "+
+					"FieldValue must address that slot through the aggregate output owner.",
 					c.name, c.sql, c.field, got, c.want)
 			}
 		})

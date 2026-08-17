@@ -67,9 +67,26 @@ func TestFDB_MultiwayJoinOrder_Probe(t *testing.T) {
 	planBig := planExplain(qBigFirst)
 	planSmall := planExplain(qSmallFirst)
 
-	// (a) Order-invariance.
-	if planBig != planSmall {
-		t.Errorf("MULTI-WAY ORDERING: plan depends on FROM-order (not cost-based reordering):\n big-first:   %s\n small-first: %s", planBig, planSmall)
+	// (a) Order-invariance OF THE ACCESS PATH — the part below the top
+	// projection. The projection cannot be order-invariant and must not be
+	// asked to: it addresses the merged row by ORDINAL, and the merged row is
+	// laid out in FROM order, so t1.id is slot 4 of
+	// [T3.ID, T3.T2_ID, T2.ID, T2.T1_ID, T1.ID] and slot 0 of
+	// [T1.ID, T2.ID, T2.T1_ID, T3.ID, T3.T2_ID]. Both read t1.id.
+	bigSlots, bigPath := splitTopProjection(planBig)
+	smallSlots, smallPath := splitTopProjection(planSmall)
+	if bigPath != smallPath {
+		t.Errorf("MULTI-WAY ORDERING: access path depends on FROM-order (not cost-based reordering):\n big-first:   %s\n small-first: %s", planBig, planSmall)
+	}
+	if bigSlots != "_current.ID#4" {
+		t.Errorf("FROM t3, t2, t1 projects %q, want _current.ID#4 — t1.id is the last "+
+			"slot of the merged row [T3.ID, T3.T2_ID, T2.ID, T2.T1_ID, T1.ID]\n  %s",
+			bigSlots, planBig)
+	}
+	if smallSlots != "_current.ID#0" {
+		t.Errorf("FROM t1, t2, t3 projects %q, want _current.ID#0 — t1.id is the first "+
+			"slot of the merged row [T1.ID, T2.ID, T2.T1_ID, T3.ID, T3.T2_ID]\n  %s",
+			smallSlots, planSmall)
 	}
 
 	// (b) Cost-optimal.

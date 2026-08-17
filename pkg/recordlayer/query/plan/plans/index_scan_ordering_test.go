@@ -7,12 +7,23 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func indexOrderingLayout() *values.RecordType {
+	return values.NewRecordType("index_ordering_row", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "C", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 3},
+	})
+}
+
 // TestRecordQueryIndexPlan_HintOrdering_Unbound pins the pre-existing
 // unbound-scan behavior: with no scan comparisons, every index key column is
 // a sorted key (in scan direction), followed by the trimmed PK suffix.
 func TestRecordQueryIndexPlan_HintOrdering_Unbound(t *testing.T) {
 	t.Parallel()
-	plan := NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, indexOrderingLayout(), false)
+	}).
 		WithKeyComponentTypes(testPhysicalLongTypes(2)).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(1))
@@ -23,8 +34,8 @@ func TestRecordQueryIndexPlan_HintOrdering_Unbound(t *testing.T) {
 	}
 	wantFields := []string{"A", "B", "ID"}
 	for i, w := range wantFields {
-		fv, ok := got.Keys[i].(*values.FieldValue)
-		if !ok || fv.Field != w {
+		fv, ok := values.AsFieldValue(got.Keys[i])
+		if !ok || fv.DisplayName() != w {
 			t.Fatalf("HintOrdering(unbound).Keys[%d] = %#v, want field %q", i, got.Keys[i], w)
 		}
 	}
@@ -43,7 +54,9 @@ func TestRecordQueryIndexPlan_HintOrdering_Unbound(t *testing.T) {
 // cascades package for the end-to-end partitioning proof).
 func TestRecordQueryIndexPlan_HintOrdering_EqualityPrefixDropped(t *testing.T) {
 	t.Parallel()
-	plan := NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, indexOrderingLayout(), false)
+	}).
 		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}).
 		WithKeyComponentTypes(testPhysicalLongTypes(2)).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
@@ -55,8 +68,8 @@ func TestRecordQueryIndexPlan_HintOrdering_EqualityPrefixDropped(t *testing.T) {
 	}
 	wantFields := []string{"B", "ID"}
 	for i, w := range wantFields {
-		fv, ok := got.Keys[i].(*values.FieldValue)
-		if !ok || fv.Field != w {
+		fv, ok := values.AsFieldValue(got.Keys[i])
+		if !ok || fv.DisplayName() != w {
 			t.Fatalf("HintOrdering(A=7).Keys[%d] = %#v, want field %q", i, got.Keys[i], w)
 		}
 	}
@@ -67,7 +80,9 @@ func TestRecordQueryIndexPlan_HintOrdering_EqualityPrefixDropped(t *testing.T) {
 // a genuine equality prefix consumes a sort position.
 func TestRecordQueryIndexPlan_HintOrdering_NonEqualityLeadingComparisonKeepsFullKey(t *testing.T) {
 	t.Parallel()
-	plan := NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, indexOrderingLayout(), false)
+	}).
 		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingGT(t, int64(7))}).
 		WithKeyComponentTypes(testPhysicalLongTypes(2)).
 		WithIndexMetadata([]string{"A", "B"}, []string{"ID"}, false).
@@ -84,7 +99,9 @@ func TestRecordQueryIndexPlan_HintOrdering_NonEqualityLeadingComparisonKeepsFull
 // is dropped; B, C and the trimmed PK suffix stay.
 func TestRecordQueryIndexPlan_HintOrdering_EqualityPrefixThenRangeStopsAtFirstNonEquality(t *testing.T) {
 	t.Parallel()
-	plan := NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, indexOrderingLayout(), false)
+	}).
 		WithScanComparisons([]*predicates.ComparisonRange{
 			pkOrderingEq(t, int64(7)),
 			pkOrderingGT(t, int64(3)),
@@ -99,8 +116,8 @@ func TestRecordQueryIndexPlan_HintOrdering_EqualityPrefixThenRangeStopsAtFirstNo
 	}
 	wantFields := []string{"B", "C", "ID"}
 	for i, w := range wantFields {
-		fv, ok := got.Keys[i].(*values.FieldValue)
-		if !ok || fv.Field != w {
+		fv, ok := values.AsFieldValue(got.Keys[i])
+		if !ok || fv.DisplayName() != w {
 			t.Fatalf("HintOrdering(A=7,B>3).Keys[%d] = %#v, want field %q", i, got.Keys[i], w)
 		}
 	}

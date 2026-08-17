@@ -1065,7 +1065,10 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	}
 
 	// Pass md so DML join legs (e.g. UPDATE … FROM a JOIN b) anchor (RFC-077 7.6).
-	ref, dmlScalarSubqueryPlans := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	ref, dmlScalarSubqueryPlans, translateErr := query.TranslateToCascadesWithError(logicalOp, md)
+	if translateErr != nil {
+		return nil, translateErr
+	}
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}
@@ -1959,6 +1962,16 @@ func materializeDriverValue(v any) any {
 		return tuple.UUID(u).String()
 	case tuple.UUID:
 		return u.String()
+	case rowstruct.TypedOrdinalRow:
+		s, err := rowstruct.NewOrdinal(u)
+		if err != nil {
+			// Match the protobuf arm below: never discard the value when its
+			// declared STRUCT shape is malformed. A valid record-valued ordinal
+			// row becomes api.Struct; an invalid internal value stays visible as
+			// itself rather than being guessed into a different public shape.
+			return v
+		}
+		return s
 	case protoreflect.ProtoMessage:
 		s, err := rowstruct.New(u.ProtoReflect())
 		if err != nil {
@@ -2168,13 +2181,9 @@ func (r *paginatingRows) fetchPage() error {
 		defer rs.Close()
 
 		for rs.Next() {
-			row := make([]driver.Value, len(r.cols))
-			for i := range row {
-				v, err := rs.Object(i + 1)
-				if err != nil {
-					return nil, err
-				}
-				row[i] = materializeDriverValue(v)
+			row, materializeErr := materializePageRow(rs, r.cols, r.isUpdate)
+			if materializeErr != nil {
+				return nil, materializeErr
 			}
 			r.buf = append(r.buf, row)
 		}
@@ -2237,6 +2246,33 @@ func (r *paginatingRows) fetchPage() error {
 	// entries only the PREVIOUS one could name are genuinely unreachable.
 	r.scratch.SweepAfterPage(pageExhausted)
 	return nil
+}
+
+// materializePageRow converts one executor row into the public SELECT row.
+// DML result rows are instead an executor-private mutation echo (UPDATE is
+// exact {OLD, NEW}; INSERT/DELETE have their corresponding internal carriers).
+// Embedded SQL exposes only their count, never those columns, so the DML arm
+// deliberately consumes the cursor row without consulting ResultSet.Object.
+// Asking the SELECT adapter to align an UPDATE echo to the target table's
+// public columns made a successful write fail afterwards with "no positional
+// output row aligned to column ID".
+func materializePageRow(
+	rs *executor.RecordLayerResultSet,
+	cols []executor.ColumnDef,
+	isUpdate bool,
+) ([]driver.Value, error) {
+	if isUpdate {
+		return []driver.Value{}, nil
+	}
+	row := make([]driver.Value, len(cols))
+	for i := range row {
+		v, err := rs.Object(i + 1)
+		if err != nil {
+			return nil, err
+		}
+		row[i] = materializeDriverValue(v)
+	}
+	return row, nil
 }
 
 // preflightTxBudget enforces the whole-transaction time budget before a page
@@ -2911,6 +2947,30 @@ type metadataIndexDef struct {
 	md  *recordlayer.RecordMetaData
 }
 
+// recordTypes returns the metadata association when the index is registered.
+// A Java-authored Index can also be supplied directly while its RecordMetaData
+// contains exactly one record type (the deserialization/candidate-construction
+// boundary exercised by RFC-202). In that unambiguous case the sole record
+// type is the index's carrier; declining merely because the Go metadata map
+// has not registered the detached Index would make a valid persisted covering
+// index unreadable. Multi-type metadata still fails closed.
+func (d *metadataIndexDef) recordTypes() []*recordlayer.RecordType {
+	if d == nil || d.idx == nil || d.md == nil {
+		return nil
+	}
+	if associated := d.md.RecordTypesForIndex(d.idx); len(associated) > 0 {
+		return associated
+	}
+	all := d.md.RecordTypes()
+	if len(all) != 1 {
+		return nil
+	}
+	for _, recordType := range all {
+		return []*recordlayer.RecordType{recordType}
+	}
+	return nil
+}
+
 func (d *metadataIndexDef) IndexName() string { return d.idx.Name }
 
 // IndexColumnNames returns one name per physical key column. A nesting parent
@@ -3002,7 +3062,7 @@ func (d *metadataIndexDef) IndexHasOpaqueFilter() bool {
 // IndexKeyComponentTypes derives one authoritative physical tuple type per
 // index-key component across every record type served by the index.
 func (d *metadataIndexDef) IndexKeyComponentTypes() []values.Type {
-	return physicalKeyComponentTypes(d.idx.RootExpression, d.md.RecordTypesForIndex(d.idx))
+	return physicalKeyComponentTypes(d.idx.RootExpression, d.recordTypes())
 }
 
 // IndexPrimaryKeyComponentTypes derives authoritative carriers aligned with
@@ -3015,7 +3075,7 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 		return nil
 	}
 	unknown := unknownPhysicalTypes(len(pkCols))
-	rts := d.md.RecordTypesForIndex(d.idx)
+	rts := d.recordTypes()
 	if len(rts) == 0 {
 		return unknown
 	}
@@ -3304,7 +3364,11 @@ func primaryCandidateKeyComponents(rt *recordlayer.RecordType) ([]string, []valu
 // the runtime slots by construction. Multi-type indexes flow Unknown:
 // their rows have no single layout.
 func (d *metadataIndexDef) IndexRowType() values.Type {
-	return singleRecordTypeRowType(d.md, d.idx)
+	rts := d.recordTypes()
+	if len(rts) != 1 || rts[0].Descriptor == nil {
+		return values.UnknownType
+	}
+	return executor.PositionalTypeForRecordLayout(rts[0].Descriptor, d.md.IsStoreRecordVersions())
 }
 
 // singleRecordTypeRowType is that derivation as a free function, so the
@@ -3327,7 +3391,7 @@ func singleRecordTypeRowType(md *recordlayer.RecordMetaData, idx *recordlayer.In
 // (executor.PositionalTypeForDescriptor), applied per type instead of only to
 // the single-type case; a type without a descriptor contributes nothing.
 func (d *metadataIndexDef) IndexRecordTypeRowTypes() []values.Type {
-	rts := d.md.RecordTypesForIndex(d.idx)
+	rts := d.recordTypes()
 	out := make([]values.Type, 0, len(rts))
 	for _, rt := range rts {
 		if rt.Descriptor == nil {
@@ -3339,7 +3403,7 @@ func (d *metadataIndexDef) IndexRecordTypeRowTypes() []values.Type {
 }
 
 func (d *metadataIndexDef) IndexRecordTypes() []string {
-	rts := d.md.RecordTypesForIndex(d.idx)
+	rts := d.recordTypes()
 	names := make([]string, len(rts))
 	for i, rt := range rts {
 		names[i] = rt.Name
@@ -3348,7 +3412,7 @@ func (d *metadataIndexDef) IndexRecordTypes() []string {
 }
 
 func (d *metadataIndexDef) IndexPrimaryKeyColumns() []string {
-	rts := d.md.RecordTypesForIndex(d.idx)
+	rts := d.recordTypes()
 	// Coverage reconstructs visible fields from the tail of IndexEntry.PrimaryKey.
 	// Expose names only for an exactly coordinate-aligned tail: flat scalar
 	// fields, optionally preceded by the one RecordTypeKey coordinate that the
@@ -3454,36 +3518,19 @@ func coveredPrimaryKeyColumns(rt *recordlayer.RecordType) ([]string, bool, bool)
 // prefix, so two legs over different record types with the same PK STRUCTURE
 // dedup on a key that includes the type discriminator — never dropping rows.
 func (d *metadataIndexDef) IndexCommonPrimaryKeyValues() []values.Value {
-	rts := d.md.RecordTypesForIndex(d.idx)
-	if len(rts) == 0 || rts[0].PrimaryKey == nil {
+	rts := d.recordTypes()
+	// A multi-type index has no single flowed object type. Keep its raw key
+	// expressions as metadata, but do not manufacture unresolved FieldValues;
+	// the structural PK property conservatively abstains until a concrete
+	// per-type alternative supplies one exact row layout.
+	if len(rts) != 1 || rts[0].PrimaryKey == nil {
 		return nil
 	}
-	common := recordlayer.TranslatePrimaryKeyToValues(rts[0].PrimaryKey, strings.ToUpper)
-	if common == nil {
-		return nil
-	}
-	for _, rt := range rts[1:] {
-		if rt.PrimaryKey == nil {
-			return nil
-		}
-		other := recordlayer.TranslatePrimaryKeyToValues(rt.PrimaryKey, strings.ToUpper)
-		if !commonPKValuesStructurallyEqual(common, other) {
-			return nil
-		}
-	}
-	return common
-}
-
-func commonPKValuesStructurallyEqual(a, b []values.Value) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if !values.ValuesStructurallyEqual(a[i], b[i]) {
-			return false
-		}
-	}
-	return true
+	return recordlayer.TranslatePrimaryKeyToValues(
+		rts[0].PrimaryKey,
+		strings.ToUpper,
+		d.IndexRowType(),
+	)
 }
 
 func (c *metadataPlanContext) GetPrimaryKeyColumns(recordType string) []string {
@@ -3661,9 +3708,13 @@ func tryVectorIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMetaD
 		partitionCount,
 	)
 
+	baseRowType := singleRecordTypeRowType(md, idx)
+	if values.IsUnresolved(baseRowType) {
+		return nil
+	}
 	return cascades.NewVectorIndexScanMatchCandidate(
 		idx.Name, rtNames, upperCols, partitionCount, metric,
-		values.UnknownType, idx.IsUnique(), pkCols,
+		baseRowType, idx.IsUnique(), pkCols,
 	).WithPartitionKeyComponentTypes(partitionTypes)
 }
 
@@ -3693,6 +3744,9 @@ func vectorMetricOperator(name string) (values.DistanceOperator, bool) {
 func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
 	if md == nil {
 		return nil
+	}
+	if explode, ok := plan.(*plans.RecordQueryExplodePlan); ok {
+		return deriveColumnsFromProjectionlessExplode(explode)
 	}
 	if proj, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
 		return deriveColumnsFromProjection(proj, md)
@@ -3759,12 +3813,60 @@ func deriveColumnsFromPlan(plan plans.RecordQueryPlan, md *recordlayer.RecordMet
 			nullable = api.ColumnNoNulls
 		}
 		cols[i] = executor.ColumnDef{
-			Name: strings.ToUpper(string(fd.Name())),
+			Name: values.FieldNameForProtoField(fd),
 			// Route through protoFieldTypeName (descriptor-aware) so a bare
 			// SELECT * reports a UUID column as "OTHER" — the same JDBC name the
 			// projection path (valueTypeName) and Java (Types.OTHER) use — rather
 			// than the "UNKNOWN" protoKindToTypeName's MessageKind default gives.
 			TypeName: protoFieldTypeName(rt.Descriptor, string(fd.Name())),
+			Nullable: nullable,
+		}
+	}
+	return cols
+}
+
+// deriveColumnsFromProjectionlessExplode publishes the SQL-visible columns of
+// a bare record-valued Explode leaf. Inline VALUES is the canonical owner:
+// `SELECT * FROM VALUES (42)` deliberately has no Projection above its Explode,
+// so no catalog scan exists from which the generic leaf fallback can recover
+// metadata. The Explode's constructor-time result snapshot and admitted output
+// layout are the authority instead.
+//
+// This arm is deliberately all-or-nothing and record-only. A scalar Explode is
+// one scalar source consumed by a surrounding FlatMap, not a projection-less
+// table row. WITH ORDINALITY emits a two-slot box (element, ordinal), whose SQL
+// AS/AT names are likewise assigned by that surrounding operator; flattening a
+// record element here would describe a different row than execution emits.
+func deriveColumnsFromProjectionlessExplode(explode *plans.RecordQueryExplodePlan) []executor.ColumnDef {
+	if explode == nil || explode.IsWithOrdinality() {
+		return nil
+	}
+	rowType, ok := explode.GetElementType().(*values.RecordType)
+	if !ok || rowType == nil {
+		return nil
+	}
+	if _, err := values.SnapshotExactType(rowType); err != nil {
+		return nil
+	}
+	layout, err := explode.ProvidedOutputLayout()
+	if err != nil || layout == nil || layout.Carrier() == nil ||
+		!layout.Carrier().FlowedType().Equals(rowType) {
+		return nil
+	}
+
+	cols := make([]executor.ColumnDef, len(rowType.Fields))
+	for ordinal, field := range rowType.Fields {
+		typeName := cascadesTypeName(field.FieldType)
+		if typeName == "" {
+			typeName = "UNKNOWN"
+		}
+		nullable := api.ColumnNoNulls
+		if field.FieldType.IsNullable() {
+			nullable = api.ColumnNullable
+		}
+		cols[ordinal] = executor.ColumnDef{
+			Name:     field.Name,
+			TypeName: typeName,
 			Nullable: nullable,
 		}
 	}
@@ -4078,8 +4180,8 @@ func deriveColumnsFromMultiIntersection(mi *plans.RecordQueryMultiIntersectionOn
 		// Grouping columns resolve their type against the record type;
 		// aggregates default to BIGINT.
 		typeName := "BIGINT"
-		if fv, isCol := f.Value.(*values.FieldValue); isCol && desc != nil {
-			if t := protoFieldTypeName(desc, strings.ToUpper(fv.Field)); t != "UNKNOWN" {
+		if fv, isCol := values.AsFieldValue(f.Value); isCol && desc != nil {
+			if t := protoFieldTypeName(desc, strings.ToUpper(fv.DisplayName())); t != "UNKNOWN" {
 				typeName = t
 			}
 		}
@@ -4239,8 +4341,8 @@ func resolveLegRead(inner plans.RecordQueryPlan, md *recordlayer.RecordMetaData,
 // derivation emits one column per TOP-LEVEL proto field, so a struct occupies
 // exactly one slot and root ordinals stay aligned with r.cols. No re-anchoring
 // is needed to reach the right slot.
-func (r legRead) column(fv *values.FieldValue) (executor.ColumnDef, bool) {
-	if fv.Resolved != nil {
+func (r legRead) column(fv values.FieldValue) (executor.ColumnDef, bool) {
+	if path := fv.Path(); path != nil {
 		// A reference that is not exactly single-accessor is not addressable
 		// against this leg's columns by EITHER key. A multi-accessor root
 		// ordinal is not an index into the leg's flattened columns, and the
@@ -4273,15 +4375,19 @@ func (r legRead) column(fv *values.FieldValue) (executor.ColumnDef, bool) {
 		// restriction is LATENT, not a live behaviour change, and this decline
 		// is fail-safe rather than corpus-proven. Recorded rather than dressed
 		// up as coverage.
-		if len(fv.Resolved.Accessors) != 1 {
+		if path.Len() != 1 {
 			return executor.ColumnDef{}, false
 		}
-		if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(r.cols) {
+		accessor, ok := path.Accessor(0)
+		if !ok {
+			return executor.ColumnDef{}, false
+		}
+		if ord := accessor.Ordinal(); ord >= 0 && ord < len(r.cols) {
 			return r.cols[ord], true
 		}
 	}
 	for _, ic := range r.cols {
-		if strings.EqualFold(parseColRef(ic.Name).bare(), fv.Field) {
+		if strings.EqualFold(parseColRef(ic.Name).bare(), fv.DisplayName()) {
 			return ic, true
 		}
 	}
@@ -4304,12 +4410,29 @@ func (r legRead) column(fv *values.FieldValue) (executor.ColumnDef, bool) {
 // worth stating plainly: on a null-supplying leg this function bypasses
 // column() entirely, so the decline there is NOT in force for the case this
 // arm most cares about.
-func (r legRead) nullExtended(fv *values.FieldValue) bool {
+func (r legRead) nullExtended(fv values.FieldValue) bool {
 	if r.nullSupplying {
 		return true
 	}
 	ic, ok := r.column(fv)
 	return ok && ic.Nullable == api.ColumnNullable
+}
+
+// projectionLabelAlreadyUsed reports whether an earlier projected slot already
+// publishes this display label. A repeated label is legal and expected
+// (`SELECT c.id, o.id`); it is also the signal that the output SCHEMA — which
+// must stay name-addressable — carries a deduplicating suffix the user never
+// wrote.
+func projectionLabelAlreadyUsed(earlier []executor.ColumnDef, label string) bool {
+	if label == "" {
+		return false
+	}
+	for _, c := range earlier {
+		if strings.EqualFold(columnDefDisplayName(c), label) {
+			return true
+		}
+	}
+	return false
 }
 
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -4319,7 +4442,9 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 	descs := allLeafDescriptors(proj.GetInner(), md)
 	aliases := proj.GetAliases()
 	aliasProvenance := proj.GetAliasMinted()
+	aliasSources := proj.GetAliasSources()
 	projections := proj.GetProjections()
+	outputNames := proj.GetOutputNames()
 
 	// Leaf descriptors under a NULL-SUPPLYING (DefaultOnEmpty) subtree: a
 	// column defined by one of these serves NULL on the outer join's padded
@@ -4390,7 +4515,79 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		// A slot past the provenance vector reads as a USER alias: a machinery
 		// mint is the exceptional case and states itself explicitly.
 		aliasMinted := i < len(aliasProvenance) && aliasProvenance[i]
-		cd := deriveProjectionColumnDef(v, alias, aliasMinted, i, descs)
+		aliasSource := values.ProjectionAliasSource{}
+		if i < len(aliasSources) {
+			aliasSource = aliasSources[i]
+		}
+		cd := deriveProjectionColumnDef(v, alias, aliasMinted, aliasSource, i, descs)
+		// The projection's frozen result schema is the emitted row-key
+		// authority. In particular, a scalar QOV can compute an UNNEST ordinal
+		// whose SQL name (AT) differs from the scalar leg's display name (VAL).
+		// Re-deriving that key from the Value here would make metadata disagree
+		// with the row the executor emits.
+		if i < len(outputNames) && outputNames[i] != "" {
+			cd.Name = outputNames[i]
+			if alias == "" {
+				if qov, isQOV := values.AsQuantifiedObjectValue(v); isQOV &&
+					qov.FlowedType() != nil && qov.FlowedType().Code() != values.TypeCodeRecord {
+					cd.Label = outputNames[i]
+				} else if _, isReference := values.AsFieldValue(v); isReference &&
+					!projectionLabelAlreadyUsed(cols[:i], cd.Label) {
+					// A plain column REFERENCE can be RENAMED by the projection's
+					// frozen output schema with no SELECT alias attached: a CTE
+					// column list (`WITH r(n) AS …`) renames the leg's output and
+					// never appears as an alias on a projected item, and a
+					// rebuild that preserves the output schema does not always
+					// carry the alias vector with it. The executor names the
+					// emitted slot from that schema, so a label left on the read's
+					// own field name (`ID`) describes a slot the row calls `N` and
+					// the positional read refuses to align — every column of the
+					// result then goes loud.
+					//
+					// NOT when the derived label already occurs at an earlier
+					// slot. The output schema is name-addressable, so a repeated
+					// label is DEDUPLICATED there (`X`, `X_2`) while the
+					// user-visible labels stay `[X X]` — Java's layout, and what
+					// the alignment check already tolerates by ordinal. Following
+					// the schema there would publish the machinery's suffix as a
+					// column name.
+					//
+					// Bare leaf and upper-cased, to stay in the derivation's own
+					// spelling: an output name over a gated ordinal join is
+					// qualified (`C.NAME`) while the label is bare, and a quoted
+					// inner alias reaches the schema in its written case (`did`)
+					// where the column list reports `DID`.
+					cd.Label = strings.ToUpper(parseColRef(outputNames[i]).bare())
+				}
+			} else if !aliasMinted {
+				cd.Label = outputNames[i]
+			}
+		}
+		// Exact Value nullability describes the expression before a surrounding
+		// join edge. Overlay the selected input's null-extension after that
+		// derivation, even when the expression type itself is already known (a
+		// projected EXISTS is exact NOT NULL and therefore never enters the
+		// UNKNOWN-only inheritance block below).
+		if fv, isField := values.AsFieldValue(v); isField {
+			if qov, viaQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); viaQOV {
+				if qov.Correlation() == proj.GetInnerQuantifier().GetAlias() && fv.Path().Len() == 1 &&
+					projectionInputNullExtendsOutput(proj.GetInner()) {
+					deriveInner()
+					ordinals := fv.Path().Ordinals()
+					if ordinal := ordinals[0]; ordinal >= 0 && ordinal < len(innerCols) && innerCols[ordinal].Nullable == api.ColumnNullable {
+						cd.Nullable = api.ColumnNullable
+					}
+				} else if _, nullSupplying, found := legPlanFor(proj.GetInner(), qov.Correlation().Name()); found && nullSupplying {
+					cd.Nullable = api.ColumnNullable
+				} else {
+					deriveInner()
+					qualified := strings.ToUpper(qov.Correlation().Name()) + "." + strings.ToUpper(fv.DisplayName())
+					if inherited, ok := innerByName[qualified]; ok && inherited.Nullable == api.ColumnNullable {
+						cd.Nullable = api.ColumnNullable
+					}
+				}
+			}
+		}
 		if cd.Nullable == api.ColumnNoNulls {
 			// The projected reference is either a FLAT (childless) read — its
 			// Field may carry the "LEG.COL" qualifier — or the resolver's
@@ -4409,10 +4606,10 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 			// NoNulls. Java addresses the same reference by ordinal identity
 			// alone — ResolvedAccessor.equals/hashCode compare getOrdinal()
 			// and the name is not part of identity (FieldValue.java:684,:689).
-			if fv, ok := v.(*values.FieldValue); ok {
+			if fv, ok := values.AsFieldValue(v); ok {
 				structural := false
-				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-					if r, found := resolveLegRead(proj.GetInner(), md, qov.Correlation.Name()); found {
+				if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
+					if r, found := resolveLegRead(proj.GetInner(), md, qov.Correlation().Name()); found {
 						structural = true
 						if r.nullExtended(fv) {
 							cd.Nullable = api.ColumnNullable
@@ -4427,7 +4624,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 				// nothing: the qualifier the mint used to add could only ever
 				// have tie-broken against a table name.
 				if !structural {
-					if d := descriptorForColumn(fv.Field, descs); d != nil {
+					if d := descriptorForColumn(fv.DisplayName(), descs); d != nil {
 						if _, born := nullBorn[d.FullName()]; born {
 							cd.Nullable = api.ColumnNullable
 						}
@@ -4447,10 +4644,9 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 			// like `val * 2 AS doubled` is then a plain rename of the inner
 			// output, and refusing to inherit reported UNKNOWN where Java types
 			// it from the flowed result type regardless of plan shape.
-			fv, isField := v.(*values.FieldValue)
+			fv, isField := values.AsFieldValue(v)
 			if isField {
-				_, viaQOV := fv.Child.(*values.QuantifiedObjectValue)
-				if fv.Child == nil || viaQOV {
+				if qov, viaQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); viaQOV {
 					deriveInner()
 					// The BAKED ordinal is the structural linkage (RFC-142): a
 					// plan-time reference reads the inner output SLOT, and the
@@ -4471,27 +4667,8 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// fieldPath.getLastFieldType, FieldValue.java:143-148), so
 					// declining to inherit leaves the RIGHT answer standing rather
 					// than a guess.
-					if fv.Resolved != nil && len(fv.Resolved.Accessors) > 1 {
+					if fv.Path().Len() > 1 {
 						inherited = true
-					}
-					// Ordinal inheritance only for the FLAT read: a
-					// QUANTIFIER-ADDRESSED read over a JOIN carries a
-					// LEG-relative ordinal, which is not an index into the
-					// flattened inner columns — inheriting by it would type
-					// the column from an unrelated leg's slot. QOV reads use
-					// the name path below.
-					if fv.Child == nil && fv.Resolved != nil && len(fv.Resolved.Accessors) == 1 {
-						if ord := fv.Resolved.Accessors[0].Ordinal; ord >= 0 && ord < len(innerCols) {
-							if ic := innerCols[ord]; ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
-								cd.TypeName = ic.TypeName
-								// Upgrade-only, like every inherit site: the
-								// null-born adjustment ran before inheritance.
-								if ic.Nullable == api.ColumnNullable {
-									cd.Nullable = api.ColumnNullable
-								}
-								inherited = true
-							}
-						}
 					}
 					if !inherited {
 						// A QOV-addressed read over a JOIN resolves against
@@ -4517,7 +4694,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 							}
 							inherited = true
 						}
-						if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
+						if qov != nil {
 							// Resolve the LEG STRUCTURALLY: reconstructing leg
 							// membership from qualified-name prefixes both
 							// miscounts (an already-qualified output like a
@@ -4530,15 +4707,15 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 							// projected EXISTS stays NoNulls on a CROSS join),
 							// and the null-supplying flag applies the LEFT-JOIN
 							// null extension only where it exists.
-							if r, found := resolveLegRead(proj.GetInner(), md, qov.Correlation.Name()); found {
+							if r, found := resolveLegRead(proj.GetInner(), md, qov.Correlation().Name()); found {
 								if ic, ok := r.column(fv); ok && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
 									cd.TypeName = ic.TypeName
 									cd.Nullable = ic.Nullable
 									if r.nullSupplying {
 										cd.Nullable = api.ColumnNullable
 									}
-									inherited = true
 								}
+								inherited = true
 							}
 							// THE DECLINE IN legRead.column ONLY NARROWS THIS ARM, it
 							// does not close it. When column() refuses, the lookup
@@ -4555,14 +4732,14 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 							// sits under `if !inherited`); it shuts entirely when the
 							// qualified-name inner keys go away.
 							if !inherited {
-								legPrefix := strings.ToUpper(qov.Correlation.Name()) + "."
-								if ic, found := innerByName[legPrefix+strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+								legPrefix := strings.ToUpper(qov.Correlation().Name()) + "."
+								if ic, found := innerByName[legPrefix+strings.ToUpper(fv.DisplayName())]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
 									inheritFrom(ic)
 								}
 							}
 						}
 						if !inherited {
-							if ic, found := innerByName[strings.ToUpper(fv.Field)]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
+							if ic, found := innerByName[strings.ToUpper(fv.DisplayName())]; found && ic.TypeName != "" && ic.TypeName != "UNKNOWN" {
 								inheritFrom(ic)
 							}
 						}
@@ -4573,6 +4750,29 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		cols[i] = cd
 	}
 	return cols
+}
+
+// projectionInputNullExtendsOutput reports whether a whole-row read through a
+// projection's sole physical edge crosses a join that can replace one of its
+// output slots with SQL NULL. An INNER/CROSS FlatMap may contain a
+// FirstOrDefault solely to compute EXISTS; its folded output Value remains
+// exact NOT NULL, so the wrapper alone is not evidence of null extension.
+func projectionInputNullExtendsOutput(plan plans.RecordQueryPlan) bool {
+	for plan != nil {
+		switch p := plan.(type) {
+		case *plans.RecordQueryNestedLoopJoinPlan:
+			return p.GetJoinType() == plans.JoinLeftOuter || p.GetJoinType() == plans.JoinFullOuter
+		case *plans.RecordQueryProjectionPlan:
+			return false
+		default:
+			inner, ok := plan.(innerPlan)
+			if !ok {
+				return false
+			}
+			plan = inner.GetInner()
+		}
+	}
+	return false
 }
 
 // deriveProjectionColumnDef derives the ResultSet ColumnDef (datum-lookup Name,
@@ -4606,7 +4806,14 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 // key, false when it is the user's `AS`. It is what separates the two — they are
 // spelled alike — and the separation is the whole difference between reporting
 // `SELECT u.name AS "U.NAME"` as Java does (verbatim) and degrading it.
-func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, idx int, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
+func deriveProjectionColumnDef(
+	v values.Value,
+	alias string,
+	aliasMinted bool,
+	aliasSource values.ProjectionAliasSource,
+	idx int,
+	descs []protoreflect.MessageDescriptor,
+) executor.ColumnDef {
 	// A NESTED reference is named by its resolved PATH, read from the one
 	// predicate every naming authority shares, and it is tested FIRST because it
 	// subsumes both arms below: `Field` is ONE segment of the path, so it cannot
@@ -4630,19 +4837,15 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 	var name string
 	if path, nested := values.NestedResolvedPath(v); nested {
 		name = path
-	} else if fv, ok := v.(*values.FieldValue); ok {
-		if fv.Child != nil {
-			name = values.ColumnNameValue(v)
-		} else {
-			name = fv.Field
-		}
+	} else if _, ok := values.AsFieldValue(v); ok {
+		name = values.ColumnNameValue(v)
 	} else {
 		name = values.ColumnNameValue(v)
 	}
 	var label string
 	if alias != "" {
 		label = strings.ToUpper(alias)
-	} else if _, isField := v.(*values.FieldValue); !isField {
+	} else if _, isField := values.AsFieldValue(v); !isField {
 		label = fmt.Sprintf("_%d", idx)
 	}
 	// Resolve THIS column against the leg that defines it (a join
@@ -4661,7 +4864,7 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 	// type serves columns the descriptor cannot resolve (derived/CTE
 	// outputs) and every non-FieldValue expression.
 	typeName := ""
-	if _, isField := v.(*values.FieldValue); isField && colDesc != nil {
+	if _, isField := values.AsFieldValue(v); isField && colDesc != nil {
 		// The stored descriptor is the metadata authority for a BASE column read —
 		// but ONLY to recover the eval-width the flowed seed conflates (INTEGER↔
 		// BIGINT, FLOAT↔DOUBLE). A DERIVED/CTE OUTPUT alias whose name coincidentally
@@ -4700,7 +4903,7 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 	// the user-visible metadata.
 	displayLabel := label
 	if label == "" {
-		if _, isField := v.(*values.FieldValue); isField && name != "" {
+		if _, isField := values.AsFieldValue(v); isField && name != "" {
 			// The label is the bare LEAF of the column's NAME, derived above,
 			// never of fv.Field. The two happen to agree for a fused nested
 			// reference today — the mint names it after its leaf — and that
@@ -4732,14 +4935,15 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 		// structural qualifier LIST, and a delimited `"U.NAME"` is one
 		// Identifier with an EMPTY qualifier list), so no spelling can be the
 		// discriminator.
-		// The counterparty is the projected VALUE: a FieldValue over a
-		// QuantifiedObjectValue names the source the machinery minted this
-		// alias FROM, so whether the qualifier sliced out of the label equals
-		// that correlation is exactly this site's conversion question. The
+		// The counterparty is the frozen structured alias source captured when
+		// the machinery minted this key. The projected Value may since have been
+		// reanchored onto `_current`, so it is evaluation authority rather than
+		// authored display identity. Whether the qualifier sliced out of the
+		// label equals the frozen source is this site's conversion question. The
 		// parenthesis heuristic is recorded as its own DECLINE rather than
 		// folded into "bare", because a rejection made by looking for `()` in a
 		// rendering is the thing under measurement, not a clean non-split.
-		if stripped, did := stripDisplayLabelQualifier(label, v); did {
+		if stripped, did := stripDisplayLabelQualifier(label, aliasSource); did {
 			displayLabel = stripped
 		}
 	}
@@ -4749,18 +4953,16 @@ func deriveProjectionColumnDef(v values.Value, alias string, aliasMinted bool, i
 			nullable = api.ColumnNoNulls
 		}
 	}
-	// The proto descriptor says what the STORED column is; the FLOWED value
-	// type says what this query serves — a NOT NULL column read through a
-	// LEFT-outer null-supplying window is nullable (the padded rows serve
-	// NULL), which Java reports via the plan's result type
-	// (FieldValue.computeResultType's nullable override).
-	// A KNOWN-typed nullable flowed value
-	// therefore upgrades NoNulls — never the reverse; an UNKNOWN type
-	// (name-model lazy dotted refs never flow one) says nothing.
-	if nullable == api.ColumnNoNulls {
-		if fv, isField := v.(*values.FieldValue); isField && fv.Typ != nil &&
-			fv.Typ.Code() != values.TypeCodeUnknown && fv.Typ.IsNullable() {
+	// The proto descriptor says what the STORED column is; the exact FLOWED
+	// value says what this query serves. It is authoritative in both
+	// directions: outer-null extension widens a field to nullable, while EXISTS
+	// and other definite expressions remain NOT NULL even without a descriptor.
+	// UNKNOWN carries no claim and leaves the descriptor/default untouched.
+	if flowed := v.Type(); flowed != nil && flowed.Code() != values.TypeCodeUnknown {
+		if flowed.IsNullable() {
 			nullable = api.ColumnNullable
+		} else {
+			nullable = api.ColumnNoNulls
 		}
 	}
 	return executor.ColumnDef{
@@ -4807,12 +5009,8 @@ func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.Messa
 	// reference name (qualified for a JOIN composite) so descriptorForColumn keys
 	// the right leg; fall back to the field Name for a non-FieldValue value.
 	typeRef := name
-	if fv, ok := f.Value.(*values.FieldValue); ok {
-		if fv.Child != nil {
-			typeRef = strings.ToUpper(values.ColumnNameValue(f.Value))
-		} else {
-			typeRef = strings.ToUpper(fv.Field)
-		}
+	if _, ok := values.AsFieldValue(f.Value); ok {
+		typeRef = strings.ToUpper(values.ColumnNameValue(f.Value))
 	}
 	return columnDefFromRef(name, label, typeRef, f.Value, descs)
 }
@@ -4921,6 +5119,149 @@ func mergedRVSequenceDiverges(rc *values.RecordConstructorValue, merged []execut
 	return false
 }
 
+// mergedInRVOrder re-sequences the name-model leg-merge into the ordinal RC's
+// authoritative output order, keeping each column's qualified datum key.
+//
+// A divergence between the two sequences is a statement about ORDER, never
+// about the names. The merge walks the PHYSICAL leg tree, and which grouping
+// the planner picks for equal-cost legs is arbitrary — a plain three-way
+// `SELECT *` plans `TA ⋈ (TB ⋈ TC)` or `TB ⋈ (TA ⋈ TC)` on a tie — while the RC
+// always carries FROM order. Answering the divergence by falling back to the
+// RC's own bare labels fixes the order and throws the qualifiers away with it,
+// dropping the `TA.K`/`TB.K` datum keys that by-name reads use. The permutation
+// is what was actually needed, and the RC states it.
+//
+// Each RC field names its LEG by root correlation and its position by baked
+// ordinal path; slotIndex resolves that pair to the leg's derived-column index
+// (legSlotIndex in production, which walks the path down the leg's own join
+// tree). Nothing here re-derives a column: the merge already carries the
+// qualification, the outer-join null extension and the per-leg recursion, and
+// this only says WHERE each of its entries belongs.
+//
+// The resolver is a parameter so the permutation assembly and its refusals can
+// be driven directly, without standing up a plan tree for each one.
+//
+// Reports false unless the RC accounts for every merged column exactly once,
+// under exactly the two leg roots. Anything else means the merge is not simply
+// misordered, and the caller keeps its existing RC-derived answer rather than
+// guessing at an alignment.
+func mergedInRVOrder(
+	rc *values.RecordConstructorValue,
+	merged []executor.ColumnDef,
+	firstAlias, secondAlias string,
+	firstWidth int,
+	slotIndex func(alias string, path []int) (int, bool),
+) ([]executor.ColumnDef, bool) {
+	if len(rc.Fields) != len(merged) ||
+		firstWidth < 0 || firstWidth > len(merged) ||
+		firstAlias == "" || secondAlias == "" || firstAlias == secondAlias {
+		return nil, false
+	}
+	out := make([]executor.ColumnDef, len(merged))
+	taken := make([]bool, len(merged))
+	for i, f := range rc.Fields {
+		field, isField := values.AsFieldValue(f.Value)
+		if !isField {
+			return nil, false
+		}
+		root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !isRoot {
+			return nil, false
+		}
+		var position int
+		var resolved bool
+		switch name := strings.ToUpper(root.Correlation().Name()); name {
+		case firstAlias:
+			position, resolved = slotIndex(name, field.Path().Ordinals())
+		case secondAlias:
+			position, resolved = slotIndex(name, field.Path().Ordinals())
+			position += firstWidth
+		}
+		if !resolved || position < 0 || position >= len(merged) || taken[position] {
+			return nil, false
+		}
+		taken[position] = true
+		out[i] = merged[position]
+	}
+	return out, true
+}
+
+// legSlotIndex resolves one ordinal path within a leg's emitted row to that
+// leg's DERIVED-COLUMN index.
+//
+// The two orders are not the same and cannot be assumed to be. A join leg emits
+// a nested positional-merge row whose slot order is its PHYSICAL leg order,
+// while its derived columns come back flat in SQL order — deriveColumnsFromJoin
+// may already have reversed them. `SELECT * FROM p, q, p` planned `(P ⋈ Q) ⋈ P`
+// is the shape where they part company: the sub-join's row is `<_0 Q, _1 P>`
+// and its columns are `[P.ID P.V Q.QID]`. So the path is followed through the
+// join's OWN result value, which names the leg at each slot, and the leg order
+// is re-derived exactly as the merge derived it.
+//
+// A leg that is not a join emits a flat row: slot i is column i.
+func legSlotIndex(
+	leg plans.RecordQueryPlan, md *recordlayer.RecordMetaData, path []int,
+) (int, bool) {
+	if leg == nil || len(path) == 0 {
+		return 0, false
+	}
+	// Pass-through wrappers (Fetch, Limit, DefaultOnEmpty) keep their input's
+	// row, so descend to the node that shapes it. definesOutputSchema is the
+	// same stop set deriveColumnsFromPlan's descent uses.
+	for !definesOutputSchema(leg) {
+		inner, wrapped := leg.(innerPlan)
+		if !wrapped || inner.GetInner() == nil {
+			break
+		}
+		leg = inner.GetInner()
+	}
+	nlj, isJoin := leg.(*plans.RecordQueryNestedLoopJoinPlan)
+	if !isJoin {
+		if len(path) != 1 {
+			return 0, false
+		}
+		if path[0] < 0 || path[0] >= len(deriveColumnsFromPlan(leg, md)) {
+			return 0, false
+		}
+		return path[0], true
+	}
+	rc, isRC := nlj.GetResultValue().(*values.RecordConstructorValue)
+	if !isRC || path[0] < 0 || path[0] >= len(rc.Fields) {
+		return 0, false
+	}
+	slotLeg, isSlotLeg := values.AsQuantifiedObjectValue(rc.Fields[path[0]].Value)
+	if !isSlotLeg {
+		return 0, false
+	}
+	firstLeg, secondLeg, firstAlias, secondAlias := joinLegDerivationOrder(nlj)
+	switch strings.ToUpper(slotLeg.Correlation().Name()) {
+	case firstAlias:
+		return legSlotIndex(firstLeg, md, path[1:])
+	case secondAlias:
+		index, ok := legSlotIndex(secondLeg, md, path[1:])
+		if !ok {
+			return 0, false
+		}
+		return len(deriveColumnsFromPlan(firstLeg, md)) + index, true
+	}
+	return 0, false
+}
+
+// joinLegDerivationOrder returns the join's legs in the order
+// deriveColumnsFromJoin merges their columns, with their aliases uppercased.
+// Both sites must make the same first/second decision or an index computed
+// against one describes the other.
+func joinLegDerivationOrder(
+	nlj *plans.RecordQueryNestedLoopJoinPlan,
+) (firstLeg, secondLeg plans.RecordQueryPlan, firstAlias, secondAlias string) {
+	outerAlias := strings.ToUpper(nlj.GetOuterAlias().Name())
+	innerAlias := strings.ToUpper(nlj.GetInnerAlias().Name())
+	if joinResultValueIsReversed(nlj.GetResultValue(), outerAlias, innerAlias) {
+		return nlj.GetInner(), nlj.GetOuter(), innerAlias, outerAlias
+	}
+	return nlj.GetOuter(), nlj.GetInner(), outerAlias, innerAlias
+}
+
 func ordinalUnnestColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
 	name := strings.ToUpper(f.Name)
 	label := strings.ToUpper(parseColRef(f.Name).bare())
@@ -4934,13 +5275,11 @@ func ordinalUnnestColumnDef(f values.RecordConstructorField, descs []protoreflec
 // shape. Used to classify an ordinal-unnest seed field as an OUTER column vs an
 // element/ordinal (which reference the FlatMap's INNER correlation).
 func valueRootCorrelation(v values.Value) (values.CorrelationIdentifier, bool) {
-	switch t := v.(type) {
-	case *values.QuantifiedObjectValue:
-		return t.Correlation, true
-	case *values.FieldValue:
-		if t.Child != nil {
-			return valueRootCorrelation(t.Child)
-		}
+	if qov, ok := values.AsQuantifiedObjectValue(v); ok {
+		return qov.Correlation(), true
+	}
+	if field, ok := values.AsFieldValue(v); ok {
+		return valueRootCorrelation(field.ChildValue())
 	}
 	return values.CorrelationIdentifier{}, false
 }
@@ -5018,15 +5357,25 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	if outerCols == nil && innerCols == nil {
 		return nil
 	}
+	// Null extension is a property of the join edge, not of the stored table
+	// descriptor nor of a derived leg's pre-join exact type. Apply it before
+	// any SQL-order reversal so it stays attached to the physical role that
+	// supplies NULLs. This is especially important for synthesized NOT NULL
+	// columns such as projected EXISTS flags.
+	switch nlj.GetJoinType() {
+	case plans.JoinLeftOuter:
+		innerCols = columnsWithNullable(innerCols)
+	case plans.JoinFullOuter:
+		outerCols = columnsWithNullable(outerCols)
+		innerCols = columnsWithNullable(innerCols)
+	}
 
 	outerAlias := strings.ToUpper(nlj.GetOuterAlias().Name())
-	innerAlias := strings.ToUpper(nlj.GetInnerAlias().Name())
 
 	firstCols, secondCols := outerCols, innerCols
-	firstAlias, secondAlias := outerAlias, innerAlias
-	if joinResultValueIsReversed(nlj.GetResultValue(), outerAlias, innerAlias) {
+	firstLeg, secondLeg, firstAlias, secondAlias := joinLegDerivationOrder(nlj)
+	if firstAlias != outerAlias {
 		firstCols, secondCols = innerCols, outerCols
-		firstAlias, secondAlias = innerAlias, outerAlias
 	}
 
 	merged := qualifyAndMergeColumns(firstCols, secondCols, firstAlias, secondAlias)
@@ -5069,6 +5418,31 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 	rc, isOrdinalRC := nlj.GetResultValue().(*values.RecordConstructorValue)
 	mergedDivergesFromRV := isOrdinalRC && mergedRVSequenceDiverges(rc, merged)
 	elemAlias, elemTypeName, elemValue := gatheredExplodeElement(nlj, md)
+	// A merge that is merely MISORDERED is re-sequenced, not discarded: the RC's
+	// baked ordinals name each slot's position in the merged physical row, so
+	// the permutation is stated rather than guessed, and the qualified datum
+	// keys survive. Only when the two cannot be aligned that way does the
+	// RC-derived (bare-label) answer below take over. The gathered-unnest arm is
+	// NOT re-sequenced — its merge is missing the element column outright, so
+	// there is no permutation to find.
+	// No baked-ordinal requirement: the mapping is by RESOLVED PATH through the
+	// leg tree, which a resolved read carries whether or not the RC also wears
+	// the baked marker. Requiring the marker left a four-way `SELECT *` (whose
+	// top RC resolves but is not marked) reporting its columns in physical leg
+	// order while the row it describes was in FROM order — metadata and row
+	// disagreeing, which the positional read refuses outright.
+	if mergedDivergesFromRV && elemAlias == "" {
+		resolveSlot := func(alias string, path []int) (int, bool) {
+			if alias == firstAlias {
+				return legSlotIndex(firstLeg, md, path)
+			}
+			return legSlotIndex(secondLeg, md, path)
+		}
+		if resequenced, ok := mergedInRVOrder(
+			rc, merged, firstAlias, secondAlias, len(firstCols), resolveSlot); ok {
+			return resequenced
+		}
+	}
 	if isOrdinalRC && len(rc.Fields) > 0 && values.ContainsBakedOrdinal(rc) &&
 		((hasPositionalMergeLeg(nlj) && elemAlias != "") || mergedDivergesFromRV) {
 		descs := allLeafDescriptors(nlj.GetOuter(), md)
@@ -5105,6 +5479,14 @@ func deriveColumnsFromJoin(nlj *plans.RecordQueryNestedLoopJoinPlan, md *recordl
 		return cols
 	}
 	return merged
+}
+
+func columnsWithNullable(columns []executor.ColumnDef) []executor.ColumnDef {
+	result := append([]executor.ColumnDef(nil), columns...)
+	for i := range result {
+		result[i].Nullable = api.ColumnNullable
+	}
+	return result
 }
 
 // hasPositionalMergeLeg reports whether a leg subplan (transitively, through
@@ -5171,9 +5553,12 @@ func gatheredExplodeElement(p plans.RecordQueryPlan, md *recordlayer.RecordMetaD
 			elemTypeName := explodeElementTypeName(exp, fm.GetOuter(), md)
 			collType := exp.GetCollectionValue().Type()
 			if arr, isArr := collType.(*values.ArrayType); isArr && arr.ElementType != nil {
-				return fm.GetInnerAlias().Name(), elemTypeName, values.NewQuantifiedObjectValueOfType(
+				element, err := values.NewQuantifiedObjectValue(
 					fm.GetInnerAlias(), arr.ElementType,
 				)
+				if err == nil {
+					return fm.GetInnerAlias().Name(), elemTypeName, element
+				}
 			}
 			return fm.GetInnerAlias().Name(), elemTypeName, nil
 		}
@@ -5231,15 +5616,15 @@ func gatheredExplodeElement(p plans.RecordQueryPlan, md *recordlayer.RecordMetaD
 // ordinal removes: not a different answer here, but the possibility of the
 // question being asked anywhere else.
 func explodeElementTypeName(exp *plans.RecordQueryExplodePlan, leg plans.RecordQueryPlan, md *recordlayer.RecordMetaData) string {
-	fv, isFV := exp.GetCollectionValue().(*values.FieldValue)
+	fv, isFV := values.AsFieldValue(exp.GetCollectionValue())
 	if !isFV {
 		return ""
 	}
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 	if !isQOV {
 		return ""
 	}
-	id, ok := fv.CorrelatedIdentityIn(values.OrdinalDomainOfType(qov.Type()))
+	id, ok := values.CorrelatedFieldIdentityIn(fv, values.OrdinalDomainOfQuantified(qov))
 	if !ok {
 		return ""
 	}
@@ -5416,8 +5801,8 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 	// the outer columns alone. Projected EXISTS (a RecordConstructor result value)
 	// was already handled above; this covers the WHERE-only case where the result
 	// value is the bare outer QOV.
-	if qov, ok := fm.GetResultValue().(*values.QuantifiedObjectValue); ok &&
-		strings.EqualFold(qov.Correlation.Name(), fm.GetOuterAlias().Name()) {
+	if qov, ok := values.AsQuantifiedObjectValue(fm.GetResultValue()); ok &&
+		strings.EqualFold(qov.Correlation().Name(), fm.GetOuterAlias().Name()) {
 		return deriveColumnsFromPlan(fm.GetOuter(), md)
 	}
 
@@ -5449,12 +5834,12 @@ func deriveColumnsFromFlatMap(fm *plans.RecordQueryFlatMapPlan, md *recordlayer.
 // type correction scoped to the correlated-scalar seed. Caller has already
 // gated on values.IsOrdinalJoinRV.
 func isCorrelatedScalarInnerLeg(f values.RecordConstructorField, innerAlias string) bool {
-	fv, ok := f.Value.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(f.Value)
 	if !ok {
 		return false
 	}
-	qov, ok := fv.Child.(*values.QuantifiedObjectValue)
-	if !ok || !strings.EqualFold(qov.Correlation.Name(), innerAlias) {
+	qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+	if !ok || !strings.EqualFold(qov.Correlation().Name(), innerAlias) {
 		return false
 	}
 	t := fv.Type()
@@ -5781,36 +6166,18 @@ func arithTypeNameViaDesc(a *values.ArithmeticValue, desc protoreflect.MessageDe
 }
 
 func operandTypeNameViaDesc(v values.Value, desc protoreflect.MessageDescriptor) string {
-	switch t := v.(type) {
-	case *values.FieldValue:
-		// A MULTI-ACCESSOR reference has already stated its type: it descended
-		// into a struct and its declared type is the LEAF's, which is exactly
-		// Java's answer — FieldValue.computeResultType is
-		// `fieldPath.getLastFieldType()` (FieldValue.java:143-148), with no
-		// name-keyed re-derivation anywhere upstream of it. The descriptor
-		// cannot improve on that and can only be WRONG: `t.Field` names a
-		// member of the enclosing STRUCT's namespace, while the descriptor is
-		// the RECORD's, and a lookup that crosses the two silently answers
-		// about a different column that happens to share the spelling.
-		//
-		// The arity test is on the resolved path and NOT on `t.Child`: the
-		// source-relative mint (expr.sourceRelativeColumnRef) produces a fused
-		// multi-accessor value with a nil Child, so childlessness is a
-		// statement about correlation, never about how many segments the
-		// reference has.
-		if t.Resolved != nil && len(t.Resolved.Accessors) > 1 {
+	if field, ok := values.AsFieldValue(v); ok {
+		if field.Path().Len() > 1 {
 			return valueTypeName(v, desc)
 		}
 		if desc != nil {
-			if n := protoFieldTypeName(desc, t.Field); n != "UNKNOWN" {
+			if n := protoFieldTypeName(desc, field.DisplayName()); n != "UNKNOWN" {
 				return n
 			}
 		}
-		// The operand may belong to a different join leg than `desc` (the
-		// caller only threads the first leaf descriptor). Fall back to the
-		// value's own semantic type rather than dropping it from the
-		// numeric promotion (P2).
 		return valueTypeName(v, desc)
+	}
+	switch t := v.(type) {
 	case *values.ArithmeticValue:
 		return arithTypeNameViaDesc(t, desc)
 	default:
@@ -6261,6 +6628,13 @@ func atOnNonArraySource(left logical.LogicalOperator, u *logical.LogicalUnnest, 
 	// COLUMN_REFERENCE). Checked before the outerTable=="" reject below, which
 	// would otherwise mistake the unnest-element owner for a bare table source.
 	if logical.FindOwnerUnnest(left, u.Segments[0]) != nil {
+		return false
+	}
+	// An exact inline VALUES leaf is another real correlated owner. It has no
+	// catalog descriptor by design; its frozen logical row is the authority
+	// that translateUnnestJoin uses to classify the array path. Do not let this
+	// early table-error echo mask that exact classification with 42809.
+	if logical.FindOwnerInlineValues(left, u.Segments[0]) != nil {
 		return false
 	}
 	outerTable := logical.FindOuterScanTable(left, u.Segments[0])

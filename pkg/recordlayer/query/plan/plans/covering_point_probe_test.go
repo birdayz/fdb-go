@@ -47,9 +47,11 @@ func pointProbeScan(t *testing.T, unique, bindAll bool) *RecordQueryIndexPlan {
 		comps = append(comps, mk(7))
 		types = append(types, values.NullableLong)
 	}
-	return NewRecordQueryIndexPlan(
-		"idx_ab", comps, []string{"T"}, values.UnknownType, false,
-	).
+	return mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"idx_ab", comps, []string{"T"}, exactTestRecordType(), false,
+		)
+	}).
 		// Physical key types are what turn a bind into a PROOF: without them the
 		// multiplicity is Unknown and nothing is provable, so every cell would
 		// agree at false and the pin would be vacuous. The vacuity guard below
@@ -72,7 +74,9 @@ func TestCoveringScanPointProbeProvability(t *testing.T) {
 	for _, unique := range []bool{true, false} {
 		for _, bindAll := range []bool{true, false} {
 			inner := pointProbeScan(t, unique, bindAll)
-			cov := NewRecordQueryCoveringIndexPlan(inner)
+			cov := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+				return NewRecordQueryCoveringIndexPlan(inner)
+			})
 
 			want := isProvablePointProbe(inner)
 			got := isProvablePointProbe(cov)
@@ -91,8 +95,10 @@ func TestCoveringScanPointProbeProvability(t *testing.T) {
 
 			// Through the production wrapper too: the access path emits
 			// Fetch(Covering(scan)), and a fetch is transparent 1:1 over its child.
-			fetch := NewRecordQueryFetchFromPartialRecordPlan(
-				cov, nil, nil, FetchIndexRecordsPrimaryKey)
+			fetch := mustChecked(t, func() (*RecordQueryFetchFromPartialRecordPlan, error) {
+				return NewRecordQueryFetchFromPartialRecordPlan(
+					cov, nil, exactTestRecordType(), FetchIndexRecordsPrimaryKey)
+			})
 			if got := isProvablePointProbe(fetch); got != want {
 				t.Errorf("unique=%v bindAll=%v: Fetch(Covering(scan)) reports provable=%v, "+
 					"want %v — a fetch is transparent 1:1 over its child and must inherit "+

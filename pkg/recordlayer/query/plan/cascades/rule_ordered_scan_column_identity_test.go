@@ -16,12 +16,13 @@ func TestSortKeyMatchesColumn_NestedShadowsTopLevelColumn(t *testing.T) {
 	t.Parallel()
 
 	src := values.NamedCorrelationIdentifier("T")
-	nested := values.NewFieldValue(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(src), "ADDR", values.UnknownType),
-		"CITY", values.UnknownType)
-	flat := values.NewFieldValue(values.NewQuantifiedObjectValue(src), "CITY", values.UnknownType)
-	baked := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(src), "CITY", 0, values.UnknownType)
+	root := mustOrderedScanQOV(t, src)
+	nested := mustOrderedScanField(t,
+		mustOrderedScanField(t, root, "ADDR"),
+		"CITY")
+	flat := mustOrderedScanField(t, root, "CITY")
+	bakedValue, err := values.ResolveOrdinalSeedField(root, 6)
+	baked := mustConstruct(t, bakedValue, err)
 
 	if sortKeyMatchesColumn(nested, nil, 0, "CITY") {
 		t.Fatal("nested addr.city sort key matched top-level CITY column (would elide sort against wrong column)")

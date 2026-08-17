@@ -6,6 +6,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
@@ -176,31 +177,35 @@ func (t *cascadesTranslator) buildClusterPullUp(j *logical.LogicalJoin) *cluster
 // The same rule already governed childless BARE names, which were never
 // attributed either; the dotted arm was the inconsistency.
 func (pu *clusterPullUp) bake(v values.Value) values.Value {
-	fv, isFV := v.(*values.FieldValue)
+	fv, isFV := values.AsFieldValue(v)
 	// A source-relative baked ref (resolver construction bind) still addresses
 	// its leg's own row — re-bake it onto the concat like its lazy twin.
 	// SourceRelativeBaked() requires len(Accessors) == 1, so a multi-accessor unpinned ref is SKIPPED rather than re-baked onto the concat; classification owed (TODO.md).
-	if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
+	if !isFV || fv.Path().IsFrontierPinned() {
 		return v
 	}
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 	if !isQOV {
 		return v
 	}
-	alias := strings.ToUpper(qov.Correlation.Name())
-	col := strings.ToUpper(fv.Field)
+	alias := strings.ToUpper(qov.Correlation().Name())
 	leg, isLeg := pu.legByBinding[alias]
 	if !isLeg {
 		return v
 	}
-	idx, found := leg.typ.FieldIndexUnique(col)
+	idx, suffix, found := legRefRootInWindow(fv, leg.typ)
 	if !found {
 		pu.missed = true
 		return v
 	}
-	outerQOV := values.NewQuantifiedObjectValueOfType(pu.outerCorr, pu.concatType)
-	baked, err := values.NewFieldValueOfOrdinal(outerQOV, leg.start+idx)
+	outerQOV, err := values.NewQuantifiedObjectValue(pu.outerCorr, pu.concatType)
 	if err != nil {
+		pu.missed = true
+		return v
+	}
+	path := append([]int{leg.start + idx}, suffix...)
+	baked, err := values.ResolveFieldOrdinals(outerQOV, path)
+	if err != nil || baked.Type() == nil || !baked.Type().Equals(fv.ResultType()) {
 		pu.missed = true
 		return v
 	}
@@ -384,11 +389,11 @@ func rebuildInnerWithValues(op logical.LogicalOperator, fn func(values.Value) va
 func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[string]struct{}) (map[string]struct{}, bool) {
 	refs := map[string]struct{}{}
 	record := func(v values.Value) values.Value {
-		fv, isFV := v.(*values.FieldValue)
+		fv, isFV := values.AsFieldValue(v)
 		// Source-relative baked refs are outer-leg references like their lazy
 		// twins — they must be COUNTED or the decline guard misses them.
 		// SourceRelativeBaked() requires len(Accessors) == 1, so a multi-accessor unpinned ref is NOT COUNTED here — the direction that makes the decline guard miss it; classification owed (TODO.md).
-		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
+		if !isFV || fv.Path().IsFrontierPinned() {
 			return v
 		}
 		// Attribution is by CORRELATION. A childless FieldValue names no
@@ -400,11 +405,11 @@ func collectClusterOuterRefs(op logical.LogicalOperator, outerAliases, skip map[
 		// leg alias invented out of expression text. The genuine reference that
 		// name embeds is walked separately, as the aggregate's operand, where it
 		// carries its correlation.
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 		if !isQOV {
 			return v
 		}
-		alias := strings.ToUpper(qov.Correlation.Name())
+		alias := strings.ToUpper(qov.Correlation().Name())
 		if _, shadowed := skip[alias]; shadowed {
 			return v
 		}
@@ -482,12 +487,15 @@ func outerSubtreeAliases(op logical.LogicalOperator) map[string]struct{} {
 // exactly `INNER.SCALARCOL` (what replaceScalarSubqueryRef reads) but KEYED by
 // the fresh unique innerCorr (shape 2: the SQL alias would collide with a
 // JOIN-inner's own typed QOV at widenLegTypesFromPlan).
-func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string) values.Value {
-	outerQOV := values.NewQuantifiedObjectValueOfType(pu.outerCorr, pu.concatType)
+func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationIdentifier, innerAlias, scalarCol string, scalarType values.Type) values.Value {
+	outerQOV, err := values.NewQuantifiedObjectValue(pu.outerCorr, pu.concatType)
+	if err != nil {
+		return nil
+	}
 	var fields []values.RecordConstructorField
 	for _, leg := range pu.legs {
 		for i := range leg.typ.Fields {
-			fv, err := values.NewFieldValueOfOrdinal(outerQOV, leg.start+i)
+			fv, err := values.ResolveOrdinalSeedField(outerQOV, leg.start+i)
 			if err != nil {
 				return nil // decline
 			}
@@ -501,7 +509,7 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 	// concrete type is untyped at translation; nullability (LEFT-OUTER
 	// null-fill) is the only type property that matters.
 	innerType := &values.RecordType{Fields: []values.Field{
-		{Name: scalarCol, FieldType: values.WithNullability(values.UnknownType, true), Ordinal: 0},
+		{Name: scalarCol, FieldType: values.WithNullability(scalarType, true), Ordinal: 0},
 	}}
 	// RFC-212 §10.3 deliverable 1: register the (correlation, TITLE) pair so the
 	// executor's dotted-arm answers can be attributed to this producer BY
@@ -511,8 +519,11 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 	if values.LegIdentityCensusEnabled() {
 		values.RecordInnerScalarLegTitleAt(values.InnerLegProducerClusteredOuter, innerCorr, scalarCol)
 	}
-	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
-	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
+	innerQOV, err := values.NewQuantifiedObjectValue(innerCorr, innerType)
+	if err != nil {
+		return nil
+	}
+	innerFV, err := values.ResolveOrdinalSeedField(innerQOV, 0)
 	if err != nil {
 		return nil // decline
 	}
@@ -540,55 +551,26 @@ func clusterProjectionsResolvable(p *logical.LogicalProject, csq logical.Correla
 		if v != nil {
 			ok := true
 			values.WalkValue(v, func(node values.Value) bool {
+				if field, isField := values.AsFieldValue(node); isField {
+					qov, isQOV := values.AsQuantifiedObjectValue(field.ChildValue())
+					if !isQOV {
+						ok = false
+						return false
+					}
+					leg, isLeg := pu.legByBinding[strings.ToUpper(qov.Correlation().Name())]
+					if !isLeg {
+						ok = false
+						return false
+					}
+					if _, _, found := legRefRootInWindow(field, leg.typ); !found {
+						ok = false
+					}
+					return false
+				}
 				switch n := node.(type) {
 				case *values.ScalarSubqueryValue:
 					if n.Alias != csq.Alias {
 						ok = false // a second (uncorrelated) subquery — fallback
-					}
-					return false
-				case *values.FieldValue:
-					// A source-relative baked ref resolves like its lazy twin
-					// (the pull-up re-bakes it); machinery-owned baked nodes decline.
-					//
-					// THIS IS ALSO THE ARITY GATE, which the name does not convey:
-					// SourceRelativeBaked() requires len(Accessors) == 1
-					// (values.go:1367-1368), so a MULTI-ACCESSOR nested reference
-					// declines here and never reaches the name-keyed lookups below
-					// (FieldIndexUnique / clusterFieldResolvable, which take
-					// n.Field — one segment of a path). Named because the guard
-					// reads as being about machinery ownership alone.
-					if n.Resolved != nil && !n.SourceRelativeBaked() {
-						ok = false
-						return false
-					}
-					// A QUANTIFIER-ADDRESSED leg read (the resolver's SourceRelativeBaked
-					// emission for a qualified projection over a join,
-					// FieldValue{Child: QOV(leg), COL}) resolves when the leg
-					// span carries the column — bakeClusterLegRefs BINDS it to
-					// that leg's seed slot from the CorrelationIdentifier it
-					// already carries. It does not render the identifier and the
-					// column back into `LEG.COL` for a later matcher to take
-					// apart, which is what the predecessor did and what made leg
-					// `A` holding column `B.C` indistinguishable from leg `A.B`
-					// holding column `C`.
-					if n.Child != nil {
-						qov, isQOV := n.Child.(*values.QuantifiedObjectValue)
-						if !isQOV {
-							ok = false
-							return false
-						}
-						leg, isLeg := pu.legByBinding[strings.ToUpper(qov.Correlation.Name())]
-						if !isLeg {
-							ok = false
-							return false
-						}
-						if _, found := leg.typ.FieldIndexUnique(strings.ToUpper(n.Field)); !found {
-							ok = false
-						}
-						return false
-					}
-					if !clusterFieldResolvable(n.Field, pu, innerKey) {
-						ok = false
 					}
 					return false
 				}
@@ -650,29 +632,35 @@ func clusterSeedSlot(pu *clusterPullUp, binding, col string) (int, bool) {
 // The seed's row is built from the same legs in the same order, so the slot is
 // derivable from the identity alone. Non-leg and machinery-baked references
 // pass through untouched.
-func bakeClusterLegRefs(v values.Value, pu *clusterPullUp, cols []string) values.Value {
+func bakeClusterLegRefs(v values.Value, pu *clusterPullUp, seedQOV values.Value) values.Value {
 	return values.Replace(v, func(node values.Value) values.Value {
-		fv, isFV := node.(*values.FieldValue)
-		if !isFV || fv.Child == nil {
+		fv, isFV := values.AsFieldValue(node)
+		if !isFV {
 			return node
 		}
-		// SourceRelativeBaked() requires len(Accessors) == 1, so a multi-accessor unpinned ref is left unbaked here; classification owed (TODO.md).
-		if fv.Resolved != nil && !fv.SourceRelativeBaked() {
-			return node
-		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 		if !isQOV {
 			return node
 		}
-		alias := strings.ToUpper(qov.Correlation.Name())
-		slot, found := clusterSeedSlot(pu, alias, strings.ToUpper(fv.Field))
-		if !found || slot >= len(cols) {
+		alias := strings.ToUpper(qov.Correlation().Name())
+		leg, found := pu.legByBinding[alias]
+		if !found {
 			return node
 		}
-		// The display name keeps the seed's own spelling for EXPLAIN; the
-		// ordinal is what reads the row.
-		return values.NewFieldValueWithResolvedOrdinalInDomain(
-			cols[slot], slot, fv.Typ, values.OrdinalDomainOfColumnNames(cols))
+		idx, suffix, found := legRefRootInWindow(fv, leg.typ)
+		if !found {
+			return node
+		}
+		slot, found := clusterSeedSlot(pu, alias, leg.typ.Fields[idx].Name)
+		if !found {
+			return node
+		}
+		path := append([]int{slot}, suffix...)
+		baked, err := values.ResolveFieldOrdinals(seedQOV, path)
+		if err != nil || baked.Type() == nil || !baked.Type().Equals(fv.ResultType()) {
+			return node
+		}
+		return baked
 	})
 }
 
@@ -827,7 +815,11 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 	}
 	if innerLimit != nil {
 		limitQ := t.namedQuantifier(sourceAlias(innerPlan), innerRef)
-		limitExpr := newLimitExprFromLogical(innerLimit, limitQ)
+		limitExpr, err := newLimitExprFromLogical(innerLimit, limitQ)
+		if err != nil {
+			t.setTranslateErr(err)
+			return nil
+		}
 		innerRef = expressions.InitialOf(limitExpr)
 	}
 	// The inner quantifier carries a FRESH unique id (shape 2 decouples it from
@@ -843,60 +835,54 @@ func (t *cascadesTranslator) buildClusteredOuterOrdinalScalar(p *logical.Logical
 		innerQ = expressions.NamedForEachQuantifier(innerCorr, innerRef)
 	}
 
-	seed := clusteredOuterOrdinalSeed(pu, innerCorr, csq.InnerAlias, scalarCol)
+	innerResultType, err := ExactLogicalResultType(bakedInner, t.md)
+	if err != nil {
+		return nil
+	}
+	scalarType := innerResultType
+	if record, isRecord := innerResultType.(*values.RecordType); isRecord {
+		if len(record.Fields) != 1 || record.Fields[0].FieldType == nil {
+			return nil
+		}
+		scalarType = record.Fields[0].FieldType
+	}
+	seed := clusteredOuterOrdinalSeed(pu, innerCorr, csq.InnerAlias, scalarCol, scalarType)
 	if seed == nil {
 		return nil
 	}
-	joinSelect := expressions.NewSelectExpressionWithJoinType(
+	joinSelect, err := expressions.NewSelectExpressionWithJoinType(
 		seed,
 		[]expressions.Quantifier{outerQ, innerQ},
 		nil,
 		[]string{pu.outerCorr.Name(), innerCorr.Name()},
 		expressions.JoinLeftOuter,
 	)
+	if err != nil {
+		t.setTranslateErr(api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"clustered correlated scalar join has no exact result row: %v", err))
+		return nil
+	}
 	joinRef := expressions.InitialOf(joinSelect)
+	projQ := t.namedQuantifier("", joinRef)
+	seedType, isRecord := seed.Type().(*values.RecordType)
+	if !isRecord || len(seedType.Fields) == 0 {
+		return nil
+	}
+	seedQOV, err := values.NewQuantifiedObjectValue(projQ.GetAlias(), seedType)
+	if err != nil {
+		return nil
+	}
 
 	projected := make([]values.Value, len(p.Projections))
-	minted := make([]*values.FieldValue, len(p.Projections))
-	// The projection reads the seed field by its SQL-alias-based NAME — the
-	// unique correlation is a leg-typing key only.
-	innerNameCorr := values.NamedCorrelationIdentifier(csq.InnerAlias)
-	// Derived BEFORE the loop for the same reason the single-source twin does
-	// it: the scalar reference binds to its slot here, where the layout is in
-	// hand, instead of being rendered into text for a later pass to re-match.
-	inputCols := expressionOutputColumns(joinSelect)
-	for i, col := range p.Projections {
-		if i < len(p.ProjectedValues) && p.ProjectedValues[i] != nil {
-			projected[i] = replaceScalarSubqueryRef(p.ProjectedValues[i], csq, innerNameCorr, inputCols)
-			continue
+	for i := range p.Projections {
+		if i >= len(p.ProjectedValues) || p.ProjectedValues[i] == nil {
+			return nil
 		}
-		fv := &values.FieldValue{Field: strings.ToUpper(col), Typ: values.UnknownType}
-		projected[i] = fv
-		minted[i] = fv
-	}
-	// The level-2 output row is the seed RC's POSITIONAL row
-	// (dotted `LEG.COL` names plus the scalar's `ALIAS.COL` field) — bake each
-	// flat projection read to its slot at plan time. A QUANTIFIER-ADDRESSED
-	// leg read (the resolver's SourceRelativeBaked emission) first flattens onto the output's
-	// dotted name, then bakes with the rest. A lazy dotted read reaching the
-	// runtime positional row fails loud (ordinal -1); the retired name
-	// resolution no longer serves it.
-	if inputCols != nil {
-		for i, v := range projected {
-			if fv, isMinted := v.(*values.FieldValue); isMinted && fv == minted[i] {
-				if ref := projectionRefAt(p, i); ref.Present {
-					projected[i] = bakeSegmentedColumnRef(fv, ref, inputCols, nil)
-					continue
-				}
-			}
-			projected[i] = bakeFlatRefsAgainstColumns(bakeClusterLegRefs(v, pu, inputCols), inputCols)
+		replaced, replaceErr := replaceScalarSubqueryRef(p.ProjectedValues[i], csq, seedQOV, len(seedType.Fields)-1)
+		if replaceErr != nil {
+			return nil
 		}
+		projected[i] = bakeClusterLegRefs(replaced, pu, seedQOV)
 	}
-	projQ := t.namedQuantifier("", joinRef)
-	return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		projected,
-		p.Aliases,
-		p.AliasMinted,
-		projQ,
-	)
+	return t.exactProjectionForLogicalProject(projected, p, projQ)
 }

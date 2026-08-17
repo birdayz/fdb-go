@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -15,9 +16,15 @@ import (
 // scalar subquery results, and any mutable state that plan nodes
 // share. Mirrors Java's EvaluationContext.
 type EvaluationContext struct {
-	bindings         map[values.CorrelationIdentifier]any
-	params           []any
-	scalarSubqueries map[values.CorrelationIdentifier]any
+	bindings map[values.CorrelationIdentifier]any
+	// quantifiedBindings retains multiple exact objects that legitimately share
+	// one correlation spelling in different physical phases (for example a
+	// FlatMap's whole record and a scalar UNNEST element retained inside it).
+	// Legacy bindings remain for parameters/older correlation consumers; exact
+	// QOV evaluation selects here by both correlation and flowed type first.
+	quantifiedBindings map[values.CorrelationIdentifier][]quantifiedRuntimeBinding
+	params             []any
+	scalarSubqueries   map[values.CorrelationIdentifier]any
 	// mergedLegReadBypass names aliases whose binder-produced leg window
 	// GetCorrelationBinding must DECLINE to serve, so the same query can be driven
 	// down the alias's OTHER resolution route. See WithMergedLegReadBypass.
@@ -55,6 +62,12 @@ type EvaluationContext struct {
 	// "no scratch" and every operator falls back to a self-contained
 	// continuation.
 	scratch *ExecutionScratch
+}
+
+type quantifiedRuntimeBinding struct {
+	qov            values.QuantifiedObjectValue
+	value          any
+	explicitAbsent bool
 }
 
 // WithExecutionScratch returns a copy carrying the statement's scratch. The
@@ -164,7 +177,8 @@ func (ec *EvaluationContext) WithMergedLegReadSink(sink *MergedLegReadSink) *Eva
 // EmptyEvaluationContext returns a context with no bindings.
 func EmptyEvaluationContext() *EvaluationContext {
 	return &EvaluationContext{
-		bindings: make(map[values.CorrelationIdentifier]any),
+		bindings:           make(map[values.CorrelationIdentifier]any),
+		quantifiedBindings: make(map[values.CorrelationIdentifier][]quantifiedRuntimeBinding),
 	}
 }
 
@@ -202,6 +216,7 @@ func (ec *EvaluationContext) RowContext() *values.RowEvalContext {
 	return &values.RowEvalContext{
 		Binder:           ec,
 		Correlations:     ec,
+		Objects:          &evaluationObjectBinder{base: ec},
 		ScalarSubqueries: ec.scalarSubqueries,
 		Clock:            ec,
 	}
@@ -219,6 +234,7 @@ func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values
 		Positional:       pos,
 		Binder:           ec,
 		Correlations:     ec,
+		Objects:          &evaluationObjectBinder{base: ec},
 		ScalarSubqueries: ec.scalarSubqueries,
 		Clock:            ec,
 	}
@@ -233,7 +249,26 @@ func (ec *EvaluationContext) RowContextPositional(pos values.OrdinalRow) *values
 // by executeProjection / executeFilter / executePredicatesFilter / executeMap so
 // the frontier dispatch is identical across them. hasBindingCtx is
 // params||scalarSubqueries||bindings for the caller's evalCtx.
-func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBindingCtx bool) any {
+func frontierRowContext(
+	pos values.OrdinalRow,
+	ec *EvaluationContext,
+	hasBindingCtx bool,
+	edges ...values.QuantifiedObjectValue,
+) (any, error) {
+	// An admitted physical row never uses the ambient positional fallback.
+	// Its exact layout is the sole authority for current/source QOV bindings;
+	// an omitted source therefore remains loudly unbound instead of reading a
+	// same-shaped slot from another quantifier.
+	if pr, isPR := pos.(*PositionalRow); isPR && pr != nil && pr.Layout != nil {
+		binding := &frontierRowBinding{}
+		base := binding.initContext(pr, ec)
+		objects, err := initEdgeObjectBinder(&binding.edges, pr, base.Objects, edges...)
+		if err != nil {
+			return nil, err
+		}
+		base.Objects = objects
+		return ordinalLayoutRowContext(&binding.windows, pr.Layout, pr, pr.LayoutPresence, base)
+	}
 	// A row whose TYPE carries leg boundaries (a merged concat /
 	// clustered box row) serves its legs as correlation-bound windows, so a
 	// quantifier-addressed source-relative baked reference (QOV(leg).col with the
@@ -250,12 +285,100 @@ func frontierRowContext(pos values.OrdinalRow, ec *EvaluationContext, hasBinding
 			rc.ScalarSubqueries = ec.scalarSubqueries
 			rc.Clock = ec
 		}
-		return rc
+		return rc, nil
+	}
+	if len(edges) > 0 {
+		pr, ok := pos.(*PositionalRow)
+		if !ok || pr == nil {
+			return nil, layoutBindingError(values.LayoutRuntimeShape, "quantifier edge requires an executor positional row")
+		}
+		result := rowEvalContextForPositional(pr, ec)
+		objects, err := newEdgeObjectBinder(pr, result.Objects, edges...)
+		if err != nil {
+			return nil, err
+		}
+		result.Objects = objects
+		return result, nil
 	}
 	if hasBindingCtx && ec != nil {
-		return ec.RowContextPositional(pos)
+		return ec.RowContextPositional(pos), nil
 	}
-	return pos
+	return pos, nil
+}
+
+// positionalRowContext holds a row context together with the QOV adapter that
+// context points at, so building one costs ONE allocation instead of two.
+//
+// The adapter is an 8-byte wrapper whose whole content is the context it adapts,
+// and this is built once per ROW: separately allocated, it was 1.1 allocations
+// per row on a wide scan. It cannot instead be memoized on the EvaluationContext
+// because every With* derivation is a struct copy — a cached adapter would ride
+// that copy still pointing at the ORIGINAL context, and serve bindings that the
+// derivation replaced. Co-allocating needs no such invariant: the adapter is
+// reachable only from the context it was built for, and dies with it.
+type positionalRowContext struct {
+	ctx    values.RowEvalContext
+	binder evaluationObjectBinder
+}
+
+// frontierRowBinding is the whole per-row chain of an admitted physical row's
+// evaluation context in ONE allocation: the context itself, the outer-correlation
+// adapter it starts from, the edge binder layered on that, and room for the
+// layout binder values materializes on top.
+//
+// The chain is four objects that are born together, point only at each other,
+// and die together at the end of the row — so allocating them separately bought
+// nothing and cost three allocations per row where one does. Together with the
+// layout stamp at mint time and the unboxed cursor results, this is what brought
+// a 20k-row wide scan's allocation count back to master's.
+//
+// It is deliberately NOT reused across rows. Reuse would be measurably cheaper
+// still and would rest on nothing enforcing that no Value retains the context it
+// was evaluated against; the failure mode of that invariant breaking is a row
+// silently evaluated against its successor's data, which no test shape reliably
+// catches. One allocation per row is the version that needs no such promise.
+type frontierRowBinding struct {
+	ctx     values.RowEvalContext
+	outer   evaluationObjectBinder
+	edges   edgeObjectBinder
+	windows values.OrdinalBinderStorage
+}
+
+// initContext fills the binding's context and outer adapter for pos, returning
+// the context the rest of the chain layers onto. It is rowEvalContextForPositional
+// against storage the caller already owns.
+func (b *frontierRowBinding) initContext(
+	pos values.OrdinalRow,
+	ec *EvaluationContext,
+) *values.RowEvalContext {
+	b.ctx.Positional = pos
+	if ec == nil {
+		return &b.ctx
+	}
+	b.outer.base = ec
+	b.ctx.Binder = ec
+	b.ctx.Correlations = ec
+	b.ctx.Objects = &b.outer
+	b.ctx.ScalarSubqueries = ec.scalarSubqueries
+	b.ctx.Clock = ec
+	return &b.ctx
+}
+
+// rowEvalContextForPositional preserves every evaluation capability while
+// adapting legacy correlation bindings into the exact-QOV namespace used as
+// the base of an OrdinalLayout binder.
+func rowEvalContextForPositional(pos values.OrdinalRow, ec *EvaluationContext) *values.RowEvalContext {
+	holder := &positionalRowContext{ctx: values.RowEvalContext{Positional: pos}}
+	if ec == nil {
+		return &holder.ctx
+	}
+	holder.binder.base = ec
+	holder.ctx.Binder = ec
+	holder.ctx.Correlations = ec
+	holder.ctx.Objects = &holder.binder
+	holder.ctx.ScalarSubqueries = ec.scalarSubqueries
+	holder.ctx.Clock = ec
+	return &holder.ctx
 }
 
 // valuesDependOnStatementClock reports whether ANY of the value trees
@@ -301,7 +424,8 @@ func aggregateOperandsDependOnStatementClock(specs []expressions.AggregateSpec) 
 // RowContextPositional (to resolve an outer correlation) or can flow as the
 // bare ordinal row.
 func hasBindingContext(ec *EvaluationContext) bool {
-	return ec != nil && (len(ec.params) > 0 || len(ec.scalarSubqueries) > 0 || len(ec.bindings) > 0)
+	return ec != nil && (len(ec.params) > 0 || len(ec.scalarSubqueries) > 0 ||
+		len(ec.bindings) > 0 || len(ec.quantifiedBindings) > 0)
 }
 
 // WithScalarSubqueries returns a copy with pre-evaluated scalar
@@ -327,6 +451,50 @@ func (ec *EvaluationContext) WithBinding(id values.CorrelationIdentifier, val an
 	cp := *ec
 	cp.bindings = newBindings
 	return &cp
+}
+
+// withQuantifiedBinding is the executor-internal explicit-absence form. The
+// true callers copy a positive proof from an exact OrdinalLayout binder or
+// PositionalRow.wholeObjectBinding (FirstOrDefault's typed empty shell); false
+// callers install an ordinary exact object. This keeps an unmatched
+// non-nullable physical object distinct from both an arbitrary invalid nil and
+// a matched all-NULL record.
+func (ec *EvaluationContext) withQuantifiedBinding(
+	qov values.QuantifiedObjectValue,
+	val any,
+	explicitAbsent bool,
+) (*EvaluationContext, error) {
+	exact, ok := values.AsQuantifiedObjectValue(qov)
+	if !ok || exact == nil {
+		return nil, layoutBindingError(values.CorrelationForeignValue, "quantified binding is not exact")
+	}
+	if explicitAbsent && val != nil {
+		return nil, layoutBindingError(values.LayoutRuntimeShape, "explicitly absent quantified binding is non-nil")
+	}
+	if val == nil && !explicitAbsent && !exact.FlowedType().IsNullable() {
+		return nil, layoutBindingError(values.LayoutNullabilityMismatch, "non-nullable quantified binding is SQL NULL")
+	}
+	bindings := make(map[values.CorrelationIdentifier][]quantifiedRuntimeBinding, len(ec.quantifiedBindings)+1)
+	for correlation, existing := range ec.quantifiedBindings {
+		bindings[correlation] = append([]quantifiedRuntimeBinding(nil), existing...)
+	}
+	correlation := exact.Correlation()
+	entries := bindings[correlation]
+	replaced := false
+	for i := range entries {
+		if entries[i].qov.FlowedType().Equals(exact.FlowedType()) {
+			entries[i] = quantifiedRuntimeBinding{qov: exact, value: val, explicitAbsent: explicitAbsent}
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		entries = append(entries, quantifiedRuntimeBinding{qov: exact, value: val, explicitAbsent: explicitAbsent})
+	}
+	bindings[correlation] = entries
+	cp := *ec
+	cp.quantifiedBindings = bindings
+	return &cp, nil
 }
 
 // cloneBindings copies this context's bindings into a fresh map sized for extra
@@ -406,6 +574,54 @@ func (ec *EvaluationContext) GetCorrelationBinding(id values.CorrelationIdentifi
 		}
 	}
 	return v, ok
+}
+
+// GetQuantifiedBinding implements the exact QOV binder. When this context has
+// exact declarations for a correlation, the requested flowed type must select
+// one of them; a same-spelled foreign type cannot fall back to the legacy map.
+func (ec *EvaluationContext) GetQuantifiedBinding(view values.QuantifiedObjectValue) (any, bool, error) {
+	exact, ok := values.AsQuantifiedObjectValue(view)
+	if !ok || exact == nil {
+		return nil, false, layoutBindingError(values.CorrelationForeignValue, "quantified lookup is not exact")
+	}
+	entries := ec.quantifiedBindings[exact.Correlation()]
+	for _, entry := range entries {
+		if values.QuantifiedRowShapesAgree(entry.qov.FlowedType(), exact.FlowedType()) {
+			return entry.value, true, nil
+		}
+	}
+	if len(entries) > 0 {
+		return nil, false, layoutBindingError(values.CorrelationTypeConflict,
+			fmt.Sprintf("quantified lookup %s: read as %s, declared %s",
+				exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+				describeDeclaredBindings(entries)))
+	}
+	value, present := ec.bindings[exact.Correlation()]
+	return value, present, nil
+}
+
+// IsExplicitNullQuantifiedBinding implements the positive absence-proof
+// channel consumed by values' strict ordinal binder. Exact type validation is
+// identical to GetQuantifiedBinding, so a same-spelled foreign declaration
+// cannot borrow another object's FirstOrDefault absence.
+func (ec *EvaluationContext) IsExplicitNullQuantifiedBinding(view values.QuantifiedObjectValue) (bool, error) {
+	exact, ok := values.AsQuantifiedObjectValue(view)
+	if !ok || exact == nil {
+		return false, layoutBindingError(values.CorrelationForeignValue, "quantified absence lookup is not exact")
+	}
+	entries := ec.quantifiedBindings[exact.Correlation()]
+	for _, entry := range entries {
+		if values.QuantifiedRowShapesAgree(entry.qov.FlowedType(), exact.FlowedType()) {
+			return entry.explicitAbsent, nil
+		}
+	}
+	if len(entries) > 0 {
+		return false, layoutBindingError(values.CorrelationTypeConflict,
+			fmt.Sprintf("quantified absence lookup %s: read as %s, declared %s",
+				exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+				describeDeclaredBindings(entries)))
+	}
+	return false, nil
 }
 
 // GetOrCreateTempTable returns the TempTable at the given alias,
@@ -577,4 +793,22 @@ func (tt *TempTable) ReplaceList(rows []QueryResult) {
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
 	tt.list = append([]QueryResult(nil), rows...)
+}
+
+// describeDeclaredBindings renders the exact shapes a correlation IS bound to,
+// so a type conflict reports both sides. A conflict whose message names neither
+// the correlation nor the two shapes forces every occurrence to be
+// re-investigated from scratch, and these arrive in clusters.
+func describeDeclaredBindings(entries []quantifiedRuntimeBinding) string {
+	if len(entries) == 0 {
+		return "nothing"
+	}
+	out := ""
+	for i, entry := range entries {
+		if i > 0 {
+			out += " | "
+		}
+		out += values.DescribeType(entry.qov.FlowedType())
+	}
+	return out
 }

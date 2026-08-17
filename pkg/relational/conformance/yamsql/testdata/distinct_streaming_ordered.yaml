@@ -33,7 +33,7 @@ tests:
     # The distinct sits directly over the ordered index scan (the dedup key is
     # adjacent → streaming-eligible); the index supplies the order, so the
     # ORDER BY is elided rather than realized as an InMemorySort.
-    plan_contains: Distinct(Project([CATEGORY#1], IndexScan(EVENTS_BY_CATEGORY
+    plan_contains: Distinct(Project([_current.CATEGORY#1], IndexScan(EVENTS_BY_CATEGORY
     plan_not_contains: InMemorySort
     rows:
       - ['alpha']

@@ -60,26 +60,73 @@ func main() {
 	}
 }
 
+// genSeed is a scenario's whole reproduction recipe: the generator NAME its
+// header declares plus the seed. Both halves are load-bearing — see
+// groupByRecipe.
+type genSeed struct {
+	gen  string
+	seed uint64
+}
+
+// groupByRecipe buckets committed scenarios by (generator, seed) and returns
+// the buckets in a stable order.
+//
+// The GENERATOR half is what makes this correct. The corpus is produced by more
+// than one generator, each recording its name in the header, and the same seed
+// yields a DIFFERENT case under each. Keying on the seed alone merges two
+// unrelated recipes into one bucket, and every scenario in it is then compared
+// against whichever generator's candidates the lookup happens to return.
+func groupByRecipe(scenarios []*factorycorpus.Scenario) ([]genSeed, map[genSeed][]*factorycorpus.Scenario) {
+	byRecipe := map[genSeed][]*factorycorpus.Scenario{}
+	var recipes []genSeed
+	for _, s := range scenarios {
+		gs := genSeed{s.Header.Generator, s.Header.Seed}
+		if _, seen := byRecipe[gs]; !seen {
+			recipes = append(recipes, gs)
+		}
+		byRecipe[gs] = append(byRecipe[gs], s)
+	}
+	sort.Slice(recipes, func(i, j int) bool {
+		if recipes[i].gen != recipes[j].gen {
+			return recipes[i].gen < recipes[j].gen
+		}
+		return recipes[i].seed < recipes[j].seed
+	})
+	return recipes, byRecipe
+}
+
+// resolveCandidates re-derives a recipe's candidates through the generator the
+// header NAMES — the same lookup determinism_test.go uses.
+//
+// `factory.Candidates(seed)` is the FLAT generator unconditionally, so using it
+// here handed every nested-generator file an unrelated candidate. That did not
+// fail quietly: it surfaced as a "feature vector moved" refusal naming a family
+// change that never happened, which stopped the re-bless at its first file and
+// would have rewritten headers to describe the wrong scenario had the
+// comparison not been there.
+func resolveCandidates(gs genSeed) ([]factory.Candidate, error) {
+	candidates, known := factory.CandidatesForGenerator(gs.gen, gs.seed)
+	if !known {
+		return nil, fmt.Errorf("committed scenarios name generator %q, which this build does not have; their reproduction recipes cannot be checked at all", gs.gen)
+	}
+	return candidates, nil
+}
+
 func run(corpusDir, censusPath string, dryRun bool) error {
 	scenarios, err := factorycorpus.LoadDir(corpusDir)
 	if err != nil {
 		return err
 	}
-	bySeed := map[uint64][]*factorycorpus.Scenario{}
-	var seeds []uint64
-	for _, s := range scenarios {
-		if _, seen := bySeed[s.Header.Seed]; !seen {
-			seeds = append(seeds, s.Header.Seed)
-		}
-		bySeed[s.Header.Seed] = append(bySeed[s.Header.Seed], s)
-	}
-	sort.Slice(seeds, func(i, j int) bool { return seeds[i] < seeds[j] })
+	recipes, byRecipe := groupByRecipe(scenarios)
 
 	moved := 0
 	touchedFiles := map[string]bool{}
-	for _, seed := range seeds {
-		candidates := factory.Candidates(seed)
-		for _, s := range bySeed[seed] {
+	for _, gs := range recipes {
+		candidates, candErr := resolveCandidates(gs)
+		if candErr != nil {
+			return candErr
+		}
+		for _, s := range byRecipe[gs] {
 			header := s.Header
 			var candidate *factory.Candidate
 			for i := range candidates {

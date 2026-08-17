@@ -120,12 +120,12 @@ func NewAliasMapValueEquivalence(am *AliasMap) *AliasMapValueEquivalence {
 // IsDefinedEqual checks if two values are QuantifiedObjectValues with
 // aliases mapped in the underlying AliasMap.
 func (e *AliasMapValueEquivalence) IsDefinedEqual(left, right values.Value) ConstrainedBoolean {
-	lqov, lok := left.(*values.QuantifiedObjectValue)
-	rqov, rok := right.(*values.QuantifiedObjectValue)
+	lqov, lok := values.AsQuantifiedObjectValue(left)
+	rqov, rok := values.AsQuantifiedObjectValue(right)
 	if !lok || !rok {
 		return FalseValue()
 	}
-	return e.IsDefinedEqualAlias(lqov.Correlation, rqov.Correlation)
+	return e.IsDefinedEqualAlias(lqov.Correlation(), rqov.Correlation())
 }
 
 // IsDefinedEqualAlias checks if two correlation identifiers are mapped

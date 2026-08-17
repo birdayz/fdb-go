@@ -7,6 +7,33 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+type simplifierFieldSpec struct {
+	name string
+	typ  values.Type
+}
+
+// simplifierFields resolves every row-dependent leaf against one exact row
+// object. Fields returned by one call therefore retain the shared correlation
+// of the SQL row the predicate reads, while each ordinal is checked against the
+// same immutable layout before the Value can enter a simplification fixture.
+func simplifierFields(t testing.TB, specs ...simplifierFieldSpec) []values.Value {
+	t.Helper()
+	fields := make([]values.Field, len(specs))
+	for i, spec := range specs {
+		fields[i] = values.Field{Name: spec.name, FieldType: spec.typ, Ordinal: i}
+	}
+	rowType := values.NewRecordType("SIMPLIFIER_ROW", false, fields)
+	root, err := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), rowType)
+	root = mustConstruct(t, root, err)
+
+	resolved := make([]values.Value, len(specs))
+	for i := range specs {
+		field, resolveErr := values.ResolveFieldOrdinals(root, []int{i})
+		resolved[i] = mustConstruct(t, field, resolveErr)
+	}
+	return resolved
+}
+
 // Simplifier converges on a single constant after folding.
 func TestSimplify_AllConstantsFoldToConstant(t *testing.T) {
 	t.Parallel()
@@ -15,7 +42,7 @@ func TestSimplify_AllConstantsFoldToConstant(t *testing.T) {
 		predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), predicates.NewConstantPredicate(predicates.TriFalse)),
 		predicates.NewNot(predicates.NewConstantPredicate(predicates.TriTrue)),
 	)
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	cp, ok := got.(*predicates.ConstantPredicate)
 	if !ok {
 		t.Fatalf("expected ConstantPredicate, got %T: %s", got, got.Explain())
@@ -35,7 +62,7 @@ func TestSimplify_DropIdentities(t *testing.T) {
 		leaf,
 		predicates.NewConstantPredicate(predicates.TriTrue),
 	)
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	if got != predicates.QueryPredicate(leaf) {
 		t.Fatalf("expected the UNKNOWN leaf to survive, got %T %s", got, got.Explain())
 	}
@@ -50,7 +77,7 @@ func TestSimplify_DescendsIntoChildren(t *testing.T) {
 		predicates.NewConstantPredicate(predicates.TriTrue),
 		predicates.NewNot(predicates.NewNot(leaf)),
 	)
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	// After recursion: AND(TRUE, leaf) → leaf.
 	if got != predicates.QueryPredicate(leaf) {
 		t.Fatalf("expected the UNKNOWN leaf, got %T %s", got, got.Explain())
@@ -72,7 +99,7 @@ func TestSimplify_FixpointConvergence(t *testing.T) {
 		),
 		predicates.NewNot(predicates.NewNot(predicates.NewConstantPredicate(predicates.TriTrue))),
 	)
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	cp, ok := got.(*predicates.ConstantPredicate)
 	if !ok || cp.Value != predicates.TriFalse {
 		t.Fatalf("expected FALSE, got %T %s", got, got.Explain())
@@ -82,11 +109,11 @@ func TestSimplify_FixpointConvergence(t *testing.T) {
 // Nil predicate / empty rules: identity.
 func TestSimplify_Degenerate(t *testing.T) {
 	t.Parallel()
-	if got := Simplify(nil, DefaultSimplifyRules()); got != nil {
+	if got := mustSimplify(t, nil, DefaultSimplifyRules()); got != nil {
 		t.Fatalf("nil input: expected nil, got %v", got)
 	}
 	leaf := predicates.NewConstantPredicate(predicates.TriTrue)
-	if got := Simplify(leaf, nil); got != predicates.QueryPredicate(leaf) {
+	if got := mustSimplify(t, leaf, nil); got != predicates.QueryPredicate(leaf) {
 		t.Fatalf("empty rules: expected identity, got %v", got)
 	}
 }
@@ -100,7 +127,7 @@ func TestSimplify_CrossRuleCooperation(t *testing.T) {
 		predicates.NewConstantPredicate(predicates.TriTrue),
 		predicates.NewConstantPredicate(predicates.TriFalse),
 	))
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	cp, ok := got.(*predicates.ConstantPredicate)
 	if !ok || cp.Value != predicates.TriTrue {
 		t.Fatalf("expected TRUE, got %T %s", got, got.Explain())
@@ -123,8 +150,9 @@ func TestSimplify_FullPipeline(t *testing.T) {
 	//     TRUE                  ← AndConstant drops identity
 	//   )
 	// After simplification: just `age >= 18`.
+	age := simplifierFields(t, simplifierFieldSpec{name: "age", typ: values.NullableLong})[0]
 	agePred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
+		age,
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	pred := predicates.NewAnd(
@@ -139,7 +167,7 @@ func TestSimplify_FullPipeline(t *testing.T) {
 		agePred,
 		predicates.NewConstantPredicate(predicates.TriTrue),
 	)
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	if got != predicates.QueryPredicate(agePred) {
 		t.Fatalf("expected agePred to survive, got %T %s", got, got.Explain())
 	}
@@ -157,11 +185,12 @@ func TestSimplify_IsNullVariants(t *testing.T) {
 	t.Parallel()
 	t.Run("FieldValue LHS survives", func(t *testing.T) {
 		t.Parallel()
+		name := simplifierFields(t, simplifierFieldSpec{name: "name", typ: values.TypeString})[0]
 		pred := predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "name", Typ: values.TypeString},
+			name,
 			predicates.Comparison{Type: predicates.ComparisonIsNull},
 		)
-		got := Simplify(pred, DefaultSimplifyRules())
+		got := mustSimplify(t, pred, DefaultSimplifyRules())
 		if _, ok := got.(*predicates.ComparisonPredicate); !ok {
 			t.Fatalf("expected ComparisonPredicate to survive (LHS row-dependent), got %T: %s", got, got.Explain())
 		}
@@ -169,10 +198,10 @@ func TestSimplify_IsNullVariants(t *testing.T) {
 	t.Run("NullValue LHS folds to TRUE", func(t *testing.T) {
 		t.Parallel()
 		pred := predicates.NewComparisonPredicate(
-			&values.NullValue{Typ: values.TypeUnknown},
+			values.NewNullValue(values.TypeString),
 			predicates.Comparison{Type: predicates.ComparisonIsNull},
 		)
-		got := Simplify(pred, DefaultSimplifyRules())
+		got := mustSimplify(t, pred, DefaultSimplifyRules())
 		cp, ok := got.(*predicates.ConstantPredicate)
 		if !ok || cp.Value != predicates.TriTrue {
 			t.Fatalf("got %T %s, want ConstantPredicate{TRUE}", got, got.Explain())
@@ -184,7 +213,7 @@ func TestSimplify_IsNullVariants(t *testing.T) {
 			&values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
 			predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 		)
-		got := Simplify(pred, DefaultSimplifyRules())
+		got := mustSimplify(t, pred, DefaultSimplifyRules())
 		cp, ok := got.(*predicates.ConstantPredicate)
 		if !ok || cp.Value != predicates.TriTrue {
 			t.Fatalf("got %T %s, want ConstantPredicate{TRUE}", got, got.Explain())
@@ -222,7 +251,7 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := Simplify(tc.pred, DefaultSimplifyRules())
+			got := mustSimplify(t, tc.pred, DefaultSimplifyRules())
 			cp, ok := got.(*predicates.ConstantPredicate)
 			if !ok {
 				t.Fatalf("expected ConstantPredicate, got %T: %s", got, got.Explain())
@@ -240,17 +269,21 @@ func TestSimplify_CompositeConstantOnEitherSide_Folds(t *testing.T) {
 // declines correctly when RHS is a FieldValue.
 func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
 	t.Parallel()
-	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "cutoff", Typ: values.NullableLong}},
+	fields := simplifierFields(t,
+		simplifierFieldSpec{name: "age", typ: values.NullableLong},
+		simplifierFieldSpec{name: "cutoff", typ: values.NullableLong},
 	)
-	got := Simplify(pred, DefaultSimplifyRules())
+	pred := predicates.NewComparisonPredicate(
+		fields[0],
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: fields[1]},
+	)
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	cp, ok := got.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate to survive, got %T: %s", got, got.Explain())
 	}
-	if got.Explain() != "age = cutoff" {
-		t.Fatalf("Explain: got %q, want %q", got.Explain(), "age = cutoff")
+	if got.Explain() != pred.Explain() {
+		t.Fatalf("Explain changed without a rewrite: got %q, want %q", got.Explain(), pred.Explain())
 	}
 	// Identity preserved — same pointer, no rewrite happened.
 	if cp != pred {
@@ -265,11 +298,15 @@ func TestSimplify_NonConstantRHS_Survives(t *testing.T) {
 // FieldValue.
 func TestSimplify_NotComparison_NonConstantRHS_Rewrites(t *testing.T) {
 	t.Parallel()
+	fields := simplifierFields(t,
+		simplifierFieldSpec{name: "a", typ: values.NullableLong},
+		simplifierFieldSpec{name: "b", typ: values.NullableLong},
+	)
 	pred := predicates.NewNot(predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "a", Typ: values.NullableLong},
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.FieldValue{Field: "b", Typ: values.NullableLong}},
+		fields[0],
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: fields[1]},
 	))
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	cp, ok := got.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected NOT to be pushed past comparison, got %T: %s", got, got.Explain())
@@ -277,8 +314,13 @@ func TestSimplify_NotComparison_NonConstantRHS_Rewrites(t *testing.T) {
 	if cp.Comparison.Type != predicates.ComparisonNotEquals {
 		t.Fatalf("Type: got %v, want NotEquals", cp.Comparison.Type)
 	}
-	if got.Explain() != "a <> b" {
-		t.Fatalf("Explain: got %q, want %q", got.Explain(), "a <> b")
+	if !values.ValuesStructurallyEqual(cp.Operand, fields[0]) ||
+		!values.ValuesStructurallyEqual(cp.Comparison.Operand, fields[1]) {
+		t.Fatalf("NOT rewrite changed the exact row-dependent operands: got %s", got.Explain())
+	}
+	wantExplain := values.ExplainValue(fields[0]) + " <> " + values.ExplainValue(fields[1])
+	if got.Explain() != wantExplain {
+		t.Fatalf("Explain: got %q, want %q", got.Explain(), wantExplain)
 	}
 }
 
@@ -290,10 +332,11 @@ func TestSimplify_NotComparison_NonConstantRHS_Rewrites(t *testing.T) {
 // be `NOT(AND(TRUE, leaf))` instead of `NOT(leaf)`.
 func TestSimplify_RecursesThroughNot(t *testing.T) {
 	t.Parallel()
-	leaf := predicates.NewValuePredicate(&values.FieldValue{Field: "is_active", Typ: values.TypeBool})
+	isActive := simplifierFields(t, simplifierFieldSpec{name: "is_active", typ: values.TypeBool})[0]
+	leaf := predicates.NewValuePredicate(isActive)
 	// NOT(AND(TRUE, leaf)) → inner AND folds to leaf → NOT(leaf).
 	pred := predicates.NewNot(predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), leaf))
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	not, ok := got.(*predicates.NotPredicate)
 	if !ok {
 		t.Fatalf("expected NotPredicate, got %T: %s", got, got.Explain())
@@ -308,9 +351,9 @@ func TestSimplify_RecursesThroughNot(t *testing.T) {
 // NotComparisonRewriteRule cooperating across the fixpoint.
 func TestSimplify_TripleNotCollapses(t *testing.T) {
 	t.Parallel()
-	age := &values.FieldValue{Field: "age", Typ: values.NullableLong}
+	age := simplifierFields(t, simplifierFieldSpec{name: "age", typ: values.NullableLong})[0]
 	cp := predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(5))})
-	got := Simplify(
+	got := mustSimplify(t,
 		predicates.NewNot(predicates.NewNot(predicates.NewNot(cp))),
 		DefaultSimplifyRules(),
 	)
@@ -330,7 +373,11 @@ func TestSimplify_TripleNotCollapses(t *testing.T) {
 func TestSimplify_Idempotent(t *testing.T) {
 	t.Parallel()
 	rules := DefaultSimplifyRules()
-	age := &values.FieldValue{Field: "age", Typ: values.NullableLong}
+	fields := simplifierFields(t,
+		simplifierFieldSpec{name: "age", typ: values.NullableLong},
+		simplifierFieldSpec{name: "flag", typ: values.TypeBool},
+	)
+	age, flag := fields[0], fields[1]
 	samples := []predicates.QueryPredicate{
 		// Fully simplifiable → collapses to a constant.
 		predicates.NewAnd(predicates.NewConstantPredicate(predicates.TriTrue), predicates.NewConstantPredicate(predicates.TriFalse)),
@@ -348,11 +395,11 @@ func TestSimplify_Idempotent(t *testing.T) {
 		// NOT-rewrite: NOT(x = 1) → x <> 1.
 		predicates.NewNot(predicates.NewComparisonPredicate(age, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))})),
 		// Opaque: should be identity.
-		predicates.NewValuePredicate(&values.FieldValue{Field: "flag", Typ: values.TypeBool}),
+		predicates.NewValuePredicate(flag),
 	}
 	for _, s := range samples {
-		once := Simplify(s, rules)
-		twice := Simplify(once, rules)
+		once := mustSimplify(t, s, rules)
+		twice := mustSimplify(t, once, rules)
 		if once != twice {
 			t.Fatalf("not idempotent for %s: once=%s twice=%s",
 				s.Explain(), once.Explain(), twice.Explain())
@@ -372,21 +419,21 @@ func TestSimplify_Kleene3VLConstants(t *testing.T) {
 	rules := DefaultSimplifyRules()
 
 	// AND(TRUE, UNKNOWN) → UNKNOWN (TRUE is identity, UNKNOWN survives).
-	if got := Simplify(predicates.NewAnd(T, u), rules); got != predicates.QueryPredicate(u) {
+	if got := mustSimplify(t, predicates.NewAnd(T, u), rules); got != predicates.QueryPredicate(u) {
 		t.Fatalf("AND(T,U): got %T %s", got, got.Explain())
 	}
 	// AND(FALSE, UNKNOWN) → FALSE (short-circuit).
-	got := Simplify(predicates.NewAnd(F, u), rules)
+	got := mustSimplify(t, predicates.NewAnd(F, u), rules)
 	if cp, ok := got.(*predicates.ConstantPredicate); !ok || cp.Value != predicates.TriFalse {
 		t.Fatalf("AND(F,U): got %T %s", got, got.Explain())
 	}
 	// OR(TRUE, UNKNOWN) → TRUE (short-circuit).
-	got = Simplify(predicates.NewOr(T, u), rules)
+	got = mustSimplify(t, predicates.NewOr(T, u), rules)
 	if cp, ok := got.(*predicates.ConstantPredicate); !ok || cp.Value != predicates.TriTrue {
 		t.Fatalf("OR(T,U): got %T %s", got, got.Explain())
 	}
 	// OR(FALSE, UNKNOWN) → UNKNOWN (FALSE is identity).
-	if got := Simplify(predicates.NewOr(F, u), rules); got != predicates.QueryPredicate(u) {
+	if got := mustSimplify(t, predicates.NewOr(F, u), rules); got != predicates.QueryPredicate(u) {
 		t.Fatalf("OR(F,U): got %T %s", got, got.Explain())
 	}
 }
@@ -399,8 +446,9 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 	// (5 = 5) AND (3 > 1) AND (age >= 18) → after comparison
 	// folds: (TRUE AND TRUE AND age >= 18). AND identity-drop
 	// removes the TRUEs, leaving the surviving ComparisonPredicate.
+	age := simplifierFields(t, simplifierFieldSpec{name: "age", typ: values.NullableLong})[0]
 	agePred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
+		age,
 		predicates.Comparison{Type: predicates.ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
 	)
 	pred := predicates.NewAnd(
@@ -414,7 +462,7 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 		),
 		agePred,
 	)
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 	if got != predicates.QueryPredicate(agePred) {
 		t.Fatalf("expected the age predicate to survive, got %T %s", got, got.Explain())
 	}
@@ -434,13 +482,16 @@ func TestSimplify_ComparisonPlusAnd(t *testing.T) {
 // See `rule_demorgan.go` + `rule_demorgan_test.go`.
 func TestSimplify_NotOverOrDoesNotDistribute(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
-	b := &values.FieldValue{Field: "b", Typ: values.TypeString}
+	fields := simplifierFields(t,
+		simplifierFieldSpec{name: "a", typ: values.TypeString},
+		simplifierFieldSpec{name: "b", typ: values.TypeString},
+	)
+	a, b := fields[0], fields[1]
 	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("x")})
 	p2 := predicates.NewComparisonPredicate(b, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("y")})
 
 	pred := predicates.NewNot(predicates.NewOr(p1, p2))
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 
 	// CURRENT behaviour: NOT(OR(p1, p2)) survives unchanged.
 	notP, ok := got.(*predicates.NotPredicate)
@@ -458,11 +509,11 @@ func TestSimplify_NotOverOrDoesNotDistribute(t *testing.T) {
 // to its surviving member.
 func TestSimplify_OrOfPredicateAndFalse(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
+	a := simplifierFields(t, simplifierFieldSpec{name: "a", typ: values.TypeString})[0]
 	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("Hello")})
 
 	pred := predicates.NewOr(p1, predicates.NewConstantPredicate(predicates.TriFalse))
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 
 	// Identity law: OR(p, FALSE) collapses to p.
 	if got != predicates.QueryPredicate(p1) {
@@ -475,11 +526,11 @@ func TestSimplify_OrOfPredicateAndFalse(t *testing.T) {
 // Java's identity-law coverage on the AND side.
 func TestSimplify_AndOfPredicateAndTrue(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.TypeString}
+	a := simplifierFields(t, simplifierFieldSpec{name: "a", typ: values.TypeString})[0]
 	p1 := predicates.NewComparisonPredicate(a, predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue("Hello")})
 
 	pred := predicates.NewAnd(p1, predicates.NewConstantPredicate(predicates.TriTrue))
-	got := Simplify(pred, DefaultSimplifyRules())
+	got := mustSimplify(t, pred, DefaultSimplifyRules())
 
 	if got != predicates.QueryPredicate(p1) {
 		t.Fatalf("expected p1 to survive (AND TRUE identity), got %T: %s", got, got.Explain())

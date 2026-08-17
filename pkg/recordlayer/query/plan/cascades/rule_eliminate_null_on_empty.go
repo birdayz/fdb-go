@@ -67,7 +67,12 @@ func (r *EliminateNullOnEmptyRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		alias := q.GetAlias()
 		for _, p := range preds {
-			if rejectsNull(p, alias) {
+			rejects, err := rejectsNull(p, alias)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			if rejects {
 				eligible[alias] = struct{}{}
 				break
 			}
@@ -98,13 +103,17 @@ func (r *EliminateNullOnEmptyRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Yield a new SelectExpression with identical predicates + result value,
 	// preserving the source aliases and join type.
-	newSelect := expressions.NewSelectExpressionWithJoinType(
+	newSelect, err := expressions.NewSelectExpressionWithJoinType(
 		sel.GetResultValue(),
 		newQuantifiers,
 		preds,
 		sel.GetSourceAliases(),
 		sel.GetJoinType(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(newSelect)
 }
 
@@ -114,14 +123,17 @@ func (r *EliminateNullOnEmptyRule) OnMatch(call *ExpressionRuleCall) {
 // alias, constant-fold, and report true iff the folded outcome is FALSE or NULL
 // (both filter the row out of a WHERE/ON/HAVING). A folded TRUE (accepts the
 // null tuple) or an UNKNOWN (couldn't fold to a constant) does NOT reject.
-func rejectsNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier) bool {
-	folded := foldPredicateAtNull(p, alias)
+func rejectsNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier) (bool, error) {
+	folded, err := foldPredicateAtNull(p, alias)
+	if err != nil {
+		return false, err
+	}
 	cp, ok := folded.(*predicates.ConstantPredicate)
 	if !ok {
-		return false // UNKNOWN — could not fold to a constant.
+		return false, nil // UNKNOWN — could not fold to a constant.
 	}
 	// FALSE (contradiction) or NULL (UNKNOWN truth value) both reject the row.
-	return cp.Value == predicates.TriFalse || cp.Value == predicates.TriUnknown
+	return cp.Value == predicates.TriFalse || cp.Value == predicates.TriUnknown, nil
 }
 
 // foldPredicateAtNull substitutes a typed NullValue for every leaf correlated to
@@ -135,7 +147,7 @@ func rejectsNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier
 // Per Java's #4222 limitation, `NULL AND <non-constant>` is NOT folded (the
 // simplifier does not assume NULL ≡ FALSE in a filter context). Such a mixed
 // predicate stays non-constant → UNKNOWN → does not reject (conservative).
-func foldPredicateAtNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier) predicates.QueryPredicate {
+func foldPredicateAtNull(p predicates.QueryPredicate, alias values.CorrelationIdentifier) (predicates.QueryPredicate, error) {
 	nullified := substituteNullAtAlias(p, alias)
 	folded := predicates.SimplifyPredicateValues(nullified)
 	return Simplify(folded, DefaultSimplifyRules())
@@ -162,8 +174,8 @@ func substituteAndCollapse(v values.Value, alias values.CorrelationIdentifier) v
 		return nil
 	}
 	// Leaf QOV over the target alias → typed NullValue.
-	if qov, ok := v.(*values.QuantifiedObjectValue); ok {
-		if qov.Correlation == alias {
+	if qov, ok := values.AsQuantifiedObjectValue(v); ok {
+		if qov.Correlation() == alias {
 			return values.NewNullValue(qov.Type())
 		}
 		return v
@@ -182,6 +194,14 @@ func substituteAndCollapse(v values.Value, alias values.CorrelationIdentifier) v
 			changed = true
 		}
 	}
+	// Collapse before rebuilding. An exact FieldValue can only be reconstructed
+	// on another compatible record-shaped root; rebuilding it on the substituted
+	// NullValue correctly fails. Null-strict semantics already determine the
+	// answer at this point, so publishing a typed NULL avoids constructing that
+	// deliberately invalid intermediate Value.
+	if isNullStrictValue(v) && hasNullValue(newChildren) {
+		return values.NewNullValue(v.Type())
+	}
 	rebuilt := v
 	if changed {
 		rebuilt = values.WithChildren(v, newChildren)
@@ -192,6 +212,15 @@ func substituteAndCollapse(v values.Value, alias values.CorrelationIdentifier) v
 		return values.NewNullValue(rebuilt.Type())
 	}
 	return rebuilt
+}
+
+func hasNullValue(children []values.Value) bool {
+	for _, child := range children {
+		if _, ok := child.(*values.NullValue); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // mapPredicateValues applies the Value transform `fn` to every Value operand
@@ -245,11 +274,12 @@ func mapPredicateValues(p predicates.QueryPredicate, fn func(values.Value) value
 // PromoteValue, SubscriptValue (enumerated below).
 func isNullStrictValue(v values.Value) bool {
 	switch v.(type) {
-	case *values.ArithmeticValue, *values.CastValue, *values.FieldValue,
+	case *values.ArithmeticValue, *values.CastValue,
 		*values.NotValue, *values.PromoteValue, *values.SubscriptValue:
 		return true
 	default:
-		return false
+		_, isField := values.AsFieldValue(v)
+		return isField
 	}
 }
 

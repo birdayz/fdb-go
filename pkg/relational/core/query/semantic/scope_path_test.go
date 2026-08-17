@@ -198,6 +198,48 @@ func TestResolvePathNested_LeadingSegmentSelectsTheSource(t *testing.T) {
 	}
 }
 
+func TestResolveSourceQualifiedPath_SelectsSelfNamedSourceWithoutWeakeningExpressionAmbiguity(t *testing.T) {
+	t.Parallel()
+	self := &StaticTable{
+		TableName: ParseQualifiedName("sub", false),
+		TableColumns: []Column{{
+			Id: NewUnquoted("sub"), Type: "RECORD", StructFields: []Column{
+				{Id: NewUnquoted("sub"), Type: "BIGINT", IsArray: true},
+			},
+		}},
+	}
+	scope := NewScope(nil)
+	if err := scope.AddSource(ScopeSource{Table: self, Alias: NewUnquoted("sub"), CorrelationName: "SUB"}); err != nil {
+		t.Fatalf("AddSource: %v", err)
+	}
+
+	path := segs("sub", "sub")
+	if _, _, _, err := scope.ResolvePathNested(path); err == nil {
+		t.Fatal("ordinary SUB.SUB expression resolved despite competing source-qualified and struct-relative matches")
+	} else {
+		var ambiguous *AmbiguousColumnError
+		if !errors.As(err, &ambiguous) {
+			t.Fatalf("ordinary SUB.SUB error = %v, want AmbiguousColumnError", err)
+		}
+	}
+
+	col, src, accessors, err := scope.ResolveSourceQualifiedPath(path)
+	if err != nil {
+		t.Fatalf("source-qualified SUB.SUB: %v", err)
+	}
+	if src.CorrelationName != "SUB" || col.Id.Name() != "SUB" || col.Type != "RECORD" || len(accessors) != 0 {
+		t.Fatalf("source-qualified SUB.SUB = col=%+v src=%+v accessors=%v, want direct SUB record on source SUB", col, src, accessors)
+	}
+
+	deep, _, accessors, err := scope.ResolveSourceQualifiedPath(segs("sub", "sub", "sub"))
+	if err != nil {
+		t.Fatalf("source-qualified SUB.SUB.SUB: %v", err)
+	}
+	if deep.Type != "RECORD" || len(accessors) != 1 || !accessors[0].Col.IsArray {
+		t.Fatalf("source-qualified nested suffix = root=%+v accessors=%v, want array member", deep, accessors)
+	}
+}
+
 // A descent that cannot complete fails ENTIRELY. Java returns Optional.empty()
 // from lookupNestedField for a missing field and for a non-struct step alike
 // (SemanticAnalyzer.java:576-593) — never a partial path, which would resolve

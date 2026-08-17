@@ -13,9 +13,11 @@ package executor
 // instead of assuming it. These tests pin that the check exists and is exact.
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -25,7 +27,7 @@ func childRow(width int) QueryResult {
 	fields := make([]values.Field, width)
 	slots := make([]any, width)
 	for i := range fields {
-		fields[i] = values.Field{Ordinal: i, FieldType: values.UnknownType}
+		fields[i] = values.Field{Ordinal: i, FieldType: values.NotNullLong}
 		slots[i] = int64(i)
 	}
 	return QueryResult{Positional: &PositionalRow{
@@ -96,6 +98,58 @@ func TestMergeChildEvalArg_AcceptsTheExactBakedWidth(t *testing.T) {
 			t.Fatalf("concatenated field %d carries ordinal %d; the result value's "+
 				"baked references address the FLAT concatenation, so a child's local "+
 				"ordinals must be renumbered", i, f.Ordinal)
+		}
+	}
+}
+
+func TestMultiIntersectionMergeCursor_PreservesPlanExactOutputType(t *testing.T) {
+	t.Parallel()
+	mergedType := &values.RecordType{RecordName: "merged_aggregate_rows", Fields: []values.Field{
+		{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "SUM(V)", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "G", FieldType: values.NullableLong, Ordinal: 2},
+		{Name: "COUNT(*)", FieldType: values.NullableLong, Ordinal: 3},
+	}}
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), mergedType)
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "G", Value: mustTestFieldOrdinal(t, root, 0)},
+		values.RecordConstructorField{Name: "COUNT(*)", Value: mustTestFieldOrdinal(t, root, 3)},
+	)
+	outputType := resultValue.Type().(*values.RecordType)
+	children := []QueryResult{
+		{Positional: &PositionalRow{
+			Type: values.NewRecordType("sum_row", false, []values.Field{
+				{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
+				{Name: "SUM(V)", FieldType: values.NullableLong, Ordinal: 1},
+			}),
+			Slots: []any{int64(7), int64(42)},
+		}},
+		{Positional: &PositionalRow{
+			Type: values.NewRecordType("count_row", false, []values.Field{
+				{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
+				{Name: "COUNT(*)", FieldType: values.NullableLong, Ordinal: 1},
+			}),
+			Slots: []any{int64(7), int64(1)},
+		}},
+	}
+	cursor := &multiIntersectionMergeCursor{
+		inner:       recordlayer.FromList([][]QueryResult{children}),
+		resultValue: resultValue,
+		outputType:  outputType,
+		childWidth:  2,
+	}
+	defer cursor.Close()
+	result, err := cursor.OnNext(context.Background())
+	if err != nil || !result.HasNext() {
+		t.Fatalf("OnNext = (%v,%v), want a row", result, err)
+	}
+	row := result.GetValue().Positional
+	if row == nil || !row.Type.Equals(outputType) {
+		t.Fatalf("output type = %v, want exact plan type %v", row, outputType)
+	}
+	for i, field := range row.Type.Fields {
+		if field.FieldType.Code() == values.TypeCodeUnknown {
+			t.Fatalf("output field %d erased to UNKNOWN: %v", i, field)
 		}
 	}
 }

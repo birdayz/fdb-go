@@ -43,8 +43,8 @@ func TestValuePredicate(t *testing.T) {
 	}
 	// Explain renders the Value's per-instance form via ExplainValue
 	// — FieldValue produces its column name, not the kind string.
-	p = NewValuePredicate(&values.FieldValue{Field: "is_active", Typ: values.TypeBool})
-	if got := p.Explain(); got != "is_active" {
+	p = NewValuePredicate(predicateTestField(t, "is_active", values.TypeBool))
+	if got := p.Explain(); got != "predicate_test_is_active.is_active#0" {
 		t.Fatalf("Explain: got %q", got)
 	}
 }
@@ -198,11 +198,8 @@ func TestNotPredicate_ExplainParens(t *testing.T) {
 		},
 		{
 			name: "NOT(ComparisonPredicate) — wraps",
-			in: NewNot(NewComparisonPredicate(
-				&values.FieldValue{Field: "age", Typ: values.NullableLong},
-				Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))},
-			)),
-			want: "NOT (age >= 18)",
+			in:   NewNot(NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonGreaterThanEq, Operand: values.LiteralValue(int64(18))})),
+			want: "NOT (predicate_test_age.age#0 >= 18)",
 		},
 		{
 			name: "NOT(ConstantPredicate) — wraps",
@@ -323,7 +320,7 @@ func TestOrPredicate_Explain_Empty(t *testing.T) {
 // non-nil contract.
 func TestValuePredicate_Children(t *testing.T) {
 	t.Parallel()
-	got := (&ValuePredicate{Value: &values.FieldValue{Field: "x", Typ: values.TypeBool}}).Children()
+	got := (&ValuePredicate{Value: predicateTestField(t, "x", values.TypeBool)}).Children()
 	if got == nil {
 		t.Fatal("Children should be non-nil empty slice, got nil")
 	}
@@ -352,7 +349,7 @@ func TestValueNamesEqual_NilSafety(t *testing.T) {
 	t.Parallel()
 	withNil := &ValuePredicate{Value: nil}
 	alsoNil := &ValuePredicate{Value: nil}
-	withVal := &ValuePredicate{Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}}
+	withVal := &ValuePredicate{Value: predicateTestField(t, "x", values.NullableLong)}
 
 	if !PredicateEquals(withNil, alsoNil) {
 		t.Fatal("two ValuePredicate{Value:nil} should be equal")
@@ -398,22 +395,13 @@ func TestPredicateEquals(t *testing.T) {
 		t.Fatal("NOT TRUE should equal NOT TRUE")
 	}
 	// ComparisonPredicate structural (same operand name + same op + same literal)
-	c1 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
-		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
-	)
-	c2 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
-		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
-	)
+	c1 := NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))})
+	c2 := NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))})
 	if !PredicateEquals(c1, c2) {
 		t.Fatal("same comparison should be equal")
 	}
 	// Different op.
-	c3 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
-		Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue(int64(5))},
-	)
+	c3 := NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonLessThan, Operand: values.LiteralValue(int64(5))})
 	if PredicateEquals(c1, c3) {
 		t.Fatal("different ops should not be equal")
 	}
@@ -451,28 +439,16 @@ func TestChildren_Walk(t *testing.T) {
 // predicates like `age = 5 AND rank = 5` as duplicates.
 func TestPredicateEquals_DifferentFieldsAreNotEqual(t *testing.T) {
 	t.Parallel()
-	age := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
-		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
-	)
-	rank := NewComparisonPredicate(
-		&values.FieldValue{Field: "rank", Typ: values.NullableLong},
-		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
-	)
+	age := NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))})
+	rank := NewComparisonPredicate(predicateTestField(t, "rank", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))})
 	if PredicateEquals(age, rank) {
 		t.Fatal("age=5 and rank=5 should NOT be equal — different fields")
 	}
-	age2 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
-		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))},
-	)
+	age2 := NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(5))})
 	if !PredicateEquals(age, age2) {
 		t.Fatal("two identical age=5 predicates should be equal")
 	}
-	age10 := NewComparisonPredicate(
-		&values.FieldValue{Field: "age", Typ: values.NullableLong},
-		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(10))},
-	)
+	age10 := NewComparisonPredicate(predicateTestField(t, "age", values.NullableLong), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(int64(10))})
 	if PredicateEquals(age, age10) {
 		t.Fatal("age=5 and age=10 should NOT be equal — different literals")
 	}
@@ -481,12 +457,12 @@ func TestPredicateEquals_DifferentFieldsAreNotEqual(t *testing.T) {
 // ValuePredicate on different fields must also differ.
 func TestPredicateEquals_ValuePredicateDifferentFields(t *testing.T) {
 	t.Parallel()
-	a := NewValuePredicate(&values.FieldValue{Field: "is_active", Typ: values.TypeBool})
-	b := NewValuePredicate(&values.FieldValue{Field: "is_pending", Typ: values.TypeBool})
+	a := NewValuePredicate(predicateTestField(t, "is_active", values.TypeBool))
+	b := NewValuePredicate(predicateTestField(t, "is_pending", values.TypeBool))
 	if PredicateEquals(a, b) {
 		t.Fatal("ValuePredicate on different fields should NOT be equal")
 	}
-	c := NewValuePredicate(&values.FieldValue{Field: "is_active", Typ: values.TypeBool})
+	c := NewValuePredicate(predicateTestField(t, "is_active", values.TypeBool))
 	if !PredicateEquals(a, c) {
 		t.Fatal("ValuePredicate on same field should be equal")
 	}
@@ -497,7 +473,7 @@ func TestPredicateEquals_ValuePredicateDifferentFields(t *testing.T) {
 // ComparisonPredicates crashed with "comparing uncomparable type".
 func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
 	t.Parallel()
-	field := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	field := predicateTestField(t, "x", values.NullableLong)
 	pIn1 := NewComparisonPredicate(field, Comparison{
 		Type: ComparisonIn, Operand: values.LiteralValue([]any{int64(1), int64(2), int64(3)}),
 	})
@@ -522,7 +498,7 @@ func TestPredicateEquals_ComparisonInOperand(t *testing.T) {
 // equal even though their structural Operand differs.
 func TestPredicateEquals_UnaryIgnoresOperand(t *testing.T) {
 	t.Parallel()
-	field := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	field := predicateTestField(t, "x", values.NullableLong)
 	nilOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNull})
 	nullValueOp := NewComparisonPredicate(field, Comparison{Type: ComparisonIsNull, Operand: values.LiteralValue(nil)})
 	if !PredicateEquals(nilOp, nullValueOp) {
@@ -560,8 +536,8 @@ func TestComparisonPredicate_GetCorrelatedTo_LHSAndRHS(t *testing.T) {
 	lhsAlias := values.NamedCorrelationIdentifier("q_lhs")
 	rhsAlias := values.NamedCorrelationIdentifier("q_rhs")
 
-	lhs := &values.FieldValue{Field: "col", Typ: values.NullableLong, Child: values.NewQuantifiedObjectValue(lhsAlias)}
-	rhs := values.NewQuantifiedObjectValue(rhsAlias)
+	lhs := predicateTestFieldForAlias(t, lhsAlias, "col", values.NullableLong)
+	rhs := mustQOV(t, rhsAlias)
 
 	pred := NewComparisonPredicate(lhs, Comparison{
 		Type:    ComparisonEquals,
@@ -580,16 +556,14 @@ func TestComparisonPredicate_GetCorrelatedTo_LHSAndRHS(t *testing.T) {
 	}
 }
 
-func TestComparisonPredicate_GetCorrelatedTo_UnaryEmpty(t *testing.T) {
+func TestComparisonPredicate_GetCorrelatedTo_UnaryExactRoot(t *testing.T) {
 	t.Parallel()
-	// IS NULL with a plain FieldValue (no QOV) — empty correlations.
-	pred := NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
-		Comparison{Type: ComparisonIsNull},
-	)
+	// Exact FieldValues are always rooted in one admitted QOV. Unary
+	// comparisons retain that dependency just like binary comparisons.
+	pred := NewComparisonPredicate(predicateTestField(t, "x", values.NullableLong), Comparison{Type: ComparisonIsNull})
 	corr := pred.GetCorrelatedTo()
-	if len(corr) != 0 {
-		t.Fatalf("unary IS NULL on non-correlated field: len = %d, want 0", len(corr))
+	if len(corr) != 1 {
+		t.Fatalf("unary IS NULL on exact field: len = %d, want 1", len(corr))
 	}
 }
 
@@ -600,11 +574,11 @@ func TestAndPredicate_GetCorrelatedTo_Union(t *testing.T) {
 
 	pred := NewAnd(
 		NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(alias1),
+			mustQOV(t, alias1),
 			NewLiteralComparison(ComparisonEquals, int64(5)),
 		),
 		NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(alias2),
+			mustQOV(t, alias2),
 			NewLiteralComparison(ComparisonEquals, int64(10)),
 		),
 	)
@@ -640,11 +614,11 @@ func TestOrPredicate_GetCorrelatedTo_Union(t *testing.T) {
 
 	pred := NewOr(
 		NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(alias1),
+			mustQOV(t, alias1),
 			NewLiteralComparison(ComparisonEquals, int64(5)),
 		),
 		NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(alias2),
+			mustQOV(t, alias2),
 			NewLiteralComparison(ComparisonEquals, int64(10)),
 		),
 	)
@@ -661,7 +635,7 @@ func TestOrPredicate_GetCorrelatedTo_Union(t *testing.T) {
 func TestNotPredicate_GetCorrelatedTo(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("q_sub")
-	pred := NewNot(NewExistentialAlias(alias))
+	pred := NewNot(mustExistentialAlias(t, alias))
 	corr := pred.GetCorrelatedTo()
 	if _, ok := corr[alias]; !ok {
 		t.Fatal("NOT(EXISTS) should contain the existential alias")
@@ -683,7 +657,7 @@ func TestNotPredicate_GetCorrelatedTo_NilChild(t *testing.T) {
 func TestExistentialValuePredicate_GetCorrelatedTo(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("exists_q")
-	pred := NewExistentialAlias(alias)
+	pred := mustExistentialAlias(t, alias)
 	corr := pred.GetCorrelatedTo()
 	if _, ok := corr[alias]; !ok {
 		t.Fatal("ExistentialValuePredicate should contain its alias")
@@ -696,7 +670,7 @@ func TestExistentialValuePredicate_GetCorrelatedTo(t *testing.T) {
 func TestValuePredicate_GetCorrelatedTo(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("q_val")
-	pred := NewValuePredicate(values.NewQuantifiedObjectValue(alias))
+	pred := NewValuePredicate(mustQOV(t, alias))
 	corr := pred.GetCorrelatedTo()
 	if _, ok := corr[alias]; !ok {
 		t.Fatal("ValuePredicate should contain the QOV correlation")
@@ -736,7 +710,7 @@ func TestCompoundPredicate_GetCorrelatedTo_SkipsNilChildren(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("q_live")
-	correlated := NewValuePredicate(values.NewQuantifiedObjectValue(alias))
+	correlated := NewValuePredicate(mustQOV(t, alias))
 	for _, tc := range []struct {
 		name      string
 		predicate QueryPredicate
@@ -785,13 +759,13 @@ func TestGetCorrelatedToOfPredicate_ExactCompoundSet(t *testing.T) {
 
 	tree := NewAnd(
 		NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(lhsAlias),
+			mustQOV(t, lhsAlias),
 			Comparison{
 				Type:    ComparisonEquals,
-				Operand: values.NewQuantifiedObjectValue(rhsAlias),
+				Operand: mustQOV(t, rhsAlias),
 			},
 		),
-		NewExistentialAlias(existsAlias),
+		mustExistentialAlias(t, existsAlias),
 		NewConstantPredicate(TriTrue),
 	)
 
@@ -812,7 +786,7 @@ func TestGetCorrelatedToOfPredicate_ExactCompoundSet(t *testing.T) {
 // different-escape → unequal.
 func TestPredicateEquals_ComparisonLikeEscape(t *testing.T) {
 	t.Parallel()
-	field := &values.FieldValue{Field: "name", Typ: values.TypeString}
+	field := predicateTestField(t, "name", values.TypeString)
 	withBackslash := NewComparisonPredicate(field, Comparison{
 		Type: ComparisonLike, Operand: values.LiteralValue("a%b"), Escape: '\\',
 	})

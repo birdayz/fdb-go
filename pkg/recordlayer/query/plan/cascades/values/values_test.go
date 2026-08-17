@@ -12,7 +12,7 @@ import (
 // Static interface assertions.
 var (
 	_ Value = (*ConstantValue)(nil)
-	_ Value = (*FieldValue)(nil)
+	_ Value = (*fieldValue)(nil)
 	_ Value = (*ArithmeticValue)(nil)
 	_ Value = (*BooleanValue)(nil)
 	_ Value = (*CastValue)(nil)
@@ -33,12 +33,12 @@ func TestExplainValue(t *testing.T) {
 	if got := ExplainValue(&ConstantValue{Value: nil, Typ: NullableLong}); got != "NULL" {
 		t.Fatalf("NULL const: got %q", got)
 	}
-	if got := ExplainValue(&FieldValue{Field: "age", Typ: NullableLong}); got != "age" {
+	if got := ExplainValue(&fieldValue{Field: "age", Typ: NullableLong}); got != "age" {
 		t.Fatalf("field: got %q", got)
 	}
 	arith := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "a", Typ: NullableLong},
+		Left:  &fieldValue{Field: "a", Typ: NullableLong},
 		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	if got := ExplainValue(arith); got != "(a + 5)" {
@@ -59,6 +59,51 @@ func TestExplainValue(t *testing.T) {
 	cast := NewCastValue(&ConstantValue{Value: int64(1), Typ: NullableLong}, TypeString)
 	if got := ExplainValue(cast); got != "CAST(1 AS STRING)" {
 		t.Fatalf("cast: got %q", got)
+	}
+}
+
+func TestExplainPlanValuesUsesStableLocalUniqueAliases(t *testing.T) {
+	t.Parallel()
+	rowType := NewRecordType("", false, []Field{{Name: "ID", Ordinal: 0, FieldType: NotNullLong}})
+	uniqueA, err := NewQuantifiedObjectValue(UniqueCorrelationIdentifier(), rowType)
+	if err != nil {
+		t.Fatalf("unique A: %v", err)
+	}
+	uniqueB, err := NewQuantifiedObjectValue(UniqueCorrelationIdentifier(), rowType)
+	if err != nil {
+		t.Fatalf("unique B: %v", err)
+	}
+	fieldA, err := ResolveFieldOrdinals(uniqueA, []int{0})
+	if err != nil {
+		t.Fatalf("field A: %v", err)
+	}
+	fieldB, err := ResolveFieldOrdinals(uniqueB, []int{0})
+	if err != nil {
+		t.Fatalf("field B: %v", err)
+	}
+	if got := ExplainPlanValues([]Value{fieldA}); len(got) != 1 || got[0] != "ID#0" {
+		t.Fatalf("one input explain = %v, want [ID#0]", got)
+	}
+	if got := ExplainPlanValues([]Value{fieldA, fieldB}); len(got) != 2 || got[0] != "q$0.ID#0" || got[1] != "q$1.ID#0" {
+		t.Fatalf("two input explain = %v, want stable local q$0/q$1", got)
+	}
+	if got := ExplainPlanValues([]Value{uniqueA}); len(got) != 1 || got[0] != "q$0" {
+		t.Fatalf("bare scalar/object QOV explain = %v, want [q$0]", got)
+	}
+
+	// A user can legally quote a machine-shaped alias. Its named kind must not
+	// be mistaken for the unique correlation whose rendered text it resembles.
+	forgedText := uniqueA.Correlation().Name()
+	named, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier(forgedText), rowType)
+	if err != nil {
+		t.Fatalf("named machine-shaped alias: %v", err)
+	}
+	namedField, err := ResolveFieldOrdinals(named, []int{0})
+	if err != nil {
+		t.Fatalf("named field: %v", err)
+	}
+	if got := ExplainPlanValues([]Value{fieldA, namedField}); len(got) != 2 || got[0] != "ID#0" || got[1] != forgedText+".ID#0" {
+		t.Fatalf("kind-disjoint explain = %v, named alias was rewritten", got)
 	}
 }
 
@@ -124,7 +169,7 @@ func TestFieldValue_Evaluate(t *testing.T) {
 	// Missing field: post-cap an ABSENT column over an ordinal row is a LOUD
 	// *OrdinalResolutionError (an unresolved reference), never a silent NULL. A
 	// real SQL NULL is key-present-value-nil, tested elsewhere.
-	missing := &FieldValue{Field: "nope", Typ: TypeString}
+	missing := &fieldValue{Field: "nope", Typ: TypeString}
 	_, errEv1 := missing.Evaluate(row)
 	var ordErr *OrdinalResolutionError
 	if !errors.As(errEv1, &ordErr) {
@@ -149,8 +194,8 @@ func TestArithmeticValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	// operands carry plan-time ordinals — sorted {a, b} → a=slot 0,
 	// b=slot 1 (fom sorts keys), read positionally from the row.
-	a := NewFieldValueWithResolvedOrdinal("a", 0, NullableLong)
-	b := NewFieldValueWithResolvedOrdinal("b", 1, NullableLong)
+	a := newFieldValueWithResolvedOrdinal("a", 0, NullableLong)
+	b := newFieldValueWithResolvedOrdinal("b", 1, NullableLong)
 
 	cases := []struct {
 		op   ArithmeticOp
@@ -526,7 +571,7 @@ func TestAggregateOp_Symbol(t *testing.T) {
 
 func TestAggregateValue_Shape(t *testing.T) {
 	t.Parallel()
-	sum := NewAggregateValue(AggSum, &FieldValue{Field: "amount", Typ: NullableLong})
+	sum := NewAggregateValue(AggSum, &fieldValue{Field: "amount", Typ: NullableLong})
 	if got := sum.Type(); got != NullableLong {
 		t.Fatalf("SUM(int) Type: got %v, want NullableLong", got)
 	}
@@ -540,8 +585,8 @@ func TestAggregateValue_Shape(t *testing.T) {
 		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 
-	// COUNT(*) — no operand. Type is NotNullLong (zero on empty
-	// groups, never NULL) — compare by code to ignore nullability.
+	// COUNT(*) — no operand. The aggregate-row contract widens it to nullable
+	// because the whole group row can be null-supplied by an outer edge.
 	cstar := NewAggregateValue(AggCountStar, nil)
 	if got := cstar.Type(); got.Code() != TypeCodeLong {
 		t.Fatalf("COUNT(*) Type code: got %v, want %v", got.Code(), TypeCodeLong)
@@ -554,7 +599,7 @@ func TestAggregateValue_Shape(t *testing.T) {
 	}
 
 	// MIN inherits operand type.
-	minAge := NewAggregateValue(AggMin, &FieldValue{Field: "age", Typ: NullableLong})
+	minAge := NewAggregateValue(AggMin, &fieldValue{Field: "age", Typ: NullableLong})
 	if minAge.Type().Code() != TypeCodeLong {
 		t.Fatal("MIN should inherit operand type")
 	}
@@ -563,7 +608,7 @@ func TestAggregateValue_Shape(t *testing.T) {
 	// AVG(BIGINT) is DOUBLE, not LONG — this is the load-bearing fix: it
 	// makes DOUBLE→LONG assignability checks reject AVG into a BIGINT column.
 	for _, opType := range []Type{NullableLong, NullableLong, NotNullLong, NullableFloat, NullableDouble} {
-		avg := NewAggregateValue(AggAvg, &FieldValue{Field: "v", Typ: opType})
+		avg := NewAggregateValue(AggAvg, &fieldValue{Field: "v", Typ: opType})
 		if got := avg.Type().Code(); got != TypeCodeDouble {
 			t.Fatalf("AVG(%v) Type code: got %v, want DOUBLE", opType.Code(), got)
 		}
@@ -581,7 +626,7 @@ func TestAggregateValue_CountStarWithOperandPanics(t *testing.T) {
 			t.Fatal("expected panic")
 		}
 	}()
-	_ = NewAggregateValue(AggCountStar, &FieldValue{Field: "x", Typ: NullableLong})
+	_ = NewAggregateValue(AggCountStar, &fieldValue{Field: "x", Typ: NullableLong})
 }
 
 // Non-COUNT(*) without operand is also a programmer error.
@@ -601,7 +646,7 @@ func TestAggregateValue_MissingOperandPanics(t *testing.T) {
 // message tells the caller which aggregator they should be using.
 func TestAggregateValue_EvaluatePanics(t *testing.T) {
 	t.Parallel()
-	sum := NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: NullableLong})
+	sum := NewAggregateValue(AggSum, &fieldValue{Field: "x", Typ: NullableLong})
 	v, err := sum.Evaluate(map[string]any{"x": int64(5)})
 	if v != nil || err == nil {
 		t.Fatalf("AggregateValue.Evaluate: got (%v, %v), want (nil, AggregateEvalError)", v, err)
@@ -615,20 +660,20 @@ func TestAggregateValue_EvaluatePanics(t *testing.T) {
 // --- QuantifiedObjectValue -----------------------------------------
 
 var (
-	_ Value      = (*QuantifiedObjectValue)(nil)
-	_ Correlated = (*QuantifiedObjectValue)(nil)
+	_ Value      = (*quantifiedObjectValue)(nil)
+	_ Correlated = (*quantifiedObjectValue)(nil)
 )
 
 func TestQuantifiedObjectValue_Shape(t *testing.T) {
 	t.Parallel()
 	corr := NamedCorrelationIdentifier("t")
-	q := NewQuantifiedObjectValue(corr)
+	q := mustQOV(t, corr)
 
 	if got, want := q.Name(), "quantifier"; got != want {
 		t.Fatalf("Name: got %q, want %q", got, want)
 	}
-	if q.Type().Code() != TypeCodeUnknown {
-		t.Fatal("seed quantifier Type should be UnknownType")
+	if got := q.Type(); got.Code() != TypeCodeRecord || got.IsNullable() {
+		t.Fatalf("test QOV Type = %v, want exact empty RECORD NOT NULL", got)
 	}
 	if len(q.Children()) != 0 {
 		t.Fatal("quantifier has no Value children")
@@ -641,7 +686,7 @@ func TestQuantifiedObjectValue_Shape(t *testing.T) {
 func TestQuantifiedObjectValue_GetCorrelatedTo(t *testing.T) {
 	t.Parallel()
 	corr := NamedCorrelationIdentifier("u")
-	q := NewQuantifiedObjectValue(corr)
+	q := mustQOV(t, corr)
 
 	set := q.GetCorrelatedTo()
 	if len(set) != 1 {
@@ -655,7 +700,7 @@ func TestQuantifiedObjectValue_GetCorrelatedTo(t *testing.T) {
 func TestQuantifiedObjectValue_Evaluate_MultiSource(t *testing.T) {
 	t.Parallel()
 	corr := NamedCorrelationIdentifier("t")
-	q := NewQuantifiedObjectValue(corr)
+	q := mustQOV(t, corr)
 	// Post-cap a QOV resolves its correlation's row through a CorrelationBinder;
 	// each source binds an ordinal row. QOV(t) must pick t's row, never u's.
 	binder := &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
@@ -677,7 +722,7 @@ func TestQuantifiedObjectValue_Evaluate_MultiSource(t *testing.T) {
 
 func TestQuantifiedObjectValue_Evaluate_SingleSource(t *testing.T) {
 	t.Parallel()
-	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
+	q := mustQOV(t, NamedCorrelationIdentifier("t"))
 	// A bare frontier ordinal row IS the correlation's row.
 	got, errEv0 := q.Evaluate(fom(map[string]any{"age": int64(42)}))
 	require.NoError(t, errEv0)
@@ -688,7 +733,7 @@ func TestQuantifiedObjectValue_Evaluate_SingleSource(t *testing.T) {
 
 func TestQuantifiedObjectValue_Evaluate_NilContext(t *testing.T) {
 	t.Parallel()
-	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
+	q := mustQOV(t, NamedCorrelationIdentifier("t"))
 	got, errEv0 := q.Evaluate(nil)
 	require.NoError(t, errEv0)
 	if got != nil {
@@ -698,7 +743,7 @@ func TestQuantifiedObjectValue_Evaluate_NilContext(t *testing.T) {
 
 func TestQuantifiedObjectValue_Evaluate_ForeignContextIsNil(t *testing.T) {
 	t.Parallel()
-	q := NewQuantifiedObjectValue(NamedCorrelationIdentifier("t"))
+	q := mustQOV(t, NamedCorrelationIdentifier("t"))
 	// Unfamiliar context shape degrades to nil.
 	got, errEv0 := q.Evaluate(42)
 	require.NoError(t, errEv0)
@@ -707,14 +752,16 @@ func TestQuantifiedObjectValue_Evaluate_ForeignContextIsNil(t *testing.T) {
 	}
 }
 
-func TestQuantifiedObjectValue_ZeroCorrelationPanics(t *testing.T) {
+func TestQuantifiedObjectValue_ZeroCorrelationReturnsCodedError(t *testing.T) {
 	t.Parallel()
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on zero correlation")
-		}
-	}()
-	_ = NewQuantifiedObjectValue(CorrelationIdentifier{})
+	qov, err := NewQuantifiedObjectValue(CorrelationIdentifier{}, NotNullLong)
+	if qov != nil {
+		t.Fatalf("zero correlation produced partial QOV %T", qov)
+	}
+	var resolution *ResolutionError
+	if !errors.As(err, &resolution) || resolution.Code() != CorrelationZero {
+		t.Fatalf("zero correlation error = %v, want CorrelationZero", err)
+	}
 }
 
 // --- PromoteValue --------------------------------------------------
@@ -723,7 +770,7 @@ var _ Value = (*PromoteValue)(nil)
 
 func TestPromoteValue_Shape(t *testing.T) {
 	t.Parallel()
-	child := &FieldValue{Field: "age", Typ: NullableLong}
+	child := &fieldValue{Field: "age", Typ: NullableLong}
 	p := NewPromoteValue(child, TypeString)
 
 	if got, want := p.Type(), TypeString; got != want {
@@ -867,24 +914,24 @@ var _ Value = (*RecordConstructorValue)(nil)
 // Value impls in this package MUST add themselves here.
 var (
 	_ Value = (*ConstantValue)(nil)
-	_ Value = (*FieldValue)(nil)
+	_ Value = (*fieldValue)(nil)
 	_ Value = (*NullValue)(nil)
 	_ Value = (*ParameterValue)(nil)
 	_ Value = (*ScalarFunctionValue)(nil)
 	_ Value = (*ArithmeticValue)(nil)
 	_ Value = (*BooleanValue)(nil)
 	_ Value = (*CastValue)(nil)
-	_ Value = (*QuantifiedObjectValue)(nil)
+	_ Value = (*quantifiedObjectValue)(nil)
 	// NotValue is in value_not_test.go.
 )
 
 func TestRecordConstructorValue_Shape(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
-		RecordConstructorField{Name: "id", Value: &FieldValue{Field: "id", Typ: NullableLong}},
+		RecordConstructorField{Name: "id", Value: &fieldValue{Field: "id", Typ: NullableLong}},
 		RecordConstructorField{Name: "doubled", Value: &ArithmeticValue{
 			Op:    OpMul,
-			Left:  &FieldValue{Field: "x", Typ: NullableLong},
+			Left:  &fieldValue{Field: "x", Typ: NullableLong},
 			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		}},
 	)
@@ -904,7 +951,7 @@ func TestRecordConstructorValue_Evaluate(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
 		// "id" carries its plan-time ordinal (sole column → slot 0).
-		RecordConstructorField{Name: "a", Value: NewFieldValueWithResolvedOrdinal("id", 0, NullableLong)},
+		RecordConstructorField{Name: "a", Value: newFieldValueWithResolvedOrdinal("id", 0, NullableLong)},
 		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
 	)
 	ctx := fom(map[string]any{"id": int64(7)})
@@ -927,7 +974,7 @@ func TestRecordConstructorValue_Evaluate(t *testing.T) {
 func TestRecordConstructorValue_Explain(t *testing.T) {
 	t.Parallel()
 	r := NewRecordConstructorValue(
-		RecordConstructorField{Name: "id", Value: &FieldValue{Field: "id", Typ: NullableLong}},
+		RecordConstructorField{Name: "id", Value: &fieldValue{Field: "id", Typ: NullableLong}},
 		RecordConstructorField{Name: "lit", Value: &ConstantValue{Value: int64(42), Typ: NullableLong}},
 	)
 	if got, want := ExplainValue(r), "{id: id, lit: 42}"; got != want {
@@ -974,10 +1021,10 @@ func TestWalkValue_PreOrder(t *testing.T) {
 		Op: OpMul,
 		Left: &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &FieldValue{Field: "a", Typ: NullableLong},
-			Right: &FieldValue{Field: "b", Typ: NullableLong},
+			Left:  &fieldValue{Field: "a", Typ: NullableLong},
+			Right: &fieldValue{Field: "b", Typ: NullableLong},
 		},
-		Right: &FieldValue{Field: "c", Typ: NullableLong},
+		Right: &fieldValue{Field: "c", Typ: NullableLong},
 	}
 	var visited int
 	WalkValue(tree, func(Value) bool {
@@ -993,8 +1040,8 @@ func TestWalkValue_SkipSubtree(t *testing.T) {
 	t.Parallel()
 	tree := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &ArithmeticValue{Op: OpAdd, Left: &FieldValue{Field: "a"}, Right: &FieldValue{Field: "b"}},
-		Right: &FieldValue{Field: "c", Typ: NullableLong},
+		Left:  &ArithmeticValue{Op: OpAdd, Left: &fieldValue{Field: "a"}, Right: &fieldValue{Field: "b"}},
+		Right: &fieldValue{Field: "c", Typ: NullableLong},
 	}
 	var visited int
 	WalkValue(tree, func(v Value) bool {
@@ -1020,7 +1067,7 @@ func TestWalkValue_NilSafe(t *testing.T) {
 
 func TestValueSize(t *testing.T) {
 	t.Parallel()
-	leaf := &FieldValue{Field: "x", Typ: NullableLong}
+	leaf := &fieldValue{Field: "x", Typ: NullableLong}
 	if got := ValueSize(leaf); got != 1 {
 		t.Fatalf("leaf: got %d, want 1", got)
 	}
@@ -1028,10 +1075,10 @@ func TestValueSize(t *testing.T) {
 		Op: OpMul,
 		Left: &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &FieldValue{Field: "a"},
-			Right: &FieldValue{Field: "b"},
+			Left:  &fieldValue{Field: "a"},
+			Right: &fieldValue{Field: "b"},
 		},
-		Right: &FieldValue{Field: "c"},
+		Right: &fieldValue{Field: "c"},
 	}
 	if got := ValueSize(tree); got != 5 {
 		t.Fatalf("tree: got %d, want 5", got)
@@ -1045,7 +1092,7 @@ func TestContainsAggregate(t *testing.T) {
 	t.Parallel()
 	plain := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "a", Typ: NullableLong},
+		Left:  &fieldValue{Field: "a", Typ: NullableLong},
 		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	if ContainsAggregate(plain) {
@@ -1054,7 +1101,7 @@ func TestContainsAggregate(t *testing.T) {
 
 	withAgg := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: NullableLong}),
+		Left:  NewAggregateValue(AggSum, &fieldValue{Field: "x", Typ: NullableLong}),
 		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	if !ContainsAggregate(withAgg) {
@@ -1079,8 +1126,8 @@ func TestIsConstantValue(t *testing.T) {
 		{"NullValue", NewNullValue(NullableLong), true},
 		{"BooleanValue true", NewBooleanValue(true), true},
 		{"BooleanValue nil", &BooleanValue{Value: nil}, true},
-		{"FieldValue", &FieldValue{Field: "x", Typ: NullableLong}, false},
-		{"QuantifiedObjectValue", NewQuantifiedObjectValue(NamedCorrelationIdentifier("t")), false},
+		{"FieldValue", &fieldValue{Field: "x", Typ: NullableLong}, false},
+		{"QuantifiedObjectValue", mustQOV(t, NamedCorrelationIdentifier("t")), false},
 		{"AggregateValue", NewAggregateValue(AggSum, &ConstantValue{Value: int64(1), Typ: NullableLong}), false},
 
 		// Composite over all-constant children: true.
@@ -1092,13 +1139,13 @@ func TestIsConstantValue(t *testing.T) {
 		// Composite with one non-constant: false.
 		{"arith(field, 2)", &ArithmeticValue{
 			Op:    OpAdd,
-			Left:  &FieldValue{Field: "x", Typ: NullableLong},
+			Left:  &fieldValue{Field: "x", Typ: NullableLong},
 			Right: &ConstantValue{Value: int64(2), Typ: NullableLong},
 		}, false},
 		// Cast over constant: true.
 		{"cast(constant)", NewCastValue(&ConstantValue{Value: int64(5), Typ: NullableLong}, TypeString), true},
 		// Cast over field: false.
-		{"cast(field)", NewCastValue(&FieldValue{Field: "x", Typ: NullableLong}, TypeString), false},
+		{"cast(field)", NewCastValue(&fieldValue{Field: "x", Typ: NullableLong}, TypeString), false},
 
 		{"nil", nil, false},
 	}
@@ -1133,7 +1180,7 @@ func TestEvaluateConstant(t *testing.T) {
 		t.Fatalf("1+2: got (%v, %v), want (3, true)", got, ok)
 	}
 	// Non-constant declines.
-	if _, ok := EvaluateConstant(&FieldValue{Field: "x", Typ: NullableLong}); ok {
+	if _, ok := EvaluateConstant(&fieldValue{Field: "x", Typ: NullableLong}); ok {
 		t.Fatal("FieldValue should decline (not constant)")
 	}
 	// Nil safe.
@@ -1202,7 +1249,7 @@ func TestExplainTypeName(t *testing.T) {
 // pins the fall-through arm for raw struct-construction.
 func TestAggregateValue_Type_UnknownOpIsUnknown(t *testing.T) {
 	t.Parallel()
-	a := &AggregateValue{Op: AggInvalid, Operand: &FieldValue{Field: "x", Typ: NullableLong}}
+	a := &AggregateValue{Op: AggInvalid, Operand: &fieldValue{Field: "x", Typ: NullableLong}}
 	if got := a.Type(); got != TypeUnknown {
 		t.Fatalf("AggInvalid.Type() = %v, want UnknownType", got)
 	}
@@ -1420,7 +1467,7 @@ func TestScalarFunctionValue_Evaluate(t *testing.T) {
 	field := func(name string) Value {
 		for i, n := range row.names {
 			if n == name {
-				return NewFieldValueWithResolvedOrdinal(name, i, TypeString)
+				return newFieldValueWithResolvedOrdinal(name, i, TypeString)
 			}
 		}
 		t.Fatalf("field %q not present in row", name)
@@ -1468,7 +1515,7 @@ func TestScalarFunctionValue_IsConstant(t *testing.T) {
 	}
 
 	upperField := NewScalarFunctionValue("UPPER", TypeString,
-		&FieldValue{Field: "name", Typ: TypeString})
+		&fieldValue{Field: "name", Typ: TypeString})
 	if IsConstantValue(upperField) {
 		t.Fatal("UPPER(field) should not be constant")
 	}
@@ -1485,13 +1532,13 @@ func TestExplainValue_ScalarFunctionValue(t *testing.T) {
 	t.Parallel()
 
 	v := NewScalarFunctionValue("UPPER", TypeString,
-		&FieldValue{Field: "NAME", Typ: TypeString})
+		&fieldValue{Field: "NAME", Typ: TypeString})
 	if got, want := ExplainValue(v), "UPPER(NAME)"; got != want {
 		t.Fatalf("UPPER(NAME): got %q, want %q", got, want)
 	}
 	nested := NewScalarFunctionValue("LENGTH", NullableLong,
 		NewScalarFunctionValue("LOWER", TypeString,
-			&FieldValue{Field: "NAME", Typ: TypeString}))
+			&fieldValue{Field: "NAME", Typ: TypeString}))
 	if got, want := ExplainValue(nested), "LENGTH(LOWER(NAME))"; got != want {
 		t.Fatalf("nested: got %q, want %q", got, want)
 	}
@@ -1635,7 +1682,7 @@ func TestFieldValue_QOV_CorrelationBinder(t *testing.T) {
 	corrB := NamedCorrelationIdentifier("B")
 	// the correlated NAME ref carries its plan-time ordinal — sorted
 	// {ID, NAME} → NAME=slot 1 in the bound row.
-	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrA), "NAME", 1, UnknownType)
+	fv := newCorrelatedFieldValueWithResolvedOrdinal(mustQOV(t, corrA), "NAME", 1, UnknownType)
 
 	rc := &RowEvalContext{
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
@@ -1655,7 +1702,7 @@ func TestFieldValue_QOV_CorrelationBinder_OtherTable(t *testing.T) {
 	corrB := NamedCorrelationIdentifier("B")
 	// correlated NAME ref carries its plan-time ordinal — single
 	// column {NAME} → slot 0 in the bound row.
-	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrB), "NAME", 0, UnknownType)
+	fv := newCorrelatedFieldValueWithResolvedOrdinal(mustQOV(t, corrB), "NAME", 0, UnknownType)
 
 	rc := &RowEvalContext{
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
@@ -1684,7 +1731,7 @@ func TestFieldValue_QOV_FlatMap_QualifiedKey(t *testing.T) {
 		names: []string{"NAME", "EMP.NAME", "DEPT.NAME"},
 		slots: []any{"wrong-bare", "Alice", "Engineering"},
 	}
-	fv := NewFieldValueWithResolvedOrdinal("EMP.NAME", 1, UnknownType)
+	fv := newFieldValueWithResolvedOrdinal("EMP.NAME", 1, UnknownType)
 	got, errEv0 := fv.Evaluate(row)
 	require.NoError(t, errEv0)
 	if got != "Alice" {
@@ -1697,7 +1744,7 @@ func TestFieldValue_QOV_FlatMap_QualifiedKey(t *testing.T) {
 // collapses a buried table (T3) into a merge quantifier ($m) whose row flows that
 // table's columns under their OWN qualified names (T3.T2_ID), preserved verbatim
 // by the join's merged positional row — NOT re-prefixed with the merge alias. A
-// FieldValue{Child: QOV($m), Field: "T3.T2_ID"} resolves "T3.T2_ID" DIRECTLY
+// fieldValue{Child: QOV($m), Field: "T3.T2_ID"} resolves "T3.T2_ID" DIRECTLY
 // against the ordinal row (GetByName exact match); the naive qualKey =
 // $m + "." + Field would invent the never-written key "$M.T3.T2_ID" — the
 // 0-rows bug. Post-cap the resolution is exact and loud on a miss (no fallback).
@@ -1706,7 +1753,7 @@ func TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField(t *testing.T) {
 	merge := NamedCorrelationIdentifier("$M_2:T3_2:T4")
 	// the qualified ref carries its plan-time ordinal — sorted
 	// {ID, T3.T2_ID, T4.T3_ID} → T3.T2_ID = slot 1 in the merged row.
-	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(merge), "T3.T2_ID", 1, UnknownType)
+	fv := newCorrelatedFieldValueWithResolvedOrdinal(mustQOV(t, merge), "T3.T2_ID", 1, UnknownType)
 
 	merged := map[string]any{
 		"T3.T2_ID": int64(7),
@@ -1731,7 +1778,7 @@ func TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField(t *testing.T) {
 
 	// A qualified field NOT present is a LOUD miss (no spurious fallback to a
 	// bare key) — the ordinal frontier's no-silent-miss contract.
-	missing := NewFieldValue(NewQuantifiedObjectValue(merge), "T9.X", UnknownType)
+	missing := newFieldValue(mustQOV(t, merge), "T9.X", UnknownType)
 	_, errEv2 := missing.Evaluate(fom(merged))
 	var ordErr *OrdinalResolutionError
 	if !errors.As(errEv2, &ordErr) {
@@ -1741,7 +1788,7 @@ func TestFieldValue_QOV_MergeQuantifier_AlreadyQualifiedField(t *testing.T) {
 
 func TestFieldValue_QOV_FlatMap_NoFallbackToBareKey(t *testing.T) {
 	t.Parallel()
-	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("A")), "K", UnknownType)
+	fv := newFieldValue(mustQOV(t, NamedCorrelationIdentifier("A")), "K", UnknownType)
 
 	merged := map[string]any{
 		"K":   int64(99),
@@ -1768,8 +1815,8 @@ func TestFieldValue_QOV_NullKeyDisambiguation(t *testing.T) {
 		names: []string{"A.K", "B.K", "K"},
 		slots: []any{int64(10), int64(20), int64(10)},
 	}
-	fvA := NewFieldValueWithResolvedOrdinal("A.K", 0, UnknownType)
-	fvB := NewFieldValueWithResolvedOrdinal("B.K", 1, UnknownType)
+	fvA := newFieldValueWithResolvedOrdinal("A.K", 0, UnknownType)
+	fvB := newFieldValueWithResolvedOrdinal("B.K", 1, UnknownType)
 	gotA, errEv0 := fvA.Evaluate(row)
 	require.NoError(t, errEv0)
 	gotB, errEv1 := fvB.Evaluate(row)
@@ -1792,8 +1839,8 @@ func TestFieldValue_QOV_NullFK_NoMatch(t *testing.T) {
 		names: []string{"A.K", "B.K", "K"},
 		slots: []any{nil, int64(10), int64(10)}, // A.K null-supplied (no match)
 	}
-	fvA := NewFieldValueWithResolvedOrdinal("A.K", 0, UnknownType)
-	fvB := NewFieldValueWithResolvedOrdinal("B.K", 1, UnknownType)
+	fvA := newFieldValueWithResolvedOrdinal("A.K", 0, UnknownType)
+	fvB := newFieldValueWithResolvedOrdinal("B.K", 1, UnknownType)
 	gotA, errEv0 := fvA.Evaluate(row)
 	require.NoError(t, errEv0)
 	gotB, errEv1 := fvB.Evaluate(row)
@@ -1811,7 +1858,7 @@ func TestFieldValue_QOV_CorrelationIdMap(t *testing.T) {
 	corrE := NamedCorrelationIdentifier("EMP")
 	// correlated SALARY ref carries its plan-time ordinal — sorted
 	// {NAME, SALARY} → SALARY = slot 1 in the bound row.
-	fv := NewCorrelatedFieldValueWithResolvedOrdinal(NewQuantifiedObjectValue(corrE), "SALARY", 1, UnknownType)
+	fv := newCorrelatedFieldValueWithResolvedOrdinal(mustQOV(t, corrE), "SALARY", 1, UnknownType)
 
 	ctx := &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
 		corrE:                              fom(map[string]any{"SALARY": int64(100), "NAME": "Alice"}),
@@ -1826,7 +1873,7 @@ func TestFieldValue_QOV_CorrelationIdMap(t *testing.T) {
 
 func TestFieldValue_QOV_MissingCorrelation_IsLoud(t *testing.T) {
 	t.Parallel()
-	fv := NewFieldValue(NewQuantifiedObjectValue(NamedCorrelationIdentifier("MISSING")), "COL", UnknownType)
+	fv := newFieldValue(mustQOV(t, NamedCorrelationIdentifier("MISSING")), "COL", UnknownType)
 
 	rc := &RowEvalContext{
 		Correlations: &testCorrelationBinder{bindings: map[CorrelationIdentifier]any{
@@ -1845,7 +1892,7 @@ func TestFieldValue_QOV_MissingCorrelation_IsLoud(t *testing.T) {
 func TestFieldValue_NoChild_BackwardCompat(t *testing.T) {
 	t.Parallel()
 	// a flat reference carries its plan-time ordinal (slot 0).
-	fv := NewFieldValueWithResolvedOrdinal("NAME", 0, UnknownType)
+	fv := newFieldValueWithResolvedOrdinal("NAME", 0, UnknownType)
 
 	row := &fakeOrdinalRow{names: []string{"NAME"}, slots: []any{"Alice"}}
 	got, errEv0 := fv.Evaluate(row)
@@ -1859,7 +1906,7 @@ func TestFieldValue_NoChild_QualifiedString_BackwardCompat(t *testing.T) {
 	t.Parallel()
 	// the qualified flat reference carries its plan-time ordinal —
 	// slot 0 in the row, so it reads the EMP.NAME slot, never the bare "NAME".
-	fv := NewFieldValueWithResolvedOrdinal("EMP.NAME", 0, UnknownType)
+	fv := newFieldValueWithResolvedOrdinal("EMP.NAME", 0, UnknownType)
 
 	row := &fakeOrdinalRow{names: []string{"EMP.NAME", "NAME"}, slots: []any{"Alice", "wrong"}}
 	got, errEv0 := fv.Evaluate(row)

@@ -37,7 +37,7 @@ func TestExistentialLegCorrelations_CarriesAMachineMintedLegAsItself(t *testing.
 	machine := machineLegCorr()
 	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
 		machine: {Kind: values.LegKindFlatRun, Offset: 0, Alias: machine, Typ: &values.RecordType{Fields: []values.Field{
-			{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		}}},
 	}
 	set := existentialLegCorrelations(
@@ -91,17 +91,24 @@ func TestRebaseOuterLegRefsOrdinal_DeclineProbeMatchesAMachineMintedLeg(t *testi
 	t.Parallel()
 	machine := machineLegCorr()
 	legType := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 	}}
 	windows := map[values.CorrelationIdentifier]ordinalLegWindow{
 		machine: {Kind: values.LegKindFlatRun, Offset: 0, Alias: machine, Typ: legType},
 	}
-	mergedQOV := values.NewQuantifiedObjectValueOfType(
+	mergedQOV, err := values.NewQuantifiedObjectValue(
 		values.NamedCorrelationIdentifier("MERGED"), legType)
+	if err != nil {
+		t.Fatalf("merged QOV: %v", err)
+	}
+	machineQOV, err := values.NewQuantifiedObjectValue(machine, legType)
+	if err != nil {
+		t.Fatalf("machine QOV: %v", err)
+	}
 
 	// An unhandled predicate kind that DOES reference the leg.
 	pred := predicates.MustNewExistentialValuePredicate(
-		values.NewQuantifiedObjectValueOfType(machine, legType),
+		machineQOV,
 		predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 	)
 	if _, refs := predicates.GetCorrelatedToOfPredicate(pred)[machine]; !refs {
@@ -124,9 +131,12 @@ func TestRebaseOuterLegRefsOrdinal_DeclineProbeMatchesAMachineMintedLeg(t *testi
 	// CONTROL: the same predicate kind over a NON-leg correlation must still pass
 	// through. Without this the assertion above is satisfied by an arm that
 	// declines everything, which would turn the whole path off.
+	freeQOV, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("SUBQ"), legType)
+	if err != nil {
+		t.Fatalf("free QOV: %v", err)
+	}
 	free := predicates.MustNewExistentialValuePredicate(
-		values.NewQuantifiedObjectValueOfType(
-			values.NamedCorrelationIdentifier("SUBQ"), legType),
+		freeQOV,
 		predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 	)
 	if _, freeOK := rebaseOuterLegRefsOrdinal(free, windows, mergedQOV); !freeOK {

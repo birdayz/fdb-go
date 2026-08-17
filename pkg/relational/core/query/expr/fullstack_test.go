@@ -65,7 +65,10 @@ func TestFullStack_Pipeline(t *testing.T) {
 
 	// 6. Run through the simplifier. `5 = 5` tautology should fold
 	// out of the AND.
-	simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	if err != nil {
+		t.Fatalf("Simplify: %v", err)
+	}
 
 	// 7. Evaluate against sample rows.
 	type row = map[string]any
@@ -127,7 +130,7 @@ func TestFullStack_Pipeline(t *testing.T) {
 	// 9. Pin the Explain output so Simplify regressions or
 	// Explain-formatting changes surface here. Bare boolean ACTIVE lifts
 	// to `ACTIVE = TRUE` (RFC-146), matching Java's toUnderlyingPredicate.
-	wantExplain := "(ID#0 >= 18 AND (NAME#1 IS NOT NULL OR ACTIVE#3 = TRUE))"
+	wantExplain := "(USERS.ID#0 >= 18 AND (USERS.NAME#1 IS NOT NULL OR USERS.ACTIVE#3 = TRUE))"
 	if got := simplified.Explain(); got != wantExplain {
 		t.Fatalf("Explain: got %q, want %q", got, wantExplain)
 	}
@@ -252,7 +255,10 @@ func TestFullStack_RichPredicates(t *testing.T) {
 			if err != nil {
 				t.Fatalf("WalkPredicate: %v", err)
 			}
-			simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+			simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+			if err != nil {
+				t.Fatalf("Simplify: %v", err)
+			}
 			// Declared column order of this test's USERS table — the order
 			// the resolver baked ordinals against.
 			richRow := ordinalPredRow{

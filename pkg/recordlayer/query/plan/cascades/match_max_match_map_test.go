@@ -21,8 +21,10 @@ func TestBuildMatchMaxMatchMap_RebasesQueryValueToCandidateAlias(t *testing.T) {
 	candidateAlias := values.NamedCorrelationIdentifier("c")
 	boundAliasMap := AliasMapOfAliases(queryAlias, candidateAlias)
 
-	queryResultValue := values.NewQuantifiedObjectValue(queryAlias)
-	candidateResultValue := values.NewQuantifiedObjectValue(candidateAlias)
+	queryResultValue, queryErr := values.NewQuantifiedObjectValue(queryAlias, values.NotNullLong)
+	queryResultValue = mustConstruct(t, queryResultValue, queryErr)
+	candidateResultValue, candidateErr := values.NewQuantifiedObjectValue(candidateAlias, values.NotNullLong)
+	candidateResultValue = mustConstruct(t, candidateResultValue, candidateErr)
 
 	mmm := buildMatchMaxMatchMap(queryResultValue, candidateResultValue, boundAliasMap)
 	if mmm == nil {
@@ -31,13 +33,13 @@ func TestBuildMatchMaxMatchMap_RebasesQueryValueToCandidateAlias(t *testing.T) {
 
 	// The query value stored is the REBASED one (query alias -> candidate alias),
 	// so it now references the candidate alias.
-	qv, ok := mmm.GetQueryValue().(*values.QuantifiedObjectValue)
+	qv, ok := values.AsQuantifiedObjectValue(mmm.GetQueryValue())
 	if !ok {
-		t.Fatalf("expected query value to be a *QuantifiedObjectValue, got %T", mmm.GetQueryValue())
+		t.Fatalf("expected query value to be an exact QuantifiedObjectValue, got %T", mmm.GetQueryValue())
 	}
-	if qv.Correlation != candidateAlias {
+	if qv.Correlation() != candidateAlias {
 		t.Fatalf("query value should be rebased to the candidate alias %q, got %q",
-			candidateAlias.Name(), qv.Correlation.Name())
+			candidateAlias.Name(), qv.Correlation().Name())
 	}
 
 	if mmm.GetCandidateValue() != candidateResultValue {
@@ -62,14 +64,17 @@ func TestBuildMatchMaxMatchMap_FieldOverQuantifier(t *testing.T) {
 	candidateAlias := values.NamedCorrelationIdentifier("c")
 	boundAliasMap := AliasMapOfAliases(queryAlias, candidateAlias)
 
-	queryField := &values.FieldValue{
-		Child: values.NewQuantifiedObjectValue(queryAlias),
-		Field: "COL",
-	}
-	candidateField := &values.FieldValue{
-		Child: values.NewQuantifiedObjectValue(candidateAlias),
-		Field: "COL",
-	}
+	rowType := values.NewRecordType("MatchRow", false, []values.Field{
+		{Name: "COL", FieldType: values.NullableLong, Ordinal: 0},
+	})
+	queryRoot, queryRootErr := values.NewQuantifiedObjectValue(queryAlias, rowType)
+	queryRoot = mustConstruct(t, queryRoot, queryRootErr)
+	queryField, queryFieldErr := values.ResolveFieldOrdinals(queryRoot, []int{0})
+	queryField = mustConstruct(t, queryField, queryFieldErr)
+	candidateRoot, candidateRootErr := values.NewQuantifiedObjectValue(candidateAlias, rowType)
+	candidateRoot = mustConstruct(t, candidateRoot, candidateRootErr)
+	candidateField, candidateFieldErr := values.ResolveFieldOrdinals(candidateRoot, []int{0})
+	candidateField = mustConstruct(t, candidateField, candidateFieldErr)
 
 	mmm := buildMatchMaxMatchMap(queryField, candidateField, boundAliasMap)
 	if mmm == nil {

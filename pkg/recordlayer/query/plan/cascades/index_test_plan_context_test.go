@@ -55,7 +55,7 @@ func (c *indexTestPlanContext) GetPrimaryKeyColumns(recordType string) []string 
 func testRecordRowType(name string, cols ...string) *values.RecordType {
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
-		fields[i] = values.Field{Name: c, FieldType: values.UnknownType, Ordinal: i}
+		fields[i] = values.Field{Name: c, FieldType: values.NullableLong, Ordinal: i}
 	}
 	return values.NewRecordType(name, false, fields)
 }
@@ -63,12 +63,21 @@ func testRecordRowType(name string, cols ...string) *values.RecordType {
 // testColumnRef bakes a source-relative reference to a column of a layout built
 // by testRecordRowType: the shape the SQL resolver produces for `t.c`, carrying
 // the ordinal AND the domain that ordinal indexes.
-func testColumnRef(child values.Value, rowType *values.RecordType, col string, typ values.Type) *values.FieldValue {
+func testColumnRef(child values.Value, rowType *values.RecordType, col string, _ values.Type) values.Value {
 	for i, f := range rowType.Fields {
 		if f.Name == col {
-			return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-				child, col, i, typ, values.OrdinalDomainOfType(rowType),
-			)
+			if child == nil {
+				var err error
+				child, err = values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), rowType)
+				if err != nil {
+					panic(err)
+				}
+			}
+			resolved, err := values.ResolveFieldOrdinals(child, []int{i})
+			if err != nil {
+				panic(err)
+			}
+			return resolved
 		}
 	}
 	panic("testColumnRef: no column " + col + " in " + rowType.RecordName)

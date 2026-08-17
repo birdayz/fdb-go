@@ -26,10 +26,7 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 	t.Parallel()
 
 	stats := properties.FixedStatistics{Cardinality: 1000}
-	pk2 := []values.Value{
-		&values.FieldValue{Field: "TENANT", Typ: values.UnknownType},
-		&values.FieldValue{Field: "ORDER", Typ: values.UnknownType},
-	}
+	pk2 := []values.Value{testField(t, "TENANT", values.NullableLong), testField(t, "ORDER", values.NullableLong)}
 	eqTenant := scanCostRange(t, predicates.ComparisonEquals, int64(7))
 	eqOrder := scanCostRange(t, predicates.ComparisonEquals, int64(9))
 	rangeOrder := scanCostRange(t, predicates.ComparisonGreaterThan, int64(9))
@@ -44,7 +41,9 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 	}{
 		{
 			name: "composite PK partial equality prefix",
-			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			plan: mustChecked(t, func() (*RecordQueryScanPlan, error) {
+				return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+			}).
 				WithPrimaryKey(pk2).
 				WithScanComparisons([]*predicates.ComparisonRange{eqTenant}).
 				WithKeyComponentTypes(testPhysicalLongTypes(1)),
@@ -53,7 +52,9 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 		},
 		{
 			name: "composite PK fully equality bound",
-			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			plan: mustChecked(t, func() (*RecordQueryScanPlan, error) {
+				return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+			}).
 				WithPrimaryKey(pk2).
 				WithScanComparisons([]*predicates.ComparisonRange{eqTenant, eqOrder}).
 				WithKeyComponentTypes(testPhysicalLongTypes(2)),
@@ -61,7 +62,9 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 		},
 		{
 			name: "primary key metadata unavailable",
-			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			plan: mustChecked(t, func() (*RecordQueryScanPlan, error) {
+				return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+			}).
 				WithScanComparisons([]*predicates.ComparisonRange{eqTenant}).
 				WithKeyComponentTypes(testPhysicalLongTypes(1)),
 			wantCardinality: stats.Cardinality *
@@ -69,7 +72,9 @@ func TestScanHintCost_PartialPKPrefixNotPointProbe(t *testing.T) {
 		},
 		{
 			name: "full primary key includes range",
-			plan: NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			plan: mustChecked(t, func() (*RecordQueryScanPlan, error) {
+				return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+			}).
 				WithPrimaryKey(pk2).
 				WithScanComparisons([]*predicates.ComparisonRange{eqTenant, rangeOrder}).
 				WithKeyComponentTypes(testPhysicalLongTypes(2)),

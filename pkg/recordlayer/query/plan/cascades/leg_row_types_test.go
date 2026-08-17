@@ -16,21 +16,25 @@ import (
 // record — recovered via the same QOV path the seed uses, so the pin asserts
 // legRowTypes maps each alias to its OWN correct-width type (no conflation, no
 // drop, no nullability drift), not a tautology.
-func flowedLegType(name string, fields []values.Field) *values.RecordType {
+func flowedLegType(t testing.TB, name string, fields []values.Field) *values.RecordType {
+	t.Helper()
 	rt := values.NewRecordType(name, false, fields)
-	qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(name), rt)
-	return qov.Type().(*values.RecordType)
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(name), rt)
+	exactQOV := mustConstruct(t, qov, err)
+	return exactQOV.FlowedType().(*values.RecordType)
 }
 
-func chainLegType(name string) *values.RecordType {
-	return flowedLegType(name, []values.Field{
+func chainLegType(t testing.TB, name string) *values.RecordType {
+	t.Helper()
+	return flowedLegType(t, name, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "NEXT_ID", FieldType: values.NotNullLong, Ordinal: 1},
 	})
 }
 
-func starSpokeType(name string) *values.RecordType {
-	return flowedLegType(name, []values.Field{
+func starSpokeType(t testing.TB, _ string) *values.RecordType {
+	t.Helper()
+	return flowedLegType(t, "SPOKE", []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "HID", FieldType: values.NotNullLong, Ordinal: 1},
 	})
@@ -61,22 +65,22 @@ func TestLegRowTypesBridge(t *testing.T) {
 	}{
 		{
 			name: "chain_3way",
-			sel:  buildOrdinalChainSelect(3),
-			want: map[string]*values.RecordType{"T1": chainLegType("T1"), "T2": chainLegType("T2"), "T3": chainLegType("T3")},
+			sel:  buildOrdinalChainSelect(t, 3),
+			want: map[string]*values.RecordType{"T1": chainLegType(t, "T1"), "T2": chainLegType(t, "T2"), "T3": chainLegType(t, "T3")},
 		},
 		{
 			name: "chain_4way",
-			sel:  buildOrdinalChainSelect(4),
-			want: map[string]*values.RecordType{"T1": chainLegType("T1"), "T2": chainLegType("T2"), "T3": chainLegType("T3"), "T4": chainLegType("T4")},
+			sel:  buildOrdinalChainSelect(t, 4),
+			want: map[string]*values.RecordType{"T1": chainLegType(t, "T1"), "T2": chainLegType(t, "T2"), "T3": chainLegType(t, "T3"), "T4": chainLegType(t, "T4")},
 		},
 		{
 			// Mixed leg widths: hub [ID] + spokes [ID, HID] — the recovery must
 			// not conflate a 1-field leg with a 2-field one.
 			name: "star_3spoke",
-			sel:  buildOrdinalStar(3),
+			sel:  buildOrdinalStar(t, 3),
 			want: map[string]*values.RecordType{
-				"H":  flowedLegType("H", []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}}),
-				"S1": starSpokeType("S1"), "S2": starSpokeType("S2"), "S3": starSpokeType("S3"),
+				"H":  flowedLegType(t, "H", []values.Field{{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0}}),
+				"S1": starSpokeType(t, "S1"), "S2": starSpokeType(t, "S2"), "S3": starSpokeType(t, "S3"),
 			},
 		},
 	}
@@ -121,11 +125,11 @@ func TestLegRowTypesBridge_UntypedSlotControl(t *testing.T) {
 	t.Parallel()
 	// A single-QOV result value referencing only T1 (typed) — T2 is not
 	// referenced anywhere, so its type cannot be recovered.
-	t1 := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("T1"), chainLegType("T1"))
-	fv, err := values.NewFieldValueOfOrdinal(t1, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	t1Value, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("T1"), chainLegType(t, "T1"))
+	t1 := mustConstruct(t, t1Value, err)
+	fvValue, err := values.ResolveOrdinalSeedField(t1, 0)
+	fv := mustConstruct(t, fvValue, err)
 	rv := values.NewRawRecordConstructorValue(values.RecordConstructorField{Name: "ID", Value: fv})
 
 	got := legRowTypes(rv, nil)

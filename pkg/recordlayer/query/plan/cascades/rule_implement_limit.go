@@ -73,11 +73,16 @@ func (r *ImplementLimitRule) OnMatch(call *ExpressionRuleCall) {
 		// leave stale (the class the physicalLimitWrapper's WithChildren pinned).
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
 		var limitPlan *plans.RecordQueryLimitPlan
+		var err error
 		if lv := lim.GetLimitValue(); lv != nil {
 			// Runtime cap: static limit is the no-cap sentinel (-1), only lv consulted.
-			limitPlan = plans.NewRecordQueryLimitPlanFromQuantifier(innerQ, -1, lim.GetOffset(), lv)
+			limitPlan, err = plans.NewRecordQueryLimitPlanFromQuantifier(innerQ, -1, lim.GetOffset(), lv)
 		} else {
-			limitPlan = plans.NewRecordQueryLimitPlanFromQuantifier(innerQ, lim.GetLimit(), lim.GetOffset(), nil)
+			limitPlan, err = plans.NewRecordQueryLimitPlanFromQuantifier(innerQ, lim.GetLimit(), lim.GetOffset(), nil)
+		}
+		if err != nil {
+			call.Fail(err)
+			return
 		}
 		call.Yield(limitPlan)
 	}

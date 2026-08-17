@@ -239,12 +239,13 @@ type integerDomainProjection struct {
 // product is materialized. materialize builds only the currently selected
 // physical TupleRange.
 type boundScanRangeSet struct {
-	components        []boundRangeComponent
-	tails             []boundRangeTail
-	terminalZeroIndex int
-	reverse           bool
-	empty             bool
-	fingerprintSalt   string
+	components                 []boundRangeComponent
+	tails                      []boundRangeTail
+	terminalZeroIndex          int
+	reverse                    bool
+	empty                      bool
+	fingerprintSalt            string
+	compatibleFingerprintSalts []string
 }
 
 // bindScanComparisonsToRangeSet evaluates a comparison prefix once and returns
@@ -259,9 +260,11 @@ func bindScanComparisonsToRangeSet(
 	binder values.ParameterBinder,
 	reverse bool,
 	fingerprintSalt string,
+	compatibleFingerprintSalts ...string,
 ) (scanRangeSetSpec, error) {
-	return bindScanComparisonsToRangeSetWithTerminalWidening(
-		comparisons, keyTypes, binder, reverse, fingerprintSalt, true,
+	return bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
+		comparisons, keyTypes, binder, reverse, fingerprintSalt,
+		compatibleFingerprintSalts, true,
 	)
 }
 
@@ -278,14 +281,30 @@ func bindScanComparisonsToRangeSetWithTerminalWidening(
 	fingerprintSalt string,
 	allowTerminalZeroWidening bool,
 ) (scanRangeSetSpec, error) {
+	return bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
+		comparisons, keyTypes, binder, reverse, fingerprintSalt, nil,
+		allowTerminalZeroWidening,
+	)
+}
+
+func bindScanComparisonsToRangeSetWithTerminalWideningAndCompatibility(
+	comparisons []*predicates.ComparisonRange,
+	keyTypes []values.Type,
+	binder values.ParameterBinder,
+	reverse bool,
+	fingerprintSalt string,
+	compatibleFingerprintSalts []string,
+	allowTerminalZeroWidening bool,
+) (scanRangeSetSpec, error) {
 	if err := validateScanComparisonShape(comparisons); err != nil {
 		return scanRangeSetSpec{}, err
 	}
 	bound := &boundScanRangeSet{
-		tails:             []boundRangeTail{{kind: boundRangeTailAllOf}},
-		terminalZeroIndex: -1,
-		reverse:           reverse,
-		fingerprintSalt:   fingerprintSalt,
+		tails:                      []boundRangeTail{{kind: boundRangeTailAllOf}},
+		terminalZeroIndex:          -1,
+		reverse:                    reverse,
+		fingerprintSalt:            fingerprintSalt,
+		compatibleFingerprintSalts: append([]string(nil), compatibleFingerprintSalts...),
 	}
 
 	equalityCount := 0
@@ -1311,16 +1330,42 @@ func (b *boundScanRangeSet) spec() scanRangeSetSpec {
 	}
 	if b.empty {
 		return scanRangeSetSpec{
-			fingerprint:       b.fingerprint(),
-			alternativeCounts: counts,
-			empty:             true,
+			fingerprint:            b.fingerprint(),
+			compatibleFingerprints: b.compatibleFingerprints(),
+			alternativeCounts:      counts,
+			empty:                  true,
 		}
 	}
 	return scanRangeSetSpec{
-		fingerprint:       b.fingerprint(),
-		alternativeCounts: counts,
-		materialize:       b.materialize,
+		fingerprint:            b.fingerprint(),
+		compatibleFingerprints: b.compatibleFingerprints(),
+		alternativeCounts:      counts,
+		materialize:            b.materialize,
 	}
+}
+
+func (b *boundScanRangeSet) compatibleFingerprints() [][]byte {
+	if len(b.compatibleFingerprintSalts) == 0 {
+		return nil
+	}
+	result := make([][]byte, 0, len(b.compatibleFingerprintSalts))
+	for _, salt := range b.compatibleFingerprintSalts {
+		fingerprint := b.fingerprintWithSalt(salt)
+		if bytes.Equal(fingerprint, b.fingerprint()) {
+			continue
+		}
+		duplicate := false
+		for _, existing := range result {
+			if bytes.Equal(existing, fingerprint) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			result = append(result, fingerprint)
+		}
+	}
+	return result
 }
 
 func (b *boundScanRangeSet) materialize(choices []uint32) (recordlayer.TupleRange, error) {
@@ -1434,9 +1479,13 @@ func (b *boundScanRangeSet) materializeInequality(
 }
 
 func (b *boundScanRangeSet) fingerprint() []byte {
+	return b.fingerprintWithSalt(b.fingerprintSalt)
+}
+
+func (b *boundScanRangeSet) fingerprintWithSalt(salt string) []byte {
 	h := sha256.New()
 	writeFingerprintBytes(h, []byte("scan-range-set-v1"))
-	writeFingerprintBytes(h, []byte(b.fingerprintSalt))
+	writeFingerprintBytes(h, []byte(salt))
 	if b.reverse {
 		writeFingerprintBytes(h, []byte{1})
 	} else {

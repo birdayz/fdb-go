@@ -146,7 +146,7 @@ func TestGetCorrelatedToOfValue_ConstantNoCorrelations(t *testing.T) {
 func TestGetCorrelatedToOfValue_SingleQuantifiedObject(t *testing.T) {
 	t.Parallel()
 	c1 := NamedCorrelationIdentifier("c1")
-	v := NewQuantifiedObjectValue(c1)
+	v := mustQOV(t, c1)
 	got := GetCorrelatedToOfValue(v)
 	if len(got) != 1 {
 		t.Fatalf("got %d correlations, want 1", len(got))
@@ -163,8 +163,8 @@ func TestGetCorrelatedToOfValue_TreeWithMultipleCorrelations(t *testing.T) {
 	// Build a tree: ArithmeticValue(QOV(c1), QOV(c2))
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewQuantifiedObjectValue(c1),
-		Right: NewQuantifiedObjectValue(c2),
+		Left:  mustQOV(t, c1),
+		Right: mustQOV(t, c2),
 	}
 	got := GetCorrelatedToOfValue(v)
 	if len(got) != 2 {
@@ -184,8 +184,8 @@ func TestGetCorrelatedToOfValue_DuplicateCorrelationDedups(t *testing.T) {
 	// Both children reference the same correlation.
 	v := &ArithmeticValue{
 		Op:    OpMul,
-		Left:  NewQuantifiedObjectValue(c),
-		Right: NewQuantifiedObjectValue(c),
+		Left:  mustQOV(t, c),
+		Right: mustQOV(t, c),
 	}
 	got := GetCorrelatedToOfValue(v)
 	if len(got) != 1 {
@@ -203,7 +203,7 @@ func TestGetCorrelatedToOfValue_MixedTreeConstantAndCorrelated(t *testing.T) {
 	v := &ArithmeticValue{
 		Op:    OpSub,
 		Left:  &ConstantValue{Value: int64(42), Typ: NullableLong},
-		Right: NewQuantifiedObjectValue(c1),
+		Right: mustQOV(t, c1),
 	}
 	got := GetCorrelatedToOfValue(v)
 	if len(got) != 1 {
@@ -220,7 +220,7 @@ func TestGetCorrelatedToOfValue_DeeperNesting(t *testing.T) {
 	// Nest: ArithmeticValue( ArithmeticValue( QOV(deep), Const(1) ), Const(2) )
 	inner := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewQuantifiedObjectValue(c1),
+		Left:  mustQOV(t, c1),
 		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	outer := &ArithmeticValue{
@@ -264,7 +264,7 @@ func TestGetCorrelatedToOfValue_BooleanValue(t *testing.T) {
 func TestGetCorrelatedToOfValue_ExistsValue(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("exists_q")
-	v := NewExistsValue(alias)
+	v := mustExistsValue(t, alias)
 	got := GetCorrelatedToOfValue(v)
 	if _, ok := got[alias]; !ok {
 		t.Fatal("ExistsValue alias not in correlation set")
@@ -346,8 +346,8 @@ func BenchmarkGetCorrelatedToOfValue_Tree(b *testing.B) {
 	c2 := NamedCorrelationIdentifier("b")
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewQuantifiedObjectValue(c1),
-		Right: NewQuantifiedObjectValue(c2),
+		Left:  mustQOV(b, c1),
+		Right: mustQOV(b, c2),
 	}
 	for b.Loop() {
 		GetCorrelatedToOfValue(v)

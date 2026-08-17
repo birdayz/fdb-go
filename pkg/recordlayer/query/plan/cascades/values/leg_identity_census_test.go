@@ -2,6 +2,7 @@ package values
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -316,5 +317,101 @@ func TestLegIdentityWitnessSetSaturates(t *testing.T) {
 	if len(c.FoldOnlySamples) < LegIdentitySampleCap() {
 		t.Errorf("the saturation condition len(witnesses) >= cap did not hold after "+
 			"%d distinct anomalies — the harness guard would never fire", sampleCap+extra)
+	}
+}
+
+// TestLegIdentityAssert_ZeroSideGuardsInvertTheAlarm drives every arm of the two
+// guards a site gets once its expected population becomes ZERO.
+//
+// A floor watches for COLLAPSE and cannot express this: at zero it is
+// unsatisfiable, and lowering it to 0 silently disarms it, since Total is never
+// negative. So a site whose reader was deleted, and a site whose reader was
+// merely displaced, each get a guard whose alarm points the other way — and the
+// two are separate because the instruction they carry differs. "Something you
+// removed came back" and "this corpus started routing here again" send the
+// reader to different places.
+//
+// Not parallel: the census counters are package-scoped and this asserts absolute
+// totals, so it owns them for its duration — the same discipline every census
+// test in this file keeps.
+func TestLegIdentityAssert_ZeroSideGuardsInvertTheAlarm(t *testing.T) {
+	ResetLegIdentityCensus()
+	SetLegIdentityCensusEnabled(true)
+	t.Cleanup(func() {
+		SetLegIdentityCensusEnabled(false)
+		ResetLegIdentityCensus()
+	})
+
+	report := func(exp LegIdentityExpectations) (bool, string) {
+		t.Helper()
+		var sb strings.Builder
+		failed := AssertLegIdentityCensusWith(&sb, exp)
+		return failed, sb.String()
+	}
+
+	retired := map[LegIdentitySite]string{
+		LegSiteLeftOuterExistential: "no non-test source records here",
+	}
+	declared := map[LegIdentitySite]string{
+		LegSiteRowLegsBinder: "the layout dispatch binds first",
+	}
+
+	// CONTROL FIRST. With both sites empty the guards pass, so every failure
+	// below is the traffic and not the expectations.
+	if failed, out := report(LegIdentityExpectations{Retired: retired, DeclaredEmpty: declared}); failed {
+		t.Fatalf("the control failed with both declared sites empty, so nothing below "+
+			"can be attributed to the traffic it introduces:\n%s", out)
+	}
+
+	// A retired site reporting traffic.
+	RecordLegIdentityComparison(LegSiteLeftOuterExistential, "A", "A")
+	failed, out := report(LegIdentityExpectations{Retired: retired, DeclaredEmpty: declared})
+	if !failed {
+		t.Fatalf("a RETIRED site reported traffic and the gate stayed green. Its reader was "+
+			"removed from the tree; a call there is it coming back:\n%s", out)
+	}
+	if !strings.Contains(out, "RETIRED") {
+		t.Fatalf("the failure never says the site is RETIRED, so the reader is told to raise "+
+			"a floor on a reader that is supposed to be gone:\n%s", out)
+	}
+
+	// A floor of zero is NOT a substitute: Total is never negative, so the same
+	// traffic passes a floors-only gate. This is why the guard is a separate
+	// field rather than a 0 entry in the floor map.
+	if f, out := report(LegIdentityExpectations{
+		Floors: map[LegIdentitySite]int64{LegSiteLeftOuterExistential: 0},
+	}); f {
+		t.Fatalf("a floor of 0 caught the revival, which would mean this whole mechanism is "+
+			"unnecessary — check the assertion, not the expectation:\n%s", out)
+	}
+
+	// A displaced site reporting traffic: same detection, different words.
+	ResetLegIdentityCensus()
+	RecordLegIdentityComparison(LegSiteRowLegsBinder, "A", "A")
+	failed, out = report(LegIdentityExpectations{Retired: retired, DeclaredEmpty: declared})
+	if !failed {
+		t.Fatalf("a DISPLACED site's empty declaration went stale and the gate stayed "+
+			"green:\n%s", out)
+	}
+	if !strings.Contains(out, "DISPLACED") || strings.Contains(out, "RETIRED") {
+		t.Fatalf("the displaced site's failure does not read as a stale declaration, or reads "+
+			"as a retirement. The two carry different instructions and the text is the whole "+
+			"value of a stale guard:\n%s", out)
+	}
+
+	// The floors still work alongside them. A site with a real floor and no
+	// traffic fails for the ORIGINAL reason — collapse — which proves the new
+	// guards did not displace the old one.
+	ResetLegIdentityCensus()
+	failed, out = report(LegIdentityExpectations{
+		Floors:        map[LegIdentitySite]int64{LegSiteNLJPlanAlias: 4096},
+		Retired:       retired,
+		DeclaredEmpty: declared,
+	})
+	if !failed {
+		t.Fatalf("a floored site at zero passed, so the collapse guard is gone:\n%s", out)
+	}
+	if !strings.Contains(out, "want >= 4096") {
+		t.Fatalf("the collapse failure lost its floor:\n%s", out)
 	}
 }

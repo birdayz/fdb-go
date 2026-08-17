@@ -4,31 +4,34 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // scanQuant returns a fresh ForEachQuantifier ranging over a fresh
 // LogicalSomething(name) scan. Convenience for the union-merge
 // fixtures that need different leaf identities.
 func scanQuant(name string) expressions.Quantifier {
-	scan := expressions.NewFullUnorderedScanExpression([]string{name}, values.UnknownType)
+	scan := typeRewriteScan(name)
 	return expressions.ForEachQuantifier(expressions.InitialOf(scan))
+}
+
+func typeRewriteUnion(quantifiers []expressions.Quantifier) *expressions.LogicalUnionExpression {
+	return mustTypeRewriteConstruct(expressions.NewLogicalUnionExpression(quantifiers))
 }
 
 func TestUnionMergeRule_FlattensSingleNested(t *testing.T) {
 	t.Parallel()
 	// Union(Scan(A), Union(Scan(B), Scan(C)))
 	a := scanQuant("A")
-	innerU := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	innerU := typeRewriteUnion([]expressions.Quantifier{
 		scanQuant("B"),
 		scanQuant("C"),
 	})
 	innerUQ := expressions.ForEachQuantifier(expressions.InitialOf(innerU))
-	outerU := expressions.NewLogicalUnionExpression([]expressions.Quantifier{a, innerUQ})
+	outerU := typeRewriteUnion([]expressions.Quantifier{a, innerUQ})
 	ref := expressions.InitialOf(outerU)
 
 	rule := NewUnionMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireTypeRewriteRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
@@ -41,15 +44,15 @@ func TestUnionMergeRule_FlattensSingleNested(t *testing.T) {
 func TestUnionMergeRule_FlattensMultipleNested(t *testing.T) {
 	t.Parallel()
 	// Union(Union(A, B), Union(C, D)) → Union(A, B, C, D)
-	innerL := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanQuant("A"), scanQuant("B")})
-	innerR := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanQuant("C"), scanQuant("D")})
-	outer := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	innerL := typeRewriteUnion([]expressions.Quantifier{scanQuant("A"), scanQuant("B")})
+	innerR := typeRewriteUnion([]expressions.Quantifier{scanQuant("C"), scanQuant("D")})
+	outer := typeRewriteUnion([]expressions.Quantifier{
 		expressions.ForEachQuantifier(expressions.InitialOf(innerL)),
 		expressions.ForEachQuantifier(expressions.InitialOf(innerR)),
 	})
 	ref := expressions.InitialOf(outer)
 	rule := NewUnionMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireTypeRewriteRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
@@ -61,13 +64,13 @@ func TestUnionMergeRule_FlattensMultipleNested(t *testing.T) {
 
 func TestUnionMergeRule_DeclinesOnNonNested(t *testing.T) {
 	t.Parallel()
-	outer := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	outer := typeRewriteUnion([]expressions.Quantifier{
 		scanQuant("A"),
 		scanQuant("B"),
 	})
 	ref := expressions.InitialOf(outer)
 	rule := NewUnionMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireTypeRewriteRule(t, rule, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on a flat Union — yielded %d, want 0", len(yielded))
 	}
@@ -78,12 +81,12 @@ func TestUnionMergeRule_PreservesOrderAcrossFlatten(t *testing.T) {
 	// Union(Scan(A), Union(Scan(B), Scan(C)), Scan(D))
 	// Flatten preserves textual order: [A, B, C, D].
 	a := scanQuant("A")
-	innerU := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanQuant("B"), scanQuant("C")})
+	innerU := typeRewriteUnion([]expressions.Quantifier{scanQuant("B"), scanQuant("C")})
 	innerUQ := expressions.ForEachQuantifier(expressions.InitialOf(innerU))
 	d := scanQuant("D")
-	outer := expressions.NewLogicalUnionExpression([]expressions.Quantifier{a, innerUQ, d})
+	outer := typeRewriteUnion([]expressions.Quantifier{a, innerUQ, d})
 	ref := expressions.InitialOf(outer)
-	yielded := FireExpressionRule(NewUnionMergeRule(), ref)
+	yielded := fireTypeRewriteRule(t, NewUnionMergeRule(), ref)
 	merged := yielded[0].(*expressions.LogicalUnionExpression)
 	want := []string{"A", "B", "C", "D"}
 	for i, q := range merged.GetQuantifiers() {
@@ -102,15 +105,15 @@ func TestUnionMergeRule_PreservesOrderAcrossFlatten(t *testing.T) {
 func TestUnionMergeRule_FlattensSingleChildInnerUnion(t *testing.T) {
 	t.Parallel()
 	// Outer = Union(Union(Scan(A)), Scan(B))
-	innerU := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	innerU := typeRewriteUnion([]expressions.Quantifier{
 		scanQuant("A"),
 	})
 	innerUQ := expressions.ForEachQuantifier(expressions.InitialOf(innerU))
-	outerU := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	outerU := typeRewriteUnion([]expressions.Quantifier{
 		innerUQ, scanQuant("B"),
 	})
 	ref := expressions.InitialOf(outerU)
-	yielded := FireExpressionRule(NewUnionMergeRule(), ref)
+	yielded := fireTypeRewriteRule(t, NewUnionMergeRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1 (length-only check would have declined here)", len(yielded))
 	}

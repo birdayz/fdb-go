@@ -38,7 +38,7 @@ func TestMergedLegExclusion_IsScopedToTheProvenShape(t *testing.T) {
 
 	reads := map[executor.MergedRowRead]int{proven: 6, unproven: 2}
 	redundant := map[executor.MergedRowRead]string{
-		proven: "TestFDB_MergedLegBinding_ReaderShapeIsRedundant",
+		proven: "TestFDB_MergedLegBinding_NothingReadsTheBinder",
 	}
 
 	unexcusedReads, unexcusedNames, excusedReads, excusedNames := partitionMergedRowReads(reads, redundant)

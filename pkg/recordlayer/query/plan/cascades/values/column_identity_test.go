@@ -102,10 +102,10 @@ func TestIdentityIn_SameLeafNameDifferentQuantifiers(t *testing.T) {
 		// the same ordinal, and the quantifier is the only element left. This is
 		// the case an identity built from (name, ordinal) — or from
 		// (domain, ordinal) — cannot tell apart at all.
-		left := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			NewQuantifiedObjectValue(o), "ID", 0, UnknownType, ordersDomain)
-		right := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			NewQuantifiedObjectValue(i), "ID", 0, UnknownType, ordersDomain)
+		left := newCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			mustQOV(t, o), "ID", 0, UnknownType, ordersDomain)
+		right := newCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			mustQOV(t, i), "ID", 0, UnknownType, ordersDomain)
 
 		leftKey, ok := left.CorrelatedIdentityIn(ordersDomain)
 		if !ok {
@@ -135,10 +135,10 @@ func TestIdentityIn_SameLeafNameDifferentQuantifiers(t *testing.T) {
 		// correlation and the ordinal are equal, so only the layout the ordinal
 		// indexes can refuse — an ordinal compared across layouts is the same
 		// conflation as a name, wearing a type that reads as authoritative.
-		left := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			NewQuantifiedObjectValue(o), "ID", 0, UnknownType, ordersDomain)
-		right := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			NewQuantifiedObjectValue(o), "ID", 0, UnknownType, itemsDomain)
+		left := newCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			mustQOV(t, o), "ID", 0, UnknownType, ordersDomain)
+		right := newCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			mustQOV(t, o), "ID", 0, UnknownType, itemsDomain)
 
 		leftKey, ok := left.CorrelatedIdentityIn(ordersDomain)
 		if !ok {
@@ -177,7 +177,7 @@ func TestIdentityIn_FailsClosed(t *testing.T) {
 
 	t.Run("lazy value", func(t *testing.T) {
 		t.Parallel()
-		lazy := NewFieldValue(NewQuantifiedObjectValue(corr), "ID", UnknownType)
+		lazy := newFieldValue(mustQOV(t, corr), "ID", UnknownType)
 		if _, ok := lazy.CorrelatedIdentityIn(domain); ok {
 			t.Fatal("a lazy value has no ordinal; it must not produce an identity")
 		}
@@ -188,9 +188,9 @@ func TestIdentityIn_FailsClosed(t *testing.T) {
 		// inner.addr.city — the quantifier's row is NOT the layout the
 		// ordinal indexes, so reporting (corr, domain, ordinal) would name a
 		// slot of the wrong layout.
-		inner := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			NewQuantifiedObjectValue(corr), "ADDR", 1, UnknownType, domain)
-		outer := NewFieldValueWithResolvedOrdinalInDomain("CITY", 0, UnknownType, domain)
+		inner := newCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			mustQOV(t, corr), "ADDR", 1, UnknownType, domain)
+		outer := newFieldValueWithResolvedOrdinalInDomain("CITY", 0, UnknownType, domain)
 		outer.Child = inner
 		if _, ok := outer.IdentityIn(domain); ok {
 			t.Fatal("a chained accessor must decline: its child is not the quantifier's row")
@@ -199,11 +199,11 @@ func TestIdentityIn_FailsClosed(t *testing.T) {
 
 	t.Run("name-only negative ordinal", func(t *testing.T) {
 		t.Parallel()
-		nameOnly := &FieldValue{
+		nameOnly := &fieldValue{
 			Field:    "ARR",
 			Typ:      UnknownType,
-			Child:    NewQuantifiedObjectValue(corr),
-			Resolved: NewFieldPathOfSingleInDomain("ARR", -1, false, domain),
+			Child:    mustQOV(t, corr),
+			Resolved: newFieldPathOfSingleInDomain("ARR", -1, false, domain),
 		}
 		if _, ok := nameOnly.CorrelatedIdentityIn(domain); ok {
 			t.Fatal("a -1 name-only accessor is ordinal-equal to every other one; it must decline")
@@ -212,13 +212,13 @@ func TestIdentityIn_FailsClosed(t *testing.T) {
 
 	t.Run("unknown domain", func(t *testing.T) {
 		t.Parallel()
-		v := NewCorrelatedFieldValueWithResolvedOrdinal(
-			NewQuantifiedObjectValue(corr), "ID", 0, UnknownType)
+		v := newCorrelatedFieldValueWithResolvedOrdinal(
+			mustQOV(t, corr), "ID", 0, UnknownType)
 		if _, ok := v.CorrelatedIdentityIn(domain); ok {
 			t.Fatal("a producer that could not state its layout must not answer")
 		}
-		taught := NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-			NewQuantifiedObjectValue(corr), "ID", 0, UnknownType, domain)
+		taught := newCorrelatedFieldValueWithResolvedOrdinalInDomain(
+			mustQOV(t, corr), "ID", 0, UnknownType, domain)
 		if _, ok := taught.CorrelatedIdentityIn(OrdinalDomain{}); ok {
 			t.Fatal("a caller that cannot state its frontier must not get an answer")
 		}
@@ -226,7 +226,7 @@ func TestIdentityIn_FailsClosed(t *testing.T) {
 
 	t.Run("childless declines the correlated form", func(t *testing.T) {
 		t.Parallel()
-		v := NewFieldValueWithResolvedOrdinalInDomain("ID", 0, UnknownType, domain)
+		v := newFieldValueWithResolvedOrdinalInDomain("ID", 0, UnknownType, domain)
 		if _, ok := v.CorrelatedIdentityIn(domain); ok {
 			t.Fatal("a childless value reads no quantifier's row; the correlated form must decline")
 		}
@@ -281,14 +281,14 @@ func TestSameColumnPath(t *testing.T) {
 	orders := OrdinalDomainOfColumnNames([]string{"ID", "CUSTOMER_ID"})
 	items := OrdinalDomainOfColumnNames([]string{"ID", "ORDER_ID", "QTY"})
 
-	path := func(name string, ordinal int, domain OrdinalDomain) *FieldPath {
-		return NewFieldPathOfSingleInDomain(name, ordinal, false, domain)
+	path := func(name string, ordinal int, domain OrdinalDomain) *fieldPath {
+		return newFieldPathOfSingleInDomain(name, ordinal, false, domain)
 	}
 
 	t.Run("the DISPLAY NAME alone is not a difference", func(t *testing.T) {
 		t.Parallel()
 		// Same layout, same ordinal, two renderings. Java's
-		// ResolvedAccessor.equals excludes the name for exactly this case.
+		// resolvedAccessor.equals excludes the name for exactly this case.
 		if !SameColumnPath(path("ID", 0, orders), path("ALIASED", 0, orders)) {
 			t.Fatal("two renderings of ordinal 0 of one layout were called different columns: " +
 				"the display name is deciding identity")
@@ -329,16 +329,16 @@ func TestSameColumnPath(t *testing.T) {
 		if SameColumnPath(nil, path("ID", 0, orders)) || SameColumnPath(path("ID", 0, orders), nil) {
 			t.Fatal("a nil path matched")
 		}
-		if SameColumnPath(&FieldPath{Domain: orders}, &FieldPath{Domain: orders}) {
+		if SameColumnPath(&fieldPath{Domain: orders}, &fieldPath{Domain: orders}) {
 			t.Fatal("two empty paths matched: an empty path reads nothing")
 		}
 	})
 
 	t.Run("every accessor of a nested path is compared", func(t *testing.T) {
 		t.Parallel()
-		nested := func(rootOrd, leafOrd int) *FieldPath {
-			return &FieldPath{
-				Accessors: []ResolvedAccessor{
+		nested := func(rootOrd, leafOrd int) *fieldPath {
+			return &fieldPath{
+				Accessors: []resolvedAccessor{
 					{Field: "ADDR", Ordinal: rootOrd}, {Field: "CITY", Ordinal: leafOrd},
 				},
 				Domain: orders,

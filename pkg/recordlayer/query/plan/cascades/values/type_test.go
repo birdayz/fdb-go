@@ -272,10 +272,13 @@ func TestRecordType_Shape(t *testing.T) {
 		t.Errorf("Equals: same-shape records should be equal")
 	}
 
-	// Not equal: different name.
+	// EQUAL: different name. The record name is provenance, not identity —
+	// Java's Type.Record.equals compares (typeCode, isNullable, fields) and
+	// never the name. See TestRecordTypeEqualsIgnoresRecordName for the full
+	// per-attribute pin.
 	rDiffName := NewRecordType("OtherRec", false, fields)
-	if r.Equals(rDiffName) {
-		t.Errorf("Equals: different name should not be equal")
+	if !r.Equals(rDiffName) {
+		t.Errorf("Equals: the record name must not separate two identical shapes")
 	}
 	// Not equal: different nullability.
 	rNullable := NewRecordType("MyRec", true, fields)
@@ -546,9 +549,10 @@ func TestEnumType_Shape(t *testing.T) {
 	if !e.Equals(e2) {
 		t.Errorf("Equals: identical enums should be equal")
 	}
-	// Not equal: different name.
-	if e.Equals(NewEnumType("Other", false, e.Values)) {
-		t.Errorf("Equals: different name should differ")
+	// EQUAL: different name — Java's Type.Enum.equals compares (typeCode,
+	// isNullable, enumValues) and never the name, same rule as Type.Record.
+	if !e.Equals(NewEnumType("Other", false, e.Values)) {
+		t.Errorf("Equals: the enum name must not separate two identical value sets")
 	}
 	// Not equal: different ordering of values.
 	eReorder := NewEnumType("Suit", false, []EnumValue{
@@ -1707,8 +1711,8 @@ func TestValue_Type_Leaves(t *testing.T) {
 		{"ConstantValue(nil)", &ConstantValue{Value: nil, Typ: NullableLong}, "LONG NULL"},
 		{"NullValue(typed-INT)", &NullValue{Typ: NullableLong}, "LONG NULL"},
 		{"NullValue(unknown)", &NullValue{Typ: TypeUnknown}, "UNKNOWN NULL"},
-		{"FieldValue(int)", &FieldValue{Field: "x", Typ: NullableLong}, "LONG NULL"},
-		{"FieldValue(bool)", &FieldValue{Field: "active", Typ: TypeBool}, "BOOLEAN NULL"},
+		{"FieldValue(int)", &fieldValue{Field: "x", Typ: NullableLong}, "LONG NULL"},
+		{"FieldValue(bool)", &fieldValue{Field: "active", Typ: TypeBool}, "BOOLEAN NULL"},
 		{"ParameterValue(int)", &ParameterValue{Ordinal: 1, Typ: NullableLong}, "LONG NULL"},
 	}
 	for _, tc := range cases {
@@ -1751,7 +1755,7 @@ func TestValue_Type_Composites(t *testing.T) {
 		},
 		{
 			"PromoteValue(NULL field → FLOAT)",
-			NewPromoteValue(&FieldValue{Field: "x", Typ: NullableDouble}, NullableDouble),
+			NewPromoteValue(&fieldValue{Field: "x", Typ: NullableDouble}, NullableDouble),
 			"DOUBLE NULL",
 		},
 		{
@@ -1775,7 +1779,7 @@ func TestValue_Type_Composites(t *testing.T) {
 }
 
 // TestValue_Type_Aggregate pins the aggregate-specific rules:
-// COUNT / COUNT(*) → NOT NULL long; SUM / MIN / MAX / AVG with an
+// COUNT / COUNT(*) → nullable long; SUM / MIN / MAX / AVG with an
 // operand → operand-type but nullable (returns NULL on empty
 // groups).
 func TestValue_Type_Aggregate(t *testing.T) {
@@ -1785,20 +1789,20 @@ func TestValue_Type_Aggregate(t *testing.T) {
 		v       Value
 		wantStr string
 	}{
-		{"COUNT(*)", NewAggregateValue(AggCountStar, nil), "LONG NOT NULL"},
+		{"COUNT(*)", NewAggregateValue(AggCountStar, nil), "LONG NULL"},
 		{
 			"COUNT(col)",
-			NewAggregateValue(AggCount, &FieldValue{Field: "x", Typ: NullableLong}),
-			"LONG NOT NULL",
+			NewAggregateValue(AggCount, &fieldValue{Field: "x", Typ: NullableLong}),
+			"LONG NULL",
 		},
 		{
 			"SUM(col)",
-			NewAggregateValue(AggSum, &FieldValue{Field: "x", Typ: NullableLong}),
+			NewAggregateValue(AggSum, &fieldValue{Field: "x", Typ: NullableLong}),
 			"LONG NULL",
 		},
 		{
 			"MIN(string)",
-			NewAggregateValue(AggMin, &FieldValue{Field: "name", Typ: TypeString}),
+			NewAggregateValue(AggMin, &fieldValue{Field: "name", Typ: TypeString}),
 			"STRING NULL",
 		},
 	}
@@ -1811,7 +1815,7 @@ func TestValue_Type_Aggregate(t *testing.T) {
 }
 
 // TestValue_Type_RecordConstructor pins the synthesised RecordType
-// path: the constructor produces an anonymous nullable RecordType
+// path: the constructor produces an anonymous non-null RecordType
 // whose Fields carry per-field types derived from each child Value.
 func TestValue_Type_RecordConstructor(t *testing.T) {
 	t.Parallel()
@@ -1827,8 +1831,8 @@ func TestValue_Type_RecordConstructor(t *testing.T) {
 	if rt.RecordName != "" {
 		t.Errorf("RecordName: got %q, want \"\"", rt.RecordName)
 	}
-	if !rt.Nullable {
-		t.Errorf("Nullable: got false, want true (synthesised record always nullable)")
+	if rt.Nullable {
+		t.Errorf("Nullable: got true, want false (a successful record constructor produces an object)")
 	}
 	if len(rt.Fields) != 2 {
 		t.Fatalf("Fields len: got %d, want 2", len(rt.Fields))
@@ -1877,18 +1881,18 @@ func TestWithNullability_RecordCarriesLegs(t *testing.T) {
 func TestNewFieldValueOfOrdinal_NullableRecordNullablesColumn(t *testing.T) {
 	t.Parallel()
 	fields := []Field{{Name: "ID", FieldType: NotNullLong, Ordinal: 0}}
-	notNullQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("P"),
+	notNullQOV := mustQOV(t, NamedCorrelationIdentifier("P"),
 		&RecordType{Fields: fields})
-	fv, err := NewFieldValueOfOrdinal(notNullQOV, 0)
+	fv, err := newFieldValueOfOrdinal(notNullQOV, 0)
 	if err != nil {
 		t.Fatalf("bake: %v", err)
 	}
 	if fv.Typ.IsNullable() {
 		t.Fatalf("NOT NULL record: column type = %v, want NOT NULL passthrough", fv.Typ)
 	}
-	nullableQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("N"),
+	nullableQOV := mustQOV(t, NamedCorrelationIdentifier("N"),
 		&RecordType{Nullable: true, Fields: fields})
-	fv, err = NewFieldValueOfOrdinal(nullableQOV, 0)
+	fv, err = newFieldValueOfOrdinal(nullableQOV, 0)
 	if err != nil {
 		t.Fatalf("bake: %v", err)
 	}

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -50,13 +51,19 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	for _, partitions := range crossProductPartitions(childPartitions) {
-		var childPlans []plans.RecordQueryPlan
-		var newQuantifiers []expressions.Quantifier
+		childPlans := make([]plans.RecordQueryPlan, 0, len(partitions))
+		newQuantifiers := make([]expressions.Quantifier, 0, len(partitions))
 
+		// A union carries EVERY leg or it is not this union. A leg whose
+		// partition holds no expression cannot be represented, and skipping it
+		// would emit a narrower union that silently drops that leg's rows —
+		// so the whole combination is declined instead.
+		legMissing := false
 		for i, partition := range partitions {
 			planExprs := partition.GetExpressions()
 			if len(planExprs) == 0 {
-				continue
+				legMissing = true
+				break
 			}
 
 			newRef := call.MemoizeFinalExpressionsFromOther(
@@ -71,7 +78,14 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 			}
 		}
 
-		if len(childPlans) < 2 {
+		// Arity follows Java: RecordQueryUnorderedUnionPlan.fromQuantifiers
+		// imposes no minimum, so a ONE-leg logical union implements as a
+		// one-leg concat. UnionSingletonElimRule normally rewrites that shape
+		// away first, but the implementation rule must not depend on another
+		// rule having fired — with a Go-only two-leg floor here, a surviving
+		// singleton union had no implementer at all and planning returned no
+		// plan and no error.
+		if legMissing || len(newQuantifiers) == 0 {
 			continue
 		}
 
@@ -109,10 +123,17 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 					if len(branchCols) == len(firstCols) && !colNamesEqual(branchCols, firstCols) {
 						// The rename projection (Map) is its own cascades expression
 						// carrying the live newQuantifiers[i] edge (RFC-184 W2).
-						mapPlan := plans.NewRecordQueryMapPlanFromQuantifier(
-							newQuantifiers[i],
-							columnRenameValue(branchCols, firstCols),
-						)
+						rename, err := columnRenameValue(childPlans[i].GetResultType(), firstCols)
+						if err != nil {
+							call.Fail(err)
+							return
+						}
+						mapPlan, err := plans.NewRecordQueryMapPlanFromQuantifier(
+							newQuantifiers[i], rename)
+						if err != nil {
+							call.Fail(err)
+							return
+						}
 						childPlans[i] = mapPlan
 						newQuantifiers[i] = expressions.NewPhysicalQuantifier(
 							call.MemoizeFinalExpression(mapPlan))
@@ -124,7 +145,11 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 		// The unordered union is its own cascades expression carrying the live
 		// newQuantifiers leg edges (RFC-184 W2); each leg's per-ordering winner
 		// resolves at extraction via ref.Winner(). childPlans is unused now.
-		unionPlan := plans.NewRecordQueryUnorderedUnionPlanFromQuantifiers(newQuantifiers)
+		unionPlan, err := plans.NewRecordQueryUnorderedUnionPlanFromQuantifiers(newQuantifiers)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		call.YieldFinalExpression(unionPlan)
 	}
 }
@@ -145,17 +170,7 @@ func physicalPlanColumnNames(p plans.RecordQueryPlan) []string {
 	type inner interface{ GetInner() plans.RecordQueryPlan }
 	for {
 		if proj, ok := p.(*plans.RecordQueryProjectionPlan); ok {
-			projs := proj.GetProjections()
-			names := make([]string, len(projs))
-			aliases := proj.GetAliases()
-			for i, v := range projs {
-				alias := ""
-				if i < len(aliases) {
-					alias = aliases[i]
-				}
-				names[i] = values.OutputColumnName(v, alias)
-			}
-			return names
+			return proj.GetOutputNames()
 		}
 		if mp, ok := p.(*plans.RecordQueryMapPlan); ok {
 			if rv := mp.GetResultValue(); rv != nil {
@@ -207,13 +222,33 @@ func colNamesEqual(a, b []string) bool {
 // columns positionally from src to dst names: field i reads the input
 // row's SLOT i (the read is positional by definition of the rename, so the
 // ordinal is baked at plan time) and writes to dst[i].
-func columnRenameValue(srcCols, dstCols []string) *values.RecordConstructorValue {
+func columnRenameValue(srcType values.Type, dstCols []string) (*values.RecordConstructorValue, error) {
+	srcRecord, ok := srcType.(*values.RecordType)
+	if !ok || len(srcRecord.Fields) != len(dstCols) {
+		return nil, fmt.Errorf("union rename source is %T width %d, want record width %d",
+			srcType, recordTypeFieldCount(srcRecord), len(dstCols))
+	}
+	root, err := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), srcRecord)
+	if err != nil {
+		return nil, err
+	}
 	fields := make([]values.RecordConstructorField, len(dstCols))
 	for i := range dstCols {
+		field, resolveErr := values.ResolveFieldOrdinals(root, []int{i})
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
 		fields[i] = values.RecordConstructorField{
 			Name:  dstCols[i],
-			Value: values.NewFieldValueWithResolvedOrdinal(srcCols[i], i, values.UnknownType),
+			Value: field,
 		}
 	}
-	return values.NewRecordConstructorValue(fields...)
+	return values.NewRecordConstructorValue(fields...), nil
+}
+
+func recordTypeFieldCount(record *values.RecordType) int {
+	if record == nil {
+		return -1
+	}
+	return len(record.Fields)
 }

@@ -124,7 +124,9 @@ func BenchmarkFullStack(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		_ = cascades.Simplify(pred, rules)
+		if _, err := cascades.Simplify(pred, rules); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

@@ -27,15 +27,31 @@ type AliasMap struct {
 	// every (s, t) pair has Forward[s] == t and Reverse[t] == s.
 	forward map[values.CorrelationIdentifier]values.CorrelationIdentifier
 	reverse map[values.CorrelationIdentifier]values.CorrelationIdentifier
+	view    values.AliasMap
 }
 
-// EmptyAliasMap returns the unique empty AliasMap singleton-equivalent.
-// Equal AliasMaps are considered equal regardless of identity, so a fresh
-// empty map is fine.
-func EmptyAliasMap() *AliasMap {
+// EmptyAliasMap returns the empty AliasMap. It is a genuine SINGLETON: an
+// AliasMap has no exported mutator, and equal AliasMaps are equal regardless of
+// identity, so every reader can share one.
+//
+// It was a fresh three-allocation value per call — a struct plus two maps plus
+// a view — and the memo asks for it on every plan-level equality: 2.5GB over
+// the pure-planner sweep to hand out something with nothing in it.
+//
+// The BUILDERS below (AliasMapOf, Compose, With) use the empty map as a
+// mutable accumulator, which is why they take newMutableAliasMap instead. That
+// distinction is the whole safety argument here: if a future builder reaches
+// for EmptyAliasMap and writes into it, it corrupts every reader in the
+// process. Start from newMutableAliasMap.
+func EmptyAliasMap() *AliasMap { return emptyAliasMap }
+
+var emptyAliasMap = newMutableAliasMap()
+
+func newMutableAliasMap() *AliasMap {
 	return &AliasMap{
 		forward: map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
 		reverse: map[values.CorrelationIdentifier]values.CorrelationIdentifier{},
+		view:    values.EmptyAliasMap(),
 	}
 }
 
@@ -46,7 +62,7 @@ func AliasMapOf(pairs ...values.CorrelationIdentifier) *AliasMap {
 	if len(pairs)%2 != 0 {
 		panic("AliasMapOf requires an even number of arguments")
 	}
-	m := EmptyAliasMap()
+	m := newMutableAliasMap()
 	for i := 0; i < len(pairs); i += 2 {
 		s, t := pairs[i], pairs[i+1]
 		if _, exists := m.forward[s]; exists {
@@ -58,6 +74,15 @@ func AliasMapOf(pairs ...values.CorrelationIdentifier) *AliasMap {
 		m.forward[s] = t
 		m.reverse[t] = s
 	}
+	valuePairs := make([]values.AliasPair, 0, len(m.forward))
+	for source, target := range m.forward {
+		valuePairs = append(valuePairs, values.AliasPair{Source: source, Target: target})
+	}
+	view, err := values.NewAliasMap(valuePairs)
+	if err != nil {
+		panic("AliasMapOf: " + err.Error())
+	}
+	m.view = view
 	return m
 }
 
@@ -109,7 +134,7 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 	if other.IsEmpty() {
 		return a
 	}
-	out := EmptyAliasMap()
+	out := newMutableAliasMap()
 	for s, t := range a.forward {
 		out.forward[s] = t
 		out.reverse[t] = s
@@ -124,6 +149,15 @@ func (a *AliasMap) Compose(other *AliasMap) *AliasMap {
 		out.forward[s] = t
 		out.reverse[t] = s
 	}
+	valuePairs := make([]values.AliasPair, 0, len(out.forward))
+	for source, target := range out.forward {
+		valuePairs = append(valuePairs, values.AliasPair{Source: source, Target: target})
+	}
+	view, err := values.NewAliasMap(valuePairs)
+	if err != nil {
+		panic("AliasMap.Compose: " + err.Error())
+	}
+	out.view = view
 	return out
 }
 
@@ -146,13 +180,18 @@ func (a *AliasMap) With(source, target values.CorrelationIdentifier) (*AliasMap,
 	if existingS, ok := a.reverse[target]; ok && existingS != source {
 		return a, false
 	}
-	out := EmptyAliasMap()
+	out := newMutableAliasMap()
 	for s, t := range a.forward {
 		out.forward[s] = t
 		out.reverse[t] = s
 	}
 	out.forward[source] = target
 	out.reverse[target] = source
+	view, compatible, err := values.ExtendAliasMap(a.view, []values.AliasPair{{Source: source, Target: target}})
+	if err != nil || !compatible {
+		return a, false
+	}
+	out.view = view
 	return out, true
 }
 
@@ -183,9 +222,9 @@ func (a *AliasMap) GetTargetOrDefault(source, def values.CorrelationIdentifier) 
 // yields a nil values.AliasMap, which the helpers read as identity-alias.
 func (a *AliasMap) ToValuesAliasMap() values.AliasMap {
 	if a == nil {
-		return nil
+		return values.EmptyAliasMap()
 	}
-	return values.AliasMap(a.forward)
+	return a.view
 }
 
 // Equals reports whether two AliasMaps have identical bindings.

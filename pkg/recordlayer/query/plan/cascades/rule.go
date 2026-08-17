@@ -38,18 +38,47 @@ type RuleCall struct {
 	// rule call can yield zero, one, or many (AnyOf-style rules).
 	// Access via Yield / Yielded.
 	yielded []any
+
+	// err is the first failure reported by the rule body. A failed call never
+	// publishes any of its staged yields.
+	err error
 }
 
 // Yield records a replacement expression. The planner reads the
 // accumulated list after OnMatch returns.
 func (c *RuleCall) Yield(expr any) {
+	if c == nil || c.err != nil {
+		return
+	}
 	c.yielded = append(c.yielded, expr)
 }
 
+// Fail records the first rule-body error. Later failures cannot hide the
+// original cause, and yields staged before the failure are discarded.
+func (c *RuleCall) Fail(err error) {
+	if c == nil || err == nil || c.err != nil {
+		return
+	}
+	c.err = err
+	c.yielded = nil
+}
+
+// Err returns the first error reported by the rule body.
+func (c *RuleCall) Err() error {
+	if c == nil {
+		return nil
+	}
+	return c.err
+}
+
 // Yielded returns the replacements this RuleCall has accumulated.
-// Returned slice is the RuleCall's backing array — callers must not
-// mutate.
-func (c *RuleCall) Yielded() []any { return c.yielded }
+// The returned slice is defensive. Failed calls expose no yields.
+func (c *RuleCall) Yielded() []any {
+	if c == nil || c.err != nil || len(c.yielded) == 0 {
+		return nil
+	}
+	return append([]any(nil), c.yielded...)
+}
 
 // CascadesRule is the transform interface. Concrete rules implement
 // Matcher + OnMatch. Rule authors compose the matcher using the
@@ -76,16 +105,19 @@ type CascadesRule interface {
 // simplification runs through Simplify's fixpoint loop
 // (simplifier.go), and planner rules through the task stack
 // (unified_tasks.go).
-func FireRule(rule CascadesRule, in any) []any {
+func FireRule(rule CascadesRule, in any) ([]any, error) {
 	matcher := rule.Matcher()
 	matches := matcher.BindMatches(matching.NewBindings(), in)
 	var all []any
 	for _, b := range matches {
 		call := &RuleCall{Bindings: b}
 		rule.OnMatch(call)
+		if err := call.Err(); err != nil {
+			return nil, err
+		}
 		all = append(all, call.Yielded()...)
 	}
-	return all
+	return all, nil
 }
 
 // predicateMatcher is the generic single-type matcher: type-asserts

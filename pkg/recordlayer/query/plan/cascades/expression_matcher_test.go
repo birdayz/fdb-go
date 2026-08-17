@@ -19,10 +19,11 @@ func TestExpressionMatcher_RootType(t *testing.T) {
 
 func TestExpressionMatcher_BindMatches_Hit(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	f := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	fValue, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	f := mustConstruct(t, fValue, err)
 	m := NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter")
 	matches := m.BindMatches(matching.NewBindings(), f)
 	if len(matches) != 1 {
@@ -37,7 +38,7 @@ func TestExpressionMatcher_BindMatches_Hit(t *testing.T) {
 
 func TestExpressionMatcher_BindMatches_Miss(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong)
 	// Matcher for LogicalFilter receiving a Scan — should miss.
 	m := NewExpressionMatcher[*expressions.LogicalFilterExpression]("logical_filter")
 	matches := m.BindMatches(matching.NewBindings(), scan)

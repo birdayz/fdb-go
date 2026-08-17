@@ -11,8 +11,8 @@ package values
 //
 // File contents: TypeCode enum mirroring Java's well-known codes,
 // the Type interface (Code + IsNullable + a few shape predicates),
-// concrete impls (PrimitiveType, RecordType, ArrayType, EnumType,
-// RelationType), canonical singletons for every primitive, the
+// concrete impls (PrimitiveType, RecordType, the erased AnyRecord,
+// ArrayType, EnumType, RelationType), canonical singletons for every primitive, the
 // IsPromotable / MaximumType / MaximumTypeOfMany promotion lattice,
 // and TypeRepository for named-type lookup.
 //
@@ -22,7 +22,7 @@ package values
 //     plus NullType, UnknownType, NoneType, AnyType ✅
 //   - Promotion lattice: IsPromotable, MaximumType, MaximumTypeOfMany ✅
 //   - TypeRepository (named-type registry) ✅
-//   - Erased-type helpers: ArrayType.IsErased, RelationType.IsErased ✅
+//   - Erased types: AnyRecord, ArrayType.IsErased, RelationType.IsErased ✅
 //   - Value.Type() returns rich Type (legacy enum retired) ✅
 //
 // Still ahead:
@@ -300,6 +300,47 @@ var (
 	// nullable. Mirrors Java's `Type.ANY`.
 	AnyType Type = &PrimitiveType{TypeCode: TypeCodeAny, Nullable: true}
 )
+
+// --- AnyRecord -----------------------------------------------------
+
+// anyRecordType is Java's Type.AnyRecord: an exact, erased RECORD type used
+// when a scan can return records of more than one concrete shape. It is a
+// distinct concrete type rather than an empty RecordType: RECORD<> says the
+// row is known to have zero fields, while AnyRecord says its field layout is
+// deliberately unavailable until a type filter above the scan refines it.
+//
+// The concrete type and its sole field are private, and the implementation is
+// a value, not a pointer. A Type handed to a caller is therefore immutable by
+// construction rather than merely protected by defensive slice copies.
+type anyRecordType struct {
+	nullable bool
+}
+
+// NewAnyRecordType constructs an exact erased RECORD type. Unlike AnyType and
+// UnknownType, AnyRecord has a fully decided identity (RECORD plus
+// nullability), so exact type snapshots and QOV boundaries can safely admit
+// it. Its erased field layout still cannot be used to resolve a FieldValue.
+func NewAnyRecordType(nullable bool) Type {
+	return anyRecordType{nullable: nullable}
+}
+
+// Code implements Type. AnyRecord is a RECORD, matching Java's
+// Type.AnyRecord.getTypeCode().
+func (anyRecordType) Code() TypeCode { return TypeCodeRecord }
+
+// IsNullable implements Type.
+func (a anyRecordType) IsNullable() bool { return a.nullable }
+
+// Equals implements Type. The private concrete-kind check is load-bearing:
+// an AnyRecord is never equal to a concrete RecordType, including RECORD<>.
+func (a anyRecordType) Equals(other Type) bool {
+	o, ok := other.(anyRecordType)
+	return ok && a.nullable == o.nullable
+}
+
+// String implements Type. Java renders Type.AnyRecord as RECORD because the
+// absent shape, rather than a synthetic field list, is the salient fact.
+func (anyRecordType) String() string { return TypeCodeRecord.String() }
 
 // --- RecordType ----------------------------------------------------
 
@@ -752,8 +793,22 @@ func (*RecordType) Code() TypeCode { return TypeCodeRecord }
 // IsNullable implements Type.
 func (r *RecordType) IsNullable() bool { return r.Nullable }
 
-// Equals implements Type. Structural — name + nullable + element-
-// wise field equality.
+// Equals implements Type. Structural — nullable + element-wise field equality.
+//
+// RecordName is deliberately NOT compared, matching Java's
+// Type.Record.equals/computeHashCode, which hash and compare
+// (typeCode, isNullable, fields) and never the name. A record type's name is
+// PROVENANCE — which descriptor or alias the shape was derived from — not
+// identity: the same row reached by two routes legitimately carries two names
+// (a leg typed from its table descriptor vs the same leg re-derived through a
+// projection), and Java lets those compare equal because nothing downstream
+// reads rows by record name.
+//
+// Making the name identity is not a stricter version of the same check, it is a
+// DIFFERENT one, and it fails in the direction that rejects correct plans: an
+// exact QOV minted from the descriptor and the one minted from the derived row
+// then denote "different" types for one alias and the binder refuses a lookup
+// it must serve.
 func (r *RecordType) Equals(other Type) bool {
 	if other == nil {
 		return false
@@ -762,7 +817,7 @@ func (r *RecordType) Equals(other Type) bool {
 	if !ok {
 		return false
 	}
-	if r.RecordName != or.RecordName || r.Nullable != or.Nullable {
+	if r.Nullable != or.Nullable {
 		return false
 	}
 	if len(r.Fields) != len(or.Fields) {
@@ -930,7 +985,12 @@ func ExplodeOrdinalityResultType(elementType Type) Type {
 	if elementType == nil {
 		elementType = UnknownType
 	}
-	return NewRecordType("", true, []Field{
+	// Explode emits a present row for every array element. The collection may
+	// be nullable/empty, but that controls whether any rows exist; it does not
+	// make an emitted element/ordinal row null-supplying. Keeping the record
+	// non-null also preserves AT's authored INT NOT NULL contract through exact
+	// FieldValue result-type derivation.
+	return NewRecordType("", false, []Field{
 		{Name: OrdinalFieldName(0), FieldType: elementType, Ordinal: 0},
 		{Name: OrdinalFieldName(1), FieldType: NotNullInt, Ordinal: 1},
 	})
@@ -1087,7 +1147,10 @@ func (e *EnumType) Equals(other Type) bool {
 	if !ok {
 		return false
 	}
-	if e.EnumName != oe.EnumName || e.Nullable != oe.Nullable {
+	// EnumName is provenance, not identity — same rule and same reason as
+	// RecordType.Equals; Java's Type.Enum.equals compares (typeCode, isNullable,
+	// enumValues) only.
+	if e.Nullable != oe.Nullable {
 		return false
 	}
 	if len(e.Values) != len(oe.Values) {
@@ -1527,8 +1590,22 @@ func MaximumType(t1, t2 Type) Type {
 		// is recursively maxed; field names are resolved t1-wins-when-
 		// equal-or-t2-anonymous, else anonymised.
 		if c1 == TypeCodeRecord {
-			r1 := t1.(*RecordType)
-			r2 := t2.(*RecordType)
+			any1, erased1 := t1.(anyRecordType)
+			any2, erased2 := t2.(anyRecordType)
+			if erased1 || erased2 {
+				// Two erased records have a well-defined common erased shape.
+				// Mixing erased and concrete layouts does not manufacture field
+				// information in either direction.
+				if erased1 && erased2 {
+					return anyRecordType{nullable: any1.nullable || any2.nullable}
+				}
+				return nil
+			}
+			r1, ok1 := t1.(*RecordType)
+			r2, ok2 := t2.(*RecordType)
+			if !ok1 || !ok2 {
+				return nil
+			}
 			if len(r1.Fields) != len(r2.Fields) {
 				return nil
 			}
@@ -1655,6 +1732,8 @@ func WithNullability(t Type, nullable bool) Type {
 		return t
 	}
 	switch tt := t.(type) {
+	case anyRecordType:
+		return anyRecordType{nullable: nullable}
 	case *PrimitiveType:
 		// Canonical singleton when one exists, else a fresh
 		// PrimitiveType.

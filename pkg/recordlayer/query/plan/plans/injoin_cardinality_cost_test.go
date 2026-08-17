@@ -41,7 +41,9 @@ func TestInJoinHintCost_ScalesOffChildCardinalityWhenNotAPointProbe(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			stats := properties.FixedStatistics{Cardinality: test.tableCard}
-			inner := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, values.UnknownType, false).
+			inner := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+				return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, exactTestRecordType(), false)
+			}).
 				WithKeyComponentTypes(testPhysicalLongTypes(1)).
 				WithIndexMetadata([]string{"CATEGORY"}, []string{"ID"}, false /* non-unique */)
 
@@ -50,7 +52,9 @@ func TestInJoinHintCost_ScalesOffChildCardinalityWhenNotAPointProbe(t *testing.T
 				t.Fatalf("test setup: child cardinality = %v, want a bucket (>1) — must not itself be a point probe", childCost.Cardinality)
 			}
 
-			inJoin := NewRecordQueryInJoinPlan(inner, "x", false, false)
+			inJoin := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+				return NewRecordQueryInJoinPlan(inner, "x", false, false)
+			})
 			inJoin.SetInValues(test.inValues)
 
 			got := inJoin.HintCost([]properties.Cost{childCost}, stats)
@@ -76,7 +80,7 @@ func TestInJoinHintCost_ScalesOffChildCardinalityWhenNotAPointProbe(t *testing.T
 func TestInJoinHintCost_StaysInValuesLenForProvableUniqueBind(t *testing.T) {
 	t.Parallel()
 
-	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}
+	pk := []values.Value{testField(t, "ID", values.NullableLong)}
 	eq := scanCostRange(t, predicates.ComparisonEquals, int64(5))
 
 	tests := []struct {
@@ -92,12 +96,16 @@ func TestInJoinHintCost_StaysInValuesLenForProvableUniqueBind(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+			inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+				return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+			}).
 				WithPrimaryKey(pk).
 				WithScanComparisons([]*predicates.ComparisonRange{eq}).
 				WithKeyComponentTypes(testPhysicalLongTypes(1))
 
-			inJoin := NewRecordQueryInJoinPlan(inner, "x", false, false)
+			inJoin := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+				return NewRecordQueryInJoinPlan(inner, "x", false, false)
+			})
 			inJoin.SetInValues(test.inValues)
 
 			// Child cost deliberately bogus/large: a proven point probe must
@@ -127,7 +135,9 @@ func TestInJoinInUnion_AgreeOnCardinalityForSameNonUniqueChild(t *testing.T) {
 	stats := properties.FixedStatistics{Cardinality: 1000}
 	eq := scanCostRange(t, predicates.ComparisonEquals, int64(5))
 	newInner := func() *RecordQueryIndexPlan {
-		return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, values.UnknownType, false).
+		return mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+			return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, exactTestRecordType(), false)
+		}).
 			WithKeyComponentTypes(testPhysicalLongTypes(1)).
 			WithIndexMetadata([]string{"CATEGORY"}, []string{"ID"}, false /* non-unique */)
 	}
@@ -137,11 +147,15 @@ func TestInJoinInUnion_AgreeOnCardinalityForSameNonUniqueChild(t *testing.T) {
 		t.Fatalf("test setup: child cardinality = %v, want a bucket (>1)", childCost.Cardinality)
 	}
 
-	inJoin := NewRecordQueryInJoinPlan(newInner(), "x", false, false)
+	inJoin := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+		return NewRecordQueryInJoinPlan(newInner(), "x", false, false)
+	})
 	inJoin.SetInValues([]any{int64(1), int64(2), int64(3)})
 	inJoinCost := inJoin.HintCost([]properties.Cost{childCost}, stats)
 
-	inUnion := NewRecordQueryInUnionPlan(newInner(), []string{"x"}, nil, false)
+	inUnion := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(newInner(), []string{"x"}, nil, false)
+	})
 	inUnion.SetInSources([][]any{{int64(1), int64(2), int64(3)}})
 	inUnionCost := inUnion.HintCost([]properties.Cost{childCost}, stats)
 

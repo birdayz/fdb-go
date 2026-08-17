@@ -83,29 +83,44 @@ func assertAccessorPathCensus(w io.Writer) bool {
 
 // assertFieldValueMintCensus gates the producer half.
 //
-// MaxExplainRendered is 0 with NO floor beside it, and the asymmetry with its
-// consumer-side twin is deliberate: zero is the STEADY STATE for this class.
+// MaxExplainRendered is 0 with no floor beside it, and the asymmetry with its
+// consumer-side twin was deliberate: zero is the STEADY STATE for this class.
 // A Field carrying both '.' and '#' is the shape explainValueOrdinals emits and
 // nothing else does, so any non-zero is Explain output re-entered as identity —
 // a defect, not debt. The whole measured population was 21,865, and all 64
 // captured origins pointed at ONE line: HintOrdering minting a lazy FieldValue
 // from SortKey.Field while SortKey.ValueExpr carried the baked identity all
-// along. Growth is the only alarm direction there is here.
+// along.
 //
-// MinTotal is the vacuity guard on the INDEPENDENT denominator, and it is what
-// makes the ceiling mean anything: `lazy-EXPLAIN-RENDERED = 0` over zero observed
+// MINTOTAL IS GONE AND MAXTOTAL REPLACES IT, WHICH IS THE WHOLE POPULATION'S
+// DIRECTION INVERTING RATHER THAN A FLOOR BEING RELAXED.
+//
+// MinTotal was the vacuity guard on the INDEPENDENT denominator, and it is what
+// made the ceiling mean anything: `lazy-EXPLAIN-RENDERED = 0` over zero observed
 // mints passes perfectly while measuring nothing, which is this repo's dominant
-// false positive.
+// false positive. It was floored at 5000 against a measured 21,865.
+//
+// The lazy FieldValue no longer exists. Exact resolution builds every FieldValue
+// the planner constructs, and RebuildFieldValue — the admitted path — records
+// nothing here; the only three surviving hook sites sit on pullup.go's
+// package-private legacy fixture arm, which its own comment describes as "not
+// externally constructible". So the denominator is structurally zero, the floor
+// is unsatisfiable, and the ceiling it protected has nothing left to protect.
+//
+// Lowering MinTotal to 0 would have disarmed the guard silently — a floor of
+// zero is satisfied by every state. Deleting it would have left the retirement
+// unwatched. MaxTotal = 0 is the reconciliation: it says the same population is
+// now expected EMPTY and fails on the revival, and unlike a floor it survives a
+// -test.run filter, which a claim about the tree must.
 func assertFieldValueMintCensus(w io.Writer) bool {
 	gates := &values.FieldValueMintGates{
-		MinTotal:           5000,
+		MaxTotal:           intPtr(0),
 		MaxExplainRendered: intPtr(0),
 	}
 	if pat, cut := narrowed(); cut {
-		fmt.Fprintf(w, "field-value mint census: whole-corpus vacuity FLOOR not checked "+
-			"(-test.run=%q narrowed the population). The lazy-EXPLAIN-RENDERED CEILING and the "+
-			"partition check both survive narrowing and are still checked.\n", pat)
-		gates.MinTotal = 0
+		fmt.Fprintf(w, "field-value mint census: narrowed by -test.run=%q. Every gate here is a "+
+			"CEILING and all of them still run — a subset cannot exceed the whole — so this "+
+			"note is a statement about the population, not about what was skipped.\n", pat)
 	}
 	return values.AssertFieldValueMintCensus(w, gates)
 }

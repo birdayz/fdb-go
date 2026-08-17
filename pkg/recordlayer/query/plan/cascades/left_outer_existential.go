@@ -1,7 +1,7 @@
 package cascades
 
 import (
-	"strings"
+	"bytes"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -44,18 +44,6 @@ func ordinalSeedLegWindows(rc *values.RecordConstructorValue) (map[values.Correl
 // the root address alone is a real merged column — the enclosing STRUCT — so the
 // plan builds, executes, and compares the wrong thing. Declining costs a clean
 // unsupported error; a truncated path costs wrong rows.
-func descendOrFail(root *values.FieldValue, into *values.RecordType, suffix []values.ResolvedAccessor, leafTyp values.Type, failed *bool, node values.Value) values.Value {
-	if len(suffix) == 0 {
-		return root
-	}
-	fused, err := values.FuseNestedSuffix(root, into, suffix, leafTyp)
-	if err != nil {
-		*failed = true
-		return node
-	}
-	return fused
-}
-
 // rebaseOuterLegValueOrdinal rewrites leg references in v to baked ordinals
 // over mergedQOV. ok=false when a leg reference exists that the windows cannot
 // map (dotted field, unknown column, a root the leg layout cannot state) — the
@@ -68,40 +56,35 @@ func descendOrFail(root *values.FieldValue, into *values.RecordType, suffix []va
 func rebaseOuterLegValueOrdinal(
 	v values.Value,
 	windows map[values.CorrelationIdentifier]ordinalLegWindow,
-	mergedQOV *values.QuantifiedObjectValue,
+	mergedQOV values.QuantifiedObjectValue,
+	expectedLegs ...map[values.CorrelationIdentifier]struct{},
 ) (values.Value, bool) {
-	if v == nil {
+	if v == nil || mergedQOV == nil {
 		return v, true
 	}
 	failed := false
-	out := values.Replace(v, func(node values.Value) values.Value {
-		fv, isFV := node.(*values.FieldValue)
-		if !isFV {
-			return node
-		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	out := rewriteFieldValues(v, func(fv values.FieldValue) (values.Value, bool) {
+		qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 		if !isQOV {
-			return node
+			failed = true
+			return nil, false
 		}
-		// An ALREADY-baked positional ref over the MERGED row is final: a multi-esq
-		// peel box bakes the existential correlation at plan time
-		// (translateUnnestExistsFilter's planTimeBake arm) to an ofOrdinal over the
-		// merged QOV, and this executor hoist then runs OVER that baked tree. Its
-		// ordinal already indexes the merged layout, so re-baking would add the leg
-		// window offset a SECOND time (out of range → !ok, a spurious decline of a
-		// correctly-baked box). Pass it through — but ONLY when it is already over the
-		// merged QOV. A LEG-LOCAL FrontierPinned ref (`ofOrdinal(QOV(A), i)`, child is
-		// a source leg still in `windows`) is NOT final: guarding on the merged
-		// correlation lets it fall through to the leg-relative arm below, which
-		// translates it onto the merged row at w.Offset+i (by its Field name).
-		if fv.Resolved != nil && fv.Resolved.FrontierPinned && qov.Correlation == mergedQOV.Correlation {
-			return node
+		// An address already rooted at this exact merged object is final. Compare
+		// the complete QOV identity, not just the correlation: the same alias with
+		// a different flowed type is a malformed phase transfer and must not be
+		// mistaken for a no-op.
+		if qov.Correlation() == mergedQOV.Correlation() {
+			if !sameExactType(qov.FlowedType(), mergedQOV.FlowedType()) {
+				failed = true
+				return nil, false
+			}
+			return fv, true
 		}
-		// The reference's own correlation selects its window. It used to be the
-		// UPPER FOLD of that correlation, against a text-keyed map — a round trip
-		// through a namespace that merges the two the rest of this package keeps
-		// disjoint.
-		w, isLeg := windows[qov.Correlation]
+
+		// The source QOV identity selects its window. Display names never
+		// participate in the mapping; duplicate and dotted SQL names therefore
+		// cannot redirect the address.
+		w, isLeg := windows[qov.Correlation()]
 		if values.LegIdentityCensusEnabled() {
 			// KIND-AWARE: a hit on a NESTED window is its own class, because
 			// whether the fused two-step arm is ever ENTERED on this corpus is the
@@ -110,126 +93,27 @@ func rebaseOuterLegValueOrdinal(
 			values.RecordSeedWindowLookupOfKind(values.SeedWindowSiteExistentialRebase, isLeg, w.Kind)
 		}
 		if !isLeg {
-			// After the buried-window fix (finalizeSeedWindows), EVERY outer/buried
-			// leg is a window, so !isLeg means a genuinely non-outer ref (the FlatMap
-			// inner) — pass it through. BUT if a known leg boundary (the merged type's
-			// Legs) is absent from windows, the two derivations DRIFTED — fail LOUD
-			// rather than silently read the inner row. This is a defensive check:
-			// unreachable while windows and merged Legs stay in lockstep.
-			if rt, ok := mergedQOV.Type().(*values.RecordType); ok {
-				for _, leg := range rt.Legs {
-					// This hook sits inside a Cascades rule, so its TOTALS count rule
-					// firings, not queries: the memo may explore this hoist once or
-					// many times for one query. Read the site's absolute numbers as a
-					// planning artifact; only its zero fold-only population is a fact
-					// about the corpus.
-					if values.LegIdentityCensusEnabled() {
-						// RETIRED PREDICATE: `leg.Name == strings.ToUpper(corr.Name())` —
-						// one of the two sites that folded a side before comparing. A
-						// fold-only count cannot see what such a predicate did differently,
-						// so the census records the verdict. The fold is spelled out here
-						// because the local that used to hold it is gone with the text key.
-						values.RecordLegIdentityConversion(
-							values.LegSiteLeftOuterExistential, leg.Alias, qov.Correlation,
-							leg.Name == strings.ToUpper(qov.Correlation.Name()))
-						values.RecordLegIdentityLeg(leg)
-					}
-					// The drift check asks an IDENTITY question — "is this correlation a
-					// known leg boundary?" — so it is answered by the leg's identity
-					// against the reference's own correlation, not by the upper fold of
-					// one side against the text of the other. Folding here would let the
-					// tripwire mistake a case-variant alias for the leg it is guarding.
-					if values.SameLeg(leg.Alias, qov.Correlation) {
-						failed = true
-						break
-					}
+			// A missing window is safe only for a genuinely external/inner root.
+			// The caller supplies the complete outer-source manifest separately
+			// from the physical windows so a derivation bug cannot turn a known
+			// outer root into an unchecked source-bound read.
+			for _, expected := range expectedLegs {
+				if _, isExpected := expected[qov.Correlation()]; isExpected {
+					failed = true
+					return nil, false
 				}
 			}
-			return node
+			// A genuinely non-outer reference (for example the FlatMap inner)
+			// is outside this layout and remains source-bound.
+			return fv, true
 		}
-		var legOrdinal int
-		// The suffix a NESTED leg reference still has to travel after its root
-		// lands on the merged row. Empty for every flat reference.
-		var suffix []values.ResolvedAccessor
-		var suffixInto *values.RecordType
-		switch {
-		case fv.Resolved != nil && len(fv.Resolved.Accessors) > 1:
-			// A NESTED leg reference — `leg.n.sk`, ONE FieldValue whose root
-			// accessor is the leg column and whose remaining accessors descend
-			// inside it. It is the SAME shape under both bake kinds, which is why
-			// this arm sits above the pinned/name dispatch rather than inside
-			// either: the two arms below split on the frontier pin, and arity is
-			// orthogonal to it, so a multi-accessor path used to take whichever
-			// arm its pin selected and be mishandled in a DIFFERENT way by each.
-			// The pinned arm declined it (Single() on a fused path). The name arm
-			// did something worse — it looked up fv.Field, found the ROOT column,
-			// baked the merged address of the STRUCT and dropped the descent. That
-			// address is a real merged column, so nothing downstream rejects it:
-			// `WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.k = t1.n.sk)` over a join
-			// compared a BIGINT against a whole struct and quietly matched nothing.
-			//
-			// The root ordinal is DERIVED from the leg's own layout and the carried
-			// one is asserted against it, never taken: a carried ordinal is stated
-			// in the layout the reference was resolved against, and reading it
-			// against a different one lands on whatever column occupies that slot.
-			// ReAnchorRootInto is that derive-and-assert, and it declines when the
-			// root name is absent or DUPLICATED in the leg — an opaque box leg can
-			// expose two buried columns of one name, where a first match is
-			// indistinguishable from a correct answer and disambiguating needs the
-			// leg identity this site does not carry.
-			reanchored, _, reOK := fv.Resolved.ReAnchorRootInto(w.Typ)
-			if !reOK {
-				failed = true
-				return node
-			}
-			legOrdinal = reanchored.Root().Ordinal
-			suffix = reanchored.Accessors[1:]
-			// The record the suffix descends into is the LEG column's own type.
-			// The merged row states only WHERE the column sits; its per-slot
-			// types are derived from the seed's baked columns and are UNKNOWN
-			// for a struct column (measured), so descending against them would
-			// fail on every real nested reference.
-			if legOrdinal >= 0 && legOrdinal < len(w.Typ.Fields) {
-				suffixInto, _ = w.Typ.Fields[legOrdinal].FieldType.(*values.RecordType)
-			}
-		case fv.Resolved != nil && fv.Resolved.FrontierPinned:
-			// A LEG-LOCAL baked ref (`ofOrdinal(QOV(A), i)` — child a SOURCE LEG, not
-			// the merged QOV, so the precise guard above passed it through to here).
-			// Carry its BAKED root ordinal, NOT FieldIndex(Field): an OPAQUE box leg can
-			// expose DUPLICATE buried column names (`A.K` and `B.K` merged into one leg),
-			// where FieldIndex("K") would remap the already-baked ref to the FIRST match
-			// and silently probe the WRONG column (wrong rows). acc.Ordinal is the exact
-			// leg-local slot; w.Offset + it = the merged slot. (Empirically no shape
-			// produces such a ref — the arm is CORRECT-or-LOUD defensive.)
-			//
-			// Single() can no longer be the discriminator it once was: a fused path
-			// is handled ABOVE, by arity, before the pin is consulted. What remains
-			// here is a single-accessor pinned ref, so a !single answer means a
-			// path with ZERO accessors — the non-empty invariant violated by a
-			// hand-built FieldPath — and declining is the only safe reading.
-			acc, single := fv.Resolved.Single()
-			if !single {
-				failed = true
-				return node
-			}
-			legOrdinal = acc.Ordinal
-		case !strings.Contains(fv.Field, "."):
-			// A leg-relative NAME ref (non-baked): NewFieldValueOfOrdinal is not its
-			// source, so the slot is resolved by column name. The lookup DECLINES on a
-			// duplicate rather than first-matching: an OPAQUE box leg can expose two
-			// buried columns of one name, where a first match is indistinguishable from
-			// a correct answer and disambiguating needs the leg identity this site does
-			// not carry — exactly what the two arms above decline for.
-			idx, found := w.Typ.FieldIndexUnique(strings.ToUpper(fv.Field))
-			if !found {
-				failed = true
-				return node
-			}
-			legOrdinal = idx
-		default:
-			failed = true // dotted lazy ref — not a direct leg column
-			return node
+		path := fv.Path()
+		if path == nil || path.Len() == 0 || w.Typ == nil {
+			failed = true
+			return nil, false
 		}
+		ordinals := path.Ordinals()
+		legOrdinal := ordinals[0]
 		// Bound the ordinal to THIS leg's window before adding w.Offset. The name arm
 		// (FieldIndexUnique) is in-range by construction, but a baked acc.Ordinal is relative
 		// to its child QOV's FULL type — if `windows[alias]` was narrowed to a
@@ -239,7 +123,7 @@ func rebaseOuterLegValueOrdinal(
 		// Decline instead (correct-or-loud).
 		if legOrdinal < 0 || legOrdinal >= len(w.Typ.Fields) {
 			failed = true
-			return node
+			return nil, false
 		}
 		// DISPATCH ON THE KIND, never on the shape. `w.Offset + legOrdinal` is only
 		// an address under LegKindFlatRun, where Offset starts a run of the leg's
@@ -251,63 +135,30 @@ func rebaseOuterLegValueOrdinal(
 		// LegKindUnset DECLINES rather than defaulting: a window that reached this
 		// rebase without a stated kind is a producer bug, and a declined
 		// optimization is recoverable while a wrong ordinal is not.
-		var rebased *values.FieldValue
-		var err error
+		var mapped []int
 		switch w.Kind {
 		case values.LegKindFlatRun:
-			rebased, err = values.NewFieldValueOfOrdinal(mergedQOV, w.Offset+legOrdinal)
+			mapped = make([]int, 0, len(ordinals))
+			mapped = append(mapped, w.Offset+legOrdinal)
+			mapped = append(mapped, ordinals[1:]...)
 		case values.LegKindNested:
-			// THE FUSED TWO-STEP ADDRESS — Java's
-			// ofOrdinalNumberAndFuseIfPossible, arrived at the same way.
-			//
-			// Java rewrites a reference to a collapsed sibling as
-			// FieldValue.ofOrdinalNumber(QOV(newUpper), index)
-			// (PartitionSelectRule.java:301-302). When translateCorrelations then
-			// rebuilds the enclosing FieldValue(QOV(lower), [f]), the leaf swap
-			// produces FieldValue(FieldValue(QOV(upper),[i]), [f]) and
-			// FieldValue.withNewChild → ofFieldsAndFuseIfPossible merges the two
-			// accessor lists via FieldPath.withSuffix into the single two-step path
-			// FieldValue(QOV(upper), [i, f]). Nothing is materialized and nothing is
-			// re-offset — composition is a path FUSION, never a flattening.
-			//
-			// Go does the same with the same primitives: bake the ONE-step path to
-			// the slot, then WithSuffix the leg-local accessor onto it. The
-			// executor already reads such a path — FieldValue.descendResolvedPath
-			// has an explicit OrdinalRow arm that descends a nested step by ordinal
-			// — and the executor's own span side already resolves the fused
-			// two-step address in resolveSpanLeaf.
-			rebased, err = values.NewFusedFieldValueOfNestedOrdinal(
-				mergedQOV, w.Offset, w.Typ, legOrdinal)
-			// The fused node's TYPE is authoritative and is NOT overwritten below.
-			// It is recomputed from the fused path — leaf column type, promoted
-			// nullable if the merged row's slot is nullable — which is Java's
-			// ofFieldsAndFuseIfPossible. The reference's own fv.Typ cannot know
-			// about the slot step, so taking it here would drop a LEFT-outer
-			// null-supplied column's nullability.
-			if err == nil {
-				return descendOrFail(rebased, suffixInto, suffix, fv.Typ, &failed, node)
-			}
+			mapped = make([]int, 0, len(ordinals)+1)
+			mapped = append(mapped, w.Offset)
+			mapped = append(mapped, ordinals...)
 		default:
 			failed = true
-			return node
+			return nil, false
 		}
+		rebased, err := values.ResolveFieldOrdinals(mergedQOV, mapped)
 		if err != nil {
 			failed = true
-			return node
+			return nil, false
 		}
-		if len(suffix) > 0 {
-			// A NESTED reference under a FLAT window: the address above reaches
-			// the leg COLUMN, which is itself a record, and the rest of the path
-			// descends inside it. The descent recomputes the type, so fv.Typ is
-			// not taken — the merged row's slot may be nullable and only the
-			// descent knows that.
-			return descendOrFail(rebased, suffixInto, suffix, fv.Typ, &failed, node)
+		if !sameExactType(rebased.Type(), fv.ResultType()) {
+			failed = true
+			return nil, false
 		}
-		// Keep the reference's own column type (the merged layout's field
-		// type IS the leg column's — same fv.Typ lineage). FLAT arm only; the
-		// nested arm returned above with its recomputed type.
-		rebased.Typ = fv.Typ
-		return rebased
+		return rebased, true
 	})
 	if failed {
 		return v, false
@@ -315,20 +166,61 @@ func rebaseOuterLegValueOrdinal(
 	return out, true
 }
 
+// rewriteFieldValues is the checked, copy-on-write walk used by the ordinal
+// reanchor. FieldValues are intercepted before generic reconstruction so a
+// changed child can never be swallowed by the legacy infallible WithChildren
+// arm. All admitted FieldValues are canonical QOV-rooted nodes.
+func rewriteFieldValues(v values.Value, rewrite func(values.FieldValue) (values.Value, bool)) values.Value {
+	if v == nil {
+		return nil
+	}
+	if field, ok := values.AsFieldValue(v); ok {
+		rewritten, accepted := rewrite(field)
+		if !accepted {
+			return nil
+		}
+		return rewritten
+	}
+	children := v.Children()
+	if len(children) == 0 {
+		return v
+	}
+	changed := false
+	rebuiltChildren := make([]values.Value, len(children))
+	for i, child := range children {
+		rebuiltChildren[i] = rewriteFieldValues(child, rewrite)
+		if rebuiltChildren[i] == nil {
+			return nil
+		}
+		changed = changed || rebuiltChildren[i] != child
+	}
+	if !changed {
+		return v
+	}
+	return values.WithChildren(v, rebuiltChildren)
+}
+
+func sameExactType(left, right values.Type) bool {
+	lh, leftErr := values.SnapshotExactType(left)
+	rh, rightErr := values.SnapshotExactType(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(lh.CanonicalBytes(), rh.CanonicalBytes())
+}
+
 // rebaseOuterLegRefsOrdinal is the predicate-level walk (the ordinal twin of
 // rebaseOuterLegRefsToMerged — same predicate shapes).
 func rebaseOuterLegRefsOrdinal(
 	p predicates.QueryPredicate,
 	windows map[values.CorrelationIdentifier]ordinalLegWindow,
-	mergedQOV *values.QuantifiedObjectValue,
+	mergedQOV values.QuantifiedObjectValue,
+	expectedLegs ...map[values.CorrelationIdentifier]struct{},
 ) (predicates.QueryPredicate, bool) {
 	if p == nil {
 		return p, true
 	}
 	switch pred := p.(type) {
 	case *predicates.ComparisonPredicate:
-		newOperand, ok1 := rebaseOuterLegValueOrdinal(pred.Operand, windows, mergedQOV)
-		newCompOperand, ok2 := rebaseOuterLegValueOrdinal(pred.Comparison.Operand, windows, mergedQOV)
+		newOperand, ok1 := rebaseOuterLegValueOrdinal(pred.Operand, windows, mergedQOV, expectedLegs...)
+		newCompOperand, ok2 := rebaseOuterLegValueOrdinal(pred.Comparison.Operand, windows, mergedQOV, expectedLegs...)
 		if !ok1 || !ok2 {
 			return p, false
 		}
@@ -339,7 +231,7 @@ func rebaseOuterLegRefsOrdinal(
 		cmp.Operand = newCompOperand
 		return &predicates.ComparisonPredicate{Operand: newOperand, Comparison: cmp}, true
 	case *predicates.ValuePredicate:
-		newVal, ok := rebaseOuterLegValueOrdinal(pred.Value, windows, mergedQOV)
+		newVal, ok := rebaseOuterLegValueOrdinal(pred.Value, windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -351,7 +243,7 @@ func rebaseOuterLegRefsOrdinal(
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			ns, ok := rebaseOuterLegRefsOrdinal(s, windows, mergedQOV)
+			ns, ok := rebaseOuterLegRefsOrdinal(s, windows, mergedQOV, expectedLegs...)
 			if !ok {
 				return p, false
 			}
@@ -368,7 +260,7 @@ func rebaseOuterLegRefsOrdinal(
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			ns, ok := rebaseOuterLegRefsOrdinal(s, windows, mergedQOV)
+			ns, ok := rebaseOuterLegRefsOrdinal(s, windows, mergedQOV, expectedLegs...)
 			if !ok {
 				return p, false
 			}
@@ -382,7 +274,7 @@ func rebaseOuterLegRefsOrdinal(
 		}
 		return predicates.NewOr(subs...), true
 	case *predicates.NotPredicate:
-		newChild, ok := rebaseOuterLegRefsOrdinal(pred.Child, windows, mergedQOV)
+		newChild, ok := rebaseOuterLegRefsOrdinal(pred.Child, windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -403,6 +295,13 @@ func rebaseOuterLegRefsOrdinal(
 		for alias := range windows {
 			if _, refs := predicates.GetCorrelatedToOfPredicate(p)[alias]; refs {
 				return p, false
+			}
+		}
+		for _, expected := range expectedLegs {
+			for alias := range expected {
+				if _, refs := predicates.GetCorrelatedToOfPredicate(p)[alias]; refs {
+					return p, false
+				}
 			}
 		}
 		return p, true
@@ -474,14 +373,15 @@ func ordinalSeedLegLayoutOf(rv values.Value) (map[values.CorrelationIdentifier]o
 func rebasePlanOuterRefsOrdinal(
 	p plans.RecordQueryPlan,
 	windows map[values.CorrelationIdentifier]ordinalLegWindow,
-	mergedQOV *values.QuantifiedObjectValue,
+	mergedQOV values.QuantifiedObjectValue,
+	expectedLegs ...map[values.CorrelationIdentifier]struct{},
 ) (plans.RecordQueryPlan, bool) {
 	if p == nil || len(windows) == 0 {
 		return p, true
 	}
 	switch pl := p.(type) {
 	case *plans.RecordQueryIndexPlan:
-		newComps, changed, ok := rebaseComparisonRangesOrdinal(pl.GetScanComparisons(), windows, mergedQOV)
+		newComps, changed, ok := rebaseComparisonRangesOrdinal(pl.GetScanComparisons(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -506,7 +406,7 @@ func rebasePlanOuterRefsOrdinal(
 		if !ok {
 			return p, false
 		}
-		rebased, ok := rebasePlanOuterRefsOrdinal(inner, windows, mergedQOV)
+		rebased, ok := rebasePlanOuterRefsOrdinal(inner, windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -519,7 +419,7 @@ func rebasePlanOuterRefsOrdinal(
 		}
 		return pl.WithIndexPlan(rebasedIdx), true
 	case *plans.RecordQueryScanPlan:
-		newComps, changed, ok := rebaseComparisonRangesOrdinal(pl.GetScanComparisons(), windows, mergedQOV)
+		newComps, changed, ok := rebaseComparisonRangesOrdinal(pl.GetScanComparisons(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -528,7 +428,7 @@ func rebasePlanOuterRefsOrdinal(
 		}
 		return pl.WithScanComparisons(newComps), true
 	case *plans.RecordQueryPredicatesFilterPlan:
-		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -536,7 +436,7 @@ func rebasePlanOuterRefsOrdinal(
 		newPreds := make([]predicates.QueryPredicate, len(preds))
 		changed := inner != pl.GetInner()
 		for i, pr := range preds {
-			np, prOK := rebaseOuterLegRefsOrdinal(pr, windows, mergedQOV)
+			np, prOK := rebaseOuterLegRefsOrdinal(pr, windows, mergedQOV, expectedLegs...)
 			if !prOK {
 				return p, false
 			}
@@ -548,9 +448,10 @@ func rebasePlanOuterRefsOrdinal(
 		if !changed {
 			return p, true
 		}
-		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(inner, newPreds, pl.GetInnerAlias()), true
+		rebuilt, err := plans.NewRecordQueryPredicatesFilterPlanWithAlias(inner, newPreds, pl.GetInnerAlias())
+		return rebuilt, err == nil
 	case *plans.RecordQueryFilterPlan:
-		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -558,7 +459,7 @@ func rebasePlanOuterRefsOrdinal(
 		newPreds := make([]predicates.QueryPredicate, len(preds))
 		changed := inner != pl.GetInner()
 		for i, pr := range preds {
-			np, prOK := rebaseOuterLegRefsOrdinal(pr, windows, mergedQOV)
+			np, prOK := rebaseOuterLegRefsOrdinal(pr, windows, mergedQOV, expectedLegs...)
 			if !prOK {
 				return p, false
 			}
@@ -570,27 +471,30 @@ func rebasePlanOuterRefsOrdinal(
 		if !changed {
 			return p, true
 		}
-		return plans.NewRecordQueryFilterPlan(newPreds, inner), true
+		rebuilt, err := plans.NewRecordQueryFilterPlan(newPreds, inner)
+		return rebuilt, err == nil
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
 		if inner == pl.GetInner() {
 			return p, true
 		}
-		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, pl.GetTranslateValueFunction(), pl.GetResultType(), pl.GetFetchIndexRecords()), true
+		rebuilt, err := plans.NewRecordQueryFetchFromPartialRecordPlan(inner, pl.GetTranslateValueFunction(), pl.GetResultType(), pl.GetFetchIndexRecords())
+		return rebuilt, err == nil
 	case *plans.RecordQueryDefaultOnEmptyPlan:
-		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
 		if inner == pl.GetInner() {
 			return p, true
 		}
-		return plans.NewRecordQueryDefaultOnEmptyPlan(inner, pl.GetDefaultValue()), true
+		rebuilt, err := plans.NewRecordQueryDefaultOnEmptyPlan(inner, pl.GetDefaultValue())
+		return rebuilt, err == nil
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -598,33 +502,37 @@ func rebasePlanOuterRefsOrdinal(
 			return p, true
 		}
 		if pl.IsStrict() {
-			return plans.NewRecordQueryFirstOrDefaultPlanStrict(inner, pl.GetDefaultValue()), true
+			rebuilt, err := plans.NewRecordQueryFirstOrDefaultPlanStrict(inner, pl.GetDefaultValue())
+			return rebuilt, err == nil
 		}
-		return plans.NewRecordQueryFirstOrDefaultPlan(inner, pl.GetDefaultValue()), true
+		rebuilt, err := plans.NewRecordQueryFirstOrDefaultPlan(inner, pl.GetDefaultValue())
+		return rebuilt, err == nil
 	case *plans.RecordQueryTypeFilterPlan:
-		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
 		if inner == pl.GetInner() {
 			return p, true
 		}
-		return plans.NewRecordQueryTypeFilterPlan(pl.GetRecordTypes(), inner), true
+		rebuilt, err := plans.NewRecordQueryTypeFilterPlan(pl.GetRecordTypes(), inner)
+		return rebuilt, err == nil
 	case *plans.RecordQueryMapPlan:
-		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
-		newResult, rvOK := rebaseOuterLegValueOrdinal(pl.GetResultValue(), windows, mergedQOV)
+		newResult, rvOK := rebaseOuterLegValueOrdinal(pl.GetResultValue(), windows, mergedQOV, expectedLegs...)
 		if !rvOK {
 			return p, false
 		}
 		if inner == pl.GetInner() && newResult == pl.GetResultValue() {
 			return p, true
 		}
-		return plans.NewRecordQueryMapPlan(inner, newResult), true
+		rebuilt, err := plans.NewRecordQueryMapPlan(inner, newResult)
+		return rebuilt, err == nil
 	case *plans.RecordQueryProjectionPlan:
-		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV)
+		inner, ok := rebasePlanOuterRefsOrdinal(pl.GetInner(), windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return p, false
 		}
@@ -632,7 +540,7 @@ func rebasePlanOuterRefsOrdinal(
 		newProjs := make([]values.Value, len(projs))
 		changed := inner != pl.GetInner()
 		for i, v := range projs {
-			nv, vOK := rebaseOuterLegValueOrdinal(v, windows, mergedQOV)
+			nv, vOK := rebaseOuterLegValueOrdinal(v, windows, mergedQOV, expectedLegs...)
 			if !vOK {
 				return p, false
 			}
@@ -646,8 +554,16 @@ func rebasePlanOuterRefsOrdinal(
 		}
 		// A rebase hands back "the same projection, moved": the output names and
 		// WHO wrote them are both unchanged by moving where the ordinals point.
-		return plans.NewRecordQueryProjectionPlanWithAliases(newProjs, pl.GetAliases(), inner).
-			WithAliasProvenance(pl.GetAliasMinted()), true
+		rebuilt, err := plans.NewRecordQueryProjectionPlanWithOutputSchema(
+			newProjs, pl.GetAliases(), pl.GetAliasMinted(), pl.GetOutputNames(), inner)
+		if err != nil {
+			return p, false
+		}
+		rebuilt, err = rebuilt.WithAliasSources(pl.GetAliasSources())
+		if err != nil {
+			return p, false
+		}
+		return rebuilt, true
 	default:
 		// Unhandled node — return unchanged. The caller's
 		// planReferencesAnyBuriedAlias verification declines any buried leg
@@ -663,12 +579,13 @@ func rebasePlanOuterRefsOrdinal(
 func rebaseComparisonRangesOrdinal(
 	comps []*predicates.ComparisonRange,
 	windows map[values.CorrelationIdentifier]ordinalLegWindow,
-	mergedQOV *values.QuantifiedObjectValue,
+	mergedQOV values.QuantifiedObjectValue,
+	expectedLegs ...map[values.CorrelationIdentifier]struct{},
 ) ([]*predicates.ComparisonRange, bool, bool) {
 	out := make([]*predicates.ComparisonRange, len(comps))
 	changed := false
 	for i, cr := range comps {
-		nc, ch, ok := rebaseComparisonRangeOrdinal(cr, windows, mergedQOV)
+		nc, ch, ok := rebaseComparisonRangeOrdinal(cr, windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return comps, false, false
 		}
@@ -686,7 +603,8 @@ func rebaseComparisonRangesOrdinal(
 func rebaseComparisonRangeOrdinal(
 	cr *predicates.ComparisonRange,
 	windows map[values.CorrelationIdentifier]ordinalLegWindow,
-	mergedQOV *values.QuantifiedObjectValue,
+	mergedQOV values.QuantifiedObjectValue,
+	expectedLegs ...map[values.CorrelationIdentifier]struct{},
 ) (*predicates.ComparisonRange, bool, bool) {
 	if cr == nil || cr.IsEmpty() {
 		return cr, false, true
@@ -708,7 +626,7 @@ func rebaseComparisonRangeOrdinal(
 		if c == nil || c.Operand == nil {
 			continue
 		}
-		newOperand, ok := rebaseOuterLegValueOrdinal(c.Operand, windows, mergedQOV)
+		newOperand, ok := rebaseOuterLegValueOrdinal(c.Operand, windows, mergedQOV, expectedLegs...)
 		if !ok {
 			return cr, false, false
 		}

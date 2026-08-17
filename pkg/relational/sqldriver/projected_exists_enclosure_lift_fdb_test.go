@@ -160,24 +160,46 @@ func TestFDB_ProjectedExistsEnclosureLift(t *testing.T) {
 		}
 	})
 
-	// FORWARD SENTINEL — the derived-wrapped projected-EXISTS form declines TODAY
-	// (0AF00, the CTE-carrier-under-EXISTS reach gap). The clean lift makes this
-	// byte-identical with/without the enclosure. WHEN THIS STARTS RETURNING ROWS
-	// (reach gap closed), THIS TEST FAILS ON PURPOSE: replace the decline assertion
-	// with a rows assertion and CONFIRM the rows are the gathered [map[X:7] true]
-	// (matching CONTROL), never a suppressed silent-0. Do not "fix" this by relaxing
-	// the assertion — the trip is the whole point.
-	t.Run("sentinel_derived_wrapped_projexists_declines_today", func(t *testing.T) {
-		_, err := run(`SELECT d."X", EXISTS (SELECT 1 FROM C WHERE C."CK" = d."K") FROM ` +
+	// THE SENTINEL TRIPPED, AND THIS IS ITS ROWS ASSERTION. The derived-wrapped
+	// projected-EXISTS form used to decline 0AF00 — the derived-table schema
+	// derivation could not describe a body whose FROM list carries a lateral
+	// unnest leg, so the outer reference to `d` had nothing to resolve against.
+	// It plans now, and what it must answer is the CONTROL's gathered row with a
+	// TRUE beside it: A.K=100 matches C.CK=100, so the EXISTS holds on the one
+	// row the gather produces.
+	//
+	// The row COUNT and the EXISTS value are the assertion, not just "it plans".
+	// The failure this sentinel was posted against is a SILENT ZERO — the
+	// enclosure forcing this shape used to carry would have suppressed the gather
+	// entirely — and a zero-row answer is indistinguishable from a working query
+	// over empty data unless the count is pinned.
+	//
+	// The second column's LABEL is not pinned. An unaliased projected EXISTS is
+	// named by the machinery, and that spelling is not what this test is about;
+	// its VALUE is.
+	t.Run("derived_wrapped_projexists_gathers_like_the_control", func(t *testing.T) {
+		rows, err := run(`SELECT d."X", EXISTS (SELECT 1 FROM C WHERE C."CK" = d."K") FROM ` +
 			`(SELECT A."K", "X" FROM A, A."ARR" AS "X", B WHERE "X" = B."BK") d`)
-		if err == nil {
-			t.Fatalf("SENTINEL TRIPPED: the derived-wrapped projected-EXISTS-over-unnest-CTE shape now PLANS. " +
-				"The CTE-carrier-under-EXISTS reach gap has closed. Replace this decline assertion with a ROWS " +
-				"assertion and CONFIRM the gathered result [map[X:7] true] (matching control_direct_unnest_gathers), " +
-				"NOT a silent-0 — the removed enclosure forcing would have suppressed the gather.")
+		if err != nil {
+			t.Fatalf("derived-wrapped projected-EXISTS-over-unnest must plan+run: %v", err)
 		}
-		if !strings.Contains(err.Error(), "0AF00") {
-			t.Fatalf("derived-wrapped projected-EXISTS-over-unnest-CTE: expected the 0AF00 reach-gap decline, got %v", err)
+		if len(rows) != 1 {
+			t.Fatalf("derived-wrapped projected-EXISTS rows = %v, want exactly 1 — the "+
+				"gathered row the control produces. Zero rows is the SILENT-0 this "+
+				"sentinel was posted against: the gather suppressed rather than lifted.", rows)
+		}
+		parts := strings.Split(rows[0], "|")
+		if len(parts) != 2 {
+			t.Fatalf("row %q is not the 2-column (X, EXISTS) projection", rows[0])
+		}
+		if parts[0] != "X=7" {
+			t.Fatalf("first column = %q, want X=7 — the same gathered row "+
+				"control_direct_unnest_gathers pins (A.ARR={7,8} x B.BK=7, WHERE X=B.BK).",
+				parts[0])
+		}
+		if !strings.HasSuffix(parts[1], "=true") {
+			t.Fatalf("projected EXISTS = %q, want a TRUE: C.CK=100 matches the derived "+
+				"row's A.K=100, so the correlated EXISTS holds.", parts[1])
 		}
 	})
 }

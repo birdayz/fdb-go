@@ -9,20 +9,33 @@ import (
 )
 
 func newTestArrayValue(elems ...any) values.Value {
+	elementType := values.Type(values.NotNullLong)
+	if len(elems) > 0 {
+		if _, ok := elems[0].(string); ok {
+			elementType = values.NotNullString
+		}
+	}
 	return &values.ConstantValue{
-		Typ:   &values.ArrayType{ElementType: values.UnknownType},
+		Typ:   &values.ArrayType{ElementType: elementType},
 		Value: elems,
 	}
+}
+
+func mustImplementExplodeConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct implement-explode fixture: " + err.Error())
+	}
+	return value
 }
 
 func TestImplementExplode_Fires(t *testing.T) {
 	t.Parallel()
 
 	collVal := newTestArrayValue(1, 2, 3)
-	explode := expressions.NewExplodeExpression(collVal)
+	explode := mustImplementExplodeConstruct(expressions.NewExplodeExpression(collVal))
 	ref := expressions.InitialOf(explode)
 
-	yielded := FireExpressionRule(NewImplementExplodeRule(), ref)
+	yielded := mustFireExpressionRule(t, NewImplementExplodeRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementExplodeRule yielded %d, want 1", len(yielded))
 	}
@@ -41,7 +54,7 @@ func TestImplementExplode_ViaPlanner(t *testing.T) {
 	t.Parallel()
 
 	collVal := newTestArrayValue("a", "b")
-	explode := expressions.NewExplodeExpression(collVal)
+	explode := mustImplementExplodeConstruct(expressions.NewExplodeExpression(collVal))
 	ref := expressions.InitialOf(explode)
 
 	rules := DefaultExpressionRules()
@@ -68,7 +81,7 @@ func TestImplementExplode_PlanOutput(t *testing.T) {
 	t.Parallel()
 
 	collVal := newTestArrayValue(42)
-	explode := expressions.NewExplodeExpression(collVal)
+	explode := mustImplementExplodeConstruct(expressions.NewExplodeExpression(collVal))
 	ref := expressions.InitialOf(explode)
 
 	rules := DefaultExpressionRules()
@@ -94,22 +107,14 @@ func TestImplementExplode_PlanOutput(t *testing.T) {
 	t.Logf("Explode Explain: %s", explain)
 }
 
-func TestImplementExplode_NilCollectionValue(t *testing.T) {
+func TestImplementExplode_NilCollectionRejectedAtLogicalBoundary(t *testing.T) {
 	t.Parallel()
 
-	explode := expressions.NewExplodeExpression(nil)
-	ref := expressions.InitialOf(explode)
-
-	yielded := FireExpressionRule(NewImplementExplodeRule(), ref)
-	if len(yielded) != 1 {
-		t.Fatalf("ImplementExplodeRule yielded %d for nil collection, want 1", len(yielded))
+	explode, err := expressions.NewExplodeExpression(nil)
+	if err == nil {
+		t.Fatal("nil collection produced an executable logical Explode")
 	}
-
-	plan := yielded[0].(*plans.RecordQueryExplodePlan)
-	if plan.GetCollectionValue() != nil {
-		t.Fatal("expected nil collection value")
-	}
-	if plan.Explain() != "Explode(<nil>)" {
-		t.Fatalf("Explain = %q", plan.Explain())
+	if explode != nil {
+		t.Fatalf("nil collection returned %T together with error %v", explode, err)
 	}
 }

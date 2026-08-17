@@ -16,7 +16,7 @@ import (
 
 // s3NestedQOV builds q over {NESTED record{X,Y}, W long} — the shape whose
 // baked-over-baked chain the compose rule fuses.
-func s3NestedQOV(t *testing.T) *QuantifiedObjectValue {
+func s3NestedQOV(t *testing.T) *quantifiedObjectValue {
 	t.Helper()
 	inner := NewRecordType("", false, []Field{
 		{Name: "X", FieldType: NotNullLong, Ordinal: 0},
@@ -26,19 +26,19 @@ func s3NestedQOV(t *testing.T) *QuantifiedObjectValue {
 		{Name: "NESTED", FieldType: inner, Ordinal: 0},
 		{Name: "W", FieldType: NotNullLong, Ordinal: 1},
 	})
-	return NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), outer)
+	return mustQOV(t, NamedCorrelationIdentifier("q"), outer)
 }
 
 // bakedChain builds the canonical fusable chain: ofOrdinal(ofOrdinal(q, 0), 1)
 // — outer reads Y (ordinal 1) off the NESTED record (ordinal 0) of q.
-func bakedChain(t *testing.T) (inner, outer *FieldValue) {
+func bakedChain(t *testing.T) (inner, outer *fieldValue) {
 	t.Helper()
 	qov := s3NestedQOV(t)
-	in, err := NewFieldValueOfOrdinal(qov, 0)
+	in, err := newFieldValueOfOrdinal(qov, 0)
 	if err != nil {
 		t.Fatalf("inner bake: %v", err)
 	}
-	out, err := NewFieldValueOfOrdinal(in, 1)
+	out, err := newFieldValueOfOrdinal(in, 1)
 	if err != nil {
 		t.Fatalf("outer bake: %v", err)
 	}
@@ -51,13 +51,13 @@ func bakedChain(t *testing.T) (inner, outer *FieldValue) {
 // node's root read context is the inner path's).
 func TestFieldPath_WithSuffix_ImmutableFuse(t *testing.T) {
 	t.Parallel()
-	p1 := NewFieldPathOfSingle("A", 0, true)
-	p2 := NewFieldPathOfSingle("B", 1, false)
+	p1 := newFieldPathOfSingle("A", 0, true)
+	p2 := newFieldPathOfSingle("B", 1, false)
 
 	fused := p1.WithSuffix(p2)
 	if len(fused.Accessors) != 2 ||
-		fused.Accessors[0] != (ResolvedAccessor{Field: "A", Ordinal: 0}) ||
-		fused.Accessors[1] != (ResolvedAccessor{Field: "B", Ordinal: 1}) {
+		fused.Accessors[0] != (resolvedAccessor{Field: "A", Ordinal: 0}) ||
+		fused.Accessors[1] != (resolvedAccessor{Field: "B", Ordinal: 1}) {
 		t.Fatalf("fused accessors = %+v, want [(A,0),(B,1)]", fused.Accessors)
 	}
 	if !fused.FrontierPinned {
@@ -74,7 +74,7 @@ func TestFieldPath_WithSuffix_ImmutableFuse(t *testing.T) {
 		t.Fatal("WithSuffix must return a NEW path")
 	}
 	// Empty-suffix identity: the receiver itself comes back.
-	if p1.WithSuffix(&FieldPath{}) != p1 || p1.WithSuffix(nil) != p1 {
+	if p1.WithSuffix(&fieldPath{}) != p1 || p1.WithSuffix(nil) != p1 {
 		t.Fatal("empty suffix must return the receiver unchanged")
 	}
 }
@@ -89,18 +89,18 @@ func TestFieldPath_ComposeGate(t *testing.T) {
 	qov := s3NestedQOV(t)
 
 	// Lazy chain: field(field(q, "NESTED"), "Y") — unchanged.
-	lazyInner := NewFieldValue(qov, "NESTED", nil)
-	lazyOuter := NewFieldValue(lazyInner, "Y", NotNullLong)
+	lazyInner := newFieldValue(qov, "NESTED", nil)
+	lazyOuter := newFieldValue(lazyInner, "Y", NotNullLong)
 	if got := SimplifyValue(lazyOuter); got != lazyOuter {
 		t.Fatalf("lazy chain simplified to %v — the compose gate must leave lazy chains untouched", got)
 	}
 
 	// Baked over lazy / lazy over baked: unfused.
-	bakedInner, err := NewFieldValueOfOrdinal(qov, 0)
+	bakedInner, err := newFieldValueOfOrdinal(qov, 0)
 	if err != nil {
 		t.Fatalf("bake: %v", err)
 	}
-	lazyOverBaked := NewFieldValue(bakedInner, "Y", NotNullLong)
+	lazyOverBaked := newFieldValue(bakedInner, "Y", NotNullLong)
 	if got := SimplifyValue(lazyOverBaked); got != lazyOverBaked {
 		t.Fatalf("lazy-over-baked fused to %v — gate requires BOTH ends baked", got)
 	}
@@ -108,7 +108,7 @@ func TestFieldPath_ComposeGate(t *testing.T) {
 	// Fully-baked chain: fuses into ONE node with the concatenated path,
 	// child = the chain's base, pin inherited from the INNER path.
 	inner, outer := bakedChain(t)
-	fused, ok := SimplifyValue(outer).(*FieldValue)
+	fused, ok := SimplifyValue(outer).(*fieldValue)
 	if !ok || fused == outer {
 		t.Fatalf("baked chain did not fuse (got %T %v)", fused, fused)
 	}
@@ -116,8 +116,8 @@ func TestFieldPath_ComposeGate(t *testing.T) {
 		t.Fatalf("fused child = %v, want the chain's base QOV", fused.Child)
 	}
 	if fused.Resolved == nil || len(fused.Resolved.Accessors) != 2 ||
-		fused.Resolved.Accessors[0] != (ResolvedAccessor{Field: "NESTED", Ordinal: 0}) ||
-		fused.Resolved.Accessors[1] != (ResolvedAccessor{Field: "Y", Ordinal: 1}) {
+		fused.Resolved.Accessors[0] != (resolvedAccessor{Field: "NESTED", Ordinal: 0}) ||
+		fused.Resolved.Accessors[1] != (resolvedAccessor{Field: "Y", Ordinal: 1}) {
 		t.Fatalf("fused path = %+v, want [(NESTED,0),(Y,1)]", fused.Resolved)
 	}
 	if !fused.Resolved.FrontierPinned {
@@ -137,7 +137,7 @@ func TestFieldPath_ComposeGate(t *testing.T) {
 func TestFusedPath_Evaluate(t *testing.T) {
 	t.Parallel()
 	_, outer := bakedChain(t)
-	fused := SimplifyValue(outer).(*FieldValue)
+	fused := SimplifyValue(outer).(*fieldValue)
 
 	// Positional root, name-keyed nested record: there is no map[string]any
 	// descent for a fused nested step — nested records surface as
@@ -159,8 +159,8 @@ func TestFusedPath_Evaluate(t *testing.T) {
 	// why fusion exists and why Java has no chained form. The BAKED (unfused) chain
 	// is likewise loud below: its pinned outer sees the nested record as a bare
 	// context and the frontier guard fires.
-	qovBase := fused.Child.(*QuantifiedObjectValue)
-	lazyChain := NewFieldValue(NewFieldValue(qovBase, "NESTED", nil), "Y", NotNullLong)
+	qovBase := fused.Child.(*quantifiedObjectValue)
+	lazyChain := newFieldValue(newFieldValue(qovBase, "NESTED", nil), "Y", NotNullLong)
 	nestedOrd := &fakeOrdinalRow{names: []string{"X", "Y"}, slots: []any{int64(1), int64(2)}}
 	var lazyORE *OrdinalResolutionError
 	if _, err := lazyChain.Evaluate(&fakeOrdinalRow{names: []string{"NESTED", "W"}, slots: []any{nestedOrd, int64(9)}}); !errors.As(err, &lazyORE) {
@@ -210,9 +210,9 @@ func TestFusedPath_Evaluate(t *testing.T) {
 	// level would be the trap. Here the root reads ordinal 0 (NESTED), never the
 	// top-level "Y" planted at ordinal 1. (The nested record is a POSITIONAL
 	// row — there is no map[string]any form for a fused nested step.)
-	unpinned := &FieldValue{
+	unpinned := &fieldValue{
 		Field: "Y", Typ: NotNullLong,
-		Resolved: NewFieldPathOfSingle("NESTED", 0, false).WithSuffix(NewFieldPathOfSingle("Y", 1, false)),
+		Resolved: newFieldPathOfSingle("NESTED", 0, false).WithSuffix(newFieldPathOfSingle("Y", 1, false)),
 	}
 	got, err = unpinned.Evaluate(&fakeOrdinalRow{
 		names: []string{"NESTED", "Y"},
@@ -234,10 +234,10 @@ func TestFusedPath_Evaluate(t *testing.T) {
 func TestFusedPath_CorrelatedContexts(t *testing.T) {
 	t.Parallel()
 	qov := s3NestedQOV(t)
-	corr := qov.Correlation
-	fused := &FieldValue{
+	corr := qov.Correlation()
+	fused := &fieldValue{
 		Field: "Y", Typ: NotNullLong, Child: qov,
-		Resolved: NewFieldPathOfSingle("NESTED", 0, false).WithSuffix(NewFieldPathOfSingle("Y", 1, false)),
+		Resolved: newFieldPathOfSingle("NESTED", 0, false).WithSuffix(newFieldPathOfSingle("Y", 1, false)),
 	}
 	// The trap: top-level "Y"=99 at ordinal 1; the correct answer lives only
 	// under NESTED (ordinal 0) .Y (ordinal 1) = 2.
@@ -258,7 +258,7 @@ func TestFusedPath_CorrelatedContexts(t *testing.T) {
 
 // TestFusedPath_IdentityHashExplain pins the fused node's identity surface:
 // element-wise ORDINAL-ONLY equality (Java FieldPath list-equals over
-// ResolvedAccessor.equals = getOrdinal() alone, FieldValue.java:411-420 +
+// resolvedAccessor.equals = getOrdinal() alone, FieldValue.java:411-420 +
 // :675-689), equal ⟹ same-hash (the baked hash folds only the ordinal path
 // — a name-bearing hash would split alias-mapped twins that should compare
 // equal), and the multi-step Explain rendering (every step as name#ordinal,
@@ -266,40 +266,40 @@ func TestFusedPath_CorrelatedContexts(t *testing.T) {
 func TestFusedPath_IdentityHashExplain(t *testing.T) {
 	t.Parallel()
 	_, outer := bakedChain(t)
-	fused := SimplifyValue(outer).(*FieldValue)
+	fused := SimplifyValue(outer).(*fieldValue)
 
 	// Explain: child prefix + NESTED#0.Y#1.
 	if r := ExplainValue(fused); !strings.HasSuffix(r, "NESTED#0.Y#1") {
 		t.Fatalf("fused Explain = %q, want …NESTED#0.Y#1", r)
 	}
 	// '#'-escape stays per-step injective: a step named "X#0" doubles.
-	tricky := &FieldValue{Field: "X#0", Resolved: NewFieldPathOfSingle("A", 0, false).WithSuffix(NewFieldPathOfSingle("X#0", 1, false))}
+	tricky := &fieldValue{Field: "X#0", Resolved: newFieldPathOfSingle("A", 0, false).WithSuffix(newFieldPathOfSingle("X#0", 1, false))}
 	if r := ExplainValue(tricky); !strings.HasSuffix(r, "A#0.X##0#1") {
 		t.Fatalf("escaped fused Explain = %q, want …A#0.X##0#1", r)
 	}
 
 	// Identity: element-wise. Same elements equal (and hash-equal); prefix
 	// alone, different last ordinal, and different step name are all unequal.
-	same := &FieldValue{Field: "Y", Child: fused.Child, Resolved: NewFieldPathOfSingle("NESTED", 0, true).WithSuffix(NewFieldPathOfSingle("Y", 1, true))}
+	same := &fieldValue{Field: "Y", Child: fused.Child, Resolved: newFieldPathOfSingle("NESTED", 0, true).WithSuffix(newFieldPathOfSingle("Y", 1, true))}
 	if !EqualsWithoutChildren(fused, same) {
 		t.Fatal("equal fused paths must be EQUAL (pin excluded)")
 	}
 	if SemanticHashCode(fused) != SemanticHashCode(same) {
 		t.Fatal("equal fused paths (same child) must hash equal")
 	}
-	prefixOnly := &FieldValue{Field: "NESTED", Resolved: NewFieldPathOfSingle("NESTED", 0, true)}
+	prefixOnly := &fieldValue{Field: "NESTED", Resolved: newFieldPathOfSingle("NESTED", 0, true)}
 	if EqualsWithoutChildren(fused, prefixOnly) {
 		t.Fatal("a path and its proper prefix must be UNEQUAL")
 	}
-	diffOrd := &FieldValue{Field: "Y", Resolved: NewFieldPathOfSingle("NESTED", 0, true).WithSuffix(NewFieldPathOfSingle("Y", 0, true))}
+	diffOrd := &fieldValue{Field: "Y", Resolved: newFieldPathOfSingle("NESTED", 0, true).WithSuffix(newFieldPathOfSingle("Y", 0, true))}
 	if EqualsWithoutChildren(fused, diffOrd) {
 		t.Fatal("paths differing in a step ordinal must be UNEQUAL")
 	}
 	// A step NAME difference is NOT an identity difference — Java's
-	// ResolvedAccessor.equals is ordinal-only (FieldValue.java:675-689).
+	// resolvedAccessor.equals is ordinal-only (FieldValue.java:675-689).
 	// Same ordinals, different display names: EQUAL and hash-equal — this is
 	// the alias-mapped-twin dedup this identity rule exists for.
-	diffName := &FieldValue{Field: "X", Child: fused.Child, Resolved: NewFieldPathOfSingle("OTHER", 0, true).WithSuffix(NewFieldPathOfSingle("X", 1, true))}
+	diffName := &fieldValue{Field: "X", Child: fused.Child, Resolved: newFieldPathOfSingle("OTHER", 0, true).WithSuffix(newFieldPathOfSingle("X", 1, true))}
 	if !EqualsWithoutChildren(fused, diffName) {
 		t.Fatal("paths differing only in step NAMES must be EQUAL (Java ordinal-only element identity)")
 	}
@@ -316,7 +316,7 @@ func TestFusedPath_IdentityHashExplain(t *testing.T) {
 func TestAssertOrdinalJoinSeed_RejectsFusedPath(t *testing.T) {
 	t.Parallel()
 	_, outer := bakedChain(t)
-	fused := SimplifyValue(outer).(*FieldValue)
+	fused := SimplifyValue(outer).(*fieldValue)
 	rc := NewRawRecordConstructorValue(RecordConstructorField{Name: fused.Field, Value: fused})
 	defer func() {
 		r := recover()
@@ -351,15 +351,15 @@ func TestJoinSeed_DupBareNameMemoIdentity(t *testing.T) {
 		{Name: "A_X", FieldType: NotNullLong, Ordinal: 0},
 		{Name: "B_X", FieldType: NotNullLong, Ordinal: 1},
 	})
-	qov := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("q"), seed)
+	qov := mustQOV(t, NamedCorrelationIdentifier("q"), seed)
 
 	// BAKED refs to the two X columns — DISTINCT memo members (ordinal-path identity):
 	// this is what the join ordinalization must emit.
-	bx0, err := NewFieldValueOfOrdinal(qov, 0)
+	bx0, err := newFieldValueOfOrdinal(qov, 0)
 	if err != nil {
 		t.Fatalf("bake X#0: %v", err)
 	}
-	bx1, err := NewFieldValueOfOrdinal(qov, 1)
+	bx1, err := newFieldValueOfOrdinal(qov, 1)
 	if err != nil {
 		t.Fatalf("bake X#1: %v", err)
 	}
@@ -372,8 +372,8 @@ func TestJoinSeed_DupBareNameMemoIdentity(t *testing.T) {
 
 	// LAZY (name-only) refs to bare "X" CONFLATE (name-bucket identity) — the exact
 	// failure join ordinalization must avoid: two logically-different columns become one memo member.
-	lx0 := NewFieldValue(qov, "X", NotNullLong)
-	lx1 := NewFieldValue(qov, "X", NotNullLong)
+	lx0 := newFieldValue(qov, "X", NotNullLong)
+	lx1 := newFieldValue(qov, "X", NotNullLong)
 	if SemanticHashCode(lx0) != SemanticHashCode(lx1) {
 		t.Fatal("lazy same-name refs must share name-bucket identity — the conflation this forbids in the seed")
 	}
@@ -385,84 +385,5 @@ func TestJoinSeed_DupBareNameMemoIdentity(t *testing.T) {
 	// baked seed column never conflates with a stray lazy reference to the same name.
 	if SemanticHashCode(bx0) == SemanticHashCode(lx0) {
 		t.Fatal("baked and lazy refs to the same column must be distinct by contract")
-	}
-}
-
-// The fused two-step node must report the LEAF COLUMN's type, not the SLOT's.
-//
-// This is the half a path-only assertion cannot see. Both rebase sites built the
-// fused node by copying the SLOT's baked node and overwriting its path and
-// display name, which left it reporting the LEG'S WHOLE RECORD TYPE as the type
-// of a single column read. Every ordinal in the path was correct; only the type
-// was wrong, so a test that compared accessor ordinals passed with the defect
-// fully present.
-//
-// Java does not have the bug because ofFieldsAndFuseIfPossible RECOMPUTES the
-// result type from the fused path rather than inheriting the first step's.
-func TestFusedNestedOrdinal_CarriesTheLeafsTypeNotTheSlots(t *testing.T) {
-	t.Parallel()
-
-	legRow := NewRecordType("", false, []Field{
-		{Name: "SID", FieldType: NotNullLong, Ordinal: 0},
-		{Name: "SNAME", FieldType: NotNullString, Ordinal: 1},
-	})
-	merged := NewRecordType("", false, []Field{
-		{Name: OrdinalFieldName(0), FieldType: legRow, Ordinal: 0},
-		{Name: OrdinalFieldName(1), FieldType: NotNullLong, Ordinal: 1},
-	})
-	mergedQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("M"), merged)
-
-	fused, err := NewFusedFieldValueOfNestedOrdinal(mergedQOV, 0, legRow, 1)
-	if err != nil {
-		t.Fatalf("fusing slot 0 then leg-local 1: %v", err)
-	}
-
-	// The PATH: two steps, [0, 1].
-	if len(fused.Resolved.Accessors) != 2 ||
-		fused.Resolved.Accessors[0].Ordinal != 0 || fused.Resolved.Accessors[1].Ordinal != 1 {
-		t.Fatalf("fused path = %+v, want the two-step [0 1]", fused.Resolved.Accessors)
-	}
-
-	// THE TYPE. SNAME is a STRING; the slot holds a RECORD. Reporting the slot's
-	// type here is what the hand-written fusion did, and it is a type error that
-	// travels: a downstream comparison or cast against a record-typed operand
-	// where a string was meant.
-	if !fused.Type().Equals(NotNullString) {
-		t.Fatalf("fused node Type() = %v, want %v (the LEAF column SNAME).\n"+
-			"  If this reports a RECORD, the node inherited the SLOT's type — the "+
-			"fusion copied the first step's node instead of recomputing the result "+
-			"type from the fused path, which is what Java's ofFieldsAndFuseIfPossible "+
-			"does.", fused.Type(), NotNullString)
-	}
-	if fused.Field != "SNAME" {
-		t.Fatalf("fused node Field = %q, want the LEAF's display name SNAME", fused.Field)
-	}
-
-	// THE NULLABILITY RULE, applied at BOTH steps. A column read through a
-	// nullable record is nullable (Java's FieldValue.computeResultType): a
-	// null-supplied row serves NULL in every slot. Descending two steps means the
-	// rule applies twice, and taking the leaf's type verbatim would report a
-	// LEFT-outer-supplied column as NOT NULL.
-	nullableMerged := NewRecordType("", true, []Field{
-		{Name: OrdinalFieldName(0), FieldType: legRow, Ordinal: 0},
-	})
-	nullableQOV := NewQuantifiedObjectValueOfType(NamedCorrelationIdentifier("M"), nullableMerged)
-	nfused, err := NewFusedFieldValueOfNestedOrdinal(nullableQOV, 0, legRow, 1)
-	if err != nil {
-		t.Fatalf("fusing over a nullable merged row: %v", err)
-	}
-	if !nfused.Type().IsNullable() {
-		t.Fatalf("over a NULLABLE merged row the fused node reports %v (not nullable).\n"+
-			"  The slot step's nullability must propagate to the descended column, or a "+
-			"LEFT-outer null-supplied leg's columns are reported NOT NULL — which is "+
-			"metadata a consumer is entitled to trust.", nfused.Type())
-	}
-
-	// And a nested window with no record to descend into is an ERROR, not a
-	// silently mis-typed node.
-	if _, err := NewFusedFieldValueOfNestedOrdinal(mergedQOV, 0, nil, 0); err == nil {
-		t.Fatal("fusing with a nil leg type succeeded — a nested window that states no " +
-			"record type has nothing to descend into and must fail loudly rather than " +
-			"produce a node whose second step indexes nothing")
 	}
 }

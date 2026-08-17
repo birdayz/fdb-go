@@ -48,6 +48,75 @@ func hazardEqRange(t *testing.T) *predicates.ComparisonRange {
 	return predicates.EmptyComparisonRange().Merge(&c).Range
 }
 
+func hazardScan(t testing.TB, recordType string) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{recordType}, values.NewRecordType(
+		recordType, false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		},
+	))
+}
+
+func hazardFlowedValue(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	flowedValue, flowedErr := quantifier.RequireFlowedObjectValue()
+	return mustConstruct(t, flowedValue, flowedErr)
+}
+
+func hazardSelect(
+	t testing.TB,
+	resultValue values.Value,
+	quantifiers []expressions.Quantifier,
+	queryPredicates []predicates.QueryPredicate,
+) *expressions.SelectExpression {
+	t.Helper()
+	selectValue, selectErr := expressions.NewSelectExpression(
+		resultValue, quantifiers, queryPredicates)
+	return mustConstruct(t, selectValue, selectErr)
+}
+
+func hazardProjection(
+	t testing.TB,
+	projectedValues []values.Value,
+	inner expressions.Quantifier,
+) *expressions.LogicalProjectionExpression {
+	t.Helper()
+	projectionValue, projectionErr := expressions.NewLogicalProjectionExpression(
+		projectedValues, inner)
+	return mustConstruct(t, projectionValue, projectionErr)
+}
+
+func hazardExactRowProjection(
+	t testing.TB,
+	inner expressions.Quantifier,
+) *expressions.LogicalProjectionExpression {
+	t.Helper()
+	root := hazardFlowedValue(t, inner)
+	recordType, ok := root.FlowedType().(*values.RecordType)
+	if !ok {
+		t.Fatalf("hazard projection root type = %T, want exact record", root.FlowedType())
+	}
+	projected := make([]values.Value, len(recordType.Fields))
+	for i := range recordType.Fields {
+		field, err := values.ResolveFieldOrdinals(root, []int{i})
+		projected[i] = mustConstruct(t, field, err)
+	}
+	return hazardProjection(t, projected, inner)
+}
+
+func hazardFilter(
+	t testing.TB,
+	queryPredicates []predicates.QueryPredicate,
+	inner expressions.Quantifier,
+) *expressions.LogicalFilterExpression {
+	t.Helper()
+	filterValue, filterErr := expressions.NewLogicalFilterExpression(queryPredicates, inner)
+	return mustConstruct(t, filterValue, filterErr)
+}
+
 // TestGetBoundParameterPrefixMap_DelegatesToCandidate pins RFC-190 190.4c:
 // what counts as a usable scan prefix is the CANDIDATE's decision, so
 // PartialMatch must delegate to MatchCandidate.ComputeBoundParameterPrefixMap
@@ -73,7 +142,7 @@ func TestGetBoundParameterPrefixMap_DelegatesToCandidate(t *testing.T) {
 
 	var saw map[values.CorrelationIdentifier]*predicates.ComparisonRange
 	calls := 0
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanExpr := hazardScan(t, "T")
 	mi := NewRegularMatchInfo(bindings, nil, nil, nil, nil, nil, nil, nil)
 	pm := NewPartialMatch(
 		EmptyAliasMap(),
@@ -110,7 +179,7 @@ func TestGetBoundParameterPrefixMap_DelegatesToCandidate(t *testing.T) {
 func TestGetBoundParameterPrefixMap_NoCandidate(t *testing.T) {
 	t.Parallel()
 
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanExpr := hazardScan(t, "T")
 	mi := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 	pm := NewPartialMatch(
 		EmptyAliasMap(), nil,
@@ -151,9 +220,10 @@ func TestGetCompensatedAliases_IncludesPredicateOwnedLocalAliases(t *testing.T) 
 	existQ := namedExistentialQuantifier("qe")
 
 	// An EXISTS predicate correlated to the (unmatched) existential quantifier.
-	existsPred := predicates.NewExistentialAlias(existAlias)
-	sel := expressions.NewSelectExpression(
-		nil,
+	existsPred := mustExistentialAlias(t, existAlias)
+	sel := hazardSelect(
+		t,
+		hazardFlowedValue(t, forEachQ),
 		[]expressions.Quantifier{forEachQ, existQ},
 		[]predicates.QueryPredicate{existsPred},
 	)
@@ -204,11 +274,11 @@ func TestGetCompensatedAliases_SeesRangeComparandCorrelations(t *testing.T) {
 	// comparand buried in the range constraint.
 	comparand := predicates.Comparison{
 		Type:    predicates.ComparisonGreaterThan,
-		Operand: values.NewQuantifiedObjectValue(rangeAlias),
+		Operand: hazardFlowedValue(t, rangeSourceQ),
 	}
 	rc := predicates.NewRangeConstraints(nil, []predicates.Comparison{comparand})
 	rangePred := predicates.NewPredicateWithValueAndRanges(
-		values.NewQuantifiedObjectValue(forEachQ.GetAlias()),
+		hazardFlowedValue(t, forEachQ),
 		[]*predicates.RangeConstraints{rc},
 	)
 
@@ -222,8 +292,9 @@ func TestGetCompensatedAliases_SeesRangeComparandCorrelations(t *testing.T) {
 			"deciding which quantifiers to retain will leave it dangling")
 	}
 
-	sel := expressions.NewSelectExpression(
-		nil,
+	sel := hazardSelect(
+		t,
+		hazardFlowedValue(t, forEachQ),
 		[]expressions.Quantifier{forEachQ, rangeSourceQ},
 		[]predicates.QueryPredicate{rangePred},
 	)
@@ -253,10 +324,11 @@ func TestGetCompensatedAliases_ExcludesForeignPredicateCorrelations(t *testing.T
 
 	foreign := values.NamedCorrelationIdentifier("outer_not_ours")
 	forEachQ := namedForEachQuantifier("q1")
-	foreignPred := predicates.NewExistentialAlias(foreign)
+	foreignPred := mustExistentialAlias(t, foreign)
 
-	sel := expressions.NewSelectExpression(
-		nil,
+	sel := hazardSelect(
+		t,
+		hazardFlowedValue(t, forEachQ),
 		[]expressions.Quantifier{forEachQ},
 		[]predicates.QueryPredicate{foreignPred},
 	)
@@ -366,8 +438,7 @@ func TestNestPullUp_FailsClosedOnNonSingletonCandidateRef(t *testing.T) {
 	alias := values.NamedCorrelationIdentifier("cand")
 
 	// Singleton reference: the chain builds.
-	single := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	single := expressions.InitialOf(hazardScan(t, "T"))
 	mi := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
 	pmSingle := NewPartialMatch(
 		EmptyAliasMap(), stubMatchCandidate{name: "idx"},
@@ -378,9 +449,8 @@ func TestNestPullUp_FailsClosedOnNonSingletonCandidateRef(t *testing.T) {
 	}
 
 	// Two members: which one was matched is unknowable, so fail closed.
-	multi := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
-	if !multi.Insert(expressions.NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType)) {
+	multi := expressions.InitialOf(hazardScan(t, "T"))
+	if !multi.Insert(hazardScan(t, "U")) {
 		t.Fatal("setup: second member not inserted")
 	}
 	if len(multi.AllMembers()) != 2 {
@@ -425,14 +495,11 @@ func TestNestPullUp_FailsClosedOnNonSingletonCandidateRef(t *testing.T) {
 func TestNestPullUp_AdjustedChainBuildsOuterRootAndInnerCurrent(t *testing.T) {
 	t.Parallel()
 
-	innerScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	innerScan := hazardScan(t, "T")
 	innerRef := expressions.InitialOf(innerScan)
 	innerAlias := values.NamedCorrelationIdentifier("candidate_inner")
 	outerQ := expressions.NamedForEachQuantifier(innerAlias, innerRef)
-	outerProjection := expressions.NewLogicalProjectionExpression(
-		[]values.Value{outerQ.GetFlowedObjectValue()},
-		outerQ,
-	)
+	outerProjection := hazardExactRowProjection(t, outerQ)
 	outerRef := expressions.InitialOf(outerProjection)
 
 	regular := NewRegularMatchInfo(
@@ -464,12 +531,12 @@ func TestNestPullUp_AdjustedChainBuildsOuterRootAndInnerCurrent(t *testing.T) {
 
 	assertPulledToTop := func(label string, pulled values.Value) {
 		t.Helper()
-		qov, ok := pulled.(*values.QuantifiedObjectValue)
+		qov, ok := values.AsQuantifiedObjectValue(pulled)
 		if !ok {
-			t.Fatalf("%s pulled to %T, want *QuantifiedObjectValue", label, pulled)
+			t.Fatalf("%s pulled to %T, want exact QuantifiedObjectValue", label, pulled)
 		}
-		if qov.Correlation != topAlias {
-			t.Fatalf("%s pulled to alias %q, want %q", label, qov.Correlation.Name(), topAlias.Name())
+		if qov.Correlation() != topAlias {
+			t.Fatalf("%s pulled to alias %q, want %q", label, qov.Correlation().Name(), topAlias.Name())
 		}
 	}
 
@@ -492,14 +559,11 @@ func TestNestPullUp_AdjustedChainBuildsOuterRootAndInnerCurrent(t *testing.T) {
 func TestCompensateCompleteMatch_AdjustedResultUsesWrapperMapAndRoot(t *testing.T) {
 	t.Parallel()
 
-	innerScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	innerScan := hazardScan(t, "T")
 	innerRef := expressions.InitialOf(innerScan)
 	innerAlias := values.NamedCorrelationIdentifier("candidate_inner")
 	outerQ := expressions.NamedForEachQuantifier(innerAlias, innerRef)
-	outerProjection := expressions.NewLogicalProjectionExpression(
-		[]values.Value{outerQ.GetFlowedObjectValue()},
-		outerQ,
-	)
+	outerProjection := hazardExactRowProjection(t, outerQ)
 	outerRef := expressions.InitialOf(outerProjection)
 
 	// This value cannot be pulled through the outer projection. If
@@ -536,7 +600,7 @@ func TestCompensateCompleteMatch_AdjustedResultUsesWrapperMapAndRoot(t *testing.
 		EmptyGroupByMappings(),
 	)
 
-	queryScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	queryScan := hazardScan(t, "T")
 	queryRef := expressions.InitialOf(queryScan)
 	pm := NewPartialMatch(
 		EmptyAliasMap(),
@@ -572,18 +636,16 @@ func TestNestPullUp_AdjustedLevelRequiresOneQuantifier(t *testing.T) {
 	}{
 		{
 			name: "zero",
-			expr: expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
+			expr: hazardScan(t, "T"),
 		},
 		{
 			name: "two",
-			expr: expressions.NewSelectExpression(
-				nil,
-				[]expressions.Quantifier{
-					namedForEachQuantifier("q1"),
-					namedForEachQuantifier("q2"),
-				},
-				nil,
-			),
+			expr: func() expressions.RelationalExpression {
+				q1 := namedForEachQuantifier("q1")
+				q2 := namedForEachQuantifier("q2")
+				return hazardSelect(t, hazardFlowedValue(t, q1),
+					[]expressions.Quantifier{q1, q2}, nil)
+			}(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -606,7 +668,7 @@ func TestNestPullUp_AdjustedLevelRequiresOneQuantifier(t *testing.T) {
 // very expression the candidate reference holds).
 func hazardScanPM(t *testing.T, preds []predicates.QueryPredicate, pMap *PredicateMultiMap) *PartialMatchImpl {
 	t.Helper()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := hazardScan(t, "T")
 	ref := expressions.InitialOf(scan)
 	rv := scan.GetResultValue()
 	mi := NewRegularMatchInfo(
@@ -616,7 +678,7 @@ func hazardScanPM(t *testing.T, preds []predicates.QueryPredicate, pMap *Predica
 	)
 	var queryExpr expressions.RelationalExpression = scan
 	if len(preds) > 0 {
-		queryExpr = expressions.NewLogicalFilterExpression(
+		queryExpr = hazardFilter(t,
 			preds, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
 	}
 	return NewPartialMatch(
@@ -643,7 +705,7 @@ func TestCompensate_ThreadsParentPullUpIntoChild(t *testing.T) {
 	// captures the pull-up it is invoked with.
 	var capturedPullUp *PullUp
 	var captured bool
-	childPred := predicates.NewExistentialAlias(values.NamedCorrelationIdentifier("unused"))
+	childPred := mustExistentialAlias(t, values.NamedCorrelationIdentifier("unused"))
 	childMapBuilder := NewPredicateMultiMapBuilder()
 	childMapBuilder.Put(childPred, &PredicateMapping{
 		mappingKey: NewMappingKey(childPred, childPred, MappingRegularImpliesCandidate),
@@ -659,7 +721,7 @@ func TestCompensate_ThreadsParentPullUpIntoChild(t *testing.T) {
 	childPM := hazardScanPM(t, []predicates.QueryPredicate{childPred}, childMapBuilder.Build())
 
 	// Parent: a Select with one ForEach quantifier that has the child match.
-	parentScan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	parentScan := hazardScan(t, "T")
 	parentRef := expressions.InitialOf(parentScan)
 	parentRV := parentScan.GetResultValue()
 	qFE := namedForEachQuantifier("qFE")
@@ -674,7 +736,7 @@ func TestCompensate_ThreadsParentPullUpIntoChild(t *testing.T) {
 	)
 	parentMI.SetChildPartialMatch(qFE.GetAlias(), childPM)
 
-	parentSelect := expressions.NewSelectExpression(nil, []expressions.Quantifier{qFE}, nil)
+	parentSelect := hazardSelect(t, hazardFlowedValue(t, qFE), []expressions.Quantifier{qFE}, nil)
 	parentPM := NewPartialMatch(
 		EmptyAliasMap(), stubMatchCandidate{name: "idx"},
 		expressions.InitialOf(parentSelect), parentSelect, parentRef, parentMI,
@@ -768,17 +830,15 @@ func TestCompensate_PropagatesPrimaryKeyDistinctObligation(t *testing.T) {
 	t.Parallel()
 
 	child := hazardScanPM(t, nil, nil)
-	candidateScan := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
+	candidateScan := hazardScan(t, "T")
 	candidateRef := expressions.InitialOf(candidateScan)
 	candidateResult := candidateScan.GetResultValue()
 
 	queryForEach := namedForEachQuantifier("query_for_each")
 	candidateChildAlias := values.NamedCorrelationIdentifier("candidate_child")
-	query := expressions.NewSelectExpression(
-		queryForEach.GetFlowedObjectValue(),
+	query := hazardSelect(
+		t,
+		hazardFlowedValue(t, queryForEach),
 		[]expressions.Quantifier{queryForEach},
 		nil,
 	)
@@ -913,7 +973,10 @@ func TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten(
 			predicateCompensation.Get(right) != nil {
 			t.Fatal("top-level mapping must win before the legacy conjunct fallback")
 		}
-		residuals := predicateCompensation.ApplyCompensations(nil)
+		residuals, compensable := predicateCompensation.ApplyCompensations(nil)
+		if !compensable {
+			t.Fatal("compensation reported it could not be expressed")
+		}
 		if len(residuals) != 1 || residuals[0] != topLevelAnd {
 			t.Fatalf("residuals = %v, want the one original top-level AND", residuals)
 		}
@@ -952,7 +1015,10 @@ func TestCompensate_PrefersTopLevelPredicateMappingBeforeLegacyFlatten(
 			predicateCompensation.Get(right) == nil {
 			t.Fatal("legacy fallback must compensate each mapped leaf exactly once")
 		}
-		residuals := predicateCompensation.ApplyCompensations(nil)
+		residuals, compensable := predicateCompensation.ApplyCompensations(nil)
+		if !compensable {
+			t.Fatal("compensation reported it could not be expressed")
+		}
 		if len(residuals) != 2 || residuals[0] != left || residuals[1] != right {
 			t.Fatalf("residuals = %v, want left and right once in order", residuals)
 		}
@@ -997,7 +1063,7 @@ func TestNestPullUp_RootIsOnlyOwnedWhenNestingStartsAMatch(t *testing.T) {
 	}
 
 	// Incoming MATCH pull-up: continuing an enclosing match — no root here.
-	incoming := ForMatch(nil, alias, expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	incoming := ForMatch(nil, alias, hazardScan(t, "T"))
 	if !incoming.IsMatch() {
 		t.Fatal("setup: ForMatch must produce a match level")
 	}
@@ -1033,10 +1099,10 @@ func TestApply_RetainsQuantifierReferencedOnlyByRangeComparand(t *testing.T) {
 	// residual: qBase.x IN {> QOV(qExist)} — qExist appears ONLY in the range.
 	comparand := predicates.Comparison{
 		Type:    predicates.ComparisonGreaterThan,
-		Operand: values.NewQuantifiedObjectValue(existAlias),
+		Operand: hazardFlowedValue(t, existQ),
 	}
 	residual := predicates.NewPredicateWithValueAndRanges(
-		values.NewQuantifiedObjectValue(baseQ.GetAlias()),
+		hazardFlowedValue(t, baseQ),
 		[]*predicates.RangeConstraints{
 			predicates.NewRangeConstraints(nil, []predicates.Comparison{comparand}),
 		},
@@ -1056,7 +1122,7 @@ func TestApply_RetainsQuantifierReferencedOnlyByRangeComparand(t *testing.T) {
 		t.Fatal("setup: compensation must be possible to reach Apply")
 	}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := hazardScan(t, "T")
 	applied, ok := comp.Apply(scan, nil)
 	if !ok {
 		t.Fatal("Apply unexpectedly failed")

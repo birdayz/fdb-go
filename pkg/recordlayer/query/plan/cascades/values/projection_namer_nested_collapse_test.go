@@ -3,10 +3,11 @@ package values
 import "testing"
 
 // TestProjectionNamerCollapsesANestedPath was a CHARACTERIZATION of two
-// derivation defects. RFC-229 §2.3 closed the second one, so that half is
-// FLIPPED here — it now asserts the fixed property, exactly as the old failure
-// message instructed — and the first half stays a characterization, because
-// §2.3 is deliberately nested-only and does not touch the fallback arm.
+// derivation defects, and is now a pin on both being closed. RFC-229 §2.3
+// closed the nested-path collapse; the pre-bake/post-bake asymmetry outlived it
+// because §2.3 was deliberately nested-only, and is closed now that the
+// composite naming arm mints from the ordinal-free renderer. Each half was
+// flipped by the instruction its own failure message carried.
 //
 // The fixtures are not invented. A fused nested reference really is ONE
 // FieldValue with a multi-accessor `Resolved`, and the `Field` these fixtures
@@ -23,27 +24,32 @@ import "testing"
 func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 	t.Parallel()
 
-	// DEFECT 1 — STILL A CHARACTERIZATION. The same expression renders
-	// differently either side of the bake, because the fallback arm renders
-	// ordinals. Writers and readers agree only if they derive on the same side
-	// of it. RFC-229 §2.3 is nested-only and leaves this arm alone; the mask
-	// that keeps it from reaching a user is isPlainColumnRef in the result-set
-	// layer, pinned separately.
-	lazy := &FieldValue{Field: "N"}
-	baked := &FieldValue{Field: "N", Resolved: &FieldPath{
-		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 0}},
+	// DEFECT 1 — FIXED. The same expression used to render differently either
+	// side of the bake, because the composite arm rendered ordinals: writers and
+	// readers agreed only if they derived on the same side of it. The arm mints
+	// from the ordinal-free renderer now, so the two agree by construction, and
+	// isPlainColumnRef in the result-set layer — which used to be the only thing
+	// keeping the asymmetry off a user's screen — is belt beside braces.
+	lazy := &fieldValue{Field: "N"}
+	baked := &fieldValue{Field: "N", Resolved: &fieldPath{
+		Accessors: []resolvedAccessor{{Field: "N", Ordinal: 0}},
 	}}
 	one := &ConstantValue{Value: int64(1)}
 	lazyExpr := &ArithmeticValue{Left: lazy, Right: one, Op: OpAdd}
 	bakedExpr := &ArithmeticValue{Left: baked, Right: one, Op: OpAdd}
 
 	preBake, postBake := ProjectionColumnName(lazyExpr), ProjectionColumnName(bakedExpr)
-	if preBake == postBake {
-		t.Fatalf("a computed projection now renders %q on BOTH sides of the bake.\n"+
-			"  THE ASYMMETRY THIS PINS IS FIXED — the fallback arm no longer leaks "+
-			"ordinals into an output name. Replace this half with an assertion that "+
-			"the two agree, and drop the pre/post-bake language from RFC-229 §0.",
-			preBake)
+	if preBake != postBake {
+		t.Fatalf("a computed projection renders %q pre-bake and %q post-bake — an "+
+			"output column's NAME must not depend on whether its operands have been "+
+			"bound to ordinals yet, or a writer and a reader that derive on opposite "+
+			"sides of the bake stop finding each other's slot", preBake, postBake)
+	}
+	// Not merely "equal": equal is satisfied by a renderer that lost the field
+	// names altogether, and the ordinal-free spelling is the one the executor
+	// keys the slot under.
+	if preBake != "(N + 1)" {
+		t.Fatalf("a computed projection names its slot %q, want %q", preBake, "(N + 1)")
 	}
 
 	// The plain-field arm is the control: it returns Field verbatim, so it has no
@@ -68,11 +74,11 @@ func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 	// DEFECT 2 — FIXED (RFC-229 §2.3). Two references reading DIFFERENT leaves
 	// of one struct root used to take the SAME output name, because the namer
 	// read the flat root. They now take their resolved PATH.
-	nested := &FieldValue{Field: "N", Resolved: &FieldPath{
-		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "SK", Ordinal: 1}},
+	nested := &fieldValue{Field: "N", Resolved: &fieldPath{
+		Accessors: []resolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "SK", Ordinal: 1}},
 	}}
-	nested2 := &FieldValue{Field: "N", Resolved: &FieldPath{
-		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "CO", Ordinal: 2}},
+	nested2 := &fieldValue{Field: "N", Resolved: &fieldPath{
+		Accessors: []resolvedAccessor{{Field: "N", Ordinal: 0}, {Field: "CO", Ordinal: 2}},
 	}}
 
 	a, b := ProjectionColumnName(nested), ProjectionColumnName(nested2)
@@ -135,9 +141,9 @@ func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 	// `Project([N#1.SK#0, N#1.CO#1], Scan(T1))` for the single-source form.
 	// (`SELECT t1.n.sk ...` — the three-part qualified spelling — is refused
 	// 42703 and is not how this shape is reached.)
-	qualified := &FieldValue{Field: "N", Resolved: &FieldPath{
-		Accessors: []ResolvedAccessor{{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0}},
-	}, Child: NewQuantifiedObjectValue(NamedCorrelationIdentifier("T1"))}
+	qualified := &fieldValue{Field: "N", Resolved: &fieldPath{
+		Accessors: []resolvedAccessor{{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0}},
+	}, Child: mustQOV(t, NamedCorrelationIdentifier("T1"))}
 	if got, want := ProjectionColumnName(qualified), "T1.N.SK"; got != want {
 		t.Fatalf("a QUALIFIED nested projection names its slot %q, want %q.\n"+
 			"  The qualifier is KEPT deliberately: over `FROM t1, t2` where both "+
@@ -150,7 +156,7 @@ func TestProjectionNamerCollapsesANestedPath(t *testing.T) {
 	}
 	// What the qualifier buys, asserted rather than argued.
 	otherSource := *qualified
-	otherSource.Child = NewQuantifiedObjectValue(NamedCorrelationIdentifier("T2"))
+	otherSource.Child = mustQOV(t, NamedCorrelationIdentifier("T2"))
 	if a, b := ProjectionColumnName(qualified), ProjectionColumnName(&otherSource); a == b {
 		t.Fatalf("the same nested path off TWO sources both name %q — the "+
 			"cross-source collapse the qualifier prevents is back", a)

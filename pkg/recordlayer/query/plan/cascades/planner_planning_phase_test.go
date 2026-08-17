@@ -11,6 +11,41 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustPlanningPhaseConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planning-phase fixture: " + err.Error())
+	}
+	return value
+}
+
+func planningPhaseRowType() values.Type {
+	return values.NewRecordType("PlanningPhaseRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "active", FieldType: values.NotNullBoolean, Ordinal: 1},
+	})
+}
+
+func planningPhaseScan(recordTypes ...string) *expressions.FullUnorderedScanExpression {
+	return mustPlanningPhaseConstruct(expressions.NewFullUnorderedScanExpression(
+		recordTypes, planningPhaseRowType()))
+}
+
+func planningPhaseRoot(q expressions.Quantifier) values.QuantifiedObjectValue {
+	flowedType := mustPlanningPhaseConstruct(q.GetFlowedObjectType())
+	return mustPlanningPhaseConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func planningPhaseField(q expressions.Quantifier, ordinal int) values.Value {
+	return mustPlanningPhaseConstruct(values.ResolveFieldOrdinals(
+		planningPhaseRoot(q), []int{ordinal}))
+}
+
+func planningPhasePK() []values.Value {
+	root := mustPlanningPhaseConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("planning_phase_pk"), planningPhaseRowType()))
+	return []values.Value{mustPlanningPhaseConstruct(values.ResolveOrdinalSeedField(root, 0))}
+}
+
 // planWithImplRules runs the full planner pipeline: REWRITING (Explore)
 // + PLANNING (implementation rules) on the given root Reference.
 // Returns the planner for further inspection (Members, properties).
@@ -63,11 +98,11 @@ func (c uniqueAbsorptionPlanContext) GetPrimaryKeyColumns(recordType string) []s
 func TestPlanner_PlanningPhase_UniqueOverScan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := planningPhaseScan("T")
 	scanRef := expressions.InitialOf(scan)
-	unique := expressions.NewLogicalUniqueExpression(
+	unique := mustPlanningPhaseConstruct(expressions.NewLogicalUniqueExpression(
 		expressions.ForEachQuantifier(scanRef),
-	)
+	))
 	rootRef := expressions.InitialOf(unique)
 
 	planWithImplRulesAndContext(
@@ -119,8 +154,10 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	// to Go's sibling concat-union implementation and vanish from
 	// AllMembers(). Fire the rule directly to pin that it FORMS.
 	{
-		wA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-		wB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+		wA := mustPlanningPhaseConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"A"}, planningPhaseRowType(), false))
+		wB := mustPlanningPhaseConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"B"}, planningPhaseRowType(), false))
 		refA := expressions.InitialOf(wA)
 		pmA := NewPlanPropertiesMap()
 		pmA.Add(wA)
@@ -129,13 +166,13 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 		pmB := NewPlanPropertiesMap()
 		pmB.Add(wB)
 		refB.SetPlanProperties(pmB)
-		outerRef := expressions.InitialOf(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		outerRef := expressions.InitialOf(mustPlanningPhaseConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 			expressions.ForEachQuantifier(refA),
 			expressions.ForEachQuantifier(refB),
-		}))
+		})))
 
 		var formed *plans.RecordQueryUnorderedUnionPlan
-		for _, y := range FireImplementationRule(NewImplementUnorderedUnionRule(), outerRef) {
+		for _, y := range mustFireImplementationRule(t, NewImplementUnorderedUnionRule(), outerRef) {
 			if w, ok := y.(*plans.RecordQueryUnorderedUnionPlan); ok {
 				formed = w
 				break
@@ -153,12 +190,12 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 	// WINNER SHAPE: after the full planner run, SOME physical union
 	// implementation (either concat variant — whichever the cost model
 	// keeps) must survive in the root's members with a valid 2-child plan.
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	scanA := planningPhaseScan("A")
+	scanB := planningPhaseScan("B")
+	union := mustPlanningPhaseConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(expressions.InitialOf(scanA)),
 		expressions.ForEachQuantifier(expressions.InitialOf(scanB)),
-	})
+	}))
 	rootRef := expressions.InitialOf(union)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
@@ -205,23 +242,23 @@ func TestPlanner_PlanningPhase_UnorderedUnionOverTwoScans(t *testing.T) {
 func TestPlanner_PlanningPhase_SelectWithPredicateOverScan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := planningPhaseScan("T")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
 	// Result value = QuantifiedObjectValue referencing the single
 	// quantifier's alias, so isQuantifiedObjectValueFor returns true
 	// and the rule yields a PredicatesFilter (not a Map).
-	rv := values.NewQuantifiedObjectValue(q.GetAlias())
+	rv := planningPhaseRoot(q)
 
 	// WHERE active = true — a ComparisonPredicate.
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "active", Typ: values.TypeBool},
+		planningPhaseField(q, 1),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, true),
 	)
 
-	sel := expressions.NewSelectExpression(rv, []expressions.Quantifier{q},
-		[]predicates.QueryPredicate{pred})
+	sel := mustPlanningPhaseConstruct(expressions.NewSelectExpression(
+		rv, []expressions.Quantifier{q}, []predicates.QueryPredicate{pred}))
 	rootRef := expressions.InitialOf(sel)
 
 	// Explicitly include ImplementSimpleSelectRule (currently disabled in
@@ -267,7 +304,7 @@ func TestPlanner_PlanningPhase_SelectWithPredicateOverScan(t *testing.T) {
 func TestPlanner_PlanningPhase_FinalizeExpressions_LeafExpression(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Leaf"}, values.UnknownType)
+	scan := planningPhaseScan("Leaf")
 	rootRef := expressions.InitialOf(scan)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
@@ -301,11 +338,11 @@ func TestPlanner_PlanningPhase_FinalizeExpressions_LeafExpression(t *testing.T) 
 func TestPlanner_PlanningPhase_PropertiesComputedOnReference(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := planningPhaseScan("T")
 	scanRef := expressions.InitialOf(scan)
-	unique := expressions.NewLogicalUniqueExpression(
+	unique := mustPlanningPhaseConstruct(expressions.NewLogicalUniqueExpression(
 		expressions.ForEachQuantifier(scanRef),
-	)
+	))
 	rootRef := expressions.InitialOf(unique)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
@@ -355,12 +392,12 @@ func TestPlanner_PlanningPhase_PropertiesComputedOnReference(t *testing.T) {
 func TestPlanner_PlanningPhase_AlwaysRuns(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := planningPhaseScan("T")
 	scanRef := expressions.InitialOf(scan)
 	rootRef := expressions.InitialOf(
-		expressions.NewLogicalUniqueExpression(
+		mustPlanningPhaseConstruct(expressions.NewLogicalUniqueExpression(
 			expressions.ForEachQuantifier(scanRef),
-		),
+		)),
 	)
 
 	// No WithImplementationRules — PLANNING still runs (data access,
@@ -385,11 +422,11 @@ func TestPlanner_PlanningPhase_AlwaysRuns(t *testing.T) {
 func TestPlanner_PlanningPhase_MembersPopulated(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := planningPhaseScan("T")
 	scanRef := expressions.InitialOf(scan)
-	unique := expressions.NewLogicalUniqueExpression(
+	unique := mustPlanningPhaseConstruct(expressions.NewLogicalUniqueExpression(
 		expressions.ForEachQuantifier(scanRef),
-	)
+	))
 	rootRef := expressions.InitialOf(unique)
 
 	planWithImplRulesAndContext(
@@ -435,25 +472,23 @@ func TestPlanner_PlanningPhase_MembersPopulated(t *testing.T) {
 func TestCompensationSafeForYieldRequiredUniqueOverPhysicalPlan(t *testing.T) {
 	t.Parallel()
 
-	pk := []values.Value{
-		values.NewFlatFieldValue("ID", values.NotNullLong),
-	}
-	scan := plans.NewRecordQueryScanPlan(
+	pk := planningPhasePK()
+	scan := mustPlanningPhaseConstruct(plans.NewRecordQueryScanPlan(
 		[]string{"T"},
-		values.UnknownType,
+		planningPhaseRowType(),
 		false,
-	).WithPrimaryKey(pk)
+	)).WithPrimaryKey(pk)
 	childRef := expressions.FinalOf(scan)
-	required := expressions.NewRequiredLogicalUniqueExpression(
+	required := mustPlanningPhaseConstruct(expressions.NewRequiredLogicalUniqueExpression(
 		expressions.ForEachQuantifier(childRef),
-	)
+	))
 	if !compensationSafeForYield(required) {
 		t.Fatal("required PK-distinct compensation over a physical plan was stranded as a logical final")
 	}
 
-	ordinary := expressions.NewLogicalUniqueExpression(
+	ordinary := mustPlanningPhaseConstruct(expressions.NewLogicalUniqueExpression(
 		expressions.ForEachQuantifier(childRef),
-	)
+	))
 	if compensationSafeForYield(ordinary) {
 		t.Fatal("ordinary query Unique unexpectedly entered the data-access compensation exception")
 	}
@@ -462,17 +497,15 @@ func TestCompensationSafeForYieldRequiredUniqueOverPhysicalPlan(t *testing.T) {
 func TestPlanner_PlanningPhase_ImplementsRequiredUniqueOverPinnedPlan(t *testing.T) {
 	t.Parallel()
 
-	pk := []values.Value{
-		values.NewFlatFieldValue("ID", values.NotNullLong),
-	}
-	scan := plans.NewRecordQueryScanPlan(
+	pk := planningPhasePK()
+	scan := mustPlanningPhaseConstruct(plans.NewRecordQueryScanPlan(
 		[]string{"T"},
-		values.UnknownType,
+		planningPhaseRowType(),
 		false,
-	).WithPrimaryKey(pk)
-	required := expressions.NewRequiredLogicalUniqueExpression(
+	)).WithPrimaryKey(pk)
+	required := mustPlanningPhaseConstruct(expressions.NewRequiredLogicalUniqueExpression(
 		expressions.ForEachQuantifier(expressions.FinalOf(scan)),
-	)
+	))
 	rootRef := expressions.InitialOf(required)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())

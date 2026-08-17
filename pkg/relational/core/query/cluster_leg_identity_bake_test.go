@@ -30,12 +30,12 @@ func collidingClusterPullUp() *clusterPullUp {
 	legA := clusterLegSpan{
 		binding: "A",
 		start:   0,
-		typ:     &values.RecordType{Fields: []values.Field{{Name: "B.C", Ordinal: 0}}},
+		typ:     &values.RecordType{Fields: []values.Field{{Name: "B.C", Ordinal: 0, FieldType: values.NotNullLong}}},
 	}
 	legAB := clusterLegSpan{
 		binding: "A.B",
 		start:   1,
-		typ:     &values.RecordType{Fields: []values.Field{{Name: "C", Ordinal: 0}}},
+		typ:     &values.RecordType{Fields: []values.Field{{Name: "C", Ordinal: 0, FieldType: values.NotNullLong}}},
 	}
 	return &clusterPullUp{
 		outerCorr: values.NamedCorrelationIdentifier("outer"),
@@ -51,6 +51,14 @@ func collidingClusterPullUp() *clusterPullUp {
 // that pull-up: both legs' columns joined, in leg order.
 var seedCols = []string{"A.B.C", "A.B.C"}
 
+func collidingClusterSeedQOV(t testing.TB) values.QuantifiedObjectValue {
+	t.Helper()
+	return exactTestQOV(t, "SEED", &values.RecordType{Fields: []values.Field{
+		{Name: seedCols[0], Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: seedCols[1], Ordinal: 1, FieldType: values.NotNullLong},
+	}})
+}
+
 // TestClusterLegBake_ResolvesTheSecondLegThroughItsIdentity is the pin. The two
 // legs' columns are indistinguishable by name; only the identity separates them.
 func TestClusterLegBake_ResolvesTheSecondLegThroughItsIdentity(t *testing.T) {
@@ -63,21 +71,31 @@ func TestClusterLegBake_ResolvesTheSecondLegThroughItsIdentity(t *testing.T) {
 		t.Fatalf("fixture: seed columns %v do not collide", seedCols)
 	}
 
-	ref := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A.B")),
-		"C", values.UnknownType)
+	leg := pu.legByBinding["A.B"]
+	ref := exactTestField(t, exactTestQOV(t, "A.B", leg.typ), 0)
 
-	out := bakeClusterLegRefs(ref, pu, seedCols)
-	fv, isFV := out.(*values.FieldValue)
-	if !isFV || fv.Resolved == nil {
+	out := bakeClusterLegRefs(ref, pu, collidingClusterSeedQOV(t))
+	fv, isFV := values.AsFieldValue(out)
+	if !isFV || fv.Path() == nil {
 		t.Fatalf("QOV(A.B).C did not bake (%#v) — the identity names exactly one slot, "+
 			"so there is nothing for the bind to decline on", out)
 	}
-	got, ok := fv.OrdinalIn(values.OrdinalDomainOfColumnNames(seedCols))
-	if !ok || got != 1 {
-		t.Fatalf("QOV(A.B).C bound slot (%d,%v), want (1,true) — slot 0 is leg A's "+
+	ordinals := fv.Path().Ordinals()
+	if len(ordinals) != 1 || ordinals[0] != 1 {
+		t.Fatalf("QOV(A.B).C bound path %v, want [1] — slot 0 is leg A's "+
 			"column \"B.C\", which renders to the same text and is a different column",
-			got, ok)
+			ordinals)
+	}
+	owner, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+	if !ok || owner.Correlation() != values.NamedCorrelationIdentifier("SEED") {
+		t.Fatalf("baked owner = %T, want exact SEED QOV", fv.ChildValue())
+	}
+
+	wrongSeed := exactTestQOV(t, "WRONG_SEED", &values.RecordType{Fields: []values.Field{
+		{Name: seedCols[0], Ordinal: 0, FieldType: values.NotNullLong},
+	}})
+	if got := bakeClusterLegRefs(ref, pu, wrongSeed); got != ref {
+		t.Fatalf("missing seed slot mutated the exact leg reference: %T", got)
 	}
 }
 
@@ -88,17 +106,16 @@ func TestClusterLegBake_ResolvesTheFirstLegToo(t *testing.T) {
 	t.Parallel()
 	pu := collidingClusterPullUp()
 
-	ref := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")),
-		"B.C", values.UnknownType)
+	leg := pu.legByBinding["A"]
+	ref := exactTestField(t, exactTestQOV(t, "A", leg.typ), 0)
 
-	fv, isFV := bakeClusterLegRefs(ref, pu, seedCols).(*values.FieldValue)
-	if !isFV || fv.Resolved == nil {
+	fv, isFV := values.AsFieldValue(bakeClusterLegRefs(ref, pu, collidingClusterSeedQOV(t)))
+	if !isFV || fv.Path() == nil {
 		t.Fatalf("QOV(A).\"B.C\" did not bake — a column whose NAME contains a dot is " +
 			"still a column, and its leg is stated by the correlation")
 	}
-	if got, ok := fv.OrdinalIn(values.OrdinalDomainOfColumnNames(seedCols)); !ok || got != 0 {
-		t.Fatalf("QOV(A).\"B.C\" bound slot (%d,%v), want (0,true)", got, ok)
+	if got := fv.Path().Ordinals(); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("QOV(A).\"B.C\" bound path %v, want [0]", got)
 	}
 }
 
@@ -114,11 +131,11 @@ func TestClusterSeedSlot_MirrorsTheSeedBuildersOrder(t *testing.T) {
 	t.Parallel()
 	legA := clusterLegSpan{
 		binding: "A", start: 4,
-		typ: &values.RecordType{Fields: []values.Field{{Name: "X", Ordinal: 0}, {Name: "Y", Ordinal: 1}}},
+		typ: &values.RecordType{Fields: []values.Field{{Name: "X", Ordinal: 0, FieldType: values.NotNullLong}, {Name: "Y", Ordinal: 1, FieldType: values.NotNullLong}}},
 	}
 	legB := clusterLegSpan{
 		binding: "B", start: 9,
-		typ: &values.RecordType{Fields: []values.Field{{Name: "Z", Ordinal: 0}}},
+		typ: &values.RecordType{Fields: []values.Field{{Name: "Z", Ordinal: 0, FieldType: values.NotNullLong}}},
 	}
 	pu := &clusterPullUp{
 		legs:         []clusterLegSpan{legA, legB},

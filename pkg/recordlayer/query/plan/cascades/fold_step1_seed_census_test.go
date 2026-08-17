@@ -1,7 +1,6 @@
 package cascades
 
 import (
-	"strconv"
 	"strings"
 	"testing"
 
@@ -17,16 +16,53 @@ import (
 // and the census's own classification all have to agree on what "a positional
 // merge" is, and the one place that decides is values.IsPositionalMergeRC. A
 // fixture that drifted from it would make every assertion below vacuous.
-func positionalMergeRCOverLegs(legs ...*values.RecordType) *values.RecordConstructorValue {
+func positionalMergeRCOverLegs(
+	t testing.TB,
+	legs ...*values.RecordType,
+) *values.RecordConstructorValue {
+	t.Helper()
 	fields := make([]values.RecordConstructorField, len(legs))
 	for i, rt := range legs {
 		corr := values.NamedCorrelationIdentifier(strings.ToUpper(string(rune('A' + i))))
+		qov, err := values.NewQuantifiedObjectValue(corr, rt)
 		fields[i] = values.RecordConstructorField{
 			Name:  values.OrdinalFieldName(i),
-			Value: values.NewQuantifiedObjectValueOfType(corr, rt),
+			Value: mustConstruct(t, qov, err),
 		}
 	}
 	return values.NewRawRecordConstructorValue(fields...)
+}
+
+func foldStep1CensusQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	flowedType values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, flowedType)
+	return mustConstruct(t, qov, err)
+}
+
+func foldStep1CensusScan(
+	t testing.TB,
+	flowedType values.Type,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryScanPlan([]string{"T"}, flowedType, false)
+	return mustConstruct(t, plan, err)
+}
+
+func foldStep1CensusFlatMap(
+	t testing.TB,
+	leg plans.RecordQueryPlan,
+	resultValue values.Value,
+) *plans.RecordQueryFlatMapPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryFlatMapPlan(
+		leg, leg,
+		values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"),
+		resultValue, false)
+	return mustConstruct(t, plan, err)
 }
 
 // The refused-leg classifier separates the two shapes RFC-200's exact
@@ -43,9 +79,14 @@ func positionalMergeRCOverLegs(legs ...*values.RecordType) *values.RecordConstru
 func TestFoldStep1Census_ClassifiesTheRefusedLegByItsResultValue(t *testing.T) {
 	t.Parallel()
 
-	legA := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}
-	legB := &values.RecordType{Fields: []values.Field{{Name: "QTY", Ordinal: 0}, {Name: "V", Ordinal: 1}}}
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, legA, false)
+	legA := values.NewRecordType("LegA", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	legB := values.NewRecordType("LegB", false, []values.Field{
+		{Name: "QTY", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	scan := foldStep1CensusScan(t, legA)
 
 	for _, tc := range []struct {
 		name string
@@ -54,32 +95,32 @@ func TestFoldStep1Census_ClassifiesTheRefusedLegByItsResultValue(t *testing.T) {
 	}{
 		{
 			name: "positional merge",
-			rv:   positionalMergeRCOverLegs(legA, legB),
+			rv:   positionalMergeRCOverLegs(t, legA, legB),
 			want: foldStep1LegShapePositionalMerge,
 		},
 		{
 			name: "bare QOV identity pass-through",
-			rv:   values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")),
+			rv: foldStep1CensusQOV(
+				t, values.NamedCorrelationIdentifier("A"), legA),
 			want: foldStep1LegShapeBareQOV,
 		},
 		{
 			name: "a NAMED 2-slot RC of bare typed leg QOVs is NOT a merge",
 			rv: values.NewRawRecordConstructorValue(
-				values.RecordConstructorField{Name: "A", Value: values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA)},
-				values.RecordConstructorField{Name: "B", Value: values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), legB)},
+				values.RecordConstructorField{Name: "A", Value: foldStep1CensusQOV(t, values.NamedCorrelationIdentifier("A"), legA)},
+				values.RecordConstructorField{Name: "B", Value: foldStep1CensusQOV(t, values.NamedCorrelationIdentifier("B"), legB)},
 			),
 			want: foldStep1LegShapeRCNotMerge,
 		},
 		{
-			name: "no result value at all",
-			rv:   nil,
+			name: "exact scalar result value",
+			rv:   &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 			want: foldStep1LegShapeOther,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			fm := plans.NewRecordQueryFlatMapPlan(scan, scan,
-				values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), tc.rv, false)
+			fm := foldStep1CensusFlatMap(t, scan, tc.rv)
 			got, witness := classifyDeclinedLeg(fm)
 			if got != tc.want {
 				t.Fatalf("classifyDeclinedLeg = %v, want %v (witness %q) — RFC-200's gate (c) is "+
@@ -95,76 +136,50 @@ func TestFoldStep1Census_ClassifiesTheRefusedLegByItsResultValue(t *testing.T) {
 	}
 }
 
-// The bare-QOV witness must separate TYPED from UNTYPED, which is the whole
-// reason it prints a `typed=` flag at all.
-//
-// The dimension is the one the shape test above cannot reach: both cases below
-// land in foldStep1LegShapeBareQOV, correctly — the bucket is about the result
-// value's SHAPE (a QOV rather than a record constructor), and the typing is the
-// cut WITHIN it. So a test that only asserts the bucket passes with the flag
-// stuck at any constant value, which is exactly the state this found the witness
-// in: it read `Typ != nil`, and no constructible QOV has a nil Typ
-// (NewQuantifiedObjectValue stamps UnknownType; NewQuantifiedObjectValueOfType
-// degrades nil to it), so it printed typed=true for the entire untyped
-// population.
-//
-// This is the instrument the bare-untyped-QOV residue is measured with. Java has
-// no untyped QOV to measure — QuantifiedObjectValue.of requires a Type
-// (QuantifiedObjectValue.java:187) and Quantifier.getFlowedObjectValue derives
-// one unconditionally (Quantifier.java:801-810) — so the Go-side count is the
-// entire statement of the gap, and a witness that cannot see the gap would report
-// it closed while every site still stood.
-func TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped(t *testing.T) {
+// Exact QOV admission has closed the historical typed/untyped split: unresolved
+// roots are rejected at construction, and every admitted QOV reports
+// `typed=true`. The witness must still spell WHICH exact type it carries,
+// because a record row and a scalar both satisfy that boolean but only the row
+// has an arity the ordinal layout could position.
+func TestFoldStep1Census_BareQOVWitnessReportsAdmittedExactTypes(t *testing.T) {
 	t.Parallel()
 
-	legA := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, legA, false)
+	legA := values.NewRecordType("LegA", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	scan := foldStep1CensusScan(t, legA)
 	corr := values.NamedCorrelationIdentifier("A")
 
+	if qov, err := values.NewQuantifiedObjectValue(corr, values.UnknownType); err == nil || qov != nil {
+		t.Fatalf("unresolved QOV admission = (%v, %v), want (nil, error)", qov, err)
+	}
+
 	for _, tc := range []struct {
-		name      string
-		rv        values.Value
-		wantTyped bool
+		name     string
+		rv       values.Value
+		wantType string
 	}{
 		{
-			// The population CQ-68 is about: a result value nobody ever typed.
-			name:      "bare QOV is UNTYPED",
-			rv:        values.NewQuantifiedObjectValue(corr),
-			wantTyped: false,
+			name:     "QOV carrying a real row type",
+			rv:       foldStep1CensusQOV(t, corr, legA),
+			wantType: "rvtype=RecordType(1)",
 		},
 		{
-			// The state a typing sweep moves them to. Without this direction the
-			// flag could be stuck at false and still pass the case above.
-			name:      "QOV carrying a real row type is TYPED",
-			rv:        values.NewQuantifiedObjectValueOfType(corr, legA),
-			wantTyped: true,
-		},
-		{
-			// An explicit UnknownType is untyped for the same reason the implicit
-			// one is; the placeholder is the absence of a type, not a type.
-			name:      "QOV explicitly carrying UnknownType is UNTYPED",
-			rv:        values.NewQuantifiedObjectValueOfType(corr, values.UnknownType),
-			wantTyped: false,
+			name:     "QOV carrying an exact scalar type",
+			rv:       foldStep1CensusQOV(t, corr, values.NotNullLong),
+			wantType: "rvtype=LONG",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			fm := plans.NewRecordQueryFlatMapPlan(scan, scan,
-				values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), tc.rv, false)
+			fm := foldStep1CensusFlatMap(t, scan, tc.rv)
 
 			shape, witness := classifyDeclinedLeg(fm)
 			if shape != foldStep1LegShapeBareQOV {
-				t.Fatalf("shape = %v, want foldStep1LegShapeBareQOV — the typed/untyped cut is "+
-					"WITHIN the bare-QOV bucket, so a case that leaves the bucket is not "+
-					"exercising the flag at all (witness %q)", shape, witness)
+				t.Fatalf("shape = %v, want foldStep1LegShapeBareQOV (witness %q)", shape, witness)
 			}
-
-			want := "typed=" + strconv.FormatBool(tc.wantTyped)
-			if !strings.Contains(witness, want) {
-				t.Fatalf("witness %q does not report %q. This flag is how the bare-untyped-QOV "+
-					"population is counted; if it cannot distinguish a typed result value from "+
-					"an untyped one, the residue reads as closed while every site still stands",
-					witness, want)
+			if !strings.Contains(witness, "typed=true") || !strings.Contains(witness, tc.wantType) {
+				t.Fatalf("witness %q must report typed=true and %q", witness, tc.wantType)
 			}
 		})
 	}

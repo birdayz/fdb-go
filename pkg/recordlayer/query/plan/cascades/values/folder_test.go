@@ -45,7 +45,7 @@ func TestDefaultFolder_FieldRefDeclines(t *testing.T) {
 	f := DefaultFolder()
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "x", Typ: NullableLong},
+		Left:  &fieldValue{Field: "x", Typ: NullableLong},
 		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	}
 	if got, ok := f.Fold(v); ok {
@@ -79,7 +79,7 @@ func TestDefaultFolder_PartialFoldDoesNotReturnOk(t *testing.T) {
 	f := DefaultFolder()
 	v := &ArithmeticValue{
 		Op:   OpAdd,
-		Left: &FieldValue{Field: "name", Typ: NullableLong},
+		Left: &fieldValue{Field: "name", Typ: NullableLong},
 		Right: &ArithmeticValue{
 			Op:    OpAdd,
 			Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},

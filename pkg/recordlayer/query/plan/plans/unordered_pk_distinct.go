@@ -27,16 +27,20 @@ type RecordQueryUnorderedPrimaryKeyDistinctPlan struct {
 
 // NewRecordQueryUnorderedPrimaryKeyDistinctPlan constructs a PK-based
 // distinct plan over the given inner plan.
-func NewRecordQueryUnorderedPrimaryKeyDistinctPlan(inner RecordQueryPlan) *RecordQueryUnorderedPrimaryKeyDistinctPlan {
-	return &RecordQueryUnorderedPrimaryKeyDistinctPlan{innerQ: QuantifierOverPlan(inner)}
+func NewRecordQueryUnorderedPrimaryKeyDistinctPlan(inner RecordQueryPlan) (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+	return NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(QuantifierOverPlan(inner))
 }
 
 // NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier constructs a
 // primary-key distinct plan over the supplied live memo edge.
 func NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
 	innerQ expressions.Quantifier,
-) *RecordQueryUnorderedPrimaryKeyDistinctPlan {
-	return &RecordQueryUnorderedPrimaryKeyDistinctPlan{innerQ: innerQ}
+) (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryUnorderedPrimaryKeyDistinctPlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryUnorderedPrimaryKeyDistinctPlan{PlanExprBase: base, innerQ: innerQ}, nil
 }
 
 // GetInner returns the wrapped inner plan, dereferenced through the quantifier.
@@ -51,7 +55,7 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetInnerQuantifier() expres
 
 // GetResultValue returns the child row unchanged.
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -74,11 +78,7 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) IsReverse() bool {
 // GetResultType returns the inner plan's result type — PK-distinct
 // doesn't reshape rows.
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
+	return p.GetResultValue().Type()
 }
 
 // GetChildren returns the inner plan as the only child.
@@ -131,13 +131,18 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) EqualsWithoutChildren(other
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryUnorderedPrimaryKeyDistinctPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForQuantifier("RecordQueryUnorderedPrimaryKeyDistinctPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.innerQ = qs[0]
-	return &cp
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook. Relinking swaps only the child
@@ -151,16 +156,21 @@ func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithChildren(
 			len(qs),
 		)
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // WithInner returns a copy with a replacement singleton child.
 func (p *RecordQueryUnorderedPrimaryKeyDistinctPlan) WithInner(
 	inner RecordQueryPlan,
-) *RecordQueryUnorderedPrimaryKeyDistinctPlan {
+) (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
 	cp := *p
 	cp.innerQ = QuantifierOverPlan(inner)
-	return &cp
+	base, err := newPlanExprBaseForQuantifier("RecordQueryUnorderedPrimaryKeyDistinctPlan", cp.innerQ)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

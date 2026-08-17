@@ -42,10 +42,10 @@ func TestRecursiveRefJoinGatesOrdinal(t *testing.T) {
 	if rc.Fields[0].Name != "RID" {
 		t.Fatalf("seed leads with %q, want the reference leg's cteColumnsScope column RID", rc.Fields[0].Name)
 	}
-	fv := rc.Fields[0].Value.(*values.FieldValue)
-	qov := fv.Child.(*values.QuantifiedObjectValue)
-	if !strings.EqualFold(qov.Correlation.Name(), "r") {
-		t.Fatalf("reference-leg QOV correlates to %s, want r", qov.Correlation)
+	fv := exactTestFieldView(t, rc.Fields[0].Value)
+	qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+	if !ok || !strings.EqualFold(qov.Correlation().Name(), "r") {
+		t.Fatalf("reference-leg QOV = %v, want correlation r", qov)
 	}
 
 	// The OTHER direction: the recursive DEFINITION node in leg position
@@ -58,151 +58,224 @@ func TestRecursiveRefJoinGatesOrdinal(t *testing.T) {
 	}
 }
 
-// The recursive-CTE leg remap's dotted arm fires from the STRUCTURAL
-// classification (the projected value was a plain FieldValue — its rendered
-// name is an identifier by construction), never from the string's shape. A
-// string-grammar discriminator here misread computed renderings twice
-// (review findings): "(B.ID + 1)" split into the garbage correlation "(B",
-// and a float literal's "1.5" — digit-only segments pass an [A-Z0-9_] test —
-// into QOV("1"). Structurally classified, a computed value's dots are never
-// qualifiers regardless of rendering shape.
-func TestRemapComputedRenderingNotSplit(t *testing.T) {
+// Recursive-leg normalization is now an ordinal projection over the leg's
+// exact flowed row. Output names are aliases only; neither a dotted alias nor a
+// computed rendering is parsed back into a correlation.
+func TestNormalizeRecursiveLegUsesExactOrdinalAuthority(t *testing.T) {
 	t.Parallel()
-	// "A.B" at index 1 is an ALIAS-derived name (a quoted alias may legally
-	// contain a dot — one identifier, never qualifier syntax): verbatim
-	// false, must NOT split into QOV("A") (review finding, provenance not
-	// value type).
-	names := []string{"(B.ID + 1)", "A.B", "1.5", "B.ID", "PLAIN"}
-	verbatimField := []bool{false, false, false, true, true}
-	vals := recursiveRemapValues(names, verbatimField, true, false)
-
-	// Non-verbatim names (expression rendering, dotted quoted alias, float
-	// literal): NOT split — a resolved-ordinal read named by the full
-	// rendering, no QOV child.
-	for _, i := range []int{0, 1, 2} {
-		fv, ok := vals[i].(*values.FieldValue)
-		if !ok || fv.Child != nil {
-			t.Fatalf("computed rendering %q = %#v, want a flat FieldValue (no QOV split)", names[i], vals[i])
-		}
-		if fv.Field != names[i] {
-			t.Fatalf("computed rendering read name = %q, want the full rendering %q", fv.Field, names[i])
-		}
-		if fv.Resolved == nil {
-			t.Fatalf("computed rendering %q under ordinalReads must carry the resolved ordinal", names[i])
-		}
+	rowType := &values.RecordType{Fields: []values.Field{
+		{Name: "LEFT", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "RIGHT", Ordinal: 1, FieldType: values.NotNullString},
+	}}
+	scanExpr, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
 	}
-
-	// A plain unaliased FieldValue's genuinely-dotted lazy name: the QOV
-	// read stays.
-	fv3, ok := vals[3].(*values.FieldValue)
-	if !ok || fv3.Child == nil || fv3.Field != "ID" {
-		t.Fatalf("qualified reference = %#v, want QOV(B).ID", vals[3])
+	tr := newGateTranslator(t)
+	normalizedExpr := tr.normalizeLegToOutputColumns(scanExpr, []string{"A.B", "(T.RIGHT)"})
+	if normalizedExpr == nil {
+		t.Fatalf("normalize recursive leg: %v", tr.translateErr)
 	}
-
-	// Bare column: resolved-ordinal read.
-	fv4, ok := vals[4].(*values.FieldValue)
-	if !ok || fv4.Child != nil || fv4.Field != "PLAIN" || fv4.Resolved == nil {
-		t.Fatalf("bare column = %#v, want resolved-ordinal PLAIN", vals[4])
+	normalized, ok := normalizedExpr.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("normalized leg = %T, want logical projection", normalizedExpr)
 	}
-
-	// The fallback path (nil classification — logical column names,
-	// identifiers by construction): dotted names still split.
-	fb := recursiveRemapValues([]string{"B.ID"}, nil, false, false)
-	fv, ok := fb[0].(*values.FieldValue)
-	if !ok || fv.Child == nil || fv.Field != "ID" {
-		t.Fatalf("fallback qualified reference = %#v, want QOV(B).ID", fb[0])
+	aliases := normalized.GetAliases()
+	if len(aliases) != 2 || aliases[0] != "A.B" || aliases[1] != "(T.RIGHT)" {
+		t.Fatalf("normalization aliases = %v", aliases)
+	}
+	for ordinal, value := range normalized.GetProjectedValues() {
+		field := exactTestFieldView(t, value)
+		if got := field.Path().Ordinals(); len(got) != 1 || got[0] != ordinal {
+			t.Fatalf("normalized slot %d path = %v, want [%d]", ordinal, got, ordinal)
+		}
+		owner, ownerOK := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !ownerOK || owner.Correlation() != normalized.GetInner().GetAlias() {
+			t.Fatalf("normalized slot %d owner = %v, want inner quantifier %s",
+				ordinal, owner, normalized.GetInner().GetAlias())
+		}
 	}
 }
 
-// legPhysicalOutputNames classifies the NAME'S PROVENANCE: only an UNALIASED
-// plain FieldValue's name is its Field string verbatim (identifier by
-// construction). An ALIASED FieldValue's name is the alias — one identifier,
-// never qualifier syntax, and a quoted alias may legally contain a dot
-// (`AS "A.B"` — splitting it manufactured QOV("A"); review finding).
-func TestLegClassificationStructural(t *testing.T) {
+func TestRecursiveCTEConsumerBridgeWidensOnlyTheDeclaredPositionalRoot(t *testing.T) {
 	t.Parallel()
-	lp := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{
-			&values.FieldValue{Field: "B.ID", Typ: values.UnknownType},
-			&values.FieldValue{Field: "ID", Typ: values.UnknownType},
-			&values.ArithmeticValue{
-				Op:    values.OpAdd,
-				Left:  &values.FieldValue{Field: "ID", Typ: values.UnknownType},
-				Right: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-			},
-			&values.ConstantValue{Value: 1.5, Typ: values.NullableDouble},
-		},
-		[]string{"", "A.B", "", ""},
-		expressions.ForEachQuantifier(expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
-	names, verbatimField, fromProjection := legPhysicalOutputNames(lp, []string{"a", "b", "c", "d"})
-	if !fromProjection {
-		t.Fatal("projection-topped leg must classify fromProjection")
+	declaredRow := &values.RecordType{Fields: []values.Field{
+		{Name: "NAME", Ordinal: 0, FieldType: values.NullableString},
+		{Name: "LEVEL", Ordinal: 1, FieldType: values.NotNullInt},
+	}}
+	commonRow := &values.RecordType{Fields: []values.Field{
+		{Name: "NAME", Ordinal: 0, FieldType: values.NullableString},
+		{Name: "LEVEL", Ordinal: 1, FieldType: values.NullableInt},
+	}}
+	declaration := exactTestQOV(t, "ORG_LEVELS", declaredRow)
+	target := exactTestQOV(t, "ORG_LEVELS", commonRow)
+
+	for ordinal, wantType := range []values.Type{values.NullableString, values.NullableInt} {
+		original := exactTestField(t, declaration, ordinal)
+		translated, err := translateRecursiveCTEConsumerValue(original, declaration, target)
+		if err != nil {
+			t.Fatalf("translate slot %d: %v", ordinal, err)
+		}
+		field := exactTestFieldView(t, translated)
+		if !field.ResultType().Equals(wantType) {
+			t.Fatalf("translated slot %d type = %s, want %s", ordinal, field.ResultType(), wantType)
+		}
+		owner, ok := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !ok || !owner.FlowedType().Equals(commonRow) {
+			t.Fatalf("translated slot %d owner = %v, want exact common row %s", ordinal, owner, commonRow)
+		}
 	}
-	if len(names) != 4 || len(verbatimField) != 4 {
-		t.Fatalf("names/classification arity = %d/%d, want 4/4", len(names), len(verbatimField))
+
+	nestedDeclared := &values.RecordType{Fields: []values.Field{{
+		Name: "PAYLOAD", Ordinal: 0, FieldType: &values.RecordType{Fields: []values.Field{{
+			Name: "LEVEL", Ordinal: 0, FieldType: values.NotNullInt,
+		}}},
+	}}}
+	nestedCommon := &values.RecordType{Fields: []values.Field{{
+		Name: "PAYLOAD", Ordinal: 0, FieldType: &values.RecordType{Fields: []values.Field{{
+			Name: "LEVEL", Ordinal: 0, FieldType: values.NullableInt,
+		}}},
+	}}}
+	nestedDeclaration := exactTestQOV(t, "NESTED_LEVELS", nestedDeclared)
+	nestedTarget := exactTestQOV(t, "NESTED_LEVELS", nestedCommon)
+	nested, err := translateRecursiveCTEConsumerValue(
+		exactTestField(t, nestedDeclaration, 0, 0), nestedDeclaration, nestedTarget)
+	if err != nil {
+		t.Fatalf("translate nested LEVEL: %v", err)
 	}
-	if !verbatimField[0] || verbatimField[1] || verbatimField[2] || verbatimField[3] {
-		t.Fatalf("classification = %v, want [true false false false] (unaliased FieldValue vs aliased/computed/literal)", verbatimField)
+	nestedField := exactTestFieldView(t, nested)
+	if got := nestedField.Path().Ordinals(); len(got) != 2 || got[0] != 0 || got[1] != 0 ||
+		!nestedField.ResultType().Equals(values.NullableInt) {
+		t.Fatalf("nested LEVEL path/type = %v/%s, want [0 0]/nullable INT", got, nestedField.ResultType())
 	}
-	if names[1] != "A.B" {
-		t.Fatalf("aliased column name = %q, want the alias A.B verbatim", names[1])
+
+	foreign := exactTestField(t, exactTestQOV(t, "FOREIGN", declaredRow), 1)
+	unchanged, err := translateRecursiveCTEConsumerValue(foreign, declaration, target)
+	if err != nil || unchanged != foreign {
+		t.Fatalf("foreign window = (%v, %v), want pointer-stable unchanged", unchanged, err)
+	}
+
+	reordered := &values.RecordType{Fields: []values.Field{
+		{Name: "LEVEL", Ordinal: 0, FieldType: values.NullableInt},
+		{Name: "NAME", Ordinal: 1, FieldType: values.NullableString},
+	}}
+	if translated, translateErr := translateRecursiveCTEConsumerValue(
+		exactTestField(t, declaration, 1), declaration, exactTestQOV(t, "ORG_LEVELS", reordered)); translated != nil || translateErr == nil {
+		t.Fatalf("reordered common row = (%v, %v), want exact rejection", translated, translateErr)
+	}
+
+	incompatible := &values.RecordType{Fields: []values.Field{
+		{Name: "NAME", Ordinal: 0, FieldType: values.NullableString},
+		{Name: "LEVEL", Ordinal: 1, FieldType: values.NotNullString},
+	}}
+	if translated, translateErr := translateRecursiveCTEConsumerValue(
+		exactTestField(t, declaration, 1), declaration, exactTestQOV(t, "ORG_LEVELS", incompatible)); translated != nil || translateErr == nil {
+		t.Fatalf("incompatible common row = (%v, %v), want exact rejection", translated, translateErr)
 	}
 }
 
-// TestPositionalArmDecoupling pins the positional arm of
-// recursiveRemapValues: it
-// reads slot i by ORDINAL but DECOUPLES the emit name from the name-window read
-// root. Field=BARE so ProjectionColumnName emits the temp-row key bare (RFC-130:
-// a dotted "C.ID" key would double the wide-payload row); Resolved.Root().Field=
-// the FULL qualified physName so the name-window fallback (Datum[nameReadRootKey])
-// hits the body's qualified output key, matching the equivalent dotted-split
-// read a name-model body would use.
-func TestPositionalArmDecoupling(t *testing.T) {
+func TestRecursiveCTECommonRowPrecedesSelfScanAndConsumerBinding(t *testing.T) {
 	t.Parallel()
-	vals := recursiveRemapValues([]string{"C.ID", "PAYLOAD"}, []bool{true, true}, true, true)
+	constantInt := func(value int32) values.Value {
+		return &values.ConstantValue{Value: value, Typ: values.NotNullInt}
+	}
+	declaredRow := &values.RecordType{Fields: []values.Field{
+		{Name: "LEVEL", Ordinal: 0, FieldType: values.NotNullInt},
+	}}
 
-	// Qualified column: bare emit, FULL read root, ordinal 0.
-	fv0, ok := vals[0].(*values.FieldValue)
-	if !ok || fv0.Resolved == nil {
-		t.Fatalf("positional arm col0 = %#v, want a resolved-ordinal FieldValue", vals[0])
+	seed := logical.NewProject(scan("Order", "o"), []string{"LEVEL"}, nil)
+	seed.ProjectedValues = []values.Value{constantInt(0)}
+	recursive := logical.NewProject(scan("WALK", "w"), []string{"LEVEL"}, nil)
+	recursive.ProjectedValues = []values.Value{&values.ArithmeticValue{
+		Op:    values.OpAdd,
+		Left:  exactTestField(t, exactTestQOV(t, "W", declaredRow), 0),
+		Right: constantInt(1),
+	}}
+	main := logical.NewProject(scan("WALK", "r"), []string{"LEVEL"}, nil)
+	main.ProjectedValues = []values.Value{
+		exactTestField(t, exactTestQOV(t, "R", declaredRow), 0),
 	}
-	if fv0.Field != "ID" {
-		t.Fatalf("positional emit name = %q, want BARE ID (RFC-130: no dotted temp-row key)", fv0.Field)
+	cte := logical.NewCTE("WALK",
+		logical.NewUnion([]logical.LogicalOperator{seed, recursive}, false), main, true)
+
+	tr := newGateTranslator(t)
+	translated := tr.translateRecursiveCTE(cte)
+	if translated == nil {
+		t.Fatalf("translate nullable recursive CTE: %v", tr.translateErr)
 	}
-	if fv0.Resolved.Root().Field != "C.ID" {
-		t.Fatalf("positional read root = %q, want the FULL qualified C.ID (name-window fallback key)", fv0.Resolved.Root().Field)
+	projection, ok := translated.(*expressions.LogicalProjectionExpression)
+	if !ok {
+		t.Fatalf("main expression = %T, want logical projection", translated)
 	}
-	if fv0.Resolved.Root().Ordinal != 0 {
-		t.Fatalf("positional ordinal = %d, want slot 0", fv0.Resolved.Root().Ordinal)
+	mainLevel := exactTestFieldView(t, projection.GetProjectedValues()[0])
+	if !mainLevel.ResultType().Equals(values.NullableInt) {
+		t.Fatalf("main LEVEL type = %s, want nullable INT", mainLevel.ResultType())
+	}
+	mainOwner, ok := values.AsQuantifiedObjectValue(mainLevel.ChildValue())
+	if !ok || !mainOwner.FlowedType().Equals(&values.RecordType{Fields: []values.Field{
+		{Name: "LEVEL", Ordinal: 0, FieldType: values.NullableInt},
+	}}) {
+		t.Fatalf("main LEVEL owner = %v, want exact common nullable row", mainOwner)
 	}
 
-	// Bare column: bare on both, ordinal 1 (no spurious qualifier manufactured).
-	fv1, ok := vals[1].(*values.FieldValue)
-	if !ok || fv1.Resolved == nil || fv1.Field != "PAYLOAD" || fv1.Resolved.Root().Field != "PAYLOAD" || fv1.Resolved.Root().Ordinal != 1 {
-		t.Fatalf("positional arm col1 = %#v, want bare PAYLOAD ordinal 1", vals[1])
+	recursiveUnion, ok := projection.GetInner().GetRangesOver().Get().(*expressions.RecursiveUnionExpression)
+	if !ok {
+		t.Fatalf("main child = %T, want RecursiveUnionExpression",
+			projection.GetInner().GetRangesOver().Get())
+	}
+	if !recursiveUnion.GetResultValue().Type().Equals(mainOwner.FlowedType()) {
+		t.Fatalf("recursive union type = %s, want main common owner %s",
+			recursiveUnion.GetResultValue().Type(), mainOwner.FlowedType())
+	}
+	var tempScan *expressions.TempTableScanExpression
+	var findTempScan func(expressions.RelationalExpression)
+	findTempScan = func(expression expressions.RelationalExpression) {
+		if expression == nil || tempScan != nil {
+			return
+		}
+		if scanExpression, isScan := expression.(*expressions.TempTableScanExpression); isScan {
+			tempScan = scanExpression
+			return
+		}
+		for _, quantifier := range expression.GetQuantifiers() {
+			if rangesOver := quantifier.GetRangesOver(); rangesOver != nil {
+				findTempScan(rangesOver.Get())
+			}
+		}
+	}
+	findTempScan(recursiveUnion.GetRecursiveState().GetRangesOver().Get())
+	if tempScan == nil || !tempScan.GetResultValue().Type().Equals(mainOwner.FlowedType()) {
+		t.Fatalf("recursive self scan = %v, want common nullable row %s", tempScan, mainOwner.FlowedType())
+	}
+
+	incompatibleRecursive := logical.NewProject(scan("WALK", "w"), []string{"LEVEL"}, nil)
+	incompatibleRecursive.ProjectedValues = []values.Value{
+		&values.ConstantValue{Value: "wrong", Typ: values.NotNullString},
+	}
+	incompatibleCTE := logical.NewCTE("WALK",
+		logical.NewUnion([]logical.LogicalOperator{seed, incompatibleRecursive}, false), main, true)
+	incompatibleTranslator := newGateTranslator(t)
+	if got := incompatibleTranslator.translateRecursiveCTE(incompatibleCTE); got != nil ||
+		incompatibleTranslator.translateErr == nil ||
+		!strings.Contains(incompatibleTranslator.translateErr.Error(), "incompatible") {
+		t.Fatalf("incompatible recursive leg = (%T, %v), want typed rejection",
+			got, incompatibleTranslator.translateErr)
 	}
 }
 
-// TestRecursiveBodyGatesOrdinal is a structural sentinel. It runs the
-// ACTUAL translateRecursiveCTE — exercising the
-// lifted name-model blanket — and asserts the recursive PLAIN-JOIN body join
-// GATES ordinal. This is the durable regression net: a silent revert
-// that re-broadens the blanket forces inInnerCluster=true → the body join declines
-// → this fails. The differential CANNOT catch that revert (it
-// compares two EMISSION modes over the SHARED translator, so a name-model revert
-// makes both modes agree and the differential stays green — a green-but-latent gap).
+// TestRecursiveBodyGatesOrdinal is a structural sentinel over the actual
+// recursive-CTE translation: a plain-join recursive body remains on the exact
+// ordinal join path before its output is normalized by position.
 func TestRecursiveBodyGatesOrdinal(t *testing.T) {
 	t.Parallel()
 	// Recursive branch: SELECT c.order_id FROM Order c, WALK w  (plain inner join
 	// over the CTE self-reference — the RFC-130 recursive-join-body shape).
 	bodyJoin := inner(scan("Order", "c"), scan("WALK", "w"))
 	rec := logical.NewProject(bodyJoin, []string{"ORDER_ID"}, nil)
-	rec.ProjectedValues = []values.Value{&values.FieldValue{Field: "C.ORDER_ID", Typ: values.UnknownType}}
+	rec.ProjectedValues = []values.Value{exactTestNamedField(t, "C", "ORDER_ID", values.NotNullLong)}
 	// Seed: SELECT order_id FROM Order o.
 	seed := logical.NewProject(scan("Order", "o"), []string{"ORDER_ID"}, nil)
-	seed.ProjectedValues = []values.Value{&values.FieldValue{Field: "ORDER_ID", Typ: values.UnknownType}}
+	seed.ProjectedValues = []values.Value{exactTestNamedField(t, "O", "ORDER_ID", values.NotNullLong)}
 	cte := logical.NewCTE("WALK", logical.NewUnion([]logical.LogicalOperator{seed, rec}, false), scan("WALK", ""), true)
 
 	tr := newGateTranslator(t)
@@ -214,132 +287,5 @@ func TestRecursiveBodyGatesOrdinal(t *testing.T) {
 	d, ok := tr.wedgeGate[bodyJoin]
 	if !ok || !d.Gated {
 		t.Fatalf("recursive plain-join body join = %+v (recorded=%v), want GATED after the full translateRecursiveCTE run", d, ok)
-	}
-	if !tr.recursiveBodyIsPositional(rec) {
-		t.Fatal("recursiveBodyIsPositional must be TRUE for a plain-join recursive body")
-	}
-	// Gated ⟹ the seed took the ORDINAL branch (translateJoin's
-	// buildOrdinalJoinResultValue), never the name-model buildJoinResultValue —
-	// so the body RV is not AnchoredJoin. (The RV itself can't be rebuilt here:
-	// translateRecursiveCTE deletes cteExprScope[cteName] on the way out, so the
-	// self-reference leg no longer types. The Gated bit is the authoritative,
-	// scope-independent proof.)
-
-	// Negative control (surgical lift, value-level): a SCAN-only recursive body
-	// (no join) has no gated join → stays name-model → NOT positional, so it keeps
-	// the dotted-split arm. Proves the lift did not over-broaden to non-join bodies.
-	scanBody := logical.NewProject(scan("WALK", "w2"), []string{"ORDER_ID"}, nil)
-	scanBody.ProjectedValues = []values.Value{&values.FieldValue{Field: "ORDER_ID", Typ: values.UnknownType}}
-	if tr.recursiveBodyIsPositional(scanBody) {
-		t.Fatal("recursiveBodyIsPositional must be FALSE for a scan-only recursive body (name-model bodies keep the dotted-split arm)")
-	}
-}
-
-// TestLegPhysicalOutputNamesProvenanceOfANestedPath pins the INVARIANT
-// legPhysicalOutputNames' second return states, on the one shape RFC-229 §2.3
-// made able to violate it.
-//
-// THE INVARIANT (the function's own header): verbatimField[i] is true when the
-// emitted name is a plain *values.FieldValue's `Field` string VERBATIM — an
-// identifier by construction, "so a dot in it IS a qualifier".
-// recursiveRemapValues reads that flag and nothing else: on true it splits at
-// the FIRST dot and mints FieldValue{Field: after, Child: QOV(before)}.
-//
-// WHY §2.3 CAN VIOLATE IT. For an UNALIASED nested reference the emitted name
-// is no longer `Field` (the struct root `N`) but the RESOLVED PATH (`N.SK`, or
-// `T1.N.SK` over a multi-source FROM). The old predicate — unaliased AND a
-// FieldValue — is still true, so the flag claims "verbatim identifier" about a
-// string that is a PATH. The split then mints QOV("N"): a correlation named
-// after a struct ROOT, which is not a quantifier anywhere in the plan. That is
-// byte-for-byte the garbage-correlation class the flag was introduced to close
-// (QOV("(B"), QOV("1"), QOV("A")); §2.3 re-armed it from the writer side.
-//
-// WHY THIS IS A UNIT PIN AND NOT A QUERY PIN, stated plainly because the
-// distinction is the whole reason the test lives here. It was MEASURED at the
-// SQL level first: `WITH RECURSIVE r AS (SELECT n.sk FROM t1 ... UNION ALL
-// SELECT sk + 1 FROM r ...)` returns the correct [10 11 12 13] with the fix AND
-// without it. Both routes answer, because the seed's Datum key really is
-// "N.SK", so a QOV("N")/field-"SK" read happens to resolve it the same way a
-// qualified join key "B.ID" does. So there is no query whose ANSWER detects
-// this, and a query-level test would have been green either way — the defect is
-// that a structured provenance claim is FALSE, and the claim is what must be
-// asserted. (The end-to-end shape is still pinned, in sqldriver's
-// nested_projection_column_name_fdb_test.go, for the answer.)
-func TestLegPhysicalOutputNamesProvenanceOfANestedPath(t *testing.T) {
-	t.Parallel()
-
-	nested := values.NewFlatFieldValue("N", values.UnknownType)
-	nested.Resolved = &values.FieldPath{Accessors: []values.ResolvedAccessor{
-		{Field: "N", Ordinal: 1}, {Field: "SK", Ordinal: 0},
-	}}
-	flat := values.NewFlatFieldValue("ID", values.UnknownType)
-	dotted := values.NewFlatFieldValue("B.ID", values.UnknownType)
-
-	leg := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{nested, flat, dotted},
-		[]string{"", "", ""},
-		expressions.Quantifier{},
-	)
-	names, verbatim, fromProjection := legPhysicalOutputNames(leg, []string{"A", "B", "C"})
-	if !fromProjection {
-		t.Fatalf("legPhysicalOutputNames declined the projection leg entirely — "+
-			"the shape this test drives is gone (names=%v)", names)
-	}
-	if len(names) != 3 || len(verbatim) != 3 {
-		t.Fatalf("legPhysicalOutputNames returned %d names / %d flags, want 3 / 3",
-			len(names), len(verbatim))
-	}
-
-	// The PREMISE, asserted rather than assumed: the emitted name for the nested
-	// column really is the path. If §2.3 were reverted this would be "N" and the
-	// rest of this test would be about a shape that no longer exists.
-	if names[0] != "N.SK" {
-		t.Fatalf("the nested column's physical name is %q, want N.SK — this test's "+
-			"premise is that §2.3 made this name a PATH; without that there is no "+
-			"provenance claim to violate", names[0])
-	}
-
-	// THE ASSERTION. A path is not a `Field` verbatim, so the flag must be false
-	// and recursiveRemapValues must take the ORDINAL arm (read emitted slot i)
-	// rather than the first-dot split.
-	if verbatim[0] {
-		t.Fatalf("legPhysicalOutputNames claims the nested column's name %q is a "+
-			"plain FieldValue's Field VERBATIM. It is not — it is the resolved "+
-			"path, and the flag's documented meaning is that a dot in a verbatim "+
-			"name IS a qualifier. recursiveRemapValues believes it: it splits at "+
-			"the first dot and mints FieldValue{Field:\"SK\", Child: QOV(\"N\")} — "+
-			"a correlation named after a STRUCT ROOT, which is not a quantifier "+
-			"anywhere in the plan. That is the garbage-correlation class this flag "+
-			"exists to close.", names[0])
-	}
-
-	// CONTROLS — without these the assertion above is satisfied by a flag that
-	// went false for EVERY column, which would send genuinely qualified leg
-	// references down the ordinal arm and lose the qualifier-stripping the
-	// recursive wrap depends on (a qualified key persisted into the temp table
-	// doubles the row and stalls the recursion one level early).
-	if !verbatim[1] {
-		t.Fatalf("a plain unaliased flat FieldValue's name %q is no longer "+
-			"classified verbatim — the predicate has gone false for everything, "+
-			"not just for paths", names[1])
-	}
-	if !verbatim[2] {
-		t.Fatalf("a genuinely QUALIFIED unaliased leg reference %q is no longer "+
-			"classified verbatim. This is the case the split exists FOR: the wrap "+
-			"reads the qualified datum key and projects the bare output name, "+
-			"which is what keeps a qualified key out of the temp table.", names[2])
-	}
-
-	// An ALIAS still wins over everything, including on the nested shape — the
-	// alias is one identifier and a quoted alias may legally contain a dot.
-	aliased := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{nested}, []string{"A.B"}, expressions.Quantifier{})
-	_, aliasVerbatim, ok := legPhysicalOutputNames(aliased, []string{"A"})
-	if !ok || len(aliasVerbatim) != 1 {
-		t.Fatalf("legPhysicalOutputNames declined the aliased leg (ok=%v)", ok)
-	}
-	if aliasVerbatim[0] {
-		t.Fatalf("an ALIASED nested column is classified verbatim — splitting a " +
-			"quoted alias `AS \"A.B\"` manufactures QOV(\"A\"), the same class")
 	}
 }

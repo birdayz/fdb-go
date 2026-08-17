@@ -239,7 +239,7 @@ bench-ci:
     # benches produce output. Track exit codes manually.
     set -uo pipefail
     rm -f bench-raw.txt bench-results.txt
-    bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //pkg/relational/api:api_test
+    bazelisk build //pkg/recordlayer:recordlayer_test //pkg/fdbgo/wire/types:types_test //pkg/recordlayer/query/plan/cascades:cascades_test //pkg/recordlayer/query/plan/cascades/expressions:expressions_test //pkg/fdbgo/fdb:fdb_test //pkg/recordlayer/keyspace:keyspace_test //pkg/relational/api:api_test //pkg/simfdb/hunt/sqlhunt:sqlhunt_test
     BAZEL_BIN=$(bazelisk info bazel-bin)
     fail_count=0
     {
@@ -319,6 +319,22 @@ bench-ci:
         rc=$?
         if [ "$rc" -ne 0 ]; then
             echo "!!! api_test bench binary exited with $rc (124 = timeout)"
+            fail_count=$((fail_count + 1))
+        fi
+        # sqlhunt is the END-TO-END SQL bench: plan + execute a query against
+        # simfdb, no Docker, so it is deterministic and gating. It is where the
+        # row-path and planner-overhead numbers come from, and until it was
+        # listed here NOTHING ran it — `bazelisk test` never passes -test.bench,
+        # so its nine benchmarks were reported by no harness at all.
+        echo "=== Running benchmarks: //pkg/simfdb/hunt/sqlhunt:sqlhunt_test ==="
+        timeout 300 "$BAZEL_BIN/pkg/simfdb/hunt/sqlhunt/sqlhunt_test_/sqlhunt_test" \
+            -test.run='^$' \
+            -test.bench=. \
+            -test.benchmem \
+            -test.benchtime=1s 2>&1
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "!!! sqlhunt_test bench binary exited with $rc (124 = timeout) — GATING (simfdb, no Docker, so this is deterministic)"
             fail_count=$((fail_count + 1))
         fi
         echo "=== bench-ci summary: $fail_count bench binary failure(s) ==="

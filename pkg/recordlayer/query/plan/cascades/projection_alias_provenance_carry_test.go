@@ -9,6 +9,36 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustProvenanceConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct projection-provenance fixture: " + err.Error())
+	}
+	return value
+}
+
+func provenanceRowType() values.Type {
+	return values.NewRecordType("ProjectionProvenanceRow", false, []values.Field{
+		{Name: "A.K", FieldType: values.NullableLong, Ordinal: 0},
+	})
+}
+
+func provenanceMergeRowType() values.Type {
+	return values.NewRecordType("ProjectionProvenanceMergeRow", false, []values.Field{
+		{Name: "U.NAME", FieldType: values.NullableString, Ordinal: 0},
+		{Name: "O.TOTAL", FieldType: values.NullableLong, Ordinal: 1},
+	})
+}
+
+func provenanceFields(q expressions.Quantifier, ordinals ...int) []values.Value {
+	root := mustProvenanceConstruct(q.RequireFlowedObjectValue())
+	fields := make([]values.Value, len(ordinals))
+	for i, ordinal := range ordinals {
+		fields[i] = mustProvenanceConstruct(values.ResolveFieldOrdinals(
+			root, []int{ordinal}))
+	}
+	return fields
+}
+
 // The per-slot alias provenance (who named an output column: the machinery's
 // duplicate-disambiguation mint, or the user's `AS`) has to survive every
 // rewrite between the translator and the ResultSet metadata site, because
@@ -29,21 +59,35 @@ import (
 // reference to already hold a physical plan member, so a logical scan yields
 // nothing and the test would pass vacuously.
 func provenanceTestProjection(aliasMinted []bool) *expressions.LogicalProjectionExpression {
-	inner := expressions.ForEachQuantifier(expressions.InitialOf(
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-	))
-	return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		[]values.Value{&values.FieldValue{Field: "A.K", Typ: values.UnknownType}},
+	innerPlan := mustProvenanceConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, provenanceRowType(), false))
+	inner := expressions.ForEachQuantifier(expressions.InitialOf(innerPlan))
+	projection := mustProvenanceConstruct(expressions.NewLogicalProjectionExpressionWithAliasProvenance(
+		provenanceFields(inner, 0),
 		[]string{"A.K"},
 		aliasMinted,
 		inner,
-	)
+	))
+	if len(aliasMinted) > 0 && aliasMinted[0] {
+		projection = mustProvenanceConstruct(projection.WithAliasSources(
+			[]values.ProjectionAliasSource{
+				values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
+			}))
+	}
+	return projection
 }
 
 func assertCarriedMinted(t *testing.T, got []bool, where string) {
 	t.Helper()
 	if len(got) != 1 || !got[0] {
 		t.Errorf("%s dropped the alias provenance: got %v, want [true]", where, got)
+	}
+}
+
+func assertCarriedSource(t *testing.T, got []values.ProjectionAliasSource, where, want string) {
+	t.Helper()
+	if len(got) != 1 || !got[0].Present || got[0].Source != values.NamedCorrelationIdentifier(want) {
+		t.Errorf("%s dropped the structured alias source: got %+v, want %s", where, got, want)
 	}
 }
 
@@ -71,6 +115,7 @@ func TestImplementProjectionFinalRule_CarriesAliasProvenance(t *testing.T) {
 		}
 		found = true
 		assertCarriedMinted(t, p.GetAliasMinted(), "ImplementProjectionFinalRule")
+		assertCarriedSource(t, p.GetAliasSources(), "ImplementProjectionFinalRule", "A")
 	}
 	if !found {
 		t.Fatal("rule yielded no RecordQueryProjectionPlan")
@@ -100,9 +145,31 @@ func TestImplementProjectionRule_CarriesAliasProvenance(t *testing.T) {
 		}
 		found = true
 		assertCarriedMinted(t, p.GetAliasMinted(), "ImplementProjectionRule")
+		assertCarriedSource(t, p.GetAliasSources(), "ImplementProjectionRule", "A")
 	}
 	if !found {
 		t.Fatal("rule yielded no RecordQueryProjectionPlan")
+	}
+}
+
+func TestSameProjectionMetadataComparesStructuredAliasSource(t *testing.T) {
+	t.Parallel()
+	logical := provenanceTestProjection([]bool{true})
+	inner := logical.GetInner()
+	physical := mustProvenanceConstruct(plans.NewRecordQueryProjectionPlanFromQuantifierWithOutputSchema(
+		logical.GetProjectedValues(), logical.GetAliases(), logical.GetAliasMinted(), logical.GetOutputNames(), inner))
+	physical = mustProvenanceConstruct(physical.WithAliasSources([]values.ProjectionAliasSource{
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
+	}))
+	if !sameProjectionMetadata(logical, physical, 1) {
+		t.Fatal("equal frozen structured alias sources did not license projection reuse")
+	}
+
+	foreign := mustProvenanceConstruct(physical.WithAliasSources([]values.ProjectionAliasSource{
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("Z")),
+	}))
+	if sameProjectionMetadata(logical, foreign, 1) {
+		t.Fatal("projection reuse discarded a different frozen structured alias source")
 	}
 }
 
@@ -121,32 +188,32 @@ func TestImplementProjectionRule_CarriesAliasProvenance(t *testing.T) {
 //     key that reached the outer stays a machinery key. Measured at 6 firings.
 func TestProjectionMergeRule_ComposesAliasProvenance(t *testing.T) {
 	t.Parallel()
-	scan := expressions.ForEachQuantifier(expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	))
+	scanExpr := mustProvenanceConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, provenanceMergeRowType()))
+	scan := expressions.ForEachQuantifier(expressions.InitialOf(scanExpr))
 	// The inner supplies two slots the outer reads by baked ordinal.
-	inner := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{
-			values.NewFieldValueWithResolvedOrdinal("U.NAME", 0, values.NullableString),
-			values.NewFieldValueWithResolvedOrdinal("O.TOTAL", 1, values.NullableLong),
-		},
-		[]string{"", ""},
+	inner := mustProvenanceConstruct(expressions.NewLogicalProjectionExpressionWithAliasProvenance(
+		provenanceFields(scan, 0, 1),
+		[]string{"U.NAME", "O.TOTAL"},
+		[]bool{true, true},
 		scan,
-	)
+	))
+	inner = mustProvenanceConstruct(inner.WithAliasSources([]values.ProjectionAliasSource{
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("U")),
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("O")),
+	}))
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(inner))
+	outerFields := provenanceFields(innerQ, 0, 1)
 
 	// Outer slot 0: NO alias — the rule mints its effective name here, so the
 	// merged slot is machinery-named regardless of the outer's marker.
 	// Outer slot 1: a user alias, marker false — must stay a user alias.
-	outer := expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		[]values.Value{
-			values.NewFieldValueWithResolvedOrdinal("U.NAME", 0, values.NullableString),
-			values.NewFieldValueWithResolvedOrdinal("O.TOTAL", 1, values.NullableLong),
-		},
+	outer := mustProvenanceConstruct(expressions.NewLogicalProjectionExpressionWithAliasProvenance(
+		outerFields,
 		[]string{"", "MY.TOTAL"},
 		[]bool{false, false},
 		innerQ,
-	)
+	))
 
 	rule := NewProjectionMergeRule()
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), outer)
@@ -176,18 +243,24 @@ func TestProjectionMergeRule_ComposesAliasProvenance(t *testing.T) {
 	if got[1] {
 		t.Error("an outer slot the USER aliased must keep its user provenance across the merge")
 	}
+	mergedSources := flat.GetAliasSources()
+	if len(mergedSources) != 2 || !mergedSources[0].Present ||
+		mergedSources[0].Source != values.NamedCorrelationIdentifier("U") || mergedSources[1].Present {
+		t.Errorf("rule-minted outer slot did not inherit exact inner source / user slot gained one: %+v", mergedSources)
+	}
 
 	// The other direction of the carry: an outer slot that was ALREADY a
 	// machinery key must stay one even though it carries an explicit alias.
-	outerMinted := expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-		[]values.Value{
-			values.NewFieldValueWithResolvedOrdinal("U.NAME", 0, values.NullableString),
-			values.NewFieldValueWithResolvedOrdinal("O.TOTAL", 1, values.NullableLong),
-		},
+	outerMinted := mustProvenanceConstruct(expressions.NewLogicalProjectionExpressionWithAliasProvenance(
+		outerFields,
 		[]string{"U.NAME", "O.TOTAL"},
 		[]bool{true, true},
 		innerQ,
-	)
+	))
+	outerMinted = mustProvenanceConstruct(outerMinted.WithAliasSources([]values.ProjectionAliasSource{
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("OUTER_U")),
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("OUTER_O")),
+	}))
 	bindings = rule.Matcher().BindMatches(matching.NewBindings(), outerMinted)
 	if len(bindings) == 0 {
 		t.Fatal("rule should match the minted-outer projection")
@@ -206,6 +279,11 @@ func TestProjectionMergeRule_ComposesAliasProvenance(t *testing.T) {
 	if got := flat.GetAliasMinted(); len(got) != 2 || !got[0] || !got[1] {
 		t.Errorf("a machinery key must survive the merge: got %v, want [true true]", got)
 	}
+	gotSources := flat.GetAliasSources()
+	if len(gotSources) != 2 || gotSources[0].Source != values.NamedCorrelationIdentifier("OUTER_U") ||
+		gotSources[1].Source != values.NamedCorrelationIdentifier("OUTER_O") {
+		t.Errorf("existing outer machinery sources did not survive merge: %+v", gotSources)
+	}
 }
 
 // TestPlanExtraction_CarriesAliasProvenance pins the extraction rebuild. Measured
@@ -217,9 +295,9 @@ func TestProjectionMergeRule_ComposesAliasProvenance(t *testing.T) {
 func TestPlanExtraction_CarriesAliasProvenance(t *testing.T) {
 	t.Parallel()
 	proj := provenanceTestProjection([]bool{true})
-	fresh := expressions.ForEachQuantifier(expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType),
-	))
+	freshScan := mustProvenanceConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"U"}, provenanceRowType()))
+	fresh := expressions.ForEachQuantifier(expressions.InitialOf(freshScan))
 
 	rebuilt, err := rebuildWithFreshChildren(proj, []expressions.Quantifier{fresh})
 	if err != nil {
@@ -230,6 +308,7 @@ func TestPlanExtraction_CarriesAliasProvenance(t *testing.T) {
 		t.Fatalf("rebuild returned %T, want *LogicalProjectionExpression", rebuilt)
 	}
 	assertCarriedMinted(t, rp.GetAliasMinted(), "plan extraction rebuild")
+	assertCarriedSource(t, rp.GetAliasSources(), "plan extraction rebuild", "A")
 	if got := rp.GetAliases(); len(got) != 1 || got[0] != "A.K" {
 		t.Errorf("plan extraction rebuild dropped the aliases: got %v, want [A.K]", got)
 	}

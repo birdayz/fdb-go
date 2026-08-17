@@ -35,6 +35,19 @@ func orderingIdentityRecordRow() *values.RecordType {
 	})
 }
 
+func orderingIdentityField(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	rowType values.Type,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	root, rootErr := values.NewQuantifiedObjectValue(alias, rowType)
+	root = mustConstruct(t, root, rootErr)
+	field, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, field, err)
+}
+
 func orderingIdentityKeyExpression(cols ...string) *gen.KeyExpression {
 	children := make([]*gen.KeyExpression, len(cols))
 	for i, c := range cols {
@@ -103,20 +116,20 @@ func TestOrderingValuesEqualRefusesEqualOrdinalsInDifferentLayouts(t *testing.T)
 			"conflation to refuse")
 	}
 
-	requested := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"CUSTOMER_ID", 0, values.UnknownType, aggregateDomain)
-	candidate := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"ID", 0, values.UnknownType, recordDomain)
+	aggregateRow := values.NewRecordType("", false, []values.Field{
+		{Name: "CUSTOMER_ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "COUNT(*)", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	rootAlias := values.NamedCorrelationIdentifier("ordering_identity")
+	requested := orderingIdentityField(t, rootAlias, aggregateRow, 0)
+	candidate := orderingIdentityField(t, rootAlias, orderingIdentityRecordRow(), 0)
 
-	if !values.ValuesStructurallyEqual(requested, candidate) {
-		t.Fatal("test setup: ValuesStructurallyEqual no longer equates these " +
-			"two, so the arm this test guards is gone. Good news — but check " +
-			"that FieldPath.Equals now compares the domain, and if it does, " +
-			"this test should assert THAT instead.")
+	if values.ValuesStructurallyEqual(requested, candidate) {
+		t.Fatal("exact structural equality conflated same-slot fields from different root types")
 	}
 
-	if orderingValuesEqualIn(nil, requested, candidate) {
-		t.Fatalf("orderingValuesEqualIn(nil, %q in %v, %q in %v) = true.\n\n"+
+	if orderingValuesEqualIn(requested, candidate) {
+		t.Fatalf("orderingValuesEqualIn(%q in %v, %q in %v) = true.\n\n"+
 			"These are DIFFERENT columns of DIFFERENT rows that happen to share "+
 			"an ordinal. Answering yes elides a sort against an ordering the "+
 			"scan does not provide: measured live on "+
@@ -131,18 +144,16 @@ func TestOrderingValuesEqualRefusesEqualOrdinalsInDifferentLayouts(t *testing.T)
 			values.ExplainValue(candidate), recordDomain)
 	}
 
-	if !orderingValuesEqualIn(nil, candidate, candidate) {
+	if !orderingValuesEqualIn(candidate, candidate) {
 		t.Fatal("orderingValuesEqualIn is not reflexive on a stated identity — " +
 			"the identity arm refuses a value against itself, which would make " +
 			"every access-path ordering match fail")
 	}
 
 	// The same-column direction, so the test cannot pass by refusing everything.
-	sameColumn := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"CUSTOMER_ID", 1, values.UnknownType, recordDomain)
-	otherSideSameColumn := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"CUSTOMER_ID", 1, values.UnknownType, recordDomain)
-	if !orderingValuesEqualIn(nil, sameColumn, otherSideSameColumn) {
+	sameColumn := orderingIdentityField(t, rootAlias, orderingIdentityRecordRow(), 1)
+	otherSideSameColumn := orderingIdentityField(t, rootAlias, orderingIdentityRecordRow(), 1)
+	if !orderingValuesEqualIn(sameColumn, otherSideSameColumn) {
 		t.Fatal("orderingValuesEqualIn refuses two independently built references " +
 			"to the SAME ordinal of the SAME layout. That is the common path; " +
 			"refusing it costs every elision the identity was introduced to win")
@@ -320,26 +331,15 @@ func TestOrderingKeyStaysLazyWhenTheLayoutIsAmbiguous(t *testing.T) {
 	})
 
 	candidate, aliases := orderingIdentityCandidate(
-		"IDX_MULTI", []string{"STATUS"}, values.UnknownType)
+		"IDX_MULTI", []string{"STATUS"}, firstRow)
 	candidate.WithRecordTypeRowTypes([]values.Type{firstRow, secondRow})
 
 	parts := candidate.ComputeMatchedOrderingParts(
 		orderingIdentityEmptyMatchInfo(), aliases, false)
-	if len(parts) == 0 {
-		t.Fatal("test setup: the candidate minted no ordering parts, so the " +
-			"fail-closed claim is untested")
-	}
-	for i, part := range parts {
-		if _, ok := values.OrderingIdentityOf(part.GetValue()); ok {
-			t.Fatalf("ordering part %d (%q) states an identity over a "+
-				"candidate with %d candidate row layouts.\n\n"+
-				"There is no layout to state: the two rows here declare the "+
-				"same names in opposite positions, so an ordinal resolved "+
-				"against either one addresses the WRONG column of the other. "+
-				"The key must stay unaddressable.",
-				i, values.ExplainValue(part.GetValue()),
-				len(candidate.rowLayouts()))
-		}
+	if len(parts) != 0 {
+		t.Fatalf("candidate with %d incompatible exact row layouts minted %d ordering parts; "+
+			"RFC-232 has no lazy/unaddressable FieldValue fallback, so the claim must decline",
+			len(candidate.rowLayouts()), len(parts))
 	}
 }
 
@@ -369,16 +369,8 @@ func TestOrderingKeyDeclinesADuplicateColumnName(t *testing.T) {
 
 	parts := candidate.ComputeMatchedOrderingParts(
 		orderingIdentityEmptyMatchInfo(), aliases, false)
-	if len(parts) == 0 {
-		t.Fatal("test setup: no ordering parts minted")
-	}
-	if ident, ok := values.OrderingIdentityOf(parts[0].GetValue()); ok {
-		t.Fatalf("STATUS resolved to ordinal %d against a layout declaring "+
-			"STATUS TWICE.\n\n"+
-			"A first-match bake picks a slot the name does not identify. The "+
-			"runtime authority (bakedIntersectionKeys) resolves the same name "+
-			"with a UNIQUE-match rule and would reject this ordinal, so a "+
-			"first-match mint also breaks the agreement between plan time and "+
-			"run time.", ident.Ordinal)
+	if len(parts) != 0 {
+		t.Fatalf("duplicate-name layout minted %d ordering parts; exact unique-name "+
+			"resolution must decline the claim with no lazy FieldValue fallback", len(parts))
 	}
 }

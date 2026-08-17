@@ -204,18 +204,24 @@ func gatheredMixedSeedFixture(t *testing.T) (
 		{Name: "DID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
 	}}
-	gdQOV := values.NewQuantifiedObjectValueOfType(gd, gdType)
-	did, err := values.NewFieldValueOfOrdinal(gdQOV, 0)
+	gdQOV, err := values.NewQuantifiedObjectValue(gd, gdType)
+	if err != nil {
+		t.Fatalf("GD QOV: %v", err)
+	}
+	did, err := values.ResolveOrdinalSeedField(gdQOV, 0)
 	if err != nil {
 		t.Fatalf("GD.DID bake: %v", err)
 	}
-	legV, err := values.NewFieldValueOfOrdinal(gdQOV, 1)
+	legV, err := values.ResolveOrdinalSeedField(gdQOV, 1)
 	if err != nil {
 		t.Fatalf("GD.V bake: %v", err)
 	}
 	// The unnest element of a SCALAR array: a bare QOV over the element type, the
 	// slot OrdinalSeedLegWindows recognizes through isMixedSeedElement.
-	elemQOV := values.NewQuantifiedObjectValueOfType(elem, values.NotNullLong)
+	elemQOV, err := values.NewQuantifiedObjectValue(elem, values.NotNullLong)
+	if err != nil {
+		t.Fatalf("element QOV: %v", err)
+	}
 	rc := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "DID", Value: did},
 		values.RecordConstructorField{Name: "V", Value: legV},
@@ -382,14 +388,18 @@ func TestLegKind_GatheredSeedBareArmIgnoresANestedWindow(t *testing.T) {
 func TestLegKind_BoxRebaseRefusesWhatItCannotAddress(t *testing.T) {
 	t.Parallel()
 	legA := values.NamedCorrelationIdentifier("A")
-	boxType := &values.RecordType{Fields: []values.Field{
-		{Name: "K", FieldType: values.UnknownType, Ordinal: 0},
-		{Name: "AONLY", FieldType: values.UnknownType, Ordinal: 1},
-		{Name: "BONLY", FieldType: values.UnknownType, Ordinal: 2},
+	legType := &values.RecordType{Fields: []values.Field{
+		{Name: "K", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "AONLY", FieldType: values.NotNullLong, Ordinal: 1},
 	}}
-	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("BOX"), boxType)
-
-	ref := values.NewFieldValue(values.NewQuantifiedObjectValue(legA), "K", values.UnknownType)
+	legQOV, err := values.NewQuantifiedObjectValue(legA, legType)
+	if err != nil {
+		t.Fatalf("leg QOV: %v", err)
+	}
+	ref, err := values.ResolveFieldOrdinals(legQOV, []int{0})
+	if err != nil {
+		t.Fatalf("leg K: %v", err)
+	}
 
 	for _, tc := range []struct {
 		name     string
@@ -409,6 +419,21 @@ func TestLegKind_BoxRebaseRefusesWhatItCannotAddress(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			boxType := &values.RecordType{Fields: []values.Field{
+				{Name: "K", FieldType: values.NotNullLong, Ordinal: 0},
+				{Name: "AONLY", FieldType: values.NotNullLong, Ordinal: 1},
+				{Name: "BONLY", FieldType: values.NotNullLong, Ordinal: 2},
+			}}
+			if tc.kind == values.LegKindNested {
+				boxType = &values.RecordType{Fields: []values.Field{
+					{Name: "A", FieldType: legType, Ordinal: 0},
+					{Name: "BONLY", FieldType: values.NotNullLong, Ordinal: 1},
+				}}
+			}
+			boxQOV, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("BOX"), boxType)
+			if err != nil {
+				t.Fatalf("box QOV: %v", err)
+			}
 			out, ok := rebaseLegRefsToBox(ref, kindWindows(tc.kind), boxType, boxQOV)
 			if ok != tc.wantOK {
 				t.Fatalf("kind=%v: rebaseLegRefsToBox ok=%t, want %t. A window this reader "+
@@ -420,14 +445,11 @@ func TestLegKind_BoxRebaseRefusesWhatItCannotAddress(t *testing.T) {
 			if !tc.wantOK {
 				return
 			}
-			fv, isFV := out.(*values.FieldValue)
-			if !isFV || fv.Resolved == nil {
+			fv, isFV := values.AsFieldValue(out)
+			if !isFV || fv.Path() == nil {
 				t.Fatalf("kind=%v must bake to an ordinal path over the box, got %T %v", tc.kind, out, out)
 			}
-			got := make([]int, len(fv.Resolved.Accessors))
-			for i, a := range fv.Resolved.Accessors {
-				got[i] = a.Ordinal
-			}
+			got := fv.Path().Ordinals()
 			if len(got) != len(tc.wantPath) {
 				t.Fatalf("kind=%v produced a %d-step path %v, want the %d-step %v",
 					tc.kind, len(got), got, len(tc.wantPath), tc.wantPath)

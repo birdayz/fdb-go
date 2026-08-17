@@ -142,15 +142,19 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Build union legs.
 	onlyForEachQ := forEachQuantifiers[0]
-	lowerResultValue := onlyForEachQ.GetFlowedObjectValue()
+	lowerResultValue, err := onlyForEachQ.RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// Check if the result value is "simple" — a QuantifiedObjectValue
 	// referencing the single ForEach alias. If so, the outer wrapping
 	// SelectExpression is unnecessary.
 	resultValue := sel.GetResultValue()
 	isSimpleResultValue := false
-	if qov, ok := resultValue.(*values.QuantifiedObjectValue); ok {
-		if qov.Correlation == onlyForEachQ.GetAlias() {
+	if qov, ok := values.AsQuantifiedObjectValue(resultValue); ok {
+		if qov.Correlation() == onlyForEachQ.GetAlias() {
 			isSimpleResultValue = true
 		}
 	}
@@ -168,16 +172,24 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 			onlyForEachQ.GetRangesOver(),
 		)
 
-		legSelect := expressions.NewSelectExpression(
+		legSelect, err := expressions.NewSelectExpression(
 			lowerResultValue,
 			[]expressions.Quantifier{legForEach},
 			legPreds,
 		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		legSelectRef := call.MemoizeExpression(legSelect)
 
-		legUnique := expressions.NewLogicalUniqueExpression(
+		legUnique, err := expressions.NewLogicalUniqueExpression(
 			expressions.ForEachQuantifier(legSelectRef),
 		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		legUniqueRef := call.MemoizeExpression(legUnique)
 
 		legRefs = append(legRefs, legUniqueRef)
@@ -188,13 +200,21 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 	for i, ref := range legRefs {
 		unionQuantifiers[i] = expressions.ForEachQuantifier(ref)
 	}
-	unionExpr := expressions.NewLogicalUnionExpression(unionQuantifiers)
+	unionExpr, err := expressions.NewLogicalUnionExpression(unionQuantifiers)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	unionRef := call.MemoizeExpression(unionExpr)
 
 	// Wrap in LogicalDistinctExpression (dedup across legs).
-	distinctExpr := expressions.NewLogicalDistinctExpression(
+	distinctExpr, err := expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(unionRef),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	if isSimpleResultValue {
 		// Simple result value: Distinct is the final expression.
@@ -210,11 +230,15 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 			onlyForEachQ.GetAlias(),
 			distinctRef,
 		)
-		outerSelect := expressions.NewSelectExpression(
+		outerSelect, err := expressions.NewSelectExpression(
 			resultValue,
 			[]expressions.Quantifier{outerQuantifier},
 			nil, // no predicates on the outer select
 		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		call.Yield(outerSelect)
 	}
 }

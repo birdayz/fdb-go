@@ -205,9 +205,21 @@ func TestDottedRowTypeProducerCensus_FloorSaysWhatItReArms(t *testing.T) {
 	if !strings.Contains(msg, "RE-ARMS") {
 		t.Fatalf("the floor failure does not say what a collapse re-arms: %q", msg)
 	}
-	if !strings.Contains(msg, "refineRowTypes") {
-		t.Fatalf("the floor failure does not name the reader that makes a second "+
-			"unpopulated producer a plan-level conflict: %q", msg)
+	// The message has to name the CONDITION under which a second producer is
+	// fatal, and that condition inverted: it used to be "a second UNPOPULATED
+	// producer conflicts" (refineRowTypes' decline-on-populated-vs-empty rule),
+	// and the live guard in GetFlowedObjectType instead ADOPTS an empty table,
+	// so what is fatal now is a second producer stating DIFFERENT boundaries.
+	// Asserting the old wording here would keep the retired rule alive in the
+	// one place a reader would trust it.
+	if !strings.Contains(msg, "DIFFERENT boundaries") {
+		t.Fatalf("the floor failure does not name the condition that makes a second "+
+			"producer a plan-level conflict — under the live guard that is DIFFERENT "+
+			"boundaries, not an absent leg table: %q", msg)
+	}
+	if strings.Contains(msg, "refineRowTypes") {
+		t.Fatalf("the floor failure still cites refineRowTypes, which is not on the "+
+			"live path and implements the opposite ruling: %q", msg)
 	}
 }
 

@@ -3,7 +3,6 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -44,19 +43,21 @@ func (r *PrimaryScanRule) Matcher() matching.BindingMatcher { return r.matcher }
 // RecordQueryScanPlan over the same record types.
 func (r *PrimaryScanRule) OnMatch(call *ExpressionRuleCall) {
 	scan := matching.Get[*expressions.FullUnorderedScanExpression](call.Bindings, r.matcher)
-	plan := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), false)
+	plan, err := plans.NewRecordQueryScanPlan(scan.GetRecordTypes(), scan.GetFlowedType(), false)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	if call.Context != nil && len(scan.GetRecordTypes()) == 1 {
 		pkCols := call.Context.GetPrimaryKeyColumns(scan.GetRecordTypes()[0])
 		if len(pkCols) > 0 {
-			pkVals := make([]values.Value, len(pkCols))
-			for i, col := range pkCols {
-				pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
+			if pkVals := resolvedColumnsInRow(scan.GetFlowedType(), pkCols); len(pkVals) == len(pkCols) {
+				plan = plan.WithPrimaryKey(pkVals).
+					WithKeyComponentTypes(physicalTypesFromFlatRow(
+						scan.GetFlowedType(), pkCols, nil,
+					))
 			}
-			plan = plan.WithPrimaryKey(pkVals).
-				WithKeyComponentTypes(physicalTypesFromFlatRow(
-					scan.GetFlowedType(), pkCols, nil,
-				))
 		}
 	}
 

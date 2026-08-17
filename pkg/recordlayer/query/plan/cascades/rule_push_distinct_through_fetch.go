@@ -86,7 +86,11 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	)
 	newDistinctInnerQ := expressions.NamedForEachQuantifier(baseQ.GetAlias(),
 		call.MemoizeFinalExpression(fetchInnerPlan))
-	newDistinctPlan := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
+	newDistinctPlan, err := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// Memoize the distinct.
 	distinctRef := call.MemoizeFinalExpression(newDistinctPlan)
@@ -94,12 +98,16 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// Build: Fetch(Distinct(fetchInner)) as its own cascades expression carrying
 	// the live distinctRef edge (RFC-184 W2).
 	newFetchQ := expressions.ForEachQuantifier(distinctRef)
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		newFetchQ,
 		fetchW.GetTranslateValueFunction(),
 		fetchW.GetResultType(),
 		fetchW.GetFetchIndexRecords(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	call.Yield(newFetchPlan)
 }

@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -149,14 +150,32 @@ func TestFDB_CaseCoalesceNullifProbe(t *testing.T) {
 			t.Errorf("COALESCE = %v, want [-1 10 20 30]", got)
 		}
 	})
-	t.Run("nullif_equal_becomes_null", func(t *testing.T) {
-		// NULLIF(v, 20): v=20 → NULL, else v. COUNT of non-null → 2 (10,30); the 20 and the already-NULL drop.
-		var c int64
-		if err := db.QueryRowContext(ctx, "SELECT COUNT(NULLIF(v, 20)) FROM t").Scan(&c); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		if c != 2 {
-			t.Errorf("COUNT(NULLIF(v,20)) = %d, want 2 (10,30; v=20→NULL, v=NULL stays)", c)
+	t.Run("nullif_is_rejected_by_name_inside_an_aggregate_too", func(t *testing.T) {
+		// NULLIF has no entry in the SQL function catalogue Java's planner
+		// consults, so Java answers "Unsupported operator NULLIF"; the Go
+		// catalogue marks it representable-but-not-cascades-safe for exactly
+		// that reason, and the yamsql corpus pins the rejection for the plain
+		// projection spelling.
+		//
+		// The AGGREGATE OPERAND is the position that used to escape the gate:
+		// the unsupported-function sweep walks LogicalProject/LogicalFilter/
+		// LogicalUpdate values, and a call buried under COUNT() reached the
+		// executor through a path none of those visit. Two spellings of one
+		// query disagreeing on whether a function exists is the divergence —
+		// pin that both are refused, with the message Java gives.
+		for _, q := range []string{
+			"SELECT COUNT(NULLIF(v, 20)) FROM t",
+			"SELECT NULLIF(v, 20) FROM t",
+		} {
+			var c int64
+			err := db.QueryRowContext(ctx, q).Scan(&c)
+			if err == nil {
+				t.Errorf("%s answered %d, want a rejection — NULLIF is not in the catalogue", q, c)
+				continue
+			}
+			if !strings.Contains(err.Error(), "Unsupported operator NULLIF") {
+				t.Errorf("%s: err = %v, want %q", q, err, "Unsupported operator NULLIF")
+			}
 		}
 	})
 }

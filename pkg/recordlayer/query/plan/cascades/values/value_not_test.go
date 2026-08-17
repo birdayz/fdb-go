@@ -63,7 +63,7 @@ func TestNotValue_Evaluate_TypeMismatchDegrades(t *testing.T) {
 func TestNotValue_Evaluate_FieldLookup(t *testing.T) {
 	t.Parallel()
 	// "active" carries its plan-time ordinal (sole column → slot 0).
-	v := NewNotValue(NewFieldValueWithResolvedOrdinal("active", 0, TypeBool))
+	v := NewNotValue(newFieldValueWithResolvedOrdinal("active", 0, TypeBool))
 	got, errEv0 := v.Evaluate(fom(map[string]any{"active": true}))
 	require.NoError(t, errEv0)
 	if got != false {
@@ -120,7 +120,7 @@ func TestNotValue_WalkValue(t *testing.T) {
 	t.Parallel()
 	tree := NewNotValue(&ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "x", Typ: NullableLong},
+		Left:  &fieldValue{Field: "x", Typ: NullableLong},
 		Right: &ConstantValue{Value: int64(1), Typ: NullableLong},
 	})
 	visited := 0
@@ -142,7 +142,7 @@ func TestNotValue_IsConstantValue(t *testing.T) {
 	if !IsConstantValue(NewNotValue(NewBooleanValue(true))) {
 		t.Fatal("NOT(constant) should be IsConstantValue")
 	}
-	if IsConstantValue(NewNotValue(&FieldValue{Field: "x", Typ: TypeBool})) {
+	if IsConstantValue(NewNotValue(&fieldValue{Field: "x", Typ: TypeBool})) {
 		t.Fatal("NOT(field) should NOT be IsConstantValue")
 	}
 }
@@ -232,7 +232,7 @@ func TestNotValue_FoldsConstantToLeaf(t *testing.T) {
 // fold — the child isn't constant, so the Not wrapper survives.
 func TestNotValue_NonConstantChild_NoFold(t *testing.T) {
 	t.Parallel()
-	tree := NewNotValue(&FieldValue{Field: "active", Typ: TypeBool})
+	tree := NewNotValue(&fieldValue{Field: "active", Typ: TypeBool})
 	out := SimplifyValue(tree)
 	if out != Value(tree) {
 		// Allow either pointer-stable (child unchanged → return v) or

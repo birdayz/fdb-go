@@ -9,6 +9,20 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRFC190ExistsConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-190 EXISTS fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc190ExistsRowType() *values.RecordType {
+	return values.NewRecordType("RFC190ExistsRow", false, []values.Field{{
+		Name:      "K",
+		FieldType: values.NullableLong,
+	}})
+}
+
 func TestRFC190BuildExistsCompensationChainAliasContract(t *testing.T) {
 	t.Parallel()
 
@@ -57,17 +71,17 @@ func TestRFC190BuildExistsCompensationChainAliasContract(t *testing.T) {
 				baseAlias = values.NamedCorrelationIdentifier(
 					"base_" + test.name)
 			}
-			scan := plans.NewRecordQueryScanPlan(
-				[]string{"T"}, values.UnknownType, false)
+			scan := mustRFC190ExistsConstruct(plans.NewRecordQueryScanPlan(
+				[]string{"T"}, rfc190ExistsRowType(), false))
 			call := NewExpressionRuleCall(expressions.InitialOf(scan), nil, nil)
 			baseQ := expressions.NamedPhysicalQuantifier(
 				baseAlias, call.MemoizeExpression(scan))
+			innerObject := mustRFC190ExistsConstruct(values.NewQuantifiedObjectValue(
+				innerCorrelation, rfc190ExistsRowType()))
+			innerK := mustRFC190ExistsConstruct(values.ResolveFieldOrdinals(
+				innerObject, []int{0}))
 			belowFODPredicate := predicates.NewComparisonPredicate(
-				values.NewFieldValue(
-					values.NewQuantifiedObjectValue(innerCorrelation),
-					"K",
-					values.UnknownType,
-				),
+				innerK,
 				predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 			)
 			var belowFODPredicates []predicates.QueryPredicate
@@ -77,7 +91,7 @@ func TestRFC190BuildExistsCompensationChainAliasContract(t *testing.T) {
 				}
 			}
 
-			finalQ := buildExistsCompensationChain(
+			finalQ := mustRFC190ExistsConstruct(buildExistsCompensationChain(
 				call,
 				baseQ,
 				scan,
@@ -86,7 +100,7 @@ func TestRFC190BuildExistsCompensationChainAliasContract(t *testing.T) {
 				test.hasExistsFilter,
 				test.negated,
 				test.preserveAlias,
-			)
+			))
 
 			top := rfc190FinalPlanForQuantifier(t, finalQ)
 			aliases := []values.CorrelationIdentifier{finalQ.GetAlias()}
@@ -113,14 +127,18 @@ func TestRFC190BuildExistsCompensationChainAliasContract(t *testing.T) {
 					t.Fatalf("residual comparison = %v, want %v",
 						residual.Comparison.Type, test.residualType)
 				}
-				qov, ok := residual.Operand.(*values.QuantifiedObjectValue)
+				qov, ok := values.AsQuantifiedObjectValue(residual.Operand)
 				if !ok {
 					t.Fatalf("residual operand = %T, want quantified object",
 						residual.Operand)
 				}
-				if qov.Correlation != innerCorrelation {
-					t.Fatalf("residual operand correlation = %v, want %v",
-						qov.Correlation, innerCorrelation)
+				residualLayout, err := residualFilter.GetInner().ProvidedOutputLayout()
+				if err != nil {
+					t.Fatalf("residual input layout: %v", err)
+				}
+				if qov != residualLayout.Carrier() {
+					t.Fatalf("residual operand = %v/%p, want exact FirstOrDefault carrier %v/%p",
+						qov.Correlation(), qov, residualLayout.Carrier().Correlation(), residualLayout.Carrier())
 				}
 				aliases = append(aliases,
 					residualFilter.GetInnerQuantifier().GetAlias())
@@ -146,9 +164,13 @@ func TestRFC190BuildExistsCompensationChainAliasContract(t *testing.T) {
 						belowFODFilter.GetInnerAlias(), innerCorrelation)
 				}
 				preds := belowFODFilter.GetPredicates()
-				if len(preds) != 1 || preds[0] != belowFODPredicate {
-					t.Fatalf("below-FOD predicates = %v, want supplied predicate %v",
-						preds, belowFODPredicate)
+				if len(preds) != 1 {
+					t.Fatalf("below-FOD predicate count = %d, want 1", len(preds))
+				}
+				comparison, ok := preds[0].(*predicates.ComparisonPredicate)
+				if !ok || comparison.Comparison.Type != predicates.ComparisonIsNotNull {
+					t.Fatalf("below-FOD predicate = %T/%v, want IS NOT NULL comparison",
+						preds[0], preds[0])
 				}
 				aliases = append(aliases,
 					belowFODFilter.GetInnerQuantifier().GetAlias())
@@ -181,6 +203,94 @@ func TestRFC190BuildExistsCompensationChainAliasContract(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRFC190ExistsResidualUsesWholeFODCarrierBesideSameAliasRetainedWindow(t *testing.T) {
+	t.Parallel()
+	bType := values.NewRecordType("BOOKS", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "AUTHOR_ID", FieldType: values.NullableLong},
+	})
+	wType := values.NewRecordType("AWARDS", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "BOOK_ID", FieldType: values.NullableLong},
+		{Name: "PRIZE", FieldType: values.NullableString},
+	})
+	bAlias := values.NamedCorrelationIdentifier("B")
+	// Reuse W as both the existential bookkeeping alias and a genuine buried
+	// source alias. That is the collision the residual must not resolve through.
+	wAlias := values.NamedCorrelationIdentifier("W")
+	bScan := mustRFC190ExistsConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"BOOKS"}, bType, false))
+	wScan := mustRFC190ExistsConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"AWARDS"}, wType, false))
+	bQ := expressions.NamedPhysicalQuantifier(
+		bAlias, expressions.FinalOfAtStage(bScan, expressions.StageCanonical))
+	wQ := expressions.NamedPhysicalQuantifier(
+		wAlias, expressions.FinalOfAtStage(wScan, expressions.StageCanonical))
+	bRoot := mustRFC190ExistsConstruct(bQ.RequireFlowedObjectValue())
+	wRoot := mustRFC190ExistsConstruct(wQ.RequireFlowedObjectValue())
+	bID := mustRFC190ExistsConstruct(values.ResolveOrdinalSeedField(bRoot, 0))
+	bAuthor := mustRFC190ExistsConstruct(values.ResolveOrdinalSeedField(bRoot, 1))
+	wID := mustRFC190ExistsConstruct(values.ResolveOrdinalSeedField(wRoot, 0))
+	wBook := mustRFC190ExistsConstruct(values.ResolveOrdinalSeedField(wRoot, 1))
+	wPrize := mustRFC190ExistsConstruct(values.ResolveOrdinalSeedField(wRoot, 2))
+	join := mustRFC190ExistsConstruct(plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+		bQ, wQ, nil, plans.JoinInner, bAlias, wAlias,
+		values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "B_ID", Value: bID},
+			values.RecordConstructorField{Name: "AUTHOR_ID", Value: bAuthor},
+			values.RecordConstructorField{Name: "W_ID", Value: wID},
+			values.RecordConstructorField{Name: "BOOK_ID", Value: wBook},
+			values.RecordConstructorField{Name: "PRIZE", Value: wPrize}),
+	))
+	joinLayout := mustRFC190ExistsConstruct(join.ProvidedOutputLayout())
+	if provided, provideErr := values.LayoutProvides(joinLayout, wRoot); provideErr != nil || !provided {
+		t.Fatalf("join retained W/AWARDS window = (%v, %v), want (true, nil)", provided, provideErr)
+	}
+	call := NewExpressionRuleCall(expressions.InitialOf(join), nil, nil)
+	baseQ := expressions.NamedPhysicalQuantifier(
+		wAlias, call.MemoizeFinalExpression(join))
+	finalQ := mustRFC190ExistsConstruct(buildExistsCompensationChain(
+		call, baseQ, join, wAlias, nil, true, false, true))
+
+	residualFilter, ok := rfc190FinalPlanForQuantifier(t, finalQ).(*plans.RecordQueryPredicatesFilterPlan)
+	if !ok {
+		t.Fatalf("top plan = %T, want existential residual filter",
+			rfc190FinalPlanForQuantifier(t, finalQ))
+	}
+	preds := residualFilter.GetPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("residual predicate count = %d, want 1", len(preds))
+	}
+	comparison, ok := preds[0].(*predicates.ComparisonPredicate)
+	if !ok || comparison.Comparison.Type != predicates.ComparisonIsNotNull {
+		t.Fatalf("residual predicate = %T/%v, want IS NOT NULL", preds[0], preds[0])
+	}
+	whole, ok := values.AsQuantifiedObjectValue(comparison.Operand)
+	if !ok {
+		t.Fatalf("residual operand = %T, want exact whole-row QOV", comparison.Operand)
+	}
+	fod, ok := residualFilter.GetInner().(*plans.RecordQueryFirstOrDefaultPlan)
+	if !ok {
+		t.Fatalf("residual input = %T, want FirstOrDefault", residualFilter.GetInner())
+	}
+	fodLayout, err := fod.ProvidedOutputLayout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if whole != fodLayout.Carrier() {
+		t.Fatalf("residual operand = %v/%p, want exact FOD carrier %v/%p",
+			whole.Correlation(), whole, fodLayout.Carrier().Correlation(), fodLayout.Carrier())
+	}
+	provided, err := values.LayoutProvides(fodLayout, wRoot)
+	if err != nil || !provided {
+		t.Fatalf("FOD retained W/AWARDS window = (%v, %v), want (true, nil)", provided, err)
+	}
+	if whole == wRoot || whole.FlowedType().Equals(wRoot.FlowedType()) {
+		t.Fatalf("whole residual collapsed onto narrow W/AWARDS window: whole=%v W=%v",
+			whole.FlowedType(), wRoot.FlowedType())
 	}
 }
 

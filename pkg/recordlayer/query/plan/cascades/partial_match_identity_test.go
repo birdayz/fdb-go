@@ -15,15 +15,37 @@ type partialMatchIdentityFixture struct {
 	candidateRef *expressions.Reference
 }
 
-func newPartialMatchIdentityFixture(name string) partialMatchIdentityFixture {
-	queryExpr := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
-	candidateExpr := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
+func partialMatchIdentityRowType(recordType string) *values.RecordType {
+	return values.NewRecordType(recordType, false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
+func partialMatchIdentityScan(
+	t testing.TB,
+	recordType string,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(
+		t, []string{recordType}, partialMatchIdentityRowType(recordType))
+}
+
+func partialMatchIdentityFlowedValue(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	flowedValue, flowedErr := quantifier.RequireFlowedObjectValue()
+	return mustConstruct(t, flowedValue, flowedErr)
+}
+
+func newPartialMatchIdentityFixture(
+	t testing.TB,
+	name string,
+) partialMatchIdentityFixture {
+	t.Helper()
+	queryExpr := partialMatchIdentityScan(t, "T")
+	candidateExpr := partialMatchIdentityScan(t, "T")
 	return partialMatchIdentityFixture{
 		candidate:    stubMatchCandidate{name: name},
 		queryExpr:    queryExpr,
@@ -84,7 +106,7 @@ func identityTestComparisonRange(
 func TestPartialMatchSemanticIdentity_AdjustedChainIsLayerSensitive(t *testing.T) {
 	t.Parallel()
 
-	fixture := newPartialMatchIdentityFixture("adjusted_identity")
+	fixture := newPartialMatchIdentityFixture(t, "adjusted_identity")
 	newMMM := func(literal int64) *MaxMatchMap {
 		value := values.LiteralValue(literal)
 		return NewMaxMatchMap(
@@ -142,7 +164,7 @@ func TestPartialMatchSemanticIdentity_AdjustedChainIsLayerSensitive(t *testing.T
 func TestPartialMatchSemanticIdentity_AdjustedOrderingIgnoresFreshParameterIDs(t *testing.T) {
 	t.Parallel()
 
-	fixture := newPartialMatchIdentityFixture("adjusted_ordering_parameter_id")
+	fixture := newPartialMatchIdentityFixture(t, "adjusted_ordering_parameter_id")
 	firstParameterID := values.UniqueCorrelationIdentifier()
 	reconstructedParameterID := values.UniqueCorrelationIdentifier()
 	if firstParameterID == reconstructedParameterID {
@@ -152,7 +174,14 @@ func TestPartialMatchSemanticIdentity_AdjustedOrderingIgnoresFreshParameterIDs(t
 	newAdjustedMatch := func(
 		parameterID values.CorrelationIdentifier,
 	) *PartialMatchImpl {
-		orderingValue := values.NewFieldValue(nil, "ID", values.UnknownType)
+		orderingRootValue, orderingRootErr := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("ordering_identity"),
+			partialMatchIdentityRowType("ordering_identity"),
+		)
+		orderingRoot := mustConstruct(t, orderingRootValue, orderingRootErr)
+		orderingValueValue, orderingValueErr := values.ResolveFieldOrdinals(
+			orderingRoot, []int{0})
+		orderingValue := mustConstruct(t, orderingValueValue, orderingValueErr)
 		orderingRange := identityTestComparisonRange(
 			t,
 			predicates.NewLiteralComparison(
@@ -198,7 +227,7 @@ func TestPartialMatchSemanticIdentity_AdjustedOrderingIgnoresFreshParameterIDs(t
 func TestPartialMatchSemanticIdentity_GroupMapOrderIsIrrelevant(t *testing.T) {
 	t.Parallel()
 
-	fixture := newPartialMatchIdentityFixture("group_map_order")
+	fixture := newPartialMatchIdentityFixture(t, "group_map_order")
 	buildGroups := func(reverse bool) *GroupByMappings {
 		matched := NewValueBiMap()
 		entries := [][2]values.Value{
@@ -239,7 +268,7 @@ func TestPartialMatchSemanticIdentity_GroupMapOrderIsIrrelevant(t *testing.T) {
 func TestPartialMatchSemanticIdentity_OpaqueCompensationFailsOpen(t *testing.T) {
 	t.Parallel()
 
-	fixture := newPartialMatchIdentityFixture("opaque_compensation")
+	fixture := newPartialMatchIdentityFixture(t, "opaque_compensation")
 	queryPredicate := predicates.NewConstantPredicate(predicates.TriTrue)
 	candidatePredicate := predicates.NewConstantPredicate(predicates.TriTrue)
 	newPredicateMap := func(marker int) *PredicateMultiMap {
@@ -285,7 +314,7 @@ func TestPartialMatchSemanticIdentity_OpaqueCompensationFailsOpen(t *testing.T) 
 func TestPartialMatchSemanticIdentity_InequalityOrderIsIrrelevant(t *testing.T) {
 	t.Parallel()
 
-	fixture := newPartialMatchIdentityFixture("inequality_order")
+	fixture := newPartialMatchIdentityFixture(t, "inequality_order")
 	parameterAlias := values.NamedCorrelationIdentifier("p")
 	greaterFive := predicates.NewLiteralComparison(
 		predicates.ComparisonGreaterThan,
@@ -327,7 +356,7 @@ func TestPartialMatchSemanticIdentity_InequalityOrderIsIrrelevant(t *testing.T) 
 func TestPartialMatchSemanticIdentity_PredicateMapOrderIsIrrelevant(t *testing.T) {
 	t.Parallel()
 
-	fixture := newPartialMatchIdentityFixture("predicate_map_order")
+	fixture := newPartialMatchIdentityFixture(t, "predicate_map_order")
 	newPredicateMap := func(reverse bool) *PredicateMultiMap {
 		entries := []predicates.TriBool{predicates.TriTrue, predicates.TriFalse}
 		if reverse {
@@ -373,14 +402,8 @@ func TestPartialMatchSemanticIdentity_ChildSelectionAndReconstruction(t *testing
 	t.Parallel()
 
 	candidate := stubMatchCandidate{name: "child_selection"}
-	childQueryExpr := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
-	childCandidateExpr := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
+	childQueryExpr := partialMatchIdentityScan(t, "T")
+	childCandidateExpr := partialMatchIdentityScan(t, "T")
 	childQueryRef := expressions.InitialOf(childQueryExpr)
 	childCandidateRef := expressions.InitialOf(childCandidateExpr)
 
@@ -391,16 +414,18 @@ func TestPartialMatchSemanticIdentity_ChildSelectionAndReconstruction(t *testing
 		candidateAlias,
 		childCandidateRef,
 	)
-	parentQueryExpr := expressions.NewSelectExpression(
-		queryQuantifier.GetFlowedObjectValue(),
+	parentQueryValue, parentQueryErr := expressions.NewSelectExpression(
+		partialMatchIdentityFlowedValue(t, queryQuantifier),
 		[]expressions.Quantifier{queryQuantifier},
 		nil,
 	)
-	parentCandidateExpr := expressions.NewSelectExpression(
-		candidateQuantifier.GetFlowedObjectValue(),
+	parentQueryExpr := mustConstruct(t, parentQueryValue, parentQueryErr)
+	parentCandidateValue, parentCandidateErr := expressions.NewSelectExpression(
+		partialMatchIdentityFlowedValue(t, candidateQuantifier),
 		[]expressions.Quantifier{candidateQuantifier},
 		nil,
 	)
+	parentCandidateExpr := mustConstruct(t, parentCandidateValue, parentCandidateErr)
 	parentQueryRef := expressions.InitialOf(parentQueryExpr)
 	parentCandidateRef := expressions.InitialOf(parentCandidateExpr)
 	parentAliasMap := AliasMapOfAliases(queryAlias, candidateAlias)
@@ -482,7 +507,7 @@ func TestPartialMatchSemanticIdentity_ChildSelectionAndReconstruction(t *testing
 func TestPartialMatchSemanticIdentity_DefaultAndResidualCompensationDiffer(t *testing.T) {
 	t.Parallel()
 
-	fixture := newPartialMatchIdentityFixture("compensation_identity")
+	fixture := newPartialMatchIdentityFixture(t, "compensation_identity")
 	newPredicateMap := func(residual bool) *PredicateMultiMap {
 		original := predicates.NewConstantPredicate(predicates.TriTrue)
 		translated := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -542,19 +567,9 @@ func TestPartialMatchSemanticIdentity_DefaultAndResidualCompensationDiffer(t *te
 func TestPartialMatchSemanticIdentity_ForwardedReferencesCanonicalize(t *testing.T) {
 	t.Parallel()
 
-	fixture := newPartialMatchIdentityFixture("forwarded_reconstruction")
-	forwardedQueryRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
-			[]string{"T"},
-			values.UnknownType,
-		),
-	)
-	forwardedCandidateRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
-			[]string{"T"},
-			values.UnknownType,
-		),
-	)
+	fixture := newPartialMatchIdentityFixture(t, "forwarded_reconstruction")
+	forwardedQueryRef := expressions.InitialOf(partialMatchIdentityScan(t, "T"))
+	forwardedCandidateRef := expressions.InitialOf(partialMatchIdentityScan(t, "T"))
 	first := NewPartialMatch(
 		EmptyAliasMap(),
 		fixture.candidate,

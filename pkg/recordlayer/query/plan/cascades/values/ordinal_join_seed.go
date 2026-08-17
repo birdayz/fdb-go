@@ -26,10 +26,10 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 	}
 	var runs []run
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*FieldValue)
+		fv, isFV := f.Value.(*fieldValue)
 		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
 			// FrontierPinned required: the seed's constructor is
-			// NewFieldValueOfOrdinal, which pins — an UNPINNED baked node here
+			// newFieldValueOfOrdinal, which pins — an UNPINNED baked node here
 			// (the recursive-CTE wrap shape) is not a join-seed reference and
 			// its presence means the wrong constructor built the seed.
 			panic(fmt.Sprintf("ordinal join seed malformed: field %d (%q) is %T (baked=%v) — the seed bakes EVERY leg column with the frontier-pinned constructor", i, f.Name, f.Value, isFV && fv.Resolved != nil))
@@ -41,24 +41,24 @@ func AssertOrdinalJoinSeed(rc *RecordConstructorValue) {
 			// compose fired where it must not.
 			panic(fmt.Sprintf("ordinal join seed malformed: field %d (%q) carries a %d-accessor path — the seed bakes single-accessor leg references only", i, f.Name, len(fv.Resolved.Accessors)))
 		}
-		qov, isQOV := fv.Child.(*QuantifiedObjectValue)
+		qov, isQOV := fv.Child.(*quantifiedObjectValue)
 		if !isQOV {
-			panic(fmt.Sprintf("ordinal join seed malformed: field %d (%q) is baked over a %T child, want *QuantifiedObjectValue (the leg reference)", i, f.Name, fv.Child))
+			panic(fmt.Sprintf("ordinal join seed malformed: field %d (%q) is baked over a %T child, want *quantifiedObjectValue (the leg reference)", i, f.Name, fv.Child))
 		}
 		legType, isRT := qov.Type().(*RecordType)
 		if !isRT {
-			panic(fmt.Sprintf("ordinal join seed malformed: field %d (%q) leg %s flows %T, want *RecordType", i, f.Name, qov.Correlation, qov.Type()))
+			panic(fmt.Sprintf("ordinal join seed malformed: field %d (%q) leg %s flows %T, want *RecordType", i, f.Name, qov.correlation, qov.Type()))
 		}
 		ord := acc.Ordinal
-		if len(runs) == 0 || runs[len(runs)-1].alias != qov.Correlation {
+		if len(runs) == 0 || runs[len(runs)-1].alias != qov.correlation {
 			if ord != 0 {
-				panic(fmt.Sprintf("ordinal join seed malformed: leg %s run starts at field %d with baked ordinal %d, want 0 — run ordinals must be exactly 0..width-1 ascending", qov.Correlation, i, ord))
+				panic(fmt.Sprintf("ordinal join seed malformed: leg %s run starts at field %d with baked ordinal %d, want 0 — run ordinals must be exactly 0..width-1 ascending", qov.correlation, i, ord))
 			}
-			runs = append(runs, run{alias: qov.Correlation, legType: legType, width: 1})
+			runs = append(runs, run{alias: qov.correlation, legType: legType, width: 1})
 		} else {
 			cur := &runs[len(runs)-1]
 			if ord != cur.width {
-				panic(fmt.Sprintf("ordinal join seed malformed: leg %s field %d baked at ordinal %d, want %d — run ordinals must be exactly 0..width-1 ascending (no gaps, no reorders)", qov.Correlation, i, ord, cur.width))
+				panic(fmt.Sprintf("ordinal join seed malformed: leg %s field %d baked at ordinal %d, want %d — run ordinals must be exactly 0..width-1 ascending (no gaps, no reorders)", qov.correlation, i, ord, cur.width))
 			}
 			cur.width++
 		}

@@ -23,7 +23,9 @@ func TestRecordQueryScanPlan_WithPrimaryKey_PreservesComparisons(t *testing.T) {
 	if !res.Ok {
 		t.Fatal("failed to build equality range")
 	}
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithScanComparisons([]*predicates.ComparisonRange{res.Range}).
 		WithPrimaryKey([]values.Value{&values.ConstantValue{Value: int64(7), Typ: values.NullableLong}})
 
@@ -39,13 +41,18 @@ func TestRecordQueryIndexPlan_FanOutOrderingHintsAbstain(t *testing.T) {
 	t.Parallel()
 
 	empty := predicates.EmptyComparisonRange()
-	fanOut := NewRecordQueryIndexPlan(
-		"idx_tags",
-		[]*predicates.ComparisonRange{empty},
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	).WithIndexMetadata(
+	indexRowType := values.NewRecordType("index_test_row", false, []values.Field{
+		{Name: "TAGS", FieldType: values.NullableString, Ordinal: 0},
+		{Name: "SCORE", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	fanOut := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"idx_tags",
+			[]*predicates.ComparisonRange{empty},
+			[]string{"T"}, indexRowType, false,
+		)
+	}).WithIndexMetadata(
 		[]string{"TAGS"},
 		[]string{"ID"},
 		false,
@@ -66,13 +73,13 @@ func TestRecordQueryIndexPlan_FanOutOrderingHintsAbstain(t *testing.T) {
 		)
 	}
 
-	scalar := NewRecordQueryIndexPlan(
-		"idx_score",
-		[]*predicates.ComparisonRange{empty},
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	).WithIndexMetadata(
+	scalar := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"idx_score",
+			[]*predicates.ComparisonRange{empty},
+			[]string{"T"}, indexRowType, false,
+		)
+	}).WithIndexMetadata(
 		[]string{"SCORE"},
 		[]string{"ID"},
 		false,
@@ -97,13 +104,13 @@ func TestRecordQueryIndexPlan_FanOutOrderingHintsAbstain(t *testing.T) {
 func TestRecordQueryIndexPlan_ExpressionKeyOrderingHintsAbstain(t *testing.T) {
 	t.Parallel()
 
-	expressionKey := NewRecordQueryIndexPlan(
-		"idx_cardinality_tags",
-		[]*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	).WithIndexMetadata(
+	expressionKey := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"idx_cardinality_tags",
+			[]*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
+			[]string{"T"}, exactTestRecordType(), false,
+		)
+	}).WithIndexMetadata(
 		[]string{"TAGS"},
 		[]string{"ID"},
 		false,
@@ -143,13 +150,27 @@ type stubPlan struct {
 	label string
 }
 
-func (s *stubPlan) GetResultType() values.Type                     { return values.UnknownType }
+func (s *stubPlan) GetResultType() values.Type                     { return values.NotNullLong }
 func (s *stubPlan) GetChildren() []RecordQueryPlan                 { return nil }
 func (s *stubPlan) Explain() string                                { return s.label }
 func (s *stubPlan) EqualsPlanWithoutChildren(RecordQueryPlan) bool { return true }
 func (s *stubPlan) HashCodeWithoutChildren() uint64                { return 0 }
 
-func stub(label string) *stubPlan { return &stubPlan{label: label} }
+func stub(label string) *stubPlan {
+	base, err := newPlanExprBaseForType("stubPlan", values.NotNullLong)
+	if err != nil {
+		panic(err)
+	}
+	return &stubPlan{PlanExprBase: base, label: label}
+}
+
+func structuralLong(value int64) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullLong}
+}
+
+func structuralString(value string) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullString}
+}
 
 // ---------------------------------------------------------------------------
 // RecordQueryLimitPlan
@@ -158,7 +179,9 @@ func stub(label string) *stubPlan { return &stubPlan{label: label} }
 func TestLimitPlan_Construction(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	p := NewRecordQueryLimitPlan(inner, 10, 0)
+	p := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(inner, 10, 0)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -172,16 +195,20 @@ func TestLimitPlan_Construction(t *testing.T) {
 
 func TestLimitPlan_GetResultType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryLimitPlan(stub("X"), 5, 0)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType", p.GetResultType())
+	p := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("X"), 5, 0)
+	})
+	if !values.NotNullLong.Equals(p.GetResultType()) {
+		t.Fatalf("GetResultType() = %v, want NotNullLong from inner", p.GetResultType())
 	}
 }
 
 func TestLimitPlan_GetChildren(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	p := NewRecordQueryLimitPlan(inner, 10, 0)
+	p := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(inner, 10, 0)
+	})
 	cs := p.GetChildren()
 	if len(cs) != 1 || cs[0] != inner {
 		t.Fatalf("GetChildren() = %v, want [inner]", cs)
@@ -190,15 +217,20 @@ func TestLimitPlan_GetChildren(t *testing.T) {
 
 func TestLimitPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryLimitPlan(nil, 10, 0)
+	p := &RecordQueryLimitPlan{limit: 10}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil for nil inner", cs)
+	}
+	if _, err := NewRecordQueryLimitPlan(nil, 10, 0); err == nil {
+		t.Fatal("constructor accepted a nil inner plan")
 	}
 }
 
 func TestLimitPlan_Explain_NoOffset(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryLimitPlan(stub("Scan(T)"), 10, 0)
+	p := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("Scan(T)"), 10, 0)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Limit") {
 		t.Fatalf("Explain = %q, missing 'Limit'", got)
@@ -213,7 +245,9 @@ func TestLimitPlan_Explain_NoOffset(t *testing.T) {
 
 func TestLimitPlan_Explain_WithOffset(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryLimitPlan(stub("Scan(T)"), 5, 20)
+	p := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("Scan(T)"), 5, 20)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Limit") {
 		t.Fatalf("Explain = %q, missing 'Limit'", got)
@@ -225,8 +259,12 @@ func TestLimitPlan_Explain_WithOffset(t *testing.T) {
 
 func TestLimitPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryLimitPlan(nil, 10, 5)
-	b := NewRecordQueryLimitPlan(nil, 10, 5)
+	a := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("A"), 10, 5)
+	})
+	b := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("B"), 10, 5)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same limit+offset should be equal")
 	}
@@ -234,8 +272,12 @@ func TestLimitPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestLimitPlan_EqualsWithoutChildren_DifferentLimit(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryLimitPlan(nil, 10, 0)
-	b := NewRecordQueryLimitPlan(nil, 20, 0)
+	a := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("A"), 10, 0)
+	})
+	b := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("B"), 20, 0)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different limits should not be equal")
 	}
@@ -243,8 +285,12 @@ func TestLimitPlan_EqualsWithoutChildren_DifferentLimit(t *testing.T) {
 
 func TestLimitPlan_EqualsWithoutChildren_DifferentOffset(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryLimitPlan(nil, 10, 0)
-	b := NewRecordQueryLimitPlan(nil, 10, 5)
+	a := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("A"), 10, 0)
+	})
+	b := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("B"), 10, 5)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different offsets should not be equal")
 	}
@@ -252,8 +298,12 @@ func TestLimitPlan_EqualsWithoutChildren_DifferentOffset(t *testing.T) {
 
 func TestLimitPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	lim := NewRecordQueryLimitPlan(nil, 10, 0)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	lim := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("Inner"), 10, 0)
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if lim.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("LimitPlan should not equal ScanPlan")
 	}
@@ -261,7 +311,9 @@ func TestLimitPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestLimitPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryLimitPlan(nil, 10, 5)
+	p := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("Inner"), 10, 5)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -271,9 +323,15 @@ func TestLimitPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestLimitPlan_HashCodeWithoutChildren_DiffersForDifferentParams(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryLimitPlan(nil, 10, 0)
-	b := NewRecordQueryLimitPlan(nil, 20, 0)
-	c := NewRecordQueryLimitPlan(nil, 10, 5)
+	a := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("A"), 10, 0)
+	})
+	b := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("B"), 20, 0)
+	})
+	c := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("C"), 10, 5)
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different limits should (very likely) have different hashes")
 	}
@@ -290,7 +348,9 @@ func TestFilterPlan_Construction(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 	inner := stub("Inner")
-	p := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, inner)
+	p := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, inner)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -304,25 +364,28 @@ func TestFilterPlan_Construction(t *testing.T) {
 
 func TestFilterPlan_GetResultType_DelegatesInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	p := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	p := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, scan)
+	})
 	if !values.NotNullLong.Equals(p.GetResultType()) {
 		t.Fatalf("GetResultType() = %v, want NotNullLong (from inner)", p.GetResultType())
 	}
 }
 
-func TestFilterPlan_GetResultType_NilInner(t *testing.T) {
+func TestFilterPlan_ConstructorRejectsNilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryFilterPlan(nil, nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType for nil inner", p.GetResultType())
+	if _, err := NewRecordQueryFilterPlan(nil, nil); err == nil {
+		t.Fatal("constructor accepted a nil inner plan")
 	}
 }
 
 func TestFilterPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryFilterPlan(nil, nil)
+	p := &RecordQueryFilterPlan{}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
 	}
@@ -331,7 +394,9 @@ func TestFilterPlan_GetChildren_NilInner(t *testing.T) {
 func TestFilterPlan_Explain_ContainsFilter(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	p := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("Scan(T)"))
+	p := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("Scan(T)"))
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Filter") {
 		t.Fatalf("Explain = %q, missing 'Filter'", got)
@@ -343,7 +408,7 @@ func TestFilterPlan_Explain_ContainsFilter(t *testing.T) {
 
 func TestFilterPlan_Explain_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryFilterPlan(nil, nil)
+	p := &RecordQueryFilterPlan{}
 	got := p.Explain()
 	if !strings.Contains(got, "<nil>") {
 		t.Fatalf("Explain = %q, missing '<nil>' for nil inner", got)
@@ -353,8 +418,12 @@ func TestFilterPlan_Explain_NilInner(t *testing.T) {
 func TestFilterPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	a := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, nil)
-	b := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, nil)
+	a := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("B"))
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same predicates should be equal")
 	}
@@ -364,8 +433,12 @@ func TestFilterPlan_EqualsWithoutChildren_DifferentPredicateCount(t *testing.T) 
 	t.Parallel()
 	p1 := predicates.NewConstantPredicate(predicates.TriTrue)
 	p2 := predicates.NewConstantPredicate(predicates.TriFalse)
-	a := NewRecordQueryFilterPlan([]predicates.QueryPredicate{p1}, nil)
-	b := NewRecordQueryFilterPlan([]predicates.QueryPredicate{p1, p2}, nil)
+	a := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{p1}, stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{p1, p2}, stub("B"))
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different predicate counts should not be equal")
 	}
@@ -373,12 +446,16 @@ func TestFilterPlan_EqualsWithoutChildren_DifferentPredicateCount(t *testing.T) 
 
 func TestFilterPlan_EqualsWithoutChildren_DifferentPredicate(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryFilterPlan([]predicates.QueryPredicate{
-		predicates.NewConstantPredicate(predicates.TriTrue),
-	}, nil)
-	b := NewRecordQueryFilterPlan([]predicates.QueryPredicate{
-		predicates.NewConstantPredicate(predicates.TriFalse),
-	}, nil)
+	a := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{
+			predicates.NewConstantPredicate(predicates.TriTrue),
+		}, stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{
+			predicates.NewConstantPredicate(predicates.TriFalse),
+		}, stub("B"))
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different predicates should not be equal")
 	}
@@ -386,8 +463,12 @@ func TestFilterPlan_EqualsWithoutChildren_DifferentPredicate(t *testing.T) {
 
 func TestFilterPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	f := NewRecordQueryFilterPlan(nil, nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	f := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan(nil, stub("Inner"))
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if f.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("FilterPlan should not equal ScanPlan")
 	}
@@ -396,7 +477,9 @@ func TestFilterPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 func TestFilterPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	p := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, nil)
+	p := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("Inner"))
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -406,12 +489,16 @@ func TestFilterPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestFilterPlan_HashCodeWithoutChildren_DiffersForDifferentPreds(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryFilterPlan([]predicates.QueryPredicate{
-		predicates.NewConstantPredicate(predicates.TriTrue),
-	}, nil)
-	b := NewRecordQueryFilterPlan([]predicates.QueryPredicate{
-		predicates.NewConstantPredicate(predicates.TriFalse),
-	}, nil)
+	a := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{
+			predicates.NewConstantPredicate(predicates.TriTrue),
+		}, stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{
+			predicates.NewConstantPredicate(predicates.TriFalse),
+		}, stub("B"))
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different predicates should (very likely) produce different hashes")
 	}
@@ -420,8 +507,13 @@ func TestFilterPlan_HashCodeWithoutChildren_DiffersForDifferentPreds(t *testing.
 func TestFilterPlan_CopiesPredicateSlice(t *testing.T) {
 	t.Parallel()
 	preds := []predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}
-	p := NewRecordQueryFilterPlan(preds, nil)
-	// Mutate the original slice.
+	p := mustChecked(t, func() (*RecordQueryFilterPlan,
+		// Mutate the original slice.
+		error,
+	) {
+		return NewRecordQueryFilterPlan(preds, stub("Inner"))
+	})
+
 	preds[0] = predicates.NewConstantPredicate(predicates.TriFalse)
 	// The plan's copy should be unaffected.
 	got := p.GetPredicates()[0]
@@ -438,10 +530,12 @@ func TestFilterPlan_CopiesPredicateSlice(t *testing.T) {
 func TestInMemorySortPlan_Construction(t *testing.T) {
 	t.Parallel()
 	keys := []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: false},
+		{Field: "id", ValueExpr: testField(t, "id", values.NullableLong), Desc: false},
 	}
 	inner := stub("Inner")
-	p := NewRecordQueryInMemorySortPlan(inner, keys)
+	p := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(inner, keys)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -453,11 +547,10 @@ func TestInMemorySortPlan_Construction(t *testing.T) {
 	}
 }
 
-func TestInMemorySortPlan_GetResultType_NilInner(t *testing.T) {
+func TestInMemorySortPlan_ConstructorRejectsNilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryInMemorySortPlan(nil, nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType for nil inner", p.GetResultType())
+	if _, err := NewRecordQueryInMemorySortPlan(nil, nil); err == nil {
+		t.Fatal("constructor accepted a nil inner plan")
 	}
 }
 
@@ -468,11 +561,15 @@ func TestInMemorySortPlan_GetResultType_NilInner(t *testing.T) {
 // UnknownType unconditionally.
 func TestInMemorySortPlan_GetResultType_PreservesInnerType(t *testing.T) {
 	t.Parallel()
-	inner := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
 	keys := []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)},
 	}
-	p := NewRecordQueryInMemorySortPlan(inner, keys)
+	p := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(inner, keys)
+	})
 	if !values.NotNullLong.Equals(p.GetResultType()) {
 		t.Fatalf("GetResultType() = %v, want NotNullLong (from inner)", p.GetResultType())
 	}
@@ -480,7 +577,7 @@ func TestInMemorySortPlan_GetResultType_PreservesInnerType(t *testing.T) {
 
 func TestInMemorySortPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryInMemorySortPlan(nil, nil)
+	p := &RecordQueryInMemorySortPlan{}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
 	}
@@ -489,29 +586,40 @@ func TestInMemorySortPlan_GetChildren_NilInner(t *testing.T) {
 func TestInMemorySortPlan_Explain(t *testing.T) {
 	t.Parallel()
 	keys := []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}, Desc: true},
+		{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)},
+		{Field: "name", ValueExpr: testField(t, "name", values.NullableLong), Desc: true},
 	}
-	p := NewRecordQueryInMemorySortPlan(stub("Scan(T)"), keys)
+	p := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("Scan(T)"), keys)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "InMemorySort") {
 		t.Fatalf("Explain = %q, missing 'InMemorySort'", got)
 	}
-	if !strings.Contains(got, "id ASC") {
-		t.Fatalf("Explain = %q, missing 'id ASC'", got)
+	// The key is RENDERED FROM ValueExpr, so what appears is the read —
+	// source and ordinal included — rather than the Field text the key was
+	// constructed with. Field is the spelling BEFORE re-anchoring and stops
+	// describing the read once the key is bound to its input, which is how
+	// EXPLAIN came to print a minted correlation counter.
+	if !strings.Contains(got, "id#0 ASC") {
+		t.Fatalf("Explain = %q, missing 'id#0 ASC'", got)
 	}
-	if !strings.Contains(got, "name DESC") {
-		t.Fatalf("Explain = %q, missing 'name DESC'", got)
+	if !strings.Contains(got, "name#0 DESC") {
+		t.Fatalf("Explain = %q, missing 'name#0 DESC'", got)
 	}
 }
 
 func TestInMemorySortPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	keys := []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: false},
+		{Field: "id", ValueExpr: testField(t, "id", values.NullableLong), Desc: false},
 	}
-	a := NewRecordQueryInMemorySortPlan(nil, keys)
-	b := NewRecordQueryInMemorySortPlan(nil, keys)
+	a := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("A"), keys)
+	})
+	b := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("B"), keys)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same sort keys should be equal")
 	}
@@ -519,12 +627,16 @@ func TestInMemorySortPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestInMemorySortPlan_EqualsWithoutChildren_DifferentKeyCount(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	a := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("A"), []SortKey{
+			{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)},
+		})
 	})
-	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	b := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("B"), []SortKey{
+			{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)},
+			{Field: "name", ValueExpr: testField(t, "name", values.NullableLong)},
+		})
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different key counts should not be equal")
@@ -535,12 +647,16 @@ func TestInMemorySortPlan_EqualsWithoutChildren_DifferentDesc(t *testing.T) {
 	t.Parallel()
 	// Isolate the direction: share one semantically-equal ValueExpr + Field so
 	// only Desc differs.
-	fv := &values.FieldValue{Field: "id", Typ: values.UnknownType}
-	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "id", ValueExpr: fv, Desc: false},
+	fv := testField(t, "id", values.NullableLong)
+	a := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("A"), []SortKey{
+			{Field: "id", ValueExpr: fv, Desc: false},
+		})
 	})
-	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "id", ValueExpr: fv, Desc: true},
+	b := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("B"), []SortKey{
+			{Field: "id", ValueExpr: fv, Desc: true},
+		})
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different direction flags should not be equal")
@@ -549,11 +665,15 @@ func TestInMemorySortPlan_EqualsWithoutChildren_DifferentDesc(t *testing.T) {
 
 func TestInMemorySortPlan_EqualsWithoutChildren_DifferentValue(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	a := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("A"), []SortKey{
+			{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)},
+		})
 	})
-	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	b := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("B"), []SortKey{
+			{Field: "name", ValueExpr: testField(t, "name", values.NullableLong)},
+		})
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different keys should not be equal")
@@ -562,8 +682,12 @@ func TestInMemorySortPlan_EqualsWithoutChildren_DifferentValue(t *testing.T) {
 
 func TestInMemorySortPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	s := NewRecordQueryInMemorySortPlan(nil, nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	s := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("Inner"), nil)
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if s.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("InMemorySortPlan should not equal ScanPlan")
 	}
@@ -572,9 +696,11 @@ func TestInMemorySortPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 func TestInMemorySortPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
 	keys := []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)},
 	}
-	p := NewRecordQueryInMemorySortPlan(nil, keys)
+	p := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("Inner"), keys)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -584,11 +710,15 @@ func TestInMemorySortPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestInMemorySortPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	a := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("A"), []SortKey{
+			{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)},
+		})
 	})
-	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "name", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	b := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("B"), []SortKey{
+			{Field: "name", ValueExpr: testField(t, "name", values.NullableLong)},
+		})
 	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different sort keys should (very likely) have different hashes")
@@ -604,11 +734,15 @@ func TestInMemorySortPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 func TestInMemorySortPlan_SemanticSortKeyIdentity(t *testing.T) {
 	t.Parallel()
 	// Distinct FieldValue instances, same semantics + direction.
-	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: true, NullsFirst: true},
+	a := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("A"), []SortKey{
+			{Field: "id", ValueExpr: testField(t, "id", values.NullableLong), Desc: true, NullsFirst: true},
+		})
 	})
-	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Desc: true, NullsFirst: true},
+	b := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("B"), []SortKey{
+			{Field: "id", ValueExpr: testField(t, "id", values.NullableLong), Desc: true, NullsFirst: true},
+		})
 	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("semantically-equal sort keys with distinct ValueExpr instances must be EqualsWithoutChildren-equal (F41)")
@@ -624,11 +758,15 @@ func TestInMemorySortPlan_SemanticSortKeyIdentity(t *testing.T) {
 func TestInMemorySortPlan_SortKeyValueDistinguishes(t *testing.T) {
 	t.Parallel()
 	// Field is display-only — hold it constant so only the Value differs.
-	a := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "k", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+	a := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("A"), []SortKey{
+			{Field: "k", ValueExpr: testField(t, "id", values.NullableLong)},
+		})
 	})
-	b := NewRecordQueryInMemorySortPlan(nil, []SortKey{
-		{Field: "k", ValueExpr: &values.FieldValue{Field: "name", Typ: values.UnknownType}},
+	b := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("B"), []SortKey{
+			{Field: "k", ValueExpr: testField(t, "name", values.NullableLong)},
+		})
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different sort Values (same display Field) must NOT be EqualsWithoutChildren-equal (F41)")
@@ -641,9 +779,11 @@ func TestInMemorySortPlan_SortKeyValueDistinguishes(t *testing.T) {
 func TestInMemorySortPlan_CopiesKeySlice(t *testing.T) {
 	t.Parallel()
 	keys := []SortKey{
-		{Field: "id", ValueExpr: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		{Field: "id", ValueExpr: testField(t, "id", values.NullableLong)},
 	}
-	p := NewRecordQueryInMemorySortPlan(nil, keys)
+	p := mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+		return NewRecordQueryInMemorySortPlan(stub("Inner"), keys)
+	})
 	keys[0].Desc = true
 	if p.GetSortKeys()[0].Desc {
 		t.Fatal("sort plan should have an independent copy of the key slice")
@@ -657,7 +797,9 @@ func TestInMemorySortPlan_CopiesKeySlice(t *testing.T) {
 func TestDistinctPlan_Construction(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	p := NewRecordQueryDistinctPlan(inner)
+	p := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(inner)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -666,17 +808,16 @@ func TestDistinctPlan_Construction(t *testing.T) {
 	}
 }
 
-func TestDistinctPlan_GetResultType_NilInner(t *testing.T) {
+func TestDistinctPlan_ConstructorRejectsNilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryDistinctPlan(nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType for nil inner", p.GetResultType())
+	if _, err := NewRecordQueryDistinctPlan(nil); err == nil {
+		t.Fatal("constructor accepted a nil inner plan")
 	}
 }
 
 func TestDistinctPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryDistinctPlan(nil)
+	p := &RecordQueryDistinctPlan{}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil for nil inner", cs)
 	}
@@ -684,7 +825,9 @@ func TestDistinctPlan_GetChildren_NilInner(t *testing.T) {
 
 func TestDistinctPlan_Explain(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryDistinctPlan(stub("Scan(T)"))
+	p := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(stub("Scan(T)"))
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Distinct") {
 		t.Fatalf("Explain = %q, missing 'Distinct'", got)
@@ -696,7 +839,7 @@ func TestDistinctPlan_Explain(t *testing.T) {
 
 func TestDistinctPlan_Explain_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryDistinctPlan(nil)
+	p := &RecordQueryDistinctPlan{}
 	got := p.Explain()
 	if !strings.Contains(got, "<nil>") {
 		t.Fatalf("Explain = %q, missing '<nil>'", got)
@@ -705,8 +848,12 @@ func TestDistinctPlan_Explain_NilInner(t *testing.T) {
 
 func TestDistinctPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryDistinctPlan(nil)
-	b := NewRecordQueryDistinctPlan(nil)
+	a := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(stub("B"))
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two DistinctPlans should be equal (type-only discriminator)")
 	}
@@ -714,8 +861,12 @@ func TestDistinctPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestDistinctPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	d := NewRecordQueryDistinctPlan(nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	d := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(stub("Inner"))
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if d.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("DistinctPlan should not equal ScanPlan")
 	}
@@ -723,8 +874,12 @@ func TestDistinctPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestDistinctPlan_HashCodeWithoutChildren_SameAcrossInstances(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryDistinctPlan(nil)
-	b := NewRecordQueryDistinctPlan(stub("X"))
+	a := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(stub("X"))
+	})
 	// Distinct has no node-info params, so all instances hash the same.
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Fatal("all DistinctPlan instances should have the same hash (no params)")
@@ -741,7 +896,9 @@ func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
 	alias := values.NamedCorrelationIdentifier("pk_distinct_inner")
 	innerRef := expressions.FinalOfAtStage(inner, expressions.StageCanonical)
 	innerQ := expressions.NamedPhysicalQuantifier(alias, innerRef)
-	p := NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
+	p := mustChecked(t, func() (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+		return NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
+	})
 
 	if p.GetInner() != inner {
 		t.Fatal("GetInner() did not resolve the supplied quantifier")
@@ -751,9 +908,10 @@ func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
 		got.GetAlias() != alias {
 		t.Fatalf("inner quantifier = %#v, want supplied physical quantifier", got)
 	}
-	resultQOV, ok := p.GetResultValue().(*values.QuantifiedObjectValue)
-	if !ok || resultQOV.Correlation != alias {
-		t.Fatalf("GetResultValue() = %#v, want QOV(%s)", p.GetResultValue(), alias)
+	resultQOV, ok := values.AsQuantifiedObjectValue(p.GetResultValue())
+	layout := requireProvidedLayout(t, p)
+	if !ok || resultQOV != layout.Carrier() {
+		t.Fatalf("GetResultValue() = %#v, want provided-layout carrier %#v", p.GetResultValue(), layout.Carrier())
 	}
 
 	replacement := stub("Replacement")
@@ -778,7 +936,9 @@ func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
 		}
 	}
 
-	withInner := p.WithInner(replacement)
+	withInner := mustChecked(t, func() (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+		return p.WithInner(replacement)
+	})
 	if withInner == p || withInner.GetInner() != replacement || p.GetInner() != inner {
 		t.Fatal("WithInner did not copy-preservingly relink the child")
 	}
@@ -786,14 +946,16 @@ func TestUnorderedPrimaryKeyDistinctPlan_QuantifierAndRelink(t *testing.T) {
 
 func TestUnorderedPrimaryKeyDistinctPlan_Hints(t *testing.T) {
 	t.Parallel()
-	pk := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	inner := NewRecordQueryScanPlan(
-		[]string{"T"},
-		values.UnknownType,
-		true,
-	).WithPrimaryKey([]values.Value{pk}).
+	pk := testField(t, "ID", values.NotNullLong)
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan(
+			[]string{"T"}, exactTestRecordType(), true,
+		)
+	}).WithPrimaryKey([]values.Value{pk}).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
-	p := NewRecordQueryUnorderedPrimaryKeyDistinctPlan(inner)
+	p := mustChecked(t, func() (*RecordQueryUnorderedPrimaryKeyDistinctPlan, error) {
+		return NewRecordQueryUnorderedPrimaryKeyDistinctPlan(inner)
+	})
 
 	childCost := properties.Cost{Cardinality: 100, CPU: 7}
 	if got, want := p.HintCost(
@@ -824,12 +986,11 @@ func TestUnorderedPrimaryKeyDistinctPlan_Hints(t *testing.T) {
 
 func TestProjectionPlan_Construction(t *testing.T) {
 	t.Parallel()
-	projs := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.NotNullLong},
-		&values.FieldValue{Field: "name", Typ: values.NotNullString},
-	}
+	projs := []values.Value{testField(t, "id", values.NotNullLong), testField(t, "name", values.NotNullString)}
 	inner := stub("Inner")
-	p := NewRecordQueryProjectionPlan(projs, inner)
+	p := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(projs, inner)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -843,12 +1004,14 @@ func TestProjectionPlan_Construction(t *testing.T) {
 
 func TestProjectionPlan_DefensiveCopy(t *testing.T) {
 	t.Parallel()
-	originalProjection := &values.FieldValue{Field: "id", Typ: values.NotNullLong}
+	originalProjection := testField(t, "id", values.NotNullLong)
 	projections := []values.Value{originalProjection}
 	aliases := []string{"ID_ALIAS"}
-	p := NewRecordQueryProjectionPlanWithAliases(projections, aliases, stub("Inner"))
+	p := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(projections, aliases, stub("Inner"))
+	})
 
-	projections[0] = &values.FieldValue{Field: "mutated", Typ: values.NotNullLong}
+	projections[0] = testField(t, "mutated", values.NotNullLong)
 	aliases[0] = "MUTATED_INPUT"
 	if got := p.GetProjections(); len(got) != 1 || got[0] != originalProjection {
 		t.Fatalf("constructor retained mutable projection input: got %v", got)
@@ -871,17 +1034,23 @@ func TestProjectionPlan_DefensiveCopy(t *testing.T) {
 
 func TestProjectionPlan_AliasesAreSemanticIdentity(t *testing.T) {
 	t.Parallel()
-	readA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
-	readB := values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType)
-	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.AliasMap{}) {
-		t.Fatal("test requires same-ordinal baked reads to be semantically equal")
+	readA := testField(t, "A", values.NullableLong)
+	readB := readA
+	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.EmptyAliasMap()) {
+		t.Fatal("test requires the shared exact projection Value to be semantically equal")
 	}
-	aliased := NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{readA}, []string{"output_alias"}, stub("Inner"))
-	aliasedTwin := NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{readB}, []string{"OUTPUT_ALIAS"}, stub("OtherInner"))
-	renamed := NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{readB}, []string{"OTHER_ALIAS"}, stub("Inner"))
+	aliased := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{readA}, []string{"output_alias"}, stub("Inner"))
+	})
+	aliasedTwin := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{readB}, []string{"OUTPUT_ALIAS"}, stub("OtherInner"))
+	})
+	renamed := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{readB}, []string{"OTHER_ALIAS"}, stub("Inner"))
+	})
 
 	if !aliased.EqualsPlanWithoutChildren(aliasedTwin) {
 		t.Fatal("aliases producing the same executor-visible output name reported unequal")
@@ -899,14 +1068,18 @@ func TestProjectionPlan_AliasesAreSemanticIdentity(t *testing.T) {
 
 func TestProjectionPlan_EmptyAliasesAreEquivalent(t *testing.T) {
 	t.Parallel()
-	projection := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.NotNullLong},
-	}
-	withoutAliases := NewRecordQueryProjectionPlan(projection, stub("Inner"))
-	emptyAliases := NewRecordQueryProjectionPlanWithAliases(
-		projection, []string{}, stub("Inner"))
-	blankPlaceholder := NewRecordQueryProjectionPlanWithAliases(
-		projection, []string{""}, stub("Inner"))
+	projection := []values.Value{testField(t, "id", values.NotNullLong)}
+	withoutAliases := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(projection, stub("Inner"))
+	})
+	emptyAliases := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			projection, []string{}, stub("Inner"))
+	})
+	blankPlaceholder := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			projection, []string{""}, stub("Inner"))
+	})
 
 	for _, candidate := range []*RecordQueryProjectionPlan{emptyAliases, blankPlaceholder} {
 		if !withoutAliases.EqualsPlanWithoutChildren(candidate) {
@@ -920,11 +1093,8 @@ func TestProjectionPlan_EmptyAliasesAreEquivalent(t *testing.T) {
 
 func TestProjectionPlan_DerivedOutputNamesAreSemanticIdentity(t *testing.T) {
 	t.Parallel()
-	readA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
-	readB := values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType)
-	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.AliasMap{}) {
-		t.Fatal("test requires same-ordinal baked reads to be semantically equal")
-	}
+	readA := testFieldAt(t, "A", 0, values.NullableLong)
+	readB := testFieldAt(t, "B", 0, values.NullableLong)
 
 	testCases := []struct {
 		name        string
@@ -939,10 +1109,14 @@ func TestProjectionPlan_DerivedOutputNamesAreSemanticIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			build := func(v values.Value) *RecordQueryProjectionPlan {
 				if tc.useAliasAPI {
-					return NewRecordQueryProjectionPlanWithAliases(
-						[]values.Value{v}, tc.aliases, stub("Inner"))
+					return mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+						return NewRecordQueryProjectionPlanWithAliases(
+							[]values.Value{v}, tc.aliases, stub("Inner"))
+					})
 				}
-				return NewRecordQueryProjectionPlan([]values.Value{v}, stub("Inner"))
+				return mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+					return NewRecordQueryProjectionPlan([]values.Value{v}, stub("Inner"))
+				})
 			}
 			left, right := build(readA), build(readB)
 			if left.EqualsPlanWithoutChildren(right) {
@@ -962,20 +1136,20 @@ func TestProjectionPlan_NestedFieldNamesAreSemanticIdentity(t *testing.T) {
 	}
 	leftValue := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType),
+		Left:  testFieldAt(t, "A", 0, values.NullableLong),
 		Right: one(),
 	}
 	rightValue := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType),
+		Left:  testFieldAt(t, "B", 0, values.NullableLong),
 		Right: one(),
 	}
-	if !values.SemanticEqualsUnderAliasMap(leftValue, rightValue, values.AliasMap{}) {
-		t.Fatal("test requires same-shape arithmetic over same-ordinal reads to be semantically equal")
-	}
-
-	left := NewRecordQueryProjectionPlan([]values.Value{leftValue}, stub("Inner"))
-	right := NewRecordQueryProjectionPlan([]values.Value{rightValue}, stub("Inner"))
+	left := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{leftValue}, stub("Inner"))
+	})
+	right := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{rightValue}, stub("Inner"))
+	})
 	if left.EqualsPlanWithoutChildren(right) {
 		t.Fatal("nested baked field display names changed output schema but compared equal")
 	}
@@ -986,30 +1160,56 @@ func TestProjectionPlan_NestedFieldNamesAreSemanticIdentity(t *testing.T) {
 
 func TestProjectionPlan_IsIdentityChecksSchemaAndInnerCorrelation(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	identityValue := values.NewQuantifiedObjectValue(innerQ.GetAlias())
+	identityValue := mustChecked(t, func() (values.Value, error) {
+		return innerQ.RequireFlowedObjectValue()
+	})
 
-	if !NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{identityValue}, nil, innerQ).IsIdentity() {
+	// IsIdentity remains total on the historical malformed shape so rule code
+	// can fail closed while inspecting package-local adversaries. The public
+	// constructor must reject that shape because the executor would wrap the
+	// whole row into one output slot.
+	identity := &RecordQueryProjectionPlan{
+		projections: []values.Value{identityValue},
+		innerQ:      innerQ,
+	}
+	if !identity.IsIdentity() {
 		t.Fatal("unaliased QOV over the projection's inner quantifier must be identity")
 	}
-	if !NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{identityValue}, []string{""}, innerQ).IsIdentity() {
+	if !(&RecordQueryProjectionPlan{
+		projections: []values.Value{identityValue},
+		aliases:     []string{""},
+		innerQ:      innerQ,
+	}).IsIdentity() {
 		t.Fatal("an explicit empty alias must preserve identity")
 	}
-	if NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{identityValue}, []string{"RENAMED"}, innerQ).IsIdentity() {
+	if (&RecordQueryProjectionPlan{
+		projections: []values.Value{identityValue},
+		aliases:     []string{"RENAMED"},
+		innerQ:      innerQ,
+	}).IsIdentity() {
 		t.Fatal("a schema-renaming alias must not be identity")
 	}
-	if NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{identityValue}, []string{"", ""}, innerQ).IsIdentity() {
+	if (&RecordQueryProjectionPlan{
+		projections: []values.Value{identityValue},
+		aliases:     []string{"", ""},
+		innerQ:      innerQ,
+	}).IsIdentity() {
 		t.Fatal("a malformed alias list must fail identity closed")
 	}
 	otherAlias := values.NamedCorrelationIdentifier("OTHER")
-	if NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{values.NewQuantifiedObjectValue(otherAlias)}, nil, innerQ).IsIdentity() {
+	if (&RecordQueryProjectionPlan{
+		projections: []values.Value{mustTestQOV(t, otherAlias.Name(), exactTestRecordType())},
+		innerQ:      innerQ,
+	}).IsIdentity() {
 		t.Fatal("a QOV over a different quantifier must not be identity")
+	}
+	if _, err := NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{identityValue}, nil, innerQ); err == nil {
+		t.Fatal("constructor accepted a one-slot whole-row projection")
 	}
 }
 
@@ -1029,16 +1229,32 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
 	// Reads of slot 0 and slot 1 of a duplicate-named [X, X] row.
-	read01 := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
-		values.NewFieldValueWithResolvedOrdinal("X", 1, values.UnknownType),
+	// Duplicate names are machinery-owned ordinal rows and deliberately bypass
+	// NewRecordType's user-schema duplicate-name rejection.
+	duplicateLayout := &values.RecordType{RecordName: "duplicate_x", Nullable: false, Fields: []values.Field{
+		{Name: "X", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "X", FieldType: values.NullableLong, Ordinal: 1},
+	}}
+	read := func(ordinal int) values.Value {
+		request, err := values.FieldByOrdinal(ordinal)
+		if err != nil {
+			t.Fatalf("field request X#%d: %v", ordinal, err)
+		}
+		field, err := values.ResolveFieldAccess(
+			mustTestQOV(t, "duplicate_x", duplicateLayout), []values.FieldRequest{request})
+		if err != nil {
+			t.Fatalf("field X#%d: %v", ordinal, err)
+		}
+		return field
 	}
-	read00 := []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
-		values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
-	}
-	p01 := NewRecordQueryProjectionPlanWithAliases(read01, []string{"A", "B"}, inner)
-	p00 := NewRecordQueryProjectionPlanWithAliases(read00, []string{"A", "B"}, inner)
+	read01 := []values.Value{read(0), read(1)}
+	read00 := []values.Value{read(0), read(0)}
+	p01 := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(read01, []string{"A", "B"}, inner)
+	})
+	p00 := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(read00, []string{"A", "B"}, inner)
+	})
 
 	// The renderings carry the ordinal — the identity discriminator.
 	if !strings.Contains(p01.Explain(), "X#0") || !strings.Contains(p01.Explain(), "X#1") {
@@ -1052,11 +1268,10 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 	}
 
 	// Same reads ⟹ equal and hash-equal.
-	p01b := NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{
-			values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType),
-			values.NewFieldValueWithResolvedOrdinal("X", 1, values.UnknownType),
-		}, []string{"A", "B"}, inner)
+	p01b := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{read(0), read(1)}, []string{"A", "B"}, inner)
+	})
 	if !p01.EqualsPlanWithoutChildren(p01b) {
 		t.Fatal("identical ordinal reads must compare equal")
 	}
@@ -1079,12 +1294,16 @@ func TestProjectionPlan_Identity_ResolvedOrdinal(t *testing.T) {
 func TestProjectionPlan_Identity_OrdinalVsLiteralHashField(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	ordinalPlan := NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{values.NewFieldValueWithResolvedOrdinal("X", 0, values.UnknownType)},
-		[]string{"A"}, inner)
-	literalPlan := NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{values.NewFlatFieldValue("X#0", values.UnknownType)},
-		[]string{"A"}, inner)
+	ordinalPlan := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{testFieldAt(t, "X", 0, values.NullableLong)},
+			[]string{"A"}, inner)
+	})
+	literalPlan := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{testField(t, "X#0", values.NullableLong)},
+			[]string{"A"}, inner)
+	})
 
 	if ordinalPlan.EqualsPlanWithoutChildren(literalPlan) {
 		t.Fatal("ordinal read of X@0 and a name-read of a field literally named X#0 must NOT compare equal")
@@ -1108,7 +1327,9 @@ func TestProjectionPlan_GetResultType(t *testing.T) {
 	// Empty projection list: a record with no fields, NOT UnknownType. The
 	// arity is the claim — an empty record says "zero columns", where
 	// UnknownType said "cannot tell" and every reader failed closed on it.
-	empty := NewRecordQueryProjectionPlan(nil, stub("X"))
+	empty := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(nil, stub("X"))
+	})
 	emptyRT, ok := empty.GetResultType().(*values.RecordType)
 	if !ok {
 		t.Fatalf("GetResultType() = %v (%T), want a *values.RecordType", empty.GetResultType(), empty.GetResultType())
@@ -1120,12 +1341,11 @@ func TestProjectionPlan_GetResultType(t *testing.T) {
 	// Two columns: one aliased, one not. The stated row must have one field
 	// per projected column, in order, and NO field may be unnamed — an unnamed
 	// field reaches the name-keyed readers as "" and resolves to nothing.
-	p := NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{
-			values.NewFlatFieldValue("A", values.UnknownType),
-			values.NewFlatFieldValue("B", values.UnknownType),
-		},
-		[]string{"OUT", ""}, stub("X"))
+	p := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{testField(t, "A", values.NullableLong), testField(t, "B", values.NullableLong)},
+			[]string{"OUT", ""}, stub("X"))
+	})
 	rt, ok := p.GetResultType().(*values.RecordType)
 	if !ok {
 		t.Fatalf("GetResultType() = %v (%T), want a *values.RecordType", p.GetResultType(), p.GetResultType())
@@ -1154,13 +1374,12 @@ func TestProjectionPlan_GetResultType(t *testing.T) {
 func TestProjectionPlan_ResultTypeMatchesLogicalTwin(t *testing.T) {
 	t.Parallel()
 
-	projections := []values.Value{
-		values.NewFlatFieldValue("A", values.UnknownType),
-		values.NewFlatFieldValue("B", values.UnknownType),
-	}
+	projections := []values.Value{testField(t, "A", values.NullableLong), testField(t, "B", values.NullableLong)}
 	aliases := []string{"OUT", ""}
 
-	physical := NewRecordQueryProjectionPlanWithAliases(projections, aliases, stub("X"))
+	physical := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(projections, aliases, stub("X"))
+	})
 	logical, err := values.ProjectionResultValue(projections, aliases)
 	if err != nil {
 		t.Fatalf("ProjectionResultValue: %v", err)
@@ -1177,43 +1396,66 @@ func TestProjectionPlan_ResultTypeMatchesLogicalTwin(t *testing.T) {
 // SCOPE, stated precisely because an earlier revision of this comment
 // overstated it as an "unbuildability pin". It is not one. This drives
 // values.ProjectionResultValue, a derivation; the LogicalProjectionExpression
-// constructors validate nothing and build the shape happily
-// (expressions/flowed_value_typing_test.go's TestLogicalProjectionFallsBackTo-
-// UntypedQOV builds it and reaches the fallback). So the shape IS constructible
-// and the arm below IS live. What this pins is narrower and still worth having:
-// the derivation must keep refusing, because the executor emits one positional
-// slot per projection, so that shape WRAPS its inner's row rather than passing
-// it through and has no name to give its single field.
+// constructors do not otherwise validate the projection list. What this pins is
+// narrower and still worth having: the derivation must keep refusing, because
+// the executor emits one positional slot per projection, so that shape WRAPS
+// its inner's row rather than passing it through and has no name to give its
+// single field.
 //
-// The alarm direction is REVIVAL: a success here means the derivation started
-// synthesising a row for a shape that cannot name one, and every consumer keyed
-// on "unstated" would begin trusting it.
+// WHAT "WHOLE-ROW" MEANS HERE IS AN IDENTITY, NOT A TYPE, and the two arms
+// below are what separate them. A machinery correlation — `_current`, or a
+// minted `q$N` — names a row the SQL never named, so a one-slot wrap of it has
+// nothing to call its field. A NAMED correlation is a source the user wrote,
+// and projecting it whole is `SELECT x`, whose column is x. Deciding this on
+// the QOV's TYPE instead split one shape in half: `SELECT x FROM t, t.arr AS x`
+// planned for a scalar element and was refused for a STRUCT one.
+//
+// The alarm direction is REVIVAL: a success on the first arm means the
+// derivation started synthesising a row for a shape that cannot name one, and
+// every consumer keyed on "unstated" would begin trusting it.
 func TestProjectionResultValue_RejectsWholeRowProjection(t *testing.T) {
 	t.Parallel()
 
-	_, err := values.ProjectionResultValue(
-		[]values.Value{values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("Q"))}, nil)
-	if err == nil {
+	machineryRow, err := values.NewQuantifiedObjectValue(
+		values.UniqueCorrelationIdentifier(), exactTestRecordType())
+	if err != nil {
+		t.Fatalf("machinery-row QOV: %v", err)
+	}
+	if _, err := values.ProjectionResultValue([]values.Value{machineryRow}, nil); err == nil {
 		t.Fatal("the derivation SYNTHESISED a row for a one-slot whole-row projection. " +
 			"The alarm is REVIVAL: this shape must keep declining, because the executor " +
-			"emits one positional slot per projection, so it wraps the inner row instead " +
-			"of passing it through and has no name for its single field. (This does not " +
-			"assert the shape is unconstructible — it is; the expression constructors " +
-			"validate nothing and the untyped-QOV fallback that handles it is live.)")
+			"emits one positional slot per projection, so it wraps a row the SQL never " +
+			"named and has no name for its single field.")
 	}
 
-	// Precision: the guard must reject only the BARE whole-row shape. A
+	// Precision: the guard must reject only the machinery whole-row shape. A
 	// one-slot projection of an actual column is ordinary and must build.
 	if _, err := values.ProjectionResultValue(
-		[]values.Value{values.NewFlatFieldValue("A", values.UnknownType)}, nil); err != nil {
+		[]values.Value{testField(t, "A", values.NullableLong)}, nil); err != nil {
 		t.Errorf("a one-column projection of a real column must build, got: %v", err)
+	}
+
+	// A scalar quantified object is the value of one scalar input (not a
+	// whole record wrapped into one slot), as produced by UNNEST/Explode.
+	scalarQOV := mustTestQOV(t, "X", values.NotNullLong)
+	if _, err := values.ProjectionResultValue([]values.Value{scalarQOV}, []string{"X"}); err != nil {
+		t.Errorf("a one-slot projection of an exact scalar QOV must build, got: %v", err)
+	}
+
+	// And its STRUCT twin, which is the same SQL. A record-typed QOV over a
+	// NAMED source is one projected column whose value happens to be a row.
+	if _, err := values.ProjectionResultValue(
+		[]values.Value{mustTestQOV(t, "X", exactTestRecordType())}, []string{"X"}); err != nil {
+		t.Errorf("a one-slot projection of a STRUCT element must build, got: %v", err)
 	}
 }
 
 func TestProjectionPlan_GetChildren(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	p := NewRecordQueryProjectionPlan(nil, inner)
+	p := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(nil, inner)
+	})
 	cs := p.GetChildren()
 	if len(cs) != 1 || cs[0] != inner {
 		t.Fatalf("GetChildren() = %v, want [inner]", cs)
@@ -1222,18 +1464,24 @@ func TestProjectionPlan_GetChildren(t *testing.T) {
 
 func TestProjectionPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryProjectionPlan(nil, nil)
+	p := &RecordQueryProjectionPlan{}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
+	}
+	if _, err := NewRecordQueryProjectionPlan(nil, nil); err == nil {
+		t.Fatal("constructor accepted a nil inner plan")
+	}
+	if _, err := NewRecordQueryProjectionPlanFromQuantifier(nil, nil, expressions.Quantifier{}); err == nil {
+		t.Fatal("quantifier constructor accepted an empty inner quantifier")
 	}
 }
 
 func TestProjectionPlan_Explain(t *testing.T) {
 	t.Parallel()
-	projs := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-	}
-	p := NewRecordQueryProjectionPlan(projs, stub("Scan(T)"))
+	projs := []values.Value{testField(t, "id", values.NullableLong)}
+	p := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(projs, stub("Scan(T)"))
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Project") {
 		t.Fatalf("Explain = %q, missing 'Project'", got)
@@ -1242,7 +1490,7 @@ func TestProjectionPlan_Explain(t *testing.T) {
 
 func TestProjectionPlan_Explain_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryProjectionPlan(nil, nil)
+	p := &RecordQueryProjectionPlan{}
 	got := p.Explain()
 	if !strings.Contains(got, "<nil>") {
 		t.Fatalf("Explain = %q, missing '<nil>'", got)
@@ -1251,9 +1499,13 @@ func TestProjectionPlan_Explain_NilInner(t *testing.T) {
 
 func TestProjectionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	projs := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
-	a := NewRecordQueryProjectionPlan(projs, nil)
-	b := NewRecordQueryProjectionPlan(projs, nil)
+	projs := []values.Value{testField(t, "id", values.NullableLong)}
+	a := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(projs, stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(projs, stub("B"))
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same projections should be equal")
 	}
@@ -1261,12 +1513,12 @@ func TestProjectionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestProjectionPlan_EqualsWithoutChildren_DifferentColumns(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryProjectionPlan([]values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-	}, nil)
-	b := NewRecordQueryProjectionPlan([]values.Value{
-		&values.FieldValue{Field: "name", Typ: values.UnknownType},
-	}, nil)
+	a := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{testField(t, "id", values.NullableLong)}, stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{testField(t, "name", values.NullableLong)}, stub("B"))
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different projection columns should not be equal")
 	}
@@ -1274,13 +1526,12 @@ func TestProjectionPlan_EqualsWithoutChildren_DifferentColumns(t *testing.T) {
 
 func TestProjectionPlan_EqualsWithoutChildren_DifferentCount(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryProjectionPlan([]values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-	}, nil)
-	b := NewRecordQueryProjectionPlan([]values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-		&values.FieldValue{Field: "name", Typ: values.UnknownType},
-	}, nil)
+	a := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{testField(t, "id", values.NullableLong)}, stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{testField(t, "id", values.NullableLong), testField(t, "name", values.NullableLong)}, stub("B"))
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different projection counts should not be equal")
 	}
@@ -1288,8 +1539,12 @@ func TestProjectionPlan_EqualsWithoutChildren_DifferentCount(t *testing.T) {
 
 func TestProjectionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryProjectionPlan(nil, nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(nil, stub("Inner"))
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if p.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("ProjectionPlan should not equal ScanPlan")
 	}
@@ -1297,8 +1552,10 @@ func TestProjectionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestProjectionPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
-	projs := []values.Value{&values.FieldValue{Field: "id", Typ: values.UnknownType}}
-	p := NewRecordQueryProjectionPlan(projs, nil)
+	projs := []values.Value{testField(t, "id", values.NullableLong)}
+	p := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(projs, stub("Inner"))
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -1308,12 +1565,12 @@ func TestProjectionPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestProjectionPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryProjectionPlan([]values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-	}, nil)
-	b := NewRecordQueryProjectionPlan([]values.Value{
-		&values.FieldValue{Field: "name", Typ: values.UnknownType},
-	}, nil)
+	a := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{testField(t, "id", values.NullableLong)}, stub("A"))
+	})
+	b := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan([]values.Value{testField(t, "name", values.NullableLong)}, stub("B"))
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different projections should (very likely) produce different hashes")
 	}
@@ -1327,7 +1584,9 @@ func TestUnionPlan_Construction(t *testing.T) {
 	t.Parallel()
 	a := stub("A")
 	b := stub("B")
-	p := NewRecordQueryUnionPlan([]RecordQueryPlan{a, b})
+	p := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{a, b})
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -1338,8 +1597,12 @@ func TestUnionPlan_Construction(t *testing.T) {
 
 func TestUnionPlan_GetResultType_FirstInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
-	p := NewRecordQueryUnionPlan([]RecordQueryPlan{scan, stub("B")})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
+	p := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{scan, stub("B")})
+	})
 	if !values.NotNullLong.Equals(p.GetResultType()) {
 		t.Fatalf("GetResultType() = %v, want NotNullLong (from first inner)", p.GetResultType())
 	}
@@ -1349,7 +1612,9 @@ func TestUnionPlan_GetChildren(t *testing.T) {
 	t.Parallel()
 	a := stub("A")
 	b := stub("B")
-	p := NewRecordQueryUnionPlan([]RecordQueryPlan{a, b})
+	p := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{a, b})
+	})
 	cs := p.GetChildren()
 	if len(cs) != 2 || cs[0] != a || cs[1] != b {
 		t.Fatal("GetChildren() mismatch")
@@ -1358,7 +1623,9 @@ func TestUnionPlan_GetChildren(t *testing.T) {
 
 func TestUnionPlan_Explain(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryUnionPlan([]RecordQueryPlan{stub("A"), stub("B")})
+	p := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{stub("A"), stub("B")})
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Union") {
 		t.Fatalf("Explain = %q, missing 'Union'", got)
@@ -1367,8 +1634,12 @@ func TestUnionPlan_Explain(t *testing.T) {
 
 func TestUnionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryUnionPlan(nil)
-	b := NewRecordQueryUnionPlan([]RecordQueryPlan{stub("X")})
+	a := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{stub("A")})
+	})
+	b := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{stub("X")})
+	})
 	// Union equality is type-only (no operator params).
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("any two UnionPlans should be EqualsWithoutChildren")
@@ -1377,17 +1648,30 @@ func TestUnionPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestUnionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	u := NewRecordQueryUnionPlan(nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	u := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{stub("Inner")})
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if u.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("UnionPlan should not equal ScanPlan")
+	}
+}
+
+func TestUnionPlan_ConstructorRejectsEmptyInputs(t *testing.T) {
+	t.Parallel()
+	if _, err := NewRecordQueryUnionPlan(nil); err == nil {
+		t.Fatal("constructor accepted an empty input list")
 	}
 }
 
 func TestUnionPlan_CopiesInnerSlice(t *testing.T) {
 	t.Parallel()
 	inners := []RecordQueryPlan{stub("A")}
-	p := NewRecordQueryUnionPlan(inners)
+	p := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan(inners)
+	})
 	inners[0] = stub("B")
 	if p.GetInners()[0].Explain() != "A" {
 		t.Fatal("union should have an independent copy of the inner slice")
@@ -1402,8 +1686,10 @@ func TestIntersectionPlan_Construction(t *testing.T) {
 	t.Parallel()
 	a := stub("A")
 	b := stub("B")
-	keys := []values.Value{&values.FieldValue{Field: "pk", Typ: values.NotNullLong}}
-	p := NewRecordQueryIntersectionPlan([]RecordQueryPlan{a, b}, keys)
+	keys := []values.Value{testField(t, "pk", values.NotNullLong)}
+	p := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{a, b}, keys)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -1417,24 +1703,29 @@ func TestIntersectionPlan_Construction(t *testing.T) {
 
 func TestIntersectionPlan_GetResultType_FirstInner(t *testing.T) {
 	t.Parallel()
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.NotNullString, false)
-	p := NewRecordQueryIntersectionPlan([]RecordQueryPlan{scan}, nil)
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullString, false)
+	})
+	p := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{scan}, nil)
+	})
 	if !values.NotNullString.Equals(p.GetResultType()) {
 		t.Fatalf("GetResultType() = %v, want NotNullString (from first inner)", p.GetResultType())
 	}
 }
 
-func TestIntersectionPlan_GetResultType_Empty(t *testing.T) {
+func TestIntersectionPlan_ConstructorRejectsEmptyInputs(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryIntersectionPlan(nil, nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType", p.GetResultType())
+	if _, err := NewRecordQueryIntersectionPlan(nil, nil); err == nil {
+		t.Fatal("constructor accepted an empty input list")
 	}
 }
 
 func TestIntersectionPlan_Explain(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryIntersectionPlan([]RecordQueryPlan{stub("A"), stub("B")}, nil)
+	p := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{stub("A"), stub("B")}, nil)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Intersection") {
 		t.Fatalf("Explain = %q, missing 'Intersection'", got)
@@ -1443,8 +1734,12 @@ func TestIntersectionPlan_Explain(t *testing.T) {
 
 func TestIntersectionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	i := NewRecordQueryIntersectionPlan(nil, nil)
-	u := NewRecordQueryUnionPlan(nil)
+	i := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{stub("IntersectionInner")}, nil)
+	})
+	u := mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+		return NewRecordQueryUnionPlan([]RecordQueryPlan{stub("UnionInner")})
+	})
 	if i.EqualsPlanWithoutChildren(u) {
 		t.Fatal("IntersectionPlan should not equal UnionPlan")
 	}
@@ -1452,8 +1747,10 @@ func TestIntersectionPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestIntersectionPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "pk", Typ: values.UnknownType}}
-	p := NewRecordQueryIntersectionPlan(nil, keys)
+	keys := []values.Value{testField(t, "pk", values.NullableLong)}
+	p := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{stub("Inner")}, keys)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -1463,12 +1760,11 @@ func TestIntersectionPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestIntersectionPlan_HashCodeWithoutChildren_DiffersForDifferentKeyCount(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryIntersectionPlan(nil, []values.Value{
-		&values.FieldValue{Field: "pk", Typ: values.UnknownType},
+	a := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{stub("A")}, []values.Value{testField(t, "pk", values.NullableLong)})
 	})
-	b := NewRecordQueryIntersectionPlan(nil, []values.Value{
-		&values.FieldValue{Field: "pk", Typ: values.UnknownType},
-		&values.FieldValue{Field: "sk", Typ: values.UnknownType},
+	b := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{stub("B")}, []values.Value{testField(t, "pk", values.NullableLong), testField(t, "sk", values.NullableLong)})
 	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different key counts should (very likely) produce different hashes")
@@ -1478,14 +1774,16 @@ func TestIntersectionPlan_HashCodeWithoutChildren_DiffersForDifferentKeyCount(t 
 func TestIntersectionPlan_CopiesSlices(t *testing.T) {
 	t.Parallel()
 	inners := []RecordQueryPlan{stub("A")}
-	keys := []values.Value{&values.FieldValue{Field: "pk", Typ: values.UnknownType}}
-	p := NewRecordQueryIntersectionPlan(inners, keys)
+	keys := []values.Value{testField(t, "pk", values.NullableLong)}
+	p := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan(inners, keys)
+	})
 	inners[0] = stub("B")
-	keys[0] = &values.FieldValue{Field: "xx", Typ: values.UnknownType}
+	keys[0] = testField(t, "xx", values.NullableLong)
 	if p.GetInners()[0].Explain() != "A" {
 		t.Fatal("intersection should have an independent copy of inners")
 	}
-	if values.ExplainValue(p.GetComparisonKeyValues()[0]) != values.ExplainValue(&values.FieldValue{Field: "pk", Typ: values.UnknownType}) {
+	if values.ExplainValue(p.GetComparisonKeyValues()[0]) != values.ExplainValue(testField(t, "pk", values.NullableLong)) {
 		t.Fatal("intersection should have an independent copy of comparison keys")
 	}
 }
@@ -1493,16 +1791,18 @@ func TestIntersectionPlan_CopiesSlices(t *testing.T) {
 func TestIntersectionPlan_ReverseOrderingContractSurvivesCopies(t *testing.T) {
 	t.Parallel()
 
-	key := &values.FieldValue{Field: "pk", Typ: values.UnknownType}
+	key := testField(t, "pk", values.NullableLong)
 	parts := []properties.ProvidedOrderingPart{{
 		Value:     key,
 		SortOrder: properties.ProvidedSortOrderDescending,
 	}}
-	p := NewRecordQueryIntersectionPlanWithOrdering(
-		[]RecordQueryPlan{stub("A"), stub("B")},
-		parts,
-		true,
-	)
+	p := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlanWithOrdering(
+			[]RecordQueryPlan{stub("A"), stub("B")},
+			parts,
+			true,
+		)
+	})
 	if p == nil {
 		t.Fatal("reverse descending intersection constructor declined a naturally executable key")
 	}
@@ -1517,7 +1817,10 @@ func TestIntersectionPlan_ReverseOrderingContractSurvivesCopies(t *testing.T) {
 		t.Fatalf("HintOrdering() = %#v, want PK DESC NULLS LAST", hint)
 	}
 
-	relinkedExpr := p.WithQuantifiers(QuantifiersOverPlans([]RecordQueryPlan{stub("C"), stub("D")}))
+	relinkedExpr, err := p.WithQuantifiers(QuantifiersOverPlans([]RecordQueryPlan{stub("C"), stub("D")}))
+	if err != nil {
+		t.Fatalf("WithQuantifiers(): %v", err)
+	}
 	relinked, ok := relinkedExpr.(*RecordQueryIntersectionPlan)
 	if !ok {
 		t.Fatalf("WithQuantifiers() = %T, want *RecordQueryIntersectionPlan", relinkedExpr)
@@ -1531,14 +1834,16 @@ func TestIntersectionPlan_ReverseOrderingContractSurvivesCopies(t *testing.T) {
 		t.Fatalf("WithQuantifiers() did not relink children: %s", relinked.GetInners()[0].Explain())
 	}
 
-	forward := NewRecordQueryIntersectionPlanWithOrdering(
-		nil,
-		[]properties.ProvidedOrderingPart{{
-			Value:     key,
-			SortOrder: properties.ProvidedSortOrderAscending,
-		}},
-		false,
-	)
+	forward := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlanWithOrdering(
+			[]RecordQueryPlan{stub("ForwardA"), stub("ForwardB")},
+			[]properties.ProvidedOrderingPart{{
+				Value:     key,
+				SortOrder: properties.ProvidedSortOrderAscending,
+			}},
+			false,
+		)
+	})
 	if forward == nil {
 		t.Fatal("forward ascending intersection constructor declined a natural key")
 	}
@@ -1549,8 +1854,8 @@ func TestIntersectionPlan_ReverseOrderingContractSurvivesCopies(t *testing.T) {
 		t.Fatal("opposite merge directions should produce different structural hashes")
 	}
 
-	parts[0].Value = &values.FieldValue{Field: "mutated", Typ: values.UnknownType}
-	if values.ExplainValue(p.GetComparisonKeyOrderingParts()[0].Value) != "pk" {
+	parts[0].Value = testField(t, "mutated", values.NullableLong)
+	if values.ExplainValue(p.GetComparisonKeyOrderingParts()[0].Value) != values.ExplainValue(key) {
 		t.Fatal("intersection should have an independent copy of semantic ordering parts")
 	}
 }
@@ -1562,10 +1867,12 @@ func TestIntersectionPlan_ReverseOrderingContractSurvivesCopies(t *testing.T) {
 func TestValuesPlan_Construction(t *testing.T) {
 	t.Parallel()
 	cols := []values.Value{
-		values.LiteralValue(int64(1)),
-		values.LiteralValue("hello"),
+		structuralLong(1),
+		structuralString("hello"),
 	}
-	p := NewRecordQueryValuesPlan(cols)
+	p := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(cols)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -1576,15 +1883,20 @@ func TestValuesPlan_Construction(t *testing.T) {
 
 func TestValuesPlan_GetResultType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryValuesPlan(nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType", p.GetResultType())
+	p := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(nil)
+	})
+	want := values.NewRecordType("", false, nil)
+	if !want.Equals(p.GetResultType()) {
+		t.Fatalf("GetResultType() = %v, want exact empty record %v", p.GetResultType(), want)
 	}
 }
 
 func TestValuesPlan_GetChildren_Nil(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryValuesPlan(nil)
+	p := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(nil)
+	})
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil (leaf plan)", cs)
 	}
@@ -1592,8 +1904,10 @@ func TestValuesPlan_GetChildren_Nil(t *testing.T) {
 
 func TestValuesPlan_Explain(t *testing.T) {
 	t.Parallel()
-	cols := []values.Value{values.LiteralValue(int64(42))}
-	p := NewRecordQueryValuesPlan(cols)
+	cols := []values.Value{structuralLong(42)}
+	p := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(cols)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "Values") {
 		t.Fatalf("Explain = %q, missing 'Values'", got)
@@ -1602,7 +1916,9 @@ func TestValuesPlan_Explain(t *testing.T) {
 
 func TestValuesPlan_Explain_Empty(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryValuesPlan(nil)
+	p := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(nil)
+	})
 	got := p.Explain()
 	if got != "Values()" {
 		t.Fatalf("Explain = %q, want 'Values()'", got)
@@ -1611,9 +1927,13 @@ func TestValuesPlan_Explain_Empty(t *testing.T) {
 
 func TestValuesPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	cols := []values.Value{values.LiteralValue(int64(1))}
-	a := NewRecordQueryValuesPlan(cols)
-	b := NewRecordQueryValuesPlan(cols)
+	cols := []values.Value{structuralLong(1)}
+	a := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(cols)
+	})
+	b := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(cols)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same columns should be equal")
 	}
@@ -1621,8 +1941,12 @@ func TestValuesPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestValuesPlan_EqualsWithoutChildren_DifferentValues(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
-	b := NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(2))})
+	a := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan([]values.Value{structuralLong(1)})
+	})
+	b := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan([]values.Value{structuralLong(2)})
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different column values should not be equal")
 	}
@@ -1630,10 +1954,14 @@ func TestValuesPlan_EqualsWithoutChildren_DifferentValues(t *testing.T) {
 
 func TestValuesPlan_EqualsWithoutChildren_DifferentCount(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
-	b := NewRecordQueryValuesPlan([]values.Value{
-		values.LiteralValue(int64(1)),
-		values.LiteralValue(int64(2)),
+	a := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan([]values.Value{structuralLong(1)})
+	})
+	b := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan([]values.Value{
+			structuralLong(1),
+			structuralLong(2),
+		})
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different column counts should not be equal")
@@ -1642,8 +1970,12 @@ func TestValuesPlan_EqualsWithoutChildren_DifferentCount(t *testing.T) {
 
 func TestValuesPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	v := NewRecordQueryValuesPlan(nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	v := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(nil)
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if v.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("ValuesPlan should not equal ScanPlan")
 	}
@@ -1651,8 +1983,10 @@ func TestValuesPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestValuesPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
-	cols := []values.Value{values.LiteralValue(int64(1))}
-	p := NewRecordQueryValuesPlan(cols)
+	cols := []values.Value{structuralLong(1)}
+	p := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(cols)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -1662,8 +1996,12 @@ func TestValuesPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestValuesPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(1))})
-	b := NewRecordQueryValuesPlan([]values.Value{values.LiteralValue(int64(2))})
+	a := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan([]values.Value{structuralLong(1)})
+	})
+	b := mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan([]values.Value{structuralLong(2)})
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different values should (very likely) produce different hashes")
 	}
@@ -1675,7 +2013,9 @@ func TestValuesPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 
 func TestScanPlan_Construction(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"Order", "Customer"}, values.NotNullLong, true)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Order", "Customer"}, values.NotNullLong, true)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -1688,17 +2028,18 @@ func TestScanPlan_Construction(t *testing.T) {
 	}
 }
 
-func TestScanPlan_NilFlowedType_DefaultsToUnknown(t *testing.T) {
+func TestScanPlan_ConstructorRejectsNilFlowedType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"T"}, nil, false)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType when nil passed", p.GetResultType())
+	if _, err := NewRecordQueryScanPlan([]string{"T"}, nil, false); err == nil {
+		t.Fatal("constructor accepted a nil flowed type")
 	}
 }
 
 func TestScanPlan_GetFlowedType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"T"}, values.NotNullString, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullString, false)
+	})
 	if !values.NotNullString.Equals(p.GetFlowedType()) {
 		t.Fatalf("GetFlowedType() = %v, want NotNullString", p.GetFlowedType())
 	}
@@ -1706,7 +2047,9 @@ func TestScanPlan_GetFlowedType(t *testing.T) {
 
 func TestScanPlan_GetChildren_Empty(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil (leaf plan)", cs)
 	}
@@ -1714,7 +2057,9 @@ func TestScanPlan_GetChildren_Empty(t *testing.T) {
 
 func TestScanPlan_Explain_Forward(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	got := p.Explain()
 	if got != "Scan(T)" {
 		t.Fatalf("Explain = %q, want 'Scan(T)'", got)
@@ -1723,7 +2068,9 @@ func TestScanPlan_Explain_Forward(t *testing.T) {
 
 func TestScanPlan_Explain_Reverse(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, true)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), true)
+	})
 	got := p.Explain()
 	if got != "Scan(T) REVERSE" {
 		t.Fatalf("Explain = %q, want 'Scan(T) REVERSE'", got)
@@ -1732,7 +2079,9 @@ func TestScanPlan_Explain_Reverse(t *testing.T) {
 
 func TestScanPlan_Explain_MultiType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"B", "A"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"B", "A"}, exactTestRecordType(), false)
+	})
 	got := p.Explain()
 	// Sorted, so A comes first.
 	if got != "Scan(A, B)" {
@@ -1742,7 +2091,9 @@ func TestScanPlan_Explain_MultiType(t *testing.T) {
 
 func TestScanPlan_Explain_Empty(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan(nil, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan(nil, exactTestRecordType(), false)
+	})
 	got := p.Explain()
 	if got != "Scan()" {
 		t.Fatalf("Explain = %q, want 'Scan()'", got)
@@ -1751,8 +2102,12 @@ func TestScanPlan_Explain_Empty(t *testing.T) {
 
 func TestScanPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	b := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	a := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	b := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same params should be equal")
 	}
@@ -1760,8 +2115,12 @@ func TestScanPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestScanPlan_EqualsWithoutChildren_DifferentTypes(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	b := NewRecordQueryScanPlan([]string{"U"}, values.UnknownType, false)
+	a := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	b := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"U"}, exactTestRecordType(), false)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different record types should not be equal")
 	}
@@ -1769,8 +2128,12 @@ func TestScanPlan_EqualsWithoutChildren_DifferentTypes(t *testing.T) {
 
 func TestScanPlan_EqualsWithoutChildren_DifferentReverse(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	b := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, true)
+	a := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	b := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), true)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different reverse flags should not be equal")
 	}
@@ -1778,8 +2141,12 @@ func TestScanPlan_EqualsWithoutChildren_DifferentReverse(t *testing.T) {
 
 func TestScanPlan_EqualsWithoutChildren_DifferentFlowedType(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
-	b := NewRecordQueryScanPlan([]string{"T"}, values.NotNullString, false)
+	a := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullLong, false)
+	})
+	b := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, values.NotNullString, false)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different flowed types should not be equal")
 	}
@@ -1787,8 +2154,12 @@ func TestScanPlan_EqualsWithoutChildren_DifferentFlowedType(t *testing.T) {
 
 func TestScanPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	s := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	d := NewRecordQueryDistinctPlan(nil)
+	s := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	d := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(stub("Inner"))
+	})
 	if s.EqualsPlanWithoutChildren(d) {
 		t.Fatal("ScanPlan should not equal DistinctPlan")
 	}
@@ -1796,7 +2167,9 @@ func TestScanPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestScanPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -1806,9 +2179,15 @@ func TestScanPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestScanPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	b := NewRecordQueryScanPlan([]string{"U"}, values.UnknownType, false)
-	c := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, true)
+	a := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
+	b := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"U"}, exactTestRecordType(), false)
+	})
+	c := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), true)
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different record types should (very likely) produce different hashes")
 	}
@@ -1819,7 +2198,9 @@ func TestScanPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 
 func TestScanPlan_DedupAndSort(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryScanPlan([]string{"C", "A", "B", "A"}, values.UnknownType, false)
+	p := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"C", "A", "B", "A"}, exactTestRecordType(), false)
+	})
 	rts := p.GetRecordTypes()
 	if len(rts) != 3 || rts[0] != "A" || rts[1] != "B" || rts[2] != "C" {
 		t.Fatalf("record types = %v, want [A, B, C]", rts)
@@ -1833,11 +2214,13 @@ func TestScanPlan_DedupAndSort(t *testing.T) {
 func TestStreamingAggPlan_Construction(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
+	keys := []values.Value{testField(t, "dept", values.NullableLong)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
+		{Function: expressions.AggSum, Operand: testField(t, "amount", values.NullableLong)},
 	}
-	p := NewRecordQueryStreamingAggregationPlan(inner, keys, aggs)
+	p := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(inner, keys, aggs)
+	})
 	if p == nil {
 		t.Fatal("constructor returned nil")
 	}
@@ -1854,16 +2237,21 @@ func TestStreamingAggPlan_Construction(t *testing.T) {
 
 func TestStreamingAggPlan_GetResultType(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryStreamingAggregationPlan(stub("X"), nil, nil)
-	if !values.UnknownType.Equals(p.GetResultType()) {
-		t.Fatalf("GetResultType() = %v, want UnknownType", p.GetResultType())
+	p := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("X"), nil, nil)
+	})
+	want := values.NewRecordType("", false, nil)
+	if !want.Equals(p.GetResultType()) {
+		t.Fatalf("GetResultType() = %v, want exact empty record %v", p.GetResultType(), want)
 	}
 }
 
 func TestStreamingAggPlan_GetChildren(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	p := NewRecordQueryStreamingAggregationPlan(inner, nil, nil)
+	p := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(inner, nil, nil)
+	})
 	cs := p.GetChildren()
 	if len(cs) != 1 || cs[0] != inner {
 		t.Fatalf("GetChildren() = %v, want [inner]", cs)
@@ -1872,16 +2260,24 @@ func TestStreamingAggPlan_GetChildren(t *testing.T) {
 
 func TestStreamingAggPlan_GetChildren_NilInner(t *testing.T) {
 	t.Parallel()
-	p := NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
+	p := &RecordQueryStreamingAggregationPlan{}
 	if cs := p.GetChildren(); cs != nil {
 		t.Fatalf("GetChildren() = %v, want nil", cs)
+	}
+	if _, err := NewRecordQueryStreamingAggregationPlan(nil, nil, nil); err == nil {
+		t.Fatal("constructor accepted a nil inner plan")
+	}
+	if _, err := NewRecordQueryStreamingAggregationPlanFromQuantifier(expressions.Quantifier{}, nil, nil); err == nil {
+		t.Fatal("quantifier constructor accepted an empty inner quantifier")
 	}
 }
 
 func TestStreamingAggPlan_Explain(t *testing.T) {
 	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	p := NewRecordQueryStreamingAggregationPlan(stub("Scan(T)"), keys, nil)
+	keys := []values.Value{testField(t, "dept", values.NullableLong)}
+	p := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("Scan(T)"), keys, nil)
+	})
 	got := p.Explain()
 	if !strings.Contains(got, "StreamingAgg") {
 		t.Fatalf("Explain = %q, missing 'StreamingAgg'", got)
@@ -1890,12 +2286,16 @@ func TestStreamingAggPlan_Explain(t *testing.T) {
 
 func TestStreamingAggPlan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
+	keys := []values.Value{testField(t, "dept", values.NullableLong)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
+		{Function: expressions.AggSum, Operand: testField(t, "amount", values.NullableLong)},
 	}
-	a := NewRecordQueryStreamingAggregationPlan(nil, keys, aggs)
-	b := NewRecordQueryStreamingAggregationPlan(nil, keys, aggs)
+	a := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("A"), keys, aggs)
+	})
+	b := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("B"), keys, aggs)
+	})
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("same keys+aggs should be equal")
 	}
@@ -1903,10 +2303,14 @@ func TestStreamingAggPlan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestStreamingAggPlan_EqualsWithoutChildren_DifferentGroupingKeys(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryStreamingAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}, nil)
-	b := NewRecordQueryStreamingAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}}, nil)
+	a := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("A"),
+			[]values.Value{testField(t, "dept", values.NullableLong)}, nil)
+	})
+	b := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("B"),
+			[]values.Value{testField(t, "region", values.NullableLong)}, nil)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different grouping keys should not be equal")
 	}
@@ -1914,13 +2318,17 @@ func TestStreamingAggPlan_EqualsWithoutChildren_DifferentGroupingKeys(t *testing
 
 func TestStreamingAggPlan_EqualsWithoutChildren_DifferentAggFunction(t *testing.T) {
 	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	operand := &values.FieldValue{Field: "val", Typ: values.UnknownType}
-	a := NewRecordQueryStreamingAggregationPlan(nil, keys, []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: operand},
+	keys := []values.Value{testField(t, "dept", values.NullableLong)}
+	operand := testField(t, "val", values.NullableLong)
+	a := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("A"), keys, []expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: operand},
+		})
 	})
-	b := NewRecordQueryStreamingAggregationPlan(nil, keys, []expressions.AggregateSpec{
-		{Function: expressions.AggMax, Operand: operand},
+	b := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("B"), keys, []expressions.AggregateSpec{
+			{Function: expressions.AggMax, Operand: operand},
+		})
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different aggregate functions should not be equal")
@@ -1929,12 +2337,16 @@ func TestStreamingAggPlan_EqualsWithoutChildren_DifferentAggFunction(t *testing.
 
 func TestStreamingAggPlan_EqualsWithoutChildren_DifferentAggOperand(t *testing.T) {
 	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	a := NewRecordQueryStreamingAggregationPlan(nil, keys, []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
+	keys := []values.Value{testField(t, "dept", values.NullableLong)}
+	a := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("A"), keys, []expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: testField(t, "amount", values.NullableLong)},
+		})
 	})
-	b := NewRecordQueryStreamingAggregationPlan(nil, keys, []expressions.AggregateSpec{
-		{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "qty", Typ: values.UnknownType}},
+	b := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("B"), keys, []expressions.AggregateSpec{
+			{Function: expressions.AggSum, Operand: testField(t, "qty", values.NullableLong)},
+		})
 	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("different aggregate operands should not be equal")
@@ -1943,8 +2355,12 @@ func TestStreamingAggPlan_EqualsWithoutChildren_DifferentAggOperand(t *testing.T
 
 func TestStreamingAggPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	s := NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	s := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("Inner"), nil, nil)
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if s.EqualsPlanWithoutChildren(scan) {
 		t.Fatal("StreamingAgg should not equal ScanPlan")
 	}
@@ -1952,8 +2368,10 @@ func TestStreamingAggPlan_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestStreamingAggPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 	t.Parallel()
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
-	p := NewRecordQueryStreamingAggregationPlan(nil, keys, nil)
+	keys := []values.Value{testField(t, "dept", values.NullableLong)}
+	p := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("Inner"), keys, nil)
+	})
 	h1 := p.HashCodeWithoutChildren()
 	h2 := p.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -1963,10 +2381,14 @@ func TestStreamingAggPlan_HashCodeWithoutChildren_Deterministic(t *testing.T) {
 
 func TestStreamingAggPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 	t.Parallel()
-	a := NewRecordQueryStreamingAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}, nil)
-	b := NewRecordQueryStreamingAggregationPlan(nil,
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}}, nil)
+	a := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("A"),
+			[]values.Value{testField(t, "dept", values.NullableLong)}, nil)
+	})
+	b := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("B"),
+			[]values.Value{testField(t, "region", values.NullableLong)}, nil)
+	})
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different grouping keys should (very likely) produce different hashes")
 	}
@@ -1975,12 +2397,16 @@ func TestStreamingAggPlan_HashCodeWithoutChildren_Differs(t *testing.T) {
 func TestStreamingAggPlan_HashDistinctFromScan(t *testing.T) {
 	t.Parallel()
 	// StreamingAgg and Scan should have different hashes.
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
+	keys := []values.Value{testField(t, "dept", values.NullableLong)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		{Function: expressions.AggCount, Operand: testField(t, "id", values.NullableLong)},
 	}
-	s := NewRecordQueryStreamingAggregationPlan(nil, keys, aggs)
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	s := mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("Inner"), keys, aggs)
+	})
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	if s.HashCodeWithoutChildren() == scan.HashCodeWithoutChildren() {
 		t.Fatal("streaming agg and scan should have different hashes")
 	}
@@ -1995,17 +2421,43 @@ func TestAllPlanTypes_DistinctTypeHashes(t *testing.T) {
 	// Plans with no operator-specific params, all should have distinct
 	// type-discriminator hashes.
 	hashes := map[string]uint64{
-		"Limit":          NewRecordQueryLimitPlan(nil, 0, 0).HashCodeWithoutChildren(),
-		"Filter":         NewRecordQueryFilterPlan(nil, nil).HashCodeWithoutChildren(),
-		"InMemorySort":   NewRecordQueryInMemorySortPlan(nil, nil).HashCodeWithoutChildren(),
-		"Distinct":       NewRecordQueryDistinctPlan(nil).HashCodeWithoutChildren(),
-		"Project":        NewRecordQueryProjectionPlan(nil, nil).HashCodeWithoutChildren(),
-		"Union":          NewRecordQueryUnionPlan(nil).HashCodeWithoutChildren(),
-		"Intersect":      NewRecordQueryIntersectionPlan(nil, nil).HashCodeWithoutChildren(),
-		"MultiIntersect": NewRecordQueryMultiIntersectionOnValuesPlan(nil, nil, nil).HashCodeWithoutChildren(),
-		"Values":         NewRecordQueryValuesPlan(nil).HashCodeWithoutChildren(),
-		"Scan":           NewRecordQueryScanPlan(nil, values.UnknownType, false).HashCodeWithoutChildren(),
-		"StreamAgg":      NewRecordQueryStreamingAggregationPlan(nil, nil, nil).HashCodeWithoutChildren(),
+		"Limit": mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+			return NewRecordQueryLimitPlan(stub("LimitInner"), 0, 0)
+		}).HashCodeWithoutChildren(),
+		"Filter": mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+			return NewRecordQueryFilterPlan(nil, stub("FilterInner"))
+		}).HashCodeWithoutChildren(),
+		"InMemorySort": mustChecked(t, func() (*RecordQueryInMemorySortPlan, error) {
+			return NewRecordQueryInMemorySortPlan(stub("SortInner"), nil)
+		}).HashCodeWithoutChildren(),
+		"Distinct": mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+			return NewRecordQueryDistinctPlan(stub("DistinctInner"))
+		}).HashCodeWithoutChildren(),
+		"Project": mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+			return NewRecordQueryProjectionPlan(nil, stub("ProjectInner"))
+		}).HashCodeWithoutChildren(),
+		"Union": mustChecked(t, func() (*RecordQueryUnionPlan, error) {
+			return NewRecordQueryUnionPlan([]RecordQueryPlan{stub("UnionInner")})
+		}).HashCodeWithoutChildren(),
+		"Intersect": mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+			return NewRecordQueryIntersectionPlan([]RecordQueryPlan{stub("IntersectionInner")}, nil)
+		}).HashCodeWithoutChildren(),
+		"MultiIntersect": mustChecked(t, func() (*RecordQueryMultiIntersectionOnValuesPlan, error) {
+			return NewRecordQueryMultiIntersectionOnValuesPlan(
+				[]RecordQueryPlan{stub("MultiIntersectionInner")},
+				nil,
+				values.NewRecordConstructorValue(),
+			)
+		}).HashCodeWithoutChildren(),
+		"Values": mustChecked(t, func() (*RecordQueryValuesPlan, error) {
+			return NewRecordQueryValuesPlan(nil)
+		}).HashCodeWithoutChildren(),
+		"Scan": mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan(nil, exactTestRecordType(), false)
+		}).HashCodeWithoutChildren(),
+		"StreamAgg": mustChecked(t, func() (*RecordQueryStreamingAggregationPlan, error) {
+			return NewRecordQueryStreamingAggregationPlan(stub("StreamingAggInner"), nil, nil)
+		}).HashCodeWithoutChildren(),
 	}
 	seen := make(map[uint64]string)
 	for name, h := range hashes {
@@ -2021,14 +2473,18 @@ func TestAllPlanTypes_DistinctTypeHashes(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func BenchmarkLimitPlan_Explain(b *testing.B) {
-	p := NewRecordQueryLimitPlan(stub("Scan(T)"), 100, 50)
+	p := mustChecked(b, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("Scan(T)"), 100, 50)
+	})
 	for b.Loop() {
 		_ = p.Explain()
 	}
 }
 
 func BenchmarkLimitPlan_HashCodeWithoutChildren(b *testing.B) {
-	p := NewRecordQueryLimitPlan(nil, 100, 50)
+	p := mustChecked(b, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("Scan(T)"), 100, 50)
+	})
 	for b.Loop() {
 		_ = p.HashCodeWithoutChildren()
 	}
@@ -2036,7 +2492,9 @@ func BenchmarkLimitPlan_HashCodeWithoutChildren(b *testing.B) {
 
 func BenchmarkFilterPlan_Explain(b *testing.B) {
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	p := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("Scan(T)"))
+	p := mustChecked(b, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("Scan(T)"))
+	})
 	for b.Loop() {
 		_ = p.Explain()
 	}
@@ -2044,43 +2502,53 @@ func BenchmarkFilterPlan_Explain(b *testing.B) {
 
 func BenchmarkFilterPlan_HashCodeWithoutChildren(b *testing.B) {
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	p := NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, nil)
+	p := mustChecked(b, func() (*RecordQueryFilterPlan, error) {
+		return NewRecordQueryFilterPlan([]predicates.QueryPredicate{pred}, stub("Scan(T)"))
+	})
 	for b.Loop() {
 		_ = p.HashCodeWithoutChildren()
 	}
 }
 
 func BenchmarkScanPlan_Explain(b *testing.B) {
-	p := NewRecordQueryScanPlan([]string{"Order", "Customer"}, values.UnknownType, true)
+	p := mustChecked(b, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Order", "Customer"}, exactTestRecordType(), true)
+	})
 	for b.Loop() {
 		_ = p.Explain()
 	}
 }
 
 func BenchmarkScanPlan_HashCodeWithoutChildren(b *testing.B) {
-	p := NewRecordQueryScanPlan([]string{"Order", "Customer"}, values.UnknownType, true)
+	p := mustChecked(b, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"Order", "Customer"}, exactTestRecordType(), true)
+	})
 	for b.Loop() {
 		_ = p.HashCodeWithoutChildren()
 	}
 }
 
 func BenchmarkStreamingAggPlan_Explain(b *testing.B) {
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
+	keys := []values.Value{testField(b, "dept", values.NullableLong)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		{Function: expressions.AggCount, Operand: testField(b, "id", values.NullableLong)},
 	}
-	p := NewRecordQueryStreamingAggregationPlan(stub("Scan(T)"), keys, aggs)
+	p := mustChecked(b, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("Scan(T)"), keys, aggs)
+	})
 	for b.Loop() {
 		_ = p.Explain()
 	}
 }
 
 func BenchmarkStreamingAggPlan_HashCodeWithoutChildren(b *testing.B) {
-	keys := []values.Value{&values.FieldValue{Field: "dept", Typ: values.UnknownType}}
+	keys := []values.Value{testField(b, "dept", values.NullableLong)}
 	aggs := []expressions.AggregateSpec{
-		{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+		{Function: expressions.AggCount, Operand: testField(b, "id", values.NullableLong)},
 	}
-	p := NewRecordQueryStreamingAggregationPlan(nil, keys, aggs)
+	p := mustChecked(b, func() (*RecordQueryStreamingAggregationPlan, error) {
+		return NewRecordQueryStreamingAggregationPlan(stub("Scan(T)"), keys, aggs)
+	})
 	for b.Loop() {
 		_ = p.HashCodeWithoutChildren()
 	}
@@ -2092,19 +2560,19 @@ func BenchmarkValuesPlan_Explain(b *testing.B) {
 		values.LiteralValue("hello"),
 		values.LiteralValue(int64(42)),
 	}
-	p := NewRecordQueryValuesPlan(cols)
+	p := mustChecked(b, func() (*RecordQueryValuesPlan, error) {
+		return NewRecordQueryValuesPlan(cols)
+	})
 	for b.Loop() {
 		_ = p.Explain()
 	}
 }
 
 func BenchmarkProjectionPlan_HashCodeWithoutChildren(b *testing.B) {
-	projs := []values.Value{
-		&values.FieldValue{Field: "id", Typ: values.UnknownType},
-		&values.FieldValue{Field: "name", Typ: values.UnknownType},
-		&values.FieldValue{Field: "age", Typ: values.UnknownType},
-	}
-	p := NewRecordQueryProjectionPlan(projs, nil)
+	projs := []values.Value{testField(b, "id", values.NullableLong), testField(b, "name", values.NullableLong), testField(b, "age", values.NullableLong)}
+	p := mustChecked(b, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlan(projs, stub("Inner"))
+	})
 	for b.Loop() {
 		_ = p.HashCodeWithoutChildren()
 	}
@@ -2114,8 +2582,11 @@ func (s *stubPlan) EqualsWithoutChildren(other expressions.RelationalExpression,
 	return planEqualsAsExpression(s, other)
 }
 
-func (s *stubPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return s
+func (s *stubPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("stubPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // The getOnlyElement guard on a plan's child dereference must actually FIRE.
@@ -2212,8 +2683,11 @@ func (w *stubPlanWrapper) EqualsWithoutChildren(expressions.RelationalExpression
 	return false
 }
 func (w *stubPlanWrapper) HashCodeWithoutChildren() uint64 { return 0 }
-func (w *stubPlanWrapper) WithQuantifiers([]expressions.Quantifier) expressions.RelationalExpression {
-	return w
+func (w *stubPlanWrapper) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("stubPlanWrapper", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return w, nil
 }
 
 // distinctStubPlan is stubPlan with REAL equality. stubPlan reports every
@@ -2225,7 +2699,7 @@ type distinctStubPlan struct {
 	label string
 }
 
-func (s *distinctStubPlan) GetResultType() values.Type     { return values.UnknownType }
+func (s *distinctStubPlan) GetResultType() values.Type     { return values.NotNullLong }
 func (s *distinctStubPlan) GetChildren() []RecordQueryPlan { return nil }
 func (s *distinctStubPlan) Explain() string                { return s.label }
 func (s *distinctStubPlan) HashCodeWithoutChildren() uint64 {
@@ -2241,12 +2715,17 @@ func (s *distinctStubPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bool
 	return ok && o.label == s.label
 }
 
-func distinctStub(label string) *distinctStubPlan { return &distinctStubPlan{label: label} }
+func distinctStub(label string) *distinctStubPlan {
+	return &distinctStubPlan{PlanExprBase: PlanExprBase{resultValue: &values.ConstantValue{Value: int64(0), Typ: values.NotNullLong}}, label: label}
+}
 
 func (s *distinctStubPlan) EqualsWithoutChildren(other expressions.RelationalExpression, _ *expressions.AliasMap) bool {
 	return planEqualsAsExpression(s, other)
 }
 
-func (s *distinctStubPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return s
+func (s *distinctStubPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("distinctStubPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return s, nil
 }

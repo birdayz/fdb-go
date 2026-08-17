@@ -43,6 +43,15 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build metadata: %v", err)
 	}
+	orderType := PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
+	priceOrdinal, ok := orderType.FieldIndexUnique("PRICE")
+	if !ok {
+		t.Fatal("Order exact row type has no unique PRICE field")
+	}
+	aggregateType := exactTestRowType(
+		values.Field{Name: "PRICE", FieldType: orderType.Fields[priceOrdinal].FieldType},
+		values.Field{Name: "COUNT", FieldType: values.NotNullLong},
+	)
 
 	_, err = testDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, openErr := recordlayer.NewStoreBuilder().
@@ -53,31 +62,31 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 
 		// The value plan's unsupported physical type would fail in range
 		// binding if the filtered-index invariant were checked too late.
-		valuePlan := plans.NewRecordQueryIndexPlan(
+		valuePlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"filtered_value",
 			[]*predicates.ComparisonRange{
 				scanRangeTestComparison(t, predicates.ComparisonEquals,
-					&values.ConstantValue{Value: []any{int64(1)}, Typ: values.UnknownType}),
+					&values.ConstantValue{Value: []any{int64(1)}, Typ: values.NewArrayType(false, values.NotNullLong)}),
 			},
-			[]string{"Order"}, values.UnknownType, false,
-		).WithKeyComponentTypes([]values.Type{values.AnyType})
+			[]string{"Order"}, orderType, false,
+		)).WithKeyComponentTypes([]values.Type{values.AnyType})
 
 		// Both dynamic inputs are deliberately ill-typed. The sparse-index
 		// rejection must precede vector partition validation and evaluation.
-		vectorPlan := plans.NewRecordQueryVectorIndexPlan(
+		vectorPlan := mustExecutorConstruct(plans.NewRecordQueryVectorIndexPlan(
 			"filtered_vector", nil,
-			&values.ConstantValue{Value: "not a vector", Typ: values.UnknownType},
-			&values.ConstantValue{Value: "not a rank cap", Typ: values.UnknownType},
+			&values.ConstantValue{Value: "not a vector", Typ: values.NotNullString},
+			&values.ConstantValue{Value: "not a rank cap", Typ: values.NotNullString},
 			predicates.ComparisonDistanceRankLessThanOrEq,
-			nil, nil, []string{"Order"}, values.UnknownType,
-		)
+			nil, nil, []string{"Order"}, orderType,
+		))
 
-		indexPlan := plans.NewRecordQueryIndexPlan(
-			"filtered_count", nil, []string{"Order"}, values.UnknownType, false,
-		)
-		aggregatePlan := plans.NewRecordQueryAggregateIndexPlan(
-			indexPlan, "Order", values.UnknownType, "COUNT",
-		).WithGroupColumns([]string{"PRICE"}, "COUNT")
+		indexPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
+			"filtered_count", nil, []string{"Order"}, orderType, false,
+		))
+		aggregatePlan := mustExecutorConstruct(plans.NewRecordQueryAggregateIndexPlan(
+			indexPlan, "Order", aggregateType, "COUNT",
+		)).WithGroupColumns([]string{"PRICE"}, "COUNT")
 
 		for _, test := range []struct {
 			name string

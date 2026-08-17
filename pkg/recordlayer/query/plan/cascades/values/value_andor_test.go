@@ -226,7 +226,7 @@ func TestAndOrValue_SimplifyChildFold(t *testing.T) {
 func TestAndOrValue_SimplifyNoConstFoldKeepsTree(t *testing.T) {
 	t.Parallel()
 	// AND(field, true) — field is non-constant → tree shape preserved.
-	field := &FieldValue{Field: "active", Typ: TypeBool}
+	field := &fieldValue{Field: "active", Typ: TypeBool}
 	v := NewAndOrValue(AndOrAnd, field, NewBooleanValue(true))
 	folded := SimplifyValue(v)
 	// Returns same pointer (no children changed).

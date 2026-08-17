@@ -176,6 +176,24 @@ func (rs *RecordLayerResultSet) positionalAligned(row *PositionalRow) bool {
 	if aligned {
 		for i, f := range row.Type.Fields {
 			disp := columnDisplayName(rs.columns[i])
+			// Duplicate plain display names are not an alignment discriminator.
+			// A projection/aggregate result may publish [ID, ID, COUNT(*)] while
+			// its exact logical schema deduplicates the second slot to ID_2 so the
+			// record type remains name-addressable. Both channels are still parallel
+			// by ordinal; requiring ID_2 == ID would reject a perfectly valid output
+			// row. This exception is admitted only when the display name has already
+			// occurred at an earlier ordinal. A unique alias/name mismatch remains a
+			// loud producer bug, preserving the fail-closed projection controls.
+			duplicateDisplay := false
+			for j := 0; j < i; j++ {
+				if strings.EqualFold(columnDisplayName(rs.columns[j]), disp) {
+					duplicateDisplay = true
+					break
+				}
+			}
+			if duplicateDisplay {
+				continue
+			}
 			// A column whose display name is NOT a plain (dotted) identifier has no
 			// canonical user-facing spelling to match — it is a synthesized rendering
 			// of a computed expression or an aggregate:

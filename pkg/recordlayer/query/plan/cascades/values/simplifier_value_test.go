@@ -25,7 +25,7 @@ func TestSimplifyValue_LeafConstantsUnchanged(t *testing.T) {
 	if got := SimplifyValue(bv); got != Value(bv) {
 		t.Fatal("BooleanValue: should be unchanged")
 	}
-	fv := &FieldValue{Field: "x", Typ: NullableLong}
+	fv := &fieldValue{Field: "x", Typ: NullableLong}
 	if got := SimplifyValue(fv); got != Value(fv) {
 		t.Fatal("FieldValue: non-constant, should be unchanged")
 	}
@@ -78,7 +78,7 @@ func TestSimplifyValue_PartialFold(t *testing.T) {
 	// collapses).
 	v := &ArithmeticValue{
 		Op:   OpAdd,
-		Left: &FieldValue{Field: "name", Typ: NullableLong},
+		Left: &fieldValue{Field: "name", Typ: NullableLong},
 		Right: &ArithmeticValue{
 			Op:    OpAdd,
 			Left:  &ConstantValue{Value: int64(1), Typ: NullableLong},
@@ -89,8 +89,8 @@ func TestSimplifyValue_PartialFold(t *testing.T) {
 	if got.Op != OpAdd {
 		t.Fatalf("outer Op: got %v, want OpAdd", got.Op)
 	}
-	if _, ok := got.Left.(*FieldValue); !ok {
-		t.Fatalf("Left: got %T, want *FieldValue (untouched)", got.Left)
+	if _, ok := got.Left.(*fieldValue); !ok {
+		t.Fatalf("Left: got %T, want *fieldValue (untouched)", got.Left)
 	}
 	rhs, ok := got.Right.(*ConstantValue)
 	if !ok {
@@ -106,7 +106,7 @@ func TestSimplifyValue_NoFoldOnNonConstantLeaves(t *testing.T) {
 	// name + 5 → name + 5 (no fold; pointer-equal).
 	v := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  &FieldValue{Field: "name", Typ: NullableLong},
+		Left:  &fieldValue{Field: "name", Typ: NullableLong},
 		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	got := SimplifyValue(v)
@@ -159,7 +159,7 @@ func TestSimplifyValue_ScalarFunctionPartialFold(t *testing.T) {
 	t.Parallel()
 	// UPPER(name) — leaf scalar fn over a field, can't fold; pointer-equal.
 	v := NewScalarFunctionValue("UPPER", TypeString,
-		&FieldValue{Field: "name", Typ: TypeString})
+		&fieldValue{Field: "name", Typ: TypeString})
 	if got := SimplifyValue(v); got != Value(v) {
 		t.Fatalf("UPPER(field): should be unchanged")
 	}
@@ -227,7 +227,7 @@ func TestSimplifyValue_PromotePartialFold(t *testing.T) {
 	t.Parallel()
 	// PROMOTE(name, NullableDouble) — non-constant child; pointer-equal
 	// short-circuit through simplifyChildren.
-	v := NewPromoteValue(&FieldValue{Field: "name", Typ: NullableLong}, NullableDouble)
+	v := NewPromoteValue(&fieldValue{Field: "name", Typ: NullableLong}, NullableDouble)
 	if got := SimplifyValue(v); got != Value(v) {
 		t.Fatal("PROMOTE(field) should be unchanged")
 	}
@@ -262,7 +262,7 @@ func TestSimplifyValue_CoalesceFirstNonNullConstant(t *testing.T) {
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
 		NewNullValue(NullableLong),
 		&ConstantValue{Value: int64(42), Typ: NullableLong},
-		&FieldValue{Field: "x", Typ: NullableLong},
+		&fieldValue{Field: "x", Typ: NullableLong},
 	)
 	got := SimplifyValue(v)
 	c, ok := got.(*ConstantValue)
@@ -276,8 +276,8 @@ func TestSimplifyValue_CoalesceFirstNonNullConstant(t *testing.T) {
 
 func TestSimplifyValue_CoalesceRemoveRedundantNulls(t *testing.T) {
 	t.Parallel()
-	x := &FieldValue{Field: "x", Typ: NullableLong}
-	y := &FieldValue{Field: "y", Typ: NullableLong}
+	x := &fieldValue{Field: "x", Typ: NullableLong}
+	y := &fieldValue{Field: "y", Typ: NullableLong}
 	v := NewScalarFunctionValue("COALESCE", NullableLong,
 		x, NewNullValue(NullableLong), y, NewNullValue(NullableLong))
 	got := SimplifyValue(v)
@@ -292,8 +292,8 @@ func TestSimplifyValue_CoalesceRemoveRedundantNulls(t *testing.T) {
 
 func TestSimplifyValue_CoalesceNoChangeNeeded(t *testing.T) {
 	t.Parallel()
-	x := &FieldValue{Field: "x", Typ: NullableLong}
-	y := &FieldValue{Field: "y", Typ: NullableLong}
+	x := &fieldValue{Field: "x", Typ: NullableLong}
+	y := &fieldValue{Field: "y", Typ: NullableLong}
 	v := NewScalarFunctionValue("COALESCE", NullableLong, x, y)
 	got := SimplifyValue(v)
 	if got != Value(v) {
@@ -350,7 +350,7 @@ func TestCannotFoldCoalesce_BooleanNil(t *testing.T) {
 	}
 
 	// FieldValue is non-constant — cannot fold.
-	fv := &FieldValue{Field: "x", Typ: NullableLong}
+	fv := &fieldValue{Field: "x", Typ: NullableLong}
 	if !cannotFoldCoalesce(fv) {
 		t.Error("cannotFoldCoalesce(FieldValue) = false, want true")
 	}
@@ -397,11 +397,11 @@ func TestSimplifyValueWithContext_EliminateArithmeticConstant(t *testing.T) {
 	nonConstAlias := NamedCorrelationIdentifier("var_col")
 	v1 := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewQuantifiedObjectValue(nonConstAlias),
+		Left:  mustQOV(t, nonConstAlias),
 		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	got1 := SimplifyValueWithContext(v1, ctx)
-	if qov, ok := got1.(*QuantifiedObjectValue); !ok || qov.Correlation != nonConstAlias {
+	if qov, ok := got1.(*quantifiedObjectValue); !ok || qov.Correlation() != nonConstAlias {
 		t.Fatalf("var_col + 5: expected QOV(var_col), got %T", got1)
 	}
 
@@ -414,7 +414,7 @@ func TestSimplifyValueWithContext_EliminateArithmeticConstant(t *testing.T) {
 	// foldConstant fires: wraps in ConstantValue.
 	v2 := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewQuantifiedObjectValue(alias),
+		Left:  mustQOV(t, alias),
 		Right: &ConstantValue{Value: int64(5), Typ: NullableLong},
 	}
 	got2 := SimplifyValueWithContext(v2, ctx)
@@ -425,16 +425,16 @@ func TestSimplifyValueWithContext_EliminateArithmeticConstant(t *testing.T) {
 	// var_col + const_col where const_col is constant → drop const_col, return var_col
 	v3 := &ArithmeticValue{
 		Op:    OpAdd,
-		Left:  NewQuantifiedObjectValue(nonConstAlias),
-		Right: NewQuantifiedObjectValue(alias),
+		Left:  mustQOV(t, nonConstAlias),
+		Right: mustQOV(t, alias),
 	}
 	got3 := SimplifyValueWithContext(v3, ctx)
-	qov, ok := got3.(*QuantifiedObjectValue)
+	qov, ok := got3.(*quantifiedObjectValue)
 	if !ok {
 		t.Fatalf("var + const: expected QuantifiedObjectValue, got %T", got3)
 	}
-	if qov.Correlation != nonConstAlias {
-		t.Fatalf("expected non-constant alias %v, got %v", nonConstAlias, qov.Correlation)
+	if qov.Correlation() != nonConstAlias {
+		t.Fatalf("expected non-constant alias %v, got %v", nonConstAlias, qov.Correlation())
 	}
 }
 
@@ -444,7 +444,7 @@ func TestSimplifyValueWithContext_LiftConstructor(t *testing.T) {
 	// Use correlated values to prevent foldConstant from wrapping.
 	varAlias := NamedCorrelationIdentifier("var")
 	inner := &RecordConstructorValue{Fields: []RecordConstructorField{
-		{Name: "b", Value: NewQuantifiedObjectValue(varAlias)},
+		{Name: "b", Value: mustQOV(t, varAlias)},
 		{Name: "c", Value: &ConstantValue{Value: int64(3), Typ: NullableLong}},
 	}}
 	outer := &RecordConstructorValue{Fields: []RecordConstructorField{
@@ -467,10 +467,10 @@ func TestSimplifyValueWithContext_LiftConstructorNotAtRoot(t *testing.T) {
 	ctx := ValueSimplifyContext{IsRoot: false}
 	varAlias := NamedCorrelationIdentifier("var")
 	inner := &RecordConstructorValue{Fields: []RecordConstructorField{
-		{Name: "b", Value: NewQuantifiedObjectValue(varAlias)},
+		{Name: "b", Value: mustQOV(t, varAlias)},
 	}}
 	outer := &RecordConstructorValue{Fields: []RecordConstructorField{
-		{Name: "a", Value: NewQuantifiedObjectValue(varAlias)},
+		{Name: "a", Value: mustQOV(t, varAlias)},
 		{Name: "inner", Value: inner},
 	}}
 	got := SimplifyValueWithContext(outer, ctx)
@@ -490,12 +490,12 @@ func TestSimplifyValue_FieldOverRecordConstructor(t *testing.T) {
 		RecordConstructorField{Name: "b", Value: &ConstantValue{Value: "hello", Typ: TypeString}},
 	)
 	// The reference selects a member by ORDINAL (Java's findColumn is
-	// getColumns().get(fieldOrdinal)). NewFieldValueOfOrdinal resolves slot 1
+	// getColumns().get(fieldOrdinal)). newFieldValueOfOrdinal resolves slot 1
 	// against the constructor's own type, which is what makes the ordinal a
 	// proof rather than a claim.
-	fv, err := NewFieldValueOfOrdinal(rc, 1)
+	fv, err := newFieldValueOfOrdinal(rc, 1)
 	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal over RC: %v", err)
+		t.Fatalf("newFieldValueOfOrdinal over RC: %v", err)
 	}
 	got := SimplifyValue(fv)
 	c, ok := got.(*ConstantValue)
@@ -512,9 +512,9 @@ func TestSimplifyValue_FieldOverRecordConstructor_NotFound(t *testing.T) {
 	rc := NewRecordConstructorValue(
 		RecordConstructorField{Name: "a", Value: &ConstantValue{Value: int64(1), Typ: NullableLong}},
 	)
-	fv := &FieldValue{Field: "z", Typ: TypeString, Child: rc}
+	fv := &fieldValue{Field: "z", Typ: TypeString, Child: rc}
 	got := SimplifyValue(fv)
-	if _, ok := got.(*FieldValue); !ok {
+	if _, ok := got.(*fieldValue); !ok {
 		t.Fatalf("field('z') on RC without 'z' should remain FieldValue, got %T", got)
 	}
 }

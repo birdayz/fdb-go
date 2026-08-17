@@ -128,7 +128,12 @@ type PredicateCompensationFunc interface {
 	// matched candidate scan.
 	//
 	// Ports Java's PredicateCompensationFunction.applyCompensationForPredicate.
-	ApplyCompensationForPredicate(translationMap TranslationMap) []predicates.QueryPredicate
+	//
+	// The bool reports whether the compensation could be expressed at all. A
+	// false is NOT an empty compensation: dropping a residual predicate that
+	// could not be translated returns rows the query excludes, so the caller
+	// must abandon the match rather than proceed with what it did get.
+	ApplyCompensationForPredicate(translationMap TranslationMap) ([]predicates.QueryPredicate, bool)
 }
 
 type noPredicateCompensationFunc struct{}
@@ -140,8 +145,8 @@ func (f noPredicateCompensationFunc) Amend(*BiMap[values.CorrelationIdentifier, 
 	return f
 }
 
-func (noPredicateCompensationFunc) ApplyCompensationForPredicate(TranslationMap) []predicates.QueryPredicate {
-	return nil
+func (noPredicateCompensationFunc) ApplyCompensationForPredicate(TranslationMap) ([]predicates.QueryPredicate, bool) {
+	return nil, true
 }
 
 type impossiblePredicateCompensationFunc struct{}
@@ -153,8 +158,8 @@ func (f impossiblePredicateCompensationFunc) Amend(*BiMap[values.CorrelationIden
 	return f
 }
 
-func (impossiblePredicateCompensationFunc) ApplyCompensationForPredicate(TranslationMap) []predicates.QueryPredicate {
-	return nil
+func (impossiblePredicateCompensationFunc) ApplyCompensationForPredicate(TranslationMap) ([]predicates.QueryPredicate, bool) {
+	return nil, true
 }
 
 // predicateCompensationOfPredicate wraps a query predicate for
@@ -178,12 +183,15 @@ func (f *predicateCompensationOfPredicate) Amend(
 	return OfPredicateCompensation(amended, true)
 }
 
-func (f *predicateCompensationOfPredicate) ApplyCompensationForPredicate(tm TranslationMap) []predicates.QueryPredicate {
+func (f *predicateCompensationOfPredicate) ApplyCompensationForPredicate(tm TranslationMap) ([]predicates.QueryPredicate, bool) {
 	if tm == nil || tm.DefinesOnlyIdentities() {
-		return []predicates.QueryPredicate{f.predicate}
+		return []predicates.QueryPredicate{f.predicate}, true
 	}
-	translated := translatePredicateCorrelations(f.predicate, tm)
-	return []predicates.QueryPredicate{translated}
+	translated, ok := translatePredicateCorrelations(f.predicate, tm)
+	if !ok {
+		return nil, false
+	}
+	return []predicates.QueryPredicate{translated}, true
 }
 
 // OfPredicateCompensation creates a PredicateCompensationFunc that
@@ -225,11 +233,11 @@ func (f *predicateCompensationOfExistentialValuePredicate) Amend(
 
 func (f *predicateCompensationOfExistentialValuePredicate) ApplyCompensationForPredicate(
 	TranslationMap,
-) []predicates.QueryPredicate {
+) ([]predicates.QueryPredicate, bool) {
 	if f == nil || f.predicate == nil {
-		return nil
+		return nil, false
 	}
-	return []predicates.QueryPredicate{f.predicate}
+	return []predicates.QueryPredicate{f.predicate}, true
 }
 
 // OfExistentialValuePredicateCompensation creates Java's specialized EVP

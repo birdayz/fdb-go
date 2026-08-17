@@ -10,24 +10,31 @@ import (
 func TestDistinctOverGroupByElim_Fires(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	rowType := values.NewRecordType("DistinctGroupByRow", false, []values.Field{
+		{Name: "region", FieldType: values.NullableString},
+		{Name: "id", FieldType: values.NotNullLong},
+	})
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType))
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanRoot := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
+	region := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRoot, []int{0}))
+	id := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRoot, []int{1}))
 
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.NullableString}},
+	gb := mustDistinctConstruct(expressions.NewGroupByExpression(
+		[]values.Value{region},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
+			{Function: expressions.AggCount, Operand: id},
 		},
 		scanQ,
-	)
+	))
 	gbRef := expressions.InitialOf(gb)
 	gbQ := expressions.ForEachQuantifier(gbRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(gbQ)
+	distinct := distinctRuleDistinct(t, gbQ)
 	distinctRef := expressions.InitialOf(distinct)
 
-	results := FireExpressionRule(NewDistinctOverGroupByElimRule(), distinctRef)
+	results := mustFireDistinctExpressionRule(t, NewDistinctOverGroupByElimRule(), distinctRef)
 	if len(results) == 0 {
 		t.Fatal("DistinctOverGroupByElimRule didn't fire")
 	}
@@ -47,41 +54,53 @@ func TestDistinctOverGroupByElim_FloatingOrUnknownKeyDoesNotFire(t *testing.T) {
 		{name: "FLOAT", typ: values.NotNullFloat},
 		{name: "DOUBLE", typ: values.NullableDouble},
 		{name: "nested DOUBLE", typ: values.NewArrayType(true, values.NullableDouble)},
-		{name: "unknown", typ: values.UnknownType},
 	} {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-			groupBy := expressions.NewGroupByExpression(
-				[]values.Value{&values.FieldValue{Field: "K", Typ: test.typ}},
+			rowType := values.NewRecordType("DistinctUnsafeGroupKey", false, []values.Field{{
+				Name: "K", FieldType: test.typ,
+			}})
+			scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType))
+			scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+			scanRoot := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
+			key := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRoot, []int{0}))
+			groupBy := mustDistinctConstruct(expressions.NewGroupByExpression(
+				[]values.Value{key},
 				nil,
-				expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-			)
-			distinct := expressions.NewLogicalDistinctExpression(
+				scanQ,
+			))
+			distinct := distinctRuleDistinct(t,
 				expressions.ForEachQuantifier(expressions.InitialOf(groupBy)),
 			)
-			if results := FireExpressionRule(
+			if results := mustFireDistinctExpressionRule(t,
 				NewDistinctOverGroupByElimRule(), expressions.InitialOf(distinct),
 			); len(results) != 0 {
 				t.Fatalf("rule eliminated DISTINCT over %s grouping identity", test.name)
 			}
 		})
 	}
+
+	unknownRow := values.NewRecordType("DistinctUnknownGroupKey", false, []values.Field{{
+		Name: "K", FieldType: values.UnknownType,
+	}})
+	if _, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, unknownRow); err == nil {
+		t.Fatal("UNKNOWN grouping identity was admitted before the rule boundary")
+	}
 }
 
 func TestDistinctOverScalarGroupByElim_Fires(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	groupBy := expressions.NewGroupByExpression(
+	scan := distinctRuleScan(t, "T")
+	groupBy := mustDistinctConstruct(expressions.NewGroupByExpression(
 		nil,
 		[]expressions.AggregateSpec{{Function: expressions.AggCount}},
 		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
-	distinct := expressions.NewLogicalDistinctExpression(
+	))
+	distinct := distinctRuleDistinct(t,
 		expressions.ForEachQuantifier(expressions.InitialOf(groupBy)),
 	)
-	if results := FireExpressionRule(
+	if results := mustFireDistinctExpressionRule(t,
 		NewDistinctOverGroupByElimRule(), expressions.InitialOf(distinct),
 	); len(results) != 1 {
 		t.Fatalf("scalar GROUP BY emits at most one row: got %d rewrites, want 1", len(results))
@@ -91,19 +110,19 @@ func TestDistinctOverScalarGroupByElim_Fires(t *testing.T) {
 func TestDistinctOverGroupByElim_DoesNotFireOverFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := distinctRuleScan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	// Distinct over a Filter (not a GroupBy) — should not fire.
-	filter := expressions.NewLogicalFilterExpression(nil, scanQ)
+	filter := mustDistinctConstruct(expressions.NewLogicalFilterExpression(nil, scanQ))
 	filterRef := expressions.InitialOf(filter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(filterQ)
+	distinct := distinctRuleDistinct(t, filterQ)
 	distinctRef := expressions.InitialOf(distinct)
 
-	results := FireExpressionRule(NewDistinctOverGroupByElimRule(), distinctRef)
+	results := mustFireDistinctExpressionRule(t, NewDistinctOverGroupByElimRule(), distinctRef)
 	if len(results) != 0 {
 		t.Fatal("DistinctOverGroupByElimRule should not fire over a filter")
 	}

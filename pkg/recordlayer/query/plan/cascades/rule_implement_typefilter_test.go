@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -12,17 +11,17 @@ import (
 // LogicalTypeFilterExpression → TypeFilterPlan implementation chain.
 func TestImplementTypeFilterRule_FiresAfterScanImplemented(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := smallImplementScan("Order")
 	innerRef := expressions.InitialOf(scan)
-	tf := expressions.NewLogicalTypeFilterExpression(
+	tf := mustSmallImplementConstruct(expressions.NewLogicalTypeFilterExpression(
 		[]string{"Order"},
 		expressions.ForEachQuantifier(innerRef),
-	)
+	))
 	topRef := expressions.InitialOf(tf)
 
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	fireSmallImplementRule(t, NewPrimaryScanRule(), innerRef)
 
-	yielded := FireExpressionRule(NewImplementTypeFilterRule(), topRef)
+	yielded := fireSmallImplementRule(t, NewImplementTypeFilterRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTypeFilterRule yielded %d, want 1", len(yielded))
 	}
@@ -43,14 +42,14 @@ func TestImplementTypeFilterRule_FiresAfterScanImplemented(t *testing.T) {
 // gate.
 func TestImplementTypeFilterRule_NoFireWithoutPhysicalInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	tf := expressions.NewLogicalTypeFilterExpression(
+	scan := smallImplementScan("Order")
+	tf := mustSmallImplementConstruct(expressions.NewLogicalTypeFilterExpression(
 		[]string{"Order"},
 		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
+	))
 	topRef := expressions.InitialOf(tf)
 
-	yielded := FireExpressionRule(NewImplementTypeFilterRule(), topRef)
+	yielded := fireSmallImplementRule(t, NewImplementTypeFilterRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementTypeFilterRule fired without physical inner; yielded %d", len(yielded))
 	}

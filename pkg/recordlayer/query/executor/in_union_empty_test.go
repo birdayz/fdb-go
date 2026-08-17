@@ -28,12 +28,12 @@ func TestExecuteInUnion_KnownEmptySourceSkipsInner(t *testing.T) {
 			for i := range bindings {
 				bindings[i] = "binding"
 			}
-			inUnion := plans.NewRecordQueryInUnionPlan(
-				plans.NewRecordQueryValuesPlan(nil),
+			inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(
+				mustExecutorConstruct(plans.NewRecordQueryValuesPlan(nil)),
 				bindings,
 				nil,
 				false,
-			)
+			))
 			inUnion.SetInSources(test.sources)
 
 			ctx := context.Background()
@@ -69,15 +69,15 @@ func TestExecuteInUnion_MultiBindingSingletonBindsCompleteContext(t *testing.T) 
 		firstBinding  = "first"
 		secondBinding = "second"
 	)
-	inUnion := plans.NewRecordQueryInUnionPlan(
-		plans.NewRecordQueryValuesPlan([]values.Value{
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(firstBinding)),
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(secondBinding)),
-		}),
+	inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(
+		mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
+			mustTestQOV(t, values.NamedCorrelationIdentifier(firstBinding), values.NotNullLong),
+			mustTestQOV(t, values.NamedCorrelationIdentifier(secondBinding), values.NotNullLong),
+		})),
 		[]string{firstBinding, secondBinding},
 		nil,
 		false,
-	)
+	))
 	inUnion.SetInSources([][]any{{int64(11)}, {int64(22)}})
 
 	ctx := context.Background()
@@ -105,6 +105,44 @@ func TestExecuteInUnion_MultiBindingSingletonBindsCompleteContext(t *testing.T) 
 	}
 }
 
+func TestExecuteInUnion_PreservesUniqueBindingIdentity(t *testing.T) {
+	t.Parallel()
+	binding := values.UniqueCorrelationIdentifier()
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
+		mustTestQOV(t, binding, values.NotNullLong),
+	}))
+	inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlanWithBindingAliases(
+		inner, []values.CorrelationIdentifier{binding}, nil, false))
+	inUnion.SetInSources([][]any{{int64(11), int64(22)}})
+	aliases := inUnion.GetBindingAliases()
+	if len(aliases) != 1 || aliases[0] != binding {
+		t.Fatalf("binding aliases = %v, want exact unique alias %v", aliases, binding)
+	}
+	if named := values.NamedCorrelationIdentifier(binding.Name()); named == binding {
+		t.Fatal("fixture requires unique and named aliases with the same spelling to stay distinct")
+	}
+
+	cursor, err := executeInUnion(
+		context.Background(), inUnion, nil, EmptyEvaluationContext(), nil,
+		recordlayer.ExecuteProperties{})
+	if err != nil {
+		t.Fatalf("executeInUnion: %v", err)
+	}
+	results, err := CollectAll(context.Background(), cursor)
+	if err != nil {
+		t.Fatalf("CollectAll: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2", len(results))
+	}
+	for i, want := range []int64{11, 22} {
+		if results[i].Positional == nil || len(results[i].Positional.Slots) != 1 ||
+			results[i].Positional.Slots[0] != want {
+			t.Fatalf("result %d = %+v, want [%d]", i, results[i], want)
+		}
+	}
+}
+
 func TestExecuteInUnion_SingletonAppliesSkip(t *testing.T) {
 	t.Parallel()
 
@@ -128,12 +166,12 @@ func TestExecuteInUnion_SingletonAppliesSkip(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			inUnion := plans.NewRecordQueryInUnionPlan(
-				plans.NewRecordQueryValuesPlan(nil),
+			inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(
+				mustExecutorConstruct(plans.NewRecordQueryValuesPlan(nil)),
 				test.bindings,
 				nil,
 				false,
-			)
+			))
 			inUnion.SetInSources(test.sources)
 
 			ctx := context.Background()
@@ -182,12 +220,12 @@ func TestExecuteInUnion_RejectsMismatchedDimensions(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			inUnion := plans.NewRecordQueryInUnionPlan(
-				plans.NewRecordQueryValuesPlan(nil),
+			inUnion := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(
+				mustExecutorConstruct(plans.NewRecordQueryValuesPlan(nil)),
 				test.bindings,
 				nil,
 				false,
-			)
+			))
 			inUnion.SetInSources(test.sources)
 			if _, err := executeInUnion(
 				context.Background(),

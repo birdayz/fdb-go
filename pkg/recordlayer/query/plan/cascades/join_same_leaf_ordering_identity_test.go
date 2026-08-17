@@ -57,19 +57,19 @@ func TestSelfJoinOrderingKeepsBothLegsApart(t *testing.T) {
 	t.Parallel()
 
 	layout := selfJoinLayout()
-	pk := func() values.Value {
-		return &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	}
 	// A distinct outer is what makes the property CONCATENATE rather than
 	// report the outer alone -- the arm where both legs' keys coexist in one
 	// ordering set and can therefore collide.
-	outer := plans.NewRecordQueryIndexPlan(
-		"T_ID_IDX", nil, []string{"T"}, layout, false).
+	outerPlan, err := plans.NewRecordQueryIndexPlan(
+		"T_ID_IDX", nil, []string{"T"}, layout, false)
+	outer := mustConstruct(t, outerPlan, err).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"ID"}, nil, false).
 		WithStrictlySorted()
-	inner := plans.NewRecordQueryScanPlan([]string{"T"}, layout, false).
-		WithPrimaryKey([]values.Value{pk()}).
+	innerPlan, err := plans.NewRecordQueryScanPlan([]string{"T"}, layout, false)
+	inner := mustConstruct(t, innerPlan, err)
+	innerID, err := values.ResolveFieldOrdinals(inner.GetResultValue(), []int{0})
+	inner = inner.WithPrimaryKey([]values.Value{mustConstruct(t, innerID, err)}).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 
 	// Both legs provide the SAME key: same name, same ordinal, same domain.
@@ -94,21 +94,30 @@ func TestSelfJoinOrderingKeepsBothLegsApart(t *testing.T) {
 	// translator emits each output column as a read off its own quantifier. The
 	// two fields differ only in their correlation, which is exactly what makes a
 	// first-match pull-up dangerous.
+	outerRoot, err := values.NewQuantifiedObjectValue(outerAlias, layout)
+	exactOuterRoot := mustConstruct(t, outerRoot, err)
+	outerID, err := values.ResolveFieldOrdinals(exactOuterRoot, []int{0})
+	exactOuterID := mustConstruct(t, outerID, err)
+	innerRoot, err := values.NewQuantifiedObjectValue(innerAlias, layout)
+	exactInnerRoot := mustConstruct(t, innerRoot, err)
+	innerID, err = values.ResolveFieldOrdinals(exactInnerRoot, []int{0})
+	exactInnerID := mustConstruct(t, innerID, err)
 	resultValue := values.NewRecordConstructorValue(
 		values.RecordConstructorField{
 			Name:  "OID",
-			Value: values.NewFieldValue(values.NewQuantifiedObjectValue(outerAlias), "ID", values.NotNullLong),
+			Value: exactOuterID,
 		},
 		values.RecordConstructorField{
 			Name:  "IID",
-			Value: values.NewFieldValue(values.NewQuantifiedObjectValue(innerAlias), "ID", values.NotNullLong),
+			Value: exactInnerID,
 		},
 	)
-	flatMap := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		expressions.NamedPhysicalQuantifier(outerAlias, expressions.FinalOf(outer)),
 		expressions.NamedPhysicalQuantifier(innerAlias, expressions.FinalOf(inner)),
 		outerAlias, innerAlias, resultValue, false,
 	)
+	flatMap := mustConstruct(t, flatMapPlan, err)
 
 	got := computeWrapperRichOrdering(flatMap)
 	if got == nil {
@@ -142,10 +151,14 @@ func TestSelfJoinOrderingKeepsBothLegsApart(t *testing.T) {
 	// result constructor -- because that ordinal IS the identity the key is
 	// addressed by downstream. Naming the column without its slot would make the
 	// assertion agree with a key that points at the other column.
-	wantOuter := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(outerAlias), "OID", 0, values.NotNullLong)
-	wantInner := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(innerAlias), "IID", 1, values.NotNullLong)
+	outerResultRoot, err := values.NewQuantifiedObjectValue(outerAlias, resultValue.Type())
+	exactOuterResultRoot := mustConstruct(t, outerResultRoot, err)
+	wantOuterValue, err := values.ResolveFieldOrdinals(exactOuterResultRoot, []int{0})
+	wantOuter := mustConstruct(t, wantOuterValue, err)
+	innerResultRoot, err := values.NewQuantifiedObjectValue(innerAlias, resultValue.Type())
+	exactInnerResultRoot := mustConstruct(t, innerResultRoot, err)
+	wantInnerValue, err := values.ResolveFieldOrdinals(exactInnerResultRoot, []int{1})
+	wantInner := mustConstruct(t, wantInnerValue, err)
 	if !values.ValuesStructurallyEqual(keys[0], wantOuter) {
 		t.Fatalf("outer leg's ordering key = %s, want %s. The pull-up must select "+
 			"the result field OWNED BY the outer alias, not the first field whose "+

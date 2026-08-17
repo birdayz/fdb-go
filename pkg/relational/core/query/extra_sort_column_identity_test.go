@@ -14,35 +14,35 @@ import (
 // This is the shape the whole file is about: `sortKeyFieldRef` renders BOTH of
 // these as the root `N` (fv.Child is nil, so the ToUpper(fv.Field) arm fires),
 // so any identity derived from that rendering conflates them.
-func nestedSortFixture() (src sortSource, keySK, keyCO logical.SortKey) {
+func nestedSortFixture(t testing.TB) (src sortSource, keySK, keyCO logical.SortKey, owner values.QuantifiedObjectValue) {
+	t.Helper()
+	nestedType := &values.RecordType{Fields: []values.Field{
+		{Name: "SK", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "CO", Ordinal: 1, FieldType: values.NotNullLong},
+	}}
 	rowType := values.NewRecordType("T1", false, []values.Field{
-		{Name: "ID", FieldType: values.UnknownType},
-		{Name: "N", FieldType: values.UnknownType},
-		{Name: "V", FieldType: values.UnknownType},
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "N", Ordinal: 1, FieldType: nestedType},
+		{Name: "V", Ordinal: 2, FieldType: values.NotNullLong},
 	})
+	owner = exactTestQOV(t, "T1", rowType)
 	nested := func(leaf string, leafOrdinal int) logical.SortKey {
 		return logical.SortKey{
-			Expr: "N." + leaf,
-			Value: &values.FieldValue{
-				Field: "N",
-				Typ:   values.UnknownType,
-				Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
-					{Field: "N", Ordinal: 1},
-					{Field: leaf, Ordinal: leafOrdinal},
-				}},
-			},
+			Expr:  "N." + leaf,
+			Value: exactTestField(t, owner, 1, leafOrdinal),
 		}
 	}
-	return sortSource{isJoin: false, singleType: rowType}, nested("SK", 0), nested("CO", 1)
+	return sortSource{isJoin: false, singleType: rowType}, nested("SK", 0), nested("CO", 1), owner
 }
 
 // outputFieldsWithoutTheKeys is a folded projection for
 // `SELECT id, EXISTS(...) AS h FROM t1 ORDER BY ...` — neither nested key is
 // projected, so both must be appended as hidden columns.
-func outputFieldsWithoutTheKeys() []values.RecordConstructorField {
+func outputFieldsWithoutTheKeys(t testing.TB, owner values.Value) []values.RecordConstructorField {
+	t.Helper()
 	return []values.RecordConstructorField{
-		{Name: "ID", Value: values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType)},
-		{Name: "H", Value: &values.FieldValue{Field: "H", Typ: values.UnknownType}},
+		{Name: "ID", Value: exactTestField(t, owner, 0)},
+		{Name: "H", Value: values.LiteralValue(true)},
 	}
 }
 
@@ -66,21 +66,21 @@ func sortChain(keys ...logical.SortKey) []logical.LogicalOperator {
 func TestExtraSortColumnsKeepBothMembersOfOneStructRoot(t *testing.T) {
 	t.Parallel()
 
-	src, keySK, keyCO := nestedSortFixture()
+	src, keySK, keyCO, owner := nestedSortFixture(t)
 
 	for _, tc := range []struct {
 		name      string
 		keys      []logical.SortKey
 		wantNames []string
 	}{
-		{"co-then-sk", []logical.SortKey{keyCO, keySK}, []string{"N.CO", "N.SK"}},
-		{"sk-then-co", []logical.SortKey{keySK, keyCO}, []string{"N.SK", "N.CO"}},
+		{"co-then-sk", []logical.SortKey{keyCO, keySK}, []string{"T1.N.CO", "T1.N.SK"}},
+		{"sk-then-co", []logical.SortKey{keySK, keyCO}, []string{"T1.N.SK", "T1.N.CO"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
 			extra := collectExtraSortColumns(sortChain(tc.keys...),
-				outputFieldsWithoutTheKeys(), src)
+				outputFieldsWithoutTheKeys(t, owner), src)
 
 			if len(extra) != 2 {
 				var got []string
@@ -105,7 +105,7 @@ func TestExtraSortColumnsKeepBothMembersOfOneStructRoot(t *testing.T) {
 			// The names being distinct is hygiene; the VALUES being distinct is the
 			// correctness claim. Assert it directly so a future naming scheme cannot
 			// make this test pass while both columns read the same member.
-			if values.SemanticEqualsUnderAliasMap(extra[0].val, extra[1].val, values.AliasMap{}) {
+			if values.SemanticEqualsUnderAliasMap(extra[0].val, extra[1].val, values.EmptyAliasMap()) {
 				t.Errorf("the two hidden columns carry SEMANTICALLY EQUAL values, so both "+
 					"read the same struct member and one of the sort keys is a no-op. "+
 					"values: %v / %v", extra[0].val, extra[1].val)
@@ -128,10 +128,10 @@ func TestExtraSortColumnsKeepBothMembersOfOneStructRoot(t *testing.T) {
 func TestExtraSortColumnsDedupExactDuplicates(t *testing.T) {
 	t.Parallel()
 
-	src, _, keyCO := nestedSortFixture()
+	src, _, keyCO, owner := nestedSortFixture(t)
 
 	extra := collectExtraSortColumns(sortChain(keyCO, keyCO),
-		outputFieldsWithoutTheKeys(), src)
+		outputFieldsWithoutTheKeys(t, owner), src)
 
 	if len(extra) != 1 {
 		t.Fatalf("collectExtraSortColumns returned %d hidden column(s), want 1: "+
@@ -139,8 +139,8 @@ func TestExtraSortColumnsDedupExactDuplicates(t *testing.T) {
 			"More than one means the dedup stopped recognising equal values and the "+
 			"folded row is widening for nothing.", len(extra))
 	}
-	if extra[0].name != "N.CO" {
-		t.Errorf("hidden column named %q, want %q", extra[0].name, "N.CO")
+	if extra[0].name != "T1.N.CO" {
+		t.Errorf("hidden column named %q, want the exact owner-qualified path %q", extra[0].name, "T1.N.CO")
 	}
 }
 
@@ -164,27 +164,27 @@ func TestExtraSortColumnsDedupExactDuplicates(t *testing.T) {
 func TestExtraSortColumnsDedupOnTheValueNotTheSpelling(t *testing.T) {
 	t.Parallel()
 
-	src, _, _ := nestedSortFixture()
+	src, _, _, owner := nestedSortFixture(t)
+	column := exactTestField(t, owner, 2)
 
 	qualified := logical.SortKey{
 		Expr:  "T1.V",
-		Value: &values.FieldValue{Field: "T1.V", Typ: values.UnknownType},
+		Value: column,
 	}
 	bare := logical.SortKey{
 		Expr:  "V",
-		Value: &values.FieldValue{Field: "V", Typ: values.UnknownType},
+		Value: column,
 	}
 
 	// The two keys really do spell differently — assert it, or a change to the
 	// rendering could make this test pass by collapsing the premise instead of
 	// the columns.
-	if sortKeyExtraColumnName(qualified) == sortKeyExtraColumnName(bare) {
-		t.Fatalf("both keys now spell %q, so this test no longer discriminates a "+
-			"value-keyed dedup from a name-keyed one", sortKeyExtraColumnName(bare))
+	if qualified.Expr == bare.Expr {
+		t.Fatal("fixture no longer supplies two distinct SQL spellings")
 	}
 
 	extra := collectExtraSortColumns(sortChain(qualified, bare),
-		outputFieldsWithoutTheKeys(), src)
+		outputFieldsWithoutTheKeys(t, owner), src)
 
 	if len(extra) != 1 {
 		var got []string
@@ -220,16 +220,16 @@ func TestExtraSortColumnsDedupOnTheValueNotTheSpelling(t *testing.T) {
 func TestExtraSortColumnDedupEqualityIsSymmetric(t *testing.T) {
 	t.Parallel()
 
-	src, keySK, _ := nestedSortFixture()
+	src, keySK, _, owner := nestedSortFixture(t)
 
 	// The struct ROOT as a sort key: a single-accessor read of `N` itself.
 	keyRoot := logical.SortKey{
 		Expr:  "N",
-		Value: values.NewFieldValueWithResolvedOrdinal("N", 1, values.UnknownType),
+		Value: exactTestField(t, owner, 1),
 	}
 
 	extra := collectExtraSortColumns(sortChain(keyRoot, keySK),
-		outputFieldsWithoutTheKeys(), src)
+		outputFieldsWithoutTheKeys(t, owner), src)
 
 	if len(extra) != 2 {
 		t.Fatalf("collectExtraSortColumns returned %d hidden column(s), want 2 for "+
@@ -248,7 +248,7 @@ func TestExtraSortColumnDedupEqualityIsSymmetric(t *testing.T) {
 		t.Fatalf("fixture no longer produces both source values (root=%v member=%v) — "+
 			"the assertion below would hold vacuously", rootVal, memberVal)
 	}
-	if values.SemanticEqualsUnderAliasMap(rootVal, memberVal, values.AliasMap{}) {
+	if values.SemanticEqualsUnderAliasMap(rootVal, memberVal, values.EmptyAliasMap()) {
 		t.Error("a struct ROOT read and a MEMBER read compare SEMANTICALLY EQUAL. The " +
 			"extras dedup rests on them being distinct; if this holds, `ORDER BY n, n.sk` " +
 			"loses a column.")

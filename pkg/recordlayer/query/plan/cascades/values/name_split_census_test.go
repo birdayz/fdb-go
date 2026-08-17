@@ -58,138 +58,53 @@ func TestNameSplitCensus_ForgedQualifierIsRed(t *testing.T) {
 	}
 }
 
-// TestNameSplitCensus_DarkArmIsRed pins the FLOORS.
+// TestNameSplitCensus_RetirementIsWatched replaces the three floor directions
+// this file used to pin (a dark arm, a dark splitting arm, and a stale
+// floor-of-zero declaration).
 //
-// The direction that matters more than the zero: both arms are nearly dark
-// already (9 and 2 calls over the whole corpus), so SPLIT-QUALIFIED == 0 is
-// nearly vacuous on its own. If the shapes driving these arms stop being
-// planned, or a recorder is dropped from an arm, the zero stays 0 and the gate
-// stays green while measuring nothing at all.
-func TestNameSplitCensus_DarkArmIsRed(t *testing.T) {
+// All three watched the population for COLLAPSE, because both arms were nearly
+// dark already — nine calls and two over the whole corpus — so SPLIT-QUALIFIED
+// == 0 was nearly vacuous on its own, and an arm that stopped being driven read
+// exactly like an arm measured clean.
+//
+// The arms are gone. Both were part of the NAME-model bake, which the ordinal
+// model replaced with resolution by baked slot, so RecordNameSplit has no caller
+// and the population is structurally zero. A floor on it is unsatisfiable; the
+// direction inverts and a CALL is the alarm.
+func TestNameSplitCensus_RetirementIsWatched(t *testing.T) {
 	t.Parallel()
 
-	for _, dark := range []NameSplitSite{NameSplitSiteLegQOVSegmentsOf, NameSplitSiteFlatColumnBake} {
+	var empty [nameSplitSiteCount][nameSplitClassCount]int
+	var sb strings.Builder
+	if assertNameSplitCounts(&sb, empty, nil, &NameSplitFloors{}) {
+		t.Fatalf("the RETIRED steady state (neither arm reached) failed the census: %s", sb.String())
+	}
+
+	// Every site, and on SEGMENTED traffic — the class that used to be the
+	// healthy one. The alarm has to cover the whole channel or an arm revives
+	// under a class nobody watched.
+	for site := NameSplitSite(0); site < nameSplitSiteCount; site++ {
 		var counts [nameSplitSiteCount][nameSplitClassCount]int
-		counts[NameSplitSiteLegQOVSegmentsOf][NameSplitSegmented] = 9
-		counts[NameSplitSiteFlatColumnBake][NameSplitBare] = 2
-		// The arm goes silent. No qualifier is forged — the hard zero still holds.
-		counts[dark] = [nameSplitClassCount]int{}
-
-		floors := measuredFloors()
-
-		var sb strings.Builder
-		if failed := assertNameSplitCounts(&sb, counts, nil, &floors); !failed {
-			t.Fatalf("%s went dark and the census stayed green — a SPLIT-QUALIFIED zero "+
-				"over an empty population reads exactly like a channel measured clean", dark)
+		counts[site][NameSplitSegmented] = 1
+		var b strings.Builder
+		if !assertNameSplitCounts(&b, counts, nil, &NameSplitFloors{}) {
+			t.Fatalf("%s was reached once and the census stayed green. The name-split "+
+				"channel is retired; a call means a resolution path that decides from a "+
+				"rendered NAME is back.", site)
 		}
-		if out := sb.String(); !strings.Contains(out, "DARK") {
-			t.Fatalf("%s: failure text does not name the disappearance: %s", dark, out)
+		if out := b.String(); !strings.Contains(out, "revival") {
+			t.Fatalf("%s: the failure does not state which DIRECTION is the alarm: %s", site, out)
 		}
 	}
-}
 
-// measuredFloors is the shape the sqldriver TestMain declares, kept in one place
-// so every direction below is exercised against the floors production actually
-// runs — including the ZERO declaration, which is the part most easily made
-// vacuous by a test that invents its own healthier numbers.
-func measuredFloors() NameSplitFloors {
-	var f NameSplitFloors
-	f.Calls[NameSplitSiteLegQOVSegmentsOf] = 1 // measured 9
-	f.Calls[NameSplitSiteFlatColumnBake] = 1   // measured 2
-	f.Split[NameSplitSiteFlatColumnBake] = 1   // measured 2 (splitBare)
-	f.Split[NameSplitSiteLegQOVSegmentsOf] = 0 // measured 0 — WATCHED, NOT PROVEN
-	return f
-}
-
-// TestNameSplitCensus_SplitArmGoingDarkIsRed pins the per-CLASS floor, which is
-// the one the total-calls floor cannot stand in for.
-//
-// flatColumnBake's 2 calls are BOTH splits, so its Calls floor and its Split
-// floor happen to move together. legQOVSegmentsOf's do not: 9 calls, 0 splits.
-// The direction here is the one that separates them — an arm whose SEGMENTED
-// traffic is healthy while its splitting arm stops being reached or loses its
-// recorder. Under a Calls floor alone that reads green.
-func TestNameSplitCensus_SplitArmGoingDarkIsRed(t *testing.T) {
-	t.Parallel()
-
-	var counts [nameSplitSiteCount][nameSplitClassCount]int
-	counts[NameSplitSiteLegQOVSegmentsOf][NameSplitSegmented] = 9
-	// flatColumnBake keeps a healthy CALL total, entirely on segmented traffic:
-	// its splitting arm has gone dark. bakeSegmentedColumnRef is a different
-	// function today so this site reports segmented 0 by construction — the
-	// point of the shape is that the Calls floor cannot tell the difference.
-	counts[NameSplitSiteFlatColumnBake][NameSplitSegmented] = 2
-
-	floors := measuredFloors()
-
-	var sb strings.Builder
-	if failed := assertNameSplitCounts(&sb, counts, nil, &floors); !failed {
-		t.Fatal("flatColumnBake's splitting arm went dark behind a healthy call total and " +
-			"the census stayed green — the Calls floor is measuring the segmented channel, " +
-			"and this census's hard zero is a zero over the SPLIT population")
-	}
-	// The failure text must name the population, and the LABEL changed with the
-	// code: this asserted "SPLITTING arm" until CQ-52 deleted the first-dot
-	// re-split at both sites. There is no splitting arm to go dark now — what
-	// this floor watches is the NO-SEGMENTS path, decisions made without a
-	// parse-tree triple. The assertion is retargeted rather than dropped, so the
-	// text is still pinned to describe the thing being measured.
-	if out := sb.String(); !strings.Contains(out, "NO-SEGMENTS decision") {
-		t.Fatalf("failure text does not name the no-segments population: %s", out)
-	}
-}
-
-// TestNameSplitCensus_StaleZeroDeclarationIsRed pins the OTHER direction of the
-// zero declaration, and it is the one that keeps the label honest.
-//
-// legQOVSegmentsOf's no-segments floor is 0. That is not "no floor" — it is a
-// claim: that path was measured EMPTY over the corpus, so the corpus cannot
-// guard its recorder wiring and a unit pin does it instead. The site is LIVE
-// (its call floor is met), so the day the corpus starts driving it without a
-// parse-tree triple, that claim is stale and the unit pin is no longer the only
-// coverage available. The older wording here said the arm was proven live by "a
-// panic reached with a dotted name" — that was true of the SPLITTING arm, which
-// CQ-52 deleted; a dotted name no longer takes a different path from any other.
-// A declaration nobody re-reads is how a placeholder becomes a permanent
-// exemption.
-func TestNameSplitCensus_StaleZeroDeclarationIsRed(t *testing.T) {
-	t.Parallel()
-
-	var counts [nameSplitSiteCount][nameSplitClassCount]int
-	counts[NameSplitSiteLegQOVSegmentsOf][NameSplitSegmented] = 9
-	// The corpus now drives the arm — bare, so no debt is forged and the hard
-	// zero still holds. The ONLY thing that may go red here is the declaration.
-	counts[NameSplitSiteLegQOVSegmentsOf][NameSplitBare] = 1
-	counts[NameSplitSiteFlatColumnBake][NameSplitBare] = 2
-
-	floors := measuredFloors()
-
-	var sb strings.Builder
-	if failed := assertNameSplitCounts(&sb, counts, nil, &floors); !failed {
-		t.Fatal("legQOVSegmentsOf's splitting arm acquired a population and its " +
-			"floor-of-0 declaration stayed green — 'watched, not proven' would then " +
-			"outlive the measurement that made it honest, and the site would keep a " +
-			"permanent exemption from the floor its sibling carries")
-	}
-	if out := sb.String(); !strings.Contains(out, "WATCHED, NOT PROVEN") {
-		t.Fatalf("failure text does not name the declaration going stale: %s", out)
-	}
-}
-
-// TestNameSplitCensus_MeasuredShapeIsGreen pins the CURRENT reading, so the two
-// reds above cannot be satisfied by an assertion that simply always fails.
-func TestNameSplitCensus_MeasuredShapeIsGreen(t *testing.T) {
-	t.Parallel()
-
-	var counts [nameSplitSiteCount][nameSplitClassCount]int
-	counts[NameSplitSiteLegQOVSegmentsOf][NameSplitSegmented] = 9
-	counts[NameSplitSiteFlatColumnBake][NameSplitBare] = 2
-
-	floors := measuredFloors()
-
-	var sb strings.Builder
-	if failed := assertNameSplitCounts(&sb, counts, nil, &floors); failed {
-		t.Fatalf("the measured corpus shape must pass: %s", sb.String())
+	// The retirement alarm must survive a narrowed run (nil floors): a guard that
+	// only watches a retired population on full runs stops watching it exactly
+	// when someone is iterating on the code that would revive it.
+	var revived [nameSplitSiteCount][nameSplitClassCount]int
+	revived[NameSplitSiteFlatColumnBake][NameSplitBare] = 1
+	var b2 strings.Builder
+	if !assertNameSplitCounts(&b2, revived, nil, nil) {
+		t.Fatalf("with floors dropped, a revived arm passed: %s", b2.String())
 	}
 }
 

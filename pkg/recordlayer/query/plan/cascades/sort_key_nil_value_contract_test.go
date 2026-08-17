@@ -9,6 +9,29 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustNilSortKeyConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct nil-sort-key fixture: " + err.Error())
+	}
+	return value
+}
+
+func nilSortKeyScanAndFields() (*plans.RecordQueryScanPlan, values.Value, values.Value) {
+	row := values.NewRecordType("NilSortKeyRow", false, []values.Field{
+		{Name: "V1", FieldType: values.NotNullLong},
+		{Name: "V2", FieldType: values.NotNullLong},
+	})
+	scan := mustNilSortKeyConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, row, false))
+	root, ok := values.AsQuantifiedObjectValue(scan.GetResultValue())
+	if !ok {
+		panic("nil-sort-key scan result is not a QOV")
+	}
+	return scan,
+		mustNilSortKeyConstruct(values.ResolveFieldOrdinals(root, []int{0})),
+		mustNilSortKeyConstruct(values.ResolveFieldOrdinals(root, []int{1}))
+}
+
 // plans.SortKey.ValueExpr is REQUIRED, and its upstream expressions.SortKey.Value
 // is non-nil at every producer. The contract had been spelled THREE different
 // ways in three places, each of which quietly tolerated the nil it says cannot
@@ -37,7 +60,7 @@ import (
 func TestSortKeysAreOrderable_DeclinesANilValue(t *testing.T) {
 	t.Parallel()
 
-	ok := values.NewFlatFieldValue("AMOUNT", values.UnknownType)
+	_, ok, _ := nilSortKeyScanAndFields()
 	if !sortKeysAreOrderable([]expressions.SortKey{{Value: ok}}) {
 		t.Fatal("control: an ordinary scalar key was declined, so the assertions below " +
 			"would pass for the wrong reason — this rule would never yield a plan at all")
@@ -53,35 +76,33 @@ func TestSortKeysAreOrderable_DeclinesANilValue(t *testing.T) {
 	}
 }
 
-// TestStablePlanNodeHash_NilSortKeyValueDoesNotCollide is a NEGATIVE RESULT,
-// committed rather than discarded because it is what keeps the third spelling
-// classified as unreachable-and-harmless instead of latent.
-//
-// stablePlanNodeHash tolerates a nil ValueExpr by silently OMITTING the key's
-// Value from the #17 tie-break hash. That reads like the sharpest of the three
-// spellings — an omission sounds like it should make a malformed plan hash
-// IDENTICALLY to a well-formed one with the same display Field, which would make
-// two different plans indistinguishable to the tie-break. MEASURED, it does not:
-// the hash is a byte STREAM, so the presence or absence of the fixed 8-byte
-// value write is itself distinguishing, and every plan below hashes uniquely.
-//
-// What makes it unreachable rather than merely harmless is upstream: nil is
-// declined at sortKeysAreOrderable (above) and at the executor, so no planner
-// path builds a plan whose hash this arm would decide. What makes it HARMLESS is
-// this test, and the property is not obvious enough to assert without measuring.
-//
-// If this ever goes red, the omission has become a real collision and the fix is
-// to fold a discriminator for the nil case rather than to omit it.
-func TestStablePlanNodeHash_NilSortKeyValueDoesNotCollide(t *testing.T) {
+// TestInMemorySortRejectsNilKeyAndHashesValidKeysDistinctly pins both sides of
+// the checked sort-key contract. A nil ValueExpr is not a malformed plan state
+// whose tie-break hash needs to remain meaningful: the constructor rejects it
+// before admission, wherever it appears in the key list. The valid population
+// still exercises the hash stream across empty/concatenable display labels,
+// exact Value identities, directions, and one-/two-key sequences.
+func TestInMemorySortRejectsNilKeyAndHashesValidKeysDistinctly(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	vals := []values.Value{
-		nil,
-		values.NewFlatFieldValue("V1", values.UnknownType),
-		values.NewFlatFieldValue("V2", values.UnknownType),
+	scan, v1, v2 := nilSortKeyScanAndFields()
+	if _, err := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{
+		Field: "V1", ValueExpr: nil,
+	}}); err == nil {
+		t.Fatal("in-memory sort constructor accepted a nil leading ValueExpr")
 	}
-	valNames := []string{"nil", "V1", "V2"}
+	if _, err := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
+		{Field: "V1", ValueExpr: v1},
+		{Field: "V2", ValueExpr: nil},
+	}); err == nil {
+		t.Fatal("in-memory sort constructor accepted a nil non-leading ValueExpr")
+	}
+
+	vals := []values.Value{
+		v1,
+		v2,
+	}
+	valNames := []string{"V1", "V2"}
 	// "" and "AB" are in the alphabet on purpose: an empty Field and a Field that
 	// is the CONCATENATION of two others are how a stream with no length prefix
 	// would give a nil key's omission somewhere to hide.
@@ -93,13 +114,12 @@ func TestStablePlanNodeHash_NilSortKeyValueDoesNotCollide(t *testing.T) {
 	}
 	seen := map[uint64]string{}
 	fold := func(ks []plans.SortKey, name string) {
-		h := stablePlanNodeHash(plans.NewRecordQueryInMemorySortPlan(scan, ks))
+		plan := mustNilSortKeyConstruct(plans.NewRecordQueryInMemorySortPlan(scan, ks))
+		h := stablePlanNodeHash(plan)
 		if prev, dup := seen[h]; dup {
 			t.Fatalf("two DIFFERENT in-memory sorts hash alike (%d):\n  %s\n  %s\n"+
-				"stablePlanNodeHash omits a nil ValueExpr from the fold, and that omission has "+
-				"now become a real collision — the #17 tie-break cannot separate these two and "+
-				"ranks them by arrival order instead of by content. Fold a discriminator for "+
-				"the nil case rather than omitting it.", h, prev, name)
+				"the #17 tie-break cannot separate these two valid exact key programs and "+
+				"would rank them by arrival order instead of by content.", h, prev, name)
 		}
 		seen[h] = name
 	}
@@ -119,10 +139,10 @@ func TestStablePlanNodeHash_NilSortKeyValueDoesNotCollide(t *testing.T) {
 			}
 		}
 	}
-	// 24 one-key plans + 576 two-key plans. Stated so a refactor that silently
+	// 16 one-key plans + 256 two-key plans. Stated so a refactor that silently
 	// shrinks the alphabet cannot turn this into a green over a tiny population.
-	if len(seen) != 600 {
-		t.Fatalf("folded %d distinct plans, want 600 — the enumeration changed size, so the "+
+	if len(seen) != 272 {
+		t.Fatalf("folded %d distinct plans, want 272 — the enumeration changed size, so the "+
 			"no-collision result above is over a different population than the one claimed",
 			len(seen))
 	}

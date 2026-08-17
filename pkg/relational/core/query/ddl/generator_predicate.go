@@ -100,12 +100,16 @@ func indexPredicateIsSupported(p predicates.QueryPredicate) bool {
 		}
 		return true
 	case *predicates.ComparisonPredicate:
-		fv, ok := q.Operand.(*values.FieldValue)
-		if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) == 0 {
+		fv, ok := values.AsFieldValue(q.Operand)
+		if !ok {
 			return false
 		}
-		for _, acc := range fv.Resolved.Accessors {
-			if acc.Field == "" {
+		accessors, ok := fieldAccessors(fv)
+		if !ok {
+			return false
+		}
+		for _, acc := range accessors {
+			if acc.name == "" {
 				return false
 			}
 		}
@@ -120,7 +124,7 @@ func indexPredicateIsSupported(p predicates.QueryPredicate) bool {
 		// i_sparse_int_big shape). Go's plan tree carries no promote node, so
 		// the same shape is detected from the literal/column widths.
 		if lit, hasLit := comparisonLiteralOperand(q.Comparison); hasLit {
-			if _, rejected, _ := promoteLiteralToColumn(lit, fv.Typ); rejected {
+			if _, rejected, _ := promoteLiteralToColumn(lit, fv.ResultType()); rejected {
 				return false
 			}
 		}
@@ -363,8 +367,8 @@ func indexPredicateChildrenToProto(children []predicates.QueryPredicate, res sto
 // (IndexPredicate.java:562-566: the value's field path names, the comparison
 // via IndexComparison.fromComparison) and its toProto (:587-594).
 func comparisonPredicateToProto(q *predicates.ComparisonPredicate, res storageNames) (*gen.Predicate, error) {
-	fv, ok := q.Operand.(*values.FieldValue)
-	if !ok || fv.Resolved == nil {
+	fv, ok := values.AsFieldValue(q.Operand)
+	if !ok {
 		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 			"attempt to construct index predicate PoJo from unsupported query predicate")
 	}
@@ -372,11 +376,16 @@ func comparisonPredicateToProto(q *predicates.ComparisonPredicate, res storageNa
 	// the type's field names, and the maintainer resolves the stored path
 	// against the record descriptor at indexing time; a folded display name
 	// ("COL1" for a quoted "col1") would never match it.
-	path := make([]string, 0, len(fv.Resolved.Accessors))
-	for i := range fv.Resolved.Accessors {
-		path = append(path, res.fieldName(fv.Resolved.Accessors, i))
+	accessors, ok := fieldAccessors(fv)
+	if !ok {
+		return nil, api.NewError(api.ErrCodeUnsupportedOperation,
+			"attempt to construct index predicate PoJo from unresolved field access")
 	}
-	cmp, err := indexComparisonToProto(q.Comparison, fv.Typ)
+	path := make([]string, 0, len(accessors))
+	for i := range accessors {
+		path = append(path, res.fieldName(accessors, i))
+	}
+	cmp, err := indexComparisonToProto(q.Comparison, fv.ResultType())
 	if err != nil {
 		return nil, err
 	}

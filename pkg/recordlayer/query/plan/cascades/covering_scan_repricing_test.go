@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -8,6 +9,20 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func mustRepricing[T any](value T, err error) T {
+	if err != nil {
+		panic(fmt.Sprintf("construct covering-repricing fixture: %v", err))
+	}
+	return value
+}
+
+func repricingRowType() *values.RecordType {
+	return values.NewRecordType("repricing_row", false, []values.Field{
+		{Name: "A", Ordinal: 0, FieldType: values.NullableLong},
+		{Name: "ID", Ordinal: 1, FieldType: values.NullableLong},
+	})
+}
 
 // RFC-220 made EVERY index-backed access a covering scan under a fetch, so the
 // covering arms added to combineConcreteCostUnclamped and scanLikeCostSpecForPlan
@@ -58,15 +73,15 @@ func repricingScan(t *testing.T, unique, bindPK bool) *plans.RecordQueryIndexPla
 	if bindPK {
 		comps = append(comps, mk(7))
 	}
-	return plans.NewRecordQueryIndexPlan(
-		"idx_a", comps, []string{"T"}, values.UnknownType, false,
-	).WithIndexMetadata([]string{"A"}, []string{"ID"}, unique)
+	return mustRepricing(plans.NewRecordQueryIndexPlan(
+		"idx_a", comps, []string{"T"}, repricingRowType(), false,
+	)).WithIndexMetadata([]string{"A"}, []string{"ID"}, unique)
 }
 
 func repricingCtx(unique bool) *indexTestPlanContext {
 	return &indexTestPlanContext{candidates: []MatchCandidate{
 		newKnownDistinctValueIndexCandidate(
-			"idx_a", []string{"T"}, []string{"A"}, nil, values.UnknownType, unique, nil),
+			"idx_a", []string{"T"}, []string{"A"}, nil, repricingRowType(), unique, nil),
 	}}
 }
 
@@ -85,7 +100,7 @@ func TestCoveringScanIsPricedByTheSameModelAsTheScanItWraps(t *testing.T) {
 		for _, ctxUnique := range []bool{true, false} {
 			for _, fullBind := range []bool{true, false} {
 				inner := repricingScan(t, unique, fullBind)
-				cov := plans.NewRecordQueryCoveringIndexPlan(inner)
+				cov := mustRepricing(plans.NewRecordQueryCoveringIndexPlan(inner))
 				ctx := repricingCtx(ctxUnique)
 
 				bareCost := combineConcreteCostUnclamped(inner, nil, st, ctx)
@@ -126,7 +141,7 @@ func TestCoveringScanCombineArmAgreesWithTheDelegatingHintCost(t *testing.T) {
 	t.Parallel()
 
 	st := properties.DefaultStatistics{}
-	cov := plans.NewRecordQueryCoveringIndexPlan(repricingScan(t, true, true))
+	cov := mustRepricing(plans.NewRecordQueryCoveringIndexPlan(repricingScan(t, true, true)))
 
 	priced := combineConcreteCostUnclamped(cov, nil, st, repricingCtx(true))
 	delegated := cov.HintCost(nil, st)
@@ -154,7 +169,7 @@ func TestCoveringInnerIsReachableForTheFkChainFixedCPU(t *testing.T) {
 
 	ctx := repricingCtx(true)
 	inner := repricingScan(t, true, true)
-	cov := plans.NewRecordQueryCoveringIndexPlan(inner)
+	cov := mustRepricing(plans.NewRecordQueryCoveringIndexPlan(inner))
 
 	bareCPU, bareOK := fkChainInnerFixedCPU(inner, ctx)
 	if !bareOK {
@@ -175,8 +190,8 @@ func TestCoveringInnerIsReachableForTheFkChainFixedCPU(t *testing.T) {
 	}
 
 	// The PRODUCTION shape, which is what the access path actually builds.
-	fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		cov, nil, nil, plans.FetchIndexRecordsPrimaryKey)
+	fetch := mustRepricing(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		cov, nil, repricingRowType(), plans.FetchIndexRecordsPrimaryKey))
 	fetchCPU, fetchOK := fkChainInnerFixedCPU(fetch, ctx)
 	if !fetchOK {
 		t.Fatal("Fetch(Covering(scan)) — the shape the access path emits for every " +

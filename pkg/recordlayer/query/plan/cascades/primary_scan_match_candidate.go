@@ -214,16 +214,9 @@ func (c *PrimaryScanMatchCandidate) GetBaseType() values.Type {
 // PK columns. Implements WithPrimaryKeyMatchCandidate.
 func (c *PrimaryScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
 	c.primaryKeyValuesOnce.Do(func() {
-		if len(c.primaryKeyColumns) == 0 {
-			return
-		}
-		pkVals := make([]values.Value, len(c.primaryKeyColumns))
-		for i, col := range c.primaryKeyColumns {
-			pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
-		}
-		c.primaryKeyValues = pkVals
+		c.primaryKeyValues = resolvedColumnsInRow(c.baseType, c.primaryKeyColumns)
 	})
-	return c.primaryKeyValues
+	return append([]values.Value(nil), c.primaryKeyValues...)
 }
 
 // orderingKeyLayout returns the ONE row layout this scan's ordering keys may be
@@ -245,7 +238,7 @@ func (c *PrimaryScanMatchCandidate) orderingKeyLayout() *values.RecordType {
 func (c *PrimaryScanMatchCandidate) bakeOrderingColumn(name string) values.Value {
 	rt := c.orderingKeyLayout()
 	if rt == nil {
-		return values.NewFieldValue(nil, name, values.UnknownType)
+		return nil
 	}
 	return bakeOrderingColumnIn(rt, name)
 }
@@ -314,6 +307,9 @@ func (c *PrimaryScanMatchCandidate) ComputeMatchedOrderingParts(
 		// meet in one merged ordering: they must be domained in the SAME record
 		// layout or the merge hands them different tokens and collapses.
 		colValue := c.bakeOrderingColumn(c.primaryKeyColumns[idx])
+		if colValue == nil {
+			break
+		}
 		parts = append(parts, NewMatchedOrderingPart(
 			paramID, colValue, bindings[paramID], sortOrder))
 	}
@@ -394,7 +390,10 @@ func (c *PrimaryScanMatchCandidate) ToScanPlan(
 	// can correctly prepend the RecordTypeKey prefix for point lookups.
 	// The TypeFilterPlan wrapper (added below when types differ) handles
 	// the broader filtering; the scan itself targets the specific type.
-	scanPlan := plans.NewRecordQueryScanPlan(c.queriedRecordTypes, flowedType, reverse)
+	scanPlan, err := plans.NewRecordQueryScanPlan(c.queriedRecordTypes, flowedType, reverse)
+	if err != nil {
+		return nil
+	}
 
 	// Attach primary key values if available.
 	if pkVals := c.GetPrimaryKeyValues(); len(pkVals) > 0 {
@@ -430,7 +429,11 @@ func (c *PrimaryScanMatchCandidate) ToScanPlan(
 	}
 
 	// Wrap in a TypeFilterPlan to restrict to queried types.
-	return plans.NewRecordQueryTypeFilterPlan(c.queriedRecordTypes, scanPlan)
+	filtered, err := plans.NewRecordQueryTypeFilterPlan(c.queriedRecordTypes, scanPlan)
+	if err != nil {
+		return nil
+	}
+	return filtered
 }
 
 // String returns a human-readable label for debugging.

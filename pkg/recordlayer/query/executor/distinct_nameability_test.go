@@ -7,7 +7,6 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // The scratch's retirement rule is NAMEABILITY: an entry must live exactly as
@@ -45,7 +44,7 @@ func TestDistinctAggregateFinalRowStaysResumable(t *testing.T) {
 		nil, // scalar aggregate: one final row, carrying the retained inner position
 		[]expressions.AggregateSpec{{
 			Function: expressions.AggCount,
-			Operand:  values.NewFieldValueWithResolvedOrdinal("V", 0, values.NotNullInt),
+			Operand:  mustTestFieldOrdinal(t, distinctPlan.GetResultValue(), 0),
 			Alias:    "C",
 		}},
 		distinctPlan,

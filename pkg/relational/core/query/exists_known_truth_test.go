@@ -17,7 +17,11 @@ func TestFoldKnownExists(t *testing.T) {
 	scan := logical.NewScan("T", "T")
 
 	exists := func(alias values.CorrelationIdentifier) predicates.QueryPredicate {
-		return predicates.NewExistentialAlias(alias)
+		predicate, err := predicates.NewExistentialAlias(alias, values.NullableLong)
+		if err != nil {
+			t.Fatalf("NewExistentialAlias(%q): %v", alias, err)
+		}
+		return predicate
 	}
 	notExists := func(alias values.CorrelationIdentifier) predicates.QueryPredicate {
 		return predicates.NewNot(exists(alias))

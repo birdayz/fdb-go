@@ -130,19 +130,32 @@ func runAggregateSignedZeroRangeSet(t *testing.T, width string) {
 	}
 	run := func(t *testing.T, parameter float64, reverse bool) []aggregateRow {
 		t.Helper()
-		indexPlan := plans.NewRecordQueryIndexPlan(
+		indexPlan, planErr := plans.NewRecordQueryIndexPlan(
 			"SUM_GW",
 			[]*predicates.ComparisonRange{groupRange, wRange},
 			[]string{"GA"},
-			values.UnknownType,
+			executor.PositionalTypeForDescriptor(desc),
 			reverse,
-		).WithKeyComponentTypes([]values.Type{groupValueType, values.NotNullLong})
-		aggregatePlan := plans.NewRecordQueryAggregateIndexPlan(
+		)
+		if planErr != nil {
+			t.Fatalf("construct exact aggregate index scan: %v", planErr)
+		}
+		indexPlan = indexPlan.WithKeyComponentTypes([]values.Type{groupValueType, values.NotNullLong})
+		aggregateResultType := values.NewRecordType("", false, []values.Field{
+			{Name: "G", FieldType: groupValueType},
+			{Name: "W", FieldType: values.NotNullLong},
+			{Name: "SUM(VAL)", FieldType: values.NotNullLong},
+		})
+		aggregatePlan, planErr := plans.NewRecordQueryAggregateIndexPlan(
 			indexPlan,
 			"GA",
-			values.UnknownType,
+			aggregateResultType,
 			"SUM",
-		).WithGroupColumns([]string{"G", "W"}, "VAL")
+		)
+		if planErr != nil {
+			t.Fatalf("construct exact aggregate plan: %v", planErr)
+		}
+		aggregatePlan = aggregatePlan.WithGroupColumns([]string{"G", "W"}, "VAL")
 
 		var out []aggregateRow
 		_, runErr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

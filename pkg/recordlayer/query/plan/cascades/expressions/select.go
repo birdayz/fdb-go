@@ -2,6 +2,7 @@ package expressions
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -65,38 +66,17 @@ type SelectExpression struct {
 
 // NewSelectExpression builds a SELECT. quantifiers and predicates are
 // copied. resultValue is captured by reference (Values are immutable).
-func NewSelectExpression(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate) *SelectExpression {
-	copiedQ := make([]Quantifier, len(quantifiers))
-	copy(copiedQ, quantifiers)
-	copiedP := make([]predicates.QueryPredicate, len(queryPredicates))
-	copy(copiedP, queryPredicates)
-	return &SelectExpression{
-		resultValue:     resultValue,
-		quantifiers:     copiedQ,
-		queryPredicates: copiedP,
-	}
+func NewSelectExpression(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate) (*SelectExpression, error) {
+	return newSelectExpression(resultValue, quantifiers, queryPredicates, nil, JoinInner)
 }
 
-// NewSelectExpressionWithAliases builds a SELECT with source aliases
-// parallel to quantifiers.
-func NewSelectExpressionWithAliases(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate, sourceAliases []string) *SelectExpression {
-	copiedQ := make([]Quantifier, len(quantifiers))
-	copy(copiedQ, quantifiers)
-	copiedP := make([]predicates.QueryPredicate, len(queryPredicates))
-	copy(copiedP, queryPredicates)
-	copiedA := make([]string, len(sourceAliases))
-	copy(copiedA, sourceAliases)
-	return &SelectExpression{
-		resultValue:     resultValue,
-		quantifiers:     copiedQ,
-		queryPredicates: copiedP,
-		sourceAliases:   copiedA,
+func newSelectExpression(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate, sourceAliases []string, joinType JoinType) (*SelectExpression, error) {
+	if resultValue == nil {
+		return nil, fmt.Errorf("SelectExpression result: value is nil")
 	}
-}
-
-// NewSelectExpressionWithJoinType builds a SELECT with source aliases
-// and an explicit join type (LEFT OUTER, CROSS, etc.).
-func NewSelectExpressionWithJoinType(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate, sourceAliases []string, joinType JoinType) *SelectExpression {
+	if _, err := snapshotExpressionResultType("SelectExpression", resultValue.Type()); err != nil {
+		return nil, err
+	}
 	copiedQ := make([]Quantifier, len(quantifiers))
 	copy(copiedQ, quantifiers)
 	copiedP := make([]predicates.QueryPredicate, len(queryPredicates))
@@ -109,7 +89,19 @@ func NewSelectExpressionWithJoinType(resultValue values.Value, quantifiers []Qua
 		queryPredicates: copiedP,
 		sourceAliases:   copiedA,
 		joinType:        joinType,
-	}
+	}, nil
+}
+
+// NewSelectExpressionWithAliases builds a SELECT with source aliases
+// parallel to quantifiers.
+func NewSelectExpressionWithAliases(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate, sourceAliases []string) (*SelectExpression, error) {
+	return newSelectExpression(resultValue, quantifiers, queryPredicates, sourceAliases, JoinInner)
+}
+
+// NewSelectExpressionWithJoinType builds a SELECT with source aliases
+// and an explicit join type (LEFT OUTER, CROSS, etc.).
+func NewSelectExpressionWithJoinType(resultValue values.Value, quantifiers []Quantifier, queryPredicates []predicates.QueryPredicate, sourceAliases []string, joinType JoinType) (*SelectExpression, error) {
+	return newSelectExpression(resultValue, quantifiers, queryPredicates, sourceAliases, joinType)
 }
 
 // GetJoinType returns the join type (INNER, LEFT OUTER, CROSS).
@@ -313,12 +305,15 @@ func (e *SelectExpression) WithSwappedQuantifiers() *SelectExpression {
 // model restoring the swap's SQL column ordering, and the nested-loop-join rule
 // gates its correlated-scan fast path on it — so the omission failed OPEN in
 // both directions, admitting exactly the shapes those gates exist to refuse.
-func (e *SelectExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
+func (e *SelectExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("SelectExpression", len(quantifiers), len(e.quantifiers)); err != nil {
+		return nil, err
+	}
 	copied := make([]Quantifier, len(quantifiers))
 	copy(copied, quantifiers)
 	cp := *e
 	cp.quantifiers = copied
-	return &cp
+	return &cp, nil
 }
 
 var _ RelationalExpression = (*SelectExpression)(nil)

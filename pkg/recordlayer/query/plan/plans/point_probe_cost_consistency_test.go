@@ -25,12 +25,14 @@ func TestPointProbeHintCost_ChargesFetchRateNotScanRate(t *testing.T) {
 	t.Parallel()
 
 	stats := properties.FixedStatistics{Cardinality: 1000}
-	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}
+	pk := []values.Value{testField(t, "ID", values.NullableLong)}
 	eq := scanCostRange(t, predicates.ComparisonEquals, int64(5))
 
 	t.Run("RecordQueryScanPlan full-PK point-probe", func(t *testing.T) {
 		t.Parallel()
-		plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+		}).
 			WithPrimaryKey(pk).
 			WithScanComparisons([]*predicates.ComparisonRange{eq}).
 			WithKeyComponentTypes(testPhysicalLongTypes(1))
@@ -45,7 +47,9 @@ func TestPointProbeHintCost_ChargesFetchRateNotScanRate(t *testing.T) {
 
 	t.Run("RecordQueryIndexPlan unique full-equality point-probe", func(t *testing.T) {
 		t.Parallel()
-		plan := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, values.UnknownType, false).
+		plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+			return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, exactTestRecordType(), false)
+		}).
 			WithKeyComponentTypes(testPhysicalLongTypes(1)).
 			WithIndexMetadata([]string{"ID"}, []string{"ID"}, true)
 		got := plan.HintCost(nil, stats)
@@ -70,7 +74,9 @@ func TestPointProbeHintCost_NonUniqueOrPartialBindUnaffected(t *testing.T) {
 
 	t.Run("non-unique index equality stays a bucket", func(t *testing.T) {
 		t.Parallel()
-		plan := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, values.UnknownType, false).
+		plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+			return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{eq}, []string{"T"}, exactTestRecordType(), false)
+		}).
 			WithKeyComponentTypes(testPhysicalLongTypes(1)).
 			WithIndexMetadata([]string{"ID"}, []string{"ID"}, false)
 		got := plan.HintCost(nil, stats)
@@ -85,11 +91,10 @@ func TestPointProbeHintCost_NonUniqueOrPartialBindUnaffected(t *testing.T) {
 
 	t.Run("partial composite PK prefix stays a bucket", func(t *testing.T) {
 		t.Parallel()
-		pk2 := []values.Value{
-			&values.FieldValue{Field: "TENANT", Typ: values.UnknownType},
-			&values.FieldValue{Field: "ORDER", Typ: values.UnknownType},
-		}
-		plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+		pk2 := []values.Value{testField(t, "TENANT", values.NullableLong), testField(t, "ORDER", values.NullableLong)}
+		plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+		}).
 			WithPrimaryKey(pk2).
 			WithScanComparisons([]*predicates.ComparisonRange{eq}).
 			WithKeyComponentTypes(testPhysicalLongTypes(1))
@@ -116,13 +121,17 @@ func TestPointProbeHintCost_NonUniqueOrPartialBindUnaffected(t *testing.T) {
 // where it is not.
 func TestInJoinHintCost_BothTermsAreFetchRate(t *testing.T) {
 	t.Parallel()
-	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}
+	pk := []values.Value{testField(t, "ID", values.NullableLong)}
 	eq := scanCostRange(t, predicates.ComparisonEquals, int64(5))
-	inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey(pk).
 		WithScanComparisons([]*predicates.ComparisonRange{eq}).
 		WithKeyComponentTypes(testPhysicalLongTypes(1))
-	plan := NewRecordQueryInJoinPlan(inner, "x", false, false)
+	plan := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+		return NewRecordQueryInJoinPlan(inner, "x", false, false)
+	})
 	plan.SetInValues([]any{int64(1), int64(2), int64(3)})
 	// The child cost passed here is deliberately NOT what inner.HintCost would
 	// actually produce (Cardinality 1) — a genuine point probe ignores the

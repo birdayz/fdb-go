@@ -73,6 +73,11 @@ type aggregateCursor struct {
 	evalCtx           *EvaluationContext
 	flatFrontierInput bool
 	needsRowCtx       bool
+	// inputEdges declares the streaming aggregate's physical child edge. An
+	// admitted child row resolves an aggregate operand through its own exact
+	// QOV, not through the child's current-only output layout; threading this
+	// edge into frontierRowContext keeps that declaration explicit at runtime.
+	inputEdges []values.QuantifiedObjectValue
 
 	// When the input flows a 2-way ordinal join's MERGED positional row
 	// (downstreamLegWindows unwraps the layout-preserving passthroughs down to
@@ -121,6 +126,11 @@ type aggregateCursor struct {
 	// inner, which is Java's latent nesting bug in fromRawBytes → toProto:
 	// re-emitting it would hand aggregate proto bytes to the LEAF plan).
 	previousContinuationInGroup recordlayer.RecordCursorContinuation
+	// outputType is the plan-authoritative exact aggregate result schema.
+	// finalizeGroup and the scalar-empty alternative must publish this exact
+	// type; reconstructing names-only rows would reintroduce UNKNOWN fields and
+	// fail the plan's provided-layout contract.
+	outputType *values.RecordType
 }
 
 type groupState struct {
@@ -134,14 +144,20 @@ type groupState struct {
 	maxs    []any
 }
 
-func newAggregateCursor(
+func newAggregateCursorWithOutputType(
 	inner recordlayer.RecordCursor[QueryResult],
 	groupingKeys []values.Value,
 	aggregates []expressions.AggregateSpec,
 	innerPlan plans.RecordQueryPlan,
 	evalCtx *EvaluationContext,
+	inputQOV values.QuantifiedObjectValue,
+	outputType *values.RecordType,
 ) *aggregateCursor {
 	legSpans, windowsOK := downstreamLegWindows(innerPlan)
+	var inputEdges []values.QuantifiedObjectValue
+	if inputQOV != nil {
+		inputEdges = []values.QuantifiedObjectValue{inputQOV}
+	}
 	return &aggregateCursor{
 		inner:             inner,
 		groupingKeys:      groupingKeys,
@@ -155,8 +171,10 @@ func newAggregateCursor(
 		needsRowCtx: hasBindingContext(evalCtx) ||
 			valuesDependOnStatementClock(groupingKeys) ||
 			aggregateOperandsDependOnStatementClock(aggregates),
+		inputEdges:    inputEdges,
 		joinLegSpans:  legSpans,
 		joinWindowsOK: windowsOK,
+		outputType:    outputType,
 		// Java: this.previousContinuationInGroup = continuation (the constructor
 		// param, START on a fresh cursor). executeAggregation overwrites it with
 		// the decoded inner position on a resume.
@@ -232,7 +250,7 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 		case *plans.RecordQueryMapPlan:
 			input = p.GetInner()
 		case *plans.RecordQueryFlatMapPlan:
-			if qov, ok := p.GetResultValue().(*values.QuantifiedObjectValue); ok && qov.Correlation == p.GetOuterAlias() {
+			if qov, ok := values.AsQuantifiedObjectValue(p.GetResultValue()); ok && qov.Correlation() == p.GetOuterAlias() {
 				input = p.GetOuter()
 				continue
 			}
@@ -460,29 +478,32 @@ func (w *aggregateCursorContinuation) IsEnd() bool { return false }
 //     ordinals — a wrong-slot hazard).
 //   - A row with NO Positional yields NULL: every live input flows an
 //     ordinal PositionalRow; there is no name-map to read.
-func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) any {
+func (c *aggregateCursor) aggregateEvalArg(v values.Value, row QueryResult) (any, error) {
 	if row.Positional == nil {
-		return nil
+		return nil, nil
 	}
 	if valueReadsBakedOrdinal(v) {
 		// A baked ordinal operand reads plan-time-resolved slots directly off the
 		// positional row (evaluateOrdinal), so pass it as the bare ordinal row —
 		// with the statement clock in reach for a CURRENT_TIMESTAMP-family
 		// subtree of the operand.
-		return &values.RowEvalContext{Positional: row.Positional, Clock: c.evalCtx}
+		if row.Positional.Layout != nil {
+			return frontierRowContext(row.Positional, c.evalCtx, true, c.inputEdges...)
+		}
+		return &values.RowEvalContext{Positional: row.Positional, Clock: c.evalCtx}, nil
 	}
 	if c.flatFrontierInput {
-		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
+		return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx, c.inputEdges...)
 	}
 	if c.joinWindowsOK {
 		// A RAW 2-way ordinal JOIN merge: a qualified group-key / operand
 		// QOV(leg).col resolves LEG-LOCALLY through its window.
-		return legWindowRowContext(row.Positional, c.evalCtx, c.joinLegSpans)
+		return legWindowRowContext(row.Positional, c.evalCtx, c.joinLegSpans), nil
 	}
 	// The general positional-row consumer: a flat output-named positional
 	// (projecting derived source, recursive-CTE / bare-projected-join row, or a
 	// constant operand) resolves by its baked plan-time ordinal — authoritative.
-	return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx)
+	return frontierRowContext(row.Positional, c.evalCtx, c.needsRowCtx, c.inputEdges...)
 }
 
 // valueReadsBakedOrdinal reports whether v (a group key / aggregate operand) reads
@@ -495,7 +516,7 @@ func valueReadsBakedOrdinal(v values.Value) bool {
 	// (NewFieldValueOfOrdinal). An UNPINNED baked node (a recursive-CTE leg projection
 	// column) is never an aggregate key/operand — matching intent, not over-broad on
 	// `Resolved != nil`.
-	if fv, ok := v.(*values.FieldValue); ok && fv.Resolved != nil && fv.Resolved.FrontierPinned {
+	if fv, ok := values.AsFieldValue(v); ok && fv.Path().IsFrontierPinned() {
 		return true
 	}
 	for _, c := range v.Children() {
@@ -544,7 +565,11 @@ func (c *aggregateCursor) computeGroupKey(row QueryResult) (string, []any, error
 	}
 	keyParts := make([]any, len(c.groupingKeys))
 	for i, k := range c.groupingKeys {
-		v, err := k.Evaluate(c.aggregateEvalArg(k, row))
+		arg, err := c.aggregateEvalArg(k, row)
+		if err != nil {
+			return "", nil, err
+		}
+		v, err := k.Evaluate(arg)
 		if err != nil {
 			return "", nil, err
 		}
@@ -661,7 +686,23 @@ func (c *aggregateCursor) accumulateRow(row QueryResult) error {
 	gs.count++
 
 	for i, agg := range c.aggregates {
-		val, err := agg.Operand.Evaluate(c.aggregateEvalArg(agg.Operand, row))
+		// COUNT(*) and its planner-normalized constant equivalents consume the
+		// row itself, not an operand. In particular, the canonical COUNT(*)
+		// AggregateSpec has a nil Operand; trying to route it through the exact
+		// value evaluator both invents a binding requirement and dereferences a
+		// value that deliberately does not exist. finalizeGroup reads gs.count
+		// for this class, so there is no per-aggregate state to update here.
+		if expressions.IsCountStar(agg) {
+			continue
+		}
+		if agg.Operand == nil {
+			return fmt.Errorf("%s aggregate has no operand", agg.Function)
+		}
+		arg, err := c.aggregateEvalArg(agg.Operand, row)
+		if err != nil {
+			return err
+		}
+		val, err := agg.Operand.Evaluate(arg)
 		if err != nil {
 			return err
 		}
@@ -904,9 +945,11 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 		posNames = append(posNames, posName)
 		posSlots = append(posSlots, val)
 	}
-	return QueryResult{
-		Positional: &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots},
+	outputType := c.outputType
+	if outputType == nil {
+		outputType = positionalTypeFromNames(posNames)
 	}
+	return QueryResult{Positional: &PositionalRow{Type: outputType, Slots: posSlots}}
 }
 
 // emptyScalarAggregateRow is the scalar-aggregation-on-empty-input default row
@@ -917,7 +960,7 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 // DefaultOnEmpty plan's onEmptyResultValue riding RecordCursor.orElse), never
 // emitted by the aggregate cursor itself (Java AggregateCursor.isNoRecords
 // returns exhausted on empty input).
-func emptyScalarAggregateRow(aggregates []expressions.AggregateSpec) QueryResult {
+func emptyScalarAggregateRow(aggregates []expressions.AggregateSpec, outputType *values.RecordType) QueryResult {
 	posNames := make([]string, 0, len(aggregates))
 	posSlots := make([]any, 0, len(aggregates))
 	for _, agg := range aggregates {
@@ -933,9 +976,10 @@ func emptyScalarAggregateRow(aggregates []expressions.AggregateSpec) QueryResult
 		posNames = append(posNames, posName)
 		posSlots = append(posSlots, val)
 	}
-	return QueryResult{
-		Positional: &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots},
+	if outputType == nil {
+		outputType = positionalTypeFromNames(posNames)
 	}
+	return QueryResult{Positional: &PositionalRow{Type: outputType, Slots: posSlots}}
 }
 
 func (c *aggregateCursor) Close() error {
@@ -1226,15 +1270,36 @@ func newNLJCursor(
 	outerAlias, innerAlias values.CorrelationIdentifier,
 	preds []predicates.QueryPredicate,
 	resultValue values.Value,
+	outputLayout values.OrdinalLayout,
+	outputSourceOrigins map[values.CorrelationIdentifier]outputSourceOrigin,
 	evalCtx *EvaluationContext,
 	st *recordlayer.ExecuteState,
 ) (*nljCursor, error) {
-	build, err := newOrdinalJoinBuild(resultValue, preds)
+	for source, origin := range outputSourceOrigins {
+		if origin.topLegAlias != outerAlias && origin.topLegAlias != innerAlias {
+			return nil, layoutBindingError(values.CorrelationForeignValue,
+				fmt.Sprintf("retained output source %s names a foreign NLJ origin", source))
+		}
+	}
+	build, err := newOrdinalJoinBuildWithOutputLayout(
+		resultValue, preds, outputLayout, outputSourceOrigins)
 	if err != nil {
 		return nil, err
 	}
 	if build != nil {
 		build.Clock = evalCtx
+	}
+	if build.enabled() {
+		switch joinType {
+		case plans.JoinLeftOuter:
+			if err := build.configureNullSupplying(innerAlias); err != nil {
+				return nil, err
+			}
+		case plans.JoinFullOuter:
+			if err := build.configureNullSupplying(outerAlias, innerAlias); err != nil {
+				return nil, err
+			}
+		}
 	}
 	c := &nljCursor{
 		outerInner: outer,
@@ -1283,6 +1348,7 @@ func (c *nljCursor) pairBinder(outer, inner values.OrdinalRow) *twoLegBinder {
 	return &twoLegBinder{
 		outerID: c.outerCorr, innerID: c.innerCorr,
 		outer: outer, inner: inner,
+		outerType: c.build.legType(c.outerCorr), innerType: c.build.legType(c.innerCorr),
 		base: correlationBase(c.evalCtx),
 	}
 }
@@ -1525,11 +1591,11 @@ func extractEquijoinOperands(preds []predicates.QueryPredicate, outerAlias, inne
 // multi-accessor path declines: its root ordinal addresses a merge-shaped
 // intermediate, not the leg row. ok=false for every other shape.
 func bakedLegOperand(v values.Value, outerAlias, innerAlias values.CorrelationIdentifier) (isOuter, ok bool) {
-	fv, isFV := v.(*values.FieldValue)
-	if !isFV || fv.Resolved == nil || len(fv.Resolved.Accessors) != 1 {
+	fv, isFV := values.AsFieldValue(v)
+	if !isFV || fv.Path().Len() != 1 {
 		return false, false
 	}
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 	if !isQOV {
 		return false, false
 	}
@@ -1538,9 +1604,9 @@ func bakedLegOperand(v values.Value, outerAlias, innerAlias values.CorrelationId
 	// deliberately case-DISJOINT, and declining an unstated identity because an
 	// unstated identity names nothing.
 	switch {
-	case values.SameLeg(qov.Correlation, outerAlias):
+	case values.SameLeg(qov.Correlation(), outerAlias):
 		return true, true
-	case values.SameLeg(qov.Correlation, innerAlias):
+	case values.SameLeg(qov.Correlation(), innerAlias):
 		return false, true
 	}
 	return false, false

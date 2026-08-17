@@ -8,6 +8,46 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func flatMapCensusRowType(columns ...string) *values.RecordType {
+	fields := make([]values.Field, len(columns))
+	for i, column := range columns {
+		fields[i] = values.Field{Name: column, FieldType: values.NotNullLong, Ordinal: i}
+	}
+	return values.NewRecordType("FlatMapCensusRow", false, fields)
+}
+
+func flatMapCensusQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	flowedType values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, flowedType)
+	return mustConstruct(t, qov, err)
+}
+
+func flatMapCensusScan(
+	t testing.TB,
+	flowedType values.Type,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryScanPlan([]string{"T"}, flowedType, false)
+	return mustConstruct(t, plan, err)
+}
+
+func flatMapCensusPlan(
+	t testing.TB,
+	leg plans.RecordQueryPlan,
+	resultValue values.Value,
+) *plans.RecordQueryFlatMapPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryFlatMapPlan(
+		leg, leg,
+		values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"),
+		resultValue, false)
+	return mustConstruct(t, plan, err)
+}
+
 // The witness must report the declined leg's flowed type SPELLING, not just a
 // boolean.
 //
@@ -19,18 +59,16 @@ import (
 // and the refusal is on SHAPE (values.IsPositionalMergeRC needs a
 // *RecordConstructorValue, which no QOV is at any typing).
 //
-// A boolean could not have said that. `typed=true` is compatible with a
-// zero-field record, an UnknownType degraded elsewhere, or a scalar; the arity
-// is what makes "these are real rows the layout authority still cannot position"
-// a measurement instead of a reading. So the spelling is asserted, in both the
-// record and the non-record direction.
+// A boolean could not have said that. `typed=true` is compatible with both a
+// record and a scalar; the arity is what makes "these are real rows the layout
+// authority still cannot position" a measurement instead of a reading. Exact
+// QOV admission has retired the old untyped construction, so the opposite arm
+// is now an exact scalar and must spell its concrete code rather than an arity.
 func TestFlatMapProducerCensus_WitnessSpellsTheFlowedType(t *testing.T) {
 	t.Parallel()
 
-	twoCol := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", Ordinal: 0}, {Name: "K", Ordinal: 1},
-	}}
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, twoCol, false)
+	twoCol := flatMapCensusRowType("ID", "K")
+	scan := flatMapCensusScan(t, twoCol)
 	corr := values.NamedCorrelationIdentifier("A")
 
 	for _, tc := range []struct {
@@ -41,21 +79,20 @@ func TestFlatMapProducerCensus_WitnessSpellsTheFlowedType(t *testing.T) {
 		{
 			// The measured shape of the residue: a real row type with a real arity.
 			name: "record type reports its ARITY",
-			rv:   values.NewQuantifiedObjectValueOfType(corr, twoCol),
+			rv:   flatMapCensusQOV(t, corr, twoCol),
 			want: "rvtype=RecordType(2)",
 		},
 		{
 			// Without this direction the arity branch could be the only branch and
-			// an untyped value would print as RecordType(0) rather than as unknown.
-			name: "untyped reports UNKNOWN, not an arity",
-			rv:   values.NewQuantifiedObjectValue(corr),
-			want: "rvtype=UNKNOWN",
+			// a scalar could be misleadingly printed as a zero-field record.
+			name: "scalar reports LONG, not an arity",
+			rv:   flatMapCensusQOV(t, corr, values.NotNullLong),
+			want: "rvtype=LONG",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			fm := plans.NewRecordQueryFlatMapPlan(scan, scan,
-				values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), tc.rv, false)
+			fm := flatMapCensusPlan(t, scan, tc.rv)
 			shape, witness := classifyDeclinedLeg(fm)
 			if shape != foldStep1LegShapeBareQOV {
 				t.Fatalf("shape = %v, want bare-QOV — the type spelling is a cut WITHIN that "+
@@ -84,7 +121,7 @@ func TestFlatMapProducerCensus_WitnessSpellsTheFlowedType(t *testing.T) {
 func TestFlatMapProducerCensus_OriginIsMeasuredNotInferred(t *testing.T) {
 	t.Parallel()
 
-	rowType := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}
+	rowType := flatMapCensusRowType("ID")
 	corr := values.NamedCorrelationIdentifier("A")
 
 	// The census keys a package-global map, and this test IS parallel-safe
@@ -95,9 +132,9 @@ func TestFlatMapProducerCensus_OriginIsMeasuredNotInferred(t *testing.T) {
 	// map but cannot change the answer for a value it has never seen. What would
 	// break that is an assertion about the map's SIZE or about a value this test
 	// did not build; there is none.
-	recorded := values.NewQuantifiedObjectValueOfType(corr, rowType)
-	shared := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), rowType)
-	absent := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), rowType)
+	recorded := flatMapCensusQOV(t, corr, rowType)
+	shared := flatMapCensusQOV(t, values.NamedCorrelationIdentifier("B"), rowType)
+	absent := flatMapCensusQOV(t, values.NamedCorrelationIdentifier("C"), rowType)
 
 	recordFlatMapResultValue(flatMapSiteCorrelated, recorded)
 	recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap, shared)
@@ -141,16 +178,20 @@ func TestFlatMapProducerCensus_AssertionArmsGoRed(t *testing.T) {
 		// PARTITIONS. An earlier copy of these figures had calls that did not equal
 		// the sum of the arms at any site, which made "the measured state passes"
 		// an assertion about a state the planner has never been in.
-		c.Calls = [flatMapProducerSiteCount]int{25406, 1754, 431, 449}
-		c.TypedQOV = [flatMapProducerSiteCount]int{476, 0, 0, 130}
-		c.UntypedQOV = [flatMapProducerSiteCount]int{0, 1609, 249, 269}
-		c.MergeRC = [flatMapProducerSiteCount]int{6732, 0, 0, 0}
-		c.OtherRV = [flatMapProducerSiteCount]int{18198, 145, 182, 50}
+		//
+		// UNTYPED IS NOW ZERO EVERYWHERE, and that is the whole reconciliation:
+		// the untyped population this state used to carry at three sites (1609,
+		// 249, 269) cannot be constructed since NewQuantifiedObjectValue began
+		// requiring an exact type, so it moved into TypedQOV.
+		c.Calls = [flatMapProducerSiteCount]int{46223, 1589, 568, 398}
+		c.TypedQOV = [flatMapProducerSiteCount]int{466, 1417, 278, 347}
+		c.UntypedQOV = [flatMapProducerSiteCount]int{0, 0, 0, 0}
+		c.MergeRC = [flatMapProducerSiteCount]int{6592, 0, 0, 0}
+		c.OtherRV = [flatMapProducerSiteCount]int{39165, 172, 290, 51}
 		return c
 	}
 	floors := &FlatMapProducerFloors{
-		Calls:           [flatMapProducerSiteCount]int{2000, 150, 40, 40},
-		UntypedQOVFloor: [flatMapProducerSiteCount]int{0, 150, 20, 20},
+		Calls: [flatMapProducerSiteCount]int{2000, 150, 40, 40},
 	}
 
 	t.Run("the measured state PASSES", func(t *testing.T) {
@@ -178,29 +219,38 @@ func TestFlatMapProducerCensus_AssertionArmsGoRed(t *testing.T) {
 		}
 	})
 
-	t.Run("the untyped population DISAPPEARING is RED", func(t *testing.T) {
+	t.Run("the untyped population REVIVING is RED at every site", func(t *testing.T) {
 		t.Parallel()
-		c := base()
-		c.UntypedQOV[flatMapSiteExistentialSelect] = 0
-		var b strings.Builder
-		if !assertFlatMapProducerCounters(&b, c, floors) {
-			t.Fatal("the untyped population at implementExistentialSelect going to zero must " +
-				"fail. It is a floor on a DIVERGENCE: Java cannot build an untyped QOV at " +
-				"all, so this population is a real gap, and a silent drop is either the gap " +
-				"closing or the site going dark — indistinguishable from a smaller number.")
+		// The direction that used to be watched here was the population
+		// DISAPPEARING, because while it existed a silent drop was
+		// indistinguishable from the site going dark. It has since been retired at
+		// the constructor, so zero is the steady state and GROWTH is the alarm —
+		// and the alarm has to cover every site, not just the residue producer's,
+		// or three of the four could revive unwatched.
+		for s := flatMapProducerSite(0); s < flatMapProducerSiteCount; s++ {
+			c := base()
+			c.UntypedQOV[s] = 1
+			c.TypedQOV[s]--
+			var b strings.Builder
+			if !assertFlatMapProducerCounters(&b, c, floors) {
+				t.Fatalf("a single untyped QOV at %s must fail. NewQuantifiedObjectValue "+
+					"requires an exact type, so one here means a construction path has "+
+					"appeared that reaches around it.", s)
+			}
+			if !strings.Contains(b.String(), "want 0") {
+				t.Fatalf("failure message for %s does not state the expectation: %s", s, b.String())
+			}
 		}
 	})
 
 	t.Run("a site going DARK is RED", func(t *testing.T) {
 		t.Parallel()
-		// The untyped count is held ABOVE its floor (20) while the call count is
-		// dropped BELOW its own (40), so the CALL floor is the only arm that can
-		// fire. Zeroing both — which this subtest did on first writing — trips the
-		// untyped floor first and passes without ever reaching the call floor: the
-		// test would stay green with the dark-site arm deleted outright.
+		// The CALL floor is now the only floor on this census, so dropping the call
+		// count below it is the whole perturbation. It used to need care — the
+		// untyped floor fired first and made this subtest vacuous — and that hazard
+		// went with the floor.
 		c := base()
 		c.Calls[flatMapSiteJoinWithExistential] = 30
-		c.UntypedQOV[flatMapSiteJoinWithExistential] = 25
 		var b strings.Builder
 		if !assertFlatMapProducerCounters(&b, c, floors) {
 			t.Fatal("a producer site making too few constructions must fail — otherwise every " +
@@ -236,7 +286,8 @@ func TestFlatMapProducerCensus_MintOutranksTheCourier(t *testing.T) {
 	values.SetLegIdentityCensusEnabled(true)
 	defer values.SetLegIdentityCensusEnabled(restore)
 
-	minted := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("MINTED"))
+	rowType := flatMapCensusRowType("ID")
+	minted := flatMapCensusQOV(t, values.NamedCorrelationIdentifier("MINTED"), rowType)
 	values.RecordSelectResultMint(values.SelectResultMintExistsSelect, minted)
 	recordFlatMapResultValue(flatMapSiteExistentialSelect, minted)
 
@@ -257,7 +308,7 @@ func TestFlatMapProducerCensus_MintOutranksTheCourier(t *testing.T) {
 	// A value with NO mint still reports its courier — the population that reaches
 	// the decline classifier is exactly this kind, and it must not go dark when
 	// the mint lookup is added ahead of it.
-	unminted := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("UNMINTED"))
+	unminted := flatMapCensusQOV(t, values.NamedCorrelationIdentifier("UNMINTED"), rowType)
 	recordFlatMapResultValue(flatMapSiteCorrelated, unminted)
 	if got := describeFlatMapResultOrigin(unminted); got != "origin=buildCorrelatedFlatMapPlan" {
 		t.Fatalf("origin of an UNMINTED value = %q, want origin=buildCorrelatedFlatMapPlan. "+
@@ -280,9 +331,9 @@ func TestFlatMapProducerCensus_SnapshotDeepCopiesShapes(t *testing.T) {
 	values.SetLegIdentityCensusEnabled(true)
 	defer values.SetLegIdentityCensusEnabled(restore)
 
-	rowType := &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}
+	rowType := flatMapCensusRowType("ID")
 	recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap,
-		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("SNAPA"), rowType))
+		flatMapCensusQOV(t, values.NamedCorrelationIdentifier("SNAPA"), rowType))
 
 	snap := FlatMapProducerCensus()
 	shapes := snap.Shapes[flatMapSiteYieldExistsFlatMap]
@@ -297,7 +348,7 @@ func TestFlatMapProducerCensus_SnapshotDeepCopiesShapes(t *testing.T) {
 	was := shapes[key]
 
 	recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap,
-		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("SNAPB"), rowType))
+		flatMapCensusQOV(t, values.NamedCorrelationIdentifier("SNAPB"), rowType))
 
 	if got := snap.Shapes[flatMapSiteYieldExistsFlatMap][key]; got != was {
 		t.Fatalf("shape %q in a SNAPSHOT moved %d -> %d when the census was written again.\n"+

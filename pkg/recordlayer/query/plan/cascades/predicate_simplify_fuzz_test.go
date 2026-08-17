@@ -36,9 +36,24 @@ func FuzzSimplify_PredicateTree(f *testing.F) {
 		op2 := predicates.ComparisonType(op2raw % 6)
 
 		// Two leaves over a synthetic FieldValue + literal RHS.
-		field := &values.FieldValue{Field: "x", Typ: values.NullableLong}
-		left := predicates.NewComparisonPredicate(field, predicates.Comparison{Type: op1, Operand: values.LiteralValue(a)})
-		right := predicates.NewComparisonPredicate(field, predicates.Comparison{Type: op2, Operand: values.LiteralValue(b)})
+		rowType := values.NewRecordType("PredicateSimplifyFuzzRow", false, []values.Field{
+			{Name: "x", FieldType: values.NullableLong, Ordinal: 0},
+		})
+		root, err := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier("predicate_simplify_fuzz"), rowType)
+		if err != nil {
+			t.Fatalf("construct fuzz QOV: %v", err)
+		}
+		field, err := values.ResolveFieldOrdinals(root, []int{0})
+		if err != nil {
+			t.Fatalf("resolve fuzz field: %v", err)
+		}
+		left := predicates.NewComparisonPredicate(field, predicates.Comparison{
+			Type: op1, Operand: &values.ConstantValue{Value: a, Typ: values.NotNullLong},
+		})
+		right := predicates.NewComparisonPredicate(field, predicates.Comparison{
+			Type: op2, Operand: &values.ConstantValue{Value: b, Typ: values.NotNullLong},
+		})
 
 		// Tree shape selector (5 shapes across `shaperaw % 5`).
 		var pred predicates.QueryPredicate
@@ -56,25 +71,25 @@ func FuzzSimplify_PredicateTree(f *testing.F) {
 		}
 
 		// Default-rules pass.
-		out := Simplify(pred, DefaultSimplifyRules())
+		out := mustSimplify(t, pred, DefaultSimplifyRules())
 		if out == nil {
 			t.Fatalf("Simplify returned nil — should always produce a QueryPredicate (a=%d b=%d op1=%v op2=%v shape=%d)", a, b, op1, op2, shaperaw%5)
 		}
 		// Idempotency.
-		again := Simplify(out, DefaultSimplifyRules())
+		again := mustSimplify(t, out, DefaultSimplifyRules())
 		if again == nil {
-			t.Fatalf("Simplify(simplified) returned nil")
+			t.Fatalf("mustSimplify(t, simplified) returned nil")
 		}
 
 		// NormalizationRules pass — adds De Morgan; same no-panic +
 		// idempotency contract under the bigger rule set.
-		outN := Simplify(pred, NormalizationRules())
+		outN := mustSimplify(t, pred, NormalizationRules())
 		if outN == nil {
-			t.Fatalf("Simplify(NormalizationRules) returned nil")
+			t.Fatalf("mustSimplify(t, NormalizationRules) returned nil")
 		}
-		againN := Simplify(outN, NormalizationRules())
+		againN := mustSimplify(t, outN, NormalizationRules())
 		if againN == nil {
-			t.Fatalf("Simplify(NormalizationRules)(simplified) returned nil")
+			t.Fatalf("mustSimplify(t, NormalizationRules)(simplified) returned nil")
 		}
 	})
 }

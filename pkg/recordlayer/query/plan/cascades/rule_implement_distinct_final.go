@@ -187,7 +187,11 @@ func (r *ImplementDistinctFinalRule) yieldElidedOrWrapped(
 			return
 		}
 	}
-	w := newPhysicalDistinctFor(call, expr)
+	w, err := newPhysicalDistinctFor(call, expr)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	if w == nil {
 		return
 	}
@@ -226,15 +230,15 @@ func exemptSlotsFor(inner plans.RecordQueryPlan, proof secondaryUniqueProof) []i
 	}
 	positionOfOrdinal := map[int]int{}
 	for position, column := range slotColumns {
-		fv, isField := column.(*values.FieldValue)
+		fv, isField := values.AsFieldValue(column)
 		if !isField {
 			continue
 		}
-		ord, stated := fv.OrdinalIn(proof.Layout)
+		identity, stated := values.CorrelatedFieldIdentityIn(fv, proof.Layout)
 		if !stated {
 			continue
 		}
-		positionOfOrdinal[ord] = position
+		positionOfOrdinal[identity.Ordinal] = position
 	}
 	slots := make([]int, 0, len(proof.KeyOrdinals))
 	for _, keyOrdinal := range proof.KeyOrdinals {
@@ -709,15 +713,15 @@ func collectProjectedOrdinals(
 	for _, v := range proj.GetProjectedValues() {
 		// TOP-LEVEL type assertion only — a FieldValue nested inside an
 		// ArithmeticValue/function is deliberately not unwrapped here.
-		fv, isFV := v.(*values.FieldValue)
+		fv, isFV := values.AsFieldValue(v)
 		if !isFV {
 			continue
 		}
-		ord, stated := fv.OrdinalIn(layout)
+		identity, stated := values.CorrelatedFieldIdentityIn(fv, layout)
 		if !stated {
 			return nil, false
 		}
-		ords[ord] = struct{}{}
+		ords[identity.Ordinal] = struct{}{}
 	}
 	return ords, true
 }
@@ -840,10 +844,10 @@ func uniqueKeysCovered(uniqueKeyCols []string, layout values.Type, projectedOrds
 // common shape — also streams; that step must not disturb the DISTINCT +
 // ORDER-BY-on-a-non-projected-column dedup-by-projected-only semantics, so it
 // is deliberately separated from this ordering-detection step.
-func newPhysicalDistinctFor(call *ImplementationRuleCall, member expressions.RelationalExpression) expressions.RelationalExpression {
+func newPhysicalDistinctFor(call *ImplementationRuleCall, member expressions.RelationalExpression) (expressions.RelationalExpression, error) {
 	ph, ok := member.(physicalPlanExpression)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	concreteInner := ph.GetRecordQueryPlan()
 	streaming := distinctStreamingEligible(member, concreteInner)
@@ -906,9 +910,16 @@ func distinctKeyColumns(inner plans.RecordQueryPlan) []values.Value {
 	}
 	recordResultTypeRead("distinctKeyColumns", inner.GetResultType())
 	if rt, ok := inner.GetResultType().(*values.RecordType); ok && len(rt.Fields) > 0 {
+		root, err := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), rt)
+		if err != nil {
+			return nil
+		}
 		cols := make([]values.Value, len(rt.Fields))
-		for i, f := range rt.Fields {
-			cols[i] = values.NewFieldValueWithResolvedOrdinal(f.Name, i, f.FieldType)
+		for i := range rt.Fields {
+			cols[i], err = values.ResolveFieldOrdinals(root, []int{i})
+			if err != nil {
+				return nil
+			}
 		}
 		return cols
 	}

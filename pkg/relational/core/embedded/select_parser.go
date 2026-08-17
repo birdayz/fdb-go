@@ -136,15 +136,29 @@ type selectQuery struct {
 	// from a schema-qualified table without re-splitting display text.
 	sourceSegments []string
 	whereExpr      antlrgen.IWhereExprContext
+	// catalogAwareInnerPlan carries the PRIMARY derived source's catalog-aware
+	// inner plan across the fromSource bridge — see fromSource's field.
+	catalogAwareInnerPlan logical.LogicalOperator
 	// limit < 0 means no limit.
 	limit int64
 	// offset >= 0 means skip that many rows after sort/group (OFFSET n).
 	offset int64
 	// joins describes JOIN clauses (nil = no joins).
 	joins []joinClause
+	// tableQualifierAliases is the exact, query-local exception to
+	// alias-hides-table-name resolution. A key is a FROM correlation alias that
+	// also spelled the active schema qualifier of a later real table
+	// (`FROM PA AS s, s.PB AS B`). Java resolves the later source table-first and
+	// still lets `PA.ID` address the earlier PA source. The marker is captured
+	// before schema normalization erases `s.PB`'s leading segment.
+	tableQualifierAliases map[string]bool
 	// derivedQuery is non-nil when the FROM clause is a subquery (derived table).
 	// When set, tableName holds the alias; the query is materialized at execution time.
 	derivedQuery antlrgen.IQueryContext
+	// inlineValues carries the parse-tree leaf for a literal VALUES table.
+	// This parser layer does not assign logical semantics; it only preserves the
+	// distinct source kind for the later builder.
+	inlineValues *antlrgen.InlineTableItemContext
 }
 
 // joinType enumerates the join flavours; threaded through to the
@@ -207,6 +221,8 @@ type joinClause struct {
 	// CTE keyed by `alias` before the join executor runs, mirroring
 	// the first-source derived-table handling.
 	derivedQuery antlrgen.IQueryContext
+	// inlineValues is the literal-table source for this comma FROM leg.
+	inlineValues *antlrgen.InlineTableItemContext
 	// bindingID is the leg's binding correlation name when its alias
 	// DUPLICATES an earlier FROM leg's at the same level; empty when the
 	// alias itself binds (every non-duplicate leg — zero change for
@@ -814,7 +830,9 @@ func selectQueryFromClassification(cls *selectClassification, fs *fromSource) *s
 		sq.sourceSegments = fs.sourceSegments
 		sq.joins = fs.joins
 		sq.derivedQuery = fs.derivedQuery
+		sq.inlineValues = fs.inlineValues
 		sq.whereExpr = fs.whereExpr
+		sq.catalogAwareInnerPlan = fs.catalogAwareInnerPlan
 	}
 	return sq
 }
@@ -1372,6 +1390,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					ac.groupColBare = key.bare
 					ac.groupColQualifier = key.qualifier
 					ac.groupColQualified = key.qualified
+					ac.groupColSegs = append([]string(nil), key.segs...)
 					if ac.outName == "" {
 						ac.outName = outName
 					}
@@ -1386,6 +1405,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					ac.aggArgBare = key.bare
 					ac.aggArgQualifier = key.qualifier
 					ac.aggArgQualified = key.qualified
+					ac.aggArgSegs = append([]string(nil), key.segs...)
 				}
 			}
 		}
@@ -1408,6 +1428,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				ob.bare = key.bare
 				ob.qualifier = key.qualifier
 				ob.qualified = key.qualified
+				ob.segs = append([]string(nil), key.segs...)
 			}
 		}
 	}
@@ -1649,8 +1670,11 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 	// countStar fast path assumes a single synthetic row. With GROUP BY
 	// present we need a per-group COUNT(*), so demote to aggCols. The
 	// alias (if any) propagates so `SELECT COUNT(*) AS n FROM t GROUP BY g`
-	// emits the column as `n`. Also set projCols so the downstream projection
-	// narrows the aggregate output (keys+aggs) to just the COUNT column.
+	// emits the column as `n`. The visible aggCol is the complete public-output
+	// contract: buildSelectShell records its native aggregate ordinal and builds
+	// the one reshaping projection. Synthesizing a parallel projCols entry here
+	// would add a second, ordinary projection without aggregate ordinals and
+	// sever that exact slot contract (notably inside a UNION-derived table).
 	if cls.countStar && len(cls.groupBy) > 0 {
 		cls.countStar = false
 		outName := "COUNT(*)"
@@ -1658,10 +1682,6 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 			outName = cls.countStarAlias
 		}
 		cls.aggCols = append(cls.aggCols, aggSelectCol{outName: outName, selectOrdinal: 1, aggFunc: "COUNT", visible: true})
-		cls.projCols = []projCol{{name: outName, bare: outName, selectOrdinal: 1}}
-		cls.projAliases = []string{""}
-		cls.projExprs = []antlrgen.IExpressionContext{nil}
-		cls.projStarQualifiers = []string{""}
 	}
 
 	// Go extension: Java's fdb-relational 4.11.1.0 does not support ORDER BY on
@@ -2112,8 +2132,32 @@ type fromSource struct {
 	tableAlias     string
 	sourceSegments []string
 	derivedQuery   antlrgen.IQueryContext
+	inlineValues   *antlrgen.InlineTableItemContext
 	joins          []joinClause
 	whereExpr      antlrgen.IWhereExprContext
+	// catalogAwareInnerPlan is the PRIMARY derived source's inner plan, built
+	// through the catalog-aware path — the exact twin of
+	// joinClause.catalogAwareInnerPlan, which has carried the same thing for
+	// derived JOIN legs all along. Without it a rebuild (qualified/hidden star
+	// expansion) re-entered the text-only builder for the primary source alone,
+	// and the body came back with resolved Values on none of its projections.
+	catalogAwareInnerPlan logical.LogicalOperator
+}
+
+// inlineValuesCarrierAlias returns the authored inline-table alias, or a
+// deterministic private correlation when the optional definition is absent.
+// It is parser metadata only: output column names remain in the carried parse
+// node and are interpreted by the semantic builder in a later chunk.
+func inlineValuesCarrierAlias(item *antlrgen.InlineTableItemContext, position int) string {
+	if item != nil && item.InlineTableDefinition() != nil {
+		definition := item.InlineTableDefinition()
+		if definition.TableName() != nil {
+			if alias := functions.FullIdToName(definition.TableName().FullId()); alias != "" {
+				return alias
+			}
+		}
+	}
+	return fmt.Sprintf("Q$INLINE_VALUES%d", position)
 }
 
 // rejectAtOrdinality rejects an `AT atAlias` ordinality clause on a table
@@ -2295,6 +2339,85 @@ func unnestCandidateShape(j joinClause, visible map[string]struct{}, resolvesToT
 		return false
 	}
 	return true
+}
+
+// rejectDuplicateUnnestAliasesInFrom rejects a lateral unnest AS/AT binding
+// that collides with any other FROM source in the same query block, including
+// a source appearing later in the comma list. The logical-tree backstop cannot
+// inspect a subquery plan that construction discarded after its scope failed;
+// this query-block check runs while the complete parsed FROM list is still in
+// hand and therefore preserves DuplicateAlias precedence inside EXISTS too.
+func rejectDuplicateUnnestAliasesInFrom(primaryTable, primaryAlias string, joins []joinClause, resolvesToTable tableResolver) error {
+	type binding struct {
+		name   string
+		owner  int
+		unnest bool
+	}
+	bindings := make([]binding, 0, 1+2*len(joins))
+	primary := primaryAlias
+	if primary == "" {
+		primary = primaryTable
+	}
+	if primary != "" {
+		bindings = append(bindings, binding{name: primary, owner: -1})
+	}
+	for i, j := range joins {
+		visible := visibleFromAliases(primaryTable, primaryAlias, joins[:i], resolvesToTable)
+		if isLateralUnnestJoin(j, visible, resolvesToTable) {
+			asAlias, atAlias := unnestAliases(j)
+			if asAlias != "" && atAlias != "" && strings.EqualFold(asAlias, atAlias) {
+				return api.NewError(api.ErrCodeDuplicateAlias,
+					"lateral unnest AS and AT aliases must be distinct")
+			}
+			for _, name := range []string{asAlias, atAlias} {
+				if name != "" {
+					bindings = append(bindings, binding{name: name, owner: i, unnest: true})
+				}
+			}
+			continue
+		}
+		name := j.alias
+		if name == "" {
+			name = j.tableName
+		}
+		if name != "" {
+			bindings = append(bindings, binding{name: name, owner: i})
+		}
+	}
+	for i := range bindings {
+		for j := i + 1; j < len(bindings); j++ {
+			if bindings[i].owner == bindings[j].owner ||
+				(!bindings[i].unnest && !bindings[j].unnest) ||
+				!strings.EqualFold(bindings[i].name, bindings[j].name) {
+				continue
+			}
+			return api.NewError(api.ErrCodeDuplicateAlias,
+				"lateral unnest alias collides with another FROM-source alias; use a distinct AS/AT alias")
+		}
+	}
+	return nil
+}
+
+// rememberSchemaAliasTableQualifiers records the table-first collision before
+// normalizeSchemaQualifiedSelectSources removes the schema segment. Only a
+// source alias that actually serves as the schema qualifier of a later real
+// table is marked; ordinary `FROM PA AS x` keeps the alias-hides-table rule.
+func rememberSchemaAliasTableQualifiers(sq *selectQuery, resolvesToTable tableResolver) {
+	if sq == nil || resolvesToTable == nil {
+		return
+	}
+	visible := visibleFromAliases(sq.tableName, sq.tableAlias, nil, resolvesToTable)
+	for i, j := range sq.joins {
+		if len(j.segments) == 2 && resolvesToTable(j.segments) {
+			if _, collision := visible[strings.ToUpper(j.segments[0])]; collision {
+				if sq.tableQualifierAliases == nil {
+					sq.tableQualifierAliases = make(map[string]bool)
+				}
+				sq.tableQualifierAliases[strings.ToUpper(j.segments[0])] = true
+			}
+		}
+		visible = visibleFromAliases(sq.tableName, sq.tableAlias, sq.joins[:i+1], resolvesToTable)
+	}
 }
 
 // schemaQualifiedTableUnnest reports whether a comma source is a SCHEMA-QUALIFIED
@@ -2511,6 +2634,15 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 				derivedQuery: item.Query(),
 				fromComma:    true,
 			})
+		case *antlrgen.InlineTableItemContext:
+			alias := inlineValuesCarrierAlias(item, len(extraCrossJoins)+1)
+			extraCrossJoins = append(extraCrossJoins, joinClause{
+				tableName:    alias,
+				joinType:     joinTypeInner,
+				alias:        alias,
+				inlineValues: item,
+				fromComma:    true,
+			})
 		default:
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"FROM: comma-separated sources must be plain table names, got %T",
@@ -2542,6 +2674,24 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			joins:          joins,
 			whereExpr:      fromClause.WhereExpr(),
 			derivedQuery:   subItem.Query(),
+		}
+		assignFromLegBindingIDs(fs)
+		return fs, nil
+	}
+
+	if inlineItem, isInline := srcBase.TableSourceItem().(*antlrgen.InlineTableItemContext); isInline {
+		alias := inlineValuesCarrierAlias(inlineItem, 0)
+		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins, -1)
+		if jErr != nil {
+			return nil, jErr
+		}
+		fs := &fromSource{
+			tableName:      alias,
+			tableAlias:     alias,
+			sourceSegments: []string{alias},
+			inlineValues:   inlineItem,
+			joins:          joins,
+			whereExpr:      fromClause.WhereExpr(),
 		}
 		assignFromLegBindingIDs(fs)
 		return fs, nil

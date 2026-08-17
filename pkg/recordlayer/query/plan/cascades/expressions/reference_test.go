@@ -1,8 +1,55 @@
 package expressions
 
 import (
+	"errors"
 	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+type preparedAliasAwareTestExpression struct {
+	quantifier Quantifier
+}
+
+func (e *preparedAliasAwareTestExpression) GetResultValue() values.Value {
+	return values.NewQueriedValue(nil, values.NotNullLong)
+}
+
+func (e *preparedAliasAwareTestExpression) GetQuantifiers() []Quantifier {
+	return []Quantifier{e.quantifier}
+}
+func (*preparedAliasAwareTestExpression) CanCorrelate() bool  { return false }
+func (*preparedAliasAwareTestExpression) ChildrenAsSet() bool { return false }
+func (*preparedAliasAwareTestExpression) HashCodeWithoutChildren() uint64 {
+	return 0x232
+}
+
+func (*preparedAliasAwareTestExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return nil
+}
+
+func (e *preparedAliasAwareTestExpression) EqualsWithoutChildren(other RelationalExpression, aliases *AliasMap) bool {
+	o, ok := other.(*preparedAliasAwareTestExpression)
+	if !ok {
+		return false
+	}
+	if e.quantifier.GetAlias() == o.quantifier.GetAlias() {
+		return true
+	}
+	if aliases == nil {
+		return false
+	}
+	target, mapped := aliases.GetTarget(e.quantifier.GetAlias())
+	return mapped && target == o.quantifier.GetAlias()
+}
+
+func (e *preparedAliasAwareTestExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("preparedAliasAwareTestExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return &preparedAliasAwareTestExpression{quantifier: quantifiers[0]}, nil
+}
+func (*preparedAliasAwareTestExpression) InternsAliasAware() bool { return true }
 
 func TestReference_InitialOf_SingleMember(t *testing.T) {
 	t.Parallel()
@@ -64,12 +111,12 @@ func TestReference_Insert_SemanticEqualsFallback(t *testing.T) {
 	// SemanticEquals fallback. The previous pointer-only contract
 	// would have inserted both — this test pins the post-680e664a
 	// behavior that the SemanticEquals fallback dedupes them.
-	r1 := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, nil))
-	r2 := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, nil))
+	r1 := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	r2 := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
 	q1 := ForEachQuantifier(r1)
 	q2 := ForEachQuantifier(r2)
-	d1 := NewLogicalDistinctExpression(q1)
-	d2 := NewLogicalDistinctExpression(q2)
+	d1 := mustExpression(NewLogicalDistinctExpression(q1))
+	d2 := mustExpression(NewLogicalDistinctExpression(q2))
 	ref := InitialOf(d1)
 	if inserted := ref.Insert(d2); inserted {
 		t.Fatalf("Insert(d2) returned true — SemanticEquals fallback should have dedupd against d1")
@@ -154,4 +201,197 @@ func TestReference_InsertFinal_NilPanics(t *testing.T) {
 		}
 	}()
 	r.InsertFinal(nil)
+}
+
+func TestReferencePreparedApplyAndReadsAreDefensive(t *testing.T) {
+	t.Parallel()
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))
+	finalScan := mustExpression(NewFullUnorderedScanExpression([]string{"FINAL"}, values.NotNullLong))
+	reference := &Reference{}
+	view := reference.AdmissionView()
+	relation, err := values.ExactRelationOf(scan.GetResultValue().Type())
+	if err != nil {
+		t.Fatalf("ExactRelationOf: %v", err)
+	}
+	incoming := []RelationalExpression{scan}
+	finalIncoming := []RelationalExpression{finalScan}
+	if err := reference.ApplyPreparedMemberBatch(view, relation, incoming, finalIncoming, 0); err != nil {
+		t.Fatalf("ApplyPreparedMemberBatch: %v", err)
+	}
+
+	// Mutating every caller/read slice must not rewrite Reference storage.
+	incoming[0] = nil
+	finalIncoming[0] = nil
+	members := reference.Members()
+	if len(members) != 1 || members[0] != scan {
+		t.Fatalf("stored members = %v, want admitted scan", members)
+	}
+	finalMembers := reference.FinalMembers()
+	if len(finalMembers) != 1 || finalMembers[0] != finalScan {
+		t.Fatalf("stored final members = %v, want admitted final scan", finalMembers)
+	}
+	members[0] = nil
+	finalMembers[0] = nil
+	all := reference.AllMembers()
+	all[0] = nil
+	all[1] = nil
+	admissionMembers := reference.AdmissionView().Members(ReferenceExploratoryMembers)
+	admissionMembers[0] = nil
+	admissionFinals := reference.AdmissionView().Members(ReferenceFinalMembers)
+	admissionFinals[0] = nil
+	if got, gotFinal := reference.Get(), reference.FinalMembers()[0]; got != scan || gotFinal != finalScan {
+		t.Fatalf("caller mutated Reference members through a returned slice: got exploratory/final %v/%v", got, gotFinal)
+	}
+
+	resultType, err := reference.ResultType()
+	if err != nil {
+		t.Fatalf("ResultType: %v", err)
+	}
+	want := values.NewRelationType(values.NotNullLong)
+	if !resultType.Equals(want) {
+		t.Fatalf("ResultType = %v, want %v", resultType, want)
+	}
+	// ResultType thaws on every read; mutating the returned graph cannot alter
+	// the exact type stored by the Reference.
+	resultType.(*values.RelationType).InnerType = values.NotNullString
+	again, err := reference.ResultType()
+	if err != nil || !again.Equals(want) {
+		t.Fatalf("stored result type changed through caller graph: (%v, %v)", again, err)
+	}
+}
+
+func TestReferencePreparedApplyRejectsBeforeMutation(t *testing.T) {
+	t.Parallel()
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))
+	reference := &Reference{}
+	view := reference.AdmissionView()
+	notRelation, err := values.SnapshotExactType(values.NotNullLong)
+	if err != nil {
+		t.Fatalf("SnapshotExactType: %v", err)
+	}
+	err = reference.ApplyPreparedMemberBatch(view, notRelation, []RelationalExpression{scan}, nil, 0)
+	var coded interface {
+		Code() values.ResolutionErrorCode
+	}
+	if !errors.As(err, &coded) || coded.Code() != values.MemoMissingRelationWrapper {
+		t.Fatalf("ApplyPreparedMemberBatch error = %v, want MemoMissingRelationWrapper", err)
+	}
+	if len(reference.AllMembers()) != 0 {
+		t.Fatalf("failed prepared apply published members: %v", reference.AllMembers())
+	}
+}
+
+func TestReferencePreparedApplyRejectsLateInvalidMemberBeforeMutation(t *testing.T) {
+	t.Parallel()
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))
+	reference := &Reference{}
+	view := reference.AdmissionView()
+	relation, err := values.ExactRelationOf(values.NotNullLong)
+	if err != nil {
+		t.Fatalf("ExactRelationOf: %v", err)
+	}
+	err = reference.ApplyPreparedMemberBatch(view, relation, []RelationalExpression{scan}, []RelationalExpression{nil}, 0)
+	var coded interface {
+		Code() values.ResolutionErrorCode
+	}
+	if !errors.As(err, &coded) || coded.Code() != values.MemoUnsupportedExpression {
+		t.Fatalf("ApplyPreparedMemberBatch error = %v, want MemoUnsupportedExpression", err)
+	}
+	if len(reference.AllMembers()) != 0 {
+		t.Fatalf("late-invalid prepared apply published members: %v", reference.AllMembers())
+	}
+	// Reusing the original view proves the failed apply changed neither member
+	// storage nor the version checked by a subsequent valid commit.
+	if err := reference.ApplyPreparedMemberBatch(view, relation, []RelationalExpression{scan}, nil, 0); err != nil {
+		t.Fatalf("valid apply after late rejection: %v", err)
+	}
+	if got := reference.Members(); len(got) != 1 || got[0] != scan {
+		t.Fatalf("valid apply after late rejection stored %v, want admitted scan", got)
+	}
+}
+
+func TestReferenceRejectedPreparedApplyDoesNotCompressForwardingChain(t *testing.T) {
+	t.Parallel()
+	root := &Reference{}
+	middle := &Reference{forwardedTo: root}
+	leaf := &Reference{forwardedTo: middle}
+	if got := ForEachQuantifier(leaf).GetRangesOver(); got != root {
+		t.Fatalf("read-only Quantifier forwarding resolved to %p, want root %p", got, root)
+	}
+	if leaf.forwardedTo != middle {
+		t.Fatal("Quantifier.GetRangesOver compressed a forwarding read")
+	}
+	view := leaf.AdmissionView()
+	notRelation, err := values.SnapshotExactType(values.NotNullLong)
+	if err != nil {
+		t.Fatalf("SnapshotExactType: %v", err)
+	}
+	err = leaf.ApplyPreparedMemberBatch(view, notRelation, nil, nil, 0)
+	var coded interface {
+		Code() values.ResolutionErrorCode
+	}
+	if !errors.As(err, &coded) || coded.Code() != values.MemoMissingRelationWrapper {
+		t.Fatalf("ApplyPreparedMemberBatch error = %v, want MemoMissingRelationWrapper", err)
+	}
+	if leaf.forwardedTo != middle || middle.forwardedTo != root || root.forwardedTo != nil {
+		t.Fatal("failed prepared ingress compressed or rewrote the forwarding chain")
+	}
+}
+
+func TestPreparedMemberDuplicateDoesNotMutateForwardingOrCorrelationCaches(t *testing.T) {
+	t.Parallel()
+	root := InitialOf(&typedStubExpr{name: "leaf", typ: values.NotNullLong})
+	middle := &Reference{forwardedTo: root}
+	leaf := &Reference{forwardedTo: middle}
+	member := &preparedAliasAwareTestExpression{quantifier: NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("member"),
+		leaf,
+	)}
+	incoming := &preparedAliasAwareTestExpression{quantifier: NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("incoming"),
+		root,
+	)}
+
+	duplicate, aliasAwareOnly := PreparedMemberDuplicate([]RelationalExpression{member}, incoming)
+	if !duplicate || !aliasAwareOnly {
+		t.Fatalf("PreparedMemberDuplicate = (%v, %v), want alias-aware-only duplicate", duplicate, aliasAwareOnly)
+	}
+	if leaf.forwardedTo != middle || middle.forwardedTo != root || root.forwardedTo != nil {
+		t.Fatal("prepared equality compressed or rewrote a child forwarding chain")
+	}
+	if root.correlatedToCache != nil || middle.correlatedToCache != nil || leaf.correlatedToCache != nil {
+		t.Fatal("prepared equality populated a shared Reference correlation cache")
+	}
+}
+
+func TestPreparedMemberDuplicatePreservesSemanticFallback(t *testing.T) {
+	t.Parallel()
+	leftChild := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	rightChild := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	left := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(leftChild)))
+	right := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(rightChild)))
+	duplicate, aliasAwareOnly := PreparedMemberDuplicate([]RelationalExpression{left}, right)
+	if !duplicate || aliasAwareOnly {
+		t.Fatalf("PreparedMemberDuplicate semantic fallback = (%v, %v), want (true, false)", duplicate, aliasAwareOnly)
+	}
+}
+
+func TestReferenceResultTypeDistinguishesEmptyAndLegacyUnadmitted(t *testing.T) {
+	t.Parallel()
+	_, emptyErr := (&Reference{}).ResultType()
+	var emptyCoded interface {
+		Code() values.ResolutionErrorCode
+	}
+	if !errors.As(emptyErr, &emptyCoded) || emptyCoded.Code() != values.MemoEmptyReference {
+		t.Fatalf("empty ResultType error = %v, want MemoEmptyReference", emptyErr)
+	}
+
+	legacy := InitialOf(&stubExpr{name: "legacy"})
+	_, legacyErr := legacy.ResultType()
+	var legacyCoded interface {
+		Code() values.ResolutionErrorCode
+	}
+	if !errors.As(legacyErr, &legacyCoded) || legacyCoded.Code() != values.MemoInvalidHandle {
+		t.Fatalf("legacy ResultType error = %v, want MemoInvalidHandle", legacyErr)
+	}
 }

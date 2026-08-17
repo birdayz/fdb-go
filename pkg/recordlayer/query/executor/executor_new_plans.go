@@ -127,10 +127,28 @@ func executeAggregateIndexScan(
 	// rows. Named by the canonical output names (uppercase group
 	// cols, canonical agg name) — the exact schema plan-time bakes bind
 	// against.
-	posNames := make([]string, 0, len(groupCols)+1)
-	posNames = append(posNames, groupCols...)
-	posNames = append(posNames, canonicalName)
-	posType := positionalTypeFromNames(posNames)
+	posType, ok := p.GetResultType().(*values.RecordType)
+	if !ok || posType == nil || len(posType.Fields) != len(groupCols)+1 {
+		actualWidth := -1
+		if posType != nil {
+			actualWidth = len(posType.Fields)
+		}
+		return nil, fmt.Errorf(
+			"executor: aggregate index %q has result type %T with %d columns, want exact record width %d",
+			idxPlan.GetIndexName(), p.GetResultType(), actualWidth, len(groupCols)+1)
+	}
+	for i, name := range append(append([]string(nil), groupCols...), canonicalName) {
+		if posType.Fields[i].Name != name || posType.Fields[i].Ordinal != i {
+			return nil, fmt.Errorf(
+				"executor: aggregate index %q result field %d is %q#%d, want %q#%d",
+				idxPlan.GetIndexName(), i, posType.Fields[i].Name, posType.Fields[i].Ordinal, name, i)
+		}
+		if _, exactErr := values.SnapshotExactType(posType.Fields[i].FieldType); exactErr != nil {
+			return nil, fmt.Errorf(
+				"executor: aggregate index %q result field %d has unresolved type: %w",
+				idxPlan.GetIndexName(), i, exactErr)
+		}
+	}
 
 	// PERMUTED_MIN/MAX indexes keep the current extremum per group in the
 	// SECONDARY (permuted) subspace, not the primary VALUE tree; the aggregate
@@ -197,6 +215,9 @@ func executeAggregateIndexScan(
 		posType:       posType,
 		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
 		liveGroupsOnly: p.IsLiveGroupsOnly(),
+		// Stamped at mint time so the output boundary checks the row instead of
+		// copying it to attach the layout — see mintedRowLayout.
+		layout: mintedRowLayout(p),
 	}
 	return applySkipLimit(result, props.Skip, props.ReturnedRowLimit), nil
 }
@@ -363,6 +384,9 @@ type aggregateIndexCursor struct {
 	// existence here rather than at plan time would make the plan a lie.
 	liveGroupsOnly bool
 	closed         bool
+	// layout is the plan's provided output layout, carried by every row this
+	// cursor mints.
+	layout values.OrdinalLayout
 }
 
 func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -415,7 +439,10 @@ func (c *aggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCu
 		}
 	}
 
-	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
+	// The row is minted here and has one owner, so it carries the layout its
+	// output boundary will hold it to rather than being copied to acquire it —
+	// see mintedRowLayout.
+	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots, Layout: c.layout}}
 	return recordlayer.NewResultWithValue(qr, result.GetContinuation()), nil
 }
 
@@ -474,6 +501,10 @@ func executeMultiIntersection(
 
 	keyVals := p.GetComparisonKey()
 	compKeyFunc := multiIntersectionCompKeyFunc(keyVals)
+	outputType, ok := p.GetResultType().(*values.RecordType)
+	if !ok || outputType == nil {
+		return nil, fmt.Errorf("multi-intersection result type is %T, want exact record", p.GetResultType())
+	}
 
 	var innerCursor recordlayer.RecordCursor[[]QueryResult]
 	if p.HasDrivingAlias() {
@@ -511,6 +542,7 @@ func executeMultiIntersection(
 	merged := &multiIntersectionMergeCursor{
 		inner:       innerCursor,
 		resultValue: p.GetResultValue(),
+		outputType:  outputType,
 		// The same len(keyVals)+1 the absent-child filler is sized to, carried to
 		// the concatenation so the PRESENT children are held to it as well. The
 		// filler being right is worth nothing if a real child disagrees.
@@ -555,17 +587,26 @@ func absentAggregateRow(width int) QueryResult {
 }
 
 func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.ComparisonKeyFunc[QueryResult] {
+	var programs comparisonKeyPrograms
 	return func(qr QueryResult) (tuple.Tuple, error) {
 		if len(keyVals) > 0 {
+			evalKeys, inputEdges, err := programs.forRow(keyVals, qr.Positional)
+			if err != nil {
+				return nil, fmt.Errorf("multi-intersection comparison key program: %w", err)
+			}
+			arg, err := compKeyEvalArg(qr, inputEdges...)
+			if err != nil {
+				return nil, err
+			}
 			t := make(tuple.Tuple, len(keyVals))
-			for i, kv := range keyVals {
+			for i, kv := range evalKeys {
 				// Comparison/merge keys are field extractions; an eval
 				// failure means the plan and the row disagree (a planner
 				// bug), which must fail the QUERY, not the process — Java
 				// surfaces it as a RecordCoreException through the cursor
 				// future chain. Resolves against the ordinal row via
 				// compKeyEvalArg.
-				v, err := kv.Evaluate(compKeyEvalArg(qr))
+				v, err := kv.Evaluate(arg)
 				if err != nil {
 					return nil, fmt.Errorf("multi-intersection comparison key: %w", err)
 				}
@@ -609,6 +650,11 @@ func multiIntersectionCompKeyFunc(keyVals []values.Value) recordlayer.Comparison
 type multiIntersectionMergeCursor struct {
 	inner       recordlayer.RecordCursor[[]QueryResult]
 	resultValue values.Value
+	// outputType is the plan-admitted result row. The result constructor owns
+	// exact field types; deriving a type from display names here would erase
+	// them to Unknown and make layout attachment reject an otherwise-correct
+	// row after it had already been computed.
+	outputType *values.RecordType
 	// childWidth is the per-child span the resultValue's ordinals were baked
 	// against. It has NO usable zero value: leaving it unset is an error at
 	// evaluation time, not a silently disabled check. Set
@@ -654,17 +700,19 @@ func (c *multiIntersectionMergeCursor) OnNext(ctx context.Context) (recordlayer.
 	// from), so evaluating each field against the concatenated child positional row
 	// produces a per-slot output row whose names/order match the result-set columns.
 	if rc, ok := c.resultValue.(*values.RecordConstructorValue); ok {
-		posNames := make([]string, len(rc.Fields))
+		if c.outputType == nil || len(c.outputType.Fields) != len(rc.Fields) {
+			return recordlayer.RecordCursorResult[QueryResult]{}, fmt.Errorf(
+				"multi-intersection result type width does not match result constructor")
+		}
 		posSlots := make([]any, len(rc.Fields))
 		for i, f := range rc.Fields {
-			posNames[i] = f.Name
 			fv, ferr := f.Value.Evaluate(evalArg)
 			if ferr != nil {
 				return recordlayer.RecordCursorResult[QueryResult]{}, ferr
 			}
 			posSlots[i] = fv
 		}
-		qr.Positional = &PositionalRow{Type: positionalTypeFromNames(posNames), Slots: posSlots}
+		qr.Positional = &PositionalRow{Type: c.outputType, Slots: posSlots}
 	} else if c.resultValue != nil {
 		// Non-RC resultValue: a scalar output row.
 		datum, derr := c.resultValue.Evaluate(evalArg)
@@ -1068,6 +1116,10 @@ func executePredicatesFilter(
 	if err != nil {
 		return nil, err
 	}
+	inputQOV, err := requireSoleInputQOV(p)
+	if err != nil {
+		return nil, err
+	}
 	preds := p.GetPredicates()
 	innerAlias := p.GetInnerAlias()
 	// Bind the current row under innerAlias only when the inner plan
@@ -1083,6 +1135,14 @@ func executePredicatesFilter(
 	// e.g. on a null-filled LEFT JOIN row (b absent), qov(b).id would wrongly
 	// pick up the outer row's bare ID instead of NULL.
 	bindAlias := innerAlias.Name() != "" && !producesMergedRows(p.GetInner())
+	inputEdges := []values.QuantifiedObjectValue{inputQOV}
+	if bindAlias && innerAlias != inputQOV.Correlation() {
+		aliasQOV, aliasErr := values.NewQuantifiedObjectValue(innerAlias, inputQOV.FlowedType())
+		if aliasErr != nil {
+			return nil, fmt.Errorf("predicates filter input alias %q: %w", innerAlias.Name(), aliasErr)
+		}
+		inputEdges = append(inputEdges, aliasQOV)
+	}
 	// On the positional frontier a QOV(innerAlias).col resolves
 	// via the bare-positional fallback in evaluateCorrelated (Correlations miss →
 	// Positional), so bindAlias is NOT a reason to wrap — only a genuine
@@ -1099,6 +1159,11 @@ func executePredicatesFilter(
 		pred: func(qr QueryResult) (bool, error) {
 			var rowCtx any
 			switch {
+			case qr.Positional != nil && qr.Positional.Layout != nil:
+				rowCtx, err = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputEdges...)
+				if err != nil {
+					return false, err
+				}
 			case qr.Positional != nil && windowsOK:
 				// The merged positional row of a gated 2-way
 				// ordinal join — a leg reference QOV(leg).col needs
@@ -1115,19 +1180,24 @@ func executePredicatesFilter(
 				// generateCorrelatedFieldAccess), so bind the UNWRAPPED scalar under
 				// innerAlias so QOV(innerAlias) resolves to it. Without this the QOV
 				// whole-row fallback returns the 1-slot row, not the scalar.
-				ec := evalCtx
-				if ec == nil {
-					ec = EmptyEvaluationContext()
+				layout, layoutErr := p.GetInner().ProvidedOutputLayout()
+				if layoutErr != nil {
+					return false, fmt.Errorf("predicates filter scalar input layout: %w", layoutErr)
 				}
-				ec = ec.WithBinding(innerAlias, qr.Positional.Slots[0])
-				rowCtx = ec.RowContext()
+				rowCtx, err = scalarLayoutRowContext(layout, qr.Positional, evalCtx, inputEdges...)
+				if err != nil {
+					return false, err
+				}
 			case qr.Positional != nil:
 				// The non-join frontier flows an authoritative
 				// ordinal row — resolve predicates by ordinal (loud on a miss, no
 				// name-map fallback). A QOV(innerAlias).col resolves via the
 				// bare-positional fallback in evaluateCorrelated, so no alias
 				// binding is needed here.
-				rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
+				rowCtx, err = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputEdges...)
+				if err != nil {
+					return false, err
+				}
 			}
 			for _, pred := range preds {
 				res, err := pred.Eval(rowCtx)
@@ -1156,6 +1226,10 @@ func executeMap(
 	if err != nil {
 		return nil, err
 	}
+	inputQOV, err := requireSoleInputQOV(p)
+	if err != nil {
+		return nil, err
+	}
 	resultValue := p.GetResultValue()
 	// On the positional frontier an outer correlation resolves via
 	// the eval context's binder before the bare-positional frontier fallback.
@@ -1170,11 +1244,7 @@ func executeMap(
 	var mapPosType *values.RecordType
 	mapRC, _ := resultValue.(*values.RecordConstructorValue)
 	if rt, ok := resultValue.Type().(*values.RecordType); ok {
-		mapPosNames := make([]string, len(rt.Fields))
-		for i, fld := range rt.Fields {
-			mapPosNames[i] = fld.Name
-		}
-		mapPosType = positionalTypeFromNames(mapPosNames)
+		mapPosType = rt
 	}
 	// When the input flows a 2-way ordinal join's merged
 	// positional row, the result value evaluates under the LEG WINDOWS —
@@ -1186,7 +1256,12 @@ func executeMap(
 			return qr
 		}
 		var rowCtx any
-		if qr.Positional != nil && windowsOK {
+		if qr.Positional != nil && qr.Positional.Layout != nil {
+			rowCtx, evalErr = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputQOV)
+			if evalErr != nil {
+				return qr
+			}
+		} else if qr.Positional != nil && windowsOK {
 			// The merged positional row of a gated 2-way
 			// ordinal join — a leg reference QOV(leg).col needs its
 			// leg window (unconditional; see executePredicatesFilter).
@@ -1194,7 +1269,10 @@ func executeMap(
 		} else if qr.Positional != nil {
 			// The non-join frontier flows an authoritative ordinal
 			// row — resolve the result value by ordinal (loud on a miss).
-			rowCtx = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx)
+			rowCtx, evalErr = frontierRowContext(qr.Positional, evalCtx, posNeedsCtx, inputQOV)
+			if evalErr != nil {
+				return qr
+			}
 		}
 		// A Map's output IS a PositionalRow. When the result value is a
 		// RecordConstructor, evaluate each field individually into dense slots; a
@@ -1217,7 +1295,7 @@ func executeMap(
 				evalErr = err
 				return qr
 			}
-			pos = scalarPositionalRow(m)
+			pos = scalarPositionalRowOfType(m, resultValue.Type())
 		}
 		return QueryResult{Positional: pos, Record: qr.Record, PrimaryKey: qr.PrimaryKey}
 	})
@@ -1300,15 +1378,74 @@ func executeFirstOrDefault(
 	if result.GetNoNextReason().IsOutOfBand() {
 		return checkpointAfterOutOfBand(result)
 	}
-	defaultVal := p.GetDefaultValue()
-	if defaultVal == nil {
-		return newSingleResultCursor(QueryResult{Positional: scalarPositionalRow(nil)}), nil
-	}
-	qr, err := resultFromValue(defaultVal)
+	qr, err := firstOrDefaultResultFromValue(p, p.GetDefaultValue())
 	if err != nil {
 		return nil, err
 	}
 	return newSingleResultCursor(qr), nil
+}
+
+// firstOrDefaultResultFromValue materializes the empty arm in the plan's exact
+// output carrier. A record NULL is not a scalar `_0 UNKNOWN` wrapper and it is
+// not a matched record whose fields merely happen to be NULL: it is an exact
+// record-shaped physical shell with an explicit absent-current marker.
+func firstOrDefaultResultFromValue(
+	p *plans.RecordQueryFirstOrDefaultPlan,
+	defaultValue values.Value,
+) (QueryResult, error) {
+	if p == nil {
+		return QueryResult{}, fmt.Errorf("FirstOrDefault default has no plan")
+	}
+	resultType := p.GetResultType()
+	if recordType, isRecord := resultType.(*values.RecordType); isRecord {
+		if constructor, ok := defaultValue.(*values.RecordConstructorValue); ok {
+			result, err := resultFromValue(constructor)
+			if err != nil {
+				return QueryResult{}, err
+			}
+			if result.Positional == nil || result.Positional.Type == nil ||
+				!result.Positional.Type.Equals(recordType) || len(result.Positional.Slots) != len(recordType.Fields) {
+				return QueryResult{}, fmt.Errorf(
+					"FirstOrDefault RECORD constructor type %v is incompatible with result type %s",
+					result.Positional, recordType)
+			}
+			return result, nil
+		}
+		if defaultValue != nil {
+			value, err := defaultValue.Evaluate(nil)
+			if err != nil {
+				return QueryResult{}, err
+			}
+			if value != nil {
+				return QueryResult{}, fmt.Errorf(
+					"FirstOrDefault non-constructor RECORD default evaluated to %T", value)
+			}
+		}
+		layout, err := p.ProvidedOutputLayout()
+		if err != nil {
+			return QueryResult{}, fmt.Errorf("FirstOrDefault provided output layout: %w", err)
+		}
+		row, err := NewLayoutPositionalRow(recordType, layout)
+		if err != nil {
+			return QueryResult{}, fmt.Errorf("FirstOrDefault default carrier: %w", err)
+		}
+		presence, err := values.NewOrdinalCarrierMatchPresence(layout, false)
+		if err != nil {
+			return QueryResult{}, fmt.Errorf("FirstOrDefault default presence: %w", err)
+		}
+		row.LayoutPresence = presence
+		return QueryResult{Positional: row}, nil
+	}
+
+	var value any
+	if defaultValue != nil {
+		var err error
+		value, err = defaultValue.Evaluate(nil)
+		if err != nil {
+			return QueryResult{}, err
+		}
+	}
+	return QueryResult{Positional: scalarPositionalRowOfType(value, resultType)}, nil
 }
 
 // An out-of-band stop underneath a first-or-default is a resumable PAGE
@@ -1439,7 +1576,9 @@ func executeDefaultOnEmpty(
 		if err != nil {
 			return &errResultCursor{err: err}
 		}
-		return inner
+		return recordlayer.MapErrCursor(inner, func(result QueryResult) (QueryResult, error) {
+			return normalizeDefaultOnEmptyResult(p, result)
+		})
 	}
 	alternativeFactory := func(cont []byte) recordlayer.RecordCursor[QueryResult] {
 		// Evaluate the default lazily (only when the inner is empty), matching
@@ -1447,7 +1586,7 @@ func executeDefaultOnEmpty(
 		// supplier. A nil default flows a scalar NULL row.
 		var defaultRow QueryResult
 		if defaultVal := p.GetDefaultValue(); defaultVal != nil {
-			qr, err := resultFromValue(defaultVal)
+			qr, err := defaultOnEmptyResultFromValue(p, defaultVal)
 			if err != nil {
 				return &errResultCursor{err: err}
 			}
@@ -1459,6 +1598,71 @@ func executeDefaultOnEmpty(
 	}
 	orElse := recordlayer.OrElseWithContinuation(primaryFactory, alternativeFactory, continuation)
 	return applySkipLimit(orElse, props.Skip, props.ReturnedRowLimit), nil
+}
+
+// normalizeDefaultOnEmptyResult publishes the operator's reconciled output
+// type on an inner row. DefaultOnEmpty is a UNION of two result alternatives:
+// a non-null child row and a nullable default can produce a nullable RECORD.
+// Forwarding the child's narrower runtime type unchanged makes the row disagree
+// with the plan's exact provided layout even though its values are valid for
+// that layout. Retag only the root-nullability widening admitted by the plan
+// constructor; every field, ordinal, and slot count must still agree exactly.
+func normalizeDefaultOnEmptyResult(
+	p *plans.RecordQueryDefaultOnEmptyPlan,
+	result QueryResult,
+) (QueryResult, error) {
+	resultType, isRecord := p.GetResultType().(*values.RecordType)
+	if !isRecord {
+		return result, nil
+	}
+	if result.Positional == nil || result.Positional.Type == nil {
+		return QueryResult{}, fmt.Errorf("DefaultOnEmpty record result has no typed positional row")
+	}
+	actualType := result.Positional.Type
+	if !values.WithNullability(actualType, true).Equals(values.WithNullability(resultType, true)) ||
+		len(result.Positional.Slots) != len(resultType.Fields) {
+		return QueryResult{}, fmt.Errorf(
+			"DefaultOnEmpty runtime row type %s is incompatible with result type %s",
+			actualType, resultType)
+	}
+	if actualType.Equals(resultType) && result.Positional.Layout == nil {
+		return result, nil
+	}
+	row := *result.Positional
+	row.Type = resultType
+	row.Slots = append([]any(nil), result.Positional.Slots...)
+	// The child's layout describes the child type. DefaultOnEmpty publishes a
+	// fresh identity layout for the reconciled union type; ExecutePlan attaches
+	// that parent layout after the OrElse cursor chooses its branch.
+	row.Layout = nil
+	row.LayoutPresence = nil
+	result.Positional = &row
+	return result, nil
+}
+
+func defaultOnEmptyResultFromValue(
+	p *plans.RecordQueryDefaultOnEmptyPlan,
+	defaultValue values.Value,
+) (QueryResult, error) {
+	resultType, isRecord := p.GetResultType().(*values.RecordType)
+	if isRecord {
+		if _, isConstructor := defaultValue.(*values.RecordConstructorValue); !isConstructor {
+			value, err := defaultValue.Evaluate(nil)
+			if err != nil {
+				return QueryResult{}, err
+			}
+			if value == nil {
+				return QueryResult{Positional: NewPositionalRow(resultType)}, nil
+			}
+			return QueryResult{}, fmt.Errorf(
+				"DefaultOnEmpty non-constructor RECORD default evaluated to %T", value)
+		}
+	}
+	result, err := resultFromValue(defaultValue)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	return normalizeDefaultOnEmptyResult(p, result)
 }
 
 func executeInJoin(
@@ -1486,7 +1690,7 @@ func executeInJoin(
 	// (validated by the check bytes) and continues its inner mid-stream. The
 	// pre-A5 eager concat discarded the incoming continuation entirely — every
 	// resumed page replayed the whole IN-join from value 0.
-	bindingID := values.NamedCorrelationIdentifier(p.GetBindingName())
+	bindingID := p.GetBindingAlias()
 	outerFactory := func(cont []byte) recordlayer.RecordCursor[any] {
 		return recordlayer.FromListWithContinuation(inValues, cont)
 	}
@@ -1531,14 +1735,14 @@ func executeInUnion(
 	props recordlayer.ExecuteProperties,
 ) (recordlayer.RecordCursor[QueryResult], error) {
 	inSources := p.GetInSources()
-	bindingNames := p.GetBindingNames()
+	bindingAliases := p.GetBindingAliases()
 	if len(inSources) == 0 {
 		return ExecutePlan(ctx, p.GetInner(), store, evalCtx, continuation, props)
 	}
-	if len(bindingNames) == 0 || len(inSources) != len(bindingNames) {
+	if len(bindingAliases) == 0 || len(inSources) != len(bindingAliases) {
 		return nil, fmt.Errorf(
 			"executeInUnion: binding/source dimension mismatch (%d bindings, %d sources)",
-			len(bindingNames),
+			len(bindingAliases),
 			len(inSources),
 		)
 	}
@@ -1558,7 +1762,7 @@ func executeInUnion(
 		childContext := evalCtx
 		for i, source := range inSources {
 			childContext = childContext.WithBinding(
-				values.NamedCorrelationIdentifier(bindingNames[i]),
+				bindingAliases[i],
 				source[0],
 			)
 		}
@@ -1582,8 +1786,8 @@ func executeInUnion(
 	// continuation straight to the sole child; otherwise the children are
 	// CURSOR FACTORIES and the continuation is the UnionCursor's per-child
 	// UnionContinuation, decoded into each child's start state.
-	if len(bindingNames) == 1 && len(inSources[0]) > 0 {
-		bindingID := values.NamedCorrelationIdentifier(bindingNames[0])
+	if len(bindingAliases) == 1 && len(inSources[0]) > 0 {
+		bindingID := bindingAliases[0]
 		vals := inSources[0]
 		// childFactory tags each value's execution context with its own
 		// index (withRecursionInvocationBranch): when compKeys is non-empty
@@ -1632,7 +1836,7 @@ func executeInUnion(
 		return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
 	}
 
-	return nil, fmt.Errorf("executeInUnion: multi-binding IN union (%d bindings) not yet implemented", len(bindingNames))
+	return nil, fmt.Errorf("executeInUnion: multi-binding IN union (%d bindings) not yet implemented", len(bindingAliases))
 }
 
 // concatFactories folds N cursor factories into a right-nested chain of binary
@@ -1783,9 +1987,12 @@ func (s *mergeSortChildState) consume() {
 type mergeSortCursor struct {
 	states   []*mergeSortChildState
 	compKeys []values.Value
-	reverse  bool
-	dedup    bool
-	closed   bool
+	// compKeyPrograms holds the comparison-key program specialized per leg row
+	// shape, so a merge builds one per LEG rather than one per row.
+	compKeyPrograms comparisonKeyPrograms
+	reverse         bool
+	dedup           bool
+	closed          bool
 	// lastNoNext caches a terminal result (Java MergeCursor.onNext:291-293:
 	// once stopped, every later onNext returns the same result).
 	lastNoNext *recordlayer.RecordCursorResult[QueryResult]
@@ -1920,7 +2127,12 @@ func newMergeSortCursorFromFactories(
 		}
 		states[i] = &mergeSortChildState{cursor: factory(resumes[i].continuation), cont: cont}
 	}
-	return &mergeSortCursor{states: states, compKeys: compKeys, reverse: reverse, dedup: dedup}, nil
+	return &mergeSortCursor{
+		states:   states,
+		compKeys: compKeys,
+		reverse:  reverse,
+		dedup:    dedup,
+	}, nil
 }
 
 func (m *mergeSortCursor) IsClosed() bool { return m.closed }
@@ -2151,8 +2363,16 @@ func (m *mergeSortCursor) stopWith(reason recordlayer.NoNextReason) recordlayer.
 // planner invariant violation surfaced as a loud cursor error.
 func (m *mergeSortCursor) evalCompKeys(qr QueryResult) ([]any, error) {
 	kv := make([]any, len(m.compKeys))
-	for i, key := range m.compKeys {
-		v, err := key.Evaluate(compKeyEvalArg(qr))
+	evalKeys, inputEdges, err := m.compKeyPrograms.forRow(m.compKeys, qr.Positional)
+	if err != nil {
+		return nil, fmt.Errorf("merge comparison key program: %w", err)
+	}
+	arg, err := compKeyEvalArg(qr, inputEdges...)
+	if err != nil {
+		return nil, err
+	}
+	for i, key := range evalKeys {
+		v, err := key.Evaluate(arg)
 		if err != nil {
 			return nil, fmt.Errorf("merge comparison key %d: %w", i, err)
 		}

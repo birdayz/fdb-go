@@ -9,8 +9,16 @@ import (
 )
 
 func pred(name string) predicates.QueryPredicate {
+	root := mustFilterConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("NORMALIZE_PRED"), filterRuleRowType()))
+	return predAt(root, name)
+}
+
+func predAt(root values.Value, name string) predicates.QueryPredicate {
+	ordinal := map[string]int{"a": 0, "b": 1, "c": 2, "x": 3}[name]
+	field := mustFilterConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
 	return predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: name, Typ: values.NullableLong},
+		field,
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 }
@@ -162,27 +170,28 @@ func TestNormalizeDNF_AlreadyInDNF_ReturnsFalse(t *testing.T) {
 func TestNormalizePredicatesRule_FiresWithExistentialQuantifier(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := filterRuleScan("T")
 	scanRef := expressions.InitialOf(scan)
 	forEachQ := expressions.ForEachQuantifier(scanRef)
+	forEachRoot := mustFilterConstruct(forEachQ.RequireFlowedObjectValue())
 
-	existScan := &expressions.FullUnorderedScanExpression{}
+	existScan := filterRuleScan("E")
 	existRef := expressions.InitialOf(existScan)
 	existQ := expressions.ExistentialQuantifier(existRef)
 
 	nonCNFPred := predicates.NewOr(
-		pred("a"),
-		predicates.NewAnd(pred("b"), pred("c")),
+		predAt(forEachRoot, "a"),
+		predicates.NewAnd(predAt(forEachRoot, "b"), predAt(forEachRoot, "c")),
 	)
 
-	sel := expressions.NewSelectExpression(
-		forEachQ.GetFlowedObjectValue(),
+	sel := mustFilterConstruct(expressions.NewSelectExpression(
+		forEachRoot,
 		[]expressions.Quantifier{forEachQ, existQ},
 		[]predicates.QueryPredicate{nonCNFPred},
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewNormalizePredicatesRule(), ref)
+	yielded := fireFilterRule(t, NewNormalizePredicatesRule(), ref)
 	if len(yielded) == 0 {
 		t.Fatal("NormalizePredicatesRule should fire on SelectExpression with Existential quantifier")
 	}

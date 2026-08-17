@@ -11,14 +11,34 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRestrictedInnerConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct restricted-inner fixture: " + err.Error())
+	}
+	return value
+}
+
+func restrictedInnerRowType() values.Type {
+	return values.NewRecordType("", false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "active", FieldType: values.TypeBool, Ordinal: 2},
+	})
+}
+
+func restrictedInnerField(q expressions.Quantifier, ordinal int) values.Value {
+	root := mustRestrictedInnerConstruct(q.RequireFlowedObjectValue())
+	return mustRestrictedInnerConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
 // mkEnumIndexPlan builds a distinct physical index plan for the enumeration
 // pins below. Distinctness matters: a group whose members dedup would make an
 // arity assertion pass for the wrong reason.
 func mkEnumIndexPlan(name string) *plans.RecordQueryIndexPlan {
-	return plans.NewRecordQueryIndexPlan(
+	return mustRestrictedInnerConstruct(plans.NewRecordQueryIndexPlan(
 		name, []*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
-		[]string{"T"}, values.UnknownType, false,
-	).WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
+		[]string{"T"}, restrictedInnerRowType(), false,
+	)).WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
 }
 
 // singleMemberOf returns the sole physical member of ref, or an error string
@@ -83,11 +103,12 @@ func TestImplementFilterRuleEnumeratesDistinctRestrictedInners(t *testing.T) {
 	innerRef.InsertFinal(b)
 	innerRef.InsertFinal(c)
 
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	filter := expressions.NewLogicalFilterExpression(
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	pred := predicates.NewValuePredicate(restrictedInnerField(innerQ, 2))
+	filter := mustRestrictedInnerConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(innerRef),
-	)
+		innerQ,
+	))
 	topRef := expressions.InitialOf(filter)
 
 	// A MEMO is mandatory here. Without one MemoizeExpression falls back to
@@ -95,7 +116,7 @@ func TestImplementFilterRuleEnumeratesDistinctRestrictedInners(t *testing.T) {
 	// therefore hides the defect completely — a memo-less version of this test
 	// passes with the interning bug fully present.
 	memo := NewMemo(topRef)
-	yielded := FireExpressionRuleWithMemo(NewImplementFilterRule(), topRef, EmptyPlanContext(), memo)
+	yielded := mustFireExpressionRuleWithMemo(t, NewImplementFilterRule(), topRef, EmptyPlanContext(), memo)
 
 	byMember := map[expressions.RelationalExpression]bool{}
 	seenRefs := map[*expressions.Reference]bool{}
@@ -136,6 +157,70 @@ func TestImplementFilterRuleEnumeratesDistinctRestrictedInners(t *testing.T) {
 	}
 }
 
+// TestImplementProjectionRuleEnumeratesDistinctRestrictedInners pins the
+// parent half of the covering cost ladder. The projection implementation rule
+// must construct a separate parent over every retained physical child, rather
+// than selecting one local child and making every other access path invisible
+// to root-level costing.
+func TestImplementProjectionRuleEnumeratesDistinctRestrictedInners(t *testing.T) {
+	t.Parallel()
+
+	a := mkEnumIndexPlan("IDX_PROJ_A")
+	b := mkEnumIndexPlan("IDX_PROJ_B")
+	c := mkEnumIndexPlan("IDX_PROJ_C")
+
+	innerRef := expressions.InitialOf(a)
+	innerRef.InsertFinal(a)
+	innerRef.InsertFinal(b)
+	innerRef.InsertFinal(c)
+	innerQ := expressions.ForEachQuantifier(innerRef)
+	logicalAlias := innerQ.GetAlias()
+	projected := restrictedInnerField(innerQ, 0)
+	projection := mustRestrictedInnerConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{projected}, innerQ))
+	topRef := expressions.InitialOf(projection)
+
+	memo := NewMemo(topRef)
+	yielded := mustFireExpressionRuleWithMemo(
+		t, NewImplementProjectionRule(), topRef, EmptyPlanContext(), memo)
+
+	byMember := map[expressions.RelationalExpression]bool{}
+	seenRefs := map[*expressions.Reference]bool{}
+	for _, yieldedExpression := range yielded {
+		projectionPlan, ok := yieldedExpression.(*plans.RecordQueryProjectionPlan)
+		if !ok {
+			continue
+		}
+		ref := projectionPlan.GetInnerQuantifier().GetRangesOver()
+		if got := projectionPlan.GetInnerQuantifier().GetAlias(); got != logicalAlias {
+			t.Fatalf("projection physical edge alias = %s, want logical child alias %s; "+
+				"retained Values and fetch translation are expressed in that domain", got.Name(), logicalAlias.Name())
+		}
+		if got := ref.Stage(); got != expressions.StagePlanned {
+			t.Fatalf("a restricted physical projection child has stage %v, want StagePlanned; "+
+				"a canonical-stage visit promotes the chosen final out of the final lane, "+
+				"allowing a later physical rewrite to replace rather than compete with it", got)
+		}
+		if !ref.IsPinnedFinal() {
+			t.Fatal("a restricted physical projection child is not marked as a pinned final selection")
+		}
+		member, why := singleMemberOf(ref)
+		if why != "" {
+			t.Fatalf("a yielded Projection ranges over a reference that %s", why)
+		}
+		seenRefs[ref.Canonical()] = true
+		byMember[member] = true
+	}
+
+	if len(byMember) != 3 {
+		t.Fatalf("the rule built parents over %d distinct child members, want 3 (yielded %d expressions)",
+			len(byMember), len(yielded))
+	}
+	if len(seenRefs) != 3 {
+		t.Fatalf("the 3 projection parents share %d distinct inner references, want 3", len(seenRefs))
+	}
+}
+
 // TestImplementDeleteRuleMixedGroupDoesNotBypassTheDedup drives the dimension
 // both existing DML pins leave unprobed: a child group holding a DISTINCT
 // member and a NON-DISTINCT member at the same time.
@@ -171,17 +256,26 @@ func TestImplementDeleteRuleMixedGroupDoesNotBypassTheDedup(t *testing.T) {
 	// correctness half of the defect. memoizeNonLeaf looks a group up through its
 	// children, so with both members non-leaf both memoize to the same group and
 	// both halves are exercised.
-	childRef := expressions.InitialOf(plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false))
+	childScan := mustRestrictedInnerConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"Order"}, restrictedInnerRowType(), false))
+	childRef := expressions.InitialOf(childScan)
 	computeRefPlanProperties(childRef)
 
 	// stored + distinct: a filter delegates record-level distinctness to its
 	// child, and the child is a primary scan.
-	distinctPlan := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(
+	distinctPlan := mustRestrictedInnerConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(
 		expressions.ForEachQuantifier(childRef),
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)})
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}))
 	// stored but NOT distinct: a projection can map two records onto one tuple.
-	nonDistinctPlan := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		nil, nil, expressions.ForEachQuantifier(childRef))
+	// Project every slot so it stays an exact co-member of the pass-through
+	// filter while still carrying projection's non-distinct property.
+	projectionQ := expressions.ForEachQuantifier(childRef)
+	nonDistinctPlan := mustRestrictedInnerConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{
+			restrictedInnerField(projectionQ, 0),
+			restrictedInnerField(projectionQ, 1),
+			restrictedInnerField(projectionQ, 2),
+		}, nil, projectionQ))
 
 	// EXPLORATORY members, which is how the planner actually populates a group:
 	// implementation rules Yield into the reference (Reference.Insert), and the
@@ -207,10 +301,11 @@ func TestImplementDeleteRuleMixedGroupDoesNotBypassTheDedup(t *testing.T) {
 			"into the single-class case the existing pins already cover")
 	}
 
-	del := expressions.NewDeleteExpression(expressions.ForEachQuantifier(innerRef), "Order")
+	del := mustRestrictedInnerConstruct(expressions.NewDeleteExpression(
+		expressions.ForEachQuantifier(innerRef), "Order"))
 	topRef := expressions.InitialOf(del)
 	memo := NewMemo(topRef)
-	yielded := FireExpressionRuleWithMemo(NewImplementDeleteRule(), topRef, EmptyPlanContext(), memo)
+	yielded := mustFireExpressionRuleWithMemo(t, NewImplementDeleteRule(), topRef, EmptyPlanContext(), memo)
 
 	if len(yielded) != 2 {
 		t.Fatalf("ImplementDeleteRule yielded %d plans over a 2-member mixed "+

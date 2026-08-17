@@ -24,6 +24,19 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func orderingDispatchField(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	rowType values.Type,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	root, rootErr := values.NewQuantifiedObjectValue(alias, rowType)
+	root = mustConstruct(t, root, rootErr)
+	field, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, field, err)
+}
+
 // twoLayoutOrdinalCollision returns two baked ordering keys that occupy the SAME
 // ordinal in DIFFERENT row layouts — the shape every assertion in this file
 // needs. They are different columns of different rows by construction, and the
@@ -54,22 +67,16 @@ func twoLayoutOrdinalCollision(t *testing.T) (recordRowKey, aggregateRowKey valu
 			"lists must differ for OrdinalDomainOfType to separate them.")
 	}
 
-	recordRowKey = values.NewFieldValueWithResolvedOrdinalInDomain(
-		"ID", 0, values.UnknownType, recordDomain)
-	aggregateRowKey = values.NewFieldValueWithResolvedOrdinalInDomain(
-		"CUSTOMER_ID", 0, values.UnknownType, aggregateDomain)
+	rootAlias := values.NamedCorrelationIdentifier("ordering_row")
+	recordRowKey = orderingDispatchField(t, rootAlias, recordRow, 0)
+	aggregateRowKey = orderingDispatchField(t, rootAlias, aggregateRow, 0)
 
-	// The premise the whole file rests on, asserted rather than assumed: the
-	// structural comparison CANNOT tell these apart. If this ever stops being
-	// true the identity arm is no longer load-bearing and every assertion below
-	// becomes vacuous.
-	if !values.ValuesStructurallyEqual(recordRowKey, aggregateRowKey) {
-		t.Fatalf("test setup: ValuesStructurallyEqual now SEPARATES ordinal 0 of "+
-			"two different layouts (%q vs %q).\n\n"+
-			"That is the conflation this file's gate exists to prevent, so if the "+
-			"structural comparison started consulting the layout the gate is "+
-			"redundant — but every test below would then pass for the wrong "+
-			"reason. Find out what changed before deleting anything.",
+	// RFC-232 makes the exact root type part of every admitted FieldValue.
+	// Structural equality must therefore agree with the ordering identity gate
+	// that these are different rows, even though their ordinal paths collide.
+	if values.ValuesStructurallyEqual(recordRowKey, aggregateRowKey) {
+		t.Fatalf("test setup: exact structural equality conflated ordinal 0 of "+
+			"two different layouts (%q vs %q)",
 			values.ExplainValue(recordRowKey), values.ExplainValue(aggregateRowKey))
 	}
 
@@ -84,7 +91,7 @@ func TestIntersectionComparatorSeparatesSameSlotDifferentLayouts(t *testing.T) {
 
 	recordRowKey, aggregateRowKey := twoLayoutOrdinalCollision(t)
 
-	if intersectionValuesEqualIn(nil, recordRowKey, aggregateRowKey) {
+	if intersectionValuesEqualIn(recordRowKey, aggregateRowKey) {
 		t.Fatalf("intersectionValuesEqualIn says ordinal 0 of a record row (%q) and "+
 			"ordinal 0 of an aggregate output row (%q) are the SAME COLUMN.\n\n"+
 			"They are different columns of different rows. The comparator reached "+
@@ -97,10 +104,13 @@ func TestIntersectionComparatorSeparatesSameSlotDifferentLayouts(t *testing.T) {
 
 	// The other direction, so a gate that accidentally declines EVERYTHING does
 	// not pass this file: the same ordinal in the SAME layout is the same column.
-	sameLayoutTwin := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"ID", 0, values.UnknownType,
-		recordRowKey.(*values.FieldValue).Resolved.Domain)
-	if !intersectionValuesEqualIn(nil, recordRowKey, sameLayoutTwin) {
+	recordRow := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "STATUS", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	sameLayoutTwin := orderingDispatchField(
+		t, values.NamedCorrelationIdentifier("ordering_row"), recordRow, 0)
+	if !intersectionValuesEqualIn(recordRowKey, sameLayoutTwin) {
 		t.Fatalf("intersectionValuesEqualIn refuses two keys stating the SAME "+
 			"ordinal in the SAME layout (%q vs %q).\n\n"+
 			"A comparator that declines everything satisfies the separation "+
@@ -154,9 +164,8 @@ func TestNonFieldOrderingKeysStayWholeValueCompared(t *testing.T) {
 	layout := values.NewRecordType("", false, []values.Field{
 		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
 	})
-	domain := values.OrdinalDomainOfType(layout)
-	base := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"ID", 0, values.UnknownType, domain)
+	base := orderingDispatchField(
+		t, values.NamedCorrelationIdentifier("record_type_base"), layout, 0)
 
 	left := values.NewRecordTypeValue(base)
 	right := values.NewRecordTypeValue(base)
@@ -167,7 +176,7 @@ func TestNonFieldOrderingKeysStayWholeValueCompared(t *testing.T) {
 			"any row and has no ordinal to state; it must be compared as a whole " +
 			"Value.")
 	}
-	if !intersectionValuesEqualIn(nil, left, right) {
+	if !intersectionValuesEqualIn(left, right) {
 		t.Fatalf("intersectionValuesEqualIn refuses two structurally identical " +
 			"record-type discriminators.\n\n" +
 			"These carry no column identity by design, so an identity-or-decline " +
@@ -267,30 +276,19 @@ func TestPartitionRedundancyProofSeparatesSameSlotDifferentLayouts(t *testing.T)
 // The assertion below is transitivity over the whole triple rather than the three
 // pairs, because the three pairs are what availability dispatch also satisfied
 // individually; only the closure exposes it.
-func TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain(t *testing.T) {
+func TestOrderingComparatorsAreTransitiveAcrossExactLayouts(t *testing.T) {
 	t.Parallel()
 
 	inD1, inD2 := twoLayoutOrdinalCollision(t)
-	unknownDomain := values.NewFieldValueWithResolvedOrdinal(
-		"ID", 0, values.UnknownType)
-	if values.StatesOrderingColumn(unknownDomain) {
-		t.Fatalf("test setup: %q states a column identity, so it is not the "+
-			"UNKNOWN-domain witness; NewFieldValueWithResolvedOrdinal must keep "+
-			"minting domain-free bakes for the witness to exist",
-			values.ExplainValue(unknownDomain))
-	}
-	// The premise, asserted rather than assumed: the structural arm CANNOT tell
-	// the domain-free bake from either stated layout, so the only thing that can
-	// make the triple transitive is refusing to consult that arm for a FieldValue
-	// pair. Without this the assertion below could pass on a triple the weaker
-	// arm happened to separate anyway.
-	for _, stated := range []values.Value{inD1, inD2} {
-		if !values.ValuesStructurallyEqual(stated, unknownDomain) {
-			t.Fatalf("test setup: the structural comparison SEPARATES %q from the "+
-				"domain-free bake %q, so this triple no longer witnesses the "+
-				"intransitivity type dispatch removed and every assertion below is "+
-				"vacuous.",
-				values.ExplainValue(stated), values.ExplainValue(unknownDomain))
+	recordRow := values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "STATUS", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	inD1Twin := orderingDispatchField(
+		t, values.NamedCorrelationIdentifier("ordering_row"), recordRow, 0)
+	for _, value := range []values.Value{inD1, inD1Twin, inD2} {
+		if !values.StatesOrderingColumn(value) {
+			t.Fatalf("exact field %q did not state an ordering identity", values.ExplainValue(value))
 		}
 	}
 
@@ -300,15 +298,15 @@ func TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain(t *testing.T) {
 	}{
 		{"[0] in D1", inD1},
 		{"[0] in D2", inD2},
-		{"[0] in an UNKNOWN layout", unknownDomain},
+		{"an independent [0] in D1", inD1Twin},
 	}
 
 	for _, c := range []struct {
 		name string
 		eq   func(a, b values.Value) bool
 	}{
-		{"intersectionValuesEqualIn", func(a, b values.Value) bool { return intersectionValuesEqualIn(nil, a, b) }},
-		{"orderingValuesEqualIn", func(a, b values.Value) bool { return orderingValuesEqualIn(nil, a, b) }},
+		{"intersectionValuesEqualIn", intersectionValuesEqualIn},
+		{"orderingValuesEqualIn", orderingValuesEqualIn},
 	} {
 		// The separation the identity arm exists for. Stated first because a
 		// comparator that equated these would make the transitivity closure below
@@ -343,148 +341,81 @@ func TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain(t *testing.T) {
 			}
 		}
 
-		// The decline is TOTAL, not a weaker match: the domain-free bake is
-		// unaddressable, so it is not even equal to itself. Pinned because it is
-		// what makes the closure above hold — a reflexive-but-otherwise-declining U
-		// would still be transitive here, and this says which of the two we have.
-		if c.eq(unknownDomain, unknownDomain) {
-			t.Errorf("%s equates the domain-free bake %q with ITSELF.\n\n"+
-				"An unaddressable ordering key has no column identity to match on, so "+
-				"the comparator has nothing to decide with; if this starts passing, a "+
-				"structural or name arm is deciding FieldValue pairs again and the "+
-				"transitivity above holds only by luck of which pairs were probed.",
-				c.name, values.ExplainValue(unknownDomain))
+		if !c.eq(inD1, inD1Twin) || !c.eq(inD1Twin, inD1Twin) {
+			t.Errorf("%s refuses exact twins in the same layout (%q vs %q)",
+				c.name, values.ExplainValue(inD1), values.ExplainValue(inD1Twin))
 		}
 	}
 
-	// The ROOT axis carries the SAME defect this test cured on the domain axis,
-	// and it is not fixed. Probing only one axis is what let it through, so the
-	// second axis is probed here, in the same file, from the same triple shape.
-	assertRootAxisWitnessStillIntransitive(t)
+	assertExactRootAxisIsTransitive(t)
 }
 
-// selfJoinRootCollision returns the three ordering keys of the root-axis
-// witness: ONE childless key and TWO QOV-rooted keys over the same column of the
-// same layout, read off two DIFFERENT quantifiers.
+// selfJoinRootCollision returns three exact QOV-rooted ordering keys over the
+// same path and row layout. Two read from O and one reads from I.
 //
 // This is a self-join's shape. `o.A` and `i.A` share a layout token (both
 // quantifiers range over the same table, and OrdinalDomain is derived from the
 // layout's CONTENT, so the same table yields the same token) and share an
-// ordinal, and they are different columns. The childless key is what a candidate
-// mint and a source-relative request produce.
-func selfJoinRootCollision(t *testing.T) (childless, outerA, innerA values.Value) {
+// ordinal, but they are different columns. Independently resolved reads from O
+// must compare equal while a read from I must remain distinct.
+func selfJoinRootCollision(t *testing.T) (outerATwin, outerA, innerA values.Value) {
 	t.Helper()
 
 	row := values.NewRecordType("", false, []values.Field{
 		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
 		{Name: "B", FieldType: values.NullableLong, Ordinal: 1},
 	})
-	domain := values.OrdinalDomainOfType(row)
-	if !domain.IsKnown() {
-		t.Fatalf("test setup: the self-join row has no domain token")
-	}
-
 	outer := values.NamedCorrelationIdentifier("O")
 	inner := values.NamedCorrelationIdentifier("I")
 
-	childless = values.NewFieldValueWithResolvedOrdinalInDomain(
-		"A", 0, values.UnknownType, domain)
-	outerA = values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(outer), "A", 0, values.UnknownType, domain)
-	innerA = values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(inner), "A", 0, values.UnknownType, domain)
+	outerATwin = orderingDispatchField(t, outer, row, 0)
+	outerA = orderingDispatchField(t, outer, row, 0)
+	innerA = orderingDispatchField(t, inner, row, 0)
 
-	// All three STATE a column identity. This is the property that makes the
-	// witness invisible to the corpus census's FieldPairsDecided bucket, and it
-	// is what distinguishes the root axis from the domain axis: no dispatch
-	// change can reach this defect, because every pair below is already decided
-	// by the FINAL identity arm.
-	for _, v := range []values.Value{childless, outerA, innerA} {
+	// All three state a complete column identity, including an exact root.
+	for _, v := range []values.Value{outerATwin, outerA, innerA} {
 		if !values.StatesOrderingColumn(v) {
-			t.Fatalf("test setup: %q states NO column identity, so this triple is "+
-				"the domain-axis witness again rather than the root-axis one; all "+
-				"three keys must be decided by the identity arm for the root "+
-				"asymmetry to be the only thing under test",
+			t.Fatalf("test setup: %q states no complete column identity; all "+
+				"three keys must be decided by the exact identity arm",
 				values.ExplainValue(v))
 		}
 	}
 
-	return childless, outerA, innerA
+	return outerATwin, outerA, innerA
 }
 
-// assertRootAxisWitnessStillIntransitive records a defect that is REAL, MEASURED
-// and NOT YET FIXED, in the same blocked-negative form the domain-axis witness
-// used before its fix landed: it asserts the WRONG behaviour on purpose so the
-// defect cannot be forgotten, and it goes RED the moment the fix arrives.
-//
-// values.SameOrderingColumn treats the ZERO correlation as a WILDCARD: a
-// childless key bridges to a QOV-rooted one, while two DIFFERENT named
-// quantifiers decline. In a self-join that is exactly the intransitive triple
-// type dispatch removed from the domain axis:
-//
-//	C    = childless [0] in D(R)      states an identity
-//	o.A  = [0] in D(R) off quantifier O   states an identity
-//	i.A  = [0] in D(R) off quantifier I   states an identity
-//
-// C ≡ o.A (wildcard), C ≡ i.A (wildcard), o.A ≢ i.A (two named quantifiers are
-// different columns). All three are decided INSIDE the final identity arm, so
-// unlike the domain axis no dispatch change can reach this — and the corpus
-// census lumps all three pairs into FieldPairsDecided, where they are invisible.
-//
-// THE FIX IS NOT TO DELETE THE WILDCARD. The childless bridge is load-bearing:
-// a candidate mints its ordering keys childless while a request scoped to its
-// owning quantifier does not, and removing the bridge would decline every such
-// match. The fix is to give the childless side a real correlation — CQ-55-A2's
-// correlation-space translation, which resolves a source-relative root to the
-// quantifier it actually reads — at which point the wildcard has nothing left to
-// do and the triple collapses.
-//
-// What keeps this a PIN rather than a live hazard is measured, not argued:
-// pkg/relational/conformance/explaindiff's ordering-census test counts the
-// childless↔QOV bridges whose comparison context also holds a second distinct
-// QOV root — the population where this triple could actually form — and asserts
-// that count is ZERO over the corpus.
-//
-// When A2 lands, both assertions below go RED. Delete this function and fold the
-// root triple into the transitivity closure above.
-func assertRootAxisWitnessStillIntransitive(t *testing.T) {
+// assertExactRootAxisIsTransitive pins exact-root identity: same root and path
+// admits; a foreign root with the same type and path declines. This is the
+// mutation-sensitive guard against reintroducing a zero-root wildcard.
+func assertExactRootAxisIsTransitive(t *testing.T) {
 	t.Helper()
 
-	childless, outerA, innerA := selfJoinRootCollision(t)
+	outerATwin, outerA, innerA := selfJoinRootCollision(t)
 
 	for _, c := range []struct {
 		name string
 		eq   func(a, b values.Value) bool
 	}{
-		{"intersectionValuesEqualIn", func(a, b values.Value) bool { return intersectionValuesEqualIn(nil, a, b) }},
-		{"orderingValuesEqualIn", func(a, b values.Value) bool { return orderingValuesEqualIn(nil, a, b) }},
+		{"intersectionValuesEqualIn", intersectionValuesEqualIn},
+		{"orderingValuesEqualIn", orderingValuesEqualIn},
 	} {
 		// The separation that is CORRECT and must not regress: two named
 		// quantifiers over the same table are different columns.
 		if c.eq(outerA, innerA) {
 			t.Errorf("%s equates %q and %q — two DIFFERENT quantifiers over the "+
-				"same table. That is a self-join conflation and a REGRESSION, not "+
-				"progress on the intransitivity below.",
+				"same table. That is a self-join conflation and a regression in "+
+				"exact-root identity.",
 				c.name, values.ExplainValue(outerA), values.ExplainValue(innerA))
 			continue
 		}
 
-		// The defect: the zero correlation bridges to BOTH of them.
-		toOuter := c.eq(childless, outerA)
-		toInner := c.eq(childless, innerA)
-		if !toOuter || !toInner {
-			t.Errorf("%s no longer bridges the childless key %q to BOTH named "+
-				"quantifiers (%q: %v, %q: %v).\n\n"+
-				"If that is because the childless root now carries a real "+
-				"correlation (CQ-55-A2's correlation-space translation), the defect "+
-				"this pin records is FIXED: delete assertRootAxisWitnessStillIntransitive "+
-				"and fold this triple into the transitivity closure above. If instead "+
-				"the wildcard was simply deleted, check that candidate-vs-request "+
-				"ordering matches still form at all — the bridge is load-bearing "+
-				"and removing it declines every source-relative candidate key.",
-				c.name, values.ExplainValue(childless),
-				values.ExplainValue(outerA), toOuter,
-				values.ExplainValue(innerA), toInner)
+		if !c.eq(outerATwin, outerA) {
+			t.Errorf("%s refuses independently resolved reads of the same exact root (%q vs %q)",
+				c.name, values.ExplainValue(outerATwin), values.ExplainValue(outerA))
+		}
+		if c.eq(outerATwin, innerA) {
+			t.Errorf("%s bridges exact root O (%q) to exact root I (%q)",
+				c.name, values.ExplainValue(outerATwin), values.ExplainValue(innerA))
 		}
 	}
 }

@@ -26,7 +26,7 @@ That is the whole defect class. A name that is re-derived can be derived *differ
 
 - **RFC-227**: the hidden sort column was named by its rendering rather than its path, so two `ORDER BY` keys under one struct root collapsed. Silently wrong row order.
 - **`AggregateKeyColumnName`** still renders the flat struct root, so `GROUP BY n.sk, n.co` would collapse two grouping columns into one. Unreachable today only because nested-path `GROUP BY` is refused with 42703 — pinned as a tripwire, and NOT fixed here; see §6.
-- **`ProjectionColumnName`** returns `fv.Field` for a `FieldValue` but `ToUpper(ExplainValue(v))` for anything else, and `ExplainValue` renders ordinals. So a computed projection over a *baked* field renders `(N#0 + 1)` where the same expression pre-bake renders `(N + 1)`. Writers and readers agree only if they derive on the same side of the bake. The asymmetry is real; **rev 1 named the wrong mask for it** — the short-circuit that hides it is `isPlainColumnRef` in the result-set layer, not an alias check in `OutputColumnName`. That correction matters because §7's test would otherwise have pinned a mask that does not exist and reported green.
+- **`ProjectionColumnName`** returned `fv.Field` for a `FieldValue` but `ToUpper(ExplainValue(v))` for anything else, and `ExplainValue` renders ordinals. So a computed projection over a *baked* field rendered `(N#0 + 1)` where the same expression pre-bake rendered `(N + 1)`. Writers and readers agreed only if they derived on the same side of the bake. The asymmetry was real; **rev 1 named the wrong mask for it** — the short-circuit that hid it is `isPlainColumnRef` in the result-set layer, not an alias check in `OutputColumnName`. That correction matters because §7's test would otherwise have pinned a mask that does not exist and reported green. **CLOSED**: the composite arm mints from `ColumnNameValue`, the ordinal-free renderer the other name-derivation sites already used, so the name no longer moves when its operands bake and the mask is now redundant rather than load-bearing. It was not cosmetic — the derived name is re-read downstream as a `FieldValue`'s `Field` text, so the `#` it carried reached the explain escape and a slot key came out as `(C1.ID##0 + 1)` (`cte.yaml#25`, the only doubled `#` in the 17229-line plan-shape corpus).
 
 Three instances, three different mechanisms, one cause. The cause is that the name is a function call rather than a fact.
 
@@ -150,7 +150,7 @@ Two things survive the cut. Continuations are clean: they serialize the evaluate
 
 - The every-arm unit pin on the stored name: minted, copied, rebuilt, rebased — a column that loses its name across any of the four fails, because that is the contract §2.1 claims.
 - A nested-path projection asserting the stored name is the PATH and not the root, which is the §2.3 claim stated as a test rather than as a comment.
-- The pre-bake/post-bake rendering asymmetry from §0 pinned directly — against `isPlainColumnRef` in the result-set layer, which is the mask that actually hides it. Rev 1 named `OutputColumnName`'s alias check instead, so this test would have pinned a mask that does not exist and reported green.
+- The pre-bake/post-bake rendering asymmetry from §0 pinned directly — against `isPlainColumnRef` in the result-set layer, which is the mask that actually hid it. Rev 1 named `OutputColumnName`'s alias check instead, so this test would have pinned a mask that does not exist and reported green. **Now that §0's third bullet is closed the pin is the asymmetry's ABSENCE**, driven both ways: the two spellings agree, and the agreed spelling is asserted literally, because "they agree" is satisfied by a renderer that dropped the operand names entirely.
 - `groupby_nested_key_collapse_fdb_test.go` flips from asserting the 42703 refusal to asserting 4 groups for `GROUP BY n.sk, n.co` and 2 for each single-key query — when, and only when, nested-path `GROUP BY` lands.
 - **A name-only difference DOES split the memo, and that must not change.** Rev 3 asked for the opposite and was wrong about current behaviour (§2.2.1). The pin therefore guards the existing contract: `SELECT k AS a` and `SELECT k AS b` compare unequal and hash unequal, with a no-alias control that compares equal — so an implementation that quietly drops the name out of identity fails here rather than shipping as a silent planner change.
 - **The duplicate-name policy of §2.2.2**, driven from a test rather than left to the first collision in production: two projected columns of one name produce NO stored name on either, and readers fall through to the positional identity.
@@ -242,12 +242,21 @@ contract by being derived from it, not by being copied beside it. Adding a slot
 would put a second name beside the first with nothing forcing them to agree —
 which is the defect class this RFC exists to close, arriving as its fix.
 
-The contract does fail for ONE population: a COMPUTED expression, whose
-rendering gains `#ordinal` discriminators when its operands bake. That is §0's
-pre/post-bake asymmetry, it is out of §2.3's nested-only scope, and it is
-asserted as the boundary rather than omitted. A slot would "fix" it by freezing
-the pre-bake spelling — a behaviour change §2 neither proposes nor justifies,
-and the label such a column actually receives is the positional `_i` anyway.
+The contract failed for ONE population when this was written: a COMPUTED
+expression, whose rendering gained `#ordinal` discriminators when its operands
+baked. That is §0's pre/post-bake asymmetry, it was out of §2.3's nested-only
+scope, and it was asserted as the boundary rather than omitted. A slot would
+have "fixed" it by freezing the pre-bake spelling — a behaviour change §2
+neither proposes nor justifies, and the label such a column actually receives is
+the positional `_i` anyway.
+
+**The population is now empty, and NOT via a slot** — which is the outcome this
+section predicted the right shape of. The composite arm derives from
+`ColumnNameValue` rather than `ExplainValue`, so there is no second name to keep
+in agreement with the first: the ordinal-free rendering is a *function of the
+same `Resolved` path*, inheriting its preserve-on-copy contract exactly as
+§2.3's nested names do. The boundary this section drew was correct; what it
+took to erase it was making the derivation ordinal-free, not storing it.
 
 ### 8.3 REFUTED AS PRESCRIBED: §2.2.2 asks for a mechanism Go should not adopt
 

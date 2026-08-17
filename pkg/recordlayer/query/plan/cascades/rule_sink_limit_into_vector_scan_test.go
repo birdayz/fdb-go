@@ -12,28 +12,42 @@ import (
 func TestSinkLimitIntoVectorScanRule_FiresForMatchingLiteralLimit(t *testing.T) {
 	t.Parallel()
 
-	vector := plans.NewRecordQueryVectorIndexPlan(
+	row := values.NewRecordType("VectorRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "embedding", FieldType: values.NewArrayType(false, values.NotNullDouble)},
+	})
+	vector, err := plans.NewRecordQueryVectorIndexPlan(
 		"vector_idx",
 		nil,
-		values.LiteralValue([]float64{1, 2, 3}),
-		values.LiteralValue(int64(5)),
+		&values.ConstantValue{Value: []float64{1, 2, 3}, Typ: values.NewArrayType(false, values.NotNullDouble)},
+		&values.ConstantValue{Value: int64(5), Typ: values.NotNullLong},
 		predicates.ComparisonDistanceRankLessThanOrEq,
 		nil,
 		nil,
 		[]string{"T"},
-		values.UnknownType,
-	).WithOrderedStream()
-	limit := plans.NewRecordQueryLimitPlanFromQuantifier(
+		row,
+	)
+	if err != nil {
+		t.Fatalf("NewRecordQueryVectorIndexPlan: %v", err)
+	}
+	vector = vector.WithOrderedStream()
+	limit, err := plans.NewRecordQueryLimitPlanFromQuantifier(
 		expressions.ForEachQuantifier(expressions.InitialOf(vector)),
 		5,
 		0,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("NewRecordQueryLimitPlanFromQuantifier: %v", err)
+	}
 
-	yielded := FireImplementationRule(
+	yielded, err := FireImplementationRule(
 		NewSinkLimitIntoVectorScanRule(),
 		expressions.InitialOf(limit),
 	)
+	if err != nil {
+		t.Fatalf("FireImplementationRule: %v", err)
+	}
 	if len(yielded) != 1 {
 		t.Fatalf("expected one self-limiting vector scan, got %d", len(yielded))
 	}

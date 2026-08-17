@@ -507,19 +507,18 @@ func TestGapSignaturesAreSpecific(t *testing.T) {
 // statementExactGaps are the gap entries whose signature must quote the EXACT
 // failing statement rather than the class-level rejection text alone.
 //
-// Both files are big — array-join-at.yamsql is thirty PartiQL AT shapes, and
-// functions.yamsql asserts 111 queries — and both were originally pinned to a
-// message their file can produce from many different statements ("Cascades
-// planner could not plan query"; "actual result set is NULL, expecting non-NULL
-// result set"). A signature that generic converts the entry from "this measured
-// divergence" into "any failure of this shape anywhere in the file", which is
-// precisely the mute allowlist the gap table exists not to be: a NEW decline at
-// a different query would have been counted as the known one and the run would
-// have stayed green.
+// These files are big — array-join-at.yamsql is thirty PartiQL AT shapes,
+// table-functions.yamsql contains several range() calls, and functions.yamsql
+// asserts 111 queries. A generic signature converts the entry from "this
+// measured divergence" into "any failure of this shape anywhere in the file",
+// which is precisely the mute allowlist the gap table exists not to be: a NEW
+// decline at a different query would have been counted as the known one and the
+// run would have stayed green.
 //
 // The values are prefixes of the runner's `%q`-formatted statement text, so the
 // embedded SQL quotes appear escaped.
 var statementExactGaps = map[string]string{
-	"array-join-at.yamsql": `"SELECT \"subquery\".\"id\" - 100 AS \"id\", \"at\", \"val\" FROM (SELECT \"id\" + 100 AS \"id\", \"arr1\" FROM T1) AS \"subquery\"`,
-	"functions.yamsql":     `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st"`,
+	"array-join-at.yamsql":   `"SELECT T2.\"id\", \"at1\", \"val1\", \"at2\", \"val2\" FROM T2`,
+	"functions.yamsql":       `"update C set st = coalesce(st, null) where c1 = 4 returning \"new\".st"`,
+	"table-functions.yamsql": `"select * from range(1, 4)"`,
 }

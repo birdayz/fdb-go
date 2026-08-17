@@ -68,7 +68,7 @@ func TestExplainOnlyModeWithSchema_StillRendersLogicalText(t *testing.T) {
 	got := explainOnlyTextWithSchema(t,
 		"CREATE SCHEMA TEMPLATE tmpl CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))",
 		"SELECT * FROM t WHERE id > 5")
-	if want := "Filter(ID#0 > 5)\n  Scan(T)"; got != want {
+	if want := "Filter(T.ID#0 > 5)\n  Scan(T)"; got != want {
 		t.Fatalf("explain-only-with-schema text = %q, want %q", got, want)
 	}
 }

@@ -1,6 +1,7 @@
 package query
 
 import (
+	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -172,29 +173,28 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if ownerWindow.bakeCorr != "" {
 		ownerCorr = strings.ToUpper(ownerWindow.bakeCorr)
 	}
-	ownerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(ownerCorr), ownerWindow.typ)
-	collection, err := values.NewFieldValueOfOrdinal(ownerQOV, ownerWindow.leafOffset+arrIdx)
+	ownerQOV, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(ownerCorr), ownerWindow.typ)
 	if err != nil {
 		return nil
 	}
+	suffix := make([]values.FieldRequest, 0, len(u.Segments)-2)
 	if len(u.Segments) > 2 {
-		suffix := make([]values.ResolvedAccessor, 0, len(u.Segments)-2)
 		for _, seg := range u.Segments[2:] {
-			// NAME-addressed: the struct descent (FieldValue's proto-message
-			// arm) resolves each suffix step by field NAME. Ordinal is the
-			// LOUD sentinel -1 — a struct materializes as a proto message, not
-			// a positional row, so the ordinal is never consulted; should one
-			// ever reach the OrdinalRow descent arm, Get(-1) fails
-			// out-of-range (a clean error) rather than silently reading slot 0.
-			suffix = append(suffix, values.ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1})
+			request, requestErr := values.FieldByName(strings.ToUpper(seg))
+			if requestErr != nil {
+				return nil
+			}
+			suffix = append(suffix, request)
 		}
-		fused := collection.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
-		collection = &values.FieldValue{Field: strings.ToUpper(fieldName), Typ: collection.Typ, Child: collection.Child, Resolved: fused}
 	}
-	// The baked node carries the leg type's field TYPE for the array column;
-	// the classifier's proto-derived element type is authoritative for the
-	// Explode (ordinalLegType columns are best-effort for derived shapes).
-	collection.Typ = values.NewArrayType(true, elementType)
+	collection, err := values.ResolveOrdinalSeedAccess(ownerQOV, ownerWindow.leafOffset+arrIdx, suffix)
+	if err != nil {
+		return nil
+	}
+	wantArray := values.NewArrayType(collection.Type().IsNullable(), elementType)
+	if !collection.Type().Equals(wantArray) {
+		return nil
+	}
 
 	// Legs translate FRESH (legs of a GATED parent gate
 	// independently); the Explode is one more ordinary quantifier, correlated
@@ -229,7 +229,11 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		fieldsAt += len(legTypes[legs[i].binding].typ.Fields)
 	}
 
-	explode := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
+	explode, err := expressions.NewExplodeExpressionWithOrdinality(collection, u.AtAlias != "")
+	if err != nil {
+		t.setTranslateErr(err)
+		return nil
+	}
 	explodeQ := expressions.NamedForEachQuantifier(innerCorr, expressions.InitialOf(explode))
 	quantifiers = append(quantifiers[:unnestPos:unnestPos],
 		append([]expressions.Quantifier{explodeQ}, quantifiers[unnestPos:]...)...)
@@ -311,13 +315,17 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 		t.unnestGatherBoxLegTypes[j] = legTypes
 	}
 
-	seedSel := expressions.NewSelectExpressionWithJoinType(
+	seedSel, err := expressions.NewSelectExpressionWithJoinType(
 		rc,
 		quantifiers,
 		preds,
 		sourceAliases,
 		expressions.JoinInner,
 	)
+	if err != nil {
+		t.setTranslateErr(err)
+		return nil
+	}
 	return seedSel
 }
 
@@ -329,12 +337,12 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 // slot (element-first — winning the bare namespace over a same-named outer column,
 // the name-model shadow), and slotInGatheredSeed consults the resulting element slots.
 func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifier) bool {
-	switch tv := v.(type) {
-	case *values.QuantifiedObjectValue:
-		return tv.Correlation == inner
-	case *values.FieldValue:
-		if qov, ok := tv.Child.(*values.QuantifiedObjectValue); ok {
-			return qov.Correlation == inner
+	if qov, ok := values.AsQuantifiedObjectValue(v); ok {
+		return qov.Correlation() == inner
+	}
+	if field, ok := values.AsFieldValue(v); ok {
+		if qov, isQOV := values.AsQuantifiedObjectValue(field.ChildValue()); isQOV {
+			return qov.Correlation() == inner
 		}
 	}
 	return false
@@ -364,16 +372,28 @@ func fieldValueReferencesInner(v values.Value, inner values.CorrelationIdentifie
 // failed to select a window still read the element. The flag gates the whole bare
 // namespace today because slotInGatheredSeed declines every unresolved qualified
 // read before either bare arm — see the gate there.
-func bakeGatheredGroupValue(v values.Value, windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow, elementSlots map[string]int, seedQOV values.Value) values.Value {
-	return values.Replace(v, func(node values.Value) values.Value {
-		fv, isFV := node.(*values.FieldValue)
+func bakeGatheredGroupValue(
+	v values.Value,
+	windows map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow,
+	elementSlots map[string]int,
+	seedQOV values.Value,
+) (values.Value, error) {
+	if _, ok := values.AsQuantifiedObjectValue(seedQOV); !ok {
+		return nil, fmt.Errorf("gathered group value has no exact seed owner")
+	}
+	var bindErr error
+	bakedValue := values.Replace(v, func(node values.Value) values.Value {
+		if bindErr != nil {
+			return node
+		}
+		fv, isFV := values.AsFieldValue(node)
 		// A source-relative baked ref names a seed slot like its lazy twin —
 		// re-bake it here; only machinery-owned baked nodes are final.
 		// SourceRelativeBaked() requires len(Accessors) == 1, so a multi-accessor element MEMBER is skipped here; measured NOT to reproduce the sibling silent drop (TestFDB_UnnestElementMemberInGather), classification still owed (TODO.md).
-		if !isFV || (fv.Resolved != nil && !fv.SourceRelativeBaked()) {
+		if !isFV || fv.Path().Len() != 1 || fv.Path().IsFrontierPinned() {
 			return node
 		}
-		qualified, col := false, strings.ToUpper(fv.Field)
+		qualified, col := false, strings.ToUpper(fv.DisplayName())
 		// corr is the reference's OWN correlation where it has one, and the zero
 		// identifier where the qualifier was sliced out of the NAME instead. Both
 		// arms used to produce a string and hand it to one lookup, which made them
@@ -397,23 +417,29 @@ func bakeGatheredGroupValue(v values.Value, windows map[values.CorrelationIdenti
 		// routing flat-dotted names here reads RED instead of silently declining the
 		// gather to the name model.
 		var corr values.CorrelationIdentifier
-		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-			qualified, corr = true, qov.Correlation
+		if qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue()); ok {
+			qualified, corr = true, qov.Correlation()
 		} else if dot := strings.IndexByte(col, '.'); dot >= 0 {
 			qualified, col = true, col[dot+1:]
 		}
 		if slot, ok := slotInGatheredSeed(windows, elementSlots, corr, col, qualified); ok {
-			if baked, err := values.NewFieldValueOfOrdinal(seedQOV, slot); err == nil {
-				// The positional read (Resolved ordinal) is authoritative; Field is
-				// display-only. Preserve the ORIGINAL reference's display name so the
-				// group-by OUTPUT column matches what the SELECT projects (`EL`, `A.K`).
-				values.NoteFieldValueMint(fv.Field, baked.Resolved != nil)
-				baked.Field = fv.Field
-				return baked
+			baked, err := values.ResolveFieldOrdinals(seedQOV, []int{slot})
+			if err != nil {
+				bindErr = fmt.Errorf("gathered seed slot %d: %w", slot, err)
+				return node
 			}
+			if fv.ResultType() == nil || baked.Type() == nil || !fv.ResultType().Equals(baked.Type()) {
+				bindErr = fmt.Errorf("gathered seed slot %d changes the source field type", slot)
+				return node
+			}
+			return baked
 		}
 		return node
 	})
+	if bindErr != nil {
+		return nil, bindErr
+	}
+	return bakedValue, nil
 }
 
 // slotInGatheredSeed resolves a group-by key / operand reference to its flat slot in

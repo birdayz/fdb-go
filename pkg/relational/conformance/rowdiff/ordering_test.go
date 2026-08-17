@@ -28,9 +28,13 @@ func eqRange(t *testing.T, lit any) *predicates.ComparisonRange {
 // indexScan builds a synthetic RecordQueryIndexPlan carrying the metadata the
 // ordering derivation reads: index key columns, primary-key columns, direction,
 // and per-column scan comparisons.
-func indexScan(cols, pk []string, reverse bool, comps ...*predicates.ComparisonRange) *plans.RecordQueryIndexPlan {
-	p := plans.NewRecordQueryIndexPlan("IDX", comps, nil, nil, reverse)
-	return p.WithIndexMetadata(cols, pk, false)
+func indexScan(t testing.TB, cols, pk []string, reverse bool, comps ...*predicates.ComparisonRange) *plans.RecordQueryIndexPlan {
+	t.Helper()
+	p, err := plans.NewRecordQueryIndexPlan(
+		"IDX", comps, []string{"T"}, rowdiffPlanFixtureType(), reverse)
+	p = mustRowdiffPlan(t, p, err).WithIndexMetadata(cols, pk, false)
+	return p.WithKeyComponentTypes(rowdiffColumnTypes(t, cols)).
+		WithPrimaryKeyComponentTypes(rowdiffColumnTypes(t, pk))
 }
 
 // The arms of the ordering derivation, as the sweep's vacuity floors name them.
@@ -68,11 +72,11 @@ func orderingLeafArm(p plans.RecordQueryPlan) string {
 // finding rather than as an untested branch.
 func TestOrderingLeafArm_EveryArm(t *testing.T) {
 	t.Parallel()
-	idx := indexScan([]string{"B"}, []string{"ID"}, false, predicates.EmptyComparisonRange())
-	cov := plans.NewRecordQueryCoveringIndexPlan(idx)
-	scan := plans.NewRecordQueryScanPlan(nil, nil, false)
+	idx := indexScan(t, []string{"B"}, []string{"ID"}, false, predicates.EmptyComparisonRange())
+	cov := rowdiffTestCovering(t, idx)
+	scan := rowdiffTestScan(t, false)
 	fetch := func(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
-		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, nil, nil, plans.FetchIndexRecordsPrimaryKey)
+		return rowdiffTestFetch(t, inner)
 	}
 	cases := []struct {
 		name string
@@ -85,7 +89,7 @@ func TestOrderingLeafArm_EveryArm(t *testing.T) {
 		{"fetch over index scan", fetch(idx), orderingArmIndex},
 		{"fetch over covering scan", fetch(cov), orderingArmIndex},
 		{"nested pass-throughs over a pk scan", fetch(fetch(scan)), orderingArmPrimaryKey},
-		{"a sort ends the derivation", plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{Field: "ID"}}), orderingArmOther},
+		{"a sort ends the derivation", rowdiffTestSort(t, scan, []plans.SortKey{{Field: "ID"}}), orderingArmOther},
 		{"nil plan", nil, orderingArmOther},
 	}
 	for _, tc := range cases {
@@ -108,11 +112,11 @@ func TestOrderingLeafArm_EveryArm(t *testing.T) {
 func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 	t.Parallel()
 
-	fwdScan := plans.NewRecordQueryScanPlan(nil, nil, false)
-	revScan := plans.NewRecordQueryScanPlan(nil, nil, true)
+	fwdScan := rowdiffTestScan(t, false)
+	revScan := rowdiffTestScan(t, true)
 
 	sortOver := func(inner plans.RecordQueryPlan, keys ...plans.SortKey) *plans.RecordQueryInMemorySortPlan {
-		return plans.NewRecordQueryInMemorySortPlan(inner, keys)
+		return rowdiffTestSort(t, inner, keys)
 	}
 	idKey := plans.SortKey{Field: "ID"}
 	idDescKey := plans.SortKey{Field: "ID", Desc: true}
@@ -136,18 +140,18 @@ func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 	}
 	// ORDER BY id over an ALL-equality-bound index scan (index [A], A = 5) —
 	// entries are (5, id), so the stream is already ID-ordered.
-	allEqIdxA := indexScan([]string{"A"}, []string{"ID"}, false, eqRange(t, int64(5)))
+	allEqIdxA := indexScan(t, []string{"A"}, []string{"ID"}, false, eqRange(t, int64(5)))
 	if got := checkPlanOrdering(sortOver(allEqIdxA, idKey), orderByID); len(got) == 0 {
 		t.Fatal("redundant sort over an all-equality index scan (ORDER BY id) not flagged")
 	}
 	// ORDER BY b, id over a forward index [B] scan — provides (b, id).
-	fwdIdxB := indexScan([]string{"B"}, []string{"ID"}, false, predicates.EmptyComparisonRange())
+	fwdIdxB := indexScan(t, []string{"B"}, []string{"ID"}, false, predicates.EmptyComparisonRange())
 	if got := checkPlanOrdering(sortOver(fwdIdxB, bKey, idKey), orderByBID); len(got) == 0 {
 		t.Fatal("redundant sort over a forward index [B] scan (ORDER BY b, id) not flagged")
 	}
 	// Same, but through an order-preserving FETCH pass-through above the scan
 	// (the non-covering index shape the real planner produces).
-	fetchIdxB := plans.NewRecordQueryFetchFromPartialRecordPlan(fwdIdxB, nil, nil, plans.FetchIndexRecordsPrimaryKey)
+	fetchIdxB := rowdiffTestFetch(t, fwdIdxB)
 	if got := checkPlanOrdering(sortOver(fetchIdxB, bKey, idKey), orderByBID); len(got) == 0 {
 		t.Fatal("redundant sort over Fetch(index [B] scan) not flagged (pass-through not walked)")
 	}
@@ -158,11 +162,11 @@ func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 	// and this detector goes silent on every index shape in the corpus — a clean
 	// report produced by not running, which is the failure mode a nightly net
 	// cannot afford.
-	covIdxB := plans.NewRecordQueryCoveringIndexPlan(fwdIdxB)
+	covIdxB := rowdiffTestCovering(t, fwdIdxB)
 	if got := checkPlanOrdering(sortOver(covIdxB, bKey, idKey), orderByBID); len(got) == 0 {
 		t.Fatal("redundant sort over Covering(index [B] scan) not flagged — the ordering derivation does not reach the covering shape, so it reports clean by never running")
 	}
-	fetchCovIdxB := plans.NewRecordQueryFetchFromPartialRecordPlan(covIdxB, nil, nil, plans.FetchIndexRecordsPrimaryKey)
+	fetchCovIdxB := rowdiffTestFetch(t, covIdxB)
 	if got := checkPlanOrdering(sortOver(fetchCovIdxB, bKey, idKey), orderByBID); len(got) == 0 {
 		t.Fatal("redundant sort over Fetch(Covering(index [B] scan)) not flagged — this is the exact shape the access path emits")
 	}
@@ -188,8 +192,8 @@ func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 	// Reaching the covering shape must not turn the detector into something that
 	// knows more than the planner: a covering scan over a REVERSE index with a
 	// mixed-direction ORDER BY stays clean, exactly as the bare shape does.
-	covRevIdxA := plans.NewRecordQueryCoveringIndexPlan(
-		indexScan([]string{"A"}, []string{"ID"}, true, predicates.EmptyComparisonRange()))
+	covRevIdxA := rowdiffTestCovering(t,
+		indexScan(t, []string{"A"}, []string{"ID"}, true, predicates.EmptyComparisonRange()))
 	orderByADescIDCov := Query{OrderBy: []OrderKey{{Col: "A", Desc: true}, {Col: "ID"}}}
 	if got := checkPlanOrdering(sortOver(covRevIdxA, aDescKey, idKey), orderByADescIDCov); len(got) != 0 {
 		t.Fatalf("covering scan with a mixed direction (a DESC, id ASC) flagged: %v", got)
@@ -206,14 +210,14 @@ func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 	// ORDER BY a DESC, id over a REVERSE index [A] scan — reverse gives
 	// (a desc, id DESC) but the query wants id ASC: mixed direction, sort
 	// needed.
-	revIdxA := indexScan([]string{"A"}, []string{"ID"}, true, predicates.EmptyComparisonRange())
+	revIdxA := indexScan(t, []string{"A"}, []string{"ID"}, true, predicates.EmptyComparisonRange())
 	orderByADescID := Query{OrderBy: []OrderKey{{Col: "A", Desc: true}, {Col: "ID"}}}
 	if got := checkPlanOrdering(sortOver(revIdxA, aDescKey, idKey), orderByADescID); len(got) != 0 {
 		t.Fatalf("sort with a mixed direction (a DESC, id ASC) flagged: %v", got)
 	}
 	// ORDER BY a NULLS LAST, id over a forward index [A] scan — forward emits
 	// NULLs FIRST, so a NULLS LAST request genuinely needs the sort.
-	fwdIdxA := indexScan([]string{"A"}, []string{"ID"}, false, predicates.EmptyComparisonRange())
+	fwdIdxA := indexScan(t, []string{"A"}, []string{"ID"}, false, predicates.EmptyComparisonRange())
 	orderByANullsLast := Query{OrderBy: []OrderKey{{Col: "A", Nulls: NullsLast}, {Col: "ID"}}}
 	if got := checkPlanOrdering(sortOver(fwdIdxA, aKey, idKey), orderByANullsLast); len(got) != 0 {
 		t.Fatalf("sort over a nullable column with a NULLS-placement mismatch flagged: %v", got)
@@ -236,8 +240,9 @@ func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 }
 
 // TestSortKeysMatchOrderBy_QualifiedKeyNeverMatches pins the shape that made the
-// guard's leaf-name comparison unsound: a plan sort key carries a LEAF name, an
-// ORDER BY key carries `Qual` too, and matching leaf-to-leaf throws the leg away.
+// old display-name comparison unsound: an ORDER BY key carries `Qual`, while a
+// resolved field ordinal is local to its root row and cannot identify the SQL
+// leg without an explicit qualifier-to-correlation mapping.
 //
 // The vectors here are the generator's own — gen.go emits `ORDER BY l.id [DESC],
 // r.id` for a self-join and `l.id, m.id, r.id` for a 3-way — so the leaf names
@@ -247,7 +252,9 @@ func TestCheckPlanOrdering_RedundantSort(t *testing.T) {
 func TestSortKeysMatchOrderBy_QualifiedKeyNeverMatches(t *testing.T) {
 	t.Parallel()
 
-	keys := []plans.SortKey{{Field: "ID", Desc: true}, {Field: "ID"}}
+	scan := rowdiffTestScan(t, false)
+	keys := rowdiffTestSortKeys(t, scan.GetResultValue(),
+		[]plans.SortKey{{Field: "ID", Desc: true}, {Field: "ID"}})
 	lThenR := []OrderKey{{Col: "ID", Qual: "L", Desc: true}, {Col: "ID", Qual: "R"}}
 	rThenL := []OrderKey{{Col: "ID", Qual: "R", Desc: true}, {Col: "ID", Qual: "L"}}
 
@@ -259,14 +266,25 @@ func TestSortKeysMatchOrderBy_QualifiedKeyNeverMatches(t *testing.T) {
 	}
 
 	threeWay := []OrderKey{{Col: "ID", Qual: "L"}, {Col: "ID", Qual: "M"}, {Col: "ID", Qual: "R"}}
-	if sortKeysMatchOrderBy([]plans.SortKey{{Field: "ID"}, {Field: "ID"}, {Field: "ID"}}, threeWay) {
+	threeWayKeys := rowdiffTestSortKeys(t, scan.GetResultValue(),
+		[]plans.SortKey{{Field: "ID"}, {Field: "ID"}, {Field: "ID"}})
+	if sortKeysMatchOrderBy(threeWayKeys, threeWay) {
 		t.Fatal("sort keys [ID, ID, ID] matched the 3-way `ORDER BY l.id, m.id, r.id`")
 	}
 
-	// The refusal must be about the QUALIFIER, not about repeated leaf names:
-	// an unqualified key still matches, or the guard would reject every sort and
-	// the ordering axis would report clean by never running.
-	if !sortKeysMatchOrderBy([]plans.SortKey{{Field: "id", Desc: true}}, []OrderKey{{Col: "ID", Desc: true}}) {
+	// Display text alone is no longer an identity channel. A mutation restoring
+	// the old Field comparison would accept this malformed key.
+	if sortKeysMatchOrderBy([]plans.SortKey{{Field: "ID", Desc: true}}, []OrderKey{{Col: "ID", Desc: true}}) {
+		t.Fatal("a display-only sort key matched without an exact resolved ValueExpr")
+	}
+
+	// The refusal must be about the QUALIFIER, not the exact field path: the
+	// equivalent unqualified key still matches, or the guard would reject every
+	// planned sort and the ordering axis would report clean by never running.
+	unqualified := rowdiffTestSortKeys(t, scan.GetResultValue(),
+		[]plans.SortKey{{Field: "ID", Desc: true}})
+	unqualified[0].Field = "arbitrary display text"
+	if !sortKeysMatchOrderBy(unqualified, []OrderKey{{Col: "id", Desc: true}}) {
 		t.Fatal("an UNQUALIFIED key stopped matching — the refusal is over-broad and the whole axis goes silent")
 	}
 }

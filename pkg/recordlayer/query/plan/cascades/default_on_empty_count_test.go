@@ -16,18 +16,30 @@ import (
 func TestConcretePlanCounts_DefaultOnEmpty(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	rowType := values.NewRecordType("default_on_empty_count_row", false, []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
+	})
+	scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false)
+	if err != nil {
+		t.Fatalf("construct exact scan: %v", err)
+	}
 	if got := concretePlanCounts(scan, nil).numDefaultOnEmpty; got != 0 {
 		t.Fatalf("bare scan numDefaultOnEmpty = %d, want 0", got)
 	}
 
-	doe := plans.NewRecordQueryDefaultOnEmptyPlan(scan, values.NewNullValue(values.UnknownType))
+	doe, err := plans.NewRecordQueryDefaultOnEmptyPlan(scan, values.NewNullValue(rowType))
+	if err != nil {
+		t.Fatalf("construct first DefaultOnEmpty: %v", err)
+	}
 	if got := concretePlanCounts(doe, nil).numDefaultOnEmpty; got != 1 {
 		t.Fatalf("DefaultOnEmpty(scan) numDefaultOnEmpty = %d, want 1", got)
 	}
 
 	// Nested ON EMPTY NULL: both are counted.
-	doe2 := plans.NewRecordQueryDefaultOnEmptyPlan(doe, values.NewNullValue(values.UnknownType))
+	doe2, err := plans.NewRecordQueryDefaultOnEmptyPlan(doe, values.NewNullValue(rowType))
+	if err != nil {
+		t.Fatalf("construct nested DefaultOnEmpty: %v", err)
+	}
 	if got := concretePlanCounts(doe2, nil).numDefaultOnEmpty; got != 2 {
 		t.Fatalf("DefaultOnEmpty(DefaultOnEmpty(scan)) numDefaultOnEmpty = %d, want 2", got)
 	}

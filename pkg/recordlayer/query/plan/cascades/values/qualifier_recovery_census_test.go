@@ -369,3 +369,132 @@ func TestRecordQualifierRecovery_GateOff(t *testing.T) {
 			"recorder that ignores it moves that cost into every query")
 	}
 }
+
+// TestQualRecAssert_RetiredSplitInvertsTheAlarm drives every arm of the
+// retirement check, which is the newest and least-reached guard in this file.
+//
+// A retired arm is the case the ordinary floors cannot express. A floor watches
+// for COLLAPSE: it says a population that should be large has gone small. Once
+// an arm is deleted, zero is the steady state and the danger inverts to GROWTH —
+// a split arriving means the rendered-name recovery came back. Lowering the
+// floor to 0 turns it into the "watched, not proven" DECLARATION, which is a
+// statement about a CORPUS and is dropped the moment a -test.run filter narrows
+// one; a tree fact must not be. So the two live in different fields, and this
+// pins that they behave differently.
+func TestQualRecAssert_RetiredSplitInvertsTheAlarm(t *testing.T) {
+	t.Parallel()
+
+	retired := func(sites ...QualifierRecoverySite) (r [qualRecSiteCount]bool) {
+		for _, s := range sites {
+			r[s] = true
+		}
+		return r
+	}
+
+	t.Run("a split at a retired site fails", func(t *testing.T) {
+		t.Parallel()
+		var counts [qualRecSiteCount][qualRecClassCount]int
+		var wit [qualRecSiteCount][qualRecClassCount][]string
+		counts[QualRecSiteRecursiveRemap][QualRecManufactured] = 1
+		failed, out := assertReport(t, counts, wit, &QualifierRecoveryExpectations{
+			RetiredSplit: retired(QualRecSiteRecursiveRemap),
+		})
+		if !failed {
+			t.Fatalf("a RETIRED splitting arm reported a split and the gate stayed green. "+
+				"That arm was deleted; a call at it is the rendered-name recovery coming "+
+				"back, which is the whole event this guard exists for:\n%s", out)
+		}
+		if !strings.Contains(out, "RETIRED") {
+			t.Fatalf("the failure never says the arm is RETIRED, so the reader is sent to "+
+				"raise a floor on something that is supposed to be gone:\n%s", out)
+		}
+	})
+
+	t.Run("every class but CARRIED counts as a split", func(t *testing.T) {
+		t.Parallel()
+		for _, c := range []QualifierRecoveryClass{
+			QualRecAgreed, QualRecDiverged, QualRecManufactured,
+			QualRecLeafOnly, QualRecBare, QualRecHeuristicDecline,
+		} {
+			var counts [qualRecSiteCount][qualRecClassCount]int
+			var wit [qualRecSiteCount][qualRecClassCount][]string
+			counts[QualRecSiteProjScopeClassify][c] = 1
+			failed, out := assertReport(t, counts, wit, &QualifierRecoveryExpectations{
+				RetiredSplit: retired(QualRecSiteProjScopeClassify),
+			})
+			if !failed {
+				t.Fatalf("a %s call at a retired site passed. Every class but CARRIED means a "+
+					"rendered name was sliced, so every one of them is a revival:\n%s", c, out)
+			}
+		}
+	})
+
+	t.Run("CARRIED alone does not fire it", func(t *testing.T) {
+		t.Parallel()
+		var counts [qualRecSiteCount][qualRecClassCount]int
+		var wit [qualRecSiteCount][qualRecClassCount][]string
+		counts[QualRecSiteProjScopeClassify][QualRecCarried] = 73
+		failed, out := assertReport(t, counts, wit, &QualifierRecoveryExpectations{
+			RetiredSplit: retired(QualRecSiteProjScopeClassify),
+		})
+		if failed {
+			t.Fatalf("a site answering entirely on the CARRIED channel failed its retirement "+
+				"check. CARRIED is the converted channel and is exactly what a retired "+
+				"splitter is supposed to report:\n%s", out)
+		}
+	})
+
+	t.Run("it survives the floors being dropped", func(t *testing.T) {
+		t.Parallel()
+		var counts [qualRecSiteCount][qualRecClassCount]int
+		var wit [qualRecSiteCount][qualRecClassCount][]string
+		counts[QualRecSiteRecursiveRemap][QualRecBare] = 3
+		// Floors nil is what a -test.run filter passes. The whole reason
+		// retirement is not a Split zero is that the zero would vanish here.
+		failed, out := assertReport(t, counts, wit, &QualifierRecoveryExpectations{
+			Floors:       nil,
+			RetiredSplit: retired(QualRecSiteRecursiveRemap),
+		})
+		if !failed {
+			t.Fatalf("the retirement check was skipped when the floors were dropped. Under a "+
+				"narrowed run that is the one direction that fails OPEN — the arm comes back "+
+				"and nothing says so:\n%s", out)
+		}
+	})
+
+	t.Run("a retired site is exempt from the stale-zero declaration", func(t *testing.T) {
+		t.Parallel()
+		var counts [qualRecSiteCount][qualRecClassCount]int
+		var wit [qualRecSiteCount][qualRecClassCount][]string
+		counts[QualRecSiteRecursiveRemap][QualRecBare] = 3
+		failed, out := assertReport(t, counts, wit, &QualifierRecoveryExpectations{
+			Floors:       &QualifierRecoveryFloors{},
+			RetiredSplit: retired(QualRecSiteRecursiveRemap),
+		})
+		if !failed {
+			t.Fatalf("the revival went unreported entirely:\n%s", out)
+		}
+		if n := strings.Count(out, "FAIL:"); n != 1 {
+			t.Fatalf("one revival produced %d FAIL lines, want 1. The stale-zero declaration "+
+				"and the retirement describe the same event with opposite instructions, so "+
+				"reporting both tells the reader to raise a floor AND to delete the arm:\n%s",
+				n, out)
+		}
+	})
+
+	t.Run("without the declaration a retired site is unwatched", func(t *testing.T) {
+		t.Parallel()
+		// The negative control for the whole mechanism: the same counts, with the
+		// site NOT declared retired and no floor on it, pass. That is what the
+		// tree looked like before this field existed, and it is why an unfloored
+		// zero is not a guard.
+		var counts [qualRecSiteCount][qualRecClassCount]int
+		var wit [qualRecSiteCount][qualRecClassCount][]string
+		counts[QualRecSiteRecursiveRemap][QualRecBare] = 3
+		failed, out := assertReport(t, counts, wit, &QualifierRecoveryExpectations{})
+		if failed {
+			t.Fatalf("the control failed, so every arm above may be passing for a reason "+
+				"other than the one under test:\n%s", out)
+		}
+	})
+}

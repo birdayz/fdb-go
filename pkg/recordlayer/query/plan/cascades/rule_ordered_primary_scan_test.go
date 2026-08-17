@@ -8,32 +8,39 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+type orderedPrimaryScanPlanContext struct {
+	indexTestPlanContext
+	primaryKeyColumns []string
+}
+
+func (c *orderedPrimaryScanPlanContext) GetPrimaryKeyColumns(string) []string {
+	return append([]string(nil), c.primaryKeyColumns...)
+}
+
 func TestOrderedPrimaryScanRule_FiresForPrimaryKeyOrdering(t *testing.T) {
 	t.Parallel()
 
-	ctx := &rfc190PrimaryKeyPlanContext{
+	ctx := &orderedPrimaryScanPlanContext{
 		primaryKeyColumns: []string{"TENANT_ID", "ID"},
 	}
-	// The flowed type must be REAL. Sort elision now depends on the physical
-	// type of each key coordinate — a raw FLOAT/DOUBLE key is not in logical
-	// order — so a stubbed UnknownType would exercise the fail-closed path
-	// rather than the behaviour this test is about.
-	rowType := values.NewRecordType("T", false, []values.Field{
-		{Name: "TENANT_ID", FieldType: values.NotNullLong, Ordinal: 0},
-		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
-	})
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType)
-	sortExpr := expressions.NewLogicalSortExpression(
+	// The flowed type must be exact. Sort elision depends on the physical type
+	// of each key coordinate, and each sort Value must be rooted in this
+	// quantifier rather than a name-only placeholder.
+	scan := mustOrderedScanFull(t, []string{"T"})
+	scanRef := mustOrderedScanInitial(t, scan)
+	quantifier := expressions.ForEachQuantifier(scanRef)
+	flowed := mustOrderedScanFlowed(t, quantifier)
+	sortExpr := mustOrderedScanSort(t,
 		[]expressions.SortKey{
-			{Value: values.NewFlatFieldValue("TENANT_ID", values.NullableLong)},
-			{Value: values.NewFlatFieldValue("ID", values.NullableLong)},
+			{Value: mustOrderedScanField(t, flowed, "TENANT_ID")},
+			{Value: mustOrderedScanField(t, flowed, "ID")},
 		},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+		quantifier,
 	)
 
-	yielded := FireExpressionRuleWithMemo(
+	yielded := mustFireExpressionRuleWithMemo(t,
 		NewOrderedPrimaryScanRule(),
-		expressions.InitialOf(sortExpr),
+		mustOrderedScanInitial(t, sortExpr),
 		ctx,
 		nil,
 	)

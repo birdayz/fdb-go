@@ -724,7 +724,7 @@ func PKScanOrdering(plan *RecordQueryScanPlan) properties.Ordering {
 	}
 	comps := plan.GetScanComparisons()
 	firstNonEq := equalityPrefixLen(comps, len(pk))
-	keys := resolveOrderingColumns(pk[firstNonEq:], plan.GetFlowedType())
+	keys := resolveOrderingColumns(pk[firstNonEq:])
 	// Terminate the claim at the first coordinate whose physical key order is
 	// not its logical order (a FLOAT/DOUBLE primary-key column — see
 	// keyCanExtendOrderingClaim). A float PK is reachable: `PRIMARY KEY (e)`
@@ -807,7 +807,11 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 	keys := make([]values.Value, 0, len(sorted))
 	desc := make([]bool, 0, len(sorted))
 	for _, col := range sorted {
-		keys = append(keys, orderingColumnOfName(p.GetFlowedType(), col))
+		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
+		if key == nil {
+			return properties.Ordering{}
+		}
+		keys = append(keys, key)
 		desc = append(desc, rev)
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
@@ -838,19 +842,12 @@ func (p *RecordQueryIndexPlan) HintOrdering() properties.Ordering {
 // no order claim and the columns after it stay claimable. (The one equality
 // that does NOT pin a point — a zero-valued float, which spans both signed
 // zeros — is already excluded upstream by equalityPrefixLen.)
-func columnCanExtendOrderingClaim(layout values.Type, name string) bool {
-	return values.ColumnCanExtendOrderingClaim(layout, name)
-}
-
 // keyCanExtendOrderingClaim is the Value-shaped form, for derivations that
 // already hold ordering keys rather than metadata names. A flat field is
 // resolved by name against the layout (its declared type is usually
 // UnknownType at this point, so the layout is the authority); any other key
 // shape is judged on its own type.
 func keyCanExtendOrderingClaim(layout values.Type, k values.Value) bool {
-	if fv, isField := k.(*values.FieldValue); isField && fv.Child == nil {
-		return columnCanExtendOrderingClaim(layout, fv.Field)
-	}
 	if k == nil {
 		return true
 	}
@@ -907,13 +904,19 @@ func claimableTypedKeyLimit(keys []values.Value) int {
 // key, which no identity-keyed consumer can address. That is the fail-closed
 // direction: the ordering claim is dropped, costing a sort, rather than being
 // stated in terms nothing can verify.
-func orderingColumnOfName(layout values.Type, name string) values.Value {
+func orderingColumnOfName(root values.Value, layout values.Type, name string) values.Value {
 	if ident, ok := values.OrdinalOfNameIn(layout, name); ok {
-		return values.NewFieldValueWithResolvedOrdinalInDomain(
-			name, ident.Ordinal, values.UnknownType, ident.Domain)
+		request, err := values.FieldByNameAndOrdinal(name, ident.Ordinal)
+		if err != nil {
+			return nil
+		}
+		resolved, err := values.ResolveFieldAccess(root, []values.FieldRequest{request})
+		if err != nil {
+			return nil
+		}
+		return resolved
 	}
-	values.NoteFieldValueMint(name, false)
-	return &values.FieldValue{Field: name, Typ: values.UnknownType}
+	return nil
 }
 
 // resolveOrderingColumns re-mints an already-Value-shaped key list against the
@@ -925,25 +928,9 @@ func orderingColumnOfName(layout values.Type, name string) values.Value {
 // identity to state, and inventing one is the ordinal conflation the domain
 // token exists to prevent. An ALREADY-baked key is left alone — re-resolving it
 // by name would undo whatever producer knew better.
-func resolveOrderingColumns(keys []values.Value, layout values.Type) []values.Value {
+func resolveOrderingColumns(keys []values.Value) []values.Value {
 	out := make([]values.Value, len(keys))
-	for i, k := range keys {
-		fv, isField := k.(*values.FieldValue)
-		if !isField || fv.Child != nil || fv.Resolved != nil {
-			out[i] = k
-			continue
-		}
-		ident, resolved := values.OrdinalOfNameIn(layout, fv.Field)
-		if !resolved {
-			// Keep the producer's own node. Re-minting a fresh lazy copy would
-			// change nothing an identity consumer can see and would break the
-			// node identity callers downstream still rely on.
-			out[i] = k
-			continue
-		}
-		out[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
-			fv.Field, ident.Ordinal, fv.Typ, ident.Domain)
-	}
+	copy(out, keys)
 	return out
 }
 
@@ -1112,19 +1099,36 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) HintOrdering() properties.Ord
 	if len(names) == 0 {
 		return properties.Ordering{IsKnown: true, Keys: compKey}
 	}
-	domain := values.OrdinalDomainOfColumnNames(names)
+	outputLayout, err := p.ProvidedOutputLayout()
+	if err != nil || outputLayout == nil || outputLayout.Carrier() == nil {
+		return properties.Ordering{IsKnown: true, Keys: compKey}
+	}
 	keys := make([]values.Value, len(compKey))
 	for i, k := range compKey {
-		fv, isField := k.(*values.FieldValue)
-		if !isField || fv.Child != nil || fv.Resolved == nil ||
-			len(fv.Resolved.Accessors) != 1 ||
-			fv.Resolved.Accessors[0].Ordinal != i || i >= len(names) {
+		fv, isField := values.AsFieldValue(k)
+		path := values.FieldPathView(nil)
+		if isField {
+			path = fv.Path()
+		}
+		if !isField || fv.ChildValue() == nil || path == nil ||
+			path.Len() != 1 || i >= len(names) {
 			// Anything but "grouping column i, read at slot i" is not the
 			// shape this restatement is proven for.
 			return properties.Ordering{IsKnown: true, Keys: compKey}
 		}
-		keys[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
-			fv.Field, i, fv.Typ, domain)
+		accessor, ok := path.Accessor(0)
+		if !ok || accessor.Ordinal() != i {
+			return properties.Ordering{IsKnown: true, Keys: compKey}
+		}
+		request, err := values.FieldByNameAndOrdinal(names[i], i)
+		if err != nil {
+			return properties.Ordering{IsKnown: true, Keys: compKey}
+		}
+		resolved, err := values.ResolveFieldAccess(outputLayout.Carrier(), []values.FieldRequest{request})
+		if err != nil {
+			return properties.Ordering{IsKnown: true, Keys: compKey}
+		}
+		keys[i] = resolved
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys}
 }
@@ -1175,12 +1179,25 @@ func (p *RecordQueryStreamingAggregationPlan) HintOrdering() properties.Ordering
 	if len(groupKeys) == 0 {
 		return properties.Ordering{IsKnown: false}
 	}
-	outputNames := p.OutputColumnNames()
-	domain := values.OrdinalDomainOfColumnNames(outputNames)
+	outputLayout, err := p.ProvidedOutputLayout()
+	if err != nil || outputLayout == nil || outputLayout.Carrier() == nil {
+		return properties.Ordering{IsKnown: false}
+	}
 	keys := make([]values.Value, len(groupKeys))
 	for i, k := range groupKeys {
-		keys[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
-			expressions.AggregateKeyColumnName(k), i, values.UnknownType, domain)
+		// NAME AND ORDINAL together, and the pairing is load-bearing on a row
+		// that carries two same-named group keys — `GROUP BY ot.k, it.k` emits
+		// [K, K, COUNT(*)]. The ordinal selects the slot and the name verifies
+		// it, so the canonical output name stays the authority it is documented
+		// to be without the duplicate making the request unanswerable.
+		request, err := values.FieldByNameAndOrdinal(expressions.AggregateKeyColumnName(k), i)
+		if err != nil {
+			return properties.Ordering{IsKnown: false}
+		}
+		keys[i], err = values.ResolveFieldAccess(outputLayout.Carrier(), []values.FieldRequest{request})
+		if err != nil {
+			return properties.Ordering{IsKnown: false}
+		}
 	}
 	desc := make([]bool, len(keys))
 	if orderProducingScanIsReverse(p.GetInner()) {
@@ -1256,12 +1273,17 @@ func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 	// thing about its own output row; both must, because a requested ORDER BY
 	// key on an aggregate output is baked against that row and an ordinal with
 	// no domain is one no consumer may compare.
-	domain := values.OrdinalDomainOfColumnNames(p.OutputColumnNames())
 	keys := make([]values.Value, len(groupCols))
 	desc := make([]bool, len(groupCols))
 	for i, col := range groupCols {
-		keys[i] = values.NewFieldValueWithResolvedOrdinalInDomain(
-			col, i, values.UnknownType, domain)
+		request, err := values.FieldByNameAndOrdinal(col, i)
+		if err != nil {
+			return properties.Ordering{IsKnown: false}
+		}
+		keys[i], err = values.ResolveFieldAccess(p.GetResultValue(), []values.FieldRequest{request})
+		if err != nil {
+			return properties.Ordering{IsKnown: false}
+		}
 		desc[i] = p.IsReverse()
 	}
 	return properties.Ordering{IsKnown: true, Keys: keys, Descending: desc}
@@ -1364,7 +1386,7 @@ func (p *RecordQueryScanPlan) HintRichOrdering() *properties.RichOrdering {
 	if p.IsReverse() {
 		dir = properties.ProvidedSortOrderDescending
 	}
-	resolved := resolveOrderingColumns(pk, p.GetFlowedType())
+	resolved := resolveOrderingColumns(pk)
 	// Truncate the SORTED tail at the first coordinate whose physical order is
 	// not its logical order. The equality-bound prefix is exempt: a FixedBinding
 	// pins one physical point and states no order, so a float there is harmless
@@ -1466,7 +1488,10 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 			p.GetPrimaryKeyComponentTypes(), len(pkColumnNames))
 	prefixLen = fixedLen
 	for i, col := range columnNames[:prefixLen] {
-		key := orderingColumnOfName(p.GetFlowedType(), col)
+		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
+		if key == nil {
+			return properties.EmptyOrdering()
+		}
 		keys = append(keys, key)
 		// FIXED means "states no order, so ANY requested direction is
 		// satisfied". That is only true of a coordinate pinned to ONE physical
@@ -1488,7 +1513,10 @@ func (p *RecordQueryIndexPlan) HintRichOrdering() *properties.RichOrdering {
 		}
 	}
 	for _, col := range tail {
-		key := orderingColumnOfName(p.GetFlowedType(), col)
+		key := orderingColumnOfName(p.GetResultValue(), p.GetFlowedType(), col)
+		if key == nil {
+			return properties.EmptyOrdering()
+		}
 		keys = append(keys, key)
 		bm[key] = []properties.OrderingBinding{properties.SortedBinding(dir)}
 	}

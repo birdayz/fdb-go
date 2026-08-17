@@ -70,16 +70,28 @@ func (r *PushLimitThroughUnionRule) OnMatch(call *ExpressionRuleCall) {
 
 	newQs := make([]expressions.Quantifier, 0, len(oldQs))
 	for _, q := range oldQs {
-		branchLim := expressions.NewLogicalLimitExpression(branchLimit, 0, q)
+		branchLim, err := expressions.NewLogicalLimitExpression(branchLimit, 0, q)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		branchRef := expressions.InitialOf(branchLim)
 		newQs = append(newQs, expressions.ForEachQuantifier(branchRef))
 	}
 
-	newUnion := expressions.NewLogicalUnionExpression(newQs)
+	newUnion, err := expressions.NewLogicalUnionExpression(newQs)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	unionRef := expressions.InitialOf(newUnion)
 	unionQ := expressions.ForEachQuantifier(unionRef)
 
-	newOuter := expressions.NewLogicalLimitExpression(limit.GetLimit(), limit.GetOffset(), unionQ)
+	newOuter, err := expressions.NewLogicalLimitExpression(limit.GetLimit(), limit.GetOffset(), unionQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(newOuter)
 }
 

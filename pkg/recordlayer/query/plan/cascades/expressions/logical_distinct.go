@@ -12,12 +12,17 @@ import (
 // Ports Java's
 // `com.apple.foundationdb.record.query.plan.cascades.expressions.LogicalDistinctExpression`.
 type LogicalDistinctExpression struct {
-	inner Quantifier
+	inner       Quantifier
+	resultValue values.QuantifiedObjectValue
 }
 
 // NewLogicalDistinctExpression builds a Distinct over inner.
-func NewLogicalDistinctExpression(inner Quantifier) *LogicalDistinctExpression {
-	return &LogicalDistinctExpression{inner: inner}
+func NewLogicalDistinctExpression(inner Quantifier) (*LogicalDistinctExpression, error) {
+	resultValue, err := requireFlowedResult("LogicalDistinctExpression", inner)
+	if err != nil {
+		return nil, err
+	}
+	return &LogicalDistinctExpression{inner: inner, resultValue: resultValue}, nil
 }
 
 // GetInner returns the inner Quantifier.
@@ -26,7 +31,7 @@ func (e *LogicalDistinctExpression) GetInner() Quantifier { return e.inner }
 // GetResultValue is the inner's flowed object value (Distinct doesn't
 // reshape rows).
 func (e *LogicalDistinctExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -56,10 +61,11 @@ func (e *LogicalDistinctExpression) EqualsWithoutChildren(other RelationalExpres
 // Java's `return 31`.
 func (e *LogicalDistinctExpression) HashCodeWithoutChildren() uint64 { return 31 }
 
-func (e *LogicalDistinctExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *LogicalDistinctExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalDistinctExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewLogicalDistinctExpression(quantifiers[0])
 }
 
 var _ RelationalExpression = (*LogicalDistinctExpression)(nil)

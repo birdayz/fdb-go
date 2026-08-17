@@ -35,12 +35,10 @@ import (
 //     planner's traversal driver consume this.
 //
 // Java's flavoured yields (exploratory / final / plan / unknown) map
-// onto the single Yield here: the task-stack driver installs a
-// per-phase yield function (yieldFn — nil during exploration, so Yield
-// goes to Reference.Insert; both InsertFinal and Insert during
-// PLANNING; see unified_tasks.go and expression_rule_adapter.go), and
-// the data-access path routes by physicality via the planner's
-// yieldUnknown.
+// onto the single staged Yield here. The task-stack driver publishes the
+// complete batch only after OnMatch succeeds, choosing Insert or
+// InsertFinal by phase; the data-access path routes by physicality via
+// the planner's yieldUnknown.
 type ExpressionRuleCall struct {
 	Bindings  *matching.PlannerBindings
 	Reference *expressions.Reference
@@ -60,7 +58,33 @@ type ExpressionRuleCall struct {
 	Stats       properties.StatisticsProvider
 	memo        *Memo
 	yieldedExps []expressions.RelationalExpression
-	yieldFn     func(expressions.RelationalExpression) bool
+	// stagedInserts holds the rule body's InsertReExploring calls until the
+	// driver publishes them, for the reason given on that method.
+	stagedInserts []stagedReExploringInsert
+	err           error
+}
+
+// stagedReExploringInsert is one held InsertReExploring call.
+type stagedReExploringInsert struct {
+	ref  *expressions.Reference
+	expr expressions.RelationalExpression
+}
+
+// Fail records the first rule-body failure. Drivers must check Err before
+// publishing any staged rule effects.
+func (c *ExpressionRuleCall) Fail(err error) {
+	if c == nil || err == nil || c.err != nil {
+		return
+	}
+	c.err = err
+}
+
+// Err returns the first failure reported by the rule body.
+func (c *ExpressionRuleCall) Err() error {
+	if c == nil {
+		return nil
+	}
+	return c.err
 }
 
 // CancellationErr reports whether the owning planning run was canceled.
@@ -113,41 +137,19 @@ func NewExpressionRuleCallWithMemo(ref *expressions.Reference, bindings *matchin
 	}
 }
 
-// Yield inserts `expr` into the Reference's equivalence class. Returns
-// true if the expression was a new member, false if Reference.Insert
-// detected a duplicate (matching EqualsWithoutChildren under empty
-// alias map). On the insert paths yieldedExps records the call even when
-// dedup absorbed the result — the rule's intent was to yield.
-//
-// A canceled run returns false without inserting; the record is not
-// guaranteed — cancellation seen at entry skips yieldedExps entirely, while
-// cancellation that lands inside yieldFn still appends. Either way false now
-// means EITHER "dedup absorbed this" OR "planning was canceled". No rule
-// branches on the return today; one that wants a dedup fallback
-// (`if !call.Yield(x) { ... }`) must first check CancellationErr, or it will
-// run that fallback while the run is being torn down.
-func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
+// Yield stages expr in this invocation-local batch. It deliberately does not
+// mutate the Reference or Memo: the driver first lets OnMatch finish, checks
+// Err, validates the complete batch, and only then commits it. The bool reports
+// commit-time deduplication is intentionally not observable from inside the
+// rule body.
+func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) {
 	if expr == nil {
 		panic("ExpressionRuleCall.Yield: nil expression")
 	}
-	if c.CancellationErr() != nil {
-		return false
+	if c.Err() != nil || c.CancellationErr() != nil {
+		return
 	}
-	if c.yieldFn != nil {
-		result := c.yieldFn(expr)
-		c.yieldedExps = append(c.yieldedExps, expr)
-		return result
-	}
-	inserted := c.Reference.Insert(expr)
 	c.yieldedExps = append(c.yieldedExps, expr)
-	// REWRITING-phase integration (RFC-037): record the yielded
-	// expression in the Memo topology index and, if a structurally-
-	// equivalent member already lives in a different Reference, merge the
-	// two groups. nil Memo ⇒ standalone rule test, no merging.
-	if c.memo != nil {
-		c.memo.Integrate(c.Reference, expr)
-	}
-	return inserted
 }
 
 // MemoizeExpression finds or creates a Reference for a sub-expression.
@@ -164,15 +166,61 @@ func (c *ExpressionRuleCall) Yield(expr expressions.RelationalExpression) bool {
 // Rules should use this instead of expressions.InitialOf when creating
 // child References for yielded expressions. This is how the Cascades
 // planner avoids redundant exploration of shared sub-trees.
-// InsertReExploring inserts expr into ref through the memo's scheduled
-// insert (epoch re-arm + re-round when ref's exploration already began).
-// Rule code adding members to a reference it did not just create must use
-// this instead of Reference.Insert.
-func (c *ExpressionRuleCall) InsertReExploring(ref *expressions.Reference, expr expressions.RelationalExpression) bool {
-	if c.memo != nil {
-		return c.memo.InsertReExploring(ref, expr)
+// InsertReExploring STAGES an insert of expr into ref, to be applied through
+// the memo's scheduled insert (epoch re-arm + re-round when ref's exploration
+// already began) once the driver has checked Err. Rule code adding members to a
+// reference it did not just create must use this instead of Reference.Insert.
+//
+// It is staged for the same reason Yield is, and the reason is not symmetry:
+// MemoizeExpression can resolve to an EXISTING, already-explored reference (see
+// the note at its call site in DecorrelateValuesRule), so the ref inserted into
+// here may be reachable from the root. A rule that adds a member there and then
+// Fails has published a member it went on to reject — the one effect the staged
+// protocol exists to prevent, escaping through the one call that did not use it.
+//
+// MemoizeExpression deliberately stays IMMEDIATE. A rule needs the *Reference
+// back to build the parent expression it is about to yield, so deferring it
+// would take a memo journal with rollback; and its residue on failure is an
+// ORPHAN group — created, referenced by no published expression, discarded with
+// the planner. That the planner IS discarded is pinned rather than assumed:
+// Fail sets capErr, the run loop returns on it, and no caller reuses a planner
+// (see TestRuleFailureLeavesNoMemberInALiveGroup).
+//
+// It returns nothing. The old bool reported the memo's dedup answer, which is
+// not knowable before the commit — the single production caller discarded it,
+// and fabricating one at stage time would be a lie rather than a simplification.
+func (c *ExpressionRuleCall) InsertReExploring(ref *expressions.Reference, expr expressions.RelationalExpression) {
+	if ref == nil || expr == nil {
+		return
 	}
-	return ref.Insert(expr)
+	if c.Err() != nil || c.CancellationErr() != nil {
+		return
+	}
+	c.stagedInserts = append(c.stagedInserts, stagedReExploringInsert{ref: ref, expr: expr})
+}
+
+// CommitStagedInserts applies the InsertReExploring calls the rule body staged.
+// Drivers call it only after OnMatch has returned and Err is clear, and BEFORE
+// publishing the yields, so a parent lands over children that are complete.
+func (c *ExpressionRuleCall) CommitStagedInserts() {
+	for _, s := range c.stagedInserts {
+		if c.memo != nil {
+			c.memo.InsertReExploring(s.ref, s.expr)
+			continue
+		}
+		s.ref.Insert(s.expr)
+	}
+	c.stagedInserts = nil
+}
+
+// StagedInsertCount reports how many inserts are held unpublished. Tests use it
+// to prove staging happened rather than inferring it from the memo being
+// unchanged, which is also what a rule that never inserted would look like.
+func (c *ExpressionRuleCall) StagedInsertCount() int {
+	if c == nil {
+		return 0
+	}
+	return len(c.stagedInserts)
 }
 
 func (c *ExpressionRuleCall) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
@@ -216,7 +264,10 @@ func (c *ExpressionRuleCall) GetRequestedOrderings() []*properties.RequestedOrde
 // rule-firing tests that want to assert on the rule's output without
 // reaching into the Reference's member list.
 func (c *ExpressionRuleCall) Yielded() []expressions.RelationalExpression {
-	return c.yieldedExps
+	if c == nil || c.Err() != nil || len(c.yieldedExps) == 0 {
+		return nil
+	}
+	return append([]expressions.RelationalExpression(nil), c.yieldedExps...)
 }
 
 // MemoizeFinalExpression creates a NEW Reference holding expr as its single
@@ -259,7 +310,17 @@ func (c *ExpressionRuleCall) MemoizeMemberPlansFromOther(
 	source *expressions.Reference,
 	members []expressions.RelationalExpression,
 ) *expressions.Reference {
-	return newRestrictedFinalReference("MemoizeMemberPlansFromOther", source, members)
+	// Expression implementation rules are already constructing physical parent
+	// alternatives during PLANNING. Keep the restricted physical child at the
+	// planned stage: revisiting a canonical-stage singleton promotes its chosen
+	// final into the exploratory lane and clears the final lane before physical
+	// rewrites run. A rewrite such as Fetch(Covering(Index)) -> Index then leaves
+	// only the new Index final, so the supposedly restricted Fetch alternative
+	// mutates underneath its parent and can never participate in root costing.
+	// StagePlanned still allows the physical final to be explored; it merely
+	// prevents the stage transition from deleting the selected final.
+	return newRestrictedFinalReference(
+		"MemoizeMemberPlansFromOther", source, members, expressions.StagePlanned)
 }
 
 // newRestrictedFinalReference is the ONE implementation behind both memoize-
@@ -277,13 +338,18 @@ func newRestrictedFinalReference(
 	caller string,
 	source *expressions.Reference,
 	members []expressions.RelationalExpression,
+	stage expressions.PlannerStage,
 ) *expressions.Reference {
 	assertMembersOf(caller, source, members)
 
 	var ref *expressions.Reference
 	for i, m := range members {
 		if i == 0 {
-			ref = expressions.FinalOfAtStage(m, expressions.StageCanonical)
+			if stage == expressions.StagePlanned && len(members) == 1 {
+				ref = expressions.PinnedFinalOf(m)
+			} else {
+				ref = expressions.FinalOfAtStage(m, stage)
+			}
 		} else {
 			ref.InsertFinal(m)
 		}

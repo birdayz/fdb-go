@@ -15,10 +15,16 @@ import (
 // for the row whose columns are dotted `LEG.COL` labels, and is
 // `RecordConstructorValue.Type()` one of them?**
 //
-// WHY IT EXISTS. `refineRowTypes` treats a populated leg table against an empty
-// one as a CONFLICT and declines the refinement (pinned in
-// expressions.TestLegTablePopulation_*). So populating the leg table on a row
-// type is only safe if EVERY producer of that row populates it. A plan that says
+// WHY IT EXISTS. The live member-agreement guard is in
+// `expressions.GetFlowedObjectType`, and it takes a POPULATED leg table over an
+// empty one — an empty table is read as an unstated gap, not as a claim that the
+// row has no boundaries — so only two DIFFERENT populated tables conflict.
+// (`refineRowTypes` implements the opposite, decline-on-populated-vs-empty rule
+// and is NOT on the live path; see its header.) That makes an unpopulated
+// producer harmless where it once was fatal, but it does NOT make the producer
+// set uninteresting: a second producer that derives DIFFERENT boundaries for the
+// same row is exactly the conflicting-populated case, so populating the leg
+// table on a row type is safe only if every producer that populates it agrees. A plan that says
 // "populate it at the seed's own derivation and leave
 // `RecordConstructorValue.Type()` untouched" is therefore making a claim about
 // the producer set — that the generic constructor path is not one of them.
@@ -48,13 +54,13 @@ import (
 // §1.1 was restated on exactly this measurement: carry the leg table on the
 // constructor VALUE and propagate it through `Type()`.
 //
-// Nothing in the tree populates `RecordType.Legs` today, so no populated-vs-empty
-// pair exists for `legTablesAgree` to decline on: §11.3's retitling sets `Fields`
-// only (`scalar_subquery_seed.go`'s `innerType`), and `legTablesAgree` compares
-// lengths first, so empty-vs-empty agrees trivially. The precondition becomes
-// load-bearing the moment any change populates `Legs` at a derivation site — at
-// which point this path must be populated in the SAME change, or `refineRowTypes`
-// will decline the refinement.
+// `Legs` IS populated in the tree now — `expressions.GetFlowedObjectType` calls
+// `values.WithSeedTilingLegs` on every member's row — so the populated-vs-empty
+// pair this paragraph once said could not arise does arise, routinely. It is not
+// a conflict: the live guard adopts the populated table. What remains
+// load-bearing is the DISAGREEING-populated case, which is why the producer set
+// still has to be known: a second derivation site that states different
+// boundaries for this row makes the quantifier refuse its own members.
 //
 // The DISCRIMINATOR is the column NAMES, not the construction site, and that is
 // deliberate: the hazard is two paths deriving the SAME ROW, so the row has to be
@@ -249,8 +255,9 @@ func assertDottedRowTypeProducerCensusState(w io.Writer, c dottedRowTypeCounters
 			"  collapse to near-zero total traffic means the counter stopped being reached, so\n"+
 			"  any later re-measurement of the producer set is reporting a broken instrument.\n"+
 			"  WHAT A COLLAPSE RE-ARMS: the ability to re-check WHERE RecordType.Legs must be\n"+
-			"  populated. refineRowTypes DECLINES a populated table against an empty one, so a\n"+
-			"  population attached anywhere but this path is a plan-level conflict.\n",
+			"  populated. The live guard adopts a populated table over an empty one, so a second\n"+
+			"  producer is fatal only when it states DIFFERENT boundaries for the same row —\n"+
+			"  which is precisely what this census is here to rule out.\n",
 			c.Dotted+c.Plain, floor.Derivations)
 	}
 	if floor.Dotted > 0 && c.Dotted < floor.Dotted {

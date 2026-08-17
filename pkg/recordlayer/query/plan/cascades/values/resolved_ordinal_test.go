@@ -6,7 +6,7 @@ import (
 )
 
 // TestFieldValue_ResolvedOrdinal pins the plan-time-resolved ordinal
-// accessor (values.NewFieldValueWithResolvedOrdinal — Java's
+// accessor (values.newFieldValueWithResolvedOrdinal — Java's
 // FieldValue.ofOrdinalNumber model), needed for the recursive-CTE
 // leg-normalization wrap: a leg emitting DUPLICATE output aliases
 // (`SELECT a + 1 AS x, b + 1 AS x` — two slots both named X) is only
@@ -32,8 +32,8 @@ func TestFieldValue_ResolvedOrdinal(t *testing.T) {
 	// (GetByName) is first-match and returns slot 0 for BOTH; resolved-ordinal
 	// reads hit each slot.
 	dupRow := &fakeOrdinalRow{names: []string{"X", "X"}, slots: []any{int64(2), int64(11)}}
-	read0 := NewFieldValueWithResolvedOrdinal("X", 0, UnknownType)
-	read1 := NewFieldValueWithResolvedOrdinal("X", 1, UnknownType)
+	read0 := newFieldValueWithResolvedOrdinal("X", 0, UnknownType)
+	read1 := newFieldValueWithResolvedOrdinal("X", 1, UnknownType)
 	v0, err := read0.Evaluate(dupRow)
 	if err != nil || v0 != int64(2) {
 		t.Fatalf("ordinal 0 read: got (%v, %v), want (2, nil)", v0, err)
@@ -47,7 +47,7 @@ func TestFieldValue_ResolvedOrdinal(t *testing.T) {
 	// (*OrdinalResolutionError) instead of silently collapsing to slot 0. That loud
 	// failure is the STRONGER form of the silent-wrong this accessor
 	// exists to prevent.
-	flat := NewFlatFieldValue("X", UnknownType)
+	flat := newFlatFieldValue("X", UnknownType)
 	if _, err := flat.Evaluate(dupRow); err == nil {
 		t.Fatal("flat name read over an ordinal row must be a loud *OrdinalResolutionError, got nil")
 	} else {
@@ -58,7 +58,7 @@ func TestFieldValue_ResolvedOrdinal(t *testing.T) {
 	}
 
 	// (2) Out-of-range resolved ordinal: loud, never a silent NULL.
-	readOOR := NewFieldValueWithResolvedOrdinal("X", 5, UnknownType)
+	readOOR := newFieldValueWithResolvedOrdinal("X", 5, UnknownType)
 	if _, err := readOOR.Evaluate(dupRow); err == nil {
 		t.Fatal("out-of-range resolved ordinal must be a loud OrdinalResolutionError, got nil")
 	}
@@ -82,7 +82,7 @@ func TestFieldValue_ResolvedOrdinal(t *testing.T) {
 	if SemanticHashCode(read0) == SemanticHashCode(read1) {
 		t.Fatal("reads of ordinals 0 and 1 must not hash equal")
 	}
-	if !EqualsWithoutChildren(read0, NewFieldValueWithResolvedOrdinal("X", 0, UnknownType)) {
+	if !EqualsWithoutChildren(read0, newFieldValueWithResolvedOrdinal("X", 0, UnknownType)) {
 		t.Fatal("same field+ordinal must compare equal")
 	}
 	// An ordinal-carrying read and a plain flat read of the same name are
@@ -106,8 +106,8 @@ func TestFieldValue_ResolvedOrdinal(t *testing.T) {
 func TestFieldValue_ExplainOrdinalEscape(t *testing.T) {
 	t.Parallel()
 
-	ordinalRead := NewFieldValueWithResolvedOrdinal("X", 0, UnknownType)
-	literalField := NewFlatFieldValue("X#0", UnknownType)
+	ordinalRead := newFieldValueWithResolvedOrdinal("X", 0, UnknownType)
+	literalField := newFlatFieldValue("X#0", UnknownType)
 
 	if got := ExplainValue(ordinalRead); got != "X#0" {
 		t.Fatalf("ordinal read rendering = %q, want X#0", got)
@@ -124,7 +124,7 @@ func TestFieldValue_ExplainOrdinalEscape(t *testing.T) {
 	}
 	// An ordinal read of a field that itself contains '#': field text escaped,
 	// ordinal suffix stays a single '#'.
-	if got := ExplainValue(NewFieldValueWithResolvedOrdinal("X#0", 1, UnknownType)); got != "X##0#1" {
+	if got := ExplainValue(newFieldValueWithResolvedOrdinal("X#0", 1, UnknownType)); got != "X##0#1" {
 		t.Fatalf("ordinal read of '#'-field rendering = %q, want X##0#1", got)
 	}
 	// Datum-key naming contract untouched: a plain field read keys by Field

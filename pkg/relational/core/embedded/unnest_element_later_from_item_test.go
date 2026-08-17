@@ -1,19 +1,125 @@
 package embedded
 
 import (
-	"fmt"
+	"errors"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/metadata"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// TestUnnestElementStaysUntypedWithALaterFromItem is
-// TestUnnestElementQuantifierStaysUntyped's shape with ONE more FROM item, and
-// the extra item changes which resolver mint emits the element's quantifier
-// object:
+func unnestFrontendMetadata(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	b := metadata.NewSchemaTemplateBuilder().SetName("unnest_frontend")
+	b.AddTable("T1", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("ARR1", api.NewArrayType(api.NewLongType(false), true), 2),
+	}, []string{"ID"})
+	b.AddTable("U", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+		metadata.NewColumnSpec("V", api.NewLongType(true), 2),
+	}, []string{"ID"})
+	b.AddTable("PA", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+	}, []string{"ID"})
+	b.AddTable("PB", []metadata.ColumnSpec{
+		metadata.NewColumnSpec("ID", api.NewLongType(false), 1),
+	}, []string{"ID"})
+	tmpl, err := b.Build()
+	if err != nil {
+		t.Fatalf("build schema: %v", err)
+	}
+	return tmpl.Underlying()
+}
+
+func TestDuplicateUnnestAliasInsideExistsIsRejectedBeforeTranslation(t *testing.T) {
+	t.Parallel()
+	md := unnestFrontendMetadata(t)
+	root, err := parseQueryFromSelect(t,
+		`SELECT "ID" FROM T1 WHERE EXISTS (SELECT 1 FROM T1, T1."ARR1" AS "V", U AS "V")`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, err = NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+	var apiErr *api.Error
+	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeDuplicateAlias {
+		t.Fatalf("VisitQuery error = %v, want %s before subquery attachment/translation", err, api.ErrCodeDuplicateAlias)
+	}
+}
+
+func TestQualifiedStarOverScalarUnnestKeepsExactWholeObjectValue(t *testing.T) {
+	t.Parallel()
+	md := unnestFrontendMetadata(t)
+	root, err := parseQueryFromSelect(t, `SELECT "V".* FROM T1, T1."ARR1" AS "V"`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op, err := NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+	if err != nil {
+		t.Fatalf("VisitQuery: %v", err)
+	}
+	proj := findProjection(op)
+	if proj == nil || len(proj.ProjectedValues) != 1 || proj.ProjectedValues[0] == nil {
+		t.Fatalf("qualified-star projection = %#v, want one resolved exact value", proj)
+	}
+	qov, ok := values.AsQuantifiedObjectValue(proj.ProjectedValues[0])
+	if !ok {
+		t.Fatalf("qualified-star value = %T %v, want whole scalar QOV", proj.ProjectedValues[0], proj.ProjectedValues[0])
+	}
+	if qov.Correlation() != values.NamedCorrelationIdentifier("V") ||
+		qov.FlowedType().Code() != values.TypeCodeLong || qov.FlowedType().IsNullable() {
+		t.Fatalf("qualified-star QOV = %s:%s, want V:LONG NOT NULL", qov.Correlation(), qov.FlowedType())
+	}
+}
+
+func TestSchemaAliasCollisionRetainsOnlyTheAuthoredTableQualifier(t *testing.T) {
+	t.Parallel()
+	md := unnestFrontendMetadata(t)
+	root, err := parseQueryFromSelect(t,
+		`SELECT PA."ID" AS "PID", "B"."ID" AS "BID" FROM PA AS "s", "s"."PB" AS "B"`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op, err := NewPlanVisitorWithSchema(md, "s").VisitQuery(root)
+	if err != nil {
+		t.Fatalf("VisitQuery: %v", err)
+	}
+	proj := findProjection(op)
+	if proj == nil || len(proj.ProjectedValues) != 2 {
+		t.Fatalf("projection = %#v, want two exact slots", proj)
+	}
+	for i, want := range []values.CorrelationIdentifier{
+		values.NamedCorrelationIdentifier("S"), values.NamedCorrelationIdentifier("B"),
+	} {
+		fv, ok := values.AsFieldValue(proj.ProjectedValues[i])
+		if !ok {
+			t.Fatalf("slot %d = %T %v, want FieldValue", i, proj.ProjectedValues[i], proj.ProjectedValues[i])
+		}
+		qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+		if !ok || qov.Correlation() != want {
+			t.Fatalf("slot %d root = %v, want QOV(%s)", i, fv.ChildValue(), want)
+		}
+		if got := fv.Path().Ordinals(); len(got) != 1 || got[0] != 0 {
+			t.Fatalf("slot %d path = %v, want [0]", i, got)
+		}
+	}
+
+	negative, err := parseQueryFromSelect(t, `SELECT PA."ID" FROM PA AS "x", PB AS "B"`)
+	if err != nil {
+		t.Fatalf("parse negative: %v", err)
+	}
+	if _, err := NewPlanVisitorWithSchema(md, "s").VisitQuery(negative); err == nil {
+		t.Fatal("ordinary alias X unexpectedly retained the hidden PA table qualifier")
+	}
+}
+
+// TestUnnestElementCarriesExactScalarWithALaterFromItem is the logical-tree
+// counterpart of TestUnnestElementQuantifierCarriesExactScalar with ONE more
+// FROM item. The extra item changes which resolver mint emits the element's
+// quantified object:
 //
 //	FROM A, C, C."ARR" AS "X"          -> ResolveIdentifier's correlated arm
 //	FROM A, C, C."ARR" AS "X", U       -> ResolveColumnShadowingQualified
@@ -26,20 +132,15 @@ import (
 //
 // # Why this asserts on the LOGICAL tree, not the physical plan
 //
-// MEASURED on this shape, with the guard absent:
-// ResolveColumnShadowingQualified returned `QOV(X) : RECORD<X UNKNOWN NULL>`
-// and the Cascades translator received it in the projection's ProjectedValues —
-// but the WINNING PHYSICAL plan carried `QOV(X) : UNKNOWN`, because a planner
-// rewrite happens to re-mint that read untyped on this shape. So a
-// physical-plan assertion here passes with the defect fully present: it cannot
-// express it, which is not coverage. The logical tree is the last surface on
-// which the resolver's own answer is still the answer, so that is where the
-// assertion goes.
+// RFC-232 no longer permits UNKNOWN quantified objects. The virtual unnest
+// table is lookup metadata, while QOV(X) flows the exact array element itself:
+// LONG NOT NULL for this fixture, never RECORD<X ...>. The logical tree is the
+// last surface on which this resolver mint is still directly observable.
 //
 // Do not "strengthen" this into a physical-plan check. The rewrite that erases
 // the type is incidental — it is not a guard, nothing pins it, and a shape
 // where it does not fire is a shape with silently wrong leg windows.
-func TestUnnestElementStaysUntypedWithALaterFromItem(t *testing.T) {
+func TestUnnestElementCarriesExactScalarWithALaterFromItem(t *testing.T) {
 	t.Parallel()
 
 	b := metadata.NewSchemaTemplateBuilder().SetName("unnest_later_from_item")
@@ -73,7 +174,7 @@ func TestUnnestElementStaysUntypedWithALaterFromItem(t *testing.T) {
 	// Every quantifier object the RESOLVER put on a projected value, by
 	// correlation. Projected values are the resolver's verbatim output at this
 	// stage — nothing has rewritten them yet.
-	seen := map[string][]string{}
+	seen := map[string][]values.Type{}
 	var visit func(logical.LogicalOperator)
 	visit = func(node logical.LogicalOperator) {
 		if node == nil {
@@ -85,8 +186,8 @@ func TestUnnestElementStaysUntypedWithALaterFromItem(t *testing.T) {
 					continue
 				}
 				values.WalkValue(v, func(n values.Value) bool {
-					if qov, isQ := n.(*values.QuantifiedObjectValue); isQ {
-						seen[qov.Correlation.Name()] = append(seen[qov.Correlation.Name()], fmt.Sprint(qov.Typ))
+					if qov, isQ := values.AsQuantifiedObjectValue(n); isQ {
+						seen[qov.Correlation().Name()] = append(seen[qov.Correlation().Name()], qov.FlowedType())
 					}
 					return true
 				})
@@ -114,7 +215,7 @@ func TestUnnestElementStaysUntypedWithALaterFromItem(t *testing.T) {
 	}
 	typedA := false
 	for _, ty := range aTypes {
-		if isRowType(ty) {
+		if ty != nil && ty.Code() == values.TypeCodeRecord {
 			typedA = true
 		}
 	}
@@ -125,37 +226,20 @@ func TestUnnestElementStaysUntypedWithALaterFromItem(t *testing.T) {
 			"assertion below is vacuous.\n  seen: %v", aTypes, seen)
 	}
 
-	// THE BOUNDARY. The unnest element's quantifier must NOT state a row —
-	// here, where ResolveColumnShadowingQualified is the mint.
+	// THE BOUNDARY. The unnest element's quantifier must state the exact scalar
+	// element — here, where ResolveColumnShadowingQualified is the mint.
 	xTypes, sawX := seen["X"]
 	if !sawX {
-		t.Fatalf("no projected quantifier object for the unnest binding X; the bare "+
-			"`\"X\"` projection is no longer resolved QOV-correlated, so this test no "+
-			"longer reaches ResolveColumnShadowingQualified.\n  seen: %v", seen)
+		t.Fatalf("no projected quantifier object for the unnest binding X; the virtual "+
+			"scope source likely still exposes UNKNOWN and exact QOV construction declined. "+
+			"The bare `\"X\"` projection must reach ResolveColumnShadowingQualified.\n  seen: %v", seen)
 	}
 	for _, ty := range xTypes {
-		if isRowType(ty) {
-			t.Fatalf("the unnest ELEMENT quantifier X states a ROW (%s) on the "+
-				"LATER-FROM-ITEM shape.\n\n"+
-				"  This shape resolves the bare `\"X\"` through "+
-				"ResolveColumnShadowingQualified, not through ResolveIdentifier's "+
-				"correlated arm. A flowed-type guard applied at only one of those mints "+
-				"leaves the other stating a row, and the two are reached by SQL that "+
-				"differs by one FROM item.\n\n"+
-				"  values.IsMixedSeedElementType discriminates the element from a join "+
-				"leg by exactly this record-ness, so a row here makes the element read "+
-				"as a leg: LOUD \"multi-leg row cannot serve a source-relative ordinal\" "+
-				"on some shapes, SILENTLY MISSING ROWS on others.\n\n"+
-				"  Fix expr.flowedTypeFor — the single authority all three mints route "+
-				"through.\n  seen: %v", ty, seen)
+		if ty == nil || ty.Code() != values.TypeCodeLong || ty.IsNullable() {
+			t.Fatalf("the unnest ELEMENT quantifier X states %v, want exact LONG NOT NULL. "+
+				"This shape resolves bare `\"X\"` through ResolveColumnShadowingQualified; "+
+				"the virtual one-column lookup table must not become the flowed type, and "+
+				"UNKNOWN is no longer an admissible QOV.\n  seen: %v", ty, seen)
 		}
 	}
-}
-
-// isRowType reports whether a rendered values.Type is a record. The rendering
-// is compared rather than the Go type because the type travels here as the
-// string the plan prints, which is the same surface
-// TestUnnestElementQuantifierStaysUntyped reads.
-func isRowType(rendered string) bool {
-	return len(rendered) >= 6 && rendered[:6] == "RECORD"
 }

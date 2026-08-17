@@ -16,6 +16,12 @@
 # Without both directions the file passed against a tree with no elimination
 # at all.
 #
+# RFC-232 makes ownership visible in Explain output: values projected from a
+# physical child are rooted at `_current`, while enforced sort keys retain the
+# qualified source root that declared them. A checked row-preserving projection
+# may also move across LIMIT when the output layout is unchanged. The rows and
+# explicit sort-presence/absence assertions below remain the semantic gate.
+#
 # Cursor natural orders (per execSelectQueryFull):
 #   - PK equality / PK range / composite-PK range: PK cols ASC
 #   - Secondary-index equality: PK cols ASC (index key fixed)
@@ -133,7 +139,7 @@ tests:
 
   # Secondary-index range + ORDER BY on DIFFERENT col — must sort.
   - query: SELECT id, v, name FROM t WHERE v >= 20 ORDER BY name
-    plan_contains: "InMemorySort([NAME ASC], IndexScan(IDX_V, [<>]))"
+    plan_contains: "Project([_current.ID#0, _current.V#1, _current.NAME#2], InMemorySort([_current.NAME#2 ASC], IndexScan(IDX_V, [<>])))"
     rows:
       - [1, 30, 'a']
       - [2, 20, 'b']
@@ -191,7 +197,7 @@ tests:
   # natural order is (region, plan, id). ORDER BY [id] alone is NOT
   # a prefix of (region, plan, id) — must sort.
   - query: SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
-    plan_contains: "InMemorySort([ID ASC], IndexScan(IDX_REGION_PLAN, [=, <>]))"
+    plan_contains: "Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))"
     rows:
       - [1]
       - [2]
@@ -247,8 +253,15 @@ tests:
   # plandiff. The old 0AF00 pins predated the extension.
   # -------------------------------------------------------------------
 
+  # LIMIT/PROJECT NESTING IS NOT PINNED HERE. Both nestings are the same
+  # rows and the same operators, PushLimitThroughProjectionRule yields one
+  # beside the other, and the cost model rates them identically — so the
+  # nesting is a tie-break, not a plan property. Two entries below pinned the
+  # OPPOSITE nesting for the same query modulo DESC, which is what a pinned
+  # tie looks like. What IS determined, and what this scenario is for, is the
+  # absence of a sort: plan_not_contains InMemorySort.
   - query: SELECT id FROM t ORDER BY id LIMIT 3
-    plan_contains: "Limit(3, Project([ID#0], Scan(T)))"
+    plan_contains: "Limit(3, "
     plan_not_contains: "InMemorySort"
     rows:
       - [1]
@@ -262,23 +275,43 @@ tests:
       - [3]
       - [4]
 
+  # ID is the PK suffix carried by every IDX_V entry, so this projection is
+  # fully covered. MergeProjectionAndFetchRule and ImplementProjectionRule each
+  # independently remove the fetch; disabling BOTH restores the fetching scan.
+  # The positive COVERING pin prevents either the projection/limit placement or
+  # parent-alternative enumeration from silently hiding that index-only path.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    plan_contains: "Limit(3, IndexScan(IDX_V, [<>]))"
+    plan_contains: "Limit(3, Project([_current.ID#0, _current.V#1], IndexScan(IDX_V, [<>] COVERING)))"
     plan_not_contains: "InMemorySort"
     rows:
       - [3, 10]
       - [5, 15]
       - [2, 20]
 
+  # Nesting untied — see the LIMIT 3 entry above. REVERSE is the assertion.
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
-    plan_contains: "Limit(2, Scan(T) REVERSE)"
+    plan_contains: "Scan(T) REVERSE"
+    plan_not_contains: "InMemorySort"
+    rows:
+      - [5]
+      - [4]
+
+  # ...and the cap itself, as a SIBLING entry rather than a tighter substring on
+  # the one above. plan_contains takes a single string, so asserting both the
+  # reverse scan and the LIMIT in one entry would have to spell their NESTING —
+  # which is the tie this scenario deliberately declines to pin. Two entries pin
+  # two independent properties instead. Without this the cap was not pinned at
+  # all: a plan that dropped the LIMIT outright still satisfies "Scan(T) REVERSE"
+  # and the rows below, since the table has exactly 5 rows in that order.
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    plan_contains: "Limit(2, "
     plan_not_contains: "InMemorySort"
     rows:
       - [5]
       - [4]
 
   - query: SELECT DISTINCT v FROM t WHERE v > 0 ORDER BY v LIMIT 3
-    plan_contains: "Distinct(Project([V#1], IndexScan(IDX_V, [<>] COVERING)))"
+    plan_contains: "Distinct(Project([_current.V#1], IndexScan(IDX_V, [<>] COVERING)))"
     plan_not_contains: "InMemorySort"
     rows:
       - [10]
@@ -304,7 +337,7 @@ tests:
 
   # Alias + LIMIT (Go extension, RFC-128).
   - query: SELECT id AS pk FROM t ORDER BY pk LIMIT 2
-    plan_contains: "Limit(2, Project([ID#0], Scan(T)))"
+    plan_contains: "Limit(2, Project([_current.ID#0], Scan(T)))"
     plan_not_contains: "InMemorySort"
     rows:
       - [1]
@@ -380,9 +413,20 @@ tests:
       - [1, 20]
       - [1, 10]
 
-  # ORDER BY id DESC + LIMIT (Go extension, RFC-128).
+  # ORDER BY id DESC + LIMIT (Go extension, RFC-128). Nesting untied — see the
+  # LIMIT 3 entry above; REVERSE + no sort is what this pins.
   - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
-    plan_contains: "Limit(2, Scan(T) REVERSE)"
+    plan_contains: "Scan(T) REVERSE"
+    plan_not_contains: "InMemorySort"
+    rows:
+      - [5]
+      - [4]
+
+  # ...and the cap, for the same reason as its twin above: dropping the LIMIT
+  # from plan_contains left it asserted by nothing, and the five-row fixture
+  # makes the row list agree with an uncapped reverse scan's first two rows.
+  - query: SELECT id FROM t ORDER BY id DESC LIMIT 2
+    plan_contains: "Limit(2, "
     plan_not_contains: "InMemorySort"
     rows:
       - [5]
@@ -402,7 +446,7 @@ tests:
   # descending sub-sorts; rejection emerges from "no scan satisfies".
   # Same architectural reason in both engines.
   - query: SELECT a, b FROM ab WHERE a > 0 ORDER BY a ASC, b DESC
-    plan_contains: "InMemorySort([A ASC, B DESC], Scan(AB, [<>]))"
+    plan_contains: "Project([_current.A#0, _current.B#1], InMemorySort([_current.A#0 ASC, _current.B#1 DESC], Scan(AB, [<>])))"
     rows:
       - [1, 30]
       - [1, 20]
@@ -414,7 +458,7 @@ tests:
   # exercises the alias-resolves-to-PK-col reverse-scan path with a
   # row bound.
   - query: SELECT id AS pk FROM t ORDER BY pk DESC LIMIT 3
-    plan_contains: "Limit(3, Project([ID#0], Scan(T) REVERSE))"
+    plan_contains: "Limit(3, Project([_current.ID#0], Scan(T) REVERSE))"
     plan_not_contains: "InMemorySort"
     rows:
       - [5]
@@ -452,7 +496,7 @@ tests:
   # Leading PK col equated + LIMIT (Go extension, RFC-128) — the
   # equality-prefix-relaxation forward-scan path with a row bound.
   - query: SELECT a, b FROM ab WHERE a = 2 ORDER BY b ASC LIMIT 1
-    plan_contains: "Limit(1, Scan(AB, [=]))"
+    plan_contains: "Limit(1, Project([_current.A#0, _current.B#1], Scan(AB, [=])))"
     plan_not_contains: "InMemorySort"
     rows:
       - [2, 10]
@@ -497,7 +541,7 @@ tests:
   # the orderBy unchanged with orderBy[0]=c ≠ na[0]=b → falls through
   # to in-memory sort. Rows come out sorted by c ASC.
   - query: SELECT a, b, c FROM ab WHERE a = 1 ORDER BY c
-    plan_contains: "InMemorySort([C ASC], Scan(AB, [=]))"
+    plan_contains: "Project([_current.A#0, _current.B#1, _current.C#2], InMemorySort([_current.C#2 ASC], Scan(AB, [=])))"
     rows:
       - [1, 10, 100]
       - [1, 30, 130]
@@ -522,8 +566,12 @@ tests:
 
   # Same with LIMIT (Go extension, RFC-128) — reverse scan bounded
   # to the top two v values.
+  # The projection is COVERED by IDX_V here (id is the PK, carried in the index
+  # entry), so the reverse range read needs no record fetch. The pin was written
+  # against a plan that fetched; the covering one is strictly less I/O for the
+  # same rows.
   - query: SELECT id, v FROM t WHERE v > 0 ORDER BY v DESC LIMIT 2
-    plan_contains: "Limit(2, IndexScan(IDX_V, [<>]) REVERSE)"
+    plan_contains: "IndexScan(IDX_V, [<>] COVERING) REVERSE"
     plan_not_contains: "InMemorySort"
     rows:
       - [4, 40]
@@ -546,9 +594,16 @@ tests:
 
   # Equated leading + DESC on trailing non-equated col + LIMIT (Go
   # extension, RFC-128). region='eu' rows: (4, 'pro'), (5, 'free');
-  # plan DESC puts 'pro' first, LIMIT 1 keeps id=4.
+  # plan DESC puts 'pro' first, LIMIT 1 keeps id=4. ID is the PK suffix
+  # carried by IDX_REGION_PLAN, so the projection is covered. Either
+  # MergeProjectionAndFetchRule or ImplementProjectionRule removes the fetch;
+  # disabling BOTH restores the fetching scan and fails this positive pin.
+  # The LIMIT stays ABOVE the projection: a rewrite that pushes it below prunes
+  # the un-pushed shape out of REWRITING and the covering member is then never
+  # offered to PLANNING at all. That reachability half is pinned in
+  # embedded.TestLimitOverProjectionKeepsTheCoveringRewrite.
   - query: SELECT id FROM rp WHERE region = 'eu' ORDER BY plan DESC LIMIT 1
-    plan_contains: "Limit(1, IndexScan(IDX_REGION_PLAN, [=, *]) REVERSE)"
+    plan_contains: "Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))"
     plan_not_contains: "InMemorySort"
     rows:
       - [4]

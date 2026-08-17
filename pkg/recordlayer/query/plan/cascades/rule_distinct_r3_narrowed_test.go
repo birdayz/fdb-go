@@ -6,6 +6,7 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -18,6 +19,55 @@ func narrowedDistinctFrom(results []expressions.RelationalExpression) *plans.Rec
 		}
 	}
 	return nil
+}
+
+// fireFilteredDistinctForR3 states the filtered projection with exact row
+// types on both the logical and physical members of its projection group. The
+// older shared helper used an untyped scan as a wildcard implementation; an
+// unresolved row can no longer cross an RFC-232 constructor boundary.
+func fireFilteredDistinctForR3(
+	t *testing.T,
+	projected []string,
+	preds []predicates.QueryPredicate,
+) (retained bool, stampedBy string, fired bool) {
+	t.Helper()
+	rowType := distinctScanType("T")
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, rowType))
+	scanQ := expressions.NamedForEachQuantifier(
+		distinctReadAlias("T"), expressions.InitialOf(scan))
+	filter := mustDistinctConstruct(expressions.NewLogicalFilterExpression(preds, scanQ))
+	filterQ := expressions.NamedForEachQuantifier(
+		distinctReadAlias("T"), expressions.InitialOf(filter))
+	cols := make([]values.Value, len(projected))
+	for i, column := range projected {
+		cols[i] = distinctRead("T", column)
+	}
+	projection := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(cols, filterQ))
+	projectionRef := expressions.InitialOf(projection)
+	projectionRef.Insert(makeFakePlanWrapperForType(
+		"T", projection.GetResultValue().Type(), false))
+	distinct := mustDistinctConstruct(expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(projectionRef)))
+	ctx := &indexTestPlanContext{
+		candidates:      secondaryUniqueTestCandidates(),
+		readableIndexes: AllIndexesReadable(),
+	}
+	results := mustFireImplementationRuleWithContext(t,
+		NewImplementDistinctFinalRule(), expressions.InitialOf(distinct), ctx, nil)
+	for _, result := range results {
+		fired = true
+		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
+			retained = true
+			continue
+		}
+		if stamped, ok := result.(plans.DistinctProofStamped); ok {
+			if name := stamped.GetDistinctProofIndexName(); name != "" {
+				stampedBy = name
+			}
+		}
+	}
+	return retained, stampedBy, fired
 }
 
 // TestDistinctFinal_R3NarrowsWhereItCannotElide is R3's central planner pin.
@@ -118,7 +168,7 @@ func TestDistinctFinal_R3DoesNotNarrowWithoutAQualifyingIndex(t *testing.T) {
 func TestDistinctFinal_R3YieldsToFullElision(t *testing.T) {
 	t.Parallel()
 
-	retained, stampedBy, fired := fireFilteredDistinct(t,
+	retained, stampedBy, fired := fireFilteredDistinctForR3(t,
 		[]string{"NULLABLE_EMAIL"},
 		[]predicates.QueryPredicate{predicates.NewComparisonPredicate(
 			distinctRead("T", "NULLABLE_EMAIL"),
@@ -147,7 +197,7 @@ func TestDistinctFinal_R3YieldsToFullElision(t *testing.T) {
 func TestDistinctFinal_R3NarrowingIsPlanIdentity(t *testing.T) {
 	t.Parallel()
 
-	full := plans.NewRecordQueryDistinctPlan(makeFakePlanWrapper("T"))
+	full := mustDistinctConstruct(plans.NewRecordQueryDistinctPlan(makeFakePlanWrapper("T")))
 	narrowed := full.WithNarrowedDedup("T$nullable_email_unique", []int{0})
 
 	if full.EqualsPlanWithoutChildren(narrowed) {

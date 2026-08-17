@@ -63,12 +63,13 @@ func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			legs, raw, err := b.legRows(outer.Name(), inner.Name(), outerRow, tc.inner)
+			legs, raw, err := b.legRows(outer, inner, outerRow, tc.inner)
 			if err != nil {
 				t.Fatalf("legRows: %v", err)
 			}
 			binder := &buildLegBinder{legs: legs, raw: raw}
-			got, evErr := values.NewExistsValue(inner).Evaluate(
+			exists := mustExecutorConstruct(values.NewExistsValue(inner, values.NullableLong))
+			got, evErr := exists.Evaluate(
 				&values.RowEvalContext{Correlations: binder})
 			if evErr != nil {
 				t.Fatalf("ExistsValue.Evaluate: %v", evErr)
@@ -104,7 +105,7 @@ func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 		t.Parallel()
 		oneCol := &QueryResult{Positional: &PositionalRow{
 			Type: values.NewRecordType("", false, []values.Field{
-				{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+				{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
 			}),
 			Slots: []any{int64(7)},
 		}}
@@ -118,7 +119,7 @@ func TestOrdinalJoinBuild_ScalarInnerBindsItsDatum(t *testing.T) {
 		} {
 			t.Run(side.name, func(t *testing.T) {
 				t.Parallel()
-				legs, raw, err := b.legRows(outer.Name(), inner.Name(), side.outer, side.inner)
+				legs, raw, err := b.legRows(outer, inner, side.outer, side.inner)
 				if err != nil {
 					t.Fatalf("legRows: %v", err)
 				}

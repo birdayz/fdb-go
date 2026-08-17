@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // TestReference_Insert_DistinctWhenChildRefsDiffer pins the
@@ -13,12 +12,12 @@ import (
 // NOT duplicates.
 func TestReference_Insert_DistinctWhenChildRefsDiffer(t *testing.T) {
 	t.Parallel()
-	scanA := NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := mustExpression(NewFullUnorderedScanExpression([]string{"A"}, testRecordType()))
+	scanB := mustExpression(NewFullUnorderedScanExpression([]string{"B"}, testRecordType()))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
 	// Two filters with the SAME predicate but DIFFERENT inner Refs.
-	fA := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, ForEachQuantifier(InitialOf(scanA)))
-	fB := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, ForEachQuantifier(InitialOf(scanB)))
+	fA := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, ForEachQuantifier(InitialOf(scanA))))
+	fB := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, ForEachQuantifier(InitialOf(scanB))))
 	r := InitialOf(fA)
 	if !r.Insert(fB) {
 		t.Fatal("insert dedup'd a filter over a different inner Reference")
@@ -33,13 +32,13 @@ func TestReference_Insert_DistinctWhenChildRefsDiffer(t *testing.T) {
 // genuinely-equivalent expressions).
 func TestReference_Insert_DedupSameChildRefs(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"A"}, testRecordType()))
 	scanRef := InitialOf(scan)
 	// Two filters with the same predicate AND the same inner Reference
 	// pointer (same scanRef).
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	fA := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, ForEachQuantifier(scanRef))
-	fB := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, ForEachQuantifier(scanRef))
+	fA := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, ForEachQuantifier(scanRef)))
+	fB := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, ForEachQuantifier(scanRef)))
 	r := InitialOf(fA)
 	if r.Insert(fB) {
 		t.Fatal("insert added a structurally+children-equivalent duplicate")

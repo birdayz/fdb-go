@@ -54,7 +54,12 @@ func (r *FilterDropTruePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 	if !dropped {
 		return
 	}
-	call.Yield(expressions.NewLogicalFilterExpression(kept, f.GetInner()))
+	rewritten, err := expressions.NewLogicalFilterExpression(kept, f.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(rewritten)
 }
 
 var _ ExpressionRule = (*FilterDropTruePredicatesRule)(nil)

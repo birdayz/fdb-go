@@ -67,6 +67,65 @@ func sortedAliasNames(set map[values.CorrelationIdentifier]struct{}) string {
 	return "{" + strings.Join(names, ",") + "}"
 }
 
+// TestPartitionSelect_CrossProductLowerUsesExactSentinel pins the Case-1
+// lower's scalar row. That row is planner-generated, so its literal must carry
+// an exact type just like a translated SQL literal; an UnknownType here makes
+// the checked Select constructor reject every disconnected bipartition.
+func TestPartitionSelect_CrossProductLowerUsesExactSentinel(t *testing.T) {
+	t.Parallel()
+
+	a := partitionBinaryNamedScanQuantifier("A")
+	b := partitionBinaryNamedScanQuantifier("B")
+	c := partitionBinaryNamedScanQuantifier("C")
+	selectExpr := mustPartitionBinaryConstruct(expressions.NewSelectExpression(
+		mustPartitionBinaryConstruct(a.RequireFlowedObjectValue()),
+		[]expressions.Quantifier{a, b, c},
+		nil,
+	))
+	yields := mustFirePartitionExpressionRule(
+		t, NewPartitionSelectRule(), expressions.InitialOf(selectExpr))
+	if len(yields) == 0 {
+		t.Fatal("PartitionSelectRule yielded nothing for an independent three-way cross product")
+	}
+
+	foundExactSentinel := false
+	seen := make(map[*expressions.Reference]struct{})
+	var visit func(expressions.RelationalExpression)
+	visit = func(expr expressions.RelationalExpression) {
+		if constructor, ok := expr.GetResultValue().(*values.RecordConstructorValue); ok {
+			for _, field := range constructor.Fields {
+				constant, isConstant := field.Value.(*values.ConstantValue)
+				if !isConstant || constant.Value != int64(1) {
+					continue
+				}
+				if !constant.Type().Equals(values.NotNullLong) {
+					t.Fatalf("cross-product sentinel type = %v, want LONG NOT NULL", constant.Type())
+				}
+				foundExactSentinel = true
+			}
+		}
+		for _, quantifier := range expr.GetQuantifiers() {
+			ref := quantifier.GetRangesOver()
+			if ref == nil {
+				continue
+			}
+			if _, alreadySeen := seen[ref]; alreadySeen {
+				continue
+			}
+			seen[ref] = struct{}{}
+			for _, member := range ref.AllMembers() {
+				visit(member)
+			}
+		}
+	}
+	for _, yield := range yields {
+		visit(yield)
+	}
+	if !foundExactSentinel {
+		t.Fatal("PartitionSelectRule yielded no exact Case-1 cross-product sentinel")
+	}
+}
+
 // TestPartitionSelect_RejectsNonSingletonCrossProductLower pins the SINGLETON
 // clause of the disconnected-lower guard in PartitionSelectRule (the
 // lowerComponentsAreSingletons conjunct at the disconnectedLower `continue`).
@@ -96,17 +155,17 @@ func sortedAliasNames(set map[values.CorrelationIdentifier]struct{}) string {
 func TestPartitionSelect_RejectsNonSingletonCrossProductLower(t *testing.T) {
 	t.Parallel()
 
-	a := scanQuantifier("A")
-	b := scanQuantifier("B")
-	ee := scanQuantifier("EE")
+	a := partitionBinaryNamedScanQuantifier("A")
+	b := partitionBinaryNamedScanQuantifier("B")
+	ee := partitionBinaryNamedScanQuantifier("EE")
 
 	// X ranges over a filter referencing A, so X correlates to A with no
 	// predicate between them — {A, X} is one independent component (the
 	// lateral-unnest pairing). Mirrors TestTransitiveCorrelationOrder_RangesOverEdges.
-	xInner := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{joinPred("A", "X")},
-		pbForEachOf(&expressions.FullUnorderedScanExpression{}),
-	)
+	xInner := mustPartitionBinaryConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{partitionBinaryJoinPredicate("A", "X")},
+		pbForEachOf(partitionBinaryScan("X")),
+	))
 	x := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("X"),
 		expressions.InitialOf(xInner),
@@ -116,13 +175,13 @@ func TestPartitionSelect_RejectsNonSingletonCrossProductLower(t *testing.T) {
 	// names only the EE leg, so the {A,X,B}|{EE} bipartition is a clean Case-1
 	// cross product (no upper->lower correlation) — it WOULD be yielded if the
 	// guard admitted it.
-	sel := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(ee.GetAlias()),
+	sel := mustPartitionBinaryConstruct(expressions.NewSelectExpression(
+		mustPartitionBinaryConstruct(ee.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{a, b, ee, x},
 		nil,
-	)
+	))
 
-	yields := FireExpressionRule(NewPartitionSelectRule(), expressions.InitialOf(sel))
+	yields := mustFirePartitionExpressionRule(t, NewPartitionSelectRule(), expressions.InitialOf(sel))
 
 	// The rule must actually enumerate bipartitions here (the exempt cross
 	// products {B,EE}|… and the {A,X}|… component peel), else the reject
@@ -131,7 +190,7 @@ func TestPartitionSelect_RejectsNonSingletonCrossProductLower(t *testing.T) {
 		t.Fatal("PartitionSelectRule yielded nothing; the reject assertion would be vacuous")
 	}
 
-	component := aliasSet("A", "X")
+	component := partitionBinaryAliasSet("A", "X")
 	for _, y := range yields {
 		for _, lower := range nestedLowerAliasSets(y) {
 			if len(lower) >= 3 && isSupersetOf(lower, component) {

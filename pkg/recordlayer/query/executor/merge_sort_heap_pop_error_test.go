@@ -63,7 +63,7 @@ func TestMergeSortCursorReference_AllRowsEmitted_NoTypeConflict(t *testing.T) {
 			poisonRowsCursor(int64(3)),
 			poisonRowsCursor(int64(999)), // the poisoned variant's leg 2, unpoisoned
 		},
-		idKey(), false, false,
+		idKey(t), false, false,
 	)
 	defer c.Close()
 
@@ -107,7 +107,7 @@ func TestMergeSortCursor_PopSiftError_PreservesAllLegs(t *testing.T) {
 			poisonRowsCursor(int64(3)),
 			poisonRowsCursor(poisonInt(999)),
 		},
-		idKey(), false, false,
+		idKey(t), false, false,
 	)
 	defer c.Close()
 	ctx := context.Background()

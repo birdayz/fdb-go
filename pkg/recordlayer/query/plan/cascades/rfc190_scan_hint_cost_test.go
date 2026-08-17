@@ -11,6 +11,29 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRFC190ScanHintConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-190 scan-hint fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc190ScanHintRowType() *values.RecordType {
+	return values.NewRecordType("RFC190ScanHintRow", false, []values.Field{
+		{Name: "TENANT", FieldType: values.NullableLong},
+		{Name: "ORDER", FieldType: values.NullableLong},
+	})
+}
+
+func rfc190ScanHintPrimaryKey() []values.Value {
+	root := mustRFC190ScanHintConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("rfc190_scan_hint"), rfc190ScanHintRowType()))
+	return []values.Value{
+		mustRFC190ScanHintConstruct(values.ResolveFieldOrdinals(root, []int{0})),
+		mustRFC190ScanHintConstruct(values.ResolveFieldOrdinals(root, []int{1})),
+	}
+}
+
 // TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe exercises
 // the production primary-scan match-candidate path. In a multi-type store this
 // cost is normally reached through scanPlanExpression (often around a
@@ -27,7 +50,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 		[]string{"T"},
 		[]string{"TENANT", "ORDER"},
 		false, // genuine shared-primary-key-range multi-type scan: no record-type-key prefix
-		values.UnknownType,
+		rfc190ScanHintRowType(),
 	).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 
 	eqTenant := pkGateEq(t, int64(7))
@@ -37,7 +60,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 		},
 		false,
 	)
-	partialScan := pkScanFromDataAccessPlan(partialPlan)
+	partialScan, _ := orderingSourceOfDataAccessPlan(partialPlan).(*plans.RecordQueryScanPlan)
 	if partialScan == nil {
 		t.Fatalf("candidate plan = %T, want a primary scan under at most a type filter", partialPlan)
 	}
@@ -67,7 +90,7 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 		},
 		false,
 	)
-	fullScan := pkScanFromDataAccessPlan(fullPlan)
+	fullScan, _ := orderingSourceOfDataAccessPlan(fullPlan).(*plans.RecordQueryScanPlan)
 	if fullScan == nil {
 		t.Fatalf("full candidate plan = %T, want a primary scan under at most a type filter", fullPlan)
 	}
@@ -89,11 +112,9 @@ func TestScanPlanExpressionHintCost_StampedPartialPKPrefixNotPointProbe(t *testi
 func TestScanProvableMaxCard_UsesStampedPKArity(t *testing.T) {
 	t.Parallel()
 
-	pk2 := []values.Value{
-		&values.FieldValue{Field: "TENANT", Typ: values.UnknownType},
-		&values.FieldValue{Field: "ORDER", Typ: values.UnknownType},
-	}
-	prefix := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	pk2 := rfc190ScanHintPrimaryKey()
+	prefix := mustRFC190ScanHintConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, rfc190ScanHintRowType(), false)).
 		WithPrimaryKey(pk2).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
@@ -118,13 +139,14 @@ func TestLogicalCounts_PrimaryKeyContextFallback(t *testing.T) {
 
 	ctx := &pkGateTestCtx{pk: []string{"TENANT", "ORDER"}}
 	logicalParent := func(scan *plans.RecordQueryScanPlan) expressions.RelationalExpression {
-		return expressions.NewLogicalFilterExpression(
+		return mustRFC190ScanHintConstruct(expressions.NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 			expressions.ForEachQuantifier(expressions.FinalOf(scan)),
-		)
+		))
 	}
 
-	partial := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	partial := mustRFC190ScanHintConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, rfc190ScanHintRowType(), false)).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	partialCounts := findExpressionsByType(logicalParent(partial), nil, ctx)

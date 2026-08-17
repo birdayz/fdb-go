@@ -50,62 +50,106 @@ func TestRebaseUnnestOuterLegPredicate_MintIsIntentional(t *testing.T) {
 	outerLegs := map[string]struct{}{"T": {}}
 
 	legRowType := values.Type(values.NewRecordType("T", false, []values.Field{
-		{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 	}))
+	mergedType := values.NewRecordType("MERGED", false, []values.Field{
+		{Name: "ELEM", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "T.ID", FieldType: values.NotNullLong, Ordinal: 1},
+	})
 
 	// `elem = T.ID` — an existential residual whose comparand reads an outer
 	// table leg, the shape the rebase exists for.
-	legRead := values.NewFieldValue(
-		values.NewQuantifiedObjectValueOfType(legAlias, legRowType), "ID", values.UnknownType)
-	elemRead := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(mergedCorr), "ELEM", values.UnknownType)
+	legRead := exactTestField(t, exactTestQOV(t, legAlias.Name(), legRowType), 0)
+	elemRead := exactTestField(t, exactTestQOV(t, mergedCorr.Name(), mergedType), 0)
 	pred := predicates.NewComparisonPredicate(elemRead,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: legRead})
 
-	out := rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr, UnnestLegMintSiteAnchoredNonExists)
+	out, rebased := rebaseUnnestOuterLegPredicate(pred, outerLegs, mergedCorr, mergedType, UnnestLegMintSiteAnchoredNonExists)
+	if !rebased {
+		t.Fatal("exact outer-leg rebase declined")
+	}
 
 	cmp, ok := out.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("rebase must return a comparison predicate, got %T", out)
 	}
-	operand, ok := cmp.Comparison.Operand.(*values.FieldValue)
+	operand, ok := values.AsFieldValue(cmp.Comparison.Operand)
 	if !ok {
 		t.Fatalf("comparand must stay a FieldValue, got %T", cmp.Comparison.Operand)
 	}
-	if operand.Field != "T.ID" {
+	if operand.DisplayName() != "T.ID" {
 		t.Fatalf("outer-leg read was not re-keyed onto the merged row: Field=%q, want "+
 			"%q. Leaving it bare leaves QOV(T) unbound under the existential's merged "+
 			"binding — it evaluates NULL and the EXISTS drops rows that should match. "+
 			"If this mint is being retired, the replacement must BIND the leg, not "+
-			"decline it.", operand.Field, "T.ID")
+			"decline it.", operand.DisplayName(), "T.ID")
 	}
-	qov, ok := operand.Child.(*values.QuantifiedObjectValue)
-	if !ok || qov.Correlation != mergedCorr {
+	qov, ok := values.AsQuantifiedObjectValue(operand.ChildValue())
+	if !ok || qov.Correlation() != mergedCorr {
 		t.Fatalf("re-keyed read must hang off the MERGED correlation, got child %T (%v)",
-			operand.Child, operand.Child)
+			operand.ChildValue(), operand.ChildValue())
 	}
 
 	// The element read (already on the merged correlation) must pass through
 	// untouched — otherwise the rebase would double-qualify its own output, and
 	// the mint's idempotence is what makes it safe at the several call sites
 	// that may see an already-rebased predicate.
-	lhs, ok := cmp.Operand.(*values.FieldValue)
-	if !ok || lhs.Field != "ELEM" {
+	lhs, ok := values.AsFieldValue(cmp.Operand)
+	if !ok || lhs.DisplayName() != "ELEM" {
 		t.Fatalf("a read already on the merged correlation must pass through "+
 			"unchanged, got %#v", cmp.Operand)
 	}
 
 	// A correlation that is not an outer leg is none of this rebase's business.
 	otherAlias := values.NamedCorrelationIdentifier("OTHER")
-	otherRead := values.NewFieldValue(
-		values.NewQuantifiedObjectValueOfType(otherAlias, legRowType), "ID", values.UnknownType)
+	otherRead := exactTestField(t, exactTestQOV(t, otherAlias.Name(), legRowType), 0)
 	otherPred := predicates.NewComparisonPredicate(elemRead,
 		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: otherRead})
-	otherOut := rebaseUnnestOuterLegPredicate(otherPred, outerLegs, mergedCorr, UnnestLegMintSiteAnchoredNonExists)
-	otherOperand := otherOut.(*predicates.ComparisonPredicate).Comparison.Operand.(*values.FieldValue)
-	if otherOperand.Field != "ID" {
+	otherOut, rebased := rebaseUnnestOuterLegPredicate(otherPred, outerLegs, mergedCorr, mergedType, UnnestLegMintSiteAnchoredNonExists)
+	if !rebased {
+		t.Fatal("non-outer exact read caused the rebase to decline")
+	}
+	otherOperand := exactTestFieldView(t, otherOut.(*predicates.ComparisonPredicate).Comparison.Operand)
+	if otherOperand.DisplayName() != "ID" {
 		t.Fatalf("a non-outer-leg correlation must be left alone, got Field=%q — "+
 			"rebasing it would re-anchor a reference whose binding is somebody "+
-			"else's", otherOperand.Field)
+			"else's", otherOperand.DisplayName())
+	}
+}
+
+func TestRebaseUnnestOuterLegPredicate_NilCarrierDeclinesOnlyARealOuterLeg(t *testing.T) {
+	t.Parallel()
+	outerAlias := values.NamedCorrelationIdentifier("T")
+	elementAlias := values.NamedCorrelationIdentifier("X")
+	innerAlias := values.NamedCorrelationIdentifier("U")
+	outerLegs := map[string]struct{}{"T": {}}
+	elementType := values.NewRecordType("ELEM", false, []values.Field{
+		{Name: "EK", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	innerType := values.NewRecordType("U", false, []values.Field{
+		{Name: "UK", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	outerType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	elementRead := exactTestField(t, exactTestQOV(t, elementAlias.Name(), elementType), 0)
+	innerRead := exactTestField(t, exactTestQOV(t, innerAlias.Name(), innerType), 0)
+	elementPredicate := predicates.NewComparisonPredicate(innerRead,
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: elementRead})
+
+	unchanged, ok := rebaseUnnestOuterLegPredicate(
+		elementPredicate, outerLegs, elementAlias, nil, UnnestLegMintSiteJoinPredNotWindowed)
+	if !ok || unchanged != elementPredicate {
+		t.Fatalf("element-only predicate with no merged carrier = (%T, %t), want pointer-exact no-op",
+			unchanged, ok)
+	}
+
+	outerRead := exactTestField(t, exactTestQOV(t, outerAlias.Name(), outerType), 0)
+	outerPredicate := predicates.NewComparisonPredicate(innerRead,
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: outerRead})
+	if got, admitted := rebaseUnnestOuterLegPredicate(
+		outerPredicate, outerLegs, elementAlias, nil, UnnestLegMintSiteJoinPredNotWindowed); admitted || got != outerPredicate {
+		t.Fatalf("real outer-leg predicate without merged carrier = (%T, %t), want pointer-exact loud decline",
+			got, admitted)
 	}
 }

@@ -9,437 +9,260 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *testing.T) {
-	t.Parallel()
-
-	// Projection: [A AS col1, B AS col2]
-	// Requested ordering: [COL1 ASC]
-	// Expected: ordering [A ASC] pushed to child Reference.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
-			&values.FieldValue{Field: "B", Typ: values.UnknownType},
-		},
-		[]string{"col1", "col2"},
-		scanQ,
-	)
-	projRef := expressions.InitialOf(proj)
-
-	// Set the ordering constraint on the projection's Reference.
-	cm := NewConstraintMap()
-	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{
-			// Output SLOT 0 of the projection. A resolved reference to a
-			// projection output carries the ordinal; the name resolution that
-			// turned `ORDER BY col1` into that slot happened upstream, at the one
-			// place a name is legitimate (RFC-197).
-			Value:     values.NewFieldValueWithResolvedOrdinal("COL1", 0, values.UnknownType),
-			SortOrder: properties.RequestedSortOrderAscending,
-		},
-	}, properties.DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
-
+func runRequestedOrderingProjection(
+	t *testing.T,
+	projection *expressions.LogicalProjectionExpression,
+	projectionRef *expressions.Reference,
+	constraints *ConstraintMap,
+	constraintOnly bool,
+) *ImplementationRuleCall {
+	t.Helper()
 	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), projection)
 	if len(bindings) != 1 {
-		t.Fatalf("matcher should match LogicalProjectionExpression, got %d bindings", len(bindings))
+		t.Fatalf("matcher bindings = %d, want one", len(bindings))
 	}
-
 	call := &ImplementationRuleCall{
 		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: true,
+		Reference:      projectionRef,
+		Constraints:    constraints,
+		constraintOnly: constraintOnly,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
+	return call
+}
 
-	// The constraint should be pushed to the inner (scan) Reference.
-	innerRef := proj.GetInner().GetRangesOver()
-	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if !ok {
-		t.Fatal("constraint not pushed to child Reference")
+func setProjectionRequestedOrdering(
+	constraints *ConstraintMap,
+	projectionRef *expressions.Reference,
+	parts []properties.RequestedOrderingPart,
+) {
+	Set(constraints, projectionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{
+		properties.NewRequestedOrdering(parts, properties.DistinctnessNotDistinct, false),
+	})
+}
+
+func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *testing.T) {
+	t.Parallel()
+	_ = NewPushRequestedOrderingThroughProjectionRule() // direct behavioral-census anchor
+
+	input := requestedOrderingQuantifier("T", "projection_input")
+	a := requestedOrderingField(input, "A")
+	b := requestedOrderingField(input, "B")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{a, b}, []string{"col1", "col2"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value: requestedOrderingOutputField(
+			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		SortOrder: properties.RequestedSortOrderAscending,
+	}})
+	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
+
+	pushed, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey)
+	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != 1 {
+		t.Fatalf("pushed orderings = %v ok=%v, want one part", pushed, ok)
 	}
-	if len(pushed) != 1 {
-		t.Fatalf("expected 1 pushed ordering, got %d", len(pushed))
-	}
-	parts := pushed[0].GetParts()
-	if len(parts) != 1 {
-		t.Fatalf("expected 1 ordering part, got %d", len(parts))
-	}
-	fv, ok := parts[0].Value.(*values.FieldValue)
-	if !ok {
-		t.Fatalf("expected FieldValue, got %T", parts[0].Value)
-	}
-	if fv.Field != "A" {
-		t.Fatalf("expected translated field 'A', got %q", fv.Field)
-	}
-	if parts[0].SortOrder != properties.RequestedSortOrderAscending {
-		t.Fatal("expected ASC sort order")
+	part := pushed[0].GetParts()[0]
+	assertRequestedOrderingField(t, part.Value, a)
+	if part.SortOrder != properties.RequestedSortOrderAscending {
+		t.Fatalf("pushed direction = %v, want ASC", part.SortOrder)
 	}
 }
 
 func TestPushRequestedOrderingThroughProjection_ComputedSlot(t *testing.T) {
 	t.Parallel()
 
-	// Projection: [A+B AS total, C AS c]
-	// Requested ordering: [output slot 0 ASC]
-	// Expected: ordering with the arithmetic expression (A+B) pushed.
-	//
-	// Was named for ALIAS RESOLUTION, which no longer happens here: the request
-	// addresses the slot, and turning `ORDER BY total` into that slot is the
-	// resolver's job upstream (RFC-197 item 3). What it pins now is that a
-	// COMPUTED output slot pushes down to its whole expression, not just a bare
-	// column read.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	addExpr := &values.ArithmeticValue{
-		Left:  &values.FieldValue{Field: "A", Typ: values.UnknownType},
-		Right: &values.FieldValue{Field: "B", Typ: values.UnknownType},
+	input := requestedOrderingQuantifier("T", "projection_input")
+	add := &values.ArithmeticValue{
+		Left:  requestedOrderingField(input, "A"),
+		Right: requestedOrderingField(input, "B"),
 		Op:    values.OpAdd,
 	}
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{addExpr, &values.FieldValue{Field: "C", Typ: values.UnknownType}},
-		[]string{"total", "c"},
-		scanQ,
-	)
-	projRef := expressions.InitialOf(proj)
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{add, requestedOrderingField(input, "C")},
+		[]string{"total", "c"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value: requestedOrderingOutputField(
+			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		SortOrder: properties.RequestedSortOrderAscending,
+	}})
+	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
 
-	cm := NewConstraintMap()
-	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{
-			Value:     values.NewFieldValueWithResolvedOrdinal("TOTAL", 0, values.UnknownType),
-			SortOrder: properties.RequestedSortOrderAscending,
-		},
-	}, properties.DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
-
-	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: true,
+	pushed, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey)
+	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != 1 {
+		t.Fatalf("pushed orderings = %v ok=%v, want one computed key", pushed, ok)
 	}
-	rule.OnMatch(call)
-
-	innerRef := proj.GetInner().GetRangesOver()
-	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if !ok {
-		t.Fatal("constraint not pushed")
-	}
-	parts := pushed[0].GetParts()
-	if len(parts) != 1 {
-		t.Fatalf("expected 1 ordering part, got %d", len(parts))
-	}
-	explain := values.ExplainValue(parts[0].Value)
-	expectedExplain := values.ExplainValue(addExpr)
-	if explain != expectedExplain {
-		t.Fatalf("expected translated sort key %q, got %q", expectedExplain, explain)
+	if !values.ValuesStructurallyEqual(pushed[0].GetParts()[0].Value, add) {
+		t.Fatalf("pushed key = %s, want computed key %s",
+			values.ExplainValue(pushed[0].GetParts()[0].Value), values.ExplainValue(add))
 	}
 }
 
 func TestPushRequestedOrderingThroughProjection_NoMatchDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	// Projection: [A AS col1]
-	// Requested ordering: [a LAZY "NONEXISTENT" carrier]
-	// Rule should NOT push. Two independent reasons now, and both are load-bearing:
-	// the projection has no such output, AND a lazy carrier has no ordinal to
-	// select a slot with, so it declines even against a matching name. The second
-	// case is covered on its own below.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
-		[]string{"col1"},
-		scanQ,
-	)
-	projRef := expressions.InitialOf(proj)
+	input := requestedOrderingQuantifier("T", "projection_input")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{requestedOrderingField(input, "A")}, []string{"col1"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	foreignOutput := values.NewRecordType("projection_foreign_output", false, []values.Field{
+		{Name: "NONEXISTENT", FieldType: values.NullableLong},
+	})
+	wrongSlot := requestedOrderingFieldForType(
+		projection.GetInner().GetAlias(), foreignOutput, "NONEXISTENT")
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value: wrongSlot, SortOrder: properties.RequestedSortOrderAscending,
+	}})
+	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
 
-	cm := NewConstraintMap()
-	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{
-			Value:     &values.FieldValue{Field: "NONEXISTENT", Typ: values.UnknownType},
-			SortOrder: properties.RequestedSortOrderAscending,
-		},
-	}, properties.DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
-
-	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := proj.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
-		t.Fatal("constraint should NOT be pushed when sort key doesn't translate")
+	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
+		t.Fatal("ordering from a different exact output layout must fail closed")
 	}
 }
 
 func TestPushRequestedOrderingThroughProjection_DescPreserved(t *testing.T) {
 	t.Parallel()
 
-	// Projection: [A AS a]
-	// Requested ordering: [A DESC]
-	// Expected: DESC preserved in pushed ordering.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
-		[]string{"a"},
-		scanQ,
-	)
-	projRef := expressions.InitialOf(proj)
+	input := requestedOrderingQuantifier("T", "projection_input")
+	a := requestedOrderingField(input, "A")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{a}, []string{"a"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value: requestedOrderingOutputField(
+			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		SortOrder: properties.RequestedSortOrderDescending,
+	}})
+	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
 
-	cm := NewConstraintMap()
-	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{
-			Value:     &values.FieldValue{Field: "A", Typ: values.UnknownType},
-			SortOrder: properties.RequestedSortOrderDescending,
-		},
-	}, properties.DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
-
-	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: true,
+	pushed, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey)
+	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != 1 {
+		t.Fatalf("pushed orderings = %v ok=%v, want one part", pushed, ok)
 	}
-	rule.OnMatch(call)
-
-	innerRef := proj.GetInner().GetRangesOver()
-	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if !ok {
-		t.Fatal("constraint not pushed")
-	}
-	if pushed[0].GetParts()[0].SortOrder != properties.RequestedSortOrderDescending {
-		t.Fatal("expected DESC sort order preserved")
+	part := pushed[0].GetParts()[0]
+	assertRequestedOrderingField(t, part.Value, a)
+	if part.SortOrder != properties.RequestedSortOrderDescending {
+		t.Fatalf("pushed direction = %v, want DESC", part.SortOrder)
 	}
 }
 
 func TestPushRequestedOrderingThroughProjection_MultipleSortKeys(t *testing.T) {
 	t.Parallel()
 
-	// Projection: [X AS a, Y AS b, Z AS c]
-	// Requested ordering: [A ASC, B DESC]
-	// Expected: [X ASC, Y DESC] pushed to child.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{
-			&values.FieldValue{Field: "X", Typ: values.UnknownType},
-			&values.FieldValue{Field: "Y", Typ: values.UnknownType},
-			&values.FieldValue{Field: "Z", Typ: values.UnknownType},
-		},
-		[]string{"a", "b", "c"},
-		scanQ,
-	)
-	projRef := expressions.InitialOf(proj)
-
-	cm := NewConstraintMap()
-	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
+	input := requestedOrderingQuantifier("T", "projection_input")
+	x := requestedOrderingField(input, "X")
+	y := requestedOrderingField(input, "Y")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{x, y, requestedOrderingField(input, "Z")},
+		[]string{"a", "b", "c"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{
 		{
-			Value:     values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType),
+			Value: requestedOrderingOutputField(
+				projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
 			SortOrder: properties.RequestedSortOrderAscending,
 		},
 		{
-			Value:     values.NewFieldValueWithResolvedOrdinal("B", 1, values.UnknownType),
+			Value: requestedOrderingOutputField(
+				projection.GetInner().GetAlias(), projection.GetResultValue(), 1),
 			SortOrder: properties.RequestedSortOrderDescending,
 		},
-	}, properties.DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
+	})
+	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
 
-	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := proj.GetInner().GetRangesOver()
-	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if !ok {
-		t.Fatal("constraint not pushed")
+	pushed, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey)
+	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != 2 {
+		t.Fatalf("pushed orderings = %v ok=%v, want two parts", pushed, ok)
 	}
 	parts := pushed[0].GetParts()
-	if len(parts) != 2 {
-		t.Fatalf("expected 2 ordering parts, got %d", len(parts))
-	}
-	if fv := parts[0].Value.(*values.FieldValue); fv.Field != "X" || parts[0].SortOrder != properties.RequestedSortOrderAscending {
-		t.Fatalf("first part: want X ASC, got %s %v", fv.Field, parts[0].SortOrder)
-	}
-	if fv := parts[1].Value.(*values.FieldValue); fv.Field != "Y" || parts[1].SortOrder != properties.RequestedSortOrderDescending {
-		t.Fatalf("second part: want Y DESC, got %s %v", fv.Field, parts[1].SortOrder)
+	assertRequestedOrderingField(t, parts[0].Value, x)
+	assertRequestedOrderingField(t, parts[1].Value, y)
+	if parts[0].SortOrder != properties.RequestedSortOrderAscending ||
+		parts[1].SortOrder != properties.RequestedSortOrderDescending {
+		t.Fatalf("pushed directions = [%v, %v], want [ASC, DESC]",
+			parts[0].SortOrder, parts[1].SortOrder)
 	}
 }
 
 func TestPushRequestedOrderingThroughProjection_NotConstraintOnlyDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
-		[]string{"a"},
-		scanQ,
-	)
-	projRef := expressions.InitialOf(proj)
-
-	cm := NewConstraintMap()
-	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{
-			Value:     &values.FieldValue{Field: "A", Typ: values.UnknownType},
-			SortOrder: properties.RequestedSortOrderAscending,
-		},
-	}, properties.DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
-
-	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: false,
-	}
-	rule.OnMatch(call)
-
-	innerRef := proj.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
-		t.Fatal("should not push during implementation pass")
+	input := requestedOrderingQuantifier("T", "projection_input")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{requestedOrderingField(input, "A")}, []string{"a"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value: requestedOrderingOutputField(
+			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		SortOrder: properties.RequestedSortOrderAscending,
+	}})
+	runRequestedOrderingProjection(t, projection, projectionRef, constraints, false)
+	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
+		t.Fatal("constraint should not be pushed during the implementation pass")
 	}
 }
 
 func TestPushRequestedOrderingThroughProjection_NoOrderingConstraint(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
-		[]string{"a"},
-		scanQ,
-	)
-	projRef := expressions.InitialOf(proj)
-
-	cm := NewConstraintMap()
-	// No ordering constraint set.
-
-	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := proj.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
-		t.Fatal("should not push when no ordering constraint exists")
+	input := requestedOrderingQuantifier("T", "projection_input")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{requestedOrderingField(input, "A")}, []string{"a"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
+	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
+		t.Fatal("constraint should not be pushed when none exists above the projection")
 	}
 }
 
 func TestPushRequestedOrderingThroughProjection_NoYield(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
-		[]string{"a"},
-		scanQ,
-	)
-	projRef := expressions.InitialOf(proj)
-
-	cm := NewConstraintMap()
-	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{
-			Value:     &values.FieldValue{Field: "A", Typ: values.UnknownType},
-			SortOrder: properties.RequestedSortOrderAscending,
-		},
-	}, properties.DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
-
-	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
+	input := requestedOrderingQuantifier("T", "projection_input")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{requestedOrderingField(input, "A")}, []string{"a"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value: requestedOrderingOutputField(
+			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		SortOrder: properties.RequestedSortOrderAscending,
+	}})
+	call := runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
 	if len(call.yielded) != 0 {
-		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
+		t.Fatalf("constraint-push rule yielded %d expressions, want none", len(call.yielded))
 	}
 }
 
-// TestPushRequestedOrderingThroughProjection_LazyRequestDoesNotPush is the
-// dimension the conversion needed and nothing covered: a request that names the
-// projection's output column CORRECTLY, but carries no ordinal, must still
-// decline. Every other case here either matches by ordinal or misses by both, so
-// none of them can tell an ordinal push-down from a name push-down.
-//
-// Declining is the fail-closed direction (a missed push, never a wrong slot), and
-// it is what stops two same-named outputs of different projections from being one
-// column. Resolving `ORDER BY col1` to a slot is the resolver's job, upstream and
-// once (RFC-197).
+// A resolved ordinal alone is not sufficient: the request must be rooted at
+// the exact projection output alias. This catches same-shaped sibling outputs.
 func TestPushRequestedOrderingThroughProjection_LazyRequestDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{&values.FieldValue{Field: "A", Typ: values.UnknownType}},
-		[]string{"col1"},
-		scanQ,
+	input := requestedOrderingQuantifier("T", "projection_input")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{requestedOrderingField(input, "A")}, []string{"col1"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	foreignAliasRequest := requestedOrderingOutputField(
+		values.NamedCorrelationIdentifier("foreign_projection_output"),
+		projection.GetResultValue(),
+		0,
 	)
-	projRef := expressions.InitialOf(proj)
-
-	cm := NewConstraintMap()
-	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{
-			// The RIGHT name, no ordinal.
-			Value:     &values.FieldValue{Field: "COL1", Typ: values.UnknownType},
-			SortOrder: properties.RequestedSortOrderAscending,
-		},
-	}, properties.DistinctnessNotDistinct, false)
-	Set(cm, projRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
-
-	rule := NewPushRequestedOrderingThroughProjectionRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), proj)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      projRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := proj.GetInner().GetRangesOver()
-	if _, ok := Get(cm, innerRef, RequestedOrderingConstraintKey); ok {
-		t.Fatal("a LAZY ordering request was pushed through the projection by matching its " +
-			"display name against the output column list: the name resolution belongs " +
-			"upstream, and a name-matched push conflates two same-named projection outputs")
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value: foreignAliasRequest, SortOrder: properties.RequestedSortOrderAscending,
+	}})
+	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
+	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
+		t.Fatal("ordering rooted at a foreign projection alias must fail closed")
 	}
 }

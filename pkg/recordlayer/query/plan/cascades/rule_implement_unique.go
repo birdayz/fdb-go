@@ -63,11 +63,12 @@ func (r *ImplementUniqueRule) OnMatch(call *ImplementationRuleCall) {
 		innerQ := expressions.ForEachQuantifier(
 			call.MemoizeFinalExpression(member),
 		)
-		call.YieldFinalExpression(
-			plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
-				innerQ,
-			),
-		)
+		distinct, err := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(innerQ)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.YieldFinalExpression(distinct)
 	}
 }
 

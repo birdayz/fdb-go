@@ -409,6 +409,32 @@ func indexScanRangeFingerprintSaltFields(
 	covering bool,
 	coveringColumns []string,
 ) (string, error) {
+	return indexScanRangeFingerprintSaltFieldsWithFlowedType(
+		plan, scanType, covering, coveringColumns, plan.GetFlowedType())
+}
+
+// legacyIndexScanRangeFingerprintSaltFields reproduces the execution salt
+// emitted before scan plans carried an exact flowed type. It is accepted only
+// while parsing an existing continuation; newly emitted continuations always
+// use indexScanRangeFingerprintSaltFields and therefore remain bound to the
+// exact output schema.
+func legacyIndexScanRangeFingerprintSaltFields(
+	plan *plans.RecordQueryIndexPlan,
+	scanType recordlayer.IndexScanType,
+	covering bool,
+	coveringColumns []string,
+) (string, error) {
+	return indexScanRangeFingerprintSaltFieldsWithFlowedType(
+		plan, scanType, covering, coveringColumns, values.UnknownType)
+}
+
+func indexScanRangeFingerprintSaltFieldsWithFlowedType(
+	plan *plans.RecordQueryIndexPlan,
+	scanType recordlayer.IndexScanType,
+	covering bool,
+	coveringColumns []string,
+	flowedType values.Type,
+) (string, error) {
 	b := newScanRangeExecutionIdentityBuilder("index")
 	b.stringField("index-name", plan.GetIndexName())
 	b.stringField("scan-type", string(scanType))
@@ -420,7 +446,7 @@ func indexScanRangeFingerprintSaltFields(
 	if err := b.typesField("physical-key-types", plan.GetKeyComponentTypes()); err != nil {
 		return "", err
 	}
-	if err := b.typeField("flowed-type", plan.GetFlowedType()); err != nil {
+	if err := b.typeField("flowed-type", flowedType); err != nil {
 		return "", err
 	}
 	return b.sum(), nil

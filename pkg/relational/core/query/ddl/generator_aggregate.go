@@ -347,7 +347,7 @@ func aggregateKeyExpression(call logical.AggregateCall, operand values.Value,
 	}
 
 	// Generic arm (:434-446): the operand must be a plain column.
-	child, ok := operand.(*values.FieldValue)
+	child, ok := values.AsFieldValue(operand)
 	if !ok {
 		return nil, "", api.NewError(api.ErrCodeUnsupportedOperation,
 			"Unsupported index definition, expecting a column argument in aggregation function")

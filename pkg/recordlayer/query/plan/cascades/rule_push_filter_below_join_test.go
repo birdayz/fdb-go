@@ -1,12 +1,75 @@
 package cascades
 
 import (
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+func mustPushFilterJoinConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct push-filter-below-join fixture: " + err.Error())
+	}
+	return value
+}
+
+func pushFilterJoinRowType(name string) *values.RecordType {
+	return values.NewRecordType(name, false, []values.Field{
+		{Name: "NAME", FieldType: values.NotNullString},
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "STATUS", FieldType: values.NotNullString},
+	})
+}
+
+func pushFilterJoinScan(name string) *expressions.FullUnorderedScanExpression {
+	return mustPushFilterJoinConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{name}, pushFilterJoinRowType(name)))
+}
+
+func pushFilterJoinQOV(alias, rowName string) values.QuantifiedObjectValue {
+	return mustPushFilterJoinConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(alias), pushFilterJoinRowType(rowName)))
+}
+
+func pushFilterJoinField(alias, rowName, field string) values.Value {
+	request := mustPushFilterJoinConstruct(values.FieldByName(field))
+	return mustPushFilterJoinConstruct(values.ResolveFieldAccess(
+		pushFilterJoinQOV(alias, rowName), []values.FieldRequest{request}))
+}
+
+func explorePushFilterJoinRewriting(
+	planner *Planner,
+	root *expressions.Reference,
+) (int, bool) {
+	if root == nil {
+		return 0, true
+	}
+	if planner.memo == nil {
+		planner.memo = NewMemo(root)
+	}
+	if planner.constraintMap == nil {
+		planner.constraintMap = NewConstraintMap()
+	}
+	if planner.dataAccessConsumed == nil {
+		planner.dataAccessConsumed = make(map[*expressions.Reference]int)
+	}
+	planner.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: root})
+	planner.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: root})
+	for len(planner.stack) > 0 {
+		if planner.tasksRun >= planner.MaxTasks {
+			return planner.tasksRun, false
+		}
+		planner.pop().Run(context.Background(), planner)
+		planner.tasksRun++
+		if planner.capErr != nil {
+			return planner.tasksRun, false
+		}
+	}
+	return planner.tasksRun, true
+}
 
 // Every column reference in this file is a QOV-rooted `FieldValue` — the shape
 // the translator actually emits. They used to be childless values whose Field
@@ -29,21 +92,23 @@ func buildJoinTree(
 	joinPreds []predicates.QueryPredicate,
 	aliases []string,
 ) *expressions.Reference {
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
+	scanA := pushFilterJoinScan("A")
+	scanAQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("A"), expressions.InitialOf(scanA))
+	scanB := pushFilterJoinScan("B")
+	scanBQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("B"), expressions.InitialOf(scanB))
 
-	rv := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-	sel := expressions.NewSelectExpressionWithJoinType(
+	rv := mustPushFilterJoinConstruct(scanAQ.RequireFlowedObjectValue())
+	sel := mustPushFilterJoinConstruct(expressions.NewSelectExpressionWithJoinType(
 		rv,
 		[]expressions.Quantifier{scanAQ, scanBQ},
 		joinPreds,
 		aliases,
 		expressions.JoinInner,
-	)
+	))
 	selQ := expressions.ForEachQuantifier(expressions.InitialOf(sel))
-	filter := expressions.NewLogicalFilterExpression(filterPreds, selQ)
+	filter := mustPushFilterJoinConstruct(expressions.NewLogicalFilterExpression(filterPreds, selQ))
 	return expressions.InitialOf(filter)
 }
 
@@ -52,7 +117,7 @@ func TestPushFilterBelowJoin_SingleSidePredicate(t *testing.T) {
 
 	// Predicate: A.NAME = 'foo' — references only alias A.
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
+		pushFilterJoinField("A", "A", "NAME"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 
@@ -62,7 +127,7 @@ func TestPushFilterBelowJoin_SingleSidePredicate(t *testing.T) {
 		[]string{"A", "B"},
 	)
 
-	yielded := FireExpressionRule(NewPushFilterBelowJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewPushFilterBelowJoinRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}
@@ -100,10 +165,10 @@ func TestPushFilterBelowJoin_BothSidePredicate(t *testing.T) {
 
 	// Predicate: A.ID = B.ID — references both aliases.
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "ID", values.NullableLong),
+		pushFilterJoinField("A", "A", "ID"),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "ID", values.NullableLong),
+			Operand: pushFilterJoinField("B", "B", "ID"),
 		},
 	)
 
@@ -113,7 +178,7 @@ func TestPushFilterBelowJoin_BothSidePredicate(t *testing.T) {
 		[]string{"A", "B"},
 	)
 
-	yielded := FireExpressionRule(NewPushFilterBelowJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewPushFilterBelowJoinRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d, want 0 (both-side predicate can't be pushed)", len(yielded))
 	}
@@ -124,15 +189,15 @@ func TestPushFilterBelowJoin_MixedPredicates(t *testing.T) {
 
 	// Predicate 1: A.NAME = 'foo' — only side A.
 	predA := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
+		pushFilterJoinField("A", "A", "NAME"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 	// Predicate 2: A.ID = B.ID — both sides.
 	predBoth := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "ID", values.NullableLong),
+		pushFilterJoinField("A", "A", "ID"),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "ID", values.NullableLong),
+			Operand: pushFilterJoinField("B", "B", "ID"),
 		},
 	)
 
@@ -142,7 +207,7 @@ func TestPushFilterBelowJoin_MixedPredicates(t *testing.T) {
 		[]string{"A", "B"},
 	)
 
-	yielded := FireExpressionRule(NewPushFilterBelowJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewPushFilterBelowJoinRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}
@@ -180,27 +245,30 @@ func TestPushFilterBelowJoin_NoAliases(t *testing.T) {
 	t.Parallel()
 
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
+		pushFilterJoinField("A", "A", "NAME"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 
 	// Build with no aliases — rule should not fire.
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
+	scanA := pushFilterJoinScan("A")
+	scanAQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("A"), expressions.InitialOf(scanA))
+	scanB := pushFilterJoinScan("B")
+	scanBQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("B"), expressions.InitialOf(scanB))
 
-	rv := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-	sel := expressions.NewSelectExpression(
+	rv := mustPushFilterJoinConstruct(scanAQ.RequireFlowedObjectValue())
+	sel := mustPushFilterJoinConstruct(expressions.NewSelectExpression(
 		rv,
 		[]expressions.Quantifier{scanAQ, scanBQ},
 		nil,
-	)
+	))
 	selQ := expressions.ForEachQuantifier(expressions.InitialOf(sel))
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, selQ)
+	filter := mustPushFilterJoinConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred}, selQ))
 	ref := expressions.InitialOf(filter)
 
-	yielded := FireExpressionRule(NewPushFilterBelowJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewPushFilterBelowJoinRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d on no-alias join, want 0", len(yielded))
 	}
@@ -211,7 +279,7 @@ func TestPushFilterBelowJoin_PushToSideB(t *testing.T) {
 
 	// Predicate: B.STATUS = 'active' — references only alias B.
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "STATUS", values.TypeString),
+		pushFilterJoinField("B", "B", "STATUS"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 	)
 
@@ -221,7 +289,7 @@ func TestPushFilterBelowJoin_PushToSideB(t *testing.T) {
 		[]string{"A", "B"},
 	)
 
-	yielded := FireExpressionRule(NewPushFilterBelowJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewPushFilterBelowJoinRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}
@@ -250,7 +318,7 @@ func TestPushFilterBelowJoin_FixpointTerminates(t *testing.T) {
 	t.Parallel()
 
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
+		pushFilterJoinField("A", "A", "NAME"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 
@@ -260,7 +328,8 @@ func TestPushFilterBelowJoin_FixpointTerminates(t *testing.T) {
 		[]string{"A", "B"},
 	)
 
-	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewPushFilterBelowJoinRule()}, nil), ref)
+	progress, converged := explorePushFilterJoinRewriting(
+		NewPlanner([]ExpressionRule{NewPushFilterBelowJoinRule()}, nil), ref)
 	if !converged {
 		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}
@@ -278,7 +347,7 @@ func TestPushFilterBelowJoin_ConstantPredicate_NoFieldRefs(t *testing.T) {
 		[]string{"A", "B"},
 	)
 
-	yielded := FireExpressionRule(NewPushFilterBelowJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewPushFilterBelowJoinRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d, want 0 (constant predicate has no field refs)", len(yielded))
 	}
@@ -288,29 +357,32 @@ func TestPushFilterBelowJoin_LeftOuterJoin_Skips(t *testing.T) {
 	t.Parallel()
 
 	pred := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
+		pushFilterJoinField("A", "A", "NAME"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 
 	// Build LEFT OUTER join — rule should not fire.
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
+	scanA := pushFilterJoinScan("A")
+	scanAQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("A"), expressions.InitialOf(scanA))
+	scanB := pushFilterJoinScan("B")
+	scanBQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("B"), expressions.InitialOf(scanB))
 
-	rv := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
-	sel := expressions.NewSelectExpressionWithJoinType(
+	rv := mustPushFilterJoinConstruct(scanAQ.RequireFlowedObjectValue())
+	sel := mustPushFilterJoinConstruct(expressions.NewSelectExpressionWithJoinType(
 		rv,
 		[]expressions.Quantifier{scanAQ, scanBQ},
 		nil,
 		[]string{"A", "B"},
 		expressions.JoinLeftOuter,
-	)
+	))
 	selQ := expressions.ForEachQuantifier(expressions.InitialOf(sel))
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, selQ)
+	filter := mustPushFilterJoinConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{pred}, selQ))
 	ref := expressions.InitialOf(filter)
 
-	yielded := FireExpressionRule(NewPushFilterBelowJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewPushFilterBelowJoinRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d on LEFT OUTER join, want 0", len(yielded))
 	}
@@ -319,31 +391,29 @@ func TestPushFilterBelowJoin_LeftOuterJoin_Skips(t *testing.T) {
 func TestPushFilterBelowJoin_StrictSingleFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	scanARef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
-	scanBRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
+	scanARef := expressions.InitialOf(pushFilterJoinScan("A"))
+	scanBRef := expressions.InitialOf(pushFilterJoinScan("B"))
 	qA := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("A"), scanARef)
 	qB := expressions.NamedForEachStrictSingleQuantifier(
 		values.NamedCorrelationIdentifier("B"), scanBRef)
-	sel := expressions.NewSelectExpressionWithJoinType(
-		qA.GetFlowedObjectValue(),
+	sel := mustPushFilterJoinConstruct(expressions.NewSelectExpressionWithJoinType(
+		mustPushFilterJoinConstruct(qA.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{qA, qB},
 		nil,
 		[]string{"A", "B"},
 		expressions.JoinInner,
-	)
+	))
 	filterQ := expressions.ForEachQuantifier(expressions.InitialOf(sel))
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustPushFilterJoinConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{predicates.NewComparisonPredicate(
-			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "STATUS", values.TypeString),
+			pushFilterJoinField("B", "B", "STATUS"),
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 		)},
 		filterQ,
-	)
+	))
 
-	yielded := FireExpressionRule(
+	yielded := mustFireExpressionRule(t,
 		NewPushFilterBelowJoinRule(), expressions.InitialOf(filter))
 	if len(yielded) != 0 {
 		t.Fatalf("strict-single join yielded %d filter-push rewrite(s), want zero", len(yielded))
@@ -355,11 +425,11 @@ func TestPushFilterBelowJoin_BothSidesPushed(t *testing.T) {
 
 	// Two predicates, each referencing a different side.
 	predA := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "NAME", values.TypeString),
+		pushFilterJoinField("A", "A", "NAME"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "foo"),
 	)
 	predB := predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("B")), "STATUS", values.TypeString),
+		pushFilterJoinField("B", "B", "STATUS"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 	)
 
@@ -369,7 +439,7 @@ func TestPushFilterBelowJoin_BothSidesPushed(t *testing.T) {
 		[]string{"A", "B"},
 	)
 
-	yielded := FireExpressionRule(NewPushFilterBelowJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewPushFilterBelowJoinRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}

@@ -9,22 +9,39 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-func newDistanceRankResidual() predicates.QueryPredicate {
+func docsRowType() *values.RecordType {
+	return values.NewRecordType("DOCS", false, []values.Field{
+		{Name: "ZONE", FieldType: values.NotNullString, Ordinal: 0},
+		{Name: "EMBEDDING", FieldType: values.NewArrayType(false, values.NotNullDouble), Ordinal: 1},
+	})
+}
+
+func docsField(t testing.TB, root values.Value, ordinal int) values.Value {
+	t.Helper()
+	fieldValue, fieldErr := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, fieldValue, fieldErr)
+}
+
+func newDistanceRankResidual(t testing.TB, root values.Value) predicates.QueryPredicate {
+	t.Helper()
 	return predicates.NewComparisonPredicate(
 		values.NewEuclideanDistanceRowNumberValue(
-			[]values.Value{&values.FieldValue{Field: "ZONE", Typ: values.TypeString}},
-			[]values.Value{&values.FieldValue{Field: "EMBEDDING"}},
+			[]values.Value{docsField(t, root, 0)},
+			[]values.Value{docsField(t, root, 1)},
 		),
 		predicates.NewLiteralComparison(predicates.ComparisonLessThan, int64(3)),
 	)
 }
 
-func newScanExpr() expressions.RelationalExpression {
-	return expressions.NewFullUnorderedScanExpression([]string{"DOCS"}, values.UnknownType)
+func newScanExpr(t testing.TB) expressions.RelationalExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{"DOCS"}, docsRowType())
 }
 
-func newScanPlan() plans.RecordQueryPlan {
-	return plans.NewRecordQueryScanPlan([]string{"DOCS"}, values.UnknownType, false)
+func newScanPlan(t testing.TB) plans.RecordQueryPlan {
+	t.Helper()
+	planValue, planErr := plans.NewRecordQueryScanPlan([]string{"DOCS"}, docsRowType(), false)
+	return mustConstruct(t, planValue, planErr)
 }
 
 // TestFindIndexOnlyResidual_NestedUnderUnionArm pins that the PHYSICAL catch-all
@@ -36,10 +53,13 @@ func newScanPlan() plans.RecordQueryPlan {
 func TestFindIndexOnlyResidual_NestedUnderUnionArm(t *testing.T) {
 	t.Parallel()
 
-	badFilter := plans.NewRecordQueryPredicatesFilterPlan(
-		newScanPlan(), []predicates.QueryPredicate{newDistanceRankResidual()})
-	union := plans.NewRecordQueryUnorderedUnionPlan(
-		[]plans.RecordQueryPlan{newScanPlan(), badFilter})
+	badInner := newScanPlan(t)
+	badFilterValue, badFilterErr := plans.NewRecordQueryPredicatesFilterPlan(
+		badInner, []predicates.QueryPredicate{newDistanceRankResidual(t, badInner.GetResultValue())})
+	badFilter := mustConstruct(t, badFilterValue, badFilterErr)
+	unionValue, unionErr := plans.NewRecordQueryUnorderedUnionPlan(
+		[]plans.RecordQueryPlan{newScanPlan(t), badFilter})
+	union := mustConstruct(t, unionValue, unionErr)
 
 	if got := findIndexOnlyResidual(union); got == nil {
 		t.Fatal("did not find the index-only residual nested one level under a union arm")
@@ -51,16 +71,19 @@ func TestFindIndexOnlyResidual_NestedUnderUnionArm(t *testing.T) {
 func TestFindIndexOnlyResidual_CleanTree(t *testing.T) {
 	t.Parallel()
 
-	cleanFilter := plans.NewRecordQueryPredicatesFilterPlan(
-		newScanPlan(),
+	cleanInner := newScanPlan(t)
+	cleanFilterValue, cleanFilterErr := plans.NewRecordQueryPredicatesFilterPlan(
+		cleanInner,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "ZONE", Typ: values.TypeString},
+				docsField(t, cleanInner.GetResultValue(), 0),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, "z1"),
 			),
 		})
-	union := plans.NewRecordQueryUnorderedUnionPlan(
-		[]plans.RecordQueryPlan{newScanPlan(), cleanFilter})
+	cleanFilter := mustConstruct(t, cleanFilterValue, cleanFilterErr)
+	unionValue, unionErr := plans.NewRecordQueryUnorderedUnionPlan(
+		[]plans.RecordQueryPlan{newScanPlan(t), cleanFilter})
+	union := mustConstruct(t, unionValue, unionErr)
 
 	if got := findIndexOnlyResidual(union); got != nil {
 		t.Fatalf("false positive on a clean tree: %v", got.Explain())
@@ -75,12 +98,16 @@ func TestFindIndexOnlyResidual_CleanTree(t *testing.T) {
 func TestFindIndexOnlyLogicalResidual_NestedUnderQuantifier(t *testing.T) {
 	t.Parallel()
 
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(newScanExpr()))
-	badFilter := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{newDistanceRankResidual()}, scanQ)
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(newScanExpr(t)))
+	scanRootValue, scanRootErr := scanQ.RequireFlowedObjectValue()
+	scanRoot := mustConstruct(t, scanRootValue, scanRootErr)
+	badFilterValue, badFilterErr := expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{newDistanceRankResidual(t, scanRoot)}, scanQ)
+	badFilter := mustConstruct(t, badFilterValue, badFilterErr)
 	// Wrap the filter under a projection so the index-only filter sits at depth > 0.
 	projQ := expressions.ForEachQuantifier(expressions.InitialOf(badFilter))
-	proj := expressions.NewLogicalProjectionExpression(nil, projQ)
+	projValue, projErr := expressions.NewLogicalProjectionExpression(nil, projQ)
+	proj := mustConstruct(t, projValue, projErr)
 	root := expressions.InitialOf(proj)
 
 	got := findIndexOnlyLogicalResidual(root)
@@ -95,16 +122,20 @@ func TestFindIndexOnlyLogicalResidual_NestedUnderQuantifier(t *testing.T) {
 func TestFindIndexOnlyLogicalResidual_CleanTree(t *testing.T) {
 	t.Parallel()
 
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(newScanExpr()))
-	cleanFilter := expressions.NewLogicalFilterExpression(
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(newScanExpr(t)))
+	scanRootValue, scanRootErr := scanQ.RequireFlowedObjectValue()
+	scanRoot := mustConstruct(t, scanRootValue, scanRootErr)
+	cleanFilterValue, cleanFilterErr := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "ZONE", Typ: values.TypeString},
+				docsField(t, scanRoot, 0),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, "z1"),
 			),
 		}, scanQ)
+	cleanFilter := mustConstruct(t, cleanFilterValue, cleanFilterErr)
 	projQ := expressions.ForEachQuantifier(expressions.InitialOf(cleanFilter))
-	proj := expressions.NewLogicalProjectionExpression(nil, projQ)
+	projValue, projErr := expressions.NewLogicalProjectionExpression(nil, projQ)
+	proj := mustConstruct(t, projValue, projErr)
 	root := expressions.InitialOf(proj)
 
 	if got := findIndexOnlyLogicalResidual(root); got != nil {

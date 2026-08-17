@@ -16,12 +16,16 @@ import (
 func TestLogicalProjection_AliasProvenanceExcludedFromIdentity(t *testing.T) {
 	t.Parallel()
 	inner := ForEachQuantifier(InitialOf(&leafScan{name: "T"}))
-	v := values.NewFieldValueWithResolvedOrdinal("A.K", 0, values.NullableLong)
+	v := testFieldAt("A.K", 0, values.NullableLong)
 
-	minted := NewLogicalProjectionExpressionWithAliasProvenance(
-		[]values.Value{v}, []string{"A.K"}, []bool{true}, inner)
-	userWritten := NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{v}, []string{"A.K"}, inner)
+	minted := mustExpression(NewLogicalProjectionExpressionWithAliasProvenance(
+		[]values.Value{v}, []string{"A.K"}, []bool{true}, inner))
+	minted = mustExpression(minted.WithAliasSources([]values.ProjectionAliasSource{
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
+	}))
+
+	userWritten := mustExpression(NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{v}, []string{"A.K"}, inner))
 
 	if !minted.EqualsWithoutChildren(userWritten, EmptyAliasMap()) {
 		t.Error("a projection differing only in alias provenance must be the same memo member")
@@ -29,9 +33,24 @@ func TestLogicalProjection_AliasProvenanceExcludedFromIdentity(t *testing.T) {
 	if minted.HashCodeWithoutChildren() != userWritten.HashCodeWithoutChildren() {
 		t.Error("equal expressions must hash equal (memo invariant)")
 	}
+	otherSource := mustExpression(mustExpression(NewLogicalProjectionExpressionWithAliasProvenance(
+		[]values.Value{v}, []string{"A.K"}, []bool{true}, inner)).WithAliasSources(
+		[]values.ProjectionAliasSource{
+			values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("Z")),
+		}))
+	if !minted.EqualsWithoutChildren(otherSource, EmptyAliasMap()) ||
+		minted.HashCodeWithoutChildren() != otherSource.HashCodeWithoutChildren() {
+		t.Error("structured alias source is metadata provenance and must stay out of memo identity")
+	}
+	if _, err := userWritten.WithAliasSources([]values.ProjectionAliasSource{
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
+	}); err == nil {
+		t.Error("a user-named slot accepted a machinery alias source")
+	}
 
-	renamed := NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{v}, []string{"K"}, inner)
+	renamed := mustExpression(NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{v}, []string{"K"}, inner))
+
 	if minted.EqualsWithoutChildren(renamed, EmptyAliasMap()) {
 		t.Error("the alias STRING is still a memo discriminator")
 	}
@@ -46,12 +65,15 @@ func TestLogicalProjection_AliasProvenanceSurvivesWithQuantifiers(t *testing.T) 
 	t.Parallel()
 	inner := ForEachQuantifier(InitialOf(&leafScan{name: "T"}))
 	other := ForEachQuantifier(InitialOf(&leafScan{name: "T"}))
-	v := values.NewFieldValueWithResolvedOrdinal("A.K", 0, values.NullableLong)
+	v := testFieldAt("A.K", 0, values.NullableLong)
 
-	p := NewLogicalProjectionExpressionWithAliasProvenance(
-		[]values.Value{v}, []string{"A.K"}, []bool{true}, inner)
+	p := mustExpression(NewLogicalProjectionExpressionWithAliasProvenance(
+		[]values.Value{v}, []string{"A.K"}, []bool{true}, inner))
+	p = mustExpression(p.WithAliasSources([]values.ProjectionAliasSource{
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
+	}))
 
-	rewired, ok := p.WithQuantifiers([]Quantifier{other}).(*LogicalProjectionExpression)
+	rewired, ok := mustWithQuantifiers(t, p, []Quantifier{other}).(*LogicalProjectionExpression)
 	if !ok {
 		t.Fatal("WithQuantifiers must return a *LogicalProjectionExpression")
 	}
@@ -62,5 +84,78 @@ func TestLogicalProjection_AliasProvenanceSurvivesWithQuantifiers(t *testing.T) 
 	// regression cannot hide by dropping both together.
 	if got := rewired.GetAliases(); len(got) != 1 || got[0] != "A.K" {
 		t.Errorf("WithQuantifiers dropped the aliases: got %v, want [A.K]", got)
+	}
+	if got := rewired.GetAliasSources(); len(got) != 1 || !got[0].Present ||
+		got[0].Source != values.NamedCorrelationIdentifier("A") {
+		t.Errorf("WithQuantifiers dropped the structured alias source: got %+v", got)
+	}
+	got := rewired.GetAliasSources()
+	got[0] = values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("MUTATED"))
+	if original := rewired.GetAliasSources(); original[0].Source != values.NamedCorrelationIdentifier("A") {
+		t.Errorf("GetAliasSources exposed mutable storage: %+v", original)
+	}
+}
+
+func TestLogicalProjection_AliasSourceValidationRejectsMalformedVectors(t *testing.T) {
+	t.Parallel()
+	inner := ForEachQuantifier(InitialOf(&leafScan{name: "T"}))
+	v := testFieldAt("A.K", 0, values.NullableLong)
+	p := mustExpression(NewLogicalProjectionExpressionWithAliasProvenance(
+		[]values.Value{v}, []string{"A.K"}, []bool{true}, inner))
+
+	tests := []struct {
+		name    string
+		sources []values.ProjectionAliasSource
+	}{
+		{
+			name: "too many slots",
+			sources: []values.ProjectionAliasSource{
+				values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
+				{},
+			},
+		},
+		{
+			name: "present zero source",
+			sources: []values.ProjectionAliasSource{
+				{Present: true},
+			},
+		},
+		{
+			name: "absent hidden source",
+			sources: []values.ProjectionAliasSource{
+				{Source: values.NamedCorrelationIdentifier("A")},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := p.WithAliasSources(test.sources); err == nil {
+				t.Fatal("malformed structured alias-source vector was accepted")
+			}
+		})
+	}
+}
+
+func TestLogicalProjection_NamedOutputSchemaIsIdentityAndSurvivesRewire(t *testing.T) {
+	t.Parallel()
+	inner := ForEachQuantifier(InitialOf(&leafScan{name: "T"}))
+	value := values.NewBooleanValue(true)
+
+	at := mustExpression(NewLogicalProjectionExpressionWithOutputSchema(
+		[]values.Value{value}, []string{"AT"}, []bool{true}, []string{"AT"}, inner))
+	val := mustExpression(NewLogicalProjectionExpressionWithOutputSchema(
+		[]values.Value{value}, []string{"VAL"}, []bool{true}, []string{"VAL"}, inner))
+	if at.EqualsWithoutChildren(val, EmptyAliasMap()) {
+		t.Fatal("projections with different frozen output schemas reported equal")
+	}
+	if at.HashCodeWithoutChildren() == val.HashCodeWithoutChildren() {
+		t.Fatal("projections with different frozen output schemas produced the same hash")
+	}
+
+	rewired := mustWithQuantifiers(t, at,
+		[]Quantifier{ForEachQuantifier(InitialOf(&leafScan{name: "U"}))}).(*LogicalProjectionExpression)
+	if got := rewired.GetOutputNames(); len(got) != 1 || got[0] != "AT" {
+		t.Fatalf("WithQuantifiers changed frozen output schema: %v", got)
 	}
 }

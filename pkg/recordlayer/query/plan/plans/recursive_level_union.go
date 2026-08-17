@@ -33,13 +33,10 @@ type RecordQueryRecursiveLevelUnionPlan struct {
 func NewRecordQueryRecursiveLevelUnionPlan(
 	initialState, recursiveState RecordQueryPlan,
 	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
-) *RecordQueryRecursiveLevelUnionPlan {
-	return &RecordQueryRecursiveLevelUnionPlan{
-		initialQ:             QuantifierOverPlan(initialState),
-		recursiveQ:           QuantifierOverPlan(recursiveState),
-		tempTableScanAlias:   tempTableScanAlias,
-		tempTableInsertAlias: tempTableInsertAlias,
-	}
+) (*RecordQueryRecursiveLevelUnionPlan, error) {
+	return NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+		QuantifierOverPlan(initialState), QuantifierOverPlan(recursiveState),
+		tempTableScanAlias, tempTableInsertAlias, false)
 }
 
 // NewRecordQueryRecursiveLevelUnionPlanDistinct creates a plan with
@@ -47,14 +44,10 @@ func NewRecordQueryRecursiveLevelUnionPlan(
 func NewRecordQueryRecursiveLevelUnionPlanDistinct(
 	initialState, recursiveState RecordQueryPlan,
 	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
-) *RecordQueryRecursiveLevelUnionPlan {
-	return &RecordQueryRecursiveLevelUnionPlan{
-		initialQ:             QuantifierOverPlan(initialState),
-		recursiveQ:           QuantifierOverPlan(recursiveState),
-		tempTableScanAlias:   tempTableScanAlias,
-		tempTableInsertAlias: tempTableInsertAlias,
-		distinct:             true,
-	}
+) (*RecordQueryRecursiveLevelUnionPlan, error) {
+	return NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+		QuantifierOverPlan(initialState), QuantifierOverPlan(recursiveState),
+		tempTableScanAlias, tempTableInsertAlias, true)
 }
 
 // NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers builds a recursive level
@@ -67,14 +60,20 @@ func NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
 	initialQ, recursiveQ expressions.Quantifier,
 	tempTableScanAlias, tempTableInsertAlias values.CorrelationIdentifier,
 	distinct bool,
-) *RecordQueryRecursiveLevelUnionPlan {
+) (*RecordQueryRecursiveLevelUnionPlan, error) {
+	base, err := newPlanExprBaseForFirstQuantifier(
+		"RecordQueryRecursiveLevelUnionPlan", []expressions.Quantifier{initialQ, recursiveQ})
+	if err != nil {
+		return nil, err
+	}
 	return &RecordQueryRecursiveLevelUnionPlan{
+		PlanExprBase:         base,
 		initialQ:             initialQ,
 		recursiveQ:           recursiveQ,
 		tempTableScanAlias:   tempTableScanAlias,
 		tempTableInsertAlias: tempTableInsertAlias,
 		distinct:             distinct,
-	}
+	}, nil
 }
 
 func (p *RecordQueryRecursiveLevelUnionPlan) IsDistinct() bool { return p.distinct }
@@ -95,7 +94,9 @@ func (p *RecordQueryRecursiveLevelUnionPlan) GetTempTableInsertAlias() values.Co
 	return p.tempTableInsertAlias
 }
 
-func (p *RecordQueryRecursiveLevelUnionPlan) GetResultType() values.Type { return values.UnknownType }
+func (p *RecordQueryRecursiveLevelUnionPlan) GetResultType() values.Type {
+	return p.GetResultValue().Type()
+}
 
 // GetChildren returns the initial-state leg then the recursive-state leg,
 // dereferenced through the quantifiers. The pair is always two entries wide —
@@ -117,14 +118,19 @@ func (p *RecordQueryRecursiveLevelUnionPlan) GetQuantifiers() []expressions.Quan
 // WithQuantifiers returns a copy ranging over the given leg quantifiers, in
 // GetQuantifiers order. The receiver is never mutated, which is what keeps a
 // memoized plan safe to share.
-func (p *RecordQueryRecursiveLevelUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 2 {
-		return p
+func (p *RecordQueryRecursiveLevelUnionPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryRecursiveLevelUnionPlan", len(qs), 2); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.initialQ = qs[0]
 	cp.recursiveQ = qs[1]
-	return &cp
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryRecursiveLevelUnionPlan", qs)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // structuralKey lists the fields that distinguish this recursive level union in
@@ -196,7 +202,7 @@ func (p *RecordQueryRecursiveLevelUnionPlan) WithChildren(qs []expressions.Quant
 	if len(qs) != 2 {
 		return nil, fmt.Errorf("RecordQueryRecursiveLevelUnionPlan.WithChildren: expected 2 children, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

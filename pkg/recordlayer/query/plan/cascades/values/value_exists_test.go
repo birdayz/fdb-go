@@ -5,19 +5,19 @@ import "testing"
 func TestExistsValue_CompositeShape(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("subq")
-	v := NewExistsValue(alias)
+	v := mustExistsValue(t, alias)
 	// RFC-141: ExistsValue is now a transparent composite over a
 	// QuantifiedObjectValue child carrying the correlation.
 	ch := v.Children()
 	if len(ch) != 1 {
 		t.Fatalf("ExistsValue should have 1 child (the QOV), got %d", len(ch))
 	}
-	qov, ok := ch[0].(*QuantifiedObjectValue)
+	qov, ok := ch[0].(*quantifiedObjectValue)
 	if !ok {
-		t.Fatalf("child should be *QuantifiedObjectValue, got %T", ch[0])
+		t.Fatalf("child should be *quantifiedObjectValue, got %T", ch[0])
 	}
-	if qov.Correlation != alias {
-		t.Fatalf("child QOV correlation = %v, want %v", qov.Correlation, alias)
+	if qov.Correlation() != alias {
+		t.Fatalf("child QOV correlation = %v, want %v", qov.Correlation(), alias)
 	}
 	if v.GetChild() != v.Value {
 		t.Fatal("GetChild should return the Value field")
@@ -26,7 +26,7 @@ func TestExistsValue_CompositeShape(t *testing.T) {
 
 func TestExistsValue_TypeIsNotNullBoolean(t *testing.T) {
 	t.Parallel()
-	v := NewExistsValue(NamedCorrelationIdentifier("x"))
+	v := mustExistsValue(t, NamedCorrelationIdentifier("x"))
 	if !v.Type().Equals(NotNullBoolean) {
 		t.Fatalf("Type=%v, want NotNullBoolean", v.Type())
 	}
@@ -39,7 +39,7 @@ func TestExistsValue_EvaluateChildNonNull(t *testing.T) {
 	// CorrelationBinder: a bound existential object ⇒ TRUE, an unbound
 	// one (the subplan yielded no row) ⇒ child evals to nil ⇒ FALSE.
 	alias := NamedCorrelationIdentifier("subq")
-	v := NewExistsValue(alias)
+	v := mustExistsValue(t, alias)
 
 	bound := staticBinder{alias: fom(map[string]any{"col": 1})}
 	got, err := v.Evaluate(bound)
@@ -103,7 +103,7 @@ func TestExistsValue_EvaluateChildNonNull(t *testing.T) {
 func TestExistsValue_CorrelatedToAlias(t *testing.T) {
 	t.Parallel()
 	alias := NamedCorrelationIdentifier("subq")
-	v := NewExistsValue(alias)
+	v := mustExistsValue(t, alias)
 	cs := v.GetCorrelatedTo()
 	if len(cs) != 1 {
 		t.Fatalf("CorrelatedTo size = %d, want 1", len(cs))
@@ -115,8 +115,8 @@ func TestExistsValue_CorrelatedToAlias(t *testing.T) {
 
 func TestExistsValue_WithNewChild(t *testing.T) {
 	t.Parallel()
-	v := NewExistsValue(NamedCorrelationIdentifier("a"))
-	newChild := NewQuantifiedObjectValue(NamedCorrelationIdentifier("b"))
+	v := mustExistsValue(t, NamedCorrelationIdentifier("a"))
+	newChild := mustQOV(t, NamedCorrelationIdentifier("b"))
 	v2 := v.WithNewChild(newChild)
 	if v2.GetChild() != newChild {
 		t.Fatal("WithNewChild should swap the child")

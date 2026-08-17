@@ -349,6 +349,11 @@ func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.Ful
 	if msg == nil {
 		return col
 	}
+	// Preserve the descriptor identity beside the coarse SQL kind. The
+	// cascades scan layout derives this same full name directly from the proto
+	// descriptor; carrying it through semantic resolution keeps a nested
+	// FieldValue's root type exact with that edge.
+	col.StructTypeName = string(msg.FullName())
 	for _, open := range enclosing {
 		if open == msg.FullName() {
 			return col

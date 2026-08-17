@@ -210,16 +210,9 @@ func (c *VectorIndexScanMatchCandidate) HasAndOrderedByRecordTypeKey() bool { re
 // Lazily computed. Returns nil if no PK columns.
 func (c *VectorIndexScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
 	c.primaryKeyValuesOnce.Do(func() {
-		if len(c.primaryKeyColumns) == 0 {
-			return
-		}
-		pkVals := make([]values.Value, len(c.primaryKeyColumns))
-		for i, col := range c.primaryKeyColumns {
-			pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
-		}
-		c.primaryKeyValues = pkVals
+		c.primaryKeyValues = resolvedColumnsInRow(c.flowedType, c.primaryKeyColumns)
 	})
-	return c.primaryKeyValues
+	return append([]values.Value(nil), c.primaryKeyValues...)
 }
 
 // ComputeBoundParameterPrefixMap collects the bound partition-prefix equality
@@ -319,7 +312,7 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 		}
 	}
 
-	plan := plans.NewRecordQueryVectorIndexPlan(
+	plan, err := plans.NewRecordQueryVectorIndexPlan(
 		c.indexName,
 		prefixComps,
 		queryVector,
@@ -329,7 +322,11 @@ func (c *VectorIndexScanMatchCandidate) ToScanPlan(
 		isReturningVectors,
 		c.recordTypes,
 		c.flowedType,
-	).WithPartitionKeyComponentTypes(c.partitionKeyComponentTypes)
+	)
+	if err != nil {
+		return nil
+	}
+	plan = plan.WithPartitionKeyComponentTypes(c.partitionKeyComponentTypes)
 
 	// Carry the partition-key column names so the planner can certify a
 	// partition-column residual (an unconsumed partition INEQUALITY, e.g.

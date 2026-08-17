@@ -86,13 +86,6 @@ func dataAccessTestColumn(index string, position int) string {
 	return index + "_col" + string(rune('a'+position))
 }
 
-// dataAccessTestDomain is dataAccessTestRow's ordinal domain token — the layout
-// a fixture key's ordinal indexes. Fixtures that need to state an ordinal the
-// row's own column order does not give them (a deliberate same-name/different-
-// slot pair, a request rooted at a named quantifier) bake into this domain
-// directly rather than inventing a second layout.
-var dataAccessTestDomain = values.OrdinalDomainOfType(dataAccessTestRow)
-
 // dataAccessTestOrdinal is the slot dataAccessTestRow states for a column.
 func dataAccessTestOrdinal(column string) int {
 	ordinal, unique := uniqueUpperFieldIndex(dataAccessTestRow, column)
@@ -212,6 +205,28 @@ type testPlan struct {
 	resultType values.Type
 }
 
+// mustDataAccessTestPlan builds the typed test double through the same checked
+// physical-plan admission path as a production leaf. Copying the admitted base
+// gives the double one stable exact result Value and its matching output
+// layout; a bare &testPlan{} deliberately retains the invalid zero base for
+// tests that assert layoutless candidates are rejected.
+func mustDataAccessTestPlan(t testing.TB, name string) *testPlan {
+	t.Helper()
+	seed, err := plans.NewRecordQueryScanPlan(
+		[]string{"TestRecord"},
+		dataAccessTestRow,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("construct exact data-access test plan %q: %v", name, err)
+	}
+	return &testPlan{
+		PlanExprBase: seed.PlanExprBase,
+		name:         name,
+		resultType:   seed.GetResultType(),
+	}
+}
+
 func (p *testPlan) GetResultType() values.Type {
 	if p.resultType != nil {
 		return p.resultType
@@ -244,10 +259,11 @@ func (m *testMatchInfo) GetMaxMatchMap() *MaxMatchMap {
 		return m.maxMatchMap
 	}
 	// AbstractDataAccessRule requires every real match to carry a pullable
-	// MaxMatchMap. Give the shared lightweight fixture the corresponding
-	// identity map so tests exercise that production gate instead of relying on
-	// the old hard-coded empty translation.
-	current := values.LiteralValue("identity")
+	// MaxMatchMap. Give the shared lightweight fixture the corresponding exact
+	// row identity map so tests exercise that production gate instead of relying
+	// on either the old hard-coded empty translation or an UNKNOWN-typed literal
+	// that RFC-232 correctly refuses to turn into an owner-current row.
+	current := dataAccessTestQOV(values.UniqueCorrelationIdentifier())
 	return NewMaxMatchMap(
 		map[values.Value]values.Value{current: current},
 		current,
@@ -279,17 +295,76 @@ type testPartialMatch struct {
 	matchInfo MatchInfo
 }
 
-func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate                    { return pm.candidate }
-func (pm *testPartialMatch) GetMatchInfo() MatchInfo                              { return pm.matchInfo }
-func (pm *testPartialMatch) GetBoundAliasMap() *AliasMap                          { return EmptyAliasMap() }
-func (pm *testPartialMatch) GetQueryRef() *expressions.Reference                  { return nil }
-func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpression { return nil }
-func (pm *testPartialMatch) GetCandidateRef() *expressions.Reference              { return nil }
+func (pm *testPartialMatch) GetMatchCandidate() MatchCandidate   { return pm.candidate }
+func (pm *testPartialMatch) GetMatchInfo() MatchInfo             { return pm.matchInfo }
+func (pm *testPartialMatch) GetBoundAliasMap() *AliasMap         { return EmptyAliasMap() }
+func (pm *testPartialMatch) GetQueryRef() *expressions.Reference { return nil }
+func (pm *testPartialMatch) GetQueryExpression() expressions.RelationalExpression {
+	if pm == nil || pm.matchInfo == nil {
+		return nil
+	}
+	maxMatchMap := pm.matchInfo.GetMaxMatchMap()
+	if maxMatchMap == nil || maxMatchMap.GetQueryValue() == nil {
+		return nil
+	}
+	return &dataAccessTestResultExpression{resultValue: maxMatchMap.GetQueryValue()}
+}
+func (pm *testPartialMatch) GetCandidateRef() *expressions.Reference { return nil }
 func (pm *testPartialMatch) GetRegularMatchInfo() *RegularMatchInfo {
 	return pm.matchInfo.GetRegularMatchInfo()
 }
 
 var _ PartialMatch = (*testPartialMatch)(nil)
+
+// dataAccessTestQOV is the exact whole-row authority shared by the synthetic
+// match and query-result fixtures. Construction cannot be allowed to degrade:
+// an unpublishable row means the package-level fixture itself is malformed.
+func dataAccessTestQOV(alias values.CorrelationIdentifier) values.QuantifiedObjectValue {
+	qov, err := values.NewQuantifiedObjectValue(alias, dataAccessTestRow)
+	if err != nil {
+		panic("construct exact data-access test QOV: " + err.Error())
+	}
+	return qov
+}
+
+// dataAccessTestResultExpression exposes the exact query result held by the
+// MaxMatchMap. A real PartialMatch always has a query expression; using a nil
+// test double used to be harmless only while preparation skipped translation.
+type dataAccessTestResultExpression struct {
+	resultValue values.Value
+}
+
+func (e *dataAccessTestResultExpression) GetResultValue() values.Value { return e.resultValue }
+func (*dataAccessTestResultExpression) GetQuantifiers() []expressions.Quantifier {
+	return nil
+}
+func (*dataAccessTestResultExpression) CanCorrelate() bool  { return false }
+func (*dataAccessTestResultExpression) ChildrenAsSet() bool { return false }
+func (*dataAccessTestResultExpression) HashCodeWithoutChildren() uint64 {
+	return 0xdaa7a
+}
+
+func (*dataAccessTestResultExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
+	return nil
+}
+
+func (e *dataAccessTestResultExpression) EqualsWithoutChildren(
+	other expressions.RelationalExpression,
+	_ *expressions.AliasMap,
+) bool {
+	o, ok := other.(*dataAccessTestResultExpression)
+	return ok && values.ValuesStructurallyEqual(e.resultValue, o.resultValue)
+}
+
+func (e *dataAccessTestResultExpression) WithQuantifiers(
+	quantifiers []expressions.Quantifier,
+) (expressions.RelationalExpression, error) {
+	if err := requireTestQuantifierArity(
+		"dataAccessTestResultExpression", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return e, nil
+}
 
 // makeDataAccessTestPartialMatch creates a test PartialMatch with the given
 // number of matched ordering parts (used as a proxy for coverage).
@@ -463,14 +538,19 @@ func TestPrepareMatchesAndCompensations_TranslatesRequestedOrderingAtTop(
 		queryResult,
 		candidateResult,
 	)
-	topMap, ok := maxMatchMap.PullUpMaybe(
-		values.CurrentAlias,
-		values.CurrentAlias,
-	)
+	topAlias := values.CurrentCorrelation()
+	topMap, ok := maxMatchMap.PullUpMaybe(topAlias, topAlias)
 	if !ok {
 		t.Fatal("fixture MaxMatchMap did not produce a top-to-top translation")
 	}
-	requestedValue := values.NewQuantifiedObjectValue(values.CurrentAlias)
+	requestedValue, err := values.PullUpValue(candidateResult, candidateResult, topAlias)
+	if err != nil || requestedValue == nil {
+		t.Fatalf("construct owner-current exact top value: %v", err)
+	}
+	requestedQOV, isQOV := values.AsQuantifiedObjectValue(requestedValue)
+	if !isQOV || requestedQOV.Correlation() != topAlias {
+		t.Fatalf("owner-current exact top value = %T/%v, want current QOV", requestedValue, requestedValue)
+	}
 	translatedRequest := translateIntersectionRequestedOrdering(
 		properties.NewRequestedOrdering(
 			[]properties.RequestedOrderingPart{{
@@ -537,6 +617,123 @@ func TestPrepareMatchesAndCompensations_TranslatesRequestedOrderingAtTop(
 			"prepared satisfying ordering = %#v, want translated candidate-top value",
 			satisfying,
 		)
+	}
+}
+
+func TestPullUpRequestedOrderingToMatchTopBridgesGroupOutputAliasExactly(t *testing.T) {
+	t.Parallel()
+
+	rowType := values.NewRecordType("ordering_group_row", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "SORT_KEY", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType)
+	if err != nil {
+		t.Fatalf("construct exact ordering scan: %v", err)
+	}
+	childQ := expressions.NamedForEachQuantifier(
+		values.UniqueCorrelationIdentifier(), expressions.InitialOf(scan))
+	childResult, err := childQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatalf("derive exact child result: %v", err)
+	}
+	queryExpression, err := expressions.NewSelectExpression(
+		childResult, []expressions.Quantifier{childQ}, nil)
+	if err != nil {
+		t.Fatalf("construct exact pass-through query expression: %v", err)
+	}
+
+	groupAlias := values.NamedCorrelationIdentifier("T")
+	groupRoot, err := values.NewQuantifiedObjectValue(groupAlias, rowType)
+	if err != nil {
+		t.Fatalf("construct exact group-output root: %v", err)
+	}
+	groupKey, err := values.ResolveFieldOrdinals(groupRoot, []int{1})
+	if err != nil {
+		t.Fatalf("resolve exact group-output key: %v", err)
+	}
+	request := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     groupKey,
+			SortOrder: properties.RequestedSortOrderDescending,
+		}},
+		properties.DistinctnessPreserveDistinctness,
+		true,
+	)
+
+	got := pullUpRequestedOrderingToMatchTop(request, queryExpression)
+	if got == request {
+		t.Fatal("group-output request was not translated to the match-top owner")
+	}
+	if got.GetDistinctness() != request.GetDistinctness() ||
+		got.IsExhaustive() != request.IsExhaustive() ||
+		len(got.GetParts()) != 1 ||
+		got.GetParts()[0].SortOrder != properties.RequestedSortOrderDescending {
+		t.Fatalf("translated ordering lost its non-value contract: %#v", got)
+	}
+	gotField, isField := values.AsFieldValue(got.GetParts()[0].Value)
+	if !isField || gotField.Path() == nil ||
+		len(gotField.Path().Ordinals()) != 1 || gotField.Path().Ordinals()[0] != 1 {
+		t.Fatalf("translated key = %s, want exact ordinal-1 field",
+			values.ExplainValue(got.GetParts()[0].Value))
+	}
+	gotRoot, isRoot := values.AsQuantifiedObjectValue(gotField.ChildValue())
+	if !isRoot || gotRoot.Correlation() != values.CurrentCorrelation() ||
+		!gotRoot.FlowedType().Equals(rowType) {
+		t.Fatalf("translated key = %s, want exact owner-current SORT_KEY#1",
+			values.ExplainValue(got.GetParts()[0].Value))
+	}
+}
+
+func TestPullUpRequestedOrderingToMatchTopDoesNotCaptureOuterCorrelation(t *testing.T) {
+	t.Parallel()
+
+	rowType := values.NewRecordType("ordering_outer_row", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType)
+	if err != nil {
+		t.Fatalf("construct exact ordering scan: %v", err)
+	}
+	childQ := expressions.NamedForEachQuantifier(
+		values.UniqueCorrelationIdentifier(), expressions.InitialOf(scan))
+	childResult, err := childQ.RequireFlowedObjectValue()
+	if err != nil {
+		t.Fatalf("derive exact child result: %v", err)
+	}
+	externalAlias := values.NamedCorrelationIdentifier("OUTER")
+	externalRoot, err := values.NewQuantifiedObjectValue(externalAlias, rowType)
+	if err != nil {
+		t.Fatalf("construct exact outer root: %v", err)
+	}
+	externalKey, err := values.ResolveFieldOrdinals(externalRoot, []int{0})
+	if err != nil {
+		t.Fatalf("resolve exact outer key: %v", err)
+	}
+	predicate := predicates.NewComparisonPredicate(
+		externalKey,
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7)),
+	)
+	queryExpression, err := expressions.NewSelectExpression(
+		childResult,
+		[]expressions.Quantifier{childQ},
+		[]predicates.QueryPredicate{predicate},
+	)
+	if err != nil {
+		t.Fatalf("construct outer-correlated query expression: %v", err)
+	}
+	request := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     externalKey,
+			SortOrder: properties.RequestedSortOrderAscending,
+		}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+
+	if got := pullUpRequestedOrderingToMatchTop(request, queryExpression); got != request {
+		t.Fatalf("outer-correlated request was captured as the match row: %s",
+			values.ExplainValue(got.GetParts()[0].Value))
 	}
 }
 
@@ -1038,10 +1235,22 @@ func TestSatisfiesRequestedOrdering_DoesNotCollapseBakedOrdinals(t *testing.T) {
 	// decides a FieldValue pair by column identity, and a display name is never
 	// consulted. Both sides state an identity, so the decline below comes from
 	// the identity arm and not from one operand being unaddressable.
-	matched := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"DUP", 0, values.UnknownType, dataAccessTestDomain)
-	requestedOtherSlot := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"DUP", 1, values.UnknownType, dataAccessTestDomain)
+	duplicateLayout := &values.RecordType{Fields: []values.Field{
+		{Name: "DUP", Ordinal: 0, FieldType: values.NullableLong},
+		{Name: "DUP", Ordinal: 1, FieldType: values.NullableLong},
+	}}
+	root, err := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), duplicateLayout)
+	if err != nil {
+		t.Fatalf("construct duplicate-name root: %v", err)
+	}
+	matched, err := values.ResolveFieldOrdinals(root, []int{0})
+	if err != nil {
+		t.Fatalf("resolve first duplicate-name slot: %v", err)
+	}
+	requestedOtherSlot, err := values.ResolveFieldOrdinals(root, []int{1})
+	if err != nil {
+		t.Fatalf("resolve second duplicate-name slot: %v", err)
+	}
 	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
 		NewMatchedOrderingPart(
 			values.UniqueCorrelationIdentifier(),
@@ -1064,31 +1273,25 @@ func TestSatisfiesRequestedOrdering_DoesNotCollapseBakedOrdinals(t *testing.T) {
 	}
 }
 
-// TestSatisfiesRequestedOrdering_DeclinesANameOnlyMatchedKey pins the contract
-// type dispatch replaced the lazy/baked NAME bridge with.
+// TestSatisfiesRequestedOrdering_DeclinesAValueWithoutColumnIdentity pins the
+// contract that replaced the lazy/baked NAME bridge.
 //
-// A pair of plain FieldValues is decided by column identity and nothing else, so
-// a candidate that minted a name-only ordering key — bakeOrderingColumnIn's
-// fallback when the scan flows no layout, or when the column name is ambiguous
-// in it — is UNADDRESSABLE: the request does not match it and the ordered access
-// is not offered. The bridge that used to accept this pair on the strength of
-// equal names was INTRANSITIVE inside the FieldValue class (a name-only key
-// bridges to ordinal 0 of two different layouts, which identity keeps apart), and
-// an ordering set built through a non-equivalence relation depends on the order
-// it was built in.
+// A candidate that cannot resolve its metadata column now returns nil before a
+// FieldValue is constructed; the exact FieldValue API has no lazy/name-only
+// state. An arbitrary non-field Value remains unaddressable and cannot satisfy
+// a request merely because its display text resembles a column.
 //
 // The cost of declining is measured, not assumed: over the whole corpus, neither
 // comparator ever sees a FieldValue pair with a non-stating operand
 // (pkg/relational/conformance/explaindiff's ordering-census test asserts that
 // residual is ZERO). If it ever stops being zero, the fix is at the producer that
 // minted the key without its layout — not here.
-func TestSatisfiesRequestedOrdering_DeclinesANameOnlyMatchedKey(t *testing.T) {
+func TestSatisfiesRequestedOrdering_DeclinesAValueWithoutColumnIdentity(t *testing.T) {
 	t.Parallel()
 
-	matched := &values.FieldValue{Field: "sort_key", Typ: values.UnknownType}
+	matched := values.LiteralValue("SORT_KEY")
 	if values.StatesOrderingColumn(matched) {
-		t.Fatalf("test setup: %q states a column identity, so it is not the "+
-			"name-only key this test is about",
+		t.Fatalf("test setup: %q unexpectedly states a column identity",
 			values.ExplainValue(matched))
 	}
 	requestedBaked := dataAccessTestKey("SORT_KEY")
@@ -1109,43 +1312,31 @@ func TestSatisfiesRequestedOrdering_DeclinesANameOnlyMatchedKey(t *testing.T) {
 		false,
 	)
 
-	// The premise, asserted rather than assumed: the retired arms DID accept
-	// this pair on the strength of the equal name, so the decline below is the
-	// dispatch and not some unrelated mismatch.
-	if !values.CanBridgeOrderingValueRoots(matched, requestedBaked) {
-		t.Fatalf("test setup: the name bridge no longer accepts %q against %q, "+
-			"so this test no longer demonstrates what type dispatch gave up",
-			values.ExplainValue(matched), values.ExplainValue(requestedBaked))
-	}
-
 	if dir := SatisfiesRequestedOrdering(pm, requested); dir != nil {
-		t.Fatalf("a name-only matched ordering key satisfied a request for the "+
-			"same column name (direction %v).\n\n"+
-			"That is the name bridge back inside the FieldValue class, and it is "+
-			"intransitive there: the same name-only key also bridges to ordinal 0 "+
-			"of a DIFFERENT layout, which identity keeps apart, so the ordering "+
-			"sets built through the comparator become insertion-order dependent.",
+		t.Fatalf("a non-field value satisfied a resolved column request (direction %v)",
 			*dir)
 	}
 }
 
 // TestSatisfiesRequestedOrdering_AdmitsQualifiedRequestAgainstLocalCandidate
-// pins the ONE root asymmetry the identity arm permits: a childless candidate
-// key (Go's canonical source-relative root) against a request scoped to the
-// quantifier that owns it. Both state the same column of the same layout, so
-// identity accepts them — no name comparison is involved.
-func TestSatisfiesRequestedOrdering_AdmitsQualifiedRequestAgainstLocalCandidate(t *testing.T) {
+// pins the exact-root contract: two independently resolved reads through the
+// same quantified object and ordinal denote one ordering column.
+func TestSatisfiesRequestedOrdering_AdmitsRequestAgainstSameExactRoot(t *testing.T) {
 	t.Parallel()
 
-	matched := dataAccessTestKey("NAME")
 	alias := values.NamedCorrelationIdentifier("C")
-	requestedQualified := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(alias),
-		"NAME",
-		dataAccessTestOrdinal("NAME"),
-		values.UnknownType,
-		dataAccessTestDomain,
-	)
+	root, err := values.NewQuantifiedObjectValue(alias, dataAccessTestRow)
+	if err != nil {
+		t.Fatalf("construct request root: %v", err)
+	}
+	matched, err := values.ResolveFieldOrdinals(root, []int{dataAccessTestOrdinal("NAME")})
+	if err != nil {
+		t.Fatalf("resolve matched column: %v", err)
+	}
+	requestedQualified, err := values.ResolveFieldOrdinals(root, []int{dataAccessTestOrdinal("NAME")})
+	if err != nil {
+		t.Fatalf("resolve requested column: %v", err)
+	}
 	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
 		NewMatchedOrderingPart(
 			values.UniqueCorrelationIdentifier(),
@@ -1165,9 +1356,7 @@ func TestSatisfiesRequestedOrdering_AdmitsQualifiedRequestAgainstLocalCandidate(
 
 	dir := SatisfiesRequestedOrdering(pm, requested)
 	if dir == nil || *dir != ScanDirectionForward {
-		t.Fatalf("a request rooted at the quantifier that owns the candidate's "+
-			"column did not match the candidate's source-relative key for the "+
-			"same column: direction = %v, want forward", dir)
+		t.Fatalf("two reads through the same exact root and ordinal did not match: direction = %v, want forward", dir)
 	}
 }
 
@@ -1219,6 +1408,39 @@ func TestSatisfiesAnyRequestedOrderings_MixedResults(t *testing.T) {
 	}
 }
 
+func TestSatisfiesAnyRequestedOrderings_PreserveDoesNotMaskReverse(t *testing.T) {
+	t.Parallel()
+
+	fieldA := dataAccessTestKey("A")
+	pm := makeOrderingTestPartialMatch([]*MatchedOrderingPart{
+		NewMatchedOrderingPart(
+			values.UniqueCorrelationIdentifier(),
+			fieldA,
+			predicates.EmptyComparisonRange(),
+			MatchedSortOrderAscending,
+		),
+	})
+	descending := properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{
+			Value:     fieldA,
+			SortOrder: properties.RequestedSortOrderDescending,
+		}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+
+	satisfied, direction := SatisfiesAnyRequestedOrderings(
+		pm,
+		[]*properties.RequestedOrdering{properties.PreserveOrdering(), descending},
+	)
+	if direction == nil || *direction != ScanDirectionReverse {
+		t.Fatalf("{preserve, DESC} direction = %v, want reverse; preserve is neutral, not a forward vote", direction)
+	}
+	if len(satisfied) != 2 {
+		t.Fatalf("satisfied orderings = %d, want preserve and DESC", len(satisfied))
+	}
+}
+
 func TestScanPlanExpression_GetRecordQueryPlan(t *testing.T) {
 	t.Parallel()
 
@@ -1254,6 +1476,9 @@ func (t *testPlan) EqualsWithoutChildren(other expressions.RelationalExpression,
 	return ok && t.EqualsPlanWithoutChildren(o)
 }
 
-func (t *testPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return t
+func (t *testPlan) WithQuantifiers(quantifiers []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := requireTestQuantifierArity("testPlan", len(quantifiers), len(t.GetQuantifiers())); err != nil {
+		return nil, err
+	}
+	return t, nil
 }

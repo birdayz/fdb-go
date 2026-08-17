@@ -252,12 +252,26 @@ func (r *PartitionBinarySelectRule) tryPartition(
 			// merge arm packs several legs into positional slots, where an invented
 			// row shape is a wrong-slot read. The disagreement still surfaces — it
 			// surfaces there, counted and witnessed, rather than being reported twice.
-			leftSelectExpr = leftBuilder.Build().Seal().BuildSelectWithResultValue(
-				leftQuantifier.GetFlowedObjectValue(),
+			flowed, err := leftQuantifier.RequireFlowedObjectValue()
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			leftSelectExpr, err = leftBuilder.Build().Seal().BuildSelectWithResultValue(
+				flowed,
 			)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 		} else {
 			leftBuilder.AddColumn("", values.LiteralValue(int64(1)))
-			leftSelectExpr = leftBuilder.Build().Seal().BuildSelect()
+			var err error
+			leftSelectExpr, err = leftBuilder.Build().Seal().BuildSelect()
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 		}
 		newLeftQuantifier = expressions.NamedForEachQuantifier(
 			leftQuantifier.GetAlias(),
@@ -280,12 +294,26 @@ func (r *PartitionBinarySelectRule) tryPartition(
 		var rightSelectExpr *expressions.SelectExpression
 		if rightQuantifier.Kind() == expressions.QuantifierForEach {
 			// The swallowing accessor, for the reason stated on the left arm above.
-			rightSelectExpr = rightBuilder.Build().Seal().BuildSelectWithResultValue(
-				rightQuantifier.GetFlowedObjectValue(),
+			flowed, err := rightQuantifier.RequireFlowedObjectValue()
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			rightSelectExpr, err = rightBuilder.Build().Seal().BuildSelectWithResultValue(
+				flowed,
 			)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 		} else {
 			rightBuilder.AddColumn("", values.LiteralValue(int64(1)))
-			rightSelectExpr = rightBuilder.Build().Seal().BuildSelect()
+			var err error
+			rightSelectExpr, err = rightBuilder.Build().Seal().BuildSelect()
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 		}
 		newRightQuantifier = expressions.NamedForEachQuantifier(
 			rightQuantifier.GetAlias(),
@@ -302,13 +330,17 @@ func (r *PartitionBinarySelectRule) tryPartition(
 		newAliases = []string{la, ra}
 	}
 
-	newSelectExpr := expressions.NewSelectExpressionWithJoinType(
+	newSelectExpr, err := expressions.NewSelectExpressionWithJoinType(
 		sel.GetResultValue(),
 		[]expressions.Quantifier{newLeftQuantifier, newRightQuantifier},
 		nil,
 		newAliases,
 		sel.GetJoinType(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	call.Yield(newSelectExpr)
 }

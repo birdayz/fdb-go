@@ -1,6 +1,8 @@
 package expressions
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -30,6 +32,8 @@ type ExplodeExpression struct {
 	// the bare element. Mirrors Java's `ExplodeExpression.withOrdinality`
 	// (the `WITH ORDINALITY` / `AT atAlias` companion, Java #4112).
 	withOrdinality bool
+	elementType    values.ExactTypeHandle
+	resultType     values.ExactTypeHandle
 }
 
 // NewExplodeExpression builds a non-ordinal Explode over the given
@@ -37,15 +41,43 @@ type ExplodeExpression struct {
 // CollectionValue's Type is an ArrayType (Java's constructor uses
 // Verify.verify; Go defers the check to caller — invalid
 // construction surfaces as a degenerate result type).
-func NewExplodeExpression(collection values.Value) *ExplodeExpression {
-	return &ExplodeExpression{collectionValue: collection}
+func NewExplodeExpression(collection values.Value) (*ExplodeExpression, error) {
+	return newExplodeExpression(collection, false)
 }
 
 // NewExplodeExpressionWithOrdinality builds an Explode that also emits a
 // 1-based ordinal alongside each element (the `WITH ORDINALITY` variant).
 // Mirrors Java's `new ExplodeExpression(collectionValue, withOrdinality)`.
-func NewExplodeExpressionWithOrdinality(collection values.Value, withOrdinality bool) *ExplodeExpression {
-	return &ExplodeExpression{collectionValue: collection, withOrdinality: withOrdinality}
+func NewExplodeExpressionWithOrdinality(collection values.Value, withOrdinality bool) (*ExplodeExpression, error) {
+	return newExplodeExpression(collection, withOrdinality)
+}
+
+func newExplodeExpression(collection values.Value, withOrdinality bool) (*ExplodeExpression, error) {
+	if collection == nil {
+		return nil, fmt.Errorf("ExplodeExpression collection: value is nil")
+	}
+	arrayType, ok := collection.Type().(*values.ArrayType)
+	if !ok || arrayType == nil || arrayType.ElementType == nil {
+		return nil, fmt.Errorf("ExplodeExpression collection: expected an array with an exact element type, got %v", collection.Type())
+	}
+	elementType, err := snapshotExpressionResultType("ExplodeExpression element", arrayType.ElementType)
+	if err != nil {
+		return nil, err
+	}
+	result := elementType.Type()
+	if withOrdinality {
+		result = values.ExplodeOrdinalityResultType(result)
+	}
+	resultType, err := snapshotExpressionResultType("ExplodeExpression", result)
+	if err != nil {
+		return nil, err
+	}
+	return &ExplodeExpression{
+		collectionValue: collection,
+		withOrdinality:  withOrdinality,
+		elementType:     elementType,
+		resultType:      resultType,
+	}, nil
 }
 
 // GetCollectionValue returns the underlying collection Value (the
@@ -60,15 +92,7 @@ func (e *ExplodeExpression) GetWithOrdinality() bool { return e.withOrdinality }
 
 // GetElementType returns the element type of the collection value, or
 // UnknownType when the collection is not array-typed.
-func (e *ExplodeExpression) GetElementType() values.Type {
-	if e.collectionValue == nil {
-		return values.UnknownType
-	}
-	if at, ok := e.collectionValue.Type().(*values.ArrayType); ok && at.ElementType != nil {
-		return at.ElementType
-	}
-	return values.UnknownType
-}
+func (e *ExplodeExpression) GetElementType() values.Type { return e.elementType.Type() }
 
 // GetResultValue returns a QueriedValue typed at the explode result
 // type. For the bare (non-ordinal) variant this is the array's element
@@ -79,7 +103,7 @@ func (e *ExplodeExpression) GetElementType() values.Type {
 // typed at UnknownType (matches Java's invariant failure but doesn't
 // panic).
 func (e *ExplodeExpression) GetResultValue() values.Value {
-	return values.NewQueriedValue(nil, e.GetExplodeResultType())
+	return values.NewQueriedValue(nil, e.resultType.Type())
 }
 
 // GetExplodeResultType returns the type a single explode row carries:
@@ -87,11 +111,7 @@ func (e *ExplodeExpression) GetResultValue() values.Value {
 // 2-field record (element, INT NOT NULL). Mirrors Java's
 // `ExplodeExpression.getExplodeResultType()`.
 func (e *ExplodeExpression) GetExplodeResultType() values.Type {
-	elem := e.GetElementType()
-	if e.withOrdinality {
-		return values.ExplodeOrdinalityResultType(elem)
-	}
-	return elem
+	return e.resultType.Type()
 }
 
 // GetQuantifiers returns the empty slice — Explode is a leaf-shaped
@@ -163,8 +183,11 @@ func (e *ExplodeExpression) HashCodeWithoutChildren() uint64 {
 	return h
 }
 
-func (e *ExplodeExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
-	return e
+func (e *ExplodeExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("ExplodeExpression", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 var _ RelationalExpression = (*ExplodeExpression)(nil)

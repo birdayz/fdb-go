@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -69,6 +68,42 @@ func FromStoredRecord(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResu
 		Record:     rec,
 		PrimaryKey: rec.PrimaryKey,
 	}
+}
+
+// storedRecordToQueryResult is FromStoredRecord for a scan that already knows
+// the physical layout its output boundary will hold every row to. The row is
+// built here and has not escaped, so stamping the handle is free and spares the
+// boundary the defensive copy it owes a possibly-shared row — see
+// mintedRowLayout. A nil layout means the boundary publishes none, and the row
+// is returned exactly as FromStoredRecord builds it.
+func storedRecordToQueryResult(
+	layout values.OrdinalLayout,
+) func(*recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
+	if layout == nil {
+		return FromStoredRecord
+	}
+	return func(rec *recordlayer.FDBStoredRecord[proto.Message]) QueryResult {
+		return stampRowLayout(FromStoredRecord(rec), layout)
+	}
+}
+
+// stampRowLayout records layout on a row that was just built and has not
+// escaped. A nil layout, or a result with no row, is returned untouched.
+//
+// A STAMPING PRODUCER MUST NOT SET LayoutPresence unless it is presence for this
+// exact layout. The stamp makes the output boundary take its identity fast path,
+// and that path keeps presence where the copying path would have cleared it — for
+// an unstamped row the prior layout is nil, so finishAttach discards presence,
+// while a stamped row is already in its layout's own address space and keeps it.
+// Keeping it is correct there and the difference is invisible today because no
+// stamping producer sets presence; a future one that did, with presence computed
+// for a DIFFERENT layout, would carry another address space's matched/unmatched
+// bits past the boundary. See TestIdentityAttachIsPresenceEquivalent.
+func stampRowLayout(result QueryResult, layout values.OrdinalLayout) QueryResult {
+	if layout != nil && result.Positional != nil {
+		result.Positional.Layout = layout
+	}
+	return result
 }
 
 // positionalTypeCache caches the row-invariant PositionalRow.Type per message
@@ -166,7 +201,7 @@ func PositionalTypeForDescriptor(desc protoreflect.MessageDescriptor) *values.Re
 		rtFields := make([]values.Field, n)
 		for i := 0; i < n; i++ {
 			fd := fields.Get(i)
-			rtFields[i] = values.Field{Name: strings.ToUpper(string(fd.Name())), FieldType: values.FieldTypeForProtoField(fd), Ordinal: i}
+			rtFields[i] = values.Field{Name: values.FieldNameForProtoField(fd), FieldType: values.FieldTypeForProtoField(fd), Ordinal: i}
 		}
 		return values.NewRecordType("", false, rtFields)
 	})

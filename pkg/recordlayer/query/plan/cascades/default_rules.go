@@ -69,7 +69,6 @@ func DefaultExpressionRules() []ExpressionRule {
 		// inverse-pair fixpoint non-terminate — proven, see RFC-185).
 		NewNoOpFilterRule(),
 		NewProjectionMergeRule(),
-		NewProjectionElimRule(),
 		// PushProjectionBelowJoinRule REMOVED (Go-only, no Java equivalent).
 		// It wrapped a join's children in LogicalProjectionExpressions, which
 		// blocked SelectMergeRule from flattening the nested binary join into
@@ -118,7 +117,30 @@ func DefaultExpressionRules() []ExpressionRule {
 		NewIntersectionSingletonElimRule(),
 		NewInComparisonToExplodeRule(),
 		NewLimitMergeRule(),
-		NewPushLimitThroughProjectionRule(),
+		// PushLimitThroughProjectionRule REMOVED (Go-only, no Java equivalent).
+		// Java expresses a row limit as ExecuteProperties.setReturnedRowLimit()
+		// at EXECUTION and has no limit-pushing planner rule at all — 0 of the
+		// 70 .java files under query/plan/cascades/rules name limit or vector.
+		//
+		// It rewrote Limit(Project(X)) into Project(Limit(X)) during REWRITING,
+		// where OptimizeGroupTask's partition-retention block does not run. So
+		// REWRITING pruned to the single pushed survivor and the un-pushed
+		// shape — whose inner group holds the covering winner — never reached
+		// the phase that offers the covering rewrite. A FETCHING index scan won
+		// where a covering one existed, and the cost model was never consulted:
+		// the better member was ABSENT, not outranked. Pinned by
+		// embedded.TestLimitOverProjectionKeepsTheCoveringRewrite.
+		//
+		// Nothing downstream needed the push, which is the part worth stating
+		// because it is not obvious. The one rule that wants a Limit DIRECTLY
+		// above its scan is SinkLimitIntoVectorScanRule (registered in
+		// DefaultImplementationRules), and the Limit it folds is the QUALIFY
+		// rank cap's — synthesized UNDER the projection already, so the fold
+		// fires with a projection present. Pinned by
+		// embedded.TestVectorPlan_NoResidualFoldsToSelfLimiting and, for an
+		// explicit LIMIT equal to that cap (the only shape where an OUTER limit
+		// passes the fold's equality gate), by
+		// embedded.TestVectorPlan_ExplicitLimitEqualToRankStillFolds.
 		NewPushLimitThroughUnionRule(),
 		NewNoOpLimitElimRule(),
 		NewSelectMergeRule(),
@@ -190,8 +212,33 @@ func PlanningExplorationRules() []ExpressionRule {
 // InsertFinal so their results land in FinalMembers.
 //
 // Uses Java's PlanningRuleSet.IMPLEMENTATION_RULES as its base. Documented Go
-// extensions are included where the read-side architecture differs; notably,
-// NewImplementUnionRule emits Go's additional concat UNION ALL plan.
+// extensions are included where the read-side architecture differs.
+//
+// A BARE `UNION ALL` is implemented by ImplementUnorderedUnionRule alone, as in
+// Java. Go also had ImplementUnionRule, emitting a second concat plan for the
+// SAME logical shape at the SAME cost — the two are both operator-neutral — so
+// which one won was decided by exploration order rather than by cost, and it
+// flipped on unrelated changes. Java has no such rule (its RecordQueryUnionPlan
+// variants require compatible comparison keys and arise from ordered/
+// distinct-union planning), and the Go rule produced a keyless concat every
+// time. THAT is the reason for the deletion, and it stands on its own.
+//
+// AN EARLIER VERSION OF THIS NOTE ALSO CLAIMED RecordQueryUnionPlan "is an
+// eager concat that DECLINES a continuation", and the executor says otherwise.
+// executeUnion routes to executeUnionStreaming whenever every branch's column
+// names are statically known — lazy, per-branch CursorFactory, resuming off a
+// branch-tagged ConcatContinuation. Only executeUnionBuffered declines, and only
+// on the fallback where the names are not statically known. On the eagerness
+// axis the deletion in fact moved the OTHER way: the surviving
+// executeUnorderedUnion opens every child cursor up front. Keeping the wrong
+// reason next to a right conclusion is how a later reader talks themselves into
+// reverting the conclusion.
+//
+// It did serve one shape alone, and only because of a second Go-only
+// divergence: ImplementUnorderedUnionRule carried a two-leg floor Java's rule
+// does not have, so a ONE-leg logical union that survived
+// UnionSingletonElimRule had no implementer. The floor is gone (see that
+// rule), which is what makes the unordered rule sufficient on its own.
 func BatchAExpressionRules() []ExpressionRule {
 	return []ExpressionRule{
 		NewPrimaryScanRule(),
@@ -201,7 +248,6 @@ func BatchAExpressionRules() []ExpressionRule {
 		NewOrderedIndexScanRule(),
 		NewOrderedPrimaryScanRule(),
 		NewImplementTypeFilterRule(),
-		NewImplementUnionRule(),
 		NewImplementIntersectionRule(),
 		NewImplementStreamingAggregationRule(),
 		NewStreamingAggFromIndexRule(),

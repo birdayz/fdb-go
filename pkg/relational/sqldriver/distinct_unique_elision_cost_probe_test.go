@@ -76,6 +76,29 @@ import (
 
 const duecRows = 100000
 
+// duecSmallRows is the population for the ROW-IDENTITY arm run inside an
+// explicit transaction, and it is small on purpose.
+//
+// That arm's whole result has to be read under ONE read version — that is what
+// licenses the elision, so it is not negotiable — and an explicit
+// transaction's reads are bounded by the driver's 4s budget ahead of FDB's 5s
+// MVCC window. At duecRows the read does not fit under `-race`: the race lane
+// lost the window on all eight permitted attempts and then reported
+// `40001: transaction read budget exhausted ... read version 4.15s old`. The
+// retry was working; the measurement had no margin.
+//
+// Scale is NOT what that arm establishes. It compares the narrowed operator's
+// rows against the full operator's, value for value, and asserts the NULL
+// collapse — properties of the dedup, provable at any size that carries the
+// same density. Scale is what the BUDGET arms establish, and they keep
+// duecRows.
+//
+// So the fix is the population rather than the ceiling. Raising the retry count
+// would buy attempts at a window that is already too small, and the 4s budget
+// is a real FDB constraint rather than a knob — a probe that needed it moved
+// would be measuring something it cannot measure.
+const duecSmallRows = 2000
+
 // duecReps is the pair count RFC-209 §7 settled on: a single pair on this
 // harness drifts enough to fail a clean run, and every ratio below is the
 // MEDIAN of the per-rep ratios rather than a ratio of medians.
@@ -450,7 +473,15 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 			"CREATE TABLE users1 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
 			"CREATE UNIQUE INDEX by_email1 ON users1 (email) "+
 			"CREATE TABLE users50 (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
-			"CREATE UNIQUE INDEX by_email50 ON users50 (email)")
+			"CREATE UNIQUE INDEX by_email50 ON users50 (email) "+
+			// The same three densities at duecSmallRows, for the arm that has to
+			// read its whole result inside ONE read version. See duecSmallRows.
+			"CREATE TABLE users_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email_s ON users_s (email) "+
+			"CREATE TABLE users1_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email1_s ON users1_s (email) "+
+			"CREATE TABLE users50_s (id BIGINT, email STRING, email_plain STRING, payload STRING, PRIMARY KEY (id)) "+
+			"CREATE UNIQUE INDEX by_email50_s ON users50_s (email)")
 	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_duec/s WITH TEMPLATE duec")
 	dsn := fmt.Sprintf("fdbsql:///testdb_duec?cluster_file=%s&schema=s", clusterFilePath)
 	db, err := sql.Open("fdbsql", dsn)
@@ -463,6 +494,9 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	duecLoad(t, ctx, db, "users", 0)
 	duecLoad(t, ctx, db, "users1", 100)
 	duecLoad(t, ctx, db, "users50", 2)
+	duecLoadN(t, ctx, db, "users_s", 0, duecSmallRows)
+	duecLoadN(t, ctx, db, "users1_s", 100, duecSmallRows)
+	duecLoadN(t, ctx, db, "users50_s", 2, duecSmallRows)
 
 	// ---- plan shapes ---------------------------------------------------
 	// Every measurement below is interpretable only against the plan it was
@@ -1090,25 +1124,35 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	// paged auto-commit the proof is withheld and the FALLBACK produces them,
 	// so this is the gate's correctness — a gate that withheld the proof but
 	// left the query mis-deduplicated would pass every in-transaction row here.
+	// The two regimes read DIFFERENT-SIZED tables, and the asymmetry is the
+	// point rather than an oversight.
+	//
+	// In-transaction the whole result must come from one read version, which is
+	// what licenses the elision — so the read is bounded by the driver's 4s
+	// budget and at duecRows it does not fit under `-race` (see duecSmallRows).
+	// Auto-commit pages, so each page takes its own read version and no single
+	// read is bounded that way; that regime keeps the full population.
+	//
+	// Both still cover all three NULL densities, which is what these arms
+	// actually interrogate. The small tables are the same generator at a
+	// smaller count, so `users50_s` is half NULL exactly as `users50` is.
 	for _, regime := range []struct {
 		name    string
+		tables  []duecIdentityTable
 		collect func(*testing.T, context.Context, string) []string
 	}{
-		{"in-tx", func(t *testing.T, ctx context.Context, q string) []string {
+		{"in-tx", duecSmallIdentityTables(), func(t *testing.T, ctx context.Context, q string) []string {
 			return duecCollectInTx(t, ctx, tconn, q)
 		}},
-		{"auto-commit", func(t *testing.T, ctx context.Context, q string) []string {
+		{"auto-commit", []duecIdentityTable{
+			{table: "users", wantRows: duecRows, wantNulls: 0},
+			{table: "users1", wantRows: duecRows - duecRows/100 + 1, wantNulls: 1},
+			{table: "users50", wantRows: duecRows/2 + 1, wantNulls: 1},
+		}, func(t *testing.T, ctx context.Context, q string) []string {
 			return duecCollect(t, ctx, acconn, q)
 		}},
 	} {
-		for _, c := range []struct {
-			table    string
-			wantRows int
-		}{
-			{"users", 100000},
-			{"users1", 99001},
-			{"users50", 50001},
-		} {
+		for _, c := range regime.tables {
 			r3 := regime.collect(t, ctx, "SELECT DISTINCT email FROM "+c.table)
 			full := regime.collect(t, ctx, "SELECT DISTINCT email_plain FROM "+c.table)
 			if len(r3) != c.wantRows {
@@ -1129,10 +1173,7 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 					nulls++
 				}
 			}
-			wantNulls := 0
-			if c.table != "users" {
-				wantNulls = 1
-			}
+			wantNulls := c.wantNulls
 			if nulls != wantNulls {
 				t.Fatalf("%s/%s: narrowed DISTINCT returned %d NULL rows, want %d — a NULL "+
 					"key component is EXEMPT, which is exactly why it still has to be "+
@@ -1255,16 +1296,24 @@ func TestFDB_DistinctUniqueElisionCostProbe(t *testing.T) {
 	}
 }
 
-// duecLoad fills one table; every nullEvery-th row gets a NULL email (and the
-// same NULL in the unindexed mirror column). nullEvery <= 0 means none.
+// duecLoad fills one table with duecRows rows; every nullEvery-th row gets a
+// NULL email (and the same NULL in the unindexed mirror column). nullEvery <= 0
+// means none.
 func duecLoad(t *testing.T, ctx context.Context, db *sql.DB, table string, nullEvery int) {
+	t.Helper()
+	duecLoadN(t, ctx, db, table, nullEvery, duecRows)
+}
+
+// duecLoadN is duecLoad at an explicit row count, for the tables whose arm has
+// to fit inside a read version rather than exercise scale. See duecSmallRows.
+func duecLoadN(t *testing.T, ctx context.Context, db *sql.DB, table string, nullEvery, rows int) {
 	t.Helper()
 	const batch = 250
 	const workers = 8
 	start := time.Now()
 	var wg sync.WaitGroup
 	errCh := make(chan error, workers)
-	per := duecRows / workers
+	per := rows / workers
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
@@ -1306,12 +1355,12 @@ func duecLoad(t *testing.T, ctx context.Context, db *sql.DB, table string, nullE
 		"SELECT COUNT(*) FROM "+table+" WHERE email IS NULL").Scan(&nulls); err != nil {
 		t.Fatalf("null count %s: %v", table, err)
 	}
-	if n != duecRows {
-		t.Fatalf("%s loaded %d rows, want %d", table, n, duecRows)
+	if n != int64(rows) {
+		t.Fatalf("%s loaded %d rows, want %d", table, n, rows)
 	}
 	wantNulls := int64(0)
 	if nullEvery > 0 {
-		wantNulls = int64(duecRows / nullEvery)
+		wantNulls = int64(rows / nullEvery)
 	}
 	if nulls != wantNulls {
 		t.Fatalf("%s holds %d NULL emails, want %d — the NULL density IS the sweep's "+
@@ -1390,12 +1439,57 @@ func duecRunInTx(
 	return finish(n, nulls, false)
 }
 
+// duecWindowAttempts bounds every lost-window retry in this file. It is a real
+// bound: if the drain stops fitting FDB's window altogether, the last attempt
+// must FAIL saying so rather than spin.
+const duecWindowAttempts = 8
+
+// duecWithHeldWindow runs try until it reports that the MVCC window HELD, and
+// is the single place this file's retry semantics are stated.
+//
+// THE ASYMMETRY WITH duecRunInTx IS THE POINT. duecRunInTx is TIMING: resampling
+// there until the window happens to hold turns a broken regime into a green
+// measurement, which is why it returns its truncated sample as evidence
+// instead. Everything routed through here reads ROWS or observes a MEMORY-BUDGET
+// breach, and neither has that hazard — the data is committed, so a fresh
+// transaction sees the same rows and the same budget behaviour, and a retry buys
+// nothing except a window that held.
+//
+// It is needed because the fixture is 100k rows against FDB's 5s MVCC window
+// (the driver pre-empts at 4s). Unloaded that drains in 215-554 ms; under the
+// race detector it measured 4.16-4.29s — MARGINALLY over, which is also why
+// retrying works at all. duecRetained's db.Run already leaned on exactly this,
+// retrying the same shape until an attempt fit.
+//
+// try receives `fatal` on the final attempt so it can report the window loss as
+// the failure it then is.
+func duecWithHeldWindow[T any](t *testing.T, what string, try func(fatal bool) (T, bool)) T {
+	t.Helper()
+	for attempt := 1; ; attempt++ {
+		out, lost := try(attempt == duecWindowAttempts)
+		if !lost {
+			return out
+		}
+		t.Logf("%s: measurement window lost on attempt %d/%d — retrying against "+
+			"committed data in a fresh transaction", what, attempt, duecWindowAttempts)
+	}
+}
+
 // duecBudgetRun executes q inside an explicit transaction and returns the error
 // the statement memory budget produced, or nil if it completed. The
 // transaction is required: outside one the proof is withheld and every row
 // below would be measuring the full operator. The driver may surface a breach
 // at query time or on the first scan, so both are drained before deciding.
 func duecBudgetRun(t *testing.T, ctx context.Context, c *sql.Conn, q string) error {
+	t.Helper()
+	return duecWithHeldWindow(t, "BUDGET "+q, func(fatal bool) (error, bool) {
+		return duecTryBudgetRun(t, ctx, c, q, fatal)
+	})
+}
+
+func duecTryBudgetRun(
+	t *testing.T, ctx context.Context, c *sql.Conn, q string, fatal bool,
+) (breach error, windowLost bool) {
 	t.Helper()
 	tx, berr := c.BeginTx(ctx, nil)
 	if berr != nil {
@@ -1410,7 +1504,17 @@ func duecBudgetRun(t *testing.T, ctx context.Context, c *sql.Conn, q string) err
 		rows.Close()
 	}
 	if err == nil {
-		return nil
+		return nil, false
+	}
+	// A LOST WINDOW IS NOT EVIDENCE EITHER WAY, so it is neither a breach nor a
+	// failure — it is a run that did not get to observe the budget at all. This
+	// arm asks whether the statement memory budget was breached; a transaction
+	// that ran past FDB's MVCC horizon answers no part of that question, and
+	// reading it as "not breached" would silently disarm the discriminator.
+	// Tested before the budget recogniser below because the read-budget message
+	// says neither "limit" nor "memory" and would otherwise reach the Fatalf.
+	if duecMeasurementWindowLost(err) && !fatal {
+		return nil, true
 	}
 	// A breach must be the BUDGET, never some unrelated failure quietly read as
 	// evidence for the claim.
@@ -1419,12 +1523,31 @@ func duecBudgetRun(t *testing.T, ctx context.Context, c *sql.Conn, q string) err
 		!strings.Contains(msg, string(api.ErrCodeExecutionLimitReached)) {
 		t.Fatalf("query %q failed for a reason that is not the memory budget: %v", q, err)
 	}
-	return err
+	return err, false
 }
 
 // duecCollectInTx is duecCollect inside an explicit transaction, where the
 // rows are produced by the PROVEN plan rather than by the fallback.
+//
+// It retries a lost window (duecWithHeldWindow states why that is legitimate
+// here and forbidden for duecRunInTx). Without it the race lane reported
+// `40001: transaction read budget exhausted` and took the whole non-temporal
+// sweep down with it — which withholding could not have covered for, since the
+// anti-silence tally demands all six row-identity arms and says withholding
+// must cost the three timing bounds and nothing else.
 func duecCollectInTx(t *testing.T, ctx context.Context, c *sql.Conn, q string) []string {
+	t.Helper()
+	return duecWithHeldWindow(t, "COLLECT in-tx "+q, func(fatal bool) ([]string, bool) {
+		return duecTryCollectInTx(t, ctx, c, q, fatal)
+	})
+}
+
+// duecTryCollectInTx is one attempt. fatal makes the last attempt report the
+// window loss as the failure it then is, so the retry above cannot become an
+// unbounded spin that reports nothing.
+func duecTryCollectInTx(
+	t *testing.T, ctx context.Context, c *sql.Conn, q string, fatal bool,
+) (out []string, windowLost bool) {
 	t.Helper()
 	tx, err := c.BeginTx(ctx, nil)
 	if err != nil {
@@ -1432,7 +1555,39 @@ func duecCollectInTx(t *testing.T, ctx context.Context, c *sql.Conn, q string) [
 	}
 	defer func() { _ = tx.Rollback() }()
 	rows, qerr := tx.QueryContext(ctx, q)
-	return duecDrain(t, rows, qerr)
+	if qerr != nil {
+		if duecMeasurementWindowLost(qerr) && !fatal {
+			return nil, true
+		}
+		t.Fatalf("collect %q: %v", q, qerr)
+	}
+	defer rows.Close()
+	var s sql.NullString
+	for rows.Next() {
+		if scanErr := rows.Scan(&s); scanErr != nil {
+			if duecMeasurementWindowLost(scanErr) && !fatal {
+				return nil, true
+			}
+			t.Fatalf("scan %q: %v", q, scanErr)
+		}
+		// The "v:" prefix is duecDrain's encoding and must match it exactly:
+		// without it a row whose email is the literal string "NULL" and a row
+		// whose email IS SQL NULL collapse to one value, and the sweep's
+		// null-count assertion is then counting the wrong thing.
+		if s.Valid {
+			out = append(out, "v:"+s.String)
+		} else {
+			out = append(out, "NULL")
+		}
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		if duecMeasurementWindowLost(rowsErr) && !fatal {
+			return nil, true
+		}
+		t.Fatalf("rows.Err %q: %v", q, rowsErr)
+	}
+	sort.Strings(out)
+	return out, false
 }
 
 // duecCollect returns the query's values sorted, with SQL NULL as "NULL", so
@@ -1764,6 +1919,19 @@ func duecRetained(
 		return true
 	})
 	_, rerr := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
+		// RESET PER ATTEMPT. db.Run RETRIES its closure, and `out` lives in the
+		// enclosing scope, so a counter incremented here without this reset
+		// reports the SUM OVER ATTEMPTS rather than the surviving attempt. The
+		// fixture normally finishes inside FDB's 5s MVCC window and retries
+		// never happen, which is why the sum equalled the truth — until the
+		// race detector taxed every memory access and the 100k-row drain
+		// started tripping the read budget. It then reported
+		// `full=384256 … want 100000`, an impossible count off a table with
+		// 100000 rows: ~3.84 attempts added together.
+		//
+		// `narrowed` is deliberately NOT reset: it is derived from the PLAN
+		// above, before any transaction, and is retry-independent.
+		out.rows, out.keys = 0, 0
 		store, sErr := recordlayer.NewStoreBuilder().
 			SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 		if sErr != nil {
@@ -1906,4 +2074,37 @@ func duecExplainInTx(t *testing.T, ctx context.Context, db *sql.DB, query string
 		t.Fatalf("EXPLAIN %q in a transaction: %v", query, err)
 	}
 	return plan
+}
+
+// duecIdentityTable is one row-identity arm: the table, the number of rows a
+// correct DISTINCT returns over it, and how many of those are the NULL row.
+//
+// The counts are DATA rather than derived from the table's name. They used to
+// be `if c.table != "users" { wantNulls = 1 }`, which is a decision keyed on a
+// string — it silently gives the wrong answer for any table added later whose
+// name is not "users" but whose density is zero, which is exactly what
+// duecSmallRows' no-NULL fixture is.
+type duecIdentityTable struct {
+	table     string
+	wantRows  int
+	wantNulls int
+}
+
+// duecSmallIdentityTables is the three NULL densities at duecSmallRows, for the
+// in-transaction arm whose whole result has to fit inside one read version.
+//
+// The expected counts are COMPUTED from the density rather than written down,
+// so changing duecSmallRows cannot leave a stale literal behind that the arm
+// would then report as a dedup failure:
+//
+//   - density 0:   every email distinct          -> N rows, no NULL row
+//   - density 100: N/100 rows collapse to ONE    -> N - N/100 + 1, one NULL
+//   - density 2:   N/2 rows collapse to ONE      -> N/2 + 1, one NULL
+func duecSmallIdentityTables() []duecIdentityTable {
+	const n = duecSmallRows
+	return []duecIdentityTable{
+		{table: "users_s", wantRows: n, wantNulls: 0},
+		{table: "users1_s", wantRows: n - n/100 + 1, wantNulls: 1},
+		{table: "users50_s", wantRows: n/2 + 1, wantNulls: 1},
+	}
 }

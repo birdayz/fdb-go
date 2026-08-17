@@ -91,7 +91,7 @@ func TestClusteredOuterSeed_NonContiguousLegsAreRejectedAtTheSeed(t *testing.T) 
 			{binding: "I", start: pad + 2, typ: legB},
 		},
 	}
-	_ = clusteredOuterOrdinalSeed(pu, values.NamedCorrelationIdentifier("q$77"), "S", "SUMV")
+	_ = clusteredOuterOrdinalSeed(pu, values.NamedCorrelationIdentifier("q$77"), "S", "SUMV", values.NotNullLong)
 }
 
 // PROPAGATION, NEVER INFERENCE — the line the corrected §1.1 must not cross
@@ -104,7 +104,8 @@ func TestClusteredOuterSeed_NonContiguousLegsAreRejectedAtTheSeed(t *testing.T) 
 // that have nothing to do with leg windows — aggregate titles like
 // `O.SUM(AMOUNT)`, qualified projections, `[ID NAME O._0]`. Inference would
 // attach a table to all of them; and a leg table on a row no producer described
-// is a refineRowTypes conflict against every sibling that derived it without one.
+// is boundaries invented from a spelling — which the four readers that DECLINE
+// their layout when Legs becomes non-empty would then act on.
 func TestRecordConstructorType_NeverInfersLegsFromDottedNames(t *testing.T) {
 	t.Parallel()
 	rc := values.NewRawRecordConstructorValue(
@@ -131,9 +132,9 @@ func TestRecordConstructorType_NeverInfersLegsFromDottedNames(t *testing.T) {
 			"  of which channel the retirement targets.\n"+
 			"  WHAT THIS RE-ARMS: a leg table on every dotted-shaped row in the corpus,\n"+
 			"  including the several hundred whose dots are aggregate titles rather than\n"+
-			"  qualifiers — and with it a refineRowTypes conflict against every sibling\n"+
-			"  that derived the same row without one, plus the four readers that DECLINE\n"+
-			"  their layout when Legs becomes non-empty (ordinal_join.go:234 and :187,\n"+
+			"  qualifiers — boundaries invented from a spelling rather than stated by a\n"+
+			"  producer, and acted on by the four readers that DECLINE their layout when\n"+
+			"  Legs becomes non-empty (ordinal_join.go:234 and :187,\n"+
 			"  ordinal_seed_layout.go:391 and :528).", len(rt.Legs))
 	}
 }

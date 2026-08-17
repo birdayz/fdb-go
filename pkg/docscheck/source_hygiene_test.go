@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -131,30 +132,30 @@ func sourceTreeRoot(t *testing.T) string {
 	return filepath.Dir(resolved)
 }
 
-// trackedGoFiles enumerates the scan set: `git ls-files -z -- '*.go'` (the
-// RFC-175 §5 B1/B2 scope — exactly the tracked set, so untracked local scratch
-// never false-positives). When git is unavailable (minimal CI image, sandbox
-// without git), it falls back to the shared fallbackWalk, whose exclusions are
-// a closed NAMED list rather than a leading-dot pattern; that is what makes it a
-// superset of the tracked set, so the gate can only get stricter, never quieter.
+// trackedGoFiles enumerates the deliverable scan set: tracked Go files UNION
+// untracked, non-ignored Go files. The second half is load-bearing in a shared
+// implementation worktree: a newly added source file compiles immediately, but
+// `git ls-files --cached` cannot see it until somebody stages it. A docs gate
+// that ignores the file until staging reports a false green over a tree that Go
+// is already building. Ignored scratch/build output stays excluded by
+// --exclude-standard.
+//
+// When git is unavailable (minimal CI image, sandbox without git), this falls
+// back to the shared fallbackWalk, whose exclusions are a closed NAMED list
+// rather than a leading-dot pattern; that is what makes it a superset of the
+// deliverable set, so the gate can only get stricter, never quieter.
 // The dot-pattern it replaced was a SUBSET: .github and .claude/skills hold
 // tracked files. No tracked *.go lives there at d482c92f8 (`git ls-files --
 // '*.go' | grep -cE '^\.[^/]+/'` → 0 of 3469), but that is an accident of
 // today's layout, not a property this scan may rest on.
 func trackedGoFiles(t *testing.T, root string) []string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--", "*.go").Output()
-	if err == nil && len(out) > 0 {
-		var files []string
-		for _, rel := range bytes.Split(bytes.TrimRight(out, "\x00"), []byte{0}) {
-			if len(rel) > 0 {
-				files = append(files, string(rel))
-			}
-		}
+	files, err := gitGoFiles(root)
+	if err == nil && len(files) > 0 {
 		return files
 	}
-	t.Logf("git ls-files unavailable (%v) — falling back to a filesystem walk over everything but the "+
-		"named excluded trees (%v), a superset of tracked", err, sortedFallbackWalkSkips())
+	t.Logf("git deliverable-file enumeration unavailable (%v) — falling back to a filesystem walk over everything but the "+
+		"named excluded trees (%v), a superset of tracked plus untracked non-ignored files", err, sortedFallbackWalkSkips())
 	files, walkErr := fallbackWalk(root, func(name string) bool {
 		return strings.HasSuffix(name, ".go")
 	})
@@ -162,6 +163,44 @@ func trackedGoFiles(t *testing.T, root string) []string {
 		t.Fatalf("walking %s: %v", root, walkErr)
 	}
 	return files
+}
+
+// gitDeliverableFiles returns the sorted, duplicate-free union of tracked files
+// and untracked files not excluded by the repository's ignore rules. Tracked
+// paths deleted in the worktree are absent: the deliverable is what local Go
+// and Bazel commands can compile now, not what the index remembers.
+func gitDeliverableFiles(root, pattern string) ([]string, error) {
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", pattern).Output()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	for _, rel := range bytes.Split(bytes.TrimRight(out, "\x00"), []byte{0}) {
+		if len(rel) == 0 {
+			continue
+		}
+		normalized := filepath.ToSlash(string(rel))
+		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(normalized))); statErr != nil {
+			if os.IsNotExist(statErr) {
+				// The index still names tracked files deleted in this worktree. They
+				// are no longer part of the deliverable Go is compiling.
+				continue
+			}
+			return nil, statErr
+		}
+		seen[normalized] = struct{}{}
+	}
+	files := make([]string, 0, len(seen))
+	for rel := range seen {
+		files = append(files, rel)
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// gitGoFiles is the Go-source specialization shared by the source censuses.
+func gitGoFiles(root string) ([]string, error) {
+	return gitDeliverableFiles(root, "*.go")
 }
 
 // isGeneratedFile reports whether the file carries the generated-code marker.

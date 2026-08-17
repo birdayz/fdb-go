@@ -12,11 +12,8 @@ func selectTranslationTestReference() (
 	expressions.RelationalExpression,
 	*expressions.Reference,
 ) {
-	expression := expressions.NewFullUnorderedScanExpression(
-		[]string{"T"},
-		values.UnknownType,
-	)
-	return expression, expressions.InitialOf(expression)
+	expression := selectSubsumptionTestScan("T")
+	return expression, selectSubsumptionTestInitial(expression)
 }
 
 func selectTranslationTestRegularMatchInfo(
@@ -51,8 +48,14 @@ func selectTranslationTestPartialMatch(
 }
 
 func selectTranslationTestValidMaxMatchMap() *MaxMatchMap {
-	queryPart := values.NewFlatFieldValue("QUERY_PART", values.NotNullLong)
-	candidatePart := values.NewFlatFieldValue("CANDIDATE_PART", values.NotNullLong)
+	queryPart := selectSubsumptionTestQOV(
+		values.NamedCorrelationIdentifier("translation_map_query_part"),
+		selectSubsumptionTestRowType(),
+	)
+	candidatePart := selectSubsumptionTestQOV(
+		values.NamedCorrelationIdentifier("translation_map_candidate_part"),
+		selectSubsumptionTestRowType(),
+	)
 	return NewMaxMatchMap(
 		map[values.Value]values.Value{queryPart: candidatePart},
 		queryPart,
@@ -92,8 +95,14 @@ func TestBuildSelectSubsumptionTranslationMap_ForEachUsesAdjustedChildMap(
 
 	unpullable := NewMaxMatchMap(
 		nil,
-		values.NewFlatFieldValue("Q", values.NotNullLong),
-		values.NewFlatFieldValue("C", values.NotNullLong),
+		selectSubsumptionTestQOV(
+			values.NamedCorrelationIdentifier("unpullable_query"),
+			selectSubsumptionTestRowType(),
+		),
+		selectSubsumptionTestQOV(
+			values.NamedCorrelationIdentifier("unpullable_candidate"),
+			selectSubsumptionTestRowType(),
+		),
 	)
 	regular := selectTranslationTestRegularMatchInfo(unpullable)
 	adjusted := NewAdjustedMatchInfo(
@@ -122,11 +131,11 @@ func TestBuildSelectSubsumptionTranslationMap_ForEachUsesAdjustedChildMap(
 		t.Fatal("adjusted child MaxMatchMap did not produce a translation")
 	}
 	translated := values.TranslateCorrelations(
-		values.NewQuantifiedObjectValue(queryAlias),
+		selectSubsumptionTestQOV(queryAlias, selectSubsumptionTestRowType()),
 		translation,
 	)
-	qov, ok := translated.(*values.QuantifiedObjectValue)
-	if !ok || qov.Correlation != candidateAlias {
+	qov, ok := values.AsQuantifiedObjectValue(translated)
+	if !ok || qov.Correlation() != candidateAlias {
 		t.Fatalf(
 			"translated ForEach value = %T/%v, want QOV(%s)",
 			translated,
@@ -199,20 +208,18 @@ func TestBuildSelectSubsumptionTranslationMap_MissingOrUnpullableFailsClosed(
 	candidateQuantifier := expressions.NamedForEachQuantifier(candidateAlias, candidateChildRef)
 	binding := AliasMapOfAliases(queryAlias, candidateAlias)
 	var typedNilRegular *RegularMatchInfo
-	var typedNilValue *values.QuantifiedObjectValue
-	nestedTypedNilValue := &values.FieldValue{
-		Field: "nested_bad",
-		Typ:   values.UnknownType,
-		Child: typedNilValue,
+	validQueryPart := selectSubsumptionTestQOV(
+		values.NamedCorrelationIdentifier("missing_query_part"),
+		selectSubsumptionTestRowType(),
+	)
+	validCandidatePart := selectSubsumptionTestQOV(
+		values.NamedCorrelationIdentifier("missing_candidate_part"),
+		selectSubsumptionTestRowType(),
+	)
+	request := selectSubsumptionMust(values.FieldByName("nested_bad"))
+	if malformed, err := values.ResolveFieldAccess(nil, []values.FieldRequest{request}); err == nil || malformed != nil {
+		t.Fatalf("malformed field admission = (%v, %v), want (nil, error)", malformed, err)
 	}
-	validQueryPart := values.NewFlatFieldValue(
-		"Q",
-		values.NotNullLong,
-	)
-	validCandidatePart := values.NewFlatFieldValue(
-		"C",
-		values.NotNullLong,
-	)
 
 	tests := []struct {
 		name         string
@@ -230,32 +237,6 @@ func TestBuildSelectSubsumptionTranslationMap_MissingOrUnpullableFailsClosed(
 				validQueryPart,
 				validCandidatePart,
 			),
-		},
-		{
-			name: "nested typed-nil max-match query entry",
-			maxMatchMap: &MaxMatchMap{
-				mapping: map[string]maxMatchEntry{
-					"malformed": {
-						queryValue:     nestedTypedNilValue,
-						candidateValue: validCandidatePart,
-					},
-				},
-				queryValue:     validQueryPart,
-				candidateValue: validCandidatePart,
-			},
-		},
-		{
-			name: "nested typed-nil max-match candidate entry",
-			maxMatchMap: &MaxMatchMap{
-				mapping: map[string]maxMatchEntry{
-					"malformed": {
-						queryValue:     validQueryPart,
-						candidateValue: nestedTypedNilValue,
-					},
-				},
-				queryValue:     validQueryPart,
-				candidateValue: validCandidatePart,
-			},
 		},
 		{
 			name:         "missing partial match",
@@ -355,7 +336,10 @@ func TestBuildSelectSubsumptionTranslationMap_ExistentialTargets(
 			!translation.DefinesOnlyIdentities() {
 			t.Fatal("E-to-E target must be omitted from translation")
 		}
-		original := values.NewQuantifiedObjectValue(queryAlias)
+		original := selectSubsumptionTestQOV(
+			queryAlias,
+			selectSubsumptionTestRowType(),
+		)
 		if translated := values.TranslateCorrelations(
 			original,
 			translation,
@@ -381,11 +365,14 @@ func TestBuildSelectSubsumptionTranslationMap_ExistentialTargets(
 			t.Fatal("dormant E-to-FE mapping did not compose direct rebase")
 		}
 		translated := values.TranslateCorrelations(
-			values.NewQuantifiedObjectValue(queryAlias),
+			selectSubsumptionTestQOV(
+				queryAlias,
+				selectSubsumptionTestRowType(),
+			),
 			translation,
 		)
-		qov, ok := translated.(*values.QuantifiedObjectValue)
-		if !ok || qov.Correlation != candidateAlias {
+		qov, ok := values.AsQuantifiedObjectValue(translated)
+		if !ok || qov.Correlation() != candidateAlias {
 			t.Fatalf(
 				"E-to-FE translation = %T/%v, want QOV(%s)",
 				translated,
@@ -695,8 +682,14 @@ func TestTranslateSelectSubsumptionInputs_MalformedExistentialOverForEachFailsCl
 		candidateChildRef,
 	)
 
-	queryPart := values.NewFlatFieldValue("QUERY_PART", values.NotNullLong)
-	candidatePart := values.NewFlatFieldValue("CANDIDATE_PART", values.NotNullLong)
+	queryPart := selectSubsumptionTestQOV(
+		values.NamedCorrelationIdentifier("malformed_evp_query_part"),
+		selectSubsumptionTestRowType(),
+	)
+	candidatePart := selectSubsumptionTestQOV(
+		values.NamedCorrelationIdentifier("malformed_evp_candidate_part"),
+		selectSubsumptionTestRowType(),
+	)
 	candidateRoot := values.NewRecordConstructorValue(
 		values.RecordConstructorField{
 			Name:  "projected",
@@ -709,7 +702,7 @@ func TestTranslateSelectSubsumptionInputs_MalformedExistentialOverForEachFailsCl
 		candidateRoot,
 	)
 	pulledUp := childMaxMatchMap.TranslateQueryValueMaybe(candidateAlias)
-	if _, isProjectedField := pulledUp.(*values.FieldValue); !isProjectedField {
+	if _, isProjectedField := values.AsFieldValue(pulledUp); !isProjectedField {
 		t.Fatalf(
 			"fixture pull-up = %T, want projected FieldValue",
 			pulledUp,
@@ -733,13 +726,13 @@ func TestTranslateSelectSubsumptionInputs_MalformedExistentialOverForEachFailsCl
 		t.Fatal("failed to build projected ForEach translation fixture")
 	}
 	counting := &countingSelectTranslationMap{delegate: translation}
-	querySelect := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(queryAlias),
+	querySelect := selectSubsumptionMust(expressions.NewSelectExpression(
+		selectSubsumptionTestQOV(queryAlias, selectSubsumptionTestRowType()),
 		[]expressions.Quantifier{queryQuantifier},
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(queryAlias),
+			mustExistentialAlias(t, queryAlias, selectSubsumptionTestRowType()),
 		},
-	)
+	))
 
 	translatedPredicates, translatedResult, translated := translateSelectSubsumptionInputs(querySelect, counting)
 	if translated ||
@@ -793,13 +786,13 @@ func TestTranslateSelectSubsumptionInputs_ExistentialToForEachTranslatesOnce(
 		t.Fatal("failed to build dormant E-to-FE translation")
 	}
 	counting := &countingSelectTranslationMap{delegate: translation}
-	querySelect := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(queryAlias),
+	querySelect := selectSubsumptionMust(expressions.NewSelectExpression(
+		selectSubsumptionTestQOV(queryAlias, selectSubsumptionTestRowType()),
 		[]expressions.Quantifier{queryQuantifier},
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(queryAlias),
+			mustExistentialAlias(t, queryAlias, selectSubsumptionTestRowType()),
 		},
-	)
+	))
 
 	translatedPredicates, translatedResult, translated := translateSelectSubsumptionInputs(querySelect, counting)
 	if !translated {
@@ -811,8 +804,8 @@ func TestTranslateSelectSubsumptionInputs_ExistentialToForEachTranslatesOnce(
 			counting.applied,
 		)
 	}
-	translatedResultQOV, ok := translatedResult.(*values.QuantifiedObjectValue)
-	if !ok || translatedResultQOV.Correlation != candidateAlias {
+	translatedResultQOV, ok := values.AsQuantifiedObjectValue(translatedResult)
+	if !ok || translatedResultQOV.Correlation() != candidateAlias {
 		t.Fatalf(
 			"translated result = %T/%v, want QOV(%s)",
 			translatedResult,
@@ -827,8 +820,8 @@ func TestTranslateSelectSubsumptionInputs_ExistentialToForEachTranslatesOnce(
 			translatedPredicates[0],
 		)
 	}
-	translatedEVPQOV, ok := translatedEVP.Value.(*values.QuantifiedObjectValue)
-	if !ok || translatedEVPQOV.Correlation != candidateAlias {
+	translatedEVPQOV, ok := values.AsQuantifiedObjectValue(translatedEVP.Value)
+	if !ok || translatedEVPQOV.Correlation() != candidateAlias {
 		t.Fatalf(
 			"translated EVP value = %T/%v, want QOV(%s)",
 			translatedEVP.Value,
@@ -838,16 +831,18 @@ func TestTranslateSelectSubsumptionInputs_ExistentialToForEachTranslatesOnce(
 	}
 }
 
-func TestTranslateSelectSubsumptionInputs_NilAndTypedNilInputsFailClosed(
+func TestTranslateSelectSubsumptionInputs_NilAndMalformedInputsFailClosed(
 	t *testing.T,
 ) {
 	alias := values.NamedCorrelationIdentifier("query_nil_input")
-	validResult := values.NewQuantifiedObjectValue(alias)
+	validResult := selectSubsumptionTestQOV(alias, selectSubsumptionTestRowType())
 	identityTranslation := values.NewTranslationMapBuilder().Build()
-	validSelect := expressions.NewSelectExpression(validResult, nil, nil)
-	var typedNilResult *values.QuantifiedObjectValue
+	validSelect := selectSubsumptionMust(expressions.NewSelectExpression(validResult, nil, nil))
 	var typedNilPredicate *predicates.ComparisonPredicate
 	var typedNilRegularTranslation *values.RegularTranslationMap
+	if rejected, err := expressions.NewSelectExpression(nil, nil, nil); err == nil || rejected != nil {
+		t.Fatalf("NewSelectExpression(nil result) = (%v, %v), want (nil, error)", rejected, err)
+	}
 
 	tests := []struct {
 		name        string
@@ -860,39 +855,21 @@ func TestTranslateSelectSubsumptionInputs_NilAndTypedNilInputsFailClosed(
 			translation: identityTranslation,
 		},
 		{
-			name: "nil result",
-			querySelect: expressions.NewSelectExpression(
-				nil,
-				nil,
-				nil,
-			),
-			translation: identityTranslation,
-		},
-		{
-			name: "typed-nil result",
-			querySelect: expressions.NewSelectExpression(
-				typedNilResult,
-				nil,
-				nil,
-			),
-			translation: identityTranslation,
-		},
-		{
 			name: "nil predicate",
-			querySelect: expressions.NewSelectExpression(
+			querySelect: selectSubsumptionMust(expressions.NewSelectExpression(
 				validResult,
 				nil,
 				[]predicates.QueryPredicate{nil},
-			),
+			)),
 			translation: identityTranslation,
 		},
 		{
 			name: "typed-nil predicate",
-			querySelect: expressions.NewSelectExpression(
+			querySelect: selectSubsumptionMust(expressions.NewSelectExpression(
 				validResult,
 				nil,
 				[]predicates.QueryPredicate{typedNilPredicate},
-			),
+			)),
 			translation: identityTranslation,
 		},
 		{
@@ -935,20 +912,11 @@ func TestTranslateSelectSubsumptionInputs_MalformedEmbeddedValuesFailClosed(
 	t *testing.T,
 ) {
 	alias := values.NamedCorrelationIdentifier("query_bad_value")
-	validValue := values.NewQuantifiedObjectValue(alias)
-	var typedNilValue *values.QuantifiedObjectValue
-	nestedTypedNilValue := &values.FieldValue{
-		Field: "nested_bad",
-		Typ:   values.UnknownType,
-		Child: typedNilValue,
+	validValue := selectSubsumptionTestQOV(alias, selectSubsumptionTestRowType())
+	request := selectSubsumptionMust(values.FieldByName("nested_bad"))
+	if malformed, err := values.ResolveFieldAccess(nil, []values.FieldRequest{request}); err == nil || malformed != nil {
+		t.Fatalf("malformed field admission = (%v, %v), want (nil, error)", malformed, err)
 	}
-	nestedComparison := predicates.Comparison{
-		Type:    predicates.ComparisonEquals,
-		Operand: nestedTypedNilValue,
-	}
-	nestedComparisonRange := predicates.EmptyComparisonRange().
-		Merge(&nestedComparison).
-		Range
 
 	tests := []struct {
 		name      string
@@ -1017,37 +985,6 @@ func TestTranslateSelectSubsumptionInputs_MalformedEmbeddedValuesFailClosed(
 				nil,
 			),
 		},
-		{
-			name:      "typed-nil required value",
-			predicate: predicates.NewValuePredicate(typedNilValue),
-		},
-		{
-			name: "nested typed-nil comparison LHS",
-			predicate: predicates.NewComparisonPredicate(
-				nestedTypedNilValue,
-				predicates.Comparison{
-					Type: predicates.ComparisonIsNull,
-				},
-			),
-		},
-		{
-			name: "nested typed-nil comparison RHS",
-			predicate: predicates.NewComparisonPredicate(
-				validValue,
-				predicates.Comparison{
-					Type:    predicates.ComparisonEquals,
-					Operand: nestedTypedNilValue,
-				},
-			),
-		},
-		{
-			name: "nested typed-nil Placeholder range comparand",
-			predicate: &predicates.Placeholder{
-				ParameterAlias: values.NamedCorrelationIdentifier("p"),
-				Value:          validValue,
-				CompRange:      nestedComparisonRange,
-			},
-		},
 	}
 
 	for _, test := range tests {
@@ -1061,11 +998,11 @@ func TestTranslateSelectSubsumptionInputs_MalformedEmbeddedValuesFailClosed(
 					)
 				}
 			}()
-			querySelect := expressions.NewSelectExpression(
+			querySelect := selectSubsumptionMust(expressions.NewSelectExpression(
 				validValue,
 				nil,
 				[]predicates.QueryPredicate{test.predicate},
-			)
+			))
 			translatedPredicates, translatedResult, translated := translateSelectSubsumptionInputs(querySelect, nil)
 			if translated ||
 				translatedPredicates != nil ||
@@ -1081,43 +1018,16 @@ func TestTranslateSelectSubsumptionInputs_MalformedEmbeddedValuesFailClosed(
 	}
 }
 
-func TestTranslateSelectSubsumptionInputs_NestedTypedNilResultFailsClosed(
+func TestTranslateSelectSubsumptionInputs_RejectsMalformedResultAtAdmission(
 	t *testing.T,
 ) {
 	t.Parallel()
 
-	var typedNilValue *values.QuantifiedObjectValue
-	nestedTypedNilResult := &values.FieldValue{
-		Field: "nested_bad",
-		Typ:   values.UnknownType,
-		Child: typedNilValue,
-	}
-	querySelect := expressions.NewSelectExpression(
-		nestedTypedNilResult,
-		nil,
-		nil,
-	)
-
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			t.Fatalf(
-				"nested typed-nil result panicked instead of failing closed: %v",
-				recovered,
-			)
-		}
-	}()
-	translatedPredicates, translatedResult, translated := translateSelectSubsumptionInputs(
-		querySelect,
-		nil,
-	)
-	if translated ||
-		translatedPredicates != nil ||
-		translatedResult != nil {
+	if rejected, err := expressions.NewSelectExpression(nil, nil, nil); err == nil || rejected != nil {
 		t.Fatalf(
-			"nested typed-nil result translated predicates=%v result=%v ok=%v",
-			translatedPredicates,
-			translatedResult,
-			translated,
+			"NewSelectExpression(nil result) = (%v, %v), want (nil, error)",
+			rejected,
+			err,
 		)
 	}
 }
@@ -1126,7 +1036,7 @@ func TestTranslateSelectSubsumptionInputs_ParameterComparisonIsValid(
 	t *testing.T,
 ) {
 	alias := values.NamedCorrelationIdentifier("query_parameter")
-	queryValue := values.NewQuantifiedObjectValue(alias)
+	queryValue := selectSubsumptionTestQOV(alias, selectSubsumptionTestRowType())
 	queryPredicate := predicates.NewComparisonPredicate(
 		queryValue,
 		predicates.Comparison{
@@ -1134,11 +1044,11 @@ func TestTranslateSelectSubsumptionInputs_ParameterComparisonIsValid(
 			ParameterName: "bound_parameter",
 		},
 	)
-	querySelect := expressions.NewSelectExpression(
+	querySelect := selectSubsumptionMust(expressions.NewSelectExpression(
 		queryValue,
 		nil,
 		[]predicates.QueryPredicate{queryPredicate},
-	)
+	))
 
 	translatedPredicates, translatedResult, translated := translateSelectSubsumptionInputs(querySelect, nil)
 	if !translated ||
@@ -1226,17 +1136,16 @@ func TestTranslateSelectSubsumptionInputs_FullPredicateSpineOnce(
 		t.Fatal("failed to build full-spine translation")
 	}
 	counting := &countingSelectTranslationMap{delegate: translation}
-	queryQOV := values.NewQuantifiedObjectValue(queryForEachAlias)
+	queryQOV := selectSubsumptionTestQOV(
+		queryForEachAlias,
+		selectSubsumptionTestRowType(),
+	)
 
 	comparison := predicates.NewComparisonPredicate(
-		values.NewFieldValue(queryQOV, "LHS", values.NotNullLong),
+		selectSubsumptionTestField(queryForEachAlias, "LHS"),
 		predicates.Comparison{
-			Type: predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(
-				queryQOV,
-				"RHS",
-				values.NotNullLong,
-			),
+			Type:    predicates.ComparisonEquals,
+			Operand: selectSubsumptionTestField(queryForEachAlias, "RHS"),
 		},
 	)
 	nested := predicates.NewAnd(
@@ -1248,42 +1157,41 @@ func TestTranslateSelectSubsumptionInputs_FullPredicateSpineOnce(
 		),
 	)
 	vector := predicates.NewComparisonPredicate(
-		values.NewFlatFieldValue("EMB", nil),
+		&values.ConstantValue{
+			Value: []any{float64(0)},
+			Typ:   values.NewArrayType(false, values.NotNullDouble),
+		},
 		predicates.Comparison{
 			Type: predicates.ComparisonDistanceRankLessThanOrEq,
 			Operand: &values.ConstantValue{
 				Value: int64(5),
 				Typ:   values.NotNullLong,
 			},
-			QueryVector: values.NewFieldValue(
-				queryQOV,
-				"EMB",
-				nil,
-			),
+			QueryVector: selectSubsumptionTestField(queryForEachAlias, "EMB"),
 		},
 	)
 	valueAndRanges := predicates.NewPredicateWithValueAndRanges(
-		values.NewFieldValue(queryQOV, "ID", values.NotNullLong),
+		selectSubsumptionTestField(queryForEachAlias, "ID"),
 		[]*predicates.RangeConstraints{
 			predicates.NewRangeConstraints(
 				nil,
 				[]predicates.Comparison{{
-					Type: predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(
-						queryQOV,
-						"V",
-						values.NotNullLong,
-					),
+					Type:    predicates.ComparisonEquals,
+					Operand: selectSubsumptionTestField(queryForEachAlias, "V"),
 				}},
 			),
 		},
 	)
 	placeholder := predicates.NewPlaceholder(
 		values.NamedCorrelationIdentifier("parameter"),
-		values.NewFieldValue(queryQOV, "P", values.NotNullLong),
+		selectSubsumptionTestField(queryForEachAlias, "P"),
 	)
-	existentialPredicate := predicates.NewExistentialAlias(queryExistentialAlias)
-	querySelect := expressions.NewSelectExpression(
+	existentialPredicate := mustExistentialAlias(
+		t,
+		queryExistentialAlias,
+		selectSubsumptionTestRowType(),
+	)
+	querySelect := selectSubsumptionMust(expressions.NewSelectExpression(
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{
 				Name:  "fe",
@@ -1291,8 +1199,9 @@ func TestTranslateSelectSubsumptionInputs_FullPredicateSpineOnce(
 			},
 			values.RecordConstructorField{
 				Name: "exists",
-				Value: values.NewQuantifiedObjectValue(
+				Value: selectSubsumptionTestQOV(
 					queryExistentialAlias,
+					selectSubsumptionTestRowType(),
 				),
 			},
 		),
@@ -1304,7 +1213,7 @@ func TestTranslateSelectSubsumptionInputs_FullPredicateSpineOnce(
 			placeholder,
 			existentialPredicate,
 		},
-	)
+	))
 
 	translatedPredicates, translatedResult, translated := translateSelectSubsumptionInputs(querySelect, counting)
 	if !translated {
@@ -1386,16 +1295,22 @@ func TestBuildSelectSubsumptionMaxMatchMap_CandidateWideAliasesAndEquivalence(
 	// MaxMatchMap reachable-candidate walk descends only record constructors;
 	// a FieldValue root would additionally exercise that independent reachability
 	// policy instead of this helper's equivalence wiring.
-	translatedQueryResult := values.NewQuantifiedObjectValue(queryAlias)
-	candidateResult := values.NewQuantifiedObjectValue(candidateAlias)
-	candidateSelect := expressions.NewSelectExpression(
+	translatedQueryResult := selectSubsumptionTestQOV(
+		queryAlias,
+		selectSubsumptionTestRowType(),
+	)
+	candidateResult := selectSubsumptionTestQOV(
+		candidateAlias,
+		selectSubsumptionTestRowType(),
+	)
+	candidateSelect := selectSubsumptionMust(expressions.NewSelectExpression(
 		candidateResult,
 		[]expressions.Quantifier{
 			candidateForEach,
 			candidateExistential,
 		},
 		nil,
-	)
+	))
 	bindingAliasMap := AliasMapOfAliases(queryAlias, candidateAlias)
 
 	maxMatchMap := buildSelectSubsumptionMaxMatchMap(
@@ -1434,13 +1349,10 @@ func TestBuildSelectSubsumptionMaxMatchMap_NilResultsFailClosed(
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("max_match_nil")
-	validResult := values.NewQuantifiedObjectValue(alias)
-	validCandidate := expressions.NewSelectExpression(validResult, nil, nil)
-	var typedNilResult *values.QuantifiedObjectValue
-	nestedTypedNilResult := &values.FieldValue{
-		Field: "nested_bad",
-		Typ:   values.UnknownType,
-		Child: typedNilResult,
+	validResult := selectSubsumptionTestQOV(alias, selectSubsumptionTestRowType())
+	validCandidate := selectSubsumptionMust(expressions.NewSelectExpression(validResult, nil, nil))
+	if rejected, err := expressions.NewSelectExpression(nil, nil, nil); err == nil || rejected != nil {
+		t.Fatalf("NewSelectExpression(nil result) = (%v, %v), want (nil, error)", rejected, err)
 	}
 
 	tests := []struct {
@@ -1454,46 +1366,9 @@ func TestBuildSelectSubsumptionMaxMatchMap_NilResultsFailClosed(
 			candidateSelect:  validCandidate,
 		},
 		{
-			name:             "typed-nil translated result",
-			translatedResult: typedNilResult,
-			candidateSelect:  validCandidate,
-		},
-		{
-			name:             "nested typed-nil translated result",
-			translatedResult: nestedTypedNilResult,
-			candidateSelect:  validCandidate,
-		},
-		{
 			name:             "nil candidate",
 			translatedResult: validResult,
 			candidateSelect:  nil,
-		},
-		{
-			name:             "nil candidate result",
-			translatedResult: validResult,
-			candidateSelect: expressions.NewSelectExpression(
-				nil,
-				nil,
-				nil,
-			),
-		},
-		{
-			name:             "typed-nil candidate result",
-			translatedResult: validResult,
-			candidateSelect: expressions.NewSelectExpression(
-				typedNilResult,
-				nil,
-				nil,
-			),
-		},
-		{
-			name:             "nested typed-nil candidate result",
-			translatedResult: validResult,
-			candidateSelect: expressions.NewSelectExpression(
-				nestedTypedNilResult,
-				nil,
-				nil,
-			),
 		},
 	}
 

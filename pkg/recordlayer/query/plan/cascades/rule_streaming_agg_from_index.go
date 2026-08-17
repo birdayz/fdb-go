@@ -69,6 +69,7 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 	if innerRef == nil {
 		return
 	}
+	inputAlias := gb.GetInner().GetAlias()
 
 	scan := findFullScan(innerRef)
 	if scan == nil {
@@ -134,13 +135,22 @@ func (r *StreamingAggFromIndexRule) OnMatch(call *ExpressionRuleCall) {
 		// stampIndexMetadata installs the candidate's column names, so the derived
 		// list is the same `colNames` this site used to pass explicitly, minus the
 		// possibility of the two disagreeing.
-		coveringPlan := plans.NewRecordQueryCoveringIndexPlan(stampIndexMetadata(cand, idxPlan))
+		coveringPlan, err := plans.NewRecordQueryCoveringIndexPlan(stampIndexMetadata(cand, idxPlan))
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		// The inner is this covering index scan — a self-contained PRODUCER whose
 		// grouping-key order is intrinsic to the index (not a delegator floating to
 		// a winner), so carry the LIVE shared-group edge over it (RFC-184 W2, no
 		// physicalStreamingAggWrapper).
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(coveringPlan))
-		call.Yield(plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates()))
+		innerQ := expressions.NamedPhysicalQuantifier(inputAlias, call.MemoizeExpression(coveringPlan))
+		aggPlan, err := plans.NewRecordQueryStreamingAggregationPlanFromQuantifier(innerQ, groupingKeys, gb.GetAggregates())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(aggPlan)
 	}
 }
 
@@ -156,7 +166,7 @@ func aggregatesCoveredByIndex(aggs []expressions.AggregateSpec, indexCols []stri
 		if _, isConst := a.Operand.(*values.ConstantValue); isConst {
 			continue // COUNT(*) / COUNT(1) — no field access needed
 		}
-		fv, ok := a.Operand.(*values.FieldValue)
+		fv, ok := values.AsFieldValue(a.Operand)
 		if !ok {
 			return false // complex expression (e.g. SUM(a+1)) — may reference fields not in the index
 		}

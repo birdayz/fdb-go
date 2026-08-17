@@ -32,8 +32,12 @@ func equalityRange(t *testing.T, lit any) *predicates.ComparisonRange {
 func TestRecordQueryIndexPlan_ComparandIdentity(t *testing.T) {
 	t.Parallel()
 
-	p5 := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{equalityRange(t, int64(5))}, []string{"T"}, values.UnknownType, false)
-	p7 := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{equalityRange(t, int64(7))}, []string{"T"}, values.UnknownType, false)
+	p5 := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{equalityRange(t, int64(5))}, []string{"T"}, exactTestRecordType(), false)
+	})
+	p7 := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{equalityRange(t, int64(7))}, []string{"T"}, exactTestRecordType(), false)
+	})
 
 	// Different comparands MUST be unequal (was TRUE before the fix — the bug).
 	if p5.EqualsPlanWithoutChildren(p7) {
@@ -44,7 +48,9 @@ func TestRecordQueryIndexPlan_ComparandIdentity(t *testing.T) {
 	}
 
 	// SAME comparand MUST stay equal + same hash (preserve dedup for real twins).
-	p5b := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{equalityRange(t, int64(5))}, []string{"T"}, values.UnknownType, false)
+	p5b := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{equalityRange(t, int64(5))}, []string{"T"}, exactTestRecordType(), false)
+	})
 	if !p5.EqualsPlanWithoutChildren(p5b) {
 		t.Error("IndexScan([= 5]) must EqualsWithoutChildren an identical IndexScan([= 5])")
 	}
@@ -53,7 +59,9 @@ func TestRecordQueryIndexPlan_ComparandIdentity(t *testing.T) {
 	}
 
 	// A string comparand of the same range shape is still distinct.
-	pStr := NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{equalityRange(t, "5")}, []string{"T"}, values.UnknownType, false)
+	pStr := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx", []*predicates.ComparisonRange{equalityRange(t, "5")}, []string{"T"}, exactTestRecordType(), false)
+	})
 	if p5.EqualsPlanWithoutChildren(pStr) {
 		t.Error("IndexScan([= int64(5)]) must NOT equal IndexScan([= \"5\"]) — type+value comparand")
 	}
@@ -86,8 +94,12 @@ func textRange(t *testing.T, tokenizer string) *predicates.ComparisonRange {
 func TestRecordQueryIndexPlan_TextComparandIdentity(t *testing.T) {
 	t.Parallel()
 
-	pDefault := NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "default")}, []string{"T"}, values.UnknownType, false)
-	pNgram := NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "ngram")}, []string{"T"}, values.UnknownType, false)
+	pDefault := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "default")}, []string{"T"}, exactTestRecordType(), false)
+	})
+	pNgram := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "ngram")}, []string{"T"}, exactTestRecordType(), false)
+	})
 
 	// Different tokenizer MUST be unequal (was TRUE before the fix — the bug).
 	if pDefault.EqualsPlanWithoutChildren(pNgram) {
@@ -98,7 +110,9 @@ func TestRecordQueryIndexPlan_TextComparandIdentity(t *testing.T) {
 	}
 
 	// Same tokenizer MUST stay equal + same hash (preserve dedup for real twins).
-	pDefault2 := NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "default")}, []string{"T"}, values.UnknownType, false)
+	pDefault2 := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("tidx", []*predicates.ComparisonRange{textRange(t, "default")}, []string{"T"}, exactTestRecordType(), false)
+	})
 	if !pDefault.EqualsPlanWithoutChildren(pDefault2) {
 		t.Error("identical text IndexScan(tokenizer=default) must remain EqualsWithoutChildren-equal")
 	}
@@ -119,8 +133,10 @@ func TestRecordQueryVectorIndexPlan_QueryVectorIdentity(t *testing.T) {
 
 	k := values.LiteralValue(int64(5))
 	mk := func(qv values.Value) *RecordQueryVectorIndexPlan {
-		return NewRecordQueryVectorIndexPlan("vidx", nil, qv, k,
-			predicates.ComparisonDistanceRankLessThanOrEq, nil, nil, []string{"T"}, values.UnknownType)
+		return mustChecked(t, func() (*RecordQueryVectorIndexPlan, error) {
+			return NewRecordQueryVectorIndexPlan("vidx", nil, qv, k,
+				predicates.ComparisonDistanceRankLessThanOrEq, nil, nil, []string{"T"}, exactTestRecordType())
+		})
 	}
 
 	a := mk(values.LiteralValue("qA"))
@@ -142,9 +158,13 @@ func TestRecordQueryVectorIndexPlan_QueryVectorIdentity(t *testing.T) {
 func TestRecordQueryScanPlan_ComparandIdentity(t *testing.T) {
 	t.Parallel()
 
-	s5 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	s5 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(5))})
-	s7 := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	s7 := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(7))})
 
 	if s5.EqualsPlanWithoutChildren(s7) {
@@ -154,7 +174,9 @@ func TestRecordQueryScanPlan_ComparandIdentity(t *testing.T) {
 		t.Error("Scan(pk = 5) and Scan(pk = 7) must hash apart")
 	}
 
-	s5b := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	s5b := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(5))})
 	if !s5.EqualsPlanWithoutChildren(s5b) {
 		t.Error("identical Scan(pk = 5) must remain EqualsWithoutChildren-equal")
@@ -169,10 +191,14 @@ func TestRecordQueryScanPlan_ComparandIdentity(t *testing.T) {
 // alias stays excluded (RFC-164 WS-4).
 func TestRecordQueryInJoinPlan_InValuesIdentity(t *testing.T) {
 	t.Parallel()
-	inner := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 
 	mk := func(alias string, vals []any) *RecordQueryInJoinPlan {
-		p := NewRecordQueryInJoinPlan(inner, alias, true, false)
+		p := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
+			return NewRecordQueryInJoinPlan(inner, alias, true, false)
+		})
 		p.SetInValues(vals)
 		return p
 	}

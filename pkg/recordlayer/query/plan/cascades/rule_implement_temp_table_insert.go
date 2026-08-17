@@ -42,11 +42,15 @@ func (r *ImplementTempTableInsertRule) OnMatch(call *ExpressionRuleCall) {
 	// separate snapshot inner. The plan IS the cascades expression the memo holds
 	// (RFC-184 W2), no physicalTempTableInsertWrapper adapter needed.
 	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-	plan := plans.NewRecordQueryTempTableInsertPlanFromQuantifier(
+	plan, err := plans.NewRecordQueryTempTableInsertPlanFromQuantifier(
 		innerQ,
 		insert.GetTempTableAlias(),
 		insert.IsOwning(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(plan)
 }
 

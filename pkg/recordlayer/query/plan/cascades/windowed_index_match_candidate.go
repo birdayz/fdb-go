@@ -204,16 +204,9 @@ func (c *WindowedIndexScanMatchCandidate) GetPrimaryKeyAliases() []values.Correl
 // Lazily computed. Returns nil if no PK columns.
 func (c *WindowedIndexScanMatchCandidate) GetPrimaryKeyValues() []values.Value {
 	c.primaryKeyValuesOnce.Do(func() {
-		if len(c.primaryKeyColumns) == 0 {
-			return
-		}
-		pkVals := make([]values.Value, len(c.primaryKeyColumns))
-		for i, col := range c.primaryKeyColumns {
-			pkVals[i] = &values.FieldValue{Field: col, Typ: values.UnknownType}
-		}
-		c.primaryKeyValues = pkVals
+		c.primaryKeyValues = resolvedColumnsInRow(c.flowedType, c.primaryKeyColumns)
 	})
-	return c.primaryKeyValues
+	return append([]values.Value(nil), c.primaryKeyValues...)
 }
 
 // PushValueThroughFetch attempts to translate a value from the
@@ -245,8 +238,7 @@ func (c *WindowedIndexScanMatchCandidate) buildTranslateValueFunction() plans.Tr
 	coveredSets := buildCoveredOrdinalSets([]values.Type{c.flowedType}, coveredColumns)
 
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
-		switch v := value.(type) {
-		case *values.FieldValue:
+		if field, isField := values.AsFieldValue(value); isField {
 			// The correlation element of column identity, checked exactly as at
 			// the value-index site and for the same reason: two quantifiers over
 			// one table share a layout token, so the domain check below cannot
@@ -254,28 +246,38 @@ func (c *WindowedIndexScanMatchCandidate) buildTranslateValueFunction() plans.Tr
 			// baked reference reads the row being evaluated and has no
 			// correlation to check. See the reasoning at
 			// ValueIndexScanMatchCandidate.buildTranslateValueFunction.
-			if v.Child != nil {
-				qov, isBareSource := v.Child.(*values.QuantifiedObjectValue)
-				if !isBareSource || qov.Correlation != sourceAlias {
-					return nil, false
-				}
+			root, isBareSource := values.AsQuantifiedObjectValue(field.ChildValue())
+			if !isBareSource || root.Correlation() != sourceAlias || field.Path().Len() != 1 {
+				return nil, false
 			}
-			if ord, domain, covered := pushCoveredOrdinal(coveredSets, v); covered {
+			if ordinal, _, rowType, covered := pushCoveredOrdinalWithType(coveredSets, field); covered {
 				// The rank-index fetch presents the same descriptor-shaped
 				// partial record the value-index fetch does, so the pushed
 				// reference keeps its proven ordinal rather than degrading to
 				// a lazy name read.
-				return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-					values.NewQuantifiedObjectValue(targetAlias),
-					v.Field, ord, v.Typ, domain,
-				), true
+				target, err := values.NewQuantifiedObjectValue(targetAlias, rowType)
+				if err != nil {
+					return nil, false
+				}
+				translated, err := values.ResolveFieldOrdinals(target, []int{ordinal})
+				if err != nil {
+					return nil, false
+				}
+				return translated, true
 			}
 			return nil, false
-		case *values.QuantifiedObjectValue:
-			if v.Correlation == sourceAlias {
-				return values.NewQuantifiedObjectValue(targetAlias), true
+		}
+		if object, isObject := values.AsQuantifiedObjectValue(value); isObject {
+			if object.Correlation() == sourceAlias {
+				target, err := values.NewQuantifiedObjectValue(targetAlias, object.FlowedType())
+				if err != nil {
+					return nil, false
+				}
+				return target, true
 			}
 			return value, true
+		}
+		switch value.(type) {
 		case *values.ConstantValue:
 			return value, true
 		default:
@@ -327,24 +329,31 @@ func (c *WindowedIndexScanMatchCandidate) ToScanPlan(
 			comps[i] = predicates.EmptyComparisonRange()
 		}
 	}
-	indexPlan := plans.NewRecordQueryIndexPlan(
+	indexPlan, err := plans.NewRecordQueryIndexPlan(
 		c.indexName,
 		comps,
 		c.recordTypes,
 		c.flowedType,
 		reverse,
 	)
+	if err != nil {
+		return nil
+	}
 	indexPlan = stampIndexMetadata(c, indexPlan)
 
 	// Wrap in a FetchFromPartialRecordPlan with the index's translate
 	// function for covering-index push-through.
 	translateFn := c.buildTranslateValueFunction()
-	return plans.NewRecordQueryFetchFromPartialRecordPlan(
+	fetch, err := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan,
 		translateFn,
 		c.flowedType,
 		plans.FetchIndexRecordsPrimaryKey,
 	)
+	if err != nil {
+		return nil
+	}
+	return fetch
 }
 
 // String returns a human-readable label for debugging.

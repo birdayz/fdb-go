@@ -24,27 +24,36 @@ import (
 // These tests pin that every reachable union leg acquires a physical plan
 // and the root wins.
 
-func scanExpr() expressions.RelationalExpression {
-	return expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+func scanExpr(t testing.TB) expressions.RelationalExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{"T"}, &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NullableLong},
+	}})
 }
 
-func typeFilter(inner expressions.RelationalExpression) expressions.RelationalExpression {
+func typeFilter(t testing.TB, inner expressions.RelationalExpression) expressions.RelationalExpression {
+	t.Helper()
 	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
-	return expressions.NewLogicalTypeFilterExpression([]string{"X"}, q)
+	value, err := expressions.NewLogicalTypeFilterExpression([]string{"X"}, q)
+	return mustConstruct(t, value, err)
 }
 
-func trueFilter(inner expressions.RelationalExpression) expressions.RelationalExpression {
+func trueFilter(t testing.TB, inner expressions.RelationalExpression) expressions.RelationalExpression {
+	t.Helper()
 	q := expressions.ForEachQuantifier(expressions.InitialOf(inner))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	return expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, q)
+	value, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, q)
+	return mustConstruct(t, value, err)
 }
 
-func union(legs ...expressions.RelationalExpression) expressions.RelationalExpression {
+func union(t testing.TB, legs ...expressions.RelationalExpression) expressions.RelationalExpression {
+	t.Helper()
 	qs := make([]expressions.Quantifier, len(legs))
 	for i, l := range legs {
 		qs[i] = expressions.ForEachQuantifier(expressions.InitialOf(l))
 	}
-	return expressions.NewLogicalUnionExpression(qs)
+	value, err := expressions.NewLogicalUnionExpression(qs)
+	return mustConstruct(t, value, err)
 }
 
 func planAndAssertWinner(t *testing.T, root expressions.RelationalExpression) expressions.RelationalExpression {
@@ -88,9 +97,9 @@ func TestAsymmetricUnion_BothLegsPlan(t *testing.T) {
 	// legs reach a physical form through different rewrites; a constant-true
 	// filter elimination merges the right leg's group with the left leg's
 	// inner, and that merged group historically failed to implement.
-	root := union(
-		typeFilter(typeFilter(scanExpr())),
-		typeFilter(trueFilter(scanExpr())),
+	root := union(t,
+		typeFilter(t, typeFilter(t, scanExpr(t))),
+		typeFilter(t, trueFilter(t, scanExpr(t))),
 	)
 	plan := physicalPlanOf(t, planAndAssertWinner(t, root))
 	// Tighter than "a winner exists": the extracted plan must be a physical
@@ -111,9 +120,9 @@ func TestAsymmetricUnion_BothLegsPlan(t *testing.T) {
 
 func TestAsymmetricUnion_SymmetricStillPlans(t *testing.T) {
 	t.Parallel()
-	root := union(
-		typeFilter(typeFilter(scanExpr())),
-		typeFilter(typeFilter(scanExpr())),
+	root := union(t,
+		typeFilter(t, typeFilter(t, scanExpr(t))),
+		typeFilter(t, typeFilter(t, scanExpr(t))),
 	)
 	planAndAssertWinner(t, root)
 }
@@ -122,5 +131,5 @@ func TestAsymmetricUnion_FilterLegStandalonePlans(t *testing.T) {
 	t.Parallel()
 	// The right leg alone must plan (it always did — the regression was only
 	// in the union context), a control for the two above.
-	planAndAssertWinner(t, typeFilter(trueFilter(scanExpr())))
+	planAndAssertWinner(t, typeFilter(t, trueFilter(t, scanExpr(t))))
 }

@@ -41,6 +41,9 @@ func TestPrimaryScanMatchCandidate_RecordTypeKeyPrefixEliminatesTypeFilter(t *te
 	tAlias := values.NamedCorrelationIdentifier("t")
 	eq := pkGateEq(t, int64(7))
 	prefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{tAlias: eq}
+	rowType := values.NewRecordType("PrimaryTypeFilterRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong},
+	})
 
 	t.Run("redundant (record-type-key-prefixed PK): no TypeFilterPlan, no discount", func(t *testing.T) {
 		t.Parallel()
@@ -51,7 +54,7 @@ func TestPrimaryScanMatchCandidate_RecordTypeKeyPrefixEliminatesTypeFilter(t *te
 			[]string{"T"},      // queried: one of them
 			[]string{"ID"},
 			true, // hasRecordTypeKeyPrefix — the scan is already type-scoped
-			values.UnknownType,
+			rowType,
 		).WithKeyComponentTypes([]values.Type{values.NullableLong})
 		plan := candidate.ToScanPlan(prefix, false)
 
@@ -87,7 +90,7 @@ func TestPrimaryScanMatchCandidate_RecordTypeKeyPrefixEliminatesTypeFilter(t *te
 			[]string{"T"},      // queried: one of them
 			[]string{"ID"},
 			false, // no record-type-key prefix — a real shared-PK-range multi-type scan
-			values.UnknownType,
+			rowType,
 		).WithKeyComponentTypes([]values.Type{values.NullableLong})
 		plan := candidate.ToScanPlan(prefix, false)
 

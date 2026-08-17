@@ -24,11 +24,13 @@ func plannerDynamicEquality(t *testing.T, typ values.Type) *predicates.Compariso
 
 func TestPhysicalEqualityOrdering_KnownIntegerAuthorityKeepsUnknownRHSFixed(t *testing.T) {
 	t.Parallel()
-	plan := NewRecordQueryIndexPlan(
-		"IDX",
-		[]*predicates.ComparisonRange{plannerDynamicEquality(t, values.UnknownType)},
-		[]string{"T"}, values.UnknownType, false,
-	).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"IDX",
+			[]*predicates.ComparisonRange{plannerDynamicEquality(t, values.UnknownType)},
+			[]string{"T"}, exactTestRecordType(), false,
+		)
+	}).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"V"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
@@ -36,8 +38,8 @@ func TestPhysicalEqualityOrdering_KnownIntegerAuthorityKeepsUnknownRHSFixed(t *t
 	if !plain.IsKnown || len(plain.Keys) != 1 {
 		t.Fatalf("HintOrdering = %#v, want only PK suffix: authoritative LONG has no signed-zero fanout", plain)
 	}
-	field, ok := plain.Keys[0].(*values.FieldValue)
-	if !ok || field.Field != "ID" {
+	field, ok := values.AsFieldValue(plain.Keys[0])
+	if !ok || field.DisplayName() != "ID" {
 		t.Fatalf("HintOrdering key = %#v, want ID", plain.Keys[0])
 	}
 	rich := plan.HintRichOrdering()
@@ -51,7 +53,9 @@ func TestPhysicalEqualityOrdering_KnownIntegerAuthorityKeepsUnknownRHSFixed(t *t
 func TestIndexPrimaryKeySuffixTypesParticipateInIdentityAndCopies(t *testing.T) {
 	t.Parallel()
 
-	base := NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false).
+	base := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, exactTestRecordType(), false)
+	}).
 		WithKeyComponentTypes([]values.Type{values.NotNullString}).
 		WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false)
 	longPlan := base.WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
@@ -83,15 +87,16 @@ func TestPhysicalEqualityCardinality_PrimaryAndUniqueCartesianMultiplicity(t *te
 	t.Parallel()
 	comps := []*predicates.ComparisonRange{pkOrderingEq(t, float64(0)), pkOrderingEq(t, float32(0))}
 	types := []values.Type{values.NotNullDouble, values.NotNullFloat}
-	pk := []values.Value{
-		&values.FieldValue{Field: "V1", Typ: values.NotNullDouble},
-		&values.FieldValue{Field: "V2", Typ: values.NotNullFloat},
-	}
-	scan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	pk := []values.Value{testField(t, "V1", values.NotNullDouble), testField(t, "V2", values.NotNullFloat)}
+	scan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey(pk).
 		WithScanComparisons(comps).
 		WithKeyComponentTypes(types)
-	index := NewRecordQueryIndexPlan("U", comps, []string{"T"}, values.UnknownType, false).
+	index := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("U", comps, []string{"T"}, exactTestRecordType(), false)
+	}).
 		WithKeyComponentTypes(types).
 		WithIndexMetadata([]string{"V1", "V2"}, []string{"ID"}, true).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
@@ -119,10 +124,12 @@ func TestPhysicalEqualityCardinality_PrimaryAndUniqueCartesianMultiplicity(t *te
 func TestPhysicalEqualityCardinality_DynamicFloatUnknownButDynamicIntegerOne(t *testing.T) {
 	t.Parallel()
 	mk := func(physicalType values.Type) *RecordQueryIndexPlan {
-		return NewRecordQueryIndexPlan(
-			"U", []*predicates.ComparisonRange{plannerDynamicEquality(t, values.UnknownType)},
-			[]string{"T"}, values.UnknownType, false,
-		).
+		return mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+			return NewRecordQueryIndexPlan(
+				"U", []*predicates.ComparisonRange{plannerDynamicEquality(t, values.UnknownType)},
+				[]string{"T"}, exactTestRecordType(), false,
+			)
+		}).
 			WithKeyComponentTypes([]values.Type{physicalType}).
 			WithIndexMetadata([]string{"V"}, []string{"ID"}, true)
 	}
@@ -167,10 +174,12 @@ func TestUniqueIndexCardinality_NullableKeysUseNullsDistinctSemantics(t *testing
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			plan := NewRecordQueryIndexPlan(
-				"U", []*predicates.ComparisonRange{test.comparison},
-				[]string{"T"}, values.UnknownType, false,
-			).WithKeyComponentTypes([]values.Type{test.physical}).
+			plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+				return NewRecordQueryIndexPlan(
+					"U", []*predicates.ComparisonRange{test.comparison},
+					[]string{"T"}, exactTestRecordType(), false,
+				)
+			}).WithKeyComponentTypes([]values.Type{test.physical}).
 				WithIndexMetadata([]string{"V"}, []string{"ID"}, true)
 			bound := plan.ProvenCardinalities(nil).Max
 			if bound.IsUnknown() == test.wantKnown {
@@ -200,7 +209,9 @@ func TestPhysicalEqualityCost_EveryPluralLeafPaysSeekSetup(t *testing.T) {
 	nonzeroComps := []*predicates.ComparisonRange{pkOrderingEq(t, float64(1)), pkOrderingEq(t, int64(5))}
 	types := []values.Type{values.NotNullDouble, values.NotNullLong}
 	mkIndex := func(comps []*predicates.ComparisonRange) *RecordQueryIndexPlan {
-		return NewRecordQueryIndexPlan("I", comps, []string{"T"}, values.UnknownType, false).
+		return mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+			return NewRecordQueryIndexPlan("I", comps, []string{"T"}, exactTestRecordType(), false)
+		}).
 			WithKeyComponentTypes(types).
 			WithIndexMetadata([]string{"V", "W"}, []string{"ID"}, false)
 	}
@@ -214,7 +225,9 @@ func TestPhysicalEqualityCost_EveryPluralLeafPaysSeekSetup(t *testing.T) {
 
 	mkAggregate := func(comps []*predicates.ComparisonRange) *RecordQueryAggregateIndexPlan {
 		index := mkIndex(comps).WithPhysicalGroupingPrefixCount(2)
-		return NewRecordQueryAggregateIndexPlan(index, "T", values.UnknownType, "SUM").
+		return mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+			return NewRecordQueryAggregateIndexPlan(index, "T", exactTestRecordType(), "SUM")
+		}).
 			WithGroupColumns([]string{"V", "W"}, "A")
 	}
 	zeroAggregate, nonzeroAggregate := mkAggregate(zeroComps).HintCost(nil, stats), mkAggregate(nonzeroComps).HintCost(nil, stats)
@@ -225,10 +238,12 @@ func TestPhysicalEqualityCost_EveryPluralLeafPaysSeekSetup(t *testing.T) {
 
 func TestPhysicalEqualityCost_EmptyNonUniqueProbeIsNotFree(t *testing.T) {
 	t.Parallel()
-	plan := NewRecordQueryIndexPlan(
-		"I", []*predicates.ComparisonRange{pkOrderingEq(t, nil)},
-		[]string{"T"}, values.UnknownType, false,
-	).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"I", []*predicates.ComparisonRange{pkOrderingEq(t, nil)},
+			[]string{"T"}, exactTestRecordType(), false,
+		)
+	}).
 		WithKeyComponentTypes([]values.Type{values.NullableDouble}).
 		WithIndexMetadata([]string{"V"}, []string{"ID"}, false)
 	cost := plan.HintCost(nil, properties.FixedStatistics{Cardinality: 1000})
@@ -241,11 +256,13 @@ func TestPhysicalEqualityVectorCost_FullFanoutAndPartialUnknownPartitions(t *tes
 	t.Parallel()
 	k := values.LiteralValue(int64(7))
 	query := values.LiteralValue([]float64{1, 2})
-	full := NewRecordQueryVectorIndexPlan(
-		"V", []*predicates.ComparisonRange{pkOrderingEq(t, float64(0)), pkOrderingEq(t, int64(5))},
-		query, k, predicates.ComparisonDistanceRankLessThanOrEq, nil, nil,
-		[]string{"T"}, values.UnknownType,
-	).
+	full := mustChecked(t, func() (*RecordQueryVectorIndexPlan, error) {
+		return NewRecordQueryVectorIndexPlan(
+			"V", []*predicates.ComparisonRange{pkOrderingEq(t, float64(0)), pkOrderingEq(t, int64(5))},
+			query, k, predicates.ComparisonDistanceRankLessThanOrEq, nil, nil,
+			[]string{"T"}, exactTestRecordType(),
+		)
+	}).
 		WithPartitionColumns([]string{"P1", "P2"}).
 		WithPartitionKeyComponentTypes([]values.Type{values.NotNullDouble, values.NotNullLong})
 	fullCost := full.HintCost(nil, nil)
@@ -257,11 +274,13 @@ func TestPhysicalEqualityVectorCost_FullFanoutAndPartialUnknownPartitions(t *tes
 		t.Fatalf("fully bound vector CPU = %v, want %v", fullCost.CPU, wantFullCPU)
 	}
 
-	partial := NewRecordQueryVectorIndexPlan(
-		"V", []*predicates.ComparisonRange{pkOrderingEq(t, float64(0))},
-		query, k, predicates.ComparisonDistanceRankLessThanOrEq, nil, nil,
-		[]string{"T"}, values.UnknownType,
-	).
+	partial := mustChecked(t, func() (*RecordQueryVectorIndexPlan, error) {
+		return NewRecordQueryVectorIndexPlan(
+			"V", []*predicates.ComparisonRange{pkOrderingEq(t, float64(0))},
+			query, k, predicates.ComparisonDistanceRankLessThanOrEq, nil, nil,
+			[]string{"T"}, exactTestRecordType(),
+		)
+	}).
 		WithPartitionColumns([]string{"P1", "P2"}).
 		WithPartitionKeyComponentTypes([]values.Type{values.NotNullDouble})
 	partialCost := partial.HintCost(nil, nil)
@@ -284,10 +303,12 @@ func TestPhysicalEqualityCost_OverflowAndIllegalPermutationStayFinite(t *testing
 		types[i] = values.NotNullDouble
 		columns[i] = "P"
 	}
-	vector := NewRecordQueryVectorIndexPlan(
-		"V", comps, values.LiteralValue([]float64{1}), values.LiteralValue(int64(10)),
-		predicates.ComparisonDistanceRankLessThanOrEq, nil, nil, []string{"T"}, values.UnknownType,
-	).
+	vector := mustChecked(t, func() (*RecordQueryVectorIndexPlan, error) {
+		return NewRecordQueryVectorIndexPlan(
+			"V", comps, values.LiteralValue([]float64{1}), values.LiteralValue(int64(10)),
+			predicates.ComparisonDistanceRankLessThanOrEq, nil, nil, []string{"T"}, exactTestRecordType(),
+		)
+	}).
 		WithPartitionColumns(columns).
 		WithPartitionKeyComponentTypes(types)
 	vectorCost := vector.HintCost(nil, nil)
@@ -299,9 +320,13 @@ func TestPhysicalEqualityCost_OverflowAndIllegalPermutationStayFinite(t *testing
 		t.Fatalf("overflow vector cost = %+v, want finite saturation", vectorCost)
 	}
 
-	index := NewRecordQueryIndexPlan("P", nil, []string{"T"}, values.UnknownType, false).
+	index := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("P", nil, []string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPhysicalGroupingPrefixCount(1)
-	aggregate := NewRecordQueryAggregateIndexPlan(index, "T", values.UnknownType, "MAX").
+	aggregate := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+		return NewRecordQueryAggregateIndexPlan(index, "T", exactTestRecordType(), "MAX")
+	}).
 		WithGroupColumns([]string{"G1", "G2"}, "V")
 	illegalCost := aggregate.HintCost(nil, nil)
 	if illegalCost.Cardinality != properties.MaxFiniteHeuristic || illegalCost.CPU != properties.MaxFiniteHeuristic {

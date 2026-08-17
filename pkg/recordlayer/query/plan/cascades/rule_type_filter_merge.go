@@ -45,7 +45,11 @@ func (r *TypeFilterMergeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	intersected := intersectStringSlices(outer.GetRecordTypes(), inner.GetRecordTypes())
-	rewritten := expressions.NewLogicalTypeFilterExpression(intersected, inner.GetInner())
+	rewritten, err := expressions.NewLogicalTypeFilterExpression(intersected, inner.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(rewritten)
 }
 

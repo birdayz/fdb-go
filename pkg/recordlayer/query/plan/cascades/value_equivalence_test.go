@@ -20,8 +20,8 @@ func TestEmptyValueEquivalence(t *testing.T) {
 		t.Fatal("empty equivalence should return false even for same alias")
 	}
 
-	v1 := values.NewQuantifiedObjectValue(a)
-	v2 := values.NewQuantifiedObjectValue(b)
+	v1 := semanticEqualityTestQOV(t, a, semanticEqualityTestRowType())
+	v2 := semanticEqualityTestQOV(t, b, semanticEqualityTestRowType())
 	if eq.IsDefinedEqual(v1, v2).Value {
 		t.Fatal("empty equivalence should return false for all values")
 	}
@@ -53,14 +53,18 @@ func TestAliasMapValueEquivalence_QOVValues(t *testing.T) {
 	am := AliasMapOfAliases(a, b)
 	eq := NewAliasMapValueEquivalence(am)
 
-	va := values.NewQuantifiedObjectValue(a)
-	vb := values.NewQuantifiedObjectValue(b)
+	va := semanticEqualityTestQOV(t, a, semanticEqualityTestRowType())
+	vb := semanticEqualityTestQOV(t, b, semanticEqualityTestRowType())
 
 	if !eq.IsDefinedEqual(va, vb).Value {
 		t.Fatal("QOV with mapped aliases should be equal")
 	}
 
-	vc := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("c"))
+	vc := semanticEqualityTestQOV(
+		t,
+		values.NamedCorrelationIdentifier("c"),
+		semanticEqualityTestRowType(),
+	)
 	if eq.IsDefinedEqual(va, vc).Value {
 		t.Fatal("QOV with unmapped alias should not be equal")
 	}
@@ -74,11 +78,57 @@ func TestAliasMapValueEquivalence_NonQOVValues(t *testing.T) {
 	)
 	eq := NewAliasMapValueEquivalence(am)
 
-	fv1 := &values.FieldValue{Field: "X"}
-	fv2 := &values.FieldValue{Field: "X"}
+	fv1 := semanticEqualityTestField(
+		t,
+		values.NamedCorrelationIdentifier("a"),
+		"X",
+	)
+	fv2 := semanticEqualityTestField(
+		t,
+		values.NamedCorrelationIdentifier("b"),
+		"X",
+	)
 	if eq.IsDefinedEqual(fv1, fv2).Value {
 		t.Fatal("non-QOV values should not be equal via alias equivalence")
 	}
+}
+
+func semanticEqualityTestRowType() *values.RecordType {
+	return values.NewRecordType(
+		"semantic_equality_row",
+		false,
+		[]values.Field{
+			{Name: "x", FieldType: values.NotNullLong},
+			{Name: "y", FieldType: values.NotNullLong},
+			{Name: "col", FieldType: values.NotNullLong},
+			{Name: "X", FieldType: values.NotNullLong},
+		},
+	)
+}
+
+func semanticEqualityTestQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	typ values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	value, err := values.NewQuantifiedObjectValue(alias, typ)
+	return mustConstruct(t, value, err)
+}
+
+func semanticEqualityTestField(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	name string,
+) values.Value {
+	t.Helper()
+	request, err := values.FieldByName(name)
+	request = mustConstruct(t, request, err)
+	field, err := values.ResolveFieldAccess(
+		semanticEqualityTestQOV(t, alias, semanticEqualityTestRowType()),
+		[]values.FieldRequest{request},
+	)
+	return mustConstruct(t, field, err)
 }
 
 func TestAliasMapValueEquivalence_NilAliasMap(t *testing.T) {

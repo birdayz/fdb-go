@@ -41,70 +41,23 @@ import (
 // which `:194` overrides with a covariant return, plus Reference, InSource and
 // four on relational QueryPlan/CopyPlan).
 //
-// SO THE DIFFERENCE IS WHERE THE SENTINEL LIVES, NOT WHETHER ONE EXISTS. Java
-// puts it at the VALUE level, names it (EmptyValue) and gives it a predicate; a
-// plan that flows no row SAYS SO. Go puts it at the PLAN level, unnamed, as a
-// method that opts out — indistinguishable from an unfinished one, which is how
-// twelve of them accumulated (eleven now) without anyone deciding to.
+// SO THE HISTORICAL DIFFERENCE WAS WHERE THE SENTINEL LIVED, NOT WHETHER ONE
+// EXISTED. Java put it at the VALUE level, named it (EmptyValue) and gave it a
+// predicate; pre-RFC-232 Go put it at the PLAN level, unnamed, as a method that
+// opted out — indistinguishable from an unfinished one. That is how twelve
+// unconditional plan stubs accumulated before RFC-213/RFC-232 closed them.
 //
-// GO INVERTED THAT DEPENDENCY, and every symptom follows from the inversion.
-// `plans.RecordQueryPlan` requires `GetResultType()` (plan.go:70) and does NOT
-// require `GetResultValue()`; only some plans implement one voluntarily. With no
-// mandatory source to derive from, plans that cannot answer return the
-// UnknownType singleton — and the count is not the one CQ-97 booked. It booked
-// `RecordQueryFlatMapPlan`, mentioning `RecordQueryNestedLoopJoinPlan` in
-// passing. Measured by this gate it was TWELVE; RFC-226 closed RecordQueryProjectionPlan
-// and it is ELEVEN.
+// RFC-232 completed RFC-213's dependency inversion: RelationalExpression now
+// requires GetResultValue, RecordQueryPlan embeds that interface, and every
+// physical plan states an exact result value/type. The former twelve-entry debt
+// inventory therefore reached zero. The detector remains as a zero ratchet:
+// reintroducing an unconditional plan-level UnknownType is a regression, not a
+// new inventory entry.
 //
-// WHY THIS IS AN INVENTORY AND NOT A ZERO. The stub is not a bug that can be
-// deleted today: four of the eleven have neither a result value nor an inner to
-// derive from, so a zero here would be an assertion nobody can satisfy, and this
-// file's siblings record at length what happens when a census asserts a wish.
-// It is a DEBT LIST, and it earns its keep by shrinking — RFC-213's
-// implementation removes entries, and each removal comes here as a deliberate
-// edit rather than as a silent improvement nobody can point at.
-//
-// BOTH DIRECTIONS FAIL, and the growth direction is the one that matters:
-//
-//   - A TWELFTH stub means a new plan joined the divergence silently. Every
-//     consumer that type-asserts the result — measured at 28 call sites, all
-//     failing CLOSED — starts declining on that plan's rows too, and declining
-//     is invisible: it costs an optimization, never a wrong answer, so nothing
-//     else in the suite goes red.
-//   - A stub DISAPPEARING is good news that still fails, because a shrinking
-//     list cannot be told from a renamed plan. Delete the entry and say which.
+// Any new stub fails. The empty inventory is intentional: there is no accepted
+// plan-level UnknownType debt left to shrink or grow.
 func stubInventory() map[string]string {
-	return map[string]string{
-		// Tier 1 — HAVE a result value. Java's derivation applies verbatim, and
-		// these are RFC-213's first phase.
-		"RecordQueryFlatMapPlan":              "has GetResultValue; Java derives from it (RelationalExpression.java:195)",
-		"RecordQueryNestedLoopJoinPlan":       "has GetResultValue",
-		"RecordQueryStreamingAggregationPlan": "has GetResultValue",
-		"RecordQueryTempTableScanPlan":        "has GetResultValue",
-		"RecordQueryValuesPlan":               "has GetResultValue",
-
-		// Tier 2 — no result value, but a pass-through with an inner. These change
-		// no row shape at all, so forwarding is the whole fix. RecordQueryLimitPlan
-		// is the sharpest case in the file: a LIMIT cannot alter a type, its inner
-		// is one call away, and it still answers unknown.
-		"RecordQueryLimitPlan": "pure pass-through; has GetInner",
-		// RecordQueryProjectionPlan was HERE and is CLOSED by RFC-226, named so the
-		// shrink is deliberate rather than a rename nobody can point at. It was
-		// filed under tier 2 ("forward the inner"), and that was the wrong tier:
-		// a projection is precisely the node that changes the row shape, so it is
-		// tier 1 and now derives from its own GetResultValue() — a record
-		// constructor over its projected columns. RFC-213 rev 2's §2 table carries
-		// the same correction.
-		"RecordQueryTempTableInsertPlan": "has GetInner",
-
-		// Tier 3 — neither a result value nor an inner. These are why the gate is
-		// an inventory rather than a zero: closing them needs a type from
-		// somewhere that does not exist yet, and RFC-213 argues each one.
-		"RecordQueryLoadByKeysPlan":          "no result value, no inner",
-		"RecordQueryRecursiveDfsJoinPlan":    "no result value, no inner",
-		"RecordQueryRecursiveLevelUnionPlan": "no result value, no inner",
-		"RecordQueryTextIndexPlan":           "no result value, no inner",
-	}
+	return map[string]string{}
 }
 
 // planPkgDir is where the plan implementations live.
@@ -115,11 +68,8 @@ const planPkgDir = "pkg/recordlayer/query/plan/plans"
 //
 // The match is STRUCTURAL — a single-statement body returning a selector named
 // UnknownType — rather than a grep for the identifier. That distinction is
-// load-bearing: 22 further plans mention UnknownType inside GetResultType as a
-// NIL-GUARD fallback before forwarding to their inner (`if inner == nil { return
-// values.UnknownType }; return inner.GetResultType()`), and those are correct
-// forwarders, not stubs. A textual gate would report 34 and describe neither
-// population.
+// load-bearing: guarded uses elsewhere are consumers of possibly absent
+// metadata, not unconditional plan producers.
 func findStubs(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -174,16 +124,6 @@ func TestResultTypeStubInventoryIsCurrent(t *testing.T) {
 	found := findStubs(t, root)
 	want := stubInventory()
 
-	// A structural gate that matched nothing would pass vacuously while the whole
-	// divergence stood, and this one navigates an AST shape to find its
-	// population — exactly where a silent miss hides.
-	if len(found) == 0 {
-		t.Fatal("found ZERO plans returning `values.UnknownType` unconditionally. Either the " +
-			"divergence closed entirely — in which case delete this gate and say so in " +
-			"RFC-213 — or findStubs stopped matching the AST shape it looks for and is now " +
-			"asserting nothing.")
-	}
-
 	var added, removed []string
 	for name, file := range found {
 		if _, known := want[name]; !known {
@@ -202,14 +142,14 @@ func TestResultTypeStubInventoryIsCurrent(t *testing.T) {
 		t.Fatalf("%d plan(s) newly return `values.UnknownType` unconditionally and are not in "+
 			"the RFC-213 inventory:\n    %s\n"+
 			"  A NEW STUB IS INVISIBLE WITHOUT THIS GATE, which is why it is checked rather "+
-			"than counted. All 28 consumers that read a result type fail CLOSED on unknown — "+
-			"they type-assert `*values.RecordType` and decline — so a plan joining this list "+
-			"costs optimizations on its rows and turns NOTHING ELSE red.\n"+
+			"than counted. The consumer classifier below keeps raw reads at zero; guarded "+
+			"sites decline and propagated sites carry the type onward, so a plan joining this "+
+			"list can cost optimizations without turning another test red.\n"+
 			"  Java cannot express this state at all: `getResultValue()` is abstract on "+
 			"RelationalExpression (:200) and `getResultType()` is a default derived from it "+
 			"(:195-196), so every expression states its row.\n"+
-			"  If the new plan genuinely has nothing to derive from, add it to tier 3 with "+
-			"that reason. Do not add it silently.",
+			"  RFC-232 closed this population at zero by requiring an exact result value. "+
+			"Do not add a new debt entry: derive the type from that value.",
 			len(added), strings.Join(added, "\n    "))
 	}
 
@@ -222,19 +162,10 @@ func TestResultTypeStubInventoryIsCurrent(t *testing.T) {
 	}
 }
 
-// The interface inversion RFC-213 exists to correct.
-//
-// This is the ROOT of the divergence and it is one line in each language. Java's
-// RelationalExpression requires the VALUE and derives the TYPE. Go's
-// RecordQueryPlan requires the TYPE and requires no value, so the type has no
-// mandatory source and eleven plans answer unknown.
-//
-// Pinned because RFC-213's whole design rests on it, and because it is the kind
-// of precondition that gets quietly satisfied by someone else's change: the day
-// `GetResultValue()` joins the interface, this gate goes red and whoever did it
-// finds out they have landed RFC-213's phase 0 — which is a good outcome, and a
-// far better one than the RFC silently describing a tree that no longer exists.
-func TestRecordQueryPlanStillDoesNotRequireGetResultValue(t *testing.T) {
+// The interface inversion RFC-213 proposed and RFC-232 completed. This pins the
+// post-migration root contract: every RecordQueryPlan is a RelationalExpression,
+// which requires GetResultValue, and also states GetResultType explicitly.
+func TestRecordQueryPlanRequiresGetResultValue(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
 
@@ -245,7 +176,7 @@ func TestRecordQueryPlanStillDoesNotRequireGetResultValue(t *testing.T) {
 		t.Fatalf("parse %s: %v", rel, err)
 	}
 
-	var hasResultType, hasResultValue, foundIface bool
+	var hasResultType, embedsRelationalExpression, foundIface bool
 	ast.Inspect(f, func(n ast.Node) bool {
 		ts, ok := n.(*ast.TypeSpec)
 		if !ok || ts.Name == nil || ts.Name.Name != "RecordQueryPlan" {
@@ -257,12 +188,15 @@ func TestRecordQueryPlanStillDoesNotRequireGetResultValue(t *testing.T) {
 		}
 		foundIface = true
 		for _, m := range iface.Methods.List {
+			if len(m.Names) == 0 {
+				if sel, ok := m.Type.(*ast.SelectorExpr); ok && sel.Sel != nil && sel.Sel.Name == "RelationalExpression" {
+					embedsRelationalExpression = true
+				}
+			}
 			for _, nm := range m.Names {
 				switch nm.Name {
 				case "GetResultType":
 					hasResultType = true
-				case "GetResultValue":
-					hasResultValue = true
 				}
 			}
 		}
@@ -277,15 +211,9 @@ func TestRecordQueryPlanStillDoesNotRequireGetResultValue(t *testing.T) {
 		t.Fatalf("%s: RecordQueryPlan no longer requires GetResultType. That is a bigger change "+
 			"than RFC-213 describes; re-read the RFC against the tree before trusting it", rel)
 	}
-	if hasResultValue {
-		t.Fatalf("%s: RecordQueryPlan now REQUIRES GetResultValue.\n"+
-			"  That is RFC-213's phase 0 and it inverts the dependency the whole RFC is about: "+
-			"Java requires the VALUE (RelationalExpression.java:200, abstract) and DERIVES the "+
-			"type from it (:195-196); Go required the TYPE and left the value optional, which "+
-			"is why eleven plans answer UnknownType.\n"+
-			"  If this was deliberate, RFC-213 needs updating and the stub inventory above "+
-			"should be shrinking in the same change. If it was incidental, it is a much larger "+
-			"change than its author probably intended.", rel)
+	if !embedsRelationalExpression {
+		t.Fatalf("%s: RecordQueryPlan no longer embeds expressions.RelationalExpression, "+
+			"which is the RFC-232/RFC-213 contract requiring every plan to state GetResultValue", rel)
 	}
 }
 
@@ -430,15 +358,20 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	sites := classifyResultTypeSites(t, root)
 
 	counts := map[string]int{}
+	byKind := map[string][]string{}
 	var raw []string
 	for _, s := range sites {
 		if s.kind == "CENSUS" {
 			continue
 		}
 		counts[s.kind]++
+		byKind[s.kind] = append(byKind[s.kind], fmt.Sprintf("%s:%d in %s", s.file, s.line, s.fn))
 		if s.kind == "RAW" {
 			raw = append(raw, fmt.Sprintf("%s:%d in %s", s.file, s.line, s.fn))
 		}
+	}
+	for kind := range byKind {
+		sort.Strings(byKind[kind])
 	}
 	sort.Strings(raw)
 
@@ -452,9 +385,9 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	if len(raw) != 0 {
 		t.Fatalf("%d GetResultType consumer(s) read the result RAW — neither type-asserted nor "+
 			"propagated:\n    %s\n"+
-			"  RFC-213 §3 rests on every consumer failing CLOSED on an unresolved type. Twelve "+
-			"plans return values.UnknownType (a *PrimitiveType), and a raw read gets that where "+
-			"it expected a row.\n"+
+			"  RFC-213 §3 rests on every consumer failing CLOSED on an unresolved type. The "+
+			"stub population is now zero; if one is reintroduced, a raw read gets a "+
+			"*PrimitiveType where it expected a row.\n"+
 			"  THIS IS THE LINE BETWEEN AN RFC AND A BUG. A fail-closed consumer declines an "+
 			"optimization, which is invisible because a worse plan is not red. A raw consumer "+
 			"returns wrong data. If this fired, RFC-213's framing is wrong and the site above "+
@@ -482,15 +415,52 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	// (`fw.GetResultType()`). It is PROPAGATED and not GUARDED deliberately: the
 	// rebuild preserves the fetch's type verbatim rather than deciding anything
 	// about it, so a guard here would assert on a type this site never inspects.
-	const wantForward, wantGuarded, wantPropagated = 21, 7, 22
+	// RFC-232 moved result-type production from ad-hoc forwarding methods to
+	// exact result values. The one surviving FORWARD is a true physical wrapper;
+	// the guarded/propagated split below is the measured post-migration surface.
+	// Subsequent executor admission work added exact record-shape guards for
+	// projection, UPDATE, aggregate index, multi-intersection, and
+	// DefaultOnEmpty (a net three guarded sites after replaced guards), while
+	// VALUES now propagates the declared plan type into its runtime validator.
+	// FirstOrDefault empty-arm materialization added one more intentional
+	// PROPAGATED read. `firstOrDefaultResultFromValue` stores the plan's declared
+	// result type, then branches on its exact record shape: record defaults are
+	// checked or built against that type and provided layout, while scalar
+	// defaults carry that same declared type into their positional row. The AST
+	// classifier deliberately does no dataflow, so the next-statement type
+	// assertion does not make this syntactically GUARDED.
+	// Correlated FlatMap construction subsequently retired two PROPAGATED
+	// `GetResultType()` fallbacks: the selected inner plan fallback and the
+	// planner-local exact predicate-edge helper. Selected outer/inner edge types
+	// now come solely from `ProvidedOutputLayout().Carrier().FlowedType()`; an
+	// absent physical layout fails closed instead of consulting a declared result
+	// type.
+	// The two descendant producer walkers subsequently retired all four of their
+	// outer/inner `GetResultType()` reads. Carrier pointer identity plus
+	// `OrdinalLayout.RawEqual` already proves the exact physical row and layout;
+	// consulting the separately declared type was redundant and weaker. Two of
+	// those reads were in the last pinned population and two arrived transiently
+	// with `descendantRetainedResultProducer`, so the stable census moves 32 -> 30.
+	// `predicatesFilterIsFullPKPointProbe` then retired one further PROPAGATED
+	// `GetResultType()` read. Its proof now takes both the row type and the
+	// pointer-exact current owner from `scan.ProvidedOutputLayout().Carrier()`.
+	// The declared result type could not identify the selected evaluation phase
+	// after exact filter normalization and made every PK point probe over-decline;
+	// the physical carrier is the stronger and necessary authority. The stable
+	// census therefore moves 30 -> 29.
+	const wantForward, wantGuarded, wantPropagated = 1, 14, 29
 	if counts["FORWARD"] != wantForward || counts["GUARDED"] != wantGuarded || counts["PROPAGATED"] != wantPropagated {
 		t.Fatalf("consumer split moved: FORWARD=%d (want %d) GUARDED=%d (want %d) "+
 			"PROPAGATED=%d (want %d), total %d.\n"+
+			"  FORWARD:\n    %s\n  GUARDED:\n    %s\n  PROPAGATED:\n    %s\n"+
 			"  These are RFC-213 §3's numbers. A change here is a real change to the consumer "+
 			"population and the RFC's blast-radius argument is stated against them — update "+
 			"both together, and say which site moved and why.",
 			counts["FORWARD"], wantForward, counts["GUARDED"], wantGuarded,
-			counts["PROPAGATED"], wantPropagated, len(sites))
+			counts["PROPAGATED"], wantPropagated, len(sites),
+			strings.Join(byKind["FORWARD"], "\n    "),
+			strings.Join(byKind["GUARDED"], "\n    "),
+			strings.Join(byKind["PROPAGATED"], "\n    "))
 	}
 }
 
@@ -535,15 +505,12 @@ func TestResultTypeStubsCreatedAtCallSites(t *testing.T) {
 		return true
 	})
 
-	const want = 3
+	const want = 0
 	if unknownArgs != want {
 		t.Fatalf("%s: %d NewRecordQueryAggregateIndexPlan call(s) pass values.UnknownType as the "+
 			"result type, want %d.\n"+
-			"  MORE means another aggregate construction joined the call-site stub population. "+
-			"FEWER means one started passing a real type — good news, and RFC-213's tier list "+
-			"plus the continuation-fingerprint note in §3 both need updating, because that note "+
-			"says the aggregate `result-type` field contributes ZERO entropy precisely BECAUSE "+
-			"it is always the same singleton.\n"+
-			"  Either way this is a deliberate edit, not drift.", rel, unknownArgs, want)
+			"  RFC-232 closed this call-site stub population at zero: every aggregate candidate "+
+			"derives its exact output type before constructing the physical plan. Any hit is a "+
+			"regression to an unstated result row.", rel, unknownArgs, want)
 	}
 }

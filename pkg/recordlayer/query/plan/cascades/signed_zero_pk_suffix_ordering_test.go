@@ -41,12 +41,22 @@ func signedZeroSuffixCandidate(t *testing.T) (*ValueIndexScanMatchCandidate, val
 		"IDX_V", []string{"T"},
 		[]string{"V"},
 		[]values.CorrelationIdentifier{alias},
-		values.UnknownType, false,
+		row, false,
 		[]string{"ID"}).
 		WithKeyComponentTypes([]values.Type{values.NullableDouble}).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
 	cand.WithRecordTypeRowTypes([]values.Type{row})
 	return cand, alias
+}
+
+func signedZeroEqualityRange(t testing.TB, literal any) *predicates.ComparisonRange {
+	t.Helper()
+	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
+	merged := predicates.EmptyComparisonRange().Merge(&comparison)
+	if !merged.Ok {
+		t.Fatal("build signed-zero equality range")
+	}
+	return merged.Range
 }
 
 func signedZeroSuffixParts(
@@ -56,7 +66,7 @@ func signedZeroSuffixParts(
 	cand, alias := signedZeroSuffixCandidate(t)
 	mi := NewRegularMatchInfo(
 		map[values.CorrelationIdentifier]*predicates.ComparisonRange{
-			alias: equalityRange(t, literal),
+			alias: signedZeroEqualityRange(t, literal),
 		},
 		nil, nil, nil, nil, nil, nil, nil)
 	return cand.ComputeMatchedOrderingParts(mi, []values.CorrelationIdentifier{alias}, isReverse)
@@ -122,8 +132,11 @@ func TestMatchedOrderingParts_NonZeroFloatEqualityKeepsThePKSuffix(t *testing.T)
 			"float equality pins a single key, so the primary key after it stays ordered",
 			len(parts))
 	}
-	fv, ok := parts[1].GetValue().(*values.FieldValue)
-	if !ok || fv.Field != "ID" {
+	fv, ok := values.AsFieldValue(parts[1].GetValue())
+	if !ok || fv.DisplayName() != "ID" {
 		t.Fatalf("second part must be the ID primary-key suffix, got %v", parts[1].GetValue())
+	}
+	if got := fv.Path().Ordinals(); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("ID suffix ordinal path = %v, want [0]", got)
 	}
 }

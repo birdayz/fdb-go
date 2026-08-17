@@ -10,9 +10,10 @@ import (
 
 // coveringTestIndexPlan builds an index scan over IDX(A) with the given
 // comparison ranges — the inner half of a covering plan under test.
-func coveringTestIndexPlan(name string, comps []*predicates.ComparisonRange, reverse bool) *RecordQueryIndexPlan {
-	return NewRecordQueryIndexPlan(name, comps, []string{"T"}, values.UnknownType, reverse).
-		WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
+func coveringTestIndexPlan(t testing.TB, name string, comps []*predicates.ComparisonRange, reverse bool) *RecordQueryIndexPlan {
+	return mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(name, comps, []string{"T"}, exactTestRecordType(), reverse)
+	}).WithIndexMetadata([]string{"A"}, []string{"ID"}, false)
 }
 
 // TestCoveringPlan_InnerIsAFieldNotAChild pins RFC-220's first acceptance
@@ -36,8 +37,10 @@ func coveringTestIndexPlan(name string, comps []*predicates.ComparisonRange, rev
 func TestCoveringPlan_InnerIsAFieldNotAChild(t *testing.T) {
 	t.Parallel()
 
-	inner := coveringTestIndexPlan("IDX_A", nil, false)
-	cov := NewRecordQueryCoveringIndexPlan(inner)
+	inner := coveringTestIndexPlan(t, "IDX_A", nil, false)
+	cov := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(inner)
+	})
 
 	if got := cov.GetChildren(); len(got) != 0 {
 		t.Fatalf("GetChildren() returned %d children, want 0 — the inner index "+
@@ -46,7 +49,11 @@ func TestCoveringPlan_InnerIsAFieldNotAChild(t *testing.T) {
 			"described in RFC-220 §4.1.", len(got))
 	}
 
-	if got := cov.WithQuantifiers(nil); got != cov {
+	got, err := cov.WithQuantifiers(nil)
+	if err != nil {
+		t.Fatalf("WithQuantifiers(nil): %v", err)
+	}
+	if got != cov {
 		t.Fatalf("WithQuantifiers(nil) returned a different expression; the "+
 			"covering plan has no quantifiers to replace, so it must return "+
 			"itself unchanged (got %T)", got)
@@ -73,8 +80,12 @@ func TestCoveringPlan_InnerIsAFieldNotAChild(t *testing.T) {
 func TestCoveringPlan_StructuralKeyFoldsInnerScanRange(t *testing.T) {
 	t.Parallel()
 
-	eq5 := NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan("IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, false))
-	eq7 := NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan("IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}, false))
+	eq5 := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan(t, "IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, false))
+	})
+	eq7 := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan(t, "IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}, false))
+	})
 
 	if eq5.EqualsPlanWithoutChildren(eq7) {
 		t.Fatal("covering scans over IDX_A [=5] and IDX_A [=7] compared EQUAL. " +
@@ -88,7 +99,9 @@ func TestCoveringPlan_StructuralKeyFoldsInnerScanRange(t *testing.T) {
 	}
 
 	// Index name is the other half of the inner's identity.
-	otherIndex := NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan("IDX_B", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, false))
+	otherIndex := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan(t, "IDX_B", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, false))
+	})
 	if eq5.EqualsPlanWithoutChildren(otherIndex) {
 		t.Fatal("covering scans over DIFFERENT indexes (IDX_A, IDX_B) compared " +
 			"EQUAL; structuralKey is not folding the inner's index name")
@@ -96,7 +109,9 @@ func TestCoveringPlan_StructuralKeyFoldsInnerScanRange(t *testing.T) {
 
 	// Direction is the third: a reverse scan emits the same rows in the
 	// opposite order, so it is a different plan.
-	reversed := NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan("IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, true))
+	reversed := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan(t, "IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, true))
+	})
 	if eq5.EqualsPlanWithoutChildren(reversed) {
 		t.Fatal("forward and REVERSE covering scans compared EQUAL; " +
 			"structuralKey is not folding the inner's scan direction")
@@ -119,9 +134,13 @@ func TestCoveringPlan_StructuralKeyFoldsCoveringColumns(t *testing.T) {
 	// KeyWithValue VALUE part), so the two sides differ by the inner's value
 	// columns — the only way an inconsistent pair can still be expressed now
 	// that the constructor no longer accepts a caller-supplied list.
-	narrow := NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan("IDX_A", comps, false))
-	wide := NewRecordQueryCoveringIndexPlan(
-		coveringTestIndexPlan("IDX_A", comps, false).WithValueColumnNames([]string{"B"}))
+	narrow := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan(t, "IDX_A", comps, false))
+	})
+	wide := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(
+			coveringTestIndexPlan(t, "IDX_A", comps, false).WithValueColumnNames([]string{"B"}))
+	})
 
 	if got, want := len(narrow.GetCoveringColumns()), 1; got != want {
 		t.Fatalf("narrow covered columns = %v, want %d — derived from the inner's "+
@@ -150,8 +169,10 @@ func TestCoveringPlan_IdenticalPlansStillDedup(t *testing.T) {
 	t.Parallel()
 
 	mk := func() *RecordQueryCoveringIndexPlan {
-		return NewRecordQueryCoveringIndexPlan(
-			coveringTestIndexPlan("IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, false))
+		return mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+			return NewRecordQueryCoveringIndexPlan(
+				coveringTestIndexPlan(t, "IDX_A", []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}, false))
+		})
 	}
 	a, b := mk(), mk()
 
@@ -175,14 +196,18 @@ func TestCoveringPlan_ExplainCarriesCoveringMarker(t *testing.T) {
 
 	comps := []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}
 
-	forward := NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan("IDX_A", comps, false))
+	forward := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan(t, "IDX_A", comps, false))
+	})
 	if got, want := forward.Explain(), "IndexScan(IDX_A, [=] COVERING)"; got != want {
 		t.Fatalf("Explain() = %q, want %q", got, want)
 	}
 
 	// REVERSE renders after the closing paren, so the marker must be inserted
 	// before it — not appended to the end of the whole label.
-	reversed := NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan("IDX_A", comps, true))
+	reversed := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(coveringTestIndexPlan(t, "IDX_A", comps, true))
+	})
 	if got, want := reversed.Explain(), "IndexScan(IDX_A, [=] COVERING) REVERSE"; got != want {
 		t.Fatalf("Explain() on a reverse scan = %q, want %q", got, want)
 	}
@@ -200,7 +225,7 @@ func TestCoveringPlan_ExplainCarriesCoveringMarker(t *testing.T) {
 	}
 	// The plain scan is the other half of the pin: a bare index plan must NOT
 	// render the marker, or the covering type stops being what carries it.
-	if got := coveringTestIndexPlan("IDX_A", comps, false).Explain(); strings.Contains(got, "COVERING") {
+	if got := coveringTestIndexPlan(t, "IDX_A", comps, false).Explain(); strings.Contains(got, "COVERING") {
 		t.Fatalf("a bare index scan rendered %q — coveringness is a plan TYPE now, "+
 			"so only the covering plan may render the marker", got)
 	}
@@ -213,8 +238,10 @@ func TestCoveringPlan_ExplainCarriesCoveringMarker(t *testing.T) {
 func TestCoveringPlan_DelegatesToInner(t *testing.T) {
 	t.Parallel()
 
-	inner := coveringTestIndexPlan("IDX_A", nil, true).WithStrictlySorted()
-	cov := NewRecordQueryCoveringIndexPlan(inner)
+	inner := coveringTestIndexPlan(t, "IDX_A", nil, true).WithStrictlySorted()
+	cov := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(inner)
+	})
 
 	if !cov.IsReverse() {
 		t.Error("IsReverse() = false, want true — must delegate to the inner scan")
@@ -242,10 +269,12 @@ func TestCoveringPlan_DelegatesRangeDescription(t *testing.T) {
 	t.Parallel()
 
 	comps := []*predicates.ComparisonRange{pkOrderingEq(t, int64(5))}
-	inner := coveringTestIndexPlan("IDX_A", comps, false).
+	inner := coveringTestIndexPlan(t, "IDX_A", comps, false).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
-	cov := NewRecordQueryCoveringIndexPlan(inner)
+	cov := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(inner)
+	})
 
 	if got := cov.GetScanComparisons(); len(got) != 1 || got[0] != comps[0] {
 		t.Errorf("GetScanComparisons() = %v, want the inner scan's %v — the range is the inner's range", got, comps)
@@ -285,9 +314,13 @@ func TestCoveringPlanDelegatesUniqueAndFlowedType(t *testing.T) {
 	t.Parallel()
 
 	for _, unique := range []bool{true, false} {
-		inner := NewRecordQueryIndexPlan("IDX_A", nil, []string{"T"}, values.UnknownType, false).
+		inner := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+			return NewRecordQueryIndexPlan("IDX_A", nil, []string{"T"}, exactTestRecordType(), false)
+		}).
 			WithIndexMetadata([]string{"A"}, []string{"ID"}, unique)
-		cov := NewRecordQueryCoveringIndexPlan(inner)
+		cov := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+			return NewRecordQueryCoveringIndexPlan(inner)
+		})
 
 		if got := cov.IsUnique(); got != unique {
 			t.Errorf("covering.IsUnique() = %v, want %v (the wrapped scan's answer) — "+
@@ -308,8 +341,10 @@ func TestCoveringPlanDelegatesUniqueAndFlowedType(t *testing.T) {
 		}
 	}
 
-	inner := coveringTestIndexPlan("IDX_A", nil, false)
-	cov := NewRecordQueryCoveringIndexPlan(inner)
+	inner := coveringTestIndexPlan(t, "IDX_A", nil, false)
+	cov := mustChecked(t, func() (*RecordQueryCoveringIndexPlan, error) {
+		return NewRecordQueryCoveringIndexPlan(inner)
+	})
 	if cov.GetFlowedType() != inner.GetFlowedType() {
 		t.Errorf("covering.GetFlowedType() = %v, want the wrapped scan's %v",
 			cov.GetFlowedType(), inner.GetFlowedType())

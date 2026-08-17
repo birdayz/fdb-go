@@ -108,7 +108,12 @@ func computeDistinctRecords(w physicalPlanExpression, plan plans.RecordQueryPlan
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
-		*plans.RecordQueryInsertPlan,
+		// Sorting changes row order only. Its child reference is often a private
+		// singleton without a precomputed property map, so use the guarded
+		// ref-or-concrete fallback rather than treating it as non-distinct.
+		*plans.RecordQueryInMemorySortPlan:
+		return distinctRecordsFromChildRefOrInner(w)
+	case *plans.RecordQueryInsertPlan,
 		*plans.RecordQueryDeletePlan,
 		*plans.RecordQueryUpdatePlan,
 		*plans.RecordQueryTempTableInsertPlan,
@@ -174,6 +179,23 @@ func distinctRecordsForRef(ref *expressions.Reference) bool {
 	return len(pm.All()) > 0
 }
 
+func distinctRecordsFromChildRefOrInner(w physicalPlanExpression) bool {
+	qs := w.GetQuantifiers()
+	if len(qs) != 1 || qs[0].GetRangesOver() == nil {
+		return false
+	}
+	childRef := qs[0].GetRangesOver()
+	if pm := GetRefPlanPropertiesMap(childRef); pm != nil && len(pm.All()) > 0 {
+		return distinctRecordsForRef(childRef)
+	}
+	childPlan, ok := childPlanIfUnambiguous(childRef)
+	if !ok {
+		return false
+	}
+	childPhysical, ok := childPlan.(physicalPlanExpression)
+	return ok && computeDistinctRecords(childPhysical, childPlan)
+}
+
 // computeDistinctRecordsForMap checks whether a RecordQueryMapPlan is an
 // identity mapping (result value is a QuantifiedObjectValue whose
 // correlation matches the inner quantifier alias). Identity maps
@@ -186,11 +208,11 @@ func computeDistinctRecordsForMap(w physicalPlanExpression) bool {
 		return false
 	}
 	rv := mw.GetResultValue()
-	qov, ok := rv.(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(rv)
 	if !ok {
 		return false
 	}
-	if qov.Correlation == mw.GetInnerQuantifier().GetAlias() {
+	if qov.Correlation() == mw.GetInnerQuantifier().GetAlias() {
 		return distinctRecordsFromChildRef(w)
 	}
 	return false
@@ -205,60 +227,16 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		// a field, so the covering type needs its own arm rather than inheriting
 		// one through child traversal.
 		*plans.RecordQueryCoveringIndexPlan,
+		// A fetch turns a partial index entry into the stored record. Java's
+		// StoredRecordProperty therefore returns true directly for this node;
+		// delegating to its covering child would describe the input carrier, not
+		// the row the fetch emits. The restricted-reference ordering constraint
+		// is now preserved by MemoizeFinalExpressionsFromOther, so the ordered
+		// InUnion alternatives that formerly blocked this truthful arm remain
+		// retained.
+		*plans.RecordQueryFetchFromPartialRecordPlan,
 		*plans.RecordQueryVectorIndexPlan,
 		*plans.RecordQueryDistinctPlan,
-		// DIVERGENCE, deliberate and NOT a simplification — Java's
-		// StoredRecordProperty.visitFetchFromPartialRecordPlan returns true
-		// (:306-307), so a fetch belongs in the unconditional-true arm above:
-		// it turns an index entry into the stored record, and delegating to
-		// its child (a covering scan flowing PARTIAL records) answers false
-		// and calls the fetch's whole purpose non-stored. Go answers false via
-		// the default arm.
-		//
-		// Correcting it in isolation REGRESSES SELECT plans, measured over the
-		// explaindiff corpus: six ordered InUnions collapse into
-		// InMemorySort(Fetch(InJoin(...))) — e.g. `SELECT * FROM tbl WHERE a IN
-		// (10,20,30) ORDER BY a, id, k`. So it is BLOCKED on the propagation fix
-		// below, not on doubt about which answer is right. Java's is.
-		//
-		// StoredRecord is a PARTITIONING dimension (expression_partition.go
-		// toPartitionsFromMap), so this arm makes a fetch share a partition with
-		// the index and filter members it is an alternative to — partitions of
-		// the form [PredicatesFilter, Fetch, IndexPlan] where the corpus
-		// previously had singletons. That is correct and desirable.
-		//
-		// THE BLOCKER IS ONE MISSING LINE OF PROPAGATION, in a third file.
-		// MemoizeFinalExpressionsFromOther (implementation_rule.go:124-151)
-		// mints a fresh Reference and copies the source's plan properties, but
-		// registers NO constraint entry for it. OptimizeGroupTask's per-ordering
-		// retention then looks the constraint up keyed on that NEW reference
-		// (unified_tasks.go:663-666), finds nothing, and resolves the group by
-		// COST ALONE — so the ordered member that would have been retained is
-		// pruned as a loser. A RequestedOrdering pushed onto the SOURCE
-		// reference does not survive the copy.
-		//
-		// DO NOT ADD A PushConstraint CALL TO ImplementInUnionRule. Java's
-		// ImplementInUnionRule DECLARES REQUESTED_ORDERING as a constraint it
-		// CONSUMES (ImplementInUnionRule.java:82) and calls pushConstraint zero
-		// times. The push for this shape lives in a separate rule,
-		// PushRequestedOrderingThroughInLikeSelectRule.java:99-104, which pushes
-		// the requested orderings VERBATIM onto the inner quantifier's
-		// reference — not derived from the IN bindings. Go already has that rule
-		// and already registers it (default_rules.go:261). There is no missing
-		// push to write: the ordering arrives correctly and is then dropped by
-		// the copy.
-		//
-		// Java needs no such lookup for an independent reason: after rollUpTo
-		// every member of the partition it copies is ordering-HOMOGENEOUS by
-		// construction, so whichever winner the memo resolves satisfies the
-		// contract. Go has two independent ways to be correct here and currently
-		// neither is reliable — the roll-up equivalence was lossy
-		// (PropRichOrdering and richOrderingsEqual close that half) and the
-		// constraint does not survive the copy.
-		//
-		// This arm changes NO DML plan in the corpus (measured: golden with and
-		// without it differ in zero Update/Delete lines), so the DML rules'
-		// StoredRecord filter is unaffected either way.
 		*plans.RecordQueryInsertPlan,
 		*plans.RecordQueryDeletePlan,
 		*plans.RecordQueryUpdatePlan:
@@ -267,6 +245,7 @@ func computeStoredRecord(plan plans.RecordQueryPlan) bool {
 		*plans.RecordQueryPredicatesFilterPlan,
 		*plans.RecordQueryTypeFilterPlan,
 		*plans.RecordQueryLimitPlan,
+		*plans.RecordQueryInMemorySortPlan,
 		*plans.RecordQueryProjectionPlan,
 		*plans.RecordQueryMapPlan,
 		*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan:
@@ -491,8 +470,13 @@ func computeJoinRichOrdering(w physicalPlanExpression) (*properties.RichOrdering
 	if len(quantifiers) != 2 || result == nil {
 		return properties.EmptyOrdering(), true
 	}
-	outerAlias := quantifiers[0].GetAlias()
-	innerAlias := quantifiers[1].GetAlias()
+	// Quantifier aliases identify memo edges; FlatMap result programs and the
+	// runtime binder use the plan's declared leg aliases. Extraction commonly
+	// rebuilds an edge as a fresh q$ identifier while retaining a logical T/I
+	// binding in the result Value. Pulling ordering through that Value with the
+	// edge alias silently produces an empty ordering.
+	outerAlias := flatMap.GetOuterAlias()
+	innerAlias := flatMap.GetInnerAlias()
 	outerExpr, ok := exactFinalPhysicalMember(quantifiers[0].GetRangesOver())
 	if !ok {
 		return properties.EmptyOrdering(), true
@@ -507,9 +491,17 @@ func computeJoinRichOrdering(w physicalPlanExpression) (*properties.RichOrdering
 	if outerOrdering == nil || innerOrdering == nil {
 		return properties.EmptyOrdering(), true
 	}
-	outerOrdering = outerOrdering.PullUpThroughValue(
+	outerOrdering, err := pullChildOrderingThroughResult(
+		outerOrdering, outerExpr,
 		flatMapOrderingResultForChild(flatMap, outerAlias, true), outerAlias)
-	innerOrdering = innerOrdering.PullUpThroughValue(result, innerAlias)
+	if err != nil {
+		return properties.EmptyOrdering(), true
+	}
+	innerOrdering, err = pullChildOrderingThroughResult(
+		innerOrdering, innerExpr, result, innerAlias)
+	if err != nil {
+		return properties.EmptyOrdering(), true
+	}
 	if outerOrdering == nil || innerOrdering == nil {
 		return properties.EmptyOrdering(), true
 	}
@@ -525,20 +517,45 @@ func computeJoinRichOrdering(w physicalPlanExpression) (*properties.RichOrdering
 	return properties.ConcatOrderings(outerOrdering, innerOrdering), true
 }
 
+// pullChildOrderingThroughResult crosses both physical row boundaries involved
+// in a join-ordering proof. A selected child publishes ordering keys on its
+// exact provided-layout carrier, while the FlatMap result program names that
+// row through the plan's logical runtime binding alias. Pulling directly from
+// `_current` through a T-rooted result Value drops every key; using the memo
+// edge q$ alias instead also misses because it is not a runtime binding.
+func pullChildOrderingThroughResult(
+	ordering *properties.RichOrdering,
+	child physicalPlanExpression,
+	resultValue values.Value,
+	resultAlias values.CorrelationIdentifier,
+) (*properties.RichOrdering, error) {
+	if ordering == nil || child == nil || child.GetRecordQueryPlan() == nil {
+		return nil, nil
+	}
+	layout, err := child.GetRecordQueryPlan().ProvidedOutputLayout()
+	if err != nil || layout == nil || layout.Carrier() == nil {
+		return ordering.PullUpThroughValue(resultValue, resultAlias)
+	}
+	bound, err := ordering.PullUpThroughValue(layout.Carrier(), resultAlias)
+	if err != nil || bound == nil {
+		return bound, err
+	}
+	// A QOV result is already the child's whole row expressed under the
+	// FlatMap's runtime binding alias. The first pull has reached exactly that
+	// space; pushing it through the same passthrough again would require the
+	// bound T-rooted key to match the original `_current` QOV and drop it.
+	if resultQOV, ok := values.AsQuantifiedObjectValue(resultValue); ok &&
+		resultQOV.Correlation() == resultAlias {
+		return bound, nil
+	}
+	return bound.PullUpThroughValue(resultValue, resultAlias)
+}
+
 // flatMapOrderingResultForChild returns the semantic result-value lens used to
-// translate an individual child's ordering. Projected EXISTS FlatMaps mark
-// inheritOuterRecordProperties and can carry the outer projection's field
-// accesses in source-local form (ID#0) after SQL lowering. That representation
-// has no correlation with which to distinguish the two FlatMap children, even
-// though the inherit flag is explicit authority that those ordinary fields
-// come from the outer row.
-//
-// For ordering translation only, root source-local FieldValues in that result
-// constructor on the outer alias. The executable result value is untouched.
-// This lets the normal pull-up/push-down and safe root-bridge checks prove
-// ID#0 <-> T1.ID#0 while constants and the existential boolean remain
-// unowned. Ordinary joins (inherit=false) keep the original, conservative
-// multi-child ambiguity behavior.
+// translate an individual child's ordering. Resolved FieldValues always retain
+// their exact QOV root, so the old ordering-only qualification of childless
+// FieldValues is neither necessary nor representable. The inherit flag still
+// controls whether callers may use the result as the outer ordering lens.
 func flatMapOrderingResultForChild(
 	flatMap *plans.RecordQueryFlatMapPlan,
 	childAlias values.CorrelationIdentifier,
@@ -551,28 +568,7 @@ func flatMapOrderingResultForChild(
 	if !outer || !flatMap.InheritOuterRecordProperties() {
 		return result
 	}
-	rc, ok := result.(*values.RecordConstructorValue)
-	if !ok {
-		return result
-	}
-	fields := make([]values.RecordConstructorField, len(rc.Fields))
-	copy(fields, rc.Fields)
-	changed := false
-	for i := range fields {
-		fieldValue, ok := fields[i].Value.(*values.FieldValue)
-		if !ok || fieldValue == nil || fieldValue.Child != nil ||
-			len(values.GetCorrelatedToOfValue(fieldValue)) != 0 {
-			continue
-		}
-		qualified := *fieldValue
-		qualified.Child = values.NewQuantifiedObjectValue(childAlias)
-		fields[i].Value = &qualified
-		changed = true
-	}
-	if !changed {
-		return result
-	}
-	return values.NewRawRecordConstructorValue(fields...)
+	return result
 }
 
 // exactFinalPhysicalMember resolves the private-reference shape used by an

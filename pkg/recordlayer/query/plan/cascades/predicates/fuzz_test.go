@@ -25,7 +25,7 @@ func FuzzGetCorrelatedToOfPredicate(f *testing.F) {
 		if len(b) < 2 {
 			return
 		}
-		p, expectedAliases := buildFuzzPredicate(b, 0, 0)
+		p, expectedAliases := buildFuzzPredicate(t, b, 0, 0)
 		got := GetCorrelatedToOfPredicate(p)
 		// Exactness in both directions catches both fabricated aliases and
 		// under-reporting.
@@ -53,7 +53,8 @@ func FuzzGetCorrelatedToOfPredicate(f *testing.F) {
 // buildFuzzPredicate builds a small QueryPredicate tree from `b`,
 // indexed at `start`, recursion bounded by `depth`. Returns the
 // predicate AND the exact set of CorrelationIdentifiers it references.
-func buildFuzzPredicate(b []byte, start, depth int) (QueryPredicate, map[values.CorrelationIdentifier]struct{}) {
+func buildFuzzPredicate(t testing.TB, b []byte, start, depth int) (QueryPredicate, map[values.CorrelationIdentifier]struct{}) {
+	t.Helper()
 	if depth >= 4 || len(b) == 0 {
 		return NewConstantPredicate(TriTrue), map[values.CorrelationIdentifier]struct{}{}
 	}
@@ -64,29 +65,29 @@ func buildFuzzPredicate(b []byte, start, depth int) (QueryPredicate, map[values.
 	case 1:
 		// ValuePredicate referencing a fresh alias.
 		alias := values.NamedCorrelationIdentifier(string(rune('A' + b[start%len(b)]%26)))
-		v := values.NewQuantifiedObjectValue(alias)
+		v := mustQOV(t, alias)
 		return NewValuePredicate(v), map[values.CorrelationIdentifier]struct{}{alias: {}}
 	case 2:
 		// AndPredicate with two children.
-		c1, set1 := buildFuzzPredicate(b, (start+1)%len(b), depth+1)
-		c2, set2 := buildFuzzPredicate(b, (start+2)%len(b), depth+1)
+		c1, set1 := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
+		c2, set2 := buildFuzzPredicate(t, b, (start+2)%len(b), depth+1)
 		out := mergeCorrSets(set1, set2)
 		return NewAnd(c1, c2), out
 	case 3:
 		// OrPredicate with two children.
-		c1, set1 := buildFuzzPredicate(b, (start+1)%len(b), depth+1)
-		c2, set2 := buildFuzzPredicate(b, (start+2)%len(b), depth+1)
+		c1, set1 := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
+		c2, set2 := buildFuzzPredicate(t, b, (start+2)%len(b), depth+1)
 		out := mergeCorrSets(set1, set2)
 		return NewOr(c1, c2), out
 	case 4:
 		// NotPredicate over a child.
-		c, set := buildFuzzPredicate(b, (start+1)%len(b), depth+1)
+		c, set := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
 		return NewNot(c), set
 	default:
 		// Compound predicate with a nil subtree. The historical helper skipped
 		// nil children; delegated GetCorrelatedTo implementations must preserve
 		// that compatibility.
-		c, set := buildFuzzPredicate(b, (start+1)%len(b), depth+1)
+		c, set := buildFuzzPredicate(t, b, (start+1)%len(b), depth+1)
 		if b[(start+1)%len(b)]%2 == 0 {
 			return NewAnd(nil, c), set
 		}

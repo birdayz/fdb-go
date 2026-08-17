@@ -385,7 +385,7 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	if sq == nil {
 		return nil
 	}
-	if sq.tableName == "" && sq.derivedQuery == nil {
+	if sq.tableName == "" && sq.derivedQuery == nil && sq.inlineValues == nil {
 		// SELECT without FROM — emit LogicalValues (single-row
 		// constant projection). Carries the projection expression
 		// text per column (future: real Value nodes per RFC-021
@@ -416,13 +416,25 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// mergeRows uses the wrong qualifier and projections like
 	// "sq1.x" resolve to NULL.
 	var op logical.LogicalOperator
-	if sq.derivedQuery != nil {
-		var innerOp logical.LogicalOperator
-		body := sq.derivedQuery.QueryExpressionBody()
-		if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
-			if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
-				if inner, err := extractFromSimpleTable(simpleTable); err == nil {
-					innerOp = buildLogicalPlanForSelect(inner)
+	if sq.inlineValues != nil {
+		var err error
+		op, err = buildInlineValuesLogical(sq.inlineValues, sq.tableAlias, "", nil)
+		if err != nil {
+			return nil
+		}
+	} else if sq.derivedQuery != nil {
+		// The catalog-aware inner plan when one was pre-built, exactly as the
+		// join legs below do. The recursive text-only build is the fallback for
+		// a caller that never went through the catalog path; taking it while a
+		// resolved plan exists loses every ProjectedValue in the body.
+		innerOp := sq.catalogAwareInnerPlan
+		if innerOp == nil {
+			body := sq.derivedQuery.QueryExpressionBody()
+			if termDefault, ok := body.(*antlrgen.QueryTermDefaultContext); ok {
+				if simpleTable, ok := termDefault.QueryTerm().(*antlrgen.SimpleTableContext); ok {
+					if inner, err := extractFromSimpleTable(simpleTable); err == nil {
+						innerOp = buildLogicalPlanForSelect(inner)
+					}
 				}
 			}
 		}
@@ -451,7 +463,13 @@ func buildLogicalPlanForSelect(sq *selectQuery) logical.LogicalOperator {
 	// the logical operator tree expects.
 	for i, j := range sq.joins {
 		var right logical.LogicalOperator
-		if j.catalogAwareInnerPlan != nil {
+		if j.inlineValues != nil {
+			var err error
+			right, err = buildInlineValuesLogical(j.inlineValues, j.alias, j.bindingID, nil)
+			if err != nil {
+				return nil
+			}
+		} else if j.catalogAwareInnerPlan != nil {
 			// catalogAwareInnerPlan is the inner plan built through the
 			// catalog-aware path. Wrap it in a CTE so the join alias
 			// is preserved (same logic as the primary source above).
@@ -662,7 +680,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				// original reference's segments no longer describe it
 				// (stale segments silently mis-resolve against a
 				// same-spelled source column).
-				ob.bare, ob.qualifier, ob.qualified = ob.colName, "", false
+				ob.bare, ob.qualifier, ob.qualified, ob.segs = ob.colName, "", false, nil
 				continue
 			}
 			// Output aliases bind BARE one-segment identifiers only: a
@@ -679,7 +697,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 					ob.colName = sq.postSortStripProj[j]
 					// Same rule as the positional rebase above: internal
 					// text, segments cleared to the rebased bare.
-					ob.bare, ob.qualifier, ob.qualified = ob.colName, "", false
+					ob.bare, ob.qualifier, ob.qualified, ob.segs = ob.colName, "", false, nil
 					break
 				}
 			}
@@ -707,7 +725,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				expr = strip(sq.projCols[ob.pos-1].name)
 				// Rebased to the underlying projection text — segments
 				// follow the same internal-name rule.
-				ob.bare, ob.qualifier, ob.qualified = expr, "", false
+				ob.bare, ob.qualifier, ob.qualified, ob.segs = expr, "", false, nil
 			}
 			nullsFirst := ob.ascending
 			if ob.nullsFirst != nil {
@@ -719,7 +737,17 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 			// Pos), and the translator bakes a surviving Pos only into a
 			// select-list-carrying input (the aggregate reshaping
 			// projection or a union) — never a derived source's slots.
-			sk := logical.SortKey{Expr: expr, Dir: dir, NullsFirst: nullsFirst, Pos: ob.pos, BareRef: ob.bareRef, Bare: ob.bare, Qualifier: ob.qualifier, Qualified: ob.qualified}
+			sk := logical.SortKey{
+				Expr:       expr,
+				Dir:        dir,
+				NullsFirst: nullsFirst,
+				Pos:        ob.pos,
+				BareRef:    ob.bareRef,
+				Bare:       ob.bare,
+				Qualifier:  ob.qualifier,
+				Qualified:  ob.qualified,
+				Segs:       append([]string(nil), ob.segs...),
+			}
 			if ob.pos >= 1 && ob.pos <= len(sq.postSortAggregateOutputOrdinals) &&
 				sq.postSortAggregateOutputOrdinals[ob.pos-1] >= 0 {
 				sk.AggregateOutputOrdinal = sq.postSortAggregateOutputOrdinals[ob.pos-1]
@@ -730,7 +758,7 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				// from here on (the group-key strip rule). Expression keys
 				// keep zero segments: their Expr is a rendering, never a
 				// reference.
-				sk.Bare, sk.Qualifier, sk.Qualified = expr, "", false
+				sk.Bare, sk.Qualifier, sk.Qualified, sk.Segs = expr, "", false, nil
 			}
 			keys = append(keys, sk)
 		}

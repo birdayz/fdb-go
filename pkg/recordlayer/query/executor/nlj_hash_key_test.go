@@ -33,7 +33,7 @@ import (
 // nljKeyLegs builds the two-leg fixtures of ojWiringLegs with configurable
 // join-key column types: A[ID outerKey, V long] / B[ID innerKey, W long],
 // their typed QOVs, and the ordinal seed RC.
-func nljKeyLegs(t *testing.T, outerKey, innerKey values.Type) (legA, legB *values.RecordType, qovA, qovB *values.QuantifiedObjectValue, seed *values.RecordConstructorValue) {
+func nljKeyLegs(t *testing.T, outerKey, innerKey values.Type) (legA, legB *values.RecordType, qovA, qovB values.QuantifiedObjectValue, seed *values.RecordConstructorValue) {
 	t.Helper()
 	legA = values.NewRecordType("", false, []values.Field{
 		{Name: "ID", FieldType: outerKey, Ordinal: 0},
@@ -43,18 +43,19 @@ func nljKeyLegs(t *testing.T, outerKey, innerKey values.Type) (legA, legB *value
 		{Name: "ID", FieldType: innerKey, Ordinal: 0},
 		{Name: "W", FieldType: values.NotNullLong, Ordinal: 1},
 	})
-	qovA = values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA)
-	qovB = values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), legB)
+	qovA = mustTestQOV(t, values.NamedCorrelationIdentifier("A"), legA)
+	qovB = mustTestQOV(t, values.NamedCorrelationIdentifier("B"), legB)
 	seed = buildOrdinalJoinRC(t, qovA, qovB)
 	return legA, legB, qovA, qovB, seed
 }
 
 // nljKeyEqPred builds the single-equality equijoin A.ID = B.ID over the
 // typed leg QOVs — the exact shape extractEquijoinOperands accepts.
-func nljKeyEqPred(qovA, qovB *values.QuantifiedObjectValue, outerKey, innerKey values.Type) predicates.QueryPredicate {
+func nljKeyEqPred(t testing.TB, qovA, qovB values.QuantifiedObjectValue, _, _ values.Type) predicates.QueryPredicate {
+	t.Helper()
 	return ojEqPred(
-		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, outerKey),
-		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, innerKey),
+		mustTestFieldOrdinal(t, qovA, 0),
+		mustTestFieldOrdinal(t, qovB, 0),
 	)
 }
 
@@ -66,7 +67,7 @@ func nljKeyEqPred(qovA, qovB *values.QuantifiedObjectValue, outerKey, innerKey v
 func TestNLJCursor_HashPath_BytesKeys(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullBytes, values.NotNullBytes)
-	pred := nljKeyEqPred(qovA, qovB, values.NotNullBytes, values.NotNullBytes)
+	pred := nljKeyEqPred(t, qovA, qovB, values.NotNullBytes, values.NotNullBytes)
 	bkey := func(i int) []byte { return []byte(fmt.Sprintf("k%03d", i)) }
 	outerRows := []QueryResult{ojLegQR(t, legA, bkey(5), int64(50))}
 
@@ -121,7 +122,7 @@ func TestNLJCursor_HashPath_BytesKeys(t *testing.T) {
 func TestNLJCursor_HashPath_CrossNumericKeys(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullLong, values.NotNullDouble)
-	pred := nljKeyEqPred(qovA, qovB, values.NotNullLong, values.NotNullDouble)
+	pred := nljKeyEqPred(t, qovA, qovB, values.NotNullLong, values.NotNullDouble)
 	outerRows := []QueryResult{ojLegQR(t, legA, int64(5), int64(50))}
 
 	run := func(t *testing.T, nInner int) (*nljCursor, []QueryResult) {
@@ -175,7 +176,7 @@ func TestNLJCursor_HashPath_CrossNumericKeys(t *testing.T) {
 func TestNLJCursor_HashPath_UnsignedKeys(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullLong, values.NotNullLong)
-	pred := nljKeyEqPred(qovA, qovB, values.NotNullLong, values.NotNullLong)
+	pred := nljKeyEqPred(t, qovA, qovB, values.NotNullLong, values.NotNullLong)
 	big := uint64(math.MaxInt64) + 7
 	outerRows := []QueryResult{
 		ojLegQR(t, legA, big, int64(50)),
@@ -228,7 +229,7 @@ func TestNLJCursor_HashPath_UnsignedKeys(t *testing.T) {
 func TestNLJCursor_HashPath_Float32VsFloat64Keys(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullFloat, values.NotNullDouble)
-	pred := nljKeyEqPred(qovA, qovB, values.NotNullFloat, values.NotNullDouble)
+	pred := nljKeyEqPred(t, qovA, qovB, values.NotNullFloat, values.NotNullDouble)
 
 	innerRows := make([]QueryResult, 120)
 	for i := range innerRows {
@@ -256,7 +257,7 @@ func TestNLJCursor_HashPath_Float32VsFloat64Keys(t *testing.T) {
 func TestNLJCursor_HashPath_StringKeys(t *testing.T) {
 	t.Parallel()
 	legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullString, values.NotNullString)
-	pred := nljKeyEqPred(qovA, qovB, values.NotNullString, values.NotNullString)
+	pred := nljKeyEqPred(t, qovA, qovB, values.NotNullString, values.NotNullString)
 
 	innerRows := make([]QueryResult, 120)
 	for i := range innerRows {
@@ -295,7 +296,7 @@ func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 	t.Run("NaN inner key declines the hash at build", func(t *testing.T) {
 		t.Parallel()
 		legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullLong, values.NotNullDouble)
-		pred := nljKeyEqPred(qovA, qovB, values.NotNullLong, values.NotNullDouble)
+		pred := nljKeyEqPred(t, qovA, qovB, values.NotNullLong, values.NotNullDouble)
 		innerRows := make([]QueryResult, 120)
 		for i := range innerRows {
 			key := float64(i)
@@ -323,7 +324,7 @@ func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 	t.Run("NaN probe degrades to the full candidate list", func(t *testing.T) {
 		t.Parallel()
 		legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullDouble, values.NotNullDouble)
-		pred := nljKeyEqPred(qovA, qovB, values.NotNullDouble, values.NotNullDouble)
+		pred := nljKeyEqPred(t, qovA, qovB, values.NotNullDouble, values.NotNullDouble)
 		innerRows := make([]QueryResult, 120)
 		for i := range innerRows {
 			innerRows[i] = ojLegQR(t, legB, float64(i), int64(i*10))
@@ -351,7 +352,7 @@ func TestNLJCursor_HashPath_NaNKeys(t *testing.T) {
 		// and it must match the NaN outer against exactly the NaN inner key,
 		// never against the finite floats.
 		legA, legB, qovA, qovB, seed := nljKeyLegs(t, values.NotNullDouble, values.NotNullDouble)
-		pred := nljKeyEqPred(qovA, qovB, values.NotNullDouble, values.NotNullDouble)
+		pred := nljKeyEqPred(t, qovA, qovB, values.NotNullDouble, values.NotNullDouble)
 		innerRows := make([]QueryResult, 120)
 		for i := range innerRows {
 			key := float64(i)

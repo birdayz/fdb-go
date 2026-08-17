@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -57,14 +59,47 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	fetchPlan := fetchW
 	queryPredicates := filterW.GetPredicates()
 
-	oldInnerAlias := filterW.GetInnerQuantifier().GetAlias()
+	filterEdge, err := filterW.GetInnerQuantifier().RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(fmt.Errorf("PushFilterThroughFetch filter edge: %w", err))
+		return
+	}
+	fetchOutputLayout, err := fetchPlan.ProvidedOutputLayout()
+	if err != nil {
+		call.Fail(fmt.Errorf("PushFilterThroughFetch fetch output layout: %w", err))
+		return
+	}
+	fetchOutputCarrier := fetchOutputLayout.Carrier()
+	if fetchOutputCarrier == nil {
+		call.Fail(fmt.Errorf("PushFilterThroughFetch fetch output layout has no carrier"))
+		return
+	}
+
+	oldInnerAlias := filterEdge.Correlation()
 	newInnerAlias := values.UniqueCorrelationIdentifier()
 
 	var pushed []predicates.QueryPredicate
 	var residual []predicates.QueryPredicate
 
 	for _, qp := range queryPredicates {
-		translated, ok := tryPushPredicate(fetchPlan, oldInnerAlias, newInnerAlias, qp)
+		// A physical filter evaluates against its selected child's exact output
+		// carrier. The fetch candidate, however, translates values from the
+		// filter's declared edge alias into the partial-row domain. Cross that
+		// single phase boundary before asking the candidate: TranslatePhaseRoot
+		// matches the fetch carrier by exact handle, so an independently minted
+		// current root (or any foreign root) cannot be mistaken for this fetch.
+		//
+		// Keep qp itself for the residual branch. The edge-relative copy is only
+		// the candidate's pushability program; publishing it above the fetch would
+		// leave the filter reading an edge alias its selected output does not bind.
+		candidatePredicate, err := translateFetchOutputCarrierToEdge(
+			qp, fetchOutputCarrier, filterEdge)
+		if err != nil {
+			call.Fail(fmt.Errorf("PushFilterThroughFetch predicate phase bridge: %w", err))
+			return
+		}
+		translated, ok := tryPushPredicate(
+			fetchPlan, oldInnerAlias, newInnerAlias, candidatePredicate)
 		if ok {
 			pushed = append(pushed, translated)
 		} else {
@@ -105,7 +140,17 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	)
 	pushedInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
 		call.MemoizeFinalExpression(fetchInnerPlan))
-	pushedFilterPlan := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(pushedInnerQ, pushed)
+	// PushValue translated the predicate program into newInnerAlias's exact
+	// partial-row domain. The memo edge below deliberately keeps innerQ's alias
+	// so its flowed result identity remains stable; preserve the translated
+	// program's distinct binding root explicitly instead of leaving it unbound
+	// at execution.
+	pushedFilterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+		pushedInnerQ, pushed, newInnerAlias)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// Memoize the pushed filter.
 	pushedFilterRef := call.MemoizeFinalExpression(pushedFilterPlan)
@@ -113,12 +158,16 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	// Build: Fetch(Filter(pushed, fetchInner)) as its own cascades expression
 	// carrying the live pushedFilterRef edge (RFC-184 W2).
 	newFetchQ := expressions.ForEachQuantifier(pushedFilterRef)
-	newFetchPlan := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+	newFetchPlan, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		newFetchQ,
 		fetchPlan.GetTranslateValueFunction(),
 		fetchPlan.GetResultType(),
 		fetchPlan.GetFetchIndexRecords(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	if len(residual) == 0 {
 		// Case 2: all pushed.
@@ -129,15 +178,42 @@ func (r *PushFilterThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		newQOverFetch := expressions.ForEachQuantifier(fetchRef)
 
 		// Rebase residual predicates to use the new fetch quantifier alias.
-		rebasedResidual := rebasePredicates(residual, oldInnerAlias, newQOverFetch.GetAlias())
+		rebasedResidual, err := rebasePredicates(residual, oldInnerAlias, newQOverFetch.GetAlias())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 
 		// The residual filter carries the live newQOverFetch edge — a
 		// DISENTANGLED single-member reference over the concrete newFetchPlan
 		// (MemoizeFinalExpression), so planFromQuantifier resolves it directly
 		// (RFC-184 W2).
-		residualFilterPlan := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(newQOverFetch, rebasedResidual)
+		residualFilterPlan, err := plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(newQOverFetch, rebasedResidual)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		call.Yield(residualFilterPlan)
 	}
+}
+
+// translateFetchOutputCarrierToEdge moves only values rooted at one fetch's
+// exact output-carrier handle onto the filter edge declared for that fetch.
+// The candidate translator deliberately admits the declared edge alias only:
+// weakening that gate would let a self-join's same-shaped foreign row read this
+// fetch's index entry. TranslatePhaseRoot keeps the bridge equally strict by
+// matching the source QOV by pointer identity and requiring exact type equality.
+func translateFetchOutputCarrierToEdge(
+	predicate predicates.QueryPredicate,
+	fetchOutputCarrier values.QuantifiedObjectValue,
+	filterEdge values.QuantifiedObjectValue,
+) (predicates.QueryPredicate, error) {
+	return predicates.TransformEmbeddedValuesChecked(
+		predicate,
+		func(value values.Value) (values.Value, error) {
+			return values.TranslatePhaseRoot(value, fetchOutputCarrier, filterEdge)
+		},
+	)
 }
 
 // tryPushPredicate attempts to translate a predicate's value references
@@ -282,7 +358,7 @@ func tryTranslateValueRec(
 	// tree against the candidate's provided index Values via semanticEquals
 	// (ScanWithFetchMatchCandidate.java:51-76), so an uncovered column simply
 	// fails to match and correlation never enters into it.
-	if _, isAccessor := v.(*values.FieldValue); isAccessor {
+	if _, isAccessor := values.AsFieldValue(v); isAccessor {
 		translated, ok := fetchPlan.PushValue(v, oldAlias, newAlias)
 		if !ok {
 			return nil // the index does not cover this column — not pushable
@@ -348,7 +424,7 @@ func valueReadsAColumn(v values.Value) bool {
 	if v == nil {
 		return false
 	}
-	if _, ok := v.(*values.FieldValue); ok {
+	if _, ok := values.AsFieldValue(v); ok {
 		return true
 	}
 	for _, c := range v.Children() {

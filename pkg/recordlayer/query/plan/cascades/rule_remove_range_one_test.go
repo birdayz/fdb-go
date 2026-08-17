@@ -16,26 +16,25 @@ import (
 func TestRemoveRangeOneRule(t *testing.T) {
 	t.Parallel()
 	scanQ := func() expressions.Quantifier {
-		return expressions.ForEachQuantifier(expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-		))
+		return expressions.ForEachQuantifier(expressions.InitialOf(smallRewriteScan("T")))
 	}
 	rangeOneQ := func() expressions.Quantifier {
 		return expressions.ForEachQuantifier(expressions.InitialOf(
-			expressions.NewTableFunctionExpression(values.NewRangeValue(
-				&values.ConstantValue{Value: int64(0)},
-				&values.ConstantValue{Value: int64(1)},
-				&values.ConstantValue{Value: int64(1)},
-			)),
+			mustSmallRewriteConstruct(expressions.NewTableFunctionExpression(values.NewRangeValue(
+				&values.ConstantValue{Value: int64(0), Typ: values.NotNullLong},
+				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+				&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+			))),
 		))
 	}
 
 	t.Run("drops_unreferenced_range_one", func(t *testing.T) {
 		t.Parallel()
 		sQ, rQ := scanQ(), rangeOneQ()
-		sel := expressions.NewSelectExpression(sQ.GetFlowedObjectValue(),
-			[]expressions.Quantifier{sQ, rQ}, nil)
-		yielded := FireExpressionRule(NewRemoveRangeOneRule(), expressions.InitialOf(sel))
+		sRoot := mustSmallRewriteConstruct(sQ.RequireFlowedObjectValue())
+		sel := mustSmallRewriteConstruct(expressions.NewSelectExpression(sRoot,
+			[]expressions.Quantifier{sQ, rQ}, nil))
+		yielded := fireSmallRewriteRule(t, NewRemoveRangeOneRule(), expressions.InitialOf(sel))
 		// FireExpressionRule also fires on the quantifier-swapped permutation
 		// (this Select is a 2-ForEach ChildrenAsSet join), so both orderings
 		// yield the range-one-removed Select — one or more equivalent yields.
@@ -58,10 +57,12 @@ func TestRemoveRangeOneRule(t *testing.T) {
 		sQ, rQ := scanQ(), rangeOneQ()
 		// A predicate referencing the RANGE(0,1) quantifier's flowed value → the
 		// alias IS referenced, so the rule must not fire.
-		pred := predicates.NewValuePredicate(rQ.GetFlowedObjectValue())
-		sel := expressions.NewSelectExpression(sQ.GetFlowedObjectValue(),
-			[]expressions.Quantifier{sQ, rQ}, []predicates.QueryPredicate{pred})
-		yielded := FireExpressionRule(NewRemoveRangeOneRule(), expressions.InitialOf(sel))
+		rRoot := mustSmallRewriteConstruct(rQ.RequireFlowedObjectValue())
+		sRoot := mustSmallRewriteConstruct(sQ.RequireFlowedObjectValue())
+		pred := predicates.NewValuePredicate(rRoot)
+		sel := mustSmallRewriteConstruct(expressions.NewSelectExpression(sRoot,
+			[]expressions.Quantifier{sQ, rQ}, []predicates.QueryPredicate{pred}))
+		yielded := fireSmallRewriteRule(t, NewRemoveRangeOneRule(), expressions.InitialOf(sel))
 		if len(yielded) != 0 {
 			t.Fatalf("must not fire when the RANGE(0,1) alias is referenced, yielded %d", len(yielded))
 		}
@@ -70,9 +71,10 @@ func TestRemoveRangeOneRule(t *testing.T) {
 	t.Run("declines_single_quantifier", func(t *testing.T) {
 		t.Parallel()
 		rQ := rangeOneQ()
-		sel := expressions.NewSelectExpression(rQ.GetFlowedObjectValue(),
-			[]expressions.Quantifier{rQ}, nil)
-		yielded := FireExpressionRule(NewRemoveRangeOneRule(), expressions.InitialOf(sel))
+		rRoot := mustSmallRewriteConstruct(rQ.RequireFlowedObjectValue())
+		sel := mustSmallRewriteConstruct(expressions.NewSelectExpression(rRoot,
+			[]expressions.Quantifier{rQ}, nil))
+		yielded := fireSmallRewriteRule(t, NewRemoveRangeOneRule(), expressions.InitialOf(sel))
 		if len(yielded) != 0 {
 			t.Fatalf("must not fire on a single-quantifier Select (cardinality guard), yielded %d", len(yielded))
 		}
@@ -83,9 +85,10 @@ func TestRemoveRangeOneRule(t *testing.T) {
 		// Removing a one-row RANGE leg from a LEFT OUTER Select can change
 		// cardinality (null-extension) — the rule must decline.
 		sQ, rQ := scanQ(), rangeOneQ()
-		sel := expressions.NewSelectExpressionWithJoinType(sQ.GetFlowedObjectValue(),
-			[]expressions.Quantifier{sQ, rQ}, nil, nil, expressions.JoinLeftOuter)
-		yielded := FireExpressionRule(NewRemoveRangeOneRule(), expressions.InitialOf(sel))
+		sRoot := mustSmallRewriteConstruct(sQ.RequireFlowedObjectValue())
+		sel := mustSmallRewriteConstruct(expressions.NewSelectExpressionWithJoinType(sRoot,
+			[]expressions.Quantifier{sQ, rQ}, nil, nil, expressions.JoinLeftOuter))
+		yielded := fireSmallRewriteRule(t, NewRemoveRangeOneRule(), expressions.InitialOf(sel))
 		if len(yielded) != 0 {
 			t.Fatalf("must not fire on a LEFT OUTER Select (cardinality change), yielded %d", len(yielded))
 		}
@@ -97,9 +100,10 @@ func TestRemoveRangeOneRule(t *testing.T) {
 		// rebuilt Select must keep the scan's alias and drop the range leg's
 		// (NewSelectExpression alone discarded aliases/joinType).
 		sQ, rQ := scanQ(), rangeOneQ()
-		sel := expressions.NewSelectExpressionWithJoinType(sQ.GetFlowedObjectValue(),
-			[]expressions.Quantifier{sQ, rQ}, nil, []string{"S", "R"}, expressions.JoinCross)
-		yielded := FireExpressionRule(NewRemoveRangeOneRule(), expressions.InitialOf(sel))
+		sRoot := mustSmallRewriteConstruct(sQ.RequireFlowedObjectValue())
+		sel := mustSmallRewriteConstruct(expressions.NewSelectExpressionWithJoinType(sRoot,
+			[]expressions.Quantifier{sQ, rQ}, nil, []string{"S", "R"}, expressions.JoinCross))
+		yielded := fireSmallRewriteRule(t, NewRemoveRangeOneRule(), expressions.InitialOf(sel))
 		if len(yielded) == 0 {
 			t.Fatal("expected the rule to fire on an inner/cross Select")
 		}

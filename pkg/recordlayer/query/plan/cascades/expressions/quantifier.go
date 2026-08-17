@@ -205,16 +205,11 @@ func (q Quantifier) GetAlias() values.CorrelationIdentifier { return q.alias }
 
 // GetRangesOver returns the Reference holding the inner expression.
 //
-// Resolves through Canonical() so that if the child Reference has been
-// merged away (RFC-037 cross-group merging), every consumer transparently
-// sees the surviving Reference. This single accessor is the only reader of
-// the raw rangesOver field, so resolving here covers all consumers without
-// rewriting in-flight expressions.
+// Resolves forwarding read-only so that if the child Reference has been merged
+// away (RFC-037 cross-group merging), every consumer transparently sees the
+// survivor without path-compressing shared topology during a fallible read.
 func (q Quantifier) GetRangesOver() *Reference {
-	if q.rangesOver == nil {
-		return nil
-	}
-	return q.rangesOver.Canonical()
+	return canonicalReferenceReadOnly(q.rangesOver)
 }
 
 // IsNullOnEmpty returns true for ForEach quantifiers that should
@@ -224,37 +219,6 @@ func (q Quantifier) IsNullOnEmpty() bool { return q.nullOnEmpty }
 // IsStrictSingle returns true for a correlated-scalar-subquery inner quantifier
 // that must yield at most one row per outer row (a second row → 21000).
 func (q Quantifier) IsStrictSingle() bool { return q.strictSingle }
-
-// GetFlowedObjectValue returns a Value representing "the row currently
-// flowing along this Quantifier". Predicates / projections in the
-// owning expression use this Value (via FieldValue accesses) to refer
-// to columns of the inner expression's output.
-//
-// Java's `Quantifier.getFlowedObjectValue()` verbatim (Quantifier.java:801-803):
-// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`, i.e. ALWAYS
-// carrying the row type when the ranged-over reference states one.
-//
-// It used to mint the alias with no type, and the reason recorded for that was
-// that typing it "changes expression identity across the whole planner". That is
-// measured FALSE and pinned: a QuantifiedObjectValue's identity is its
-// CORRELATION in all three paths that decide it — EqualsWithoutChildren,
-// SemanticEqualsUnderAliasMap, and SemanticHashCode, which folds the tag "qov"
-// with the alias excluded. Typing one changes what it SAYS, never which
-// expression it IS. (TestTypingAQuantifiedObjectValueDoesNotChangeItsIdentity.)
-//
-// On a member DISAGREEMENT this returns the alias with no type, because it has no
-// error channel to report one through. That is NOT the collapse
-// GetFlowedObjectValueTyped's doc forbids: a caller that BAKES AN ORDINAL against
-// this row must use that accessor and refuse to proceed, because for it a row
-// shape chosen by memo insertion order is a wrong-slot read. A caller merely
-// reporting what flows loses type information it never had.
-func (q Quantifier) GetFlowedObjectValue() values.Value {
-	rt, err := q.GetFlowedObjectType()
-	if err != nil || rt == nil {
-		return values.NewQuantifiedObjectValue(q.alias)
-	}
-	return values.NewQuantifiedObjectValueOfType(q.alias, rt)
-}
 
 // MemberResultTypeDisagreementError reports that a Reference's members do not
 // agree on their result type, so no member is authoritative for the quantifier's
@@ -279,9 +243,23 @@ func (e *MemberResultTypeDisagreementError) Error() string {
 		e.Alias.Name(), e.Left, e.Right)
 }
 
-// GetFlowedObjectType returns the ROW type of the rows flowing along this
-// quantifier — Java's Quantifier.getFlowedObjectType() (Quantifier.java:806-810:
-// the ranged-over Reference's result type, unwrapped from its RELATION wrapper).
+// FlowedObjectTypeUnavailableError reports that a Quantifier cannot derive the
+// exact object or scalar type required by a QOV. Empty and memberless
+// References are invalid quantifier inputs; they are not represented by an
+// untyped placeholder value.
+type FlowedObjectTypeUnavailableError struct {
+	Alias  values.CorrelationIdentifier
+	Reason string
+}
+
+func (e *FlowedObjectTypeUnavailableError) Error() string {
+	return fmt.Sprintf("quantifier %s: flowed object type unavailable: %s", e.Alias.Name(), e.Reason)
+}
+
+// GetFlowedObjectType returns the exact object or scalar type flowing along this
+// quantifier. It follows Java's Quantifier.getFlowedObjectType(): every member's
+// relational result is represented as exactly RELATION<result>, that one
+// wrapper is removed, and NullOnEmpty widens the object once at this edge.
 //
 // Java resolves it from the Reference, whose getResultType() REDUCES over every
 // member expression and verifies each pair agrees (Reference.java:504-513). That
@@ -299,57 +277,149 @@ func (e *MemberResultTypeDisagreementError) Error() string {
 // unavailable" and keep the untyped QOV they used before. That is a REPORTING
 // gap, never a substitute — a caller that needs the type to bake an ordinal must
 // not invent one.
-func (q Quantifier) GetFlowedObjectType() (*values.RecordType, error) {
+func (q Quantifier) GetFlowedObjectType() (values.Type, error) {
 	ref := q.GetRangesOver()
 	if ref == nil {
-		return nil, nil
+		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "quantifier has no Reference"}
+	}
+	// The answer depends only on the Reference's members, and deriving it
+	// snapshots every one of them through ExactRelationOf. Rule bodies call
+	// this per match, so without the memo the same unchanged member set is
+	// re-snapshotted continuously; see Reference.flowedType.
+	if cached, ok := ref.cachedFlowedType(); ok {
+		return q.widenFlowedTypeForNullOnEmpty(cached)
 	}
 	// Java's getAllMemberExpressions() — exploratory AND final. A final member is
 	// the one a physical plan is built from, so excluding it would verify the
 	// agreement over exactly the members that do not end up in the plan.
 	members := ref.AllMembers()
 	if len(members) == 0 {
-		return nil, nil
+		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference has no members"}
 	}
-	var found *values.RecordType
+	var found values.Type
 	for _, member := range members {
 		if member == nil {
-			continue
+			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference contains a nil member"}
 		}
 		rv := member.GetResultValue()
 		if rv == nil {
-			continue
+			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "member has no result Value"}
 		}
-		rt := rowTypeOf(rv.Type())
-		if rt == nil {
-			// An untyped member cannot contradict a typed one — it reports nothing.
-			// Java has no such member; Go's logical expressions do, and the reporting
-			// gap is documented above.
-			continue
+		relation, err := values.ExactRelationOf(rv.Type())
+		if err != nil {
+			return nil, fmt.Errorf("quantifier %s member result type: %w", q.alias.Name(), err)
 		}
+		inner, ok := relation.RelationInner()
+		if !ok {
+			return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "member result is missing its relation wrapper"}
+		}
+		// The member's result VALUE states the leg boundaries; the row TYPE
+		// derived from it does not. Carry them, or the quantifier flows a row
+		// that has forgotten where each source's columns start — which does not
+		// read downstream as "no legs" but as ONE run spanning the whole concat
+		// keyed by the box's rightmost leaf, so a qualified column resolves into
+		// the first leg's slots. Legs are not part of exact-type identity, so
+		// this adds physical information without touching the agreement check
+		// below.
+		rt := values.WithSeedTilingLegs(inner.Type(), rv)
 		if found == nil {
 			found = rt
 			continue
 		}
-		refined, agree := refineRowTypes(found, rt)
-		if !agree {
-			// The ACCUMULATED row on the left, not the first typed member's. Those
-			// differ from the third member onwards, and the error used to report the
-			// first — a row that was not what the failing comparison saw. On the shape
-			// this reduction exists for (one member unresolved, a later one resolving
-			// it, a third conflicting) the reported left-hand row still carried the
-			// UNKNOWN the second member had already resolved, so the message described
-			// a conflict nobody had, and the real one was invisible. Both sides are the
-			// unwrapped ROW types, because those are what refineRowTypes compared.
+		// LEG TABLES ARE COMPARED SEPARATELY, AND BEFORE Equals, because
+		// RecordType.Equals deliberately IGNORES Legs — boundaries are physical
+		// information, not type identity. So equality cannot see this
+		// disagreement, and two members stating the same fields under different
+		// leg tables would otherwise resolve by whichever the memo scan reached
+		// first. Measured, before this check existed: the same pair of members
+		// flowed a 2-leg row in one insertion order and a 0-leg row in the other
+		// (TestGetFlowedObjectTypeRefusesDisagreeingLegTables drives both).
+		//
+		// AN EMPTY TABLE IS AN UNSTATED GAP, NOT A STATEMENT — so a POPULATED
+		// table wins over an empty one, and only two DIFFERENT populated tables
+		// conflict. That ruling is deliberate and it is the opposite of the one
+		// `legTablesAgree` alone implements; both are defensible, so here is why
+		// this is the one.
+		//
+		// The defect being fixed is that the answer DEPENDED ON INSERTION ORDER:
+		// the same two members flowed a 2-leg row when the tiling one was
+		// reached first and a 0-leg row when it was not. Either ruling removes
+		// that, because both are order-independent. What separates them is the
+		// cost of being wrong. Treating empty as a STATEMENT declines the
+		// quantifier outright, and measured over this tree that rejected real,
+		// previously-planning shapes — every correlated-EXISTS-over-a-derived-
+		// source plan among them — because in practice the empty side is a
+		// producer that never DERIVED boundaries, not one asserting it has none.
+		// Trading a wrong row for a lost plan is not an improvement.
+		//
+		// Taking the populated table is also strictly more information rather
+		// than a guess: SeedTilingLegs only yields a table that tiles the row
+		// EXACTLY, so the boundaries it states are consistent with the field
+		// list both members already agree on. And it is the safe direction —
+		// a row with no boundaries does not read downstream as "no legs", it
+		// reads as ONE run spanning the whole concat keyed by the box's
+		// rightmost leaf, so an alias-qualified column resolves at
+		// runOffset+ordinal, inside the FIRST leg. Empty is the shape that
+		// produces the wrong slot; adopting the stated boundaries removes it.
+		foundLegs, rtLegs := rowTypeLegsOf(found), rowTypeLegsOf(rt)
+		switch {
+		case len(foundLegs) == 0:
+			// Adopt rt's boundaries (possibly also empty) — see above.
+			found = values.WithRecordTypeLegs(found, rtLegs)
+		case len(rtLegs) == 0:
+			// Keep what `found` already states.
+		case !legTablesAgree(foundLegs, rtLegs):
 			return nil, &MemberResultTypeDisagreementError{
 				Alias: q.alias, Left: found, Right: rt,
 			}
 		}
-		found = refined
+		if !found.Equals(rt) {
+			return nil, &MemberResultTypeDisagreementError{
+				Alias: q.alias, Left: found, Right: rt,
+			}
+		}
 	}
-	return found, nil
+	if found == nil {
+		return nil, &FlowedObjectTypeUnavailableError{Alias: q.alias, Reason: "Reference has no usable members"}
+	}
+	// Cached BEFORE the NullOnEmpty widening, which is the quantifier's
+	// property and not the Reference's: two quantifiers can range over one
+	// Reference with different NullOnEmpty, so caching the widened row would
+	// hand the second one the first one's nullability.
+	ref.setCachedFlowedType(found)
+	return q.widenFlowedTypeForNullOnEmpty(found)
 }
 
+// widenFlowedTypeForNullOnEmpty applies this quantifier's NullOnEmpty to a
+// Reference-derived row. Kept separate from the derivation so the memo can hold
+// the part that belongs to the Reference and this part stays per-quantifier.
+func (q Quantifier) widenFlowedTypeForNullOnEmpty(found values.Type) (values.Type, error) {
+	if !q.nullOnEmpty {
+		return found, nil
+	}
+	widened := values.WithNullability(found, true)
+	if _, err := values.SnapshotExactType(widened); err != nil {
+		return nil, fmt.Errorf("quantifier %s NullOnEmpty flowed type: %w", q.alias.Name(), err)
+	}
+	return widened, nil
+}
+
+// NOT ON THE LIVE PATH. GetFlowedObjectType compares member rows with strict
+// Equals plus the leg-table rule above; nothing in production calls this, and
+// its only callers are in leg_table_population_blast_radius_test.go. Two things
+// follow and both matter to anyone reading it as protection:
+//
+//   - its populated-vs-empty ruling is the OPPOSITE of the live one. This
+//     declines that pair; the live scan adopts the stated boundaries. The
+//     reasoning for the live choice is at the call site.
+//   - the UNSTATED/stated refinement below (UNKNOWN cannot contradict a stated
+//     type) is not applied by the live scan either, which requires members to
+//     be exactly typed.
+//
+// It is kept only because the blast-radius tests still document why populating
+// a leg table is not behaviour-neutral. Deleting it, and repointing those tests
+// at the live path, is tracked in TODO.md.
+//
 // refineRowTypes reduces two members' row types to the single row the quantifier
 // flows — Java's `Verify.verify(left.equals(right))` reduction
 // (Reference.java:504-513), corrected for the one thing Go has that Java does
@@ -448,6 +518,17 @@ func refineRecordNames(a, b string) (string, bool) {
 	return "", false
 }
 
+// rowTypeLegsOf returns the leg table a flowed row states, or nil for any type
+// that is not a record. A non-record row has no boundaries to disagree about,
+// so two of them agree trivially.
+func rowTypeLegsOf(t values.Type) []values.RecordTypeLeg {
+	rt, ok := t.(*values.RecordType)
+	if !ok || rt == nil {
+		return nil
+	}
+	return rt.Legs
+}
+
 // legTablesAgree reports whether two members state the SAME buried-leg boundary
 // table. nil and empty are the same statement ("no boundaries"); anything else is
 // compared element-wise on all four fields, because a leg differing only in Start
@@ -543,46 +624,19 @@ func isUnstatedType(t values.Type) bool {
 	return t == nil || t.Code() == values.TypeCodeUnknown
 }
 
-// rowTypeOf unwraps a member's result type to its ROW type, through the RELATION
-// wrapper a relational expression's result value carries. nil when it is neither.
-func rowTypeOf(t values.Type) *values.RecordType {
-	switch t := t.(type) {
-	case *values.RecordType:
-		return t
-	case *values.RelationType:
-		if rt, isRT := t.InnerType.(*values.RecordType); isRT {
-			return rt
-		}
-	}
-	return nil
-}
-
-// GetFlowedObjectValueTyped is GetFlowedObjectValue with the member DISAGREEMENT
-// surfaced instead of swallowed. Both accessors type the value; they differ only
-// in what they do when the reference's members cannot agree on the row they flow.
-//
-// So the choice between them is NOT "do I want the type" — it is "can I proceed
-// without one". Callers that BAKE ORDINALS against the flowed row use this and
-// refuse to proceed on the error, because for them an invented row shape is a
-// wrong-slot read that no test can predict; an untyped QOV degrades a reference
-// to source-relative, and a source-relative operand pushed into a scan evaluates
-// to NULL against the build-bound row, so the join returns zero rows with no
-// error. Callers merely reporting what flows take GetFlowedObjectValue and lose
-// type information they never had.
-//
-// The error is the DISAGREEMENT only (see MemberResultTypeDisagreementError),
-// never the ordinary "no type yet": that returns the untyped QOV and a nil error.
-// A caller must not collapse the two — falling back to the untyped value on a
-// disagreement is choosing a row shape by memo insertion order.
-func (q Quantifier) GetFlowedObjectValueTyped() (values.Value, error) {
-	rt, err := q.GetFlowedObjectType()
+// RequireFlowedObjectValue constructs the only legal QOV for this edge. There
+// is no reporting-only or UnknownType fallback: absence, invalidity, and member
+// disagreement are returned before a Value is published.
+func (q Quantifier) RequireFlowedObjectValue() (values.QuantifiedObjectValue, error) {
+	flowedType, err := q.GetFlowedObjectType()
 	if err != nil {
 		return nil, err
 	}
-	if rt != nil {
-		return values.NewQuantifiedObjectValueOfType(q.alias, rt), nil
+	qov, err := values.NewQuantifiedObjectValue(q.alias, flowedType)
+	if err != nil {
+		return nil, fmt.Errorf("quantifier %s flowed QOV: %w", q.alias.Name(), err)
 	}
-	return values.NewQuantifiedObjectValue(q.alias), nil
+	return qov, nil
 }
 
 // GetCorrelatedTo returns the set of CorrelationIdentifiers the inner

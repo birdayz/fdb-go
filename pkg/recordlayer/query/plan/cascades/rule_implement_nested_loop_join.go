@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -110,19 +111,26 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// An UNCORRELATED Explode leg is the IN-list shape (col IN (v1,v2,…) →
-	// SelectExpression with an Explode over a constant list); that is owned by
-	// ImplementInJoinRule, not the NLJ rule — bail. But a CORRELATED Explode (a
+	// An uncorrelated SCALAR Explode leg is the IN-list shape (col IN
+	// (v1,v2,…) → SelectExpression with an Explode over a constant list); that
+	// is owned by ImplementInJoinRule, not the NLJ rule — bail. ARRAY<RECORD> is
+	// different: it is a relation source (inline VALUES is the concrete SQL
+	// producer), so it remains eligible as the outer side of a lateral FlatMap.
+	// A CORRELATED Explode (a
 	// lateral array UNNEST, `FROM t, t.arr AS x` → Explode of FieldValue{arr}
 	// over the outer QOV) IS a correlated FlatMap: let it fall through to the
 	// rightDepsLeft/leftDepsRight FlatMap path below, which builds
 	// RecordQueryFlatMapPlan(outer, explode, …, resultValue, false) — the
 	// non-existential, no-FirstOrDefault path (RFC-142). The guard fires only
 	// when an Explode leg is not correlated to the OTHER leg.
-	if le := getExplodeExpression(leftRef); le != nil && !referenceIsCorrelatedTo(leftRef, quants[1].GetAlias()) {
+	if le := getExplodeExpression(leftRef); le != nil &&
+		isSupportedExplodeValue(le.GetCollectionValue()) &&
+		!referenceIsCorrelatedTo(leftRef, quants[1].GetAlias()) {
 		return
 	}
-	if re := getExplodeExpression(rightRef); re != nil && !referenceIsCorrelatedTo(rightRef, quants[0].GetAlias()) {
+	if re := getExplodeExpression(rightRef); re != nil &&
+		isSupportedExplodeValue(re.GetCollectionValue()) &&
+		!referenceIsCorrelatedTo(rightRef, quants[0].GetAlias()) {
 		return
 	}
 
@@ -210,16 +218,28 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		joinPredicates, joinResultValue, err := normalizeMaterializedJoinPrograms(
+			sel.GetPredicates(), sel.GetResultValue(),
+			leftPlan, leftCorr, rightPlan, rightCorr)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		// The materialized NLJ is its own cascades expression carrying its two leg
 		// edges directly (RFC-184 W2, no physicalNestedLoopJoinWrapper) — both legs
 		// are the live shared-group edges over the memoized leg exprs.
-		call.Yield(plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+		plan, err := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
 			leftQ, rightQ,
-			sel.GetPredicates(),
+			joinPredicates,
 			joinType,
 			leftCorr, rightCorr,
-			sel.GetResultValue(),
-		))
+			joinResultValue,
+		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(plan)
 		return
 	}
 
@@ -269,6 +289,19 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 	rightNeedsLeftEvaluation := rightDepsLeft || rightStrictSingle
 	requiresFlatMap := leftNeedsRightEvaluation || rightNeedsLeftEvaluation
 	if !requiresFlatMap {
+		// RewriteOuterJoinRule represents LEFT OUTER as an INNER Select whose
+		// null-supplying edge is marked NullOnEmpty.  That marker has meaning only
+		// in the correlated FlatMap lowering below, where DefaultOnEmpty wraps the
+		// inner before it is mapped.  An ordinary materialized NLJ neither reads
+		// nor preserves the edge flag: yielding one here with JoinInner would drop
+		// unmatched preserved rows (and could materialize a still-correlated inner
+		// once with its outer binding absent).  Decline this rewritten alternative;
+		// the original JoinLeftOuter member remains in the memo and is the exact
+		// materialized fail-closed fallback when the correlated rebase cannot be
+		// proven.
+		if quants[0].IsNullOnEmpty() || quants[1].IsNullOnEmpty() {
+			return
+		}
 		// Incomplete-bipartition guard: if BOTH legs reference (via re-exposed
 		// merge seeds) the SAME external table that is neither leg's own provided
 		// alias, the two legs are connected through a sibling that this bipartition
@@ -321,16 +354,28 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		// ordinal windows to rebase EXISTS predicates onto baked slots.
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
+		joinPredicates, joinResultValue, err := normalizeMaterializedJoinPrograms(
+			sel.GetPredicates(), sel.GetResultValue(),
+			leftPlan, leftCorr, rightPlan, rightCorr)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		// The materialized NLJ is its own cascades expression carrying its two leg
 		// edges directly (RFC-184 W2, no physicalNestedLoopJoinWrapper) — both legs
 		// are the live shared-group edges over the memoized leg exprs.
-		call.Yield(plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+		plan, err := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
 			leftQ, rightQ,
-			sel.GetPredicates(),
+			joinPredicates,
 			joinType,
 			leftCorr, rightCorr,
-			sel.GetResultValue(),
-		))
+			joinResultValue,
+		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(plan)
 	}
 
 	// Correlated FlatMap: for PartitionBinarySelectRule / RewriteOuterJoinRule output
@@ -460,6 +505,19 @@ func legReferencesAny(ref *expressions.Reference, targetSet map[values.Correlati
 func legExternalAliases(ref *expressions.Reference, provided map[values.CorrelationIdentifier]struct{}) map[values.CorrelationIdentifier]struct{} {
 	out := map[values.CorrelationIdentifier]struct{}{}
 	for a := range ref.GetCorrelatedTo() {
+		// `_current` names the row local to a physical operator edge. Two
+		// independently planned legs therefore both report it without sharing a
+		// producer: their exact carrier QOVs (and often their row types) are
+		// distinct. Treating the reserved spelling as an external sibling makes
+		// every pair of projected CTE legs look like an incomplete three-way
+		// bipartition and declines the only valid materialized cross join.
+		//
+		// A real excluded sibling is a named/unique correlation that survives
+		// outside both legs. Keep those in the set; only the phase-local current
+		// root is categorically incapable of naming the same sibling.
+		if a == values.CurrentCorrelation() {
+			continue
+		}
 		if _, ok := provided[a]; !ok {
 			out[a] = struct{}{}
 		}
@@ -490,12 +548,16 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	innerNullOnEmpty bool,
 	innerStrictSingle bool,
 ) {
-	flatMapPlan, _, _, ok := buildCorrelatedFlatMapPlan(
+	flatMapPlan, _, _, ok, err := buildCorrelatedFlatMapPlan(
 		call,
 		flattenAndPredicates(sel.GetPredicates()), sel.GetResultValue(),
 		outerPlan, innerPlan, outerCorr, innerCorr, outerExpr, innerExpr,
 		joinType, innerNullOnEmpty, innerStrictSingle, false,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	if !ok {
 		return
 	}
@@ -503,23 +565,26 @@ func (r *ImplementNestedLoopJoinRule) yieldGeneralFlatMap(
 	// W2, no physicalFlatMapWrapper) — yield it directly.
 	rebuild := func(
 		orderedOuter, orderedInner expressions.RelationalExpression,
-	) expressions.RelationalExpression {
+	) (expressions.RelationalExpression, error) {
 		outerPhysical, outerOK := orderedOuter.(physicalPlanExpression)
 		innerPhysical, innerOK := orderedInner.(physicalPlanExpression)
 		if !outerOK || !innerOK {
-			return nil
+			return nil, nil
 		}
-		rebuilt, _, _, rebuiltOK := buildCorrelatedFlatMapPlan(
+		rebuilt, _, _, rebuiltOK, err := buildCorrelatedFlatMapPlan(
 			call,
 			flattenAndPredicates(sel.GetPredicates()), sel.GetResultValue(),
 			outerPhysical.GetRecordQueryPlan(), innerPhysical.GetRecordQueryPlan(),
 			outerCorr, innerCorr, orderedOuter, orderedInner,
 			joinType, innerNullOnEmpty, innerStrictSingle, true,
 		)
-		if !rebuiltOK {
-			return nil
+		if err != nil {
+			return nil, err
 		}
-		return rebuilt
+		if !rebuiltOK {
+			return nil, nil
+		}
+		return rebuilt, nil
 	}
 	r.yieldBinaryJoinWithSourceOrderingVariants(
 		call, flatMapPlan, outerSourceRef, innerSourceRef, rebuild)
@@ -581,7 +646,7 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 	call *ExpressionRuleCall,
 	base expressions.RelationalExpression,
 	outerRef, innerRef *expressions.Reference,
-	rebuild func(outer, inner expressions.RelationalExpression) expressions.RelationalExpression,
+	rebuild func(outer, inner expressions.RelationalExpression) (expressions.RelationalExpression, error),
 ) {
 	call.Yield(base)
 
@@ -610,13 +675,17 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 		return
 	}
 	outerOrderingResultValue := resultValue
+	outerAlias := quantifiers[0].GetAlias()
+	innerAlias := quantifiers[1].GetAlias()
 	if flatMap, ok := base.(*plans.RecordQueryFlatMapPlan); ok {
+		outerAlias = flatMap.GetOuterAlias()
+		innerAlias = flatMap.GetInnerAlias()
 		outerOrderingResultValue = flatMapOrderingResultForChild(
-			flatMap, quantifiers[0].GetAlias(), true)
+			flatMap, outerAlias, true)
 	}
 	localAliases := map[values.CorrelationIdentifier]struct{}{
-		quantifiers[0].GetAlias(): {},
-		quantifiers[1].GetAlias(): {},
+		outerAlias: {},
+		innerAlias: {},
 	}
 
 	less := lessWithHashTieBreak(call.CostModel())
@@ -627,31 +696,50 @@ func (r *ImplementNestedLoopJoinRule) yieldBinaryJoinWithSourceOrderingVariants(
 
 		outerRequested := pushRequestedOrderingToSelectChild(
 			requested, outerOrderingResultValue,
-			quantifiers[0].GetAlias(), localAliases)
+			outerAlias, localAliases)
 		innerRequested := pushRequestedOrderingToSelectChild(
-			requested, resultValue, quantifiers[1].GetAlias(), localAliases)
+			requested, resultValue, innerAlias, localAliases)
 
 		// The raw sets supply the leg whose ordering is irrelevant in a case.
 		// The ordered sets pin each unary delegation spine against the
 		// child-space request before the join freezes the selected top member.
-		rawOuters := collectJoinLegOrderingVariants(
+		rawOuters, err := collectJoinLegOrderingVariants(
 			outerRef, properties.PreserveOrdering(), outerOrderingResultValue,
-			quantifiers[0].GetAlias(), less, false, call.Context)
-		rawInners := collectJoinLegOrderingVariants(
+			outerAlias, less, false, call.Context)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		rawInners, err := collectJoinLegOrderingVariants(
 			innerRef, properties.PreserveOrdering(), resultValue,
-			quantifiers[1].GetAlias(), less, false, call.Context)
-		orderedOuters := collectJoinLegOrderingVariants(
+			innerAlias, less, false, call.Context)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		orderedOuters, err := collectJoinLegOrderingVariants(
 			outerRef, outerRequested, outerOrderingResultValue,
-			quantifiers[0].GetAlias(), less, true, call.Context)
-		orderedInners := collectJoinLegOrderingVariants(
+			outerAlias, less, true, call.Context)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		orderedInners, err := collectJoinLegOrderingVariants(
 			innerRef, innerRequested, resultValue,
-			quantifiers[1].GetAlias(), less, true, call.Context)
+			innerAlias, less, true, call.Context)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		for _, pair := range orderedJoinLegPairs(
 			rawOuters, rawInners, orderedOuters, orderedInners,
 			requested, less,
 		) {
 			r.yieldVerifiedOrderedJoin(
 				call, base, pair.outer, pair.inner, requested, rebuild)
+			if call.Err() != nil {
+				return
+			}
 		}
 	}
 }
@@ -666,21 +754,25 @@ func collectJoinLegOrderingVariants(
 	ref *expressions.Reference,
 	requestedInChildSpace *properties.RequestedOrdering,
 	resultValue values.Value,
-	childAlias values.CorrelationIdentifier,
+	resultAlias values.CorrelationIdentifier,
 	less func(a, b expressions.RelationalExpression) bool,
 	pinOrdering bool,
 	ctx PlanContext,
-) []joinLegOrderingVariant {
+) ([]joinLegOrderingVariant, error) {
 	if ref == nil {
-		return nil
+		return nil, nil
 	}
 	members := make([]expressions.RelationalExpression, 0, len(ref.AllMembers()))
 	members = append(members, ref.FinalMembers()...)
 	members = append(members, ref.Members()...)
 	if pinOrdering && requestedInChildSpace != nil &&
 		!requestedInChildSpace.IsPreserve() && ctx != nil {
-		members = append(members, orderedFullScanAlternatives(
-			ref, requestedInChildSpace, ctx)...)
+		orderedAlternatives, err := orderedFullScanAlternatives(
+			ref, requestedInChildSpace, ctx)
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, orderedAlternatives...)
 		// A requested-order data-access alternative can be discovered after
 		// this join leg's ordinary winner has already been pruned. The
 		// Reference retains its PartialMatches, though, so realize the same
@@ -739,7 +831,11 @@ func collectJoinLegOrderingVariants(
 		if provided == nil {
 			continue
 		}
-		pulled := provided.PullUpThroughValue(resultValue, childAlias)
+		pulled, err := pullChildOrderingThroughResult(
+			provided, ph, resultValue, resultAlias)
+		if err != nil {
+			return nil, err
+		}
 		if pulled == nil {
 			pulled = properties.EmptyOrdering()
 		}
@@ -750,7 +846,7 @@ func collectJoinLegOrderingVariants(
 			maxCardinalityOne: maxCardinalityOne,
 		})
 	}
-	return result
+	return result, nil
 }
 
 // requestedOrderingForProvided produces one concrete child-space request that
@@ -1059,10 +1155,10 @@ func rebuildJoinWithExactLegs(
 	call *ExpressionRuleCall,
 	base expressions.RelationalExpression,
 	outer, inner expressions.RelationalExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	quantifiers := base.GetQuantifiers()
 	if len(quantifiers) != 2 || outer == nil || inner == nil {
-		return nil
+		return nil, nil
 	}
 	exactQuantifiers := []expressions.Quantifier{
 		expressions.RebuildQuantifier(
@@ -1074,16 +1170,175 @@ func rebuildJoinWithExactLegs(
 	case *plans.RecordQueryFlatMapPlan:
 		return plan.WithQuantifiers(exactQuantifiers)
 	default:
-		return nil
+		return nil, nil
 	}
+}
+
+func existentialProgramCorrelations(
+	preds []predicates.QueryPredicate,
+	inner plans.RecordQueryPlan,
+	resultValues ...values.Value,
+) map[values.CorrelationIdentifier]struct{} {
+	referenced := make(map[values.CorrelationIdentifier]struct{})
+	for _, predicate := range preds {
+		for correlation := range predicates.GetCorrelatedToOfPredicate(predicate) {
+			referenced[correlation] = struct{}{}
+		}
+	}
+	if inner != nil {
+		plans.Walk(inner, func(plan plans.RecordQueryPlan) bool {
+			for correlation := range plan.GetCorrelatedToWithoutChildren() {
+				referenced[correlation] = struct{}{}
+			}
+			return true
+		})
+	}
+	for _, resultValue := range resultValues {
+		for correlation := range values.GetCorrelatedToOfValue(resultValue) {
+			referenced[correlation] = struct{}{}
+		}
+	}
+	return referenced
+}
+
+// existentialProgramsRequireRetainedOuterLayout reports whether an executable
+// existential program reads a source whose runtime object is supplied by an
+// outer layout window. Predicate normalization above is exact-type checked;
+// physical plan nodes expose only their free correlation set, so the plan arm
+// deliberately treats a same-named foreign exact type conservatively and pins
+// the current outer member. That can retain one extra alternative, but it
+// cannot turn a foreign value into an admitted binding or weaken evaluation.
+func existentialProgramsRequireRetainedOuterLayout(
+	preds []predicates.QueryPredicate,
+	inner plans.RecordQueryPlan,
+	outerLayout values.OrdinalLayout,
+	resultValues ...values.Value,
+) bool {
+	if outerLayout == nil {
+		return false
+	}
+	referenced := existentialProgramCorrelations(preds, inner, resultValues...)
+	for _, source := range outerLayout.WindowSources() {
+		if source == nil || source.Correlation().IsZero() {
+			continue
+		}
+		if _, used := referenced[source.Correlation()]; used {
+			return true
+		}
+	}
+	return false
+}
+
+// selectedExistentialOuterLayoutAuthority rebuilds one FlatMap level over the
+// exact physical winners already stamped on its two child groups. A live memo
+// member was constructed before those winners existed, so its immutable output
+// layout can omit a retained source which FlatMap.WithQuantifiers will prove at
+// extraction (for example a record-valued UNNEST source X carried through a
+// later join with V). Existential collision selection and correlated predicate
+// normalization happen before extraction; consuming the stale layout there
+// freezes an unbindable logical X RECORD operand even though execution later
+// publishes exact X ELEM.
+//
+// A stamped child winner is authoritative and must equal the preserve-order
+// winner. Before winner stamping, a sole physical member is also admissible,
+// but the caller pins the resulting outer clone into a private final edge so a
+// later alternative cannot separate the operand proof from execution. Multiple
+// unstamped alternatives decline. FlatMap currently has no input-layout
+// requirements; should that change, the clone declines rather than guessing a
+// compatible child.
+//
+// The clone is used only when it adds an exact retained source referenced by
+// this existential. Otherwise the original member remains the sole authority.
+func selectedExistentialOuterLayoutAuthority(
+	call *ExpressionRuleCall,
+	outer plans.RecordQueryPlan,
+	preds []predicates.QueryPredicate,
+	inner plans.RecordQueryPlan,
+	resultValues ...values.Value,
+) (plans.RecordQueryPlan, bool, error) {
+	flatMap, ok := outer.(*plans.RecordQueryFlatMapPlan)
+	if !ok || call == nil {
+		return outer, false, nil
+	}
+	propertiesView, err := flatMap.OrdinalPhysicalProperties()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(propertiesView.RequiredInputLayouts()) != 0 {
+		return outer, false, nil
+	}
+	quantifiers := flatMap.GetQuantifiers()
+	if len(quantifiers) != 2 {
+		return outer, false, nil
+	}
+	winners := make([]expressions.RelationalExpression, len(quantifiers))
+	for i, quantifier := range quantifiers {
+		ref := quantifier.GetRangesOver()
+		if ref == nil {
+			return outer, false, nil
+		}
+		winner, _ := getWinnerForOrdering(
+			ref, properties.PreserveOrdering(), call.CostModel())
+		if winner == nil {
+			return outer, false, nil
+		}
+		if stamped := ref.Winner(); stamped != nil {
+			if winner != stamped {
+				return outer, false, nil
+			}
+		} else if len(ref.AllMembers()) != 1 {
+			// A sole physical member can be pinned into the exact outer clone below.
+			// Multiple unstamped alternatives have no stable selection yet.
+			return outer, false, nil
+		}
+		physical, physicalOK := winner.(physicalPlanExpression)
+		if !physicalOK || physical.GetRecordQueryPlan() == nil {
+			return outer, false, nil
+		}
+		winners[i] = winner
+	}
+	rebuilt, err := rebuildJoinWithExactLegs(
+		call, flatMap, winners[0], winners[1])
+	if err != nil {
+		return nil, false, err
+	}
+	rebuiltPhysical, ok := rebuilt.(physicalPlanExpression)
+	if !ok || rebuiltPhysical.GetRecordQueryPlan() == nil {
+		return nil, false, fmt.Errorf(
+			"existential selected outer FlatMap rebuild produced %T", rebuilt)
+	}
+	rebuiltPlan := rebuiltPhysical.GetRecordQueryPlan()
+	originalLayout, err := outer.ProvidedOutputLayout()
+	if err != nil {
+		return nil, false, err
+	}
+	rebuiltLayout, err := rebuiltPlan.ProvidedOutputLayout()
+	if err != nil {
+		return nil, false, err
+	}
+	referenced := existentialProgramCorrelations(preds, inner, resultValues...)
+	for _, source := range rebuiltLayout.WindowSources() {
+		if source == nil || source.Correlation().IsZero() {
+			continue
+		}
+		if _, used := referenced[source.Correlation()]; !used {
+			continue
+		}
+		provided, provideErr := values.LayoutProvides(originalLayout, source)
+		if provideErr == nil && provided {
+			continue
+		}
+		return rebuiltPlan, true, nil
+	}
+	return outer, false, nil
 }
 
 func rebuildOrderedJoin(
 	call *ExpressionRuleCall,
 	base expressions.RelationalExpression,
 	outer, inner expressions.RelationalExpression,
-	rebuild func(outer, inner expressions.RelationalExpression) expressions.RelationalExpression,
-) expressions.RelationalExpression {
+	rebuild func(outer, inner expressions.RelationalExpression) (expressions.RelationalExpression, error),
+) (expressions.RelationalExpression, error) {
 	if rebuild != nil {
 		return rebuild(outer, inner)
 	}
@@ -1107,9 +1362,13 @@ func (r *ImplementNestedLoopJoinRule) yieldVerifiedOrderedJoin(
 	base expressions.RelationalExpression,
 	outer, inner expressions.RelationalExpression,
 	requested *properties.RequestedOrdering,
-	rebuild func(outer, inner expressions.RelationalExpression) expressions.RelationalExpression,
+	rebuild func(outer, inner expressions.RelationalExpression) (expressions.RelationalExpression, error),
 ) {
-	candidate := rebuildOrderedJoin(call, base, outer, inner, rebuild)
+	candidate, err := rebuildOrderedJoin(call, base, outer, inner, rebuild)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	if candidate != nil && orderedJoinSatisfies(candidate, requested) {
 		call.Yield(candidate)
 	}
@@ -1137,6 +1396,733 @@ func (r *ImplementNestedLoopJoinRule) yieldVerifiedOrderedJoin(
 // selectivity of the filters the memo cannot see and blocks the wrapper
 // deletion (collapsing to the quantifier would silently drop the
 // DefaultOnEmpty — wrong outer-join NULLs — and the residual filters).
+// translatePredicateLogicalSource retargets one logical source declaration in
+// a predicate list to the exact physical edge selected for that source. The
+// declaration is recovered from the predicates themselves rather than
+// fabricated from the physical plan: the whole defect this bridge closes is
+// that logical and physical root record identities can differ while their
+// resolved ordinal paths and leaf types agree.
+//
+// retainedWindows are the exact types the SELECTED plan retains as SOURCES
+// INSIDE this row under the same correlation. One alias legitimately denotes
+// two different objects there: the row itself, and a source the row retains
+// which happens to be spelled the same. A chained unnest is the standing case —
+// in `FROM t, t.arr AS x, x.sub AS y` the merged row is bound as Y while still
+// retaining Y's own scalar element, so `t.id > y` carries both `QOV(Y, row).ID`
+// and a bare `QOV(Y, INT)`. Exact type is part of QOV identity, so both bind at
+// runtime; only the ROW is the logical source this bridge retargets, and a
+// retained window must be left exactly as it is. Without that separation the
+// two readings looked like one alias with two irreconcilable types and the
+// whole join declined.
+// retainedWindowTypesAt returns the exact types of the sources a selected
+// plan's layout retains INSIDE its row under `alias`. They are the readings at
+// that correlation which are NOT the row, and they are what keeps a
+// same-spelled retained source from looking like a second, irreconcilable
+// declaration of the row itself.
+//
+// A nil layout yields nothing, which restores the pre-layout behaviour: every
+// QOV at the alias is then a row candidate.
+func retainedWindowTypesAt(
+	layout values.OrdinalLayout,
+	alias values.CorrelationIdentifier,
+) []values.Type {
+	if layout == nil {
+		return nil
+	}
+	var out []values.Type
+	for _, source := range layout.WindowSources() {
+		if source == nil || source.Correlation() != alias {
+			continue
+		}
+		out = append(out, source.FlowedType())
+	}
+	return out
+}
+
+func translatePredicateLogicalSource(
+	preds []predicates.QueryPredicate,
+	alias values.CorrelationIdentifier,
+	target values.QuantifiedObjectValue,
+	retainedWindows []values.Type,
+) ([]predicates.QueryPredicate, error) {
+	isRetainedWindow := func(root values.QuantifiedObjectValue) bool {
+		for _, window := range retainedWindows {
+			if window != nil && window.Equals(root.FlowedType()) {
+				return true
+			}
+		}
+		return false
+	}
+	var declaration values.QuantifiedObjectValue
+	var conflicting values.QuantifiedObjectValue
+	for predicateIndex, predicate := range preds {
+		_, err := predicates.TransformEmbeddedValuesChecked(
+			predicate,
+			func(value values.Value) (values.Value, error) {
+				values.WalkValue(value, func(node values.Value) bool {
+					if conflicting != nil {
+						return false
+					}
+					root, ok := values.AsQuantifiedObjectValue(node)
+					if !ok || root.Correlation() != alias || isRetainedWindow(root) {
+						return true
+					}
+					if declaration == nil {
+						declaration = root
+						return true
+					}
+					if !declaration.FlowedType().Equals(root.FlowedType()) {
+						// Stop this Value walk; the error is returned after it.
+						conflicting = root
+						return false
+					}
+					return true
+				})
+				return value, nil
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("predicate %d logical source scan: %w", predicateIndex, err)
+		}
+		if conflicting != nil {
+			return nil, fmt.Errorf(
+				"predicate logical source %s has conflicting exact types %s and %s",
+				alias.Name(), declaration.FlowedType(), conflicting.FlowedType())
+		}
+	}
+	if declaration == nil {
+		return append([]predicates.QueryPredicate(nil), preds...), nil
+	}
+	translated := make([]predicates.QueryPredicate, len(preds))
+	for i, predicate := range preds {
+		var err error
+		translated[i], err = predicates.TransformEmbeddedValuesChecked(
+			predicate,
+			func(value values.Value) (values.Value, error) {
+				return values.TranslateLogicalSourceRoot(value, declaration, target)
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("predicate %d logical source %s: %w", i, alias.Name(), err)
+		}
+	}
+	return translated, nil
+}
+
+// normalizeMaterializedJoinPrograms validates that a materialized NLJ's two
+// selected legs can each state the carrier its programs will be bound against,
+// and returns the programs unchanged.
+//
+// IT USED TO REWRITE THEM, and the rewrite has been REMOVED rather than left
+// unreachable. Its whole job was to cross the record-name divergence: a logical
+// leg root kept the table's nominal row (I ITEMS) while the selected scan
+// published the same row anonymously, those counted as two different exact
+// types, and the exact pair binder rejected a program that still named the
+// logical one. Record names are provenance in Java (Type.Record.equals compares
+// typeCode, nullability and fields) and now in Go, so the two are ONE type and
+// there is nothing left to cross.
+//
+// Re-rooting them anyway — onto the same exact row, purely to swap which QOV
+// INSTANCE the program hangs from — is not a smaller version of the old job, it
+// is a different and unsafe one: a leg's QOV also carries the buried-source leg
+// table that identifies gathered/box sub-windows, exact identity deliberately
+// excludes it, and the physical carrier's table is not the logical root's. So
+// an instance swap silently retargets those sub-windows. Measured: it made a
+// three-leg `ORDER BY` over a gathered unnest and a DISJOINT multi-source
+// unnest GROUP BY fail to plan at all, with a nested buried source pointing at
+// a slot that is not a record.
+//
+// The legs are still checked, because a leg that cannot state a carrier is a
+// malformed plan and this is where that was caught.
+func normalizeMaterializedJoinPrograms(
+	preds []predicates.QueryPredicate,
+	result values.Value,
+	leftPlan plans.RecordQueryPlan,
+	leftAlias values.CorrelationIdentifier,
+	rightPlan plans.RecordQueryPlan,
+	rightAlias values.CorrelationIdentifier,
+) ([]predicates.QueryPredicate, values.Value, error) {
+	for _, leg := range []struct {
+		plan  plans.RecordQueryPlan
+		alias values.CorrelationIdentifier
+		label string
+	}{
+		{plan: leftPlan, alias: leftAlias, label: "left"},
+		{plan: rightPlan, alias: rightAlias, label: "right"},
+	} {
+		if leg.plan == nil || leg.alias.IsZero() {
+			return nil, nil, fmt.Errorf(
+				"materialized join %s result leg is missing its selected plan or alias", leg.label)
+		}
+		layout, layoutErr := leg.plan.ProvidedOutputLayout()
+		if layoutErr != nil {
+			return nil, nil, fmt.Errorf(
+				"materialized join %s result selected layout: %w", leg.label, layoutErr)
+		}
+		if _, targetErr := values.NewQuantifiedObjectValue(
+			leg.alias, values.PhysicalCarrierType(layout)); targetErr != nil {
+			return nil, nil, fmt.Errorf(
+				"materialized join %s exact binding: %w", leg.label, targetErr)
+		}
+	}
+	return append([]predicates.QueryPredicate(nil), preds...), result, nil
+}
+
+// normalizeCorrelatedExplodeCollectionPlan retargets the collection program of
+// a correlated physical Explode onto the exact runtime row type that its
+// enclosing FlatMap binds for sourceAlias. Logical UNNEST keeps the storage
+// record's nominal name (T1), while the selected physical scan publishes the
+// executor carrier for the same row (normally anonymous). Once runtime binding
+// admission is exact, leaving the collection on the logical declaration makes
+// T1.ARR unbindable even though every resolved ordinal and leaf type agrees.
+//
+// This walk is deliberately narrow. Explode owns the correlation-bearing
+// program; PredicatesFilter is the one transparent wrapper produced for a
+// filtered WITH ORDINALITY leg. Other plans are unchanged. The checked logical
+// source bridge permits only top-level record-name normalization with the same
+// alias, complete ordinal path, and exact leaf types.
+func normalizeCorrelatedExplodeCollectionPlan(
+	plan plans.RecordQueryPlan,
+	sourceAlias values.CorrelationIdentifier,
+	target values.QuantifiedObjectValue,
+) (plans.RecordQueryPlan, bool, error) {
+	if plan == nil || sourceAlias.IsZero() || target == nil {
+		return plan, false, nil
+	}
+	switch typed := plan.(type) {
+	case *plans.RecordQueryExplodePlan:
+		collection := typed.GetCollectionValue()
+		normalized, err := values.TranslateLogicalSourceNameNormalization(
+			collection, sourceAlias, target)
+		if err != nil {
+			return nil, false, fmt.Errorf(
+				"correlated Explode source %s: %w", sourceAlias.Name(), err)
+		}
+		normalized, err = values.TranslateProjectionInputNameNormalizationToCorrelation(
+			normalized, sourceAlias, target.FlowedType())
+		if err != nil {
+			return nil, false, fmt.Errorf(
+				"correlated Explode projection input %s: %w", sourceAlias.Name(), err)
+		}
+		if normalized == collection {
+			return plan, false, nil
+		}
+		rebuilt, err := plans.NewRecordQueryExplodePlanWithOrdinality(
+			normalized, typed.IsWithOrdinality())
+		if err != nil {
+			return nil, false, err
+		}
+		return rebuilt, true, nil
+
+	case *plans.RecordQueryPredicatesFilterPlan:
+		inner, changed, err := normalizeCorrelatedExplodeCollectionPlan(
+			typed.GetInner(), sourceAlias, target)
+		if err != nil || !changed {
+			return plan, changed, err
+		}
+		rebuilt, err := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			inner, typed.GetPredicates(), typed.GetInnerAlias())
+		if err != nil {
+			return nil, false, err
+		}
+		return rebuilt, true, nil
+
+	default:
+		return plan, false, nil
+	}
+}
+
+// normalizeCorrelatedScanComparisonPlan retargets SARG operands which read the
+// enclosing FlatMap's outer binding onto that selected outer plan's exact
+// carrier. Logical join construction retains the table's nominal record name,
+// while the runtime binding is the anonymous row published by the selected
+// scan. Predicates are normalized separately below; scan comparisons are Value
+// programs stored inside the leaf and therefore need the same checked bridge
+// before the plan is memoized.
+//
+// Only Scan and Index leaves (including a covering-index field wrapper) own
+// these operands; Fetch and residual Filter are transparent wrappers on the
+// selected access path. The Value bridge admits a top-level record-name
+// difference only; foreign aliases, field-name/path drift, width/nullability
+// drift, and exact leaf-type drift leave both the plan and comparison pointers
+// unchanged.
+func normalizeCorrelatedScanComparisonPlan(
+	plan plans.RecordQueryPlan,
+	sourceAlias values.CorrelationIdentifier,
+	target values.QuantifiedObjectValue,
+) (plans.RecordQueryPlan, bool, error) {
+	if plan == nil || sourceAlias.IsZero() || target == nil {
+		return plan, false, nil
+	}
+	switch typed := plan.(type) {
+	case *plans.RecordQueryScanPlan:
+		comparisons, changed, err := normalizeCorrelatedComparisonRanges(
+			typed.GetScanComparisons(), sourceAlias, target)
+		if err != nil || !changed {
+			return plan, changed, err
+		}
+		return typed.WithScanComparisons(comparisons), true, nil
+
+	case *plans.RecordQueryIndexPlan:
+		comparisons, changed, err := normalizeCorrelatedComparisonRanges(
+			typed.GetScanComparisons(), sourceAlias, target)
+		if err != nil || !changed {
+			return plan, changed, err
+		}
+		return typed.WithScanComparisons(comparisons), true, nil
+
+	case *plans.RecordQueryCoveringIndexPlan:
+		inner, ok := plans.IndexPlanOf(typed)
+		if !ok {
+			return plan, false, nil
+		}
+		normalized, changed, err := normalizeCorrelatedScanComparisonPlan(
+			inner, sourceAlias, target)
+		if err != nil || !changed {
+			return plan, changed, err
+		}
+		normalizedIndex, ok := normalized.(*plans.RecordQueryIndexPlan)
+		if !ok {
+			return nil, false, fmt.Errorf(
+				"correlated covering comparison normalization produced %T", normalized)
+		}
+		return typed.WithIndexPlan(normalizedIndex), true, nil
+
+	case *plans.RecordQueryFetchFromPartialRecordPlan:
+		// Fetch is transparent to executable scan comparisons: the correlated
+		// operand remains owned by the selected access path below it. Walk through
+		// the wrapper, then relink copy-on-write so its translate function, result
+		// contract, and fetch mode remain untouched.
+		inner, changed, err := normalizeCorrelatedScanComparisonPlan(
+			typed.GetInner(), sourceAlias, target)
+		if err != nil || !changed {
+			return plan, changed, err
+		}
+		return typed.WithInner(inner), true, nil
+
+	case *plans.RecordQueryTypeFilterPlan:
+		// TypeFilter is transparent to the executable SARG stored below it. A
+		// polymorphic scan selected for a correlated LEFT leg commonly retains
+		// the logical table's nominal outer row in its PK operand, while the
+		// enclosing FlatMap binds that owner using the selected anonymous carrier.
+		// Recurse through the wrapper and rebuild its exact quantifier identity;
+		// the record-type discriminator set and result contract remain untouched.
+		inner, changed, err := normalizeCorrelatedScanComparisonPlan(
+			typed.GetInner(), sourceAlias, target)
+		if err != nil || !changed {
+			return plan, changed, err
+		}
+		quantifiers := typed.GetQuantifiers()
+		if len(quantifiers) != 1 {
+			return nil, false, fmt.Errorf(
+				"correlated TypeFilter comparison normalization: got %d quantifiers, want 1",
+				len(quantifiers))
+		}
+		stage := expressions.StageCanonical
+		if ref := quantifiers[0].GetRangesOver(); ref != nil {
+			stage = ref.Stage()
+		}
+		quantifiers[0] = expressions.RebuildQuantifier(
+			quantifiers[0], expressions.FinalOfAtStage(inner, stage))
+		rebuilt, err := typed.WithQuantifiers(quantifiers)
+		if err != nil {
+			return nil, false, fmt.Errorf(
+				"correlated TypeFilter comparison relink: %w", err)
+		}
+		rebuiltPlan, ok := rebuilt.(*plans.RecordQueryTypeFilterPlan)
+		if !ok {
+			return nil, false, fmt.Errorf(
+				"correlated TypeFilter comparison relink produced %T", rebuilt)
+		}
+		return rebuiltPlan, true, nil
+
+	case *plans.RecordQueryPredicatesFilterPlan:
+		// A residual which the data-access matcher could not absorb is a
+		// transparent row operator around the correlated probe. Normalize both
+		// executable programs owned by that unit: the probe stored below it and
+		// the predicate retained on the filter itself. The latter can compare the
+		// local inner row with the enclosing FlatMap's outer binding (for example
+		// E.SALARY > M.SALARY). At runtime the FlatMap publishes E with the exact
+		// selected outer carrier; retaining E's nominal logical record type here
+		// creates a same-correlation/different-exact-type binding conflict.
+		inner, childChanged, err := normalizeCorrelatedScanComparisonPlan(
+			typed.GetInner(), sourceAlias, target)
+		if err != nil {
+			return nil, false, err
+		}
+		normalizedPredicates := make([]predicates.QueryPredicate, len(typed.GetPredicates()))
+		predicateChanged := false
+		for i, predicate := range typed.GetPredicates() {
+			normalizedPredicates[i], err = predicates.TransformEmbeddedValuesChecked(
+				predicate,
+				func(value values.Value) (values.Value, error) {
+					normalized, normalizeErr := values.TranslateLogicalSourceNameNormalization(
+						value, sourceAlias, target)
+					if normalizeErr == nil && normalized != value {
+						predicateChanged = true
+					}
+					return normalized, normalizeErr
+				},
+			)
+			if err != nil {
+				return nil, false, fmt.Errorf(
+					"correlated residual predicate %d source %s: %w",
+					i, sourceAlias.Name(), err)
+			}
+		}
+		if !childChanged && !predicateChanged {
+			return plan, false, nil
+		}
+		rebuilt, err := plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			inner, normalizedPredicates, typed.GetInnerAlias())
+		if err != nil {
+			return nil, false, err
+		}
+		return rebuilt, true, nil
+
+	case *plans.RecordQueryFlatMapPlan:
+		// A gathered join can itself be the correlated inner chosen by an
+		// enclosing FlatMap. Its executable SARG then lives below this retained
+		// producer (for example PA.ID in the B scan of FlatMap(B, C)). FlatMap is
+		// transparent to that external binding, but its child quantifiers are
+		// identity-bearing: walk the two concrete selections copy-on-write and
+		// rebuild the same quantifier kinds/aliases over only the changed plans.
+		// The plan's own runtime aliases and retained result program are relinked
+		// by WithQuantifiers; no comparison is authorized by a field name alone.
+		children := []plans.RecordQueryPlan{typed.GetOuter(), typed.GetInner()}
+		quantifiers := typed.GetQuantifiers()
+		if len(quantifiers) != len(children) {
+			return nil, false, fmt.Errorf(
+				"correlated FlatMap comparison normalization: got %d quantifiers for %d children",
+				len(quantifiers), len(children))
+		}
+		flatMapChanged := false
+		for i, child := range children {
+			if child == nil {
+				continue
+			}
+			normalizedChild, childChanged, err := normalizeCorrelatedScanComparisonPlan(
+				child, sourceAlias, target)
+			if err != nil {
+				return nil, false, fmt.Errorf(
+					"correlated FlatMap child %d comparison normalization: %w", i, err)
+			}
+			if !childChanged {
+				continue
+			}
+			stage := expressions.StageCanonical
+			if ref := quantifiers[i].GetRangesOver(); ref != nil {
+				stage = ref.Stage()
+			}
+			quantifiers[i] = expressions.RebuildQuantifier(
+				quantifiers[i], expressions.FinalOfAtStage(normalizedChild, stage))
+			flatMapChanged = true
+		}
+		if !flatMapChanged {
+			return plan, false, nil
+		}
+		rebuilt, err := typed.WithQuantifiers(quantifiers)
+		if err != nil {
+			return nil, false, fmt.Errorf(
+				"correlated FlatMap comparison relink: %w", err)
+		}
+		rebuiltPlan, ok := rebuilt.(*plans.RecordQueryFlatMapPlan)
+		if !ok {
+			return nil, false, fmt.Errorf(
+				"correlated FlatMap comparison relink produced %T", rebuilt)
+		}
+		return rebuiltPlan, true, nil
+	default:
+		return plan, false, nil
+	}
+}
+
+// normalizeCorrelatedScanComparisonPlanForOuterLayout normalizes every exact
+// outer object which the selected FlatMap input can bind at runtime. The whole
+// outer row is bound under bindingAlias, while a gathered/materialized join may
+// additionally retain buried source windows (for example PA and B inside
+// B$BOX). Correlated scan comparisons can read either namespace. Restricting
+// normalization to bindingAlias leaves a nominal PA QOV beside the selected
+// anonymous PA window and the exact runtime binder correctly rejects it.
+//
+// Each rewrite still uses normalizeCorrelatedScanComparisonPlan's checked
+// top-level-name bridge. The selected layout is only the target authority; it
+// does not authorize foreign aliases, narrower windows, path drift, or leaf
+// type drift.
+func normalizeCorrelatedScanComparisonPlanForOuterLayout(
+	plan plans.RecordQueryPlan,
+	bindingAlias values.CorrelationIdentifier,
+	bindingTarget values.QuantifiedObjectValue,
+	outerLayout values.OrdinalLayout,
+) (plans.RecordQueryPlan, bool, error) {
+	if plan == nil || bindingAlias.IsZero() || bindingTarget == nil || outerLayout == nil {
+		return plan, false, nil
+	}
+	normalized, changed, err := normalizeCorrelatedScanComparisonPlan(
+		plan, bindingAlias, bindingTarget)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, source := range outerLayout.WindowSources() {
+		if source == nil || source.Correlation().IsZero() {
+			continue
+		}
+		var sourceChanged bool
+		normalized, sourceChanged, err = normalizeCorrelatedScanComparisonPlan(
+			normalized, source.Correlation(), source)
+		if err != nil {
+			return nil, false, fmt.Errorf(
+				"correlated retained source %s comparison: %w",
+				source.Correlation().Name(), err)
+		}
+		changed = changed || sourceChanged
+	}
+	return normalized, changed, nil
+}
+
+// normalizeCorrelatedPredicatesForOuterLayout is the predicate twin of
+// normalizeCorrelatedScanComparisonPlanForOuterLayout. It retargets logical
+// top-level record names onto the complete row binding and every exact retained
+// source the selected outer layout will install. Collision handling runs first,
+// so a fresh whole-row binding and an authored retained-source alias are
+// disjoint before this walk; no correlation-only choice is made here.
+func normalizeCorrelatedPredicatesForOuterLayout(
+	preds []predicates.QueryPredicate,
+	bindingAlias values.CorrelationIdentifier,
+	bindingTarget values.QuantifiedObjectValue,
+	outerLayout values.OrdinalLayout,
+) ([]predicates.QueryPredicate, bool, error) {
+	if len(preds) == 0 || bindingAlias.IsZero() || bindingTarget == nil || outerLayout == nil {
+		return preds, false, nil
+	}
+	normalized := append([]predicates.QueryPredicate(nil), preds...)
+	changed := false
+	for i, predicate := range preds {
+		if predicate == nil {
+			continue
+		}
+		rebuilt, err := predicates.TransformEmbeddedValuesChecked(
+			predicate,
+			func(value values.Value) (values.Value, error) {
+				return values.TranslateLogicalSourceNameNormalization(
+					value, bindingAlias, bindingTarget)
+			})
+		if err != nil {
+			return nil, false, fmt.Errorf(
+				"correlated predicate %d whole-row normalization: %w", i, err)
+		}
+		for _, source := range outerLayout.WindowSources() {
+			if source == nil || source.Correlation().IsZero() {
+				continue
+			}
+			rebuilt, err = predicates.TransformEmbeddedValuesChecked(
+				rebuilt,
+				func(value values.Value) (values.Value, error) {
+					return values.TranslateLogicalSourceNameNormalization(
+						value, source.Correlation(), source)
+				})
+			if err != nil {
+				return nil, false, fmt.Errorf(
+					"correlated predicate %d retained source %s normalization: %w",
+					i, source.Correlation().Name(), err)
+			}
+		}
+		if rebuilt != predicate {
+			normalized[i] = rebuilt
+			changed = true
+		}
+	}
+	return normalized, changed, nil
+}
+
+// normalizeCorrelatedValueForOuterLayout applies the same exact, name-only
+// phase bridge to one executable Value program. Existential result programs
+// are evaluated in the outer FlatMap context just like correlated predicates;
+// leaving a logical RECORD root there while the selected window publishes ELEM
+// would make a projected retained field unbindable even when no predicate reads
+// that source.
+func normalizeCorrelatedValueForOuterLayout(
+	value values.Value,
+	bindingAlias values.CorrelationIdentifier,
+	bindingTarget values.QuantifiedObjectValue,
+	outerLayout values.OrdinalLayout,
+) (values.Value, error) {
+	if value == nil || bindingAlias.IsZero() || bindingTarget == nil || outerLayout == nil {
+		return value, nil
+	}
+	normalized, err := values.TranslateLogicalSourceNameNormalization(
+		value, bindingAlias, bindingTarget)
+	if err != nil {
+		return nil, fmt.Errorf("existential result whole-row normalization: %w", err)
+	}
+	for _, source := range outerLayout.WindowSources() {
+		if source == nil || source.Correlation().IsZero() {
+			continue
+		}
+		normalized, err = values.TranslateLogicalSourceNameNormalization(
+			normalized, source.Correlation(), source)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"existential result retained source %s normalization: %w",
+				source.Correlation().Name(), err)
+		}
+	}
+	return normalized, nil
+}
+
+// admitCorrelatedFastPathOuterValue proves the outer operand against exactly
+// one runtime object installed by the selected outer FlatMap: either its whole
+// row binding or one retained source window. A logical source may differ from
+// that object only in its top-level record name. Correlation, record
+// nullability, field ordinals/names, nested types, complete path, and result
+// type remain exact through TranslateLogicalSourceNameNormalization.
+//
+// A whole row and retained source can intentionally share a correlation. If
+// both are shape-compatible with the request, the owner is ambiguous and the
+// shortcut declines. The general correlated path remains available; the
+// binder is never asked to guess.
+func admitCorrelatedFastPathOuterValue(
+	outerValue values.FieldValue,
+	wholeBinding values.QuantifiedObjectValue,
+	outerLayout values.OrdinalLayout,
+) (values.FieldValue, values.CorrelationIdentifier, bool, bool, error) {
+	if outerValue == nil || wholeBinding == nil || outerLayout == nil {
+		return nil, values.CorrelationIdentifier{}, false, false, nil
+	}
+	root, ok := values.AsQuantifiedObjectValue(outerValue.ChildValue())
+	if !ok || root.Correlation().IsZero() {
+		return nil, values.CorrelationIdentifier{}, false, false, nil
+	}
+	if path := outerValue.Path(); path != nil && path.IsFrontierPinned() {
+		authorizedCorrelation := root.Correlation() == wholeBinding.Correlation()
+		if !authorizedCorrelation {
+			for _, source := range outerLayout.WindowSources() {
+				if source != nil && source.Correlation() == root.Correlation() {
+					authorizedCorrelation = true
+					break
+				}
+			}
+		}
+		if !authorizedCorrelation {
+			return nil, values.CorrelationIdentifier{}, false, false, nil
+		}
+		// Preserve the old ordinal-seed contract. matchJoinPKPredicate has
+		// already proved this root belongs to one admitted outer correlation;
+		// its frontier-pinned path is the complete ownership proof and must not
+		// be re-derived through a retained object window.
+		return outerValue, root.Correlation(), false, true, nil
+	}
+	if root.Correlation() == values.CurrentCorrelation() {
+		return nil, values.CorrelationIdentifier{}, false, false, nil
+	}
+	type candidate struct {
+		root   values.QuantifiedObjectValue
+		window bool
+	}
+	candidates := []candidate{{root: wholeBinding}}
+	for _, source := range outerLayout.WindowSources() {
+		if source == nil || source.Correlation().IsZero() {
+			continue
+		}
+		candidates = append(candidates, candidate{root: source, window: true})
+	}
+
+	var admitted values.FieldValue
+	var admittedCorrelation values.CorrelationIdentifier
+	admittedWindow := false
+	claims := 0
+	for _, candidate := range candidates {
+		if candidate.root.Correlation() != root.Correlation() {
+			continue
+		}
+		normalized, err := values.TranslateLogicalSourceNameNormalization(
+			outerValue, root.Correlation(), candidate.root)
+		if err != nil {
+			return nil, values.CorrelationIdentifier{}, false, false, err
+		}
+		normalizedField, isField := values.AsFieldValue(normalized)
+		if !isField {
+			return nil, values.CorrelationIdentifier{}, false, false, fmt.Errorf(
+				"correlated fast-path normalization produced %T", normalized)
+		}
+		normalizedRoot, hasRoot := values.AsQuantifiedObjectValue(
+			normalizedField.ChildValue())
+		claimed := normalized != outerValue
+		if !claimed && root.FlowedType().Equals(candidate.root.FlowedType()) {
+			claimed = true
+		}
+		if !claimed || !hasRoot ||
+			normalizedRoot.Correlation() != candidate.root.Correlation() ||
+			!normalizedRoot.FlowedType().Equals(candidate.root.FlowedType()) ||
+			!normalizedField.ResultType().Equals(outerValue.ResultType()) {
+			continue
+		}
+		claims++
+		admitted = normalizedField
+		admittedCorrelation = candidate.root.Correlation()
+		admittedWindow = candidate.window
+	}
+	if claims != 1 {
+		return nil, values.CorrelationIdentifier{}, false, false, nil
+	}
+	return admitted, admittedCorrelation, admittedWindow, true, nil
+}
+
+func normalizeCorrelatedComparisonRanges(
+	ranges []*predicates.ComparisonRange,
+	sourceAlias values.CorrelationIdentifier,
+	target values.QuantifiedObjectValue,
+) ([]*predicates.ComparisonRange, bool, error) {
+	normalized := make([]*predicates.ComparisonRange, len(ranges))
+	changed := false
+	for i, comparisonRange := range ranges {
+		if comparisonRange == nil || comparisonRange.IsEmpty() {
+			normalized[i] = comparisonRange
+			continue
+		}
+		var comparisons []*predicates.Comparison
+		if comparisonRange.IsEquality() {
+			comparisons = []*predicates.Comparison{comparisonRange.GetEqualityComparison()}
+		} else {
+			comparisons = comparisonRange.GetInequalityComparisons()
+		}
+		rebuilt := predicates.EmptyComparisonRange()
+		rangeChanged := false
+		for _, comparison := range comparisons {
+			normalizedComparison := comparison
+			if comparison != nil && comparison.Operand != nil {
+				normalizedOperand, err := values.TranslateLogicalSourceNameNormalization(
+					comparison.Operand, sourceAlias, target)
+				if err != nil {
+					return nil, false, fmt.Errorf("comparison %d operand: %w", i, err)
+				}
+				if normalizedOperand != comparison.Operand {
+					copyOfComparison := *comparison
+					copyOfComparison.Operand = normalizedOperand
+					normalizedComparison = &copyOfComparison
+					rangeChanged = true
+				}
+			}
+			merged := rebuilt.Merge(normalizedComparison)
+			if !merged.Ok {
+				return nil, false, fmt.Errorf(
+					"comparison %d could not be rebuilt after exact source normalization", i)
+			}
+			rebuilt = merged.Range
+		}
+		if rangeChanged {
+			normalized[i] = rebuilt
+			changed = true
+		} else {
+			normalized[i] = comparisonRange
+		}
+	}
+	if !changed {
+		return ranges, false, nil
+	}
+	return normalized, true, nil
+}
+
 func buildCorrelatedFlatMapPlan(
 	call *ExpressionRuleCall,
 	preds []predicates.QueryPredicate,
@@ -1148,7 +2134,7 @@ func buildCorrelatedFlatMapPlan(
 	innerNullOnEmpty bool,
 	innerStrictSingle bool,
 	freezeLegs bool,
-) (*plans.RecordQueryFlatMapPlan, expressions.Quantifier, expressions.Quantifier, bool) {
+) (*plans.RecordQueryFlatMapPlan, expressions.Quantifier, expressions.Quantifier, bool, error) {
 	var outerPreds, joinPreds []predicates.QueryPredicate
 	for _, pred := range preds {
 		corrSet := predicates.GetCorrelatedToOfPredicate(pred)
@@ -1203,13 +2189,22 @@ func buildCorrelatedFlatMapPlan(
 	innerExprForMemo := innerExpr
 	if innerNullOnEmpty && len(buriedLegAliases) > 0 {
 		legLayout := buriedLegOrdinalLayout(outerPlan)
+		outerLayout, layoutErr := outerPlan.ProvidedOutputLayout()
+		if layoutErr != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, layoutErr
+		}
+		outerCarrierType := values.PhysicalCarrierType(outerLayout)
 		origInnerPlan := innerPlan
-		innerPlan = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr, legLayout, nil, legRebaseOrigin{Site: legRebaseSiteBuried})
+		var rebaseErr error
+		innerPlan, rebaseErr = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr, outerCarrierType, legLayout, nil, legRebaseOrigin{Site: legRebaseSiteBuried})
+		if rebaseErr != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, rebaseErr
+		}
 		for i, p := range joinPreds {
-			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr, legLayout, nil, legRebaseOrigin{Site: legRebaseSiteBuried})
+			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr, outerCarrierType, legLayout, nil, legRebaseOrigin{Site: legRebaseSiteBuried})
 		}
 		if planReferencesAnyBuriedAlias(innerPlan, buriedLegAliases) || predsReferenceAlias(joinPreds, buriedAliasUpperSet(buriedLegAliases)) {
-			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, nil
 		}
 		if innerPlan != origInnerPlan {
 			// The rebase rewrote the inner's buried-preserved correlation onto outerCorr
@@ -1223,6 +2218,60 @@ func buildCorrelatedFlatMapPlan(
 			// aggregation correctly subtracts it to nothing (not a dangling buried alias).
 			innerExprForMemo = &scanPlanExpression{plan: innerPlan}
 		}
+	}
+
+	// The inner Explode evaluates its collection once per outer row. Normalize
+	// that correlated program to the exact physical row the FlatMap will bind,
+	// then memoize the rebuilt plan itself so the memo edge and executable child
+	// cannot diverge. This is the same plan-backed-expression contract used by
+	// the buried-reference rewrite above.
+	outerLayout, err := outerPlan.ProvidedOutputLayout()
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
+	// The PHYSICAL type, not the public one. FlowedType deliberately withholds
+	// leg boundaries so layout cannot reach the semantic surface; this re-mint
+	// is the physical side of the same value and needs them, because
+	// NewQuantifiedObjectValue snapshots its source layout from the type it is
+	// handed. Handed the public type, the merged row forgets where each leg
+	// starts — which downstream does not read as "no legs" but as ONE run over
+	// the whole concat keyed by the box's rightmost leaf, so a qualified read
+	// lands in the first leg. Measured on `FOA FULL OUTER FOB`: `FOB.K` read
+	// FOA's K.
+	physicalOuterType := values.PhysicalCarrierType(outerLayout)
+	if layoutBearing := values.PhysicalFlowedRecordTypeOf(outerLayout.Carrier()); layoutBearing != nil {
+		physicalOuterType = layoutBearing
+	}
+	physicalOuter, err := values.NewQuantifiedObjectValue(outerCorr, physicalOuterType)
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
+	normalizedInner, innerChanged, err := normalizeCorrelatedExplodeCollectionPlan(
+		innerPlan, outerCorr, physicalOuter)
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
+	if innerChanged {
+		innerPlan = normalizedInner
+		innerExprForMemo = &scanPlanExpression{plan: innerPlan}
+	}
+	normalizedInner, innerChanged, err = normalizeCorrelatedScanComparisonPlanForOuterLayout(
+		innerPlan, outerCorr, physicalOuter, outerLayout)
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
+	if innerChanged {
+		innerPlan = normalizedInner
+		innerExprForMemo = &scanPlanExpression{plan: innerPlan}
+	}
+	innerLayout, err := innerPlan.ProvidedOutputLayout()
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
+	physicalInnerType := values.PhysicalCarrierType(innerLayout)
+	physicalInner, err := values.NewQuantifiedObjectValue(innerCorr, physicalInnerType)
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
 	}
 
 	// The base quantifiers, from which the compensating chains below advance.
@@ -1260,6 +2309,36 @@ func buildCorrelatedFlatMapPlan(
 	}
 	outerQ := expressions.NamedForEachQuantifier(outerCorr, memoizeLeg(outerExpr))
 	innerQ := expressions.NamedForEachQuantifier(innerCorr, memoizeLeg(innerExprForMemo))
+	// Predicates arrive from the logical join seed, whose source QOV retains a
+	// nominal leg type (B RECORD<...>). The selected physical plans emit the
+	// executor carriers for those rows (normally unnamed RECORD<...>). The memo
+	// quantifiers above still range over the logical expressions, so asking them
+	// for a flowed type would merely reproduce the nominal declaration. Build
+	// exact runtime declarations from the selected plans instead, and translate
+	// BOTH legs: a residual such as E.SALARY > M.SALARY evaluates inside M's
+	// filter and reads the local physical edge as well as the bound outer row.
+	// Retyping only M leaves E nominal and fails one lookup later in the same
+	// predicate. A later extraction rebase may change the local edge alias, but
+	// it then preserves these already-physical exact types.
+	//
+	// The two legs' own retained-source windows come along, because a leg alias
+	// can name BOTH the leg's row and a source that row retains (a chained
+	// unnest binds the merged row under the same correlation as the element it
+	// keeps). Only the ROW is retargeted; see translatePredicateLogicalSource.
+	outerWindows := retainedWindowTypesAt(outerLayout, outerCorr)
+	innerWindows := retainedWindowTypesAt(innerLayout, innerCorr)
+	joinPreds, err = translatePredicateLogicalSource(joinPreds, innerCorr, physicalInner, innerWindows)
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
+	joinPreds, err = translatePredicateLogicalSource(joinPreds, outerCorr, physicalOuter, outerWindows)
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
+	outerPreds, err = translatePredicateLogicalSource(outerPreds, outerCorr, physicalOuter, outerWindows)
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
 
 	// LEFT-OUTER null-extension, the Java way (ImplementNestedLoopJoinRule.java:310-330
 	// / ImplementSimpleSelectRule:100-109): wrap the inner in DefaultOnEmpty so a
@@ -1289,14 +2368,18 @@ func buildCorrelatedFlatMapPlan(
 	// the subquery's own correlation, part of the subquery body the
 	// at-most-one-row check applies to.
 	nullOnEmpty := innerNullOnEmpty || joinType == plans.JoinLeftOuter
+	innerLayoutNullSupplying := false
 	var innerWrapped plans.RecordQueryPlan = innerPlan
 	if innerStrictSingle {
 		if len(joinPreds) > 0 {
 			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
 				call.MemoizeFinalExpression(innerWrapped))
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 				fpInnerQ, joinPreds, innerCorr,
 			)
+			if err != nil {
+				return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+			}
 			innerWrapped = filterPlan
 			innerQ = expressions.NamedForEachQuantifier(innerCorr,
 				call.MemoizeFinalExpression(filterPlan))
@@ -1326,27 +2409,50 @@ func buildCorrelatedFlatMapPlan(
 		// innerCorr.
 		fodInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
 			call.MemoizeFinalExpression(innerWrapped))
-		fodPlan := plans.NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier(
-			fodInnerQ, values.NewNullValue(values.UnknownType),
+		flowedType, err := fodInnerQ.GetFlowedObjectType()
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
+		fodPlan, err := plans.NewRecordQueryFirstOrDefaultPlanStrictFromQuantifier(
+			fodInnerQ, values.NewNullValue(flowedType),
 		)
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
 		innerWrapped = fodPlan
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
 			call.MemoizeFinalExpression(fodPlan))
 	} else if nullOnEmpty {
 		// The DefaultOnEmpty is its own cascades expression carrying the live innerQ
 		// edge (RFC-184 W2) — no physicalDefaultOnEmptyWrapper.
-		doePlan := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(
-			innerQ, values.NewNullValue(values.UnknownType),
+		flowedType, err := innerQ.GetFlowedObjectType()
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
+		doePlan, err := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(
+			innerQ, values.NewNullValue(flowedType),
 		)
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
 		innerWrapped = doePlan
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
 			call.MemoizeFinalExpression(doePlan))
+		// This is the exact physical fact ordinal_join.configureNullSupplying
+		// previously rediscovered by walking the inner wrapper spine. Thread it
+		// into the plan while lowering owns it. Strict FirstOrDefault above is
+		// deliberately not marked: execution does not classify that wrapper as
+		// a DefaultOnEmpty null-supplying edge.
+		innerLayoutNullSupplying = true
 		if len(joinPreds) > 0 {
 			fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
 				call.MemoizeFinalExpression(innerWrapped))
-			filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 				fpInnerQ, joinPreds, innerCorr,
 			)
+			if err != nil {
+				return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+			}
 			innerWrapped = filterPlan
 			innerQ = expressions.NamedForEachQuantifier(innerCorr,
 				call.MemoizeFinalExpression(filterPlan))
@@ -1354,9 +2460,12 @@ func buildCorrelatedFlatMapPlan(
 	} else if len(joinPreds) > 0 {
 		fpInnerQ := expressions.NamedForEachQuantifier(innerQ.GetAlias(),
 			call.MemoizeFinalExpression(innerWrapped))
-		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			fpInnerQ, joinPreds, innerCorr,
 		)
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
 		innerWrapped = filterPlan
 		innerQ = expressions.NamedForEachQuantifier(innerCorr,
 			call.MemoizeFinalExpression(filterPlan))
@@ -1365,9 +2474,12 @@ func buildCorrelatedFlatMapPlan(
 	if len(outerPreds) > 0 {
 		ofInnerQ := expressions.NamedForEachQuantifier(outerQ.GetAlias(),
 			call.MemoizeFinalExpression(outerPlan))
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+		outerFilter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			ofInnerQ, outerPreds, outerCorr,
 		)
+		if err != nil {
+			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+		}
 		outerQ = expressions.NamedForEachQuantifier(outerCorr,
 			call.MemoizeFinalExpression(outerFilter))
 	}
@@ -1383,12 +2495,19 @@ func buildCorrelatedFlatMapPlan(
 	if values.LegIdentityCensusEnabled() {
 		recordFlatMapResultValue(flatMapSiteCorrelated, resultValue)
 	}
-	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+	newFlatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers
+	if innerLayoutNullSupplying {
+		newFlatMapPlan = plans.NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner
+	}
+	flatMapPlan, err := newFlatMapPlan(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
 		resultValue, false,
 	)
-	return flatMapPlan, outerQ, innerQ, true
+	if err != nil {
+		return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, err
+	}
+	return flatMapPlan, outerQ, innerQ, true, nil
 }
 
 // buildExistsCompensationChain adds the physical operators that turn an
@@ -1419,7 +2538,7 @@ func buildExistsCompensationChain(
 	hasExistsFilter bool,
 	negated bool,
 	preserveAlias bool,
-) expressions.Quantifier {
+) (expressions.Quantifier, error) {
 	advance := func(plan plans.RecordQueryPlan) expressions.Quantifier {
 		ref := call.MemoizeFinalExpression(plan)
 		if preserveAlias {
@@ -1433,8 +2552,11 @@ func buildExistsCompensationChain(
 	if len(belowFODPredicates) > 0 {
 		filterInnerQ := expressions.NamedPhysicalQuantifier(
 			innerQ.GetAlias(), call.MemoizeFinalExpression(inner))
-		filter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+		filter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			filterInnerQ, belowFODPredicates, innerCorrelation)
+		if err != nil {
+			return expressions.Quantifier{}, err
+		}
 		belowFOD = filter
 		innerQ = advance(filter)
 	}
@@ -1444,8 +2566,15 @@ func buildExistsCompensationChain(
 	// applies the caller's fresh-vs-preserved policy above the wrapper.
 	fodInnerQ := expressions.NamedPhysicalQuantifier(
 		innerQ.GetAlias(), call.MemoizeFinalExpression(belowFOD))
-	fod := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(
-		fodInnerQ, values.NewNullValue(values.UnknownType))
+	flowedType, err := fodInnerQ.GetFlowedObjectType()
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
+	fod, err := plans.NewRecordQueryFirstOrDefaultPlanFromQuantifier(
+		fodInnerQ, values.NewNullValue(flowedType))
+	if err != nil {
+		return expressions.Quantifier{}, err
+	}
 	innerQ = advance(fod)
 
 	if hasExistsFilter {
@@ -1453,18 +2582,34 @@ func buildExistsCompensationChain(
 		if negated {
 			comparisonType = predicates.ComparisonIsNull
 		}
-		residual := predicates.NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(innerCorrelation),
-			predicates.Comparison{Type: comparisonType},
-		)
 		filterInnerQ := expressions.NamedPhysicalQuantifier(
 			innerQ.GetAlias(), call.MemoizeFinalExpression(fod))
-		filter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+		// The existential residual tests the complete FirstOrDefault row, not a
+		// retained source window inside that row. Reusing innerCorrelation here
+		// is ambiguous when a multi-table inner already publishes a buried source
+		// under the same alias (for example W/AWARDS): the layout binder correctly
+		// selects that narrow window and rejects the whole-row type. Root the
+		// residual in the declared FOD edge instead. PredicatesFilter admission
+		// then reanchors it to the exact FOD current carrier/presence channel, so
+		// typed whole-row NULL remains distinguishable from a matched all-NULL
+		// record without weakening source-window identity.
+		innerObject, err := filterInnerQ.RequireFlowedObjectValue()
+		if err != nil {
+			return expressions.Quantifier{}, err
+		}
+		residual := predicates.NewComparisonPredicate(
+			innerObject,
+			predicates.Comparison{Type: comparisonType},
+		)
+		filter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
 			filterInnerQ, []predicates.QueryPredicate{residual}, innerCorrelation)
+		if err != nil {
+			return expressions.Quantifier{}, err
+		}
 		innerQ = advance(filter)
 	}
 
-	return innerQ
+	return innerQ, nil
 }
 
 // implementExistentialSelect handles a SelectExpression with a
@@ -1553,22 +2698,145 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 		innerAlias = aliases[1]
 	}
 
-	outerCorr := values.NamedCorrelationIdentifier(outerAlias)
-	innerCorr := values.NamedCorrelationIdentifier(innerAlias)
-
-	// The SelectExpression's result value references the outer and existential
-	// QUANTIFIER aliases (e.g. q$43), but the FlatMap binds the outer/inner rows
-	// under the SOURCE aliases the rule uses (T1 / T2). Rebase the result value
-	// so a projected ExistsValue's QOV(existential-quantifier) resolves against
-	// the FlatMap's inner binding (RFC-141 projected EXISTS); WHERE-EXISTS keeps
-	// its bare-outer-QOV result value, which rebases to QOV(outer) unchanged.
-	resultValue := remapExistentialResultValue(sel.GetResultValue(),
+	// Source aliases are optional display metadata. The quantifier aliases are
+	// the binding authority when no source name was recorded; constructing a
+	// named correlation from "" would make an otherwise valid projected EXISTS
+	// fail before the FlatMap is built.
+	outerCorr := correlationForSourceAlias(quants[0].GetAlias(), outerAlias)
+	innerCorr := correlationForSourceAlias(quants[1].GetAlias(), innerAlias)
+	// Resolve the Select result onto the runtime source aliases before choosing
+	// the outer layout authority. A projected retained source can be the only
+	// consumer of a late-discovered window; omitting it here would let the helper
+	// treat the stale outer member as sufficient and lose that object later.
+	resultValue, err := remapExistentialResultValue(sel.GetResultValue(),
 		quants[0].GetAlias(), outerCorr, quants[1].GetAlias(), innerCorr)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+
+	// The chosen outer FlatMap can predate its child winners. Rebuild one level
+	// privately when those exact winners add a retained source this existential
+	// reads; collision selection and predicate normalization must see the same
+	// layout extraction will construct later. Only when the new retained source
+	// is actually referenced do we execute the exact clone through a private
+	// edge; unrelated outer alternatives stay live.
+	outerLayoutPlan, exactOuterAuthority, err := selectedExistentialOuterLayoutAuthority(
+		call, outerPlan, regularPreds, innerPlan, resultValue)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	if exactOuterAuthority {
+		// The correlated program below is now normalized to this clone's exact
+		// retained source. Execute that same clone through a private final edge;
+		// allowing extraction to swap in another live-group member would separate
+		// the operand proof from the object installed at runtime.
+		outerExpr = outerLayoutPlan
+		outerPlan = outerLayoutPlan
+	}
 
 	// The inner-leg alias set — the below-FOD-vs-outer routing authority (see the
 	// detailed note at the below-FOD rebase). Computed here so the hoist can rebase
 	// exactly the inner-residual preds.
 	innerLegs := collectInnerLegAliases(innerRef, innerCorr)
+
+	// The rendered outer source alias can also name a retained UNNEST source
+	// inside the selected outer row. In that exact shape the two meanings must
+	// remain distinct: the FlatMap binds its complete outer row, while the inner
+	// predicate reads the scalar/AS+AT source window. Reusing VAL for both makes
+	// the whole-row QOV shadow the narrower exact VAL binding at runtime and also
+	// makes the ordinal rebase below mistake VAL.<field> for an already-rebased
+	// whole-row path. Mint an internal whole-row binding only when the selected
+	// output layout proves this same-correlation/different-exact-type collision.
+	originalOuterCorr := outerCorr
+	outerCorr, err = collisionFreeExistentialOuterCorrelation(
+		call, outerLayoutPlan, outerCorr)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	var originalOuterRoot, reboundOuterRoot values.QuantifiedObjectValue
+	if outerCorr != originalOuterCorr {
+		originalOuterRoot, reboundOuterRoot, err = existentialOuterWholeRowRoots(
+			outerLayoutPlan, originalOuterCorr, outerCorr)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		regularPreds, err = translateExistentialWholeRowPredicates(
+			regularPreds, originalOuterRoot, reboundOuterRoot)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		innerPlan, err = translateExistentialWholeRowPlanPredicates(
+			innerPlan, originalOuterRoot, reboundOuterRoot)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		// Keep the memo edge and the concrete plan in lockstep. The rewritten
+		// filter is the executable existential child; retaining innerExpr here
+		// would memoize the stale pre-collision predicate graph again.
+		innerExpr = innerPlan
+	}
+
+	// Normalize every correlated executable program against the exact selected
+	// outer layout before either the fast scan shortcut or the general
+	// compensation chain freezes it. A retained record element can carry a
+	// physical nominal name (ELEM) while SQL resolution produced RECORD with the
+	// same fields; leaving that phase-local name in the scan/predicate creates a
+	// third exact QOV which no runtime context can bind.
+	outerLayout, err := outerLayoutPlan.ProvidedOutputLayout()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	physicalOuter, err := values.NewQuantifiedObjectValue(
+		outerCorr, values.PhysicalCarrierType(outerLayout))
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	regularPreds, _, err = normalizeCorrelatedPredicatesForOuterLayout(
+		regularPreds, outerCorr, physicalOuter, outerLayout)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	normalizedInner, innerChanged, err := normalizeCorrelatedScanComparisonPlanForOuterLayout(
+		innerPlan, outerCorr, physicalOuter, outerLayout)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	if innerChanged {
+		innerPlan = normalizedInner
+		innerExpr = innerPlan
+	}
+
+	// The result was already moved from the Select quantifier aliases onto the
+	// runtime source aliases before selected-layout reconstruction. Collision
+	// handling now retargets only the complete outer-row declaration; a retained
+	// same-spelled source stays on its authored correlation and is normalized to
+	// the exact window below.
+	if reboundOuterRoot != nil {
+		resultValue, err = translateExistentialWholeRowValue(
+			resultValue, originalOuterRoot, reboundOuterRoot)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+	}
+	resultValue, err = normalizeCorrelatedValueForOuterLayout(
+		resultValue, outerCorr, physicalOuter, outerLayout)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	outerLayoutDependent := existentialProgramsRequireRetainedOuterLayout(
+		regularPreds, innerPlan, outerLayout, resultValue)
 
 	// HOIST the below-FOD window rebase ABOVE the fast path.
 	// A fully-baked (AS+AT) seed's outer-leg refs must rebase to baked ofOrdinals
@@ -1645,12 +2913,32 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	windowsHoisted := false
 	if windows, mergedRowType := ordinalSeedLegWindowsOf(planResultValue(outerPlan)); windows != nil {
 		windowsHoisted = true
-		mergedQOV := values.NewQuantifiedObjectValueOfType(outerCorr, mergedRowType)
+		expectedOuterRoots := map[values.CorrelationIdentifier]struct{}{outerCorr: {}}
+		for _, predicate := range regularPreds {
+			if !predicateReferencesInnerLeg(predicate, innerLegs) {
+				continue
+			}
+			scalarAliases := scalarSubqueryAliasesOfPredicate(predicate)
+			for correlation := range predicates.GetCorrelatedToOfPredicate(predicate) {
+				if _, isInner := innerLegs[correlation]; isInner {
+					continue
+				}
+				if _, isScalar := scalarAliases[correlation]; isScalar {
+					continue
+				}
+				expectedOuterRoots[correlation] = struct{}{}
+			}
+		}
+		mergedQOV, err := values.NewQuantifiedObjectValue(outerCorr, mergedRowType)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		for i, p := range regularPreds {
 			if !predicateReferencesInnerLeg(p, innerLegs) {
 				continue // outer-only: evaluated in the outer context — do not bake
 			}
-			np, ok := rebaseOuterLegRefsOrdinal(p, windows, mergedQOV)
+			np, ok := rebaseOuterLegRefsOrdinal(p, windows, mergedQOV, expectedOuterRoots)
 			if !ok {
 				return
 			}
@@ -1667,7 +2955,12 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// and read FALSE for every matched row (the non-fast path's rebase is the
 	// only thing that makes the projected boolean resolve).
 	if len(regularPreds) > 0 && !sel.IsQuantifiersSwapped() {
-		if r.tryExistsFlatMap(call, resultValue, outerPlan, innerPlan, outerAlias, innerAlias, outerExpr, innerExpr, hasExistsFilter, negated, regularPreds) {
+		if r.tryExistsFlatMap(
+			call, resultValue, outerPlan, innerPlan,
+			originalOuterCorr, outerCorr, innerCorr,
+			physicalOuter, outerLayout,
+			exactOuterAuthority, outerLayoutDependent,
+			outerExpr, innerExpr, hasExistsFilter, negated, regularPreds) {
 			return
 		}
 	}
@@ -1755,6 +3048,15 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 				if _, ok := scalarAliases[a]; ok {
 					continue
 				}
+				// A collision-free whole-row alias deliberately leaves an
+				// exact retained scalar source at its authored correlation. The
+				// selected outer layout is the only authority that can distinguish
+				// that source from an unbindable buried leg. Admit the correlation
+				// only when every exact QOV with that identity in this predicate is
+				// provided by the layout; a same-spelled foreign type stays loud.
+				if predicateCorrelationProvidedByOuterLayout(p, outerLayoutPlan, a) {
+					continue
+				}
 				return
 			}
 		}
@@ -1766,10 +3068,14 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// interning from collapsing the below-FOD and existential residual filters.
 	innerQ := expressions.NamedPhysicalQuantifier(
 		quants[1].GetAlias(), call.MemoizeExpression(innerExpr))
-	innerQ = buildExistsCompensationChain(
+	innerQ, err = buildExistsCompensationChain(
 		call, innerQ, innerPlan, innerCorr, joinPreds,
 		hasExistsFilter, negated, false,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// outerOnlyPreds deliberately keep the buried-leg references the
 	// below-FOD rebase above rewrites: this filter runs ABOVE the FlatMap on
@@ -1779,13 +3085,25 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// masked-conjunct pin (`d.id = 3 AND NOT EXISTS …`) exercises exactly
 	// this path. The below-FOD preds needed the rebase because THEIR row
 	// context is the inner scan's frontier row, not the outer's.
+	outerExpressionRef := call.MemoizeExpression(outerExpr)
+	if exactOuterAuthority || outerLayoutDependent || outerCorr != originalOuterCorr {
+		// The correlated programs below are rooted in this member's exact
+		// retained-source layout. A later outer-group alternative must not replace
+		// the member after collision selection or name normalization has frozen
+		// those roots.
+		outerExpressionRef = call.MemoizeFinalExpression(outerExpr)
+	}
 	outerQ := expressions.NamedPhysicalQuantifier(
-		quants[0].GetAlias(), call.MemoizeExpression(outerExpr))
+		quants[0].GetAlias(), outerExpressionRef)
 
 	if len(outerOnlyPreds) > 0 {
 		ofInnerQ := expressions.NamedPhysicalQuantifier(outerQ.GetAlias(),
 			call.MemoizeFinalExpression(outerPlan))
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerOnlyPreds, outerCorr)
+		outerFilter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerOnlyPreds, outerCorr)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		outerQ = expressions.NewPhysicalQuantifier(
 			call.MemoizeFinalExpression(outerFilter))
 	}
@@ -1800,11 +3118,15 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	if values.LegIdentityCensusEnabled() {
 		recordFlatMapResultValue(flatMapSiteExistentialSelect, resultValue)
 	}
-	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
 		resultValue, true,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// The quantifiers range over the SAME compensated expressions the plan holds
 	// — that is what the lockstep chains above buy, and it is what makes this
@@ -1818,7 +3140,222 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// terminal step feared cannot happen once the edges coincide.
 	//
 	// rule_implement_simple_select.go:97-117 always had this shape.
-	r.yieldBinaryJoinWithOrderingVariants(call, flatMapPlan)
+	if exactOuterAuthority || outerLayoutDependent || outerCorr != originalOuterCorr {
+		// The executable predicate is normalized against the preserve-order
+		// winner's exact retained-source layout. An ordered alternative can expose
+		// a different window set; keep the correct fallback plan and its enclosing
+		// sort rather than pairing that predicate with unproven ownership.
+		call.Yield(flatMapPlan)
+	} else {
+		r.yieldBinaryJoinWithOrderingVariants(call, flatMapPlan)
+	}
+}
+
+// correlationForSourceAlias preserves the quantifier's exact identifier when
+// source metadata repeats its rendered spelling. Reconstructing that spelling
+// with NamedCorrelationIdentifier changes a planner-minted Unique q$ alias into
+// a distinct user-named alias; predicates then miss the existential leg and can
+// be routed to the outer filter. A genuinely different source alias remains an
+// explicit named binding and is remapped by the caller.
+func correlationForSourceAlias(
+	quantifierAlias values.CorrelationIdentifier,
+	sourceAlias string,
+) values.CorrelationIdentifier {
+	if sourceAlias == "" || sourceAlias == quantifierAlias.Name() {
+		return quantifierAlias
+	}
+	return values.NamedCorrelationIdentifier(sourceAlias)
+}
+
+// collisionFreeExistentialOuterCorrelation separates the FlatMap's complete
+// outer-row binding from a retained source window which happens to use the same
+// correlation. Exact type is part of QOV identity, so EvaluationContext can
+// carry both, but the FlatMap bookkeeping alias is also used to route ordinal
+// rebases; using the retained source alias for the whole row conflates those
+// roles before execution. The selected output layout is the only authority:
+// same text without an admitted window, or the exact same source object type,
+// is not a collision and preserves the original identifier.
+func collisionFreeExistentialOuterCorrelation(
+	call *ExpressionRuleCall,
+	outer plans.RecordQueryPlan,
+	candidate values.CorrelationIdentifier,
+) (values.CorrelationIdentifier, error) {
+	if outer == nil || candidate.IsZero() {
+		return candidate, nil
+	}
+	layout, err := outer.ProvidedOutputLayout()
+	if err != nil {
+		var unavailable *plans.OrdinalLayoutUnavailableError
+		if errors.As(err, &unavailable) {
+			return candidate, nil
+		}
+		return values.CorrelationIdentifier{}, err
+	}
+	carrier := layout.Carrier()
+	if carrier == nil {
+		return values.CorrelationIdentifier{}, fmt.Errorf(
+			"existential outer layout has no exact carrier")
+	}
+	for _, source := range layout.WindowSources() {
+		if source == nil || source.Correlation() != candidate ||
+			sameExactType(source.FlowedType(), carrier.FlowedType()) {
+			continue
+		}
+		if call != nil && call.memo != nil {
+			return call.memo.NextMergeAlias(), nil
+		}
+		return values.UniqueCorrelationIdentifier(), nil
+	}
+	return candidate, nil
+}
+
+// predicateCorrelationProvidedByOuterLayout proves that one otherwise-buried
+// predicate correlation is an exact retained source of the selected outer
+// plan. Correlation text alone is insufficient: a whole-row QOV and a scalar
+// UNNEST source may intentionally share it. Every QOV occurrence at the
+// correlation must therefore be admitted by exact type through LayoutProvides.
+func predicateCorrelationProvidedByOuterLayout(
+	predicate predicates.QueryPredicate,
+	outer plans.RecordQueryPlan,
+	correlation values.CorrelationIdentifier,
+) bool {
+	if predicate == nil || outer == nil || correlation.IsZero() {
+		return false
+	}
+	layout, err := outer.ProvidedOutputLayout()
+	if err != nil || layout == nil {
+		return false
+	}
+	seen := false
+	provided := true
+	_, err = predicates.TransformEmbeddedValuesChecked(
+		predicate,
+		func(value values.Value) (values.Value, error) {
+			values.WalkValue(value, func(node values.Value) bool {
+				qov, ok := values.AsQuantifiedObjectValue(node)
+				if !ok || qov.Correlation() != correlation {
+					return true
+				}
+				seen = true
+				matches, provideErr := values.LayoutProvides(layout, qov)
+				if provideErr != nil || !matches {
+					provided = false
+					return false
+				}
+				return true
+			})
+			return value, nil
+		})
+	return err == nil && seen && provided
+}
+
+// existentialOuterWholeRowRoots declares the exact whole-row identity on both
+// sides of an existential collision rename. The selected outer layout is the
+// authority for the complete row type; retained source windows may use the
+// same correlation for a narrower scalar or record and must not be rewritten.
+func existentialOuterWholeRowRoots(
+	outer plans.RecordQueryPlan,
+	source, target values.CorrelationIdentifier,
+) (values.QuantifiedObjectValue, values.QuantifiedObjectValue, error) {
+	if outer == nil || source.IsZero() || target.IsZero() {
+		return nil, nil, fmt.Errorf("existential whole-row translation requires plan and aliases")
+	}
+	layout, err := outer.ProvidedOutputLayout()
+	if err != nil {
+		return nil, nil, err
+	}
+	carrier := layout.Carrier()
+	if carrier == nil {
+		return nil, nil, fmt.Errorf("existential outer layout has no exact carrier")
+	}
+	declaration, err := values.NewQuantifiedObjectValue(source, carrier.FlowedType())
+	if err != nil {
+		return nil, nil, err
+	}
+	replacement, err := values.NewQuantifiedObjectValue(target, carrier.FlowedType())
+	if err != nil {
+		return nil, nil, err
+	}
+	return declaration, replacement, nil
+}
+
+// translateExistentialWholeRowPredicates moves only the complete outer-row
+// declaration onto the fresh FlatMap binding. TranslateDeclaredEdgeRoot
+// matches correlation AND exact type, so a retained UNNEST scalar such as
+// X(INT) remains X while the stale pre-collision X(RECORD<...>) becomes the
+// fresh whole-row QOV. Rebuilding is copy-on-write and leaves the logical
+// predicate graph untouched.
+func translateExistentialWholeRowPredicates(
+	preds []predicates.QueryPredicate,
+	declaration, replacement values.QuantifiedObjectValue,
+) ([]predicates.QueryPredicate, error) {
+	translated := make([]predicates.QueryPredicate, len(preds))
+	for i, predicate := range preds {
+		var err error
+		translated[i], err = predicates.TransformEmbeddedValuesChecked(
+			predicate,
+			func(value values.Value) (values.Value, error) {
+				return translateExistentialWholeRowValue(value, declaration, replacement)
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("existential predicate %d whole-row translation: %w", i, err)
+		}
+	}
+	return translated, nil
+}
+
+// translateExistentialWholeRowPlanPredicates rewrites the predicates already
+// implemented inside the selected existential child. Logical EXISTS lowering
+// commonly puts correlated WHERE conjuncts in a physical PredicatesFilter
+// before this rule fires, leaving regularPreds empty; translating only the
+// SelectExpression's residual list therefore cannot reach the stale whole-row
+// root. The selected filter is rebuilt copy-on-write with its exact child and
+// binding alias preserved.
+func translateExistentialWholeRowPlanPredicates(
+	plan plans.RecordQueryPlan,
+	declaration, replacement values.QuantifiedObjectValue,
+) (plans.RecordQueryPlan, error) {
+	switch typed := plan.(type) {
+	case *plans.RecordQueryPredicatesFilterPlan:
+		translated, err := translateExistentialWholeRowPredicates(
+			typed.GetPredicates(), declaration, replacement)
+		if err != nil {
+			return nil, err
+		}
+		unchanged := len(translated) == len(typed.GetPredicates())
+		for i := range translated {
+			unchanged = unchanged && translated[i] == typed.GetPredicates()[i]
+		}
+		if unchanged {
+			return plan, nil
+		}
+		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(
+			typed.GetInner(), translated, typed.GetInnerAlias())
+	case *plans.RecordQueryFilterPlan:
+		translated, err := translateExistentialWholeRowPredicates(
+			typed.GetPredicates(), declaration, replacement)
+		if err != nil {
+			return nil, err
+		}
+		unchanged := len(translated) == len(typed.GetPredicates())
+		for i := range translated {
+			unchanged = unchanged && translated[i] == typed.GetPredicates()[i]
+		}
+		if unchanged {
+			return plan, nil
+		}
+		return plans.NewRecordQueryFilterPlan(translated, typed.GetInner())
+	default:
+		return plan, nil
+	}
+}
+
+func translateExistentialWholeRowValue(
+	value values.Value,
+	declaration, replacement values.QuantifiedObjectValue,
+) (values.Value, error) {
+	return values.TranslateDeclaredEdgeRoot(value, declaration, replacement)
 }
 
 // remapExistentialResultValue rebases an existential SelectExpression's result
@@ -1831,21 +3368,25 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 func remapExistentialResultValue(
 	rv values.Value,
 	outerQAlias, outerCorr, innerQAlias, innerCorr values.CorrelationIdentifier,
-) values.Value {
+) (values.Value, error) {
 	if rv == nil {
-		return nil
+		return nil, nil
 	}
-	am := values.AliasMap{}
+	pairs := make([]values.AliasPair, 0, 2)
 	if outerQAlias != outerCorr {
-		am[outerQAlias] = outerCorr
+		pairs = append(pairs, values.AliasPair{Source: outerQAlias, Target: outerCorr})
 	}
 	if innerQAlias != innerCorr {
-		am[innerQAlias] = innerCorr
+		pairs = append(pairs, values.AliasPair{Source: innerQAlias, Target: innerCorr})
 	}
-	if len(am) == 0 {
-		return rv
+	if len(pairs) == 0 {
+		return rv, nil
 	}
-	return values.RebaseValue(rv, am)
+	am, err := values.NewAliasMap(pairs)
+	if err != nil {
+		return nil, err
+	}
+	return values.RebaseValueChecked(rv, am)
 }
 
 // resultValueReferencesAlias reports whether a SelectExpression result value's
@@ -2104,6 +3645,35 @@ func projectionLegRowType(p *plans.RecordQueryProjectionPlan) *values.RecordType
 // windows the N-way chain's ACCUMULATED INNER so the next level reads its buried
 // leaves positionally. ok=false for any non-ordinal-safe node. A single scan leg
 // yields ONE leg (its own alias) — the caller uses .Legs only when len(legs) > 1.
+// fieldsRebasedTo returns a COPY of fields whose Ordinal is its position in the
+// CONCATENATED row rather than in the leg's own row.
+//
+// A leaf leg reports its plan's own result-type fields, numbered from 0. Two
+// such legs concatenated therefore read 0,1,0,1 — and a values.RecordType whose
+// Fields[i].Ordinal != i is not an exact type at all: snapshotExactType rejects
+// it with "record field ordinal does not equal its position", so
+// NewQuantifiedObjectValue over the concat FAILS and the whole ordinal seed
+// declines. The failure is silent in the way that matters: it presents as a
+// shape that "does not ordinalize" rather than as a malformed row.
+//
+// The `base` parameter this walk already threads is exactly the offset the leg
+// occupies, so rebasing here is the same arithmetic the leg WINDOW is built
+// from — the flat-run leg beside it is stamped [base, base+len). The
+// positional-merge arm has always stamped `base + i` on its own fields; these
+// two leaf arms were the ones handing their plan's numbering through unchanged,
+// which is correct only for the leg that happens to sit at offset zero.
+//
+// The copy is not optional: rt.Fields is the leg PLAN's own slice, so
+// renumbering in place would rewrite that plan's result type.
+func fieldsRebasedTo(fields []values.Field, base int) []values.Field {
+	out := make([]values.Field, len(fields))
+	for i, f := range fields {
+		f.Ordinal = base + i
+		out[i] = f
+	}
+	return out
+}
+
 func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdentifier, base int) ([]values.Field, []values.RecordTypeLeg, bool) {
 	inner := p
 	for {
@@ -2128,7 +3698,7 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 			// SameLeg exists to keep out of the minted leg's window. Threading the
 			// identifier removes the question. Name is its own spelling, so the text
 			// channel's readers see what they always saw.
-			return rt.Fields, []values.RecordTypeLeg{
+			return fieldsRebasedTo(rt.Fields, base), []values.RecordTypeLeg{
 				values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), base, len(rt.Fields)),
 			}, true
 		// A PROJECTION leg contributes its OWN stated row — see legOrdinalSafety's
@@ -2141,7 +3711,7 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 			if rt == nil {
 				return nil, nil, false
 			}
-			return rt.Fields, []values.RecordTypeLeg{
+			return fieldsRebasedTo(rt.Fields, base), []values.RecordTypeLeg{
 				values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), base, len(rt.Fields)),
 			}, true
 		case *plans.RecordQueryPredicatesFilterPlan:
@@ -2201,14 +3771,17 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 			fields := make([]values.Field, len(rc.Fields))
 			legs := make([]values.RecordTypeLeg, 0, len(rc.Fields))
 			for i, f := range rc.Fields {
-				qov := f.Value.(*values.QuantifiedObjectValue) // guaranteed by the recognizer
-				fields[i] = values.Field{Name: f.Name, FieldType: qov.Type(), Ordinal: base + i}
+				qov, isQOV := values.AsQuantifiedObjectValue(f.Value)
+				if !isQOV {
+					return nil, nil, false
+				}
+				fields[i] = values.Field{Name: f.Name, FieldType: qov.FlowedType(), Ordinal: base + i}
 				// A slot whose quantifier states no ROW carries no leg boundary. It
 				// is the unnest ELEMENT case — a scalar the merge holds whole — and
 				// giving it a nested leg would claim a row it does not have.
-				if rt, isRT := qov.Typ.(*values.RecordType); isRT && rt != nil {
+				if rt, isRT := qov.FlowedType().(*values.RecordType); isRT && rt != nil {
 					legs = append(legs, values.NewRecordTypeLeg(
-						values.LegKindNested, qov.Correlation, qov.Correlation.Name(), base+i, 1))
+						values.LegKindNested, qov.Correlation(), qov.Correlation().Name(), base+i, 1))
 				}
 			}
 			if len(legs) == 0 {
@@ -2235,7 +3808,7 @@ func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdenti
 // for a single-source scan the flowed types coincide, which the cross-agreement
 // fixture covers). Returns nil when a leg is not ordinal-safe or its type is not
 // a record (the caller keeps the original RV unchanged).
-func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) (values.Value, foldStep1LegDecline) {
+func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier, joinType plans.JoinType) (values.Value, foldStep1LegDecline) {
 	// BOTH legs are walked, never short-circuited, because the census's
 	// both-legs-unsafe check is what keeps its per-firing sub-partition honest —
 	// a short circuit would make "at most one refused leg per firing" true by
@@ -2254,11 +3827,22 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 			Witness:        witness,
 		}
 	}
+	// The NULL-SUPPLYING side is the join kind's, derived here from the SAME
+	// switch RecordQueryNestedLoopJoinPlan uses to decide which aliases it will
+	// declare null-supplying in its own output layout. The two must agree: the
+	// plan looks its null-supplying source up IN THIS SEED, and refuses to build
+	// ("null-supplying source Q must be nullable") if the record it finds is not
+	// null-extended. Seeding every leg preserved made a projected EXISTS over a
+	// LEFT JOIN unplannable outright — a query Java answers.
 	var fields []values.RecordConstructorField
 	for _, leg := range []struct {
-		plan  plans.RecordQueryPlan
-		alias values.CorrelationIdentifier
-	}{{leftPlan, leftAlias}, {rightPlan, rightAlias}} {
+		plan          plans.RecordQueryPlan
+		alias         values.CorrelationIdentifier
+		nullSupplying bool
+	}{
+		{leftPlan, leftAlias, joinType == plans.JoinFullOuter},
+		{rightPlan, rightAlias, joinType == plans.JoinLeftOuter || joinType == plans.JoinFullOuter},
+	} {
 		// Walk the leg to its buried scan leaves: the flat concat + each buried
 		// source's window. A scan leg yields one leaf (its own alias); the N-way
 		// chain's accumulated INNER (a bare INNER NLJ) yields its buried leaves.
@@ -2285,22 +3869,35 @@ func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAli
 		if len(buriedLegs) > 1 {
 			legs = buriedLegs
 		}
-		rt := &values.RecordType{Fields: concatFields, Legs: legs}
+		var rt *values.RecordType = &values.RecordType{Fields: concatFields, Legs: legs}
+		if leg.nullSupplying {
+			// WithNullability, never a fresh NewRecordType: a concat legitimately
+			// carries duplicate bare names across buried sources, and the
+			// constructor's duplicate check is for name-addressed rows. Same rule
+			// and same reason as the translator's own seed wrap.
+			rt = values.WithNullability(rt, true).(*values.RecordType)
+		}
 		// The QOV's correlation is the leg's identifier, carried. It must be the SAME
 		// identifier planBuriedLegConcat stamped on the leg boundaries just above —
 		// the seed's ordinal reads resolve by matching one against the other — and
 		// the way to guarantee that is for both to be the one identifier the caller
 		// threaded, rather than two independent folds of one string.
-		qov := values.NewQuantifiedObjectValueOfType(leg.alias, rt)
+		qov, qovErr := values.NewQuantifiedObjectValue(leg.alias, rt)
+		if qovErr != nil {
+			return nil, foldStep1LegDecline{
+				Shape:   foldStep1LegShapeNone,
+				Witness: fmt.Sprintf("QOV(%T) failed: %v", leg.plan, qovErr),
+			}
+		}
 		for i := range concatFields {
-			fv, err := values.NewFieldValueOfOrdinal(qov, i)
+			fv, err := values.ResolveOrdinalSeedField(qov, i)
 			if err != nil {
 				return nil, foldStep1LegDecline{
 					Shape:   foldStep1LegShapeNone,
 					Witness: fmt.Sprintf("ofOrdinal(%T#%d) failed: %v", leg.plan, i, err),
 				}
 			}
-			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+			fields = append(fields, values.RecordConstructorField{Name: concatFields[i].Name, Value: fv})
 		}
 	}
 	return values.NewRawRecordConstructorValue(fields...), foldStep1LegDecline{}
@@ -2451,15 +4048,15 @@ func materializedNLJOrdinalLayoutMatches(resultValue values.Value, outerPlan, in
 
 // recordFieldsMatch compares two RecordTypes by FIELDS only (name + ordinal +
 // field type, via values.Field.Equals) — NOT the full values.RecordType.Equals,
-// which also requires RecordName/Nullable to match. A window's own Typ
-// (ordinalLegWindow, built by OrdinalSeedLegWindows from a positional slice
-// of the merged seed's fields) never carries the leg's original RecordName —
-// it is a synthesized sub-record, not the leg's declared type — so comparing
-// full Equals against a real plan's GetResultType() (which DOES carry its
-// RecordName, e.g. "DEPT") would spuriously mismatch every single leg,
-// including the correctly-oriented one. Field shape is the information both
-// sides actually carry and is exactly what distinguishes one base table's
-// leg from another's (different tables have different column sets).
+// which also requires Nullable to match. A window's own Typ (ordinalLegWindow,
+// built by OrdinalSeedLegWindows from a positional slice of the merged seed's
+// fields) is a synthesized sub-record whose record-level nullability is not the
+// leg's, and one side of this comparison is a null-extended outer-join leg
+// while the other is the child plan's own row — so requiring Nullable to agree
+// would mismatch exactly the legs this gate exists to orient. Field shape is
+// the information both sides actually carry and is exactly what distinguishes
+// one base table's leg from another's (different tables have different column
+// sets).
 //
 // AN UNSTATED FIELD TYPE ON EITHER SIDE IS NOT A DIFFERENCE. A seed window's
 // field types come from wherever the seed was built, and a leg lowered from a
@@ -2549,8 +4146,8 @@ func planRowRecordType(p plans.RecordQueryPlan) *values.RecordType {
 // and that mapping cannot be recovered downstream — the rebase arm has no way to
 // ask which of its callers it has (the same argument legRebaseSite records about
 // itself).
-func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) (values.Value, bool, legRebaseOrigin) {
-	seedRV, gated, class, decline := foldStep1SeedDecision(rv, existAlias, correlatedStep1, leftPlan, rightPlan, leftAlias, rightAlias)
+func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier, joinType plans.JoinType) (values.Value, bool, legRebaseOrigin) {
+	seedRV, gated, class, decline := foldStep1SeedDecision(rv, existAlias, correlatedStep1, leftPlan, rightPlan, leftAlias, rightAlias, joinType)
 	if values.LegIdentityCensusEnabled() {
 		recordFoldStep1Outcome(class, decline)
 	}
@@ -2564,7 +4161,7 @@ func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, cor
 // foldStep1SeedDecision is foldStep1Seed's decision, split from the recording so
 // the classification is exercisable without process-global census state — the
 // same split every census on this path makes for the same reason.
-func foldStep1SeedDecision(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier) (values.Value, bool, foldStep1Class, foldStep1LegDecline) {
+func foldStep1SeedDecision(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier, joinType plans.JoinType) (values.Value, bool, foldStep1Class, foldStep1LegDecline) {
 	// Conditions (1) and (2) are separate CLASSES even though the code tests them
 	// in one expression: they are different populations with different
 	// dispositions — (1) is the permanent correlated-semijoin wall, (2) is a
@@ -2576,7 +4173,7 @@ func foldStep1SeedDecision(rv values.Value, existAlias values.CorrelationIdentif
 	if !resultValueReferencesAlias(rv, existAlias) {
 		return rv, false, foldStep1DeclineNoExistRef, foldStep1LegDecline{}
 	}
-	seed, decline := reconstructFoldStep1Seed(leftPlan, rightPlan, leftAlias, rightAlias)
+	seed, decline := reconstructFoldStep1Seed(leftPlan, rightPlan, leftAlias, rightAlias, joinType)
 	if seed == nil {
 		return rv, false, foldStep1DeclineReconstructNil, decline
 	}
@@ -2642,7 +4239,7 @@ func buriedLegOrdinalLayout(outerPlan plans.RecordQueryPlan) map[values.ColumnId
 	}
 	layout := make(map[values.ColumnIdentity]int, len(rc.Fields))
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
+		fv, isFV := values.AsFieldValue(f.Value)
 		if !isFV {
 			continue
 		}
@@ -2672,12 +4269,15 @@ func buriedLegOrdinalLayout(outerPlan plans.RecordQueryPlan) map[values.ColumnId
 //
 // Used by both ends of the buried-leg layout, so the writer and the reader
 // cannot key it two different ways.
-func legSlotIdentity(fv *values.FieldValue) (values.ColumnIdentity, bool) {
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+func legSlotIdentity(fv values.FieldValue) (values.ColumnIdentity, bool) {
+	if fv == nil {
+		return values.ColumnIdentity{}, false
+	}
+	qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 	if !isQOV {
 		return values.ColumnIdentity{}, false
 	}
-	return fv.CorrelatedIdentityIn(values.OrdinalDomainOfType(qov.Typ))
+	return values.CorrelatedFieldIdentityIn(fv, values.OrdinalDomainOfQuantified(qov))
 }
 
 // legRowTypeSource is one join leg as this derivation sees it: the QUANTIFIER —
@@ -2770,14 +4370,15 @@ func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.Correlation
 			}
 			continue
 		}
-		if flowed != nil && len(flowed.Fields) > 0 {
+		flowedRecord, isRecord := flowed.(*values.RecordType)
+		if isRecord && flowedRecord != nil && len(flowedRecord.Fields) > 0 {
 			if values.LegIdentityCensusEnabled() {
-				recordFlowedLegLayout(leg.Alias, flowed)
+				recordFlowedLegLayout(leg.Alias, flowedRecord)
 			}
-			out[leg.Alias] = flowed
+			out[leg.Alias] = flowedRecord
 			// A flowed row type that carries its own leg table gives its buried
 			// sources their windows too; one that does not simply has none to give.
-			addBuriedLegLayouts(out, flowed.Fields, flowed.Legs)
+			addBuriedLegLayouts(out, flowedRecord.Fields, flowedRecord.Legs)
 			continue
 		}
 		// The quantifier states no row, so neither does this derivation. The shape
@@ -2946,6 +4547,7 @@ func rebaseOuterLegRefsToMerged(
 	p predicates.QueryPredicate,
 	legAliases []string,
 	mergedCorr values.CorrelationIdentifier,
+	mergedType values.Type,
 	legLayout map[values.ColumnIdentity]int,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
 	site legRebaseOrigin,
@@ -2955,8 +4557,8 @@ func rebaseOuterLegRefsToMerged(
 	}
 	switch pred := p.(type) {
 	case *predicates.ComparisonPredicate:
-		newOperand := rebaseOuterLegValue(pred.Operand, legAliases, mergedCorr, legLayout, legLocalTypes, site)
-		newCompOperand := rebaseOuterLegValue(pred.Comparison.Operand, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		newOperand := rebaseOuterLegValue(pred.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		newCompOperand := rebaseOuterLegValue(pred.Comparison.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
@@ -2972,7 +4574,7 @@ func rebaseOuterLegRefsToMerged(
 			Comparison: cmp,
 		}
 	case *predicates.ValuePredicate:
-		newVal := rebaseOuterLegValue(pred.Value, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		newVal := rebaseOuterLegValue(pred.Value, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		if newVal == pred.Value {
 			return p
 		}
@@ -2981,7 +4583,7 @@ func rebaseOuterLegRefsToMerged(
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 			if subs[i] != s {
 				changed = true
 			}
@@ -2994,7 +4596,7 @@ func rebaseOuterLegRefsToMerged(
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 			if subs[i] != s {
 				changed = true
 			}
@@ -3004,7 +4606,7 @@ func rebaseOuterLegRefsToMerged(
 		}
 		return predicates.NewOr(subs...)
 	case *predicates.NotPredicate:
-		newChild := rebaseOuterLegRefsToMerged(pred.Child, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		newChild := rebaseOuterLegRefsToMerged(pred.Child, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		if newChild == pred.Child {
 			return p
 		}
@@ -3035,6 +4637,7 @@ func rebaseOuterLegValue(
 	v values.Value,
 	legAliases []string,
 	mergedCorr values.CorrelationIdentifier,
+	mergedType values.Type,
 	legLayout map[values.ColumnIdentity]int,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
 	site legRebaseOrigin,
@@ -3042,16 +4645,17 @@ func rebaseOuterLegValue(
 	if v == nil {
 		return v
 	}
-	if fv, ok := v.(*values.FieldValue); ok {
+	if fv, ok := values.AsFieldValue(v); ok {
 		// Only direct leg columns are rewritten. An already-dotted Field would
 		// indicate a pre-qualified reference from a deeper join level — those do
 		// not reach the EXISTS path (they are handled by the data-access correlated
 		// probe machinery), and re-qualifying would invent a key like "E.A.B".
-		if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok && !strings.Contains(fv.Field, ".") {
+		if qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue()); ok &&
+			fv.Path() != nil && fv.Path().Len() == 1 {
 			// Exact: correlation-key namespace on both sides (B3b) — a
 			// fold here would let a quoted user alias cross into the
 			// lowercase machine namespace.
-			corr := qov.Correlation.Name()
+			corr := qov.Correlation().Name()
 			// Bare-column allowlist (fieldValueAliasAndCol /
 			// correlatedFieldOf / correlatedInnerField): a fused
 			// multi-accessor bake (Child=QOV directly, Resolved carrying
@@ -3061,10 +4665,7 @@ func rebaseOuterLegValue(
 			// impersonate a genuine top-level "leg.id" reference. Decline
 			// (leave the node unrewritten) rather than mint that colliding
 			// qualified name.
-			bareChild := true
-			if fv.Resolved != nil {
-				_, bareChild = fv.Resolved.Single()
-			}
+			bareChild := fv.Path().Len() == 1
 			for _, leg := range legAliases {
 				if bareChild && leg != "" && leg == corr {
 					// A MISROUTING NET, and no longer a degradation guard.
@@ -3083,9 +4684,10 @@ func rebaseOuterLegValue(
 					// rebaseOuterLegRefsOrdinal instead. Unpinned wrap nodes are
 					// childless and never reach this arm, so the contract bit
 					// isolates exactly that misrouting.
-					if fv.Resolved != nil && fv.Resolved.FrontierPinned {
+					if fv.Path().IsFrontierPinned() {
+						ordinals := fv.Path().Ordinals()
 						panic(fmt.Sprintf("rebaseOuterLegValue reached FRONTIER-PINNED FieldValue %s#%d (leg %s) under merge alias %s — a pinned reference belongs to an ordinal join, which rebases through rebaseOuterLegRefsOrdinal; reaching the lazy rebase machinery means translation routed the join to the wrong one (planner bug). Nothing is lost at this point — the arms below no longer degrade a reference to a name — so fix the ROUTING, not this arm",
-							fv.Field, fv.Resolved.Root().Ordinal, corr, mergedCorr.Name()))
+							fv.DisplayName(), ordinals[0], corr, mergedCorr.Name()))
 					}
 					// NO LEG-LOCAL BAKE HERE, in the sense the deleted one meant.
 					// There was one, and it minted the leg-local ordinal by
@@ -3158,7 +4760,7 @@ func rebaseOuterLegValue(
 					// in — is how the instrument came to partition a population
 					// the arm had emptied.
 					id, identityInLegDomain := legSlotIdentity(fv)
-					identity := classifyLegReadIdentity(fv.Resolved != nil, identityInLegDomain)
+					identity := classifyLegReadIdentity(fv.Path() != nil, identityInLegDomain)
 
 					// ARM 1 — the merged re-anchor. The slot is found by the
 					// reference's own IDENTITY in its leg's row layout, the same
@@ -3212,10 +4814,14 @@ func rebaseOuterLegValue(
 						if ord, ok := legLayout[id]; ok {
 							recordRebaseOuterLegArm(legLocalBakeMergedReAnchor, fv, qov,
 								legLocalTypes, identity, site)
-							return values.NewCorrelatedFieldValueWithResolvedOrdinal(
-								values.NewQuantifiedObjectValue(mergedCorr),
-								values.OrdinalFieldName(ord), ord, fv.Typ,
-							)
+							target, targetErr := values.NewQuantifiedObjectValue(mergedCorr, mergedType)
+							if targetErr == nil {
+								reanchored, resolveErr := values.ResolveFieldOrdinals(target, []int{ord})
+								if resolveErr == nil && sameExactType(reanchored.Type(), fv.ResultType()) {
+									return reanchored
+								}
+							}
+							return v
 						}
 					}
 
@@ -3250,7 +4856,7 @@ func rebaseOuterLegValue(
 	changed := false
 	newChildren := make([]values.Value, len(children))
 	for i, c := range children {
-		newChildren[i] = rebaseOuterLegValue(c, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		newChildren[i] = rebaseOuterLegValue(c, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		if newChildren[i] != c {
 			changed = true
 		}
@@ -3277,17 +4883,17 @@ func rebaseOuterLegValue(
 // inner; an unhandled node is returned as-is and caught by the post-rebase
 // verification (planReferencesAnyBuriedAlias) which declines the probe so the
 // correct materialized NLJ fallback wins.
-func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) plans.RecordQueryPlan {
+func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) (plans.RecordQueryPlan, error) {
 	if p == nil || len(legAliases) == 0 {
-		return p
+		return p, nil
 	}
 	switch pl := p.(type) {
 	case *plans.RecordQueryIndexPlan:
-		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		if !changed {
-			return p
+			return p, nil
 		}
-		return pl.WithScanComparisons(newComps)
+		return pl.WithScanComparisons(newComps), nil
 	case *plans.RecordQueryCoveringIndexPlan:
 		// The SARGs are on the scan this wrapper holds as a FIELD; the
 		// pass-through arms below cannot reach them, and Fetch(Covering(...)) is
@@ -3296,116 +4902,151 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		// comment above requires this walk to move in step with.
 		inner, ok := plans.IndexPlanOf(pl)
 		if !ok {
-			return p
+			return p, nil
 		}
-		rebased := rebasePlanBuriedRefs(inner, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		rebased, err := rebasePlanBuriedRefs(inner, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
 		rebasedIdx, isIdx := rebased.(*plans.RecordQueryIndexPlan)
 		if !isIdx || rebasedIdx == inner {
-			return p
+			return p, nil
 		}
-		return pl.WithIndexPlan(rebasedIdx)
+		return pl.WithIndexPlan(rebasedIdx), nil
 	case *plans.RecordQueryScanPlan:
-		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		if !changed {
-			return p
+			return p, nil
 		}
-		return pl.WithScanComparisons(newComps)
+		return pl.WithScanComparisons(newComps), nil
 	case *plans.RecordQueryPredicatesFilterPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
 		preds := pl.GetPredicates()
 		newPreds := make([]predicates.QueryPredicate, len(preds))
 		changed := inner != pl.GetInner()
 		for i, pr := range preds {
-			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 			if newPreds[i] != pr {
 				changed = true
 			}
 		}
 		if !changed {
-			return p
+			return p, nil
 		}
 		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(inner, newPreds, pl.GetInnerAlias())
 	case *plans.RecordQueryFilterPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
 		preds := pl.GetPredicates()
 		newPreds := make([]predicates.QueryPredicate, len(preds))
 		changed := inner != pl.GetInner()
 		for i, pr := range preds {
-			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 			if newPreds[i] != pr {
 				changed = true
 			}
 		}
 		if !changed {
-			return p
+			return p, nil
 		}
 		return plans.NewRecordQueryFilterPlan(newPreds, inner)
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
 		if inner == pl.GetInner() {
-			return p
+			return p, nil
 		}
 		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, pl.GetTranslateValueFunction(), pl.GetResultType(), pl.GetFetchIndexRecords())
 	case *plans.RecordQueryDefaultOnEmptyPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
 		if inner == pl.GetInner() {
-			return p
+			return p, nil
 		}
 		return plans.NewRecordQueryDefaultOnEmptyPlan(inner, pl.GetDefaultValue())
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
 		if inner == pl.GetInner() {
-			return p
+			return p, nil
 		}
 		if pl.IsStrict() {
 			return plans.NewRecordQueryFirstOrDefaultPlanStrict(inner, pl.GetDefaultValue())
 		}
 		return plans.NewRecordQueryFirstOrDefaultPlan(inner, pl.GetDefaultValue())
 	case *plans.RecordQueryTypeFilterPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
 		if inner == pl.GetInner() {
-			return p
+			return p, nil
 		}
 		return plans.NewRecordQueryTypeFilterPlan(pl.GetRecordTypes(), inner)
 	case *plans.RecordQueryMapPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
-		newResult := rebaseOuterLegValue(pl.GetResultValue(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
+		newResult := rebaseOuterLegValue(pl.GetResultValue(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		if inner == pl.GetInner() && newResult == pl.GetResultValue() {
-			return p
+			return p, nil
 		}
 		return plans.NewRecordQueryMapPlan(inner, newResult)
 	case *plans.RecordQueryProjectionPlan:
-		inner := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		if err != nil {
+			return nil, err
+		}
 		projs := pl.GetProjections()
 		newProjs := make([]values.Value, len(projs))
 		changed := inner != pl.GetInner()
 		for i, v := range projs {
-			newProjs[i] = rebaseOuterLegValue(v, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+			newProjs[i] = rebaseOuterLegValue(v, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 			if newProjs[i] != v {
 				changed = true
 			}
 		}
 		if !changed {
-			return p
+			return p, nil
 		}
 		// A rebase hands back "the same projection, moved": the output names and
 		// WHO wrote them are both unchanged by moving where the ordinals point.
-		return plans.NewRecordQueryProjectionPlanWithAliases(newProjs, pl.GetAliases(), inner).
-			WithAliasProvenance(pl.GetAliasMinted())
+		projection, err := plans.NewRecordQueryProjectionPlanWithOutputSchema(
+			newProjs, pl.GetAliases(), pl.GetAliasMinted(), pl.GetOutputNames(), inner)
+		if err != nil {
+			return nil, err
+		}
+		projection, err = projection.WithAliasSources(pl.GetAliasSources())
+		if err != nil {
+			return nil, err
+		}
+		return projection, nil
 	default:
 		// Unhandled node — return unchanged. planReferencesAnyBuriedAlias will detect
 		// any buried reference that survives here and decline the probe.
-		return p
+		return p, nil
 	}
 }
 
 // rebaseComparisonRanges rebases the buried-leg references in a SARG's per-column
 // comparison ranges onto mergedCorr. Returns the new ranges and whether any changed.
-func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) ([]*predicates.ComparisonRange, bool) {
+func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) ([]*predicates.ComparisonRange, bool) {
 	out := make([]*predicates.ComparisonRange, len(comps))
 	changed := false
 	for i, cr := range comps {
-		nc, ch := rebaseComparisonRange(cr, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		nc, ch := rebaseComparisonRange(cr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		out[i] = nc
 		if ch {
 			changed = true
@@ -3418,7 +5059,7 @@ func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []st
 // equality/inequality comparison operands. Returns the (possibly rebuilt) range and
 // whether it changed. A range whose rebuilt comparison cannot be re-merged is
 // returned unchanged (the verification then declines the probe).
-func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) (*predicates.ComparisonRange, bool) {
+func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) (*predicates.ComparisonRange, bool) {
 	if cr == nil || cr.IsEmpty() {
 		return cr, false
 	}
@@ -3431,7 +5072,7 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 	rebuilt := predicates.EmptyComparisonRange()
 	changed := false
 	for _, c := range comparisons {
-		nc := rebaseComparison(c, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+		nc := rebaseComparison(c, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 		if nc != c {
 			changed = true
 		}
@@ -3450,11 +5091,11 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 // rebaseComparison rebases a single comparison's RHS operand value onto mergedCorr,
 // copying the comparison so every non-operand field (Type, Escape, ParameterName,
 // the Text*/vector fields) is preserved verbatim.
-func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) *predicates.Comparison {
+func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) *predicates.Comparison {
 	if c == nil || c.Operand == nil {
 		return c
 	}
-	newOperand := rebaseOuterLegValue(c.Operand, legAliases, mergedCorr, legLayout, legLocalTypes, site)
+	newOperand := rebaseOuterLegValue(c.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
 	if newOperand == c.Operand {
 		return c
 	}
@@ -3944,7 +5585,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	var joinPreds, existPreds []predicates.QueryPredicate
 	hasExistsFilter := false
 	negated := false
-	existCorr := values.NamedCorrelationIdentifier(existAlias)
+	existCorr := correlationForSourceAlias(quants[2].GetAlias(), existAlias)
 	// The inner-leg set of the EXISTS subquery (existCorr ∪ all FROM-source
 	// aliases the existential subplan declares). A predicate that references a
 	// member belongs on the existential level, BELOW the FOD; a predicate that
@@ -4008,7 +5649,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	}
 	step1RV, gatedSeedStep1, step1Origin := foldStep1Seed(
 		sel.GetResultValue(), quants[2].GetAlias(), correlatedStep1,
-		leftPlan, rightPlan, leftCorr, rightCorr)
+		leftPlan, rightPlan, leftCorr, rightCorr, joinType)
 	// Step 1: build the inner join (left × right). Its merged row is the
 	// outer of the existential FlatMap. Independent legs take the
 	// materialized NLJ; a null-on-empty or sibling-correlated leg takes the
@@ -4017,12 +5658,16 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// step1Expr is what the step-2 FlatMap's outer quantifier ranges over.
 	step1Expr := leftExpr
 	if correlatedStep1 {
-		fmPlan, _, _, ok := buildCorrelatedFlatMapPlan(
+		fmPlan, _, _, ok, err := buildCorrelatedFlatMapPlan(
 			call,
 			joinPreds, sel.GetResultValue(),
 			leftPlan, rightPlan, leftCorr, rightCorr, leftExpr, rightExpr,
 			joinType, q1.IsNullOnEmpty(), false, false,
 		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		if !ok {
 			return
 		}
@@ -4063,7 +5708,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		// (RecordQueryFlatMapPlan carries the Quantifier, so there is nothing to keep
 		// in step). Two independent mints from one string could drift apart here the
 		// moment either side gained a normalization.
-		nljPlan := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
+		nljPlan, err := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
 			expressions.NamedForEachQuantifier(leftCorr, call.MemoizeExpression(leftExpr)),
 			expressions.NamedForEachQuantifier(rightCorr, call.MemoizeExpression(rightExpr)),
 			joinPreds,
@@ -4071,6 +5716,10 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			leftCorr, rightCorr,
 			step1RV,
 		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		step1Expr = nljPlan
 	}
 
@@ -4160,10 +5809,16 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	if values.LegIdentityCensusEnabled() && correlatedStep1 {
 		recordCorrelatedStep1Windows(ordinalWindows != nil)
 	}
-	var mergedQOV *values.QuantifiedObjectValue
+	var mergedQOV values.QuantifiedObjectValue
 	if ordinalWindows != nil {
-		mergedQOV = values.NewQuantifiedObjectValueOfType(mergedOuterCorr, mergedRowType)
+		var mergedErr error
+		mergedQOV, mergedErr = values.NewQuantifiedObjectValue(mergedOuterCorr, mergedRowType)
+		if mergedErr != nil {
+			call.Fail(mergedErr)
+			return
+		}
 	}
+	existLegCorrs := existentialLegCorrelations(q0.GetAlias(), q1.GetAlias(), ordinalWindows, outerLegAliases)
 	// The per-leg layouts, stated by the legs' own QUANTIFIERS (Java's
 	// Quantifier.getFlowedObjectType, the thing translateCorrelations rebases
 	// against). Nothing in the rebase below consumes them to build a plan: the
@@ -4181,7 +5836,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 		rebased := make([]predicates.QueryPredicate, len(existPreds))
 		for i, p := range existPreds {
 			if ordinalWindows != nil {
-				np, ok := rebaseOuterLegRefsOrdinal(p, ordinalWindows, mergedQOV)
+				np, ok := rebaseOuterLegRefsOrdinal(p, ordinalWindows, mergedQOV, existLegCorrs)
 				if !ok {
 					return
 				}
@@ -4196,7 +5851,7 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			// The layouts come from the legs' physical plans; a read the layouts
 			// cannot place still falls through to the qualified-name mint, and
 			// the census records which.
-			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, step1Origin)
+			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr, step1RV.Type(), nil, existLegRowTypes, step1Origin)
 		}
 		existPreds = rebased
 	}
@@ -4220,7 +5875,6 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// before, so a decline is strictly no worse). Window keys usually repeat
 	// the leg aliases — duplicates and map order are irrelevant (every
 	// consumer builds a set).
-	existLegCorrs := existentialLegCorrelations(q0.GetAlias(), q1.GetAlias(), ordinalWindows, outerLegAliases)
 	// planReferencesAnyBuriedAlias below is a NAME-channel checker, and the
 	// previous description of it here was wrong in a way worth correcting rather
 	// than quietly deleting: it said the checker "matches dotted merged-row keys".
@@ -4241,13 +5895,18 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	}
 	if legReferencesAny(existRef, existLegCorrs) {
 		if ordinalWindows != nil {
-			np, ok := rebasePlanOuterRefsOrdinal(existPlan, ordinalWindows, mergedQOV)
+			np, ok := rebasePlanOuterRefsOrdinal(existPlan, ordinalWindows, mergedQOV, existLegCorrs)
 			if !ok {
 				return
 			}
 			existPlan = np
 		} else {
-			existPlan = rebasePlanBuriedRefs(existPlan, outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, step1Origin)
+			var rebaseErr error
+			existPlan, rebaseErr = rebasePlanBuriedRefs(existPlan, outerLegAliases, mergedOuterCorr, step1RV.Type(), nil, existLegRowTypes, step1Origin)
+			if rebaseErr != nil {
+				call.Fail(rebaseErr)
+				return
+			}
 		}
 		if planReferencesAnyBuriedAlias(existPlan, verifyAliases) {
 			return
@@ -4257,10 +5916,14 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	// Preserve existCorr at every compensating step: the completed FlatMap
 	// binds that correlation and must not leak it as an external dependency.
 	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr))
-	innerQ = buildExistsCompensationChain(
+	innerQ, err := buildExistsCompensationChain(
 		call, innerQ, existPlan, existCorr, existPreds,
 		hasExistsFilter, negated, true,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	// The FlatMap's result value.
 	//
@@ -4279,7 +5942,12 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	//     under mergedOuterCorr; the existential QOV (the projected ExistsValue's
 	//     child, keyed by the existential QUANTIFIER alias) resolves against the
 	//     inner FOD row under existCorr.
-	flatMapResult := values.Value(values.NewQuantifiedObjectValue(mergedOuterCorr))
+	flatMapIdentity, err := values.NewQuantifiedObjectValue(mergedOuterCorr, step1RV.Type())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	var flatMapResult values.Value = flatMapIdentity
 	if resultValueReferencesAlias(sel.GetResultValue(), quants[2].GetAlias()) {
 		// Leg references → merged outer row's qualified keys. Use the COMPLETE
 		// outer-leg alias set (not just {leftAlias,rightAlias}) so a projected
@@ -4304,16 +5972,28 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 			// rebase to baked merged ordinals (the lazy rewrite would
 			// panic on the baked refs — same policing as the predicate side).
 			var ok bool
-			projected, ok = rebaseOuterLegValueOrdinal(sel.GetResultValue(), ordinalWindows, mergedQOV)
+			projected, ok = rebaseOuterLegValueOrdinal(sel.GetResultValue(), ordinalWindows, mergedQOV, existLegCorrs)
 			if !ok {
 				return
 			}
 		} else {
-			projected = rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr, nil, existLegRowTypes, step1Origin)
+			projected = rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr, step1RV.Type(), nil, existLegRowTypes, step1Origin)
 		}
 		// Existential quantifier alias → the FlatMap inner binding (existCorr).
 		if quants[2].GetAlias() != existCorr {
-			projected = values.RebaseValue(projected, values.AliasMap{quants[2].GetAlias(): existCorr})
+			aliases, err := values.NewAliasMap([]values.AliasPair{{
+				Source: quants[2].GetAlias(),
+				Target: existCorr,
+			}})
+			if err != nil {
+				call.Fail(err)
+				return
+			}
+			projected, err = values.RebaseValueChecked(projected, aliases)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 		}
 		flatMapResult = projected
 	}
@@ -4333,17 +6013,21 @@ func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
 	if values.LegIdentityCensusEnabled() {
 		recordFlatMapResultValue(flatMapSiteJoinWithExistential, flatMapResult)
 	}
-	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
 		innerQ,
 		mergedOuterCorr, existCorr,
 		flatMapResult, true,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(flatMapPlan)
 }
 
 func correlatedExistsComparisonRange(
-	outerValue *values.FieldValue,
+	outerValue values.FieldValue,
 	outerCorrelation values.CorrelationIdentifier,
 ) (*predicates.ComparisonRange, bool) {
 	correlatedOperand, ok := correlatedFastPathOperand(outerValue, outerCorrelation)
@@ -4368,7 +6052,10 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 	call *ExpressionRuleCall,
 	resultValue values.Value,
 	outerPlan, innerPlan plans.RecordQueryPlan,
-	outerAlias, innerAlias string,
+	outerSourceCorrelation, outerCorrelation, innerCorrelation values.CorrelationIdentifier,
+	wholeOuterBinding values.QuantifiedObjectValue,
+	outerLayout values.OrdinalLayout,
+	exactOuterAuthority, outerLayoutDependent bool,
 	outerExpr, innerExpr expressions.RelationalExpression,
 	hasExistsFilter, negated bool,
 	preds []predicates.QueryPredicate,
@@ -4381,9 +6068,6 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 	if len(recordTypes) != 1 {
 		return false
 	}
-
-	outerCorrelation := values.NamedCorrelationIdentifier(outerAlias)
-	innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
 
 	// The inner leg's own output row: the layout every comparand correlated to
 	// innerAlias reads, and the layout the inner leg's metadata key-column
@@ -4416,23 +6100,38 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			}
 			outerVal := r.matchJoinPKPredicate(
 				cp, outerCorrelation, innerCorrelation, pkIdent, innerFrontier)
+			if outerVal == nil && outerSourceCorrelation != outerCorrelation {
+				outerVal = r.matchJoinPKPredicate(
+					cp, outerSourceCorrelation, innerCorrelation, pkIdent, innerFrontier)
+			}
 			if outerVal == nil {
 				continue
 			}
-			if outerValRefsBuriedLeg(outerVal, outerCorrelation) {
+			normalizedOuter, operandCorrelation, retainedWindow, admitted, admitErr := admitCorrelatedFastPathOuterValue(
+				outerVal, wholeOuterBinding, outerLayout)
+			if admitErr != nil {
+				call.Fail(admitErr)
+				return true
+			}
+			if !admitted {
 				continue
 			}
 			comparisonRange, ok := correlatedExistsComparisonRange(
-				outerVal, outerCorrelation)
+				normalizedOuter, operandCorrelation)
 			if !ok {
 				return false
 			}
 			correlatedScan := innerScan.WithScanComparisons(
 				[]*predicates.ComparisonRange{comparisonRange})
+			requiresExactOuter := exactOuterAuthority || outerLayoutDependent || retainedWindow ||
+				outerCorrelation != outerSourceCorrelation
 			r.yieldExistsFlatMap(
 				call, resultValue, outerPlan, correlatedScan,
 				outerCorrelation, innerCorrelation, outerExpr, innerExpr,
-				hasExistsFilter, negated, pred, preds,
+				hasExistsFilter, negated,
+				requiresExactOuter,
+				requiresExactOuter,
+				pred, preds,
 			)
 			return true
 		}
@@ -4476,29 +6175,48 @@ func (r *ImplementNestedLoopJoinRule) tryExistsFlatMap(
 			}
 			outerVal := r.matchJoinPKPredicate(
 				cp, outerCorrelation, innerCorrelation, idxIdent, innerFrontier)
+			if outerVal == nil && outerSourceCorrelation != outerCorrelation {
+				outerVal = r.matchJoinPKPredicate(
+					cp, outerSourceCorrelation, innerCorrelation, idxIdent, innerFrontier)
+			}
 			if outerVal == nil {
 				continue
 			}
-			if outerValRefsBuriedLeg(outerVal, outerCorrelation) {
+			normalizedOuter, operandCorrelation, retainedWindow, admitted, admitErr := admitCorrelatedFastPathOuterValue(
+				outerVal, wholeOuterBinding, outerLayout)
+			if admitErr != nil {
+				call.Fail(admitErr)
+				return true
+			}
+			if !admitted {
 				continue
 			}
 			// Build correlated index scan.
 			comparisonRange, ok := correlatedExistsComparisonRange(
-				outerVal, outerCorrelation)
+				normalizedOuter, operandCorrelation)
 			if !ok {
 				continue
 			}
-			correlatedIndexScan := stampIndexMetadata(cand, plans.NewRecordQueryIndexPlan(
+			indexPlan, indexErr := plans.NewRecordQueryIndexPlan(
 				cand.CandidateName(),
 				[]*predicates.ComparisonRange{comparisonRange},
 				recordTypes, innerScan.GetFlowedType(), false,
-			))
+			)
+			if indexErr != nil {
+				call.Fail(indexErr)
+				return true
+			}
+			correlatedIndexScan := stampIndexMetadata(cand, indexPlan)
 
-			innerCorrelation := values.NamedCorrelationIdentifier(innerAlias)
+			requiresExactOuter := exactOuterAuthority || outerLayoutDependent || retainedWindow ||
+				outerCorrelation != outerSourceCorrelation
 			r.yieldExistsFlatMap(
 				call, resultValue, outerPlan, correlatedIndexScan,
 				outerCorrelation, innerCorrelation, outerExpr, innerExpr,
-				hasExistsFilter, negated, pred, preds,
+				hasExistsFilter, negated,
+				requiresExactOuter,
+				requiresExactOuter,
+				pred, preds,
 			)
 			return true
 		}
@@ -4524,6 +6242,8 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 	outerCorrelation, innerCorrelation values.CorrelationIdentifier,
 	outerExpr, innerExpr expressions.RelationalExpression,
 	hasExistsFilter, negated bool,
+	pinOuter bool,
+	restrictOrderingVariants bool,
 	matchedPredicate predicates.QueryPredicate,
 	allPredicates []predicates.QueryPredicate,
 ) {
@@ -4559,18 +6279,36 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 	// the reference with a fresh singleton rather than wrapping it, which
 	// destroys the alternatives the group holds. That is the exact move that
 	// regressed the IN-join rule (RFC-183 §13); only ADD reachability here.
+	// pinOuter is the narrow exception: a correlated operand has been normalized
+	// to a retained source proved by this exact outer member (including a source
+	// revealed only by a selected-child FlatMap relink), or collision handling
+	// has minted a distinct whole-row binding from this member's layout. The
+	// member is then part of executable identity, so keeping a live replaceable
+	// edge would be a plan/operand mismatch rather than useful enumeration.
 	rightQ := expressions.NamedPhysicalQuantifier(innerCorrelation, call.MemoizeExpression(innerExpr))
-	rightQ = buildExistsCompensationChain(
+	rightQ, err := buildExistsCompensationChain(
 		call, rightQ, correlatedInner, innerCorrelation, innerResiduals,
 		hasExistsFilter, negated, true,
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
-	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, call.MemoizeExpression(outerExpr))
+	outerRef := call.MemoizeExpression(outerExpr)
+	if pinOuter {
+		outerRef = call.MemoizeFinalExpression(outerExpr)
+	}
+	leftQ := expressions.NamedForEachQuantifier(outerCorrelation, outerRef)
 
 	if len(outerResiduals) > 0 {
 		ofInnerQ := expressions.NamedForEachQuantifier(leftQ.GetAlias(),
 			call.MemoizeFinalExpression(outerPlan))
-		outerFilter := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerResiduals, outerCorrelation)
+		outerFilter, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(ofInnerQ, outerResiduals, outerCorrelation)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		leftQ = expressions.NamedForEachQuantifier(outerCorrelation,
 			call.MemoizeFinalExpression(outerFilter))
 	}
@@ -4580,12 +6318,20 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 	if values.LegIdentityCensusEnabled() {
 		recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap, resultValue)
 	}
-	flatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		leftQ, rightQ,
 		outerCorrelation, innerCorrelation,
 		resultValue, true,
 	)
-	r.yieldBinaryJoinWithOrderingVariants(call, flatMapPlan)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	if restrictOrderingVariants {
+		call.Yield(flatMapPlan)
+	} else {
+		r.yieldBinaryJoinWithOrderingVariants(call, flatMapPlan)
+	}
 }
 
 // scalarSubqueryAliasesOfPredicate collects the correlation aliases a
@@ -4620,22 +6366,19 @@ func scalarSubqueryAliasesOfPredicate(p predicates.QueryPredicate) map[values.Co
 // There is deliberately no third, "deep-flowed" arm. One existed, accepting an
 // outer comparand on ANY leg other than the inner one so a re-enumerated
 // multi-way chain could probe through a table buried inside the outer
-// sub-join. It could not do that: both call sites pass every accepted
-// comparand straight to outerValRefsBuriedLeg, which declines exactly the legs
-// that arm alone admitted (anything that is neither the outer nor the inner
-// leg), so no rewrite it accepted could ever be yielded. The arms are gone
-// rather than left as reachable-looking dead code; jointBuriedLegDecline in the
-// tests pins the decline that made them dead, so re-arming the capability has
-// to go through the buried-leg rebase rather than through a silent bare-name
-// read of the merged row.
+// sub-join. The exact fast-path admission now names only the complete outer
+// binding and the selected layout's declared retained windows; an unrelated
+// buried leg is not one of those authorities. Re-arming a deeper capability
+// must therefore go through the buried-leg rebase rather than a silent
+// bare-name read of the merged row.
 func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
 	cp *predicates.ComparisonPredicate,
 	outerCorr, innerCorr values.CorrelationIdentifier,
 	keyIdent values.ColumnIdentity,
 	frontier values.OrdinalDomain,
-) *values.FieldValue {
-	lhsFV, lhsOk := cp.Operand.(*values.FieldValue)
-	rhsFV, rhsOk := cp.Comparison.Operand.(*values.FieldValue)
+) values.FieldValue {
+	lhsFV, lhsOk := values.AsFieldValue(cp.Operand)
+	rhsFV, rhsOk := values.AsFieldValue(cp.Comparison.Operand)
 	if !lhsOk || !rhsOk {
 		return nil
 	}
@@ -4668,17 +6411,15 @@ func (r *ImplementNestedLoopJoinRule) matchJoinPKPredicate(
 //
 // Not-ok is the FAIL-CLOSED answer; every caller treats it as "cannot state
 // which leg this reads" and declines the rewrite.
-func legCorrelationOf(fv *values.FieldValue) (values.CorrelationIdentifier, bool) {
+func legCorrelationOf(fv values.FieldValue) (values.CorrelationIdentifier, bool) {
 	if fv == nil {
 		return values.CorrelationIdentifier{}, false
 	}
-	if qov, ok := fv.Child.(*values.QuantifiedObjectValue); ok {
-		if fv.Resolved != nil {
-			if _, single := fv.Resolved.Single(); !single {
-				return values.CorrelationIdentifier{}, false
-			}
+	if qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue()); ok {
+		if fv.Path() == nil || fv.Path().Len() != 1 {
+			return values.CorrelationIdentifier{}, false
 		}
-		return qov.Correlation, true
+		return qov.Correlation(), true
 	}
 	// A CHILDLESS value states no quantifier. There used to be an arm here that
 	// recovered one by slicing the qualifier out of the display name — the
@@ -4691,12 +6432,11 @@ func legCorrelationOf(fv *values.FieldValue) (values.CorrelationIdentifier, bool
 	// invisibility is worse than one that leaves it listed.
 	//
 	// Failing closed here is safe at every caller, which is why the arm could
-	// go before its producers do: matchJoinPKPredicate declines the rewrite,
-	// outerValRefsBuriedLeg reports "buried" and declines, and
-	// predicateSingleSide attributes the reference to neither side and keeps
-	// the predicate above the join. Each is a declined optimization, never a
-	// wrong slot. Nothing in the explaindiff corpus takes the arm (0 of 1944
-	// calls), so the optimization was theoretical.
+	// go before its producers do: matchJoinPKPredicate declines the rewrite and
+	// predicateSingleSide attributes the reference to neither side and keeps the
+	// predicate above the join. Each is a declined optimization, never a wrong
+	// slot. Nothing in the explaindiff corpus takes the arm (0 of 1944 calls), so
+	// the optimization was theoretical.
 	return values.CorrelationIdentifier{}, false
 }
 
@@ -4722,40 +6462,17 @@ func legCorrelationOf(fv *values.FieldValue) (values.CorrelationIdentifier, bool
 // some OTHER layout fails OrdinalIn and declines rather than matching on the
 // name it happens to share.
 func readsKeyColumn(
-	fv *values.FieldValue,
+	fv values.FieldValue,
 	legCorr values.CorrelationIdentifier,
 	keyIdent values.ColumnIdentity,
 	frontier values.OrdinalDomain,
 ) bool {
-	id, ok := fv.CorrelatedIdentityIn(frontier)
+	id, ok := values.CorrelatedFieldIdentityIn(fv, frontier)
 	if !ok {
 		return false
 	}
 	return values.SameLeg(id.Correlation, legCorr) &&
 		id.Domain == keyIdent.Domain && id.Ordinal == keyIdent.Ordinal
-}
-
-// outerValRefsBuriedLeg reports whether a fast-path correlation's outer
-// FieldValue references a BURIED leg of a merged-box outer — its alias differs
-// from the binding alias (the box's rightmost-leg source alias). The fast
-// path (tryExistsFlatMap's primary/index probes) builds
-// QOV(outerAlias).<bareCol>, which reads the box's rightmost leg;
-// for a correlation into a NON-rightmost buried leg (`a.gid` over a
-// `la LEFT JOIN lb` box bound as B) the bare read is last-leg-wins and reads
-// the WRONG leg on a colliding column name — a wrong-rows bug
-// (matchJoinPKPredicate's deep-flowed arm accepted the buried ref without
-// rebasing it). Declining routes it to the below-FOD rebase, which rewrites
-// the buried reference to the merged row's QUALIFIED key or a
-// BAKED ordinal (an ordinalized box) — both leg-correct. The optimization is only lost
-// for existential correlations into a buried box leg; the common
-// single-source and rightmost-leg cases still take the fast path.
-// It FAILS CLOSED: a comparand whose leg cannot be stated structurally is
-// treated as buried, because "which leg does this read" is precisely the
-// question the fast path must answer before it may rebuild the probe as
-// QOV(outerAlias).<col>.
-func outerValRefsBuriedLeg(outerVal *values.FieldValue, outerCorr values.CorrelationIdentifier) bool {
-	leg, ok := legCorrelationOf(outerVal)
-	return !ok || !values.SameLeg(leg, outerCorr)
 }
 
 // correlatedFastPathOperand builds the outer-side operand pushed into the
@@ -4779,37 +6496,35 @@ func outerValRefsBuriedLeg(outerVal *values.FieldValue, outerCorr values.Correla
 // declining hands the query to the general correlated path, which rebases the
 // reference properly. Nothing in the explaindiff corpus reaches it.
 func correlatedFastPathOperand(
-	outerVal *values.FieldValue,
+	outerVal values.FieldValue,
 	outerCorrelation values.CorrelationIdentifier,
 ) (values.Value, bool) {
-	if outerVal.Resolved != nil && outerVal.Resolved.FrontierPinned {
+	path := outerVal.Path()
+	if path != nil && path.IsFrontierPinned() {
 		return outerVal, true
 	}
 	// A SOURCE-RELATIVE bake (the resolver's construction-time
 	// ordinal, addressed to a real SQL source) transfers to the rebuilt operand
-	// verbatim — the fast path only admits references to the outer source
-	// itself (outerValRefsBuriedLeg declines buried legs), so the row bound
-	// under outerCorrelation IS that source's row and the declared-column-order
-	// ordinal reads the right slot.
+	// verbatim. matchJoinPKPredicate first restricts the operand to an explicit
+	// whole-row or authored source correlation, and
+	// admitCorrelatedFastPathOuterValue then proves that exact object against the
+	// selected layout. The declared-column-order ordinal therefore reads the
+	// right source slot without a name lookup.
 	// SourceRelativeBaked() requires len(Accessors) == 1, so this ADMITS only a FLAT outer reference; a nested descent on the outer source is not eligible for the fast path.
-	if outerVal.SourceRelativeBaked() {
+	if path != nil && path.Len() == 1 && path.RootDomain().IsKnown() {
 		// The rebuilt operand's DISPLAY name. Its identity is the ordinal
 		// passed beside it; this string is never compared, keyed or resolved,
 		// and the constructor is the one place RFC-197 leaves a name
 		// legitimate. It is taken VERBATIM: there used to be a branch here
 		// that sliced a qualifier out of a CHILDLESS reference's dotted
 		// display name (the qualified-name channel, RFC-197 bucket 6), and it
-		// was unreachable by the same construction that justified deleting
-		// matchJoinPKPredicate's deep-flowed arms — both callers gate on
-		// outerValRefsBuriedLeg, which routes through legCorrelationOf and
-		// fails closed on a childless value, so outerVal always has a
-		// QuantifiedObjectValue child by the time it arrives here.
-		return values.NewCorrelatedFieldValueWithResolvedOrdinal(
-			values.NewQuantifiedObjectValue(outerCorrelation),
-			outerVal.Field,
-			outerVal.Resolved.Root().Ordinal,
-			outerVal.Typ,
-		), true
+		// is unreachable now because exact fast-path admission requires a direct
+		// QuantifiedObjectValue child before this helper runs.
+		qov, ok := values.AsQuantifiedObjectValue(outerVal.ChildValue())
+		if !ok || qov.Correlation() != outerCorrelation {
+			return nil, false
+		}
+		return outerVal, true
 	}
 	return nil, false
 }

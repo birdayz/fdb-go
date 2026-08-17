@@ -4,6 +4,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PushRequestedOrderingThroughSortRule is a PLANNING-phase
@@ -49,8 +50,90 @@ func (r *PushRequestedOrderingThroughSortRule) OnMatch(call *ImplementationRuleC
 		return
 	}
 
-	requestedOrdering := sortExpressionToRequestedOrdering(s)
+	requestedOrdering, err := requestedOrderingAtInnerCurrent(
+		sortExpressionToRequestedOrdering(s), s.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
+}
+
+// requestedOrderingAtInnerCurrent moves a sort's ordering values from the inner
+// quantifier's alias onto the reserved-current handle for the row that
+// quantifier delivers — Java's
+//
+//	AliasMap.ofAliases(innerQuantifier.getAlias(), Quantifier.current())
+//
+// applied to every ordering part before the constraint is pushed
+// (PushRequestedOrderingThroughSortRule.java:77-85). A requested ordering is
+// attached to the CHILD reference, and everything that reads it there —
+// push-down through a select/filter, an index candidate's satisfaction check —
+// interprets its values in that reference's own current-row space. A part still
+// rooted at the sort's alias for the child names a correlation nothing below the
+// sort has ever heard of.
+//
+// The cost of skipping this is not a wrong ordering; it is a SILENTLY DROPPED
+// one. Push-down through the select below cannot express a T-rooted value over
+// that select's result, so it declines and returns Preserve — and a Preserve
+// request is satisfied by every access path, so every index becomes a viable
+// zero-prefix full scan. On the stress suite's `WHERE cat IN (...) ORDER BY id`
+// that turned one useful candidate into three and tripled the planner's task
+// count. It stayed invisible until FieldValues carried an exact root: an
+// unrooted sort key rebased to nothing and pushed down through anything.
+func requestedOrderingAtInnerCurrent(
+	requested *properties.RequestedOrdering,
+	inner expressions.Quantifier,
+) (*properties.RequestedOrdering, error) {
+	if requested == nil || requested.IsPreserve() {
+		return requested, nil
+	}
+	edge, err := inner.RequireFlowedObjectValue()
+	if err != nil {
+		// This used to answer the UNREBASED request, on the reasoning that a
+		// quantifier with no exact row phase has no alias to rebase away from.
+		// That is the one answer the function exists to prevent: the parts are
+		// still rooted at the parent's alias for the child, so declining to
+		// rebase them publishes exactly the wrong-space constraint, and it
+		// publishes it on the path where the shape is already broken.
+		//
+		// Every way GetFlowedObjectType fails is a structural defect of the
+		// Reference — no Reference, no members, a nil member, a member with no
+		// result Value, a member result missing its relation wrapper. None of
+		// those is a state a quantifier under a sort or a select is allowed to
+		// reach, so the error is the answer; the caller fails the rule.
+		return nil, err
+	}
+	target, err := values.CurrentPhaseCarrierForEdge(edge)
+	if err != nil {
+		return nil, err
+	}
+	parts := requested.GetParts()
+	rebased := make([]properties.RequestedOrderingPart, len(parts))
+	for i, part := range parts {
+		value, err := values.TranslateDeclaredEdgeRoot(part.Value, edge, target)
+		if err != nil {
+			return nil, err
+		}
+		rebased[i] = properties.RequestedOrderingPart{Value: value, SortOrder: part.SortOrder}
+	}
+	// Both the distinctness and the EXHAUSTIVE flag cross unchanged: this rebases
+	// the parts into another correlation space and decides nothing about what the
+	// request means. Hard-coding exhaustive=false here is invisible from the sort
+	// rules, whose own requests are never exhaustive — but the select push-down
+	// feeds its result through here and DOES preserve the flag, and a union pushes
+	// exhaustive requests into its first branch. Dropping it there narrows
+	// enumeration silently.
+	//
+	// Nothing comes out wrongly ORDERED, and the reason is that no reader of the flag
+	// decides satisfaction. RichOrdering.Satisfies never consults it. Its readers are
+	// Combine's subsumption and dedup, constraint-change detection in the planner,
+	// and the nested-loop-join rule's plan-partition roll-up granularity, where the
+	// eligibility predicate runs Satisfies unconditionally and the flag only controls
+	// whether partitions are retained. All of those decide WHICH alternatives get
+	// generated, so losing the flag costs enumeration and never correctness.
+	return properties.NewRequestedOrdering(
+		rebased, requested.GetDistinctness(), requested.IsExhaustive()), nil
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughSortRule)(nil)

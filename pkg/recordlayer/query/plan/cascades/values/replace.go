@@ -116,10 +116,65 @@ func ReplaceLeavesOnceMaybe(v Value, replaceFn func(Value) Value) Value {
 	})
 }
 
+// replaceLeavesOnceMaybeChecked is ReplaceLeavesOnceMaybe with atomic checked
+// reconstruction. It never publishes an original or partially rebuilt parent
+// after a child replacement fails validation.
+func replaceLeavesOnceMaybeChecked(v Value, replaceFn func(Value) (Value, error)) (Value, error) {
+	newLeaves := map[Value]struct{}{}
+	var visit func(Value) (Value, error)
+	visit = func(node Value) (Value, error) {
+		if node == nil {
+			return nil, resolutionError(RewriteNilReplacement, "rewrite.value", "rewrite encountered a nil Value")
+		}
+		children := node.Children()
+		if len(children) == 0 {
+			if _, isNew := newLeaves[node]; isNew {
+				return node, nil
+			}
+			replacement, err := replaceFn(node)
+			if err != nil {
+				return nil, err
+			}
+			if replacement == nil {
+				return nil, resolutionError(RewriteNilReplacement, "rewrite.leaf", "leaf callback returned nil")
+			}
+			WalkValue(replacement, func(candidate Value) bool {
+				if len(candidate.Children()) == 0 {
+					newLeaves[candidate] = struct{}{}
+				}
+				return true
+			})
+			return replacement, nil
+		}
+
+		var rebuiltChildren []Value
+		for i, child := range children {
+			rebuilt, err := visit(child)
+			if err != nil {
+				return nil, err
+			}
+			if rebuilt != child {
+				if rebuiltChildren == nil {
+					rebuiltChildren = make([]Value, len(children))
+					copy(rebuiltChildren[:i], children[:i])
+				}
+				rebuiltChildren[i] = rebuilt
+			} else if rebuiltChildren != nil {
+				rebuiltChildren[i] = child
+			}
+		}
+		if rebuiltChildren == nil {
+			return node, nil
+		}
+		return withChildrenChecked(node, rebuiltChildren)
+	}
+	return visit(v)
+}
+
 // WithChildren is the exported entry point for reconstructing a Value
 // with new children. Delegates to the unexported withChildren.
 func WithChildren(v Value, newChildren []Value) Value {
-	return withChildren(v, newChildren)
+	return withChildrenUnchecked(v, newChildren)
 }
 
 // withChildren reconstructs a Value with new children. Dispatches
@@ -132,6 +187,26 @@ func WithChildren(v Value, newChildren []Value) Value {
 // old children — the caller's fn was still applied to the node
 // itself in step 1.
 func withChildren(v Value, newChildren []Value) Value {
+	return withChildrenUnchecked(v, newChildren)
+}
+
+// withChildrenChecked is the atomic rewrite authority. The Value-only wrappers
+// above fail closed with nil; checked planners use this form to retain the
+// typed reconstruction diagnostic.
+func withChildrenChecked(v Value, newChildren []Value) (Value, error) {
+	if v == nil {
+		return nil, resolutionError(RewriteNilReplacement, "rewrite.value", "cannot rebuild a nil Value")
+	}
+	if field, ok := v.(*fieldValue); ok {
+		if len(newChildren) != 1 {
+			return nil, resolutionError(RewriteInvalidArity, "field.rebuild", "FieldValue rebuild requires exactly one child")
+		}
+		return rebuildFieldValueOnChangedChild(field, newChildren[0])
+	}
+	return withChildrenUnchecked(v, newChildren), nil
+}
+
+func withChildrenUnchecked(v Value, newChildren []Value) Value {
 	if v == nil {
 		return nil
 	}
@@ -344,86 +419,18 @@ func withChildren(v Value, newChildren []Value) Value {
 		}
 		return &RangeValue{BeginInclusive: newChildren[0], EndExclusive: newChildren[1], Step: newChildren[2]}
 
-	case *FieldValue:
+	case *fieldValue:
 		if len(newChildren) != 1 {
-			return v
+			return nil
 		}
-		// The rebuild FUSES a baked node over a new BAKED
-		// FieldValue child into one multi-accessor node — Java's architecture,
-		// where fuse is a property of the rebuild itself (FieldValue.withNewChild
-		// = ofFieldsAndFuseIfPossible, FieldValue.java:278-280): a TranslationMap
-		// replacing a QOV leaf with ofOrdinalNumber(QOV(upper), i) composes with
-		// the enclosing reference automatically, no map composition. Gated
-		// both-baked — the DEFINITION of fusibility (a lazy node has no path to
-		// concatenate; in Java the condition is vacuously always true) — so lazy
-		// chains keep their shape. Must produce the IDENTICAL node
-		// to composeFieldOverField (pinned by the rebuild≡compose property test).
-		// inner.Child != nil mirrors compose's gate exactly: a CHILDLESS baked
-		// inner (the recursive-CTE wrap shape) stays chained through BOTH
-		// mechanisms — there is no base to re-anchor the fused path onto.
-		if vt.Resolved != nil {
-			// COLLAPSE a baked ordinal path over an
-			// RC LITERAL child — the merge's TranslationMap replaces a box
-			// quantifier with the box's ordinal RC, and the parent's window
-			// ref then IS the RC field's own value (a planner-constructed
-			// baked leaf ref, types and markers intact). A fused path over an
-			// RC would strand data access (no sarg extraction), materializing
-			// the correlated probe the rfc153 plan pins forbid.
-			if rc, isRC := newChildren[0].(*RecordConstructorValue); isRC {
-				accs := vt.Resolved.Accessors
-				rootOrd := -1
-				if len(accs) >= 1 {
-					rootOrd = accs[0].Ordinal
-				}
-				// An UNPINNED baked node's ROOT ordinal is relative to the
-				// reference's OWN source row, NOT this seed RC.
-				// Re-base the root into the seed by the reference's LEG
-				// (vt.Child's correlation), matching the seed field whose value is
-				// a FieldValue over that SAME leg. A bare-name match would pick the
-				// first colliding occurrence (dept.id before emp.id) — the wrong
-				// leg, the raw-RC duplicate-name conflation; and the raw source
-				// ordinal would pick the seed's slot-0 (e.g. the outer scan's PK),
-				// fabricating a wrong comparand that then mis-SARGs. Falls back to
-				// the plan-time name authority when no leg-tagged field bears the
-				// reference's correlation. Keyed on the ROOT's leg-relativity
-				// (RootIsLegRelativeUnpinned), NOT the accessor count: a FUSED
-				// unpinned path (WithSuffix inherits the inner's unpinned leg-relative
-				// root) is ALSO source-relative and MUST be rebased — collapsing it by
-				// the RAW root would fuse the suffix onto the WRONG leg's seed field
-				// (leg-0 by accident for a first-leg reference, a foreign leg
-				// otherwise). Only FrontierPinned bakes keep the raw collapse — their
-				// ordinal IS seed-relative by construction.
-				if vt.RootIsLegRelativeUnpinned() && len(accs) >= 1 {
-					rootOrd = LegAwareRootOrdinal(vt, accs[0].Ordinal, rc, rootOrd)
-				}
-				if len(accs) >= 1 && rootOrd >= 0 && rootOrd < len(rc.Fields) && rc.Fields[rootOrd].Value != nil {
-					slot := rc.Fields[rootOrd].Value
-					if len(accs) == 1 {
-						return slot
-					}
-					// A MULTI-accessor path (fused by an earlier merge round)
-					// collapses its ROOT through the RC and fuses the suffix
-					// onto the slot's own baked reference — the identical
-					// construction the FieldValue-over-FieldValue fuse below
-					// produces. A whole fused path left over an RC literal
-					// strands data access exactly like the single-accessor
-					// case this arm exists for.
-					if inner, isFV := slot.(*FieldValue); isFV && inner.Resolved != nil && inner.Child != nil {
-						fused := inner.Resolved.WithSuffix(&FieldPath{Accessors: accs[1:]})
-						return &FieldValue{Field: fused.Last().Field, Typ: vt.Typ, Child: inner.Child, Resolved: fused}
-					}
-				}
+		if isAdmittedFieldValue(vt) {
+			rebuilt, err := rebuildFieldValueOnChangedChild(vt, newChildren[0])
+			if err != nil {
+				return nil
 			}
-			if inner, isFV := newChildren[0].(*FieldValue); isFV && inner.Resolved != nil && inner.Child != nil {
-				fused := inner.Resolved.WithSuffix(vt.Resolved)
-				return &FieldValue{Field: fused.Last().Field, Typ: vt.Typ, Child: inner.Child, Resolved: fused}
-			}
+			return rebuilt
 		}
-		// Preserve the baked-ordinal marker: dropping Resolved would
-		// silently degrade a BAKED node to lazy — a conflation hazard for
-		// duplicate same-named columns. Covers Replace/RebaseValue and
-		// every simplifier rebuild that funnels through WithChildren.
-		return &FieldValue{Field: vt.Field, Typ: vt.Typ, Child: newChildren[0], Resolved: vt.Resolved}
+		return rebuildLegacyFieldValue(vt, newChildren[0])
 
 	case *ExistsValue:
 		// Transparent composite (RFC-141) over a single child
@@ -445,6 +452,42 @@ func withChildren(v Value, newChildren []Value) Value {
 		}
 		panic(fmt.Sprintf("withChildren: unhandled Value type %T", v))
 	}
+}
+
+// rebuildLegacyFieldValue keeps pre-RFC private package fixtures working on the
+// Value-only rewrite surface. Checked translation never calls this path: only
+// an admitted exact FieldValue may cross that boundary.
+func rebuildLegacyFieldValue(field *fieldValue, child Value) Value {
+	if field == nil || child == nil {
+		return nil
+	}
+	if field.Resolved != nil {
+		if rc, isRC := child.(*RecordConstructorValue); isRC {
+			accs := field.Resolved.Accessors
+			rootOrdinal := -1
+			if len(accs) > 0 {
+				rootOrdinal = accs[0].Ordinal
+			}
+			if field.RootIsLegRelativeUnpinned() && len(accs) > 0 {
+				rootOrdinal = LegAwareRootOrdinal(field, accs[0].Ordinal, rc, rootOrdinal)
+			}
+			if rootOrdinal >= 0 && rootOrdinal < len(rc.Fields) && rc.Fields[rootOrdinal].Value != nil {
+				slot := rc.Fields[rootOrdinal].Value
+				if len(accs) == 1 {
+					return slot
+				}
+				if inner, ok := slot.(*fieldValue); ok && inner.Resolved != nil && inner.Child != nil {
+					fused := inner.Resolved.WithSuffix(&fieldPath{Accessors: accs[1:]})
+					return &fieldValue{Field: fused.Last().Field, Typ: field.Typ, Child: inner.Child, Resolved: fused}
+				}
+			}
+		}
+		if inner, ok := child.(*fieldValue); ok && inner.Resolved != nil && inner.Child != nil {
+			fused := inner.Resolved.WithSuffix(field.Resolved)
+			return &fieldValue{Field: fused.Last().Field, Typ: field.Typ, Child: inner.Child, Resolved: fused}
+		}
+	}
+	return &fieldValue{Field: field.Field, Typ: field.Typ, Child: child, Resolved: field.Resolved}
 }
 
 // SelfWithChildren lets a Value defined outside this package reconstruct itself
@@ -493,15 +536,19 @@ type SelfWithChildren interface {
 // turned `e.id IS NULL` into `d.id IS NULL` and made a LEFT-join anti-join
 // return zero rows). fallbackOrd is used only where a leg-relative rebase was
 // never needed.
-func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue, fallbackOrd int) int {
-	childCorr, ok := ownCorrelationOfLeaf(vt.Child)
+func LegAwareRootOrdinal(vt FieldValue, srcOrd int, rc *RecordConstructorValue, fallbackOrd int) int {
+	exact, ok := vt.(*fieldValue)
+	if !ok || exact == nil {
+		return -1
+	}
+	childCorr, ok := ownCorrelationOfLeaf(exact.Child)
 	if !ok {
 		// The reference names no leg at all, so there is nothing to rebase
 		// against and its own ordinal stands.
 		return fallbackOrd
 	}
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*FieldValue)
+		fv, isFV := f.Value.(*fieldValue)
 		if !isFV {
 			continue
 		}
@@ -518,7 +565,7 @@ func LegAwareRootOrdinal(vt *FieldValue, srcOrd int, rc *RecordConstructorValue,
 
 // fieldValueLegOrdinal returns fv's root source-relative ordinal (its leg-local
 // slot), or -1 when fv carries no baked ordinal.
-func fieldValueLegOrdinal(fv *FieldValue) int {
+func fieldValueLegOrdinal(fv *fieldValue) int {
 	if fv.Resolved != nil && len(fv.Resolved.Accessors) > 0 {
 		return fv.Resolved.Accessors[0].Ordinal
 	}

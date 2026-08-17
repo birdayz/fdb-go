@@ -98,19 +98,19 @@ func TestIntegration_OrphanIndexEntry_RaisesStorageError(t *testing.T) {
 		eqRange := predicates.EmptyComparisonRange()
 		merged := eqRange.Merge(&predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.LiteralValue(int64(100)),
+			Operand: &values.ConstantValue{Value: int64(100), Typ: values.NotNullLong},
 		})
 		if !merged.Ok {
 			t.Fatal("build equality range failed")
 		}
 
-		indexPlan := plans.NewRecordQueryIndexPlan(
+		indexPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 			"order_price_idx",
 			[]*predicates.ComparisonRange{merged.Range},
 			[]string{"Order"},
-			nil,
+			PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NullableInt})
+		)).WithKeyComponentTypes([]values.Type{values.NullableInt})
 
 		cursor, cerr := ExecutePlan(ctx, indexPlan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if cerr != nil {

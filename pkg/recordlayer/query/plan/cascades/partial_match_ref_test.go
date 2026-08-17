@@ -8,14 +8,24 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func refTestScan(
+	t testing.TB,
+	recordType string,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{recordType}, values.NewRecordType(
+		recordType, false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		},
+	))
+}
+
 func makeRefTestPartialMatch(t *testing.T, candidateName string) (*PartialMatchImpl, MatchCandidate, *expressions.Reference) {
 	t.Helper()
 	candidate := stubMatchCandidate{name: candidateName}
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanExpr := refTestScan(t, "T")
 	queryRef := expressions.InitialOf(scanExpr)
-	candidateRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	candidateRef := expressions.InitialOf(refTestScan(t, "T"))
 	matchInfo := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 	pm := NewPartialMatch(EmptyAliasMap(), candidate, queryRef, scanExpr, candidateRef, matchInfo)
 	return pm, candidate, queryRef
@@ -38,15 +48,17 @@ type refTestSemanticFixture struct {
 	candidateRef *expressions.Reference
 }
 
-func newRefTestSemanticFixture(candidateName string) refTestSemanticFixture {
-	queryExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+func newRefTestSemanticFixture(
+	t testing.TB,
+	candidateName string,
+) refTestSemanticFixture {
+	t.Helper()
+	queryExpr := refTestScan(t, "T")
 	return refTestSemanticFixture{
-		candidate: stubMatchCandidate{name: candidateName},
-		queryExpr: queryExpr,
-		queryRef:  expressions.InitialOf(queryExpr),
-		candidateRef: expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-		),
+		candidate:    stubMatchCandidate{name: candidateName},
+		queryExpr:    queryExpr,
+		queryRef:     expressions.InitialOf(queryExpr),
+		candidateRef: expressions.InitialOf(refTestScan(t, "T")),
 	}
 }
 
@@ -101,7 +113,7 @@ func TestAddPartialMatchForCandidate_DistinctSemanticMatchesSurvive(t *testing.T
 	t.Parallel()
 
 	t.Run("bound alias map", func(t *testing.T) {
-		fixture := newRefTestSemanticFixture("idx_alias_variants")
+		fixture := newRefTestSemanticFixture(t, "idx_alias_variants")
 		queryAlias := values.NamedCorrelationIdentifier("query_leg")
 		firstAliasMap := AliasMapOfAliases(
 			queryAlias,
@@ -131,7 +143,7 @@ func TestAddPartialMatchForCandidate_DistinctSemanticMatchesSurvive(t *testing.T
 	})
 
 	t.Run("parameter binding metadata", func(t *testing.T) {
-		fixture := newRefTestSemanticFixture("idx_binding_variants")
+		fixture := newRefTestSemanticFixture(t, "idx_binding_variants")
 		queryAlias := values.NamedCorrelationIdentifier("query_leg")
 		candidateAlias := values.NamedCorrelationIdentifier("candidate_leg")
 		boundAliasMap := AliasMapOfAliases(queryAlias, candidateAlias)
@@ -171,7 +183,7 @@ func TestAddPartialMatchForCandidate_DistinctSemanticMatchesSurvive(t *testing.T
 func TestAddPartialMatchForCandidate_ExactSemanticReAddCollapses(t *testing.T) {
 	t.Parallel()
 
-	fixture := newRefTestSemanticFixture("idx_semantic_duplicate")
+	fixture := newRefTestSemanticFixture(t, "idx_semantic_duplicate")
 	queryAlias := values.NamedCorrelationIdentifier("query_leg")
 	candidateAlias := values.NamedCorrelationIdentifier("candidate_leg")
 	parameterAlias := values.NamedCorrelationIdentifier("index_parameter")
@@ -209,7 +221,7 @@ func TestAddPartialMatchForCandidate_PrimaryKeyDistinctObligationIsSemanticIdent
 ) {
 	t.Parallel()
 
-	fixture := newRefTestSemanticFixture("idx_pk_distinct_identity")
+	fixture := newRefTestSemanticFixture(t, "idx_pk_distinct_identity")
 	newMatch := func(requiresPrimaryKeyDistinct bool) *PartialMatchImpl {
 		boundAliasMap := EmptyAliasMap()
 		var matchInfo *RegularMatchInfo
@@ -285,17 +297,13 @@ func TestMultipleMatchesSameCandidate(t *testing.T) {
 	t.Parallel()
 
 	candidate := stubMatchCandidate{name: "idx_b"}
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanExpr := refTestScan(t, "T")
 	queryRef := expressions.InitialOf(scanExpr)
 	// Two DISTINCT candidate refs → two genuinely distinct matches for the
 	// same candidate, both retained. Semantic dedup collapses repeated
 	// construction of the same logical match without conflating endpoints.
-	candRef1 := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
-	candRef2 := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	candRef1 := expressions.InitialOf(refTestScan(t, "T"))
+	candRef2 := expressions.InitialOf(refTestScan(t, "T"))
 
 	mi1 := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 	mi2 := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
@@ -330,11 +338,9 @@ func TestMultipleCandidatesSameReference(t *testing.T) {
 
 	candA := stubMatchCandidate{name: "idx_a"}
 	candB := stubMatchCandidate{name: "idx_b"}
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanExpr := refTestScan(t, "T")
 	queryRef := expressions.InitialOf(scanExpr)
-	candRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	candRef := expressions.InitialOf(refTestScan(t, "T"))
 
 	mi := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 	pmA := NewPartialMatch(EmptyAliasMap(), candA, queryRef, scanExpr, candRef, mi)
@@ -376,9 +382,7 @@ func TestDuplicateAddReturnsFalse(t *testing.T) {
 func TestGetPartialMatchesForCandidate_EmptyRef(t *testing.T) {
 	t.Parallel()
 
-	ref := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	ref := expressions.InitialOf(refTestScan(t, "T"))
 	candidate := stubMatchCandidate{name: "idx_empty"}
 
 	got := GetPartialMatchesForCandidate(ref, candidate)
@@ -392,13 +396,11 @@ func TestGetPartialMatchesForExpression(t *testing.T) {
 
 	candA := stubMatchCandidate{name: "idx_a"}
 	candB := stubMatchCandidate{name: "idx_b"}
-	exprA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	exprB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	exprA := refTestScan(t, "A")
+	exprB := refTestScan(t, "B")
 	queryRef := expressions.InitialOf(exprA)
 	queryRef.Insert(exprB)
-	candRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	candRef := expressions.InitialOf(refTestScan(t, "T"))
 	mi := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 
 	pmA := NewPartialMatch(EmptyAliasMap(), candA, queryRef, exprA, candRef, mi)
@@ -418,7 +420,7 @@ func TestGetPartialMatchesForExpression(t *testing.T) {
 	}
 
 	// Expression not present in any match should return nil.
-	exprC := expressions.NewFullUnorderedScanExpression([]string{"C"}, values.UnknownType)
+	exprC := refTestScan(t, "C")
 	gotC := GetPartialMatchesForExpression(queryRef, exprC)
 	if gotC != nil {
 		t.Fatalf("GetPartialMatchesForExpression(exprC): expected nil, got %v", gotC)
@@ -430,11 +432,9 @@ func TestGetPartialMatchCandidatesTyped(t *testing.T) {
 
 	candA := stubMatchCandidate{name: "idx_a"}
 	candB := stubMatchCandidate{name: "idx_b"}
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scanExpr := refTestScan(t, "T")
 	queryRef := expressions.InitialOf(scanExpr)
-	candRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	candRef := expressions.InitialOf(refTestScan(t, "T"))
 	mi := NewRegularMatchInfo(nil, nil, nil, nil, nil, nil, nil, nil)
 
 	pmA := NewPartialMatch(EmptyAliasMap(), candA, queryRef, scanExpr, candRef, mi)
@@ -460,9 +460,7 @@ func TestGetPartialMatchCandidatesTyped(t *testing.T) {
 func TestGetPartialMatchCandidatesTyped_EmptyRef(t *testing.T) {
 	t.Parallel()
 
-	ref := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	ref := expressions.InitialOf(refTestScan(t, "T"))
 	got := GetPartialMatchCandidatesTyped(ref)
 	if got != nil {
 		t.Fatalf("expected nil from empty ref, got %v", got)

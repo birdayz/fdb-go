@@ -33,6 +33,24 @@ func assertScanIdentitiesDistinct(t *testing.T, base string, variants map[string
 
 const sha256DigestSize = 32
 
+// scanIdentityResultType is the exact logical row flowed by the scan fixtures.
+// Physical key-component types are deliberately supplied separately so each
+// identity mutation below changes only the axis named by the assertion.
+func scanIdentityResultType(payload values.Type) *values.RecordType {
+	return exactTestRowType(
+		values.Field{Name: "ID", FieldType: values.NotNullLong},
+		values.Field{Name: "V", FieldType: payload},
+	)
+}
+
+func aggregateIdentityResultType(aggregate values.Type) *values.RecordType {
+	return exactTestRowType(
+		values.Field{Name: "AB", FieldType: values.NotNullString},
+		values.Field{Name: "C", FieldType: values.NotNullLong},
+		values.Field{Name: "V", FieldType: aggregate},
+	)
+}
+
 func mustScanIdentity(t testing.TB, identity string, err error) string {
 	t.Helper()
 	if err != nil {
@@ -111,14 +129,15 @@ func mustVectorScanIdentity(
 }
 
 func primaryIdentityTestPlan(recordTypes []string, reverse bool, keyType, flowedType values.Type) *plans.RecordQueryScanPlan {
-	return plans.NewRecordQueryScanPlan(recordTypes, flowedType, reverse).
+	return mustExecutorConstruct(plans.NewRecordQueryScanPlan(recordTypes, flowedType, reverse)).
 		WithScanComparisons([]*predicates.ComparisonRange{predicates.EmptyComparisonRange()}).
 		WithKeyComponentTypes([]values.Type{keyType})
 }
 
 func TestPrimaryScanRangeFingerprintSaltCoversPhysicalExecutionShape(t *testing.T) {
 	t.Parallel()
-	basePlan := primaryIdentityTestPlan([]string{"ab", "c"}, false, values.NotNullDouble, values.UnknownType)
+	flowed := scanIdentityResultType(values.NotNullLong)
+	basePlan := primaryIdentityTestPlan([]string{"ab", "c"}, false, values.NotNullDouble, flowed)
 	base := mustPrimaryScanIdentity(t, basePlan)
 	if repeat := mustPrimaryScanIdentity(t, basePlan); repeat != base {
 		t.Fatal("primary identity is not deterministic")
@@ -126,15 +145,15 @@ func TestPrimaryScanRangeFingerprintSaltCoversPhysicalExecutionShape(t *testing.
 
 	assertScanIdentitiesDistinct(t, base, map[string]string{
 		"length-delimited record types": mustPrimaryScanIdentity(t,
-			primaryIdentityTestPlan([]string{"a", "bc"}, false, values.NotNullDouble, values.UnknownType)),
+			primaryIdentityTestPlan([]string{"a", "bc"}, false, values.NotNullDouble, flowed)),
 		"direction": mustPrimaryScanIdentity(t,
-			primaryIdentityTestPlan([]string{"ab", "c"}, true, values.NotNullDouble, values.UnknownType)),
+			primaryIdentityTestPlan([]string{"ab", "c"}, true, values.NotNullDouble, flowed)),
 		"physical width": mustPrimaryScanIdentity(t,
-			primaryIdentityTestPlan([]string{"ab", "c"}, false, values.NotNullFloat, values.UnknownType)),
+			primaryIdentityTestPlan([]string{"ab", "c"}, false, values.NotNullFloat, flowed)),
 		"physical nullability": mustPrimaryScanIdentity(t,
-			primaryIdentityTestPlan([]string{"ab", "c"}, false, values.NullableDouble, values.UnknownType)),
+			primaryIdentityTestPlan([]string{"ab", "c"}, false, values.NullableDouble, flowed)),
 		"flowed schema": mustPrimaryScanIdentity(t,
-			primaryIdentityTestPlan([]string{"ab", "c"}, false, values.NotNullDouble, values.NullableString)),
+			primaryIdentityTestPlan([]string{"ab", "c"}, false, values.NotNullDouble, scanIdentityResultType(values.NullableString))),
 	})
 }
 
@@ -146,13 +165,13 @@ func indexIdentityTestPlan(
 	recordTypes []string,
 	flowedType values.Type,
 ) *plans.RecordQueryIndexPlan {
-	plan := plans.NewRecordQueryIndexPlan(
+	plan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 		name,
 		[]*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
 		recordTypes,
 		flowedType,
 		reverse,
-	).WithKeyComponentTypes([]values.Type{keyType})
+	)).WithKeyComponentTypes([]values.Type{keyType})
 	// Covered columns are DERIVED from the inner scan now (RFC-220), so the
 	// column list a covering plan will report is stamped here as the index's key
 	// columns rather than handed to a constructor.
@@ -172,13 +191,14 @@ func mustCoveringIndexScanIdentity(
 ) string {
 	t.Helper()
 	identity, err := coveringIndexScanRangeFingerprintSalt(
-		plans.NewRecordQueryCoveringIndexPlan(plan), scanType)
+		mustExecutorConstruct(plans.NewRecordQueryCoveringIndexPlan(plan)), scanType)
 	return mustScanIdentity(t, identity, err)
 }
 
 func TestIndexScanRangeFingerprintSaltCoversScanAndOutputShape(t *testing.T) {
 	t.Parallel()
-	basePlan := indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType)
+	flowed := scanIdentityResultType(values.NotNullLong)
+	basePlan := indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, flowed)
 	base := mustCoveringIndexScanIdentity(t, basePlan, recordlayer.IndexScanByValue)
 
 	// Every variant below is a COVERING plan differing from the base in exactly
@@ -186,37 +206,37 @@ func TestIndexScanRangeFingerprintSaltCoversScanAndOutputShape(t *testing.T) {
 	// through the NON-covering salt — that is the axis it names.
 	assertScanIdentitiesDistinct(t, base, map[string]string{
 		"index name": mustCoveringIndexScanIdentity(t,
-			indexIdentityTestPlan("idx2", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType),
+			indexIdentityTestPlan("idx2", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, flowed),
 			recordlayer.IndexScanByValue),
 		"scan kind": mustCoveringIndexScanIdentity(t, basePlan, recordlayer.IndexScanByRank),
 		"direction": mustCoveringIndexScanIdentity(t,
-			indexIdentityTestPlan("idx", true, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType),
+			indexIdentityTestPlan("idx", true, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, flowed),
 			recordlayer.IndexScanByValue),
 		"fetch instead of covering": mustIndexScanIdentity(t, basePlan, recordlayer.IndexScanByValue),
 		"length-delimited covering columns": mustCoveringIndexScanIdentity(t,
-			indexIdentityTestPlan("idx", false, []string{"a", "bc"}, values.NotNullDouble, []string{"T"}, values.UnknownType),
+			indexIdentityTestPlan("idx", false, []string{"a", "bc"}, values.NotNullDouble, []string{"T"}, flowed),
 			recordlayer.IndexScanByValue),
 		"covering column order": mustCoveringIndexScanIdentity(t,
-			indexIdentityTestPlan("idx", false, []string{"c", "ab"}, values.NotNullDouble, []string{"T"}, values.UnknownType),
+			indexIdentityTestPlan("idx", false, []string{"c", "ab"}, values.NotNullDouble, []string{"T"}, flowed),
 			recordlayer.IndexScanByValue),
 		"primary-key coverage layout": mustCoveringIndexScanIdentity(t,
-			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.UnknownType).
+			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, flowed).
 				WithIndexMetadata([]string{"ab", "c"}, []string{"OTHER_ID"}, false),
 			recordlayer.IndexScanByValue),
 		"physical schema": mustCoveringIndexScanIdentity(t,
-			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullFloat, []string{"T"}, values.UnknownType),
+			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullFloat, []string{"T"}, flowed),
 			recordlayer.IndexScanByValue),
 		"record type": mustCoveringIndexScanIdentity(t,
-			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"U"}, values.UnknownType),
+			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"U"}, flowed),
 			recordlayer.IndexScanByValue),
 		"flowed schema": mustCoveringIndexScanIdentity(t,
-			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, values.NullableString),
+			indexIdentityTestPlan("idx", false, []string{"ab", "c"}, values.NotNullDouble, []string{"T"}, scanIdentityResultType(values.NullableString)),
 			recordlayer.IndexScanByValue),
 	})
 
 	foreignPlan := indexIdentityTestPlan(
 		"idx", false, []string{"ab", "c"}, values.NotNullDouble,
-		[]string{"T"}, values.UnknownType,
+		[]string{"T"}, flowed,
 	).WithIndexMetadata([]string{"K"}, []string{"OTHER_ID"}, false)
 	foreignSalt := mustIndexScanIdentity(t, foreignPlan, recordlayer.IndexScanByValue)
 	comparisons := []*predicates.ComparisonRange{
@@ -265,53 +285,54 @@ func aggregateIdentityTestPlan(
 	aggregateFunction string,
 	resultType values.Type,
 ) *plans.RecordQueryAggregateIndexPlan {
-	indexPlan := plans.NewRecordQueryIndexPlan(
+	indexPlan := mustExecutorConstruct(plans.NewRecordQueryIndexPlan(
 		indexName,
 		[]*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
 		[]string{"T"},
-		values.UnknownType,
+		scanIdentityResultType(values.NotNullLong),
 		reverse,
-	).WithKeyComponentTypes([]values.Type{keyType}).
+	)).WithKeyComponentTypes([]values.Type{keyType}).
 		WithPhysicalGroupingPrefixCount(physicalPrefix)
-	return plans.NewRecordQueryAggregateIndexPlan(indexPlan, "T", resultType, aggregateFunction).
+	return mustExecutorConstruct(plans.NewRecordQueryAggregateIndexPlan(indexPlan, "T", resultType, aggregateFunction)).
 		WithGroupColumns(groupColumns, aggregateColumn)
 }
 
 func TestAggregateScanRangeFingerprintSaltCoversLogicalAndPhysicalLayout(t *testing.T) {
 	t.Parallel()
-	basePlan := aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MAX", values.UnknownType)
+	resultType := aggregateIdentityResultType(values.NotNullDouble)
+	basePlan := aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MAX", resultType)
 	base := mustAggregateScanIdentity(
 		t, basePlan, recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 1)
 
 	assertScanIdentitiesDistinct(t, base, map[string]string{
 		"index name": mustAggregateScanIdentity(t,
-			aggregateIdentityTestPlan("agg_idx_2", false, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MAX", values.UnknownType),
+			aggregateIdentityTestPlan("agg_idx_2", false, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MAX", resultType),
 			recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 1),
 		"index type": mustAggregateScanIdentity(t,
 			basePlan, recordlayer.IndexTypePermutedMin, recordlayer.IndexScanByGroup, 2, 1),
 		"scan kind": mustAggregateScanIdentity(t,
 			basePlan, recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByValue, 2, 1),
 		"direction": mustAggregateScanIdentity(t,
-			aggregateIdentityTestPlan("agg_idx", true, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MAX", values.UnknownType),
+			aggregateIdentityTestPlan("agg_idx", true, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MAX", resultType),
 			recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 1),
 		"length-delimited groups": mustAggregateScanIdentity(t,
-			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"a", "bc"}, "V", "MAX", values.UnknownType),
+			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"a", "bc"}, "V", "MAX", resultType),
 			recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 1),
 		"aggregate column": mustAggregateScanIdentity(t,
-			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"ab", "c"}, "W", "MAX", values.UnknownType),
+			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"ab", "c"}, "W", "MAX", resultType),
 			recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 1),
 		"aggregate function": mustAggregateScanIdentity(t,
-			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MIN", values.UnknownType),
+			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MIN", resultType),
 			recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 1),
 		"grouping count": mustAggregateScanIdentity(t,
 			basePlan, recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 3, 1),
 		"permuted insertion boundary": mustAggregateScanIdentity(t,
 			basePlan, recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 2),
 		"physical schema": mustAggregateScanIdentity(t,
-			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullFloat, []string{"ab", "c"}, "V", "MAX", values.UnknownType),
+			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullFloat, []string{"ab", "c"}, "V", "MAX", resultType),
 			recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 1),
 		"result schema": mustAggregateScanIdentity(t,
-			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MAX", values.NullableString),
+			aggregateIdentityTestPlan("agg_idx", false, 1, values.NotNullDouble, []string{"ab", "c"}, "V", "MAX", aggregateIdentityResultType(values.NullableString)),
 			recordlayer.IndexTypePermutedMax, recordlayer.IndexScanByGroup, 2, 1),
 	})
 }
@@ -324,25 +345,26 @@ func vectorIdentityTestPlan(
 	keyType values.Type,
 	resultType values.Type,
 ) *plans.RecordQueryVectorIndexPlan {
-	return plans.NewRecordQueryVectorIndexPlan(
+	return mustExecutorConstruct(plans.NewRecordQueryVectorIndexPlan(
 		indexName,
 		[]*predicates.ComparisonRange{predicates.EmptyComparisonRange()},
-		values.LiteralValue([]float64{1, 2}),
-		values.LiteralValue(5),
+		&values.ConstantValue{Value: []float64{1, 2}, Typ: values.NewArrayType(false, values.NotNullDouble)},
+		&values.ConstantValue{Value: int64(5), Typ: values.NotNullLong},
 		rankType,
 		efSearch,
 		returningVectors,
 		[]string{"T"},
 		resultType,
-	).WithPartitionKeyComponentTypes([]values.Type{keyType})
+	)).WithPartitionKeyComponentTypes([]values.Type{keyType})
 }
 
 func TestVectorScanRangeFingerprintSaltCoversEvaluatedInvocation(t *testing.T) {
 	t.Parallel()
 	ef := 200
 	returnVectors := true
+	resultType := scanIdentityResultType(values.NotNullDouble)
 	basePlan := vectorIdentityTestPlan(
-		"vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &returnVectors, values.NotNullDouble, values.UnknownType)
+		"vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &returnVectors, values.NotNullDouble, resultType)
 	baseVector := []float64{0, 1}
 	baseRange := recordlayer.VectorDistanceScanRangeWithPrefix(baseVector, 5, ef, nil)
 	identity := func(
@@ -368,17 +390,17 @@ func TestVectorScanRangeFingerprintSaltCoversEvaluatedInvocation(t *testing.T) {
 	falseValue := false
 	orderedPlan := basePlan.WithOrderedStream()
 	lessThanPlan := vectorIdentityTestPlan(
-		"vec_idx", predicates.ComparisonDistanceRankLessThan, &ef, &returnVectors, values.NotNullDouble, values.UnknownType)
+		"vec_idx", predicates.ComparisonDistanceRankLessThan, &ef, &returnVectors, values.NotNullDouble, resultType)
 	noEfPlan := vectorIdentityTestPlan(
-		"vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, nil, &returnVectors, values.NotNullDouble, values.UnknownType)
+		"vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, nil, &returnVectors, values.NotNullDouble, resultType)
 	notReturningPlan := vectorIdentityTestPlan(
-		"vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &falseValue, values.NotNullDouble, values.UnknownType)
+		"vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &falseValue, values.NotNullDouble, resultType)
 	changedRange := baseRange
 	changedRange.High = tuple.Tuple{int64(6), int64(ef)}
 
 	assertScanIdentitiesDistinct(t, base, map[string]string{
 		"index name": identity(
-			vectorIdentityTestPlan("vec_idx_2", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &returnVectors, values.NotNullDouble, values.UnknownType),
+			vectorIdentityTestPlan("vec_idx_2", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &returnVectors, values.NotNullDouble, resultType),
 			recordlayer.IndexTypeVector, recordlayer.IndexScanByDistance, baseVector, 5, 5, ef, baseRange),
 		"index implementation": identity(
 			basePlan, recordlayer.IndexTypeVectorSPFresh, recordlayer.IndexScanByDistance, baseVector, 5, 5, ef, baseRange),
@@ -406,10 +428,10 @@ func TestVectorScanRangeFingerprintSaltCoversEvaluatedInvocation(t *testing.T) {
 		"physical invocation range": identity(
 			basePlan, recordlayer.IndexTypeVector, recordlayer.IndexScanByDistance, baseVector, 5, 5, ef, changedRange),
 		"physical partition schema": identity(
-			vectorIdentityTestPlan("vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &returnVectors, values.NotNullFloat, values.UnknownType),
+			vectorIdentityTestPlan("vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &returnVectors, values.NotNullFloat, resultType),
 			recordlayer.IndexTypeVector, recordlayer.IndexScanByDistance, baseVector, 5, 5, ef, baseRange),
 		"result schema": identity(
-			vectorIdentityTestPlan("vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &returnVectors, values.NotNullDouble, values.NullableString),
+			vectorIdentityTestPlan("vec_idx", predicates.ComparisonDistanceRankLessThanOrEq, &ef, &returnVectors, values.NotNullDouble, scanIdentityResultType(values.NullableString)),
 			recordlayer.IndexTypeVector, recordlayer.IndexScanByDistance, baseVector, 5, 5, ef, baseRange),
 	})
 }
@@ -624,7 +646,7 @@ func TestScanRangeExecutionIdentitySaltsPropagateInvalidType(t *testing.T) {
 			name: "primary",
 			build: func() error {
 				_, err := primaryScanRangeFingerprintSalt(
-					primaryIdentityTestPlan([]string{"T"}, false, values.NotNullDouble, cyclic),
+					primaryIdentityTestPlan([]string{"T"}, false, cyclic, scanIdentityResultType(values.NotNullLong)),
 				)
 				return err
 			},
@@ -633,7 +655,7 @@ func TestScanRangeExecutionIdentitySaltsPropagateInvalidType(t *testing.T) {
 			name: "index",
 			build: func() error {
 				_, err := indexScanRangeFingerprintSalt(
-					indexIdentityTestPlan("idx", false, nil, cyclic, []string{"T"}, values.UnknownType),
+					indexIdentityTestPlan("idx", false, nil, cyclic, []string{"T"}, scanIdentityResultType(values.NotNullLong)),
 					recordlayer.IndexScanByValue,
 				)
 				return err
@@ -643,7 +665,7 @@ func TestScanRangeExecutionIdentitySaltsPropagateInvalidType(t *testing.T) {
 			name: "aggregate",
 			build: func() error {
 				_, err := aggregateScanRangeFingerprintSalt(
-					aggregateIdentityTestPlan("agg", false, 0, cyclic, nil, "V", "MAX", values.UnknownType),
+					aggregateIdentityTestPlan("agg", false, 0, cyclic, nil, "V", "MAX", aggregateIdentityResultType(values.NotNullDouble)),
 					recordlayer.IndexTypeMaxEverLong,
 					recordlayer.IndexScanByValue,
 					0,
@@ -657,7 +679,7 @@ func TestScanRangeExecutionIdentitySaltsPropagateInvalidType(t *testing.T) {
 			build: func() error {
 				plan := vectorIdentityTestPlan(
 					"vec", predicates.ComparisonDistanceRankLessThanOrEq,
-					&efSearch, &returnVectors, cyclic, values.UnknownType,
+					&efSearch, &returnVectors, cyclic, scanIdentityResultType(values.NotNullDouble),
 				)
 				_, err := vectorScanRangeFingerprintSalt(
 					plan,

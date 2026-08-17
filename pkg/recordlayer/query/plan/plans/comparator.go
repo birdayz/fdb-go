@@ -38,29 +38,36 @@ type RecordQueryComparatorPlan struct {
 }
 
 // NewRecordQueryComparatorPlan constructs a comparator plan.
-// Panics if children is empty or referencePlanIndex is out of range.
+// Returns an error if children is empty, their exact types disagree, or
+// referencePlanIndex is out of range.
 func NewRecordQueryComparatorPlan(
 	children []RecordQueryPlan,
 	comparisonKeyValues []values.Value,
 	referencePlanIndex int,
 	reverse bool,
 	abortOnComparisonFailure bool,
-) *RecordQueryComparatorPlan {
+) (*RecordQueryComparatorPlan, error) {
 	if len(children) == 0 {
-		panic("comparator plan should have at least one plan")
+		return nil, fmt.Errorf("comparator plan should have at least one plan")
 	}
 	if referencePlanIndex < 0 || referencePlanIndex >= len(children) {
-		panic("reference plan index should be within the range of sub plans")
+		return nil, fmt.Errorf("reference plan index should be within the range of sub plans")
+	}
+	childQs := QuantifiersOverPlans(children)
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryComparatorPlan", childQs)
+	if err != nil {
+		return nil, err
 	}
 	cpKeys := make([]values.Value, len(comparisonKeyValues))
 	copy(cpKeys, comparisonKeyValues)
 	return &RecordQueryComparatorPlan{
-		childQs:                  QuantifiersOverPlans(children),
+		PlanExprBase:             base,
+		childQs:                  childQs,
 		comparisonKeyValues:      cpKeys,
 		referencePlanIndex:       referencePlanIndex,
 		reverse:                  reverse,
 		abortOnComparisonFailure: abortOnComparisonFailure,
-	}
+	}, nil
 }
 
 // GetComparisonKeyValues returns the comparison key values.
@@ -81,12 +88,7 @@ func (p *RecordQueryComparatorPlan) AbortOnComparisonFailure() bool {
 
 // GetResultType returns the first child's result type, or UnknownType
 // if there are no children.
-func (p *RecordQueryComparatorPlan) GetResultType() values.Type {
-	if len(p.childQs) == 0 {
-		return values.UnknownType
-	}
-	return planFromQuantifier(p.childQs[0]).GetResultType()
-}
+func (p *RecordQueryComparatorPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the child plans, dereferenced through the quantifiers
 // and in the order referencePlanIndex indexes into.
@@ -175,13 +177,18 @@ func (p *RecordQueryComparatorPlan) GetQuantifiers() []expressions.Quantifier {
 // The arity check is what keeps referencePlanIndex in range: it was validated
 // against the child count at construction, so a same-length replacement cannot
 // invalidate it.
-func (p *RecordQueryComparatorPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != len(p.childQs) {
-		return p
+func (p *RecordQueryComparatorPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryComparatorPlan", len(qs), len(p.childQs)); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
-	return &cp
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryComparatorPlan", qs)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

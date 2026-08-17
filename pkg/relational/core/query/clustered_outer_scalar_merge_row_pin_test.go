@@ -37,16 +37,17 @@ import (
 // The second leg is an ordinary named-column leg, because a pull-up with only
 // the merge row would let a reader return false for the uninteresting reason
 // that it had nothing to match at all.
-func mergeRowLegPullUp() (*clusterPullUp, *values.RecordConstructorValue) {
+func mergeRowLegPullUp(t testing.TB) (*clusterPullUp, *values.RecordConstructorValue) {
+	t.Helper()
 	mergeRow := &values.RecordType{Fields: []values.Field{
-		{Name: values.OrdinalFieldName(0), FieldType: values.UnknownType, Ordinal: 0},
-		{Name: values.OrdinalFieldName(1), FieldType: values.UnknownType, Ordinal: 1},
+		{Name: values.OrdinalFieldName(0), FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: values.OrdinalFieldName(1), FieldType: values.NotNullLong, Ordinal: 1},
 	}}
 	mergeLeg := clusterLegSpan{binding: "M", start: 0, typ: mergeRow}
 	plainLeg := clusterLegSpan{
 		binding: "O",
 		start:   2,
-		typ:     &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}},
+		typ:     &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong}}},
 	}
 
 	// The merge RC itself, built exactly as positionalMergeCase builds it — one
@@ -55,11 +56,11 @@ func mergeRowLegPullUp() (*clusterPullUp, *values.RecordConstructorValue) {
 	rc := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{
 			Name:  values.OrdinalFieldName(0),
-			Value: values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0}}}),
+			Value: exactTestQOV(t, "A", &values.RecordType{Fields: []values.Field{{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong}}}),
 		},
 		values.RecordConstructorField{
 			Name:  values.OrdinalFieldName(1),
-			Value: values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), &values.RecordType{Fields: []values.Field{{Name: "QTY", Ordinal: 0}}}),
+			Value: exactTestQOV(t, "B", &values.RecordType{Fields: []values.Field{{Name: "QTY", Ordinal: 0, FieldType: values.NotNullLong}}}),
 		},
 	)
 	return &clusterPullUp{
@@ -84,7 +85,7 @@ const mergeRowPinReArms = "a positional-merge row is now feeding this dotted rea
 func TestClusterFieldResolvable_APositionalMergeRowNamesNothing(t *testing.T) {
 	t.Parallel()
 
-	pu, rc := mergeRowLegPullUp()
+	pu, rc := mergeRowLegPullUp(t)
 	// The fixture really is the shape RFC-200 admits, or the negative below is a
 	// negative about something else.
 	if !values.IsPositionalMergeRC(rc) {
@@ -132,7 +133,7 @@ func TestClusterFieldResolvable_APositionalMergeRowNamesNothing(t *testing.T) {
 func TestClusterSeedSlotByName_AMergeRowsOwnFieldNamesResolveToNothing(t *testing.T) {
 	t.Parallel()
 
-	pu, rc := mergeRowLegPullUp()
+	pu, rc := mergeRowLegPullUp(t)
 
 	for _, f := range rc.Fields {
 		if slot, found := clusterSeedSlotByName(pu, f.Name); found {

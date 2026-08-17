@@ -5,37 +5,126 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+const (
+	aggregateDataRegion = iota
+	aggregateDataStatus
+	aggregateDataAmount
+	aggregateDataID
+	aggregateDataYear
+	aggregateDataPrice
+)
+
+func mustAggregateDataConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct aggregate data-access fixture: " + err.Error())
+	}
+	return value
+}
+
+func aggregateDataRowType(recordName string) *values.RecordType {
+	return values.NewRecordType(recordName, false, []values.Field{
+		{Name: "region", FieldType: values.NullableString},
+		{Name: "status", FieldType: values.NullableString},
+		{Name: "amount", FieldType: values.NullableLong},
+		{Name: "id", FieldType: values.NotNullLong},
+		{Name: "year", FieldType: values.NullableString},
+		{Name: "price", FieldType: values.NullableLong},
+	})
+}
+
+type aggregateDataSpec struct {
+	function expressions.AggregateFunction
+	ordinal  int
+}
+
+func aggregateDataGroupBy(
+	groupingOrdinals []int,
+	specs ...aggregateDataSpec,
+) *expressions.GroupByExpression {
+	scan := mustAggregateDataConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Orders"}, aggregateDataRowType("Orders")))
+	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	row := mustAggregateDataConstruct(scanQ.RequireFlowedObjectValue())
+	grouping := make([]values.Value, len(groupingOrdinals))
+	for i, ordinal := range groupingOrdinals {
+		grouping[i] = mustAggregateDataConstruct(values.ResolveFieldOrdinals(
+			row, []int{ordinal}))
+	}
+	aggregates := make([]expressions.AggregateSpec, len(specs))
+	for i, spec := range specs {
+		aggregates[i] = expressions.AggregateSpec{
+			Function: spec.function,
+			Operand: mustAggregateDataConstruct(values.ResolveFieldOrdinals(
+				row, []int{spec.ordinal})),
+		}
+	}
+	return mustAggregateDataConstruct(expressions.NewGroupByExpression(
+		grouping, aggregates, scanQ))
+}
+
+func aggregateDataCandidate(
+	indexName string,
+	recordType string,
+	groupColumns []string,
+	function expressions.AggregateFunction,
+	aggregateColumn string,
+	groupTypes []values.Type,
+) *AggregateIndexMatchCandidate {
+	return NewAggregateIndexMatchCandidate(
+		indexName,
+		[]string{recordType},
+		groupColumns,
+		function,
+		aggregateColumn,
+		aggregateDataRowType(recordType),
+		groupTypes,
+		len(groupColumns),
+	)
+}
+
+func aggregateDataProjectedInner(
+	t *testing.T,
+	expression expressions.RelationalExpression,
+	expectedType values.Type,
+) plans.RecordQueryPlan {
+	t.Helper()
+	projection, ok := expression.(*plans.RecordQueryProjectionPlan)
+	if !ok {
+		t.Fatalf("expected exact aggregate-output projection, got %T", expression)
+	}
+	if got := projection.GetResultType(); !got.Equals(expectedType) {
+		t.Fatalf("projected aggregate type = %s, want %s", got, expectedType)
+	}
+	inner := projection.GetInner()
+	if inner == nil {
+		t.Fatal("aggregate-output projection has no inner plan")
+	}
+	return inner
+}
 
 func TestAggregateDataAccessRule_Fires(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
-		},
-		scanQ,
+	gb := aggregateDataGroupBy(
+		[]int{aggregateDataRegion},
+		aggregateDataSpec{function: expressions.AggSum, ordinal: aggregateDataAmount},
 	)
 	gbRef := expressions.InitialOf(gb)
 
-	aggCand := NewAggregateIndexMatchCandidate(
+	aggCand := aggregateDataCandidate(
 		"Orders$sum_amount_by_region",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewAggregateDataAccessRule(),
 		gbRef,
 		ctx,
@@ -44,41 +133,33 @@ func TestAggregateDataAccessRule_Fires(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("AggregateDataAccessRule didn't fire")
 	}
-	if !IsPhysicalAggregateIndex(results[0]) {
-		t.Fatalf("expected *plans.RecordQueryAggregateIndexPlan, got %T", results[0])
+	inner := aggregateDataProjectedInner(t, results[0], gb.GetResultValue().Type())
+	if !IsPhysicalAggregateIndex(inner) {
+		t.Fatalf("expected aggregate-index inner plan, got %T", inner)
 	}
 }
 
 func TestAggregateDataAccessRule_WrongAggFunction(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
 	// Query asks for COUNT, index is SUM.
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
-		},
-		scanQ,
+	gb := aggregateDataGroupBy(
+		[]int{aggregateDataRegion},
+		aggregateDataSpec{function: expressions.AggCount, ordinal: aggregateDataAmount},
 	)
 	gbRef := expressions.InitialOf(gb)
 
-	aggCand := NewAggregateIndexMatchCandidate(
+	aggCand := aggregateDataCandidate(
 		"Orders$sum_amount_by_region",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewAggregateDataAccessRule(),
 		gbRef,
 		ctx,
@@ -92,33 +173,24 @@ func TestAggregateDataAccessRule_WrongAggFunction(t *testing.T) {
 func TestAggregateDataAccessRule_WrongGroupingKeys(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
 	// Query groups by "status", index groups by "region".
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "status", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
-		},
-		scanQ,
+	gb := aggregateDataGroupBy(
+		[]int{aggregateDataStatus},
+		aggregateDataSpec{function: expressions.AggSum, ordinal: aggregateDataAmount},
 	)
 	gbRef := expressions.InitialOf(gb)
 
-	aggCand := NewAggregateIndexMatchCandidate(
+	aggCand := aggregateDataCandidate(
 		"Orders$sum_amount_by_region",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewAggregateDataAccessRule(),
 		gbRef,
 		ctx,
@@ -132,36 +204,27 @@ func TestAggregateDataAccessRule_WrongGroupingKeys(t *testing.T) {
 func TestAggregateDataAccessRule_MultipleAggregates_OnlyOneCandidate(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
 	// Query has TWO aggregates but only one candidate — can't satisfy
 	// via single-aggregate match, can't intersect with only one
 	// candidate.
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-		},
-		scanQ,
+	gb := aggregateDataGroupBy(
+		[]int{aggregateDataRegion},
+		aggregateDataSpec{function: expressions.AggSum, ordinal: aggregateDataAmount},
+		aggregateDataSpec{function: expressions.AggCount, ordinal: aggregateDataID},
 	)
 	gbRef := expressions.InitialOf(gb)
 
-	aggCand := NewAggregateIndexMatchCandidate(
+	aggCand := aggregateDataCandidate(
 		"Orders$sum_amount_by_region",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewAggregateDataAccessRule(),
 		gbRef,
 		ctx,
@@ -175,45 +238,34 @@ func TestAggregateDataAccessRule_MultipleAggregates_OnlyOneCandidate(t *testing.
 func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
 	// Two aggregates: SUM(amount) and COUNT(id), grouped by region.
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-		},
-		scanQ,
+	gb := aggregateDataGroupBy(
+		[]int{aggregateDataRegion},
+		aggregateDataSpec{function: expressions.AggSum, ordinal: aggregateDataAmount},
+		aggregateDataSpec{function: expressions.AggCount, ordinal: aggregateDataID},
 	)
 	gbRef := expressions.InitialOf(gb)
 
 	// Two candidates covering each aggregate, same grouping.
-	sumCand := NewAggregateIndexMatchCandidate(
+	sumCand := aggregateDataCandidate(
 		"Orders$sum_amount_by_region",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
-	countCand := NewAggregateIndexMatchCandidate(
+	countCand := aggregateDataCandidate(
 		"Orders$count_id_by_region",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region"},
 		expressions.AggCount,
 		"id",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand}}
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewAggregateDataAccessRule(),
 		gbRef,
 		ctx,
@@ -222,10 +274,11 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 multi-intersection result, got %d", len(results))
 	}
-	if !IsPhysicalMultiIntersection(results[0]) {
-		t.Fatalf("expected *plans.RecordQueryMultiIntersectionOnValuesPlan, got %T", results[0])
+	inner := aggregateDataProjectedInner(t, results[0], gb.GetResultValue().Type())
+	if !IsPhysicalMultiIntersection(inner) {
+		t.Fatalf("expected multi-intersection inner plan, got %T", inner)
 	}
-	plan := GetPhysicalMultiIntersectionPlan(results[0])
+	plan := GetPhysicalMultiIntersectionPlan(inner)
 	if plan == nil {
 		t.Fatal("GetPhysicalMultiIntersectionPlan returned nil")
 	}
@@ -236,12 +289,12 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 		t.Fatalf("expected 1 comparison key (region), got %d", len(plan.GetComparisonKey()))
 	}
 	compKey := plan.GetComparisonKey()[0]
-	fv, ok := compKey.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(compKey)
 	if !ok {
 		t.Fatalf("comparison key should be FieldValue, got %T", compKey)
 	}
-	if fv.Field != "region" {
-		t.Fatalf("comparison key field should be 'region', got %q", fv.Field)
+	if fv.DisplayName() != "region" {
+		t.Fatalf("comparison key field should be 'region', got %q", fv.DisplayName())
 	}
 	rv := plan.GetResultValue()
 	if rv == nil {
@@ -252,46 +305,35 @@ func TestAggregateDataAccessRule_MultiAggregateIntersection(t *testing.T) {
 func TestAggregateDataAccessRule_MultiAggregateMismatchedGrouping(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
 	// Two aggregates grouped by region.
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-		},
-		scanQ,
+	gb := aggregateDataGroupBy(
+		[]int{aggregateDataRegion},
+		aggregateDataSpec{function: expressions.AggSum, ordinal: aggregateDataAmount},
+		aggregateDataSpec{function: expressions.AggCount, ordinal: aggregateDataID},
 	)
 	gbRef := expressions.InitialOf(gb)
 
 	// SUM candidate groups by region, COUNT candidate groups by status
 	// — grouping mismatch prevents intersection.
-	sumCand := NewAggregateIndexMatchCandidate(
+	sumCand := aggregateDataCandidate(
 		"Orders$sum_amount_by_region",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
-	countCand := NewAggregateIndexMatchCandidate(
+	countCand := aggregateDataCandidate(
 		"Orders$count_id_by_status",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"status"}, // different grouping!
 		expressions.AggCount,
 		"id",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand}}
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewAggregateDataAccessRule(),
 		gbRef,
 		ctx,
@@ -305,58 +347,42 @@ func TestAggregateDataAccessRule_MultiAggregateMismatchedGrouping(t *testing.T) 
 func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
 	// Three aggregates: SUM(amount), COUNT(id), MAX(price).
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{
-			&values.FieldValue{Field: "region", Typ: values.UnknownType},
-			&values.FieldValue{Field: "year", Typ: values.UnknownType},
-		},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
-			{Function: expressions.AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}},
-			{Function: expressions.AggMax, Operand: &values.FieldValue{Field: "price", Typ: values.UnknownType}},
-		},
-		scanQ,
+	gb := aggregateDataGroupBy(
+		[]int{aggregateDataRegion, aggregateDataYear},
+		aggregateDataSpec{function: expressions.AggSum, ordinal: aggregateDataAmount},
+		aggregateDataSpec{function: expressions.AggCount, ordinal: aggregateDataID},
+		aggregateDataSpec{function: expressions.AggMax, ordinal: aggregateDataPrice},
 	)
 	gbRef := expressions.InitialOf(gb)
 
-	sumCand := NewAggregateIndexMatchCandidate(
+	sumCand := aggregateDataCandidate(
 		"Orders$sum_amount_by_region_year",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region", "year"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
 		[]values.Type{values.NullableString, values.NullableString},
-		2,
 	)
-	countCand := NewAggregateIndexMatchCandidate(
+	countCand := aggregateDataCandidate(
 		"Orders$count_id_by_region_year",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region", "year"},
 		expressions.AggCount,
 		"id",
-		values.UnknownType,
 		[]values.Type{values.NullableString, values.NullableString},
-		2,
 	)
-	maxCand := NewAggregateIndexMatchCandidate(
+	maxCand := aggregateDataCandidate(
 		"Orders$max_price_by_region_year",
-		[]string{"Orders"},
+		"Orders",
 		[]string{"region", "year"},
 		expressions.AggMax,
 		"price",
-		values.UnknownType,
 		[]values.Type{values.NullableString, values.NullableString},
-		2,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{sumCand, countCand, maxCand}}
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewAggregateDataAccessRule(),
 		gbRef,
 		ctx,
@@ -365,10 +391,11 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("expected 1 multi-intersection result, got %d", len(results))
 	}
-	if !IsPhysicalMultiIntersection(results[0]) {
-		t.Fatalf("expected *plans.RecordQueryMultiIntersectionOnValuesPlan, got %T", results[0])
+	inner := aggregateDataProjectedInner(t, results[0], gb.GetResultValue().Type())
+	if !IsPhysicalMultiIntersection(inner) {
+		t.Fatalf("expected multi-intersection inner plan, got %T", inner)
 	}
-	plan := GetPhysicalMultiIntersectionPlan(results[0])
+	plan := GetPhysicalMultiIntersectionPlan(inner)
 	if plan == nil {
 		t.Fatal("GetPhysicalMultiIntersectionPlan returned nil")
 	}
@@ -383,33 +410,24 @@ func TestAggregateDataAccessRule_MultiAggregateThreeWay(t *testing.T) {
 func TestAggregateDataAccessRule_WrongRecordType(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Orders"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
-
-	gb := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}},
-		},
-		scanQ,
+	gb := aggregateDataGroupBy(
+		[]int{aggregateDataRegion},
+		aggregateDataSpec{function: expressions.AggSum, ordinal: aggregateDataAmount},
 	)
 	gbRef := expressions.InitialOf(gb)
 
 	// Aggregate index is on "Products", not "Orders".
-	aggCand := NewAggregateIndexMatchCandidate(
+	aggCand := aggregateDataCandidate(
 		"Products$sum_amount_by_region",
-		[]string{"Products"},
+		"Products",
 		[]string{"region"},
 		expressions.AggSum,
 		"amount",
-		values.UnknownType,
 		[]values.Type{values.NullableString},
-		1,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{aggCand}}
 
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewAggregateDataAccessRule(),
 		gbRef,
 		ctx,

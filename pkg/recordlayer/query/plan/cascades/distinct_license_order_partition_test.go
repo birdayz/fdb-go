@@ -29,17 +29,76 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+type distinctLicensePlanContext struct {
+	candidates      []MatchCandidate
+	readableIndexes ReadableIndexes
+}
+
+func (c *distinctLicensePlanContext) GetPlannerConfiguration() PlannerConfiguration {
+	cfg := DefaultPlannerConfiguration()
+	cfg.ReadableIndexes = c.readableIndexes
+	cfg.SingleReadVersion = true
+	return cfg
+}
+
+func (c *distinctLicensePlanContext) GetMatchCandidates() []MatchCandidate {
+	return c.candidates
+}
+
+func (*distinctLicensePlanContext) GetPrimaryKeyColumns(string) []string {
+	return nil
+}
+
+func distinctLicenseRowType(recType string) *values.RecordType {
+	return values.NewRecordType(recType, false, []values.Field{
+		{Name: "PK", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "EMAIL", FieldType: values.NullableString, Ordinal: 1},
+	})
+}
+
+func distinctLicenseField(
+	t testing.TB,
+	root values.Value,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	field, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, field, err)
+}
+
+func distinctLicenseSecondaryUniqueCandidates(rowType values.Type) []MatchCandidate {
+	createsDuplicates := false
+	return []MatchCandidate{
+		NewValueIndexScanMatchCandidateWithFunctions(
+			"T$email_unique",
+			[]string{"T"},
+			[]string{"EMAIL"},
+			nil,
+			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+			rowType,
+			true,
+			nil,
+			&createsDuplicates,
+		).WithKeyComponentTypes([]values.Type{values.NotNullString}),
+	}
+}
+
 // recordIdentityScanFor is a physical scan whose record identity IS logical row
 // identity: one record type, and a primary key whose physical uniqueness is its
 // logical uniqueness. makeFakePlanWrapper states neither, so it can never carry
 // the property license and cannot express this fixture.
-func recordIdentityScanFor(recType string) *plans.RecordQueryScanPlan {
-	return plans.NewRecordQueryScanPlan(
-		[]string{recType}, distinctScanType(recType), false).
-		WithPrimaryKey([]values.Value{
-			values.NewFieldValueWithResolvedOrdinal("PK", 0, values.NullableLong),
-		}).
-		WithKeyComponentTypes([]values.Type{values.NullableLong})
+func recordIdentityScanFor(
+	t testing.TB,
+	recType string,
+	rowType values.Type,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	scan, err := plans.NewRecordQueryScanPlan([]string{recType}, rowType, false)
+	scan = mustConstruct(t, scan, err)
+	primaryKey := distinctLicenseField(t, scan.GetResultValue(), 0)
+	return scan.
+		WithPrimaryKey([]values.Value{primaryKey}).
+		WithKeyComponentTypes([]values.Type{primaryKey.Type()})
 }
 
 // TestDistinctFinal_PropertyLicenseOnPartitionPathYieldsUnstampedPlan is the
@@ -54,12 +113,17 @@ func recordIdentityScanFor(recType string) *plans.RecordQueryScanPlan {
 func TestDistinctFinal_PropertyLicenseOnPartitionPathYieldsUnstampedPlan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, distinctScanType("T"))
+	rowType := distinctLicenseRowType("T")
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType)
+	scan = mustConstruct(t, scan, err)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{distinctRead("T", "EMAIL")}, scanQ)
+	scanRow, err := scanQ.RequireFlowedObjectValue()
+	scanRow = mustConstruct(t, scanRow, err)
+	proj, err := expressions.NewLogicalProjectionExpression(
+		[]values.Value{distinctLicenseField(t, scanRow, 1)}, scanQ)
+	proj = mustConstruct(t, proj, err)
 	projRef := expressions.InitialOf(proj)
-	projRef.Insert(recordIdentityScanFor("T"))
+	projRef.Insert(recordIdentityScanFor(t, "T", proj.GetResultValue().Type()))
 	computeRefPlanProperties(projRef)
 
 	partitions := ToPlanPartitions(projRef)
@@ -85,8 +149,8 @@ func TestDistinctFinal_PropertyLicenseOnPartitionPathYieldsUnstampedPlan(t *test
 
 	// The PK license must be ABSENT — with it, the rule never computes the
 	// secondary proof and the two arms cannot coincide.
-	ctx := &indexTestPlanContext{
-		candidates:      secondaryUniqueTestCandidates(),
+	ctx := &distinctLicensePlanContext{
+		candidates:      distinctLicenseSecondaryUniqueCandidates(rowType),
 		readableIndexes: AllIndexesReadable(),
 	}
 	if distinctEliminatedByUniqueKey(proj, ctx) {
@@ -100,10 +164,14 @@ func TestDistinctFinal_PropertyLicenseOnPartitionPathYieldsUnstampedPlan(t *test
 			p.IndexName, p.FullElision)
 	}
 
-	distinct := expressions.NewLogicalDistinctExpression(
+	distinct, err := expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(projRef))
-	results := FireImplementationRuleWithContext(
+	distinct = mustConstruct(t, distinct, err)
+	results, err := FireImplementationRuleWithContext(
 		NewImplementDistinctFinalRule(), expressions.InitialOf(distinct), ctx, nil)
+	if err != nil {
+		t.Fatalf("FireImplementationRuleWithContext() unexpected error: %v", err)
+	}
 	if len(results) == 0 {
 		t.Fatal("rule did not fire at all")
 	}

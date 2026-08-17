@@ -30,7 +30,7 @@ func benchmarkDistinctPagedDrain(b *testing.B, rows, pages int, withScratch bool
 			b.Fatalf("seed: %v", err)
 		}
 	}
-	plan := plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryTempTableScanPlan(alias))
+	plan := mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(mustTempTableScan(b, base, alias)))
 
 	var contBytes int64
 	b.ReportAllocs()

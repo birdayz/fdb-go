@@ -75,7 +75,7 @@ tests:
 
   # Duplicate AND: col1 = 20 AND col1 = 20 → single equality
   - query: SELECT id FROM t1 WHERE col1 = 20 AND col1 = 20 ORDER BY id
-    plan_contains: "PredicatesFilter(IndexScan(I1, [=])"
+    plan_contains: "PredicatesFilter(IndexScan(I1, [=] COVERING)"
     rows:
       - [6]
       - [7]

@@ -22,9 +22,9 @@ func TestRelationalAliasCompleteness(t *testing.T) {
 	t.Parallel()
 	q0 := values.NamedCorrelationIdentifier("q0")
 	q1 := values.NamedCorrelationIdentifier("q1")
-	scanRef := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanRef := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
 	inner := func() Quantifier { return ForEachQuantifier(scanRef) }
-	qov := func(a values.CorrelationIdentifier) values.Value { return values.NewQuantifiedObjectValue(a) }
+	qov := func(a values.CorrelationIdentifier) values.Value { return mustQOV(a) }
 	cmp := func(a values.CorrelationIdentifier) predicates.QueryPredicate {
 		return predicates.NewComparisonPredicate(qov(a),
 			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}})
@@ -35,29 +35,31 @@ func TestRelationalAliasCompleteness(t *testing.T) {
 		build func(a values.CorrelationIdentifier) RelationalExpression
 	}{
 		{"LogicalFilter", func(a values.CorrelationIdentifier) RelationalExpression {
-			return NewLogicalFilterExpression([]predicates.QueryPredicate{cmp(a)}, inner())
+			return mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{cmp(a)}, inner()))
 		}},
 		{"Select", func(a values.CorrelationIdentifier) RelationalExpression {
-			return NewSelectExpression(qov(a), []Quantifier{inner()}, []predicates.QueryPredicate{cmp(a)})
+			return mustExpression(NewSelectExpression(qov(a), []Quantifier{inner()}, []predicates.QueryPredicate{cmp(a)}))
 		}},
 		{"LogicalSort", func(a values.CorrelationIdentifier) RelationalExpression {
-			return NewLogicalSortExpression([]SortKey{{Value: qov(a)}}, inner())
+			return mustExpression(NewLogicalSortExpression([]SortKey{{Value: qov(a)}}, inner()))
 		}},
 		{"GroupBy", func(a values.CorrelationIdentifier) RelationalExpression {
-			return NewGroupByExpression([]values.Value{qov(a)},
-				[]AggregateSpec{{Function: AggCount, Operand: qov(a)}}, inner())
+			return mustExpression(NewGroupByExpression([]values.Value{qov(a)},
+				[]AggregateSpec{{Function: AggCount, Operand: qov(a)}}, inner()))
 		}},
 		{"LogicalProjection", func(a values.CorrelationIdentifier) RelationalExpression {
-			return NewLogicalProjectionExpression([]values.Value{qov(a)}, inner())
+			return mustExpression(NewLogicalProjectionExpression(
+				[]values.Value{testCorrelatedField(a, "ID", values.NotNullLong)}, inner()))
 		}},
 		{"LogicalValues", func(a values.CorrelationIdentifier) RelationalExpression {
-			return NewLogicalValuesExpression([]values.Value{qov(a)})
+			return mustExpression(NewLogicalValuesExpression(
+				[]values.Value{testCorrelatedField(a, "ID", values.NotNullLong)}))
 		}},
 		{"LogicalIntersection", func(a values.CorrelationIdentifier) RelationalExpression {
-			return NewLogicalIntersectionExpression([]Quantifier{inner(), inner()}, []values.Value{qov(a)})
+			return mustExpression(NewLogicalIntersectionExpression([]Quantifier{inner(), inner()}, []values.Value{qov(a)}))
 		}},
 		{"Update", func(a values.CorrelationIdentifier) RelationalExpression {
-			return NewUpdateExpression(inner(), "T", []UpdateTransform{{FieldPath: "f", NewValue: qov(a)}})
+			return mustExpression(NewUpdateExpression(inner(), "T", testRecordType(), []UpdateTransform{{FieldPath: "f", NewValue: qov(a)}}))
 		}},
 	}
 

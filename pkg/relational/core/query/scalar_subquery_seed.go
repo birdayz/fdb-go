@@ -56,13 +56,20 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	var fields []values.RecordConstructorField
 
 	// OUTER leg: ofOrdinal(QOV(outer), i), leg-relative ordinal 0..n-1.
-	outerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(outerAlias), outerType)
+	outerQOV, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(outerAlias), outerType)
+	if err != nil {
+		return nil
+	}
 	for i := range outerType.Fields {
-		fv, err := values.NewFieldValueOfOrdinal(outerQOV, i)
+		resolved, err := values.ResolveOrdinalSeedField(outerQOV, i)
 		if err != nil {
 			return nil // decline
 		}
-		fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+		fv, ok := values.AsFieldValue(resolved)
+		if !ok {
+			return nil
+		}
+		fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 	}
 
 	// INNER scalar leg: ONE nullable ordinal-0 field named <inner>.<scalarCol>.
@@ -83,7 +90,11 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	// computed scalar as a single projected output), so a derivable inner type
 	// has exactly one field. Anything else contradicts that premise — keep the
 	// nullable-unknown leg rather than guess which field is the scalar.
-	scalarType := values.WithNullability(scalarColumnType(t.legColumns(innerOp), scalarCol), true)
+	scalarType := scalarColumnType(t.legColumns(innerOp), scalarCol)
+	if scalarType == nil || scalarType.Code() == values.TypeCodeUnknown {
+		return nil
+	}
+	scalarType = values.WithNullability(scalarType, true)
 	innerTitle := unqualifiedScalarTitle(scalarCol)
 	// Nullability is independent of the concrete type and always true: the join
 	// is LEFT-OUTER, so an outer row with no inner match yields NULL in this slot.
@@ -105,7 +116,7 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 	// The RC FIELD name below keeps the qualified spelling — that is the row-key
 	// arm, which replaceScalarSubqueryRef reads, and it is deliberately not in
 	// scope here.
-	innerType := &values.RecordType{Fields: []values.Field{
+	innerType := &values.RecordType{Nullable: true, Fields: []values.Field{
 		{Name: innerTitle, FieldType: scalarType, Ordinal: 0},
 	}}
 	// RFC-212 §10.3 deliverable 1, SECOND producer: register the (correlation,
@@ -120,8 +131,11 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 		// spelling would attribute a title the leg no longer has.
 		values.RecordInnerScalarLegTitleAt(values.InnerLegProducerSingleSource, innerCorr, innerTitle)
 	}
-	innerQOV := values.NewQuantifiedObjectValueOfType(innerCorr, innerType)
-	innerFV, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
+	innerQOV, err := values.NewQuantifiedObjectValue(innerCorr, innerType)
+	if err != nil {
+		return nil
+	}
+	innerFV, err := values.ResolveOrdinalSeedField(innerQOV, 0)
 	if err != nil {
 		return nil // decline
 	}
@@ -150,11 +164,37 @@ func (t *cascadesTranslator) scalarSubqueryOrdinalSeed(outerAlias string, outerO
 //   - the name is AMBIGUOUS within the leg. First-match here would reintroduce
 //     the defect this function exists to remove, one level down.
 func scalarColumnType(innerCols []values.Field, scalarCol string) values.Type {
+	// A materialising projection gives the scalar seed a proven one-field row.
+	// Its SQL/display title can contain dots that are not qualification at all
+	// (`SUM(C.VAL)`), while the slot identity is already positional.  Taking the
+	// only exact field is therefore both stronger and safer than parsing its
+	// title.  UNKNOWN still declines at the caller.
+	if len(innerCols) == 1 && innerCols[0].FieldType != nil {
+		return innerCols[0].FieldType
+	}
+
+	// Prefer the complete exact output name.  Join inners expose qualified
+	// fields such as C.VAL; stripping the qualifier before this comparison made
+	// a perfectly exact field invisible.
+	var found values.Type
+	for _, c := range innerCols {
+		if !strings.EqualFold(c.Name, scalarCol) {
+			continue
+		}
+		if found != nil {
+			return values.UnknownType
+		}
+		found = c.FieldType
+	}
+	if found != nil {
+		return found
+	}
+
 	bare := scalarCol
 	if i := strings.LastIndex(bare, "."); i >= 0 {
 		bare = bare[i+1:]
 	}
-	var found values.Type
+	found = nil
 	for _, c := range innerCols {
 		if !strings.EqualFold(c.Name, bare) {
 			continue

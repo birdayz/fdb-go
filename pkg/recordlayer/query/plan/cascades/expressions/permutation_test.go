@@ -18,7 +18,7 @@ func TestSemanticEquals_UnionPermutedChildren(t *testing.T) {
 		for i, l := range order {
 			qs[i] = ForEachQuantifier(InitialOf(l))
 		}
-		return NewLogicalUnionExpression(qs)
+		return mustExpression(NewLogicalUnionExpression(qs))
 	}
 	u1 := build([]*leafScan{leafA, leafB, leafC})
 	u2 := build([]*leafScan{leafC, leafB, leafA}) // reverse order
@@ -44,7 +44,7 @@ func TestSemanticEquals_UnionDifferentChildren(t *testing.T) {
 		for i, l := range order {
 			qs[i] = ForEachQuantifier(InitialOf(l))
 		}
-		return NewLogicalUnionExpression(qs)
+		return mustExpression(NewLogicalUnionExpression(qs))
 	}
 	u1 := build([]*leafScan{leafA, leafB})
 	u2 := build([]*leafScan{leafA, leafC})
@@ -64,7 +64,7 @@ func TestSemanticEquals_IntersectionPermuted(t *testing.T) {
 		for i, l := range order {
 			qs[i] = ForEachQuantifier(InitialOf(l))
 		}
-		return NewLogicalIntersectionExpression(qs, nil)
+		return mustExpression(NewLogicalIntersectionExpression(qs, nil))
 	}
 	x1 := build([]*leafScan{leafA, leafB})
 	x2 := build([]*leafScan{leafB, leafA})
@@ -81,8 +81,8 @@ func TestSemanticEquals_PositionalDoesNotPermute(t *testing.T) {
 	t.Parallel()
 	leafA := &leafScan{name: "A"}
 	leafB := &leafScan{name: "B"}
-	a := NewLogicalFilterExpression(nil, ForEachQuantifier(InitialOf(leafA)))
-	b := NewLogicalFilterExpression(nil, ForEachQuantifier(InitialOf(leafB)))
+	a := mustExpression(NewLogicalFilterExpression(nil, ForEachQuantifier(InitialOf(leafA))))
+	b := mustExpression(NewLogicalFilterExpression(nil, ForEachQuantifier(InitialOf(leafB))))
 	if SemanticEquals(a, b, EmptyAliasMap()) {
 		t.Fatal("positional walk fell into permutation mode for single-child operator")
 	}
@@ -140,10 +140,11 @@ func TestSemanticEquals_PermutationCap_FallsBackToPositional(t *testing.T) {
 			if reverse {
 				idx = n - 1 - i
 			}
-			scan := NewFullUnorderedScanExpression([]string{string(rune('A' + idx))}, nil)
+			scan := mustExpression(NewFullUnorderedScanExpression(
+				[]string{string(rune('A' + idx))}, testRecordType()))
 			qs[i] = ForEachQuantifier(InitialOf(scan))
 		}
-		return NewLogicalUnionExpression(qs)
+		return mustExpression(NewLogicalUnionExpression(qs))
 	}
 	u1 := mkUnion(false)
 	u2 := mkUnion(true)

@@ -24,12 +24,49 @@ go_library(
 
 go_test(
     name = "rowdiff_test",
-    # W1 added the ordering + statistics sweep axes alongside the existing cost
-    # sweep — three 250-seed PurePlannerSweeps in one target. That legitimately
-    # tripled the work (added coverage, not a per-query regression), pushing it
-    # past bazel's default medium (300s) budget on a slower CI runner. Right-size
-    # to the repo's heavy-test convention rather than cut seeds.
-    timeout = "long",
+    # Three 250-seed PurePlannerSweeps in one target — roughly 14,000 full
+    # Cascades planning passes, each optimized to completion. W1 added the
+    # ordering and statistics axes alongside the original cost sweep, which
+    # legitimately tripled the work (added coverage, not a per-query
+    # regression) and took it past bazel's default medium (300s).
+    #
+    # `long` (900s) was then already MARGINAL rather than comfortable: on CI
+    # this target ran 659s on master, i.e. 73% of its own budget, and 73% is
+    # past cmd/test-budget's warning line for a reason. RFC-232's exact
+    # resolution adds ~39% more planner tasks (the star sentinel moved
+    # 9481→13226, and it buys a real fix: a parent could physicalize over an
+    # unimplemented child and silently return zero rows), which put it over.
+    #
+    # The measured cost AFTER the re-derivation work (memo re-admission, the
+    # per-intent member hashing, the structural-key growth, the exact-type
+    # snapshot bookkeeping and the flowed-type memo) is 1.57×, taken over the
+    # WHOLE TARGET on one 24-thread box with all three sweeps running
+    # concurrently, master vs this branch:
+    #
+    #     sweep      master    branch    ratio
+    #     stats      201.68s   314.26s   1.56
+    #     ordering   112.42s   176.64s   1.57
+    #     cost       111.83s   175.93s   1.57
+    #
+    # THE TASK GROWTH DOES NOT ACCOUNT FOR ALL OF IT, and the residue is the
+    # part worth naming rather than rounding away: the star sentinel moved
+    # 9481→13226 tasks, which is 1.39, against a measured 1.57. The missing
+    # ~13% is per-task constant factor — the re-derivation work each task now
+    # pays (memo re-admission, per-intent member hashing, structural-key
+    # growth, exact-type snapshot bookkeeping) — and it is the half a later
+    # change can actually move. Both numbers are the baseline: a ratio above
+    # 1.57 at an UNCHANGED task count is a constant-factor regression, and one
+    # above 1.39 in tasks is a search-size regression. They have different
+    # causes and different fixes, so a single blended number would hide
+    # whichever one moved. Projected onto the CI
+    # runner it is 659s × 1.57 ≈ 1035s — past `long`, and bazel's next tier up
+    # is eternal (3600s). There is no intermediate increment to reach for.
+    #
+    # THE NUMBER TO WATCH IS THE CI ONE. Local timings on a 24-thread box run
+    # ~7× faster (ordering 112s vs 803s) purely on core count — the CI runner
+    # has 4 — so a local measurement tells you the RATIO between two trees, not
+    # whether either is near its budget. Compare CI-to-CI or not at all.
+    timeout = "eternal",
     srcs = [
         "agg_multicol_oracle_test.go",
         "arith_oracle_test.go",
@@ -51,6 +88,7 @@ go_test(
         "ordering_canonical_test.go",
         "ordering_test.go",
         "outer_three_way_oracle_test.go",
+        "plan_fixture_test.go",
         "right_join_oracle_test.go",
         "rowdiff_test.go",
         "scalar_sub_oracle_test.go",

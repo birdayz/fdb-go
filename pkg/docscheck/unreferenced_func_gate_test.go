@@ -154,14 +154,11 @@ var unreferencedFuncLedger = map[string]unreferencedFuncDisposition{
 			"fallback needs. Note TODO.md CQ-30 is stale on this function: it lists it among four to delete via " +
 			"plan-stamping work, but it is ALREADY dead and its deletion is gated only on the red above",
 	},
-	// The one-final-invariant defect that used to sit here is NOT resolved; the
-	// function simply left this gate's population when plan_harness.go moved
-	// into the test build, where it belonged all along. Deleting the entry
-	// without rehoming the finding would have been the invisible-work failure
-	// this ledger exists to prevent, so the full measurement now lives at the
-	// two sites that can act on it: the doc comments on
-	// VerifyOneFinalPlanPerReference (cascades/final_member_invariant.go) and on
-	// TestOneFinalPlanPerReference itself, both pointing at RFC-224.
+	// RFC-224 resolved the former one-final-invariant finding: the replacement
+	// VerifyExtractionIsUnambiguous walks the selector/extraction path, reports
+	// reach and dead ends, and checks physical-property retention coherence.
+	// TestExtractionIsUnambiguous is the end-to-end gate; focused mutation pins
+	// live beside the verifier in cascades/final_member_invariant_test.go.
 }
 
 // unreferencedFuncScanRoots are the trees the gate reads. Everything tracked

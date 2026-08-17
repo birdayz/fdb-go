@@ -52,17 +52,21 @@ func TestDistinctKeyColumns_WrapperOverProjection(t *testing.T) {
 	t.Parallel()
 
 	scanRow := values.NewRecordType("", true, []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong},
-		{Name: "A", FieldType: values.NotNullLong},
-		{Name: "B", FieldType: values.NotNullString},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "B", FieldType: values.NotNullString, Ordinal: 2},
 	})
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, scanRow, false)
+	scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, scanRow, false)
+	scan = mustConstruct(t, scan, err)
+	projectedA, err := values.ResolveFieldOrdinals(scan.GetResultValue(), []int{1})
+	projectedA = mustConstruct(t, projectedA, err)
 
 	// A projection narrowing 3 columns to 1, renamed. If any consumer reads the
 	// SCAN's row instead of the projection's, it sees 3 fields named ID/A/B.
-	proj := plans.NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{values.NewFieldValueWithResolvedOrdinal("A", 1, values.NotNullLong)},
+	proj, err := plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{projectedA},
 		[]string{"RENAMED"}, scan)
+	proj = mustConstruct(t, proj, err)
 
 	// The wrapper. A PredicatesFilter changes no row shape and DOES forward its
 	// inner's type, which is what makes it the probe: anything it reports is the
@@ -71,7 +75,8 @@ func TestDistinctKeyColumns_WrapperOverProjection(t *testing.T) {
 	// projection swallows the row the projection now states. That is a real gap,
 	// booked as CQ-101, and it is why this pin uses a forwarding wrapper: pinning
 	// the flip requires a wrapper that can transmit it.)
-	wrapper := plans.NewRecordQueryPredicatesFilterPlan(proj, nil)
+	wrapper, err := plans.NewRecordQueryPredicatesFilterPlan(proj, nil)
+	wrapper = mustConstruct(t, wrapper, err)
 
 	// Fixture guard: if the wrapper stopped forwarding a stated row, this test
 	// would "pass" the nil arm below while proving nothing about the flip.
@@ -102,9 +107,9 @@ func TestDistinctKeyColumns_WrapperOverProjection(t *testing.T) {
 			"the projection does not emit, which is a WRONG-ROW bug, not a slow one: "+
 			"got %v", len(cols), cols)
 	}
-	fv, isField := cols[0].(*values.FieldValue)
+	fv, isField := values.AsFieldValue(cols[0])
 	if !isField {
-		t.Fatalf("dedup key column is a %T, want a *values.FieldValue — "+
+		t.Fatalf("dedup key column is a %T, want an exact FieldValue — "+
 			"orderingSatisfiesGroupingKeys compares against the inner ordering's keys in "+
 			"that representation, so a non-FieldValue silently never matches and streaming "+
 			"is never proved", cols[0])

@@ -18,29 +18,40 @@ import (
 // rules (no-op elimination, merge, push-through, remove-range-one) decline on a
 // non-nil limitValue rather than mishandling the sentinel.
 type LogicalLimitExpression struct {
-	limit      int64
-	offset     int64
-	inner      Quantifier
-	limitValue values.Value
+	limit       int64
+	offset      int64
+	inner       Quantifier
+	limitValue  values.Value
+	resultValue values.QuantifiedObjectValue
 }
 
-func NewLogicalLimitExpression(limit, offset int64, inner Quantifier) *LogicalLimitExpression {
-	return &LogicalLimitExpression{
-		limit:  limit,
-		offset: offset,
-		inner:  inner,
+func NewLogicalLimitExpression(limit, offset int64, inner Quantifier) (*LogicalLimitExpression, error) {
+	resultValue, err := requireFlowedResult("LogicalLimitExpression", inner)
+	if err != nil {
+		return nil, err
 	}
+	return &LogicalLimitExpression{
+		limit:       limit,
+		offset:      offset,
+		inner:       inner,
+		resultValue: resultValue,
+	}, nil
 }
 
 // NewRuntimeLogicalLimitExpression builds a LIMIT whose row cap is a runtime
 // Value (evaluated at execution). The static limit is the no-cap sentinel (-1).
-func NewRuntimeLogicalLimitExpression(limitValue values.Value, offset int64, inner Quantifier) *LogicalLimitExpression {
-	return &LogicalLimitExpression{
-		limit:      -1,
-		offset:     offset,
-		inner:      inner,
-		limitValue: limitValue,
+func NewRuntimeLogicalLimitExpression(limitValue values.Value, offset int64, inner Quantifier) (*LogicalLimitExpression, error) {
+	resultValue, err := requireFlowedResult("LogicalLimitExpression", inner)
+	if err != nil {
+		return nil, err
 	}
+	return &LogicalLimitExpression{
+		limit:       -1,
+		offset:      offset,
+		inner:       inner,
+		limitValue:  limitValue,
+		resultValue: resultValue,
+	}, nil
 }
 
 func (e *LogicalLimitExpression) GetLimit() int64             { return e.limit }
@@ -55,7 +66,7 @@ func (e *LogicalLimitExpression) GetQuantifiers() []Quantifier {
 }
 
 func (e *LogicalLimitExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return e.resultValue
 }
 
 func (e *LogicalLimitExpression) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
@@ -101,10 +112,14 @@ func writeInt64(h interface{ Write([]byte) (int, error) }, v int64) {
 	h.Write(b[:])
 }
 
-func (e *LogicalLimitExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *LogicalLimitExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalLimitExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	if e.limitValue != nil {
+		return NewRuntimeLogicalLimitExpression(e.limitValue, e.offset, quantifiers[0])
+	}
+	return NewLogicalLimitExpression(e.limit, e.offset, quantifiers[0])
 }
 
 var _ RelationalExpression = (*LogicalLimitExpression)(nil)

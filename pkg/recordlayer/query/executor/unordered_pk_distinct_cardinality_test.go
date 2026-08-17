@@ -21,6 +21,13 @@ func TestUnorderedPrimaryKeyDistinct_ExistentialCardinalityMatrix(t *testing.T) 
 
 	pk1 := tuple.Tuple{"T", int64(1)}
 	pk2 := tuple.Tuple{"T", int64(2)}
+	rowType := exactTestRowType(values.Field{Name: "FANOUT", FieldType: values.TypeString})
+	mkRow := func(pk tuple.Tuple, value string) QueryResult {
+		return QueryResult{
+			Positional: &PositionalRow{Type: rowType, Slots: []any{value}},
+			PrimaryKey: pk,
+		}
+	}
 	tests := []struct {
 		name string
 		rows []QueryResult
@@ -33,26 +40,26 @@ func TestUnorderedPrimaryKeyDistinct_ExistentialCardinalityMatrix(t *testing.T) 
 		{
 			name: "single_match",
 			rows: []QueryResult{
-				dmapPK(pk1, map[string]any{"FANOUT": "one"}),
+				mkRow(pk1, "one"),
 			},
 			want: 1,
 		},
 		{
 			name: "many_matches_same_base",
 			rows: []QueryResult{
-				dmapPK(pk1, map[string]any{"FANOUT": "one"}),
-				dmapPK(pk1, map[string]any{"FANOUT": "two"}),
-				dmapPK(pk1, map[string]any{"FANOUT": "three"}),
+				mkRow(pk1, "one"),
+				mkRow(pk1, "two"),
+				mkRow(pk1, "three"),
 			},
 			want: 1,
 		},
 		{
 			name: "many_matches_multiple_bases",
 			rows: []QueryResult{
-				dmapPK(pk1, map[string]any{"FANOUT": "one"}),
-				dmapPK(pk1, map[string]any{"FANOUT": "two"}),
-				dmapPK(pk2, map[string]any{"FANOUT": "one"}),
-				dmapPK(pk2, map[string]any{"FANOUT": "two"}),
+				mkRow(pk1, "one"),
+				mkRow(pk1, "two"),
+				mkRow(pk2, "one"),
+				mkRow(pk2, "two"),
 			},
 			want: 2,
 		},
@@ -72,9 +79,14 @@ func TestUnorderedPrimaryKeyDistinct_ExistentialCardinalityMatrix(t *testing.T) 
 					t.Fatalf("seed temp table: %v", err)
 				}
 			}
-			plan := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
-				plans.NewRecordQueryTempTableScanPlan(alias),
-			)
+			var scan *plans.RecordQueryTempTableScanPlan
+			if len(tc.rows) == 0 {
+				scan = mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(
+					alias, exactTestRowType(values.Field{Name: "FANOUT", FieldType: values.TypeString})))
+			} else {
+				scan = mustTempTableScan(t, evalCtx, alias)
+			}
+			plan := mustExecutorConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan))
 			got := executePKDistinctCardinalityPlan(t, plan, evalCtx)
 			if len(got) != tc.want {
 				t.Fatalf("output cardinality = %d, want %d; rows = %#v", len(got), tc.want, got)
@@ -94,30 +106,37 @@ func TestUnorderedPrimaryKeyDistinct_FiltersBeforeDedup(t *testing.T) {
 	evalCtx := EmptyEvaluationContext()
 	table := evalCtx.GetOrCreateTempTable(alias, nil)
 	pk := tuple.Tuple{"T", int64(7)}
+	rowType := exactTestRowType(values.Field{Name: "V", FieldType: values.TypeString})
+	mkRow := func(value string) QueryResult {
+		return QueryResult{
+			Positional: &PositionalRow{Type: rowType, Slots: []any{value}},
+			PrimaryKey: pk,
+		}
+	}
 	for _, row := range []QueryResult{
-		dmapPK(pk, map[string]any{"V": "drop"}),
-		dmapPK(pk, map[string]any{"V": "keep"}),
+		mkRow("drop"),
+		mkRow("keep"),
 	} {
 		if err := table.Add(row); err != nil {
 			t.Fatalf("seed temp table: %v", err)
 		}
 	}
 
+	scan := mustTempTableScan(t, evalCtx, alias)
 	residual := predicates.NewComparisonPredicate(
-		values.NewFieldValueWithResolvedOrdinal("V", 0, values.TypeString),
+		mustTestFieldOrdinal(t, scan.GetResultValue(), 0),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.LiteralValue("keep"),
+			Operand: &values.ConstantValue{Value: "keep", Typ: values.NotNullString},
 		},
 	)
-	scan := plans.NewRecordQueryTempTableScanPlan(alias)
 
-	correct := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
-		plans.NewRecordQueryFilterPlan(
+	correct := mustExecutorConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(
+		mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
 			[]predicates.QueryPredicate{residual},
 			scan,
-		),
-	)
+		)),
+	))
 	correctRows := executePKDistinctCardinalityPlan(t, correct, evalCtx)
 	if len(correctRows) != 1 || rowMap(correctRows[0])["V"] != "keep" {
 		t.Fatalf("filter→PK-distinct rows = %#v, want the passing duplicate", correctRows)
@@ -125,10 +144,18 @@ func TestUnorderedPrimaryKeyDistinct_FiltersBeforeDedup(t *testing.T) {
 
 	// Discriminating control: the forbidden order drops the retained first row
 	// in the filter and can no longer recover the later passing duplicate.
-	wrong := plans.NewRecordQueryFilterPlan(
-		[]predicates.QueryPredicate{residual},
-		plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan),
+	distinctFirst := mustExecutorConstruct(plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan))
+	wrongResidual := predicates.NewComparisonPredicate(
+		mustTestFieldOrdinal(t, distinctFirst.GetResultValue(), 0),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: &values.ConstantValue{Value: "keep", Typ: values.NotNullString},
+		},
 	)
+	wrong := mustExecutorConstruct(plans.NewRecordQueryFilterPlan(
+		[]predicates.QueryPredicate{wrongResidual},
+		distinctFirst,
+	))
 	if wrongRows := executePKDistinctCardinalityPlan(t, wrong, evalCtx); len(wrongRows) != 0 {
 		t.Fatalf("PK-distinct→filter control rows = %#v, want zero", wrongRows)
 	}

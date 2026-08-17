@@ -71,17 +71,20 @@ func TestRecursiveDistinctReplay_ResumesMidStream(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("scan")
 	insertAlias := values.NamedCorrelationIdentifier("insert")
 	seedList := func() values.Value {
-		return &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}}
+		return &values.ConstantValue{
+			Value: []any{int64(1), int64(2), int64(3)},
+			Typ:   values.NewArrayType(false, values.NotNullLong),
+		}
 	}
 
 	t.Run("level_union", func(t *testing.T) {
 		t.Parallel()
 		// Seed [1,2,3]; the recursive leg echoes the frontier — every
 		// echoed row dedups away, so the recursion terminates at level 1.
-		plan := plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
-			plans.NewRecordQueryTempTableInsertPlan(plans.NewRecordQueryExplodePlan(seedList()), insertAlias, false),
-			plans.NewRecordQueryTempTableInsertPlan(plans.NewRecordQueryTempTableScanPlan(scanAlias), insertAlias, false),
-			scanAlias, insertAlias)
+		plan := mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
+			mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(mustExecutorConstruct(plans.NewRecordQueryExplodePlan(seedList())), insertAlias, false)),
+			mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(scanAlias, values.NotNullLong)), insertAlias, false)),
+			scanAlias, insertAlias))
 		got := drainOneRowPages(t, plan, 16)
 		want := []int64{1, 2, 3}
 		if len(got) != len(want) {
@@ -98,10 +101,10 @@ func TestRecursiveDistinctReplay_ResumesMidStream(t *testing.T) {
 		t.Parallel()
 		// Root [1,2,3]; each node's child echoes the node itself — the
 		// echo dedups away, so every node is a leaf.
-		plan := plans.NewRecordQueryRecursiveDfsJoinPlanDistinct(
-			plans.NewRecordQueryExplodePlan(seedList()),
-			plans.NewRecordQueryTempTableScanPlan(scanAlias),
-			scanAlias, plans.DfsPreorder)
+		plan := mustExecutorConstruct(plans.NewRecordQueryRecursiveDfsJoinPlanDistinct(
+			mustExecutorConstruct(plans.NewRecordQueryExplodePlan(seedList())),
+			mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(scanAlias, values.NotNullLong)),
+			scanAlias, plans.DfsPreorder))
 		got := drainOneRowPages(t, plan, 16)
 		want := []int64{1, 2, 3}
 		if len(got) != len(want) {
@@ -124,11 +127,14 @@ func TestRecursiveDistinctReplay_ResumesMidStream(t *testing.T) {
 		props := recordlayer.DefaultExecuteProperties()
 		props.ReturnedRowLimit = 1
 		mk := func(first int64) plans.RecordQueryPlan {
-			return plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
-				plans.NewRecordQueryTempTableInsertPlan(
-					plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{first, int64(2), int64(3)}}), insertAlias, false),
-				plans.NewRecordQueryTempTableInsertPlan(plans.NewRecordQueryTempTableScanPlan(scanAlias), insertAlias, false),
-				scanAlias, insertAlias)
+			return mustExecutorConstruct(plans.NewRecordQueryRecursiveLevelUnionPlanDistinct(
+				mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(
+					mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+						Value: []any{first, int64(2), int64(3)},
+						Typ:   values.NewArrayType(false, values.NotNullLong),
+					})), insertAlias, false)),
+				mustExecutorConstruct(plans.NewRecordQueryTempTableInsertPlan(mustExecutorConstruct(plans.NewRecordQueryTempTableScanPlan(scanAlias, values.NotNullLong)), insertAlias, false)),
+				scanAlias, insertAlias))
 		}
 		cur, err := ExecutePlan(ctx, mk(1), nil, EmptyEvaluationContext(), nil, props)
 		if err != nil {
@@ -191,7 +197,10 @@ func TestListShapedPlans_ResumeMidList(t *testing.T) {
 
 	t.Run("explode", func(t *testing.T) {
 		t.Parallel()
-		plan := plans.NewRecordQueryExplodePlan(&values.ConstantValue{Value: []any{int64(10), int64(20), int64(30)}})
+		plan := mustExecutorConstruct(plans.NewRecordQueryExplodePlan(&values.ConstantValue{
+			Value: []any{int64(10), int64(20), int64(30)},
+			Typ:   values.NewArrayType(false, values.NotNullLong),
+		}))
 		if got := drain(t, plan, EmptyEvaluationContext(), pos(1)); len(got) != 2 || got[0] != 20 || got[1] != 30 {
 			t.Fatalf("explode resumed at 1 = %v, want [20 30]", got)
 		}
@@ -203,18 +212,22 @@ func TestListShapedPlans_ResumeMidList(t *testing.T) {
 		evalCtx := EmptyEvaluationContext()
 		tt := evalCtx.GetOrCreateTempTable(alias, props.State)
 		for _, v := range []int64{7, 8, 9} {
-			if err := tt.Add(QueryResult{Positional: &PositionalRow{Type: positionalTypeFromNames([]string{"N"}), Slots: []any{v}}}); err != nil {
+			if err := tt.Add(QueryResult{Positional: &PositionalRow{
+				Type: exactTestRowType(values.Field{Name: "N", FieldType: values.NotNullLong}), Slots: []any{v},
+			}}); err != nil {
 				t.Fatalf("seed: %v", err)
 			}
 		}
-		if got := drain(t, plans.NewRecordQueryTempTableScanPlan(alias), evalCtx, pos(2)); len(got) != 1 || got[0] != 9 {
+		if got := drain(t, mustTempTableScan(t, evalCtx, alias), evalCtx, pos(2)); len(got) != 1 || got[0] != 9 {
 			t.Fatalf("temp-table scan resumed at 2 = %v, want [9]", got)
 		}
 	})
 
 	t.Run("values_past_end", func(t *testing.T) {
 		t.Parallel()
-		plan := plans.NewRecordQueryValuesPlan([]values.Value{&values.ConstantValue{Value: int64(5)}})
+		plan := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
+			&values.ConstantValue{Value: int64(5), Typ: values.NotNullLong},
+		}))
 		if got := drain(t, plan, EmptyEvaluationContext(), pos(1)); len(got) != 0 {
 			t.Fatalf("VALUES resumed past its row = %v, want []", got)
 		}

@@ -2,15 +2,13 @@ package expressions
 
 import (
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestLogicalUnique_Construction(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	q := ForEachQuantifier(InitialOf(scan))
-	u := NewLogicalUniqueExpression(q)
+	u := mustExpression(NewLogicalUniqueExpression(q))
 	if u.GetInner() != q {
 		t.Fatalf("GetInner mismatch")
 	}
@@ -30,9 +28,9 @@ func TestLogicalUnique_Construction(t *testing.T) {
 
 func TestLogicalUnique_GetResultValue(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	q := ForEachQuantifier(InitialOf(scan))
-	u := NewLogicalUniqueExpression(q)
+	u := mustExpression(NewLogicalUniqueExpression(q))
 	if u.GetResultValue() == nil {
 		t.Fatal("GetResultValue returned nil")
 	}
@@ -40,8 +38,8 @@ func TestLogicalUnique_GetResultValue(t *testing.T) {
 
 func TestLogicalUnique_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	u := NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan)))
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
+	u := mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan))))
 	if got := u.GetCorrelatedToWithoutChildren(); len(got) != 0 {
 		t.Fatalf("GetCorrelatedToWithoutChildren = %v, want empty", got)
 	}
@@ -49,22 +47,22 @@ func TestLogicalUnique_GetCorrelatedToWithoutChildren(t *testing.T) {
 
 func TestLogicalUnique_EqualsWithoutChildren(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	q1 := ForEachQuantifier(InitialOf(scan))
 	q2 := ForEachQuantifier(InitialOf(scan))
-	u1 := NewLogicalUniqueExpression(q1)
-	u2 := NewLogicalUniqueExpression(q2)
+	u1 := mustExpression(NewLogicalUniqueExpression(q1))
+	u2 := mustExpression(NewLogicalUniqueExpression(q2))
 	if !u1.EqualsWithoutChildren(u2, nil) {
 		t.Fatal("two LogicalUnique should be EqualsWithoutChildren")
 	}
 	// vs Distinct: should NOT be equal (different class).
-	d := NewLogicalDistinctExpression(q1)
+	d := mustExpression(NewLogicalDistinctExpression(q1))
 	if u1.EqualsWithoutChildren(d, nil) {
 		t.Fatal("LogicalUnique should NOT equal LogicalDistinct (different classes)")
 	}
 
-	required1 := NewRequiredLogicalUniqueExpression(q1)
-	required2 := NewRequiredLogicalUniqueExpression(q2)
+	required1 := mustExpression(NewRequiredLogicalUniqueExpression(q1))
+	required2 := mustExpression(NewRequiredLogicalUniqueExpression(q2))
 	if !required1.IsRequired() {
 		t.Fatal("required LogicalUnique did not retain required mode")
 	}
@@ -79,8 +77,8 @@ func TestLogicalUnique_EqualsWithoutChildren(t *testing.T) {
 
 func TestLogicalUnique_HashCodeStable(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	u := NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan)))
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
+	u := mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan))))
 	h1 := u.HashCodeWithoutChildren()
 	h2 := u.HashCodeWithoutChildren()
 	if h1 != h2 {
@@ -93,9 +91,9 @@ func TestLogicalUnique_HashCodeStable(t *testing.T) {
 
 func TestLogicalUnique_DistinctFromDistinctHash(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	u := NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan)))
-	d := NewLogicalDistinctExpression(ForEachQuantifier(InitialOf(scan)))
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
+	u := mustExpression(NewLogicalUniqueExpression(ForEachQuantifier(InitialOf(scan))))
+	d := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(InitialOf(scan))))
 	if u.HashCodeWithoutChildren() == d.HashCodeWithoutChildren() {
 		t.Fatal("LogicalUnique and LogicalDistinct should hash differently (251 vs 31)")
 	}
@@ -104,13 +102,13 @@ func TestLogicalUnique_DistinctFromDistinctHash(t *testing.T) {
 func TestLogicalUnique_RequiredHashAndWithQuantifiers(t *testing.T) {
 	t.Parallel()
 
-	scan1 := NewFullUnorderedScanExpression([]string{"T1"}, values.UnknownType)
-	scan2 := NewFullUnorderedScanExpression([]string{"T2"}, values.UnknownType)
+	scan1 := mustExpression(NewFullUnorderedScanExpression([]string{"T1"}, testRecordType()))
+	scan2 := mustExpression(NewFullUnorderedScanExpression([]string{"T2"}, testRecordType()))
 	q1 := ForEachQuantifier(InitialOf(scan1))
 	q2 := ForEachQuantifier(InitialOf(scan2))
 
-	ordinary := NewLogicalUniqueExpression(q1)
-	required := NewRequiredLogicalUniqueExpression(q1)
+	ordinary := mustExpression(NewLogicalUniqueExpression(q1))
+	required := mustExpression(NewRequiredLogicalUniqueExpression(q1))
 	if ordinary.HashCodeWithoutChildren() == required.HashCodeWithoutChildren() {
 		t.Fatal("ordinary and required LogicalUnique hashes must differ")
 	}
@@ -123,7 +121,7 @@ func TestLogicalUnique_RequiredHashAndWithQuantifiers(t *testing.T) {
 		)
 	}
 
-	rebuilt, ok := required.WithQuantifiers([]Quantifier{q2}).(*LogicalUniqueExpression)
+	rebuilt, ok := mustWithQuantifiers(t, required, []Quantifier{q2}).(*LogicalUniqueExpression)
 	if !ok {
 		t.Fatalf("WithQuantifiers type = %T, want *LogicalUniqueExpression", rebuilt)
 	}
@@ -134,7 +132,7 @@ func TestLogicalUnique_RequiredHashAndWithQuantifiers(t *testing.T) {
 		t.Fatal("WithQuantifiers dropped required mode")
 	}
 
-	ordinaryRebuilt := ordinary.WithQuantifiers([]Quantifier{q2}).(*LogicalUniqueExpression)
+	ordinaryRebuilt := mustWithQuantifiers(t, ordinary, []Quantifier{q2}).(*LogicalUniqueExpression)
 	if ordinaryRebuilt.IsRequired() {
 		t.Fatal("WithQuantifiers promoted ordinary mode to required")
 	}

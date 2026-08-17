@@ -18,13 +18,14 @@ import (
 // the executor remap is correctly a no-op for an already-renamed branch.
 func TestPlanColumnNames_MapReportsPostRenameNames(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	rowType := exactTestRowType(values.Field{Name: "Y", FieldType: values.NullableLong})
+	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false))
 	// A rename Map: output column X reads the inner row's key Y (as
 	// ImplementUnorderedUnionRule's columnRenameValue builds).
 	renameRV := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "X", Value: &values.FieldValue{Field: "Y"}},
+		values.RecordConstructorField{Name: "X", Value: mustTestFieldOrdinal(t, scan.GetResultValue(), 0)},
 	)
-	mapPlan := plans.NewRecordQueryMapPlan(scan, renameRV)
+	mapPlan := mustExecutorConstruct(plans.NewRecordQueryMapPlan(scan, renameRV))
 
 	got := planColumnNames(mapPlan)
 	if len(got) != 1 || got[0] != "X" {
@@ -39,12 +40,13 @@ func TestPlanColumnNames_MapReportsPostRenameNames(t *testing.T) {
 // drops a mismatched-alias aggregate branch's rows.
 func TestPlanColumnNames_StreamingAggReportsOutputSchema(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	agg := plans.NewRecordQueryStreamingAggregationPlan(
+	inputType := exactTestRowType(values.Field{Name: "ID", FieldType: values.NotNullLong})
+	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, inputType, false))
+	agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 		scan,
 		nil, // no grouping keys (scalar aggregate)
 		[]expressions.AggregateSpec{{Function: expressions.AggCount, Alias: "X"}},
-	)
+	))
 	got := planColumnNames(agg)
 	if len(got) != 1 || got[0] != "X" {
 		t.Fatalf("StreamingAgg must report its output alias [X], not the scan's columns, got %v", got)
@@ -54,12 +56,17 @@ func TestPlanColumnNames_StreamingAggReportsOutputSchema(t *testing.T) {
 // TestPlanColumnNames_AggregateIndexReportsOutputSchema pins the RFC-081 fix: a bare
 // RecordQueryAggregateIndexPlan reports its OWN output schema (group columns + the
 // canonical aggregate name) — NOT nil (which it returned before, falling through to its
-// UnknownType result type). These are exactly the keys aggregateIndexCursor writes, so the
+// plan's declared result type). These are exactly the keys aggregateIndexCursor writes, so the
 // UNION position-remap can normalize a grouped aggregate-index branch.
 func TestPlanColumnNames_AggregateIndexReportsOutputSchema(t *testing.T) {
 	t.Parallel()
-	idx := plans.NewRecordQueryIndexPlan("cnt_by_g", nil, []string{"GA"}, values.UnknownType, false)
-	agg := plans.NewRecordQueryAggregateIndexPlan(idx, "GA", values.UnknownType, "COUNT").
+	indexType := exactTestRowType(values.Field{Name: "G", FieldType: values.NotNullString})
+	resultType := exactTestRowType(
+		values.Field{Name: "G", FieldType: values.NotNullString},
+		values.Field{Name: "COUNT(*)", FieldType: values.NotNullLong},
+	)
+	idx := mustExecutorConstruct(plans.NewRecordQueryIndexPlan("cnt_by_g", nil, []string{"GA"}, indexType, false))
+	agg := mustExecutorConstruct(plans.NewRecordQueryAggregateIndexPlan(idx, "GA", resultType, "COUNT")).
 		WithGroupColumns([]string{"G"}, "")
 	got := planColumnNames(agg)
 	if len(got) != 2 || got[0] != "G" || got[1] != "COUNT(*)" {
@@ -79,16 +86,22 @@ func TestPlanColumnNames_AggregateIndexReportsOutputSchema(t *testing.T) {
 // via SQL today), but pinning the verbatim contract guards against that.
 func TestPlanColumnNames_MultiIntersectionReportsResultValueNames(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"GA"}, values.UnknownType, false)
+	resultType := exactTestRowType(
+		values.Field{Name: "G", FieldType: values.TypeString},
+		values.Field{Name: "COUNT(*)", FieldType: values.NullableLong},
+		values.Field{Name: "MixedKey", FieldType: values.TypeString},
+	)
+	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"GA"}, resultType, false))
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), resultType)
 	rv := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "G", Value: &values.FieldValue{Field: "G"}},
-		values.RecordConstructorField{Name: "COUNT(*)", Value: &values.FieldValue{Field: "COUNT(*)"}},
+		values.RecordConstructorField{Name: "G", Value: mustTestFieldOrdinal(t, root, 0)},
+		values.RecordConstructorField{Name: "COUNT(*)", Value: mustTestFieldOrdinal(t, root, 1)},
 		// Mixed-case: must be reported verbatim, NOT upper-cased by the GetResultType fallback.
-		values.RecordConstructorField{Name: "MixedKey", Value: &values.FieldValue{Field: "MixedKey"}},
+		values.RecordConstructorField{Name: "MixedKey", Value: mustTestFieldOrdinal(t, root, 2)},
 	)
-	mi := plans.NewRecordQueryMultiIntersectionOnValuesPlan(
+	mi := mustExecutorConstruct(plans.NewRecordQueryMultiIntersectionOnValuesPlan(
 		[]plans.RecordQueryPlan{scan, scan}, nil, rv,
-	)
+	))
 	got := planColumnNames(mi)
 	if len(got) != 3 || got[0] != "G" || got[1] != "COUNT(*)" || got[2] != "MixedKey" {
 		t.Fatalf("MultiIntersection must report result-value field names VERBATIM [G COUNT(*) MixedKey], got %v", got)
@@ -111,10 +124,10 @@ func TestPlanColumnNames_StopsAtProjection(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong},
 		{Name: "A", FieldType: values.NotNullLong},
 	})
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, innerRow, false)
-	proj := plans.NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{values.NewFieldValueWithResolvedOrdinal("A", 1, values.NotNullLong)},
-		[]string{"RENAMED"}, scan)
+	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, innerRow, false))
+	proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{mustTestFieldOrdinal(t, scan.GetResultValue(), 1)},
+		[]string{"RENAMED"}, scan))
 
 	got := planColumnNamesWithMD(proj, nil)
 	if len(got) != 1 || got[0] != "RENAMED" {

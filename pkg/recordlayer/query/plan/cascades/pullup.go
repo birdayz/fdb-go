@@ -131,9 +131,7 @@ func visitForPullUp(expr expressions.RelationalExpression) (values.Value, map[va
 
 	switch e := expr.(type) {
 	case *expressions.LogicalTypeFilterExpression:
-		inner := e.GetInner()
-		pullThrough := inner.GetFlowedObjectValue()
-		return pullThrough, rangedOver
+		return e.GetResultValue(), rangedOver
 	default:
 		return expr.GetResultValue(), rangedOver
 	}

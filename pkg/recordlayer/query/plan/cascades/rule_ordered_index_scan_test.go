@@ -19,23 +19,23 @@ func TestOrderedIndexScan_SortMatchesIndex(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		orderedScanTestRowType(),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
+	scan := mustOrderedScanFull(t, []string{"Order"})
+	scanRef := mustOrderedScanInitial(t, scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}}},
+	sort := mustOrderedScanSort(t,
+		[]expressions.SortKey{{Value: mustOrderedScanField(t, mustOrderedScanFlowed(t, q), "STATUS")}},
 		q,
 	)
-	sortRef := expressions.InitialOf(sort)
+	sortRef := mustOrderedScanInitial(t, sort)
 
 	rule := NewOrderedIndexScanRule()
-	results := FireExpressionRuleWithMemo(rule, sortRef, ctx, nil)
+	results := mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield (ordered index scan), got %d", len(results))
@@ -58,26 +58,27 @@ func TestOrderedIndexScan_MultiKeySortMatchesIndex(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE", "AMOUNT"},
 		[]values.CorrelationIdentifier{a1, a2, a3},
-		values.UnknownType,
+		orderedScanTestRowType(),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
+	scan := mustOrderedScanFull(t, []string{"Order"})
+	scanRef := mustOrderedScanInitial(t, scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	sort := expressions.NewLogicalSortExpression(
+	flowed := mustOrderedScanFlowed(t, q)
+	sort := mustOrderedScanSort(t,
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
-			{Value: &values.FieldValue{Field: "DATE", Typ: values.UnknownType}},
+			{Value: mustOrderedScanField(t, flowed, "STATUS")},
+			{Value: mustOrderedScanField(t, flowed, "DATE")},
 		},
 		q,
 	)
-	sortRef := expressions.InitialOf(sort)
+	sortRef := mustOrderedScanInitial(t, sort)
 
 	rule := NewOrderedIndexScanRule()
-	results := FireExpressionRuleWithMemo(rule, sortRef, ctx, nil)
+	results := mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield (ordered index scan), got %d", len(results))
@@ -96,23 +97,23 @@ func TestOrderedIndexScan_SortKeyMismatch(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS", "DATE"},
 		[]values.CorrelationIdentifier{a1, a2},
-		values.UnknownType,
+		orderedScanTestRowType(),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
+	scan := mustOrderedScanFull(t, []string{"Order"})
+	scanRef := mustOrderedScanInitial(t, scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType}}},
+	sort := mustOrderedScanSort(t,
+		[]expressions.SortKey{{Value: mustOrderedScanField(t, mustOrderedScanFlowed(t, q), "AMOUNT")}},
 		q,
 	)
-	sortRef := expressions.InitialOf(sort)
+	sortRef := mustOrderedScanInitial(t, sort)
 
 	rule := NewOrderedIndexScanRule()
-	results := FireExpressionRuleWithMemo(rule, sortRef, ctx, nil)
+	results := mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 
 	if len(results) != 0 {
 		t.Fatalf("expected 0 yields (sort key doesn't match index), got %d", len(results))
@@ -130,23 +131,23 @@ func TestOrderedIndexScan_DescSortProducesReverseIndexScan(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		orderedScanTestRowType(),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
+	scan := mustOrderedScanFull(t, []string{"Order"})
+	scanRef := mustOrderedScanInitial(t, scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}, Reverse: true}},
+	sort := mustOrderedScanSort(t,
+		[]expressions.SortKey{{Value: mustOrderedScanField(t, mustOrderedScanFlowed(t, q), "STATUS"), Reverse: true}},
 		q,
 	)
-	sortRef := expressions.InitialOf(sort)
+	sortRef := mustOrderedScanInitial(t, sort)
 
 	rule := NewOrderedIndexScanRule()
-	results := FireExpressionRuleWithMemo(rule, sortRef, ctx, nil)
+	results := mustFireExpressionRuleWithMemo(t, rule, sortRef, ctx, nil)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield (DESC sort → reverse index scan), got %d", len(results))
@@ -172,20 +173,20 @@ func TestOrderedIndexScan_PlannerIntegration(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		orderedScanTestRowType(),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
-	scanRef := expressions.InitialOf(scan)
+	scan := mustOrderedScanFull(t, []string{"Order"})
+	scanRef := mustOrderedScanInitial(t, scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}}},
+	sort := mustOrderedScanSort(t,
+		[]expressions.SortKey{{Value: mustOrderedScanField(t, mustOrderedScanFlowed(t, q), "STATUS")}},
 		q,
 	)
-	ref := expressions.InitialOf(sort)
+	ref := mustOrderedScanInitial(t, sort)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
@@ -224,7 +225,7 @@ func TestOrderedIndexScan_RejectsFanOutCandidate(t *testing.T) {
 			[]string{"TAGS"},
 			nil,
 			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-			values.UnknownType,
+			orderedScanTestRowType(),
 			false,
 			nil,
 			createsDuplicates,
@@ -239,14 +240,15 @@ func TestOrderedIndexScan_RejectsFanOutCandidate(t *testing.T) {
 		newCandidate("T$tags_scalar", &scalar),
 	}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	sortExpr := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "TAGS", Typ: values.UnknownType}}},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
+	scan := mustOrderedScanFull(t, []string{"T"})
+	quantifier := expressions.ForEachQuantifier(mustOrderedScanInitial(t, scan))
+	sortExpr := mustOrderedScanSort(t,
+		[]expressions.SortKey{{Value: mustOrderedScanField(t, mustOrderedScanFlowed(t, quantifier), "TAGS")}},
+		quantifier,
 	)
-	results := FireExpressionRuleWithMemo(
+	results := mustFireExpressionRuleWithMemo(t,
 		NewOrderedIndexScanRule(),
-		expressions.InitialOf(sortExpr),
+		mustOrderedScanInitial(t, sortExpr),
 		ctx,
 		nil,
 	)

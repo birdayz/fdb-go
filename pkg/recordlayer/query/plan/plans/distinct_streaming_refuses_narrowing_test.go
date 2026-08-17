@@ -15,12 +15,12 @@ package plans
 import (
 	"strings"
 	"testing"
-
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-func narrowingRefusalInner() RecordQueryPlan {
-	return NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+func narrowingRefusalInner(t testing.TB) RecordQueryPlan {
+	return mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 }
 
 // TestStreamingDistinctRefusesNarrowedDedup: the flag is not set, so nothing
@@ -28,7 +28,9 @@ func narrowingRefusalInner() RecordQueryPlan {
 func TestStreamingDistinctRefusesNarrowedDedup(t *testing.T) {
 	t.Parallel()
 
-	streaming := NewRecordQueryDistinctPlan(narrowingRefusalInner())
+	streaming := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(narrowingRefusalInner(t))
+	})
 	streaming.Streaming = true
 
 	narrowed := streaming.WithNarrowedDedup("IDX_EMAIL", []int{0})
@@ -54,7 +56,9 @@ func TestStreamingDistinctRefusesNarrowedDedup(t *testing.T) {
 func TestHashDistinctAcceptsNarrowedDedup(t *testing.T) {
 	t.Parallel()
 
-	hash := NewRecordQueryDistinctPlan(narrowingRefusalInner())
+	hash := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
+		return NewRecordQueryDistinctPlan(narrowingRefusalInner(t))
+	})
 	if hash.Streaming {
 		t.Fatal("precondition: the default distinct is the hash executor")
 	}

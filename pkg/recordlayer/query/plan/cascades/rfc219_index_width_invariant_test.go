@@ -9,6 +9,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRFC219WidthConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-219 width fixture: " + err.Error())
+	}
+	return value
+}
+
 // The width invariant measured here is the load-bearing premise behind RFC-219's
 // scope-out of Java's CardinalitiesProperty criterion 1
 // (CardinalitiesProperty.java:329-336, PK-bound -> atMostOne). Criterion 1 needs
@@ -193,13 +200,15 @@ func TestRFC219_IndexPlanWidthInvariant(t *testing.T) {
 			build: func(t *testing.T) ([]string, *plans.RecordQueryIndexPlan) {
 				t.Helper()
 				groupCols := []string{"CUSTOMER_ID", "STATUS"}
+				rowType := testRecordRowType(
+					"ORDERS", "CUSTOMER_ID", "STATUS", "AMOUNT", "ID")
 				cand := NewAggregateIndexMatchCandidate(
 					"SUM_AMOUNT_BY_CUSTOMER_STATUS",
 					[]string{"ORDERS"},
 					groupCols,
 					expressions.AggSum,
 					"AMOUNT",
-					values.UnknownType,
+					rowType,
 					[]values.Type{values.NullableLong, values.NullableString},
 					len(groupCols)+3,
 				)
@@ -235,13 +244,13 @@ func TestRFC219_IndexPlanWidthInvariant(t *testing.T) {
 				}
 				// The comparison the rule builds from the outer correlation.
 				comparisonRange := rfc219EqualityRange(t, 7)
-				plan := stampIndexMetadata(cand, plans.NewRecordQueryIndexPlan(
+				plan := stampIndexMetadata(cand, mustRFC219WidthConstruct(plans.NewRecordQueryIndexPlan(
 					cand.CandidateName(),
 					[]*predicates.ComparisonRange{comparisonRange},
 					cand.GetRecordTypes(),
 					rowType,
 					false,
-				))
+				)))
 				return cand.GetColumnNames(), plan
 			},
 		},
@@ -288,7 +297,7 @@ func TestRFC219_IndexPlanWidthInvariant_MutationGuard(t *testing.T) {
 
 	// Two comparisons over a one-column index: the exact shape a PK-folding
 	// sargable surface would produce, which is what criterion 1 would need.
-	overWide := plans.NewRecordQueryIndexPlan(
+	overWide := mustRFC219WidthConstruct(plans.NewRecordQueryIndexPlan(
 		cand.CandidateName(),
 		[]*predicates.ComparisonRange{
 			rfc219EqualityRange(t, 1),
@@ -297,7 +306,7 @@ func TestRFC219_IndexPlanWidthInvariant_MutationGuard(t *testing.T) {
 		cand.GetRecordTypes(),
 		rowType,
 		false,
-	)
+	))
 
 	found := rfc219IndexPlanIn(t, overWide)
 	comps := found.GetScanComparisons()

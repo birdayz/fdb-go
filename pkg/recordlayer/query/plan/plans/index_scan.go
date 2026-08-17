@@ -132,21 +132,23 @@ func NewRecordQueryIndexPlan(
 	recordTypes []string,
 	flowedType values.Type,
 	reverse bool,
-) *RecordQueryIndexPlan {
-	if flowedType == nil {
-		flowedType = values.UnknownType
+) (*RecordQueryIndexPlan, error) {
+	base, err := newPlanExprBaseForType("RecordQueryIndexPlan", flowedType)
+	if err != nil {
+		return nil, err
 	}
 	comps := make([]*predicates.ComparisonRange, len(scanComparisons))
 	copy(comps, scanComparisons)
 	return &RecordQueryIndexPlan{
+		PlanExprBase:      base,
 		indexName:         indexName,
 		scanComparisons:   comps,
 		keyComponentTypes: normalizeKeyComponentTypes(nil, len(comps)),
 		recordTypes:       dedupSortedStrings(recordTypes),
-		flowedType:        flowedType,
+		flowedType:        base.resultValue.Type(),
 		reverse:           reverse,
-		resultValue:       values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
-	}
+		resultValue:       base.resultValue,
+	}, nil
 }
 
 // GetResultValue returns the index scan's STABLE per-instance result value — the
@@ -154,9 +156,6 @@ func NewRecordQueryIndexPlan(
 // expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
 // struct-literal test plans that bypass the constructor (resultValue is nil).
 func (p *RecordQueryIndexPlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 
@@ -472,8 +471,11 @@ func (p *RecordQueryIndexPlan) EqualsWithoutChildren(other expressions.Relationa
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryIndexPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryIndexPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryIndexPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetCorrelatedToWithoutChildren reports the correlations reached through this

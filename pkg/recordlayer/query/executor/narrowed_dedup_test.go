@@ -213,9 +213,10 @@ func TestNarrowedDedup_ExemptSlotsAimAtTheKeyColumns(t *testing.T) {
 func TestNarrowedDedupFor_StreamingPlanNeverNarrows(t *testing.T) {
 	t.Parallel()
 
-	inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	innerType := exactTestRowType(values.Field{Name: "EMAIL", FieldType: values.NullableString})
+	inner := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, innerType, false))
 
-	streaming := plans.NewRecordQueryDistinctPlan(inner)
+	streaming := mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(inner))
 	streaming.Streaming = true
 	if narrowedDedupFor(streaming.WithNarrowedDedup("IDX_EMAIL", []int{0})) != nil {
 		t.Fatal("the executor read a narrowing off a streaming distinct; the " +
@@ -223,7 +224,7 @@ func TestNarrowedDedupFor_StreamingPlanNeverNarrows(t *testing.T) {
 			"narrowing would be advertised and never performed")
 	}
 
-	hash := plans.NewRecordQueryDistinctPlan(inner)
+	hash := mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(inner))
 	if narrowedDedupFor(hash.WithNarrowedDedup("IDX_EMAIL", []int{0})) == nil {
 		t.Fatal("the hash path must still read its narrowing")
 	}

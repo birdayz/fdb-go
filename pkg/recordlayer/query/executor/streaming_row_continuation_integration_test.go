@@ -85,21 +85,23 @@ func onePerTxRows(t *testing.T, store *recordlayer.FDBRecordStore, makePlan func
 // aggPriceCountPlan builds StreamingAgg(Sort(Scan)) — COUNT(*) GROUP BY price —
 // the planner's GROUP-BY-without-index lowering, so the aggregate's inner
 // continuation transitively exercises the sort codec too.
-func aggPriceCountPlan(grouped bool) plans.RecordQueryPlan {
-	scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
+func aggPriceCountPlan(t testing.TB, grouped bool) plans.RecordQueryPlan {
+	t.Helper()
+	scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"Order"}, PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false), false))
 	// price is Order proto field 3 → positional ordinal 2 (the sibling PRICE
 	// tests use ordinal 2).
-	priceVal := values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType)
-	inner := plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{
+	priceVal := mustTestFieldOrdinal(t, scan.GetResultValue(), 2)
+	inner := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{
 		Field: "PRICE", ValueExpr: priceVal, NullsFirst: true,
-	}})
+	}}))
 	var groupKeys []values.Value
 	if grouped {
 		groupKeys = []values.Value{priceVal}
 	}
-	return plans.NewRecordQueryStreamingAggregationPlan(inner, groupKeys, []expressions.AggregateSpec{
+	return mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(inner, groupKeys, []expressions.AggregateSpec{
 		{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: nil}}, // COUNT(*)
-	})
+	}))
 }
 
 // TestIntegration_AggregateRowContinuation_OneRowPerTx pins the GROUP BY
@@ -117,7 +119,7 @@ func TestIntegration_AggregateRowContinuation_OneRowPerTx(t *testing.T) {
 	)
 
 	got := onePerTxRows(t, store,
-		func() plans.RecordQueryPlan { return aggPriceCountPlan(true) },
+		func() plans.RecordQueryPlan { return aggPriceCountPlan(t, true) },
 		func(qr QueryResult) (string, error) {
 			key, ok1 := qr.Positional.Get(0)
 			cnt, ok2 := qr.Positional.Get(1)
@@ -147,7 +149,7 @@ func TestIntegration_ScalarAggregateRowContinuation_NoDuplicate(t *testing.T) {
 	)
 
 	got := onePerTxRows(t, store,
-		func() plans.RecordQueryPlan { return aggPriceCountPlan(false) },
+		func() plans.RecordQueryPlan { return aggPriceCountPlan(t, false) },
 		func(qr QueryResult) (string, error) {
 			cnt, ok := qr.Positional.Get(0)
 			if !ok {
@@ -169,7 +171,7 @@ func TestIntegration_ScalarAggregateOnEmpty_DefaultRowResumable(t *testing.T) {
 	store := setupStore(t) // no rows inserted
 
 	got := onePerTxRows(t, store,
-		func() plans.RecordQueryPlan { return aggPriceCountPlan(false) },
+		func() plans.RecordQueryPlan { return aggPriceCountPlan(t, false) },
 		func(qr QueryResult) (string, error) {
 			cnt, ok := qr.Positional.Get(0)
 			if !ok {
@@ -199,11 +201,12 @@ func TestIntegration_SortEmitContinuation_OneRowPerTx(t *testing.T) {
 	)
 
 	makePlan := func() plans.RecordQueryPlan {
-		scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-		return plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{
+		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"Order"}, PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false), false))
+		return mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{{
 			Field:     "PRICE",
-			ValueExpr: values.NewFieldValueWithResolvedOrdinal("PRICE", 2, values.UnknownType),
-		}})
+			ValueExpr: mustTestFieldOrdinal(t, scan.GetResultValue(), 2),
+		}}))
 	}
 	got := onePerTxRows(t, store, makePlan, func(qr QueryResult) (string, error) {
 		price, ok := qr.Positional.Get(2)

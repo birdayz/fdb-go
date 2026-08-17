@@ -35,7 +35,7 @@ func TestDistinctProofStampSplitsIdentityButNotContinuation(t *testing.T) {
 
 	t.Run("index scan", func(t *testing.T) {
 		t.Parallel()
-		plain := plans.NewRecordQueryIndexPlan("BY_EMAIL", nil, []string{"T"}, flowed, false)
+		plain := mustExecutorConstruct(plans.NewRecordQueryIndexPlan("BY_EMAIL", nil, []string{"T"}, flowed, false))
 		stamped, ok := plain.WithDistinctProofIndexName("BY_EMAIL").(*plans.RecordQueryIndexPlan)
 		if !ok {
 			t.Fatal("WithDistinctProofIndexName did not return an index plan")
@@ -73,11 +73,11 @@ func TestDistinctProofStampSplitsIdentityButNotContinuation(t *testing.T) {
 	// on the two carriers the criteria do NOT produce.
 	t.Run("projection", func(t *testing.T) {
 		t.Parallel()
-		inner := plans.NewRecordQueryScanPlan([]string{"T"}, flowed, false)
+		inner := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, flowed, false))
 		projections := []values.Value{
-			values.NewFieldValueWithResolvedOrdinal("EMAIL", 0, values.TypeString),
+			mustTestFieldOrdinal(t, inner.GetResultValue(), 0),
 		}
-		plain := plans.NewRecordQueryProjectionPlan(projections, inner)
+		plain := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(projections, inner))
 		stamped, ok := plain.WithDistinctProofIndexName("BY_EMAIL").(*plans.RecordQueryProjectionPlan)
 		if !ok {
 			t.Fatal("WithDistinctProofIndexName did not return a projection plan")
@@ -119,7 +119,7 @@ func TestDistinctProofStampSplitsIdentityButNotContinuation(t *testing.T) {
 
 	t.Run("primary scan", func(t *testing.T) {
 		t.Parallel()
-		plain := plans.NewRecordQueryScanPlan([]string{"T"}, flowed, false)
+		plain := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, flowed, false))
 		stamped, ok := plain.WithDistinctProofIndexName("BY_EMAIL").(*plans.RecordQueryScanPlan)
 		if !ok {
 			t.Fatal("WithDistinctProofIndexName did not return a scan plan")

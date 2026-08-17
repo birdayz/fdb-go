@@ -14,7 +14,7 @@ func TestMatchableSort_Construction(t *testing.T) {
 		values.NamedCorrelationIdentifier("p1"),
 		values.NamedCorrelationIdentifier("p2"),
 	}
-	e := NewMatchableSortExpression(ids, false, q)
+	e := mustExpression(NewMatchableSortExpression(ids, false, q))
 
 	if got := e.GetSortParameterIDs(); len(got) != 2 {
 		t.Fatalf("GetSortParameterIDs: got %d, want 2", len(got))
@@ -34,7 +34,7 @@ func TestMatchableSort_ConstructionReverse(t *testing.T) {
 	ids := []values.CorrelationIdentifier{
 		values.NamedCorrelationIdentifier("p1"),
 	}
-	e := NewMatchableSortExpression(ids, true, q)
+	e := mustExpression(NewMatchableSortExpression(ids, true, q))
 	if !e.IsReverse() {
 		t.Fatal("IsReverse: expected true for reverse sort")
 	}
@@ -46,7 +46,7 @@ func TestMatchableSort_FromExpr(t *testing.T) {
 	ids := []values.CorrelationIdentifier{
 		values.NamedCorrelationIdentifier("p1"),
 	}
-	e := NewMatchableSortExpressionFromExpr(ids, false, leaf)
+	e := mustExpression(NewMatchableSortExpressionFromExpr(ids, false, leaf))
 
 	// The inner quantifier should be a ForEach ranging over a
 	// Reference containing leaf.
@@ -66,7 +66,7 @@ func TestMatchableSort_DefensiveCopy(t *testing.T) {
 	ids := []values.CorrelationIdentifier{
 		values.NamedCorrelationIdentifier("p1"),
 	}
-	e := NewMatchableSortExpression(ids, false, q)
+	e := mustExpression(NewMatchableSortExpression(ids, false, q))
 	// Mutate the original slice — should not affect the expression.
 	ids[0] = values.NamedCorrelationIdentifier("MUTATED")
 	if e.GetSortParameterIDs()[0].String() == "MUTATED" {
@@ -81,7 +81,7 @@ func TestMatchableSort_GetQuantifiers(t *testing.T) {
 	ids := []values.CorrelationIdentifier{
 		values.NamedCorrelationIdentifier("p1"),
 	}
-	e := NewMatchableSortExpression(ids, false, q)
+	e := mustExpression(NewMatchableSortExpression(ids, false, q))
 
 	qs := e.GetQuantifiers()
 	if len(qs) != 1 {
@@ -96,7 +96,7 @@ func TestMatchableSort_CanCorrelate(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	e := NewMatchableSortExpression(nil, false, q)
+	e := mustExpression(NewMatchableSortExpression(nil, false, q))
 	if e.CanCorrelate() {
 		t.Fatal("CanCorrelate: expected false")
 	}
@@ -106,7 +106,7 @@ func TestMatchableSort_ChildrenAsSet(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	e := NewMatchableSortExpression(nil, false, q)
+	e := mustExpression(NewMatchableSortExpression(nil, false, q))
 	if e.ChildrenAsSet() {
 		t.Fatal("ChildrenAsSet: expected false")
 	}
@@ -119,7 +119,7 @@ func TestMatchableSort_GetCorrelatedToWithoutChildren(t *testing.T) {
 	ids := []values.CorrelationIdentifier{
 		values.NamedCorrelationIdentifier("p1"),
 	}
-	e := NewMatchableSortExpression(ids, false, q)
+	e := mustExpression(NewMatchableSortExpression(ids, false, q))
 	corr := e.GetCorrelatedToWithoutChildren()
 	if len(corr) != 0 {
 		t.Fatalf("GetCorrelatedToWithoutChildren: got %d entries, want 0", len(corr))
@@ -146,11 +146,11 @@ func TestMatchableSort_EqualsWithoutChildren(t *testing.T) {
 		values.NamedCorrelationIdentifier("p1"), // different length
 	}
 
-	e1 := NewMatchableSortExpression(ids1, false, q)
-	e2 := NewMatchableSortExpression(ids2, false, q) // same
-	e3 := NewMatchableSortExpression(ids3, false, q) // different param
-	e4 := NewMatchableSortExpression(ids1, true, q)  // different reverse
-	e5 := NewMatchableSortExpression(ids4, false, q) // different length
+	e1 := mustExpression(NewMatchableSortExpression(ids1, false, q))
+	e2 := mustExpression(NewMatchableSortExpression(ids2, false, q)) // same
+	e3 := mustExpression(NewMatchableSortExpression(ids3, false, q)) // different param
+	e4 := mustExpression(NewMatchableSortExpression(ids1, true, q))  // different reverse
+	e5 := mustExpression(NewMatchableSortExpression(ids4, false, q)) // different length
 
 	if !e1.EqualsWithoutChildren(e2, EmptyAliasMap()) {
 		t.Fatal("structurally identical expressions reported unequal")
@@ -186,9 +186,9 @@ func TestMatchableSort_HashCodeStable(t *testing.T) {
 		values.NamedCorrelationIdentifier("p2"),
 	}
 
-	e1 := NewMatchableSortExpression(ids1, false, q)
-	e2 := NewMatchableSortExpression(ids2, false, q)
-	e3 := NewMatchableSortExpression(ids3, true, q) // different reverse
+	e1 := mustExpression(NewMatchableSortExpression(ids1, false, q))
+	e2 := mustExpression(NewMatchableSortExpression(ids2, false, q))
+	e3 := mustExpression(NewMatchableSortExpression(ids3, true, q)) // different reverse
 
 	if e1.HashCodeWithoutChildren() != e2.HashCodeWithoutChildren() {
 		t.Fatal("structurally equal expressions produced different hash codes")
@@ -205,15 +205,15 @@ func TestMatchableSort_GetResultValue(t *testing.T) {
 	ids := []values.CorrelationIdentifier{
 		values.NamedCorrelationIdentifier("p1"),
 	}
-	e := NewMatchableSortExpression(ids, false, q)
+	e := mustExpression(NewMatchableSortExpression(ids, false, q))
 
 	rv := e.GetResultValue()
-	qov, ok := rv.(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(rv)
 	if !ok {
 		t.Fatalf("GetResultValue: got %T, want *QuantifiedObjectValue", rv)
 	}
 	// The QuantifiedObjectValue should carry the inner quantifier's alias.
-	if _, has := qov.GetCorrelatedTo()[q.GetAlias()]; !has {
+	if qov.Correlation() != q.GetAlias() {
 		t.Fatal("GetResultValue does not carry the inner quantifier's alias")
 	}
 }
@@ -227,8 +227,8 @@ func TestMatchableSort_WithQuantifiers(t *testing.T) {
 	ids := []values.CorrelationIdentifier{
 		values.NamedCorrelationIdentifier("p1"),
 	}
-	e := NewMatchableSortExpression(ids, true, q1)
-	rebuilt := e.WithQuantifiers([]Quantifier{q2})
+	e := mustExpression(NewMatchableSortExpression(ids, true, q1))
+	rebuilt := mustWithQuantifiers(t, e, []Quantifier{q2})
 	mse, ok := rebuilt.(*MatchableSortExpression)
 	if !ok {
 		t.Fatalf("WithQuantifiers: got %T, want *MatchableSortExpression", rebuilt)

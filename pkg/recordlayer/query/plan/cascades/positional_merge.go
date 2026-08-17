@@ -76,7 +76,7 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	fields := make([]values.RecordConstructorField, len(live))
 	mergedFields := make([]values.Field, len(live))
 	for i, a := range live {
-		fov, err := aliasToQ[a].GetFlowedObjectValueTyped()
+		fov, err := aliasToQ[a].RequireFlowedObjectValue()
 		if err != nil {
 			// The quantifier's own reference has members flowing DIFFERENT row shapes,
 			// so no member is authoritative and there is no honest merge slot type to
@@ -97,7 +97,11 @@ func (r *PartitionSelectRule) positionalMergeCase(
 		scavenged := false
 		if _, typed := fov.Type().(*values.RecordType); !typed {
 			if rt := legTypes[a]; rt != nil {
-				fov = values.NewQuantifiedObjectValueOfType(a, rt)
+				fov, err = values.NewQuantifiedObjectValue(a, rt)
+				if err != nil {
+					call.Fail(err)
+					return nil
+				}
 				scavenged = true
 			}
 		}
@@ -123,7 +127,11 @@ func (r *PartitionSelectRule) positionalMergeCase(
 		mergedFields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: fov.Type(), Ordinal: i}
 	}
 	lowerRC := values.NewRawRecordConstructorValue(fields...)
-	lowerSelectExpr := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerRC)
+	lowerSelectExpr, err := lowerBuilder.Build().Seal().BuildSelectWithResultValue(lowerRC)
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
 
 	// Per-plan deterministic merge alias (NextMergeAlias, RFC-077 7.5:
 	// stable plan hash; alias-aware
@@ -143,18 +151,24 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	// ofOrdinalNumber over the merge quantifier (PartitionSelectRule.java:302
 	// — composition with enclosing references is the rebuild's job).
 	mergedType := &values.RecordType{Fields: mergedFields}
-	upperQOV := values.NewQuantifiedObjectValueOfType(mergeAlias, mergedType)
+	upperQOV, err := values.NewQuantifiedObjectValue(mergeAlias, mergedType)
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
+	upperSlots := make([]values.Value, len(live))
+	for i := range live {
+		upperSlots[i], err = values.ResolveFieldOrdinals(upperQOV, []int{i})
+		if err != nil {
+			call.Fail(err)
+			return nil
+		}
+	}
 	b := values.NewTranslationMapBuilder()
 	for i, a := range live {
 		idx := i
 		b = b.When(a).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
-			fv, err := values.NewFieldValueOfOrdinal(upperQOV, idx)
-			if err != nil {
-				// Impossible by construction (idx ranges over mergedType's
-				// own fields) — loud, matching the seed-bake discipline.
-				panic("positional merge: " + err.Error())
-			}
-			return fv
+			return upperSlots[idx]
 		})
 	}
 	m := b.Build()
@@ -167,10 +181,25 @@ func (r *PartitionSelectRule) positionalMergeCase(
 		}
 	}
 	for _, p := range upperPredicates {
-		upperBuilder.AddPredicate(predicates.TranslateLeafPredicates(p, m))
+		translatedPredicate, err := predicates.TranslateLeafPredicatesChecked(p, m)
+		if err != nil {
+			call.Fail(err)
+			return nil
+		}
+		upperBuilder.AddPredicate(translatedPredicate)
 	}
-	return upperBuilder.Build().Seal().
-		BuildSelectWithResultValue(values.TranslateCorrelations(resultValue, m))
+	translatedResult, err := values.TranslateCorrelationsChecked(resultValue, m)
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
+	upperSelect, err := upperBuilder.Build().Seal().
+		BuildSelectWithResultValue(translatedResult)
+	if err != nil {
+		call.Fail(err)
+		return nil
+	}
+	return upperSelect
 }
 
 // legRowTypes recovers each quantifier's flowed ROW type from a select's value
@@ -203,10 +232,10 @@ func (r *PartitionSelectRule) positionalMergeCase(
 func legRowTypes(resultValue values.Value, preds []predicates.QueryPredicate) map[values.CorrelationIdentifier]*values.RecordType {
 	types := make(map[values.CorrelationIdentifier]*values.RecordType)
 	collect := func(v values.Value) bool {
-		if qov, isQOV := v.(*values.QuantifiedObjectValue); isQOV {
+		if qov, isQOV := values.AsQuantifiedObjectValue(v); isQOV {
 			if rt, isRT := qov.Type().(*values.RecordType); isRT {
-				if _, seen := types[qov.Correlation]; !seen {
-					types[qov.Correlation] = rt
+				if _, seen := types[qov.Correlation()]; !seen {
+					types[qov.Correlation()] = rt
 				}
 			}
 		}

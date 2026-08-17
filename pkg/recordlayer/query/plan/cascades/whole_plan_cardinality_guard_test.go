@@ -17,15 +17,26 @@ import (
 // would be a no-op that never abstains.
 func TestWholePlanMaxCardinalityKnown(t *testing.T) {
 	t.Parallel()
+	row := values.NewRecordType("WholePlanCardinalityRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+	mustPlan := func(plan plans.RecordQueryPlan, err error) plans.RecordQueryPlan {
+		if err != nil {
+			t.Fatalf("construct cardinality plan: %v", err)
+		}
+		return plan
+	}
 
 	// A bare scan has an unknown whole-plan max cardinality → guard abstains.
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustPlan(plans.NewRecordQueryScanPlan([]string{"T"}, row, false))
 	if wholePlanMaxCardinalityKnown(scan) {
 		t.Fatal("bare scan: whole-plan max cardinality must be unknown (unbounded)")
 	}
 
 	// FirstOrDefault produces exactly one row → provably bounded → guard engages.
-	fod := plans.NewRecordQueryFirstOrDefaultPlanStrict(scan, values.NewNullValue(values.UnknownType))
+	nullableRow := values.WithNullability(row, true)
+	fod := mustPlan(plans.NewRecordQueryFirstOrDefaultPlanStrict(
+		scan, values.NewNullValue(nullableRow)))
 	if !wholePlanMaxCardinalityKnown(fod) {
 		t.Fatal("FirstOrDefault: whole-plan max cardinality is provably 1 (known)")
 	}
@@ -33,7 +44,7 @@ func TestWholePlanMaxCardinalityKnown(t *testing.T) {
 	// Two bare scans → both unknown → the OUTER guard is false → criterion #2
 	// abstains (Java's behavior; Go previously ranked on the data-access maxima
 	// anyway). This is the exact condition the gate adds.
-	scan2 := plans.NewRecordQueryScanPlan([]string{"U"}, values.UnknownType, false)
+	scan2 := mustPlan(plans.NewRecordQueryScanPlan([]string{"U"}, row, false))
 	if wholePlanMaxCardinalityKnown(scan) || wholePlanMaxCardinalityKnown(scan2) {
 		t.Fatal("two unbounded scans: the whole-plan gate must be false → criterion #2 abstains")
 	}

@@ -19,13 +19,17 @@ func TestComputeDistinctRecords_FetchIsTransparent(t *testing.T) {
 	t.Parallel()
 
 	distinctThroughFetch := func(createsDuplicates bool) bool {
-		idx := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false).
-			WithDistinctRecordsSignal(createsDuplicates)
+		rowType := values.NewRecordType("FetchRow", false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		})
+		idx, err := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, rowType, false)
+		idx = mustConstruct(t, idx, err).WithDistinctRecordsSignal(createsDuplicates)
 		idxRef := expressions.InitialOf(idx)
 		computeRefPlanProperties(idxRef)
 
-		fetch := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
-			expressions.ForEachQuantifier(idxRef), nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+		fetch, err := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+			expressions.ForEachQuantifier(idxRef), nil, rowType, plans.FetchIndexRecordsPrimaryKey)
+		fetch = mustConstruct(t, fetch, err)
 		fetchRef := expressions.InitialOf(fetch)
 		computeRefPlanProperties(fetchRef)
 

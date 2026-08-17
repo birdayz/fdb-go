@@ -657,9 +657,12 @@ func queryRows(ctx context.Context, conn *sql.Conn, sqlText string) ([][]any, []
 // The normalization is load-bearing, not cosmetic, and the failure it prevents
 // is measured rather than argued. `q$6381` carries a PROCESS-GLOBAL counter, so
 // the same plan rendered on the baseline connection and on the second-plan
-// connection gets different numbers: `SELECT (SELECT MIN(b) FROM t) FROM t`
-// comes back as `Project([(SCALAR_SUBQUERY q$11)], Scan(T))` on one and
-// `...q$38...` on the other, for a query MatchLeafRule cannot touch at all.
+// connection can get different numbers. Before exact result-owner display,
+// `SELECT (SELECT MIN(b) FROM t) FROM t` came back as
+// `Project([(SCALAR_SUBQUERY q$11)], Scan(T))` on one and `...q$38...` on the
+// other, for a query MatchLeafRule cannot touch at all. Current Explain elides
+// that ownership-only alias; `TestFDB_SecondPlanPreconditionIgnoresGeneratedAliases`
+// pins both the safe source-elision state and this normalization fallback.
 //
 // The oracle's entire precondition is the string comparison
 // `altPlan == basePlan`. Left raw, those two IDENTICAL plans compare unequal,

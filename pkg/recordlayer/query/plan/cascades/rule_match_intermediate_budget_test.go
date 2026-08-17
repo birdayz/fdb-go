@@ -54,7 +54,7 @@ func TestTryIntermediateMapping_RejectedSemanticLeafChargesBudget(
 			candidateParent: func(
 				candidateQ expressions.Quantifier,
 			) expressions.RelationalExpression {
-				return expressions.NewSelectExpression(
+				return mustMatchSelect(t,
 					values.NewRecordConstructorValue(),
 					[]expressions.Quantifier{candidateQ},
 					nil,
@@ -73,7 +73,7 @@ func TestTryIntermediateMapping_RejectedSemanticLeafChargesBudget(
 			candidateParent: func(
 				candidateQ expressions.Quantifier,
 			) expressions.RelationalExpression {
-				return expressions.NewLogicalFilterExpression(
+				return mustMatchFilter(t,
 					[]predicates.QueryPredicate{
 						predicates.NewConstantPredicate(predicates.TriTrue),
 					},
@@ -99,30 +99,30 @@ func TestTryIntermediateMapping_RejectedSemanticLeafChargesBudget(
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			queryChild := expressions.NewFullUnorderedScanExpression(
+			queryChild := mustMatchScan(t,
 				[]string{"T"},
-				values.UnknownType,
+				matchRuleRowType(),
 			)
-			queryChildRef := expressions.InitialOf(queryChild)
+			queryChildRef := mustMatchInitial(t, queryChild)
 			queryQ := expressions.ForEachQuantifier(queryChildRef)
-			queryParent := expressions.NewLogicalFilterExpression(
+			queryParent := mustMatchFilter(t,
 				[]predicates.QueryPredicate{
 					predicates.NewConstantPredicate(predicates.TriTrue),
 				},
 				queryQ,
 			)
-			queryParentRef := expressions.InitialOf(queryParent)
+			queryParentRef := mustMatchInitial(t, queryParent)
 
-			candidateChild := expressions.NewFullUnorderedScanExpression(
+			candidateChild := mustMatchScan(t,
 				[]string{"T"},
-				values.UnknownType,
+				matchRuleRowType(),
 			)
-			candidateChildRef := expressions.InitialOf(candidateChild)
+			candidateChildRef := mustMatchInitial(t, candidateChild)
 			if test.candidateMemberCount == 2 {
-				if !candidateChildRef.Insert(
-					expressions.NewFullUnorderedScanExpression(
+				if !mustMatchInsert(t, candidateChildRef,
+					mustMatchScan(t,
 						[]string{"U"},
-						values.UnknownType,
+						matchRuleRowType(),
 					),
 				) {
 					t.Fatal("failed to add metadata-rejection candidate member")
@@ -138,7 +138,7 @@ func TestTryIntermediateMapping_RejectedSemanticLeafChargesBudget(
 			}
 			candidateQ := expressions.ForEachQuantifier(candidateChildRef)
 			candidateParent := test.candidateParent(candidateQ)
-			candidateParentRef := expressions.InitialOf(candidateParent)
+			candidateParentRef := mustMatchInitial(t, candidateParent)
 			candidate := &testMatchCandidate{
 				name:      "budget_" + test.name,
 				traversal: NewTraversal(candidateParentRef),
@@ -199,20 +199,20 @@ func TestMatchIntermediate_FilterSelectSharesStructuralBudget(t *testing.T) {
 	t.Parallel()
 
 	// Query: Filter(col0 = 5, Scan(T)).
-	queryChild := expressions.NewFullUnorderedScanExpression(
+	queryChild := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryChildRef := expressions.InitialOf(queryChild)
+	queryChildRef := mustMatchInitial(t, queryChild)
 	queryQ := expressions.ForEachQuantifier(queryChildRef)
 	queryPredicate := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "col0"},
+		mustMatchField(t, mustMatchFlowed(t, queryQ), "col0"),
 		predicates.NewLiteralComparison(
 			predicates.ComparisonEquals,
 			int64(5),
 		),
 	)
-	queryFilter := expressions.NewLogicalFilterExpression(
+	queryFilter := mustMatchFilter(t,
 		[]predicates.QueryPredicate{queryPredicate},
 		queryQ,
 	)
@@ -220,24 +220,24 @@ func TestMatchIntermediate_FilterSelectSharesStructuralBudget(t *testing.T) {
 	// Candidate: Select(Scan(T), Placeholder(col0)). The node types differ,
 	// so every complete structural child product reaches and fails node
 	// equality; with a fresh budget the specialized route is valid.
-	candidateChild := expressions.NewFullUnorderedScanExpression(
+	candidateChild := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateChildRef := expressions.InitialOf(candidateChild)
+	candidateChildRef := mustMatchInitial(t, candidateChild)
 	candidateQ := expressions.ForEachQuantifier(candidateChildRef)
 	parameterAlias := values.UniqueCorrelationIdentifier()
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateQ},
 		[]predicates.QueryPredicate{
 			predicates.NewPlaceholder(
 				parameterAlias,
-				&values.FieldValue{Field: "col0"},
+				mustMatchField(t, mustMatchFlowed(t, candidateQ), "col0"),
 			),
 		},
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	candidate := &testMatchCandidate{
 		name:      "budget_filter_select",
 		traversal: NewTraversal(candidateSelectRef),
@@ -276,7 +276,7 @@ func TestMatchIntermediate_FilterSelectSharesStructuralBudget(t *testing.T) {
 
 	// Pin the exact shared work cap through the inspectable internal budget.
 	structuralCall := &ExpressionRuleCall{
-		Reference: expressions.InitialOf(queryFilter),
+		Reference: mustMatchInitial(t, queryFilter),
 	}
 	budget := &matchIntermediateSearchBudget{}
 	if matchIntermediateStructural(
@@ -303,7 +303,7 @@ func TestMatchIntermediate_FilterSelectSharesStructuralBudget(t *testing.T) {
 	// Prove that the specialized route itself is viable for this fixture.
 	// Starting two states below the cap permits exactly the first compatible
 	// child's inspection + semantic attempt and must emit a match.
-	controlRef := expressions.InitialOf(queryFilter)
+	controlRef := mustMatchInitial(t, queryFilter)
 	controlBudget := &matchIntermediateSearchBudget{
 		visitedStates: matchIntermediateMaxVisitedStates - 2,
 	}
@@ -334,7 +334,7 @@ func TestMatchIntermediate_FilterSelectSharesStructuralBudget(t *testing.T) {
 	// Exercise the real one-attempt wrapper. It must not allocate a second
 	// budget to Filter->Select fallback after structural equality exhausts the
 	// first one.
-	attemptRef := expressions.InitialOf(queryFilter)
+	attemptRef := mustMatchInitial(t, queryFilter)
 	matchIntermediateWithCandidate(
 		&ExpressionRuleCall{Reference: attemptRef},
 		queryFilter,

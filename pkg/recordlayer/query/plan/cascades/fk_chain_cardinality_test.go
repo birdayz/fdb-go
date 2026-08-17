@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -9,6 +10,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
+
+func mustFKChain[T any](value T, err error) T {
+	if err != nil {
+		panic(fmt.Sprintf("construct FK-chain fixture: %v", err))
+	}
+	return value
+}
 
 // Regression tests for fk_chain_cardinality.go — the FK-chain cardinality
 // cap that keeps compareJoinOrdering's per-hop selectivity estimate from
@@ -28,12 +36,23 @@ import (
 // meaningful at all: a leaf whose flowed type declares no column order has no
 // domain, and the identity proofs fail closed on it.
 var fkChainLayouts = map[string]*values.RecordType{
-	"T1": fkChainLayout("T1", "ID"),
+	"T1": fkChainT1Layout(),
 	"T2": fkChainLayout("T2", "ID", "T1_ID", "ADDRESS"),
 	"T3": fkChainLayout("T3", "ID", "T2_ID"),
 	"T4": fkChainLayout("T4", "ID", "T3_ID"),
 	"X":  fkChainLayout("X", "ID", "GROUP"),
 	"Y":  fkChainLayout("Y", "ID", "GROUP"),
+}
+
+func fkChainT1Layout() *values.RecordType {
+	address := values.NewRecordType("T1_ADDRESS", false, []values.Field{
+		{Name: "OTHER", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+	return values.NewRecordType("T1", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "ADDRESS", FieldType: address, Ordinal: 1},
+	})
 }
 
 func fkChainLayout(name string, cols ...string) *values.RecordType {
@@ -49,7 +68,20 @@ func fkChainRowType(rt string) values.Type {
 	if l, ok := fkChainLayouts[rt]; ok {
 		return l
 	}
-	return values.UnknownType
+	panic("FK-chain fixture has no layout for " + rt)
+}
+
+func fkChainField(layout *values.RecordType, alias values.CorrelationIdentifier, field string) values.Value {
+	ordinal, ok := layout.FieldIndexUnique(field)
+	if !ok {
+		panic("FK-chain fixture has no field " + field + " in " + layout.RecordName)
+	}
+	root := mustFKChain(values.NewQuantifiedObjectValue(alias, layout))
+	resolved := mustFKChain(values.ResolveFieldOrdinals(root, []int{ordinal}))
+	if _, ok := values.AsFieldValue(resolved); !ok {
+		panic(fmt.Sprintf("FK-chain resolved field %s has unexpected type %T", field, resolved))
+	}
+	return resolved
 }
 
 // fkChainIDPK is the LAZY, name-only primary key GetPrimaryKeyValues() /
@@ -58,7 +90,8 @@ func fkChainRowType(rt string) values.Type {
 // the boundary: leafFieldIdentity resolves it against the leg's stated layout
 // once, and every comparison after that is between ordinals.
 func fkChainIDPK() []values.Value {
-	return []values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}
+	return []values.Value{fkChainField(
+		fkChainLayout("PK_METADATA", "ID"), values.UniqueCorrelationIdentifier(), "ID")}
 }
 
 // fkChainCorrelatedEq builds a ComparisonRange equal to `outerAlias.<field>`,
@@ -86,21 +119,13 @@ func fkChainCorrelatedRef(t *testing.T, outerRT string, outerAlias values.Correl
 	t.Helper()
 	layout, known := fkChainLayouts[outerRT]
 	if !known {
-		return &values.FieldValue{Field: field, Typ: values.UnknownType, Child: values.NewQuantifiedObjectValue(outerAlias)}
+		t.Fatalf("unknown FK-chain outer row type %q", outerRT)
 	}
-	ord, found := layout.FieldIndexUnique(field)
-	if !found {
-		return &values.FieldValue{Field: field, Typ: values.UnknownType, Child: values.NewQuantifiedObjectValue(outerAlias)}
-	}
-	resolved, _ := layout.GetField(ord)
-	return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(outerAlias), field, ord, resolved.FieldType,
-		values.OrdinalDomainOfType(layout),
-	)
+	return fkChainField(layout, outerAlias, field)
 }
 
 func fkChainFullScan(rt string) plans.RecordQueryPlan {
-	return plans.NewRecordQueryScanPlan([]string{rt}, fkChainRowType(rt), false).
+	return mustFKChain(plans.NewRecordQueryScanPlan([]string{rt}, fkChainRowType(rt), false)).
 		WithPrimaryKey(fkChainIDPK()).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 }
@@ -111,7 +136,7 @@ func fkChainFullScan(rt string) plans.RecordQueryPlan {
 // outer table's layout.
 func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.CorrelationIdentifier, bindField string) plans.RecordQueryPlan {
 	t.Helper()
-	return plans.NewRecordQueryScanPlan([]string{rt}, fkChainRowType(rt), false).
+	return mustFKChain(plans.NewRecordQueryScanPlan([]string{rt}, fkChainRowType(rt), false)).
 		WithPrimaryKey(fkChainIDPK()).
 		WithScanComparisons([]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, bindField)}).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
@@ -127,9 +152,9 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 // it, same as production.
 func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return plans.NewRecordQueryIndexPlan(idx,
+	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
-		[]string{rt}, fkChainRowType(rt), false).
+		[]string{rt}, fkChainRowType(rt), false)).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
@@ -143,9 +168,9 @@ func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.Cor
 // than once per probe. See TestFKChainCardinalityCap_DeclinesOnFanOutIndex.
 func fkChainFanOutFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return plans.NewRecordQueryIndexPlan(idx,
+	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
-		[]string{rt}, fkChainRowType(rt), false).
+		[]string{rt}, fkChainRowType(rt), false)).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
@@ -166,7 +191,7 @@ func fkChainFanOutFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias valu
 func fkChainRTPrefixedPK() []values.Value {
 	return []values.Value{
 		values.NewRecordTypeValue(nil),
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+		fkChainField(fkChainLayout("PK_METADATA", "ID"), values.UniqueCorrelationIdentifier(), "ID"),
 	}
 }
 
@@ -176,9 +201,9 @@ func fkChainRTPrefixedPK() []values.Value {
 // fkChainRTPrefixedPK).
 func fkChainFKProbeRTPrefixed(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return plans.NewRecordQueryIndexPlan(idx,
+	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
-		[]string{rt}, fkChainRowType(rt), false).
+		[]string{rt}, fkChainRowType(rt), false)).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
@@ -187,9 +212,10 @@ func fkChainFKProbeRTPrefixed(t *testing.T, rt, idx, outerRT string, outerAlias 
 }
 
 func fkChainFlat(outer, inner plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
-	return plans.NewRecordQueryFlatMapPlan(outer, inner,
-		outerAlias, values.NamedCorrelationIdentifier("i"),
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("i")), false)
+	innerAlias := values.NamedCorrelationIdentifier("i")
+	return mustFKChain(plans.NewRecordQueryFlatMapPlan(outer, inner,
+		outerAlias, innerAlias,
+		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, planRowLayout(inner))), false))
 }
 
 func fkChainAlias(i int) values.CorrelationIdentifier {
@@ -285,13 +311,11 @@ func TestFKChainCardinalityCap_DoesNotFireOnNonPKBind(t *testing.T) {
 	t.Parallel()
 
 	outer := fkChainFullScan("Y")
-	inner := plans.NewRecordQueryIndexPlan("x_by_group",
+	inner := mustFKChain(plans.NewRecordQueryIndexPlan("x_by_group",
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "Y", fkChainAlias(0), "GROUP")},
-		[]string{"X"}, values.UnknownType, false).
+		[]string{"X"}, fkChainRowType("X"), false)).
 		WithCommonPrimaryKey(fkChainIDPK())
-	fm := plans.NewRecordQueryFlatMapPlan(outer, inner,
-		fkChainAlias(0), values.NamedCorrelationIdentifier("i"),
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("i")), false)
+	fm := fkChainFlat(outer, inner, fkChainAlias(0)).(*plans.RecordQueryFlatMapPlan)
 
 	if cap, ok := fkChainCardinalityCap(fm, properties.MapStatistics{PerType: map[string]float64{"X": 500}}); ok {
 		t.Fatalf("cap fired on a non-PK bind (cap=%v) — the disproven-unsound case; must decline (ok=false)", cap)
@@ -309,16 +333,18 @@ func TestFKChainCardinalityCap_DoesNotFireOnNonPKBind(t *testing.T) {
 // column it is named after — and not a missing domain token.
 func fkChainCorrelatedNestedEq(t *testing.T, outerRT string, outerAlias values.CorrelationIdentifier, parent, leaf string) *predicates.ComparisonRange {
 	t.Helper()
-	operand := &values.FieldValue{
-		Field: leaf, Typ: values.UnknownType,
-		Child: values.NewQuantifiedObjectValue(outerAlias),
-		Resolved: &values.FieldPath{
-			Accessors: []values.ResolvedAccessor{
-				{Field: parent, Ordinal: 0},
-				{Field: leaf, Ordinal: 1},
-			},
-			Domain: values.OrdinalDomainOfType(fkChainRowType(outerRT)),
-		},
+	layout, ok := fkChainLayouts[outerRT]
+	if !ok {
+		t.Fatalf("unknown FK-chain outer row type %q", outerRT)
+	}
+	root := mustFKChain(values.NewQuantifiedObjectValue(outerAlias, layout))
+	parentRequest := mustFKChain(values.FieldByName(parent))
+	leafRequest := mustFKChain(values.FieldByName(leaf))
+	operand := mustFKChain(values.ResolveFieldAccess(
+		root, []values.FieldRequest{parentRequest, leafRequest}))
+	field, isField := values.AsFieldValue(operand)
+	if !isField || field.Path().Len() != 2 {
+		t.Fatalf("nested FK-chain operand = %T, want exact two-accessor FieldValue", operand)
 	}
 	cmp := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
 	res := predicates.EmptyComparisonRange().Merge(&cmp)
@@ -343,14 +369,12 @@ func TestFKChainCardinalityCap_DoesNotFireOnNestedFieldSameLeafName(t *testing.T
 	t.Parallel()
 
 	outer := fkChainFullScan("T1") // PK: flat top-level "ID"
-	inner := plans.NewRecordQueryIndexPlan("t2_by_addr_id",
+	inner := mustFKChain(plans.NewRecordQueryIndexPlan("t2_by_addr_id",
 		[]*predicates.ComparisonRange{fkChainCorrelatedNestedEq(t, "T1", fkChainAlias(0), "ADDRESS", "ID")},
-		[]string{"T2"}, values.UnknownType, false).
+		[]string{"T2"}, fkChainRowType("T2"), false)).
 		WithCommonPrimaryKey(fkChainIDPK()).
 		WithDistinctRecordsSignal(false)
-	fm := plans.NewRecordQueryFlatMapPlan(outer, inner,
-		fkChainAlias(0), values.NamedCorrelationIdentifier("i"),
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("i")), false)
+	fm := fkChainFlat(outer, inner, fkChainAlias(0)).(*plans.RecordQueryFlatMapPlan)
 
 	if cap, ok := fkChainCardinalityCap(fm, properties.MapStatistics{PerType: map[string]float64{"T2": 500}}); ok {
 		t.Fatalf("cap fired on a nested same-leaf-name bind (T1.ADDRESS.ID mistaken for T1's own top-level ID), cap=%v — must decline (ok=false)", cap)
@@ -369,11 +393,10 @@ func TestFKChainCardinalityCap_PropagatesAcrossFetchAndTypeFilter(t *testing.T) 
 
 	outer := fkChainFullScan("T1")
 	bareInner := fkChainFKProbe(t, "T2", "t2_by_t1", "T1", fkChainAlias(0))
-	fetched := plans.NewRecordQueryFetchFromPartialRecordPlan(bareInner, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
-	wrappedInner := plans.NewRecordQueryTypeFilterPlan([]string{"T2"}, fetched)
-	fm := plans.NewRecordQueryFlatMapPlan(outer, wrappedInner,
-		fkChainAlias(0), values.NamedCorrelationIdentifier("i"),
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("i")), false)
+	fetched := mustFKChain(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		bareInner, nil, fkChainRowType("T2"), plans.FetchIndexRecordsPrimaryKey))
+	wrappedInner := mustFKChain(plans.NewRecordQueryTypeFilterPlan([]string{"T2"}, fetched))
+	fm := fkChainFlat(outer, wrappedInner, fkChainAlias(0)).(*plans.RecordQueryFlatMapPlan)
 
 	cap, ok := fkChainCardinalityCap(fm, stats)
 	if !ok {
@@ -398,13 +421,11 @@ func TestFKChainCardinalityCap_ManyOuterRowsSharingOneValue(t *testing.T) {
 	stats := properties.MapStatistics{PerType: map[string]float64{"Y": 1000, "X": 500}}
 
 	outer := fkChainFullScan("Y") // 1000 rows, modeling all sharing one GROUP value
-	inner := plans.NewRecordQueryIndexPlan("x_by_group",
+	inner := mustFKChain(plans.NewRecordQueryIndexPlan("x_by_group",
 		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "Y", fkChainAlias(0), "GROUP")},
-		[]string{"X"}, values.UnknownType, false).
+		[]string{"X"}, fkChainRowType("X"), false)).
 		WithCommonPrimaryKey(fkChainIDPK())
-	fm := plans.NewRecordQueryFlatMapPlan(outer, inner,
-		fkChainAlias(0), values.NamedCorrelationIdentifier("i"),
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("i")), false)
+	fm := fkChainFlat(outer, inner, fkChainAlias(0)).(*plans.RecordQueryFlatMapPlan)
 
 	if cap, ok := fkChainCardinalityCap(fm, stats); ok {
 		t.Fatalf("cap fired (cap=%v) on 1000 outer rows sharing one non-PK bind value — "+
@@ -598,13 +619,11 @@ func TestFKChainCardinalityCap_CPUUnaffectedWhenCapDoesNotFire(t *testing.T) {
 	buildNonPKBind := func(t *testing.T, statsY, statsX float64) (plans.RecordQueryPlan, properties.MapStatistics) {
 		t.Helper()
 		outer := fkChainFullScan("Y")
-		inner := plans.NewRecordQueryIndexPlan("x_by_group",
+		inner := mustFKChain(plans.NewRecordQueryIndexPlan("x_by_group",
 			[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "Y", fkChainAlias(0), "GROUP")},
-			[]string{"X"}, values.UnknownType, false).
+			[]string{"X"}, fkChainRowType("X"), false)).
 			WithCommonPrimaryKey(fkChainIDPK())
-		fm := plans.NewRecordQueryFlatMapPlan(outer, inner,
-			fkChainAlias(0), values.NamedCorrelationIdentifier("i"),
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("i")), false)
+		fm := fkChainFlat(outer, inner, fkChainAlias(0))
 		return fm, properties.MapStatistics{PerType: map[string]float64{"Y": statsY, "X": statsX}}
 	}
 
@@ -646,11 +665,11 @@ func TestFKChainCardinalityCap_DeclinesOnDuplicateProducingInnerIndex(t *testing
 	t.Parallel()
 	unstamped := func(t *testing.T) plans.RecordQueryPlan {
 		t.Helper()
-		return plans.NewRecordQueryIndexPlan(
+		return mustFKChain(plans.NewRecordQueryIndexPlan(
 			"t2_by_t1_unstamped",
 			[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "T1", fkChainAlias(0), "ID")},
 			[]string{"T2"}, fkChainRowType("T2"), false,
-		).
+		)).
 			WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 			WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
 			WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
@@ -729,9 +748,9 @@ func TestFKChainCardinalityCap_DeclinesWhenOuterThreadedThroughFanOutIndex(t *te
 			return fkChainFanOutFKProbe(t, "T2", "t2_by_t1_fanout", "T1", fkChainAlias(0))
 		}},
 		{"distinct-records signal never stamped (Java's empty-candidate default)", func(t *testing.T) plans.RecordQueryPlan {
-			return plans.NewRecordQueryIndexPlan("t2_by_t1_unstamped",
+			return mustFKChain(plans.NewRecordQueryIndexPlan("t2_by_t1_unstamped",
 				[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "T1", fkChainAlias(0), "ID")},
-				[]string{"T2"}, values.UnknownType, false).
+				[]string{"T2"}, fkChainRowType("T2"), false)).
 				WithCommonPrimaryKey(fkChainIDPK())
 		}},
 	}
@@ -775,11 +794,11 @@ func TestFKChainCardinalityCap_DeclinesWhenProjectionReplacesTrackedPK(t *testin
 	// constant — the output column is still named "ID", but every row now
 	// carries the SAME value, breaking the underlying distinctness the name
 	// alone cannot reveal.
-	brokenProjection := plans.NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{&values.ConstantValue{Value: int64(42), Typ: values.UnknownType}},
+	brokenProjection := mustFKChain(plans.NewRecordQueryProjectionPlanWithAliases(
+		[]values.Value{&values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}},
 		[]string{"ID"},
 		hop1,
-	)
+	))
 
 	if computePKThread(brokenProjection).ok {
 		t.Fatalf("computePKThread(brokenProjection) should be ok=false: the projection " +
@@ -811,11 +830,11 @@ func TestFKChainCardinalityCap_DeclinesWhenFlatMapResultValueDropsTrackedPK(t *t
 	// hop1's OWN resultValue is a constant, not QOV("i") — it discards the
 	// probed T2 row (and its PK) entirely from what the FlatMap actually
 	// emits, even though the inner leg's own scan fully binds T1's PK.
-	hop1 := plans.NewRecordQueryFlatMapPlan(
+	hop1 := mustFKChain(plans.NewRecordQueryFlatMapPlan(
 		fkChainFullScan("T1"), fkChainFKProbe(t, "T2", "t2_by_t1", "T1", fkChainAlias(0)),
 		fkChainAlias(0), values.NamedCorrelationIdentifier("i"),
-		&values.ConstantValue{Value: int64(7), Typ: values.UnknownType}, false,
-	)
+		&values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}, false,
+	))
 
 	if computePKThread(hop1).ok {
 		t.Fatalf("computePKThread(hop1) should be ok=false: hop1's OWN resultValue is a " +
@@ -855,12 +874,16 @@ func TestFKChainCardinalityCap_DeclinesOnSameLeafNameDifferentDomain(t *testing.
 	// ordinal 0 — but in X's layout, a different column order entirely.
 	outer := fkChainFullScan("T2")
 	misdomained := fkChainCorrelatedRef(t, "X", fkChainAlias(0), "ID")
-	fv := misdomained.(*values.FieldValue)
-	if fv.Field != "ID" || fv.Resolved.Root().Ordinal != 0 {
-		t.Fatalf("test setup: the operand must share the PK column's leaf name and ordinal, got %q at %d",
-			fv.Field, fv.Resolved.Root().Ordinal)
+	fv, ok := values.AsFieldValue(misdomained)
+	if !ok {
+		t.Fatalf("test setup: operand = %T, want exact FieldValue", misdomained)
 	}
-	if fv.Resolved.Domain == values.OrdinalDomainOfType(fkChainRowType("T2")) {
+	accessor, ok := fv.Path().Accessor(0)
+	if !ok || fv.DisplayName() != "ID" || accessor.Ordinal() != 0 {
+		t.Fatalf("test setup: the operand must share the PK column's leaf name and ordinal, got %q at %d",
+			fv.DisplayName(), accessor.Ordinal())
+	}
+	if fv.Path().RootDomain() == values.OrdinalDomainOfType(fkChainRowType("T2")) {
 		t.Fatal("test setup: the operand's domain must differ from the outer's, or nothing separates the two references")
 	}
 
@@ -869,9 +892,9 @@ func TestFKChainCardinalityCap_DeclinesOnSameLeafNameDifferentDomain(t *testing.
 	if !res.Ok {
 		t.Fatal("failed to build the misdomained eq range")
 	}
-	inner := plans.NewRecordQueryIndexPlan("t3_by_t2",
+	inner := mustFKChain(plans.NewRecordQueryIndexPlan("t3_by_t2",
 		[]*predicates.ComparisonRange{res.Range},
-		[]string{"T3"}, fkChainRowType("T3"), false).
+		[]string{"T3"}, fkChainRowType("T3"), false)).
 		WithCommonPrimaryKey(fkChainIDPK()).
 		WithDistinctRecordsSignal(false)
 	fm := fkChainFlat(outer, inner, fkChainAlias(0)).(*plans.RecordQueryFlatMapPlan)
@@ -883,10 +906,9 @@ func TestFKChainCardinalityCap_DeclinesOnSameLeafNameDifferentDomain(t *testing.
 }
 
 // TestFKChainCardinalityCap_FlatMapOuterLayoutComesFromResultValue pins the
-// capability the identity conversion needed and the plan does not provide:
-// RecordQueryFlatMapPlan.GetResultType() answers UnknownType unconditionally,
-// so a hop whose OUTER is a FlatMap — which is EVERY hop of a chain past the
-// first — has no layout to state its proof in unless one is derived.
+// capability the identity conversion needed: a hop whose OUTER is a FlatMap —
+// which is EVERY hop of a chain past the first — must expose the exact layout
+// selected by its result value.
 //
 // planRowLayout derives it from the resultValue. Without that derivation the
 // cap fires on hop 1 and silently stops firing on hops 2..n, which is exactly
@@ -899,13 +921,12 @@ func TestFKChainCardinalityCap_FlatMapOuterLayoutComesFromResultValue(t *testing
 
 	hop1 := fkChainFlat(fkChainFullScan("T1"), fkChainFKProbe(t, "T2", "t2_by_t1", "T1", fkChainAlias(0)), fkChainAlias(0))
 	// hop1 emits the INNER's rows (its resultValue is QOV over the inner
-	// alias), so its layout is T2's — not the UnknownType the plan reports.
+	// alias), so its layout and declared result type are both T2's.
 	if got := planRowLayout(hop1); values.OrdinalDomainOfType(got) != values.OrdinalDomainOfType(fkChainRowType("T2")) {
 		t.Fatalf("planRowLayout(hop1) = %v, want T2's layout (the FlatMap emits its inner leg's row)", got)
 	}
-	if hop1.GetResultType() != values.UnknownType {
-		t.Fatal("precondition changed: RecordQueryFlatMapPlan now reports a real result type — " +
-			"derive planRowLayout from it and delete the local derivation rather than keeping two authorities")
+	if !hop1.GetResultType().Equals(fkChainRowType("T2")) {
+		t.Fatalf("FlatMap result type = %v, want exact T2 layout", hop1.GetResultType())
 	}
 
 	hop2 := fkChainFlat(hop1, fkChainFKProbe(t, "T3", "t3_by_t2", "T2", fkChainAlias(1)), fkChainAlias(1)).(*plans.RecordQueryFlatMapPlan)
@@ -949,11 +970,18 @@ func TestFKChainCardinalityCap_DeclinesOnSameLayoutOtherCorrelation(t *testing.T
 	outer := fkChainFullScan("T2")
 	selfBind := fkChainCorrelatedRef(t, "T2", innerAlias, "ID")
 	outerBind := fkChainCorrelatedRef(t, "T2", outerAlias, "ID")
-	selfFV, outerFV := selfBind.(*values.FieldValue), outerBind.(*values.FieldValue)
-	if selfFV.Resolved.Domain != outerFV.Resolved.Domain {
+	selfFV, selfOK := values.AsFieldValue(selfBind)
+	outerFV, outerOK := values.AsFieldValue(outerBind)
+	if !selfOK || !outerOK {
+		t.Fatalf("test setup: operands = (%T,%T), want exact FieldValues", selfBind, outerBind)
+	}
+	if selfFV.Path().RootDomain() != outerFV.Path().RootDomain() {
 		t.Fatal("test setup: both operands must be baked in ONE layout so the DOMAIN cannot reject")
 	}
-	if selfFV.Resolved.Root().Ordinal != outerFV.Resolved.Root().Ordinal || selfFV.Field != outerFV.Field {
+	selfAccessor, selfAccessorOK := selfFV.Path().Accessor(0)
+	outerAccessor, outerAccessorOK := outerFV.Path().Accessor(0)
+	if !selfAccessorOK || !outerAccessorOK ||
+		selfAccessor.Ordinal() != outerAccessor.Ordinal() || selfFV.DisplayName() != outerFV.DisplayName() {
 		t.Fatal("test setup: both operands must share the ordinal and the leaf name, leaving only the correlation")
 	}
 
@@ -962,12 +990,12 @@ func TestFKChainCardinalityCap_DeclinesOnSameLayoutOtherCorrelation(t *testing.T
 	if !res.Ok {
 		t.Fatal("failed to build the self-correlated eq range")
 	}
-	inner := plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false).
+	inner := mustFKChain(plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false)).
 		WithPrimaryKey(fkChainIDPK()).
 		WithScanComparisons([]*predicates.ComparisonRange{res.Range}).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
-	fm := plans.NewRecordQueryFlatMapPlan(outer, inner, outerAlias, innerAlias,
-		values.NewQuantifiedObjectValue(innerAlias), false)
+	fm := mustFKChain(plans.NewRecordQueryFlatMapPlan(outer, inner, outerAlias, innerAlias,
+		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, fkChainRowType("T2"))), false))
 
 	if cap, ok := fkChainCardinalityCap(fm, fkChainStats()); ok {
 		t.Fatalf("cap fired (cap=%v) on an equality bound to the INNER leg's own column — "+
@@ -991,12 +1019,12 @@ func TestFKChainCardinalityCap_FiresOnSameLayoutOuterCorrelation(t *testing.T) {
 	innerAlias := values.NamedCorrelationIdentifier("i")
 
 	outer := fkChainFullScan("T2")
-	inner := plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false).
+	inner := mustFKChain(plans.NewRecordQueryScanPlan([]string{"T2"}, fkChainRowType("T2"), false)).
 		WithPrimaryKey(fkChainIDPK()).
 		WithScanComparisons([]*predicates.ComparisonRange{fkChainCorrelatedEq(t, "T2", outerAlias, "ID")}).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
-	fm := plans.NewRecordQueryFlatMapPlan(outer, inner, outerAlias, innerAlias,
-		values.NewQuantifiedObjectValue(innerAlias), false)
+	fm := mustFKChain(plans.NewRecordQueryFlatMapPlan(outer, inner, outerAlias, innerAlias,
+		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, fkChainRowType("T2"))), false))
 
 	cap, ok := fkChainCardinalityCap(fm, fkChainStats())
 	if !ok {
@@ -1064,15 +1092,11 @@ func fkTypedEquality(
 	field string,
 ) *predicates.ComparisonRange {
 	t.Helper()
-	ordinal, ok := layout.FieldIndexUnique(field)
+	_, ok := layout.FieldIndexUnique(field)
 	if !ok {
 		t.Fatalf("layout %s has no field %s", layout.RecordName, field)
 	}
-	resolved, _ := layout.GetField(ordinal)
-	operand := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValue(alias), field, ordinal, resolved.FieldType,
-		values.OrdinalDomainOfType(layout),
-	)
+	operand := fkChainField(layout, alias, field)
 	comparison := predicates.Comparison{Type: predicates.ComparisonEquals, Operand: operand}
 	merged := predicates.EmptyComparisonRange().Merge(&comparison)
 	if !merged.Ok {
@@ -1113,19 +1137,19 @@ func TestFKChainCardinalityCap_LogicalEqualityProjectionMustBeInjective(t *testi
 			}})
 			outerAlias := values.NamedCorrelationIdentifier("o")
 			innerAlias := values.NamedCorrelationIdentifier("i")
-			outer := plans.NewRecordQueryScanPlan([]string{"O"}, outerLayout, false).
-				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "K"}}).
+			outer := mustFKChain(plans.NewRecordQueryScanPlan([]string{"O"}, outerLayout, false)).
+				WithPrimaryKey([]values.Value{fkChainField(outerLayout, values.UniqueCorrelationIdentifier(), "K")}).
 				WithKeyComponentTypes([]values.Type{test.sourceType})
-			inner := plans.NewRecordQueryScanPlan([]string{"I"}, innerLayout, false).
-				WithPrimaryKey([]values.Value{&values.FieldValue{Field: "FK"}}).
+			inner := mustFKChain(plans.NewRecordQueryScanPlan([]string{"I"}, innerLayout, false)).
+				WithPrimaryKey([]values.Value{fkChainField(innerLayout, values.UniqueCorrelationIdentifier(), "FK")}).
 				WithScanComparisons([]*predicates.ComparisonRange{
 					fkTypedEquality(t, outerLayout, outerAlias, "K"),
 				}).
 				WithKeyComponentTypes([]values.Type{test.targetType})
-			flatMap := plans.NewRecordQueryFlatMapPlan(
+			flatMap := mustFKChain(plans.NewRecordQueryFlatMapPlan(
 				outer, inner, outerAlias, innerAlias,
-				values.NewQuantifiedObjectValue(innerAlias), false,
-			)
+				mustFKChain(values.NewQuantifiedObjectValue(innerAlias, innerLayout)), false,
+			))
 			stats := properties.MapStatistics{PerType: map[string]float64{"O": 1000, "I": 20}}
 			cap, gotCap := fkChainCardinalityCap(flatMap, stats)
 			if gotCap != test.wantCap {
@@ -1178,24 +1202,26 @@ func TestFKChainCardinalityCap_PreservesSignedZeroRangeSeekThroughWrappers(t *te
 	})
 	outerAlias := values.NamedCorrelationIdentifier("o")
 	innerAlias := values.NamedCorrelationIdentifier("i")
-	outer := plans.NewRecordQueryScanPlan([]string{"O"}, outerLayout, false).
+	outer := mustFKChain(plans.NewRecordQueryScanPlan([]string{"O"}, outerLayout, false)).
 		WithPrimaryKey([]values.Value{
-			&values.FieldValue{Field: "K"},
-			&values.FieldValue{Field: "S"},
+			fkChainField(outerLayout, values.UniqueCorrelationIdentifier(), "K"),
+			fkChainField(outerLayout, values.UniqueCorrelationIdentifier(), "S"),
 		}).
 		WithKeyComponentTypes([]values.Type{values.NotNullInt, values.NotNullLong})
-	bareInner := plans.NewRecordQueryIndexPlan(
+	bareInner := mustFKChain(plans.NewRecordQueryIndexPlan(
 		"i_by_fk_fs",
 		[]*predicates.ComparisonRange{
 			fkTypedEquality(t, outerLayout, outerAlias, "K"),
 			fkTypedEquality(t, outerLayout, outerAlias, "S"),
 		},
 		[]string{"I"}, innerLayout, false,
-	).
+	)).
 		WithKeyComponentTypes([]values.Type{values.NotNullDouble, values.NotNullLong}).
 		WithIndexMetadata([]string{"FK", "FS"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey([]values.Value{&values.FieldValue{Field: "ID"}}).
+		WithCommonPrimaryKey([]values.Value{
+			fkChainField(innerLayout, values.UniqueCorrelationIdentifier(), "ID"),
+		}).
 		WithDistinctRecordsSignal(false)
 
 	shape := properties.PhysicalEqualityShapeForComparisons(
@@ -1220,21 +1246,22 @@ func TestFKChainCardinalityCap_PreservesSignedZeroRangeSeekThroughWrappers(t *te
 		{
 			name: "fetch",
 			wrap: func(p plans.RecordQueryPlan) plans.RecordQueryPlan {
-				return plans.NewRecordQueryFetchFromPartialRecordPlan(
-					p, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
-				)
+				return mustFKChain(plans.NewRecordQueryFetchFromPartialRecordPlan(
+					p, nil, innerLayout, plans.FetchIndexRecordsPrimaryKey,
+				))
 			},
 			wantFixed: properties.PhysicalRangeSeekCost * properties.PhysicalWrapperCostMultiplier,
 		},
 		{
 			name: "type filter over fetch",
 			wrap: func(p plans.RecordQueryPlan) plans.RecordQueryPlan {
-				return plans.NewRecordQueryTypeFilterPlan(
+				fetch := mustFKChain(plans.NewRecordQueryFetchFromPartialRecordPlan(
+					p, nil, innerLayout, plans.FetchIndexRecordsPrimaryKey,
+				))
+				return mustFKChain(plans.NewRecordQueryTypeFilterPlan(
 					[]string{"I"},
-					plans.NewRecordQueryFetchFromPartialRecordPlan(
-						p, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
-					),
-				)
+					fetch,
+				))
 			},
 			wantFixed: properties.PhysicalRangeSeekCost *
 				properties.PhysicalWrapperCostMultiplier * properties.PhysicalWrapperCostMultiplier,
@@ -1245,10 +1272,10 @@ func TestFKChainCardinalityCap_PreservesSignedZeroRangeSeekThroughWrappers(t *te
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			inner := test.wrap(bareInner)
-			flatMap := plans.NewRecordQueryFlatMapPlan(
+			flatMap := mustFKChain(plans.NewRecordQueryFlatMapPlan(
 				outer, inner, outerAlias, innerAlias,
-				values.NewQuantifiedObjectValue(innerAlias), false,
-			)
+				mustFKChain(values.NewQuantifiedObjectValue(innerAlias, innerLayout)), false,
+			))
 			cap, ok := fkChainCardinalityCap(flatMap, stats)
 			if !ok || cap != 20 {
 				t.Fatalf("fkChainCardinalityCap = (%v,%v), want (20,true)", cap, ok)
@@ -1285,10 +1312,15 @@ func TestFKChainCardinalityCap_PreservesSignedZeroRangeSeekThroughWrappers(t *te
 // attach the wrong signed-zero theorem to a coordinate.
 func TestAlignIndexPKTypesByCoordinate_DuplicateDisplayNamesStayPositional(t *testing.T) {
 	t.Parallel()
-	domain := values.OrdinalDomainOfColumnNames([]string{"DUP", "DUP"})
+	duplicateLayout := &values.RecordType{RecordName: "duplicate_display_names", Fields: []values.Field{
+		{Name: "DUP", Ordinal: 0, FieldType: values.NotNullDouble},
+		{Name: "DUP", Ordinal: 1, FieldType: values.NotNullFloat},
+	}}
+	root := mustFKChain(values.NewQuantifiedObjectValue(
+		values.UniqueCorrelationIdentifier(), duplicateLayout))
 	pk := []values.Value{
-		values.NewFieldValueWithResolvedOrdinalInDomain("DUP", 1, values.NotNullFloat, domain),
-		values.NewFieldValueWithResolvedOrdinalInDomain("DUP", 0, values.NotNullDouble, domain),
+		mustFKChain(values.ResolveFieldOrdinals(root, []int{1})),
+		mustFKChain(values.ResolveFieldOrdinals(root, []int{0})),
 	}
 	physicalTypes := []values.Type{values.NotNullFloat, values.NotNullDouble}
 	aligned, ok := alignIndexPKTypesByCoordinate(

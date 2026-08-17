@@ -60,7 +60,7 @@ func isScanRangeCompatible(t predicates.ComparisonType) bool {
 // mismatches like BIGINT column vs STRING literal — these must remain as residual
 // predicates so the executor surfaces the type error. Unknown types (from
 // unresolved columns) pass through.
-func comparisonTypesCompatible(fv *values.FieldValue, cmp *predicates.Comparison) bool {
+func comparisonTypesCompatible(fv values.FieldValue, cmp *predicates.Comparison) bool {
 	if cmp.Operand == nil {
 		return true
 	}

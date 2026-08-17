@@ -29,7 +29,7 @@ import (
 // which this hooks, and through bare struct literals, which nothing can hook
 // centrally. Enumerated at the time of writing with
 //
-//	grep -rn '&FieldValue{\|values\.FieldValue{' pkg/ | grep -v '_test\.go' | wc -l
+//	grep -rn '&fieldValue{\|values\.fieldValue{' pkg/ | grep -v '_test\.go' | wc -l
 //
 // there are 57 such literals in non-test code. SIX of them are the constructor
 // bodies themselves and are already counted through the constructor hook;
@@ -406,18 +406,26 @@ func DumpOrderingBridgeDottedCensus(w io.Writer, label string) {
 //     is no floor to pair with this ceiling because zero IS the steady state
 //     here.
 //
+//   - MaxTotal is the RETIREMENT ceiling, and it is what a corpus sets once the
+//     lazy mint is gone from the tree rather than merely quiet. It supersedes
+//     MinTotal instead of sitting beside it: the two are opposite claims about
+//     the same population and a corpus asserts one or the other. Being a ceiling
+//     it survives narrowing, which a floor cannot — and a retirement is a fact
+//     about the TREE, so it must.
+//
 // The PARTITION is checked unconditionally whenever gates is non-nil: a class
 // vector that disagrees with the independently counted total means a mint took a
 // path no arm classified, which is a bug in this census rather than a fact about
 // the code — and it makes every number above it unreadable. It is exact under
 // any filter, so it needs no floor to be honest.
 //
-// A nil *FieldValueMintGates is a no-op, the shape a narrowed run needs for
-// MinTotal. The ceiling and the partition survive narrowing (a subset cannot
+// A nil *fieldValueMintGates is a no-op, the shape a narrowed run needs for
+// MinTotal. The ceilings and the partition survive narrowing (a subset cannot
 // exceed the whole, and a sum of non-negative counters is exact under any
-// filter), so both are checked whenever gates is non-nil.
+// filter), so all of them are checked whenever gates is non-nil.
 type FieldValueMintGates struct {
 	MinTotal           int
+	MaxTotal           *int
 	MaxExplainRendered *int
 }
 
@@ -456,6 +464,17 @@ func assertFieldValueMintCensusState(w io.Writer, total int, counts [fieldMintCl
 			"  ran, the corpus is empty, or the hook detached — and the lazy-EXPLAIN-RENDERED\n"+
 			"  ceiling of 0 passes over zero observations while measuring nothing.\n",
 			total, gates.MinTotal)
+	}
+	if gates.MaxTotal != nil && total > *gates.MaxTotal {
+		failed = true
+		fmt.Fprintf(w, "FIELD-VALUE MINT CENSUS FAIL: %d mint(s) observed, want <= %d — the lazy\n"+
+			"  mint is RETIRED and this is its revival alarm.\n"+
+			"  ALARM DIRECTION: growth. Every FieldValue the planner builds now goes through\n"+
+			"  exact resolution, so the only construction that can reach these hooks is the\n"+
+			"  package-private legacy fixture path, which is not externally constructible.\n"+
+			"  A count here means a lazy FieldValue is being minted again — find the producer\n"+
+			"  in the origins below; do not restore a floor to match.\n",
+			total, *gates.MaxTotal)
 	}
 	if gates.MaxExplainRendered != nil &&
 		counts[FieldMintLazyExplainRendered] > *gates.MaxExplainRendered {

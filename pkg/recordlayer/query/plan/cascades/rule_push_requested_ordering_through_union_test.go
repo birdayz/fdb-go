@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -9,22 +10,42 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func requestedOrderingUnionFixture(recordTypes ...string) (
+	*expressions.LogicalUnionExpression,
+	*expressions.Reference,
+) {
+	quantifiers := make([]expressions.Quantifier, len(recordTypes))
+	for i, recordType := range recordTypes {
+		quantifiers[i] = requestedOrderingQuantifier(
+			recordType, fmt.Sprintf("union_input_%d", i))
+	}
+	union := mustRequestedOrderingConstruct(expressions.NewLogicalUnionExpression(quantifiers))
+	return union, expressions.InitialOf(union)
+}
+
+func requestedOrderingUnionField(
+	union *expressions.LogicalUnionExpression,
+	field string,
+) values.Value {
+	return requestedOrderingFieldForType(
+		values.NamedCorrelationIdentifier("union_output"),
+		union.GetResultValue().Type(),
+		field,
+	)
+}
+
 func TestPushRequestedOrderingThroughUnion_PushesToAllBranches(t *testing.T) {
 	t.Parallel()
 
 	// Union(ScanA, ScanB)
 	// Requested ordering: [col1 ASC]
 	// Expected: ordering pushed to both branches.
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanAQ, scanBQ})
-	unionRef := expressions.InitialOf(union)
+	union, unionRef := requestedOrderingUnionFixture("A", "B")
+	col1 := requestedOrderingUnionField(union, "COL1")
 
 	cm := NewConstraintMap()
 	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: col1, SortOrder: properties.RequestedSortOrderAscending},
 	}, properties.DistinctnessNotDistinct, false)
 	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
@@ -40,7 +61,7 @@ func TestPushRequestedOrderingThroughUnion_PushesToAllBranches(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	children := union.GetQuantifiers()
 	for i, child := range children {
@@ -56,10 +77,7 @@ func TestPushRequestedOrderingThroughUnion_PushesToAllBranches(t *testing.T) {
 		if len(parts) != 1 {
 			t.Fatalf("child %d: expected 1 ordering part, got %d", i, len(parts))
 		}
-		fv, ok := parts[0].Value.(*values.FieldValue)
-		if !ok || fv.Field != "col1" {
-			t.Fatalf("child %d: expected ordering on col1, got %v", i, parts[0].Value)
-		}
+		assertRequestedOrderingField(t, parts[0].Value, col1)
 		if parts[0].SortOrder != properties.RequestedSortOrderAscending {
 			t.Fatalf("child %d: expected ASC sort order", i)
 		}
@@ -70,16 +88,12 @@ func TestPushRequestedOrderingThroughUnion_FirstBranchExhaustive(t *testing.T) {
 	t.Parallel()
 
 	// Verify first branch gets exhaustive orderings, others get as-is.
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanAQ, scanBQ})
-	unionRef := expressions.InitialOf(union)
+	union, unionRef := requestedOrderingUnionFixture("A", "B")
+	a := requestedOrderingUnionField(union, "A")
 
 	cm := NewConstraintMap()
 	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: a, SortOrder: properties.RequestedSortOrderAscending},
 	}, properties.DistinctnessNotDistinct, false) // not exhaustive
 	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
@@ -91,7 +105,7 @@ func TestPushRequestedOrderingThroughUnion_FirstBranchExhaustive(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	children := union.GetQuantifiers()
 
@@ -119,12 +133,7 @@ func TestPushRequestedOrderingThroughUnion_FirstBranchExhaustive(t *testing.T) {
 func TestPushRequestedOrderingThroughUnion_NoConstraintIsNoOp(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanAQ, scanBQ})
-	unionRef := expressions.InitialOf(union)
+	union, unionRef := requestedOrderingUnionFixture("A", "B")
 
 	cm := NewConstraintMap()
 	// No ordering constraint set.
@@ -137,7 +146,7 @@ func TestPushRequestedOrderingThroughUnion_NoConstraintIsNoOp(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	for i, child := range union.GetQuantifiers() {
 		childRef := child.GetRangesOver()
@@ -151,16 +160,12 @@ func TestPushRequestedOrderingThroughUnion_NoConstraintIsNoOp(t *testing.T) {
 func TestPushRequestedOrderingThroughUnion_NotConstraintOnlyIsNoOp(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanAQ, scanBQ})
-	unionRef := expressions.InitialOf(union)
+	union, unionRef := requestedOrderingUnionFixture("A", "B")
+	col1 := requestedOrderingUnionField(union, "COL1")
 
 	cm := NewConstraintMap()
 	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: col1, SortOrder: properties.RequestedSortOrderAscending},
 	}, properties.DistinctnessNotDistinct, false)
 	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
@@ -172,7 +177,7 @@ func TestPushRequestedOrderingThroughUnion_NotConstraintOnlyIsNoOp(t *testing.T)
 		Constraints:    cm,
 		constraintOnly: false,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	for i, child := range union.GetQuantifiers() {
 		childRef := child.GetRangesOver()
@@ -186,19 +191,14 @@ func TestPushRequestedOrderingThroughUnion_NotConstraintOnlyIsNoOp(t *testing.T)
 func TestPushRequestedOrderingThroughUnion_ThreeBranches(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
-	scanC := expressions.NewFullUnorderedScanExpression([]string{"C"}, values.UnknownType)
-	scanCQ := expressions.ForEachQuantifier(expressions.InitialOf(scanC))
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanAQ, scanBQ, scanCQ})
-	unionRef := expressions.InitialOf(union)
+	union, unionRef := requestedOrderingUnionFixture("A", "B", "C")
+	a := requestedOrderingUnionField(union, "A")
+	b := requestedOrderingUnionField(union, "B")
 
 	cm := NewConstraintMap()
 	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "a", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		{Value: &values.FieldValue{Field: "b", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
+		{Value: a, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: b, SortOrder: properties.RequestedSortOrderDescending},
 	}, properties.DistinctnessNotDistinct, false)
 	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
@@ -210,7 +210,7 @@ func TestPushRequestedOrderingThroughUnion_ThreeBranches(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	for i, child := range union.GetQuantifiers() {
 		childRef := child.GetRangesOver()
@@ -228,16 +228,12 @@ func TestPushRequestedOrderingThroughUnion_ThreeBranches(t *testing.T) {
 func TestPushRequestedOrderingThroughUnion_NoYield(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanAQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	scanBQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{scanAQ, scanBQ})
-	unionRef := expressions.InitialOf(union)
+	union, unionRef := requestedOrderingUnionFixture("A", "B")
+	col1 := requestedOrderingUnionField(union, "COL1")
 
 	cm := NewConstraintMap()
 	reqOrd := properties.NewRequestedOrdering([]properties.RequestedOrderingPart{
-		{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
+		{Value: col1, SortOrder: properties.RequestedSortOrderAscending},
 	}, properties.DistinctnessNotDistinct, false)
 	Set(cm, unionRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{reqOrd})
 
@@ -249,7 +245,7 @@ func TestPushRequestedOrderingThroughUnion_NoYield(t *testing.T) {
 		Constraints:    cm,
 		constraintOnly: true,
 	}
-	rule.OnMatch(call)
+	mustRunRequestedOrderingRule(t, rule, call)
 
 	if len(call.yielded) != 0 {
 		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))

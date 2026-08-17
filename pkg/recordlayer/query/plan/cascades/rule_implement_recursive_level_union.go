@@ -62,12 +62,17 @@ func (r *ImplementRecursiveLevelUnionRule) OnMatch(call *ExpressionRuleCall) {
 	// winner, no separate physical wrapper (RFC-184 W2).
 	initQ := expressions.ForEachQuantifier(call.MemoizeExpression(initialWinner))
 	recQ := expressions.ForEachQuantifier(call.MemoizeExpression(recursiveWinner))
-	call.Yield(plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+	plan, err := plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
 		initQ, recQ,
 		recUnion.GetTempTableScanAlias(),
 		recUnion.GetTempTableInsertAlias(),
 		recUnion.IsDistinct(),
-	))
+	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(plan)
 }
 
 var _ ExpressionRule = (*ImplementRecursiveLevelUnionRule)(nil)

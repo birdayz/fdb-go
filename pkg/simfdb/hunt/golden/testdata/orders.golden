@@ -4,7 +4,7 @@
 #   CREATE INDEX idx_val ON t(val)
 
 === SELECT id, cat, val, name, flag FROM t ORDER BY id
-PLAN: Project([ID#0, CAT#1, VAL#2, NAME#3, FLAG#4], Scan(T))
+PLAN: Project([_current.ID#0, _current.CAT#1, _current.VAL#2, _current.NAME#3, _current.FLAG#4], Scan(T))
 ROWS(8) cols=[ID, CAT, VAL, NAME, FLAG]:
   [1, 1, 100, "a", true]
   [2, 1, 200, "b", false]
@@ -16,48 +16,48 @@ ROWS(8) cols=[ID, CAT, VAL, NAME, FLAG]:
   [8, 2, 250, "h", NULL]
 
 === SELECT COUNT(*) FROM t
-PLAN: Project([COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
+PLAN: Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))
 ROWS(1) cols=[COUNT(*)]:
   [8]
 
 === SELECT COUNT(val), COUNT(name), COUNT(flag) FROM t
-PLAN: Project([COUNT(VAL)#0, COUNT(NAME)#1, COUNT(FLAG)#2], StreamingAgg(keys=[], Scan(T)))
+PLAN: Project([_current.COUNT(VAL)#0, _current.COUNT(NAME)#1, _current.COUNT(FLAG)#2], StreamingAgg(keys=[], Scan(T)))
 ROWS(1) cols=[COUNT(VAL), COUNT(NAME), COUNT(FLAG)]:
   [7, 7, 7]
 
 === SELECT MIN(val), MAX(val), SUM(val) FROM t
-PLAN: Project([MIN(VAL)#0, MAX(VAL)#1, SUM(VAL)#2], StreamingAgg(keys=[], Scan(T)))
+PLAN: Project([_current.MIN(VAL)#0, _current.MAX(VAL)#1, _current.SUM(VAL)#2], StreamingAgg(keys=[], Scan(T)))
 ROWS(1) cols=[MIN(VAL), MAX(VAL), SUM(VAL)]:
   [50, 300, 1200]
 
 === SELECT cat, COUNT(*), SUM(val) FROM t GROUP BY cat ORDER BY cat
-PLAN: Project([CAT#0, COUNT(*)#1, SUM(VAL)#2], StreamingAgg(keys=[CAT#1], InMemorySort([CAT#1 ASC], Scan(T))))
+PLAN: Project([_current.CAT#0, _current.COUNT(*)#1, _current.SUM(VAL)#2], StreamingAgg(keys=[_current.CAT#1], InMemorySort([_current.CAT#1 ASC], Scan(T))))
 ROWS(3) cols=[CAT, COUNT(*), SUM(VAL)]:
   [1, 3, 350]
   [2, 3, 550]
   [3, 2, 300]
 
 === SELECT id FROM t WHERE cat = 2 ORDER BY id
-PLAN: Project([ID#0], IndexScan(IDX_CAT, [=] COVERING))
+PLAN: Project([_current.ID#0], IndexScan(IDX_CAT, [=] COVERING))
 ROWS(3) cols=[ID]:
   [3]
   [4]
   [8]
 
 === SELECT id, val FROM t WHERE val > 150 ORDER BY id
-PLAN: Project([ID#0, VAL#2], InMemorySort([ID ASC], IndexScan(IDX_VAL, [<>])))
+PLAN: Project([_current.ID#0, _current.VAL#2], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_VAL, [<>])))
 ROWS(3) cols=[ID, VAL]:
   [2, 200]
   [6, 300]
   [8, 250]
 
 === SELECT id FROM t WHERE val IS NULL ORDER BY id
-PLAN: Project([ID#0], IndexScan(IDX_VAL, [=] COVERING))
+PLAN: Project([_current.ID#0], IndexScan(IDX_VAL, [=] COVERING))
 ROWS(1) cols=[ID]:
   [5]
 
 === SELECT id FROM t WHERE val IS NOT NULL AND val <= 150 ORDER BY id
-PLAN: Project([ID#0], InMemorySort([ID ASC], Fetch(PredicatesFilter(IndexScan(IDX_VAL, [<>] COVERING), [1 preds]))))
+PLAN: Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_VAL, [<>] COVERING), [1 preds]))))
 ROWS(4) cols=[ID]:
   [1]
   [3]
@@ -65,7 +65,7 @@ ROWS(4) cols=[ID]:
   [7]
 
 === SELECT id FROM t WHERE cat IN (1, 3) ORDER BY id
-PLAN: Project([ID#0], InUnion(IndexScan(IDX_CAT, [=]), bindings=1, ASC))
+PLAN: Project([_current.ID#0], InUnion(IndexScan(IDX_CAT, [=]), bindings=1, ASC))
 ROWS(5) cols=[ID]:
   [1]
   [2]
@@ -74,7 +74,7 @@ ROWS(5) cols=[ID]:
   [7]
 
 === SELECT id, val FROM t ORDER BY val, id LIMIT 4
-PLAN: Limit(4, Project([ID#0, VAL#2], InMemorySort([VAL ASC, ID ASC], Scan(T))))
+PLAN: Limit(4, Project([_current.ID#0, _current.VAL#2], InMemorySort([_current.VAL#2 ASC, _current.ID#0 ASC], Scan(T))))
 ROWS(4) cols=[ID, VAL]:
   [5, NULL]
   [7, 50]
@@ -82,14 +82,14 @@ ROWS(4) cols=[ID, VAL]:
   [3, 150]
 
 === SELECT DISTINCT cat FROM t ORDER BY cat
-PLAN: Distinct(Project([CAT#1], IndexScan(IDX_CAT, [*])))
+PLAN: Distinct(Project([_current.CAT#1], IndexScan(IDX_CAT, [*])))
 ROWS(3) cols=[CAT]:
   [1]
   [2]
   [3]
 
 === SELECT id FROM t WHERE flag = true ORDER BY id
-PLAN: Project([ID#0], PredicatesFilter(Scan(T), [1 preds]))
+PLAN: Project([_current.ID#0], PredicatesFilter(Scan(T), [1 preds]))
 ROWS(4) cols=[ID]:
   [1]
   [3]
@@ -97,7 +97,7 @@ ROWS(4) cols=[ID]:
   [7]
 
 === SELECT id, name FROM t WHERE name IS NULL ORDER BY id
-PLAN: Project([ID#0, NAME#3], PredicatesFilter(Scan(T), [1 preds]))
+PLAN: Project([_current.ID#0, _current.NAME#3], PredicatesFilter(Scan(T), [1 preds]))
 ROWS(1) cols=[ID, NAME]:
   [6, NULL]
 

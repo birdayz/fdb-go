@@ -40,18 +40,18 @@ func TestStructurallyEqual_Constant(t *testing.T) {
 func TestStructurallyEqual_Comparison(t *testing.T) {
 	t.Parallel()
 	a := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "X"},
+		Operand:    predicateTestField(t, "X", values.NullableLong),
 		Comparison: Comparison{Type: ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5)}},
 	}
 	b := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "X"},
+		Operand:    predicateTestField(t, "X", values.NullableLong),
 		Comparison: Comparison{Type: ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5)}},
 	}
 	if !StructurallyEqual(a, b) {
 		t.Fatal("identical comparisons should be equal")
 	}
 	c := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "Y"},
+		Operand:    predicateTestField(t, "Y", values.NullableLong),
 		Comparison: Comparison{Type: ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5)}},
 	}
 	if StructurallyEqual(a, c) {
@@ -74,7 +74,7 @@ func TestStructurallyEqual_DifferentTypes(t *testing.T) {
 	t.Parallel()
 	a := NewConstantPredicate(TriTrue)
 	b := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "X"},
+		Operand:    predicateTestField(t, "X", values.NullableLong),
 		Comparison: Comparison{Type: ComparisonEquals, Operand: &values.ConstantValue{Value: int64(5)}},
 	}
 	if StructurallyEqual(a, b) {
@@ -85,12 +85,12 @@ func TestStructurallyEqual_DifferentTypes(t *testing.T) {
 func TestStructurallyEqual_Exists(t *testing.T) {
 	t.Parallel()
 	alias := values.NamedCorrelationIdentifier("q")
-	a := NewExistentialAlias(alias)
-	b := NewExistentialAlias(alias)
+	a := mustExistentialAlias(t, alias)
+	b := mustExistentialAlias(t, alias)
 	if !StructurallyEqual(a, b) {
 		t.Fatal("same alias EXISTS should be equal")
 	}
-	c := NewExistentialAlias(values.NamedCorrelationIdentifier("other"))
+	c := mustExistentialAlias(t, values.NamedCorrelationIdentifier("other"))
 	if StructurallyEqual(a, c) {
 		t.Fatal("different alias EXISTS should not be equal")
 	}

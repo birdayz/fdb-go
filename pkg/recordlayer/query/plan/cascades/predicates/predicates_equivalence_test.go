@@ -34,7 +34,7 @@ func TestPredicateEquals_ExistentialValuePredicate(t *testing.T) {
 	t.Parallel()
 	mkExists := func(a values.CorrelationIdentifier) *ExistentialValuePredicate {
 		return &ExistentialValuePredicate{
-			Value:      values.NewQuantifiedObjectValue(a),
+			Value:      mustQOV(t, a),
 			Comparison: Comparison{Type: ComparisonIsNotNull},
 		}
 	}
@@ -48,7 +48,7 @@ func TestPredicateEquals_ExistentialValuePredicate(t *testing.T) {
 		t.Fatal("EXISTS over different quantifiers must NOT be equal")
 	}
 	// Not equal to an unrelated predicate type.
-	if PredicateEquals(mkExists(q), mkValuePred("a", "x")) {
+	if PredicateEquals(mkExists(q), mkValuePred(t, "a", "x")) {
 		t.Fatal("EXISTS must not equal a ValuePredicate")
 	}
 }
@@ -60,9 +60,9 @@ func TestPredicateEquals_ExistentialValuePredicate(t *testing.T) {
 // as a multiset.
 func TestPredicateEquals_OrPositional(t *testing.T) {
 	t.Parallel()
-	p1 := mkValuePred("a", "Hello")
-	p2 := mkValuePred("b", "World")
-	p3 := mkValuePred("c", "Castro")
+	p1 := mkValuePred(t, "a", "Hello")
+	p2 := mkValuePred(t, "b", "World")
+	p3 := mkValuePred(t, "c", "Castro")
 
 	or123 := &OrPredicate{SubPredicates: []QueryPredicate{p1, p2, p3}}
 	or321 := &OrPredicate{SubPredicates: []QueryPredicate{p3, p2, p1}}
@@ -82,9 +82,9 @@ func TestPredicateEquals_OrPositional(t *testing.T) {
 // TestPredicateEquals_AndPositional pins the same gap for AND.
 func TestPredicateEquals_AndPositional(t *testing.T) {
 	t.Parallel()
-	p1 := mkValuePred("a", "Hello")
-	p2 := mkValuePred("b", "World")
-	p3 := mkValuePred("c", "Castro")
+	p1 := mkValuePred(t, "a", "Hello")
+	p2 := mkValuePred(t, "b", "World")
+	p3 := mkValuePred(t, "c", "Castro")
 
 	and123 := &AndPredicate{SubPredicates: []QueryPredicate{p1, p2, p3}}
 	and321 := &AndPredicate{SubPredicates: []QueryPredicate{p3, p2, p1}}
@@ -101,9 +101,9 @@ func TestPredicateEquals_AndPositional(t *testing.T) {
 // multiset-irrelevant.
 func TestPredicateEquals_NestedAndOrPositional(t *testing.T) {
 	t.Parallel()
-	p1 := mkValuePred("a", "Hello")
-	p2 := mkValuePred("b", "World")
-	p3 := mkValuePred("c", "Castro")
+	p1 := mkValuePred(t, "a", "Hello")
+	p2 := mkValuePred(t, "b", "World")
+	p3 := mkValuePred(t, "c", "Castro")
 
 	left := &AndPredicate{SubPredicates: []QueryPredicate{
 		p1,
@@ -126,8 +126,8 @@ func TestPredicateEquals_NestedAndOrPositional(t *testing.T) {
 // Confirms our equality is strictly positional with NO dedup.
 func TestPredicateEquals_DuplicateChildren(t *testing.T) {
 	t.Parallel()
-	p1 := mkValuePred("a", "Hello")
-	p2 := mkValuePred("b", "World")
+	p1 := mkValuePred(t, "a", "Hello")
+	p2 := mkValuePred(t, "b", "World")
 	withDup := &AndPredicate{SubPredicates: []QueryPredicate{p1, p1, p2}}
 	noDup := &AndPredicate{SubPredicates: []QueryPredicate{p1, p2}}
 	if PredicateEquals(withDup, noDup) {
@@ -140,7 +140,7 @@ func TestPredicateEquals_DuplicateChildren(t *testing.T) {
 // equal to its child (the wrapper changes the structure).
 func TestPredicateEquals_SingletonAndOr(t *testing.T) {
 	t.Parallel()
-	p := mkValuePred("a", "Hello")
+	p := mkValuePred(t, "a", "Hello")
 	andP := &AndPredicate{SubPredicates: []QueryPredicate{p}}
 	orP := &OrPredicate{SubPredicates: []QueryPredicate{p}}
 	andP2 := &AndPredicate{SubPredicates: []QueryPredicate{p}}
@@ -160,8 +160,8 @@ func TestPredicateEquals_SingletonAndOr(t *testing.T) {
 // (single child).
 func TestPredicateEquals_NotPosition(t *testing.T) {
 	t.Parallel()
-	p1 := mkValuePred("a", "Hello")
-	p2 := mkValuePred("b", "World")
+	p1 := mkValuePred(t, "a", "Hello")
+	p2 := mkValuePred(t, "b", "World")
 	notP1a := &NotPredicate{Child: p1}
 	notP1b := &NotPredicate{Child: p1}
 	notP2 := &NotPredicate{Child: p2}
@@ -178,9 +178,6 @@ func TestPredicateEquals_NotPosition(t *testing.T) {
 // QueryPredicateTest uses ValuePredicate(FieldValue, SimpleComparison
 // EQUALS lit); our shape is ComparisonPredicate(FieldValue,
 // Comparison{Equals, lit}) which serves the same role.
-func mkValuePred(field, strLit string) QueryPredicate {
-	return NewComparisonPredicate(
-		&values.FieldValue{Field: field, Typ: values.TypeString},
-		Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(strLit)},
-	)
+func mkValuePred(t testing.TB, field, strLit string) QueryPredicate {
+	return NewComparisonPredicate(predicateTestField(t, field, values.TypeString), Comparison{Type: ComparisonEquals, Operand: values.LiteralValue(strLit)})
 }

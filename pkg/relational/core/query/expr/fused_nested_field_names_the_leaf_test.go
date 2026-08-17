@@ -3,7 +3,6 @@ package expr_test
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/semantic"
 )
@@ -81,20 +80,17 @@ func TestFusedNestedReferenceIsNamedAfterItsLeaf(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: resolve: %v", tc.name, err)
 		}
-		fv, ok := v.(*values.FieldValue)
-		if !ok {
-			t.Fatalf("%s: resolved to %T, want *values.FieldValue", tc.name, v)
-		}
-		if fv.Resolved == nil {
-			t.Fatalf("%s: resolved to a LAZY FieldValue; a descent must bake its path", tc.name)
+		fv := mustExprField(t, v)
+		if fv.Path() == nil {
+			t.Fatalf("%s: exact FieldValue has no resolved path", tc.name)
 		}
 
 		// Anti-vacuity: the assertion below is about a FUSED value, so prove the
 		// value is fused before reading its name. A single-accessor value would
 		// pass the name check trivially and prove nothing about the fuse.
-		got := make([]string, len(fv.Resolved.Accessors))
-		for i, acc := range fv.Resolved.Accessors {
-			got[i] = acc.Field
+		got := make([]string, fv.Path().Len())
+		for i := range got {
+			got[i] = exprAccessorName(t, fv.Path(), i)
 		}
 		if len(got) != len(tc.wantAccs) {
 			t.Fatalf("%s: resolved path %v, want %v — this test asserts the name of a FUSED "+
@@ -106,19 +102,19 @@ func TestFusedNestedReferenceIsNamedAfterItsLeaf(t *testing.T) {
 			}
 		}
 
-		if fv.Field != tc.wantLeaf {
+		if fv.DisplayName() != tc.wantLeaf {
 			t.Errorf("%s: Field = %q, want %q — the LAST accessor of %v. Java's fused "+
 				"FieldValue answers getLastFieldName and has no root name to give; a mint "+
 				"that copies the root node whole leaves Field naming the struct the "+
 				"reference descended THROUGH, which is a different column of a different "+
 				"type, and every consumer reading Field then disagrees with the planner's "+
 				"own mints of this same shape",
-				tc.name, fv.Field, tc.wantLeaf, got)
+				tc.name, fv.DisplayName(), tc.wantLeaf, got)
 		}
 
 		// Field must not have been made right by making something else wrong:
 		// the value still denotes the LEAF, so its type is the leaf's.
-		if fv.Typ == nil {
+		if fv.ResultType() == nil {
 			t.Errorf("%s: Typ is nil; a fused reference carries the LEAF's type", tc.name)
 		}
 	}

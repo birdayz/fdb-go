@@ -834,14 +834,17 @@ func (o *RichOrdering) PushDown(mapping map[string]values.Value) *RichOrdering {
 // Ports Java's Ordering.pullUp(Value, EvaluationContext, AliasMap,
 // Set<CorrelationIdentifier>) using the direct algorithmic pullUp
 // from values.PullUpValue.
-func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values.CorrelationIdentifier) *RichOrdering {
+func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values.CorrelationIdentifier) (*RichOrdering, error) {
 	if o == nil {
-		return nil
+		return nil, nil
 	}
 
-	pulledUpMap := values.PullUpValues(o.keys, resultValue, alias)
+	pulledUpMap, err := values.PullUpValues(o.keys, resultValue, alias)
+	if err != nil {
+		return nil, err
+	}
 	if len(pulledUpMap) == 0 {
-		return NewRichOrdering(nil, nil, o.distinct)
+		return NewRichOrdering(nil, nil, o.distinct), nil
 	}
 
 	translated := make(map[string]values.Value, len(pulledUpMap))
@@ -850,9 +853,19 @@ func (o *RichOrdering) PullUpThroughValue(resultValue values.Value, alias values
 			translated[values.ExplainValue(key)] = pulledUp
 		}
 	}
-	return o.translateKeysAndBindings(translated, func(value values.Value) values.Value {
-		return values.PullUpValue(value, resultValue, alias)
+	var translateErr error
+	pulled := o.translateKeysAndBindings(translated, func(value values.Value) values.Value {
+		if translateErr != nil {
+			return nil
+		}
+		var translatedValue values.Value
+		translatedValue, translateErr = values.PullUpValue(value, resultValue, alias)
+		return translatedValue
 	})
+	if translateErr != nil {
+		return nil, translateErr
+	}
+	return pulled, nil
 }
 
 // PushDownThroughValue translates this ordering's keys from output

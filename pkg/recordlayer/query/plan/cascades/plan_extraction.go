@@ -2,6 +2,7 @@ package cascades
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -66,6 +67,20 @@ func ExtractBestPlanWith(ref *expressions.Reference, stats properties.Statistics
 // when the Reference DAG contains back-edges (e.g. recursive CTE
 // expression trees).
 func extractBestPlanWithVisited(ref *expressions.Reference, stats properties.StatisticsProvider, visited map[*expressions.Reference]bool) (expressions.RelationalExpression, error) {
+	return extractBestPlanWithVisitedForRequirement(ref, nil, stats, visited)
+}
+
+// extractBestPlanWithVisitedForRequirement is the parent-aware form of
+// extractBestPlanWithVisited. A physical parent may have finalized a Value
+// program against one exact child layout; in that case candidate filtering
+// happens before cost comparison, so a cheaper incompatible member cannot be
+// relinked under that already-finalized parent.
+func extractBestPlanWithVisitedForRequirement(
+	ref *expressions.Reference,
+	requirement plans.OrdinalLayoutRequirement,
+	stats properties.StatisticsProvider,
+	visited map[*expressions.Reference]bool,
+) (expressions.RelationalExpression, error) {
 	if ref == nil || len(ref.AllMembers()) == 0 {
 		return nil, nil
 	}
@@ -81,7 +96,20 @@ func extractBestPlanWithVisited(ref *expressions.Reference, stats properties.Sta
 	// memoized DAG; each reference must re-extract. Mirrors extractTieBreakHash.
 	visited[ref] = true
 	defer delete(visited, ref)
-	best := ref.GetBest(tieBrokenLess(properties.CostLessWith(stats)))
+	less := tieBrokenLess(properties.CostLessWith(stats))
+	var best expressions.RelationalExpression
+	var err error
+	if requirement == nil {
+		best = ref.GetBest(less)
+	} else {
+		best, err = bestOrdinalCompatiblePhysicalMember(ref, requirement, less)
+		if err != nil {
+			return nil, err
+		}
+		if best == nil {
+			return nil, fmt.Errorf("ordinal input layout: no compatible physical member remains")
+		}
+	}
 	if best == nil {
 		return nil, nil
 	}
@@ -196,16 +224,18 @@ type BestMemberSelector interface {
 	HasBestMember(ref *expressions.Reference) bool
 }
 
-// ExtractBestPlanFromSelector returns a fresh tree where every
-// Reference's best member comes from `sel` if available; falls
-// back to CostLess+stats otherwise.
+// ExtractBestPlanFromSelector returns a fresh executable tree where every
+// Reference's physical member comes from `sel` if available; otherwise it
+// cost-selects from physical members only. A selector-named LogicalSort is the
+// one exception: it is accepted only when sort elision immediately resolves it
+// to a physical ordered child.
 //
 // Use this when the caller has a pre-populated selector (e.g. the
 // cascades.Planner after PlanWithContext). It avoids repeating the OPTIMIZE
 // work that already happened during planning.
 //
-// Pass nil sel to fall back to ExtractBestPlanWith(ref, stats)
-// (no selector path).
+// Pass nil sel to use the physical-only cost fallback. Use
+// ExtractBestPlanWith when intentionally extracting a still-logical DAG.
 func ExtractBestPlanFromSelector(ref *expressions.Reference, sel BestMemberSelector, stats properties.StatisticsProvider) (expressions.RelationalExpression, error) {
 	return ExtractBestPlanFromSelectorContext(context.Background(), ref, sel, stats)
 }
@@ -246,6 +276,22 @@ func extractBestPlanFromSelectorVisited(
 	stats properties.StatisticsProvider,
 	visited map[*expressions.Reference]bool,
 ) (expressions.RelationalExpression, error) {
+	return extractBestPlanFromSelectorVisitedForRequirement(
+		ctx, ref, nil, sel, stats, visited)
+}
+
+// extractBestPlanFromSelectorVisitedForRequirement is selector extraction with
+// one parent-owned physical input requirement. A stamped global winner remains
+// authoritative only when it satisfies that requirement; otherwise the
+// cheapest compatible retained member is selected instead.
+func extractBestPlanFromSelectorVisitedForRequirement(
+	ctx context.Context,
+	ref *expressions.Reference,
+	requirement plans.OrdinalLayoutRequirement,
+	sel BestMemberSelector,
+	stats properties.StatisticsProvider,
+	visited map[*expressions.Reference]bool,
+) (expressions.RelationalExpression, error) {
 	if err := plannerContextErr(ctx); err != nil {
 		return nil, err
 	}
@@ -262,10 +308,20 @@ func extractBestPlanFromSelectorVisited(
 	visited[ref] = true
 	defer delete(visited, ref)
 
+	if requirement != nil {
+		best, err := selectedOrdinalCompatiblePhysicalMember(ctx, ref, requirement, sel, stats)
+		if err != nil {
+			return nil, err
+		}
+		if best == nil {
+			return nil, fmt.Errorf("ordinal input layout: no compatible physical member remains")
+		}
+		return rebuildExpressionFromSelectorVisited(ctx, best, sel, stats, visited)
+	}
+
 	// OPTIMIZE-winner path: if the Reference has a physical winner
-	// stamped, use it directly. Non-physical winners fall through to
-	// the legacy extraction which navigates Members to find the
-	// physical plan.
+	// stamped, use it directly. Non-physical winners fall through to the
+	// selector probe and then the physical-only member fallback below.
 	w := ref.Winner()
 	if err := plannerContextErr(ctx); err != nil {
 		return nil, err
@@ -287,22 +343,11 @@ func extractBestPlanFromSelectorVisited(
 			}
 		}
 	}
-	if !isPhysicalPlan(best) {
-		best = ref.GetBest(costLessFor(sel, stats))
-		if err := plannerContextErr(ctx); err != nil {
-			return nil, err
-		}
-	}
-	if best == nil {
-		return nil, nil
-	}
-
-	// Sort elimination: if the best expression is a LogicalSort and the
-	// selector can name a child member whose ordering satisfies the
-	// sort's keys, skip the sort and use that member directly. The
-	// satisfaction judgment lives with the selector (the planner), which
-	// runs it on the rich Value + sort-order representation — this
-	// package deliberately has no ordering model of its own.
+	// A selector may deliberately name a logical Sort as its elision probe.
+	// That is not the physical fallback: accept it only when it immediately
+	// resolves to a physical ordered child. A failed probe falls through to
+	// the same physical-only selection as any other non-physical selector
+	// result.
 	if sortExpr, ok := best.(*expressions.LogicalSortExpression); ok {
 		childWinner, err := sortWinnerFromChild(ctx, sortExpr, sel, stats, visited)
 		if err != nil {
@@ -311,6 +356,21 @@ func extractBestPlanFromSelectorVisited(
 		if childWinner != nil {
 			return childWinner, nil
 		}
+	}
+	if !isPhysicalPlan(best) {
+		// A selector miss must still resolve to an executable answer. Costing
+		// logical and physical alternatives together can select a cheaper
+		// logical expression that extraction then rebuilds as if it were a
+		// plan, while RFC-224's selected-path verifier correctly reports no
+		// physical answer. Filter before comparing so both seams use the same
+		// physical-only fallback contract.
+		best = findBestValidPhysicalExpr(ref, physicalFallbackLess(sel, stats))
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if best == nil {
+		return nil, nil
 	}
 
 	return rebuildExpressionFromSelectorVisited(ctx, best, sel, stats, visited)
@@ -334,6 +394,21 @@ func costLessFor(sel BestMemberSelector, stats properties.StatisticsProvider) fu
 		}
 	}
 	return properties.CostLessWith(stats)
+}
+
+// physicalFallbackLess returns a total comparator for physical-member
+// fallback selection. A Planner supplies its own tie-broken comparator; the
+// selector-less/test seam receives extraction's structural tie break so a
+// cost tie cannot make selection depend on member insertion order.
+func physicalFallbackLess(
+	sel BestMemberSelector,
+	stats properties.StatisticsProvider,
+) func(a, b expressions.RelationalExpression) bool {
+	less := costLessFor(sel, stats)
+	if _, total := sel.(TieBrokenCostSelector); !total {
+		less = tieBrokenLess(less)
+	}
+	return less
 }
 
 // SortElisionSelector is the optional extension of BestMemberSelector a
@@ -421,14 +496,22 @@ func rebuildOrderedSpine(
 	if err := plannerContextErr(ctx); err != nil {
 		return nil, err
 	}
+	requirements, err := ordinalInputRequirementsOf(e)
+	if err != nil {
+		return nil, err
+	}
 	srcRef, delegates := elider.OrderingSourceRef(e)
 	if err := plannerContextErr(ctx); err != nil {
 		return nil, err
 	}
 	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
-	for _, q := range e.GetQuantifiers() {
+	for i, q := range e.GetQuantifiers() {
 		if err := plannerContextErr(ctx); err != nil {
 			return nil, err
+		}
+		var requirement plans.OrdinalLayoutRequirement
+		if len(requirements) != 0 {
+			requirement = requirements[i]
 		}
 		childRef := q.GetRangesOver()
 		if delegates && childRef == srcRef && srcRef != nil {
@@ -443,6 +526,10 @@ func rebuildOrderedSpine(
 			if om == nil || !isPhysicalPlan(om) {
 				return nil, nil // spine broken — decline elision
 			}
+			compatible, compatibilityErr := memberSatisfiesOrdinalRequirement(om, requirement)
+			if compatibilityErr != nil || !compatible {
+				return nil, nil // incompatible spine — keep the explicit sort
+			}
 			inner, err := rebuildOrderedSpine(ctx, om, sortExpr, elider, sel, stats, visited, pinned)
 			if err != nil {
 				return nil, err
@@ -450,10 +537,11 @@ func rebuildOrderedSpine(
 			if inner == nil {
 				return nil, nil
 			}
-			freshChildren = append(freshChildren, expressions.ForEachQuantifier(expressions.InitialOf(inner)))
+			freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshExtractedReference(inner)))
 			continue
 		}
-		inner, err := extractBestPlanFromSelectorVisited(ctx, childRef, sel, stats, visited)
+		inner, err := extractBestPlanFromSelectorVisitedForRequirement(
+			ctx, childRef, requirement, sel, stats, visited)
 		if err != nil {
 			return nil, err
 		}
@@ -461,7 +549,7 @@ func rebuildOrderedSpine(
 		if inner == nil {
 			freshRef = &expressions.Reference{}
 		} else {
-			freshRef = expressions.InitialOf(inner)
+			freshRef = freshExtractedReference(inner)
 		}
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
@@ -541,20 +629,29 @@ func rebuildExpressionFromSelectorVisited(
 	if e == nil {
 		return nil, nil
 	}
+	requirements, err := ordinalInputRequirementsOf(e)
+	if err != nil {
+		return nil, err
+	}
 	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
-	for _, q := range e.GetQuantifiers() {
+	for i, q := range e.GetQuantifiers() {
 		if err := plannerContextErr(ctx); err != nil {
 			return nil, err
 		}
-		inner, err := extractBestPlanFromSelectorVisited(ctx, q.GetRangesOver(), sel, stats, visited)
+		var requirement plans.OrdinalLayoutRequirement
+		if len(requirements) != 0 {
+			requirement = requirements[i]
+		}
+		inner, err := extractBestPlanFromSelectorVisitedForRequirement(
+			ctx, q.GetRangesOver(), requirement, sel, stats, visited)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("ordinal input %d of %T: %w", i, e, err)
 		}
 		var freshRef *expressions.Reference
 		if inner == nil {
 			freshRef = &expressions.Reference{}
 		} else {
-			freshRef = expressions.InitialOf(inner)
+			freshRef = freshExtractedReference(inner)
 		}
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
@@ -574,13 +671,22 @@ func rebuildExpressionVisited(e expressions.RelationalExpression, stats properti
 	if e == nil {
 		return nil, nil
 	}
+	requirements, err := ordinalInputRequirementsOf(e)
+	if err != nil {
+		return nil, err
+	}
 	// Recurse into each Quantifier first — collect fresh
 	// Quantifiers for the new expression's children.
 	freshChildren := make([]expressions.Quantifier, 0, len(e.GetQuantifiers()))
-	for _, q := range e.GetQuantifiers() {
-		inner, err := extractBestPlanWithVisited(q.GetRangesOver(), stats, visited)
+	for i, q := range e.GetQuantifiers() {
+		var requirement plans.OrdinalLayoutRequirement
+		if len(requirements) != 0 {
+			requirement = requirements[i]
+		}
+		inner, err := extractBestPlanWithVisitedForRequirement(
+			q.GetRangesOver(), requirement, stats, visited)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("ordinal input %d of %T: %w", i, e, err)
 		}
 		var freshRef *expressions.Reference
 		if inner == nil {
@@ -590,7 +696,7 @@ func rebuildExpressionVisited(e expressions.RelationalExpression, stats properti
 			// ref.Members().
 			freshRef = &expressions.Reference{}
 		} else {
-			freshRef = expressions.InitialOf(inner)
+			freshRef = freshExtractedReference(inner)
 		}
 		freshChildren = append(freshChildren, expressions.ForEachQuantifier(freshRef))
 	}
@@ -631,7 +737,7 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		// record-type set + flowed Type.
 		return expressions.NewFullUnorderedScanExpression(
 			ex.GetRecordTypes(), ex.GetFlowedType(),
-		), nil
+		)
 
 	case *expressions.LogicalFilterExpression:
 		if len(freshChildren) != 1 {
@@ -639,7 +745,7 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		}
 		return expressions.NewLogicalFilterExpression(
 			ex.GetPredicates(), freshChildren[0],
-		), nil
+		)
 
 	case *expressions.LogicalProjectionExpression:
 		if len(freshChildren) != 1 {
@@ -647,12 +753,21 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		}
 		// The alias vector AND its provenance: this is the extraction rebuild,
 		// so dropping the names here loses the output column names of every
-		// rebuilt projection — the same defect PushLimitThroughProjectionRule
-		// had — and dropping the provenance re-labels every machinery datum key
-		// as a user alias, which is the same defect one layer up.
-		return expressions.NewLogicalProjectionExpressionWithAliasProvenance(
-			ex.GetProjectedValues(), ex.GetAliases(), ex.GetAliasMinted(), freshChildren[0],
-		), nil
+		// rebuilt projection — `SELECT l.id AS l_id, r.id AS r_id …` reports two
+		// columns both named ID, rows unchanged — and dropping the provenance
+		// re-labels every machinery datum key as a user alias, which is the same
+		// defect one layer up.
+		rebuilt, err := expressions.NewLogicalProjectionExpressionWithOutputSchema(
+			ex.GetProjectedValues(), ex.GetAliases(), ex.GetAliasMinted(), ex.GetOutputNames(), freshChildren[0],
+		)
+		if err != nil {
+			return nil, err
+		}
+		rebuilt, err = rebuilt.WithAliasSources(ex.GetAliasSources())
+		if err != nil {
+			return nil, err
+		}
+		return rebuilt.WithInheritedOutputIdentity(ex), nil
 
 	case *expressions.LogicalSortExpression:
 		if len(freshChildren) != 1 {
@@ -660,13 +775,13 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		}
 		return expressions.NewLogicalSortExpression(
 			ex.GetSortKeys(), freshChildren[0],
-		), nil
+		)
 
 	case *expressions.LogicalDistinctExpression:
 		if len(freshChildren) != 1 {
 			return nil, fmt.Errorf("LogicalDistinctExpression: expected 1 child, got %d", len(freshChildren))
 		}
-		return expressions.NewLogicalDistinctExpression(freshChildren[0]), nil
+		return expressions.NewLogicalDistinctExpression(freshChildren[0])
 
 	case *expressions.LogicalTypeFilterExpression:
 		if len(freshChildren) != 1 {
@@ -674,21 +789,21 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		}
 		return expressions.NewLogicalTypeFilterExpression(
 			ex.GetRecordTypes(), freshChildren[0],
-		), nil
+		)
 
 	case *expressions.LogicalUnionExpression:
-		return expressions.NewLogicalUnionExpression(freshChildren), nil
+		return expressions.NewLogicalUnionExpression(freshChildren)
 
 	case *expressions.LogicalIntersectionExpression:
 		return expressions.NewLogicalIntersectionExpression(
 			freshChildren, ex.GetComparisonKeyValues(),
-		), nil
+		)
 
 	case *expressions.SelectExpression:
 		return expressions.NewSelectExpressionWithJoinType(
 			ex.GetResultValue(), freshChildren, ex.GetPredicates(),
 			ex.GetSourceAliases(), ex.GetJoinType(),
-		), nil
+		)
 
 	case *expressions.InsertExpression:
 		if len(freshChildren) != 1 {
@@ -696,15 +811,15 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		}
 		return expressions.NewInsertExpression(
 			freshChildren[0], ex.GetTargetRecordType(), ex.GetTargetType(),
-		), nil
+		)
 
 	case *expressions.UpdateExpression:
 		if len(freshChildren) != 1 {
 			return nil, fmt.Errorf("UpdateExpression: expected 1 child, got %d", len(freshChildren))
 		}
 		return expressions.NewUpdateExpression(
-			freshChildren[0], ex.GetTargetRecordType(), ex.GetTransforms(),
-		), nil
+			freshChildren[0], ex.GetTargetRecordType(), ex.GetTargetType(), ex.GetTransforms(),
+		)
 
 	case *expressions.DeleteExpression:
 		if len(freshChildren) != 1 {
@@ -712,7 +827,7 @@ func rebuildWithFreshChildren(e expressions.RelationalExpression, freshChildren 
 		}
 		return expressions.NewDeleteExpression(
 			freshChildren[0], ex.GetTargetRecordType(),
-		), nil
+		)
 
 	default:
 		// Unknown concrete type — try the optional WithChildren
@@ -768,6 +883,186 @@ type WithChildren interface {
 
 type physicalPlanHolder interface {
 	GetRecordQueryPlan() plans.RecordQueryPlan
+}
+
+// freshExtractedReference preserves the member-set meaning of an extracted
+// child. A physical plan is a selected FINAL answer, which is load-bearing for
+// PlanExprBase to retain its exact input requirement during reconstruction; a
+// still-logical expression remains an exploratory singleton as before.
+func freshExtractedReference(inner expressions.RelationalExpression) *expressions.Reference {
+	if isPhysicalPlan(inner) {
+		return expressions.FinalOf(inner)
+	}
+	return expressions.InitialOf(inner)
+}
+
+// ordinalInputRequirementsOf returns a physical parent's complete positional
+// input-requirement vector. An empty vector means the parent has not retained a
+// layout-dependent input contract. A non-empty partial vector is malformed:
+// callers must never guess which edge an omitted requirement belongs to.
+func ordinalInputRequirementsOf(e expressions.RelationalExpression) ([]plans.OrdinalLayoutRequirement, error) {
+	// scanPlanExpression deliberately models a complete composite data-access
+	// plan as one opaque memo leaf. Its concrete plan may have children and
+	// ordinal requirements, but there are no memo quantifiers for extraction to
+	// relink; applying those requirements here invents positional memo edges and
+	// rejects the valid 1-concrete-child/0-memo-child shape. The wrapped subtree
+	// is already frozen and rebuilt by the adapter's zero-arity WithChildren.
+	if _, opaque := e.(*scanPlanExpression); opaque {
+		return nil, nil
+	}
+	holder, ok := e.(physicalPlanHolder)
+	if !ok {
+		return nil, nil
+	}
+	parent := holder.GetRecordQueryPlan()
+	if parent == nil {
+		return nil, nil
+	}
+	propertiesView, err := parent.OrdinalPhysicalProperties()
+	if err != nil {
+		var unavailable *plans.OrdinalLayoutUnavailableError
+		if errors.As(err, &unavailable) && unavailable.Code == plans.OrdinalLayoutDynamicCarrier {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%T ordinal physical properties: %w", parent, err)
+	}
+	exact, ok := plans.AsOrdinalPhysicalProperties(propertiesView)
+	if !ok {
+		return nil, fmt.Errorf("%T returned a foreign ordinal physical-property view", parent)
+	}
+	requirements := exact.RequiredInputLayouts()
+	if len(requirements) == 0 {
+		return nil, nil
+	}
+	if got, want := len(requirements), len(e.GetQuantifiers()); got != want {
+		return nil, fmt.Errorf(
+			"%T ordinal input requirements: got %d for %d quantifiers",
+			parent, got, want)
+	}
+	return requirements, nil
+}
+
+// memberSatisfiesOrdinalRequirement checks only the candidate's stated
+// provided layout. Dynamic carriers are not compatible with a concrete
+// requirement; malformed constructed plans fail selection loudly.
+func memberSatisfiesOrdinalRequirement(
+	m expressions.RelationalExpression,
+	requirement plans.OrdinalLayoutRequirement,
+) (bool, error) {
+	if requirement == nil {
+		return true, nil
+	}
+	holder, ok := m.(physicalPlanHolder)
+	if !ok {
+		return false, nil
+	}
+	candidate := holder.GetRecordQueryPlan()
+	if candidate == nil {
+		return false, nil
+	}
+	layout, err := candidate.ProvidedOutputLayout()
+	if err != nil {
+		var unavailable *plans.OrdinalLayoutUnavailableError
+		if errors.As(err, &unavailable) && unavailable.Code == plans.OrdinalLayoutDynamicCarrier {
+			return false, nil
+		}
+		return false, fmt.Errorf("%T provided output layout: %w", candidate, err)
+	}
+	return requirement.SatisfiedBy(layout)
+}
+
+// bestOrdinalCompatiblePhysicalMember filters before comparing cost. This is
+// the central safety property: an incompatible candidate never participates in
+// the less fold and therefore cannot win merely by being cheaper.
+func bestOrdinalCompatiblePhysicalMember(
+	ref *expressions.Reference,
+	requirement plans.OrdinalLayoutRequirement,
+	less func(a, b expressions.RelationalExpression) bool,
+) (expressions.RelationalExpression, error) {
+	if ref == nil || requirement == nil {
+		return nil, nil
+	}
+	return bestOrdinalCompatiblePhysicalMemberAmong(ref.AllMembers(), requirement, less)
+}
+
+// bestOrdinalCompatiblePhysicalMemberAmong is the property-keyed cost fold
+// shared by optimizer retention and extraction. The caller chooses the member
+// domain: OptimizeGroup passes FinalMembers because only finals may survive a
+// physical prune, while extraction passes AllMembers for its historical
+// physical fallback. Compatibility is always tested before cost.
+func bestOrdinalCompatiblePhysicalMemberAmong(
+	members []expressions.RelationalExpression,
+	requirement plans.OrdinalLayoutRequirement,
+	less func(a, b expressions.RelationalExpression) bool,
+) (expressions.RelationalExpression, error) {
+	if requirement == nil {
+		return nil, nil
+	}
+	if less == nil {
+		less = tieBrokenLess(properties.CostLess)
+	}
+	var best expressions.RelationalExpression
+	for _, member := range members {
+		compatible, err := memberSatisfiesOrdinalRequirement(member, requirement)
+		if err != nil {
+			return nil, err
+		}
+		if !compatible {
+			continue
+		}
+		if best == nil || less(member, best) {
+			best = member
+		}
+	}
+	return best, nil
+}
+
+// selectedOrdinalCompatiblePhysicalMember preserves an already-stamped choice
+// only when it is compatible. Otherwise it falls back to a cost comparison
+// over the compatible subset retained in the Reference.
+func selectedOrdinalCompatiblePhysicalMember(
+	ctx context.Context,
+	ref *expressions.Reference,
+	requirement plans.OrdinalLayoutRequirement,
+	sel BestMemberSelector,
+	stats properties.StatisticsProvider,
+) (expressions.RelationalExpression, error) {
+	if err := plannerContextErr(ctx); err != nil {
+		return nil, err
+	}
+	if ref == nil || requirement == nil {
+		return nil, nil
+	}
+	if winner := ref.Winner(); winner != nil {
+		compatible, err := memberSatisfiesOrdinalRequirement(winner, requirement)
+		if err != nil {
+			return nil, err
+		}
+		if compatible {
+			return winner, nil
+		}
+	}
+	if sel != nil && sel.HasBestMember(ref) {
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, err
+		}
+		selected := sel.BestMember(ref)
+		if err := plannerContextErr(ctx); err != nil {
+			return nil, err
+		}
+		compatible, err := memberSatisfiesOrdinalRequirement(selected, requirement)
+		if err != nil {
+			return nil, err
+		}
+		if compatible {
+			return selected, nil
+		}
+	}
+	less := costLessFor(sel, stats)
+	if _, total := sel.(TieBrokenCostSelector); !total {
+		less = tieBrokenLess(less)
+	}
+	return bestOrdinalCompatiblePhysicalMember(ref, requirement, less)
 }
 
 func isPhysicalPlan(e expressions.RelationalExpression) bool {

@@ -223,7 +223,7 @@ func (a *Analyzer) ExpandQualifiedStar(scope *Scope, qualifier Identifier) ([]Ex
 	// visible aliases if the qualifier misses entirely.
 	for cur := scope; cur != nil; cur = cur.Parent() {
 		for _, src := range cur.sources {
-			if src.Alias.EqualsIgnoreQuoting(qualifier) {
+			if src.matchesQualifier(qualifier) {
 				cols := NonEphemeral(src.Table.Columns())
 				out := make([]ExpandedColumn, len(cols))
 				for i, c := range cols {

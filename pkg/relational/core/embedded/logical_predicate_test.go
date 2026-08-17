@@ -8,6 +8,7 @@ import (
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
@@ -45,6 +46,126 @@ func buildTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
 		t.Fatalf("Build: %v", err)
 	}
 	return md
+}
+
+// TestSingleSourceOnOnlyCTEScopeBindsEveryClauseToTheProjectedRow pins the
+// block-local admission for a complete join-bodied CTE schema. The nested CTE
+// deliberately shadows the real Order table: its row contains only ORDER_ID,
+// while the catalog table contains many columns. WHERE, projection, and ORDER
+// BY must therefore all resolve against the same exact one-field CTE QOV. A
+// catalog fallback would give ORDER a wider base-table type and later collide
+// with the one-field runtime edge.
+func TestSingleSourceOnOnlyCTEScopeBindsEveryClauseToTheProjectedRow(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	queryCtx, err := parseQueryFromSelect(t, `WITH c2(x) AS (
+		WITH Order AS (
+			SELECT a.order_id AS order_id
+			FROM Order AS a, Order AS b
+			WHERE a.order_id = b.order_id
+		)
+		SELECT order_id FROM Order WHERE order_id > 0 ORDER BY order_id
+	) SELECT x FROM c2 ORDER BY x`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op, err := NewPlanVisitor(md).VisitQuery(queryCtx)
+	if err != nil {
+		t.Fatalf("VisitQuery: %v", err)
+	}
+
+	wantCorrelation := values.NamedCorrelationIdentifier("ORDER")
+	wantType := values.NewRecordType("", false, []values.Field{{
+		Name: "ORDER_ID", FieldType: values.NullableLong,
+	}})
+	found := map[string]bool{}
+	inspect := func(site string, value values.Value) {
+		if value == nil {
+			return
+		}
+		values.WalkValue(value, func(candidate values.Value) bool {
+			field, ok := values.AsFieldValue(candidate)
+			if !ok || field.Path() == nil {
+				return true
+			}
+			root, ok := values.AsQuantifiedObjectValue(field.ChildValue())
+			if !ok || root.Correlation() != wantCorrelation {
+				return true
+			}
+			if !root.FlowedType().Equals(wantType) {
+				t.Fatalf("%s ORDER root type = %s, want exact projected CTE row %s",
+					site, root.FlowedType(), wantType)
+			}
+			ordinals := field.Path().Ordinals()
+			if len(ordinals) != 1 || ordinals[0] != 0 {
+				t.Fatalf("%s ORDER_ID path = %v, want [0]", site, ordinals)
+			}
+			found[site] = true
+			return false
+		})
+	}
+	var walk func(logical.LogicalOperator)
+	walk = func(candidate logical.LogicalOperator) {
+		if candidate == nil {
+			return
+		}
+		switch node := candidate.(type) {
+		case *logical.LogicalFilter:
+			if node.Predicate != nil {
+				_, transformErr := predicates.TransformEmbeddedValuesChecked(
+					node.Predicate, func(value values.Value) (values.Value, error) {
+						inspect("where", value)
+						return value, nil
+					})
+				if transformErr != nil {
+					t.Fatalf("inspect WHERE predicate: %v", transformErr)
+				}
+			}
+		case *logical.LogicalProject:
+			for _, value := range node.ProjectedValues {
+				inspect("projection", value)
+			}
+		case *logical.LogicalSort:
+			for _, key := range node.Keys {
+				inspect("sort", key.Value)
+			}
+		}
+		for _, child := range candidate.Children() {
+			walk(child)
+		}
+	}
+	walk(op)
+	for _, site := range []string{"where", "projection", "sort"} {
+		if !found[site] {
+			t.Fatalf("no exact projected ORDER root found at %s", site)
+		}
+	}
+}
+
+// TestSingleSourceQueryBlockCTEScopes_DoesNotPromoteAcrossMultiLeg is the
+// flatten-evasion mutation control. A complete ON-only schema is eligible for
+// one sole-source block, but remains invisible to a comma/join block where
+// advertising it as a general CTE source can rebind another leg's bare column.
+func TestSingleSourceQueryBlockCTEScopes_DoesNotPromoteAcrossMultiLeg(t *testing.T) {
+	t.Parallel()
+	onlySource := semantic.ScopeSource{Table: &semantic.StaticTable{
+		TableName: semantic.FromSegments([]string{"C"}, false),
+		TableColumns: []semantic.Column{{
+			Id: semantic.FromNormalized("ID"), Type: "BIGINT",
+		}},
+	}}
+	onOnly := map[string]semantic.ScopeSource{"C": onlySource}
+	query := &selectQuery{
+		tableName: "C",
+		joins:     []joinClause{{tableName: "ORDER", alias: "O"}},
+	}
+	got := singleSourceQueryBlockCTEScopes(query, nil, onOnly)
+	if _, promoted := got["C"]; promoted {
+		t.Fatal("multi-leg block promoted an ON-only CTE into general resolution")
+	}
+	if _, stillRegistered := onOnly["C"]; !stillRegistered {
+		t.Fatal("multi-leg decline mutated the ON-only registry")
+	}
 }
 
 func TestCorrelatedExistsTruthAfterPagination(t *testing.T) {
@@ -189,8 +310,183 @@ func TestBuildLogicalPlanWithCatalog_WhereWalked(t *testing.T) {
 	// (rlcatalog is case-insensitive); ExplainValue renders literals
 	// unquoted via valueLiteralString.
 	got := op.Explain("")
-	if want := "Filter(PRICE#2 > 5)\n  Scan(ORDER)"; got != want {
+	if want := "Filter(ORDER.PRICE#2 > 5)\n  Scan(ORDER)"; got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
+	}
+}
+
+// The correlated fallback used to return an UNKNOWN ScalarSubqueryValue even
+// though its catalog-backed inner plan and selected column were exact.  It also
+// built its private ORDER BY as a name-only key after generic name rebaking had
+// been retired.  Pin both authorities at the logical boundary, before Cascades
+// translation can hide either defect behind a generic unsupported error.
+func TestCorrelatedScalarLogicalCarrierIsExact(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+	q, err := parseQueryFromSelect(t,
+		"SELECT (SELECT o.price FROM Order o WHERE o.order_id = c.customer_id ORDER BY o.price DESC LIMIT 1) FROM Customer c")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	op, err := buildLogicalPlanForQueryWithCatalog(q, md)
+	if err != nil {
+		t.Fatalf("build logical plan: %v", err)
+	}
+
+	var carrier *logical.LogicalProject
+	var findCarrier func(logical.LogicalOperator)
+	findCarrier = func(candidate logical.LogicalOperator) {
+		if candidate == nil || carrier != nil {
+			return
+		}
+		if project, ok := candidate.(*logical.LogicalProject); ok && len(project.CorrelatedScalarSubqueries) == 1 {
+			carrier = project
+			return
+		}
+		for _, child := range candidate.Children() {
+			findCarrier(child)
+		}
+	}
+	findCarrier(op)
+	if carrier == nil {
+		t.Fatal("logical plan has no correlated-scalar projection carrier")
+	}
+	if len(carrier.ProjectedValues) != 1 || carrier.ProjectedValues[0] == nil {
+		t.Fatalf("correlated projection values = %v, want one ScalarSubqueryValue", carrier.ProjectedValues)
+	}
+	if got := carrier.ProjectedValues[0].Type(); got == nil || got.Code() != values.TypeCodeInt || !got.IsNullable() {
+		t.Fatalf("correlated scalar carrier type = %v, want nullable INTEGER from Order.PRICE", got)
+	}
+
+	inner := carrier.CorrelatedScalarSubqueries[0].InnerPlan
+	materialized, ok := inner.(*logical.LogicalProject)
+	if !ok {
+		t.Fatalf("correlated scalar inner = %T, want one-column LogicalProject materializer", inner)
+	}
+	if len(materialized.ProjectedValues) != 1 || materialized.ProjectedValues[0] == nil {
+		t.Fatalf("scalar materializer values = %v, want the exact selected PRICE field", materialized.ProjectedValues)
+	}
+	selected, ok := values.AsFieldValue(materialized.ProjectedValues[0])
+	if !ok || selected.Path() == nil {
+		t.Fatalf("scalar materializer value = %T, want exact FieldValue", materialized.ProjectedValues[0])
+	}
+	ordinals := selected.Path().Ordinals()
+	if len(ordinals) != 1 || ordinals[0] != 2 {
+		t.Fatalf("scalar materializer path = %v, want Order.PRICE ordinal [2], not source ordinal zero", ordinals)
+	}
+	if len(materialized.Projections) != 1 {
+		t.Fatalf("scalar materializer declares %d columns, want exactly one", len(materialized.Projections))
+	}
+	var sort *logical.LogicalSort
+	var findSort func(logical.LogicalOperator)
+	findSort = func(candidate logical.LogicalOperator) {
+		if candidate == nil || sort != nil {
+			return
+		}
+		if found, ok := candidate.(*logical.LogicalSort); ok {
+			sort = found
+			return
+		}
+		for _, child := range candidate.Children() {
+			findSort(child)
+		}
+	}
+	findSort(inner)
+	if sort == nil || len(sort.Keys) != 1 || sort.Keys[0].Value == nil {
+		t.Fatalf("correlated scalar ORDER BY = %#v, want one exact Value-backed key", sort)
+	}
+	if got := sort.Keys[0].Value.Type(); got == nil || got.Code() != values.TypeCodeInt {
+		t.Fatalf("correlated scalar ORDER BY key type = %v, want INTEGER", got)
+	}
+}
+
+// An outer WITH wrapper carries CTE definitions in Body and the scalar query
+// itself in Main.  The wrapper must be transparent to scalar result typing: a
+// missing arm here turned an exact MIN(LONG) native slot into an UNKNOWN
+// ScalarSubqueryValue and made the enclosing projection unadmittable.
+func TestScalarSubqueryOutputTypeTraversesCTEMain(t *testing.T) {
+	t.Parallel()
+
+	operand := &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}
+	aggregate := &logical.LogicalAggregate{
+		Calls:             []logical.AggregateCall{{Func: "MIN", Operand: "V", BareColumn: true}},
+		AggregateOperands: []values.Value{operand},
+	}
+	project := &logical.LogicalProject{
+		Input:                   aggregate,
+		Projections:             []string{"MIN(V)"},
+		AggregateOutputOrdinals: []int{0},
+	}
+	wrapped := &logical.LogicalCTE{Name: "HIGH", Main: project}
+
+	got, err := scalarSubqueryOutputTypeChecked(wrapped)
+	if err != nil {
+		t.Fatalf("scalarSubqueryOutputTypeChecked(CTE(Main=MIN(LONG))): %v", err)
+	}
+	if got == nil || !got.Equals(values.NullableLong) {
+		t.Fatalf("scalarSubqueryOutputType(CTE(Main=MIN(LONG))) = %v, want %v", got, values.NullableLong)
+	}
+}
+
+func TestBuildScalarValidatesSemanticOutputBeforeRegistration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		sql      string
+		wantCode api.ErrorCode
+		wantType values.Type
+	}{
+		{
+			name:     "multiple_columns_are_syntax_error",
+			sql:      "SELECT order_id, price FROM Order WHERE order_id = 1",
+			wantCode: api.ErrCodeSyntaxError,
+		},
+		{
+			name:     "string_min_is_unsupported_operation",
+			sql:      "SELECT MIN(name) FROM Customer",
+			wantCode: api.ErrCodeUnsupportedOperation,
+		},
+		{
+			name:     "array_min_is_unsupported_operation",
+			sql:      "SELECT MIN(tags) FROM Order",
+			wantCode: api.ErrCodeUnsupportedOperation,
+		},
+		{
+			name:     "numeric_min_remains_exact_and_admitted",
+			sql:      "SELECT MIN(price) FROM Order",
+			wantType: values.NullableInt,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q, err := parseQueryFromSelect(t, tc.sql)
+			if err != nil {
+				t.Fatalf("parse query: %v", err)
+			}
+			planner := &existsSubqueryPlanner{md: buildTestMetaData(t)}
+			_, gotType, gotErr := planner.BuildScalar(q)
+			if tc.wantCode != "" {
+				var apiErr *api.Error
+				if !errors.As(gotErr, &apiErr) || apiErr.Code != tc.wantCode {
+					t.Fatalf("BuildScalar error = %v, want SQLSTATE %s", gotErr, tc.wantCode)
+				}
+				if len(planner.scalarSubqueries) != 0 {
+					t.Fatalf("rejected scalar registered %d plans, want 0", len(planner.scalarSubqueries))
+				}
+				return
+			}
+			if gotErr != nil {
+				t.Fatalf("BuildScalar: %v", gotErr)
+			}
+			if gotType == nil || !gotType.Equals(tc.wantType) {
+				t.Fatalf("BuildScalar type = %v, want %v", gotType, tc.wantType)
+			}
+			if len(planner.scalarSubqueries) != 1 {
+				t.Fatalf("accepted scalar registered %d plans, want 1", len(planner.scalarSubqueries))
+			}
+		})
 	}
 }
 
@@ -210,7 +506,7 @@ func TestBuildLogicalPlanWithCatalog_WhereAnd(t *testing.T) {
 		t.Fatal("expected Predicate on AND shape")
 	}
 	got := filter.Predicate.Explain()
-	if want := "(PRICE#2 > 5 AND ORDER_ID#0 = 1)"; got != want {
+	if want := "(ORDER.PRICE#2 > 5 AND ORDER.ORDER_ID#0 = 1)"; got != want {
 		t.Fatalf("Predicate.Explain: got %q, want %q", got, want)
 	}
 }
@@ -293,8 +589,8 @@ func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate non-nil")
 	}
-	if got := filter.Predicate.Explain(); got != "PRICE#2 = 3" {
-		t.Fatalf("Predicate.Explain: got %q, want PRICE#2 = 3", got)
+	if got := filter.Predicate.Explain(); got != "ORDER.PRICE#2 = 3" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER.PRICE#2 = 3", got)
 	}
 }
 
@@ -371,8 +667,8 @@ func TestBuildLogicalPlanWithCatalog_DeleteWhere(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate on DELETE WHERE")
 	}
-	if got := filter.Predicate.Explain(); got != "PRICE#2 > 5" {
-		t.Fatalf("Predicate.Explain: got %q, want PRICE#2 > 5", got)
+	if got := filter.Predicate.Explain(); got != "ORDER.PRICE#2 > 5" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER.PRICE#2 > 5", got)
 	}
 }
 
@@ -407,8 +703,8 @@ func TestBuildLogicalPlanWithCatalog_UpdateWhere(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate on UPDATE WHERE")
 	}
-	if got := filter.Predicate.Explain(); got != "ORDER_ID#0 = 1" {
-		t.Fatalf("Predicate.Explain: got %q, want ORDER_ID#0 = 1", got)
+	if got := filter.Predicate.Explain(); got != "ORDER.ORDER_ID#0 = 1" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER.ORDER_ID#0 = 1", got)
 	}
 }
 
@@ -1145,4 +1441,230 @@ func columnNames(cols []semantic.Column) []string {
 		out = append(out, c.Id.Name())
 	}
 	return out
+}
+
+// Computed virtual columns are typed from the body's resolved Values. There is
+// no catalog column to copy for either V*2 or EXISTS, and publishing UNKNOWN at
+// this boundary would make the enclosing QOV inexact under RFC-232.
+func TestComputedVirtualScopesUseExactProjectedValues(t *testing.T) {
+	t.Parallel()
+	_, md := newLoggingGenerator(t,
+		"CREATE TABLE b_exact (id BIGINT, v BIGINT, PRIMARY KEY (id))",
+		&captureLogger{})
+
+	t.Run("CTE arithmetic and EXISTS", func(t *testing.T) {
+		root := parseQuery(t, "WITH d AS ("+
+			"SELECT v * 2 AS doubled, "+
+			"EXISTS (SELECT 1 FROM b_exact AS c WHERE c.id = b_exact.id) AS present "+
+			"FROM b_exact) SELECT doubled FROM d")
+		named := root.Ctes().AllNamedQuery()
+		if len(named) != 1 {
+			t.Fatalf("named CTE count = %d, want 1", len(named))
+		}
+		src, ok, err := buildCTEColumnSource(md, "D", named[0].Query(), nil)
+		if err != nil {
+			t.Fatalf("computed CTE body did not build: %v", err)
+		}
+		if !ok || src.Table == nil {
+			t.Fatal("computed CTE did not publish an exact virtual source")
+		}
+		doubled, found := columnNamed(src.Table.Columns(), "DOUBLED")
+		if !found || doubled.Type != "BIGINT" || !doubled.Nullable {
+			t.Fatalf("DOUBLED = %+v, found=%v; want nullable BIGINT", doubled, found)
+		}
+		present, found := columnNamed(src.Table.Columns(), "PRESENT")
+		if !found || present.Type != "BOOL" || present.Nullable {
+			t.Fatalf("PRESENT = %+v, found=%v; want non-null BOOL", present, found)
+		}
+	})
+
+	t.Run("derived arithmetic", func(t *testing.T) {
+		outer := parseSelect(t,
+			"SELECT d.doubled FROM (SELECT v * 2 AS doubled FROM b_exact) AS d")
+		src, ok := buildDerivedTableSource(md, "D", outer.derivedQuery)
+		if !ok || src.Table == nil {
+			t.Fatal("computed derived table did not publish an exact virtual source")
+		}
+		doubled, found := columnNamed(src.Table.Columns(), "DOUBLED")
+		if !found || doubled.Type != "BIGINT" || !doubled.Nullable {
+			t.Fatalf("DOUBLED = %+v, found=%v; want nullable BIGINT", doubled, found)
+		}
+	})
+
+	t.Run("derived post-aggregate arithmetic", func(t *testing.T) {
+		const sql = `SELECT sub.dept_id, sub.avg_sal
+			FROM (SELECT id AS dept_id, SUM(v) / COUNT(*) AS avg_sal
+			      FROM b_exact GROUP BY id) AS sub
+			ORDER BY sub.dept_id`
+		outer := parseSelect(t, sql)
+		before := outer.derivedQuery.GetText()
+		src, ok := buildDerivedTableSource(md, "SUB", outer.derivedQuery)
+		if !ok || src.Table == nil {
+			t.Fatal("post-aggregate arithmetic derived table did not publish an exact virtual source")
+		}
+		columns := src.Table.Columns()
+		if len(columns) != 2 || columns[0].Id.Name() != "DEPT_ID" ||
+			columns[0].Type != "BIGINT" || !columns[0].Nullable ||
+			columns[1].Id.Name() != "AVG_SAL" || columns[1].Type != "BIGINT" ||
+			!columns[1].Nullable {
+			t.Fatalf("post-aggregate derived columns = %+v, want DEPT_ID/AVG_SAL nullable BIGINT", columns)
+		}
+		if after := outer.derivedQuery.GetText(); after != before {
+			t.Fatalf("scope derivation mutated aggregate body: before %q after %q", before, after)
+		}
+
+		queryCtx, err := parseQueryFromSelect(t, sql)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		op, err := NewPlanVisitor(md).VisitQuery(queryCtx)
+		if err != nil {
+			t.Fatalf("VisitQuery: %v", err)
+		}
+		sort := findSort(op)
+		if sort == nil || len(sort.Keys) != 1 || sort.Keys[0].Value == nil {
+			t.Fatalf("qualified derived ORDER BY has no exact Value: tree=%s", op.Explain(""))
+		}
+		project := findProjection(op)
+		if project == nil || len(project.ProjectedValues) != 2 ||
+			project.ProjectedValues[0] == nil || project.ProjectedValues[1] == nil {
+			t.Fatalf("derived projection did not resolve both exact fields: tree=%s", op.Explain(""))
+		}
+	})
+
+	t.Run("ordinary aggregate keeps manual derivation", func(t *testing.T) {
+		outer := parseSelect(t,
+			`SELECT sub.dept_id FROM (`+
+				`SELECT id AS dept_id, SUM(v) AS total FROM b_exact GROUP BY id`+
+				`) AS sub`)
+		src, ok := buildDerivedTableSource(md, "SUB", outer.derivedQuery)
+		if !ok || src.Table == nil {
+			t.Fatal("ordinary aggregate derived source unexpectedly declined")
+		}
+		columns := src.Table.Columns()
+		if len(columns) != 2 || columns[0].Id.Name() != "DEPT_ID" ||
+			columns[0].Type != "BIGINT" || columns[1].Id.Name() != "TOTAL" ||
+			columns[1].Type != "BIGINT" {
+			t.Fatalf("ordinary aggregate columns changed: %+v", columns)
+		}
+	})
+}
+
+func TestDerivedInlineValuesScopeUsesExactLogicalRow(t *testing.T) {
+	t.Parallel()
+	md := buildTestMetaData(t)
+
+	assertPredicate := func(t *testing.T, sql string) *logical.LogicalFilter {
+		t.Helper()
+		queryCtx, err := parseQueryFromSelect(t, sql)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		op, err := NewPlanVisitor(md).VisitQuery(queryCtx)
+		if err != nil {
+			t.Fatalf("VisitQuery: %v", err)
+		}
+		filter, ok := op.(*logical.LogicalFilter)
+		if !ok {
+			t.Fatalf("logical root = %T, want LogicalFilter\n%s", op, op.Explain(""))
+		}
+		if filter.Predicate == nil {
+			t.Fatalf("derived-inline WHERE stayed text-only: %q", filter.PredicateText)
+		}
+		return filter
+	}
+
+	t.Run("flat star body", func(t *testing.T) {
+		const sql = `SELECT * FROM (SELECT * FROM VALUES (1), (2) AS A(B)) AS U WHERE B < 2`
+		filter := assertPredicate(t, sql)
+		if got := filter.Predicate.Explain(); !strings.Contains(got, "B") || !strings.Contains(got, "< 2") {
+			t.Fatalf("resolved predicate = %q, want exact B < 2", got)
+		}
+
+		outer := parseSelect(t, sql)
+		before := outer.derivedQuery.GetText()
+		src, ok := buildDerivedTableSource(md, "U", outer.derivedQuery)
+		if !ok || src.Table == nil {
+			t.Fatal("flat inline derived body did not publish an exact virtual source")
+		}
+		cols := src.Table.Columns()
+		if len(cols) != 1 || cols[0].Id.Name() != "B" || cols[0].Type != "INT" || cols[0].Nullable {
+			t.Fatalf("flat derived columns = %+v, want B INT NOT NULL", cols)
+		}
+		if after := outer.derivedQuery.GetText(); after != before {
+			t.Fatalf("scope derivation mutated parse body: before %q after %q", before, after)
+		}
+	})
+
+	t.Run("projected nested record and array", func(t *testing.T) {
+		const sql = `SELECT * FROM (` +
+			`SELECT A.B, A.W, A.Z FROM VALUES (1, (2, 'x'), [3, 4]) AS A(B, W(X, Y), Z)` +
+			`) AS U WHERE B < 8`
+		assertPredicate(t, sql)
+		outer := parseSelect(t, sql)
+		before := outer.derivedQuery.GetText()
+		src, ok := buildDerivedTableSource(md, "U", outer.derivedQuery)
+		if !ok || src.Table == nil {
+			t.Fatal("nested inline derived body did not publish an exact virtual source")
+		}
+		cols := src.Table.Columns()
+		if len(cols) != 3 || cols[0].Id.Name() != "B" || cols[0].Type != "INT" {
+			t.Fatalf("nested derived columns = %+v, want B/W/Z", cols)
+		}
+		if cols[1].Id.Name() != "W" || cols[1].Type != "RECORD" || cols[1].Nullable ||
+			len(cols[1].StructFields) != 2 || cols[1].StructFields[0].Id.Name() != "X" ||
+			cols[1].StructFields[0].Type != "INT" || cols[1].StructFields[1].Id.Name() != "Y" ||
+			cols[1].StructFields[1].Type != "STRING" {
+			t.Fatalf("nested W metadata = %+v, want exact RECORD<X INT,Y STRING>", cols[1])
+		}
+		if cols[2].Id.Name() != "Z" || !cols[2].IsArray || cols[2].Type != "INT" || cols[2].Nullable {
+			t.Fatalf("nested Z metadata = %+v, want ARRAY<INT NOT NULL> NOT NULL", cols[2])
+		}
+		if after := outer.derivedQuery.GetText(); after != before {
+			t.Fatalf("nested scope derivation mutated parse body: before %q after %q", before, after)
+		}
+	})
+
+	t.Run("malformed common row declines", func(t *testing.T) {
+		outer := parseSelect(t,
+			`SELECT * FROM (SELECT A.B FROM VALUES (1), ('x') AS A(B)) AS U WHERE B < 8`)
+		before := outer.derivedQuery.GetText()
+		if src, ok := buildDerivedTableSource(md, "U", outer.derivedQuery); ok || src.Table != nil {
+			t.Fatalf("inexact inline body published a virtual source: %+v", src)
+		}
+		if after := outer.derivedQuery.GetText(); after != before {
+			t.Fatalf("declined scope derivation mutated parse body: before %q after %q", before, after)
+		}
+	})
+}
+
+func TestSemanticColumnFromExactTypeDeclinesUnrepresentableArrayElementNullability(t *testing.T) {
+	t.Parallel()
+
+	representable := values.NewArrayType(true, values.NotNullLong)
+	column, ok := semanticColumnFromExactType("XS", representable)
+	if !ok || !column.IsArray || column.Type != "BIGINT" || !column.Nullable {
+		t.Fatalf("representable array = %+v, ok=%v; want nullable BIGINT ARRAY", column, ok)
+	}
+
+	unrepresentable := values.NewArrayType(false, values.NullableLong)
+	if column, ok := semanticColumnFromExactType("XS", unrepresentable); ok {
+		t.Fatalf("nullable-element array was published as exact semantic column: %+v", column)
+	}
+}
+
+func TestSemanticColumnFromExactTypeDeclinesUnrepresentableRecordName(t *testing.T) {
+	t.Parallel()
+	fields := []values.Field{{Name: "V", FieldType: values.NotNullLong}}
+
+	representable := values.NewRecordType("RECORD", false, fields)
+	column, ok := semanticColumnFromExactType("S", representable)
+	if !ok || column.Type != "RECORD" || len(column.StructFields) != 1 {
+		t.Fatalf("representable record = %+v, ok=%v", column, ok)
+	}
+
+	named := values.NewRecordType("DECLARED_STRUCT", false, fields)
+	if column, ok := semanticColumnFromExactType("S", named); ok {
+		t.Fatalf("record name with no semantic carrier was published as exact: %+v", column)
+	}
 }

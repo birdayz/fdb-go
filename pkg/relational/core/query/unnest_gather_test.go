@@ -8,6 +8,7 @@ package query
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -105,18 +106,19 @@ func TestGatheredSeedShape(t *testing.T) {
 	if !isExp {
 		t.Fatalf("inner quantifier ranges over %T, want *ExplodeExpression", explode)
 	}
-	coll, isFV := exp.GetCollectionValue().(*values.FieldValue)
-	if !isFV || coll.Resolved == nil || !coll.Resolved.FrontierPinned {
-		t.Fatalf("collection = %T (baked=%v), want a frontier-pinned baked FieldValue", exp.GetCollectionValue(), isFV && coll != nil && coll.Resolved != nil)
+	coll, isFV := values.AsFieldValue(exp.GetCollectionValue())
+	if !isFV || !coll.Path().IsFrontierPinned() {
+		t.Fatalf("collection = %T (exact=%v), want a frontier-pinned exact FieldValue", exp.GetCollectionValue(), isFV)
 	}
-	qov, isQOV := coll.Child.(*values.QuantifiedObjectValue)
-	if !isQOV || !strings.EqualFold(qov.Correlation.Name(), "s") {
-		t.Fatalf("collection correlates to %v, want the OWNING source o (the per-source edge, never the cluster concat)", coll.Child)
+	qov, isQOV := values.AsQuantifiedObjectValue(coll.ChildValue())
+	if !isQOV || !strings.EqualFold(qov.Correlation().Name(), "s") {
+		t.Fatalf("collection correlates to %v, want the OWNING source s (the per-source edge, never the cluster concat)", coll.ChildValue())
 	}
 	ownerType := tr.ordinalLegType(scan("SRC", "s"))
 	wantIdx, _ := ownerType.FieldIndexUnique("ARR")
-	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != wantIdx {
-		t.Fatalf("collection baked at ordinal %v, want %d (the unique-name ordinal of the classified field on the OWNER type)", coll.Resolved, wantIdx)
+	acc, single := coll.Path().Accessor(0)
+	if !single || coll.Path().Len() != 1 || acc.Ordinal() != wantIdx {
+		t.Fatalf("collection baked at ordinals %v, want [%d] (the unique-name ordinal of the classified field on the OWNER type)", coll.Path().Ordinals(), wantIdx)
 	}
 
 	// The seed: full O-run + full C-run + element + ordinal — all baked (AS+AT
@@ -149,7 +151,7 @@ func TestGatheredDeclineBoundary(t *testing.T) {
 	// baked through the cluster spine.
 	uOn := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	onLeft := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), logical.JoinInner,
-		corrEq("x", "XID", "s", "SID"))
+		corrEq(t, "x", "XID", "s", "SID"))
 	jOn := logical.NewJoin(onLeft, uOn, logical.JoinInner, "")
 	gotOn := tr.translateGatheredUnnestCluster(jOn, uOn, innerCorr, values.NotNullLong, "ARR", unnestTrailing)
 	if gotOn == nil {
@@ -287,7 +289,7 @@ func TestGatheredMixedElementSkipsAssert(t *testing.T) {
 	}
 	rc := sel.(*expressions.SelectExpression).GetResultValue().(*values.RecordConstructorValue)
 	last := rc.Fields[len(rc.Fields)-1]
-	if _, isQOV := last.Value.(*values.QuantifiedObjectValue); !isQOV {
+	if _, isQOV := values.AsQuantifiedObjectValue(last.Value); !isQOV {
 		t.Fatalf("no-AT element field = %T, want the DIRECT bare QOV (Java's primitive branch; the mixed RC skips the seed assert)", last.Value)
 	}
 	if last.Name != "EL" {
@@ -313,14 +315,24 @@ func TestBakeNormalizesCorrelationCase(t *testing.T) {
 		"S": {typ: pu, leafOffset: 0, leafTyp: pu},
 		"X": {typ: aux, leafOffset: 0, leafTyp: aux},
 	}
-	// A cross-leg conjunct whose references carry LOWERCASE correlations.
-	pred := corrEq("s", "SID", "x", "XID")
+	// A cross-leg conjunct whose references carry LOWERCASE correlations and
+	// the exact source-row types the bake windows state.
+	pred := predicates.NewComparisonPredicate(
+		exactTestField(t, exactTestQOV(t, "s", pu), 0),
+		predicates.Comparison{
+			Type:    predicates.ComparisonEquals,
+			Operand: exactTestField(t, exactTestQOV(t, "x", aux), 0),
+		},
+	)
 	baked := bakeGatedJoinPredicates([]predicates.QueryPredicate{pred}, legTypes)
 	found := 0
 	predicates.ReplaceValues(baked[0], func(v values.Value) values.Value {
-		if fv, isFV := v.(*values.FieldValue); isFV && fv.Resolved != nil {
-			qov := fv.Child.(*values.QuantifiedObjectValue)
-			if n := qov.Correlation.Name(); n != strings.ToUpper(n) {
+		if fv, isFV := values.AsFieldValue(v); isFV {
+			qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
+			if !isQOV {
+				t.Fatalf("baked field owner = %T, want exact QOV", fv.ChildValue())
+			}
+			if n := qov.Correlation().Name(); n != strings.ToUpper(n) {
 				t.Errorf("baked correlation %q keeps the reference's original case — must take the gather's UPPER case authority", n)
 			}
 			found++
@@ -334,12 +346,13 @@ func TestBakeNormalizesCorrelationCase(t *testing.T) {
 
 // chainEqPredLocal builds a cross-leg equality conjunct over two named
 // correlations (the white-box twin of the SQL WHERE/ON spelling).
-func chainEqPredLocal(a, aCol, b, bCol string) predicates.QueryPredicate {
+func chainEqPredLocal(t *testing.T, a, aCol, b, bCol string) predicates.QueryPredicate {
+	t.Helper()
 	return predicates.NewComparisonPredicate(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a)), aCol, values.UnknownType),
+		exactTestNamedField(t, a, aCol, values.NotNullLong),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(b)), bCol, values.UnknownType),
+			Operand: exactTestNamedField(t, b, bCol, values.NotNullLong),
 		},
 	)
 }
@@ -428,7 +441,7 @@ func TestEnclosedRotationONCollection(t *testing.T) {
 
 	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
-	onPred := chainEqPredLocal("x", "XID", "s", "SID")
+	onPred := chainEqPredLocal(t, "x", "XID", "s", "SID")
 	root := logical.NewJoinWithPredicate(unnestJoin, scan("AUX", "x"), logical.JoinInner, onPred)
 
 	rebuilt, _, _, _, _, ok := tr.rotateEnclosedUnnest(root)
@@ -496,7 +509,7 @@ func TestEnclosedRotationONElementRewrite(t *testing.T) {
 
 	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	unnestJoin := logical.NewJoin(scan("SRC", "s"), u, logical.JoinInner, "")
-	onPred := chainEqPredLocal("x", "V", "EL", "EL") // B.V = EL — references the element
+	onPred := chainEqPredLocal(t, "x", "V", "EL", "EL") // B.V = EL — references the element
 	root := logical.NewJoinWithPredicate(unnestJoin, scan("AUX", "x"), logical.JoinInner, onPred)
 
 	sel := tr.translateEnclosedUnnestGather(root)
@@ -510,13 +523,13 @@ func TestEnclosedRotationONElementRewrite(t *testing.T) {
 			return
 		}
 		values.WalkValue(v, func(node values.Value) bool {
-			if fv, isFV := node.(*values.FieldValue); isFV {
-				if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV &&
-					strings.EqualFold(qov.Correlation.Name(), "EL") && strings.EqualFold(fv.Field, "EL") {
+			if fv, isFV := values.AsFieldValue(node); isFV {
+				if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV &&
+					strings.EqualFold(qov.Correlation().Name(), "EL") && strings.EqualFold(fv.DisplayName(), "EL") {
 					sawUnrewritten = true
 				}
 			}
-			if qov, isQOV := node.(*values.QuantifiedObjectValue); isQOV && strings.EqualFold(qov.Correlation.Name(), "EL") {
+			if qov, isQOV := values.AsQuantifiedObjectValue(node); isQOV && strings.EqualFold(qov.Correlation().Name(), "EL") {
 				sawBareElementQOV = true
 			}
 			return true
@@ -607,23 +620,27 @@ func TestBoxLegOwnerGathers(t *testing.T) {
 	if !isExp {
 		t.Fatalf("inner quantifier ranges over %T, want *ExplodeExpression", explode)
 	}
-	coll, isFV := exp.GetCollectionValue().(*values.FieldValue)
-	if !isFV || coll.Resolved == nil || !coll.Resolved.FrontierPinned {
+	coll, isFV := values.AsFieldValue(exp.GetCollectionValue())
+	if !isFV || !coll.Path().IsFrontierPinned() {
 		t.Fatalf("collection = %T, want a frontier-pinned baked FieldValue", exp.GetCollectionValue())
 	}
-	qov := coll.Child.(*values.QuantifiedObjectValue)
+	qov, isQOV := values.AsQuantifiedObjectValue(coll.ChildValue())
+	if !isQOV {
+		t.Fatalf("collection owner = %T, want exact box QOV", coll.ChildValue())
+	}
 	// The box quantifier's binding carries the leg's minted $BOX name; the
 	// concat is 4 wide (SID, ARR, XID, V) with s's window at offset 0 —
 	// ARR = concat ordinal 1.
-	if qov.Correlation != quants[0].GetAlias() {
-		t.Fatalf("collection correlates to %s, want the BOX leg quantifier %s (the box-leg window)", qov.Correlation, quants[0].GetAlias())
+	if qov.Correlation() != quants[0].GetAlias() {
+		t.Fatalf("collection correlates to %s, want the BOX leg quantifier %s (the box-leg window)", qov.Correlation(), quants[0].GetAlias())
 	}
-	rt := qov.Typ.(*values.RecordType)
+	rt := qov.FlowedType().(*values.RecordType)
 	if len(rt.Fields) != 4 {
 		t.Fatalf("collection QOV type = %d fields, want the 4-wide box concat", len(rt.Fields))
 	}
-	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != 1 {
-		t.Fatalf("collection ordinal = %v, want box-level 1 (offset 0 + ARR idx 1)", coll.Resolved.Accessors)
+	acc, single := coll.Path().Accessor(0)
+	if !single || coll.Path().Len() != 1 || acc.Ordinal() != 1 {
+		t.Fatalf("collection ordinal = %v, want box-level 1 (offset 0 + ARR idx 1)", coll.Path().Ordinals())
 	}
 
 	// Seed RC run layout: the leg runs must be the flat
@@ -643,11 +660,15 @@ func TestBoxLegOwnerGathers(t *testing.T) {
 		if !strings.EqualFold(f.Name, want) {
 			t.Fatalf("seed field %d = %q, want %q (FROM-order concat)", i, f.Name, want)
 		}
-		fv, ok := f.Value.(*values.FieldValue)
-		if !ok || fv.Resolved == nil {
+		fv, ok := values.AsFieldValue(f.Value)
+		if !ok {
 			t.Fatalf("seed field %d (%s) is %T, want a baked FieldValue", i, f.Name, f.Value)
 		}
-		child := fv.Child.(*values.QuantifiedObjectValue).Correlation
+		childQOV, childOK := values.AsQuantifiedObjectValue(fv.ChildValue())
+		if !childOK {
+			t.Fatalf("seed field %d owner = %T, want exact QOV", i, fv.ChildValue())
+		}
+		child := childQOV.Correlation()
 		switch {
 		case i < 4 && child != boxAlias: // the 4-wide box concat run
 			t.Fatalf("seed field %d (%s) correlates to %s, want the box leg %s", i, f.Name, child, boxAlias)
@@ -671,7 +692,7 @@ func TestOuterBoxLeftGathers(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 	box := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), logical.JoinLeft,
-		chainEqPredLocal("x", "XID", "s", "SID"))
+		chainEqPredLocal(t, "x", "XID", "s", "SID"))
 	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
 	j := logical.NewJoin(box, u, logical.JoinInner, "")
 	innerCorr := values.NamedCorrelationIdentifier("EL")
@@ -687,13 +708,17 @@ func TestOuterBoxLeftGathers(t *testing.T) {
 	if got := len(gathered.GetPredicates()); got != 0 {
 		t.Fatalf("flat select carries %d predicates, want 0 — the OUTER box's gating ON must stay inside the box, never hoist (LEFT→INNER corruption)", got)
 	}
-	coll := quants[1].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue().(*values.FieldValue)
-	qov := coll.Child.(*values.QuantifiedObjectValue)
-	if qov.Correlation != quants[0].GetAlias() {
-		t.Fatalf("collection correlates to %s, want the box quantifier %s", qov.Correlation, quants[0].GetAlias())
+	coll := exactTestFieldView(t, quants[1].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue())
+	qov, isQOV := values.AsQuantifiedObjectValue(coll.ChildValue())
+	if !isQOV {
+		t.Fatalf("collection owner = %T, want exact box QOV", coll.ChildValue())
 	}
-	if acc, single := coll.Resolved.Single(); !single || acc.Ordinal != 1 {
-		t.Fatalf("collection ordinal = %v, want box-level 1", coll.Resolved.Accessors)
+	if qov.Correlation() != quants[0].GetAlias() {
+		t.Fatalf("collection correlates to %s, want the box quantifier %s", qov.Correlation(), quants[0].GetAlias())
+	}
+	acc, single := coll.Path().Accessor(0)
+	if !single || coll.Path().Len() != 1 || acc.Ordinal() != 1 {
+		t.Fatalf("collection ordinal = %v, want box-level 1", coll.Path().Ordinals())
 	}
 }
 
@@ -720,10 +745,10 @@ func TestDupAliasOwnerFirstMatch(t *testing.T) {
 	if len(quants) != 3 {
 		t.Fatalf("quantifiers = %d, want 3", len(quants))
 	}
-	coll := quants[2].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue().(*values.FieldValue)
-	qov := coll.Child.(*values.QuantifiedObjectValue)
-	if qov.Correlation.Name() != "S" {
-		t.Fatalf("collection correlates to %s, want the FIRST duplicate's binding S (first-match by alias, correlate by binding)", qov.Correlation)
+	coll := exactTestFieldView(t, quants[2].GetRangesOver().Members()[0].(*expressions.ExplodeExpression).GetCollectionValue())
+	qov, isQOV := values.AsQuantifiedObjectValue(coll.ChildValue())
+	if !isQOV || qov.Correlation().Name() != "S" {
+		t.Fatalf("collection owner = %v, want the FIRST duplicate's binding S (first-match by alias, correlate by binding)", qov)
 	}
 }
 
@@ -739,7 +764,7 @@ func TestOpaqueBoxNestedClusterPredsStayInside(t *testing.T) {
 	t.Parallel()
 	tr := newDisjointUnnestTranslator(t)
 	innerCluster := logical.NewJoin(scan("AUX", "x"), scan("AUX2", "y"), logical.JoinInner, "")
-	innerCluster.OnPredicate = chainEqPredLocal("x", "XID", "y", "YID")
+	innerCluster.OnPredicate = chainEqPredLocal(t, "x", "XID", "y", "YID")
 	box := logical.NewJoin(scan("SRC", "s"), innerCluster, logical.JoinLeft, "")
 	u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL"}
 	j := logical.NewJoin(box, u, logical.JoinInner, "")
@@ -776,7 +801,7 @@ func TestGatheredOuterConjunctCoupling(t *testing.T) {
 	// tested, since LEFT shares the one-opaque-leg gather with FULL.
 	for _, kind := range []logical.JoinKind{logical.JoinFull, logical.JoinLeft} {
 		box := logical.NewJoinWithPredicate(scan("SRC", "s"), scan("AUX", "x"), kind,
-			chainEqPredLocal("x", "XID", "s", "SID"))
+			chainEqPredLocal(t, "x", "XID", "s", "SID"))
 		u := &logical.LogicalUnnest{Segments: []string{"s", "ARR"}, Alias: "EL", AtAlias: "ORD"}
 		j := logical.NewJoin(box, u, logical.JoinInner, "")
 
@@ -915,16 +940,10 @@ func TestSlotInGatheredSeed_DottedQualifierNeverReadsTheElement(t *testing.T) {
 	}
 }
 
-// TestBakeGatheredGroupValue_DottedLeafDoesNotBakeToTheElement is the same
-// defect seen through the walk that produces it, rather than through the
-// resolver it calls.
-//
-// bakeGatheredGroupValue is where the two spellings are minted: a
-// QuantifiedObjectValue child yields the correlation, and a dotted display name
-// yields only text. This asserts the two spellings of one column never disagree
-// — the QOV form bakes to leg A's slot, and the dotted form is left LAZY for the
-// name model rather than baked to the element's.
-func TestBakeGatheredGroupValue_DottedLeafDoesNotBakeToTheElement(t *testing.T) {
+// Exact group values are routed solely by their QOV owner. A semantic field
+// name containing a dot remains one accessor and cannot be interpreted as a
+// qualifier or redirected into the element namespace.
+func TestBakeGatheredGroupValue_ExactOwnerWinsOverDottedDisplay(t *testing.T) {
 	t.Parallel()
 	windows, elementSlots := gatheredSeedProbeWindows()
 	// The seed's merged row: 8 slots, so both candidate answers (leg A's K at 0
@@ -932,34 +951,434 @@ func TestBakeGatheredGroupValue_DottedLeafDoesNotBakeToTheElement(t *testing.T) 
 	// out-of-range seed would make the wrong answer fail for the wrong reason.
 	mergedFields := make([]values.Field, 8)
 	for i := range mergedFields {
-		mergedFields[i] = values.Field{Name: fmt.Sprintf("F%d", i), FieldType: values.UnknownType, Ordinal: i}
+		mergedFields[i] = values.Field{Name: fmt.Sprintf("F%d", i), FieldType: values.NotNullLong, Ordinal: i}
 	}
-	seedQOV := values.NewQuantifiedObjectValueOfType(
-		values.NamedCorrelationIdentifier("SEED"), &values.RecordType{Fields: mergedFields})
+	seedQOV := exactTestQOV(t, "SEED", &values.RecordType{Fields: mergedFields})
+	legType := &values.RecordType{Fields: []values.Field{
+		{Name: "K", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "A.K", Ordinal: 1, FieldType: values.NotNullLong},
+	}}
 
-	qovRef := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "K", values.UnknownType)
-	bakedQOV, isFV := bakeGatheredGroupValue(qovRef, windows, elementSlots, seedQOV).(*values.FieldValue)
-	if !isFV || bakedQOV.Resolved == nil {
-		t.Fatalf("the QOV-qualified reference must bake, got %v — the control arm is broken", bakedQOV)
+	qovRef := exactTestField(t, exactTestQOV(t, "A", legType), 0)
+	bakedValue, err := bakeGatheredGroupValue(qovRef, windows, elementSlots, seedQOV)
+	if err != nil {
+		t.Fatalf("bake exact A.K: %v", err)
 	}
-	acc, single := bakedQOV.Resolved.Single()
-	if !single || acc.Ordinal != 0 {
-		t.Fatalf("QOV-qualified A.K baked to ordinal %v (single=%v), want 0", acc, single)
+	bakedQOV := exactTestFieldView(t, bakedValue)
+	if got := bakedQOV.Path().Ordinals(); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("QOV-qualified A.K baked to path %v, want [0]", got)
 	}
 
-	dottedRef := values.NewFieldValue(nil, "A.K", values.UnknownType)
-	out := bakeGatheredGroupValue(dottedRef, windows, elementSlots, seedQOV)
-	baked, isFV := out.(*values.FieldValue)
-	if !isFV {
-		t.Fatalf("the dotted reference came back as %T, want an unchanged *FieldValue", out)
+	dottedName := exactTestField(t, exactTestQOV(t, "A", legType), 1)
+	out, err := bakeGatheredGroupValue(dottedName, windows, elementSlots, seedQOV)
+	if err != nil {
+		t.Fatalf("bake exact dotted semantic name: %v", err)
 	}
-	if baked.Resolved != nil {
-		got, _ := baked.Resolved.Single()
-		t.Fatalf("the dotted reference `A.K` BAKED to ordinal %d.\n"+
-			"  It carries no correlation, so no leg window can be selected for it; the\n"+
-			"  only slot it can reach is the element's (%d) — a different column from\n"+
-			"  the one it names (%d). It must stay lazy and go to the name model.",
-			got.Ordinal, elementSlots["K"], 0)
+	if out != dottedName {
+		t.Fatalf("exact field named A.K was reinterpreted: got %v, want original authority unchanged", out)
+	}
+}
+
+func TestExactGatheredCTEGroupKeyValueUsesUniqueSeedField(t *testing.T) {
+	t.Parallel()
+
+	seedType := &values.RecordType{Fields: []values.Field{
+		{Name: "AID", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "K", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "ARR", FieldType: values.NewArrayType(true, values.NotNullInt), Ordinal: 2},
+		{Name: "BID", FieldType: values.NullableLong, Ordinal: 3},
+		{Name: "K", FieldType: values.NullableLong, Ordinal: 4},
+		{Name: "X", FieldType: values.NotNullInt, Ordinal: 5},
+	}}
+	seed := exactTestQOV(t, "q$seed", seedType)
+	body := logical.NewScan("A", "A")
+	tr := &cascadesTranslator{cteScope: map[string]logical.LogicalOperator{"D": body}}
+	bake := gatheredSeedBake{seedQOV: seed}
+
+	tests := []struct {
+		name     string
+		input    logical.LogicalOperator
+		key      logical.GroupKey
+		bake     gatheredSeedBake
+		wantOK   bool
+		wantPath int
+		wantType values.Type
+	}{
+		{
+			name:  "unique leg field",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "AID", Bare: "AID", Segs: []string{"AID"},
+			},
+			bake: bake, wantOK: true, wantPath: 0, wantType: values.NullableLong,
+		},
+		{
+			name:  "unique element",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "X", Bare: "X", Segs: []string{"X"},
+			},
+			bake: bake, wantOK: true, wantPath: 5, wantType: values.NotNullInt,
+		},
+		{
+			name:  "duplicate stays unresolved",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "K", Bare: "K", Segs: []string{"K"},
+			},
+			bake: bake,
+		},
+		{
+			name:  "missing stays unresolved",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "NOPE", Bare: "NOPE", Segs: []string{"NOPE"},
+			},
+			bake: bake,
+		},
+		{
+			name:  "qualified key stays on semantic path",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "D.AID", Bare: "AID", Qualifier: "D", Qualified: true,
+				Segs: []string{"D", "AID"},
+			},
+			bake: bake,
+		},
+		{
+			name:  "nested key path",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "AID.CHILD", Bare: "AID", Segs: []string{"AID", "CHILD"},
+			},
+			bake: bake,
+		},
+		{
+			name:  "structured path disagrees with bare name",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "AID", Bare: "AID", Segs: []string{"OTHER"},
+			},
+			bake: bake,
+		},
+		{
+			name:  "non CTE scan",
+			input: logical.NewScan("A", "A"),
+			key: logical.GroupKey{
+				Display: "AID", Bare: "AID", Segs: []string{"AID"},
+			},
+			bake: bake,
+		},
+		{
+			name:  "projected input",
+			input: logical.NewProject(logical.NewScan("D", "D"), []string{"AID"}, nil),
+			key: logical.GroupKey{
+				Display: "AID", Bare: "AID", Segs: []string{"AID"},
+			},
+			bake: bake,
+		},
+		{
+			name:  "no gathered seed",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "AID", Bare: "AID", Segs: []string{"AID"},
+			},
+		},
+		{
+			name:  "non record seed",
+			input: logical.NewScan("D", "D"),
+			key: logical.GroupKey{
+				Display: "AID", Bare: "AID", Segs: []string{"AID"},
+			},
+			bake: gatheredSeedBake{seedQOV: exactTestQOV(t, "q$scalar", values.NotNullLong)},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeKey := tc.key
+			beforeSegments := append([]string(nil), tc.key.Segs...)
+			got, ok, err := tr.exactGatheredCTEGroupKeyValue(tc.input, tc.key, tc.bake)
+			if err != nil {
+				t.Fatalf("resolve key: %v", err)
+			}
+			if tc.key.Value != beforeKey.Value || tc.key.Display != beforeKey.Display ||
+				tc.key.Bare != beforeKey.Bare || tc.key.Qualifier != beforeKey.Qualifier ||
+				tc.key.Qualified != beforeKey.Qualified || !slices.Equal(tc.key.Segs, beforeSegments) {
+				t.Fatalf("source group key mutated: before=%+v after=%+v", beforeKey, tc.key)
+			}
+			if tr.cteScope["D"] != body {
+				t.Fatal("CTE source registration mutated")
+			}
+			if ok != tc.wantOK {
+				t.Fatalf("resolved = (%v, %v), want ok=%v", got, ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				if got != nil {
+					t.Fatalf("declined key returned %v, want nil", got)
+				}
+				return
+			}
+			field := exactTestFieldView(t, got)
+			if ordinals := field.Path().Ordinals(); len(ordinals) != 1 || ordinals[0] != tc.wantPath {
+				t.Fatalf("resolved path = %v, want [%d]", ordinals, tc.wantPath)
+			}
+			owner, ownerOK := values.AsQuantifiedObjectValue(field.ChildValue())
+			if !ownerOK || owner != seed {
+				t.Fatalf("resolved owner = %v, want exact gathered seed %v", field.ChildValue(), seed)
+			}
+			if field.ResultType() == nil || !field.ResultType().Equals(tc.wantType) {
+				t.Fatalf("resolved type = %v, want %v", field.ResultType(), tc.wantType)
+			}
+		})
+	}
+}
+
+func mustGatherTestConstruct[T any](t testing.TB, value T, err error) T {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("construct gathered CTE fixture: %v", err)
+	}
+	return value
+}
+
+func projectedCTEOutputGroupKeyFixture(
+	t *testing.T,
+	shape string,
+	outputNames []string,
+	sourceOrdinals []int,
+) (*cascadesTranslator, *logical.LogicalScan, gatheredSeedBake) {
+	t.Helper()
+	if len(outputNames) != len(sourceOrdinals) {
+		t.Fatalf("fixture output names = %d, source ordinals = %d", len(outputNames), len(sourceOrdinals))
+	}
+
+	tr := newDisjointUnnestTranslator(t)
+	j, u := gatheredFixture("EL", "ORD")
+	tr.underAggregate = true
+	gathered := tr.translateGatheredUnnestCluster(
+		j, u, values.NamedCorrelationIdentifier("EL"), values.NotNullLong, "ARR", unnestTrailing)
+	tr.underAggregate = false
+	if gathered == nil {
+		t.Fatal("fixture gathered seed declined")
+	}
+
+	project := func(input expressions.RelationalExpression, alias string) *expressions.LogicalProjectionExpression {
+		inputQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier(alias), expressions.InitialOf(input))
+		inputRow, inputErr := inputQ.RequireFlowedObjectValue()
+		inputRow = mustGatherTestConstruct(t, inputRow, inputErr)
+		projected := make([]values.Value, len(sourceOrdinals))
+		for i, ordinal := range sourceOrdinals {
+			resolved, resolveErr := values.ResolveFieldOrdinals(inputRow, []int{ordinal})
+			projected[i] = mustGatherTestConstruct(t, resolved, resolveErr)
+		}
+		projection, projectionErr := expressions.NewLogicalProjectionExpressionWithOutputSchema(
+			projected, nil, nil, outputNames, inputQ)
+		return mustGatherTestConstruct(t, projection, projectionErr)
+	}
+
+	var output expressions.RelationalExpression
+	switch shape {
+	case "reorder":
+		output = project(gathered, "REORDER_INPUT")
+	case "sort-limit":
+		sortInputQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("SORT_INPUT"), expressions.InitialOf(gathered))
+		sortInput, sortInputErr := sortInputQ.RequireFlowedObjectValue()
+		sortInput = mustGatherTestConstruct(t, sortInput, sortInputErr)
+		sortKey, sortKeyErr := values.ResolveFieldOrdinals(sortInput, []int{sourceOrdinals[0]})
+		sortKey = mustGatherTestConstruct(t, sortKey, sortKeyErr)
+		sortExpr, sortErr := expressions.NewLogicalSortExpression(
+			[]expressions.SortKey{{Value: sortKey}}, sortInputQ)
+		sortExpr = mustGatherTestConstruct(t, sortExpr, sortErr)
+		projection := project(sortExpr, "PROJECT_INPUT")
+		limitQ := expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("LIMIT_INPUT"), expressions.InitialOf(projection))
+		limitExpr, limitErr := expressions.NewLogicalLimitExpression(100, 0, limitQ)
+		output = mustGatherTestConstruct(t, limitExpr, limitErr)
+	case "union":
+		left := project(gathered, "LEFT_PROJECT_INPUT")
+		right := project(gathered, "RIGHT_PROJECT_INPUT")
+		unionExpr, unionErr := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("LEFT_UNION"), expressions.InitialOf(left)),
+			expressions.NamedForEachQuantifier(values.NamedCorrelationIdentifier("RIGHT_UNION"), expressions.InitialOf(right)),
+		})
+		output = mustGatherTestConstruct(t, unionExpr, unionErr)
+	default:
+		t.Fatalf("unknown projected CTE fixture shape %q", shape)
+	}
+
+	input := logical.NewScan("D", "D")
+	tr.cteScope["D"] = logical.NewScan("SRC", "S")
+	return tr, input, gatheredSeedBake{
+		quant: expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("D"), expressions.InitialOf(output)),
+	}
+}
+
+func TestExactProjectedCTEOutputGroupKeyValueUsesExactOutputRow(t *testing.T) {
+	t.Parallel()
+
+	positives := []struct {
+		name           string
+		shape          string
+		outputNames    []string
+		sourceOrdinals []int
+		wantOrdinal    int
+	}{
+		{
+			name: "reordered projection", shape: "reorder",
+			outputNames: []string{"BID", "AID", "K"}, sourceOrdinals: []int{2, 3, 0}, wantOrdinal: 1,
+		},
+		{
+			name: "sort limit over projection", shape: "sort-limit",
+			outputNames: []string{"AID"}, sourceOrdinals: []int{3}, wantOrdinal: 0,
+		},
+		{
+			name: "union of projections", shape: "union",
+			outputNames: []string{"AID"}, sourceOrdinals: []int{3}, wantOrdinal: 0,
+		},
+	}
+	for _, tc := range positives {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, input, bake := projectedCTEOutputGroupKeyFixture(
+				t, tc.shape, tc.outputNames, tc.sourceOrdinals)
+			key := logical.GroupKey{Display: "AID", Bare: "AID", Segs: []string{"AID"}}
+			beforeSegments := slices.Clone(key.Segs)
+			beforeRef := bake.quant.GetRangesOver()
+			beforeExpr := beforeRef.Get()
+			beforeBody := tr.cteScope["D"]
+
+			got, ok, err := tr.exactProjectedCTEOutputGroupKeyValue(input, key, bake)
+			if err != nil {
+				t.Fatalf("resolve projected CTE output key: %v", err)
+			}
+			if !ok {
+				t.Fatal("exact projected CTE output key was not resolved")
+			}
+			field := exactTestFieldView(t, got)
+			if ordinals := field.Path().Ordinals(); len(ordinals) != 1 || ordinals[0] != tc.wantOrdinal {
+				t.Fatalf("resolved path = %v, want [%d]", ordinals, tc.wantOrdinal)
+			}
+			owner, ownerOK := values.AsQuantifiedObjectValue(field.ChildValue())
+			wantOwner, wantOwnerErr := bake.quant.RequireFlowedObjectValue()
+			wantOwner = mustGatherTestConstruct(t, wantOwner, wantOwnerErr)
+			if !ownerOK || owner.Correlation() != wantOwner.Correlation() ||
+				owner.FlowedType() == nil || !owner.FlowedType().Equals(wantOwner.FlowedType()) {
+				t.Fatalf("resolved owner = %v, want exact aggregate input owner %v", field.ChildValue(), wantOwner)
+			}
+			if field.ResultType() == nil || !field.ResultType().Equals(values.NullableLong) {
+				t.Fatalf("resolved type = %v, want nullable LONG", field.ResultType())
+			}
+			if key.Value != nil || key.Display != "AID" || key.Bare != "AID" ||
+				key.Qualified || !slices.Equal(key.Segs, beforeSegments) {
+				t.Fatalf("source key mutated: %+v", key)
+			}
+			if bake.quant.GetRangesOver() != beforeRef || beforeRef.Get() != beforeExpr || tr.cteScope["D"] != beforeBody {
+				t.Fatal("source CTE/output expression graph was mutated")
+			}
+		})
+	}
+}
+
+func TestExactProjectedCTEOutputGroupKeyValueDeclinesOutsideExactContract(t *testing.T) {
+	t.Parallel()
+
+	base := func(t *testing.T) (*cascadesTranslator, *logical.LogicalScan, gatheredSeedBake) {
+		return projectedCTEOutputGroupKeyFixture(t, "reorder", []string{"BID", "AID", "K"}, []int{2, 3, 0})
+	}
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *cascadesTranslator, **logical.LogicalScan, *logical.GroupKey, *gatheredSeedBake)
+	}{
+		{
+			name: "duplicate output name",
+			mutate: func(t *testing.T, _ *cascadesTranslator, _ **logical.LogicalScan, _ *logical.GroupKey, bake *gatheredSeedBake) {
+				inputQ := expressions.NamedForEachQuantifier(
+					values.NamedCorrelationIdentifier("DUP_INPUT"), bake.quant.GetRangesOver())
+				inputRow, inputErr := inputQ.RequireFlowedObjectValue()
+				inputRow = mustGatherTestConstruct(t, inputRow, inputErr)
+				first, firstErr := values.ResolveFieldOrdinals(inputRow, []int{1})
+				first = mustGatherTestConstruct(t, first, firstErr)
+				duplicate := values.NewRawRecordConstructorValue(
+					values.RecordConstructorField{Name: "AID", Value: first},
+					values.RecordConstructorField{Name: "AID", Value: first},
+				)
+				selectExpr, selectErr := expressions.NewSelectExpressionWithAliases(
+					duplicate, []expressions.Quantifier{inputQ}, nil, []string{"DUP_INPUT"})
+				selectExpr = mustGatherTestConstruct(t, selectExpr, selectErr)
+				bake.quant = expressions.NamedForEachQuantifier(
+					values.NamedCorrelationIdentifier("D"), expressions.InitialOf(selectExpr))
+			},
+		},
+		{
+			name: "missing output name",
+			mutate: func(t *testing.T, tr *cascadesTranslator, input **logical.LogicalScan, _ *logical.GroupKey, bake *gatheredSeedBake) {
+				missingTr, missingInput, missingBake := projectedCTEOutputGroupKeyFixture(
+					t, "reorder", []string{"BID", "K"}, []int{2, 0})
+				*tr, *input, *bake = *missingTr, missingInput, missingBake
+			},
+		},
+		{
+			name: "nested key path",
+			mutate: func(_ *testing.T, _ *cascadesTranslator, _ **logical.LogicalScan, key *logical.GroupKey, _ *gatheredSeedBake) {
+				*key = logical.GroupKey{
+					Display: "N.AID", Bare: "AID", Qualifier: "N", Qualified: true, Segs: []string{"N", "AID"},
+				}
+			},
+		},
+		{
+			name: "foreign output owner",
+			mutate: func(_ *testing.T, _ *cascadesTranslator, _ **logical.LogicalScan, _ *logical.GroupKey, bake *gatheredSeedBake) {
+				bake.quant = expressions.NamedForEachQuantifier(
+					values.NamedCorrelationIdentifier("FOREIGN"), bake.quant.GetRangesOver())
+			},
+		},
+		{
+			name: "non CTE scan",
+			mutate: func(_ *testing.T, _ *cascadesTranslator, input **logical.LogicalScan, _ *logical.GroupKey, bake *gatheredSeedBake) {
+				*input = logical.NewScan("NOT_CTE", "NOT_CTE")
+				bake.quant = expressions.NamedForEachQuantifier(
+					values.NamedCorrelationIdentifier("NOT_CTE"), bake.quant.GetRangesOver())
+			},
+		},
+		{
+			name: "already resolved key",
+			mutate: func(t *testing.T, _ *cascadesTranslator, _ **logical.LogicalScan, key *logical.GroupKey, _ *gatheredSeedBake) {
+				key.Value = exactTestNamedField(t, "EXISTING", "AID", values.NullableLong)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tr, input, bake := base(t)
+			key := logical.GroupKey{Display: "AID", Bare: "AID", Segs: []string{"AID"}}
+			tc.mutate(t, tr, &input, &key, &bake)
+			beforeKey := key
+			beforeSegments := slices.Clone(key.Segs)
+			beforeRef := bake.quant.GetRangesOver()
+			beforeExpr := beforeRef.Get()
+			beforeScopeLen := len(tr.cteScope)
+			beforeCTEBody := tr.cteScope["D"]
+
+			got, ok, err := tr.exactProjectedCTEOutputGroupKeyValue(input, key, bake)
+			if err != nil {
+				t.Fatalf("decline returned error: %v", err)
+			}
+			if ok || got != nil {
+				t.Fatalf("resolved outside exact contract: (%v, %v)", got, ok)
+			}
+			if key.Value != beforeKey.Value || key.Display != beforeKey.Display ||
+				key.Bare != beforeKey.Bare || key.Qualifier != beforeKey.Qualifier ||
+				key.Qualified != beforeKey.Qualified || !slices.Equal(key.Segs, beforeSegments) {
+				t.Fatalf("source key mutated: before=%+v after=%+v", beforeKey, key)
+			}
+			if bake.quant.GetRangesOver() != beforeRef || beforeRef.Get() != beforeExpr ||
+				len(tr.cteScope) != beforeScopeLen || tr.cteScope["D"] != beforeCTEBody {
+				t.Fatal("source output expression or CTE scope was mutated")
+			}
+		})
 	}
 }

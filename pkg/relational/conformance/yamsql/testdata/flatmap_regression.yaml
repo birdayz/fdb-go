@@ -78,7 +78,7 @@ tests:
       SELECT p.name, SUM(c.val) FROM parent p, child c
       WHERE c.parent_id = p.id
       GROUP BY p.name ORDER BY p.name
-    plan_contains: "StreamingAgg(keys=[P.NAME#1], InMemorySort([P.NAME#1 ASC], FlatMap("
+    plan_contains: "StreamingAgg(keys=[_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap("
     plan_not_contains: NestedLoopJoin
     rows:
       - ["Alpha", 300]

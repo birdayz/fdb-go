@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 func TestWalk_Nil(t *testing.T) {
@@ -21,7 +20,7 @@ func TestWalk_Nil(t *testing.T) {
 
 func TestWalk_Leaf(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	visited := 0
 	Walk(scan, func(_ RelationalExpression) bool {
 		visited++
@@ -35,12 +34,12 @@ func TestWalk_Leaf(t *testing.T) {
 func TestWalk_Tree(t *testing.T) {
 	t.Parallel()
 	// Filter over Filter over Scan = 3 nodes
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	scanQ := ForEachQuantifier(InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	innerF := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	innerF := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ))
 	innerQ := ForEachQuantifier(InitialOf(innerF))
-	outerF := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerQ)
+	outerF := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, innerQ))
 
 	if got := Size(outerF); got != 3 {
 		t.Fatalf("Size(outerF)=%d, want 3", got)
@@ -49,10 +48,10 @@ func TestWalk_Tree(t *testing.T) {
 
 func TestWalk_ShortCircuit(t *testing.T) {
 	t.Parallel()
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	scanQ := ForEachQuantifier(InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	f := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
+	f := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ))
 
 	// Visit returns false from the root — short-circuits the walk.
 	visited := 0
@@ -69,11 +68,11 @@ func TestWalk_FindsAggregateLeaf(t *testing.T) {
 	t.Parallel()
 	// Demonstrate a real use case: search for a specific operator type
 	// in a tree.
-	scan := NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	scanQ := ForEachQuantifier(InitialOf(scan))
 	pT := predicates.NewConstantPredicate(predicates.TriTrue)
-	f := NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ)
-	d := NewLogicalDistinctExpression(ForEachQuantifier(InitialOf(f)))
+	f := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pT}, scanQ))
+	d := mustExpression(NewLogicalDistinctExpression(ForEachQuantifier(InitialOf(f))))
 
 	foundDistinct := false
 	Walk(d, func(e RelationalExpression) bool {

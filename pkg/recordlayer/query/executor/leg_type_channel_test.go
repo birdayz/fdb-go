@@ -49,18 +49,16 @@ func TestSpanLegType_ComesFromTheQuantifierTypeNotTheFieldLabel(t *testing.T) {
 	t.Parallel()
 
 	legA := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", Ordinal: 0}, {Name: "V", Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 1},
 	}}
-	legB := &values.RecordType{Fields: []values.Field{{Name: "W", Ordinal: 0}}}
-	qovA := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA)
-	qovB := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), legB)
+	legB := &values.RecordType{Fields: []values.Field{{Name: "W", FieldType: values.NotNullLong, Ordinal: 0}}}
+	qovA := mustTestQOV(t, values.NamedCorrelationIdentifier("A"), legA)
+	qovB := mustTestQOV(t, values.NamedCorrelationIdentifier("B"), legB)
 
 	// Labels that differ from every column name the quantifiers declare.
-	mk := func(qov *values.QuantifiedObjectValue, ord int, label string) values.RecordConstructorField {
-		fv, err := values.NewFieldValueOfOrdinal(qov, ord)
-		if err != nil {
-			t.Fatalf("NewFieldValueOfOrdinal(%s, %d): %v", qov.Correlation, ord, err)
-		}
+	mk := func(qov values.QuantifiedObjectValue, ord int, label string) values.RecordConstructorField {
+		fv := mustExecutorConstruct(values.ResolveOrdinalSeedField(qov, ord))
 		return values.RecordConstructorField{Name: label, Value: fv}
 	}
 	rc := values.NewRawRecordConstructorValue(
@@ -107,21 +105,23 @@ func TestSpanLegType_ALabelInTheQUANTIFIERTypeDoesReachTheReader(t *testing.T) {
 	t.Parallel()
 
 	outer := &values.RecordType{Fields: []values.Field{
-		{Name: "ID", Ordinal: 0}, {Name: "NAME", Ordinal: 1},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "NAME", FieldType: values.NotNullString, Ordinal: 1},
 	}}
 	// The correlated-scalar seed's inner leg, as the producer builds it: ONE
 	// field named by the subquery's output label.
-	innerLabelled := &values.RecordType{Fields: []values.Field{{Name: "I.QTY", Ordinal: 0}}}
+	innerLabelled := &values.RecordType{Fields: []values.Field{{Name: "I.QTY", FieldType: values.NotNullLong, Ordinal: 0}}}
 
-	qovOuter := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), outer)
-	qovInner := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("q$204"), innerLabelled)
+	qovOuter := mustTestQOV(t, values.NamedCorrelationIdentifier("C"), outer)
+	qovInner := mustTestQOV(t, values.NamedCorrelationIdentifier("q$204"), innerLabelled)
 
-	mk := func(qov *values.QuantifiedObjectValue, ord int) values.RecordConstructorField {
-		fv, err := values.NewFieldValueOfOrdinal(qov, ord)
-		if err != nil {
-			t.Fatalf("NewFieldValueOfOrdinal: %v", err)
+	mk := func(qov values.QuantifiedObjectValue, ord int) values.RecordConstructorField {
+		fv := mustExecutorConstruct(values.ResolveOrdinalSeedField(qov, ord))
+		view, ok := values.AsFieldValue(fv)
+		if !ok {
+			t.Fatalf("ResolveOrdinalSeedField returned %T, want exact FieldValue", fv)
 		}
-		return values.RecordConstructorField{Name: fv.Field, Value: fv}
+		return values.RecordConstructorField{Name: view.DisplayName(), Value: fv}
 	}
 	rc := values.NewRawRecordConstructorValue(mk(qovOuter, 0), mk(qovOuter, 1), mk(qovInner, 0))
 

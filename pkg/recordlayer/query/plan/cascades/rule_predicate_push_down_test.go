@@ -8,6 +8,61 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustPredicatePushDownConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct predicate-pushdown fixture: " + err.Error())
+	}
+	return value
+}
+
+// ppdRowType is the single exact leaf layout shared by the direct and
+// Java-ported fixtures. The nested G element is intentional: EXPLODE(G) must
+// flow the record whose TWO/THREE fields the nested-select cases address.
+func ppdRowType() values.Type {
+	nested := values.NewRecordType("PPD_NESTED", false, []values.Field{
+		{Name: "one", FieldType: values.NotNullLong},
+		{Name: "two", FieldType: values.NotNullString},
+		{Name: "three", FieldType: values.NotNullLong},
+	})
+	return values.NewRecordType("PPD_ROW", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong},
+		{Name: "NAME", FieldType: values.NotNullString},
+		{Name: "a", FieldType: values.NotNullLong},
+		{Name: "b", FieldType: values.NotNullString},
+		{Name: "c", FieldType: values.NotNullLong},
+		{Name: "d", FieldType: values.NotNullLong},
+		{Name: "alpha", FieldType: values.NotNullLong},
+		{Name: "beta", FieldType: values.NotNullString},
+		{Name: "gamma", FieldType: values.NotNullLong},
+		{Name: "delta", FieldType: values.NotNullLong},
+		{Name: "x", FieldType: values.NotNullLong},
+		{Name: "y", FieldType: values.NotNullString},
+		{Name: "id", FieldType: values.NotNullLong},
+		{Name: "k", FieldType: values.NotNullLong},
+		{Name: "f", FieldType: values.NewArrayType(false, values.NotNullLong)},
+		{Name: "g", FieldType: values.NewArrayType(false, nested)},
+		{Name: "sub", FieldType: values.NewArrayType(false, values.NotNullLong)},
+	})
+}
+
+func ppdScan() *expressions.FullUnorderedScanExpression {
+	return mustPredicatePushDownConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"PPD_ROW"}, ppdRowType()))
+}
+
+func ppdFlowed(quantifier expressions.Quantifier) values.QuantifiedObjectValue {
+	return mustPredicatePushDownConstruct(quantifier.RequireFlowedObjectValue())
+}
+
+func ppdSelect(
+	resultValue values.Value,
+	quantifiers []expressions.Quantifier,
+	preds []predicates.QueryPredicate,
+) *expressions.SelectExpression {
+	return mustPredicatePushDownConstruct(expressions.NewSelectExpression(
+		resultValue, quantifiers, preds))
+}
+
 // TestPredicatePushDown_SingleQuantifierPush tests the basic case:
 // a SelectExpression with one ForEach quantifier whose child is a
 // SelectExpression. A predicate referencing only that quantifier's
@@ -16,11 +71,11 @@ func TestPredicatePushDown_SingleQuantifierPush(t *testing.T) {
 	t.Parallel()
 
 	// Child: SELECT * FROM scan
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
-	childSel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	childSel := ppdSelect(
+		ppdFlowed(scanQ),
 		[]expressions.Quantifier{scanQ},
 		nil,
 	)
@@ -29,20 +84,20 @@ func TestPredicatePushDown_SingleQuantifierPush(t *testing.T) {
 
 	// Outer: SELECT childQ.* WHERE childQ.name = 'foo'
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(childQ.GetAlias()),
+		Operand: ppdFlowed(childQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "foo"},
 		},
 	}
-	outerSel := expressions.NewSelectExpression(
-		childQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(childQ),
 		[]expressions.Quantifier{childQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -79,22 +134,22 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	t.Parallel()
 
 	// Two children: A (scan1), B (scan2)
-	scan1 := &expressions.FullUnorderedScanExpression{}
+	scan1 := ppdScan()
 	scan1Ref := expressions.InitialOf(scan1)
 	scan1Q := expressions.ForEachQuantifier(scan1Ref)
-	childA := expressions.NewSelectExpression(
-		scan1Q.GetFlowedObjectValue(),
+	childA := ppdSelect(
+		ppdFlowed(scan1Q),
 		[]expressions.Quantifier{scan1Q},
 		nil,
 	)
 	childARef := expressions.InitialOf(childA)
 	qA := expressions.ForEachQuantifier(childARef)
 
-	scan2 := &expressions.FullUnorderedScanExpression{}
+	scan2 := ppdScan()
 	scan2Ref := expressions.InitialOf(scan2)
 	scan2Q := expressions.ForEachQuantifier(scan2Ref)
-	childB := expressions.NewSelectExpression(
-		scan2Q.GetFlowedObjectValue(),
+	childB := ppdSelect(
+		ppdFlowed(scan2Q),
 		[]expressions.Quantifier{scan2Q},
 		nil,
 	)
@@ -103,7 +158,7 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 
 	// Predicate on A only: qA.col = 'x'
 	predA := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(qA.GetAlias()),
+		Operand: ppdFlowed(qA),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "x"},
@@ -111,21 +166,21 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 	}
 	// Cross-predicate: qA.id = qB.id (references both)
 	predCross := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(qA.GetAlias()),
+		Operand: ppdFlowed(qA),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(qB.GetAlias()),
+			Operand: ppdFlowed(qB),
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		qA.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(qA),
 		[]expressions.Quantifier{qA, qB},
 		[]predicates.QueryPredicate{predA, predCross},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -142,31 +197,31 @@ func TestPredicatePushDown_MultiQuantifierPartial(t *testing.T) {
 func TestPredicatePushDown_NoPushablePredicates(t *testing.T) {
 	t.Parallel()
 
-	scan1 := &expressions.FullUnorderedScanExpression{}
+	scan1 := ppdScan()
 	scan1Ref := expressions.InitialOf(scan1)
 	qA := expressions.ForEachQuantifier(scan1Ref)
 
-	scan2 := &expressions.FullUnorderedScanExpression{}
+	scan2 := ppdScan()
 	scan2Ref := expressions.InitialOf(scan2)
 	qB := expressions.ForEachQuantifier(scan2Ref)
 
 	// Cross-predicate only.
 	predCross := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(qA.GetAlias()),
+		Operand: ppdFlowed(qA),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(qB.GetAlias()),
+			Operand: ppdFlowed(qB),
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		qA.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(qA),
 		[]expressions.Quantifier{qA, qB},
 		[]predicates.QueryPredicate{predCross},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (no pushable predicates), got %d", len(yielded))
 	}
@@ -177,17 +232,17 @@ func TestPredicatePushDown_NoPushablePredicates(t *testing.T) {
 func TestPredicatePushDown_NoPredicates(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
-	sel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	sel := ppdSelect(
+		ppdFlowed(scanQ),
 		[]expressions.Quantifier{scanQ},
 		nil,
 	)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (no predicates), got %d", len(yielded))
 	}
@@ -201,11 +256,11 @@ func TestPredicatePushDown_PushWithExistentialSibling(t *testing.T) {
 	t.Parallel()
 
 	// Inner: SELECT a, b FROM T (a SelectExpression the predicate can push into)
-	baseScan := &expressions.FullUnorderedScanExpression{}
+	baseScan := ppdScan()
 	baseScanRef := expressions.InitialOf(baseScan)
 	baseQ := expressions.ForEachQuantifier(baseScanRef)
-	innerSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	innerSel := ppdSelect(
+		ppdFlowed(baseQ),
 		[]expressions.Quantifier{baseQ},
 		nil,
 	)
@@ -213,26 +268,26 @@ func TestPredicatePushDown_PushWithExistentialSibling(t *testing.T) {
 	innerQ := expressions.ForEachQuantifier(innerRef)
 
 	// EXISTS subquery
-	existScan := &expressions.FullUnorderedScanExpression{}
+	existScan := ppdScan()
 	existRef := expressions.InitialOf(existScan)
 	existQ := expressions.ExistentialQuantifier(existRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
+		Operand: ppdFieldValue(innerQ, "A"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(42)},
 		},
 	}
 
-	sel := expressions.NewSelectExpression(
-		innerQ.GetFlowedObjectValue(),
+	sel := ppdSelect(
+		ppdFlowed(innerQ),
 		[]expressions.Quantifier{innerQ, existQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) == 0 {
 		t.Fatal("expected yields: predicate should push into ForEach child despite existential sibling")
 	}
@@ -244,33 +299,33 @@ func TestPredicatePushDown_PushWithExistentialSibling(t *testing.T) {
 func TestPredicatePushDown_ThroughSort(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "NAME"}}},
+	sort := mustPredicatePushDownConstruct(expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: ppdFieldValue(scanQ, "NAME")}},
 		scanQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 	sortQ := expressions.ForEachQuantifier(sortRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(sortQ.GetAlias()),
+		Operand: ppdFlowed(sortQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "x"},
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		sortQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(sortQ),
 		[]expressions.Quantifier{sortQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -302,30 +357,30 @@ func TestPredicatePushDown_ThroughSort(t *testing.T) {
 func TestPredicatePushDown_ThroughDistinct(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
+	distinct := mustPredicatePushDownConstruct(expressions.NewLogicalDistinctExpression(scanQ))
 	distinctRef := expressions.InitialOf(distinct)
 	distinctQ := expressions.ForEachQuantifier(distinctRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(distinctQ.GetAlias()),
+		Operand: ppdFlowed(distinctQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(42)},
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		distinctQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(distinctQ),
 		[]expressions.Quantifier{distinctQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -341,34 +396,35 @@ func TestPredicatePushDown_ThroughDistinct(t *testing.T) {
 func TestPredicatePushDown_ThroughUnion(t *testing.T) {
 	t.Parallel()
 
-	scan1 := &expressions.FullUnorderedScanExpression{}
+	scan1 := ppdScan()
 	scan1Ref := expressions.InitialOf(scan1)
 	leg1Q := expressions.ForEachQuantifier(scan1Ref)
 
-	scan2 := &expressions.FullUnorderedScanExpression{}
+	scan2 := ppdScan()
 	scan2Ref := expressions.InitialOf(scan2)
 	leg2Q := expressions.ForEachQuantifier(scan2Ref)
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{leg1Q, leg2Q})
+	union := mustPredicatePushDownConstruct(expressions.NewLogicalUnionExpression(
+		[]expressions.Quantifier{leg1Q, leg2Q}))
 	unionRef := expressions.InitialOf(union)
 	unionQ := expressions.ForEachQuantifier(unionRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(unionQ.GetAlias()),
+		Operand: ppdFlowed(unionQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "pushed"},
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		unionQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(unionQ),
 		[]expressions.Quantifier{unionQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -402,34 +458,34 @@ func TestPredicatePushDown_ThroughUnion(t *testing.T) {
 func TestPredicatePushDown_IntoLogicalFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	existingPred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustPredicatePushDownConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{existingPred},
 		scanQ,
-	)
+	))
 	filterRef := expressions.InitialOf(filter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
 
 	pushedPred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(filterQ.GetAlias()),
+		Operand: ppdFlowed(filterQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "pushed"},
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		filterQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(filterQ),
 		[]expressions.Quantifier{filterQ},
 		[]predicates.QueryPredicate{pushedPred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -457,12 +513,12 @@ func TestPredicatePushDown_IntoLogicalFilter(t *testing.T) {
 func TestPredicatePushDown_IntoSelectExpression(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	childSel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	childSel := ppdSelect(
+		ppdFlowed(scanQ),
 		[]expressions.Quantifier{scanQ},
 		nil,
 	)
@@ -470,21 +526,21 @@ func TestPredicatePushDown_IntoSelectExpression(t *testing.T) {
 	childQ := expressions.ForEachQuantifier(childRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(childQ.GetAlias()),
+		Operand: ppdFlowed(childQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "pushed"},
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		childQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(childQ),
 		[]expressions.Quantifier{childQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -536,10 +592,10 @@ func TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild(t *testing.T) {
 
 	// Child: A FULL OUTER JOIN B ON a.id = b.id — a 2-quantifier
 	// SelectExpression with joinType=JoinFullOuter.
-	scanA := &expressions.FullUnorderedScanExpression{}
+	scanA := ppdScan()
 	aQ := expressions.ForEachQuantifier(expressions.InitialOf(scanA))
 
-	scanB := &expressions.FullUnorderedScanExpression{}
+	scanB := ppdScan()
 	bQ := expressions.ForEachQuantifier(expressions.InitialOf(scanB))
 
 	onPred := &predicates.ComparisonPredicate{
@@ -550,13 +606,13 @@ func TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild(t *testing.T) {
 		},
 	}
 
-	fullChild := expressions.NewSelectExpressionWithJoinType(
-		values.NewQuantifiedObjectValue(aQ.GetAlias()),
+	fullChild := mustPredicatePushDownConstruct(expressions.NewSelectExpressionWithJoinType(
+		ppdFlowed(aQ),
 		[]expressions.Quantifier{aQ, bQ},
 		[]predicates.QueryPredicate{onPred},
 		nil,
 		expressions.JoinFullOuter,
-	)
+	))
 	childRef := expressions.InitialOf(fullChild)
 	childQ := expressions.ForEachQuantifier(childRef)
 
@@ -570,14 +626,14 @@ func TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild(t *testing.T) {
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		childQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(childQ),
 		[]expressions.Quantifier{childQ},
 		[]predicates.QueryPredicate{wherePred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields — a FULL OUTER child must stay opaque to predicate "+
 			"absorption (fusing WHERE into its own predicate list turns it into an "+
@@ -590,26 +646,26 @@ func TestPredicatePushDownRule_DoesNotPushIntoOuterJoinChild(t *testing.T) {
 func TestPredicatePushDown_NullOnEmptySkipped(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	nullOnEmptyQ := expressions.ForEachNullOnEmptyQuantifier(scanRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(nullOnEmptyQ.GetAlias()),
+		Operand: ppdFlowed(nullOnEmptyQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "test"},
 		},
 	}
 
-	sel := expressions.NewSelectExpression(
-		nullOnEmptyQ.GetFlowedObjectValue(),
+	sel := ppdSelect(
+		ppdFlowed(nullOnEmptyQ),
 		[]expressions.Quantifier{nullOnEmptyQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (nullOnEmpty quantifier skipped), got %d", len(yielded))
 	}
@@ -622,23 +678,23 @@ func TestPredicatePushDown_NullOnEmptySkipped(t *testing.T) {
 func TestPredicatePushDown_StrictSingleSkipped(t *testing.T) {
 	t.Parallel()
 
-	scanRef := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	scanRef := expressions.InitialOf(ppdScan())
 	strictAlias := values.NamedCorrelationIdentifier("SCALAR")
 	strictQ := expressions.NamedForEachStrictSingleQuantifier(strictAlias, scanRef)
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(strictAlias),
+		Operand: ppdFlowed(strictQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "one-row-match"},
 		},
 	}
-	sel := expressions.NewSelectExpression(
-		strictQ.GetFlowedObjectValue(),
+	sel := ppdSelect(
+		ppdFlowed(strictQ),
 		[]expressions.Quantifier{strictQ},
 		[]predicates.QueryPredicate{pred},
 	)
 
-	yielded := FireExpressionRule(
+	yielded := mustFireExpressionRule(t,
 		NewPredicatePushDownRule(), expressions.InitialOf(sel))
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (strictSingle quantifier skipped), got %d", len(yielded))
@@ -655,36 +711,36 @@ func TestPredicatePushDown_StrictSingleSkipped(t *testing.T) {
 func TestPredicatePushDown_StrictSingleNestedChildFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	outerRef := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
-	scalarRef := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	outerRef := expressions.InitialOf(ppdScan())
+	scalarRef := expressions.InitialOf(ppdScan())
 	outerQ := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("OUTER"), outerRef)
 	scalarQ := expressions.NamedForEachStrictSingleQuantifier(
 		values.NamedCorrelationIdentifier("SCALAR"), scalarRef)
-	strictChild := expressions.NewSelectExpressionWithJoinType(
-		outerQ.GetFlowedObjectValue(),
+	strictChild := mustPredicatePushDownConstruct(expressions.NewSelectExpressionWithJoinType(
+		ppdFlowed(outerQ),
 		[]expressions.Quantifier{outerQ, scalarQ},
 		nil,
 		[]string{"OUTER", "SCALAR"},
 		expressions.JoinLeftOuter,
-	)
+	))
 
 	parentQ := expressions.NamedForEachQuantifier(
 		values.NamedCorrelationIdentifier("PARENT"), expressions.InitialOf(strictChild))
 	parentPredicate := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(parentQ.GetAlias()),
+		Operand: ppdFlowed(parentQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "could-hide-row-two"},
 		},
 	}
-	parent := expressions.NewSelectExpression(
-		parentQ.GetFlowedObjectValue(),
+	parent := ppdSelect(
+		ppdFlowed(parentQ),
 		[]expressions.Quantifier{parentQ},
 		[]predicates.QueryPredicate{parentPredicate},
 	)
 
-	yielded := FireExpressionRule(
+	yielded := mustFireExpressionRule(t,
 		NewPredicatePushDownRule(), expressions.InitialOf(parent))
 	if len(yielded) != 0 {
 		t.Fatalf("nested strict-single child yielded %d predicate-push rewrite(s), want zero", len(yielded))
@@ -699,30 +755,30 @@ func TestPredicatePushDown_StrictSingleNestedChildFailsClosed(t *testing.T) {
 func TestPredicatePushDown_ThroughUnique(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	unique := expressions.NewLogicalUniqueExpression(scanQ)
+	unique := mustPredicatePushDownConstruct(expressions.NewLogicalUniqueExpression(scanQ))
 	uniqueRef := expressions.InitialOf(unique)
 	uniqueQ := expressions.ForEachQuantifier(uniqueRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(uniqueQ.GetAlias()),
+		Operand: ppdFlowed(uniqueQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(1)},
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		uniqueQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(uniqueQ),
 		[]expressions.Quantifier{uniqueQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -736,28 +792,26 @@ func TestPredicatePushDown_ThroughUnique(t *testing.T) {
 func TestPredicatePushDown_ThroughRequiredUniquePreservesMode(t *testing.T) {
 	t.Parallel()
 
-	scanRef := expressions.InitialOf(
-		&expressions.FullUnorderedScanExpression{},
-	)
-	requiredUnique := expressions.NewRequiredLogicalUniqueExpression(
+	scanRef := expressions.InitialOf(ppdScan())
+	requiredUnique := mustPredicatePushDownConstruct(expressions.NewRequiredLogicalUniqueExpression(
 		expressions.ForEachQuantifier(scanRef),
-	)
+	))
 	uniqueRef := expressions.InitialOf(requiredUnique)
 	uniqueQ := expressions.ForEachQuantifier(uniqueRef)
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(uniqueQ.GetAlias()),
+		Operand: ppdFlowed(uniqueQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: int64(1)},
 		},
 	}
-	outerSel := expressions.NewSelectExpression(
-		uniqueQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(uniqueQ),
 		[]expressions.Quantifier{uniqueQ},
 		[]predicates.QueryPredicate{pred},
 	)
 
-	yielded := FireExpressionRule(
+	yielded := mustFireExpressionRule(t,
 		NewPredicatePushDownRule(),
 		expressions.InitialOf(outerSel),
 	)
@@ -806,26 +860,26 @@ func TestPredicatePushDown_UnsupportedChild(t *testing.T) {
 	t.Parallel()
 
 	// Direct scan — no filter/select/sort/union/distinct/unique wrapper.
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := ppdScan()
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewQuantifiedObjectValue(scanQ.GetAlias()),
+		Operand: ppdFlowed(scanQ),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
 			Operand: &values.ConstantValue{Value: "x"},
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	outerSel := ppdSelect(
+		ppdFlowed(scanQ),
 		[]expressions.Quantifier{scanQ},
 		[]predicates.QueryPredicate{pred},
 	)
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (unsupported child type), got %d", len(yielded))
 	}
@@ -841,17 +895,17 @@ func TestPredicatePushDown_UnsupportedChild(t *testing.T) {
 // quantifier. Uses the same column names for source and result.
 func ppdSelectWithColumns(qun expressions.Quantifier, columns []string, preds ...predicates.QueryPredicate) *expressions.SelectExpression {
 	if len(columns) == 0 {
-		return selectWithPreds(qun, preds...)
+		return ppdSelect(ppdFlowed(qun), []expressions.Quantifier{qun}, preds)
 	}
 	fields := make([]values.RecordConstructorField, len(columns))
 	for i, c := range columns {
 		fields[i] = values.RecordConstructorField{
 			Name:  c,
-			Value: values.NewFieldValue(qun.GetFlowedObjectValue(), c, values.TypeUnknown),
+			Value: ppdFieldValue(qun, c),
 		}
 	}
 	rv := values.NewRecordConstructorValue(fields...)
-	return expressions.NewSelectExpression(rv, []expressions.Quantifier{qun}, preds)
+	return ppdSelect(rv, []expressions.Quantifier{qun}, preds)
 }
 
 // ppdSelectWithRenames builds a SelectExpression projecting columns with
@@ -861,25 +915,27 @@ func ppdSelectWithRenames(qun expressions.Quantifier, sourceToOutput map[string]
 	for src, out := range sourceToOutput {
 		fields = append(fields, values.RecordConstructorField{
 			Name:  out,
-			Value: values.NewFieldValue(qun.GetFlowedObjectValue(), src, values.TypeUnknown),
+			Value: ppdFieldValue(qun, src),
 		})
 	}
 	rv := values.NewRecordConstructorValue(fields...)
-	return expressions.NewSelectExpression(rv, []expressions.Quantifier{qun}, preds)
+	return ppdSelect(rv, []expressions.Quantifier{qun}, preds)
 }
 
 // ppdFieldPred creates a ComparisonPredicate on a quantifier's named field.
 // Mirrors Java's fieldPredicate(qun, fieldName, comparison).
 func ppdFieldPred(q expressions.Quantifier, field string, cmp predicates.Comparison) *predicates.ComparisonPredicate {
 	return &predicates.ComparisonPredicate{
-		Operand:    values.NewFieldValue(q.GetFlowedObjectValue(), field, values.TypeUnknown),
+		Operand:    ppdFieldValue(q, field),
 		Comparison: cmp,
 	}
 }
 
 // ppdFieldValue creates a FieldValue referencing a quantifier's field.
-func ppdFieldValue(q expressions.Quantifier, field string) *values.FieldValue {
-	return values.NewFieldValue(q.GetFlowedObjectValue(), field, values.TypeUnknown)
+func ppdFieldValue(q expressions.Quantifier, field string) values.Value {
+	request := mustPredicatePushDownConstruct(values.FieldByName(field))
+	return mustPredicatePushDownConstruct(values.ResolveFieldAccess(
+		ppdFlowed(q), []values.FieldRequest{request}))
 }
 
 // ppdJoinSelect creates a SelectExpression over two quantifiers (a join),
@@ -896,11 +952,11 @@ func ppdJoinSelect(quns []expressions.Quantifier, columns []ppdJoinColumn, preds
 	for i, c := range columns {
 		fields[i] = values.RecordConstructorField{
 			Name:  c.Alias,
-			Value: values.NewFieldValue(c.Qun.GetFlowedObjectValue(), c.Field, values.TypeUnknown),
+			Value: ppdFieldValue(c.Qun, c.Field),
 		}
 	}
 	rv := values.NewRecordConstructorValue(fields...)
-	return expressions.NewSelectExpression(rv, quns, preds)
+	return ppdSelect(rv, quns, preds)
 }
 
 // --------------------------------------------------------------------------
@@ -915,7 +971,7 @@ func ppdJoinSelect(quns []expressions.Quantifier, columns []ppdJoinColumn, preds
 func TestPredicatePushDownRule_PushMultiplePredicates(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	lowerSel := ppdSelectWithColumns(baseQun, []string{"a", "b"})
 	lowerQun := forEachOf(lowerSel)
@@ -927,7 +983,7 @@ func TestPredicatePushDownRule_PushMultiplePredicates(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"b"}, pred1, pred2)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -956,7 +1012,7 @@ func TestPredicatePushDownRule_PushMultiplePredicates(t *testing.T) {
 func TestPredicatePushDownRule_PushParameterPredicate(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	lowerSel := ppdSelectWithColumns(baseQun, []string{"a", "b"})
 	lowerQun := forEachOf(lowerSel)
@@ -970,7 +1026,7 @@ func TestPredicatePushDownRule_PushParameterPredicate(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"b"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -998,7 +1054,7 @@ func TestPredicatePushDownRule_PushParameterPredicate(t *testing.T) {
 func TestPredicatePushDownRule_PushFieldValuePredicate(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	lowerSel := ppdSelectWithColumns(baseQun, []string{"a", "b", "d"})
 	lowerQun := forEachOf(lowerSel)
@@ -1014,7 +1070,7 @@ func TestPredicatePushDownRule_PushFieldValuePredicate(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"a"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1042,7 +1098,7 @@ func TestPredicatePushDownRule_PushFieldValuePredicate(t *testing.T) {
 func TestPredicatePushDownRule_PushConstantValuePredicate(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	constAlias := values.UniqueCorrelationIdentifier()
 	constVal := values.NewConstantObjectValue(constAlias, "1", values.NotNullBytes)
@@ -1060,7 +1116,7 @@ func TestPredicatePushDownRule_PushConstantValuePredicate(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"a", "b"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1088,7 +1144,7 @@ func TestPredicatePushDownRule_PushConstantValuePredicate(t *testing.T) {
 func TestPredicatePushDownRule_PushToExistingPredicates(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	existingPred := ppdFieldPred(baseQun, "b", predicates.Comparison{
 		Type:    predicates.ComparisonEquals,
@@ -1106,7 +1162,7 @@ func TestPredicatePushDownRule_PushToExistingPredicates(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"a"}, pushedPred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1133,7 +1189,7 @@ func TestPredicatePushDownRule_PushToExistingPredicates(t *testing.T) {
 func TestPredicatePushDownRule_PushOrPredicate(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	lowerSel := ppdSelectWithColumns(baseQun, []string{"a", "b", "d"})
 	lowerQun := forEachOf(lowerSel)
@@ -1153,7 +1209,7 @@ func TestPredicatePushDownRule_PushOrPredicate(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"a", "b"}, orPred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1184,10 +1240,10 @@ func TestPredicatePushDownRule_PushOrPredicate(t *testing.T) {
 func TestPredicatePushDownRule_PushIntoEmptyLogicalFilter(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	// LogicalFilterExpression with no predicates (empty filter).
-	filter := expressions.NewLogicalFilterExpression(nil, baseQun)
+	filter := mustPredicatePushDownConstruct(expressions.NewLogicalFilterExpression(nil, baseQun))
 	filterQun := forEachOf(filter)
 
 	pred := ppdFieldPred(filterQun, "b", predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "hello"))
@@ -1195,7 +1251,7 @@ func TestPredicatePushDownRule_PushIntoEmptyLogicalFilter(t *testing.T) {
 	sel := ppdSelectWithColumns(filterQun, []string{"c"}, pred)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1224,10 +1280,11 @@ func TestPredicatePushDownRule_PushIntoEmptyLogicalFilter(t *testing.T) {
 func TestPredicatePushDownRule_PushMultipleToLogicalFilter(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	filterPred := ppdFieldPred(baseQun, "a", predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)))
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{filterPred}, baseQun)
+	filter := mustPredicatePushDownConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{filterPred}, baseQun))
 	filterQun := forEachOf(filter)
 
 	pred1 := ppdFieldPred(filterQun, "b", predicates.Comparison{
@@ -1242,7 +1299,7 @@ func TestPredicatePushDownRule_PushMultipleToLogicalFilter(t *testing.T) {
 	sel := ppdSelectWithColumns(filterQun, []string{"b", "c"}, pred1, pred2)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1270,7 +1327,7 @@ func TestPredicatePushDownRule_PushMultipleToLogicalFilter(t *testing.T) {
 func TestPredicatePushDownRule_DoNotPushNullCheckIntoNullOnEmpty(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	lowerSel := ppdSelectWithColumns(baseQun, []string{"a", "b", "c", "d"},
 		ppdFieldPred(baseQun, "d", predicates.NewLiteralComparison(predicates.ComparisonStartsWith, "blah")),
@@ -1285,7 +1342,7 @@ func TestPredicatePushDownRule_DoNotPushNullCheckIntoNullOnEmpty(t *testing.T) {
 	higher := ppdSelectWithColumns(nullOnEmptyQun, []string{"a", "c"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (IS NULL + null-on-empty), got %d", len(yielded))
 	}
@@ -1301,7 +1358,7 @@ func TestPredicatePushDownRule_DoNotPushNullCheckIntoNullOnEmpty(t *testing.T) {
 func TestPredicatePushDownRule_PushToMultipleChildren(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	lower1 := ppdSelectWithColumns(baseQun, []string{"a", "b", "c"})
 	lower2 := ppdSelectWithColumns(baseQun, []string{"a", "b", "c"},
@@ -1317,7 +1374,7 @@ func TestPredicatePushDownRule_PushToMultipleChildren(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"b", "c"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1360,11 +1417,12 @@ func TestPredicatePushDownRule_PushToMultipleChildren(t *testing.T) {
 func TestPredicatePushDownRule_PushToSomeChildren(t *testing.T) {
 	t.Parallel()
 
-	// First member: a bare FullUnorderedScanExpression (unsupported for push).
-	scan := &expressions.FullUnorderedScanExpression{}
 	// Second member: a SelectExpression (supported for push).
-	baseQun2, _ := baseLeaf()
-	selectAll := selectWithPreds(baseQun2)
+	baseQun2, _ := baseLeaf(t)
+	selectAll := selectWithPreds(t, baseQun2)
+	// Both alternatives inhabit the same memo group, so the unsupported scan
+	// must flow exactly the row projected by selectAll.
+	scan := selectMergeScan(t)
 
 	baseRef := expressions.InitialOf(scan)
 	baseRef.Insert(selectAll)
@@ -1378,7 +1436,7 @@ func TestPredicatePushDownRule_PushToSomeChildren(t *testing.T) {
 	higher := ppdSelectWithColumns(baseQun, []string{"a", "c"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1414,8 +1472,8 @@ func TestPredicatePushDownRule_PushToSomeChildren(t *testing.T) {
 func TestPredicatePushDownRule_DoesNotPushJoinCriteria(t *testing.T) {
 	t.Parallel()
 
-	baseT, _ := baseLeaf()
-	baseTau, _ := baseLeaf()
+	baseT, _ := baseLeaf(t)
+	baseTau, _ := baseLeaf(t)
 
 	tLow := ppdSelectWithColumns(baseT, []string{"a", "b"})
 	tLowQun := forEachOf(tLow)
@@ -1442,7 +1500,7 @@ func TestPredicatePushDownRule_DoesNotPushJoinCriteria(t *testing.T) {
 	)
 	joinRef := expressions.InitialOf(joinSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), joinRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), joinRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (join criteria not pushable), got %d", len(yielded))
 	}
@@ -1458,8 +1516,8 @@ func TestPredicatePushDownRule_DoesNotPushJoinCriteria(t *testing.T) {
 func TestPredicatePushDownRule_DoesNotPushOrMixedJoin(t *testing.T) {
 	t.Parallel()
 
-	baseT, _ := baseLeaf()
-	baseTau, _ := baseLeaf()
+	baseT, _ := baseLeaf(t)
+	baseTau, _ := baseLeaf(t)
 
 	tLow := ppdSelectWithColumns(baseT, []string{"a", "b"})
 	tLowQun := forEachOf(tLow)
@@ -1492,7 +1550,7 @@ func TestPredicatePushDownRule_DoesNotPushOrMixedJoin(t *testing.T) {
 	)
 	joinRef := expressions.InitialOf(joinSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), joinRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), joinRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (OR spans both join legs), got %d", len(yielded))
 	}
@@ -1515,8 +1573,8 @@ func TestPredicatePushDownRule_DoesNotPushOrMixedJoin(t *testing.T) {
 func TestPredicatePushDownRule_PartitionByJoinSource(t *testing.T) {
 	t.Parallel()
 
-	baseT, _ := baseLeaf()
-	baseTau, _ := baseLeaf()
+	baseT, _ := baseLeaf(t)
+	baseTau, _ := baseLeaf(t)
 
 	tLow := ppdSelectWithColumns(baseT, []string{"a", "b", "c"})
 	tLowQun := forEachOf(tLow)
@@ -1558,7 +1616,7 @@ func TestPredicatePushDownRule_PartitionByJoinSource(t *testing.T) {
 	// Go's rule fires once per quantifier and returns after the first
 	// quantifier that has pushable predicates. So we get one yield that
 	// pushes t.c=@1 into t's child.
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), joinRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), joinRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1572,7 +1630,7 @@ func TestPredicatePushDownRule_PartitionByJoinSource(t *testing.T) {
 
 	// Now fire the rule again on the result to push the tau predicate.
 	resultRef := expressions.InitialOf(result)
-	yielded2 := FireExpressionRule(NewPredicatePushDownRule(), resultRef)
+	yielded2 := mustFireExpressionRule(t, NewPredicatePushDownRule(), resultRef)
 	if len(yielded2) < 1 {
 		t.Fatalf("second pass: expected at least 1 yield, got %d", len(yielded2))
 	}
@@ -1604,8 +1662,8 @@ func TestPredicatePushDownRule_PartitionByJoinSource(t *testing.T) {
 func TestPredicatePushDownRule_RewritePredicatesOntoJoinSource(t *testing.T) {
 	t.Parallel()
 
-	baseT, _ := baseLeaf()
-	baseTau, _ := baseLeaf()
+	baseT, _ := baseLeaf(t)
+	baseTau, _ := baseLeaf(t)
 
 	// Inner join: t.b = tau.beta
 	joinPred := &predicates.ComparisonPredicate{
@@ -1640,7 +1698,7 @@ func TestPredicatePushDownRule_RewritePredicatesOntoJoinSource(t *testing.T) {
 	outer := ppdSelectWithColumns(joinQun, []string{"b", "c1", "c2"}, pred1, pred2)
 	outerRef := expressions.InitialOf(outer)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1674,10 +1732,11 @@ func TestPredicatePushDownRule_RewritePredicatesOntoJoinSource(t *testing.T) {
 func TestPredicatePushDownRule_PushThroughExplodeNestedSelect(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	// EXPLODE(baseQun.g)
-	explode := expressions.NewExplodeExpression(ppdFieldValue(baseQun, "g"))
+	explode := mustPredicatePushDownConstruct(expressions.NewExplodeExpression(
+		ppdFieldValue(baseQun, "g")))
 	explodeQun := forEachOf(explode)
 
 	// Nested select: SELECT two, three FROM explode
@@ -1703,7 +1762,7 @@ func TestPredicatePushDownRule_PushThroughExplodeNestedSelect(t *testing.T) {
 	)
 	topRef := expressions.InitialOf(topSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), topRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1726,34 +1785,35 @@ func TestPredicatePushDownRule_PushThroughExplodeNestedSelect(t *testing.T) {
 func TestPredicatePushDownRule_PushForEachPredicateWithExistentialSibling(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	// Wrap baseQun in a SelectExpression so the push has a target
-	innerSel := selectWithPreds(baseQun)
+	innerSel := selectWithPreds(t, baseQun)
 	innerQun := forEachOf(innerSel)
 
 	// EXPLODE(innerQun.g)
-	explode := expressions.NewExplodeExpression(ppdFieldValue(innerQun, "g"))
+	explode := mustPredicatePushDownConstruct(expressions.NewExplodeExpression(
+		ppdFieldValue(innerQun, "g")))
 	explodeQun := forEachOf(explode)
 
 	// EXISTS subquery
-	existsInner := selectWithPreds(explodeQun,
+	existsInner := selectWithPreds(t, explodeQun,
 		ppdFieldPred(explodeQun, "two", predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "hello")),
 	)
 	existsQun := existentialOf(existsInner)
 
 	// Top: SELECT a FROM (SELECT ... FROM T) WHERE EXISTS(...) AND b > 'hello'
-	existsPred := predicates.NewExistentialAlias(existsQun.GetAlias())
+	existsPred := mustExistentialAlias(t, existsQun.GetAlias())
 	bPred := ppdFieldPred(innerQun, "b", predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "hello"))
 
-	topSel := expressions.NewSelectExpression(
-		innerQun.GetFlowedObjectValue(),
+	topSel := ppdSelect(
+		ppdFlowed(innerQun),
 		[]expressions.Quantifier{innerQun, existsQun},
 		[]predicates.QueryPredicate{existsPred, bPred},
 	)
 	topRef := expressions.InitialOf(topSel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), topRef)
 	if len(yielded) == 0 {
 		t.Fatal("expected yields: bPred should push into ForEach child despite existential sibling")
 	}
@@ -1774,7 +1834,7 @@ func TestPredicatePushDownRule_PushForEachPredicateWithExistentialSibling(t *tes
 func TestPredicatePushDownRule_PushWithFieldRenames(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	// Lower: SELECT a AS x, b AS y FROM base
 	lowerSel := ppdSelectWithRenames(baseQun, map[string]string{"a": "x", "b": "y"})
@@ -1787,7 +1847,7 @@ func TestPredicatePushDownRule_PushWithFieldRenames(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"y"}, pred1, pred2)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1816,7 +1876,7 @@ func TestPredicatePushDownRule_PushWithFieldRenames(t *testing.T) {
 func TestPredicatePushDownRule_RenameFieldComparison(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
 	lowerSel := ppdSelectWithRenames(baseQun, map[string]string{"a": "x", "b": "y", "d": "z"})
 	lowerQun := forEachOf(lowerSel)
@@ -1830,7 +1890,7 @@ func TestPredicatePushDownRule_RenameFieldComparison(t *testing.T) {
 	higher := ppdSelectWithColumns(lowerQun, []string{"x", "y", "z"}, pred)
 	higherRef := expressions.InitialOf(higher)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), higherRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), higherRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1859,30 +1919,31 @@ func TestPredicatePushDownRule_RenameFieldComparison(t *testing.T) {
 func TestPredicatePushDownRule_DoNotPushThroughGroupBy(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
 
-	groupBy := expressions.NewGroupByExpression(
+	groupBy := mustPredicatePushDownConstruct(expressions.NewGroupByExpression(
 		[]values.Value{
-			&values.FieldValue{Field: "b", Typ: values.TypeUnknown},
-			&values.FieldValue{Field: "c", Typ: values.TypeUnknown},
+			ppdFieldValue(baseQun, "b"),
+			ppdFieldValue(baseQun, "c"),
 		},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: &values.FieldValue{Field: "a", Typ: values.TypeUnknown}, Alias: "sum"},
+			{Function: expressions.AggSum, Operand: ppdFieldValue(baseQun, "a"), Alias: "sum"},
 		},
 		baseQun,
-	)
+	))
 	groupByQun := forEachOf(groupBy)
 
-	// HAVING sum < @1 — a predicate on the aggregate result.
-	pred := ppdFieldPred(groupByQun, "sum", predicates.Comparison{
+	// HAVING SUM < @1 — GroupBy's exact native output uses its canonical
+	// upper-case grouping/aggregate names.
+	pred := ppdFieldPred(groupByQun, "SUM", predicates.Comparison{
 		Type:    predicates.ComparisonLessThan,
 		Operand: values.NewConstantObjectValue(values.UniqueCorrelationIdentifier(), "1", values.NotNullLong),
 	})
 
-	sel := ppdSelectWithColumns(groupByQun, []string{"b", "c", "sum"}, pred)
+	sel := ppdSelectWithColumns(groupByQun, []string{"B", "C", "SUM"}, pred)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (cannot push through GroupBy), got %d", len(yielded))
 	}
@@ -1899,8 +1960,8 @@ func TestPredicatePushDownRule_DoNotPushThroughGroupBy(t *testing.T) {
 func TestPredicatePushDownRule_OneOfMultipleWithExistential(t *testing.T) {
 	t.Parallel()
 
-	baseQun, _ := baseLeaf()
-	baseTauQun, _ := baseLeaf()
+	baseQun, _ := baseLeaf(t)
+	baseTauQun, _ := baseLeaf(t)
 
 	lowerSel := ppdSelectWithColumns(baseQun, []string{"a", "b"})
 	lowerQun := forEachOf(lowerSel)
@@ -1909,16 +1970,16 @@ func TestPredicatePushDownRule_OneOfMultipleWithExistential(t *testing.T) {
 	existsQun := existentialOf(existsInner)
 
 	pred1 := ppdFieldPred(lowerQun, "a", predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(42)))
-	existsPred := predicates.NewExistentialAlias(existsQun.GetAlias())
+	existsPred := mustExistentialAlias(t, existsQun.GetAlias())
 
-	sel := expressions.NewSelectExpression(
-		lowerQun.GetFlowedObjectValue(),
+	sel := ppdSelect(
+		ppdFlowed(lowerQun),
 		[]expressions.Quantifier{lowerQun, existsQun},
 		[]predicates.QueryPredicate{pred1, existsPred},
 	)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewPredicatePushDownRule(), selRef)
+	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)
 	if len(yielded) == 0 {
 		t.Fatal("expected yields: pred1 (a=42) should push into ForEach child despite existential sibling")
 	}

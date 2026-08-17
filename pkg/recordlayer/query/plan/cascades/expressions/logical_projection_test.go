@@ -11,8 +11,8 @@ func TestLogicalProjection_Construction(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	v1 := values.NewBooleanValue(true)
-	v2 := values.NewNullValue(values.UnknownType)
-	p := NewLogicalProjectionExpression([]values.Value{v1, v2}, q)
+	v2 := values.NewNullValue(values.NullableLong)
+	p := mustExpression(NewLogicalProjectionExpression([]values.Value{v1, v2}, q))
 	if got := p.GetProjectedValues(); len(got) != 2 {
 		t.Fatalf("projected size=%d, want 2", len(got))
 	}
@@ -55,7 +55,7 @@ func TestLogicalProjection_DefensiveCopy(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	src := []values.Value{values.NewBooleanValue(true)}
-	p := NewLogicalProjectionExpression(src, q)
+	p := mustExpression(NewLogicalProjectionExpression(src, q))
 	src[0] = values.NewBooleanValue(false)
 	if got, err := p.GetProjectedValues()[0].(*values.BooleanValue).Evaluate(nil); err != nil || got != true {
 		t.Fatal("constructor failed to defensively copy projection list")
@@ -73,10 +73,10 @@ func TestLogicalProjection_EqualsWithoutChildren(t *testing.T) {
 	q := ForEachQuantifier(InitialOf(leaf))
 	v1 := values.NewBooleanValue(true)
 	v2 := values.NewBooleanValue(false)
-	p1 := NewLogicalProjectionExpression([]values.Value{v1}, q)
-	p1Twin := NewLogicalProjectionExpression([]values.Value{values.NewBooleanValue(true)}, q)
-	p2 := NewLogicalProjectionExpression([]values.Value{v2}, q)
-	pBoth := NewLogicalProjectionExpression([]values.Value{v1, v2}, q)
+	p1 := mustExpression(NewLogicalProjectionExpression([]values.Value{v1}, q))
+	p1Twin := mustExpression(NewLogicalProjectionExpression([]values.Value{values.NewBooleanValue(true)}, q))
+	p2 := mustExpression(NewLogicalProjectionExpression([]values.Value{v2}, q))
+	pBoth := mustExpression(NewLogicalProjectionExpression([]values.Value{v1, v2}, q))
 	if !p1.EqualsWithoutChildren(p1Twin, EmptyAliasMap()) {
 		t.Fatal("structurally identical projections reported unequal")
 	}
@@ -96,8 +96,8 @@ func TestLogicalProjection_HashCodeStable(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	v := values.NewBooleanValue(true)
-	p1 := NewLogicalProjectionExpression([]values.Value{v}, q)
-	p2 := NewLogicalProjectionExpression([]values.Value{values.NewBooleanValue(true)}, q)
+	p1 := mustExpression(NewLogicalProjectionExpression([]values.Value{v}, q))
+	p2 := mustExpression(NewLogicalProjectionExpression([]values.Value{values.NewBooleanValue(true)}, q))
 	if p1.HashCodeWithoutChildren() != p2.HashCodeWithoutChildren() {
 		t.Fatal("structurally equal projections produced different hash codes")
 	}
@@ -107,18 +107,16 @@ func TestLogicalProjection_AliasesAreSemanticIdentity(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	readA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
-	readB := values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType)
-	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.AliasMap{}) {
-		t.Fatal("test requires same-ordinal baked reads to be semantically equal")
-	}
+	readA := testFieldAt("A", 0, values.NotNullLong)
 
-	aliased := NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{readA}, []string{"output_alias"}, q)
-	aliasedTwin := NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{readB}, []string{"OUTPUT_ALIAS"}, q)
-	renamed := NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{readB}, []string{"OTHER_ALIAS"}, q)
+	aliased := mustExpression(NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{readA}, []string{"output_alias"}, q))
+
+	aliasedTwin := mustExpression(NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{readA}, []string{"OUTPUT_ALIAS"}, q))
+
+	renamed := mustExpression(NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{readA}, []string{"OTHER_ALIAS"}, q))
 
 	if !aliased.EqualsWithoutChildren(aliasedTwin, EmptyAliasMap()) {
 		t.Fatal("aliases producing the same executor-visible output name reported unequal")
@@ -147,24 +145,24 @@ func TestLogicalProjection_InternalCorrelationNamesRemainAliasMapped(t *testing.
 		build func(values.CorrelationIdentifier) values.Value
 	}{
 		{
-			name:  "quantified object",
-			build: func(alias values.CorrelationIdentifier) values.Value { return values.NewQuantifiedObjectValue(alias) },
+			name: "field access",
+			build: func(alias values.CorrelationIdentifier) values.Value {
+				return testCorrelatedField(alias, "ID", values.NotNullLong)
+			},
 		},
 		{
 			name: "scalar subquery",
 			build: func(alias values.CorrelationIdentifier) values.Value {
-				return values.NewScalarSubqueryValue(alias, values.UnknownType)
+				return values.NewScalarSubqueryValue(alias, values.NotNullLong)
 			},
 		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			leftValue, rightValue := tc.build(q0), tc.build(q1)
-			if values.OutputColumnName(leftValue, "") == values.OutputColumnName(rightValue, "") {
-				t.Fatal("test requires the debug-derived names to expose different internal correlation spellings")
-			}
-			left := NewLogicalProjectionExpression([]values.Value{leftValue}, inner)
-			right := NewLogicalProjectionExpression([]values.Value{rightValue}, inner)
+			left := mustExpression(NewLogicalProjectionExpression([]values.Value{leftValue}, inner))
+			right := mustExpression(NewLogicalProjectionExpression([]values.Value{rightValue}, inner))
 			if !left.EqualsWithoutChildren(right, mapping) {
 				t.Fatal("projection identity treated alpha-renamed internal binders as output-schema aliases")
 			}
@@ -184,9 +182,9 @@ func TestLogicalProjection_EmptyAliasesAreEquivalent(t *testing.T) {
 	q := ForEachQuantifier(InitialOf(leaf))
 	projected := []values.Value{values.NewBooleanValue(true)}
 
-	withoutAliases := NewLogicalProjectionExpression(projected, q)
-	emptyAliases := NewLogicalProjectionExpressionWithAliases(projected, []string{}, q)
-	blankPlaceholder := NewLogicalProjectionExpressionWithAliases(projected, []string{""}, q)
+	withoutAliases := mustExpression(NewLogicalProjectionExpression(projected, q))
+	emptyAliases := mustExpression(NewLogicalProjectionExpressionWithAliases(projected, []string{}, q))
+	blankPlaceholder := mustExpression(NewLogicalProjectionExpressionWithAliases(projected, []string{""}, q))
 
 	for _, candidate := range []*LogicalProjectionExpression{emptyAliases, blankPlaceholder} {
 		if !withoutAliases.EqualsWithoutChildren(candidate, EmptyAliasMap()) {
@@ -202,10 +200,10 @@ func TestLogicalProjection_DerivedOutputNamesAreSemanticIdentity(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	readA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType)
-	readB := values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType)
-	if !values.SemanticEqualsUnderAliasMap(readA, readB, values.AliasMap{}) {
-		t.Fatal("test requires same-ordinal baked reads to be semantically equal")
+	readA := testFieldAt("A", 0, values.NotNullLong)
+	readB := testFieldAt("B", 0, values.NotNullLong)
+	if values.SemanticEqualsUnderAliasMap(readA, readB, values.EmptyAliasMap()) {
+		t.Fatal("exact field identity must include the root descriptor")
 	}
 
 	testCases := []struct {
@@ -221,14 +219,14 @@ func TestLogicalProjection_DerivedOutputNamesAreSemanticIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			build := func(v values.Value) *LogicalProjectionExpression {
 				if tc.useAliasAPI {
-					return NewLogicalProjectionExpressionWithAliases(
-						[]values.Value{v}, tc.aliases, q)
+					return mustExpression(NewLogicalProjectionExpressionWithAliases(
+						[]values.Value{v}, tc.aliases, q))
 				}
-				return NewLogicalProjectionExpression([]values.Value{v}, q)
+				return mustExpression(NewLogicalProjectionExpression([]values.Value{v}, q))
 			}
 			left, right := build(readA), build(readB)
 			if left.EqualsWithoutChildren(right, EmptyAliasMap()) {
-				t.Fatal("semantic-equal reads with different derived output names reported equal")
+				t.Fatal("reads from different exact roots reported equal")
 			}
 			if left.HashCodeWithoutChildren() == right.HashCodeWithoutChildren() {
 				t.Fatal("different derived output names produced the same projection hash")
@@ -246,20 +244,20 @@ func TestLogicalProjection_NestedFieldNamesAreSemanticIdentity(t *testing.T) {
 	}
 	leftValue := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  values.NewFieldValueWithResolvedOrdinal("A", 0, values.UnknownType),
+		Left:  testFieldAt("A", 0, values.NotNullLong),
 		Right: one(),
 	}
 	rightValue := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  values.NewFieldValueWithResolvedOrdinal("B", 0, values.UnknownType),
+		Left:  testFieldAt("B", 0, values.NotNullLong),
 		Right: one(),
 	}
-	if !values.SemanticEqualsUnderAliasMap(leftValue, rightValue, values.AliasMap{}) {
-		t.Fatal("test requires same-shape arithmetic over same-ordinal reads to be semantically equal")
+	if values.SemanticEqualsUnderAliasMap(leftValue, rightValue, values.EmptyAliasMap()) {
+		t.Fatal("arithmetic over fields from different exact roots reported equal")
 	}
 
-	left := NewLogicalProjectionExpression([]values.Value{leftValue}, q)
-	right := NewLogicalProjectionExpression([]values.Value{rightValue}, q)
+	left := mustExpression(NewLogicalProjectionExpression([]values.Value{leftValue}, q))
+	right := mustExpression(NewLogicalProjectionExpression([]values.Value{rightValue}, q))
 	if left.EqualsWithoutChildren(right, EmptyAliasMap()) {
 		t.Fatal("nested baked field display names changed output schema but compared equal")
 	}
@@ -273,8 +271,8 @@ func TestLogicalProjection_AliasesDefensiveCopy(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	inputAliases := []string{"ORIGINAL"}
-	p := NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{values.NewBooleanValue(true)}, inputAliases, q)
+	p := mustExpression(NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{values.NewBooleanValue(true)}, inputAliases, q))
 
 	inputAliases[0] = "MUTATED_INPUT"
 	got := p.GetAliases()

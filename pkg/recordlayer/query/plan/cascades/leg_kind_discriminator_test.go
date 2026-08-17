@@ -24,24 +24,26 @@ import (
 
 // kindProbeFixture is a leg-local baked reference plus the merged row it would
 // rebase onto: leg "L" of two columns, sitting at merged offset 10.
-func kindProbeFixture(t *testing.T) (values.Value, *values.QuantifiedObjectValue, *values.RecordType) {
+func kindProbeFixture(t *testing.T) (values.Value, values.QuantifiedObjectValue, *values.RecordType) {
 	t.Helper()
-	leg := &values.RecordType{Fields: []values.Field{
+	leg := values.NewRecordType("Leg", false, []values.Field{
 		{Name: "A", FieldType: values.NullableInt, Ordinal: 0},
 		{Name: "B", FieldType: values.NullableInt, Ordinal: 1},
-	}}
+	})
 	mergedFields := make([]values.Field, 16)
 	for i := range mergedFields {
 		mergedFields[i] = values.Field{Name: fmt.Sprintf("M%d", i), FieldType: values.NullableInt, Ordinal: i}
 	}
-	mergedQOV := values.NewQuantifiedObjectValueOfType(
-		values.NamedCorrelationIdentifier("M"), &values.RecordType{Fields: mergedFields})
-	ref := &values.FieldValue{
-		Field:    "B",
-		Typ:      values.NullableInt,
-		Child:    values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("L")),
-		Resolved: values.NewFieldPathOfSingle("B", 1, true),
-	}
+	mergedFields[10].FieldType = leg
+	mergedType := values.NewRecordType("Merged", false, mergedFields)
+	mergedQOV, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("M"), mergedType)
+	mergedQOV = mustConstruct(t, mergedQOV, err)
+	legQOV, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("L"), leg)
+	legQOV = mustConstruct(t, legQOV, err)
+	ref, err := values.ResolveOrdinalSeedField(legQOV, 1)
+	ref = mustConstruct(t, ref, err)
 	return ref, mergedQOV, leg
 }
 
@@ -114,14 +116,11 @@ func TestLegKind_ExistentialRebaseAddressesEachKindDifferently(t *testing.T) {
 				}
 				return
 			}
-			fv, isFV := out.(*values.FieldValue)
-			if !isFV || fv.Resolved == nil {
-				t.Fatalf("rebase produced %T (%v), want a baked *FieldValue", out, out)
+			fv, isFV := values.AsFieldValue(out)
+			if !isFV || fv.Path() == nil {
+				t.Fatalf("rebase produced %T (%v), want an exact baked FieldValue", out, out)
 			}
-			got := make([]int, len(fv.Resolved.Accessors))
-			for i, a := range fv.Resolved.Accessors {
-				got[i] = a.Ordinal
-			}
+			got := fv.Path().Ordinals()
 			if len(got) != len(tc.wantPath) {
 				t.Fatalf("kind=%v produced a %d-step path %v, want the %d-step %v — %s",
 					tc.kind, len(got), got, len(tc.wantPath), tc.wantPath, tc.why)
@@ -144,10 +143,12 @@ func TestLegKind_ExistentialRebaseAddressesEachKindDifferently(t *testing.T) {
 func TestLegKind_TheDerivationStampsEveryWindowAndEveryLeg(t *testing.T) {
 	t.Parallel()
 
-	t1 := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
-	t2 := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
+	t1Plan, err := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+	t1 := mustConstruct(t, t1Plan, err)
+	t2Plan, err := plans.NewRecordQueryScanPlan([]string{"T2"}, commit2RecType("T2", "ID", "T1_ID"), false)
+	t2 := mustConstruct(t, t2Plan, err)
 	seed, _ := reconstructFoldStep1Seed(t1, t2,
-		values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"))
+		values.NamedCorrelationIdentifier("T1"), values.NamedCorrelationIdentifier("T2"), plans.JoinInner)
 	if seed == nil {
 		t.Fatal("two scan legs must reconstruct an ordinal step-1 seed")
 	}
@@ -184,7 +185,8 @@ func TestLegKind_TheDerivationStampsEveryWindowAndEveryLeg(t *testing.T) {
 func TestLegKind_ThePlannerLegConcatStampsFlatRun(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, commit2RecType("T", "ID", "V"), false)
+	scanPlan, err := plans.NewRecordQueryScanPlan([]string{"T"}, commit2RecType("T", "ID", "V"), false)
+	scan := mustConstruct(t, scanPlan, err)
 	_, legs, ok := planBuriedLegConcat(scan, values.NamedCorrelationIdentifier("T"), 0)
 	if !ok || len(legs) != 1 {
 		t.Fatalf("planBuriedLegConcat over a scan = (%d legs, ok=%t), want (1, true)", len(legs), ok)
@@ -214,21 +216,24 @@ func TestLegKind_ThePlannerLegConcatStampsFlatRun(t *testing.T) {
 func TestLegKind_TheOrientationGateCountsTilesNotMapEntries(t *testing.T) {
 	t.Parallel()
 
-	mk := func(alias string, cols ...string) *values.QuantifiedObjectValue {
+	mk := func(alias string, cols ...string) values.QuantifiedObjectValue {
 		fields := make([]values.Field, len(cols))
 		for i, c := range cols {
 			fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
 		}
-		return values.NewQuantifiedObjectValueOfType(
+		qov, err := values.NewQuantifiedObjectValue(
 			values.NamedCorrelationIdentifier(alias),
 			values.NewRecordType("", false, fields))
+		return mustConstruct(t, qov, err)
 	}
-	bake := func(qov *values.QuantifiedObjectValue, i int) values.RecordConstructorField {
-		fv, err := values.NewFieldValueOfOrdinal(qov, i)
-		if err != nil {
-			t.Fatalf("bake: %v", err)
+	bake := func(qov values.QuantifiedObjectValue, i int) values.RecordConstructorField {
+		value, err := values.ResolveOrdinalSeedField(qov, i)
+		fv := mustConstruct(t, value, err)
+		field, ok := values.AsFieldValue(fv)
+		if !ok {
+			t.Fatalf("bake produced %T, want exact FieldValue", fv)
 		}
-		return values.RecordConstructorField{Name: fv.Field, Value: fv}
+		return values.RecordConstructorField{Name: field.DisplayName(), Value: fv}
 	}
 
 	// A plain 2-leg seed: two tiles, two map entries. The two questions coincide
@@ -251,7 +256,8 @@ func TestLegKind_TheOrientationGateCountsTilesNotMapEntries(t *testing.T) {
 		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("B"), "B", 0, 2),
 		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("E"), "E", 2, 1),
 	}
-	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), boxTyp)
+	boxQOVValue, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("E"), boxTyp)
+	boxQOV := mustConstruct(t, boxQOVValue, err)
 	boxSeed := values.NewRawRecordConstructorValue(
 		bake(a, 0), bake(a, 1), bake(boxQOV, 0), bake(boxQOV, 1), bake(boxQOV, 2))
 
@@ -317,22 +323,28 @@ func TestOrientationGate_DeclinesASwappedBoxLegSeed(t *testing.T) {
 		values.NewRecordTypeLeg(values.LegKindFlatRun, values.NamedCorrelationIdentifier("E"), "E", 2, 1),
 	}
 
-	aQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), legA)
-	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("E"), boxTyp)
-	bake := func(qov *values.QuantifiedObjectValue, i int) values.RecordConstructorField {
-		fv, err := values.NewFieldValueOfOrdinal(qov, i)
-		if err != nil {
-			t.Fatalf("bake: %v", err)
+	aQOVValue, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A"), legA)
+	aQOV := mustConstruct(t, aQOVValue, err)
+	boxQOVValue, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("E"), boxTyp)
+	boxQOV := mustConstruct(t, boxQOVValue, err)
+	bake := func(qov values.QuantifiedObjectValue, i int) values.RecordConstructorField {
+		value, resolveErr := values.ResolveOrdinalSeedField(qov, i)
+		fv := mustConstruct(t, value, resolveErr)
+		field, ok := values.AsFieldValue(fv)
+		if !ok {
+			t.Fatalf("bake produced %T, want exact FieldValue", fv)
 		}
-		return values.RecordConstructorField{Name: fv.Field, Value: fv}
+		return values.RecordConstructorField{Name: field.DisplayName(), Value: fv}
 	}
 	// The seed's baked layout: leg A tiles slots [0,2), the box tiles [2,5).
 	seed := values.NewRawRecordConstructorValue(
 		bake(aQOV, 0), bake(aQOV, 1),
 		bake(boxQOV, 0), bake(boxQOV, 1), bake(boxQOV, 2))
 
-	aPlan := plans.NewRecordQueryScanPlan([]string{"A"}, legA, false)
-	boxPlan := plans.NewRecordQueryScanPlan([]string{"E"}, boxTyp, false)
+	aScan, err := plans.NewRecordQueryScanPlan([]string{"A"}, legA, false)
+	aPlan := mustConstruct(t, aScan, err)
+	boxScan, err := plans.NewRecordQueryScanPlan([]string{"E"}, boxTyp, false)
+	boxPlan := mustConstruct(t, boxScan, err)
 
 	// CORRECT orientation: outer is A, inner is the box — exactly what the seed's
 	// ordinals were baked against.

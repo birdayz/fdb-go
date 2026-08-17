@@ -99,6 +99,8 @@ func (t *cascadesTranslator) legScanTableName(op logical.LogicalOperator) string
 				return ""
 			}
 			return key
+		case *logical.LogicalInlineValues:
+			return ""
 		case *logical.LogicalFilter:
 			op = o.Input
 		case *logical.LogicalLimit:
@@ -139,12 +141,13 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			// ITSELF ordinalized (translateUnnestJoin's :1565 binary seed) flows
 			// a genuine POSITIONAL row whose type is exactly the outer's ordinal
 			// columns concatenated with the unnest's element/ordinal columns.
-			// Mirror that layout: ordinalLegColumns(o.Left) ++ legColumns(unnest)
+			// Mirror that layout: ordinalLegColumns(o.Left) ++ exactUnnestLegColumns.
 			// — the SAME order unnestOrdinalSeed(o.Left) emits (outer run then
 			// unnestSeedInnerFields), so the second link's ofOrdinal reads land on
-			// the slots the first link builds. legColumns(unnest) gives the AS/AT
-			// column names (element type is best-effort UnknownType — a struct
-			// element the second link descends by name, never a positional read).
+			// the slots the first link builds. The AS element type is recovered from
+			// the same array authority used by translation; an Unknown placeholder is
+			// not an executable row layout and cannot be admitted into the exact QOV
+			// that the next chained link uses.
 			//
 			// Reachable ONLY through the chained ordinal seed: ordinalEligible and
 			// clusterArity both poison an unnest-right join, so no gated CLUSTER
@@ -166,7 +169,8 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			// so this recursion only ever walks the unnest-right spine, never
 			// a box.
 			//
-			// LOAD-BEARING INVARIANT: legColumns(un) here must stay layout-identical
+			// LOAD-BEARING INVARIANT: exactUnnestLegColumns here must stay
+			// layout-identical
 			// (count / order / names) to unnestSeedInnerFields(un) — the actual inner
 			// fields unnestOrdinalSeed(o.Left) builds — because the second link's
 			// ofOrdinal reads index into THIS leg type. If either drifts (a refactor of
@@ -177,9 +181,13 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 			if outerCols == nil {
 				return nil
 			}
+			innerCols := t.exactUnnestLegColumns(o.Left, un)
+			if innerCols == nil {
+				return nil
+			}
 			merged := make([]values.Field, 0, len(outerCols)+2)
 			merged = append(merged, outerCols...)
-			merged = append(merged, t.legColumns(un)...)
+			merged = append(merged, innerCols...)
 			return merged
 		}
 		// A GATED join leg (a FULL box's gated inner cluster, or a gated box
@@ -221,6 +229,80 @@ func (t *cascadesTranslator) ordinalLegColumns(op logical.LogicalOperator) []val
 	default:
 		return t.legColumns(op)
 	}
+}
+
+// exactUnnestLegColumns derives the output columns contributed by one lateral
+// unnest link. LogicalUnnest deliberately carries only syntax, so its generic
+// legColumns arm cannot know the AS element type. Ordinal chained execution,
+// however, stores these columns in an exact row and immediately constructs a
+// QOV over that row; admitting Unknown here would make the next link
+// unrepresentable. Recover the element from the same descriptor/projection
+// authority used by translateUnnestJoin and preserve the seed's AS-then-AT
+// order exactly.
+func (t *cascadesTranslator) exactUnnestLegColumns(
+	outer logical.LogicalOperator,
+	u *logical.LogicalUnnest,
+) []values.Field {
+	if u == nil || (u.Alias == "" && u.AtAlias == "") {
+		return nil
+	}
+
+	var elementType values.Type
+	if len(u.Segments) > 0 && findInlineValuesOwner(outer, u.Segments[0]) != nil {
+		owner := findInlineValuesOwner(outer, u.Segments[0])
+		classified, _, isArray, _ := inlineValuesArrayElementType(owner, u.Segments[1:])
+		if !isArray {
+			return nil
+		}
+		elementType = classified
+	} else if len(u.Segments) > 0 && logical.FindOwnerUnnest(outer, u.Segments[0]) != nil {
+		classified, _, disposition := t.classifyChainedUnnestArray(outer, u)
+		if disposition != derivedUnnestArray {
+			return nil
+		}
+		elementType = classified
+	} else {
+		outerTable := ""
+		if len(u.Segments) > 0 {
+			outerTable = findOuterScanTable(outer, u.Segments[0])
+		}
+		if outerTable == "" {
+			return nil
+		}
+		if t.outerSourceIsCTE(outerTable) || (len(u.Segments) > 0 && outerSourceIsDerivedTable(outer, u.Segments[0])) {
+			classified, _, disposition := t.classifyDerivedUnnestArray(outer, u)
+			if disposition != derivedUnnestArray {
+				return nil
+			}
+			elementType = classified
+		} else {
+			var isArray bool
+			elementType, _, isArray, _ = t.unnestArrayElementType(outerTable, u.Segments[1:])
+			if !isArray {
+				return nil
+			}
+		}
+	}
+	if values.IsUnresolved(elementType) {
+		return nil
+	}
+
+	fields := make([]values.Field, 0, 2)
+	if u.Alias != "" {
+		fields = append(fields, values.Field{
+			Name:      strings.ToUpper(u.Alias),
+			FieldType: elementType,
+			Ordinal:   len(fields),
+		})
+	}
+	if u.AtAlias != "" {
+		fields = append(fields, values.Field{
+			Name:      strings.ToUpper(u.AtAlias),
+			FieldType: values.NotNullInt,
+			Ordinal:   len(fields),
+		})
+	}
+	return fields
 }
 
 // clusterLeg is one leg of a gathered inner-join cluster: the leg operator
@@ -351,22 +433,17 @@ func (t *cascadesTranslator) gatherInnerClusterOnPredicates(j *logical.LogicalJo
 // ONE leg, not gathered through), in DECLARATION order with only the
 // null-supplying ROLE keyed by kind (Java assembles the RV in source order
 // regardless of join type; a RIGHT join's null side is its LEFT operand).
-// LEFT/RIGHT mark exactly one null-supplying leg; FULL marks NEITHER leg
-// record-level nullable — the column TYPES read NOT NULL where Java would
-// type all-FULL-columns nullable. This is ANSWER-INVARIANT (pinned): the row
-// VALUES are correct because the NLJ binds nil for the unmatched leg
-// regardless of the static type marker, so a correlation to a null-supplied
-// FULL leg (`FOB.K` in `a FULL OUTER b`) evaluates against nil and yields
-// the right rows — proven end-to-end by the FDB full-outer-unnest-exists
-// test's null-supplied-leg EXISTS/NOT-EXISTS discriminators. The type marker
-// affects only schema-level nullability reporting, not the runtime value.
+// LEFT/RIGHT mark exactly one null-supplying leg; FULL marks BOTH. The exact
+// seed QOV and the physical OrdinalLayout must agree on this fact: a window
+// declared NullSupplying over a non-nullable source is rejected rather than
+// laundering a statically impossible NULL through the binder.
 func (t *cascadesTranslator) legsOfGatedJoin(j *logical.LogicalJoin) []clusterLeg {
 	if j.Kind == logical.JoinInner {
 		return t.gatherInnerClusterLegs(j)
 	}
 	return []clusterLeg{
-		clusterLegOf(j.Left, j.Kind == logical.JoinRight),
-		clusterLegOf(j.Right, j.Kind == logical.JoinLeft),
+		clusterLegOf(j.Left, j.Kind == logical.JoinRight || j.Kind == logical.JoinFull),
+		clusterLegOf(j.Right, j.Kind == logical.JoinLeft || j.Kind == logical.JoinFull),
 	}
 }
 
@@ -433,32 +510,54 @@ func (t *cascadesTranslator) gatedJoinLegTypes(j *logical.LogicalJoin) map[strin
 	legs := t.legsOfGatedJoin(j)
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
-		if leg.binding == "" {
-			continue
-		}
-		typ := t.ordinalLegType(leg.op)
-		if typ == nil {
-			continue
-		}
-		leafOffset, leafTyp := t.legBakeWindow(leg.op)
-		if leafTyp == nil {
+		entry, ok := t.legBakeEntry(leg)
+		if !ok {
 			continue
 		}
 		// Keyed by the BINDING correlation name (== UPPER alias for every
 		// non-duplicate leg; the parser-minted id for a later duplicate —
 		// using the alias directly here would let two duplicate legs collide
 		// on the same map key).
-		legTypes[leg.binding] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		legTypes[leg.binding] = entry
 		// A CLUSTERED box leg buries sources whose references bake onto the
 		// BOX quantifier at each buried leaf's offset within the concat —
 		// the same registration the seed's own legTypes get in
 		// ordinalJoinSeedFields. Without it a WHERE conjunct naming a
 		// buried source stays lazy at the box select and grandchild-binds.
 		if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
-			t.addBuriedBakeWindows(bj, leg.binding, typ, 0, legTypes)
+			t.addBuriedBakeWindows(bj, leg.binding, entry.typ, 0, legTypes)
 		}
 	}
 	return legTypes
+}
+
+// legBakeEntry is the ONE derivation of a leg's predicate-bake entry, shared by
+// the seed builder and by gatedJoinLegTypes, which used to derive it separately.
+//
+// The type here is the leg's OWN row, NOT null-extended, even when the leg is
+// null-supplying. That is deliberate and it is the half of the outer-join
+// nullability story that is easy to get backwards: a baked predicate is
+// evaluated INSIDE the join's loop, against a row of that leg that is present by
+// construction, and it binds through the executor's edge channel, which declares
+// the child plan's own (non-nullable) row. The null-extension belongs to the
+// join's OUTPUT, where the seed's quantifier carries it — see the caller.
+//
+// ok=false when the leg has no binding or its columns are underivable; the
+// caller then omits the entry and its references stay lazy, which is sound by
+// the load-bearing lazy invariant.
+func (t *cascadesTranslator) legBakeEntry(leg clusterLeg) (bakeLegType, bool) {
+	if leg.binding == "" {
+		return bakeLegType{}, false
+	}
+	typ := t.ordinalLegType(leg.op)
+	if typ == nil {
+		return bakeLegType{}, false
+	}
+	leafOffset, leafTyp := t.legBakeWindow(leg.op)
+	if leafTyp == nil {
+		return bakeLegType{}, false
+	}
+	return bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}, true
 }
 
 // gatherInnerClusterPreds collects every nested inner join's ON predicate in
@@ -541,13 +640,18 @@ func (t *cascadesTranslator) translateGatheredInnerCluster(j *logical.LogicalJoi
 	}
 	preds = bakeGatedJoinPredicates(preds, legTypes)
 
-	return expressions.NewSelectExpressionWithJoinType(
+	selectExpr, err := expressions.NewSelectExpressionWithJoinType(
 		resultValue,
 		quantifiers,
 		preds,
 		sourceAliases,
 		expressions.JoinInner,
 	)
+	if err != nil {
+		t.setTranslateErr(err)
+		return nil
+	}
+	return selectExpr
 }
 
 // buildOrdinalJoinResultValue builds the gated 2-way join's result value: the
@@ -580,53 +684,59 @@ func (t *cascadesTranslator) ordinalJoinSeedFields(legs []clusterLeg) ([]values.
 	var fields []values.RecordConstructorField
 	legTypes := make(map[string]bakeLegType, len(legs))
 	for _, leg := range legs {
-		if leg.binding == "" {
+		entry, ok := t.legBakeEntry(leg)
+		if !ok {
 			return nil, nil
 		}
-		typ := t.ordinalLegType(leg.op)
-		if typ == nil {
-			return nil, nil
-		}
-		leafOffset, leafTyp := t.legBakeWindow(leg.op)
-		if leafTyp == nil {
-			return nil, nil
-		}
+		typ := entry.typ
 		// BINDING-keyed: == UPPER alias for every non-duplicate leg; the
 		// parser-minted id for later duplicates keeps the map and the QOV
-		// correlations collision-free.
-		legTypes[leg.binding] = bakeLegType{typ: typ, leafOffset: leafOffset, leafTyp: leafTyp}
+		// correlations collision-free. The BAKE type stays the leg's own row
+		// (see legBakeEntry); only the seed's own quantifier below carries the
+		// outer-join null-extension.
+		legTypes[leg.binding] = entry
 		// A CLUSTERED box leg buries sources whose references must bake onto
 		// the BOX's quantifier at each buried leg's offset within the box
 		// concat — Java's collapseLeftSideOperators + rewireQov-by-ordinal
 		// analog. Without these entries predicateLegAliases counts a
 		// cross-leg conjunct spanning a buried source (`c.a_id = a.id` over
 		// `(A⋈B) LEFT C`) as single-leg and leaves a grandchild-correlated
-		// lazy reference on the box select.
+		// lazy reference on the box select. Registered from the same
+		// not-null-extended row as the leg's own entry, for the same reason.
 		if bj, isJoin := leg.op.(*logical.LogicalJoin); isJoin {
 			t.addBuriedBakeWindows(bj, leg.binding, typ, 0, legTypes)
 		}
 		if leg.nullSupplying {
-			// The LEFT-outer null side: the QOV's RECORD TYPE goes nullable
+			// The outer-join null side: the QOV's RECORD TYPE goes nullable
 			// (Java's type.withNullability(true) at the pull-up; the verify
-			// keys on the QOV's result type). Column types stay their own;
-			// the record-level bit is what the executor's null-leg build and
-			// the metadata nullability read. WithNullability, NOT
-			// NewRecordType: a CLUSTERED null-supplying leg concatenates its
-			// buried legs' columns positionally and duplicate bare names
-			// legitimately survive (the same rule as ordinalLegType's own
-			// construction); the constructor's duplicate check is for
-			// name-addressed types.
+			// keys on the QOV's result type). Column types stay their own; the
+			// record-level bit is what the executor's null-leg build and the
+			// metadata nullability read. WithNullability, NOT NewRecordType: a
+			// CLUSTERED null-supplying leg concatenates its buried legs'
+			// columns positionally and duplicate bare names legitimately
+			// survive (the same rule as ordinalLegType's own construction); the
+			// constructor's duplicate check is for name-addressed types.
 			typ = values.WithNullability(typ, true).(*values.RecordType)
 		}
-		qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg.binding), typ)
+		qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(leg.binding), typ)
+		if err != nil {
+			return nil, nil
+		}
 		for i := range typ.Fields {
-			fv, err := values.NewFieldValueOfOrdinal(qov, i)
+			// This is the one purpose boundary that mints the physical seed's
+			// top-level positional references. Ordinary resolved FieldValues are
+			// deliberately unpinned; feeding those into the seed would make the
+			// translator claim a layout contract it never recorded and trips the
+			// loud seed invariant below.
+			resolved, err := values.ResolveOrdinalSeedField(qov, i)
 			if err != nil {
-				// Impossible by construction (the ordinal ranges over the
-				// type's own fields) — loud, matching the seed assert.
-				panic("ordinal seed: " + err.Error())
+				return nil, nil
 			}
-			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+			fv, ok := values.AsFieldValue(resolved)
+			if !ok {
+				return nil, nil
+			}
+			fields = append(fields, values.RecordConstructorField{Name: fv.DisplayName(), Value: fv})
 		}
 	}
 	return fields, legTypes
@@ -713,7 +823,7 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 			drift = true // a should-bake leg has no positional window
 			return v
 		}
-		fv := v.(*values.FieldValue) // legRef confirmed the cast + guards
+		fv, _ := values.AsFieldValue(v) // legRef confirmed the exact view
 		// Resolve the ROOT column within the leg's BAKE WINDOW (the rightmost
 		// leaf for a box leg — the alias names that leaf), then offset into
 		// the leg's flowed concat. Resolving over the whole concat instead would
@@ -738,35 +848,22 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 			// no quantifier at this select.
 			bakeCorr = strings.ToUpper(legType.bakeCorr)
 		}
-		typedQOV := values.NewQuantifiedObjectValueOfType(
+		typedQOV, err := values.NewQuantifiedObjectValue(
 			values.NamedCorrelationIdentifier(bakeCorr), legType.typ,
 		)
-		baked, err := values.NewFieldValueOfOrdinal(typedQOV, legType.leafOffset+idx)
 		if err != nil {
-			panic("predicate bake: " + err.Error()) // the window is within the concat by construction
-		}
-		if len(suffix) == 0 {
-			return baked
-		}
-		// A NESTED leg reference (`m.n.sk`): the resolution above landed on the
-		// slot of its ROOT column, but that slot holds the enclosing STRUCT and
-		// the rest of the path descends INSIDE it. Returning `baked` alone would
-		// be the silent half of this bug rather than the loud one: the address is
-		// a real leg column, so nothing downstream rejects it and the predicate
-		// compares a BIGINT against a whole struct. Fuse the remaining accessors
-		// on (Java's FieldPath.withSuffix, reached the same way — the descent is a
-		// path FUSION, nothing is materialized or re-offset), descending against
-		// the leg column's OWN type; the concat states only WHERE the column sits.
-		var into *values.RecordType
-		if idx < len(legType.leafTyp.Fields) {
-			into, _ = legType.leafTyp.Fields[idx].FieldType.(*values.RecordType)
-		}
-		fused, ferr := values.FuseNestedSuffix(baked, into, suffix, fv.Typ)
-		if ferr != nil {
-			drift = true // the descent cannot be stated positionally — never a truncated path
+			drift = true
 			return v
 		}
-		return fused
+		path := make([]int, 0, 1+len(suffix))
+		path = append(path, legType.leafOffset+idx)
+		path = append(path, suffix...)
+		baked, err := values.ResolveFieldOrdinals(typedQOV, path)
+		if err != nil || baked.Type() == nil || !baked.Type().Equals(fv.ResultType()) {
+			drift = true
+			return v
+		}
+		return baked
 	}
 	// Bake per CONJUNCT: a top-level AND is split by the partition/pushdown
 	// rules later, so the cross-leg test must apply to each conjunct
@@ -808,7 +905,7 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 // elsewhere), or a non-QOV child.
 //
 // MACHINERY-OWNERSHIP IS THE FRONTIER PIN, NOT THE ACCESSOR COUNT. The walks'
-// own output is NewFieldValueOfOrdinal over a composed frontier, which is
+// own output is an exact ordinal field access over a composed frontier, which is
 // FrontierPinned by construction; excluding it is what stops a re-walk from
 // re-counting or re-baking an address that already indexes the composed row.
 // Arity was long used as a second half of that exclusion, on the reading that
@@ -851,15 +948,15 @@ func bakeGatedJoinPredicatesChecked(preds []predicates.QueryPredicate, legTypes 
 //     that narrowness is pinned at its own site; see the guard's comment there
 //     for why the walk below it cannot serve a multi-accessor path.
 func legRef(v values.Value) (string, bool) {
-	fv, isFV := v.(*values.FieldValue)
-	if !isFV || (fv.Resolved != nil && !fv.RootIsLegRelativeUnpinned()) || strings.Contains(fv.Field, ".") {
+	fv, isFV := values.AsFieldValue(v)
+	if !isFV || fv.Path().IsFrontierPinned() {
 		return "", false
 	}
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+	qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 	if !isQOV {
 		return "", false
 	}
-	return strings.ToUpper(qov.Correlation.Name()), true
+	return strings.ToUpper(qov.Correlation().Name()), true
 }
 
 // legRefRootInWindow resolves a leg reference's ROOT column within one leg
@@ -877,31 +974,36 @@ func legRef(v values.Value) (string, bool) {
 // resolved `m.n.sk` to the top-level `SK` at ordinal 1 instead of `N` at
 // ordinal 2.
 //
-// ReAnchorRootInto is the shared derive-and-assert for the nested case — it
-// keys on Accessors[0].Field, derives the ordinal from the window, asserts any
-// carried ordinal against it, and DECLINES on an absent or duplicated root
-// rather than first-matching. A flat reference has no root accessor to prefer
-// and keeps the name lookup, which is correct for it: a single-accessor node's
-// display name IS its column name.
+// RFC-232 resolves the nested case from the exact path view. The root accessor
+// supplies both its display name and carried source ordinal; this helper accepts
+// the window only when the unique field lookup and that ordinal agree, then
+// carries the remaining ordinal suffix unchanged. A flat reference follows the
+// same path: its sole accessor is both root and leaf.
 //
 // Both the bake and the gather-admission verdict call this, so a verdict cannot
 // say "resolves" about a different column than the bake reads.
-func legRefRootInWindow(fv *values.FieldValue, window *values.RecordType) (int, []values.ResolvedAccessor, bool) {
+func legRefRootInWindow(fv values.FieldValue, window *values.RecordType) (int, []int, bool) {
 	if fv == nil || window == nil {
 		return 0, nil, false
 	}
-	if _, nested := values.NestedResolvedPath(fv); nested {
-		reanchored, _, ok := fv.Resolved.ReAnchorRootInto(window)
-		if !ok {
-			return 0, nil, false
-		}
-		return reanchored.Root().Ordinal, reanchored.Accessors[1:], true
+	path := fv.Path()
+	root, ok := path.Accessor(0)
+	if !ok {
+		return 0, nil, false
 	}
-	idx, found := window.FieldIndexUnique(fv.Field)
+	rootName, hasName := root.DisplayName()
+	if !hasName {
+		return 0, nil, false
+	}
+	idx, found := window.FieldIndexUnique(rootName)
 	if !found {
 		return 0, nil, false
 	}
-	return idx, nil, true
+	if root.Ordinal() != idx {
+		return 0, nil, false
+	}
+	ordinals := path.Ordinals()
+	return idx, append([]int(nil), ordinals[1:]...), true
 }
 
 // predicateLegAliases counts how many DISTINCT gated-join leg aliases a predicate's

@@ -3,7 +3,6 @@ package plans
 import (
 	"testing"
 
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -20,13 +19,20 @@ func TestFlatMapHintCost_LimitZeroInnerYieldsZeroCardinality(t *testing.T) {
 
 	outerCost := properties.Cost{Cardinality: 1000, CPU: 100}
 
-	limitPlan := NewRecordQueryLimitPlan(nil, 0, 0)
+	limitPlan := mustChecked(t, func() (*RecordQueryLimitPlan, error) {
+		return NewRecordQueryLimitPlan(stub("LimitedInner"), 0, 0)
+	})
 	limitCost := limitPlan.HintCost([]properties.Cost{{Cardinality: 5000, CPU: 500}}, nil)
 	if limitCost.Cardinality != 0 {
 		t.Fatalf("setup error: LIMIT 0 cost cardinality = %v, want 0", limitCost.Cardinality)
 	}
 
-	flatMap := NewRecordQueryFlatMapPlan(nil, nil, values.CorrelationIdentifier{}, values.CorrelationIdentifier{}, nil, false)
+	flatMap := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+		return NewRecordQueryFlatMapPlan(
+			stub("Outer"), limitPlan,
+			values.CorrelationIdentifier{}, values.CorrelationIdentifier{},
+			exactEmptyRecordValue(), false)
+	})
 	got := flatMap.HintCost([]properties.Cost{outerCost, limitCost}, nil)
 	if got.Cardinality != 0 {
 		t.Fatalf("FlatMap over LIMIT-0 inner cardinality = %v, want 0 (outerCard=%v would make LeafScanCardinality substitution %v)",
@@ -46,8 +52,10 @@ func TestRecursiveCost_ZeroSeedCardinalityStaysZero(t *testing.T) {
 	zeroSeed := properties.Cost{Cardinality: 0, CPU: 3}
 	recLeg := properties.Cost{Cardinality: 50, CPU: 5}
 
-	var zeroQ expressions.Quantifier
-	dfs := NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(zeroQ, zeroQ, values.CorrelationIdentifier{}, DfsPreorder, false)
+	dfs := mustChecked(t, func() (*RecordQueryRecursiveDfsJoinPlan, error) {
+		return NewRecordQueryRecursiveDfsJoinPlan(
+			stub("Seed"), stub("Recursive"), values.CorrelationIdentifier{}, DfsPreorder)
+	})
 	got := dfs.HintCost([]properties.Cost{zeroSeed, recLeg}, nil)
 	if got.Cardinality != 0 {
 		t.Fatalf("Cardinality = %v, want 0 (empty seed recurses zero times)", got.Cardinality)

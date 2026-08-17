@@ -28,31 +28,31 @@ tests:
   # carries it, so it would still pass if the alias were re-plumbed some
   # other way and the projection quietly disappeared again.
   - query: SELECT MAX(a) AS agg FROM t
-    plan_contains: "Project([MAX(A)#0], StreamingAgg(keys=[], Scan(T)))"
+    plan_contains: "Project([_current.MAX(A)#0], StreamingAgg(keys=[], Scan(T)))"
     columns: [AGG]
     rows:
       - [3]
   - query: SELECT COUNT(*) AS cnt FROM t
-    plan_contains: "Project([COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))"
+    plan_contains: "Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(T)))"
     columns: [CNT]
     rows:
       - [4]
   - query: SELECT SUM(a) AS total FROM t
-    plan_contains: "Project([SUM(A)#0], StreamingAgg(keys=[], Scan(T)))"
+    plan_contains: "Project([_current.SUM(A)#0], StreamingAgg(keys=[], Scan(T)))"
     columns: [TOTAL]
     rows:
       - [9]
   # An UNALIASED scalar aggregate keeps the generated expression name —
   # the fix must not invent an alias where the user wrote none.
   - query: SELECT MAX(a) FROM t
-    plan_contains: "Project([MAX(A)#0], StreamingAgg(keys=[], Scan(T)))"
+    plan_contains: "Project([_current.MAX(A)#0], StreamingAgg(keys=[], Scan(T)))"
     columns: ["MAX(A)"]
     rows:
       - [3]
   # GROUPED aggregate: already correct (a projection above it carries the
   # aliases), pinned so the two paths cannot drift apart.
   - query: SELECT b AS g, MAX(a) AS agg FROM t GROUP BY b
-    plan_contains: "Project([B#0, MAX(A)#1], StreamingAgg(keys=[B#2]"
+    plan_contains: "Project([_current.B#0, _current.MAX(A)#1], StreamingAgg(keys=[_current.B#2]"
     columns: [G, AGG]
     unordered: true
     rows:

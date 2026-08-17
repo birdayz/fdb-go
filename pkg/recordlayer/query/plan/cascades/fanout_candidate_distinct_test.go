@@ -21,6 +21,26 @@ func (d fanoutTestIndexDef) IndexRecordTypes() []string       { return []string{
 func (d fanoutTestIndexDef) IndexIsUnique() bool              { return false }
 func (d fanoutTestIndexDef) IndexPrimaryKeyColumns() []string { return []string{"ID"} }
 func (d fanoutTestIndexDef) IndexCreatesDuplicates() bool     { return d.createsDup }
+func (d fanoutTestIndexDef) IndexRowType() values.Type {
+	return values.NewRecordType("FanoutCandidateRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "TAGS", FieldType: values.NewArrayType(false, values.NotNullString)},
+		{Name: "V", FieldType: values.NullableLong},
+	})
+}
+
+func (d fanoutTestIndexDef) IndexKeyComponentTypes() []values.Type {
+	row := d.IndexRowType().(*values.RecordType)
+	result := make([]values.Type, len(d.cols))
+	for i, column := range d.cols {
+		field, ok := row.LookupFieldUnique(column)
+		if !ok {
+			panic("unknown fanout candidate column " + column)
+		}
+		result[i] = field.FieldType
+	}
+	return result
+}
 
 // plainTestIndexDef does NOT implement IndexDefWithCreatesDuplicates. Its
 // candidate remains UNKNOWN and must not acquire a usable traversal.
@@ -31,6 +51,16 @@ func (d plainTestIndexDef) IndexColumnNames() []string       { return []string{"
 func (d plainTestIndexDef) IndexRecordTypes() []string       { return []string{"T"} }
 func (d plainTestIndexDef) IndexIsUnique() bool              { return false }
 func (d plainTestIndexDef) IndexPrimaryKeyColumns() []string { return []string{"ID"} }
+func (d plainTestIndexDef) IndexRowType() values.Type {
+	return values.NewRecordType("UnknownFanoutCandidateRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "V", FieldType: values.NullableLong},
+	})
+}
+
+func (d plainTestIndexDef) IndexKeyComponentTypes() []values.Type {
+	return []values.Type{values.NullableLong}
+}
 
 // TestPlanContext_ThreadsCreatesDuplicates pins RFC-188 finding 10 M4: the
 // plan-context builder threads the IndexDef's fan-out signal onto the candidate

@@ -9,83 +9,152 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// Delete tests in rule_push_requested_ordering_through_delete_test.go
-// (PLANNING-phase constraint propagation).
+func mustDMLOrderingConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct DML-ordering fixture: " + err.Error())
+	}
+	return value
+}
+
+func dmlOrderingRowType() *values.RecordType {
+	return values.NewRecordType("dml_ordering_row", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "NAME", FieldType: values.NullableString},
+		{Name: "COL1", FieldType: values.NullableLong},
+	})
+}
+
+func dmlOrderingQuantifier(alias string) expressions.Quantifier {
+	scan := mustDMLOrderingConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, dmlOrderingRowType()))
+	return expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(alias), expressions.InitialOf(scan))
+}
+
+func dmlOrderingField(q expressions.Quantifier, ordinals ...int) values.Value {
+	root := mustDMLOrderingConstruct(q.RequireFlowedObjectValue())
+	return mustDMLOrderingConstruct(values.ResolveFieldOrdinals(root, ordinals))
+}
+
+func dmlOrderingOutputField(
+	upperAlias values.CorrelationIdentifier,
+	result values.Value,
+	ordinals ...int,
+) values.Value {
+	root := mustDMLOrderingConstruct(values.NewQuantifiedObjectValue(
+		upperAlias, result.Type()))
+	return mustDMLOrderingConstruct(values.ResolveFieldOrdinals(root, ordinals))
+}
+
+func dmlRequestedOrdering(value values.Value, sortOrder properties.RequestedSortOrder) *properties.RequestedOrdering {
+	return properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: value, SortOrder: sortOrder}},
+		properties.DistinctnessNotDistinct,
+		false,
+	)
+}
+
+func runDMLOrderingRule(
+	t testing.TB,
+	rule ImplementationRule,
+	expr expressions.RelationalExpression,
+	ref *expressions.Reference,
+	constraints *ConstraintMap,
+	constraintOnly bool,
+) *ImplementationRuleCall {
+	t.Helper()
+	bindings := rule.Matcher().BindMatches(matching.NewBindings(), expr)
+	if len(bindings) != 1 {
+		t.Fatalf("%T matcher produced %d bindings, want 1", rule, len(bindings))
+	}
+	call := &ImplementationRuleCall{
+		Bindings:       bindings[0],
+		Reference:      ref,
+		Constraints:    constraints,
+		constraintOnly: constraintOnly,
+	}
+	rule.OnMatch(call)
+	if err := call.Err(); err != nil {
+		t.Fatalf("%T.OnMatch: %v", rule, err)
+	}
+	call.applyPendingConstraints()
+	return call
+}
+
+func assertDMLOrderingField(
+	t testing.TB,
+	got values.Value,
+	want values.Value,
+) {
+	t.Helper()
+	gotField, gotOK := values.AsFieldValue(got)
+	wantField, wantOK := values.AsFieldValue(want)
+	if !gotOK || !wantOK {
+		t.Fatalf("ordering value = %T, want exact FieldValue %T", got, want)
+	}
+	gotIdentity, gotIdentityOK := values.OrderingIdentityOf(got)
+	wantIdentity, wantIdentityOK := values.OrderingIdentityOf(want)
+	if !gotIdentityOK || !wantIdentityOK || gotIdentity != wantIdentity {
+		t.Fatalf("ordering field %q identity = %+v, want %q identity %+v",
+			gotField.DisplayName(), gotIdentity,
+			wantField.DisplayName(), wantIdentity)
+	}
+}
+
+func pushedDMLOrdering(
+	t testing.TB,
+	constraints *ConstraintMap,
+	innerRef *expressions.Reference,
+) *properties.RequestedOrdering {
+	t.Helper()
+	pushed, ok := Get(constraints, innerRef, RequestedOrderingConstraintKey)
+	if !ok {
+		t.Fatal("constraint not pushed to child Reference")
+	}
+	if len(pushed) != 1 {
+		t.Fatalf("pushed orderings = %d, want 1", len(pushed))
+	}
+	return pushed[0]
+}
 
 // --- Insert ---
 
 func TestPushRequestedOrderingThroughInsert_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	ins := expressions.NewInsertExpression(scanQ, "MyRecord", values.UnknownType)
-	insRef := expressions.InitialOf(ins)
+	inputQ := dmlOrderingQuantifier("insert_input")
+	insert := mustDMLOrderingConstruct(expressions.NewInsertExpression(
+		inputQ, "MyRecord", dmlOrderingRowType()))
+	insertRef := expressions.InitialOf(insert)
+	id := dmlOrderingField(inputQ, 0)
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, insRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
+	constraints := NewConstraintMap()
+	Set(constraints, insertRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(id, properties.RequestedSortOrderAscending)})
 
-	rule := NewPushRequestedOrderingThroughInsertRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
-	if len(bindings) != 1 {
-		t.Fatalf("matcher should match InsertExpression, got %d bindings", len(bindings))
-	}
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughInsertRule(), insert,
+		insertRef, constraints, true)
 
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      insRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := ins.GetInner().GetRangesOver()
-	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if !ok {
-		t.Fatal("constraint not pushed to child Reference")
-	}
-	if len(pushed) != 1 {
-		t.Fatalf("expected 1 pushed ordering, got %d", len(pushed))
-	}
-	parts := pushed[0].GetParts()
+	parts := pushedDMLOrdering(t, constraints, inputQ.GetRangesOver()).GetParts()
 	if len(parts) != 1 {
-		t.Fatalf("expected 1 ordering part, got %d", len(parts))
+		t.Fatalf("pushed parts = %d, want 1", len(parts))
 	}
-	fv, ok := parts[0].Value.(*values.FieldValue)
-	if !ok || fv.Field != "id" {
-		t.Fatalf("expected ordering on id, got %v", parts[0].Value)
-	}
+	assertDMLOrderingField(t, parts[0].Value, id)
 }
 
 func TestPushRequestedOrderingThroughInsert_NoConstraintDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	ins := expressions.NewInsertExpression(scanQ, "MyRecord", values.UnknownType)
-	insRef := expressions.InitialOf(ins)
+	inputQ := dmlOrderingQuantifier("insert_input")
+	insert := mustDMLOrderingConstruct(expressions.NewInsertExpression(
+		inputQ, "MyRecord", dmlOrderingRowType()))
+	insertRef := expressions.InitialOf(insert)
+	constraints := NewConstraintMap()
 
-	cm := NewConstraintMap()
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughInsertRule(), insert,
+		insertRef, constraints, true)
 
-	rule := NewPushRequestedOrderingThroughInsertRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      insRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := ins.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
+	if _, ok := Get(constraints, inputQ.GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("constraint should not be pushed when parent has no constraint")
 	}
 }
@@ -93,33 +162,19 @@ func TestPushRequestedOrderingThroughInsert_NoConstraintDoesNotPush(t *testing.T
 func TestPushRequestedOrderingThroughInsert_NotConstraintOnlyDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	ins := expressions.NewInsertExpression(scanQ, "MyRecord", values.UnknownType)
-	insRef := expressions.InitialOf(ins)
+	inputQ := dmlOrderingQuantifier("insert_input")
+	insert := mustDMLOrderingConstruct(expressions.NewInsertExpression(
+		inputQ, "MyRecord", dmlOrderingRowType()))
+	insertRef := expressions.InitialOf(insert)
+	constraints := NewConstraintMap()
+	Set(constraints, insertRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			dmlOrderingField(inputQ, 0), properties.RequestedSortOrderAscending)})
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, insRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughInsertRule(), insert,
+		insertRef, constraints, false)
 
-	rule := NewPushRequestedOrderingThroughInsertRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      insRef,
-		Constraints:    cm,
-		constraintOnly: false,
-	}
-	rule.OnMatch(call)
-
-	innerRef := ins.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
+	if _, ok := Get(constraints, inputQ.GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("constraint should not be pushed during implementation pass")
 	}
 }
@@ -127,115 +182,99 @@ func TestPushRequestedOrderingThroughInsert_NotConstraintOnlyDoesNotPush(t *test
 func TestPushRequestedOrderingThroughInsert_NoYield(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	ins := expressions.NewInsertExpression(scanQ, "MyRecord", values.UnknownType)
-	insRef := expressions.InitialOf(ins)
+	inputQ := dmlOrderingQuantifier("insert_input")
+	insert := mustDMLOrderingConstruct(expressions.NewInsertExpression(
+		inputQ, "MyRecord", dmlOrderingRowType()))
+	insertRef := expressions.InitialOf(insert)
+	constraints := NewConstraintMap()
+	Set(constraints, insertRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			dmlOrderingField(inputQ, 0), properties.RequestedSortOrderAscending)})
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, insRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
-
-	rule := NewPushRequestedOrderingThroughInsertRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), ins)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      insRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
+	call := runDMLOrderingRule(t, NewPushRequestedOrderingThroughInsertRule(), insert,
+		insertRef, constraints, true)
 	if len(call.yielded) != 0 {
-		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
+		t.Fatalf("constraint-push rule yielded %d expressions, want 0", len(call.yielded))
 	}
 }
 
 // --- Update ---
 
+func dmlOrderingUpdate(inputQ expressions.Quantifier) *expressions.UpdateExpression {
+	return mustDMLOrderingConstruct(expressions.NewUpdateExpression(
+		inputQ,
+		"MyRecord",
+		dmlOrderingRowType(),
+		[]expressions.UpdateTransform{{
+			FieldPath: "NAME",
+			NewValue: &values.ConstantValue{
+				Value: "updated",
+				Typ:   values.NotNullString,
+			},
+		}},
+	))
+}
+
 func TestPushRequestedOrderingThroughUpdate_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	transforms := []expressions.UpdateTransform{
-		{FieldPath: "name", NewValue: values.LiteralValue("updated")},
-	}
-	upd := expressions.NewUpdateExpression(scanQ, "MyRecord", transforms)
-	updRef := expressions.InitialOf(upd)
+	inputQ := dmlOrderingQuantifier("update_input")
+	update := dmlOrderingUpdate(inputQ)
+	updateRef := expressions.InitialOf(update)
+	// UPDATE emits {OLD,NEW}. An order requested on OLD.ID must be translated
+	// through that exact two-level result, not blindly copied as an output path.
+	oldID := dmlOrderingOutputField(inputQ.GetAlias(), update.GetResultValue(), 0, 0)
+	inputID := dmlOrderingField(inputQ, 0)
+	constraints := NewConstraintMap()
+	Set(constraints, updateRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			oldID, properties.RequestedSortOrderDescending)})
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderDescending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, updRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughUpdateRule(), update,
+		updateRef, constraints, true)
 
-	rule := NewPushRequestedOrderingThroughUpdateRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
-	if len(bindings) != 1 {
-		t.Fatalf("matcher should match UpdateExpression, got %d bindings", len(bindings))
-	}
-
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      updRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := upd.GetInner().GetRangesOver()
-	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if !ok {
-		t.Fatal("constraint not pushed to child Reference")
-	}
-	if len(pushed) != 1 {
-		t.Fatalf("expected 1 pushed ordering, got %d", len(pushed))
-	}
-	parts := pushed[0].GetParts()
+	parts := pushedDMLOrdering(t, constraints, inputQ.GetRangesOver()).GetParts()
 	if len(parts) != 1 {
-		t.Fatalf("expected 1 ordering part, got %d", len(parts))
+		t.Fatalf("pushed parts = %d, want 1", len(parts))
 	}
-	fv, ok := parts[0].Value.(*values.FieldValue)
-	if !ok || fv.Field != "id" {
-		t.Fatalf("expected ordering on id, got %v", parts[0].Value)
-	}
+	assertDMLOrderingField(t, parts[0].Value, inputID)
 	if parts[0].SortOrder != properties.RequestedSortOrderDescending {
-		t.Fatalf("expected DESC, got %v", parts[0].SortOrder)
+		t.Fatalf("sort order = %v, want DESC", parts[0].SortOrder)
+	}
+}
+
+func TestPushRequestedOrderingThroughUpdate_NewRecordOrderingBecomesPreserve(t *testing.T) {
+	t.Parallel()
+
+	inputQ := dmlOrderingQuantifier("update_input")
+	update := dmlOrderingUpdate(inputQ)
+	updateRef := expressions.InitialOf(update)
+	newID := dmlOrderingOutputField(inputQ.GetAlias(), update.GetResultValue(), 1, 0)
+	constraints := NewConstraintMap()
+	Set(constraints, updateRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			newID, properties.RequestedSortOrderAscending)})
+
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughUpdateRule(), update,
+		updateRef, constraints, true)
+
+	if pushed := pushedDMLOrdering(t, constraints, inputQ.GetRangesOver()); !pushed.IsPreserve() {
+		t.Fatalf("NEW-record ordering pushed as %#v, want preserve", pushed.GetParts())
 	}
 }
 
 func TestPushRequestedOrderingThroughUpdate_NoConstraintDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	upd := expressions.NewUpdateExpression(scanQ, "MyRecord", nil)
-	updRef := expressions.InitialOf(upd)
+	inputQ := dmlOrderingQuantifier("update_input")
+	update := dmlOrderingUpdate(inputQ)
+	updateRef := expressions.InitialOf(update)
+	constraints := NewConstraintMap()
 
-	cm := NewConstraintMap()
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughUpdateRule(), update,
+		updateRef, constraints, true)
 
-	rule := NewPushRequestedOrderingThroughUpdateRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      updRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := upd.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
+	if _, ok := Get(constraints, inputQ.GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("constraint should not be pushed when parent has no constraint")
 	}
 }
@@ -243,33 +282,19 @@ func TestPushRequestedOrderingThroughUpdate_NoConstraintDoesNotPush(t *testing.T
 func TestPushRequestedOrderingThroughUpdate_NotConstraintOnlyDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	upd := expressions.NewUpdateExpression(scanQ, "MyRecord", nil)
-	updRef := expressions.InitialOf(upd)
+	inputQ := dmlOrderingQuantifier("update_input")
+	update := dmlOrderingUpdate(inputQ)
+	updateRef := expressions.InitialOf(update)
+	constraints := NewConstraintMap()
+	Set(constraints, updateRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			dmlOrderingOutputField(inputQ.GetAlias(), update.GetResultValue(), 0, 0),
+			properties.RequestedSortOrderAscending)})
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, updRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughUpdateRule(), update,
+		updateRef, constraints, false)
 
-	rule := NewPushRequestedOrderingThroughUpdateRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      updRef,
-		Constraints:    cm,
-		constraintOnly: false,
-	}
-	rule.OnMatch(call)
-
-	innerRef := upd.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
+	if _, ok := Get(constraints, inputQ.GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("constraint should not be pushed during implementation pass")
 	}
 }
@@ -277,111 +302,66 @@ func TestPushRequestedOrderingThroughUpdate_NotConstraintOnlyDoesNotPush(t *test
 func TestPushRequestedOrderingThroughUpdate_NoYield(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	upd := expressions.NewUpdateExpression(scanQ, "MyRecord", nil)
-	updRef := expressions.InitialOf(upd)
+	inputQ := dmlOrderingQuantifier("update_input")
+	update := dmlOrderingUpdate(inputQ)
+	updateRef := expressions.InitialOf(update)
+	constraints := NewConstraintMap()
+	Set(constraints, updateRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			dmlOrderingOutputField(inputQ.GetAlias(), update.GetResultValue(), 0, 0),
+			properties.RequestedSortOrderAscending)})
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, updRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
-
-	rule := NewPushRequestedOrderingThroughUpdateRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), upd)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      updRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
+	call := runDMLOrderingRule(t, NewPushRequestedOrderingThroughUpdateRule(), update,
+		updateRef, constraints, true)
 	if len(call.yielded) != 0 {
-		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
+		t.Fatalf("constraint-push rule yielded %d expressions, want 0", len(call.yielded))
 	}
 }
 
 // --- TempTableInsert ---
 
+func dmlOrderingTempTableInsert(
+	inputQ expressions.Quantifier,
+	owning bool,
+) *expressions.TempTableInsertExpression {
+	return mustDMLOrderingConstruct(expressions.NewTempTableInsertExpression(
+		inputQ, values.NamedCorrelationIdentifier("tt1"), owning))
+}
+
 func TestPushRequestedOrderingThroughTempTableInsert_PropagatesConstraint(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	alias := values.NamedCorrelationIdentifier("tt1")
-	tti := expressions.NewTempTableInsertExpression(scanQ, alias, true)
-	ttiRef := expressions.InitialOf(tti)
+	inputQ := dmlOrderingQuantifier("temp_insert_input")
+	tempInsert := dmlOrderingTempTableInsert(inputQ, true)
+	tempInsertRef := expressions.InitialOf(tempInsert)
+	col1 := dmlOrderingField(inputQ, 2)
+	constraints := NewConstraintMap()
+	Set(constraints, tempInsertRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			col1, properties.RequestedSortOrderAscending)})
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughTempTableInsertRule(),
+		tempInsert, tempInsertRef, constraints, true)
 
-	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
-	if len(bindings) != 1 {
-		t.Fatalf("matcher should match TempTableInsertExpression, got %d bindings", len(bindings))
-	}
-
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      ttiRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := tti.GetInner().GetRangesOver()
-	pushed, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if !ok {
-		t.Fatal("constraint not pushed to child Reference")
-	}
-	if len(pushed) != 1 {
-		t.Fatalf("expected 1 pushed ordering, got %d", len(pushed))
-	}
-	parts := pushed[0].GetParts()
+	parts := pushedDMLOrdering(t, constraints, inputQ.GetRangesOver()).GetParts()
 	if len(parts) != 1 {
-		t.Fatalf("expected 1 ordering part, got %d", len(parts))
+		t.Fatalf("pushed parts = %d, want 1", len(parts))
 	}
-	fv, ok := parts[0].Value.(*values.FieldValue)
-	if !ok || fv.Field != "col1" {
-		t.Fatalf("expected ordering on col1, got %v", parts[0].Value)
-	}
+	assertDMLOrderingField(t, parts[0].Value, col1)
 }
 
 func TestPushRequestedOrderingThroughTempTableInsert_NoConstraintDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	alias := values.NamedCorrelationIdentifier("tt1")
-	tti := expressions.NewTempTableInsertExpression(scanQ, alias, false)
-	ttiRef := expressions.InitialOf(tti)
+	inputQ := dmlOrderingQuantifier("temp_insert_input")
+	tempInsert := dmlOrderingTempTableInsert(inputQ, false)
+	tempInsertRef := expressions.InitialOf(tempInsert)
+	constraints := NewConstraintMap()
 
-	cm := NewConstraintMap()
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughTempTableInsertRule(),
+		tempInsert, tempInsertRef, constraints, true)
 
-	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      ttiRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
-	innerRef := tti.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
+	if _, ok := Get(constraints, inputQ.GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("constraint should not be pushed when parent has no constraint")
 	}
 }
@@ -389,34 +369,18 @@ func TestPushRequestedOrderingThroughTempTableInsert_NoConstraintDoesNotPush(t *
 func TestPushRequestedOrderingThroughTempTableInsert_NotConstraintOnlyDoesNotPush(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	alias := values.NamedCorrelationIdentifier("tt1")
-	tti := expressions.NewTempTableInsertExpression(scanQ, alias, true)
-	ttiRef := expressions.InitialOf(tti)
+	inputQ := dmlOrderingQuantifier("temp_insert_input")
+	tempInsert := dmlOrderingTempTableInsert(inputQ, true)
+	tempInsertRef := expressions.InitialOf(tempInsert)
+	constraints := NewConstraintMap()
+	Set(constraints, tempInsertRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			dmlOrderingField(inputQ, 2), properties.RequestedSortOrderAscending)})
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
+	runDMLOrderingRule(t, NewPushRequestedOrderingThroughTempTableInsertRule(),
+		tempInsert, tempInsertRef, constraints, false)
 
-	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      ttiRef,
-		Constraints:    cm,
-		constraintOnly: false,
-	}
-	rule.OnMatch(call)
-
-	innerRef := tti.GetInner().GetRangesOver()
-	_, ok := Get(cm, innerRef, RequestedOrderingConstraintKey)
-	if ok {
+	if _, ok := Get(constraints, inputQ.GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("constraint should not be pushed during implementation pass")
 	}
 }
@@ -424,32 +388,17 @@ func TestPushRequestedOrderingThroughTempTableInsert_NotConstraintOnlyDoesNotPus
 func TestPushRequestedOrderingThroughTempTableInsert_NoYield(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	alias := values.NamedCorrelationIdentifier("tt1")
-	tti := expressions.NewTempTableInsertExpression(scanQ, alias, true)
-	ttiRef := expressions.InitialOf(tti)
+	inputQ := dmlOrderingQuantifier("temp_insert_input")
+	tempInsert := dmlOrderingTempTableInsert(inputQ, true)
+	tempInsertRef := expressions.InitialOf(tempInsert)
+	constraints := NewConstraintMap()
+	Set(constraints, tempInsertRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{dmlRequestedOrdering(
+			dmlOrderingField(inputQ, 2), properties.RequestedSortOrderAscending)})
 
-	cm := NewConstraintMap()
-	ordering := properties.NewRequestedOrdering(
-		[]properties.RequestedOrderingPart{
-			{Value: &values.FieldValue{Field: "col1", Typ: values.UnknownType}, SortOrder: properties.RequestedSortOrderAscending},
-		},
-		properties.DistinctnessNotDistinct, false,
-	)
-	Set(cm, ttiRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{ordering})
-
-	rule := NewPushRequestedOrderingThroughTempTableInsertRule()
-	bindings := rule.Matcher().BindMatches(matching.NewBindings(), tti)
-	call := &ImplementationRuleCall{
-		Bindings:       bindings[0],
-		Reference:      ttiRef,
-		Constraints:    cm,
-		constraintOnly: true,
-	}
-	rule.OnMatch(call)
-
+	call := runDMLOrderingRule(t, NewPushRequestedOrderingThroughTempTableInsertRule(),
+		tempInsert, tempInsertRef, constraints, true)
 	if len(call.yielded) != 0 {
-		t.Fatalf("constraint-push rule should not yield expressions, but yielded %d", len(call.yielded))
+		t.Fatalf("constraint-push rule yielded %d expressions, want 0", len(call.yielded))
 	}
 }

@@ -6,6 +6,17 @@ import (
 	"fdb.dev/pkg/relational/core/query/semantic"
 )
 
+// unnestElementStructFields is a test-side view over the live typed-column
+// resolver. Production consumes the full element Column; only this assertion
+// needs its nested-field slice.
+func unnestElementStructFields(scope *semantic.Scope, j joinClause) []semantic.Column {
+	column, ok := unnestElementColumn(scope, j)
+	if !ok {
+		return nil
+	}
+	return column.StructFields
+}
+
 // TestUnnestElementStructFieldsTakesTheLeaf drives unnestElementStructFields
 // over both shapes its two segments can name, because the function cannot tell
 // them apart from a chain-free lookup's result:
@@ -95,6 +106,28 @@ func TestUnnestElementStructFieldsTakesTheLeaf(t *testing.T) {
 			"the reference actually named is never seen. Take the accessor chain's "+
 			"LEAF — a descent denotes its leaf, never the struct it was reached "+
 			"through.", nested)
+	}
+
+	// A prior record-valued unnest is represented by a shadowing one-column
+	// virtual source. When its alias and an element member have the same name,
+	// SUB.SUB must mean the SUB source's whole element followed by its SUB
+	// member; the synthetic wrapper column must not compete with that member.
+	selfElement := semantic.Column{Id: semantic.NewUnquoted("sub"), Type: "RECORD", StructFields: []semantic.Column{
+		{Id: semantic.NewUnquoted("sub"), Type: "RECORD", IsArray: true, StructFields: leafFields},
+	}}
+	selfScope := semantic.NewScope(nil)
+	if err := selfScope.AddSource(semantic.ScopeSource{
+		Table: &semantic.StaticTable{
+			TableName:    semantic.ParseQualifiedName("sub", false),
+			TableColumns: []semantic.Column{selfElement},
+		},
+		Alias: semantic.NewUnquoted("sub"), CorrelationName: "SUB", Shadowing: true,
+	}); err != nil {
+		t.Fatalf("AddSource self-named unnest: %v", err)
+	}
+	selfNamed := names(unnestElementStructFields(selfScope, joinClause{segments: []string{"SUB", "SUB"}}))
+	if !eq(selfNamed, "SK", "CO") {
+		t.Fatalf("self-named unnest `SUB.SUB` yielded element fields %v, want [SK CO]", selfNamed)
 	}
 
 	// A descent that lands on a NON-array field must still yield nothing: the

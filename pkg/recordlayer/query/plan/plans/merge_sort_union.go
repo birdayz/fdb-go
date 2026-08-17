@@ -35,15 +35,9 @@ func NewRecordQueryMergeSortUnionPlan(
 	comparisonKeys []values.Value,
 	reverse bool,
 	removeDuplicates bool,
-) *RecordQueryMergeSortUnionPlan {
-	copiedKeys := make([]values.Value, len(comparisonKeys))
-	copy(copiedKeys, comparisonKeys)
-	return &RecordQueryMergeSortUnionPlan{
-		childQs:          QuantifiersOverPlans(inners),
-		comparisonKeys:   copiedKeys,
-		reverse:          reverse,
-		removeDuplicates: removeDuplicates,
-	}
+) (*RecordQueryMergeSortUnionPlan, error) {
+	return NewRecordQueryMergeSortUnionPlanFromQuantifiers(
+		QuantifiersOverPlans(inners), comparisonKeys, reverse, removeDuplicates)
 }
 
 // NewRecordQueryMergeSortUnionPlanFromQuantifiers builds an ordered merge-sort
@@ -57,15 +51,20 @@ func NewRecordQueryMergeSortUnionPlanFromQuantifiers(
 	comparisonKeys []values.Value,
 	reverse bool,
 	removeDuplicates bool,
-) *RecordQueryMergeSortUnionPlan {
+) (*RecordQueryMergeSortUnionPlan, error) {
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryMergeSortUnionPlan", qs)
+	if err != nil {
+		return nil, err
+	}
 	copiedKeys := make([]values.Value, len(comparisonKeys))
 	copy(copiedKeys, comparisonKeys)
 	return &RecordQueryMergeSortUnionPlan{
+		PlanExprBase:     base,
 		childQs:          append([]expressions.Quantifier(nil), qs...),
 		comparisonKeys:   copiedKeys,
 		reverse:          reverse,
 		removeDuplicates: removeDuplicates,
-	}
+	}, nil
 }
 
 // GetInners returns the legs, dereferenced through the quantifiers and in
@@ -78,12 +77,7 @@ func (p *RecordQueryMergeSortUnionPlan) GetComparisonKeys() []values.Value { ret
 func (p *RecordQueryMergeSortUnionPlan) IsReverse() bool                   { return p.reverse }
 func (p *RecordQueryMergeSortUnionPlan) RemovesDuplicates() bool           { return p.removeDuplicates }
 
-func (p *RecordQueryMergeSortUnionPlan) GetResultType() values.Type {
-	if len(p.childQs) == 0 {
-		return values.UnknownType
-	}
-	return planFromQuantifier(p.childQs[0]).GetResultType()
-}
+func (p *RecordQueryMergeSortUnionPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 func (p *RecordQueryMergeSortUnionPlan) GetChildren() []RecordQueryPlan { return p.GetInners() }
 
@@ -156,13 +150,18 @@ func (p *RecordQueryMergeSortUnionPlan) GetQuantifiers() []expressions.Quantifie
 // Java's copy-on-write withChildrenReferences. The receiver is never mutated,
 // which is what keeps a memoized plan safe to share; the incoming slice is
 // copied so the caller cannot alias the copy's storage either.
-func (p *RecordQueryMergeSortUnionPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != len(p.childQs) {
-		return p
+func (p *RecordQueryMergeSortUnionPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryMergeSortUnionPlan", len(qs), len(p.childQs)); err != nil {
+		return nil, err
 	}
 	cp := *p
+	base, err := newPlanExprBaseForFirstQuantifier("RecordQueryMergeSortUnionPlan", qs)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
 	cp.childQs = append([]expressions.Quantifier(nil), qs...)
-	return &cp
+	return &cp, nil
 }
 
 // ChildrenAsSet reports that the legs of this set operation are commutative.
@@ -173,10 +172,7 @@ func (p *RecordQueryMergeSortUnionPlan) ChildrenAsSet() bool { return true }
 // physicalMergeSortUnionWrapper (RFC-184 W2); an empty union falls back to
 // PlanExprBase's fresh stand-in.
 func (p *RecordQueryMergeSortUnionPlan) GetResultValue() values.Value {
-	if len(p.childQs) == 0 {
-		return p.PlanExprBase.GetResultValue()
-	}
-	return p.childQs[0].GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -184,7 +180,7 @@ func (p *RecordQueryMergeSortUnionPlan) GetResultValue() values.Value {
 // quantifier swap: WithQuantifiers rebinds the legs and GetInners re-resolves
 // through the new references (RFC-184 W2, replacing physicalMergeSortUnionWrapper.WithChildren).
 func (p *RecordQueryMergeSortUnionPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

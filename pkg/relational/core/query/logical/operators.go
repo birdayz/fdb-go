@@ -12,7 +12,11 @@ import (
 // an EXISTS subquery. Carried on LogicalFilter so the Cascades
 // translator can build ExistentialQuantifiers over the subquery plans.
 type ExistsSubquery struct {
-	Alias         values.CorrelationIdentifier
+	Alias values.CorrelationIdentifier
+	// FlowedType is the exact whole-row type of Plan. It is captured when the
+	// subquery is built so every ExistsValue and existential Quantifier use one
+	// stable type authority rather than re-deriving a placeholder type.
+	FlowedType    values.Type
 	Plan          LogicalOperator
 	JoinPredicate predicates.QueryPredicate
 	// KnownTruth is non-nil when the front-end can prove the EXISTS result from
@@ -242,6 +246,13 @@ type LogicalProject struct {
 	// nil (or a short slice) reads as "user alias" for every slot it does not
 	// cover: a machinery mint is the exceptional case and states itself.
 	AliasMinted []bool
+	// AliasSources is parallel to AliasMinted. A present entry is the
+	// STRUCTURED authored source identity captured at the instant the machinery
+	// minted that slot's alias. It is not the later physical Value owner: a
+	// projection Value can be reanchored onto `_current` while the alias remains
+	// the datum key minted from source A. A short/nil vector means the source was
+	// not captured; consumers must never reconstruct it from alias text.
+	AliasSources []values.ProjectionAliasSource
 	// AggregateOutputOrdinals is the exact native [group keys..., aggregate
 	// calls...] input slot for each post-aggregate projection item. A negative
 	// entry marks a computed item whose Value tree is bound separately. nil
@@ -249,6 +260,13 @@ type LogicalProject struct {
 	// identity separate from Projections/Aliases prevents a group key and an
 	// aggregate alias with the same spelling from being rebound by name.
 	AggregateOutputOrdinals []int
+	// InputOrdinals is a complete positional projection contract for machinery
+	// boundaries that are created before their input quantifier exists (for
+	// example a CTE column-list rename). The logical node deliberately leaves
+	// the corresponding ProjectedValues nil; cascades translation resolves each
+	// slot against the real input quantifier's exact flowed object value. nil
+	// means no such positional boundary.
+	InputOrdinals []int
 	// AggregateSlots is parallel to Projections; true = the slot's value tree
 	// CONTAINS an aggregate. Captured pre-rewrite, where the *AggregateValue
 	// node is still present (rewriteAggregateValuesInTree destructively replaces
@@ -920,6 +938,12 @@ type LogicalCTE struct {
 	Recursive      bool
 	ColumnAliases  []string // WITH c(a, b) AS (...) → renames body's output columns
 	TraversalOrder TraversalOrder
+	// PreserveMainSource marks a scope-only envelope: Name registers Body for
+	// scans in Main, but the envelope does not replace Main's outward source
+	// identity. Correlated EXISTS/Scalar plans use this when they copy enclosing
+	// CTE definitions into a self-contained subplan. Derived-table alias carriers
+	// leave it false because their CTE name deliberately IS the outward alias.
+	PreserveMainSource bool
 	// Binding is the derived/CTE leg's binding correlation name when its
 	// FROM alias duplicates an earlier leg's ("" = Name binds). See
 	// LogicalScan.Binding.

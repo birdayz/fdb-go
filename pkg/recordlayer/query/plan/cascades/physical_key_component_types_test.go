@@ -10,6 +10,19 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func physicalKeyRowType() *values.RecordType {
+	return values.NewRecordType("T", false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableDouble, Ordinal: 1},
+		{Name: "C", FieldType: values.NullableLong, Ordinal: 2},
+		{Name: "V", FieldType: values.NullableDouble, Ordinal: 3},
+		{Name: "W", FieldType: values.NullableLong, Ordinal: 4},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullLong), Ordinal: 5},
+		{Name: "PART", FieldType: values.NullableDouble, Ordinal: 6},
+		{Name: "EMBEDDING", FieldType: values.NewArrayType(false, values.NotNullDouble), Ordinal: 7},
+	})
+}
+
 func candidatePhysicalTypeEquality(value any) *predicates.ComparisonRange {
 	comparison := predicates.NewLiteralComparison(predicates.ComparisonEquals, value)
 	return predicates.EmptyComparisonRange().Merge(&comparison).Range
@@ -34,7 +47,7 @@ func TestAggregateCandidateStopsAtPhysicalGroupingBoundary(t *testing.T) {
 	t.Parallel()
 
 	candidate := NewAggregateIndexMatchCandidate(
-		"max_idx", []string{"T"}, []string{"A", "B", "C"}, expressions.AggMax, "V", values.UnknownType,
+		"max_idx", []string{"T"}, []string{"A", "B", "C"}, expressions.AggMax, "V", physicalKeyRowType(),
 		[]values.Type{values.NullableFloat, values.NullableDouble, values.NullableLong},
 		2,
 	)
@@ -66,7 +79,9 @@ func TestAggregateCandidateStopsAtPhysicalGroupingBoundary(t *testing.T) {
 		types[2].Code() != values.TypeCodeLong {
 		t.Fatalf("scan physical types = %v, want [FLOAT DOUBLE LONG]", types)
 	}
-	aggregate := plans.NewRecordQueryAggregateIndexPlan(indexPlan, "T", values.UnknownType, "MAX").
+	aggregateValue, aggregateErr := plans.NewRecordQueryAggregateIndexPlan(
+		indexPlan, "T", physicalKeyRowType(), "MAX")
+	aggregate := mustConstruct(t, aggregateValue, aggregateErr).
 		WithGroupColumns([]string{"A", "B", "C"}, "V")
 	if got := aggregate.GetPhysicalGroupingPrefixCount(); got != 2 {
 		t.Fatalf("aggregate physical grouping prefix = %d, want 2", got)
@@ -77,7 +92,7 @@ func TestCandidatePhysicalTypeFallbackUsesCardinalityInt(t *testing.T) {
 	t.Parallel()
 
 	rowType := values.NewRecordType("T", false, []values.Field{
-		{Name: "TAGS", FieldType: values.UnknownType},
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullLong)},
 	})
 	known := false
 	candidate := NewValueIndexScanMatchCandidateWithFunctions(
@@ -100,7 +115,7 @@ func TestValueAndPrimaryCandidatesKeepSuffixAfterSignedZero(t *testing.T) {
 	knownDistinct := false
 	valueCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"float_suffix", []string{"T"}, []string{"V", "W"}, nil, aliases,
-		values.UnknownType, false, nil, &knownDistinct,
+		physicalKeyRowType(), false, nil, &knownDistinct,
 	).WithKeyComponentTypes([]values.Type{values.NullableDouble, values.NullableLong})
 	bindings := map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 		aliases[0]: candidatePhysicalTypeEquality(math.Copysign(0, -1)),
@@ -111,7 +126,7 @@ func TestValueAndPrimaryCandidatesKeepSuffixAfterSignedZero(t *testing.T) {
 	}
 
 	primaryCandidate := NewPrimaryScanMatchCandidate(
-		nil, aliases, []string{"T"}, []string{"T"}, []string{"V", "W"}, true, values.UnknownType,
+		nil, aliases, []string{"T"}, []string{"T"}, []string{"V", "W"}, true, physicalKeyRowType(),
 	).WithKeyComponentTypes([]values.Type{values.NullableDouble, values.NullableLong})
 	if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 2 {
 		t.Fatalf("primary signed-zero prefix size = %d, want 2", len(prefix))
@@ -144,7 +159,7 @@ func TestVisibleConstantNaNEligibility(t *testing.T) {
 			knownDistinct := false
 			valueCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 				"nan_idx", []string{"T"}, []string{"A", "B", "C"}, nil, aliases,
-				values.UnknownType, false, nil, &knownDistinct,
+				physicalKeyRowType(), false, nil, &knownDistinct,
 			).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableDouble, values.NullableLong})
 			valuePrefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings)
 			if len(valuePrefix) != 1 {
@@ -155,14 +170,14 @@ func TestVisibleConstantNaNEligibility(t *testing.T) {
 			}
 
 			primaryCandidate := NewPrimaryScanMatchCandidate(
-				nil, aliases, []string{"T"}, []string{"T"}, []string{"A", "B", "C"}, true, values.UnknownType,
+				nil, aliases, []string{"T"}, []string{"T"}, []string{"A", "B", "C"}, true, physicalKeyRowType(),
 			).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableDouble, values.NullableLong})
 			if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 				t.Fatalf("primary NaN prefix size = %d, want preceding equality only", len(prefix))
 			}
 
 			aggregate := NewAggregateIndexMatchCandidate(
-				"agg_nan", []string{"T"}, []string{"A", "B", "C"}, expressions.AggMax, "V", values.UnknownType,
+				"agg_nan", []string{"T"}, []string{"A", "B", "C"}, expressions.AggMax, "V", physicalKeyRowType(),
 				[]values.Type{values.NullableDouble, values.NullableLong, values.NullableLong}, 3,
 			)
 			aggAliases := aggregate.GetSargableAliases()
@@ -174,7 +189,7 @@ func TestVisibleConstantNaNEligibility(t *testing.T) {
 
 			vector := NewVectorIndexScanMatchCandidate(
 				"vector_nan", []string{"T"}, []string{"PART", "EMBEDDING"}, 1,
-				values.DistanceEuclidean, values.UnknownType, false, nil,
+				values.DistanceEuclidean, physicalKeyRowType(), false, nil,
 			).WithPartitionKeyComponentTypes([]values.Type{values.NullableDouble})
 			partitionAlias := vector.GetSargableAliases()[0]
 			if candidateBindingRangesEligible(vector, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
@@ -200,7 +215,7 @@ func TestCandidatesNeverInferUnknownPhysicalKeyTypeFromComparand(t *testing.T) {
 	knownDistinct := false
 	valueCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"heterogeneous", []string{"FloatRecord", "DoubleRecord"}, []string{"A", "B"}, nil, aliases,
-		values.UnknownType, false, nil, &knownDistinct,
+		physicalKeyRowType(), false, nil, &knownDistinct,
 	).WithKeyComponentTypes([]values.Type{values.NullableLong, values.UnknownType})
 	if prefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 		t.Fatalf("value-index prefix with conflicting second component = %d, want 1", len(prefix))
@@ -208,7 +223,7 @@ func TestCandidatesNeverInferUnknownPhysicalKeyTypeFromComparand(t *testing.T) {
 
 	primaryCandidate := NewPrimaryScanMatchCandidate(
 		nil, aliases, []string{"FloatRecord", "DoubleRecord"}, []string{"FloatRecord", "DoubleRecord"},
-		[]string{"A", "B"}, true, values.UnknownType,
+		[]string{"A", "B"}, true, physicalKeyRowType(),
 	).WithKeyComponentTypes([]values.Type{values.NullableLong, values.UnknownType})
 	if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 		t.Fatalf("primary prefix with conflicting second component = %d, want 1", len(prefix))
@@ -216,7 +231,7 @@ func TestCandidatesNeverInferUnknownPhysicalKeyTypeFromComparand(t *testing.T) {
 
 	aggregate := NewAggregateIndexMatchCandidate(
 		"heterogeneous_aggregate", []string{"FloatRecord", "DoubleRecord"}, []string{"A"},
-		expressions.AggMax, "V", values.UnknownType,
+		expressions.AggMax, "V", physicalKeyRowType(),
 		[]values.Type{values.UnknownType}, 1,
 	)
 	if candidateBindingRangesEligible(aggregate, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
@@ -227,7 +242,7 @@ func TestCandidatesNeverInferUnknownPhysicalKeyTypeFromComparand(t *testing.T) {
 
 	vector := NewVectorIndexScanMatchCandidate(
 		"heterogeneous_vector", []string{"FloatRecord", "DoubleRecord"}, []string{"PART", "EMBEDDING"}, 1,
-		values.DistanceEuclidean, values.UnknownType, false, nil,
+		values.DistanceEuclidean, physicalKeyRowType(), false, nil,
 	).WithPartitionKeyComponentTypes([]values.Type{values.UnknownType})
 	if candidateBindingRangesEligible(vector, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
 		vector.GetSargableAliases()[0]: candidatePhysicalTypeEquality(float64(1)),
@@ -260,7 +275,7 @@ func TestCandidatesRetainPhysicalFloatInequalities(t *testing.T) {
 	knownDistinct := false
 	valueCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"float_order", []string{"T"}, []string{"V"}, nil, []values.CorrelationIdentifier{alias},
-		values.UnknownType, false, nil, &knownDistinct,
+		physicalKeyRowType(), false, nil, &knownDistinct,
 	).WithKeyComponentTypes([]values.Type{values.NullableDouble})
 	if prefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 		t.Fatalf("value candidate prefix = %v, want the FLOAT inequality retained; "+
@@ -268,14 +283,14 @@ func TestCandidatesRetainPhysicalFloatInequalities(t *testing.T) {
 	}
 	primaryCandidate := NewPrimaryScanMatchCandidate(
 		nil, []values.CorrelationIdentifier{alias}, []string{"T"}, []string{"T"},
-		[]string{"V"}, true, values.UnknownType,
+		[]string{"V"}, true, physicalKeyRowType(),
 	).WithKeyComponentTypes([]values.Type{values.NullableFloat})
 	if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 		t.Fatalf("primary candidate prefix = %v, want the FLOAT inequality retained", prefix)
 	}
 
 	aggregate := NewAggregateIndexMatchCandidate(
-		"float_order_aggregate", []string{"T"}, []string{"V"}, expressions.AggMax, "A", values.UnknownType,
+		"float_order_aggregate", []string{"T"}, []string{"V"}, expressions.AggMax, "A", physicalKeyRowType(),
 		[]values.Type{values.NullableDouble}, 1,
 	)
 	aggAlias := aggregate.GetSargableAliases()[0]
@@ -287,7 +302,7 @@ func TestCandidatesRetainPhysicalFloatInequalities(t *testing.T) {
 
 	integerCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"integer_order", []string{"T"}, []string{"V"}, nil, []values.CorrelationIdentifier{alias},
-		values.UnknownType, false, nil, &knownDistinct,
+		physicalKeyRowType(), false, nil, &knownDistinct,
 	).WithKeyComponentTypes([]values.Type{values.NullableLong})
 	if prefix := integerCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 		t.Fatalf("integer inequality prefix = %v, want retained bound", prefix)
@@ -304,7 +319,7 @@ func TestCandidatesRetainPhysicalFloatIsNotNull(t *testing.T) {
 	knownDistinct := false
 	valueCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 		"float_not_null", []string{"T"}, []string{"V"}, nil,
-		[]values.CorrelationIdentifier{alias}, values.UnknownType, false, nil, &knownDistinct,
+		[]values.CorrelationIdentifier{alias}, physicalKeyRowType(), false, nil, &knownDistinct,
 	).WithKeyComponentTypes([]values.Type{values.NullableDouble})
 	if prefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 		t.Fatalf("value FLOAT IS NOT NULL prefix = %v, want retained bound", prefix)
@@ -312,14 +327,14 @@ func TestCandidatesRetainPhysicalFloatIsNotNull(t *testing.T) {
 
 	primaryCandidate := NewPrimaryScanMatchCandidate(
 		nil, []values.CorrelationIdentifier{alias}, []string{"T"}, []string{"T"},
-		[]string{"V"}, true, values.UnknownType,
+		[]string{"V"}, true, physicalKeyRowType(),
 	).WithKeyComponentTypes([]values.Type{values.NullableFloat})
 	if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 		t.Fatalf("primary FLOAT IS NOT NULL prefix = %v, want retained bound", prefix)
 	}
 
 	aggregate := NewAggregateIndexMatchCandidate(
-		"float_not_null_aggregate", []string{"T"}, []string{"V"}, expressions.AggMax, "A", values.UnknownType,
+		"float_not_null_aggregate", []string{"T"}, []string{"V"}, expressions.AggMax, "A", physicalKeyRowType(),
 		[]values.Type{values.NullableDouble}, 1,
 	)
 	aggAlias := aggregate.GetSargableAliases()[0]
@@ -331,7 +346,7 @@ func TestCandidatesRetainPhysicalFloatIsNotNull(t *testing.T) {
 
 	vector := NewVectorIndexScanMatchCandidate(
 		"float_not_null_vector", []string{"T"}, []string{"PART", "EMBEDDING"}, 1,
-		values.DistanceEuclidean, values.UnknownType, false, nil,
+		values.DistanceEuclidean, physicalKeyRowType(), false, nil,
 	).WithPartitionKeyComponentTypes([]values.Type{values.NullableFloat})
 	partitionAlias := vector.GetSargableAliases()[0]
 	if !candidateBindingRangesEligible(vector, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
@@ -365,7 +380,7 @@ func TestCandidatesOnlySARGStartsWithOnPhysicalString(t *testing.T) {
 			knownDistinct := false
 			valueCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 				"unsupported_starts_with", []string{"T"}, []string{"V"}, nil,
-				[]values.CorrelationIdentifier{alias}, values.UnknownType, false, nil, &knownDistinct,
+				[]values.CorrelationIdentifier{alias}, physicalKeyRowType(), false, nil, &knownDistinct,
 			).WithKeyComponentTypes([]values.Type{test.physicalType})
 			if prefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 0 {
 				t.Fatalf("value candidate SARGed %s STARTS_WITH: %v", test.name, prefix)
@@ -373,7 +388,7 @@ func TestCandidatesOnlySARGStartsWithOnPhysicalString(t *testing.T) {
 
 			primaryCandidate := NewPrimaryScanMatchCandidate(
 				nil, []values.CorrelationIdentifier{alias}, []string{"T"}, []string{"T"},
-				[]string{"V"}, true, values.UnknownType,
+				[]string{"V"}, true, physicalKeyRowType(),
 			).WithKeyComponentTypes([]values.Type{test.physicalType})
 			if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 0 {
 				t.Fatalf("primary candidate SARGed %s STARTS_WITH: %v", test.name, prefix)
@@ -381,7 +396,7 @@ func TestCandidatesOnlySARGStartsWithOnPhysicalString(t *testing.T) {
 
 			aggregate := NewAggregateIndexMatchCandidate(
 				"unsupported_starts_with_aggregate", []string{"T"}, []string{"V"},
-				expressions.AggMax, "A", values.UnknownType,
+				expressions.AggMax, "A", physicalKeyRowType(),
 				[]values.Type{test.physicalType}, 1,
 			)
 			aggAlias := aggregate.GetSargableAliases()[0]
@@ -393,7 +408,7 @@ func TestCandidatesOnlySARGStartsWithOnPhysicalString(t *testing.T) {
 
 			vector := NewVectorIndexScanMatchCandidate(
 				"unsupported_starts_with_vector", []string{"T"}, []string{"PART", "EMBEDDING"}, 1,
-				values.DistanceEuclidean, values.UnknownType, false, nil,
+				values.DistanceEuclidean, physicalKeyRowType(), false, nil,
 			).WithPartitionKeyComponentTypes([]values.Type{test.physicalType})
 			partitionAlias := vector.GetSargableAliases()[0]
 			if candidateBindingRangesEligible(vector, map[values.CorrelationIdentifier]*predicates.ComparisonRange{
@@ -413,7 +428,7 @@ func TestCandidatesOnlySARGStartsWithOnPhysicalString(t *testing.T) {
 		knownDistinct := false
 		valueCandidate := NewValueIndexScanMatchCandidateWithFunctions(
 			"string_starts_with", []string{"T"}, []string{"V"}, nil,
-			[]values.CorrelationIdentifier{alias}, values.UnknownType, false, nil, &knownDistinct,
+			[]values.CorrelationIdentifier{alias}, physicalKeyRowType(), false, nil, &knownDistinct,
 		).WithKeyComponentTypes([]values.Type{values.NullableString})
 		if prefix := valueCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 			t.Fatalf("value STRING STARTS_WITH prefix = %v, want retained bound", prefix)
@@ -421,7 +436,7 @@ func TestCandidatesOnlySARGStartsWithOnPhysicalString(t *testing.T) {
 
 		primaryCandidate := NewPrimaryScanMatchCandidate(
 			nil, []values.CorrelationIdentifier{alias}, []string{"T"}, []string{"T"},
-			[]string{"V"}, true, values.UnknownType,
+			[]string{"V"}, true, physicalKeyRowType(),
 		).WithKeyComponentTypes([]values.Type{values.NullableString})
 		if prefix := primaryCandidate.ComputeBoundParameterPrefixMap(bindings); len(prefix) != 1 {
 			t.Fatalf("primary STRING STARTS_WITH prefix = %v, want retained bound", prefix)

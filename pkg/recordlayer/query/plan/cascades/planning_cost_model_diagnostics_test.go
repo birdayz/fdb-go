@@ -14,6 +14,35 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustDiagnosticConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct cost-model diagnostic fixture: " + err.Error())
+	}
+	return value
+}
+
+func diagnosticRowType() values.Type {
+	return values.NewRecordType("DiagnosticRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 2},
+		{Name: "C", FieldType: values.NullableLong, Ordinal: 3},
+	})
+}
+
+func diagnosticResultValue() values.Value {
+	return values.NewRawRecordConstructorValue(values.RecordConstructorField{
+		Name:  "ID",
+		Value: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+	})
+}
+
+func diagnosticPlanField(q expressions.Quantifier, ordinal int) values.Value {
+	flowedType := mustDiagnosticConstruct(q.GetFlowedObjectType())
+	root := mustDiagnosticConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+	return mustDiagnosticConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
 type lockedDiagnosticBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -45,12 +74,12 @@ func diagnosticLogLines(buf *lockedDiagnosticBuffer) []string {
 }
 
 func diagnosticLogicalCounts(plan plans.RecordQueryPlan, ctx PlanContext) expressionCounts {
-	logical := expressions.NewLogicalProjectionExpression(
+	logical := mustDiagnosticConstruct(expressions.NewLogicalProjectionExpression(
 		nil,
 		expressions.ForEachQuantifier(
 			expressions.FinalOfAtStage(plan, expressions.StageCanonical),
 		),
-	)
+	))
 	return findExpressionsByType(logical, nil, ctx)
 }
 
@@ -82,7 +111,11 @@ type unclassifiedCostModelTestPlan struct {
 }
 
 func (p *unclassifiedCostModelTestPlan) GetResultType() values.Type {
-	return values.UnknownType
+	return diagnosticResultValue().Type()
+}
+
+func (p *unclassifiedCostModelTestPlan) GetResultValue() values.Value {
+	return diagnosticResultValue()
 }
 
 func (p *unclassifiedCostModelTestPlan) GetChildren() []plans.RecordQueryPlan {
@@ -107,9 +140,12 @@ func (p *unclassifiedCostModelTestPlan) HashCodeWithoutChildren() uint64 {
 }
 
 func (p *unclassifiedCostModelTestPlan) WithQuantifiers(
-	_ []expressions.Quantifier,
-) expressions.RelationalExpression {
-	return p
+	quantifiers []expressions.Quantifier,
+) (expressions.RelationalExpression, error) {
+	if err := requireTestQuantifierArity("unclassifiedCostModelTestPlan", len(quantifiers), len(p.GetQuantifiers())); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 func (p *unclassifiedCostModelTestPlan) Explain() string {
@@ -235,7 +271,7 @@ func TestCostModelDiagnosticsKnownNeutralPlanIsQuiet(t *testing.T) {
 
 	logger, buf := newCostModelDiagnosticLogger(slog.LevelWarn)
 	ctx := WithCostModelDiagnostics(EmptyPlanContext(), logger)
-	plan := plans.NewRecordQueryValuesPlan(nil)
+	plan := mustDiagnosticConstruct(plans.NewRecordQueryValuesPlan(nil))
 
 	_ = concretePlanCounts(plan, ctx)
 	_ = concreteResidualPredicatesWithContext(plan, ctx)
@@ -252,12 +288,12 @@ func TestCostModelDiagnosticsCoverLogicalFallbackWalks(t *testing.T) {
 	logger, buf := newCostModelDiagnosticLogger(slog.LevelWarn)
 	ctx := WithCostModelDiagnostics(EmptyPlanContext(), logger)
 	unknown := &unclassifiedCostModelTestPlan{}
-	logical := expressions.NewLogicalProjectionExpression(
+	logical := mustDiagnosticConstruct(expressions.NewLogicalProjectionExpression(
 		nil,
 		expressions.ForEachQuantifier(
 			expressions.FinalOfAtStage(unknown, expressions.StageCanonical),
 		),
-	)
+	))
 
 	_ = findExpressionsByType(logical, nil, ctx)
 	_ = countResidualPredicatesWithContext(logical, ctx)
@@ -281,16 +317,16 @@ func TestCostModelDiagnosticsPreserveLogicalCountPolicy(t *testing.T) {
 
 	t.Run("unique index remains plan-local without context", func(t *testing.T) {
 		t.Parallel()
-		index := plans.NewRecordQueryIndexPlan(
+		index := mustDiagnosticConstruct(plans.NewRecordQueryIndexPlan(
 			"idx_unique",
 			[]*predicates.ComparisonRange{
 				diagnosticEqualityRange(t, int64(1)),
 				diagnosticEqualityRange(t, int64(2)),
 			},
 			[]string{"T"},
-			values.UnknownType,
+			diagnosticRowType(),
 			false,
-		).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
+		)).WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong}).
 			WithIndexMetadata([]string{"A", "B"}, nil, true)
 
 		counts := diagnosticLogicalCounts(index, nil)
@@ -303,13 +339,13 @@ func TestCostModelDiagnosticsPreserveLogicalCountPolicy(t *testing.T) {
 
 	t.Run("unmatched index fields remain plan-local", func(t *testing.T) {
 		t.Parallel()
-		index := plans.NewRecordQueryIndexPlan(
+		index := mustDiagnosticConstruct(plans.NewRecordQueryIndexPlan(
 			"idx_partial",
 			[]*predicates.ComparisonRange{diagnosticEqualityRange(t, int64(1))},
 			[]string{"T"},
-			values.UnknownType,
+			diagnosticRowType(),
 			false,
-		).WithIndexMetadata([]string{"A", "B", "C"}, nil, false)
+		)).WithIndexMetadata([]string{"A", "B", "C"}, nil, false)
 
 		counts := diagnosticLogicalCounts(index, nil)
 		if counts.indexScanCount != 1 ||
@@ -321,16 +357,18 @@ func TestCostModelDiagnosticsPreserveLogicalCountPolicy(t *testing.T) {
 
 	t.Run("PK filter still descends into its scan", func(t *testing.T) {
 		t.Parallel()
-		scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-		filter := plans.NewRecordQueryPredicatesFilterPlan(
-			scan,
+		scan := mustDiagnosticConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"T"}, diagnosticRowType(), false))
+		scanQ := plans.QuantifierOverPlan(scan)
+		filter := mustDiagnosticConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(
+			scanQ,
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+					diagnosticPlanField(scanQ, 0),
 					predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 				),
 			},
-		)
+		))
 
 		counts := diagnosticLogicalCounts(filter, &diagnosticPKContext{pk: []string{"ID"}})
 		if counts.predicatesFilterCount != 1 ||
@@ -343,20 +381,25 @@ func TestCostModelDiagnosticsPreserveLogicalCountPolicy(t *testing.T) {
 	t.Run("multi-intersection still counts each aggregate leg", func(t *testing.T) {
 		t.Parallel()
 		aggregate := func(name string) plans.RecordQueryPlan {
-			index := plans.NewRecordQueryIndexPlan(
+			index := mustDiagnosticConstruct(plans.NewRecordQueryIndexPlan(
 				name,
 				nil,
 				[]string{"T"},
-				values.UnknownType,
+				diagnosticRowType(),
 				false,
-			)
-			return plans.NewRecordQueryAggregateIndexPlan(index, "T", values.UnknownType, "COUNT")
+			))
+			aggregateType := values.NewRecordType("DiagnosticAggregateRow", false, []values.Field{
+				{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+				{Name: "COUNT(*)", FieldType: values.NullableLong, Ordinal: 1},
+			})
+			return mustDiagnosticConstruct(plans.NewRecordQueryAggregateIndexPlan(
+				index, "T", aggregateType, "COUNT"))
 		}
-		multiIntersection := plans.NewRecordQueryMultiIntersectionOnValuesPlan(
+		multiIntersection := mustDiagnosticConstruct(plans.NewRecordQueryMultiIntersectionOnValuesPlan(
 			[]plans.RecordQueryPlan{aggregate("agg_a"), aggregate("agg_b")},
 			nil,
-			nil,
-		)
+			diagnosticResultValue(),
+		))
 
 		counts := diagnosticLogicalCounts(multiIntersection, nil)
 		if counts.coveringIndexCount != 2 || !counts.unboundedDataAccess {
@@ -366,11 +409,12 @@ func TestCostModelDiagnosticsPreserveLogicalCountPolicy(t *testing.T) {
 
 	t.Run("text index remains logical-count neutral", func(t *testing.T) {
 		t.Parallel()
-		text := plans.NewRecordQueryTextIndexPlan(
+		text := mustDiagnosticConstruct(plans.NewRecordQueryTextIndexPlan(
 			"idx_text",
 			plans.TextScan{IndexName: "idx_text", TextComparison: "contains"},
+			diagnosticRowType(),
 			false,
-		)
+		))
 
 		counts := diagnosticLogicalCounts(text, nil)
 		if counts.indexScanCount != 0 ||
@@ -386,11 +430,11 @@ func TestCostModelDiagnosticsValidateFoldedCountChildren(t *testing.T) {
 
 	logger, buf := newCostModelDiagnosticLogger(slog.LevelWarn)
 	ctx := WithCostModelDiagnostics(EmptyPlanContext(), logger)
-	multiIntersection := plans.NewRecordQueryMultiIntersectionOnValuesPlan(
+	multiIntersection := mustDiagnosticConstruct(plans.NewRecordQueryMultiIntersectionOnValuesPlan(
 		[]plans.RecordQueryPlan{&unclassifiedCostModelTestPlan{}},
 		nil,
-		nil,
-	)
+		diagnosticResultValue(),
+	))
 
 	_ = concretePlanCounts(multiIntersection, ctx)
 
@@ -439,8 +483,10 @@ func TestCostModelDiagnosticPlumbingPreservesComparatorContextSemantics(t *testi
 
 	logger, buf := newCostModelDiagnosticLogger(slog.LevelWarn)
 	wrapped := WithCostModelDiagnostics(&prefTestCtx{pref: PreferIndex}, logger)
-	primary := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	index := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
+	primary := mustDiagnosticConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, diagnosticRowType(), false))
+	index := mustDiagnosticConstruct(plans.NewRecordQueryIndexPlan(
+		"idx", nil, []string{"T"}, diagnosticRowType(), false))
 
 	noStatsBaseline := NewPlanningCostModelLess(nil)
 	noStatsComparators := []struct {
@@ -524,25 +570,25 @@ func TestCostModelDiagnosticSinkSurvivesNoStatsPlumbing(t *testing.T) {
 		ctx := WithCostModelDiagnostics(EmptyPlanContext(), logger)
 		less := path.comparator(ctx)
 		unknown := &unclassifiedCostModelTestPlan{}
-		known := plans.NewRecordQueryValuesPlan(nil)
+		known := mustDiagnosticConstruct(plans.NewRecordQueryValuesPlan(nil))
 		outerAlias := values.NamedCorrelationIdentifier("diagnostic_outer")
 		innerAlias := values.NamedCorrelationIdentifier("diagnostic_inner")
-		left := plans.NewRecordQueryFlatMapPlan(
+		left := mustDiagnosticConstruct(plans.NewRecordQueryFlatMapPlan(
 			unknown,
 			known,
 			outerAlias,
 			innerAlias,
-			values.LiteralValue(int64(1)),
+			diagnosticResultValue(),
 			false,
-		)
-		right := plans.NewRecordQueryFlatMapPlan(
+		))
+		right := mustDiagnosticConstruct(plans.NewRecordQueryFlatMapPlan(
 			known,
 			unknown,
 			innerAlias,
 			outerAlias,
-			values.LiteralValue(int64(1)),
+			diagnosticResultValue(),
 			false,
-		)
+		))
 		_ = less(left, right)
 
 		lines := diagnosticLogLines(buf)

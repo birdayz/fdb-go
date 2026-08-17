@@ -30,6 +30,51 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRFC152Construct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-152 fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc152ARowType() *values.RecordType {
+	return values.NewRecordType("RFC152A", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "flag", FieldType: values.NullableLong},
+	})
+}
+
+func rfc152BRowType() *values.RecordType {
+	return values.NewRecordType("RFC152B", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+}
+
+func rfc152FlagPredicate(alias values.CorrelationIdentifier) predicates.QueryPredicate {
+	root := mustRFC152Construct(values.NewQuantifiedObjectValue(alias, rfc152ARowType()))
+	flag := mustRFC152Construct(values.ResolveFieldOrdinals(root, []int{1}))
+	return predicates.NewComparisonPredicate(
+		flag,
+		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
+	)
+}
+
+func rfc152Result(qA, qB expressions.Quantifier) values.Value {
+	return values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: mustRFC152Construct(qA.RequireFlowedObjectValue())},
+		values.RecordConstructorField{Name: "B", Value: mustRFC152Construct(qB.RequireFlowedObjectValue())},
+	)
+}
+
+func rfc152PhysicalResult(aliasA, aliasB values.CorrelationIdentifier) values.Value {
+	qovA := mustRFC152Construct(values.NewQuantifiedObjectValue(aliasA, rfc152ARowType()))
+	qovB := mustRFC152Construct(values.NewQuantifiedObjectValue(aliasB, rfc152BRowType()))
+	return values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: qovA},
+		values.RecordConstructorField{Name: "B", Value: qovB},
+	)
+}
+
 // --- Rule-level: the rewrite still yields the nullOnEmpty form (unchanged) ---
 
 // TestRFC152_RewriteOuterJoinYieldsNullOnEmpty asserts RewriteOuterJoinRule still
@@ -43,26 +88,25 @@ func TestRFC152_RewriteOuterJoinYieldsNullOnEmpty(t *testing.T) {
 	aliasA := values.NamedCorrelationIdentifier("A")
 	aliasB := values.NamedCorrelationIdentifier("B")
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := mustRFC152Construct(expressions.NewFullUnorderedScanExpression([]string{"A"}, rfc152ARowType()))
+	scanB := mustRFC152Construct(expressions.NewFullUnorderedScanExpression([]string{"B"}, rfc152BRowType()))
 	qA := expressions.NamedForEachQuantifier(aliasA, expressions.InitialOf(scanA))
 	qB := expressions.NamedForEachQuantifier(aliasB, expressions.InitialOf(scanB))
 
 	// ON A.flag = 1 — references ONLY the preserved leg A (preserved-correlated, so
 	// the rule's `correlated` guard passes and it fires).
-	flagField := values.NewFieldValue(values.NewQuantifiedObjectValue(aliasA), "flag", values.UnknownType)
-	pred := predicates.NewComparisonPredicate(flagField, predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+	pred := rfc152FlagPredicate(aliasA)
 
-	sel := expressions.NewSelectExpressionWithJoinType(
-		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
+		rfc152Result(qA, qB),
 		[]expressions.Quantifier{qA, qB},
 		[]predicates.QueryPredicate{pred},
 		[]string{"A", "B"},
 		expressions.JoinLeftOuter,
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewRewriteOuterJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewRewriteOuterJoinRule(), ref)
 
 	var rewritten *expressions.SelectExpression
 	for _, e := range yielded {
@@ -101,16 +145,11 @@ func TestRewriteOuterJoin_StrictSingleFailsClosed(t *testing.T) {
 
 	aliasA := values.NamedCorrelationIdentifier("A")
 	aliasB := values.NamedCorrelationIdentifier("B")
-	scanARef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType))
-	scanBRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType))
-	flagField := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(aliasA), "flag", values.UnknownType)
-	pred := predicates.NewComparisonPredicate(
-		flagField,
-		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
-	)
+	scanARef := expressions.InitialOf(mustRFC152Construct(
+		expressions.NewFullUnorderedScanExpression([]string{"A"}, rfc152ARowType())))
+	scanBRef := expressions.InitialOf(mustRFC152Construct(
+		expressions.NewFullUnorderedScanExpression([]string{"B"}, rfc152BRowType())))
+	pred := rfc152FlagPredicate(aliasA)
 
 	for _, strictSide := range []string{"preserved", "null_supplying"} {
 		t.Run(strictSide, func(t *testing.T) {
@@ -121,14 +160,14 @@ func TestRewriteOuterJoin_StrictSingleFailsClosed(t *testing.T) {
 			} else {
 				qB = expressions.NamedForEachStrictSingleQuantifier(aliasB, scanBRef)
 			}
-			sel := expressions.NewSelectExpressionWithJoinType(
-				qA.GetFlowedObjectValue(),
+			sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
+				rfc152Result(qA, qB),
 				[]expressions.Quantifier{qA, qB},
 				[]predicates.QueryPredicate{pred},
 				[]string{"A", "B"},
 				expressions.JoinLeftOuter,
-			)
-			yielded := FireExpressionRule(NewRewriteOuterJoinRule(), expressions.InitialOf(sel))
+			))
+			yielded := mustFireExpressionRule(t, NewRewriteOuterJoinRule(), expressions.InitialOf(sel))
 			if len(yielded) != 0 {
 				t.Fatalf("strict-single LEFT select yielded %d outer-join rewrite(s), want zero", len(yielded))
 			}
@@ -156,26 +195,25 @@ func TestRewriteOuterJoinDeclinesFullOuter(t *testing.T) {
 	aliasA := values.NamedCorrelationIdentifier("A")
 	aliasB := values.NamedCorrelationIdentifier("B")
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := mustRFC152Construct(expressions.NewFullUnorderedScanExpression([]string{"A"}, rfc152ARowType()))
+	scanB := mustRFC152Construct(expressions.NewFullUnorderedScanExpression([]string{"B"}, rfc152BRowType()))
 	qA := expressions.NamedForEachQuantifier(aliasA, expressions.InitialOf(scanA))
 	qB := expressions.NamedForEachQuantifier(aliasB, expressions.InitialOf(scanB))
 
 	// Preserved-correlated ON-predicate — the same one the LEFT-OUTER fixture
 	// fires on, so nothing but the join type can explain a decline.
-	flagField := values.NewFieldValue(values.NewQuantifiedObjectValue(aliasA), "flag", values.UnknownType)
-	pred := predicates.NewComparisonPredicate(flagField, predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+	pred := rfc152FlagPredicate(aliasA)
 
-	sel := expressions.NewSelectExpressionWithJoinType(
-		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	sel := mustRFC152Construct(expressions.NewSelectExpressionWithJoinType(
+		rfc152Result(qA, qB),
 		[]expressions.Quantifier{qA, qB},
 		[]predicates.QueryPredicate{pred},
 		[]string{"A", "B"},
 		expressions.JoinFullOuter,
-	)
+	))
 	ref := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewRewriteOuterJoinRule(), ref)
+	yielded := mustFireExpressionRule(t, NewRewriteOuterJoinRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("RewriteOuterJoinRule yielded %d expression(s) for a FULL OUTER select, want 0 — "+
 			"the premise that FULL boxes stay opaque through all planner phases (because this rule never rewrites them) is broken; "+
@@ -193,31 +231,43 @@ func TestRewriteOuterJoinDeclinesFullOuter(t *testing.T) {
 func rfc152Plans() (preservedNLJ, preservedFlatMap, probeNLJ, probeFlatMap plans.RecordQueryPlan) {
 	aliasA := values.NamedCorrelationIdentifier("A")
 	aliasB := values.NamedCorrelationIdentifier("B")
-	resVal := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	resVal := rfc152PhysicalResult(aliasA, aliasB)
 
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	scanA := mustRFC152Construct(plans.NewRecordQueryScanPlan([]string{"A"}, rfc152ARowType(), false))
+	scanB := mustRFC152Construct(plans.NewRecordQueryScanPlan([]string{"B"}, rfc152BRowType(), false))
 
-	flagField := values.NewFieldValue(values.NewQuantifiedObjectValue(aliasA), "flag", values.UnknownType)
-	pred := predicates.NewComparisonPredicate(flagField, predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+	pred := rfc152FlagPredicate(aliasA)
 
 	// Preserved-only: materialized NLJ (inner = bare Scan(B), scanned once).
-	preservedNLJ = plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), resVal)
+	preservedNLJ = mustRFC152Construct(plans.NewRecordQueryNestedLoopJoinPlan(
+		scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter,
+		aliasA, aliasB, resVal))
 	// Preserved-only: re-scan FlatMap (inner re-scans full Scan(B) per outer row).
 	// LEFT-OUTER semantics live in the DefaultOnEmpty wrapper, as in production.
-	innerFilter := plans.NewRecordQueryPredicatesFilterPlan(scanB, []predicates.QueryPredicate{pred})
-	innerDoE := plans.NewRecordQueryDefaultOnEmptyPlan(innerFilter, values.NewNullValue(values.UnknownType))
-	preservedFlatMap = plans.NewRecordQueryFlatMapPlan(scanA, innerDoE, aliasA, aliasB, resVal, false)
+	innerFilter := mustRFC152Construct(plans.NewRecordQueryPredicatesFilterPlan(
+		scanB, []predicates.QueryPredicate{pred}))
+	innerDoE := mustRFC152Construct(plans.NewRecordQueryDefaultOnEmptyPlan(
+		innerFilter, values.NewNullValue(rfc152BRowType())))
+	preservedFlatMap = mustRFC152Construct(plans.NewRecordQueryFlatMapPlan(
+		scanA, innerDoE, aliasA, aliasB, resVal, false))
 
 	// Probe: card-1 equality-bound Scan(B) inner (a point probe, scanned per outer).
 	eqProbe := predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(7))
 	eqRange := predicates.EmptyComparisonRange().Merge(&eqProbe).Range
-	probeScanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false).
-		WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}).
-		WithScanComparisons([]*predicates.ComparisonRange{eqRange})
-	probeDoE := plans.NewRecordQueryDefaultOnEmptyPlan(probeScanB, values.NewNullValue(values.UnknownType))
-	probeFlatMap = plans.NewRecordQueryFlatMapPlan(scanA, probeDoE, aliasA, aliasB, resVal, false)
-	probeNLJ = plans.NewRecordQueryNestedLoopJoinPlan(scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter, values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), resVal)
+	probeRoot := mustRFC152Construct(values.NewQuantifiedObjectValue(aliasB, rfc152BRowType()))
+	probeID := mustRFC152Construct(values.ResolveFieldOrdinals(probeRoot, []int{0}))
+	probeScanB := mustRFC152Construct(plans.NewRecordQueryScanPlan(
+		[]string{"B"}, rfc152BRowType(), false)).
+		WithPrimaryKey([]values.Value{probeID}).
+		WithScanComparisons([]*predicates.ComparisonRange{eqRange}).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong})
+	probeDoE := mustRFC152Construct(plans.NewRecordQueryDefaultOnEmptyPlan(
+		probeScanB, values.NewNullValue(rfc152BRowType())))
+	probeFlatMap = mustRFC152Construct(plans.NewRecordQueryFlatMapPlan(
+		scanA, probeDoE, aliasA, aliasB, resVal, false))
+	probeNLJ = mustRFC152Construct(plans.NewRecordQueryNestedLoopJoinPlan(
+		scanA, scanB, []predicates.QueryPredicate{pred}, plans.JoinLeftOuter,
+		aliasA, aliasB, resVal))
 	return
 }
 

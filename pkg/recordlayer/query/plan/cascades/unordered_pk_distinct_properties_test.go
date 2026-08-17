@@ -9,13 +9,39 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func unorderedPKRowType(name string) *values.RecordType {
+	return values.NewRecordType(name, false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "V", FieldType: values.NullableLong},
+	})
+}
+
+func mustUnorderedPKConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct unordered-PK fixture: " + err.Error())
+	}
+	return value
+}
+
+func unorderedPKScan(name string) (*plans.RecordQueryScanPlan, values.Value) {
+	scan := mustUnorderedPKConstruct(plans.NewRecordQueryScanPlan(
+		[]string{name}, unorderedPKRowType(name), false))
+	root, ok := values.AsQuantifiedObjectValue(scan.GetResultValue())
+	if !ok {
+		panic("unordered-PK scan result is not a QOV")
+	}
+	pk := mustUnorderedPKConstruct(values.ResolveFieldOrdinals(root, []int{0}))
+	return scan, pk
+}
+
 func TestUnorderedPrimaryKeyDistinctPlanProperties(t *testing.T) {
 	t.Parallel()
 
-	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.NotNullLong}}
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-		WithPrimaryKey(pk)
-	distinct := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan)
+	scan, pkField := unorderedPKScan("T")
+	pk := []values.Value{pkField}
+	scan = scan.WithPrimaryKey(pk)
+	distinct := mustUnorderedPKConstruct(
+		plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(scan))
 
 	if !computeDistinctRecords(distinct, distinct) {
 		t.Fatal("primary-key distinct must advertise distinct records")
@@ -28,8 +54,10 @@ func TestUnorderedPrimaryKeyDistinctPlanProperties(t *testing.T) {
 		t.Fatalf("primary-key distinct PK = %v, want child PK %v", gotPK, pk)
 	}
 
-	nonStoredChild := plans.NewRecordQueryStreamingAggregationPlan(scan, nil, nil)
-	nonStoredDistinct := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(nonStoredChild)
+	nonStoredChild := mustUnorderedPKConstruct(
+		plans.NewRecordQueryStreamingAggregationPlan(scan, nil, nil))
+	nonStoredDistinct := mustUnorderedPKConstruct(
+		plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlan(nonStoredChild))
 	if computeStoredRecord(nonStoredDistinct) {
 		t.Fatal("primary-key distinct must not manufacture a stored record its child lacks")
 	}
@@ -38,16 +66,17 @@ func TestUnorderedPrimaryKeyDistinctPlanProperties(t *testing.T) {
 func TestFlatMapInheritedOuterPlanProperties(t *testing.T) {
 	t.Parallel()
 
-	pk := []values.Value{&values.FieldValue{Field: "ID", Typ: values.NotNullLong}}
-	outer := plans.NewRecordQueryScanPlan([]string{"OUTER"}, values.UnknownType, false).
-		WithPrimaryKey(pk)
-	inner := plans.NewRecordQueryScanPlan([]string{"INNER"}, values.UnknownType, false)
+	outer, pkField := unorderedPKScan("OUTER")
+	pk := []values.Value{pkField}
+	outer = outer.WithPrimaryKey(pk)
+	inner, _ := unorderedPKScan("INNER")
 	outerAlias := values.NamedCorrelationIdentifier("OUTER")
 	innerAlias := values.NamedCorrelationIdentifier("INNER")
-	resultValue := values.NewQuantifiedObjectValue(outerAlias)
+	resultValue := mustUnorderedPKConstruct(values.NewQuantifiedObjectValue(
+		outerAlias, outer.GetResultType()))
 
-	inheriting := plans.NewRecordQueryFlatMapPlan(
-		outer, inner, outerAlias, innerAlias, resultValue, true)
+	inheriting := mustUnorderedPKConstruct(plans.NewRecordQueryFlatMapPlan(
+		outer, inner, outerAlias, innerAlias, resultValue, true))
 	if !computeStoredRecord(inheriting) {
 		t.Fatal("inheriting FlatMap must preserve the outer stored-record property")
 	}
@@ -56,8 +85,8 @@ func TestFlatMapInheritedOuterPlanProperties(t *testing.T) {
 		t.Fatalf("inheriting FlatMap PK = %v, want outer PK %v", gotPK, pk)
 	}
 
-	nonInheriting := plans.NewRecordQueryFlatMapPlan(
-		outer, inner, outerAlias, innerAlias, resultValue, false)
+	nonInheriting := mustUnorderedPKConstruct(plans.NewRecordQueryFlatMapPlan(
+		outer, inner, outerAlias, innerAlias, resultValue, false))
 	if computeStoredRecord(nonInheriting) {
 		t.Fatal("generic non-inheriting FlatMap must not claim an outer stored record")
 	}
@@ -108,7 +137,7 @@ func TestUnorderedPrimaryKeyDistinctCardinalities(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			child := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+			child, _ := unorderedPKScan("T")
 			childRef := expressions.InitialOf(child)
 			pm := NewPlanPropertiesMap()
 			pm.props[child] = properties.PropertyMap{
@@ -116,8 +145,9 @@ func TestUnorderedPrimaryKeyDistinctCardinalities(t *testing.T) {
 			}
 			childRef.SetPlanProperties(pm)
 
-			distinct := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
-				expressions.NewPhysicalQuantifier(childRef))
+			distinct := mustUnorderedPKConstruct(
+				plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
+					expressions.NewPhysicalQuantifier(childRef)))
 			got := computeCardinalities(distinct, distinct)
 			if !got.GetMinCardinality().Equal(tc.wantMin) ||
 				!got.GetMaxCardinality().Equal(tc.wantMax) {

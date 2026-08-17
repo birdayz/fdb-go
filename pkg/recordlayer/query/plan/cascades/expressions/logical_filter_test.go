@@ -13,7 +13,7 @@ func TestLogicalFilter_Construction(t *testing.T) {
 	pTrue := predicates.NewConstantPredicate(predicates.TriTrue)
 	pFalse := predicates.NewConstantPredicate(predicates.TriFalse)
 	preds := []predicates.QueryPredicate{pTrue, pFalse}
-	f := NewLogicalFilterExpression(preds, q)
+	f := mustExpression(NewLogicalFilterExpression(preds, q))
 	if got := f.GetPredicates(); len(got) != 2 {
 		t.Fatalf("predicates size=%d, want 2", len(got))
 	}
@@ -35,7 +35,7 @@ func TestLogicalFilter_Construction_DefensiveCopy(t *testing.T) {
 	preds := []predicates.QueryPredicate{
 		predicates.NewConstantPredicate(predicates.TriTrue),
 	}
-	f := NewLogicalFilterExpression(preds, q)
+	f := mustExpression(NewLogicalFilterExpression(preds, q))
 	preds[0] = predicates.NewConstantPredicate(predicates.TriFalse)
 	if f.GetPredicates()[0].(*predicates.ConstantPredicate).Value != predicates.TriTrue {
 		t.Fatal("constructor failed to defensively copy predicate slice")
@@ -48,8 +48,8 @@ func TestLogicalFilter_EqualsWithoutChildren_Same(t *testing.T) {
 	pTrue := predicates.NewConstantPredicate(predicates.TriTrue)
 	q1 := ForEachQuantifier(InitialOf(leaf))
 	q2 := ForEachQuantifier(InitialOf(leaf))
-	f1 := NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q1)
-	f2 := NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q2)
+	f1 := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q1))
+	f2 := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q2))
 	if !f1.EqualsWithoutChildren(f2, EmptyAliasMap()) {
 		t.Fatal("structurally equal filters reported unequal-without-children")
 	}
@@ -61,8 +61,8 @@ func TestLogicalFilter_EqualsWithoutChildren_DifferentLen(t *testing.T) {
 	pTrue := predicates.NewConstantPredicate(predicates.TriTrue)
 	pFalse := predicates.NewConstantPredicate(predicates.TriFalse)
 	q := ForEachQuantifier(InitialOf(leaf))
-	f1 := NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q)
-	f2 := NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue, pFalse}, q)
+	f1 := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q))
+	f2 := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue, pFalse}, q))
 	if f1.EqualsWithoutChildren(f2, EmptyAliasMap()) {
 		t.Fatal("filters with different predicate counts reported equal-without-children")
 	}
@@ -73,7 +73,7 @@ func TestLogicalFilter_EqualsWithoutChildren_DifferentExpressionType(t *testing.
 	leaf := &leafScan{name: "T"}
 	pTrue := predicates.NewConstantPredicate(predicates.TriTrue)
 	q := ForEachQuantifier(InitialOf(leaf))
-	f := NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q)
+	f := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q))
 	if f.EqualsWithoutChildren(leaf, EmptyAliasMap()) {
 		t.Fatal("filter reported equal to non-filter expression")
 	}
@@ -85,8 +85,8 @@ func TestLogicalFilter_HashCodeStable(t *testing.T) {
 	pTrue := predicates.NewConstantPredicate(predicates.TriTrue)
 	q1 := ForEachQuantifier(InitialOf(leaf))
 	q2 := ForEachQuantifier(InitialOf(leaf))
-	f1 := NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q1)
-	f2 := NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q2)
+	f1 := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q1))
+	f2 := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q2))
 	if f1.HashCodeWithoutChildren() != f2.HashCodeWithoutChildren() {
 		t.Fatal("structurally equal filters produced different hash codes")
 	}
@@ -98,8 +98,8 @@ func TestLogicalFilter_HashCodeDifferentForDifferentPredicates(t *testing.T) {
 	pTrue := predicates.NewConstantPredicate(predicates.TriTrue)
 	pFalse := predicates.NewConstantPredicate(predicates.TriFalse)
 	q := ForEachQuantifier(InitialOf(leaf))
-	f1 := NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q)
-	f2 := NewLogicalFilterExpression([]predicates.QueryPredicate{pFalse}, q)
+	f1 := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pTrue}, q))
+	f2 := mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pFalse}, q))
 	if f1.HashCodeWithoutChildren() == f2.HashCodeWithoutChildren() {
 		t.Fatal("filters with different predicates produced identical hash codes (collision is unlikely)")
 	}

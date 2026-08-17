@@ -58,10 +58,15 @@ func (r *SortMergeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	// Yield: outer sort over inner-sort's inner.
-	call.Yield(expressions.NewLogicalSortExpression(
+	merged, err := expressions.NewLogicalSortExpression(
 		outer.GetSortKeys(),
 		innerSort.GetInner(),
-	))
+	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(merged)
 }
 
 var _ ExpressionRule = (*SortMergeRule)(nil)

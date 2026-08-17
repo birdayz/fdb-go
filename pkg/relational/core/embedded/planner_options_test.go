@@ -99,7 +99,7 @@ CREATE TABLE S5 (id BIGINT, hid BIGINT, PRIMARY KEY (id))`
 
 // fiveSpokeStarSQL is the hub+5 all-live star. Its Cascades twin
 // (buildOrdinalStar(5)) is the narrowest all-live star that exhausts the
-// 100,000-task budget at default settings.
+// embedded planner task budget at default settings.
 const fiveSpokeStarSQL = "SELECT H.id, S1.id, S2.id, S3.id, S4.id, S5.id " +
 	"FROM H, S1, S2, S3, S4, S5 " +
 	"WHERE H.id = S1.hid AND H.id = S2.hid AND H.id = S3.hid AND H.id = S4.hid AND H.id = S5.hid"
@@ -128,10 +128,37 @@ func TestPlannerOptions_PlanRightDeep(t *testing.T) {
 	if plan == nil {
 		t.Fatal("PLAN_RIGHT_DEEP converged but produced no plan")
 	}
-	if rdTasks >= 100_000 {
-		t.Fatalf("PLAN_RIGHT_DEEP tasks=%d is not under the 100,000 cap", rdTasks)
+	if rdTasks >= embeddedRightDeepPlannerMaxTasks {
+		t.Fatalf("PLAN_RIGHT_DEEP tasks=%d is not under the %d cap", rdTasks, embeddedRightDeepPlannerMaxTasks)
 	}
-	t.Logf("hub+5 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks", rdTasks)
+	// THE CAP IS A CLIFF, NOT A GAUGE. The check above still passes at 249,999
+	// — one commit before this mode stops converging at all — so it cannot warn
+	// while there is still room to act. The band below watches the CONSUMPTION.
+	//
+	// Population: the hub+5 all-live star above (fiveSpokeStarSQL over
+	// starJoinDDL), PLAN_RIGHT_DEEP on, default rule set, measured at 173542 —
+	// 69% of the 250k ceiling, i.e. 1.44x headroom. That is the number to
+	// re-measure when this fails; do not widen the band to make it pass.
+	//
+	// Both directions are alarms, for different reasons. GROWTH means the search
+	// is eating the remaining 30% and the tier needs a decision before it is
+	// gone. COLLAPSE means either a genuine win worth re-baselining or that this
+	// star stopped being all-live — a spoke that can be pruned makes the whole
+	// test a much weaker statement while still reporting green.
+	const rightDeepObservedTasks = 173542
+	rdTol := rightDeepObservedTasks / 50 // +/-2%, matching the Cascades-level star sentinel
+	if rdTasks < rightDeepObservedTasks-rdTol || rdTasks > rightDeepObservedTasks+rdTol {
+		t.Errorf("PLAN_RIGHT_DEEP tasks=%d, want %d +/-2%% ([%d,%d]) over the hub+5 all-live star. "+
+			"Above the band: consumption is climbing toward the %d ceiling (%.0f%% used at the "+
+			"baseline, %.0f%% now) — re-measure and decide the tier, do not widen this. Below it: "+
+			"re-baseline if the search genuinely shrank, but first check the star is still all-live.",
+			rdTasks, rightDeepObservedTasks, rightDeepObservedTasks-rdTol, rightDeepObservedTasks+rdTol,
+			embeddedRightDeepPlannerMaxTasks,
+			100*float64(rightDeepObservedTasks)/float64(embeddedRightDeepPlannerMaxTasks),
+			100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks))
+	}
+	t.Logf("hub+5 star: default CAPS; PLAN_RIGHT_DEEP converges in %d tasks (%.0f%% of the %d ceiling)",
+		rdTasks, 100*float64(rdTasks)/float64(embeddedRightDeepPlannerMaxTasks), embeddedRightDeepPlannerMaxTasks)
 
 	// Explicit false must behave exactly like unset — the default is
 	// Java-identical and setting it must not be a way to change it.
@@ -157,7 +184,7 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	// A bare IndexScan IS a fetching scan since RFC-220 (Java semantics), and
 	// MergeFetchIntoCoveringIndexRule collapses Fetch(Covering(Index)) into it.
 	// The fixture still starts from an INDEX plan, which is all the contrast needs.
-	const wantBase = "Project([ID#0, C#3], IndexScan(IDX_A, [=]))"
+	const wantBase = "Project([_current.ID#0, _current.C#3], IndexScan(IDX_A, [=]))"
 	if base != wantBase {
 		t.Fatalf("default plan = %q, want %q — the fixture must start from an INDEX plan for "+
 			"the disabled-rule contrast to mean anything", base, wantBase)
@@ -166,7 +193,7 @@ func TestPlannerOptions_DisabledPlannerRules(t *testing.T) {
 	disabled := api.NewOptionsBuilder().
 		Set(api.OptDisabledPlannerRules, []string{"MatchLeafRule"}).Build()
 	got := explainWithOptions(t, sql, indexedTableDDL, disabled)
-	const wantDisabled = "Project([ID#0, C#3], PredicatesFilter(Scan(T), [1 preds]))"
+	const wantDisabled = "Project([_current.ID#0, _current.C#3], PredicatesFilter(Scan(T), [1 preds]))"
 	if got != wantDisabled {
 		t.Fatalf("with MatchLeafRule disabled, plan = %q, want %q — the option is accepted and "+
 			"ignored if the plan is unchanged", got, wantDisabled)
@@ -264,7 +291,16 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 
 		base := explainWithOptions(t, sql, indexedTableDDL, nil)
 		// See the note above: the inner index scan fetches its own records now.
-		const wantBase = "Project([T.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_AB, [=, *]))))"
+		//
+		// IDX_A, not IDX_AB: the ON predicate binds `a` and nothing else, so the
+		// single-column index leaves NO unmatched index field while IDX_AB leaves
+		// one — which is the cost model's own unmatchedFieldCount rung, decided in
+		// IDX_A's favour. IDX_AB used to win only because the IDX_A candidate was
+		// refused at memo admission for carrying a differently-NAMED row, a
+		// rejection that went away when record names left exact-type identity.
+		// The fixture's point is the SHAPE (a rewritten outer join: FlatMap over a
+		// DefaultOnEmpty index probe), which is unchanged.
+		const wantBase = "Project([_current.ID#0], FlatMap(outer=Scan(T), inner=DefaultOnEmpty(IndexScan(IDX_A, [=]))))"
 		if base != wantBase {
 			t.Fatalf("default plan = %q, want %q — the fixture must start from the REWRITTEN "+
 				"outer join for the contrast to mean anything", base, wantBase)
@@ -272,7 +308,7 @@ func TestPlannerOptions_DisablePlannerRewriting(t *testing.T) {
 
 		off := api.NewOptionsBuilder().Set(api.OptDisablePlannerRewriting, true).Build()
 		got := explainWithOptions(t, sql, indexedTableDDL, off)
-		const wantOff = "Project([T.ID#0], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T), Scan(T)))"
+		const wantOff = "Project([_current.ID#0], NestedLoopJoin(LEFT OUTER, [1 preds], Scan(T), Scan(T)))"
 		if got != wantOff {
 			t.Fatalf("with rewriting disabled, plan = %q, want %q — the option is accepted and "+
 				"ignored if the plan is unchanged", got, wantOff)

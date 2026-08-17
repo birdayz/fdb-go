@@ -23,7 +23,7 @@ func FuzzRichOrdering_Satisfies(f *testing.F) {
 		keys := make([]values.Value, numKeys)
 		bm := make(map[values.Value][]OrderingBinding, numKeys)
 		for i := range keys {
-			keys[i] = &values.FieldValue{Field: string(rune('a' + i)), Typ: values.UnknownType}
+			keys[i] = propertyField(t, string(rune('a'+i)), values.NullableLong)
 			switch bindKind % 3 {
 			case 0:
 				bm[keys[i]] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
@@ -71,7 +71,7 @@ func FuzzMergeOrderings_NoPanic(f *testing.F) {
 		keysA := make([]values.Value, numA)
 		bmA := make(map[values.Value][]OrderingBinding, numA)
 		for i := range keysA {
-			keysA[i] = &values.FieldValue{Field: string(rune('a' + i)), Typ: values.UnknownType}
+			keysA[i] = propertyField(t, string(rune('a'+i)), values.NullableLong)
 			switch bindA % 2 {
 			case 0:
 				bmA[keysA[i]] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}
@@ -84,7 +84,7 @@ func FuzzMergeOrderings_NoPanic(f *testing.F) {
 		keysB := make([]values.Value, numB)
 		bmB := make(map[values.Value][]OrderingBinding, numB)
 		for i := range keysB {
-			keysB[i] = &values.FieldValue{Field: string(rune('a' + i)), Typ: values.UnknownType}
+			keysB[i] = propertyField(t, string(rune('a'+i)), values.NullableLong)
 			switch bindB % 2 {
 			case 0:
 				bmB[keysB[i]] = []OrderingBinding{SortedBinding(ProvidedSortOrderAscending)}

@@ -108,7 +108,7 @@ because an unguarded count in a status doc is a claim with a shelf life:
 | SQL corpus coverage | **342 scenarios · 2740 cases · 2401 supported (87.6%)**, 109 unsupported-feature pins, 230 error-path pins | **Yes** — `TestSQLCoverageUpToDate` regenerates `SQL_COVERAGE.md`; `FEATURE_MATRIX.md` carries the same generated totals |
 | Java yamsql corpus (RFC-201, NEW since the audit) | **238** files vendored · **32** pass · **0** fail · **206** on the skip ledger · **487** asserted queries | **Yes** — `pinnedLedger` + `pinnedFileTotal` + `pinnedAssignmentDigest` in `pkg/relational/conformance/javacorpus/pinned_ledger_test.go` |
 | Generation factory corpus (NEW, #555) | **5000** scenarios · **20000** tests · **4952** feature vectors; blessings **4469 `metamorphic` + 531 `metamorphic-tlp-only`**, labeled in every header | **Yes** — componentwise census ratchet over scenario/test totals and each feature vector, plus per-scenario authority keyed by dedup key; `ByBlessing` is report-only (`factorycorpus/census_baseline.json`) |
-| `.Field`-decides ratchet (RFC-197) | **43** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition`, and `TestStatusPageQuotesTheLiveFieldDebt` for the numbers ON THIS PAGE |
+| `.Field`-decides ratchet (RFC-197) | **17** sites, per-bucket totals gate-checked | **Yes** — `TestFieldNameNeverDecides` + `TestFieldDebtBucketsArePartition`, and `TestStatusPageQuotesTheLiveFieldDebt` for the numbers ON THIS PAGE |
 
 The first four run per-PR. Both former P0s of the client prod-readiness RFC are verified CLOSED in
 code: cluster-file rotation (`pkg/fdbgo/client/database.go:614` re-reads the file when the
@@ -160,7 +160,7 @@ entries mean the same query returns different rows or different errors on the tw
 | B1 | Nightly safety nets were fake-green (window gates anchored to cron hours GitHub dispatches 2-4h late; 12 fake-green stress nights; rowdiff window unreachable by construction; oracles never ran) | Unknown-risk factory | S → M | **DONE — confirmed genuinely green 2026-08-02 and 08-03 (reconcile runs 30744450066, 30814146026, all eleven nets artifact-backed inside limits).** Detection merged (#523); the window shape fixed and merged (#556). #523 gave every windowed job a heartbeat and made the reconciler fail on silence — which then correctly exposed that three fuzz lanes had never recorded one. #556 found the cause was the band's shape, not the lanes (a non-wrapping band calling 18:00–24:00 "daytime"), fixed it across all five nets, and published the honest history: **107 of 177 scheduled runs were fake-green**. Stress 07-17 root-caused (see Tier 1, CQ-46); binding-stress 0/50 root-caused and fixed 2026-08-05 (CQ-47) |
 | B2 | No read-your-writes in explicit transactions; SELECTs take no read locks → silent lost updates | Wrong data | L | **DONE — merged 2026-08-04 (#607, `d6f635073`), Tier 2 confirmed.** RFC-198 all five phases; joint Graefe+Torvalds lap ACK'd; 1M stress clean; the OQ-1 GRV-cache span survived a C++-client + Torvalds design review (fence reshape) and fifteen codex rounds, every finding folded before merge |
 | B3 | RFC-195: cost estimates contradict proven cardinality bounds; comparator uses a private cardinality walk | Wrong plans (perf), not wrong rows | M | **DONE, merged (#547.)** `rfcs/195-cost-must-not-contradict-proof.md:3` — "ACCEPTED, revision 3 … implemented". Seven shapes fixed in the end, not six; zero exclusions and no mechanism to add one (`cardinality_cost_bound_test.go:36-45`). **Residual: CQ-30 in `TODO.md`, open** — criterion 2's data-access maxima are still forked; held visible by a standing test |
-| B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 43 now** |
+| B4 | RFC-197 identity migration residual (see per-bucket table) | Plan/decline-direction only; wrong-rows channels closed | M | Active; ratchet-enforced; **68 at inception → 17 now** |
 | B5 | WS-N Phase D: metadata re-derived by name instead of flowing from the type (production `UnknownType` mints: see the live census, `pkg/docscheck/unknown_type_mint_census_test.go` — 43 across 20 files at `aba271454`; five name-keyed guessers, enumerated in `shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81`) | Wrong client VALUES on cross-leg same-name-different-type | L | Booked; gates the typed-row-representation work. Entry point: RFC-226 (projection states its row) |
 | B6 | Documentation authority contradictory/stale | Trust/decision risk, not code | S | **This revision.** Authority headers added to `PRODUCTION_READINESS.md` and `rfcs/prod-readiness-go-client.md`; stale TODO entries fixed; `TestProductionStatusAuthority` added so the redirects cannot silently rot |
 
@@ -178,11 +178,11 @@ three (`shifts/handoff-ws-n-phase-d-typed-metadata.md:65-81` plus the surviving 
 `return values.UnknownType` — a classified decline is often the *cure* for a mint — so B5's entry
 point (RFC-226) will not move this number, and must not be judged by it.
 
-### B4 residual, per bucket — MEASURED at `041838856`
+### B4 residual, per bucket — MEASURED on the current deliverable
 
 These are the gate-enforced group headers in `pkg/docscheck/field_name_decision_test.go`, which
 `TestFieldDebtBucketsArePartition` checks against the entries they advertise. The buckets are a
-partition, so they sum to the list: **43**.
+partition, so they sum to the list: **17**.
 
 **The numbers in this table and the totals quoted around it are now gate-checked ON THIS PAGE**
 (`TestStatusPageQuotesTheLiveFieldDebt`). They were not before, and the guarantee column above
@@ -199,23 +199,20 @@ about, one level up and in the page an adopter is handed first.
 |---|---:|---:|---|
 | boundary | 0 | **2** | No. Not a regression: the call-boundary taint made a site visible that was always there (a name handed to a helper as a plain string parameter). Reporting the bucket migrated while the walk could not reach one of its members is the false green the pass existed to end. It rose 1 → 2 for a SECOND spelling attempt inside that same nested descent, not a second site; both retire on the same ordinal resolution |
 | escape | 0 | **0** | Migrated (found + fixed a live wrong-type defect on the way) |
-| contract | 11 | **12** | Not alone — single naming authorities. The four newly-visible entries are the group-by output name's CONSUMERS, laundered through one helper; the bucket had listed eleven producers and not one consumer, and a migration plan written against producers alone cannot close it. It fell 16 → 10 by RETIRING (and back to 11 with RFC-218's nested-key re-anchor) `AggregateResultColumnName`'s six arms: the aggregate operand's text comes from the parse text carried on the spec (name-as-DATA, Java's `Column.of(Optional<String>, value)`), and the leaf `.Field` fallback beside it was a second, DIVERGENT copy of the Value→name rendering that dropped a qualifier and collapsed `SUM(t.v)`/`SUM(u.v)` onto one output slot |
-| dotted | 6 | **12** | The WRITERS are resolved; what remains are READERS that decline, each probe-pinned, plus four newly-visible MINTs. It fell 13 → 12 by RETIRING `cascades_generator.go # deriveColumnsFromProjection`, the null-born nullability upgrade's `CORR.FIELD` mint: it composed a qualifier for `descriptorForColumn`, which matches by BARE name across the join leaves and tie-breaks the qualifier against the DESCRIPTOR's name — a table, never a correlation — so it could not separate legs and first-match reported a null-supplying column NOT NULL. The read now resolves its leg structurally (leg plan + leg-relative ordinal), the addressing Java uses (`ResolvedAccessor` compares `getOrdinal()` alone). It fell 14 → 13 before that by RETIRING `cascades_generator.go # buildAggColumns` (RFC-229 §2.2): the ColumnDef mirror hand-copied the group-key naming rule and now READS the authority, `expressions.AggregateKeyColumnName`. The debt CONSOLIDATED rather than evaporated — the authority and its other mirror `aggregateGroupKeyOutputName` are both still listed under `contract` — and that is the whole shape of RFC-229: one minting point per authority instead of a rule copied into every reader |
+| contract | 11 | **4** | Output naming remains at `explainValueOrdinalsWithAliases` and `ProjectionColumnName`; RFC-232 retired the former group-by compatibility maps and their five contract decisions |
+| dotted | 6 | **3** | One lazy-accessor decline, one projection metadata mint, and one correlated-scalar compatibility label remain; the former group-by registration/read pair is gone |
 | name-keyed | 3 | **4** | Measured machinery gaps, each recorded on its debt entry (planner-budget re-fire on constraint growth, CQ-51; lazy carriers with no other identity). It fell 5 → 4 by REMOVAL: the projection-merge site's recorded "HEAVILY LIVE" reason was refuted by counting instead of panicking — the rule fires 897 times across the relational suite and its name-matching arm takes ZERO of them, so it was dead debt and is now a fail-closed decline |
-| translator | 17 | **12** | Bounded — resolution-time text handling; misbinding requires the 42702/42703 ambiguity checks to have a hole |
-| harness | 1 | **1** | No — oracle-side; affects trust in the net, not prod rows |
+| translator | 17 | **4** | Bounded — three projection metadata decisions and the declared UNNEST alias selector remain at resolution boundaries |
+| harness | 1 | **0** | Migrated; no production-identity decision remains in a test harness |
 
-**The total ROSE from 41 to 53 between the audit and now, and that is the gate working.** #540 and
-#544 taught the detector to follow a display name across a call boundary and through helpers; sites
-that were always making the decision became reportable. A ratchet whose count only ever falls is a
-ratchet that has stopped looking.
+**The total first rose from 41 to 53 when the detector learned to follow a display
+name across call boundaries and helpers, and has since fallen to 17 through
+structural retirement.** The temporary rise was the gate working: sites that
+were always making the decision became reportable before they could be removed.
 
 *Refuted while verifying:* the previous revision's "68 at inception → 38" and its `dotted 6 /
 translator 17` cells were audit-day figures presented as current. Measured trajectory of the list:
-**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (#601) → **52** (`b3ac5fe31`) → **46** (`46a00357a`) → **47** (`f599685d2`, RFC-218 adds the nested-key re-anchor's name match) → **48** (RFC-222 adds its nested-SUFFIX sibling) → **47** (`c5ffbb986`, RFC-229 retires the buildAggColumns mirror) → **44** (CQ-52 retires the leg-window re-split: both `legWindowSlot` entries and `bakeDottedRefsToLegQOVWithRef`s QUALIFIER half) → **43** (HEAD, RFC-197 retires `deriveColumnsFromProjection`s null-born `CORR.FIELD` mint by converting it to structural leg addressing; note the AUTHORITY count moved the other way, 33 → 34, because the shared helper the conversion extracted took one surviving escape with it). More
-consequentially, the previous revision's sequencing said the remaining ratchet was the
-boundary/contract tail. **It is not:** `dotted` (12) and `translator` (12) are the two largest
-buckets and together are 56% of the list (24 of 43).
+**68** at inception (#520) → **41** (#527/#528/#529) → **54** (#544) → **52** (#556) → **53** (#601) → **52** (`b3ac5fe31`) → **46** (`46a00357a`) → **47** (`f599685d2`, RFC-218 adds the nested-key re-anchor's name match) → **48** (RFC-222 adds its nested-SUFFIX sibling) → **47** (`c5ffbb986`, RFC-229 retires the buildAggColumns mirror) → **44** (CQ-52 retires the leg-window re-split) → **25** (RFC-232 exact-value migration) → **18** (retirement of the dead group-by and nested-suffix compatibility islands) → **17** (the rebased structural leg reader retires the duplicate exact-FieldValue qualified-name mint). `contract`, `name-keyed`, and `translator` hold four sites each; `dotted` holds three and `boundary` the other two.
 
 Two further corrections to the migration's bookkeeping, both found by reading the ratchet against
 `TODO.md`:
@@ -329,7 +326,7 @@ no constructible QOV can make false (`NewQuantifiedObjectValue` stamps `UnknownT
 `NewQuantifiedObjectValueOfType` degrades nil to it; `UnknownType` is a non-nil `*PrimitiveType`).
 It reported `typed=true` for all 102, so a typing sweep would have read as complete on the day it
 started with the whole population untouched. Now `quantifiedObjectValueIsTyped`, pinned in both
-directions by `TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped`.
+directions by `TestFoldStep1Census_BareQOVWitnessReportsAdmittedExactTypes`.
 
 ## Watch-list — pinned divergences a prod user must be told about
 

@@ -14,7 +14,7 @@ func TestAtLeastElementsMatcher_AtLeastTwo(t *testing.T) {
 	m := NewAtLeastElementsMatcher(2, NewConstantMatcher())
 	in := []any{
 		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		mustMatchingField(t, "x", values.NullableLong),
 		&values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 		&values.ConstantValue{Value: int64(3), Typ: values.NullableLong},
 	}
@@ -30,9 +30,9 @@ func TestAtLeastElementsMatcher_FailsBelow(t *testing.T) {
 	t.Parallel()
 	m := NewAtLeastElementsMatcher(2, NewConstantMatcher())
 	in := []any{
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		mustMatchingField(t, "x", values.NullableLong),
 		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-		&values.FieldValue{Field: "y", Typ: values.NullableLong},
+		mustMatchingField(t, "y", values.NullableLong),
 	}
 	if got := m.BindMatches(NewBindings(), in); got != nil {
 		t.Errorf("expected nil (1 match < threshold 2), got %d bindings", len(got))
@@ -45,7 +45,7 @@ func TestAtLeastElementsMatcher_AtLeastOne(t *testing.T) {
 	t.Parallel()
 	m := NewAtLeastElementsMatcher(1, NewConstantMatcher())
 	in := []any{
-		&values.FieldValue{Field: "x", Typ: values.NullableLong},
+		mustMatchingField(t, "x", values.NullableLong),
 		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
 	}
 	got := m.BindMatches(NewBindings(), in)
@@ -72,8 +72,8 @@ func TestAtLeastElementsMatcher_ZeroThreshold_AlwaysMatches(t *testing.T) {
 	t.Run("no-element-matches", func(t *testing.T) {
 		t.Parallel()
 		in := []any{
-			&values.FieldValue{Field: "x", Typ: values.NullableLong},
-			&values.FieldValue{Field: "y", Typ: values.NullableLong},
+			mustMatchingField(t, "x", values.NullableLong),
+			mustMatchingField(t, "y", values.NullableLong),
 		}
 		got := m.BindMatches(NewBindings(), in)
 		if len(got) != 1 {

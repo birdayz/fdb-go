@@ -3,6 +3,8 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PushRequestedOrderingThroughInsertRule is a PLANNING-phase
@@ -49,7 +51,60 @@ func (r *PushRequestedOrderingThroughInsertRule) OnMatch(call *ImplementationRul
 		return
 	}
 
-	call.PushConstraint(innerRef, orderings)
+	flowed, err := ins.GetInner().RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.PushConstraint(innerRef, pushDMLRequestedOrderingsThroughValue(
+		orderings, flowed, ins.GetInner().GetAlias()))
+}
+
+// pushDMLRequestedOrderingsThroughValue states DML requirements in the input
+// row's exact coordinates. Java's three DML propagation rules all call
+// RequestedOrdering.pushDown; treating them as opaque pass-through operators
+// was only harmless while their ordering keys were unrooted name carriers.
+//
+// PushDownThroughValue performs the structural projection. The correlation
+// filter mirrors Java's final current-scope check: a computation-only value
+// (UPDATE's post-mutation NEW object) is not an ordering the input can provide.
+func pushDMLRequestedOrderingsThroughValue(
+	orderings []*properties.RequestedOrdering,
+	resultValue values.Value,
+	inputAlias values.CorrelationIdentifier,
+) []*properties.RequestedOrdering {
+	pushedOrderings := make([]*properties.RequestedOrdering, 0, len(orderings))
+	for _, ordering := range orderings {
+		if ordering.IsPreserve() {
+			pushedOrderings = append(pushedOrderings, ordering)
+			continue
+		}
+		pushed := ordering.PushDownThroughValue(resultValue, inputAlias)
+		if pushed.IsPreserve() {
+			pushedOrderings = append(pushedOrderings, pushed)
+			continue
+		}
+		parts := make([]properties.RequestedOrderingPart, 0, pushed.Size())
+		for _, part := range pushed.GetParts() {
+			inputScoped := true
+			for correlation := range values.GetCorrelatedToOfValue(part.Value) {
+				if correlation != inputAlias {
+					inputScoped = false
+					break
+				}
+			}
+			if inputScoped {
+				parts = append(parts, part)
+			}
+		}
+		if len(parts) == 0 {
+			pushedOrderings = append(pushedOrderings, properties.PreserveOrdering())
+			continue
+		}
+		pushedOrderings = append(pushedOrderings, properties.NewRequestedOrdering(
+			parts, properties.DistinctnessPreserveDistinctness, ordering.IsExhaustive()))
+	}
+	return pushedOrderings
 }
 
 var _ ImplementationRule = (*PushRequestedOrderingThroughInsertRule)(nil)

@@ -51,7 +51,9 @@ func TestPKScanOrdering_NilPlan(t *testing.T) {
 // TestPKScanOrdering_NoPrimaryKey pins the empty-PK guard.
 func TestPKScanOrdering_NoPrimaryKey(t *testing.T) {
 	t.Parallel()
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	got := PKScanOrdering(plan)
 	if got.IsKnown {
 		t.Fatalf("PKScanOrdering(no PK) = %#v, want unknown ordering", got)
@@ -62,9 +64,11 @@ func TestPKScanOrdering_NoPrimaryKey(t *testing.T) {
 // no comparisons at all: every PK column is a sorted key, in scan direction.
 func TestPKScanOrdering_Unbound(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	id := testField(t, "ID", values.NotNullLong)
+	k := testField(t, "K", values.NotNullLong)
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey([]values.Value{id, k}).
 		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
@@ -81,9 +85,11 @@ func TestPKScanOrdering_Unbound(t *testing.T) {
 // unbound scan.
 func TestPKScanOrdering_ReverseUnbound(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, true).
+	id := testField(t, "ID", values.NotNullLong)
+	k := testField(t, "K", values.NotNullLong)
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), true)
+	}).
 		WithPrimaryKey([]values.Value{id, k}).
 		WithKeyComponentTypes(testPhysicalLongTypes(2))
 
@@ -110,9 +116,11 @@ func TestPKScanOrdering_ReverseUnbound(t *testing.T) {
 // cascades package for the end-to-end proof this fix closes.
 func TestPKScanOrdering_EqualityPrefixDropped(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	id := testField(t, "ID", values.NotNullLong)
+	k := testField(t, "K", values.NotNullLong)
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey([]values.Value{id, k}).
 		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(7))}).
 		WithKeyComponentTypes(testPhysicalLongTypes(2))
@@ -131,9 +139,11 @@ func TestPKScanOrdering_EqualityPrefixDropped(t *testing.T) {
 // unknown/empty — not a zero-length-but-known Ordering.
 func TestPKScanOrdering_FullyEqualityBound(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	id := testField(t, "ID", values.NotNullLong)
+	k := testField(t, "K", values.NotNullLong)
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey([]values.Value{id, k}).
 		WithScanComparisons([]*predicates.ComparisonRange{
 			pkOrderingEq(t, int64(7)),
@@ -154,9 +164,11 @@ func TestPKScanOrdering_FullyEqualityBound(t *testing.T) {
 // first non-equality comparison.
 func TestPKScanOrdering_NonEqualityLeadingComparisonKeepsFullKey(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	id := testField(t, "ID", values.NotNullLong)
+	k := testField(t, "K", values.NotNullLong)
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey([]values.Value{id, k}).
 		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingGT(t, int64(7))}).
 		WithKeyComponentTypes(testPhysicalLongTypes(2))
@@ -172,10 +184,12 @@ func TestPKScanOrdering_NonEqualityLeadingComparisonKeepsFullKey(t *testing.T) {
 // dropped; k and the trailing column stay.
 func TestPKScanOrdering_EqualityPrefixThenRangeStopsAtFirstNonEquality(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
-	m := &values.FieldValue{Field: "M", Typ: values.NotNullLong}
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	id := testField(t, "ID", values.NotNullLong)
+	k := testField(t, "K", values.NotNullLong)
+	m := testField(t, "M", values.NotNullLong)
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey([]values.Value{id, k, m}).
 		WithScanComparisons([]*predicates.ComparisonRange{
 			pkOrderingEq(t, int64(7)),
@@ -194,8 +208,10 @@ func TestPKScanOrdering_EqualityPrefixThenRangeStopsAtFirstNonEquality(t *testin
 // calls) is exactly PKScanOrdering, not a stale duplicate.
 func TestRecordQueryScanPlan_HintOrdering_DelegatesToPKScanOrdering(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	id := testField(t, "ID", values.NotNullLong)
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey([]values.Value{id}).
 		WithScanComparisons([]*predicates.ComparisonRange{pkOrderingEq(t, int64(1))}).
 		WithKeyComponentTypes(testPhysicalLongTypes(1))
@@ -232,13 +248,15 @@ func TestPKScanOrdering_FloatPKColumnTerminatesTheClaim(t *testing.T) {
 		{Name: "E", FieldType: values.NullableDouble, Ordinal: 1},
 		{Name: "V", FieldType: values.NotNullLong, Ordinal: 2},
 	})
-	g := &values.FieldValue{Field: "G", Typ: values.UnknownType}
-	e := &values.FieldValue{Field: "E", Typ: values.UnknownType}
-	v := &values.FieldValue{Field: "V", Typ: values.UnknownType}
+	g := testFieldIn(t, layout, "pk_float", "G")
+	e := testFieldIn(t, layout, "pk_float", "E")
+	v := testFieldIn(t, layout, "pk_float", "V")
 
 	t.Run("float in the middle truncates everything after it", func(t *testing.T) {
 		t.Parallel()
-		plan := NewRecordQueryScanPlan([]string{"P"}, layout, false).
+		plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan([]string{"P"}, layout, false)
+		}).
 			WithPrimaryKey([]values.Value{g, e, v})
 		got := PKScanOrdering(plan)
 		if !got.IsKnown || len(got.Keys) != 1 {
@@ -252,7 +270,9 @@ func TestPKScanOrdering_FloatPKColumnTerminatesTheClaim(t *testing.T) {
 
 	t.Run("float first claims nothing at all", func(t *testing.T) {
 		t.Parallel()
-		plan := NewRecordQueryScanPlan([]string{"P"}, layout, false).
+		plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan([]string{"P"}, layout, false)
+		}).
 			WithPrimaryKey([]values.Value{e, g})
 		got := PKScanOrdering(plan)
 		if got.IsKnown {
@@ -265,7 +285,9 @@ func TestPKScanOrdering_FloatPKColumnTerminatesTheClaim(t *testing.T) {
 		t.Parallel()
 		// The control. Without it, a truncation that returned nothing for every
 		// primary key would satisfy both cases above.
-		plan := NewRecordQueryScanPlan([]string{"P"}, layout, false).
+		plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+			return NewRecordQueryScanPlan([]string{"P"}, layout, false)
+		}).
 			WithPrimaryKey([]values.Value{g, v})
 		got := PKScanOrdering(plan)
 		if !got.IsKnown || len(got.Keys) != 2 {

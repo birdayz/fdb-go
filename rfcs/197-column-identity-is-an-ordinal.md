@@ -1036,16 +1036,16 @@ the same fact.
 | bucket | authorities | escapes |
 | --- | --- | --- |
 | boundary | 1 | 2 |
-| contract | 8 | 12 |
-| dotted | 11 | 12 |
-| harness | 1 | 1 |
+| contract | 2 | 4 |
+| dotted | 3 | 3 |
+| harness | 0 | 0 |
 | name-keyed | 4 | 4 |
-| translator | 10 | 12 |
-| TOTAL | 34 | 43 |
+| translator | 3 | 4 |
+| TOTAL | 12 | 17 |
 
-The per-bucket authority column sums to MORE than the distinct total, because two
-declarations owe debt in more than a single bucket — `deriveColumnsFromProjection`
-(dotted + translator) and `groupByOutputBaker` (contract + dotted). That is legal
+The per-bucket authority column sums to MORE than the distinct total, because one
+declaration owes debt in more than a single bucket — `deriveColumnsFromProjection`
+(dotted + translator). That is legal
 and `TestFieldDebtBucketsArePartition` reports the difference rather than
 absorbing it, so it is never mistaken for an arithmetic slip. The magnitudes are
 in the table and in that test's output, not here.
@@ -1065,9 +1065,8 @@ left. Which authorities, and how many each, is the table below.
 
 | authority | escapes |
 | --- | --- |
-| `groupByOutputBaker` | 5 |
-| `deriveColumnsFromProjection` | 2 |
-| `explainValueOrdinals` | 3 |
+| `deriveColumnsFromProjection` | 3 |
+| `explainValueOrdinalsWithAliases` | 3 |
 
 `AggregateResultColumnName` used to head this table and is GONE: its
 last entry retired and the sentence naming it did not move, which is why
@@ -1196,11 +1195,9 @@ so the table below states one per edge:
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rebaseOuterLegValueOrdinal` | pkg/recordlayer/query/plan/cascades/left_outer_existential.go | decliner | no |
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `rebaseOuterLegValue` | pkg/recordlayer/query/plan/cascades/rule_implement_nested_loop_join.go | decliner | no |
 | `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `legRef` | pkg/relational/core/query/ordinal_seed.go | decliner | no |
-| `rebaseUnnestOuterLegPredicate` | pkg/relational/core/query/cascades_translator.go | `groupByOutputBaker` | pkg/relational/core/query/cascades_translator.go | co-occurring | no |
 | `explainValueOrdinals` | pkg/recordlayer/query/plan/cascades/values/values.go | `AccessorNamePath` | pkg/recordlayer/query/plan/cascades/values/accessor_name_path.go | decliner | no |
 | `projCol` | pkg/relational/core/embedded/select_parser.go | `clusterFieldResolvable` | pkg/relational/core/query/clustered_outer_scalar.go | consumer | no |
 | `projCol` | pkg/relational/core/embedded/select_parser.go | `clusterSeedSlotByName` | pkg/relational/core/query/clustered_outer_scalar.go | consumer | no |
-| `groupByOutputOrdinals` | pkg/relational/core/query/cascades_translator.go | `groupByOutputBaker` | pkg/relational/core/query/cascades_translator.go | consumer | yes |
 
 `TestFieldDebtRFCOrderEdgesAreClassified` gates it. Each endpoint must be a live
 declaration AND must be declared in the file cited beside it, and a `decliner` or
@@ -1247,11 +1244,10 @@ with the stated class, and the table's own well-formedness — is mechanical.
 **Decomposition of the `dotted` authorities**, by name rather than by tally, so
 it cannot go stale the way a count does:
 
-- *Downstream of a dotted mint:* `rowSlotForLegColumn`, plus the group-by alias
-  pair (`groupByOutputOrdinals`'s registration and `groupByOutputBaker`'s matching
-  read). That pair retires TOGETHER or not at all — both ends compose the same
-  spelling from parts they already hold, so converting either alone breaks the
-  round trip.
+- *Downstream of a dotted mint:* `rowSlotForLegColumn`. The former group-by alias
+  pair (`groupByOutputOrdinals` and `groupByOutputBaker`) retired together when
+  RFC-232 made aggregate inputs and outputs exact ordinal values; it is no longer
+  part of this census.
 - *Downstream of another bucket* — the reversed edges: `AccessorNamePath` and the
   `clusterFieldResolvable` / `clusterSeedSlotByName` pair.
 - *Declines only, and therefore downstream of nothing:* `rebaseOuterLegValue`,
@@ -1301,23 +1297,14 @@ actually left on this channel is a LATENT mint with no consumer — retiring it
 closes its own entry and no other, and the corpus being green is not evidence it
 is already gone.
 
-**The ordering constraint that used to gate all of this is GONE.** The stated
-reason to sequence `dotted` last was a live wrong-rows hazard:
-`groupByOutputOrdinals`' name map is last-wins (`keys[full] = ord`), so two group
-keys sharing a leaf collapse to one slot, and the argument was that they were
-separated only because the name channel still carried the qualifier — making
-dotted's debt load-bearing for correctness. **That is no longer true.**
-`groupKeyOrdinalByStructure` decides WHICH key a reference is from the two Values
-(`SameColumnPath` + `sameQuantifierRoot`) and overrides the last-wins slot at both
-baker arms and at the ORDER BY consumer. It is pinned IN THE POST-DOTTED STATE:
-`group_key_structural_ordinal_test.go` builds the maps with the qualified aliases
-`O.K`/`I.K` deliberately ABSENT — the world where the name channel no longer
-carries the qualifier — and each of the three arms is detected by its own
-mutation. So the ordinal-identity replacement the constraint was waiting for is
-already in place, and a refuted blocker must LOWER the estimate rather than leave
-it standing. What survives is narrow and falsifiable: the structural decider
-declines when either side has `Resolved == nil`, and on a decline last-wins is the
-sole decider again.
+**The ordering constraint that used to gate all of this is GONE.** Its old
+last-wins group-key map and structural compatibility decider have now both been
+deleted: RFC-232 records the aggregate output slot at the composition that
+decides it and carries that exact value through HAVING and ORDER BY. The live
+guards are `TestGroupKeyPullUpGuard_ConstructionKeepsTwoQuantifiersApart` and
+`TestGroupKeyPullUpGuard_ExactBoundaryBinderRefusesAMultiMatch`; neither depends
+on a display-name round trip. Consequently the retired group-by channel carries
+no residual debt and no ordering edge in the tables above.
 
 ## Rejected alternatives
 

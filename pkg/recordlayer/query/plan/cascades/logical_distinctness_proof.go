@@ -56,8 +56,8 @@ func planRecordIdentityMatchesLogicalEquality(plan plans.RecordQueryPlan) bool {
 			plan, planRecordIdentityMatchesLogicalEquality,
 		)
 	case *plans.RecordQueryMapPlan:
-		qov, ok := p.GetResultValue().(*values.QuantifiedObjectValue)
-		if !ok || qov.Correlation != p.GetInnerQuantifier().GetAlias() {
+		qov, ok := values.AsQuantifiedObjectValue(p.GetResultValue())
+		if !ok || qov.Correlation() != p.GetInnerQuantifier().GetAlias() {
 			return false
 		}
 		return everyPhysicalMemberOfUnaryChildProves(
@@ -151,8 +151,8 @@ func planStorageOrderingIsComplete(plan plans.RecordQueryPlan) bool {
 			plan, planStorageOrderingIsComplete,
 		)
 	case *plans.RecordQueryMapPlan:
-		qov, ok := p.GetResultValue().(*values.QuantifiedObjectValue)
-		if !ok || qov.Correlation != p.GetInnerQuantifier().GetAlias() {
+		qov, ok := values.AsQuantifiedObjectValue(p.GetResultValue())
+		if !ok || qov.Correlation() != p.GetInnerQuantifier().GetAlias() {
 			return false
 		}
 		return everyPhysicalMemberOfUnaryChildProves(

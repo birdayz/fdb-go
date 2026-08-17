@@ -13,8 +13,12 @@ import (
 // still compared comparands by COUNT (or hashed Explain() text) after the F21
 // migration. Same contract as rfc176PlanBuilders: every non-Value
 // discriminator held fixed so identity varies only with the payload.
-func wsbPlanBuilders() []rfc176PlanBuilder {
+func wsbPlanBuilders(t testing.TB) []rfc176PlanBuilder {
+	t.Helper()
 	inner := stub("Inner")
+	updateInner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	oAlias := values.NamedCorrelationIdentifier("o")
 	iAlias := values.NamedCorrelationIdentifier("i")
 	predsOf := func(vs []values.Value) []predicates.QueryPredicate {
@@ -26,29 +30,43 @@ func wsbPlanBuilders() []rfc176PlanBuilder {
 	}
 	return []rfc176PlanBuilder{
 		{"InUnion", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryInUnionPlan(inner, []string{"b1"}, vs, false)
+			return mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+				return NewRecordQueryInUnionPlan(inner, []string{"b1"}, vs, false)
+			})
 		}},
 		{"Intersection", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, vs)
+			return mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+				return NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, vs)
+			})
 		}},
 		{"Update", func(vs []values.Value) RecordQueryPlan {
 			trs := make([]expressions.UpdateTransform, len(vs))
 			for i, v := range vs {
 				trs[i] = expressions.UpdateTransform{FieldPath: "F", NewValue: v}
 			}
-			return NewRecordQueryUpdatePlan(inner, "T", trs)
+			return mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
+				return NewRecordQueryUpdatePlan(updateInner, "T", trs)
+			})
 		}},
 		{"FlatMap", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, vs[0], false)
+			return mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+				return NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, vs[0], false)
+			})
 		}},
 		{"NestedLoopJoin", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryNestedLoopJoinPlan(inner, inner, predsOf(vs), JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), vs[0])
+			return mustChecked(t, func() (*RecordQueryNestedLoopJoinPlan, error) {
+				return NewRecordQueryNestedLoopJoinPlan(inner, inner, predsOf(vs), JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), vs[0])
+			})
 		}},
 		{"Filter", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryFilterPlan(predsOf(vs), inner)
+			return mustChecked(t, func() (*RecordQueryFilterPlan, error) {
+				return NewRecordQueryFilterPlan(predsOf(vs), inner)
+			})
 		}},
 		{"PredicatesFilter", func(vs []values.Value) RecordQueryPlan {
-			return NewRecordQueryPredicatesFilterPlan(inner, predsOf(vs))
+			return mustChecked(t, func() (*RecordQueryPredicatesFilterPlan, error) {
+				return NewRecordQueryPredicatesFilterPlan(inner, predsOf(vs))
+			})
 		}},
 	}
 }
@@ -59,8 +77,8 @@ func wsbPlanBuilders() []rfc176PlanBuilder {
 // equal (non-vacuousness).
 func TestPlanIdentity_EqualImpliesSameHash_WSBStragglers(t *testing.T) {
 	t.Parallel()
-	pool := rfc176ValuePool()
-	for _, b := range wsbPlanBuilders() {
+	pool := rfc176ValuePool(t)
+	for _, b := range wsbPlanBuilders(t) {
 		instances := make([]RecordQueryPlan, len(pool))
 		for i, vs := range pool {
 			instances[i] = b.build(vs)
@@ -93,17 +111,23 @@ func TestPlanIdentity_EqualImpliesSameHash_WSBStragglers(t *testing.T) {
 func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	kA := []values.Value{values.NewFlatFieldValue("A", values.UnknownType)}
-	kB := []values.Value{values.NewFlatFieldValue("B", values.UnknownType)}
+	kA := []values.Value{testField(t, "A", values.NullableLong)}
+	kB := []values.Value{testField(t, "B", values.NullableLong)}
 
-	a := NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
-	b := NewRecordQueryInUnionPlan(inner, []string{"b1"}, kB, false)
+	a := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
+	})
+	b := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kB, false)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("in-union plans with different comparison keys must NOT compare equal")
 	}
 
 	// Different IN-literals (Java: inSources.equals) break equality too.
-	c := NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
+	c := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
+	})
 	a.SetInSources([][]any{{int64(1), int64(2)}})
 	c.SetInSources([][]any{{int64(1), int64(3)}})
 	if a.EqualsPlanWithoutChildren(c) {
@@ -111,7 +135,9 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 	}
 
 	// Identical everything ⟹ equal + same hash.
-	d := NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
+	d := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
+		return NewRecordQueryInUnionPlan(inner, []string{"b1"}, kA, false)
+	})
 	d.SetInSources([][]any{{int64(1), int64(2)}})
 	if !a.EqualsPlanWithoutChildren(d) {
 		t.Fatal("identical in-union plans must compare equal")
@@ -128,15 +154,21 @@ func TestInUnionPlan_ComparandsJoinIdentity(t *testing.T) {
 func TestIntersectionPlan_KeysJoinIdentity(t *testing.T) {
 	t.Parallel()
 	inner := stub("Inner")
-	kA := []values.Value{values.NewFlatFieldValue("A", values.UnknownType)}
-	kB := []values.Value{values.NewFlatFieldValue("B", values.UnknownType)}
+	kA := []values.Value{testField(t, "A", values.NullableLong)}
+	kB := []values.Value{testField(t, "B", values.NullableLong)}
 
-	a := NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kA)
-	b := NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kB)
+	a := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kA)
+	})
+	b := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kB)
+	})
 	if a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("intersection plans with different comparison keys must NOT compare equal")
 	}
-	c := NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kA)
+	c := mustChecked(t, func() (*RecordQueryIntersectionPlan, error) {
+		return NewRecordQueryIntersectionPlan([]RecordQueryPlan{inner, inner}, kA)
+	})
 	if !a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("identical intersection plans must compare equal")
 	}
@@ -150,19 +182,29 @@ func TestIntersectionPlan_KeysJoinIdentity(t *testing.T) {
 // collapse on the WRITE path executes the wrong update. RED before the fix.
 func TestUpdatePlan_TransformsJoinIdentity(t *testing.T) {
 	t.Parallel()
-	inner := stub("Inner")
+	inner := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	})
 	set1 := []expressions.UpdateTransform{{FieldPath: "a", NewValue: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}}
 	set2 := []expressions.UpdateTransform{{FieldPath: "a", NewValue: &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong}}}
 	setB := []expressions.UpdateTransform{{FieldPath: "b", NewValue: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}}
 
-	a := NewRecordQueryUpdatePlan(inner, "T", set1)
-	if a.EqualsPlanWithoutChildren(NewRecordQueryUpdatePlan(inner, "T", set2)) {
+	a := mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
+		return NewRecordQueryUpdatePlan(inner, "T", set1)
+	})
+	if a.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
+		return NewRecordQueryUpdatePlan(inner, "T", set2)
+	})) {
 		t.Fatal("SET a=1 and SET a=2 must NOT compare equal")
 	}
-	if a.EqualsPlanWithoutChildren(NewRecordQueryUpdatePlan(inner, "T", setB)) {
+	if a.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
+		return NewRecordQueryUpdatePlan(inner, "T", setB)
+	})) {
 		t.Fatal("SET a=1 and SET b=1 must NOT compare equal")
 	}
-	c := NewRecordQueryUpdatePlan(inner, "T", set1)
+	c := mustChecked(t, func() (*RecordQueryUpdatePlan, error) {
+		return NewRecordQueryUpdatePlan(inner, "T", set1)
+	})
 	if !a.EqualsPlanWithoutChildren(c) {
 		t.Fatal("identical update plans must compare equal")
 	}
@@ -181,26 +223,40 @@ func TestFlatMapAndNLJPlan_ResultValueJoinsIdentity(t *testing.T) {
 	inner := stub("Inner")
 	oAlias := values.NamedCorrelationIdentifier("o")
 	iAlias := values.NamedCorrelationIdentifier("i")
-	rvA := values.NewFlatFieldValue("A", values.UnknownType)
-	rvB := values.NewFlatFieldValue("B", values.UnknownType)
+	rvA := testField(t, "A", values.NullableLong)
+	rvB := testField(t, "B", values.NullableLong)
 
-	fm := NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvA, false)
-	if fm.EqualsPlanWithoutChildren(NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvB, false)) {
+	fm := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+		return NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvA, false)
+	})
+	if fm.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+		return NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvB, false)
+	})) {
 		t.Fatal("flat-map plans with different result values must NOT compare equal")
 	}
-	if fm.EqualsPlanWithoutChildren(NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvA, true)) {
+	if fm.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+		return NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, rvA, true)
+	})) {
 		t.Fatal("flat-map plans with different inheritOuterRecordProperties must NOT compare equal")
 	}
-	fmDup := NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, values.NewFlatFieldValue("A", values.UnknownType), false)
+	fmDup := mustChecked(t, func() (*RecordQueryFlatMapPlan, error) {
+		return NewRecordQueryFlatMapPlan(inner, inner, oAlias, iAlias, testField(t, "A", values.NullableLong), false)
+	})
 	if !fm.EqualsPlanWithoutChildren(fmDup) || fm.HashCodeWithoutChildren() != fmDup.HashCodeWithoutChildren() {
 		t.Fatal("identical flat-map plans must compare equal and hash equal")
 	}
 
-	nlj := NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), rvA)
-	if nlj.EqualsPlanWithoutChildren(NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), rvB)) {
+	nlj := mustChecked(t, func() (*RecordQueryNestedLoopJoinPlan, error) {
+		return NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), rvA)
+	})
+	if nlj.EqualsPlanWithoutChildren(mustChecked(t, func() (*RecordQueryNestedLoopJoinPlan, error) {
+		return NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), rvB)
+	})) {
 		t.Fatal("NLJ plans with different result values must NOT compare equal")
 	}
-	nljDup := NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), values.NewFlatFieldValue("A", values.UnknownType))
+	nljDup := mustChecked(t, func() (*RecordQueryNestedLoopJoinPlan, error) {
+		return NewRecordQueryNestedLoopJoinPlan(inner, inner, nil, JoinInner, values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"), testField(t, "A", values.NullableLong))
+	})
 	if !nlj.EqualsPlanWithoutChildren(nljDup) || nlj.HashCodeWithoutChildren() != nljDup.HashCodeWithoutChildren() {
 		t.Fatal("identical NLJ plans must compare equal and hash equal")
 	}

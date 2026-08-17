@@ -36,15 +36,68 @@ func equalityRange(t *testing.T, literal any) *predicates.ComparisonRange {
 	return res.Range
 }
 
-func requestedParts(dirs map[string]properties.RequestedSortOrder, order []string) []properties.RequestedOrderingPart {
+func pkSuffixField(
+	t testing.TB,
+	rowType *values.RecordType,
+	name string,
+) values.Value {
+	t.Helper()
+	root, ok := orderingKeyCarrier(rowType)
+	if !ok {
+		t.Fatalf("build ordering carrier for %s", rowType)
+	}
+	ordinal, unique := uniqueUpperFieldIndex(rowType, name)
+	if !unique {
+		t.Fatalf("ordering field %q is not unique in %s", name, rowType)
+	}
+	fieldValue, fieldErr := values.ResolveFieldOrdinals(root, []int{ordinal})
+	return mustConstruct(t, fieldValue, fieldErr)
+}
+
+func requestedParts(
+	t testing.TB,
+	rowType *values.RecordType,
+	dirs map[string]properties.RequestedSortOrder,
+	order []string,
+) []properties.RequestedOrderingPart {
+	t.Helper()
 	parts := make([]properties.RequestedOrderingPart, 0, len(order))
 	for _, name := range order {
 		parts = append(parts, properties.RequestedOrderingPart{
-			Value:     &values.FieldValue{Field: name, Typ: values.UnknownType},
+			Value:     pkSuffixField(t, rowType, name),
 			SortOrder: dirs[name],
 		})
 	}
 	return parts
+}
+
+func statusIDRowType() *values.RecordType {
+	return values.NewRecordType("T", false, []values.Field{
+		{Name: "STATUS", FieldType: values.NullableString, Ordinal: 0},
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 1},
+	})
+}
+
+func abRowType() *values.RecordType {
+	return values.NewRecordType("AB", false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 1},
+	})
+}
+
+func abcRowType() *values.RecordType {
+	return values.NewRecordType("KVW", false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "C", FieldType: values.NullableLong, Ordinal: 2},
+	})
+}
+
+func tagsIDRowType() *values.RecordType {
+	return values.NewRecordType("T", false, []values.Field{
+		{Name: "TAGS", FieldType: values.NewArrayType(true, values.NotNullString), Ordinal: 0},
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 1},
+	})
 }
 
 // TestIndexScanRichOrdering_PKSuffixSatisfiesOrderByPK: an eq-prefixed
@@ -54,10 +107,12 @@ func requestedParts(dirs map[string]properties.RequestedSortOrder, order []strin
 func TestIndexScanRichOrdering_PKSuffixSatisfiesOrderByPK(t *testing.T) {
 	t.Parallel()
 
-	idx := plans.NewRecordQueryIndexPlan(
+	rowType := statusIDRowType()
+	idxValue, idxErr := plans.NewRecordQueryIndexPlan(
 		"IDX_STATUS",
 		[]*predicates.ComparisonRange{equalityRange(t, "active")},
-		[]string{"T"}, values.UnknownType, false).
+		[]string{"T"}, rowType, false)
+	idx := mustConstruct(t, idxValue, idxErr).
 		WithKeyComponentTypes([]values.Type{values.NullableString})
 	w := idx.WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
@@ -68,7 +123,7 @@ func TestIndexScanRichOrdering_PKSuffixSatisfiesOrderByPK(t *testing.T) {
 	}
 
 	req := properties.NewRequestedOrdering(
-		requestedParts(map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderAscending}, []string{"ID"}),
+		requestedParts(t, rowType, map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderAscending}, []string{"ID"}),
 		properties.DistinctnessPreserveDistinctness, false)
 	if !ord.Satisfies(req) {
 		t.Fatal("eq-prefixed forward index scan with PK suffix must satisfy ORDER BY pk ASC")
@@ -76,7 +131,7 @@ func TestIndexScanRichOrdering_PKSuffixSatisfiesOrderByPK(t *testing.T) {
 
 	// A forward scan's PK suffix is ASC — a DESC request is NOT satisfied.
 	reqDesc := properties.NewRequestedOrdering(
-		requestedParts(map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderDescending}, []string{"ID"}),
+		requestedParts(t, rowType, map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderDescending}, []string{"ID"}),
 		properties.DistinctnessPreserveDistinctness, false)
 	if ord.Satisfies(reqDesc) {
 		t.Fatal("forward index scan must NOT satisfy ORDER BY pk DESC")
@@ -89,17 +144,19 @@ func TestIndexScanRichOrdering_PKSuffixSatisfiesOrderByPK(t *testing.T) {
 func TestIndexScanRichOrdering_ReverseSatisfiesOrderByPKDesc(t *testing.T) {
 	t.Parallel()
 
-	idx := plans.NewRecordQueryIndexPlan(
+	rowType := statusIDRowType()
+	idxValue, idxErr := plans.NewRecordQueryIndexPlan(
 		"IDX_STATUS",
 		[]*predicates.ComparisonRange{equalityRange(t, "active")},
-		[]string{"T"}, values.UnknownType, true /* reverse */).
+		[]string{"T"}, rowType, true /* reverse */)
+	idx := mustConstruct(t, idxValue, idxErr).
 		WithKeyComponentTypes([]values.Type{values.NullableString})
 	w := idx.WithIndexMetadata([]string{"STATUS"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
 
 	ord := computeWrapperRichOrdering(w)
 	req := properties.NewRequestedOrdering(
-		requestedParts(map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderDescending}, []string{"ID"}),
+		requestedParts(t, rowType, map[string]properties.RequestedSortOrder{"ID": properties.RequestedSortOrderDescending}, []string{"ID"}),
 		properties.DistinctnessPreserveDistinctness, false)
 	if !ord.Satisfies(req) {
 		t.Fatal("reverse eq-prefixed index scan with PK suffix must satisfy ORDER BY pk DESC")
@@ -113,10 +170,12 @@ func TestIndexScanRichOrdering_ReverseSatisfiesOrderByPKDesc(t *testing.T) {
 func TestIndexScanRichOrdering_TrimPrimaryKey(t *testing.T) {
 	t.Parallel()
 
-	idx := plans.NewRecordQueryIndexPlan(
+	rowType := abcRowType()
+	idxValue, idxErr := plans.NewRecordQueryIndexPlan(
 		"KVW_B",
 		[]*predicates.ComparisonRange{equalityRange(t, int64(20))},
-		[]string{"KVW"}, values.UnknownType, false).
+		[]string{"KVW"}, rowType, false)
+	idx := mustConstruct(t, idxValue, idxErr).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
 	w := idx.WithIndexMetadata([]string{"B"}, []string{"A", "B", "C"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{
@@ -125,7 +184,7 @@ func TestIndexScanRichOrdering_TrimPrimaryKey(t *testing.T) {
 
 	ord := computeWrapperRichOrdering(w)
 	req := properties.NewRequestedOrdering(
-		requestedParts(map[string]properties.RequestedSortOrder{
+		requestedParts(t, rowType, map[string]properties.RequestedSortOrder{
 			"A": properties.RequestedSortOrderAscending,
 			"C": properties.RequestedSortOrderAscending,
 		}, []string{"A", "C"}),
@@ -147,9 +206,11 @@ func TestIndexScanRichOrdering_TrimPrimaryKey(t *testing.T) {
 func TestScanRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 	t.Parallel()
 
-	pkA := &values.FieldValue{Field: "A", Typ: values.UnknownType}
-	pkB := &values.FieldValue{Field: "B", Typ: values.UnknownType}
-	scan := plans.NewRecordQueryScanPlan([]string{"AB"}, values.UnknownType, false).
+	rowType := abRowType()
+	pkA := pkSuffixField(t, rowType, "A")
+	pkB := pkSuffixField(t, rowType, "B")
+	scanValue, scanErr := plans.NewRecordQueryScanPlan([]string{"AB"}, rowType, false)
+	scan := mustConstruct(t, scanValue, scanErr).
 		WithPrimaryKey([]values.Value{pkA, pkB}).
 		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
@@ -162,7 +223,7 @@ func TestScanRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 
 	for _, dir := range []properties.RequestedSortOrder{properties.RequestedSortOrderAscending, properties.RequestedSortOrderDescending} {
 		req := properties.NewRequestedOrdering(
-			requestedParts(map[string]properties.RequestedSortOrder{"A": dir}, []string{"A"}),
+			requestedParts(t, rowType, map[string]properties.RequestedSortOrder{"A": dir}, []string{"A"}),
 			properties.DistinctnessPreserveDistinctness, false)
 		if !ord.Satisfies(req) {
 			t.Fatalf("eq-bound PK prefix must be FIXED and satisfy ORDER BY A %v", dir)
@@ -172,7 +233,7 @@ func TestScanRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 	// The unbound remainder stays directional: B DESC is NOT satisfied by
 	// the forward scan.
 	reqBDesc := properties.NewRequestedOrdering(
-		requestedParts(map[string]properties.RequestedSortOrder{
+		requestedParts(t, rowType, map[string]properties.RequestedSortOrder{
 			"A": properties.RequestedSortOrderDescending,
 			"B": properties.RequestedSortOrderDescending,
 		}, []string{"A", "B"}),
@@ -194,7 +255,7 @@ func TestComputeMatchedOrderingParts_PKSuffix(t *testing.T) {
 		"IDX_STATUS", []string{"T"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{alias},
-		values.UnknownType, false,
+		statusIDRowType(), false,
 		[]string{"ID"})
 
 	mi := NewRegularMatchInfo(
@@ -209,8 +270,8 @@ func TestComputeMatchedOrderingParts_PKSuffix(t *testing.T) {
 		t.Fatal("STATUS part must carry the equality range")
 	}
 	idPart := parts[1]
-	fv, ok := idPart.GetValue().(*values.FieldValue)
-	if !ok || fv.Field != "ID" {
+	fv, ok := values.AsFieldValue(idPart.GetValue())
+	if !ok || fv.DisplayName() != "ID" {
 		t.Fatalf("PK suffix part must be FieldValue(ID), got %v", idPart.GetValue())
 	}
 	if idPart.GetComparisonRange().IsEquality() {
@@ -241,7 +302,7 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 		"IDX_TAGS", []string{"T"},
 		[]string{"TAGS"},
 		[]values.CorrelationIdentifier{alias},
-		values.UnknownType, false,
+		tagsIDRowType(), false,
 		[]string{"ID"})
 	cand.createsDuplicates = true
 	cand.WithRootKeyExpression(candidateTestKeyField("TAGS", gen.Field_FAN_OUT))
@@ -286,15 +347,17 @@ func TestComputeMatchedOrderingParts_NoSuffixForFanOut(t *testing.T) {
 func TestScanPlanExpressionRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 	t.Parallel()
 
-	pkA := &values.FieldValue{Field: "A", Typ: values.UnknownType}
-	pkB := &values.FieldValue{Field: "B", Typ: values.UnknownType}
-	scan := plans.NewRecordQueryScanPlan([]string{"AB"}, values.UnknownType, false).
+	rowType := abRowType()
+	pkA := pkSuffixField(t, rowType, "A")
+	pkB := pkSuffixField(t, rowType, "B")
+	scanValue, scanErr := plans.NewRecordQueryScanPlan([]string{"AB"}, rowType, false)
+	scan := mustConstruct(t, scanValue, scanErr).
 		WithPrimaryKey([]values.Value{pkA, pkB}).
 		WithScanComparisons([]*predicates.ComparisonRange{equalityRange(t, int64(1))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
 
 	reqADesc := properties.NewRequestedOrdering(
-		requestedParts(map[string]properties.RequestedSortOrder{"A": properties.RequestedSortOrderDescending}, []string{"A"}),
+		requestedParts(t, rowType, map[string]properties.RequestedSortOrder{"A": properties.RequestedSortOrderDescending}, []string{"A"}),
 		properties.DistinctnessPreserveDistinctness, false)
 
 	bare := &scanPlanExpression{plan: scan}
@@ -303,7 +366,8 @@ func TestScanPlanExpressionRichOrdering_EqualityPrefixIsFixed(t *testing.T) {
 	}
 
 	// Through the TypeFilter wrapper (order-preserving).
-	tf := plans.NewRecordQueryTypeFilterPlan([]string{"AB"}, scan)
+	tfValue, tfErr := plans.NewRecordQueryTypeFilterPlan([]string{"AB"}, scan)
+	tf := mustConstruct(t, tfValue, tfErr)
 	wrapped := &scanPlanExpression{plan: tf}
 	if ord := computeWrapperRichOrdering(wrapped); ord == nil || !ord.Satisfies(reqADesc) {
 		t.Fatal("scanPlanExpression over TypeFilter(eq-bound PK scan) must satisfy ORDER BY A DESC")
@@ -325,27 +389,38 @@ func TestSortElim_EqPrefixIndexScanSatisfiesOrderByPK(t *testing.T) {
 		[]string{"T"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		statusIDRowType(),
 		false,
 		[]string{"ID"})
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(t, []string{"T"}, statusIDRowType())
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	filter := expressions.NewLogicalFilterExpression(
+	filterValue, filterErr := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				func() values.Value {
+					rootValue, rootErr := q.RequireFlowedObjectValue()
+					root := mustConstruct(t, rootValue, rootErr)
+					fieldValue, fieldErr := values.ResolveFieldOrdinals(root, []int{0})
+					return mustConstruct(t, fieldValue, fieldErr)
+				}(),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 			),
 		},
 		q,
 	)
+	filter := mustConstruct(t, filterValue, filterErr)
 	filterQ := expressions.ForEachQuantifier(expressions.InitialOf(filter))
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "ID", Typ: values.UnknownType}}},
+	filterRootValue, filterRootErr := filterQ.RequireFlowedObjectValue()
+	filterRoot := mustConstruct(t, filterRootValue, filterRootErr)
+	idValue, idErr := values.ResolveFieldOrdinals(filterRoot, []int{1})
+	id := mustConstruct(t, idValue, idErr)
+	sortValue, sortErr := expressions.NewLogicalSortExpression(
+		[]expressions.SortKey{{Value: id}},
 		filterQ,
 	)
+	sort := mustConstruct(t, sortValue, sortErr)
 	sortRef := expressions.InitialOf(sort)
 
 	p := NewPlanner(DefaultExpressionRules(), ctx).
@@ -366,4 +441,92 @@ func TestSortElim_EqPrefixIndexScanSatisfiesOrderByPK(t *testing.T) {
 	if !IsPhysicalIndexScan(plan) && !IsPhysicalFetchFromPartialRecord(plan) && !IsPhysicalFilter(plan) {
 		t.Fatalf("expected an index-scan-shaped plan, got %T", plan)
 	}
+}
+
+// THE SAME GAP, ONE PLAN TYPE OVER: an INDEX access memoized as the plan-backed
+// leaf must state its ordering too.
+//
+// The test above closed the primary-scan half — the data-access path memoizes a
+// SARGed scan as scanPlanExpression, not as the bare plan expression, so the
+// ordering hints have to be present there. The adapter's hints then narrowed to
+// *RecordQueryScanPlan and answered "no ordering" for every index access.
+//
+// The rich form is where that hurts, because it is the only one carrying FIXED
+// bindings. Two members of the same group — a forward index probe and its
+// REVERSE twin — both answered EMPTY, so nothing at the sort boundary could
+// tell them apart and the reverse alternative was never selected:
+// `ORDER BY <equality-bound float> DESC` over a correlated range set lost its
+// reverse composite probe to an InMemorySort.
+//
+// Driven in BOTH directions, because an empty ordering trivially "differs" from
+// nothing: the forward member must NOT satisfy the DESC request and the reverse
+// member must.
+func TestScanPlanExpressionRichOrdering_IndexAccessStatesItsOrder(t *testing.T) {
+	t.Parallel()
+
+	rowType := abRowType()
+	index := func(reverse bool) *plans.RecordQueryIndexPlan {
+		value, err := plans.NewRecordQueryIndexPlan(
+			"IDX_A", []*predicates.ComparisonRange{equalityRange(t, int64(1))},
+			[]string{"AB"}, rowType, reverse)
+		return mustConstruct(t, value, err).
+			WithKeyComponentTypes([]values.Type{values.NullableLong}).
+			WithIndexMetadata([]string{"A"}, []string{"B"}, false)
+	}
+	forward, reverse := index(false), index(true)
+
+	reqBDesc := properties.NewRequestedOrdering(
+		requestedParts(t, rowType,
+			map[string]properties.RequestedSortOrder{"B": properties.RequestedSortOrderDescending},
+			[]string{"B"}),
+		properties.DistinctnessPreserveDistinctness, false)
+	reqBAsc := properties.NewRequestedOrdering(
+		requestedParts(t, rowType,
+			map[string]properties.RequestedSortOrder{"B": properties.RequestedSortOrderAscending},
+			[]string{"B"}),
+		properties.DistinctnessPreserveDistinctness, false)
+
+	// CONTROL: the bare plan expression has always stated this. If it stops,
+	// the adapter assertions below prove nothing about the adapter.
+	if ord := computeWrapperRichOrdering(forward); ord == nil || len(ord.GetKeys()) == 0 {
+		t.Fatal("the bare index plan expression states no ordering — the control for " +
+			"this test is gone, so nothing below is about the adapter")
+	}
+
+	for _, tc := range []struct {
+		name    string
+		plan    plans.RecordQueryPlan
+		wantAsc bool
+	}{
+		{"forward", forward, true},
+		{"reverse", reverse, false},
+		// Through the order-preserving TypeFilter wrapper the primary candidate
+		// adds, which is the shape the adapter's unwrap exists for.
+		{"forward under a type filter", typeFilterOver(t, forward), true},
+		{"reverse under a type filter", typeFilterOver(t, reverse), false},
+	} {
+		adapter := &scanPlanExpression{plan: tc.plan}
+		ord := computeWrapperRichOrdering(adapter)
+		if ord == nil || len(ord.GetKeys()) == 0 {
+			t.Fatalf("%s: the adapter reports NO ordering for an index access.\n"+
+				"  The data-access path memoizes the access through this adapter, so an\n"+
+				"  empty answer here is what the sort boundary sees — and it is the same\n"+
+				"  answer the REVERSE twin gives, which is why neither can be selected.",
+				tc.name)
+		}
+		if got := ord.Satisfies(reqBAsc); got != tc.wantAsc {
+			t.Fatalf("%s: satisfies(ORDER BY B ASC) = %v, want %v", tc.name, got, tc.wantAsc)
+		}
+		if got := ord.Satisfies(reqBDesc); got == tc.wantAsc {
+			t.Fatalf("%s: satisfies(ORDER BY B DESC) = %v, want %v — the two directions must "+
+				"NOT answer the same, or the scan direction is not being reported at all",
+				tc.name, got, !tc.wantAsc)
+		}
+	}
+}
+
+func typeFilterOver(t *testing.T, inner plans.RecordQueryPlan) plans.RecordQueryPlan {
+	t.Helper()
+	value, err := plans.NewRecordQueryTypeFilterPlan([]string{"AB"}, inner)
+	return mustConstruct(t, value, err)
 }

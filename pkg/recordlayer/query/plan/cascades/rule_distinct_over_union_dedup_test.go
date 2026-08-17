@@ -4,26 +4,26 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // distinctOverUnion builds Distinct(Union(<scans>)).
-func distinctOverUnion(scanNames []string) *expressions.LogicalDistinctExpression {
+func distinctOverUnion(t testing.TB, scanNames []string) *expressions.LogicalDistinctExpression {
+	t.Helper()
 	qs := make([]expressions.Quantifier, 0, len(scanNames))
 	for _, name := range scanNames {
-		scan := expressions.NewFullUnorderedScanExpression([]string{name}, values.UnknownType)
+		scan := distinctRuleScan(t, name)
 		qs = append(qs, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
 	}
-	union := expressions.NewLogicalUnionExpression(qs)
+	union := mustDistinctConstruct(expressions.NewLogicalUnionExpression(qs))
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(union))
-	return expressions.NewLogicalDistinctExpression(innerQ)
+	return distinctRuleDistinct(t, innerQ)
 }
 
 func TestDistinctOverUnionDedupRule_RemovesEquivalentSibling(t *testing.T) {
 	t.Parallel()
-	d := distinctOverUnion([]string{"A", "B", "A"})
+	d := distinctOverUnion(t, []string{"A", "B", "A"})
 	ref := expressions.InitialOf(d)
-	yielded := FireExpressionRule(NewDistinctOverUnionDedupRule(), ref)
+	yielded := mustFireDistinctExpressionRule(t, NewDistinctOverUnionDedupRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}
@@ -42,9 +42,9 @@ func TestDistinctOverUnionDedupRule_RemovesEquivalentSibling(t *testing.T) {
 
 func TestDistinctOverUnionDedupRule_AllUnique_NoFire(t *testing.T) {
 	t.Parallel()
-	d := distinctOverUnion([]string{"A", "B", "C"})
+	d := distinctOverUnion(t, []string{"A", "B", "C"})
 	ref := expressions.InitialOf(d)
-	yielded := FireExpressionRule(NewDistinctOverUnionDedupRule(), ref)
+	yielded := mustFireDistinctExpressionRule(t, NewDistinctOverUnionDedupRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d on all-unique union, want 0", len(yielded))
 	}
@@ -52,11 +52,11 @@ func TestDistinctOverUnionDedupRule_AllUnique_NoFire(t *testing.T) {
 
 func TestDistinctOverUnionDedupRule_DeclinesOnNonUnionInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scan := distinctRuleScan(t, "A")
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	d := expressions.NewLogicalDistinctExpression(innerQ)
+	d := distinctRuleDistinct(t, innerQ)
 	ref := expressions.InitialOf(d)
-	yielded := FireExpressionRule(NewDistinctOverUnionDedupRule(), ref)
+	yielded := mustFireDistinctExpressionRule(t, NewDistinctOverUnionDedupRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d on non-Union inner, want 0", len(yielded))
 	}
@@ -64,9 +64,9 @@ func TestDistinctOverUnionDedupRule_DeclinesOnNonUnionInner(t *testing.T) {
 
 func TestDistinctOverUnionDedupRule_FixpointTerminates(t *testing.T) {
 	t.Parallel()
-	d := distinctOverUnion([]string{"A", "B", "A"})
+	d := distinctOverUnion(t, []string{"A", "B", "A"})
 	ref := expressions.InitialOf(d)
-	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewDistinctOverUnionDedupRule()}, nil), ref)
+	progress, converged := exploreDistinctRewriting(NewPlanner([]ExpressionRule{NewDistinctOverUnionDedupRule()}, nil), ref)
 	if !converged {
 		t.Fatalf("exploration did not converge — tasks=%d, members=%d", progress, len(ref.Members()))
 	}

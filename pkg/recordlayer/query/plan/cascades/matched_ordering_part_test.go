@@ -8,6 +8,17 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func matchedOrderingField(t testing.TB, name string) values.Value {
+	t.Helper()
+	rowType := values.NewRecordType("MatchedOrderingRow", false, []values.Field{
+		{Name: name, FieldType: values.NullableLong, Ordinal: 0},
+	})
+	root, err := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), rowType)
+	root = mustConstruct(t, root, err)
+	field, err := values.ResolveFieldOrdinals(root, []int{0})
+	return mustConstruct(t, field, err)
+}
+
 func TestMatchedSortOrder_IsDirectional(t *testing.T) {
 	t.Parallel()
 	for _, s := range []MatchedSortOrder{
@@ -105,7 +116,7 @@ func TestMatchedSortOrder_ToProvidedSortOrder(t *testing.T) {
 func TestNewMatchedOrderingPart_Getters(t *testing.T) {
 	t.Parallel()
 	pid := values.NamedCorrelationIdentifier("p1")
-	v := &values.FieldValue{Field: "col_a", Typ: values.UnknownType}
+	v := matchedOrderingField(t, "col_a")
 	cr := predicates.EmptyComparisonRange()
 
 	mop := NewMatchedOrderingPart(pid, v, cr, MatchedSortOrderAscending)
@@ -130,7 +141,7 @@ func TestNewMatchedOrderingPart_Getters(t *testing.T) {
 func TestNewMatchedOrderingPart_NilComparisonRangeDefaultsToEmpty(t *testing.T) {
 	t.Parallel()
 	pid := values.NamedCorrelationIdentifier("p2")
-	v := &values.FieldValue{Field: "col_b", Typ: values.UnknownType}
+	v := matchedOrderingField(t, "col_b")
 
 	mop := NewMatchedOrderingPart(pid, v, nil, MatchedSortOrderDescending)
 
@@ -145,7 +156,7 @@ func TestNewMatchedOrderingPart_NilComparisonRangeDefaultsToEmpty(t *testing.T) 
 func TestMatchedOrderingPart_String(t *testing.T) {
 	t.Parallel()
 	pid := values.NamedCorrelationIdentifier("p5")
-	v := &values.FieldValue{Field: "col_e", Typ: values.UnknownType}
+	v := matchedOrderingField(t, "col_e")
 	mop := NewMatchedOrderingPart(pid, v, nil, MatchedSortOrderDescending)
 
 	s := mop.String()

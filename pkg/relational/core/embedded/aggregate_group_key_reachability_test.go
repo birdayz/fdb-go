@@ -55,23 +55,18 @@ func aggkTable(name string, cols ...string) *semantic.StaticTable {
 	return tbl
 }
 
-// aggkChildShape reports the child shape of a resolved reference: "" for a
-// childless (source-relative) bake, or the QOV's correlation name.
+// aggkChildShape reports the exact QOV root of a resolved reference.
 func aggkChildShape(t *testing.T, v values.Value) string {
 	t.Helper()
-	fv, ok := v.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(v)
 	if !ok {
-		t.Fatalf("resolved to %T, want *values.FieldValue", v)
+		t.Fatalf("resolved to %T, want an admitted exact FieldValue", v)
 	}
-	switch c := fv.Child.(type) {
-	case nil:
-		return ""
-	case *values.QuantifiedObjectValue:
-		return c.Correlation.Name()
-	default:
-		t.Fatalf("unexpected child %T", c)
-		return ""
+	qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+	if !ok {
+		t.Fatalf("resolved field has non-QOV child %T", fv.ChildValue())
 	}
+	return qov.Correlation().Name()
 }
 
 // TestAggregateGroupKeySingleSourceResolutionIsSymmetric pins R1.
@@ -120,17 +115,13 @@ func TestAggregateGroupKeySingleSourceResolutionIsSymmetric(t *testing.T) {
 
 			bareShape := aggkChildShape(t, bare)
 			qualShape := aggkChildShape(t, qual)
-			if bareShape != "" || qualShape != "" {
-				t.Fatalf("single-source resolution minted a QOV child (bare=%q qualified=%q); "+
-					"the qualified spelling now produces the CHILDLESS-vs-QOV asymmetry that "+
-					"fieldValueMatchesAggregateGroupKey exists for. Its arm is REACHABLE from "+
-					"plain single-source SQL and is no longer latent — re-derive the reachability "+
-					"argument in aggregate_group_key_accessor_name_test.go",
+			if bareShape == "" || bareShape != qualShape {
+				t.Fatalf("single-source spellings resolved under different exact roots: bare=%q qualified=%q",
 					bareShape, qualShape)
 			}
 
 			// Symmetric AND ordinal-equal, so the OR's first arm decides.
-			if !values.SemanticEqualsUnderAliasMap(bare, qual, values.AliasMap{}) {
+			if !values.SemanticEqualsUnderAliasMap(bare, qual, values.EmptyAliasMap()) {
 				t.Fatal("bare and qualified single-source references are no longer semantically " +
 					"equal: the group-key bind now depends on fieldValueMatchesAggregateGroupKey, " +
 					"which the reachability argument assumes it does not")

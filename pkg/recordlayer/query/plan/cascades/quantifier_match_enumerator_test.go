@@ -10,14 +10,27 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustEnumeratorConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct quantifier-enumerator fixture: " + err.Error())
+	}
+	return value
+}
+
+func enumeratorRowType() values.Type {
+	return values.NewRecordType("QuantifierEnumeratorRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
 func enumeratorTestQuantifier(
 	alias values.CorrelationIdentifier,
 	dependencies ...values.CorrelationIdentifier,
 ) expressions.Quantifier {
-	scan := expressions.NewFullUnorderedScanExpression(
+	scan := mustEnumeratorConstruct(expressions.NewFullUnorderedScanExpression(
 		[]string{"T"},
-		values.UnknownType,
-	)
+		enumeratorRowType(),
+	))
 	inner := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	queryPredicates := make(
 		[]predicates.QueryPredicate,
@@ -27,10 +40,11 @@ func enumeratorTestQuantifier(
 	for _, dependency := range dependencies {
 		queryPredicates = append(
 			queryPredicates,
-			predicates.NewExistentialAlias(dependency),
+			mustEnumeratorConstruct(predicates.NewExistentialAlias(
+				dependency, enumeratorRowType())),
 		)
 	}
-	child := expressions.NewLogicalFilterExpression(queryPredicates, inner)
+	child := mustEnumeratorConstruct(expressions.NewLogicalFilterExpression(queryPredicates, inner))
 	return expressions.NamedForEachQuantifier(alias, expressions.InitialOf(child))
 }
 

@@ -39,7 +39,14 @@ func (c *pkPlanContext) GetPrimaryKeyColumns(recordType string) []string {
 // inserted as a FinalMember of a Reference. Used to simulate what
 // the planner's bottom-up implementation phase would produce.
 func makeFakePlanWrapper(recType string) *plans.RecordQueryScanPlan {
-	return plans.NewRecordQueryScanPlan([]string{recType}, values.UnknownType, false)
+	return makeFakePlanWrapperForType(recType, distinctScanType(recType), false)
+}
+
+func makeFakePlanWrapperForType(
+	recType string, flowedType values.Type, reverse bool,
+) *plans.RecordQueryScanPlan {
+	return mustDistinctConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recType}, flowedType, reverse))
 }
 
 // buildDistinctOverProjection creates:
@@ -66,7 +73,7 @@ var distinctScanLayouts = map[string][]string{
 func distinctScanType(recType string) values.Type {
 	cols, known := distinctScanLayouts[recType]
 	if !known {
-		return values.UnknownType
+		panic("distinctScanType: no exact layout for " + recType)
 	}
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
@@ -102,7 +109,7 @@ func TestDistinctFinal_FloatingPrimaryKeyNeverEliminates(t *testing.T) {
 				}),
 				buildDistinctOverScan(recType),
 			} {
-				results := FireImplementationRuleWithContext(
+				results := mustFireImplementationRuleWithContext(t,
 					NewImplementDistinctFinalRule(), distinctRef, ctx, nil,
 				)
 				if len(results) == 0 {
@@ -126,28 +133,38 @@ func TestDistinctFinal_FloatingPrimaryKeyNeverEliminates(t *testing.T) {
 // ordinal in the scan row's layout — the shape the resolver produces
 // (expr.go:296-297). Case-insensitive, like every resolution path in the engine.
 func distinctRead(recType, col string) values.Value {
-	id, ok := values.OrdinalOfNameIn(distinctScanType(recType), col)
+	layout := distinctScanType(recType)
+	id, ok := values.OrdinalOfNameIn(layout, col)
 	if !ok {
 		panic("distinctRead: " + recType + " declares no column " + col)
 	}
-	return values.NewFieldValueWithResolvedOrdinalInDomain(
-		col, id.Ordinal, values.UnknownType, id.Domain)
+	root := mustDistinctConstruct(values.NewQuantifiedObjectValue(
+		distinctReadAlias(recType), layout))
+	return mustDistinctConstruct(values.ResolveFieldOrdinals(root, []int{id.Ordinal}))
+}
+
+// distinctReadAlias is the binding used by the compact column fixture above.
+// A fresh QOV is still exact and immutable; sharing this semantic alias lets a
+// caller construct its projected values before it wires the scan quantifier.
+func distinctReadAlias(recType string) values.CorrelationIdentifier {
+	return values.NamedCorrelationIdentifier("distinct_read_" + recType)
 }
 
 func buildDistinctOverProjection(
 	recType string,
 	projected []values.Value,
 ) *expressions.Reference {
-	scan := expressions.NewFullUnorderedScanExpression([]string{recType}, distinctScanType(recType))
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recType}, distinctScanType(recType)))
 	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ := expressions.NamedForEachQuantifier(distinctReadAlias(recType), scanRef)
 
-	proj := expressions.NewLogicalProjectionExpression(projected, scanQ)
+	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(projected, scanQ))
 	projRef := expressions.InitialOf(proj)
-	projRef.Insert(makeFakePlanWrapper(recType))
+	projRef.Insert(makeFakePlanWrapperForType(recType, proj.GetResultValue().Type(), false))
 	projQ := expressions.ForEachQuantifier(projRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(projQ)
+	distinct := mustDistinctConstruct(expressions.NewLogicalDistinctExpression(projQ))
 	return expressions.InitialOf(distinct)
 }
 
@@ -158,12 +175,13 @@ func buildDistinctOverProjection(
 // and returns the Distinct Reference with a physical FinalMember
 // in the inner (scan) Reference.
 func buildDistinctOverScan(recType string) *expressions.Reference {
-	scan := expressions.NewFullUnorderedScanExpression([]string{recType}, distinctScanType(recType))
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recType}, distinctScanType(recType)))
 	scanRef := expressions.InitialOf(scan)
 	scanRef.Insert(makeFakePlanWrapper(recType))
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(scanQ)
+	distinct := mustDistinctConstruct(expressions.NewLogicalDistinctExpression(scanQ))
 	return expressions.InitialOf(distinct)
 }
 
@@ -176,7 +194,7 @@ func TestDistinctFinal_PKProjected_Eliminates(t *testing.T) {
 		distinctRead("USERS", "NAME"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire and eliminate DISTINCT when PK is projected")
 	}
@@ -195,7 +213,7 @@ func TestDistinctFinal_NonPKProjected_Wraps(t *testing.T) {
 		distinctRead("USERS", "NAME"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire")
 	}
@@ -217,7 +235,7 @@ func TestDistinctFinal_FullScan_Eliminates(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverScan("USERS")
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire on full scan with PK")
 	}
@@ -233,7 +251,7 @@ func TestDistinctFinal_FullScan_Eliminates(t *testing.T) {
 func TestDistinctFinal_NoPlanContext_Wraps(t *testing.T) {
 	t.Parallel()
 	distinctRef := buildDistinctOverScan("USERS")
-	results := FireImplementationRule(NewImplementDistinctFinalRule(), distinctRef)
+	results := mustFireImplementationRule(t, NewImplementDistinctFinalRule(), distinctRef)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire")
 	}
@@ -258,7 +276,7 @@ func TestDistinctFinal_CompositePK_Eliminates(t *testing.T) {
 		distinctRead("ORDER_ITEMS", "QTY"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should eliminate when all composite PK cols projected")
 	}
@@ -278,7 +296,7 @@ func TestDistinctFinal_CompositePKPartial_Wraps(t *testing.T) {
 		distinctRead("ORDER_ITEMS", "QTY"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"ORDER_ITEMS": {"ORDER_ID", "ITEM_ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire")
 	}
@@ -303,12 +321,12 @@ func TestDistinctFinal_ComputedPKExpr_Wraps(t *testing.T) {
 	// id / 3 — the PK column ID appears only as an ArithmeticValue operand.
 	idOver3 := &values.ArithmeticValue{
 		Op:    values.OpDiv,
-		Left:  &values.FieldValue{Field: "ID", Typ: values.UnknownType},
-		Right: &values.ConstantValue{Value: int64(3), Typ: values.UnknownType},
+		Left:  distinctRead("USERS", "ID"),
+		Right: &values.ConstantValue{Value: int64(3), Typ: values.NotNullLong},
 	}
 	distinctRef := buildDistinctOverProjection("USERS", []values.Value{idOver3})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire")
 	}
@@ -335,9 +353,12 @@ func TestCollectProjectedOrdinals_BuriedFieldNotCredited(t *testing.T) {
 	layout := values.OrdinalDomainOfType(layoutType)
 	bareID := distinctRead("USERS", "ID")
 	buildProj := func(v values.Value) *expressions.LogicalProjectionExpression {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"USERS"}, layoutType)
-		scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-		return expressions.NewLogicalProjectionExpression([]values.Value{v}, scanQ)
+		scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{"USERS"}, layoutType))
+		scanQ := expressions.NamedForEachQuantifier(
+			distinctReadAlias("USERS"), expressions.InitialOf(scan))
+		return mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+			[]values.Value{v}, scanQ))
 	}
 
 	// Bare baked FieldValue → credited at its ordinal.
@@ -353,28 +374,31 @@ func TestCollectProjectedOrdinals_BuriedFieldNotCredited(t *testing.T) {
 	idOver3 := &values.ArithmeticValue{
 		Op:    values.OpDiv,
 		Left:  bareID,
-		Right: &values.ConstantValue{Value: int64(3), Typ: values.UnknownType},
+		Right: &values.ConstantValue{Value: int64(3), Typ: values.NotNullLong},
 	}
 	if ords, ok := collectProjectedOrdinals(buildProj(idOver3), layout); !ok || len(ords) != 0 {
 		t.Fatalf("id/3: expected NO credited ordinals (buried FieldValue), got %v ok=%v", ords, ok)
 	}
 
-	// A LAZY reference states no ordinal in this layout. The set becomes
-	// UNSTATABLE rather than crediting the column its display name spells —
-	// crediting it is how a projection of some other source's same-named column
-	// would be counted as covering this one's key (RFC-197).
-	lazyID := &values.FieldValue{Field: "ID", Typ: values.UnknownType}
-	if ords, ok := collectProjectedOrdinals(buildProj(lazyID), layout); ok {
-		t.Fatalf("a lazy reference named ID was credited as covering the layout's ID column: "+
-			"got %v", ords)
+	// RFC-232 makes the former LAZY-reference fixture unrepresentable: a QOV
+	// with an unresolved root cannot cross the admission boundary, so no public
+	// API can publish the childless/name-only FieldValue this arm used to build.
+	if unresolved, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("lazy_ID"), values.UnknownType,
+	); err == nil || unresolved != nil {
+		t.Fatalf("an unresolved QOV was admitted: value=%v err=%v", unresolved, err)
 	}
 
 	// So is a reference baked against a DIFFERENT layout, even at the same
 	// ordinal under the same name — the DOMAIN is what refuses, and only a case
 	// holding the name AND the ordinal equal can show it.
-	foreign := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"ID", 0, values.UnknownType,
-		values.OrdinalDomainOfColumnNames([]string{"ID", "SOMETHING_ELSE"}))
+	foreignType := values.NewRecordType("Foreign", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "SOMETHING_ELSE", FieldType: values.NullableString},
+	})
+	foreignRoot := mustDistinctConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("foreign_ID"), foreignType))
+	foreign := mustDistinctConstruct(values.ResolveFieldOrdinals(foreignRoot, []int{0}))
 	if ords, ok := collectProjectedOrdinals(buildProj(foreign), layout); ok {
 		t.Fatalf("a reference baked in ANOTHER layout was credited: got %v", ords)
 	}
@@ -388,7 +412,7 @@ func TestDistinctFinal_CaseInsensitive(t *testing.T) {
 		distinctRead("USERS", "id"),
 	})
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire with case-insensitive PK match")
 	}
@@ -404,29 +428,30 @@ func TestDistinctFinal_CaseInsensitive(t *testing.T) {
 func TestDistinctFinal_ThroughFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"USERS"}, distinctScanType("USERS"))
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"USERS"}, distinctScanType("USERS")))
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	filter := expressions.NewLogicalFilterExpression(nil, scanQ)
+	filter := mustDistinctConstruct(expressions.NewLogicalFilterExpression(nil, scanQ))
 	filterRef := expressions.InitialOf(filter)
-	filterQ := expressions.ForEachQuantifier(filterRef)
+	filterQ := expressions.NamedForEachQuantifier(distinctReadAlias("USERS"), filterRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
+	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
 		[]values.Value{
 			distinctRead("USERS", "ID"),
 		},
 		filterQ,
-	)
+	))
 	projRef := expressions.InitialOf(proj)
-	projRef.Insert(makeFakePlanWrapper("USERS"))
+	projRef.Insert(makeFakePlanWrapperForType("USERS", proj.GetResultValue().Type(), false))
 	projQ := expressions.ForEachQuantifier(projRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(projQ)
+	distinct := mustDistinctConstruct(expressions.NewLogicalDistinctExpression(projQ))
 	distinctRef := expressions.InitialOf(distinct)
 
 	ctx := &pkPlanContext{pk: map[string][]string{"USERS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 	if len(results) == 0 {
 		t.Fatal("ImplementDistinctFinalRule should fire through filter")
 	}
@@ -483,7 +508,7 @@ func secondaryUniqueTestCandidates() []MatchCandidate {
 			[]string{column},
 			nil,
 			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-			values.UnknownType,
+			distinctScanType("T"),
 			true,
 			nil,
 			createsDuplicates,
@@ -497,7 +522,7 @@ func secondaryUniqueTestCandidates() []MatchCandidate {
 			[]string{"SCORE"},
 			[]string{FunctionKindCardinality},
 			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-			values.UnknownType,
+			distinctScanType("T"),
 			true,
 			nil,
 			&scalar,
@@ -508,7 +533,7 @@ func secondaryUniqueTestCandidates() []MatchCandidate {
 			[]string{"CITY"},
 			nil,
 			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-			values.UnknownType,
+			distinctScanType("T"),
 			true,
 			nil,
 			&scalar,
@@ -559,7 +584,7 @@ func secondaryUniqueTestCandidates() []MatchCandidate {
 				values.UniqueCorrelationIdentifier(),
 				values.UniqueCorrelationIdentifier(),
 			},
-			values.UnknownType,
+			distinctScanType("T"),
 			true,
 			nil,
 			&scalar,
@@ -573,7 +598,7 @@ func secondaryUniqueTestCandidates() []MatchCandidate {
 			[]string{"SHARED"},
 			nil,
 			[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-			values.UnknownType,
+			distinctScanType("T"),
 			true,
 			nil,
 			&scalar,
@@ -587,7 +612,7 @@ func fireDistinctOverT(
 	t *testing.T, planCtx PlanContext, projected string,
 ) []expressions.RelationalExpression {
 	t.Helper()
-	return FireImplementationRuleWithContext(
+	return mustFireImplementationRuleWithContext(t,
 		NewImplementDistinctFinalRule(),
 		buildDistinctOverProjection("T", []values.Value{
 			distinctRead("T", projected),
@@ -749,23 +774,24 @@ func TestDistinctFinal_MultiTypeVisiblePrimaryKeyDoesNotEliminate(t *testing.T) 
 	layout := values.NewRecordType("AB", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 	})
-	domain := values.OrdinalDomainOfType(layout)
-	id := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"ID", 0, values.NotNullLong, domain,
-	)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"A", "B"}, layout)
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"A", "B"}, layout))
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	projection := expressions.NewLogicalProjectionExpression([]values.Value{id}, scanQ)
+	scanRow := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
+	id := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRow, []int{0}))
+	projection := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{id}, scanQ))
 	projectionRef := expressions.InitialOf(projection)
-	projectionRef.Insert(plans.NewRecordQueryScanPlan([]string{"A", "B"}, layout, false))
-	distinct := expressions.NewLogicalDistinctExpression(
+	projectionRef.Insert(mustDistinctConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"A", "B"}, projection.GetResultValue().Type(), false)))
+	distinct := mustDistinctConstruct(expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(projectionRef),
-	)
+	))
 	ctx := &pkPlanContext{pk: map[string][]string{
 		"A": {"ID"},
 		"B": {"ID"},
 	}}
-	results := FireImplementationRuleWithContext(
+	results := mustFireImplementationRuleWithContext(t,
 		NewImplementDistinctFinalRule(), expressions.InitialOf(distinct), ctx, nil,
 	)
 	for _, result := range results {
@@ -782,36 +808,33 @@ func TestDistinctFinal_MultiTypeVisiblePrimaryKeyDoesNotEliminate(t *testing.T) 
 func TestDistinctFinal_WrapsAllMembers(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"ITEMS"}, values.UnknownType)
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"ITEMS"}, distinctScanType("ITEMS")))
 	scanRef := expressions.InitialOf(scan)
-	// Insert TWO physical members to simulate multiple candidates.
-	scanRef.Insert(makeFakePlanWrapper("ITEMS"))
-	fwd := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, false)
-	rev := plans.NewRecordQueryScanPlan([]string{"ITEMS"}, values.UnknownType, true)
-	scanRef.Insert(fwd)
-	scanRef.Insert(rev)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ := expressions.NamedForEachQuantifier(distinctReadAlias("ITEMS"), scanRef)
 
 	// Project a non-PK column so elimination does NOT fire.
-	proj := expressions.NewLogicalProjectionExpression(
+	proj := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
 		[]values.Value{
 			distinctRead("ITEMS", "NAME"),
 		},
 		scanQ,
-	)
+	))
 	projRef := expressions.InitialOf(proj)
-	// Copy members to projRef so the rule has plans to wrap.
-	for _, m := range scanRef.Members() {
-		projRef.Insert(m)
-	}
+	// Insert TWO physical projection-shaped members to simulate multiple
+	// candidates. A full-row scan is not an implementation of a one-column
+	// projection and RFC-232 now rejects that memo disagreement immediately.
+	projType := proj.GetResultValue().Type()
+	projRef.Insert(makeFakePlanWrapperForType("ITEMS", projType, false))
+	projRef.Insert(makeFakePlanWrapperForType("ITEMS", projType, true))
 	projQ := expressions.ForEachQuantifier(projRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(projQ)
+	distinct := mustDistinctConstruct(expressions.NewLogicalDistinctExpression(projQ))
 	distinctRef := expressions.InitialOf(distinct)
 
 	// PK is "ID" but projection only has "NAME" → no elimination.
 	ctx := &pkPlanContext{pk: map[string][]string{"ITEMS": {"ID"}}}
-	results := FireImplementationRuleWithContext(NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
+	results := mustFireImplementationRuleWithContext(t, NewImplementDistinctFinalRule(), distinctRef, ctx, nil)
 
 	wrapCount := 0
 	for _, r := range results {
@@ -847,21 +870,24 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 	gRec := values.NewRecordType("", false, []values.Field{
 		{Name: "G", FieldType: values.NullableLong, Ordinal: 0},
 	})
-	indexPlan := plans.NewRecordQueryIndexPlan("idx_g", nil, []string{"T"}, gRec, false)
+	indexPlan := mustDistinctConstruct(plans.NewRecordQueryIndexPlan(
+		"idx_g", nil, []string{"T"}, gRec, false))
+	gKey := mustDistinctConstruct(values.ResolveFieldOrdinals(
+		indexPlan.GetResultValue(), []int{0}))
 	sortKeys := []plans.SortKey{{
 		Field:      "G",
 		NullsFirst: true,
-		ValueExpr:  values.NewFieldValueWithResolvedOrdinal("G", 0, values.NullableLong),
+		ValueExpr:  gKey,
 	}}
 	// Since RFC-184 W2 the bare in-memory sort IS its own physical member (no
 	// physicalInMemorySortWrapper), so it doubles as the ordered member here.
-	sortPlan := plans.NewRecordQueryInMemorySortPlan(indexPlan, sortKeys)
+	sortPlan := mustDistinctConstruct(plans.NewRecordQueryInMemorySortPlan(indexPlan, sortKeys))
 	orderedMember := sortPlan
 
 	if !distinctStreamingEligible(orderedMember, sortPlan) {
 		t.Fatal("precondition: the ordered member must be streaming-eligible")
 	}
-	got := newPhysicalDistinctFor(call, orderedMember)
+	got := mustDistinctConstruct(newPhysicalDistinctFor(call, orderedMember))
 	dp, ok := got.(*plans.RecordQueryDistinctPlan)
 	if !ok {
 		t.Fatalf("newPhysicalDistinctFor = %T, want *plans.RecordQueryDistinctPlan", got)
@@ -880,11 +906,12 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 	}
 
 	// PLAIN member: a bare primary scan (no adjacent dedup key) → Streaming=false.
-	plainMember := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	plainMember := mustDistinctConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, distinctScanType("T"), false))
 	if distinctStreamingEligible(plainMember, plainMember) {
 		t.Fatal("precondition: the plain member must NOT be streaming-eligible")
 	}
-	gotPlain := newPhysicalDistinctFor(call, plainMember)
+	gotPlain := mustDistinctConstruct(newPhysicalDistinctFor(call, plainMember))
 	dpPlain, ok := gotPlain.(*plans.RecordQueryDistinctPlan)
 	if !ok {
 		t.Fatalf("newPhysicalDistinctFor = %T, want *plans.RecordQueryDistinctPlan", gotPlain)
@@ -933,17 +960,21 @@ func TestDistinctFinal_PartitionDistinctnessNeedsLogicalEquality(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-				WithPrimaryKey([]values.Value{
-					values.NewFieldValueWithResolvedOrdinal("PK", 0, test.pkType),
-				}).
+			rowType := values.NewRecordType("PartitionDistinctness", false, []values.Field{
+				{Name: "PK", FieldType: test.pkType},
+			})
+			scan := mustDistinctConstruct(plans.NewRecordQueryScanPlan(
+				[]string{"T"}, rowType, false))
+			primaryKey := mustDistinctConstruct(values.ResolveFieldOrdinals(
+				scan.GetResultValue(), []int{0}))
+			scan = scan.WithPrimaryKey([]values.Value{primaryKey}).
 				WithKeyComponentTypes([]values.Type{test.pkType})
 			innerRef := expressions.InitialOf(scan)
 			computeRefPlanProperties(innerRef)
-			distinctExpr := expressions.NewLogicalDistinctExpression(
+			distinctExpr := mustDistinctConstruct(expressions.NewLogicalDistinctExpression(
 				expressions.ForEachQuantifier(innerRef),
-			)
-			results := FireImplementationRule(
+			))
+			results := mustFireImplementationRule(t,
 				NewImplementDistinctFinalRule(), expressions.InitialOf(distinctExpr),
 			)
 			if len(results) == 0 {
@@ -986,18 +1017,19 @@ func TestDistinctFinal_SecondaryUniqueMultiTypeStreamDoesNotEliminate(t *testing
 	layout := values.NewRecordType("AB", false, []values.Field{
 		{Name: "CODE", FieldType: values.NotNullString, Ordinal: 0},
 	})
-	domain := values.OrdinalDomainOfType(layout)
-	code := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"CODE", 0, values.NotNullString, domain,
-	)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"A", "B"}, layout)
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"A", "B"}, layout))
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	projection := expressions.NewLogicalProjectionExpression([]values.Value{code}, scanQ)
+	scanRow := mustDistinctConstruct(scanQ.RequireFlowedObjectValue())
+	code := mustDistinctConstruct(values.ResolveFieldOrdinals(scanRow, []int{0}))
+	projection := mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
+		[]values.Value{code}, scanQ))
 	projectionRef := expressions.InitialOf(projection)
-	projectionRef.Insert(plans.NewRecordQueryScanPlan([]string{"A", "B"}, layout, false))
-	distinct := expressions.NewLogicalDistinctExpression(
+	projectionRef.Insert(mustDistinctConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"A", "B"}, projection.GetResultValue().Type(), false)))
+	distinct := mustDistinctConstruct(expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(projectionRef),
-	)
+	))
 
 	scalar := false
 	ctx := &indexTestPlanContext{
@@ -1009,7 +1041,7 @@ func TestDistinctFinal_SecondaryUniqueMultiTypeStreamDoesNotEliminate(t *testing
 				[]string{"CODE"},
 				nil,
 				[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-				values.UnknownType,
+				layout,
 				true,
 				nil,
 				&scalar,
@@ -1017,7 +1049,7 @@ func TestDistinctFinal_SecondaryUniqueMultiTypeStreamDoesNotEliminate(t *testing
 		},
 	}
 
-	results := FireImplementationRuleWithContext(
+	results := mustFireImplementationRuleWithContext(t,
 		NewImplementDistinctFinalRule(), expressions.InitialOf(distinct), ctx, nil,
 	)
 	if len(results) == 0 {
@@ -1099,9 +1131,11 @@ func TestDistinctFinal_BothLicensesHoldYieldsUnstampedPlan(t *testing.T) {
 // the admission predicate can be asked directly.
 func soleUniqueProjectionFor(t *testing.T, column string) expressions.RelationalExpression {
 	t.Helper()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, distinctScanType("T"))
-	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	return expressions.NewLogicalProjectionExpression(
+	scan := mustDistinctConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, distinctScanType("T")))
+	scanQ := expressions.NamedForEachQuantifier(
+		distinctReadAlias("T"), expressions.InitialOf(scan))
+	return mustDistinctConstruct(expressions.NewLogicalProjectionExpression(
 		[]values.Value{distinctRead("T", column)}, scanQ,
-	)
+	))
 }

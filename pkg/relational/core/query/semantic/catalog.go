@@ -109,6 +109,18 @@ type Column struct {
 	// Recursive by construction — a nested struct field carries its own
 	// StructFields — because a path may descend more than one level.
 	StructFields []Column
+
+	// StructTypeName is the exact declared identity of a STRUCT column's
+	// record type. Type remains the SQL kind "RECORD" so existing semantic
+	// kind checks stay stable; this companion carries the descriptor full name
+	// needed when the resolver mints an executable values.RecordType. Without
+	// it, every distinct STRUCT became a record literally named "RECORD", so a
+	// resolved nested FieldValue and the scan edge for the same proto field had
+	// different exact types.
+	//
+	// Empty for non-STRUCT columns and for synthetic catalog fixtures that do
+	// not declare a nominal record identity.
+	StructTypeName string
 }
 
 // LookupStructField scans a STRUCT column's declared fields for one named by

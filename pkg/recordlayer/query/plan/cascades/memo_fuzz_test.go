@@ -28,13 +28,16 @@ func FuzzMemo_MemoizeInvariant(f *testing.F) {
 		recType := recTypes[int(recTypeSeed)%len(recTypes)]
 
 		m := NewMemo(nil)
+		rowType := values.NewRecordType(recType+"Row", false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		})
 
 		// Build the leaf.
-		scan := expressions.NewFullUnorderedScanExpression([]string{recType}, nil)
+		scan := mustFullUnorderedScan(t, []string{recType}, rowType)
 		scanRef := m.MemoizeExpression(scan)
 
 		// Verify leaf idempotency.
-		scan2 := expressions.NewFullUnorderedScanExpression([]string{recType}, nil)
+		scan2 := mustFullUnorderedScan(t, []string{recType}, rowType)
 		scanRef2 := m.MemoizeExpression(scan2)
 		if scanRef != scanRef2 {
 			t.Fatal("leaf memoization violated: same record type → different References")
@@ -42,7 +45,10 @@ func FuzzMemo_MemoizeInvariant(f *testing.F) {
 
 		// Different record type → different Reference.
 		otherType := recTypes[(int(recTypeSeed)+1)%len(recTypes)]
-		scanOther := expressions.NewFullUnorderedScanExpression([]string{otherType}, nil)
+		otherRowType := values.NewRecordType(otherType+"Row", false, []values.Field{
+			{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		})
+		scanOther := mustFullUnorderedScan(t, []string{otherType}, otherRowType)
 		scanRefOther := m.MemoizeExpression(scanOther)
 		if recType != otherType && scanRef == scanRefOther {
 			t.Fatal("distinct leaves got same Reference")
@@ -51,15 +57,22 @@ func FuzzMemo_MemoizeInvariant(f *testing.F) {
 		// Build a depth-1 operator over the leaf.
 		var depth1Ref *expressions.Reference
 		if useSort {
+			sortValue, sortValueErr := values.NewQuantifiedObjectValue(
+				values.UniqueCorrelationIdentifier(),
+				values.NotNullLong,
+			)
+			sortValue = mustConstruct(t, sortValue, sortValueErr)
 			keys := []expressions.SortKey{{
-				Value:   values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+				Value:   sortValue,
 				Reverse: false,
 			}}
-			sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(scanRef))
+			sort, sortErr := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(scanRef))
+			sort = mustConstruct(t, sort, sortErr)
 			depth1Ref = m.MemoizeExpression(sort)
 
 			// Rebuild same sort → same Reference.
-			sort2 := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(scanRef))
+			sort2, sort2Err := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(scanRef))
+			sort2 = mustConstruct(t, sort2, sort2Err)
 			depth1Ref2 := m.MemoizeExpression(sort2)
 			if depth1Ref != depth1Ref2 {
 				t.Fatal("non-leaf memoization violated: same sort → different References")
@@ -68,11 +81,13 @@ func FuzzMemo_MemoizeInvariant(f *testing.F) {
 			predVals := []predicates.TriBool{predicates.TriTrue, predicates.TriFalse, predicates.TriUnknown, predicates.TriTrue}
 			predVal := predVals[int(predSeed)%len(predVals)]
 			pred := []predicates.QueryPredicate{predicates.NewConstantPredicate(predVal)}
-			filter := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+			filter, filterErr := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+			filter = mustConstruct(t, filter, filterErr)
 			depth1Ref = m.MemoizeExpression(filter)
 
 			// Rebuild same filter → same Reference.
-			filter2 := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+			filter2, filter2Err := expressions.NewLogicalFilterExpression(pred, expressions.ForEachQuantifier(scanRef))
+			filter2 = mustConstruct(t, filter2, filter2Err)
 			depth1Ref2 := m.MemoizeExpression(filter2)
 			if depth1Ref != depth1Ref2 {
 				t.Fatal("non-leaf memoization violated: same filter → different References")
@@ -82,10 +97,12 @@ func FuzzMemo_MemoizeInvariant(f *testing.F) {
 		// Optionally build depth-2 (Distinct over the depth-1 node).
 		depth := int(depthSeed) % 4
 		if depth >= 2 && depth1Ref != nil {
-			dist := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(depth1Ref))
+			dist, distErr := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(depth1Ref))
+			dist = mustConstruct(t, dist, distErr)
 			distRef := m.MemoizeExpression(dist)
 
-			dist2 := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(depth1Ref))
+			dist2, dist2Err := expressions.NewLogicalDistinctExpression(expressions.ForEachQuantifier(depth1Ref))
+			dist2 = mustConstruct(t, dist2, dist2Err)
 			distRef2 := m.MemoizeExpression(dist2)
 			if distRef != distRef2 {
 				t.Fatal("depth-2 memoization violated")

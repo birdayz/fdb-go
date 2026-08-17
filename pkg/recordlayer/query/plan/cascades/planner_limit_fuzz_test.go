@@ -8,6 +8,43 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func plannerLimitFuzzRowType() values.Type {
+	return values.NewRecordType("PlannerLimitFuzzRow", false, []values.Field{
+		{Name: "x", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "c", FieldType: values.NullableLong, Ordinal: 1},
+	})
+}
+
+func mustPlannerLimitFuzzConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner limit fuzz fixture: " + err.Error())
+	}
+	return value
+}
+
+func plannerLimitFuzzRoot(t testing.TB, q expressions.Quantifier) values.QuantifiedObjectValue {
+	t.Helper()
+	flowedType := mustPlannerLimitFuzzConstruct(q.GetFlowedObjectType())
+	return mustPlannerLimitFuzzConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func plannerLimitFuzzField(t testing.TB, q expressions.Quantifier, ordinal int) values.Value {
+	t.Helper()
+	return mustPlannerLimitFuzzConstruct(values.ResolveFieldOrdinals(
+		plannerLimitFuzzRoot(t, q), []int{ordinal}))
+}
+
+func plannerLimitFuzzProjectionValues(
+	t testing.TB, q expressions.Quantifier, count, ordinal int,
+) []values.Value {
+	t.Helper()
+	projected := make([]values.Value, count)
+	for i := range projected {
+		projected[i] = plannerLimitFuzzField(t, q, ordinal)
+	}
+	return projected
+}
+
 // FuzzPlanner_Limit_NoPanic exercises random LIMIT topologies to ensure
 // the planner never panics. Tests LIMIT merge, no-op elimination, zero
 // limit, push-through-projection, and physical implementation.
@@ -20,39 +57,39 @@ func FuzzPlanner_Limit_NoPanic(f *testing.F) {
 	f.Add(int64(-1), int64(20), int64(-1), int64(5), true, false)
 
 	f.Fuzz(func(t *testing.T, outerLimit, outerOffset, innerLimit, innerOffset int64, addProjection, nestLimits bool) {
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustFullUnorderedScan(t, []string{"T"}, plannerLimitFuzzRowType())
 		scanRef := expressions.InitialOf(scan)
 		scanQ := expressions.ForEachQuantifier(scanRef)
 
 		var topExpr expressions.RelationalExpression
 
 		if nestLimits {
-			inner := expressions.NewLogicalLimitExpression(innerLimit, innerOffset, scanQ)
+			inner := mustPlannerLimitFuzzConstruct(expressions.NewLogicalLimitExpression(innerLimit, innerOffset, scanQ))
 			innerRef := expressions.InitialOf(inner)
 			innerQ := expressions.ForEachQuantifier(innerRef)
 
 			if addProjection {
-				proj := expressions.NewLogicalProjectionExpression(
-					[]values.Value{&values.FieldValue{Field: "x", Typ: values.UnknownType}},
+				proj := mustPlannerLimitFuzzConstruct(expressions.NewLogicalProjectionExpression(
+					[]values.Value{plannerLimitFuzzField(t, innerQ, 0)},
 					innerQ,
-				)
+				))
 				projRef := expressions.InitialOf(proj)
 				projQ := expressions.ForEachQuantifier(projRef)
-				topExpr = expressions.NewLogicalLimitExpression(outerLimit, outerOffset, projQ)
+				topExpr = mustPlannerLimitFuzzConstruct(expressions.NewLogicalLimitExpression(outerLimit, outerOffset, projQ))
 			} else {
-				topExpr = expressions.NewLogicalLimitExpression(outerLimit, outerOffset, innerQ)
+				topExpr = mustPlannerLimitFuzzConstruct(expressions.NewLogicalLimitExpression(outerLimit, outerOffset, innerQ))
 			}
 		} else {
 			if addProjection {
-				proj := expressions.NewLogicalProjectionExpression(
-					[]values.Value{&values.FieldValue{Field: "x", Typ: values.UnknownType}},
+				proj := mustPlannerLimitFuzzConstruct(expressions.NewLogicalProjectionExpression(
+					[]values.Value{plannerLimitFuzzField(t, scanQ, 0)},
 					scanQ,
-				)
+				))
 				projRef := expressions.InitialOf(proj)
 				projQ := expressions.ForEachQuantifier(projRef)
-				topExpr = expressions.NewLogicalLimitExpression(outerLimit, outerOffset, projQ)
+				topExpr = mustPlannerLimitFuzzConstruct(expressions.NewLogicalLimitExpression(outerLimit, outerOffset, projQ))
 			} else {
-				topExpr = expressions.NewLogicalLimitExpression(outerLimit, outerOffset, scanQ)
+				topExpr = mustPlannerLimitFuzzConstruct(expressions.NewLogicalLimitExpression(outerLimit, outerOffset, scanQ))
 			}
 		}
 
@@ -80,47 +117,42 @@ func FuzzPlanner_ProjectionPipeline_NoPanic(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, numCols uint8, addFilter, addSort, addLimit bool, limitVal int64) {
 		cols := int(numCols%5) + 1
-		scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		scan := mustFullUnorderedScan(t, []string{"T"}, plannerLimitFuzzRowType())
 		scanRef := expressions.InitialOf(scan)
 		scanQ := expressions.ForEachQuantifier(scanRef)
 
 		var current expressions.RelationalExpression
+		currentFirstOrdinal := 0
 
 		if addFilter {
-			current = expressions.NewLogicalFilterExpression(
+			current = mustPlannerLimitFuzzConstruct(expressions.NewLogicalFilterExpression(
 				[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 				scanQ,
-			)
+			))
 		} else {
-			projVals := make([]values.Value, cols)
-			for i := range projVals {
-				projVals[i] = &values.FieldValue{Field: "c", Typ: values.UnknownType}
-			}
-			current = expressions.NewLogicalProjectionExpression(projVals, scanQ)
+			current = mustPlannerLimitFuzzConstruct(expressions.NewLogicalProjectionExpression(
+				plannerLimitFuzzProjectionValues(t, scanQ, cols, 1), scanQ))
 		}
 
 		ref := expressions.InitialOf(current)
 		q := expressions.ForEachQuantifier(ref)
 
 		if addSort {
-			sortExpr := expressions.NewLogicalSortExpression(
-				[]expressions.SortKey{{Value: &values.FieldValue{Field: "c", Typ: values.UnknownType}, Reverse: false}},
+			sortExpr := mustPlannerLimitFuzzConstruct(expressions.NewLogicalSortExpression(
+				[]expressions.SortKey{{Value: plannerLimitFuzzField(t, q, currentFirstOrdinal), Reverse: false}},
 				q,
-			)
+			))
 			ref = expressions.InitialOf(sortExpr)
 			q = expressions.ForEachQuantifier(ref)
 		}
 
 		if addLimit && limitVal >= 0 {
-			limExpr := expressions.NewLogicalLimitExpression(limitVal, 0, q)
+			limExpr := mustPlannerLimitFuzzConstruct(expressions.NewLogicalLimitExpression(limitVal, 0, q))
 			ref = expressions.InitialOf(limExpr)
 		} else {
 			// Need a top-level ref
-			projVals := make([]values.Value, cols)
-			for i := range projVals {
-				projVals[i] = &values.FieldValue{Field: "c", Typ: values.UnknownType}
-			}
-			topProj := expressions.NewLogicalProjectionExpression(projVals, q)
+			topProj := mustPlannerLimitFuzzConstruct(expressions.NewLogicalProjectionExpression(
+				plannerLimitFuzzProjectionValues(t, q, cols, currentFirstOrdinal), q))
 			ref = expressions.InitialOf(topProj)
 		}
 
@@ -147,14 +179,14 @@ func FuzzPlanner_LimitOverUnion_NoPanic(f *testing.F) {
 		numBranches := int(branches%4) + 2
 		qs := make([]expressions.Quantifier, numBranches)
 		for i := range qs {
-			scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+			scan := mustFullUnorderedScan(t, []string{"T"}, plannerLimitFuzzRowType())
 			qs[i] = expressions.ForEachQuantifier(expressions.InitialOf(scan))
 		}
-		union := expressions.NewLogicalUnionExpression(qs)
+		union := mustPlannerLimitFuzzConstruct(expressions.NewLogicalUnionExpression(qs))
 		unionRef := expressions.InitialOf(union)
 		unionQ := expressions.ForEachQuantifier(unionRef)
 
-		lim := expressions.NewLogicalLimitExpression(limit, offset, unionQ)
+		lim := mustPlannerLimitFuzzConstruct(expressions.NewLogicalLimitExpression(limit, offset, unionQ))
 		ref := expressions.InitialOf(lim)
 
 		rules := DefaultExpressionRules()

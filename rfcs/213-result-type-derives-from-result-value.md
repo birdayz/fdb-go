@@ -1,8 +1,45 @@
 # RFC-213 — A plan's result TYPE derives from its result VALUE
 
-**Status:** DRAFT rev 2 — awaiting Graefe + Torvalds (rev 1 NAK'd; §1 was wrong)
+**Status:** IMPLEMENTED by RFC-232 (2026-08-13; rev 1 was NAK'd and rev 2's diagnosis was corrected)
 **Item:** CQ-97
-**Scope:** `pkg/recordlayer/query/plan/plans` (interface + 12 plans), read-only impact on 48 consumer sites
+**Scope:** `pkg/recordlayer/query/plan/plans` result contracts and their consumers
+
+---
+
+## Current state after RFC-232
+
+RFC-232 completed this RFC with a stronger exact-value contract than the draft
+sequence anticipated:
+
+- `expressions.RelationalExpression` requires `GetResultValue()`, and
+  `plans.RecordQueryPlan` embeds that interface while retaining
+  `GetResultType()`.
+- The unconditional plan-level `UnknownType` stub inventory is **zero**.
+- Aggregate-index construction passes an exact candidate-derived result type;
+  the former call-site `UnknownType` stub inventory is **zero**.
+- The result-type consumer classifier measures **FORWARD 1 / GUARDED 14 /
+  PROPAGATED 29 / RAW 0**. `RAW == 0` remains the correctness ratchet. The
+  post-implementation growth is executor exact-layout admission (projection,
+  UPDATE, aggregate index, multi-intersection, and DefaultOnEmpty) plus VALUES
+  passing its declared type to the runtime validator. The descendant producer
+  walkers no longer consult declared result types: exact carrier-handle
+  identity plus `OrdinalLayout.RawEqual` is the stronger physical authority for
+  crossing a row- and layout-preserving unary wrapper. The PK point-probe cost
+  proof likewise now takes both its row type and pointer-exact current owner
+  from `scan.ProvidedOutputLayout().Carrier()`: the retired declared result-type
+  read could not identify the selected evaluation phase after exact filter
+  normalization and made every PK point probe over-decline. One further read lets
+  `firstOrDefaultResultFromValue` materialize an empty arm in the plan's exact
+  record/layout carrier, or carry the declared scalar type into its positional
+  row. None of this growth is a new unresolved producer.
+- `TestResultTypeStubInventoryIsCurrent`,
+  `TestRecordQueryPlanRequiresGetResultValue`,
+  `TestResultTypeConsumersFailClosed`, and
+  `TestResultTypeStubsCreatedAtCallSites` pin those facts.
+
+Sections 0–6 below preserve the pre-implementation diagnosis and Java
+comparison. Their plan counts and consumer populations are historical baseline
+measurements, not descriptions of the current tree.
 
 ---
 
@@ -324,25 +361,46 @@ be indistinguishable from success.
 
 ## 7. Acceptance
 
-- `TestResultTypeStubInventoryIsCurrent` shrinks by exactly the tier being closed, as a
-  deliberate edit. It fails in **both** directions today — a new stub is unnamed growth, a
-  removed stub is unattributed shrinkage (the inventory is keyed by type name, so a rename
-  and a fix are indistinguishable without a human saying which).
+- `TestResultTypeStubInventoryIsCurrent` is a zero ratchet: any unconditional
+  plan-level `UnknownType` producer fails.
 - `TestResultTypeConsumersFailClosed` keeps `RAW == 0`. If it ever fires, **RFC-213's framing
   is wrong and the named site is a live defect to fix ahead of this RFC.**
-- `TestResultTypeStubsCreatedAtCallSites` keeps the call-site stub population named.
-- `TestRecordQueryPlanStillDoesNotRequireGetResultValue` **goes red on purpose** when phase 1
-  lands, handing the context to whoever landed it.
-- The unresolved census moves: `distinctKeyColumns`' 31 declines are the number to watch, and
-  a DISTINCT golden/plandiff comparison is the acceptance evidence — not a stress run.
-- At least one of §3b's two workarounds is retired, or its comment restated as a deliberate
-  choice rather than a description of a missing capability.
+- `TestResultTypeStubsCreatedAtCallSites` keeps the aggregate call-site stub
+  population at zero.
+- `TestRecordQueryPlanRequiresGetResultValue` pins the completed interface
+  inversion instead of waiting for it to happen.
+- Exact result-value/result-type tests in the plan and Cascades packages cover
+  the formerly stubbed plan shapes.
 
 ## 8. Measured vs. inferred
 
-**Measured:** Java's chain in both directions (§1, file:line); the 12-plan inventory and the
-13th at its call site; the 20/7/21/0 consumer split; the 135 unresolved reads and their
-distribution; the fingerprint's zero-entropy field.
+**Measured on the historical baseline:** Java's chain in both directions (§1,
+file:line); the 12-plan inventory and the 13th at its call site; the
+20/7/21/0 consumer split; the 135 unresolved reads and their distribution; the
+fingerprint's zero-entropy field.
+
+**Measured after RFC-232:** zero unconditional plan stubs, zero aggregate
+call-site stubs, the required result-value interface, and the 1/14/31/0
+consumer split. Producer-lineage recovery subsequently added the intentional
+outer/inner equality pair described in the current-state ledger, yielding
+1/14/33/0. Exact FirstOrDefault empty-arm materialization then added the
+intentional declared-type read described there, yielding 1/14/34/0.
+Correlated FlatMap construction then retired two `GetResultType()` fallbacks:
+the selected-inner fallback and the planner-local exact predicate-edge helper.
+Selected outer/inner edge types now come solely from
+`ProvidedOutputLayout().Carrier().FlowedType()` and fail closed when that
+physical layout is unavailable, yielding 1/14/32/0.
+The two descendant producer walkers then retired all four of their outer/inner
+`GetResultType()` reads. Two belonged to that pinned population and two had
+arrived transiently with `descendantRetainedResultProducer`; carrier pointer
+identity plus `OrdinalLayout.RawEqual` already proves the exact physical row
+and layout, so the declared-type comparisons were redundant. The stable census
+was therefore 1/14/30/0. `predicatesFilterIsFullPKPointProbe` then retired one
+more declared result-type read: `scan.ProvidedOutputLayout().Carrier()` is the
+single authority for both the exact scan row and the pointer-exact current
+owner. `GetResultType()` could not identify that selected evaluation phase and
+caused every PK point probe to over-decline after exact filter normalization.
+The stable census is therefore 1/14/29/0.
 
 **Inferred, and flagged:** that relocating the sentinel to value level will keep new stubs
 from accumulating. That is a claim about *future* human behaviour, and no instrument can

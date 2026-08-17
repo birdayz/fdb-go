@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -55,9 +56,21 @@ func (p *counterHashPlan) HashCodeWithoutChildren() uint64 {
 	return *p.n
 }
 
+func mutationScan(t testing.TB) *plans.RecordQueryScanPlan {
+	t.Helper()
+	rowType := values.NewRecordType("memo_invariant_mutation", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	scan, err := plans.NewRecordQueryScanPlan([]string{"MUTATION"}, rowType, false)
+	if err != nil {
+		t.Fatalf("construct mutation scan: %v", err)
+	}
+	return scan
+}
+
 func TestMutation_ArityCheckFires(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan(nil, nil, false)
+	scan := mutationScan(t)
 
 	// Clean: one child, one quantifier — no violation.
 	good := &arityPlan{
@@ -87,7 +100,7 @@ func TestMutation_ArityCheckFires(t *testing.T) {
 
 func TestMutation_IdentityHashCheckFires(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan(nil, nil, false)
+	scan := mutationScan(t)
 
 	a := &brokenHashPlan{RecordQueryPlan: scan, eqID: 1, hash: 100}
 	b := &brokenHashPlan{RecordQueryPlan: scan, eqID: 1, hash: 200}
@@ -117,7 +130,7 @@ func TestMutation_IdentityHashCheckFires(t *testing.T) {
 
 func TestMutation_HashDeterminismCheckFires(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan(nil, nil, false)
+	scan := mutationScan(t)
 
 	var ctr uint64
 	nd := &counterHashPlan{RecordQueryPlan: scan, n: &ctr}

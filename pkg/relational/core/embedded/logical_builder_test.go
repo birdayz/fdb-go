@@ -84,8 +84,29 @@ func TestDeriveProjectionColumnDefDoesNotDequalifyExpressionLabel(t *testing.T) 
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			v := values.NewFieldValueWithResolvedOrdinal(tc.field, 0, values.NullableLong)
-			got := deriveProjectionColumnDef(v, tc.alias, tc.minted, 0, nil)
+			// State the exact owner/path the qualified rendering came from. The
+			// pre-RFC-232 fixture put `E.SALARY` inside QOV(SOURCE), making the
+			// display-label census report a synthetic identity divergence even
+			// though the production value is QOV(E).SALARY.
+			owner, fieldName := "SOURCE", tc.field
+			ref := parseColRef(tc.field)
+			if ref.isQualified() && isPlainQualifiedColumnReference(tc.field) {
+				owner, fieldName = leadingSegment(tc.field), ref.bare()
+			}
+			typ := &values.RecordType{Fields: []values.Field{{Name: fieldName, Ordinal: 0, FieldType: values.NullableLong}}}
+			qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(owner), typ)
+			if err != nil {
+				t.Fatalf("projection QOV: %v", err)
+			}
+			v, err := values.ResolveFieldOrdinals(qov, []int{0})
+			if err != nil {
+				t.Fatalf("projection field: %v", err)
+			}
+			aliasSource := values.ProjectionAliasSource{}
+			if tc.minted {
+				aliasSource = values.NewProjectionAliasSource(values.NamedCorrelationIdentifier(owner))
+			}
+			got := deriveProjectionColumnDef(v, tc.alias, tc.minted, aliasSource, 0, nil)
 			if got.Label != tc.wantLabel {
 				t.Fatalf("label = %q, want %q", got.Label, tc.wantLabel)
 			}
@@ -98,29 +119,102 @@ func TestDeriveProjectionColumnDefDoesNotDequalifyExpressionLabel(t *testing.T) 
 	}
 }
 
+func TestMintQualifiedDatumKeyCapturesStructuredLeadingSource(t *testing.T) {
+	t.Parallel()
+
+	project := logical.NewProject(nil, []string{"A.N.SK"}, []string{""})
+	mintQualifiedDatumKey(project, 0, projCol{
+		name:      "A.N.SK",
+		bare:      "SK",
+		qualifier: "A.N",
+		qualified: true,
+		segs:      []string{"A", "N", "SK"},
+	})
+	if got := project.Aliases; len(got) != 1 || got[0] != "A.N.SK" {
+		t.Fatalf("minted aliases = %v, want [A.N.SK]", got)
+	}
+	if got := project.AliasMinted; len(got) != 1 || !got[0] {
+		t.Fatalf("minted provenance = %v, want [true]", got)
+	}
+	if got := project.AliasSources; len(got) != 1 || !got[0].Present ||
+		got[0].Source != values.NamedCorrelationIdentifier("A") {
+		t.Fatalf("structured source = %+v, want authored leading source A", got)
+	}
+
+	// Without captured segments the helper may still mint the datum key, but it
+	// must not manufacture a source by splitting the rendered alias.
+	uncaptured := logical.NewProject(nil, []string{"Z.ID"}, []string{""})
+	mintQualifiedDatumKey(uncaptured, 0, projCol{name: "Z.ID", bare: "ID", qualifier: "Z", qualified: true})
+	if got := uncaptured.AliasSources; len(got) != 1 || got[0].Present {
+		t.Fatalf("uncaptured segments manufactured an alias source: %+v", got)
+	}
+
+	// A user alias is authoritative and prevents both machinery markers.
+	user := logical.NewProject(nil, []string{"A.ID"}, []string{"USER.ID"})
+	mintQualifiedDatumKey(user, 0, projCol{
+		name: "A.ID", bare: "ID", qualifier: "A", qualified: true, segs: []string{"A", "ID"},
+	})
+	if user.AliasMinted[0] || user.AliasSources[0].Present || user.Aliases[0] != "USER.ID" {
+		t.Fatalf("user alias was overwritten by machinery provenance: aliases=%v minted=%v sources=%+v",
+			user.Aliases, user.AliasMinted, user.AliasSources)
+	}
+}
+
+func TestAlignInsertSelectColumnsClearsStructuredMachinerySource(t *testing.T) {
+	t.Parallel()
+
+	project := logical.NewProject(nil, []string{"A.ID"}, []string{"A.ID"})
+	project.AliasMinted = []bool{true}
+	project.AliasSources = []values.ProjectionAliasSource{
+		values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
+	}
+	insert := logical.NewInsert("DST", []string{"TARGET_ID"}, project)
+	alignInsertSelectColumns(insert, nil)
+	if got := project.Aliases; len(got) != 1 || got[0] != "TARGET_ID" {
+		t.Fatalf("aligned alias = %v, want [TARGET_ID]", got)
+	}
+	if project.AliasMinted[0] || project.AliasSources[0].Present {
+		t.Fatalf("user target overwrite retained machinery provenance: minted=%v sources=%+v",
+			project.AliasMinted, project.AliasSources)
+	}
+}
+
 func TestBindPostAggregateValueRejectsInRangeSourceOrdinal(t *testing.T) {
 	t.Parallel()
+	sourceType := &values.RecordType{Fields: []values.Field{
+		{Name: "A", Ordinal: 0, FieldType: values.NullableLong},
+		{Name: "B", Ordinal: 1, FieldType: values.NullableLong},
+		{Name: "V", Ordinal: 2, FieldType: values.NullableLong},
+	}}
+	source, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T"), sourceType)
+	if err != nil {
+		t.Fatalf("source QOV: %v", err)
+	}
+	field := func(ordinal int) values.Value {
+		v, resolveErr := values.ResolveFieldOrdinals(source, []int{ordinal})
+		if resolveErr != nil {
+			t.Fatalf("resolve source field %d: %v", ordinal, resolveErr)
+		}
+		return v
+	}
 	agg := logical.NewAggregate(
 		logical.NewScan("T", ""),
 		[]logical.GroupKey{{
 			Display: "A",
 			Bare:    "A",
-			Value:   values.NewFieldValueWithResolvedOrdinal("A", 0, values.NullableLong),
+			Value:   field(0),
 		}},
 		[]logical.AggregateCall{{Func: "SUM", Operand: "V", BareColumn: true}},
 		[]string{""},
 		false,
 	)
 	agg.AggregateOperands = []values.Value{
-		values.NewFieldValueWithResolvedOrdinal("V", 2, values.NullableLong),
+		field(2),
 	}
 
 	// Source B's ordinal 1 happens to equal the aggregate call's native
 	// ordinal [key=0, call=1]. It is still not producer-native identity.
-	_, err := bindPostAggregateValueToNativeOrdinals(
-		values.NewFieldValueWithResolvedOrdinal("B", 1, values.NullableLong),
-		agg,
-	)
+	err = validatePostAggregateValueDraft(field(1), agg)
 	var apiErr *api.Error
 	if !errors.As(err, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedQuery {
 		t.Fatalf("in-range unmatched source ordinal must fail typed-loud, got %v", err)

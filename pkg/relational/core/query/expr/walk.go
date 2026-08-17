@@ -937,6 +937,20 @@ func (pv *predicateValue) Evaluate(evalCtx any) (any, error) {
 // Args walk through the standard WalkExpression dispatch so nested
 // expressions (`UPPER(name)`, `LENGTH(CAST(x AS STRING))`) compose
 // without further plumbing.
+// unsupportedScalarFunctionRejection returns Java's encapsulation-time
+// rejection for a named scalar call the Cascades planner has no catalogue entry
+// for, or nil when the name is either supported or unknown to the catalogue
+// altogether (an unknown name is a different diagnosis and keeps its own).
+func unsupportedScalarFunctionRejection(name string) error {
+	if values.IsCascadesSafeScalarFunction(name) {
+		return nil
+	}
+	if _, known := values.ScalarFunctionResultType(name, nil); !known {
+		return nil
+	}
+	return api.NewErrorf(api.ErrCodeUnsupportedQuery, "Unsupported operator %s", name)
+}
+
 func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (values.Value, error) {
 	if s == nil {
 		return nil, fmt.Errorf("expr.walkScalarFunction: nil")
@@ -961,6 +975,18 @@ func (r *Resolver) walkScalarFunction(s *antlrgen.ScalarFunctionCallContext) (va
 			}
 			v, err := r.WalkExpression(argCtx.Expression())
 			if err != nil {
+				// The function is the better explanation when this walker
+				// cannot shape an argument AND the planner has no catalogue
+				// entry for the call anyway. Java resolves the NAME first and
+				// answers "Unsupported operator IF" without ever typing the
+				// arguments; reporting the argument shape instead loses the
+				// name entirely, because the call then resolves to nothing and
+				// the only thing left downstream is a projection slot with no
+				// value. Reached by `IF(price > 50, …)`, whose first argument
+				// is a bare comparison in scalar position.
+				if unsupportedScalarFunctionRejection(name) != nil {
+					return nil, unsupportedScalarFunctionRejection(name)
+				}
 				return nil, err
 			}
 			// A named scalar call is a function call like any other, so its
@@ -2340,11 +2366,15 @@ func (r *Resolver) walkExistsPredicate(ctx *antlrgen.ExistsExpressionAtomContext
 	if q == nil {
 		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS without inner Query"}
 	}
-	alias, err := r.subqueryPlanner.BuildExists(q)
+	alias, flowed, err := r.subqueryPlanner.BuildExists(q)
 	if err != nil {
 		return nil, err
 	}
-	return predicates.ExistsValueToQueryPredicate(values.NewExistsValue(alias)), nil
+	exists, err := values.NewExistsValue(alias, flowed)
+	if err != nil {
+		return nil, err
+	}
+	return predicates.ExistsValueToQueryPredicate(exists), nil
 }
 
 // walkExistsValue handles `EXISTS (SELECT ...)` in a SELECT-element /
@@ -2364,11 +2394,11 @@ func (r *Resolver) walkExistsValue(ctx *antlrgen.ExistsExpressionAtomContext) (v
 	if q == nil {
 		return nil, &UnsupportedExpressionShapeError{Shape: "EXISTS without inner Query"}
 	}
-	alias, err := r.subqueryPlanner.BuildExists(q)
+	alias, flowed, err := r.subqueryPlanner.BuildExists(q)
 	if err != nil {
 		return nil, err
 	}
-	return values.NewExistsValue(alias), nil
+	return values.NewExistsValue(alias, flowed)
 }
 
 // existsAtomOf returns the ExistsExpressionAtomContext if ctx is (or wraps) an

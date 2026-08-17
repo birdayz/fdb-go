@@ -23,20 +23,20 @@ import (
 // the given comparisons as its search arguments.
 func makeCriterion7Primary(t *testing.T, ranges ...*predicates.ComparisonRange) plans.RecordQueryPlan {
 	t.Helper()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	scan := mustSargConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, sargRowType(), false)).
 		WithScanComparisons(ranges)
-	return plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan)
+	return mustSargConstruct(plans.NewRecordQueryTypeFilterPlan([]string{"T"}, scan))
 }
 
 // makeCriterion7Index builds a singular index scan with a fetch and no type
 // filter, with the given comparisons as its search arguments.
 func makeCriterion7Index(t *testing.T, name string, fetches int, ranges ...*predicates.ComparisonRange) plans.RecordQueryPlan {
 	t.Helper()
-	var cur plans.RecordQueryPlan = plans.NewRecordQueryIndexPlan(
-		name, ranges, []string{"T"}, values.UnknownType, false)
+	var cur plans.RecordQueryPlan = sargIndex(name, ranges)
 	for i := 0; i < fetches; i++ {
-		cur = plans.NewRecordQueryFetchFromPartialRecordPlan(
-			cur, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+		cur = mustSargConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+			cur, nil, sargRowType(), plans.FetchIndexRecordsPrimaryKey))
 	}
 	return cur
 }
@@ -69,8 +69,8 @@ func assertNoStrictCycle(t *testing.T, names []string, ring []expressions.Relati
 func TestCriterion7_AbstentionCycleIsGone(t *testing.T) {
 	t.Parallel()
 
-	bind := rungEqualityRange(t, values.NewQuantifiedObjectValue(
-		values.NamedCorrelationIdentifier("cycle_bind")))
+	bind := rungEqualityRange(t, mustSargConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("cycle_bind"), values.NotNullLong)))
 
 	sargedIndexThreeFetches := makeCriterion7Index(t, "idx_cycle_sarged", 3, bind)
 	primaryWithTypeFilter := makeCriterion7Primary(t)
@@ -114,9 +114,9 @@ func TestCriterion7_AbstentionCycleIsGone(t *testing.T) {
 func TestCriterion7_AdjudicatedCycleIsGone(t *testing.T) {
 	t.Parallel()
 
-	a := rungEqualityRange(t, values.LiteralValue(int64(1)))
-	b := rungEqualityRange(t, values.LiteralValue(int64(2)))
-	c := rungEqualityRange(t, values.LiteralValue(int64(3)))
+	a := rungEqualityRange(t, sargLiteral(int64(1)))
+	b := rungEqualityRange(t, sargLiteral(int64(2)))
+	c := rungEqualityRange(t, sargLiteral(int64(3)))
 
 	p1 := makeCriterion7Primary(t, a)
 	i2 := makeCriterion7Index(t, "idx_ring_2", 1, b, c)
@@ -172,15 +172,13 @@ func TestCriterion7_AdjudicatedCycleIsGone(t *testing.T) {
 func TestCriterion7_FetchPayingIndexLosesToCoveringIndex(t *testing.T) {
 	t.Parallel()
 
-	sarg := rungEqualityRange(t, values.LiteralValue(int64(1)))
-	fetchPaying := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		plans.NewRecordQueryIndexPlan("idx_fetch_paying",
-			[]*predicates.ComparisonRange{sarg}, []string{"T"}, values.UnknownType, false),
-		nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
-	covering := plans.NewRecordQueryCoveringIndexPlan(
-		plans.NewRecordQueryIndexPlan("idx_covering_no_fetch",
-			[]*predicates.ComparisonRange{sarg}, []string{"T"}, values.UnknownType, false).
-			WithIndexMetadata([]string{"K"}, nil, false))
+	sarg := rungEqualityRange(t, sargLiteral(int64(1)))
+	fetchPaying := mustSargConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		sargIndex("idx_fetch_paying", []*predicates.ComparisonRange{sarg}),
+		nil, sargRowType(), plans.FetchIndexRecordsPrimaryKey))
+	covering := mustSargConstruct(plans.NewRecordQueryCoveringIndexPlan(
+		sargIndex("idx_covering_no_fetch", []*predicates.ComparisonRange{sarg}).
+			WithIndexMetadata([]string{"K"}, nil, false)))
 
 	opsFetch := concretePlanCounts(fetchPaying, nil)
 	opsCovering := concretePlanCounts(covering, nil)
@@ -225,19 +223,19 @@ func TestCriterion7_FetchPayingIndexLosesToCoveringIndex(t *testing.T) {
 func TestCriterion7_RankIsATotalPreorder(t *testing.T) {
 	t.Parallel()
 
-	one := rungEqualityRange(t, values.LiteralValue(int64(1)))
-	two := rungEqualityRange(t, values.LiteralValue(int64(2)))
+	one := rungEqualityRange(t, sargLiteral(int64(1)))
+	two := rungEqualityRange(t, sargLiteral(int64(2)))
 
-	covering := plans.NewRecordQueryCoveringIndexPlan(
-		plans.NewRecordQueryIndexPlan("idx_rank_covering",
-			[]*predicates.ComparisonRange{one}, []string{"T"}, values.UnknownType, false).
-			WithIndexMetadata([]string{"K"}, nil, false))
+	covering := mustSargConstruct(plans.NewRecordQueryCoveringIndexPlan(
+		sargIndex("idx_rank_covering", []*predicates.ComparisonRange{one}).
+			WithIndexMetadata([]string{"K"}, nil, false)))
 
 	corpus := []struct {
 		name string
 		plan plans.RecordQueryPlan
 	}{
-		{"primary", plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)},
+		{"primary", mustSargConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"T"}, sargRowType(), false))},
 		{"primary+tf", makeCriterion7Primary(t)},
 		{"primary+tf+1sarg", makeCriterion7Primary(t, one)},
 		{"primary+tf+2sargs", makeCriterion7Primary(t, one, two)},
@@ -246,26 +244,27 @@ func TestCriterion7_RankIsATotalPreorder(t *testing.T) {
 		{"index+2sargs", makeCriterion7Index(t, "idx_rank_2", 1, one, two)},
 		{
 			"index+tf",
-			plans.NewRecordQueryTypeFilterPlan([]string{"T"},
-				makeCriterion7Index(t, "idx_rank_tf", 1, one)),
+			mustSargConstruct(plans.NewRecordQueryTypeFilterPlan([]string{"T"},
+				makeCriterion7Index(t, "idx_rank_tf", 1, one))),
 		},
 		{"coveringNoFetch", covering},
 		{
 			"sortedPrimary",
-			plans.NewRecordQueryInMemorySortPlan(
-				plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false), nil),
+			mustSargConstruct(plans.NewRecordQueryInMemorySortPlan(
+				mustSargConstruct(plans.NewRecordQueryScanPlan(
+					[]string{"T"}, sargRowType(), false)), nil)),
 		},
 		{
 			"sortedIndex",
-			plans.NewRecordQueryInMemorySortPlan(
-				makeCriterion7Index(t, "idx_rank_sorted", 1, one, two), nil),
+			mustSargConstruct(plans.NewRecordQueryInMemorySortPlan(
+				makeCriterion7Index(t, "idx_rank_sorted", 1, one, two), nil)),
 		},
 		{
 			"twoIndexes",
-			plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
+			mustSargConstruct(plans.NewRecordQueryIntersectionPlan([]plans.RecordQueryPlan{
 				makeCriterion7Index(t, "idx_rank_int_a", 0, one),
 				makeCriterion7Index(t, "idx_rank_int_b", 0, two),
-			}, nil),
+			}, nil)),
 		},
 	}
 

@@ -80,15 +80,17 @@ func TestEqualityPrefixLen(t *testing.T) {
 // dropped/fixed; k and m are ordinary Sorted keys.
 func TestPKScanOrdering_ResumedEqualityAfterGap_AgreesWithRichOrdering(t *testing.T) {
 	t.Parallel()
-	id := &values.FieldValue{Field: "ID", Typ: values.NotNullLong}
-	k := &values.FieldValue{Field: "K", Typ: values.NotNullLong}
-	m := &values.FieldValue{Field: "M", Typ: values.NotNullLong}
+	id := testField(t, "ID", values.NotNullLong)
+	k := testField(t, "K", values.NotNullLong)
+	m := testField(t, "M", values.NotNullLong)
 	comps := []*predicates.ComparisonRange{
 		pkOrderingEq(t, int64(7)),
 		pkOrderingGT(t, int64(3)),
 		pkOrderingEq(t, int64(9)),
 	}
-	plan := NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, exactTestRecordType(), false)
+	}).
 		WithPrimaryKey([]values.Value{id, k, m}).
 		WithScanComparisons(comps)
 
@@ -122,14 +124,14 @@ func TestPKScanOrdering_ResumedEqualityAfterGap_AgreesWithRichOrdering(t *testin
 	var richSortedFields []string
 	for _, key := range rkeys {
 		if rbm[key][0].IsSorted() {
-			richSortedFields = append(richSortedFields, key.(*values.FieldValue).Field)
+			richSortedFields = append(richSortedFields, testFieldName(key))
 		}
 	}
 	if len(richSortedFields) != len(plain.Keys) {
 		t.Fatalf("plain ordering keys %v disagree with rich ordering's sorted columns %v", plain.Keys, richSortedFields)
 	}
 	for i, key := range plain.Keys {
-		if key.(*values.FieldValue).Field != richSortedFields[i] {
+		if testFieldName(key) != richSortedFields[i] {
 			t.Fatalf("plain ordering keys %v disagree with rich ordering's sorted columns %v at position %d", plain.Keys, richSortedFields, i)
 		}
 	}
@@ -147,8 +149,12 @@ func TestRecordQueryIndexPlan_ResumedEqualityAfterGap_AgreesWithRichOrdering(t *
 		pkOrderingGT(t, int64(3)),
 		pkOrderingEq(t, int64(9)),
 	}
-	plan := NewRecordQueryIndexPlan("IDX", comps, []string{"T"}, values.UnknownType, false).
-		WithIndexMetadata([]string{"A", "B", "C"}, []string{"A", "B", "C"}, false)
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("IDX", comps, []string{"T"}, indexOrderingLayout(), false)
+	}).
+		WithIndexMetadata([]string{"A", "B", "C"}, []string{"A", "B", "C"}, false).
+		WithKeyComponentTypes(testPhysicalLongTypes(3)).
+		WithPrimaryKeyComponentTypes(testPhysicalLongTypes(3))
 
 	plain := plan.HintOrdering()
 	if !plain.IsKnown || len(plain.Keys) != 2 {
@@ -156,8 +162,8 @@ func TestRecordQueryIndexPlan_ResumedEqualityAfterGap_AgreesWithRichOrdering(t *
 	}
 	wantPlain := []string{"B", "C"}
 	for i, w := range wantPlain {
-		fv, ok := plain.Keys[i].(*values.FieldValue)
-		if !ok || fv.Field != w {
+		fv, ok := values.AsFieldValue(plain.Keys[i])
+		if !ok || fv.DisplayName() != w {
 			t.Fatalf("HintOrdering(A=1,B>3,C=9).Keys[%d] = %#v, want field %q", i, plain.Keys[i], w)
 		}
 	}
@@ -177,8 +183,8 @@ func TestRecordQueryIndexPlan_ResumedEqualityAfterGap_AgreesWithRichOrdering(t *
 		{"C", false}, // resumed equality: must stay Sorted, not Fixed
 	}
 	for i, w := range wantRich {
-		fv, ok := rkeys[i].(*values.FieldValue)
-		if !ok || fv.Field != w.field {
+		fv, ok := values.AsFieldValue(rkeys[i])
+		if !ok || fv.DisplayName() != w.field {
 			t.Fatalf("HintRichOrdering.Keys[%d] = %#v, want field %q", i, rkeys[i], w.field)
 		}
 		bindings := rbm[rkeys[i]]

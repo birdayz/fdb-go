@@ -17,7 +17,7 @@ func TestEvaluatePredicateCountByLevel_Nil(t *testing.T) {
 
 func TestEvaluatePredicateCountByLevel_NoPredicates(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	info := EvaluatePredicateCountByLevel(scan)
 	// Leaf node is level 0, with 0 predicates.
 	if info.GetHighestLevel() != 0 {
@@ -30,12 +30,12 @@ func TestEvaluatePredicateCountByLevel_NoPredicates(t *testing.T) {
 
 func TestEvaluatePredicateCountByLevel_FilterWithPredicates(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
 	ref := expressions.InitialOf(scan)
 	inner := expressions.ForEachQuantifier(ref)
 	p1 := predicates.NewConstantPredicate(predicates.TriTrue)
 	p2 := predicates.NewConstantPredicate(predicates.TriFalse)
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{p1, p2}, inner)
+	filter := mustLogicalFilterExpression(t, []predicates.QueryPredicate{p1, p2}, inner)
 
 	info := EvaluatePredicateCountByLevel(filter)
 	// scan at level 0 (0 predicates), filter at level 1 (2 predicates).

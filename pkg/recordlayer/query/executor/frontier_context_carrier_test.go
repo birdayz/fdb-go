@@ -39,7 +39,10 @@ func TestFrontierContextIsNotAUniformCarrier(t *testing.T) {
 	row.Set(0, int64(1))
 	row.Set(1, "a")
 
-	got := frontierRowContext(row, nil, false)
+	got, err := frontierRowContext(row, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// The load-bearing assertion: what comes back IS the row, not a context
 	// wrapping it. A value evaluated against this has no binding surface at
@@ -70,7 +73,10 @@ func TestFrontierContextCarrierVariants(t *testing.T) {
 
 	t.Run("bindingless frontier flows the bare row", func(t *testing.T) {
 		t.Parallel()
-		got := frontierRowContext(plain, nil, false)
+		got, err := frontierRowContext(plain, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, ok := got.(values.OrdinalRow); !ok {
 			t.Fatalf("got %T, want a bare values.OrdinalRow", got)
 		}
@@ -79,7 +85,10 @@ func TestFrontierContextCarrierVariants(t *testing.T) {
 	t.Run("a binding context wraps into RowEvalContext", func(t *testing.T) {
 		t.Parallel()
 		ec := EmptyEvaluationContext().WithParams([]any{int64(7)})
-		got := frontierRowContext(plain, ec, true)
+		got, err := frontierRowContext(plain, ec, true)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, ok := got.(*values.RowEvalContext); !ok {
 			t.Fatalf("got %T, want *values.RowEvalContext", got)
 		}

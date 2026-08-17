@@ -15,6 +15,7 @@ package query
 // These pins are pure planner-side and need no FDB.
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -49,6 +50,32 @@ func scan(table, alias string) *logical.LogicalScan { return logical.NewScan(tab
 
 func inner(l, r logical.LogicalOperator) *logical.LogicalJoin {
 	return logical.NewJoin(l, r, logical.JoinInner, "")
+}
+
+func TestStarBodyBoundaryInputOrdinalsSkipShadowedBottomColumn(t *testing.T) {
+	t.Parallel()
+	tr := newChainedSpineTranslator(t)
+	body := inner(
+		scan("T4", "T4"),
+		&logical.LogicalUnnest{Segments: []string{"T4", "SARR"}, Alias: "SUB"},
+	)
+	columns, ok := tr.derivedBodyStarOrdinalLeg(body)
+	if !ok {
+		t.Fatal("colliding star body was not admitted")
+	}
+	if got, want := len(columns), 3; got != want {
+		t.Fatalf("boundary width = %d, want %d", got, want)
+	}
+	if got := []string{columns[0].Name, columns[1].Name, columns[2].Name}; !slices.Equal(got, []string{"ID", "SARR", "SUB"}) {
+		t.Fatalf("boundary columns = %v, want [ID SARR SUB]", got)
+	}
+	ordinals, mapped := tr.starBodyBoundaryInputOrdinals(body, columns)
+	if !mapped {
+		t.Fatal("shadow-deduplicated boundary did not map to the raw ordinal row")
+	}
+	if !slices.Equal(ordinals, []int{0, 1, 3}) {
+		t.Fatalf("input ordinals = %v, want [0 1 3]; slot 2 is the shadowed bottom SUB", ordinals)
+	}
 }
 
 // onExists attaches one EXISTS-in-ON subquery to j (over TypedRecord).
@@ -536,7 +563,7 @@ func TestWedgeGate_Translation(t *testing.T) {
 		nested := inner(scan("Order", "o"), scan("Customer", "c"))
 		agg := logical.NewAggregate(nested, []logical.GroupKey{{Display: "o.order_id", Bare: "order_id", Qualifier: "o", Qualified: true}}, []logical.AggregateCall{{Func: "COUNT", Operand: "*", Star: true}}, []string{"cnt"}, false)
 		agg.HavingPredicate = &predicates.ComparisonPredicate{
-			Operand:    &values.FieldValue{Field: "CNT"},
+			Operand:    values.NewAggregateValue(values.AggCountStar, nil),
 			Comparison: predicates.Comparison{Type: predicates.ComparisonGreaterThan, Operand: &values.ConstantValue{Value: int64(0)}},
 		}
 		agg.HavingExistsSubqueries = []logical.ExistsSubquery{
@@ -619,18 +646,28 @@ func TestWalkArmParity(t *testing.T) {
 func TestWhereMergeBakesLegRelative(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
+	customerType := tr.ordinalLegType(scan("Customer", "c"))
+	orderType := tr.ordinalLegType(scan("Order", "o"))
+	typedType := tr.ordinalLegType(scan("TypedRecord", "t"))
+	if customerType == nil || orderType == nil || typedType == nil {
+		t.Fatal("leg types must derive from metadata")
+	}
+	customerOrdinal, found := customerType.FieldIndexUnique("CUSTOMER_ID")
+	if !found {
+		t.Fatal("CUSTOMER_ID missing from Customer's own type")
+	}
+	typedOrdinal, found := typedType.FieldIndexUnique("ID")
+	if !found {
+		t.Fatal("ID missing from TypedRecord's own type")
+	}
 
 	nested := inner(scan("Order", "o"), scan("Customer", "c"))
 	root := inner(nested, scan("TypedRecord", "t"))
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewFieldValue(
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("c")),
-			"CUSTOMER_ID", values.NotNullLong),
+		Operand: exactTestField(t, exactTestQOV(t, "c", customerType), customerOrdinal),
 		Comparison: predicates.Comparison{
-			Type: predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(
-				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("t")),
-				"ID", values.NotNullLong),
+			Type:    predicates.ComparisonEquals,
+			Operand: exactTestField(t, exactTestQOV(t, "t", typedType), typedOrdinal),
 		},
 	}
 	filter := logical.NewFilterWithPredicate(root, pred, "c.customer_id = t.id")
@@ -645,24 +682,19 @@ func TestWhereMergeBakesLegRelative(t *testing.T) {
 	}
 
 	// The expected leg types: each table's OWN type, the seed's pairing.
-	customerType := tr.ordinalLegType(scan("Customer", "c"))
-	orderType := tr.ordinalLegType(scan("Order", "o"))
-	if customerType == nil || orderType == nil {
-		t.Fatal("leg types must derive from metadata")
-	}
 	wantOrd, found := customerType.FieldIndexUnique("CUSTOMER_ID")
 	if !found {
 		t.Fatal("CUSTOMER_ID missing from Customer's own type")
 	}
 
-	var bakedC *values.FieldValue
+	var bakedC values.FieldValue
 	for _, p := range sel.GetPredicates() {
 		predicates.ReplaceValues(p, func(v values.Value) values.Value {
-			fv, isFV := v.(*values.FieldValue)
-			if !isFV || fv.Resolved == nil {
+			fv, isFV := values.AsFieldValue(v)
+			if !isFV || fv.Path() == nil {
 				return v
 			}
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "C" {
+			if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV && qov.Correlation().Name() == "C" {
 				bakedC = fv
 			}
 			return v
@@ -671,19 +703,23 @@ func TestWhereMergeBakesLegRelative(t *testing.T) {
 	if bakedC == nil {
 		t.Fatal("the merged WHERE conjunct's `c` reference must be BAKED (cross-leg conjunct over a gated join)")
 	}
-	acc, single := bakedC.Resolved.Single()
-	if !single {
-		t.Fatalf("want a single-accessor bake, got %v", bakedC.Resolved)
+	path := bakedC.Path()
+	acc, single := path.Accessor(0)
+	if !single || path.Len() != 1 {
+		t.Fatalf("want a single-accessor bake, got %v", path.Ordinals())
 	}
-	if acc.Ordinal != wantOrd {
+	if acc.Ordinal() != wantOrd {
 		t.Fatalf("baked ordinal = %d, want %d (CUSTOMER_ID leg-relative in Customer's OWN type; a concat-relative bake is off by Order's width %d)",
-			acc.Ordinal, wantOrd, len(orderType.Fields))
+			acc.Ordinal(), wantOrd, len(orderType.Fields))
 	}
-	qovC := bakedC.Child.(*values.QuantifiedObjectValue)
-	rt, isRT := qovC.Type().(*values.RecordType)
+	qovC, isQOV := values.AsQuantifiedObjectValue(bakedC.ChildValue())
+	if !isQOV {
+		t.Fatalf("baked field owner = %T, want exact QOV", bakedC.ChildValue())
+	}
+	rt, isRT := qovC.FlowedType().(*values.RecordType)
 	if !isRT || len(rt.Fields) != len(customerType.Fields) {
 		t.Fatalf("baked QOV(c) type width = %v, want Customer's own width %d (not the {o,c} concat %d)",
-			qovC.Type(), len(customerType.Fields), len(orderType.Fields)+len(customerType.Fields))
+			qovC.FlowedType(), len(customerType.Fields), len(orderType.Fields)+len(customerType.Fields))
 	}
 }
 
@@ -698,17 +734,27 @@ func TestWhereMergeBakesLegRelative(t *testing.T) {
 func TestBoxLegBakeResolvesLeafLocal(t *testing.T) {
 	t.Parallel()
 	tr := newGateTranslator(t)
+	orderType := tr.ordinalLegType(scan("Order", "o"))
+	customerType := tr.ordinalLegType(scan("Customer", "c"))
+	typedType := tr.ordinalLegType(scan("TypedRecord", "t"))
+	if orderType == nil || customerType == nil || typedType == nil {
+		t.Fatal("leg types must derive from metadata")
+	}
+	priceOrdinal, found := customerType.FieldIndexUnique("PRICE")
+	if !found {
+		t.Fatal("PRICE missing from Customer's own type")
+	}
+	typedOrdinal, found := typedType.FieldIndexUnique("ID")
+	if !found {
+		t.Fatal("ID missing from TypedRecord's own type")
+	}
 
 	box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
 	pred := &predicates.ComparisonPredicate{
-		Operand: values.NewFieldValue(
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("c")),
-			"PRICE", values.NotNullLong),
+		Operand: exactTestField(t, exactTestQOV(t, "c", customerType), priceOrdinal),
 		Comparison: predicates.Comparison{
-			Type: predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(
-				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("t")),
-				"ID", values.NotNullLong),
+			Type:    predicates.ComparisonEquals,
+			Operand: exactTestField(t, exactTestQOV(t, "t", typedType), typedOrdinal),
 		},
 	}
 	root := logical.NewJoinWithPredicate(box, scan("TypedRecord", "t"), logical.JoinInner, pred)
@@ -722,11 +768,6 @@ func TestBoxLegBakeResolvesLeafLocal(t *testing.T) {
 		t.Fatalf("expected the seed SelectExpression, got %T", ref.Members()[0])
 	}
 
-	orderType := tr.ordinalLegType(scan("Order", "o"))
-	customerType := tr.ordinalLegType(scan("Customer", "c"))
-	if orderType == nil || customerType == nil {
-		t.Fatal("leg types must derive from metadata")
-	}
 	leafIdx, found := customerType.FieldIndexUnique("PRICE")
 	if !found {
 		t.Fatal("PRICE missing from Customer's own type")
@@ -737,14 +778,14 @@ func TestBoxLegBakeResolvesLeafLocal(t *testing.T) {
 	}
 	wantOrd := len(orderType.Fields) + leafIdx
 
-	var bakedC *values.FieldValue
+	var bakedC values.FieldValue
 	for _, p := range sel.GetPredicates() {
 		predicates.ReplaceValues(p, func(v values.Value) values.Value {
-			fv, isFV := v.(*values.FieldValue)
-			if !isFV || fv.Resolved == nil {
+			fv, isFV := values.AsFieldValue(v)
+			if !isFV || fv.Path() == nil {
 				return v
 			}
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV && qov.Correlation.Name() == "C$BOX" { // the box quantifier is MINTED (leaf+$BOX)
+			if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV && qov.Correlation().Name() == "C$BOX" { // the box quantifier is MINTED (leaf+$BOX)
 				bakedC = fv
 			}
 			return v
@@ -753,15 +794,16 @@ func TestBoxLegBakeResolvesLeafLocal(t *testing.T) {
 	if bakedC == nil {
 		t.Fatal("the ON conjunct's `c` reference must be BAKED (cross-leg over the gated join)")
 	}
-	acc, single := bakedC.Resolved.Single()
-	if !single {
-		t.Fatalf("want a single-accessor bake, got %v", bakedC.Resolved)
+	path := bakedC.Path()
+	acc, single := path.Accessor(0)
+	if !single || path.Len() != 1 {
+		t.Fatalf("want a single-accessor bake, got %v", path.Ordinals())
 	}
-	if acc.Ordinal == firstMatch {
-		t.Fatalf("baked ordinal %d is the whole-concat FIRST MATCH (Order's PRICE) — the silent wrong-column bake", acc.Ordinal)
+	if acc.Ordinal() == firstMatch {
+		t.Fatalf("baked ordinal %d is the whole-concat FIRST MATCH (Order's PRICE) — the silent wrong-column bake", acc.Ordinal())
 	}
-	if acc.Ordinal != wantOrd {
-		t.Fatalf("baked ordinal = %d, want %d (Customer's PRICE leaf-local at the box offset %d)", acc.Ordinal, wantOrd, len(orderType.Fields))
+	if acc.Ordinal() != wantOrd {
+		t.Fatalf("baked ordinal = %d, want %d (Customer's PRICE leaf-local at the box offset %d)", acc.Ordinal(), wantOrd, len(orderType.Fields))
 	}
 }
 

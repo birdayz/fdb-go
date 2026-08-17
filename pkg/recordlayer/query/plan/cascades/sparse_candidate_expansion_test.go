@@ -10,14 +10,21 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func sparseTestRowType() *values.RecordType {
+	return values.NewRecordType("SPARSE_T1", false, []values.Field{
+		{Name: "COL1", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+}
+
 func sparseTestCandidate(t *testing.T, pred *gen.Predicate) *ValueIndexScanMatchCandidate {
 	t.Helper()
 	nonFanOut := false
 	cand := NewValueIndexScanMatchCandidateWithFunctions(
 		"I1", []string{"T1"}, []string{"COL1"}, nil,
 		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
-		values.UnknownType, false, []string{"ID"}, &nonFanOut,
-	)
+		sparseTestRowType(), false, []string{"ID"}, &nonFanOut,
+	).WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
 	if pred != nil {
 		cand.WithPredicateProto(pred)
 	}

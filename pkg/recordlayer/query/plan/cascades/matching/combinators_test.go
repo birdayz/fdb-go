@@ -68,7 +68,7 @@ func TestAnyOf_UnionOfMatches(t *testing.T) {
 	}
 
 	// FieldValue input: only fieldMatcher matches → 1 result.
-	fv := &values.FieldValue{Field: "name", Typ: values.TypeString}
+	fv := mustMatchingField(t, "name", values.TypeString)
 	got = pattern.BindMatches(NewBindings(), fv)
 	if len(got) != 1 {
 		t.Fatalf("FieldValue input: expected 1 match, got %d", len(got))
@@ -105,7 +105,7 @@ func TestCombinators_Nested(t *testing.T) {
 	expr := &values.ArithmeticValue{
 		Op:    values.OpAdd,
 		Left:  &values.ConstantValue{Value: int64(5), Typ: values.NullableLong},
-		Right: &values.FieldValue{Field: "name", Typ: values.TypeString},
+		Right: mustMatchingField(t, "name", values.TypeString),
 	}
 	got := pattern.BindMatches(NewBindings(), expr)
 	if len(got) != 1 {
@@ -219,7 +219,7 @@ func TestAnyOf_PreservesDownstreamOrder(t *testing.T) {
 func TestAllOf_ThreadsOuterBindings(t *testing.T) {
 	t.Parallel()
 	outerMatcher := NewAnyValue()
-	preset := &values.FieldValue{Field: "preset", Typ: values.NullableLong}
+	preset := mustMatchingField(t, "preset", values.NullableLong)
 	outer := NewBindings().Bind(outerMatcher, preset)
 
 	pattern := NewAllOf("Value", NewConstantMatcher())
@@ -265,7 +265,7 @@ func TestMergedWith_BothBindingsVisible(t *testing.T) {
 	m1 := NewConstantMatcher()
 	m2 := NewFieldMatcher()
 	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
-	fv := &values.FieldValue{Field: "x", Typ: values.TypeString}
+	fv := mustMatchingField(t, "x", values.TypeString)
 	b1 := NewBindings().Bind(m1, cv)
 	b2 := NewBindings().Bind(m2, fv)
 
@@ -273,7 +273,7 @@ func TestMergedWith_BothBindingsVisible(t *testing.T) {
 	if Get[*values.ConstantValue](merged, m1) != cv {
 		t.Fatal("merged: lhs binding lost")
 	}
-	if Get[*values.FieldValue](merged, m2) != fv {
+	if Get[values.FieldValue](merged, m2) != fv {
 		t.Fatal("merged: rhs binding lost")
 	}
 }

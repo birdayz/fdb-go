@@ -725,6 +725,56 @@ func (t *cascadesTranslator) derivedBodyStarOrdinalLeg(body logical.LogicalOpera
 	return labels, true
 }
 
+// starBodyBoundaryInputOrdinals maps the shadow-deduplicated boundary columns
+// returned by derivedBodyStarOrdinalLeg back to the raw ordinal row emitted by
+// the admitted unnest spine. A shadowing AS/AT column is the LAST same-named
+// occurrence in that row: bottom-source fields precede every link field, and
+// derivedBodyStarOrdinalLeg has already rejected every duplicate not explained
+// by that shadow rule. Keeping this mapping separate from Field.Ordinal matters:
+// the returned fields describe the compact OUTPUT row and must retain their
+// ordinary slice-position ordinals; the source positions can contain gaps.
+func (t *cascadesTranslator) starBodyBoundaryInputOrdinals(
+	body logical.LogicalOperator,
+	boundary []values.Field,
+) ([]int, bool) {
+	op := body
+	for {
+		filter, ok := op.(*logical.LogicalFilter)
+		if !ok {
+			break
+		}
+		op = filter.Input
+	}
+	join, ok := op.(*logical.LogicalJoin)
+	if !ok {
+		return nil, false
+	}
+	raw := t.ordinalLegColumns(join)
+	if len(raw) < len(boundary) {
+		return nil, false
+	}
+	ordinals := make([]int, len(boundary))
+	previous := -1
+	for i, output := range boundary {
+		ordinal := -1
+		for j, input := range raw {
+			if strings.EqualFold(input.Name, output.Name) {
+				ordinal = j // last occurrence is the shadow winner
+			}
+		}
+		// Boundary order is raw-row order with shadowed bottom occurrences
+		// removed, so the mapping must remain strictly increasing. This also
+		// rejects any future dedup policy that the last-occurrence rule cannot
+		// represent instead of silently permuting slots.
+		if ordinal <= previous {
+			return nil, false
+		}
+		ordinals[i] = ordinal
+		previous = ordinal
+	}
+	return ordinals, true
+}
+
 // starSpineAliasBinding is one spine link label's binding: the link's VISIBLE
 // correlation name plus the label's slot WITHIN the link's leg window (the
 // element rides slot 0, the AT ordinal slot 1 — the runtime OrdinalityLegs
@@ -907,6 +957,8 @@ func (t *cascadesTranslator) clusterArity(op logical.LogicalOperator) int {
 			t.cteScope[key] = body
 			return a
 		}
+		return 1
+	case *logical.LogicalInlineValues:
 		return 1
 	case *logical.LogicalCTE:
 		if o.Recursive {

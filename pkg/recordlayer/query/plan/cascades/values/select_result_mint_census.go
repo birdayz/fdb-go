@@ -102,7 +102,7 @@ func RecordSelectResultMint(site SelectResultMintSite, rv Value) {
 		return
 	}
 	shape := fmt.Sprintf("%T", rv)
-	qov, isQOV := rv.(*QuantifiedObjectValue)
+	qov, isQOV := rv.(*quantifiedObjectValue)
 	if isQOV {
 		shape = fmt.Sprintf("QOV(typed=%t %s)", quantifiedObjectValueCarriesAType(qov), describeMintedQOVType(qov))
 	}
@@ -140,21 +140,21 @@ func RecordSelectResultMint(site SelectResultMintSite, rv Value) {
 // UnknownType singleton: an equivalent unknown built elsewhere is just as
 // untyped, and keying on the shared variable would call it typed. `Typ != nil`
 // would be a tautology — every constructible QOV has a non-nil Typ.
-func quantifiedObjectValueCarriesAType(qov *QuantifiedObjectValue) bool {
-	return qov.Typ != nil && qov.Typ.Code() != TypeCodeUnknown
+func quantifiedObjectValueCarriesAType(qov *quantifiedObjectValue) bool {
+	return qov.FlowedType() != nil && qov.FlowedType().Code() != TypeCodeUnknown
 }
 
 // describeMintedQOVType spells the flowed type, with a record's ARITY, because
 // the boolean above and the spelling answer different questions: a mint counted
 // as typed-but-not-a-row is a different fact from one carrying a real row.
-func describeMintedQOVType(qov *QuantifiedObjectValue) string {
-	if qov.Typ == nil {
+func describeMintedQOVType(qov *quantifiedObjectValue) string {
+	if qov.FlowedType() == nil {
 		return "<nil>"
 	}
-	if rt, ok := qov.Typ.(*RecordType); ok {
+	if rt, ok := qov.FlowedType().(*RecordType); ok {
 		return fmt.Sprintf("RecordType(%d)", len(rt.Fields))
 	}
-	return qov.Typ.Code().String()
+	return qov.FlowedType().Code().String()
 }
 
 // SelectResultMintOriginOf reports the site that MINTED rv, and whether any did.
@@ -230,25 +230,26 @@ func formatSelectResultMintCounters(c SelectResultMintCounters) string {
 
 // SelectResultMintFloors is the mint census's gate.
 //
-// BOTH fields are FLOORS, including the untyped one, and that polarity reads
-// backwards until you know why: an untyped QOV is a Java divergence, so the
-// number going DOWN is the good direction and still fails. A shrinking count
-// cannot be told from a darkening site, and a divergence nobody is measuring is
-// how a population becomes invisible. Lower it deliberately, having decided
-// which of the two happened.
+// Calls is a FLOOR: a site going dark must be visible, because every zero
+// recorded beside a dark site measures an absence of traffic rather than an
+// absence of the shape. Zero means NOT FLOORED, which for a floor is the same
+// assertion as a floor of zero.
 //
-// Zero means NOT FLOORED, for both fields. That overload is deliberate and it is
-// the same one every floor set on this path carries: a nil-able per-site floor
-// would need a pointer array and would buy one distinction — "floored at
-// exactly zero" — that no site wants, because a floor of zero is satisfied by
-// every possible state and asserts nothing.
+// THE UNTYPED-QOV FLOOR IS GONE, and its absence is the reconciliation. It
+// floored a DIVERGENCE — an untyped QuantifiedObjectValue, which Java cannot
+// build — so that the gap stayed counted while it stood, with the DROP as the
+// failing direction because a shrinking count cannot be told from a darkening
+// site. The gap is closed at the constructor: NewQuantifiedObjectValue requires
+// an exact type, so an untyped QOV is unrepresentable and this site mints none.
+// A floor pointing at an impossible population is unsatisfiable, and lowering it
+// to zero would leave the retirement unwatched — so the direction INVERTS and
+// the zero is asserted unconditionally in assertSelectResultMintCounters.
 type SelectResultMintFloors struct {
-	Calls           [SelectResultMintSiteCount]int
-	UntypedQOVFloor [SelectResultMintSiteCount]int
+	Calls [SelectResultMintSiteCount]int
 }
 
-// AssertSelectResultMintCensus checks the per-site call floors and the
-// untyped-population floors.
+// AssertSelectResultMintCensus checks the per-site partition, the untyped-QOV
+// zero, and the per-site call floors.
 func AssertSelectResultMintCensus(w io.Writer, floors *SelectResultMintFloors) bool {
 	return assertSelectResultMintCounters(w, SelectResultMintCensus(), floors)
 }
@@ -270,24 +271,27 @@ func assertSelectResultMintCounters(w io.Writer, c SelectResultMintCounters, flo
 				s, c.TypedQOV[s], c.UntypedQOV[s], c.OtherRV[s], got, c.Calls[s])
 		}
 	}
-	if floors == nil {
-		return failed
-	}
+	// The untyped-QOV zero is UNCONDITIONAL, like the partition above it and for
+	// the same reason: it holds over any population, narrowed run included. What
+	// it watches is REVIVAL — this site once minted every one of its result
+	// values untyped, and the constructor's exact-type requirement is the only
+	// thing keeping the count at zero.
 	for s := SelectResultMintSite(0); s < SelectResultMintSiteCount; s++ {
-		if floors.UntypedQOVFloor[s] == 0 || c.UntypedQOV[s] >= floors.UntypedQOVFloor[s] {
+		if c.UntypedQOV[s] == 0 {
 			continue
 		}
 		failed = true
 		fmt.Fprintf(w, "SELECT MINT CENSUS FAIL: %s minted %d UNTYPED QOV result value(s),\n"+
-			"  want >= %d. This is a FLOOR on a DIVERGENCE and the DROP is what fails.\n"+
-			"  Java cannot build an untyped QOV at all — QuantifiedObjectValue.of has no\n"+
-			"  untyped overload (QuantifiedObjectValue.java:187) and getFlowedObjectType is\n"+
-			"  a Verify.verify plus requireNonNull (Quantifier.java:801-810) — so this is a\n"+
-			"  real gap and the floor keeps it COUNTED rather than blessing it.\n"+
-			"  A drop is either the gap CLOSING (say so, re-measure, move the floor down\n"+
-			"  deliberately) or the site going DARK, and those are indistinguishable from a\n"+
-			"  smaller number.\n"+
-			"  census: %s\n", s, c.UntypedQOV[s], floors.UntypedQOVFloor[s], formatSelectResultMintCounters(c))
+			"  want 0 — the untyped QOV was RETIRED and this is its revival alarm.\n"+
+			"  Java cannot build one at all — QuantifiedObjectValue.of has no untyped\n"+
+			"  overload (QuantifiedObjectValue.java:187) and getFlowedObjectType is a\n"+
+			"  Verify.verify plus requireNonNull (Quantifier.java:801-810) — and\n"+
+			"  NewQuantifiedObjectValue now requires an exact type, so a non-zero here\n"+
+			"  means a mint path has appeared that reaches around that requirement.\n"+
+			"  census: %s\n", s, c.UntypedQOV[s], formatSelectResultMintCounters(c))
+	}
+	if floors == nil {
+		return failed
 	}
 	for s := SelectResultMintSite(0); s < SelectResultMintSiteCount; s++ {
 		if c.Calls[s] >= floors.Calls[s] {

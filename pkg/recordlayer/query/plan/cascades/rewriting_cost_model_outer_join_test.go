@@ -28,6 +28,19 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustOuterJoinCostConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct outer-join cost fixture: " + err.Error())
+	}
+	return value
+}
+
+func outerJoinCostRowType() values.Type {
+	return values.NewRecordType("OuterJoinCostRow", false, []values.Field{
+		{Name: "flag", FieldType: values.NullableLong, Ordinal: 0},
+	})
+}
+
 // isOuterJoinSelectForTest reports whether e is a SelectExpression carrying LEFT or
 // FULL OUTER semantics — Go's encoding of what Java models as a distinct
 // OuterJoinExpression. Local to the test: production has no such helper because
@@ -53,28 +66,35 @@ func buildCorrelatedLeftOuterSelect() *expressions.SelectExpression {
 	aliasA := values.NamedCorrelationIdentifier("A")
 	aliasB := values.NamedCorrelationIdentifier("B")
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := mustOuterJoinCostConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"A"}, outerJoinCostRowType()))
+	scanB := mustOuterJoinCostConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"B"}, outerJoinCostRowType()))
 	qA := expressions.NamedForEachQuantifier(aliasA, expressions.InitialOf(scanA))
 	qB := expressions.NamedForEachQuantifier(aliasB, expressions.InitialOf(scanB))
 
-	flagField := values.NewFieldValue(values.NewQuantifiedObjectValue(aliasA), "flag", values.UnknownType)
+	rootA := mustOuterJoinCostConstruct(values.NewQuantifiedObjectValue(aliasA, outerJoinCostRowType()))
+	flagField := mustOuterJoinCostConstruct(values.ResolveFieldOrdinals(rootA, []int{0}))
 	pred := predicates.NewComparisonPredicate(flagField, predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)))
+	result := values.NewRawRecordConstructorValue(
+		values.RecordConstructorField{Name: "A", Value: mustOuterJoinCostConstruct(qA.RequireFlowedObjectValue())},
+		values.RecordConstructorField{Name: "B", Value: mustOuterJoinCostConstruct(qB.RequireFlowedObjectValue())},
+	)
 
-	return expressions.NewSelectExpressionWithJoinType(
-		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	return mustOuterJoinCostConstruct(expressions.NewSelectExpressionWithJoinType(
+		result,
 		[]expressions.Quantifier{qA, qB},
 		[]predicates.QueryPredicate{pred},
 		[]string{"A", "B"},
 		expressions.JoinLeftOuter,
-	)
+	))
 }
 
 // deriveCanonicalRewrite runs RewriteOuterJoinRule and returns the canonical INNER
 // rewritten SelectExpression (2 inner selects, 0 outer-join selects).
 func deriveCanonicalRewrite(t *testing.T, unrewritten *expressions.SelectExpression) *expressions.SelectExpression {
 	t.Helper()
-	yielded := FireExpressionRule(NewRewriteOuterJoinRule(), expressions.InitialOf(unrewritten))
+	yielded := mustFireExpressionRule(t, NewRewriteOuterJoinRule(), expressions.InitialOf(unrewritten))
 	for _, e := range yielded {
 		if s, ok := e.(*expressions.SelectExpression); ok && s.GetJoinType() == expressions.JoinInner {
 			return s

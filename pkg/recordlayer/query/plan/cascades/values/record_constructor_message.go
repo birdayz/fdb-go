@@ -82,28 +82,42 @@ func buildRecordMessage(md protoreflect.MessageDescriptor, fields []RecordConstr
 // because the engine's row domain is coarser than proto's (every SQL integer
 // is an int64 in a row, whether the field is INT32 or INT64).
 func rowValueToProtoField(parent protoreflect.Message, fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
-	if fd.IsList() {
+	if elementFD, wrapped, isArray := EffectiveListField(fd); isArray {
 		elems, ok := v.([]any)
 		if !ok {
 			return protoreflect.Value{}, &ProtoTypeError{
 				TypeName: string(fd.FullName()),
-				Reason:   fmt.Sprintf("repeated field needs a list, got %T", v),
+				Reason:   fmt.Sprintf("array field needs a list, got %T", v),
 			}
 		}
-		list := parent.NewField(fd).List()
+		var list protoreflect.List
+		var result protoreflect.Value
+		if wrapped {
+			// A nullable ARRAY is the optional NullableArrayWrapper message,
+			// not a repeated field at this level. A PRESENT wrapper with an
+			// empty values list is SQL [], while buildRecordMessage's nil-child
+			// arm leaves the wrapper ABSENT for SQL NULL.
+			wrapper, wrappedValues := NewWrappedArrayMessage(fd)
+			list = wrappedValues
+			result = protoreflect.ValueOfMessage(wrapper)
+		} else {
+			listValue := parent.NewField(fd)
+			list = listValue.List()
+			result = listValue
+		}
 		for _, e := range elems {
 			if e == nil {
 				// proto has no null list element; Java's array deep-copy has
 				// the same hole (Verify.verifyNotNull on each element).
 				return protoreflect.Value{}, &NonNullableFieldError{Field: string(fd.Name())}
 			}
-			ev, err := rowScalarToProtoValue(fd, e)
+			ev, err := rowScalarToProtoValue(elementFD, e)
 			if err != nil {
 				return protoreflect.Value{}, err
 			}
 			list.Append(ev)
 		}
-		return protoreflect.ValueOfList(list), nil
+		return result, nil
 	}
 	return rowScalarToProtoValue(fd, v)
 }

@@ -198,6 +198,7 @@ go_test(
         "cursor_context_test.go",
         "cursor_functions_test.go",
         "cursor_iterator_error_test.go",
+        "cursor_result_value_test.go",
         "cursor_seq_test.go",
         "cursor_test.go",
         "cursor_util_test.go",

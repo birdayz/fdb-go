@@ -1,11 +1,10 @@
-package properties_test
+package properties
 
 import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -15,7 +14,7 @@ import (
 
 func TestOfCardinality(t *testing.T) {
 	t.Parallel()
-	c := properties.OfCardinality(42)
+	c := OfCardinality(42)
 	if c.IsUnknown() {
 		t.Fatal("expected known cardinality")
 	}
@@ -26,7 +25,7 @@ func TestOfCardinality(t *testing.T) {
 
 func TestOfCardinalityZero(t *testing.T) {
 	t.Parallel()
-	c := properties.OfCardinality(0)
+	c := OfCardinality(0)
 	if c.IsUnknown() {
 		t.Fatal("expected known cardinality")
 	}
@@ -42,12 +41,12 @@ func TestOfCardinalityNegativePanics(t *testing.T) {
 			t.Fatal("expected panic for negative cardinality")
 		}
 	}()
-	properties.OfCardinality(-1)
+	OfCardinality(-1)
 }
 
 func TestUnknownCardinality(t *testing.T) {
 	t.Parallel()
-	c := properties.UnknownCardinality()
+	c := UnknownCardinality()
 	if !c.IsUnknown() {
 		t.Fatal("expected unknown cardinality")
 	}
@@ -60,7 +59,7 @@ func TestUnknownCardinalityValuePanics(t *testing.T) {
 			t.Fatal("expected panic when calling Value() on unknown")
 		}
 	}()
-	properties.UnknownCardinality().Value()
+	UnknownCardinality().Value()
 }
 
 // ---------------------------------------------------------------------------
@@ -69,8 +68,8 @@ func TestUnknownCardinalityValuePanics(t *testing.T) {
 
 func TestCardinalityTimes_KnownKnown(t *testing.T) {
 	t.Parallel()
-	a := properties.OfCardinality(3)
-	b := properties.OfCardinality(5)
+	a := OfCardinality(3)
+	b := OfCardinality(5)
 	result := a.Times(b)
 	if result.IsUnknown() {
 		t.Fatal("expected known result")
@@ -82,8 +81,8 @@ func TestCardinalityTimes_KnownKnown(t *testing.T) {
 
 func TestCardinalityTimes_KnownUnknown(t *testing.T) {
 	t.Parallel()
-	a := properties.OfCardinality(3)
-	b := properties.UnknownCardinality()
+	a := OfCardinality(3)
+	b := UnknownCardinality()
 	result := a.Times(b)
 	if !result.IsUnknown() {
 		t.Fatal("expected unknown result")
@@ -92,8 +91,8 @@ func TestCardinalityTimes_KnownUnknown(t *testing.T) {
 
 func TestCardinalityTimes_UnknownKnown(t *testing.T) {
 	t.Parallel()
-	a := properties.UnknownCardinality()
-	b := properties.OfCardinality(5)
+	a := UnknownCardinality()
+	b := OfCardinality(5)
 	result := a.Times(b)
 	if !result.IsUnknown() {
 		t.Fatal("expected unknown result")
@@ -102,8 +101,8 @@ func TestCardinalityTimes_UnknownKnown(t *testing.T) {
 
 func TestCardinalityTimes_UnknownUnknown(t *testing.T) {
 	t.Parallel()
-	a := properties.UnknownCardinality()
-	b := properties.UnknownCardinality()
+	a := UnknownCardinality()
+	b := UnknownCardinality()
 	result := a.Times(b)
 	if !result.IsUnknown() {
 		t.Fatal("expected unknown result")
@@ -112,8 +111,8 @@ func TestCardinalityTimes_UnknownUnknown(t *testing.T) {
 
 func TestCardinalityTimes_Zero(t *testing.T) {
 	t.Parallel()
-	a := properties.OfCardinality(0)
-	b := properties.OfCardinality(100)
+	a := OfCardinality(0)
+	b := OfCardinality(100)
 	result := a.Times(b)
 	if result.IsUnknown() {
 		t.Fatal("expected known result")
@@ -129,7 +128,7 @@ func TestCardinalityTimes_Zero(t *testing.T) {
 
 func TestCardinalityFloor_KnownBelowMin(t *testing.T) {
 	t.Parallel()
-	c := properties.OfCardinality(2)
+	c := OfCardinality(2)
 	result := c.Floor(5)
 	if result.IsUnknown() {
 		t.Fatal("expected known result")
@@ -141,7 +140,7 @@ func TestCardinalityFloor_KnownBelowMin(t *testing.T) {
 
 func TestCardinalityFloor_KnownAboveMin(t *testing.T) {
 	t.Parallel()
-	c := properties.OfCardinality(10)
+	c := OfCardinality(10)
 	result := c.Floor(5)
 	if result.IsUnknown() {
 		t.Fatal("expected known result")
@@ -153,7 +152,7 @@ func TestCardinalityFloor_KnownAboveMin(t *testing.T) {
 
 func TestCardinalityFloor_KnownEqualMin(t *testing.T) {
 	t.Parallel()
-	c := properties.OfCardinality(5)
+	c := OfCardinality(5)
 	result := c.Floor(5)
 	if result.IsUnknown() {
 		t.Fatal("expected known result")
@@ -165,7 +164,7 @@ func TestCardinalityFloor_KnownEqualMin(t *testing.T) {
 
 func TestCardinalityFloor_UnknownStaysUnknown(t *testing.T) {
 	t.Parallel()
-	c := properties.UnknownCardinality()
+	c := UnknownCardinality()
 	result := c.Floor(5)
 	if !result.IsUnknown() {
 		t.Fatal("expected unknown result")
@@ -180,14 +179,14 @@ func TestCardinalityEqual(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		a, b properties.Cardinality
+		a, b Cardinality
 		want bool
 	}{
-		{"known==known same", properties.OfCardinality(5), properties.OfCardinality(5), true},
-		{"known!=known diff", properties.OfCardinality(5), properties.OfCardinality(3), false},
-		{"unknown==unknown", properties.UnknownCardinality(), properties.UnknownCardinality(), true},
-		{"known!=unknown", properties.OfCardinality(5), properties.UnknownCardinality(), false},
-		{"unknown!=known", properties.UnknownCardinality(), properties.OfCardinality(5), false},
+		{"known==known same", OfCardinality(5), OfCardinality(5), true},
+		{"known!=known diff", OfCardinality(5), OfCardinality(3), false},
+		{"unknown==unknown", UnknownCardinality(), UnknownCardinality(), true},
+		{"known!=unknown", OfCardinality(5), UnknownCardinality(), false},
+		{"unknown!=known", UnknownCardinality(), OfCardinality(5), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,21 +204,21 @@ func TestCardinalityEqual(t *testing.T) {
 
 func TestExactlyOne(t *testing.T) {
 	t.Parallel()
-	c := properties.ExactlyOne()
+	c := ExactlyOne()
 	assertKnown(t, c.GetMinCardinality(), 1)
 	assertKnown(t, c.GetMaxCardinality(), 1)
 }
 
 func TestAtMostOne(t *testing.T) {
 	t.Parallel()
-	c := properties.AtMostOne()
+	c := AtMostOne()
 	assertKnown(t, c.GetMinCardinality(), 0)
 	assertKnown(t, c.GetMaxCardinality(), 1)
 }
 
 func TestUnknownMaxCardinalityFactory(t *testing.T) {
 	t.Parallel()
-	c := properties.UnknownMaxCardinality()
+	c := UnknownMaxCardinality()
 	assertKnown(t, c.GetMinCardinality(), 0)
 	if !c.GetMaxCardinality().IsUnknown() {
 		t.Fatal("expected unknown max")
@@ -228,7 +227,7 @@ func TestUnknownMaxCardinalityFactory(t *testing.T) {
 
 func TestUnknownCardinalities(t *testing.T) {
 	t.Parallel()
-	c := properties.UnknownCardinalities()
+	c := UnknownCardinalities()
 	if !c.GetMinCardinality().IsUnknown() {
 		t.Fatal("expected unknown min")
 	}
@@ -243,13 +242,13 @@ func TestUnknownCardinalities(t *testing.T) {
 
 func TestCardinalitiesTimes_KnownKnown(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(2),
-		Max: properties.OfCardinality(10),
+	a := Cardinalities{
+		Min: OfCardinality(2),
+		Max: OfCardinality(10),
 	}
-	b := properties.Cardinalities{
-		Min: properties.OfCardinality(3),
-		Max: properties.OfCardinality(5),
+	b := Cardinalities{
+		Min: OfCardinality(3),
+		Max: OfCardinality(5),
 	}
 	result := a.Times(b)
 	assertKnown(t, result.GetMinCardinality(), 6)
@@ -258,8 +257,8 @@ func TestCardinalitiesTimes_KnownKnown(t *testing.T) {
 
 func TestCardinalitiesTimes_UnknownMax(t *testing.T) {
 	t.Parallel()
-	a := properties.UnknownMaxCardinality()
-	b := properties.ExactlyOne()
+	a := UnknownMaxCardinality()
+	b := ExactlyOne()
 	result := a.Times(b)
 	assertKnown(t, result.GetMinCardinality(), 0)
 	if !result.GetMaxCardinality().IsUnknown() {
@@ -273,7 +272,7 @@ func TestCardinalitiesTimes_UnknownMax(t *testing.T) {
 
 func TestCardinalitiesFloor_BothBelowMinimum(t *testing.T) {
 	t.Parallel()
-	c := properties.AtMostOne() // min=0, max=1
+	c := AtMostOne() // min=0, max=1
 	result := c.Floor(2)
 	assertKnown(t, result.GetMinCardinality(), 2)
 	assertKnown(t, result.GetMaxCardinality(), 2)
@@ -281,9 +280,9 @@ func TestCardinalitiesFloor_BothBelowMinimum(t *testing.T) {
 
 func TestCardinalitiesFloor_BothAboveMinimum(t *testing.T) {
 	t.Parallel()
-	c := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(10),
+	c := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(10),
 	}
 	result := c.Floor(2)
 	assertKnown(t, result.GetMinCardinality(), 5)
@@ -292,7 +291,7 @@ func TestCardinalitiesFloor_BothAboveMinimum(t *testing.T) {
 
 func TestCardinalitiesFloor_UnknownUnchanged(t *testing.T) {
 	t.Parallel()
-	c := properties.UnknownCardinalities()
+	c := UnknownCardinalities()
 	result := c.Floor(5)
 	if !result.GetMinCardinality().IsUnknown() {
 		t.Fatal("expected unknown min")
@@ -308,15 +307,15 @@ func TestCardinalitiesFloor_UnknownUnchanged(t *testing.T) {
 
 func TestIntersectCardinalities_TwoKnown(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(100),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(100),
 	}
-	b := properties.Cardinalities{
-		Min: properties.OfCardinality(10),
-		Max: properties.OfCardinality(50),
+	b := Cardinalities{
+		Min: OfCardinality(10),
+		Max: OfCardinality(50),
 	}
-	result := properties.IntersectCardinalities([]properties.Cardinalities{a, b})
+	result := IntersectCardinalities([]Cardinalities{a, b})
 	// min: both known -> 0 (intersection can be empty)
 	assertKnown(t, result.GetMinCardinality(), 0)
 	// max: min(100, 50) = 50
@@ -325,15 +324,15 @@ func TestIntersectCardinalities_TwoKnown(t *testing.T) {
 
 func TestIntersectCardinalities_OneUnknownMin(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(100),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(100),
 	}
-	b := properties.Cardinalities{
-		Min: properties.UnknownCardinality(),
-		Max: properties.OfCardinality(50),
+	b := Cardinalities{
+		Min: UnknownCardinality(),
+		Max: OfCardinality(50),
 	}
-	result := properties.IntersectCardinalities([]properties.Cardinalities{a, b})
+	result := IntersectCardinalities([]Cardinalities{a, b})
 	// min: first known, second unknown -> unknown
 	if !result.GetMinCardinality().IsUnknown() {
 		t.Fatal("expected unknown min")
@@ -343,9 +342,9 @@ func TestIntersectCardinalities_OneUnknownMin(t *testing.T) {
 
 func TestIntersectCardinalities_BothUnknownMax(t *testing.T) {
 	t.Parallel()
-	a := properties.UnknownMaxCardinality()
-	b := properties.UnknownMaxCardinality()
-	result := properties.IntersectCardinalities([]properties.Cardinalities{a, b})
+	a := UnknownMaxCardinality()
+	b := UnknownMaxCardinality()
+	result := IntersectCardinalities([]Cardinalities{a, b})
 	assertKnown(t, result.GetMinCardinality(), 0)
 	if !result.GetMaxCardinality().IsUnknown() {
 		t.Fatal("expected unknown max")
@@ -354,7 +353,7 @@ func TestIntersectCardinalities_BothUnknownMax(t *testing.T) {
 
 func TestIntersectCardinalities_Empty(t *testing.T) {
 	t.Parallel()
-	result := properties.IntersectCardinalities(nil)
+	result := IntersectCardinalities(nil)
 	if !result.GetMinCardinality().IsUnknown() {
 		t.Fatal("expected unknown min for empty input")
 	}
@@ -365,11 +364,11 @@ func TestIntersectCardinalities_Empty(t *testing.T) {
 
 func TestIntersectCardinalities_Single(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(100),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(100),
 	}
-	result := properties.IntersectCardinalities([]properties.Cardinalities{a})
+	result := IntersectCardinalities([]Cardinalities{a})
 	assertKnown(t, result.GetMinCardinality(), 5)
 	assertKnown(t, result.GetMaxCardinality(), 100)
 }
@@ -380,30 +379,30 @@ func TestIntersectCardinalities_Single(t *testing.T) {
 
 func TestUnionCardinalities_TwoKnown(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(100),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(100),
 	}
-	b := properties.Cardinalities{
-		Min: properties.OfCardinality(10),
-		Max: properties.OfCardinality(50),
+	b := Cardinalities{
+		Min: OfCardinality(10),
+		Max: OfCardinality(50),
 	}
-	result := properties.UnionCardinalities([]properties.Cardinalities{a, b})
+	result := UnionCardinalities([]Cardinalities{a, b})
 	assertKnown(t, result.GetMinCardinality(), 15)
 	assertKnown(t, result.GetMaxCardinality(), 150)
 }
 
 func TestUnionCardinalities_OneUnknownMin(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(100),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(100),
 	}
-	b := properties.Cardinalities{
-		Min: properties.UnknownCardinality(),
-		Max: properties.OfCardinality(50),
+	b := Cardinalities{
+		Min: UnknownCardinality(),
+		Max: OfCardinality(50),
 	}
-	result := properties.UnionCardinalities([]properties.Cardinalities{a, b})
+	result := UnionCardinalities([]Cardinalities{a, b})
 	if !result.GetMinCardinality().IsUnknown() {
 		t.Fatal("expected unknown min")
 	}
@@ -412,15 +411,15 @@ func TestUnionCardinalities_OneUnknownMin(t *testing.T) {
 
 func TestUnionCardinalities_OneUnknownMax(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.UnknownCardinality(),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: UnknownCardinality(),
 	}
-	b := properties.Cardinalities{
-		Min: properties.OfCardinality(10),
-		Max: properties.OfCardinality(50),
+	b := Cardinalities{
+		Min: OfCardinality(10),
+		Max: OfCardinality(50),
 	}
-	result := properties.UnionCardinalities([]properties.Cardinalities{a, b})
+	result := UnionCardinalities([]Cardinalities{a, b})
 	assertKnown(t, result.GetMinCardinality(), 15)
 	if !result.GetMaxCardinality().IsUnknown() {
 		t.Fatal("expected unknown max")
@@ -429,7 +428,7 @@ func TestUnionCardinalities_OneUnknownMax(t *testing.T) {
 
 func TestUnionCardinalities_Empty(t *testing.T) {
 	t.Parallel()
-	result := properties.UnionCardinalities(nil)
+	result := UnionCardinalities(nil)
 	assertKnown(t, result.GetMinCardinality(), 0)
 	if !result.GetMaxCardinality().IsUnknown() {
 		t.Fatal("expected unknown max for empty union")
@@ -438,21 +437,21 @@ func TestUnionCardinalities_Empty(t *testing.T) {
 
 func TestUnionCardinalities_Single(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(3),
-		Max: properties.OfCardinality(7),
+	a := Cardinalities{
+		Min: OfCardinality(3),
+		Max: OfCardinality(7),
 	}
-	result := properties.UnionCardinalities([]properties.Cardinalities{a})
+	result := UnionCardinalities([]Cardinalities{a})
 	assertKnown(t, result.GetMinCardinality(), 3)
 	assertKnown(t, result.GetMaxCardinality(), 7)
 }
 
 func TestUnionCardinalities_Three(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{Min: properties.OfCardinality(1), Max: properties.OfCardinality(10)}
-	b := properties.Cardinalities{Min: properties.OfCardinality(2), Max: properties.OfCardinality(20)}
-	c := properties.Cardinalities{Min: properties.OfCardinality(3), Max: properties.OfCardinality(30)}
-	result := properties.UnionCardinalities([]properties.Cardinalities{a, b, c})
+	a := Cardinalities{Min: OfCardinality(1), Max: OfCardinality(10)}
+	b := Cardinalities{Min: OfCardinality(2), Max: OfCardinality(20)}
+	c := Cardinalities{Min: OfCardinality(3), Max: OfCardinality(30)}
+	result := UnionCardinalities([]Cardinalities{a, b, c})
 	assertKnown(t, result.GetMinCardinality(), 6)
 	assertKnown(t, result.GetMaxCardinality(), 60)
 }
@@ -463,15 +462,15 @@ func TestUnionCardinalities_Three(t *testing.T) {
 
 func TestWeakenCardinalities_TwoKnown(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(100),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(100),
 	}
-	b := properties.Cardinalities{
-		Min: properties.OfCardinality(10),
-		Max: properties.OfCardinality(50),
+	b := Cardinalities{
+		Min: OfCardinality(10),
+		Max: OfCardinality(50),
 	}
-	result := properties.WeakenCardinalities([]properties.Cardinalities{a, b})
+	result := WeakenCardinalities([]Cardinalities{a, b})
 	// min: min(5, 10) = 5
 	assertKnown(t, result.GetMinCardinality(), 5)
 	// max: max(100, 50) = 100
@@ -480,15 +479,15 @@ func TestWeakenCardinalities_TwoKnown(t *testing.T) {
 
 func TestWeakenCardinalities_OneUnknownMin(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(100),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(100),
 	}
-	b := properties.Cardinalities{
-		Min: properties.UnknownCardinality(),
-		Max: properties.OfCardinality(50),
+	b := Cardinalities{
+		Min: UnknownCardinality(),
+		Max: OfCardinality(50),
 	}
-	result := properties.WeakenCardinalities([]properties.Cardinalities{a, b})
+	result := WeakenCardinalities([]Cardinalities{a, b})
 	// min: known(5) weakened by unknown -> unknown (less constraining)
 	if !result.GetMinCardinality().IsUnknown() {
 		t.Fatal("expected unknown min")
@@ -498,15 +497,15 @@ func TestWeakenCardinalities_OneUnknownMin(t *testing.T) {
 
 func TestWeakenCardinalities_OneUnknownMax(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(5),
-		Max: properties.OfCardinality(100),
+	a := Cardinalities{
+		Min: OfCardinality(5),
+		Max: OfCardinality(100),
 	}
-	b := properties.Cardinalities{
-		Min: properties.OfCardinality(10),
-		Max: properties.UnknownCardinality(),
+	b := Cardinalities{
+		Min: OfCardinality(10),
+		Max: UnknownCardinality(),
 	}
-	result := properties.WeakenCardinalities([]properties.Cardinalities{a, b})
+	result := WeakenCardinalities([]Cardinalities{a, b})
 	assertKnown(t, result.GetMinCardinality(), 5)
 	if !result.GetMaxCardinality().IsUnknown() {
 		t.Fatal("expected unknown max")
@@ -515,7 +514,7 @@ func TestWeakenCardinalities_OneUnknownMax(t *testing.T) {
 
 func TestWeakenCardinalities_Empty(t *testing.T) {
 	t.Parallel()
-	result := properties.WeakenCardinalities(nil)
+	result := WeakenCardinalities(nil)
 	assertKnown(t, result.GetMinCardinality(), 0)
 	if !result.GetMaxCardinality().IsUnknown() {
 		t.Fatal("expected unknown max for empty weaken")
@@ -524,20 +523,20 @@ func TestWeakenCardinalities_Empty(t *testing.T) {
 
 func TestWeakenCardinalities_Single(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{
-		Min: properties.OfCardinality(3),
-		Max: properties.OfCardinality(7),
+	a := Cardinalities{
+		Min: OfCardinality(3),
+		Max: OfCardinality(7),
 	}
-	result := properties.WeakenCardinalities([]properties.Cardinalities{a})
+	result := WeakenCardinalities([]Cardinalities{a})
 	assertKnown(t, result.GetMinCardinality(), 3)
 	assertKnown(t, result.GetMaxCardinality(), 7)
 }
 
 func TestWeakenCardinalities_MinPicksSmaller(t *testing.T) {
 	t.Parallel()
-	a := properties.Cardinalities{Min: properties.OfCardinality(10), Max: properties.OfCardinality(20)}
-	b := properties.Cardinalities{Min: properties.OfCardinality(3), Max: properties.OfCardinality(30)}
-	result := properties.WeakenCardinalities([]properties.Cardinalities{a, b})
+	a := Cardinalities{Min: OfCardinality(10), Max: OfCardinality(20)}
+	b := Cardinalities{Min: OfCardinality(3), Max: OfCardinality(30)}
+	result := WeakenCardinalities([]Cardinalities{a, b})
 	assertKnown(t, result.GetMinCardinality(), 3)
 	assertKnown(t, result.GetMaxCardinality(), 30)
 }
@@ -548,12 +547,12 @@ func TestWeakenCardinalities_MinPicksSmaller(t *testing.T) {
 
 func TestCardinalitiesEqual(t *testing.T) {
 	t.Parallel()
-	a := properties.ExactlyOne()
-	b := properties.ExactlyOne()
+	a := ExactlyOne()
+	b := ExactlyOne()
 	if !a.Equal(b) {
 		t.Fatal("expected equal")
 	}
-	c := properties.AtMostOne()
+	c := AtMostOne()
 	if a.Equal(c) {
 		t.Fatal("expected not equal")
 	}
@@ -565,18 +564,18 @@ func TestCardinalitiesEqual(t *testing.T) {
 
 func TestPropertyMapGetCardinalities_Present(t *testing.T) {
 	t.Parallel()
-	m := properties.PropertyMap{
-		properties.PropCardinalities: properties.ExactlyOne(),
+	m := PropertyMap{
+		PropCardinalities: ExactlyOne(),
 	}
 	got := m.GetCardinalities()
-	if !got.Equal(properties.ExactlyOne()) {
+	if !got.Equal(ExactlyOne()) {
 		t.Fatalf("expected ExactlyOne, got %+v", got)
 	}
 }
 
 func TestPropertyMapGetCardinalities_Absent(t *testing.T) {
 	t.Parallel()
-	m := properties.PropertyMap{}
+	m := PropertyMap{}
 	got := m.GetCardinalities()
 	if !got.GetMinCardinality().IsUnknown() || !got.GetMaxCardinality().IsUnknown() {
 		t.Fatalf("expected UnknownCardinalities, got %+v", got)
@@ -589,9 +588,9 @@ func TestPropertyMapGetCardinalities_Absent(t *testing.T) {
 
 func TestEstimateCardinality_LeafScan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	got := properties.EstimateCardinality(scan)
-	want := properties.EstimateCost(scan).Cardinality
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	got := EstimateCardinality(scan)
+	want := EstimateCost(scan).Cardinality
 	if got != want {
 		t.Fatalf("EstimateCardinality = %v, EstimateCost.Cardinality = %v (must match)", got, want)
 	}
@@ -599,14 +598,14 @@ func TestEstimateCardinality_LeafScan(t *testing.T) {
 
 func TestEstimateCardinality_FilterReducesCardinality(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	filter := expressions.NewLogicalFilterExpression(
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	pred := predicates.NewValuePredicate(propertyField(t, "active", values.TypeBool))
+	filter := mustLogicalFilterExpression(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
-	scanCard := properties.EstimateCardinality(scan)
-	filterCard := properties.EstimateCardinality(filter)
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+
+	scanCard := EstimateCardinality(scan)
+	filterCard := EstimateCardinality(filter)
 	if filterCard >= scanCard {
 		t.Fatalf("filter cardinality %v should be less than scan cardinality %v", filterCard, scanCard)
 	}
@@ -614,11 +613,11 @@ func TestEstimateCardinality_FilterReducesCardinality(t *testing.T) {
 
 func TestEstimateCardinalityWith_UsesStatistics(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"BigTable"}, values.UnknownType)
-	stats := properties.MapStatistics{
+	scan := mustFullUnorderedScanExpression(t, []string{"BigTable"}, propertyTestFlowedType())
+	stats := MapStatistics{
 		PerType: map[string]float64{"BigTable": 5_000_000},
 	}
-	got := properties.EstimateCardinalityWith(scan, stats)
+	got := EstimateCardinalityWith(scan, stats)
 	if got != 5_000_000 {
 		t.Fatalf("EstimateCardinalityWith = %v, want 5_000_000 (from stats)", got)
 	}
@@ -626,15 +625,15 @@ func TestEstimateCardinalityWith_UsesStatistics(t *testing.T) {
 
 func TestBestRefCardinality_PicksMinAcrossMembers(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := mustFullUnorderedScanExpression(t, []string{"A"}, propertyTestFlowedType())
+	scanB := mustFullUnorderedScanExpression(t, []string{"B"}, propertyTestFlowedType())
 	ref := expressions.InitialOf(scanA)
 	ref.Insert(scanB)
 
 	// Both scans have the same default cardinality, so BestRefCardinality
 	// returns that value.
-	want := properties.EstimateCardinality(scanA)
-	got := properties.BestRefCardinality(ref)
+	want := EstimateCardinality(scanA)
+	got := BestRefCardinality(ref)
 	if got != want {
 		t.Fatalf("BestRefCardinality = %v, want %v", got, want)
 	}
@@ -642,20 +641,19 @@ func TestBestRefCardinality_PicksMinAcrossMembers(t *testing.T) {
 
 func TestCardinalityLess_OrdersBySize(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	filter := expressions.NewLogicalFilterExpression(
+	scan := mustFullUnorderedScanExpression(t, []string{"T"}, propertyTestFlowedType())
+	pred := predicates.NewValuePredicate(propertyField(t, "active", values.TypeBool))
+	filter := mustLogicalFilterExpression(t,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)))
 
 	// Filter has lower cardinality than Scan -> CardinalityLess(filter, scan)
 	// should be true.
-	if !properties.CardinalityLess(filter, scan) {
+	if !CardinalityLess(filter, scan) {
 		t.Fatal("CardinalityLess(filter, scan) = false, want true (filter narrows)")
 	}
 	// Reverse: CardinalityLess(scan, filter) should be false.
-	if properties.CardinalityLess(scan, filter) {
+	if CardinalityLess(scan, filter) {
 		t.Fatal("CardinalityLess(scan, filter) = true, want false")
 	}
 }
@@ -664,7 +662,7 @@ func TestCardinalityLess_OrdersBySize(t *testing.T) {
 // helpers
 // ---------------------------------------------------------------------------
 
-func assertKnown(t *testing.T, c properties.Cardinality, want int64) {
+func assertKnown(t *testing.T, c Cardinality, want int64) {
 	t.Helper()
 	if c.IsUnknown() {
 		t.Fatalf("expected known cardinality %d, got unknown", want)

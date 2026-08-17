@@ -69,8 +69,20 @@ func (r *PushRequestedOrderingThroughSelectRule) OnMatch(call *ImplementationRul
 			if o.IsPreserve() {
 				toBePushed = append(toBePushed, properties.PreserveOrdering())
 			} else {
-				pushed := pushRequestedOrderingToSelectChild(
-					o, resultValue, innerQuantifier.GetAlias(), localAliases)
+				// Java's pushDown finishes with rebase(childAlias -> current) and
+				// keeps only the parts that land entirely in current space
+				// (RequestedOrdering.java:220-232). The child-space result above
+				// is the half before that rebase; a constraint attached to the
+				// child REFERENCE is read there in the child's own current-row
+				// space, so it has to cross.
+				pushed, err := requestedOrderingAtInnerCurrent(
+					pushRequestedOrderingToSelectChild(
+						o, resultValue, innerQuantifier.GetAlias(), localAliases),
+					innerQuantifier)
+				if err != nil {
+					call.Fail(err)
+					return
+				}
 				toBePushed = append(toBePushed, pushed)
 				hasConcrete = hasConcrete || !pushed.IsPreserve()
 			}
@@ -95,16 +107,42 @@ func (r *PushRequestedOrderingThroughSelectRule) OnMatch(call *ImplementationRul
 // Value.PushDownThroughValue handles the projection shape; this local-alias
 // filter supplies Java's alias-map/constant-alias discipline that the direct Go
 // value algorithm does not otherwise carry.
+//
+// The request arrives expressed over the SELECT's own output row, which is the
+// reserved-current handle — Java passes Quantifier.current() as the upper base
+// of the same push-down (RequestedOrdering.pushDown, called with
+// Quantifier.current()). Passing the CHILD's alias there instead asks the
+// push-down to interpret the request in the space it is trying to reach, so
+// every part declines and the whole request degrades to Preserve.
 func pushRequestedOrderingToSelectChild(
 	ordering *properties.RequestedOrdering,
 	resultValue values.Value,
 	childAlias values.CorrelationIdentifier,
 	localAliases map[values.CorrelationIdentifier]struct{},
 ) *properties.RequestedOrdering {
+	return pushRequestedOrderingToSelectChildThroughOutput(
+		ordering, resultValue, values.CurrentCorrelation(), childAlias, localAliases)
+}
+
+// pushRequestedOrderingToSelectChildThroughOutput separates the alias that
+// owns the producer's OUTPUT row from the child whose retained fields may
+// satisfy the request. They are normally the same logical SELECT alias. A
+// physical FlatMap at an enclosing Sort is different: the Sort names the
+// FlatMap's exact current-row carrier, while the result program still names
+// the outer and inner runtime bindings. Push-down must therefore interpret
+// output ordinals in current-row space, then use childAlias only to reject
+// fields owned by the sibling leg.
+func pushRequestedOrderingToSelectChildThroughOutput(
+	ordering *properties.RequestedOrdering,
+	resultValue values.Value,
+	outputAlias values.CorrelationIdentifier,
+	childAlias values.CorrelationIdentifier,
+	localAliases map[values.CorrelationIdentifier]struct{},
+) *properties.RequestedOrdering {
 	if ordering == nil || ordering.IsPreserve() {
 		return properties.PreserveOrdering()
 	}
-	pushed := ordering.PushDownThroughValue(resultValue, childAlias)
+	pushed := ordering.PushDownThroughValue(resultValue, outputAlias)
 	if pushed.IsPreserve() {
 		return pushed
 	}
@@ -124,8 +162,8 @@ func pushRequestedOrderingToSelectChild(
 	// scan directions, and BOTH yields a forward scan only — so no descending
 	// access path below an IN was ever enumerated.
 	resultIsChildRow := false
-	if qov, isQOV := resultValue.(*values.QuantifiedObjectValue); isQOV {
-		resultIsChildRow = qov.Correlation == childAlias
+	if qov, isQOV := values.AsQuantifiedObjectValue(resultValue); isQOV {
+		resultIsChildRow = qov.Correlation() == childAlias
 	}
 
 	parts := make([]properties.RequestedOrderingPart, 0, len(pushed.GetParts()))

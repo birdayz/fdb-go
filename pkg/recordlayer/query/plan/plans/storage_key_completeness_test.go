@@ -31,11 +31,14 @@ func completenessRow() values.Type {
 
 // completenessIndexPlan builds a forward index scan on one key column of the
 // given type over PK (ID), with no scan bounds.
-func completenessIndexPlan(keyColumn string, keyType values.Type) *RecordQueryIndexPlan {
-	return NewRecordQueryIndexPlan(
-		"IDX_"+keyColumn,
-		[]*predicates.ComparisonRange{},
-		[]string{"T"}, completenessRow(), false /* forward */).
+func completenessIndexPlan(t testing.TB, keyColumn string, keyType values.Type) *RecordQueryIndexPlan {
+	t.Helper()
+	return mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"IDX_"+keyColumn,
+			[]*predicates.ComparisonRange{},
+			[]string{"T"}, completenessRow(), false /* forward */)
+	}).
 		WithKeyComponentTypes([]values.Type{keyType}).
 		WithIndexMetadata([]string{keyColumn}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
@@ -47,7 +50,7 @@ func completenessIndexPlan(keyColumn string, keyType values.Type) *RecordQueryIn
 func TestStorageKeyCompleteness_UntruncatedIndexIsComplete(t *testing.T) {
 	t.Parallel()
 
-	ordering := completenessIndexPlan("A", values.NullableLong).HintRichOrdering()
+	ordering := completenessIndexPlan(t, "A", values.NullableLong).HintRichOrdering()
 	if got := len(ordering.GetKeys()); got != 2 {
 		t.Fatalf("ordering has %d coordinates, want 2 (A, ID)", got)
 	}
@@ -68,7 +71,7 @@ func TestStorageKeyCompleteness_UntruncatedIndexIsComplete(t *testing.T) {
 func TestStorageKeyCompleteness_FloatTruncationIsIncomplete(t *testing.T) {
 	t.Parallel()
 
-	plan := completenessIndexPlan("D", values.NullableDouble)
+	plan := completenessIndexPlan(t, "D", values.NullableDouble)
 	ordering := plan.HintRichOrdering()
 	if got := len(ordering.GetKeys()); got != 0 {
 		t.Fatalf("the claim must terminate AT the float, advertising no coordinate; got %d", got)
@@ -109,7 +112,7 @@ func TestStorageKeyCompleteness_TruncationIsOverdetermined(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			plan := completenessIndexPlan(tc.column, tc.keyType)
+			plan := completenessIndexPlan(t, tc.column, tc.keyType)
 			typesAgree := properties.TupleKeyUniquenessMatchesLogicalEquality(
 				plan.GetKeyComponentTypes(), len(plan.GetColumnNames())) &&
 				properties.TupleKeyUniquenessMatchesLogicalEquality(
@@ -137,7 +140,7 @@ func TestStorageKeyCompleteness_TruncationIsOverdetermined(t *testing.T) {
 func TestStorageKeyCompleteness_ExpressionKeyIndexIsIncomplete(t *testing.T) {
 	t.Parallel()
 
-	plan := completenessIndexPlan("A", values.NullableLong).
+	plan := completenessIndexPlan(t, "A", values.NullableLong).
 		WithOrderingKeyNamesUnavailable()
 
 	// The type-only question — what the consumer used to ask — still answers
@@ -189,10 +192,10 @@ func TestStorageKeyCompleteness_ZeroCoordinateScanIsIncomplete(t *testing.T) {
 
 	// A DOUBLE leading primary-key column terminates the ordering claim at
 	// position 0, so the scan advertises no coordinates at all.
-	plan := NewRecordQueryScanPlan([]string{"T"}, completenessRow(), false).
-		WithPrimaryKey([]values.Value{
-			values.NewFieldValueWithResolvedOrdinal("D", 2, values.NullableDouble),
-		}).
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"T"}, completenessRow(), false)
+	}).
+		WithPrimaryKey([]values.Value{testFieldAt(t, "D", 2, values.NullableDouble)}).
 		WithKeyComponentTypes([]values.Type{values.NullableDouble})
 
 	ordering := plan.HintRichOrdering()
@@ -220,18 +223,21 @@ func TestStorageKeyCompleteness_ZeroCoordinateScanIsIncomplete(t *testing.T) {
 func TestStorageKeyCompleteness_DoesNotSurvivePrefixing(t *testing.T) {
 	t.Parallel()
 
-	full := completenessIndexPlan("A", values.NullableLong).HintRichOrdering()
+	full := completenessIndexPlan(t, "A", values.NullableLong).HintRichOrdering()
 	if !full.StorageKeyIsComplete() {
 		t.Fatal("precondition: the full (A, ID) ordering is storage-complete")
 	}
 
 	keys := full.GetKeys()
 	upper := values.NamedCorrelationIdentifier("completeness_prefix")
-	prefix := full.PullUpThroughValue(
+	prefix, err := full.PullUpThroughValue(
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{Name: "A", Value: keys[0]},
 		),
 		upper)
+	if err != nil {
+		t.Fatalf("PullUpThroughValue: %v", err)
+	}
 	if prefix == nil {
 		t.Fatal("PullUpThroughValue returned nil")
 	}

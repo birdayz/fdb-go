@@ -56,9 +56,18 @@ func (r *DistinctOverUnionDedupRule) OnMatch(call *ExpressionRuleCall) {
 	if !removed {
 		return
 	}
-	newUnion := expressions.NewLogicalUnionExpression(deduped)
+	newUnion, err := expressions.NewLogicalUnionExpression(deduped)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(newUnion))
-	call.Yield(expressions.NewLogicalDistinctExpression(innerQ))
+	outer, err := expressions.NewLogicalDistinctExpression(innerQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(outer)
 }
 
 // dedupUnionChildren returns a slice of `qs` where each Quantifier's

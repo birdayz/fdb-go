@@ -94,7 +94,11 @@ func (r *PushMapThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	)
 	// The pushed projection (Map) is its own cascades expression carrying the
 	// live newInnerQ edge (RFC-184 W2).
-	pushedMapPlan := plans.NewRecordQueryMapPlanFromQuantifier(newInnerQ, pushedResultValue)
+	pushedMapPlan, err := plans.NewRecordQueryMapPlanFromQuantifier(newInnerQ, pushedResultValue)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	call.Yield(pushedMapPlan)
 }

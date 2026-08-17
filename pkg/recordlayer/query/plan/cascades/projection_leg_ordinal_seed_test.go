@@ -7,23 +7,28 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustProjectionLegConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct projection-leg fixture: " + err.Error())
+	}
+	return value
+}
+
 // projLeg is a derived-table leg as the planner builds it: a projection of two
 // columns over a scan. This is what `FROM (SELECT id, v FROM t1) AS d` and a
 // non-inlined CTE reference lower to, and it is the leg shape the step-1 seed
 // used to refuse.
 func projLeg(t *testing.T) *plans.RecordQueryProjectionPlan {
 	t.Helper()
-	scan := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
+	rowType := commit2RecType("T1", "ID", "V")
+	scan := mustProjectionLegConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T1"}, rowType, false))
 	q := plans.QuantifierOverPlan(scan)
-	idV, err := values.NewFieldValueOfOrdinal(values.NewQuantifiedObjectValueOfType(q.GetAlias(), commit2RecType("T1", "ID", "V")), 0)
-	if err != nil {
-		t.Fatalf("ofOrdinal(0): %v", err)
-	}
-	vV, err := values.NewFieldValueOfOrdinal(values.NewQuantifiedObjectValueOfType(q.GetAlias(), commit2RecType("T1", "ID", "V")), 1)
-	if err != nil {
-		t.Fatalf("ofOrdinal(1): %v", err)
-	}
-	return plans.NewRecordQueryProjectionPlan([]values.Value{idV, vV}, scan)
+	root := mustProjectionLegConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), rowType))
+	idV := mustProjectionLegConstruct(values.ResolveFieldOrdinals(root, []int{0}))
+	vV := mustProjectionLegConstruct(values.ResolveFieldOrdinals(root, []int{1}))
+	return mustProjectionLegConstruct(plans.NewRecordQueryProjectionPlan(
+		[]values.Value{idV, vV}, scan))
 }
 
 // A PROJECTION leg is ordinal-safe and contributes its OWN stated row to the
@@ -50,9 +55,10 @@ func TestProjectionLegSeedsStep1(t *testing.T) {
 	// the scan's two. Arity is asserted because a projection admitted with the
 	// WRONG row (its inner's, say) would still be "safe" and would window the
 	// merged row against columns the leg never emits.
-	scan := plans.NewRecordQueryScanPlan([]string{"T3"}, commit2RecType("T3", "ID", "T1_ID"), false)
+	scan := mustProjectionLegConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T3"}, commit2RecType("T3", "ID", "T1_ID"), false))
 	seed, decline := reconstructFoldStep1Seed(proj, scan,
-		values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("T3"))
+		values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("T3"), plans.JoinInner)
 	if seed == nil {
 		t.Fatalf("projection + scan legs must reconstruct a seed; declined shape=%v witness=%q",
 			decline.Shape, decline.Witness)
@@ -83,8 +89,9 @@ func TestProjectionLegSeedsStep1(t *testing.T) {
 // cannot admit a leg whose fields the merged row then cannot enumerate.
 func TestProjectionLegWithNoStatableRowIsRefused(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T1"}, commit2RecType("T1", "ID", "V"), false)
-	empty := plans.NewRecordQueryProjectionPlan(nil, scan)
+	scan := mustProjectionLegConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T1"}, commit2RecType("T1", "ID", "V"), false))
+	empty := mustProjectionLegConstruct(plans.NewRecordQueryProjectionPlan(nil, scan))
 	if projectionLegRowType(empty) != nil {
 		t.Fatal("a projection with no columns states no row")
 	}
@@ -93,7 +100,7 @@ func TestProjectionLegWithNoStatableRowIsRefused(t *testing.T) {
 			"ordinals off a row nothing describes addresses slots by guess")
 	}
 	if seed, _ := reconstructFoldStep1Seed(empty, scan,
-		values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("T1")); seed != nil {
+		values.NamedCorrelationIdentifier("D"), values.NamedCorrelationIdentifier("T1"), plans.JoinInner); seed != nil {
 		t.Fatal("an unstatable projection leg must decline the seed reconstruction")
 	}
 }

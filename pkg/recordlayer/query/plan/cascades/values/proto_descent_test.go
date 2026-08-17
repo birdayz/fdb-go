@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -56,6 +57,74 @@ func nestedFixtureMessage(t *testing.T) protoreflect.Message {
 func protoStr(s string) *string { return &s }
 func protoInt32(i int32) *int32 { return &i }
 
+// TestFieldValue_ProtoRootWithNullableArrayWrapper pins that exact runtime
+// shape admission uses the same EffectiveListField authority as proto typing.
+// The wrapper is one nullable ARRAY slot, not an unrelated nested RECORD; a
+// root containing it remains readable, while a mutated element type is still
+// rejected before any field value is observed.
+func TestFieldValue_ProtoRootWithNullableArrayWrapper(t *testing.T) {
+	t.Parallel()
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name: proto.String("nullable_array_root.proto"), Syntax: proto.String("proto2"),
+		Package: proto.String("wrapper.root"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("Longs"), Field: []*descriptorpb.FieldDescriptorProto{{
+				Name: proto.String("values"), Number: proto.Int32(1),
+				Label: descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum(),
+				Type:  descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum(),
+			}}},
+			{Name: proto.String("Row"), Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("id"), Number: proto.Int32(1), Label: descriptorpb.FieldDescriptorProto_LABEL_REQUIRED.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_INT64.Enum()},
+				{Name: proto.String("items"), Number: proto.Int32(2), Label: descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(), Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".wrapper.root.Longs")},
+			}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	desc := file.Messages().ByName("Row")
+	message := dynamicpb.NewMessage(desc)
+	message.Set(desc.Fields().ByName("id"), protoreflect.ValueOfInt64(7))
+	wrapper, list := NewWrappedArrayMessage(desc.Fields().ByName("items"))
+	list.Append(protoreflect.ValueOfInt64(9))
+	message.Set(desc.Fields().ByName("items"), protoreflect.ValueOfMessage(wrapper))
+
+	rootType := NewRecordType("", false, []Field{
+		{Name: "ID", FieldType: FieldTypeForProtoField(desc.Fields().ByName("id")), Ordinal: 0},
+		{Name: "ITEMS", FieldType: FieldTypeForProtoField(desc.Fields().ByName("items")), Ordinal: 1},
+	})
+	qov := mustQOV(t, NamedCorrelationIdentifier("wrapped"), rootType)
+	id, err := ResolveFieldOrdinals(qov, []int{0})
+	if err != nil {
+		t.Fatalf("resolve ID: %v", err)
+	}
+	if got, evalErr := id.Evaluate(&RowEvalContext{Correlations: &ordEvalBinder{id: qov.Correlation(), bound: message}}); evalErr != nil || got != int64(7) {
+		t.Fatalf("ID over root containing wrapper = (%v, %v), want (7, nil)", got, evalErr)
+	}
+	items, err := ResolveFieldOrdinals(qov, []int{1})
+	if err != nil {
+		t.Fatalf("resolve ITEMS: %v", err)
+	}
+	got, evalErr := items.Evaluate(&RowEvalContext{Correlations: &ordEvalBinder{id: qov.Correlation(), bound: message}})
+	array, ok := got.([]any)
+	if evalErr != nil || !ok || len(array) != 1 || array[0] != int64(9) {
+		t.Fatalf("ITEMS wrapper = (%#v, %v), want []any{9}", got, evalErr)
+	}
+
+	mutatedType := NewRecordType("", false, []Field{
+		{Name: "ID", FieldType: rootType.Fields[0].FieldType, Ordinal: 0},
+		{Name: "ITEMS", FieldType: NewArrayType(true, NotNullString), Ordinal: 1},
+	})
+	mutatedQOV := mustQOV(t, NamedCorrelationIdentifier("wrong_wrapper"), mutatedType)
+	mutatedID, err := ResolveFieldOrdinals(mutatedQOV, []int{0})
+	if err != nil {
+		t.Fatalf("resolve mutated ID: %v", err)
+	}
+	if _, evalErr := mutatedID.Evaluate(&RowEvalContext{Correlations: &ordEvalBinder{id: mutatedQOV.Correlation(), bound: message}}); evalErr == nil {
+		t.Fatal("wrapper element-type mutation was admitted; root compatibility must reject it before reading even ID")
+	}
+}
+
 // TestFieldValue_DescendProtoMessage pins the STRUCT descent: a fused
 // multi-accessor path whose intermediate value is a raw proto message
 // descends by field name (case-insensitive — SQL identifiers are UPPER,
@@ -76,11 +145,11 @@ func protoInt32(i int32) *int32 { return &i }
 func TestFieldValue_DescendProtoMessage(t *testing.T) {
 	t.Parallel()
 	om := nestedFixtureMessage(t)
-	fused := &FieldValue{
+	fused := &fieldValue{
 		Field: "SUB",
 		Typ:   NotNullLong,
-		Resolved: &FieldPath{
-			Accessors:      []ResolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "REC", Ordinal: 0}, {Field: "SUB", Ordinal: 0}},
+		Resolved: &fieldPath{
+			Accessors:      []resolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "REC", Ordinal: 0}, {Field: "SUB", Ordinal: 0}},
 			FrontierPinned: true,
 		},
 	}
@@ -93,11 +162,11 @@ func TestFieldValue_DescendProtoMessage(t *testing.T) {
 	}
 
 	// A repeated leaf stays a list (the Explode's collection shape).
-	fusedArr := &FieldValue{
+	fusedArr := &fieldValue{
 		Field: "ARR_E",
 		Typ:   NotNullLong,
-		Resolved: &FieldPath{
-			Accessors:      []ResolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "REC", Ordinal: 0}, {Field: "ARR_E", Ordinal: 1}},
+		Resolved: &fieldPath{
+			Accessors:      []resolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "REC", Ordinal: 0}, {Field: "ARR_E", Ordinal: 1}},
 			FrontierPinned: true,
 		},
 	}
@@ -111,11 +180,11 @@ func TestFieldValue_DescendProtoMessage(t *testing.T) {
 	}
 
 	// A missing field on a PINNED path is LOUD, never silent NULL.
-	fusedMiss := &FieldValue{
+	fusedMiss := &fieldValue{
 		Field: "NOPE",
 		Typ:   NotNullLong,
-		Resolved: &FieldPath{
-			Accessors:      []ResolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "REC", Ordinal: 0}, {Field: "NOPE", Ordinal: 9}},
+		Resolved: &fieldPath{
+			Accessors:      []resolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "REC", Ordinal: 0}, {Field: "NOPE", Ordinal: 9}},
 			FrontierPinned: true,
 		},
 	}
@@ -133,12 +202,12 @@ func TestFieldValue_DescendProtoMessage(t *testing.T) {
 // MessageHelpers.java:170-175). Go descends by name, and the debt entry on
 // protoFieldByName says the fix is to resolve the path to field NUMBERS once at
 // the boundary. That reads like a local edit. It is not, and the reason is
-// mechanical: ResolvedAccessor.Ordinal is NOT the proto descriptor's
+// mechanical: resolvedAccessor.Ordinal is NOT the proto descriptor's
 // declaration index on the producers that actually reach this arm.
 //
 // The struct-descent producers mint the LOUD sentinel -1 on purpose —
 // `unnest_seed.go` and `unnest_gather.go` both build their suffix accessors as
-// `ResolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1}`, on the stated
+// `resolvedAccessor{Field: strings.ToUpper(seg), Ordinal: -1}`, on the stated
 // grounds that "a struct materializes as a proto message, not a positional row,
 // so the ordinal is never consulted". The remaining producer,
 // `expr/expr.go`'s fuseNestedAccessors, copies semantic.NestedAccessor.Ordinal,
@@ -158,11 +227,11 @@ func TestFieldValue_DescendProtoMessage_MustNotConsultTheOrdinal(t *testing.T) {
 
 	// The exact accessor shape unnest_seed.go / unnest_gather.go mint for a
 	// struct descent: the name carries the resolution, the ordinal is -1.
-	sentinel := &FieldValue{
+	sentinel := &fieldValue{
 		Field: "SUB",
 		Typ:   NotNullLong,
-		Resolved: &FieldPath{
-			Accessors: []ResolvedAccessor{
+		Resolved: &fieldPath{
+			Accessors: []resolvedAccessor{
 				{Field: "ROOT", Ordinal: 0},
 				{Field: "REC", Ordinal: -1},
 				{Field: "SUB", Ordinal: -1},
@@ -183,11 +252,11 @@ func TestFieldValue_DescendProtoMessage_MustNotConsultTheOrdinal(t *testing.T) {
 	// wrong-but-in-range ordinal still reads the field the name selects. `sub`
 	// is declaration index 0 of Inner and `arr_e` is 1, so an ordinal descent
 	// would return the list [7 8] here instead of 42.
-	wrongOrdinal := &FieldValue{
+	wrongOrdinal := &fieldValue{
 		Field: "SUB",
 		Typ:   NotNullLong,
-		Resolved: &FieldPath{
-			Accessors: []ResolvedAccessor{
+		Resolved: &fieldPath{
+			Accessors: []resolvedAccessor{
 				{Field: "ROOT", Ordinal: 0},
 				{Field: "REC", Ordinal: 0},
 				{Field: "SUB", Ordinal: 1},
@@ -216,12 +285,12 @@ func TestFieldValue_DescendDefaultArm(t *testing.T) {
 	t.Parallel()
 
 	descend := func(pinned bool, root any) (any, error) {
-		fv := &FieldValue{
+		fv := &fieldValue{
 			Field: "SUB",
 			Typ:   NotNullLong,
-			Resolved: &FieldPath{
+			Resolved: &fieldPath{
 				// 2 accessors → one descent step lands `cur` on `root`.
-				Accessors:      []ResolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "SUB", Ordinal: 0}},
+				Accessors:      []resolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "SUB", Ordinal: 0}},
 				FrontierPinned: pinned,
 			},
 		}

@@ -40,11 +40,8 @@ func groupKeyCursor(t *testing.T) *aggregateCursor {
 	rowType := values.NewRecordType("", false, []values.Field{
 		{Name: "D", FieldType: values.NullableDouble, Ordinal: 0},
 	})
-	qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("T"), rowType)
-	key, err := values.NewFieldValueOfOrdinal(qov, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
+	qov := mustTestQOV(t, values.NamedCorrelationIdentifier("T"), rowType)
+	key := mustTestFieldOrdinal(t, qov, 0)
 	return &aggregateCursor{
 		groupingKeys: []values.Value{key},
 		aggregates:   []expressions.AggregateSpec{{Function: expressions.AggCount}},

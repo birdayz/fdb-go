@@ -15,15 +15,21 @@ import (
 type DeleteExpression struct {
 	inner            Quantifier
 	targetRecordType string
+	resultValue      values.QuantifiedObjectValue
 }
 
 // NewDeleteExpression builds a DELETE for `targetRecordType` over
 // `inner`.
-func NewDeleteExpression(inner Quantifier, targetRecordType string) *DeleteExpression {
+func NewDeleteExpression(inner Quantifier, targetRecordType string) (*DeleteExpression, error) {
+	resultValue, err := requireFlowedResult("DeleteExpression", inner)
+	if err != nil {
+		return nil, err
+	}
 	return &DeleteExpression{
 		inner:            inner,
 		targetRecordType: targetRecordType,
-	}
+		resultValue:      resultValue,
+	}, nil
 }
 
 // GetInner returns the inner Quantifier.
@@ -50,7 +56,7 @@ func (e *DeleteExpression) GetTargetRecordType() string { return e.targetRecordT
 // TestDeleteResultValueStatesTheInnerRow so the three are not "made consistent"
 // in either direction.
 func (e *DeleteExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -87,10 +93,11 @@ func (e *DeleteExpression) HashCodeWithoutChildren() uint64 {
 	return h.Sum64()
 }
 
-func (e *DeleteExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *DeleteExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("DeleteExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewDeleteExpression(quantifiers[0], e.targetRecordType)
 }
 
 var _ RelationalExpression = (*DeleteExpression)(nil)

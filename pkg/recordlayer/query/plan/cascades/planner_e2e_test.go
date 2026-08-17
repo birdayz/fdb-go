@@ -11,12 +11,60 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustE2EConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner E2E fixture: " + err.Error())
+	}
+	return value
+}
+
+func e2eTestRowType() values.Type {
+	return values.NewRecordType("E2ERow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "x", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "a_id", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "b_id", FieldType: values.NotNullLong, Ordinal: 3},
+	})
+}
+
+func e2eLogicalScan(recordType string) *expressions.FullUnorderedScanExpression {
+	return mustE2EConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, e2eTestRowType()))
+}
+
+func e2eRoot(q expressions.Quantifier) values.QuantifiedObjectValue {
+	flowedType := mustE2EConstruct(q.GetFlowedObjectType())
+	return mustE2EConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func e2eField(root values.Value, name string) values.Value {
+	request := mustE2EConstruct(values.FieldByName(name))
+	return mustE2EConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
+}
+
+func e2eMergeResult(qs ...expressions.Quantifier) values.Value {
+	fields := make([]values.RecordConstructorField, len(qs))
+	for i, q := range qs {
+		fields[i] = values.RecordConstructorField{
+			Name: values.OrdinalFieldName(i), Value: e2eRoot(q),
+		}
+	}
+	return values.NewRawRecordConstructorValue(fields...)
+}
+
+func e2ePlanner(ctx PlanContext) *Planner {
+	return NewPlanner(DefaultExpressionRules(), ctx).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
+}
+
 func TestE2E_ScanOnlyPlan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := e2eLogicalScan("T")
 	rootRef := expressions.InitialOf(scan)
 
-	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
+	p := e2ePlanner(nil)
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -32,19 +80,20 @@ func TestE2E_ScanOnlyPlan(t *testing.T) {
 
 func TestE2E_FilterOverScan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := e2eLogicalScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.UnknownType},
+		e2eField(e2eRoot(scanQ), "x"),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, 42),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustE2EConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
-	)
+		scanQ,
+	))
 	rootRef := expressions.InitialOf(filter)
 
-	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
+	p := e2ePlanner(nil)
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -59,27 +108,29 @@ func TestE2E_FilterOverScan(t *testing.T) {
 
 func TestE2E_SortOverFilterOverScan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := e2eLogicalScan("T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "x", Typ: values.UnknownType},
+		e2eField(e2eRoot(scanQ), "x"),
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, 10),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustE2EConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
-	)
+		scanQ,
+	))
 	filterRef := expressions.InitialOf(filter)
-	sort := expressions.NewLogicalSortExpression(
+	filterQ := expressions.ForEachQuantifier(filterRef)
+	sort := mustE2EConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{{
-			Value:   &values.FieldValue{Field: "x", Typ: values.UnknownType},
+			Value:   e2eField(e2eRoot(filterQ), "x"),
 			Reverse: false,
 		}},
-		expressions.ForEachQuantifier(filterRef),
-	)
+		filterQ,
+	))
 	rootRef := expressions.InitialOf(sort)
 
-	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
+	p := e2ePlanner(nil)
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -91,14 +142,14 @@ func TestE2E_SortOverFilterOverScan(t *testing.T) {
 
 func TestE2E_DistinctOverScan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := e2eLogicalScan("T")
 	scanRef := expressions.InitialOf(scan)
-	distinct := expressions.NewLogicalDistinctExpression(
+	distinct := mustE2EConstruct(expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(scanRef),
-	)
+	))
 	rootRef := expressions.InitialOf(distinct)
 
-	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
+	p := e2ePlanner(nil)
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -110,14 +161,14 @@ func TestE2E_DistinctOverScan(t *testing.T) {
 
 func TestE2E_LimitOverScan(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := e2eLogicalScan("T")
 	scanRef := expressions.InitialOf(scan)
-	limit := expressions.NewLogicalLimitExpression(5, 0,
+	limit := mustE2EConstruct(expressions.NewLogicalLimitExpression(5, 0,
 		expressions.ForEachQuantifier(scanRef),
-	)
+	))
 	rootRef := expressions.InitialOf(limit)
 
-	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
+	p := e2ePlanner(nil)
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -129,15 +180,15 @@ func TestE2E_LimitOverScan(t *testing.T) {
 
 func TestE2E_UnionOfTwoScans(t *testing.T) {
 	t.Parallel()
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	scanA := e2eLogicalScan("A")
+	scanB := e2eLogicalScan("B")
+	union := mustE2EConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(expressions.InitialOf(scanA)),
 		expressions.ForEachQuantifier(expressions.InitialOf(scanB)),
-	})
+	}))
 	rootRef := expressions.InitialOf(union)
 
-	p := NewPlanner(allRules(), nil).WithPlanningExpressionRules(BatchAExpressionRules()).WithImplementationRules(DefaultImplementationRules())
+	p := e2ePlanner(nil)
 	plan, _, err := p.Plan(rootRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
@@ -166,26 +217,28 @@ func TestE2E_SortEliminationThroughFilter(t *testing.T) {
 	rowType := values.NewRecordType("TABLE", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 	})
-	scan := expressions.NewFullUnorderedScanExpression([]string{"TABLE"}, rowType)
+	scan := mustE2EConstruct(expressions.NewFullUnorderedScanExpression([]string{"TABLE"}, rowType))
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
 	pred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+		e2eField(e2eRoot(scanQ), "ID"),
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, 5),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustE2EConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(scanRef),
-	)
+		scanQ,
+	))
 	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	sort := expressions.NewLogicalSortExpression(
+	sort := mustE2EConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{{
-			Value:   &values.FieldValue{Field: "ID", Typ: values.UnknownType},
+			Value:   e2eField(e2eRoot(filterQ), "ID"),
 			Reverse: false,
 		}},
-		expressions.ForEachQuantifier(filterRef),
-	)
+		filterQ,
+	))
 	rootRef := expressions.InitialOf(sort)
 
 	// PlanContext that declares ID as the primary key of TABLE.
@@ -285,25 +338,28 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 	t.Parallel()
 
 	buildSelect := func() *expressions.Reference {
-		scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+		scanA := e2eLogicalScan("A")
 		scanARef := expressions.InitialOf(scanA)
 		scanAQ := expressions.ForEachQuantifier(scanARef)
 
-		scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+		scanB := e2eLogicalScan("B")
 		scanBRef := expressions.InitialOf(scanB)
 		scanBQ := expressions.ForEachQuantifier(scanBRef)
 
 		joinPred := predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "a_id", Typ: values.UnknownType},
-			predicates.NewLiteralComparison(predicates.ComparisonEquals, "b_id"),
+			e2eField(e2eRoot(scanAQ), "a_id"),
+			predicates.Comparison{
+				Type:    predicates.ComparisonEquals,
+				Operand: e2eField(e2eRoot(scanBQ), "b_id"),
+			},
 		)
 
-		sel := expressions.NewSelectExpressionWithAliases(
-			values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+		sel := mustE2EConstruct(expressions.NewSelectExpressionWithAliases(
+			e2eMergeResult(scanAQ, scanBQ),
 			[]expressions.Quantifier{scanAQ, scanBQ},
 			[]predicates.QueryPredicate{joinPred},
 			[]string{"A", "B"},
-		)
+		))
 		return expressions.InitialOf(sel)
 	}
 
@@ -329,10 +385,10 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 	// BOTH join directions.
 	fireRef := buildSelect()
 	for _, q := range fireRef.Get().GetQuantifiers() {
-		FireExpressionRule(NewPrimaryScanRule(), q.GetRangesOver())
+		mustFireExpressionRule(t, NewPrimaryScanRule(), q.GetRangesOver())
 	}
 	var yieldedNLJs []*plans.RecordQueryNestedLoopJoinPlan
-	for _, y := range FireExpressionRule(NewImplementNestedLoopJoinRule(), fireRef) {
+	for _, y := range mustFireExpressionRule(t, NewImplementNestedLoopJoinRule(), fireRef) {
 		if nlj, ok := y.(*plans.RecordQueryNestedLoopJoinPlan); ok {
 			yieldedNLJs = append(yieldedNLJs, nlj)
 		}
@@ -382,21 +438,25 @@ func TestE2E_JoinCommutativityExploration(t *testing.T) {
 func TestE2E_JoinCommutativitySkippedForLeftJoin(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+	scanA := e2eLogicalScan("A")
 	scanARef := expressions.InitialOf(scanA)
 	scanAQ := expressions.ForEachQuantifier(scanARef)
 
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanB := e2eLogicalScan("B")
 	scanBRef := expressions.InitialOf(scanB)
 	scanBQ := expressions.ForEachQuantifier(scanBRef)
+	nullableB := mustE2EConstruct(values.NewQuantifiedObjectValue(
+		scanBQ.GetAlias(), values.WithNullability(e2eRoot(scanBQ).FlowedType(), true)))
 
-	sel := expressions.NewSelectExpressionWithJoinType(
-		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	sel := mustE2EConstruct(expressions.NewSelectExpressionWithJoinType(
+		values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: values.OrdinalFieldName(0), Value: e2eRoot(scanAQ)},
+			values.RecordConstructorField{Name: values.OrdinalFieldName(1), Value: nullableB}),
 		[]expressions.Quantifier{scanAQ, scanBQ},
 		nil,
 		[]string{"A", "B"},
 		expressions.JoinLeftOuter,
-	)
+	))
 	selRef := expressions.InitialOf(sel)
 
 	rules := DefaultExpressionRules()

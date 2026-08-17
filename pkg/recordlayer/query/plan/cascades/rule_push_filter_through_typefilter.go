@@ -45,9 +45,26 @@ func (r *PushFilterThroughTypeFilterRule) OnMatch(call *ExpressionRuleCall) {
 	if !ok {
 		return
 	}
-	pushed := expressions.NewLogicalFilterExpression(f.GetPredicates(), tf.GetInner())
+	// TypeFilter preserves the row shape but not the quantifier alias. Rebase
+	// the exact predicate root from the wrapper output to the wrapper input.
+	rebasedPredicates, err := rebasePushFilterPredicates(
+		f.GetPredicates(), f.GetInner().GetAlias(), tf.GetInner().GetAlias())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	pushed, err := expressions.NewLogicalFilterExpression(rebasedPredicates, tf.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
-	call.Yield(expressions.NewLogicalTypeFilterExpression(tf.GetRecordTypes(), pushedQ))
+	outer, err := expressions.NewLogicalTypeFilterExpression(tf.GetRecordTypes(), pushedQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(outer)
 }
 
 var _ ExpressionRule = (*PushFilterThroughTypeFilterRule)(nil)

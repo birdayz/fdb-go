@@ -11,7 +11,7 @@ setup:
 tests:
   # DISTINCT on single column.
   - query: SELECT DISTINCT g FROM t
-    plan_contains: "Distinct(Project([G#1], Scan(T)))"
+    plan_contains: "Distinct(Project([_current.G#1], Scan(T)))"
     plan_not_contains: "InMemorySort"
     unordered: true
     rows:
@@ -20,7 +20,7 @@ tests:
       - [~]
   # DISTINCT over multiple columns — NULLs compared equal within DISTINCT.
   - query: SELECT DISTINCT g, v FROM t
-    plan_contains: "Distinct(Project([G#1, V#2], Scan(T)))"
+    plan_contains: "Distinct(Project([_current.G#1, _current.V#2], Scan(T)))"
     plan_not_contains: "InMemorySort"
     unordered: true
     rows:
@@ -37,7 +37,7 @@ tests:
   # of v=1 (id=1) wins; v=2 (id=3); first v=3 (id=4); v=NULL (id=6).
   # Sorted by id: 1, 3, 4, 6 → v: 1, 2, 3, NULL.
   - query: SELECT DISTINCT v FROM t ORDER BY id
-    plan_contains: "Distinct(Project([V#2], Scan(T)))"
+    plan_contains: "Distinct(Project([_current.V#2], Scan(T)))"
     plan_not_contains: "InMemorySort"
     rows:
       - [1]
@@ -48,7 +48,7 @@ tests:
   # the extraSortField path, kept as a regression guard. ASC default
   # is NULLS FIRST.
   - query: SELECT DISTINCT v FROM t ORDER BY v
-    plan_contains: "Distinct(Project([V#2], InMemorySort([V ASC], Scan(T)))"
+    plan_contains: "Distinct(Project([_current.V#2], InMemorySort([_current.V#2 ASC], Scan(T)))"
     rows:
       - [~]
       - [1]
@@ -61,7 +61,7 @@ tests:
   - query: |-
       WITH s AS (SELECT v FROM t)
       SELECT DISTINCT v FROM s ORDER BY v
-    plan_contains: "Distinct(Project([V#0], InMemorySort([V ASC]"
+    plan_contains: "Distinct(Project([_current.V#0], InMemorySort([_current.V#0 ASC]"
     rows:
       - [~]
       - [1]
@@ -74,7 +74,7 @@ tests:
   # v values: 1, 1, 2, 3, 3, NULL, NULL → v/2: 0, 0, 1, 1, 1, NULL, NULL
   # distinct → 0, 1, NULL.
   - query: SELECT DISTINCT v / 2 AS bucket FROM t ORDER BY bucket
-    plan_contains: "Distinct(Project([(V#2 / 2)], InMemorySort([(V#2 / 2) ASC]"
+    plan_contains: "Distinct(Project([(_current.V#2 / 2)], InMemorySort([(_current.V#2 / 2) ASC]"
     rows:
       - [~]
       - [0]
@@ -87,7 +87,7 @@ tests:
   # `SELECT DISTINCT v FROM t ORDER BY v` stanza above, which already
   # pins NULLS FIRST.
   - query: SELECT DISTINCT v / 2 FROM t ORDER BY 1
-    plan_contains: "Distinct(Project([(V#2 / 2)], InMemorySort([(V#2 / 2) ASC]"
+    plan_contains: "Distinct(Project([(_current.V#2 / 2)], InMemorySort([(_current.V#2 / 2) ASC]"
     rows:
       - [~]
       - [0]

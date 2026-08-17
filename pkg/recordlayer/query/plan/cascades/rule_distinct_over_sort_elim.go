@@ -54,7 +54,12 @@ func (r *DistinctOverSortElimRule) OnMatch(call *ExpressionRuleCall) {
 	}
 	// Reuse the sort's inner Quantifier — preserves Reference pointer
 	// across rule fires, so Reference.Insert dedupes second-fire.
-	call.Yield(expressions.NewLogicalDistinctExpression(sort.GetInner()))
+	rewritten, err := expressions.NewLogicalDistinctExpression(sort.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(rewritten)
 }
 
 var _ ExpressionRule = (*DistinctOverSortElimRule)(nil)

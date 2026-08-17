@@ -26,23 +26,32 @@ import (
 func TestPlanner_LimitOneOverMultiRowFilterRetainsLimit(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	scan := mustFullUnorderedScan(t, []string{"T"}, rowType)
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanRoot, err := values.NewQuantifiedObjectValue(scanQ.GetAlias(), rowType)
+	exactScanRoot := mustConstruct(t, scanRoot, err)
+	fieldAValue, err := values.ResolveFieldOrdinals(exactScanRoot, []int{0})
+	fieldA := mustConstruct(t, fieldAValue, err)
 
 	// 24 SEPARATE predicates keep numPreds high enough that the (deleted)
 	// heuristic estimate 1e6*0.5^24 ≈ 0.06 underflows below 1.0.
 	preds := make([]predicates.QueryPredicate, 24)
 	for i := range preds {
 		preds[i] = predicates.NewComparisonPredicate(
-			&values.FieldValue{Field: "A", Typ: values.UnknownType},
+			fieldA,
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)),
 		)
 	}
-	filter := expressions.NewLogicalFilterExpression(preds, scanQ)
+	filterValue, err := expressions.NewLogicalFilterExpression(preds, scanQ)
+	filter := mustConstruct(t, filterValue, err)
 	filterRef := expressions.InitialOf(filter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	lim := expressions.NewLogicalLimitExpression(1, 0, filterQ)
+	limitValue, err := expressions.NewLogicalLimitExpression(1, 0, filterQ)
+	lim := mustConstruct(t, limitValue, err)
 
 	plan := planPipeline(t, lim)
 	if !strings.Contains(plan, "Limit") {

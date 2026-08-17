@@ -93,9 +93,12 @@ func TestSeedKeyedByBinding(t *testing.T) {
 	// (the alias-keyed collision this plumbing exists to dissolve).
 	corrs := map[string]bool{}
 	for _, f := range fields {
-		fv := f.Value.(*values.FieldValue)
-		qov := fv.Child.(*values.QuantifiedObjectValue)
-		corrs[qov.Correlation.Name()] = true
+		fv := exactTestFieldView(t, f.Value)
+		qov, ok := values.AsQuantifiedObjectValue(fv.ChildValue())
+		if !ok {
+			t.Fatalf("seed field owner = %T, want exact QOV", fv.ChildValue())
+		}
+		corrs[qov.Correlation().Name()] = true
 	}
 	if !corrs["S"] || !corrs["Q$DUP1"] || len(corrs) != 2 {
 		t.Fatalf("seed QOV correlations = %v, want exactly {S, Q$DUP1}", corrs)

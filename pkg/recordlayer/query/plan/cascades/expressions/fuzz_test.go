@@ -66,33 +66,34 @@ func FuzzSemanticEquals_Properties(f *testing.F) {
 // recursion bounded — never panics, never returns nil.
 func buildFuzzTree(b []byte, start int) RelationalExpression {
 	if len(b) == 0 {
-		return NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		return mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType()))
 	}
 	op := b[start%len(b)] % 5
 	switch op {
 	case 0:
-		return NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+		return mustExpression(NewFullUnorderedScanExpression([]string{"A"}, testRecordType()))
 	case 1:
-		return NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+		return mustExpression(NewFullUnorderedScanExpression([]string{"B"}, testRecordType()))
 	case 2:
 		// Filter over Scan
-		scan := NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+		scan := mustExpression(NewFullUnorderedScanExpression([]string{"A"}, testRecordType()))
 		q := ForEachQuantifier(InitialOf(scan))
 		pred := predicates.NewConstantPredicate(predicates.TriTrue)
-		return NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q)
+		return mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q))
 	case 3:
 		// Distinct over Scan
-		scan := NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
+		scan := mustExpression(NewFullUnorderedScanExpression([]string{"A"}, testRecordType()))
 		q := ForEachQuantifier(InitialOf(scan))
-		return NewLogicalDistinctExpression(q)
+		return mustExpression(NewLogicalDistinctExpression(q))
 	default:
 		// Union over two Scans (commutative — exercises permutation path)
-		a := NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-		b := NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
-		return NewLogicalUnionExpression([]Quantifier{
+		a := mustExpression(NewFullUnorderedScanExpression([]string{"A"}, testRecordType()))
+		b := mustExpression(NewFullUnorderedScanExpression([]string{"B"}, testRecordType()))
+		return mustExpression(NewLogicalUnionExpression([]Quantifier{
 			ForEachQuantifier(InitialOf(a)),
 			ForEachQuantifier(InitialOf(b)),
-		})
+		}))
+
 	}
 }
 

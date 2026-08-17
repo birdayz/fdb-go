@@ -764,6 +764,6 @@ func (s *stubPlan) EqualsWithoutChildren(other expressions.RelationalExpression,
 	return ok && s.EqualsPlanWithoutChildren(o)
 }
 
-func (s *stubPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return s
+func (s *stubPlan) WithQuantifiers(_ []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	return s, nil
 }

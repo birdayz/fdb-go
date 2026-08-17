@@ -25,14 +25,16 @@
 # so `n.sk` and `n.co` share it and both used to be named `N`.
 #
 #   - ONE source:  the slot is `N.SK`.
-#   - TWO sources: every reference is emitted through its quantifier, so the
-#     node carries QOV(T1) and the slot is `T1.N.SK`.
+#   - TWO sources: the logical read is owned by T1, but the executable Project
+#     sits above the materialized join (and, here, an enforced sort). Its value
+#     is therefore checked-reanchored to the selected merged `_current` carrier,
+#     preserving the complete nested path as `_current.N.SK`.
 #
-# The qualifier is DELIBERATE, not renderer leakage: over two sources each
-# declaring an `n`, `T1.N.SK` and `T2.N.SK` are different columns, and a bare
-# `N.SK` would re-create one level up exactly the collapse the path fixes. Java
-# keeps it too — the requested Identifier's fullyQualifiedName() retains its
-# qualifiers — and clears it only for the user-visible label
+# The logical qualifier is DELIBERATE, not renderer leakage: over two sources
+# each declaring an `n`, T1.N.SK and T2.N.SK are different inputs. The physical
+# join result resolves that ownership into distinct exact ordinals on one merged
+# carrier; the final Project must use that carrier rather than retain an unbound
+# source QOV. Java likewise clears qualification only for the user-visible label
 # (Identifier.withoutQualifier, Identifier.java:101).
 #
 # THE FILE ASSERTS BOTH CHANNELS ON PURPOSE, because they disagree and each can
@@ -62,7 +64,7 @@ tests:
   # THE REGRESSION THIS FILE EXISTS FOR. Both members of one struct root: before
   # RFC-229 §2.3 both slots were named `N` and both labels read N.
   - query: SELECT n.sk, n.co FROM t1 ORDER BY id
-    plan_contains: "Project([N#2.SK#0, N#2.CO#1], Scan(T1))"
+    plan_contains: "Project([_current.N#2.SK#0, _current.N#2.CO#1], Scan(T1))"
     columns: [SK, CO]
     rows:
       - [10, 21]
@@ -72,7 +74,7 @@ tests:
   # catches a fix that only engages when two nested columns are present — the
   # name was wrong for `SELECT n.sk` alone too.
   - query: SELECT n.sk FROM t1 ORDER BY id
-    plan_contains: "Project([N#2.SK#0], Scan(T1))"
+    plan_contains: "Project([_current.N#2.SK#0], Scan(T1))"
     columns: [SK]
     rows:
       - [10]
@@ -83,7 +85,7 @@ tests:
   # so this is the only entry point, and a test written the obvious way would
   # have pinned nothing.)
   - query: SELECT n.sk, n.co FROM t1, t2 ORDER BY id
-    plan_contains: "Project([T1.N#2.SK#0, T1.N#2.CO#1],"
+    plan_contains: "Project([_current.N#2.SK#0, _current.N#2.CO#1],"
     columns: [SK, CO]
     rows:
       - [10, 21]
@@ -94,7 +96,7 @@ tests:
   # that actually declares `n`, and the flat column from the OTHER leg must keep
   # its own bare name and its own value.
   - query: SELECT n.sk, v FROM t1 JOIN t2 ON t2.v > 0 ORDER BY id
-    plan_contains: "T1.N#2.SK#0"
+    plan_contains: "Project([_current.N#2.SK#0, _current.V#4],"
     columns: [SK, V]
     rows:
       - [10, 7]
@@ -125,7 +127,7 @@ tests:
   # EVERY reference through the path renderer would still satisfy every case
   # above and would change this one.
   - query: SELECT id, n.co FROM t1 ORDER BY id
-    plan_contains: "Project([ID#0, N#2.CO#1], Scan(T1))"
+    plan_contains: "Project([_current.ID#0, _current.N#2.CO#1], Scan(T1))"
     columns: [ID, CO]
     rows:
       - [1, 21]

@@ -45,7 +45,12 @@ func (r *SortDedupKeysRule) OnMatch(call *ExpressionRuleCall) {
 	if !removed {
 		return
 	}
-	call.Yield(expressions.NewLogicalSortExpression(deduped, s.GetInner()))
+	rewritten, err := expressions.NewLogicalSortExpression(deduped, s.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(rewritten)
 }
 
 // dedupSortKeys returns a slice of `keys` where each (Value-Explain,

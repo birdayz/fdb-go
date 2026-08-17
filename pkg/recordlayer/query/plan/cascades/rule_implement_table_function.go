@@ -27,7 +27,11 @@ func (r *ImplementTableFunctionRule) OnMatch(call *ExpressionRuleCall) {
 	tableFn := matching.Get[*expressions.TableFunctionExpression](call.Bindings, r.matcher)
 	// The table function is its own Cascades expression now (RFC-184 W2) — a bare
 	// leaf plan, no physicalTableFunctionWrapper adapter needed.
-	plan := plans.NewRecordQueryTableFunctionPlan(tableFn.GetValue())
+	plan, err := plans.NewRecordQueryTableFunctionPlan(tableFn.GetValue())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(plan)
 }
 

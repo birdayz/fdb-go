@@ -22,7 +22,7 @@ func TestIndexOnlyAggregateOp_String(t *testing.T) {
 
 func TestIndexOnlyAggregateValue_Type(t *testing.T) {
 	t.Parallel()
-	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, &FieldValue{Field: "qty", Typ: NotNullLong})
+	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, &fieldValue{Field: "qty", Typ: NotNullLong})
 	if !v.Type().Equals(NotNullLong) {
 		t.Fatalf("Type = %v, want NotNullLong (carries from child)", v.Type())
 	}
@@ -52,7 +52,7 @@ func TestIndexOnlyAggregateValue_Name(t *testing.T) {
 
 func TestIndexOnlyAggregateValue_Children(t *testing.T) {
 	t.Parallel()
-	c := &FieldValue{Field: "x", Typ: NotNullLong}
+	c := &fieldValue{Field: "x", Typ: NotNullLong}
 	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, c)
 	cs := v.Children()
 	if len(cs) != 1 || cs[0] != c {
@@ -70,7 +70,7 @@ func TestIndexOnlyAggregateValue_NilChildEmptyChildren(t *testing.T) {
 
 func TestIndexOnlyAggregateValue_EvaluateIsPlaceholder(t *testing.T) {
 	t.Parallel()
-	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, &FieldValue{Field: "x", Typ: NotNullLong})
+	v := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong, &fieldValue{Field: "x", Typ: NotNullLong})
 	got, errEv0 := v.Evaluate(nil)
 	require.NoError(t, errEv0)
 	if got != nil {
@@ -116,14 +116,14 @@ func TestIndexOnlyAggregateValue_ImplementsIndexableAggregate(t *testing.T) {
 func TestIndexOnlyAggregateValue_WithChildren(t *testing.T) {
 	t.Parallel()
 	original := NewIndexOnlyAggregateValue(IndexOnlyMaxEverLong,
-		&FieldValue{Field: "x", Typ: NotNullLong})
+		&fieldValue{Field: "x", Typ: NotNullLong})
 	rebuilt := original.WithChildren([]Value{
-		&FieldValue{Field: "y", Typ: NotNullLong},
+		&fieldValue{Field: "y", Typ: NotNullLong},
 	})
 	if rebuilt.Op != IndexOnlyMaxEverLong {
 		t.Fatalf("rebuilt.Op = %v, want MAX_EVER_LONG", rebuilt.Op)
 	}
-	if fv, ok := rebuilt.Child.(*FieldValue); !ok || fv.Field != "y" {
+	if fv, ok := rebuilt.Child.(*fieldValue); !ok || fv.Field != "y" {
 		t.Fatalf("rebuilt.Child = %v, want FieldValue(y)", rebuilt.Child)
 	}
 }

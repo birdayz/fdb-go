@@ -7,15 +7,29 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustRfc186Construct[T any](value T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+func rfc186RowType() *values.RecordType {
+	return values.NewRecordType("", false, []values.Field{{
+		Name:      "ID",
+		FieldType: values.NotNullLong,
+	}})
+}
+
 func rfc186Scan(table string) expressions.RelationalExpression {
-	return expressions.NewFullUnorderedScanExpression([]string{table}, values.UnknownType)
+	return mustRfc186Construct(expressions.NewFullUnorderedScanExpression([]string{table}, rfc186RowType()))
 }
 
 // rfc186SortOver wraps a child reference in a LogicalSortExpression — a
 // distinct canonical alternative (one extra tree node) for designation
 // ranking.
 func rfc186SortOver(child *expressions.Reference) expressions.RelationalExpression {
-	return expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(child))
+	return mustRfc186Construct(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(child)))
 }
 
 // TestDesignatedFinal_InsertionOrderPermutation is RFC-186's class-level
@@ -92,7 +106,7 @@ func TestDesignatedFinal_CycleGuard(t *testing.T) {
 
 	ref := expressions.InitialOf(rfc186Scan("T"))
 	// Back-edge: a final whose quantifier ranges over ref itself.
-	ref.InsertFinal(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(ref)))
+	ref.InsertFinal(mustRfc186Construct(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(ref))))
 	ref.InsertFinal(rfc186Scan("T"))
 
 	s := newDesignationScope()
@@ -153,7 +167,7 @@ func TestOptimizeGroup_CoherencePhaseGateAndDetection(t *testing.T) {
 	t.Parallel()
 
 	newScan := func() expressions.RelationalExpression {
-		return expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+		return rfc186Scan("T")
 	}
 	build := func() *expressions.Reference {
 		inner := expressions.InitialOf(newScan())
@@ -290,9 +304,9 @@ func TestDesignatedFinal_BackEdgeTaintNotCached(t *testing.T) {
 	// child's RANKED designation, whose comparison hits the ref back-edge.
 	ref := expressions.InitialOf(rfc186Scan("T"))
 	child := expressions.InitialOf(rfc186Scan("T"))
-	child.InsertFinal(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(ref)))
+	child.InsertFinal(mustRfc186Construct(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(ref))))
 	child.InsertFinal(rfc186Scan("T"))
-	ref.InsertFinal(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(child)))
+	ref.InsertFinal(mustRfc186Construct(expressions.NewLogicalSortExpression(nil, expressions.ForEachQuantifier(child))))
 	ref.InsertFinal(rfc186Scan("T"))
 
 	s := newDesignationScope()
@@ -310,7 +324,8 @@ func TestDesignatedFinal_BackEdgeTaintNotCached(t *testing.T) {
 // attributes (null-on-empty, kind) can vary while the child content stays
 // identical.
 func rfc186SelectOver(q expressions.Quantifier) expressions.RelationalExpression {
-	return expressions.NewSelectExpression(q.GetFlowedObjectValue(), []expressions.Quantifier{q}, nil)
+	resultValue := mustRfc186Construct(q.RequireFlowedObjectValue())
+	return mustRfc186Construct(expressions.NewSelectExpression(resultValue, []expressions.Quantifier{q}, nil))
 }
 
 // TestDesignatedFinal_ExploratoryChildTaintNotCached pins the ancestor half

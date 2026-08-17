@@ -29,6 +29,25 @@ import (
 type Memo struct {
 	root *expressions.Reference
 
+	// admissionErr is the FIRST admission failure this memo saw, held stickily
+	// for the planner's run loop to surface through capErr.
+	//
+	// It is an INVARIANT ASSERTION, not a recoverable error, and the storage
+	// shape says so: no rule can act on "this expression's concrete type is
+	// outside the repository manifest" or "its result type is not RELATION<T>",
+	// so nothing is gained by making memoization fallible at the call site —
+	// and MemoizeExpression is the rule-facing API, so making it return an error
+	// would push a decision no caller can make onto every caller.
+	//
+	// Java asserts the same property the same way and never returns it either:
+	// Reference.insertUnchecked's type-agreement check sits inside
+	// Debugger.sanityCheck (absent in production) and the always-on one is
+	// Reference.getResultType's Verify.verify, which THROWS. Go's principle 4
+	// forbids panicking in library code, so a sticky field drained by the run
+	// loop is the port of a thrown Verify — same "stop the run, report loudly",
+	// without the panic.
+	admissionErr error
+
 	// reExplore, when set, schedules a re-exploration round for a
 	// Reference whose member set changed OUTSIDE the task-driven yield
 	// paths (a cross-group Absorb, a rule's raw insert into an existing
@@ -123,9 +142,60 @@ func NewMemo(root *expressions.Reference) *Memo {
 func (m *Memo) track(ref *expressions.Reference) {
 	m.refs[ref] = struct{}{}
 	if ref.ID() == 0 {
+		// EXACT ADMISSION HAPPENS HERE, and only on this arm.
+		//
+		// track is the one funnel every memo-created Reference crosses, and it is
+		// reached only on a dedup MISS — memoizeLeaf and memoizeNonLeaf call it
+		// after their lookup loops fail, and indexReference early-returns for a
+		// Reference it already knows. So this is one admission per NEW group, not
+		// one per memoize call, and on a fresh singleton the batch admits exactly
+		// one member: the same derivation the Reference is about to need anyway.
+		//
+		// The ID==0 guard is load-bearing rather than incidental. Cross-group
+		// merge re-tracks References that already carry an ID, and admitting
+		// those would re-derive a type the Reference already agreed with — which
+		// is precisely the O(N²) re-derivation removed from
+		// prepareReferenceMemberBatch's firstAdmitted skip. Widening this guard
+		// gives that regression straight back.
+		if err := m.admitTrackedReference(ref); err != nil && m.admissionErr == nil {
+			m.admissionErr = err
+		}
 		ref.AssignMemoID(m.nextID)
 		m.nextID++
 	}
+}
+
+// admitTrackedReference runs the checked admission over a Reference the memo is
+// adopting for the first time.
+//
+// IT IS THE BATCH PREPARATION ITSELF, called with no intents, rather than a
+// hand-copy of the parts of it that looked relevant. The first version was the
+// hand-copy, and it silently dropped the half that does the actual RFC-232 work:
+// prepareReferenceMemberBatch admits each member, seeds the Reference type from
+// the first admitted member when the Reference does not state one, and then
+// compares EVERY admitted member's CanonicalBytes against it. The copy admitted
+// members and discarded the handles, so members of one Reference were never
+// checked for agreement with each other — vacuous on a fresh singleton, and not
+// vacuous at all for indexReference, which tracks multi-member References.
+//
+// Zero intents is the whole call: with nothing to insert, prepare admits,
+// agrees, and returns a batch that is never committed. It works on scratch
+// copies, so nothing is mutated by asking.
+func (m *Memo) admitTrackedReference(ref *expressions.Reference) error {
+	if _, err := prepareReferenceMemberBatch(ref, nil); err != nil {
+		return err
+	}
+	return nil
+}
+
+// AdmissionErr returns the first admission failure, if any. The planner's run
+// loop drains it into capErr so a violated invariant ends the run rather than
+// producing a plan over a memo that never agreed on its own types.
+func (m *Memo) AdmissionErr() error {
+	if m == nil {
+		return nil
+	}
+	return m.admissionErr
 }
 
 // MergeCount returns the number of cross-group merges performed so far
@@ -137,10 +207,12 @@ func (m *Memo) MergeCount() int { return m.mergeCount }
 func (m *Memo) MarkPlanningActive() { m.planningActive = true }
 
 // AliasAwareDedups sums, over every Reference in the memo, the extra dedup the
-// alias-aware interning tier performed (Reference.AliasAwareDedups) — the
-// "shadow" of the merge re-enumeration's shared-sub-product collapse.
-// TestAliasAwareInterningShadowDelta asserts this equals the member-count
-// delta between alias-aware interning and the alias-identity baseline.
+// alias-aware interning tier performed (Reference.AliasAwareDedups): proposals
+// for which only tier 3's MemoEqual recognized the duplicate. Prepared
+// ExpressionRule admission now absorbs earlier memo-equal proposals before
+// scheduling their phantom descendants, so the chain corpus legitimately has
+// a zero shadow; the prepared-equality unit test separately pins a direct
+// alias-aware-only hit.
 func (m *Memo) AliasAwareDedups() int {
 	total := 0
 	seen := make(map[*expressions.Reference]struct{}, len(m.refs))
@@ -156,11 +228,10 @@ func (m *Memo) AliasAwareDedups() int {
 }
 
 // TotalMembers sums the exploratory + final member count over every canonical
-// Reference in the memo. With the alias-aware interning tier live this is the
-// deduped population; the shadow-delta pin re-plans with the tier disabled to
-// recover the alias-identity population. The difference EXCEEDS AliasAwareDedups
-// (the direct dedups): each collapsed merge sub-product would otherwise
-// re-explode, so one direct dedup saves several downstream members (cascade).
+// Reference in the memo. The shadow-delta pin compares this population with
+// the alias-aware tier disabled. A non-zero difference means tier 3 changed
+// the realized population; zero means an earlier equality tier or prepared
+// admission already prevented the proposal from producing descendants.
 func (m *Memo) TotalMembers() int {
 	total := 0
 	seen := make(map[*expressions.Reference]struct{}, len(m.refs))
@@ -256,6 +327,31 @@ func (m *Memo) ScheduleFreshReference(ref *expressions.Reference) {
 func (m *Memo) MemoizeExpression(expr expressions.RelationalExpression) *expressions.Reference {
 	if expr == nil {
 		panic("Memo.MemoizeExpression: nil expression")
+	}
+
+	// THE REGISTRY CHECK COMES BEFORE ANY HASH, because the lookup loops below
+	// call HashCodeWithoutChildren and EqualsWithoutChildren — OPEN interface
+	// methods — on a candidate that has cleared nothing yet. A foreign
+	// implementation or a typed nil reaches those first, and this switch is what
+	// stands between them. It is a pure type switch and allocates nothing, so
+	// hoisting it costs the memo effectively nothing while the expensive half
+	// (result-type derivation) stays where a duplicate candidate never pays it.
+	// It RETURNS on failure rather than only recording. Recording alone would be
+	// theatre: the very next statement calls GetQuantifiers, which is one of the
+	// open methods this check exists to stand in front of, so a foreign or
+	// typed-nil implementation would reach it anyway and the guard would report
+	// the violation from inside the crash it was meant to prevent.
+	//
+	// The Reference handed back is a bare wrapper, minted without touching a
+	// single method on expr. It is deliberately garbage: the run is over, and
+	// the planner's loop drains admissionErr into capErr at the next task
+	// boundary. Returning nil instead would trade a loud stop for a nil
+	// dereference in whichever rule happened to be memoizing.
+	if err := admitMemoRegistry(expr); err != nil {
+		if m.admissionErr == nil {
+			m.admissionErr = err
+		}
+		return expressions.InitialOf(expr)
 	}
 
 	qs := expr.GetQuantifiers()

@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"sort"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -8,37 +9,110 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustDecorrelateConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct decorrelate-values fixture: " + err.Error())
+	}
+	return value
+}
+
+func decorrelateBaseRowType() *values.RecordType {
+	return values.NewRecordType("T", false, []values.Field{
+		{Name: "a", FieldType: values.NullableLong},
+		{Name: "b", FieldType: values.NullableLong},
+		{Name: "c", FieldType: values.NullableLong},
+		{Name: "d", FieldType: values.NullableLong},
+		{Name: "COL", FieldType: values.NullableLong},
+	})
+}
+
+func decorrelateObject(q expressions.Quantifier) values.QuantifiedObjectValue {
+	return mustDecorrelateConstruct(q.RequireFlowedObjectValue())
+}
+
+func decorrelateField(child values.Value, name string) values.Value {
+	request := mustDecorrelateConstruct(values.FieldByName(name))
+	return mustDecorrelateConstruct(values.ResolveFieldAccess(
+		child, []values.FieldRequest{request}))
+}
+
+func decorrelateOrdinal(child values.Value, ordinal int) values.Value {
+	return mustDecorrelateConstruct(values.ResolveFieldOrdinals(child, []int{ordinal}))
+}
+
+func decorrelateLiteral(literal any) *values.ConstantValue {
+	var typ values.Type
+	switch literal.(type) {
+	case int, int32, int64:
+		typ = values.NotNullLong
+	case string:
+		typ = values.NotNullString
+	case bool:
+		typ = values.NotNullBoolean
+	case []byte:
+		typ = values.NotNullBytes
+	default:
+		panic("unsupported decorrelate-values literal type")
+	}
+	return &values.ConstantValue{Value: literal, Typ: typ}
+}
+
+func TestDecorrelateValuesRule_ExactConstructorCollapseWithConstantObjectSibling(t *testing.T) {
+	t.Parallel()
+
+	captured := values.NewConstantObjectValue(
+		values.NamedCorrelationIdentifier("__const__"), "0", values.NotNullBytes)
+	selected := decorrelateLiteral(int64(42))
+	constructor := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "x", Value: captured},
+		values.RecordConstructorField{Name: "y", Value: selected},
+	)
+
+	resolved, err := values.ResolveFieldOrdinals(constructor, []int{1})
+	if err != nil {
+		t.Fatalf("resolve exact constructor field: %v", err)
+	}
+	if resolved != selected {
+		t.Fatalf("resolved field = %T %p, want selected literal %p", resolved, resolved, selected)
+	}
+
+	// Canonical collapse returns the selected Value itself. Later mutation of
+	// the source constructor cannot redirect the already-resolved program.
+	constructor.Fields[1].Value = decorrelateLiteral(int64(99))
+	if got := resolved.(*values.ConstantValue).Value; got != int64(42) {
+		t.Fatalf("resolved field changed with source constructor: got %v, want 42", got)
+	}
+}
+
 func TestDecorrelateValuesRule_InlineConstantBox(t *testing.T) {
 	t.Parallel()
 
 	// Values box: SELECT 42 AS x FROM range(1)
 	rangeQ := makeRangeOneQ()
-	constResult := &values.ConstantValue{Value: int64(42)}
-	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
+	constResult := decorrelateLiteral(int64(42))
+	valuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil))
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
 
 	// Real table scan
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, scanRef := makeBaseScan()
 
 	// Outer select: SELECT f.col FROM (values box) p, (scan) f WHERE f.col = p.x
 	outerPred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "COL"},
+		Operand: decorrelateField(decorrelateObject(scanQ), "COL"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias()),
+			Operand: decorrelateObject(valuesBoxQ),
 		},
 	}
-	outerSel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(scanQ),
 		[]expressions.Quantifier{valuesBoxQ, scanQ},
-		[]predicates.QueryPredicate{outerPred},
-	)
+		[]predicates.QueryPredicate{outerPred}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -74,23 +148,21 @@ func TestDecorrelateValuesRule_SkipCorrelatedResult(t *testing.T) {
 
 	// Values box with result correlated to its own child → not a values box.
 	rangeQ := makeRangeOneQ()
-	correlatedResult := values.NewQuantifiedObjectValue(rangeQ.GetAlias())
-	notAValuesBox := expressions.NewSelectExpression(correlatedResult, []expressions.Quantifier{rangeQ}, nil)
+	correlatedResult := decorrelateObject(rangeQ)
+	notAValuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(correlatedResult, []expressions.Quantifier{rangeQ}, nil))
 	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
 	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, _ := makeBaseScan()
 
-	outerSel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(scanQ),
 		[]expressions.Quantifier{notAValuesBoxQ, scanQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (result is correlated), got %d", len(yielded))
 	}
@@ -100,18 +172,16 @@ func TestDecorrelateValuesRule_SingleQuantifier(t *testing.T) {
 	t.Parallel()
 
 	// Single quantifier → rule requires ≥2.
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, _ := makeBaseScan()
 
-	sel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	sel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(scanQ),
 		[]expressions.Quantifier{scanQ},
-		nil,
-	)
+		nil))
+
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), selRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (single quantifier), got %d", len(yielded))
 	}
@@ -121,25 +191,23 @@ func TestDecorrelateValuesRule_SidewaysCorrelation(t *testing.T) {
 	t.Parallel()
 
 	// Values box whose result references a sibling → must not be inlined.
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, _ := makeBaseScan()
 
 	rangeQ := makeRangeOneQ()
 	// Result references the sibling scanQ's alias.
-	sidewaysResult := values.NewQuantifiedObjectValue(scanQ.GetAlias())
-	valuesBox := expressions.NewSelectExpression(sidewaysResult, []expressions.Quantifier{rangeQ}, nil)
+	sidewaysResult := decorrelateObject(scanQ)
+	valuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(sidewaysResult, []expressions.Quantifier{rangeQ}, nil))
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
 
-	outerSel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(scanQ),
 		[]expressions.Quantifier{valuesBoxQ, scanQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (sideways correlation), got %d", len(yielded))
 	}
@@ -150,40 +218,38 @@ func TestDecorrelateValuesRule_AndPredicateTranslation(t *testing.T) {
 
 	// Values box with constant result.
 	rangeQ := makeRangeOneQ()
-	constResult := &values.ConstantValue{Value: int64(7)}
-	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
+	constResult := decorrelateLiteral(int64(7))
+	valuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil))
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, _ := makeBaseScan()
 
 	// AND predicate: f.col = p.x AND f.col > 0
 	andPred := predicates.NewAnd(
 		&predicates.ComparisonPredicate{
-			Operand: &values.FieldValue{Field: "COL"},
+			Operand: decorrelateField(decorrelateObject(scanQ), "COL"),
 			Comparison: predicates.Comparison{
 				Type:    predicates.ComparisonEquals,
-				Operand: values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias()),
+				Operand: decorrelateObject(valuesBoxQ),
 			},
 		},
 		&predicates.ComparisonPredicate{
-			Operand: &values.FieldValue{Field: "COL"},
+			Operand: decorrelateField(decorrelateObject(scanQ), "COL"),
 			Comparison: predicates.Comparison{
 				Type:    predicates.ComparisonGreaterThan,
-				Operand: &values.ConstantValue{Value: int64(0)},
+				Operand: decorrelateLiteral(int64(0)),
 			},
 		},
 	)
-	outerSel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(scanQ),
 		[]expressions.Quantifier{valuesBoxQ, scanQ},
-		[]predicates.QueryPredicate{andPred},
-	)
+		[]predicates.QueryPredicate{andPred}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -212,25 +278,23 @@ func TestDecorrelateValuesRule_ResultValueTranslation(t *testing.T) {
 
 	// Values box.
 	rangeQ := makeRangeOneQ()
-	constResult := &values.ConstantValue{Value: "hello"}
-	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
+	constResult := decorrelateLiteral("hello")
+	valuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil))
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, _ := makeBaseScan()
 
 	// Result value references the values box alias.
-	outerResult := values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias())
-	outerSel := expressions.NewSelectExpression(
+	outerResult := decorrelateObject(valuesBoxQ)
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
 		outerResult,
 		[]expressions.Quantifier{valuesBoxQ, scanQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -252,24 +316,22 @@ func TestDecorrelateValuesRule_WithSourceAliases(t *testing.T) {
 
 	// Values box.
 	rangeQ := makeRangeOneQ()
-	constResult := &values.ConstantValue{Value: int64(1)}
-	valuesBox := expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil)
+	constResult := decorrelateLiteral(int64(1))
+	valuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(constResult, []expressions.Quantifier{rangeQ}, nil))
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, _ := makeBaseScan()
 
-	outerSel := expressions.NewSelectExpressionWithAliases(
-		scanQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpressionWithAliases(
+		decorrelateObject(scanQ),
 		[]expressions.Quantifier{valuesBoxQ, scanQ},
 		nil,
-		[]string{"P", "F"},
-	)
+		[]string{"P", "F"}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -288,32 +350,30 @@ func TestDecorrelateValuesRule_MultipleValuesBoxes(t *testing.T) {
 	t.Parallel()
 
 	// Two values boxes + one real scan → both inlined.
-	vb1 := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: int64(10)},
-		[]expressions.Quantifier{makeRangeOneQ()}, nil,
-	)
+	vb1 := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral(int64(10)),
+		[]expressions.Quantifier{makeRangeOneQ()}, nil))
+
 	vb1Ref := expressions.InitialOf(vb1)
 	vb1Q := expressions.ForEachQuantifier(vb1Ref)
 
-	vb2 := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: "hello"},
-		[]expressions.Quantifier{makeRangeOneQ()}, nil,
-	)
+	vb2 := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral("hello"),
+		[]expressions.Quantifier{makeRangeOneQ()}, nil))
+
 	vb2Ref := expressions.InitialOf(vb2)
 	vb2Q := expressions.ForEachQuantifier(vb2Ref)
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, _ := makeBaseScan()
 
-	outerSel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(scanQ),
 		[]expressions.Quantifier{vb1Q, vb2Q, scanQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -329,18 +389,18 @@ func TestDecorrelateValuesRule_MultipleValuesBoxes(t *testing.T) {
 // This is the Go equivalent of Java's valuesQun(...) helper.
 func makeRangeOneQ() expressions.Quantifier {
 	rangeOne := values.NewRangeValue(
-		&values.ConstantValue{Value: int64(0)},
-		&values.ConstantValue{Value: int64(1)},
-		&values.ConstantValue{Value: int64(1)},
+		decorrelateLiteral(int64(0)),
+		decorrelateLiteral(int64(1)),
+		decorrelateLiteral(int64(1)),
 	)
-	rangeSource := expressions.NewTableFunctionExpression(rangeOne)
+	rangeSource := mustDecorrelateConstruct(expressions.NewTableFunctionExpression(rangeOne))
 	rangeRef := expressions.InitialOf(rangeSource)
 	return expressions.ForEachQuantifier(rangeRef)
 }
 
 func makeValuesBox(resultValue values.Value) (expressions.Quantifier, *expressions.Reference) {
 	rangeQ := makeRangeOneQ()
-	valuesBox := expressions.NewSelectExpression(resultValue, []expressions.Quantifier{rangeQ}, nil)
+	valuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(resultValue, []expressions.Quantifier{rangeQ}, nil))
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
 	return valuesBoxQ, valuesBoxRef
@@ -350,9 +410,14 @@ func makeValuesBox(resultValue values.Value) (expressions.Quantifier, *expressio
 // SELECT RecordConstructorValue{fields} FROM range(1).
 // Mirrors Java's valuesQun(ImmutableMap.of("x", v1, "y", v2)).
 func makeRecordValuesBox(fields map[string]values.Value) (expressions.Quantifier, *expressions.Reference) {
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	rcFields := make([]values.RecordConstructorField, 0, len(fields))
-	for name, v := range fields {
-		rcFields = append(rcFields, values.RecordConstructorField{Name: name, Value: v})
+	for _, name := range names {
+		rcFields = append(rcFields, values.RecordConstructorField{Name: name, Value: fields[name]})
 	}
 	rcv := values.NewRecordConstructorValue(rcFields...)
 	return makeValuesBox(rcv)
@@ -360,7 +425,8 @@ func makeRecordValuesBox(fields map[string]values.Value) (expressions.Quantifier
 
 // makeBaseScan creates a base table scan quantifier.
 func makeBaseScan() (expressions.Quantifier, *expressions.Reference) {
-	scan := &expressions.FullUnorderedScanExpression{}
+	scan := mustDecorrelateConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, decorrelateBaseRowType()))
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 	return scanQ, scanRef
@@ -387,45 +453,45 @@ func TestDecorrelateValuesRule_TrimUncorrelatedValuesBoxes(t *testing.T) {
 	// Values box: SELECT RecordConstructorValue{x=cov, y=42} FROM range(1)
 	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
 		"x": cov,
-		"y": &values.ConstantValue{Value: int64(42)},
+		"y": decorrelateLiteral(int64(42)),
 	})
 
 	// Lower select: SELECT b,c,d FROM T WHERE a = 42
 	baseQ, _ := makeBaseScan()
-	lowerSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	lowerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: &values.ConstantValue{Value: int64(42)},
+					Operand: decorrelateLiteral(int64(42)),
 				},
 			},
-		},
-	)
+		}))
+
 	lowerRef := expressions.InitialOf(lowerSel)
 	lowerQ := expressions.ForEachQuantifier(lowerRef)
 
 	// Top select: uses cov (NOT the values box alias) in predicate
 	// and references lowerQ in result — values box is NOT referenced.
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(lowerQ.GetFlowedObjectValue(), "d", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(lowerQ), "d"),
 		[]expressions.Quantifier{valuesBoxQ, lowerQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(lowerQ.GetFlowedObjectValue(), "c", nil),
+				Operand: decorrelateField(decorrelateObject(lowerQ), "c"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
 					Operand: cov,
 				},
 			},
-		},
-	)
+		}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -470,24 +536,24 @@ func TestDecorrelateValuesRule_RewritePredicatesAndReturnValueOnUncorrelatedValu
 	// Values box: SELECT {x=cov, y=42} FROM range(1)
 	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
 		"x": cov,
-		"y": &values.ConstantValue{Value: int64(42)},
+		"y": decorrelateLiteral(int64(42)),
 	})
 
 	// Lower select: SELECT b,c,d FROM T WHERE a = 42
 	baseQ, _ := makeBaseScan()
-	lowerSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	lowerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: &values.ConstantValue{Value: int64(42)},
+					Operand: decorrelateLiteral(int64(42)),
 				},
 			},
-		},
-	)
+		}))
+
 	lowerRef := expressions.InitialOf(lowerSel)
 	lowerQ := expressions.ForEachQuantifier(lowerRef)
 
@@ -495,29 +561,29 @@ func TestDecorrelateValuesRule_RewritePredicatesAndReturnValueOnUncorrelatedValu
 	outerResult := values.NewRecordConstructorValue(
 		values.RecordConstructorField{
 			Name:  "y",
-			Value: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+			Value: decorrelateField(decorrelateObject(valuesBoxQ), "y"),
 		},
 		values.RecordConstructorField{
 			Name:  "d",
-			Value: values.NewFieldValue(lowerQ.GetFlowedObjectValue(), "d", nil),
+			Value: decorrelateField(decorrelateObject(lowerQ), "d"),
 		},
 	)
 	outerPred := &predicates.ComparisonPredicate{
-		Operand: values.NewFieldValue(lowerQ.GetFlowedObjectValue(), "c", nil),
+		Operand: decorrelateField(decorrelateObject(lowerQ), "c"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+			Operand: decorrelateField(decorrelateObject(valuesBoxQ), "x"),
 		},
 	}
 
-	outerSel := expressions.NewSelectExpression(
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
 		outerResult,
 		[]expressions.Quantifier{valuesBoxQ, lowerQ},
-		[]predicates.QueryPredicate{outerPred},
-	)
+		[]predicates.QueryPredicate{outerPred}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -529,30 +595,25 @@ func TestDecorrelateValuesRule_RewritePredicatesAndReturnValueOnUncorrelatedValu
 		t.Fatalf("expected 1 quantifier (values box removed), got %d", len(decorrelated.GetQuantifiers()))
 	}
 
-	// Result value: v.y inlined → the "y" field should now reference the
-	// RecordConstructorValue from the values box (which contains the 42 literal).
+	// Result value: v.y is resolved through the exact record constructor and
+	// canonicalized directly to the 42 literal.
 	rv, ok := decorrelated.GetResultValue().(*values.RecordConstructorValue)
 	if !ok {
 		t.Fatalf("expected RecordConstructorValue result, got %T", decorrelated.GetResultValue())
 	}
-	// The "y" field's value had FieldValue{Child: QOV(vbAlias), Field: "y"}.
-	// After translation, the QOV is replaced with the RCV from the values box.
-	// So we get FieldValue{Child: RCV{x:cov, y:42}, Field: "y"}.
 	yField := rv.Fields[0]
 	if yField.Name != "y" {
 		t.Fatalf("expected first field name 'y', got %q", yField.Name)
 	}
-	yFV, ok := yField.Value.(*values.FieldValue)
+	yLiteral, ok := yField.Value.(*values.ConstantValue)
 	if !ok {
-		t.Fatalf("expected FieldValue for y, got %T", yField.Value)
+		t.Fatalf("expected direct ConstantValue for y, got %T", yField.Value)
 	}
-	// The child of the FieldValue should now be the RecordConstructorValue
-	// (the values box's result) instead of a QuantifiedObjectValue.
-	if _, stillQOV := yFV.Child.(*values.QuantifiedObjectValue); stillQOV {
-		t.Error("expected QOV to be replaced by values box result, but QOV still present")
+	if yLiteral.Value != int64(42) {
+		t.Fatalf("inlined y = %v, want 42", yLiteral.Value)
 	}
 
-	// Predicate: v.x inlined → comparison operand's child is RCV.
+	// Predicate: v.x is likewise canonicalized to the captured constant object.
 	if len(decorrelated.GetPredicates()) != 1 {
 		t.Fatalf("expected 1 predicate, got %d", len(decorrelated.GetPredicates()))
 	}
@@ -560,12 +621,12 @@ func TestDecorrelateValuesRule_RewritePredicatesAndReturnValueOnUncorrelatedValu
 	if !ok {
 		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
 	}
-	compFV, ok := cp.Comparison.Operand.(*values.FieldValue)
+	gotCOV, ok := cp.Comparison.Operand.(*values.ConstantObjectValue)
 	if !ok {
-		t.Fatalf("expected FieldValue in comparison operand, got %T", cp.Comparison.Operand)
+		t.Fatalf("expected ConstantObjectValue in comparison operand, got %T", cp.Comparison.Operand)
 	}
-	if _, stillQOV := compFV.Child.(*values.QuantifiedObjectValue); stillQOV {
-		t.Error("expected QOV in predicate comparison to be replaced, but QOV still present")
+	if gotCOV != cov {
+		t.Fatal("predicate did not preserve the captured constant object")
 	}
 }
 
@@ -578,25 +639,25 @@ func TestDecorrelateValuesRule_DoNotPushDownExistentialValuesQuantifier(t *testi
 
 	// Values box: SELECT 42 FROM range(1), but wrapped in an existential quantifier.
 	rangeQ := makeRangeOneQ()
-	valuesBox := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: int64(42)},
-		[]expressions.Quantifier{rangeQ}, nil,
-	)
+	valuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral(int64(42)),
+		[]expressions.Quantifier{rangeQ}, nil))
+
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	existsQ := expressions.ExistentialQuantifier(valuesBoxRef)
 
 	baseQ, _ := makeBaseScan()
 
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(baseQ), "a"),
 		[]expressions.Quantifier{baseQ, existsQ},
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(existsQ.GetAlias()),
-		},
-	)
+			mustExistentialAlias(t, existsQ.GetAlias()),
+		}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (existential quantifier over values box), got %d", len(yielded))
 	}
@@ -611,42 +672,42 @@ func TestDecorrelateValuesRule_DoNotMatchIfAllExistentialQuantifiers(t *testing.
 
 	// Existential over values box
 	rangeQ := makeRangeOneQ()
-	valuesBox := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: int64(42)},
-		[]expressions.Quantifier{rangeQ}, nil,
-	)
+	valuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral(int64(42)),
+		[]expressions.Quantifier{rangeQ}, nil))
+
 	valuesBoxRef := expressions.InitialOf(valuesBox)
 	existsValuesQ := expressions.ExistentialQuantifier(valuesBoxRef)
 
 	// Existential over a base scan with a predicate
 	baseQ, _ := makeBaseScan()
-	filteredSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	filteredSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: &values.ConstantValue{Value: int64(42)},
+					Operand: decorrelateLiteral(int64(42)),
 				},
 			},
-		},
-	)
+		}))
+
 	filteredRef := expressions.InitialOf(filteredSel)
 	existsTQ := expressions.ExistentialQuantifier(filteredRef)
 
-	outerSel := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: "y"},
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral("y"),
 		[]expressions.Quantifier{existsValuesQ, existsTQ},
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(existsValuesQ.GetAlias()),
-			predicates.NewExistentialAlias(existsTQ.GetAlias()),
-		},
-	)
+			mustExistentialAlias(t, existsValuesQ.GetAlias()),
+			mustExistentialAlias(t, existsTQ.GetAlias()),
+		}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (all existential quantifiers), got %d", len(yielded))
 	}
@@ -661,40 +722,40 @@ func TestDecorrelateValuesRule_DoNotAllowValuesBoxWithJoin(t *testing.T) {
 	t.Parallel()
 
 	// "Values box" with two child quantifiers: SELECT 42 FROM range(1), range(1)
-	notAValuesBox := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: int64(42)},
-		[]expressions.Quantifier{makeRangeOneQ(), makeRangeOneQ()}, nil,
-	)
+	notAValuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral(int64(42)),
+		[]expressions.Quantifier{makeRangeOneQ(), makeRangeOneQ()}, nil))
+
 	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
 	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
 
 	baseQ, _ := makeBaseScan()
 
 	// Outer select that references the "values box"
-	correlatedSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	correlatedSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewQuantifiedObjectValue(notAValuesBoxQ.GetAlias()),
+					Operand: decorrelateObject(notAValuesBoxQ),
 				},
 			},
-		},
-	)
+		}))
+
 	correlatedRef := expressions.InitialOf(correlatedSel)
 	correlatedQ := expressions.ForEachQuantifier(correlatedRef)
 
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(correlatedQ.GetFlowedObjectValue(), "b", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(correlatedQ), "b"),
 		[]expressions.Quantifier{notAValuesBoxQ, correlatedQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (values box has join / multiple children), got %d", len(yielded))
 	}
@@ -716,61 +777,61 @@ func TestDecorrelateValuesRule_DoNotTreatUngroupedCountAsValues(t *testing.T) {
 	//   selectHaving = forEach(SelectExpression(groupBy._0, [groupBy], []))
 
 	baseQ, _ := makeBaseScan()
-	selectWhereSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	selectWhereSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
-		nil,
-	)
+		nil))
+
 	selectWhereRef := expressions.InitialOf(selectWhereSel)
 	selectWhereQ := expressions.ForEachQuantifier(selectWhereRef)
 
-	groupByExpr := expressions.NewGroupByExpression(
-		nil, // no grouping keys (ungrouped aggregate)
+	groupByExpr := mustDecorrelateConstruct(expressions.NewGroupByExpression(
+		nil,
 		[]expressions.AggregateSpec{{
 			Function: expressions.AggCount,
 			Operand:  nil,
 			Alias:    "count",
 		}},
-		selectWhereQ,
-	)
+		selectWhereQ))
+
 	groupByRef := expressions.InitialOf(groupByExpr)
 	groupByQ := expressions.ForEachQuantifier(groupByRef)
 
 	// selectHaving result references groupBy → correlated to its child.
-	selectHavingSel := expressions.NewSelectExpression(
-		values.NewFieldValue(groupByQ.GetFlowedObjectValue(), "_0", nil),
+	selectHavingSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateOrdinal(decorrelateObject(groupByQ), 0),
 		[]expressions.Quantifier{groupByQ},
-		nil,
-	)
+		nil))
+
 	selectHavingRef := expressions.InitialOf(selectHavingSel)
 	selectHavingQ := expressions.ForEachQuantifier(selectHavingRef)
 
 	// Now build the outer join: (selectHaving as notQuiteValuesQun) JOIN T
 	otherBaseQ, _ := makeBaseScan()
-	correlatedSel := expressions.NewSelectExpression(
-		otherBaseQ.GetFlowedObjectValue(),
+	correlatedSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(otherBaseQ),
 		[]expressions.Quantifier{otherBaseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(otherBaseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(otherBaseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewQuantifiedObjectValue(selectHavingQ.GetAlias()),
+					Operand: decorrelateObject(selectHavingQ),
 				},
 			},
-		},
-	)
+		}))
+
 	correlatedRef := expressions.InitialOf(correlatedSel)
 	correlatedQ := expressions.ForEachQuantifier(correlatedRef)
 
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(correlatedQ.GetFlowedObjectValue(), "b", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(correlatedQ), "b"),
 		[]expressions.Quantifier{selectHavingQ, correlatedQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (ungrouped count is not a values box), got %d", len(yielded))
 	}
@@ -784,24 +845,24 @@ func TestDecorrelateValuesRule_RemoveValuesIfOnlyChild(t *testing.T) {
 	t.Parallel()
 
 	// SELECT 'hello' FROM values(true) WHERE values.flowed = true
-	valuesBoxQ, _ := makeValuesBox(&values.ConstantValue{Value: true})
+	valuesBoxQ, _ := makeValuesBox(decorrelateLiteral(true))
 
-	outerSel := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: "hello"},
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral("hello"),
 		[]expressions.Quantifier{valuesBoxQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias()),
+				Operand: decorrelateObject(valuesBoxQ),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: &values.ConstantValue{Value: true},
+					Operand: decorrelateLiteral(true),
 				},
 			},
-		},
-	)
+		}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -842,25 +903,25 @@ func TestDecorrelateValuesRule_RemoveValuesIfOnlyChild(t *testing.T) {
 func TestDecorrelateValuesRule_RemoveValuesIfAllChildren(t *testing.T) {
 	t.Parallel()
 
-	vb1Q, _ := makeValuesBox(&values.ConstantValue{Value: "hello"})
-	vb2Q, _ := makeValuesBox(&values.ConstantValue{Value: "world"})
+	vb1Q, _ := makeValuesBox(decorrelateLiteral("hello"))
+	vb2Q, _ := makeValuesBox(decorrelateLiteral("world"))
 
-	outerSel := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: int64(42)},
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral(int64(42)),
 		[]expressions.Quantifier{vb1Q, vb2Q},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewQuantifiedObjectValue(vb1Q.GetAlias()),
+				Operand: decorrelateObject(vb1Q),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonLessThan,
-					Operand: values.NewQuantifiedObjectValue(vb2Q.GetAlias()),
+					Operand: decorrelateObject(vb2Q),
 				},
 			},
-		},
-	)
+		}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -911,57 +972,57 @@ func TestDecorrelateValuesRule_DoNotUseValuesBoxWithCorrelationsInTheValue(t *te
 
 	// Lower select: SELECT a,b,c FROM T WHERE d = b
 	baseQ, _ := makeBaseScan()
-	lowerSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	lowerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "d", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "d"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "b", nil),
+					Operand: decorrelateField(decorrelateObject(baseQ), "b"),
 				},
 			},
-		},
-	)
+		}))
+
 	lowerRef := expressions.InitialOf(lowerSel)
 	lowerQ := expressions.ForEachQuantifier(lowerRef)
 
 	// Values box whose result references lowerQ (a sibling).
 	// SELECT {x=lowerQ.b} FROM range(1) — the result is correlated to lowerQ.
-	valuesBoxSel := expressions.NewSelectExpression(
+	valuesBoxSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{
 				Name:  "x",
-				Value: values.NewFieldValue(lowerQ.GetFlowedObjectValue(), "b", nil),
+				Value: decorrelateField(decorrelateObject(lowerQ), "b"),
 			},
 		),
-		[]expressions.Quantifier{makeRangeOneQ()}, nil,
-	)
+		[]expressions.Quantifier{makeRangeOneQ()}, nil))
+
 	valuesBoxRef := expressions.InitialOf(valuesBoxSel)
 	valuesBoxQ := expressions.ForEachQuantifier(valuesBoxRef)
 
-	outerSel := expressions.NewSelectExpression(
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
 		values.NewRecordConstructorValue(
 			values.RecordConstructorField{
 				Name:  "a",
-				Value: values.NewFieldValue(lowerQ.GetFlowedObjectValue(), "a", nil),
+				Value: decorrelateField(decorrelateObject(lowerQ), "a"),
 			},
 			values.RecordConstructorField{
 				Name:  "x",
-				Value: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+				Value: decorrelateField(decorrelateObject(valuesBoxQ), "x"),
 			},
 			values.RecordConstructorField{
 				Name:  "c",
-				Value: values.NewFieldValue(lowerQ.GetFlowedObjectValue(), "c", nil),
+				Value: decorrelateField(decorrelateObject(lowerQ), "c"),
 			},
 		),
 		[]expressions.Quantifier{valuesBoxQ, lowerQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (values box result references sibling), got %d", len(yielded))
 	}
@@ -977,28 +1038,28 @@ func TestDecorrelateValuesRule_MultiFieldValuesBoxInline(t *testing.T) {
 
 	// Values box: SELECT {x=3, y="hello"} FROM range(1)
 	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
-		"x": &values.ConstantValue{Value: int64(3)},
-		"y": &values.ConstantValue{Value: "hello"},
+		"x": decorrelateLiteral(int64(3)),
+		"y": decorrelateLiteral("hello"),
 	})
 
 	baseQ, _ := makeBaseScan()
 
 	// SELECT base.b FROM (values) v, (scan) base WHERE base.a = v.x
 	outerPred := &predicates.ComparisonPredicate{
-		Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+		Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+			Operand: decorrelateField(decorrelateObject(valuesBoxQ), "x"),
 		},
 	}
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(baseQ.GetFlowedObjectValue(), "b", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(baseQ), "b"),
 		[]expressions.Quantifier{valuesBoxQ, baseQ},
-		[]predicates.QueryPredicate{outerPred},
-	)
+		[]predicates.QueryPredicate{outerPred}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1008,19 +1069,18 @@ func TestDecorrelateValuesRule_MultiFieldValuesBoxInline(t *testing.T) {
 		t.Fatalf("expected 1 quantifier (values box removed), got %d", len(decorrelated.GetQuantifiers()))
 	}
 
-	// Predicate comparison operand was FieldValue(QOV(vbAlias), "x").
-	// After decorrelation, the QOV should be replaced with the RCV.
+	// Exact reconstruction resolves FieldValue(QOV(vbAlias), "x") through the
+	// replacement constructor and canonicalizes it to the selected literal.
 	cp, ok := decorrelated.GetPredicates()[0].(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected ComparisonPredicate, got %T", decorrelated.GetPredicates()[0])
 	}
-	fv, ok := cp.Comparison.Operand.(*values.FieldValue)
+	literal, ok := cp.Comparison.Operand.(*values.ConstantValue)
 	if !ok {
-		t.Fatalf("expected FieldValue in comparison operand, got %T", cp.Comparison.Operand)
+		t.Fatalf("expected direct ConstantValue in comparison operand, got %T", cp.Comparison.Operand)
 	}
-	// The child should now be a RecordConstructorValue, not a QOV.
-	if _, isRCV := fv.Child.(*values.RecordConstructorValue); !isRCV {
-		t.Errorf("expected RCV as child of translated FieldValue, got %T", fv.Child)
+	if literal.Value != int64(3) {
+		t.Fatalf("inlined x = %v, want 3", literal.Value)
 	}
 }
 
@@ -1029,34 +1089,34 @@ func TestDecorrelateValuesRule_MultiFieldValuesBoxInline(t *testing.T) {
 func TestDecorrelateValuesRule_OrPredicateTranslation(t *testing.T) {
 	t.Parallel()
 
-	valuesBoxQ, _ := makeValuesBox(&values.ConstantValue{Value: int64(99)})
+	valuesBoxQ, _ := makeValuesBox(decorrelateLiteral(int64(99)))
 	baseQ, _ := makeBaseScan()
 
 	// OR predicate: f.col = p OR f.col > 10
 	orPred := predicates.NewOr(
 		&predicates.ComparisonPredicate{
-			Operand: &values.FieldValue{Field: "COL"},
+			Operand: decorrelateField(decorrelateObject(baseQ), "COL"),
 			Comparison: predicates.Comparison{
 				Type:    predicates.ComparisonEquals,
-				Operand: values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias()),
+				Operand: decorrelateObject(valuesBoxQ),
 			},
 		},
 		&predicates.ComparisonPredicate{
-			Operand: &values.FieldValue{Field: "COL"},
+			Operand: decorrelateField(decorrelateObject(baseQ), "COL"),
 			Comparison: predicates.Comparison{
 				Type:    predicates.ComparisonGreaterThan,
-				Operand: &values.ConstantValue{Value: int64(10)},
+				Operand: decorrelateLiteral(int64(10)),
 			},
 		},
 	)
-	outerSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{valuesBoxQ, baseQ},
-		[]predicates.QueryPredicate{orPred},
-	)
+		[]predicates.QueryPredicate{orPred}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1086,27 +1146,27 @@ func TestDecorrelateValuesRule_OrPredicateTranslation(t *testing.T) {
 func TestDecorrelateValuesRule_NotPredicateTranslation(t *testing.T) {
 	t.Parallel()
 
-	valuesBoxQ, _ := makeValuesBox(&values.ConstantValue{Value: int64(5)})
+	valuesBoxQ, _ := makeValuesBox(decorrelateLiteral(int64(5)))
 	baseQ, _ := makeBaseScan()
 
 	// NOT(f.col = p)
 	notPred := predicates.NewNot(
 		&predicates.ComparisonPredicate{
-			Operand: &values.FieldValue{Field: "COL"},
+			Operand: decorrelateField(decorrelateObject(baseQ), "COL"),
 			Comparison: predicates.Comparison{
 				Type:    predicates.ComparisonEquals,
-				Operand: values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias()),
+				Operand: decorrelateObject(valuesBoxQ),
 			},
 		},
 	)
-	outerSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{valuesBoxQ, baseQ},
-		[]predicates.QueryPredicate{notPred},
-	)
+		[]predicates.QueryPredicate{notPred}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1136,21 +1196,21 @@ func TestDecorrelateValuesRule_NotPredicateTranslation(t *testing.T) {
 func TestDecorrelateValuesRule_ExistentialPredicateNotTranslated(t *testing.T) {
 	t.Parallel()
 
-	valuesBoxQ, _ := makeValuesBox(&values.ConstantValue{Value: int64(1)})
+	valuesBoxQ, _ := makeValuesBox(decorrelateLiteral(int64(1)))
 	baseQ, _ := makeBaseScan()
 
 	// Outer select: SELECT f.a FROM values(1) v, T f WHERE EXISTS(f)
 	// The exists predicate references f (not the values box).
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(baseQ), "a"),
 		[]expressions.Quantifier{valuesBoxQ, baseQ},
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(baseQ.GetAlias()),
-		},
-	)
+			mustExistentialAlias(t, baseQ.GetAlias()),
+		}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1184,22 +1244,22 @@ func TestDecorrelateValuesRule_ConstantObjectValueResult(t *testing.T) {
 
 	baseQ, _ := makeBaseScan()
 
-	outerSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{valuesBoxQ, baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewQuantifiedObjectValue(valuesBoxQ.GetAlias()),
+					Operand: decorrelateObject(valuesBoxQ),
 				},
 			},
-		},
-	)
+		}))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1231,40 +1291,40 @@ func TestDecorrelateValuesRule_DoNotUseValuesBoxWithPredicates(t *testing.T) {
 
 	rangeQ := makeRangeOneQ()
 
-	notAValuesBox := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: int64(42)},
+	notAValuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral(int64(42)),
 		[]expressions.Quantifier{rangeQ},
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-	)
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}))
+
 	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
 	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
 
 	baseQ, _ := makeBaseScan()
 
-	correlatedSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	correlatedSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewQuantifiedObjectValue(notAValuesBoxQ.GetAlias()),
+					Operand: decorrelateObject(notAValuesBoxQ),
 				},
 			},
-		},
-	)
+		}))
+
 	correlatedRef := expressions.InitialOf(correlatedSel)
 	correlatedQ := expressions.ForEachQuantifier(correlatedRef)
 
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(correlatedQ.GetFlowedObjectValue(), "b", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(correlatedQ), "b"),
 		[]expressions.Quantifier{notAValuesBoxQ, correlatedQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (values box has predicates), got %d", len(yielded))
 	}
@@ -1277,47 +1337,47 @@ func TestDecorrelateValuesRule_DoNotTreatRangeTwoAsValues(t *testing.T) {
 	t.Parallel()
 
 	rangeTwoValue := values.NewRangeValue(
-		&values.ConstantValue{Value: int64(0)},
-		&values.ConstantValue{Value: int64(2)},
-		&values.ConstantValue{Value: int64(1)},
+		decorrelateLiteral(int64(0)),
+		decorrelateLiteral(int64(2)),
+		decorrelateLiteral(int64(1)),
 	)
-	rangeTwoExpr := expressions.NewTableFunctionExpression(rangeTwoValue)
+	rangeTwoExpr := mustDecorrelateConstruct(expressions.NewTableFunctionExpression(rangeTwoValue))
 	rangeTwoRef := expressions.InitialOf(rangeTwoExpr)
 	rangeTwoQ := expressions.ForEachQuantifier(rangeTwoRef)
 
-	notAValuesBox := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: int64(42)},
-		[]expressions.Quantifier{rangeTwoQ}, nil,
-	)
+	notAValuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral(int64(42)),
+		[]expressions.Quantifier{rangeTwoQ}, nil))
+
 	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
 	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
 
 	baseQ, _ := makeBaseScan()
 
-	correlatedSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	correlatedSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewQuantifiedObjectValue(notAValuesBoxQ.GetAlias()),
+					Operand: decorrelateObject(notAValuesBoxQ),
 				},
 			},
-		},
-	)
+		}))
+
 	correlatedRef := expressions.InitialOf(correlatedSel)
 	correlatedQ := expressions.ForEachQuantifier(correlatedRef)
 
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(correlatedQ.GetFlowedObjectValue(), "b", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(correlatedQ), "b"),
 		[]expressions.Quantifier{notAValuesBoxQ, correlatedQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (values box over range(2)), got %d", len(yielded))
 	}
@@ -1334,49 +1394,49 @@ func TestDecorrelateValuesRule_DoNotTreatRangeWithConstantObjectValueAsValueBox(
 		values.NamedCorrelationIdentifier("__const__"),
 		"0", values.NotNullLong,
 	)
-	rangeExpr := expressions.NewTableFunctionExpression(
+	rangeExpr := mustDecorrelateConstruct(expressions.NewTableFunctionExpression(
 		values.NewRangeValue(
-			&values.ConstantValue{Value: int64(0)},
+			decorrelateLiteral(int64(0)),
 			endCOV,
-			&values.ConstantValue{Value: int64(1)},
-		),
-	)
+			decorrelateLiteral(int64(1)),
+		)))
+
 	rangeRef := expressions.InitialOf(rangeExpr)
 	rangeQ := expressions.ForEachQuantifier(rangeRef)
 
-	notAValuesBox := expressions.NewSelectExpression(
-		&values.ConstantValue{Value: int64(42)},
-		[]expressions.Quantifier{rangeQ}, nil,
-	)
+	notAValuesBox := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateLiteral(int64(42)),
+		[]expressions.Quantifier{rangeQ}, nil))
+
 	notAValuesBoxRef := expressions.InitialOf(notAValuesBox)
 	notAValuesBoxQ := expressions.ForEachQuantifier(notAValuesBoxRef)
 
 	baseQ, _ := makeBaseScan()
 
-	correlatedSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	correlatedSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewQuantifiedObjectValue(notAValuesBoxQ.GetAlias()),
+					Operand: decorrelateObject(notAValuesBoxQ),
 				},
 			},
-		},
-	)
+		}))
+
 	correlatedRef := expressions.InitialOf(correlatedSel)
 	correlatedQ := expressions.ForEachQuantifier(correlatedRef)
 
-	outerSel := expressions.NewSelectExpression(
-		values.NewFieldValue(correlatedQ.GetFlowedObjectValue(), "b", nil),
+	outerSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(correlatedQ), "b"),
 		[]expressions.Quantifier{notAValuesBoxQ, correlatedQ},
-		nil,
-	)
+		nil))
+
 	outerRef := expressions.InitialOf(outerSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), outerRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), outerRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (values box over range with ConstantObjectValue), got %d", len(yielded))
 	}
@@ -1400,44 +1460,44 @@ func TestDecorrelateValuesRule_PushIntoChildSelect(t *testing.T) {
 
 	// Values box: SELECT {x="hello", y=@0} FROM range(1)
 	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
-		"x": &values.ConstantValue{Value: "hello"},
+		"x": decorrelateLiteral("hello"),
 		"y": cov,
 	})
 
 	// Child select: SELECT a,c,d FROM T WHERE b = v.x AND v.y >= c
 	baseQ, _ := makeBaseScan()
-	childSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	childSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "b", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "b"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+					Operand: decorrelateField(decorrelateObject(valuesBoxQ), "x"),
 				},
 			},
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+				Operand: decorrelateField(decorrelateObject(valuesBoxQ), "y"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonGreaterThanEq,
-					Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "c", nil),
+					Operand: decorrelateField(decorrelateObject(baseQ), "c"),
 				},
 			},
-		},
-	)
+		}))
+
 	childSelRef := expressions.InitialOf(childSel)
 	childSelQ := expressions.ForEachQuantifier(childSelRef)
 
 	// Top select: SELECT t.* FROM values v, (child select) t
-	topSel := expressions.NewSelectExpression(
-		childSelQ.GetFlowedObjectValue(),
+	topSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(childSelQ),
 		[]expressions.Quantifier{valuesBoxQ, childSelQ},
-		nil,
-	)
+		nil))
+
 	topRef := expressions.InitialOf(topSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), topRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1488,42 +1548,42 @@ func TestDecorrelateValuesRule_PushIntoChildFilter(t *testing.T) {
 	// (simplified from Java: no otherQun correlation for test clarity)
 	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
 		"x": cov,
-		"y": &values.ConstantValue{Value: "hello"},
+		"y": decorrelateLiteral("hello"),
 	})
 
 	// LogicalFilterExpression: FILTER T WHERE a = v.x AND b = v.y
 	baseQ, _ := makeBaseScan()
-	filterExpr := expressions.NewLogicalFilterExpression(
+	filterExpr := mustDecorrelateConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+					Operand: decorrelateField(decorrelateObject(valuesBoxQ), "x"),
 				},
 			},
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "b", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "b"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+					Operand: decorrelateField(decorrelateObject(valuesBoxQ), "y"),
 				},
 			},
 		},
-		baseQ,
-	)
+		baseQ))
+
 	filterRef := expressions.InitialOf(filterExpr)
 	filterQ := expressions.ForEachQuantifier(filterRef)
 
 	// Top select: SELECT t.d FROM values v, (filter) t
-	topSel := expressions.NewSelectExpression(
-		values.NewFieldValue(filterQ.GetFlowedObjectValue(), "d", nil),
+	topSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateField(decorrelateObject(filterQ), "d"),
 		[]expressions.Quantifier{valuesBoxQ, filterQ},
-		nil,
-	)
+		nil))
+
 	topRef := expressions.InitialOf(topSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), topRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1605,88 +1665,88 @@ func TestDecorrelateValuesRule_PartitionValuesByChild(t *testing.T) {
 
 	// select0: SELECT * FROM T WHERE a = values0
 	base0Q, _ := makeBaseScan()
-	select0 := expressions.NewSelectExpression(
-		base0Q.GetFlowedObjectValue(),
+	select0 := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(base0Q),
 		[]expressions.Quantifier{base0Q},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(base0Q.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(base0Q), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewQuantifiedObjectValue(values0Q.GetAlias()),
+					Operand: decorrelateObject(values0Q),
 				},
 			},
-		},
-	)
+		}))
+
 	select0Ref := expressions.InitialOf(select0)
 	select0Q := expressions.ForEachQuantifier(select0Ref)
 
 	// select1: SELECT * FROM T WHERE values1 = b
 	base1Q, _ := makeBaseScan()
-	select1 := expressions.NewSelectExpression(
-		base1Q.GetFlowedObjectValue(),
+	select1 := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(base1Q),
 		[]expressions.Quantifier{base1Q},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewQuantifiedObjectValue(values1Q.GetAlias()),
+				Operand: decorrelateObject(values1Q),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(base1Q.GetFlowedObjectValue(), "b", nil),
+					Operand: decorrelateField(decorrelateObject(base1Q), "b"),
 				},
 			},
-		},
-	)
+		}))
+
 	select1Ref := expressions.InitialOf(select1)
 	select1Q := expressions.ForEachQuantifier(select1Ref)
 
 	// select2: SELECT * FROM T WHERE c = promote(values2)
 	base2Q, _ := makeBaseScan()
-	select2 := expressions.NewSelectExpression(
-		base2Q.GetFlowedObjectValue(),
+	select2 := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(base2Q),
 		[]expressions.Quantifier{base2Q},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(base2Q.GetFlowedObjectValue(), "c", nil),
+				Operand: decorrelateField(decorrelateObject(base2Q), "c"),
 				Comparison: predicates.Comparison{
 					Type: predicates.ComparisonEquals,
 					Operand: values.NewPromoteValue(
-						values.NewQuantifiedObjectValue(values2Q.GetAlias()),
+						decorrelateObject(values2Q),
 						values.NotNullBytes,
 					),
 				},
 			},
-		},
-	)
+		}))
+
 	select2Ref := expressions.InitialOf(select2)
 	select2Q := expressions.ForEachQuantifier(select2Ref)
 
 	// select3: SELECT * FROM T WHERE d IS NULL (NOT correlated to values3)
 	base3Q, _ := makeBaseScan()
-	select3 := expressions.NewSelectExpression(
-		base3Q.GetFlowedObjectValue(),
+	select3 := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(base3Q),
 		[]expressions.Quantifier{base3Q},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(base3Q.GetFlowedObjectValue(), "d", nil),
+				Operand: decorrelateField(decorrelateObject(base3Q), "d"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonIsNull,
 					Operand: nil,
 				},
 			},
-		},
-	)
+		}))
+
 	select3Ref := expressions.InitialOf(select3)
 	select3Q := expressions.ForEachQuantifier(select3Ref)
 
 	// Top select: join all values boxes with all selects.
-	topSel := expressions.NewSelectExpression(
-		select0Q.GetFlowedObjectValue(),
+	topSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(select0Q),
 		[]expressions.Quantifier{values0Q, select0Q, values1Q, values2Q, select1Q, select2Q, values3Q, select3Q},
-		nil,
-	)
+		nil))
+
 	topRef := expressions.InitialOf(topSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), topRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -1759,67 +1819,65 @@ func TestDecorrelateValuesRule_PushIntoExpressionsWithVariations(t *testing.T) {
 
 	// Values box: SELECT {x=42, y="hello"} FROM range(1)
 	valuesBoxQ, _ := makeRecordValuesBox(map[string]values.Value{
-		"x": &values.ConstantValue{Value: int64(42)},
-		"y": &values.ConstantValue{Value: "hello"},
+		"x": decorrelateLiteral(int64(42)),
+		"y": decorrelateLiteral("hello"),
 	})
 
 	// Base table scan (shared across all 3 members).
 	baseQ, _ := makeBaseScan()
 
 	// Member 1: SELECT c, d FROM T WHERE a = v.x AND b = v.y (correlated)
-	selectBase := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	selectBase := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "a", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "a"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+					Operand: decorrelateField(decorrelateObject(valuesBoxQ), "x"),
 				},
 			},
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "b", nil),
+				Operand: decorrelateField(decorrelateObject(baseQ), "b"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+					Operand: decorrelateField(decorrelateObject(valuesBoxQ), "y"),
 				},
 			},
-		},
-	)
+		}))
 
 	// Member 2: DISTINCT(SELECT c,d FROM T WHERE v.x = c AND v.y = d)
 	// (correlated, but the correlation is in a child under LogicalDistinct)
-	reversePredicatesSel := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	reversePredicatesSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
 		[]predicates.QueryPredicate{
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "x", nil),
+				Operand: decorrelateField(decorrelateObject(valuesBoxQ), "x"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "c", nil),
+					Operand: decorrelateField(decorrelateObject(baseQ), "c"),
 				},
 			},
 			&predicates.ComparisonPredicate{
-				Operand: values.NewFieldValue(valuesBoxQ.GetFlowedObjectValue(), "y", nil),
+				Operand: decorrelateField(decorrelateObject(valuesBoxQ), "y"),
 				Comparison: predicates.Comparison{
 					Type:    predicates.ComparisonEquals,
-					Operand: values.NewFieldValue(baseQ.GetFlowedObjectValue(), "d", nil),
+					Operand: decorrelateField(decorrelateObject(baseQ), "d"),
 				},
 			},
-		},
-	)
+		}))
+
 	reversePredicatesRef := expressions.InitialOf(reversePredicatesSel)
 	reversePredicatesQ := expressions.ForEachQuantifier(reversePredicatesRef)
-	distinct := expressions.NewLogicalDistinctExpression(reversePredicatesQ)
+	distinct := mustDecorrelateConstruct(expressions.NewLogicalDistinctExpression(reversePredicatesQ))
 
 	// Member 3: SELECT c,d FROM T (NOT correlated)
-	selectUncorrelated := expressions.NewSelectExpression(
-		baseQ.GetFlowedObjectValue(),
+	selectUncorrelated := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(baseQ),
 		[]expressions.Quantifier{baseQ},
-		nil,
-	)
+		nil))
 
 	// Create a Reference with all 3 members.
 	multiRef := expressions.InitialOf(selectBase)
@@ -1829,14 +1887,14 @@ func TestDecorrelateValuesRule_PushIntoExpressionsWithVariations(t *testing.T) {
 	lowerQ := expressions.ForEachQuantifier(multiRef)
 
 	// Top select: SELECT v.x, v.y, lower.c, lower.d FROM values v, lower
-	topSel := expressions.NewSelectExpression(
-		lowerQ.GetFlowedObjectValue(),
+	topSel := mustDecorrelateConstruct(expressions.NewSelectExpression(
+		decorrelateObject(lowerQ),
 		[]expressions.Quantifier{valuesBoxQ, lowerQ},
-		nil,
-	)
+		nil))
+
 	topRef := expressions.InitialOf(topSel)
 
-	yielded := FireExpressionRule(NewDecorrelateValuesRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewDecorrelateValuesRule(), topRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}

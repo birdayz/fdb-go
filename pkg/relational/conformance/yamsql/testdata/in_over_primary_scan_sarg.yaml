@@ -241,7 +241,10 @@ tests:
   # unordered, and this file does not pin an order SQL does not promise. The
   # descending ROW ORDER is proved by the full-key scenarios above.
   - query: SELECT * FROM tbl WHERE id IN (1, 2, 3) ORDER BY id DESC
-    plan_contains: "InMemorySort([ID DESC], InJoin(Scan(TBL, [=]), binding ASC))"
+    # RFC-232 renders the exact source-owned ordinal carried by the enforced
+    # sort key; it is the same intentional remaining RFC-191 sort described
+    # above, not a different access path.
+    plan_contains: "InMemorySort([_current.ID#0 DESC], InJoin(Scan(TBL, [=]), binding ASC))"
     unordered: true
     rows:
       - [1, 1, 10, 100]

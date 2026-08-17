@@ -8,7 +8,11 @@ import (
 
 func TestValueSemanticEquals_PointerIdentity(t *testing.T) {
 	t.Parallel()
-	v := &values.FieldValue{Field: "x"}
+	v := semanticEqualityTestField(
+		t,
+		values.NamedCorrelationIdentifier("pointer_identity"),
+		"x",
+	)
 	result := ValueSemanticEquals(v, v, EmptyValueEquivalence())
 	if !result.IsTrue() {
 		t.Fatal("same pointer should return AlwaysTrue")
@@ -20,7 +24,11 @@ func TestValueSemanticEquals_PointerIdentity(t *testing.T) {
 
 func TestValueSemanticEquals_NilValues(t *testing.T) {
 	t.Parallel()
-	fv := &values.FieldValue{Field: "x"}
+	fv := semanticEqualityTestField(
+		t,
+		values.NamedCorrelationIdentifier("nil_control"),
+		"x",
+	)
 
 	t.Run("both_nil", func(t *testing.T) {
 		t.Parallel()
@@ -48,8 +56,9 @@ func TestValueSemanticEquals_NilValues(t *testing.T) {
 
 func TestValueSemanticEquals_StructurallyEqual(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "col"}
-	b := &values.FieldValue{Field: "col"}
+	alias := values.NamedCorrelationIdentifier("structurally_equal")
+	a := semanticEqualityTestField(t, alias, "col")
+	b := semanticEqualityTestField(t, alias, "col")
 	result := ValueSemanticEquals(a, b, EmptyValueEquivalence())
 	if !result.IsTrue() {
 		t.Fatal("structurally identical FieldValues should be semantically equal")
@@ -58,8 +67,9 @@ func TestValueSemanticEquals_StructurallyEqual(t *testing.T) {
 
 func TestValueSemanticEquals_StructurallyDifferent(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "x"}
-	b := &values.FieldValue{Field: "y"}
+	alias := values.NamedCorrelationIdentifier("structurally_different")
+	a := semanticEqualityTestField(t, alias, "x")
+	b := semanticEqualityTestField(t, alias, "y")
 	result := ValueSemanticEquals(a, b, EmptyValueEquivalence())
 	if !result.IsFalse() {
 		t.Fatal("different FieldValues should not be semantically equal")
@@ -74,8 +84,8 @@ func TestValueSemanticEquals_QOVWithEquivalence(t *testing.T) {
 	am := AliasMapOfAliases(aliasA, aliasB)
 	veq := NewAliasMapValueEquivalence(am)
 
-	va := values.NewQuantifiedObjectValue(aliasA)
-	vb := values.NewQuantifiedObjectValue(aliasB)
+	va := semanticEqualityTestQOV(t, aliasA, semanticEqualityTestRowType())
+	vb := semanticEqualityTestQOV(t, aliasB, semanticEqualityTestRowType())
 
 	result := ValueSemanticEquals(va, vb, veq)
 	if !result.IsTrue() {
@@ -88,8 +98,8 @@ func TestValueSemanticEquals_QOVWithoutEquivalence(t *testing.T) {
 	aliasA := values.NamedCorrelationIdentifier("a")
 	aliasB := values.NamedCorrelationIdentifier("b")
 
-	va := values.NewQuantifiedObjectValue(aliasA)
-	vb := values.NewQuantifiedObjectValue(aliasB)
+	va := semanticEqualityTestQOV(t, aliasA, semanticEqualityTestRowType())
+	vb := semanticEqualityTestQOV(t, aliasB, semanticEqualityTestRowType())
 
 	result := ValueSemanticEquals(va, vb, EmptyValueEquivalence())
 	if !result.IsFalse() {
@@ -105,16 +115,16 @@ func TestValueSemanticEquals_CompositeWithMappedChildren(t *testing.T) {
 	am := AliasMapOfAliases(aliasA, aliasB)
 	veq := NewAliasMapValueEquivalence(am)
 
-	konst := &values.ConstantValue{Value: int64(42)}
+	konst := &values.ConstantValue{Value: int64(42), Typ: values.NotNullLong}
 
 	lhs := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  values.NewQuantifiedObjectValue(aliasA),
+		Left:  semanticEqualityTestQOV(t, aliasA, values.NotNullLong),
 		Right: konst,
 	}
 	rhs := &values.ArithmeticValue{
 		Op:    values.OpAdd,
-		Left:  values.NewQuantifiedObjectValue(aliasB),
+		Left:  semanticEqualityTestQOV(t, aliasB, values.NotNullLong),
 		Right: konst,
 	}
 
@@ -126,8 +136,12 @@ func TestValueSemanticEquals_CompositeWithMappedChildren(t *testing.T) {
 
 func TestValueSemanticEquals_DifferentTypes(t *testing.T) {
 	t.Parallel()
-	fv := &values.FieldValue{Field: "x"}
-	cv := &values.ConstantValue{Value: int64(1)}
+	fv := semanticEqualityTestField(
+		t,
+		values.NamedCorrelationIdentifier("different_types"),
+		"x",
+	)
+	cv := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
 
 	result := ValueSemanticEquals(fv, cv, EmptyValueEquivalence())
 	if !result.IsFalse() {

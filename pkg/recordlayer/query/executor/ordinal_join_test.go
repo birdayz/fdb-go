@@ -35,20 +35,24 @@ func ojLegTypeBW() *values.RecordType {
 // for each leg, in order, ofOrdinal(QOV(leg), 0..n-1), field name = the leg
 // column name, duplicates across legs preserved verbatim
 // (NewRawRecordConstructorValue).
-func buildOrdinalJoinRC(t *testing.T, qovs ...*values.QuantifiedObjectValue) *values.RecordConstructorValue {
+func buildOrdinalJoinRC(t *testing.T, qovs ...values.QuantifiedObjectValue) *values.RecordConstructorValue {
 	t.Helper()
 	var fields []values.RecordConstructorField
 	for _, qov := range qovs {
 		rt, isRT := qov.Type().(*values.RecordType)
 		if !isRT {
-			t.Fatalf("buildOrdinalJoinRC: leg %s flows %T, want *RecordType", qov.Correlation, qov.Type())
+			t.Fatalf("buildOrdinalJoinRC: leg %s flows %T, want *RecordType", qov.Correlation(), qov.Type())
 		}
 		for i := range rt.Fields {
-			fv, err := values.NewFieldValueOfOrdinal(qov, i)
+			fv, err := values.ResolveOrdinalSeedField(qov, i)
 			if err != nil {
-				t.Fatalf("buildOrdinalJoinRC: NewFieldValueOfOrdinal(%s, %d): %v", qov.Correlation, i, err)
+				t.Fatalf("buildOrdinalJoinRC: ResolveOrdinalSeedField(%s, %d): %v", qov.Correlation(), i, err)
 			}
-			fields = append(fields, values.RecordConstructorField{Name: fv.Field, Value: fv})
+			view, ok := values.AsFieldValue(fv)
+			if !ok {
+				t.Fatalf("ResolveOrdinalSeedField returned %T, want exact FieldValue", fv)
+			}
+			fields = append(fields, values.RecordConstructorField{Name: view.DisplayName(), Value: fv})
 		}
 	}
 	return values.NewRawRecordConstructorValue(fields...)
@@ -134,11 +138,11 @@ func TestOrdinalJoinSpans_HappyPath(t *testing.T) {
 	t.Parallel()
 	corrA := values.NamedCorrelationIdentifier("a")
 	corrB := values.NamedCorrelationIdentifier("b")
-	qovA := values.NewQuantifiedObjectValueOfType(corrA, ojLegTypeAV())
+	qovA := mustTestQOV(t, corrA, ojLegTypeAV())
 	legB := values.NewRecordType("", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 	})
-	qovB := values.NewQuantifiedObjectValueOfType(corrB, legB)
+	qovB := mustTestQOV(t, corrB, legB)
 
 	rc := buildOrdinalJoinRC(t, qovA, qovB)
 	spans, mergedType, ok := ordinalJoinSpans(rc)
@@ -166,7 +170,7 @@ func TestOrdinalJoinSpans_HappyPath(t *testing.T) {
 		if f.Name != want || f.Ordinal != i {
 			t.Fatalf("merged field %d = {%q, ord %d}, want {%q, ord %d} — dup names across legs must survive in order", i, f.Name, f.Ordinal, want, i)
 		}
-		if f.FieldType != values.NotNullLong {
+		if f.FieldType == nil || !f.FieldType.Equals(values.NotNullLong) {
 			t.Fatalf("merged field %d type = %v, want the baked FieldValue's type", i, f.FieldType)
 		}
 	}
@@ -178,7 +182,7 @@ func TestOrdinalJoinSpans_HappyPath(t *testing.T) {
 // planner path produces; only a malformed ORDINAL seed is loud.
 func TestOrdinalJoinSpans_NameModelDeclines(t *testing.T) {
 	t.Parallel()
-	qovA := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("a"), ojLegTypeAV())
+	qovA := mustTestQOV(t, values.NamedCorrelationIdentifier("a"), ojLegTypeAV())
 
 	// Non-RC value.
 	if _, _, ok := ordinalJoinSpans(&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}); ok {
@@ -186,8 +190,8 @@ func TestOrdinalJoinSpans_NameModelDeclines(t *testing.T) {
 	}
 	// Lazy projection RC (zero baked fields).
 	lazyRC := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "ID", Value: values.NewFieldValue(qovA, "ID", values.NotNullLong)},
-		values.RecordConstructorField{Name: "V", Value: values.NewFieldValue(qovA, "V", values.NotNullLong)},
+		values.RecordConstructorField{Name: "ID", Value: mustTestFieldOrdinal(t, qovA, 0)},
+		values.RecordConstructorField{Name: "V", Value: mustTestFieldOrdinal(t, qovA, 1)},
 	)
 	if _, _, ok := ordinalJoinSpans(lazyRC); ok {
 		t.Fatal("a lazy RC must not be an ordinal join — the name model's RCs land here")
@@ -202,11 +206,8 @@ func TestOrdinalJoinSpans_NameModelDeclines(t *testing.T) {
 // seed assert is loud.
 func TestOrdinalJoinSpans_FoldedProjectionsDecline(t *testing.T) {
 	t.Parallel()
-	qovA := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("a"), ojLegTypeAV())
-	bakedV, err := values.NewFieldValueOfOrdinal(qovA, 1)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
+	qovA := mustTestQOV(t, values.NamedCorrelationIdentifier("a"), ojLegTypeAV())
+	bakedV := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovA, 1))
 
 	// `SELECT a.V FROM a JOIN b` post-merge: single run, partial coverage.
 	folded := values.NewRawRecordConstructorValue(
@@ -241,16 +242,20 @@ func TestOrdinalJoinSpans_FoldedProjectionsDecline(t *testing.T) {
 // references.
 func TestSeedAssert_MalformedPanics(t *testing.T) {
 	t.Parallel()
-	newQOV := func(name string, rt *values.RecordType) *values.QuantifiedObjectValue {
-		return values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(name), rt)
+	newQOV := func(name string, rt *values.RecordType) values.QuantifiedObjectValue {
+		return mustTestQOV(t, values.NamedCorrelationIdentifier(name), rt)
 	}
-	baked := func(qov *values.QuantifiedObjectValue, ord int) values.RecordConstructorField {
+	baked := func(qov values.QuantifiedObjectValue, ord int) values.RecordConstructorField {
 		t.Helper()
-		fv, err := values.NewFieldValueOfOrdinal(qov, ord)
+		fv, err := values.ResolveOrdinalSeedField(qov, ord)
 		if err != nil {
-			t.Fatalf("NewFieldValueOfOrdinal(%s, %d): %v", qov.Correlation, ord, err)
+			t.Fatalf("ResolveOrdinalSeedField(%s, %d): %v", qov.Correlation(), ord, err)
 		}
-		return values.RecordConstructorField{Name: fv.Field, Value: fv}
+		view, ok := values.AsFieldValue(fv)
+		if !ok {
+			t.Fatalf("ResolveOrdinalSeedField returned %T, want exact FieldValue", fv)
+		}
+		return values.RecordConstructorField{Name: view.DisplayName(), Value: fv}
 	}
 
 	t.Run("single run", func(t *testing.T) {
@@ -326,7 +331,7 @@ func TestSeedAssert_MalformedPanics(t *testing.T) {
 		qovA := newQOV("a", ojLegTypeAV())
 		rc := values.NewRawRecordConstructorValue(
 			baked(qovA, 0),
-			values.RecordConstructorField{Name: "V", Value: values.NewFieldValue(qovA, "V", values.NotNullLong)},
+			values.RecordConstructorField{Name: "V", Value: mustTestFieldOrdinal(t, qovA, 1)},
 		)
 		mustPanicLoud(t, func() { values.AssertOrdinalJoinSeed(rc) })
 		if _, _, ok := ordinalJoinSpans(rc); ok {
@@ -348,8 +353,8 @@ func TestLegWindowRow(t *testing.T) {
 	t.Parallel()
 	corrA := values.NamedCorrelationIdentifier("a")
 	corrB := values.NamedCorrelationIdentifier("b")
-	qovA := values.NewQuantifiedObjectValueOfType(corrA, ojLegTypeAV())
-	qovB := values.NewQuantifiedObjectValueOfType(corrB, ojLegTypeBW())
+	qovA := mustTestQOV(t, corrA, ojLegTypeAV())
+	qovB := mustTestQOV(t, corrB, ojLegTypeBW())
 	rc := buildOrdinalJoinRC(t, qovA, qovB)
 	spans, mergedType, ok := ordinalJoinSpans(rc)
 	if !ok {
@@ -392,65 +397,91 @@ func TestLegWindowRow(t *testing.T) {
 	}
 }
 
-// TestLegWindow_WrongSlotHazard is the red→green pin on the exact hazard leg
-// windows exist to prevent: a SOURCE-RELATIVE leg reference FieldValue(QOV(B),
-// "W") carries a LEG-relative ordinal (1, from B's type). Evaluated over the
-// bare MERGED positional row WITHOUT leg context it cannot address B's own
-// window, so a source-relative ordinal over a MULTI-LEG row with no leg
-// binding fails LOUD rather than silently misreading the wrong leg's slot
-// (A.V at absolute slot 1). Through the leg window binder it reads window B
-// slot 1 = merged slot 3, correct (B's W = 20).
+// TestLegWindow_WrongSlotHazard is the red→green pin on the exact hazard the
+// RFC-232 OrdinalLayout replaces legacy RecordType.Legs to prevent. B.W has
+// source ordinal 1. The carrier's absolute slot 1 is A.V, so an evaluation
+// phase whose layout does not bind B must fail LOUD rather than fall through to
+// the carrier row. The full A/B layout maps B field 1 to carrier slot 3 and
+// reads 20. Both halves use the same FieldValue; only the admitted immutable
+// layout differs.
 func TestLegWindow_WrongSlotHazard(t *testing.T) {
 	t.Parallel()
 	corrA := values.NamedCorrelationIdentifier("a")
 	corrB := values.NamedCorrelationIdentifier("b")
-	qovA := values.NewQuantifiedObjectValueOfType(corrA, ojLegTypeAV())
-	qovB := values.NewQuantifiedObjectValueOfType(corrB, ojLegTypeBW())
+	qovA := mustTestQOV(t, corrA, ojLegTypeAV())
+	qovB := mustTestQOV(t, corrB, ojLegTypeBW())
 	rc := buildOrdinalJoinRC(t, qovA, qovB)
-	spans, mergedType, ok := ordinalJoinSpans(rc)
+	_, mergedType, ok := ordinalJoinSpans(rc)
 	if !ok {
 		t.Fatal("ordinalJoinSpans rejected the fixture RC")
 	}
-	merged := ojMergedRow(t, mergedType) // [A.ID=1, A.V=10, B.ID=2, B.W=20]
 
-	// The discriminating probe is B.W: its source-relative ordinal is 1. Over the
-	// bare merged row a leg-oblivious read would land on absolute slot 1 = A.V=10
-	// (the wrong leg), so a source-relative ordinal over a MULTI-LEG row with no
-	// leg binding must be loud instead.
-	bwRef := values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "W", 1, values.NotNullLong)
+	// The discriminating probe is B.W: its source-relative ordinal is 1. A
+	// leg-oblivious carrier read would land on absolute slot 1 = A.V=10.
+	bwRef := mustTestFieldOrdinal(t, qovB, 1)
 
-	// (i) THE HAZARD, caught: merged row as a bare multi-leg Positional, no leg
-	// bindings — correct-or-loud refuses to serve B's source-relative ordinal
-	// against the foreign merged slots and errors loudly instead of misreading
-	// A's V. This is the RED half: a silent read here would be the bug the leg
-	// windows exist to prevent.
-	if _, err := bwRef.Evaluate(&values.RowEvalContext{Positional: merged}); err == nil {
-		t.Fatal("B.W over the bare multi-leg merged row must be LOUD (correct-or-loud), not a silent misread of A's V at absolute slot 1")
+	newLayout := func(windows []values.OrdinalWindowSpec) values.OrdinalLayout {
+		t.Helper()
+		layout, err := values.NewOrdinalLayoutForCarrierType(
+			mergedType,
+			[]values.OrdinalTileSpec{{Start: 0, Width: 4, Kind: values.OrdinalTileFlat}},
+			windows,
+		)
+		if err != nil {
+			t.Fatalf("NewOrdinalLayoutForCarrierType: %v", err)
+		}
+		return layout
+	}
+	rowFor := func(layout values.OrdinalLayout) *PositionalRow {
+		t.Helper()
+		row, err := NewLayoutPositionalRow(mergedType, layout)
+		if err != nil {
+			t.Fatalf("NewLayoutPositionalRow: %v", err)
+		}
+		copy(row.Slots, []any{int64(1), int64(10), int64(2), int64(20)})
+		return row
+	}
+	aWindow := values.OrdinalWindowSpec{Source: qovA, FieldPaths: [][]int{{0}, {1}}}
+	bWindow := values.OrdinalWindowSpec{Source: qovB, FieldPaths: [][]int{{2}, {3}}}
+
+	// (i) THE HAZARD, caught: the selected layout has no B window. Objects is
+	// installed, so exact QOV evaluation cannot use the ambient positional
+	// fallback and must report the absent binding.
+	aOnly := newLayout([]values.OrdinalWindowSpec{aWindow})
+	aOnlyCtx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, aOnly, rowFor(aOnly), nil, nil)
+	if err != nil {
+		t.Fatalf("A-only ordinalLayoutRowContext: %v", err)
+	}
+	if got, evalErr := bwRef.Evaluate(aOnlyCtx); evalErr == nil {
+		t.Fatalf("B.W without a B layout window = %v, want loud unbound correlation (absolute slot 1 is A.V=10)", got)
 	} else {
-		var ue *values.UnboundEvalContextError
-		if !errors.As(err, &ue) {
-			t.Fatalf("hazard eval error = %v, want *UnboundEvalContextError (multi-leg row cannot serve a source-relative ordinal)", err)
+		var resolutionErr *values.ResolutionError
+		if !errors.As(evalErr, &resolutionErr) || resolutionErr.Code() != values.UnboundCorrelation {
+			t.Fatalf("hazard eval error = %v, want UnboundCorrelation", evalErr)
 		}
 	}
 
-	// (ii) GREEN: the same node through the leg window binder reads window B
-	// slot 1 = merged slot 3 = B's W.
-	binder := &legWindowBinder{spans: spans, row: merged}
-	got, err := bwRef.Evaluate(&values.RowEvalContext{Correlations: binder})
+	// (ii) GREEN: the full layout maps B's source slot 1 to carrier slot 3.
+	full := newLayout([]values.OrdinalWindowSpec{aWindow, bWindow})
+	fullCtx, err := ordinalLayoutRowContext(&values.OrdinalBinderStorage{}, full, rowFor(full), nil, nil)
+	if err != nil {
+		t.Fatalf("full ordinalLayoutRowContext: %v", err)
+	}
+	got, err := bwRef.Evaluate(fullCtx)
 	if err != nil {
 		t.Fatalf("windowed eval errored: %v", err)
 	}
 	if got != int64(20) {
 		t.Fatalf("B.W through the leg window = %v, want 20 (B's W)", got)
 	}
-	// Secondary: B.ID's source-relative ordinal 0 is likewise loud over the bare
-	// multi-leg merged row and correct (2) through the window.
-	bidRef := values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong)
-	if _, err := bidRef.Evaluate(&values.RowEvalContext{Positional: merged}); err == nil {
-		t.Fatal("B.ID over the bare multi-leg merged row must be LOUD, not a silent misread of A's ID")
+	// Secondary: B.ID's source ordinal 0 is likewise unbound in the A-only
+	// layout and correct (2) through the full layout.
+	bidRef := mustTestFieldOrdinal(t, qovB, 0)
+	if got, evalErr := bidRef.Evaluate(aOnlyCtx); evalErr == nil {
+		t.Fatalf("B.ID without a B layout window = %v, want loud unbound correlation", got)
 	}
-	if got, _ := bidRef.Evaluate(&values.RowEvalContext{Correlations: binder}); got != int64(2) {
-		t.Fatalf("B.ID through the leg window = %v, want 2", got)
+	if got, evalErr := bidRef.Evaluate(fullCtx); evalErr != nil || got != int64(2) {
+		t.Fatalf("B.ID through the full layout = (%v, %v), want (2, nil)", got, evalErr)
 	}
 
 	// (iii) THE FUSED TWIN, also caught. A source-relative leg reference that
@@ -463,40 +494,31 @@ func TestLegWindow_WrongSlotHazard(t *testing.T) {
 	// (Java's withNewChild == ofFieldsAndFuseIfPossible), which yields the
 	// identical node composeFieldOverField does.
 	hdrType := values.NewRecordType("", false, []values.Field{{Name: "SUB", FieldType: values.NotNullLong, Ordinal: 0}})
-	innerFused := &values.FieldValue{Field: "HDR", Typ: hdrType, Child: qovB, Resolved: values.NewFieldPathOfSingle("HDR", 0, false)}
-	outerFused := &values.FieldValue{Field: "SUB", Typ: values.NotNullLong, Child: innerFused, Resolved: values.NewFieldPathOfSingle("SUB", 0, false)}
-	fused, ok := values.WithChildren(outerFused, []values.Value{innerFused}).(*values.FieldValue)
-	if !ok {
-		t.Fatal("withChildren rebuild-fuse did not produce a *FieldValue")
+	nestedB := mustTestQOV(t, corrB, values.NewRecordType("", false, []values.Field{
+		{Name: "HDR", FieldType: hdrType, Ordinal: 0},
+	}))
+	fused := mustExecutorConstruct(values.ResolveFieldOrdinals(nestedB, []int{0, 0}))
+	fusedView, ok := values.AsFieldValue(fused)
+	if !ok || fusedView.Path() == nil {
+		t.Fatalf("nested exact resolution returned %T, want exact FieldValue", fused)
 	}
-	if len(fused.Resolved.Accessors) != 2 || fused.Resolved.FrontierPinned || fused.SourceRelativeBaked() {
-		t.Fatalf("fused node shape = (accessors %d, pinned %v, sourceRelativeBaked %v), want (2, false, false) — the multi-accessor unpinned shape that slips the old single-accessor guard", len(fused.Resolved.Accessors), fused.Resolved.FrontierPinned, fused.SourceRelativeBaked())
+	if fusedView.Path().Len() != 2 || fusedView.Path().IsFrontierPinned() {
+		t.Fatalf("fused node shape = (accessors %d, pinned %v), want (2, false) — the multi-accessor unpinned shape that slips the old single-accessor guard", fusedView.Path().Len(), fusedView.Path().IsFrontierPinned())
 	}
-	// bare-OrdinalRow arm.
-	if _, err := fused.Evaluate(merged); err == nil {
-		t.Fatal("fused B.HDR.SUB over the bare multi-leg merged row must be LOUD, not a silent misread/NULL of a foreign leg's slot")
+	// The explicit Objects binder makes the fused twin obey the same rule: the
+	// absent exact source is loud and cannot fall through to carrier slot 0.
+	if got, evalErr := fused.Evaluate(aOnlyCtx); evalErr == nil {
+		t.Fatalf("fused B.HDR.SUB without its layout window = %v, want loud unbound correlation", got)
 	} else {
-		var ue *values.UnboundEvalContextError
-		if !errors.As(err, &ue) {
-			t.Fatalf("fused hazard eval error = %v, want *UnboundEvalContextError", err)
-		}
-	}
-	// RowEvalContext-Positional fall-through arm.
-	if _, err := fused.Evaluate(&values.RowEvalContext{Positional: merged}); err == nil {
-		t.Fatal("fused B.HDR.SUB over a multi-leg RowEvalContext{Positional} must be LOUD")
-	} else {
-		var ue *values.UnboundEvalContextError
-		if !errors.As(err, &ue) {
-			t.Fatalf("fused RowEvalContext hazard eval error = %v, want *UnboundEvalContextError", err)
+		var resolutionErr *values.ResolutionError
+		if !errors.As(evalErr, &resolutionErr) || resolutionErr.Code() != values.UnboundCorrelation {
+			t.Fatalf("fused hazard eval error = %v, want UnboundCorrelation", evalErr)
 		}
 	}
 
-	// A BAKED B#0 through the binder reads the same correct slot.
-	bakedBID, err := values.NewFieldValueOfOrdinal(qovB, 0)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
-	got, err = bakedBID.Evaluate(&values.RowEvalContext{Correlations: binder})
+	// A machinery-pinned B#0 through the same layout reads the correct slot.
+	bakedBID := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovB, 0))
+	got, err = bakedBID.Evaluate(fullCtx)
 	if err != nil {
 		t.Fatalf("baked windowed eval errored: %v", err)
 	}
@@ -547,8 +569,8 @@ func TestEvaluateOrdinalJoinRow(t *testing.T) {
 	corrA := values.NamedCorrelationIdentifier("a")
 	corrB := values.NamedCorrelationIdentifier("b")
 	legA, legB := ojLegTypeAV(), ojLegTypeBW()
-	qovA := values.NewQuantifiedObjectValueOfType(corrA, legA)
-	qovB := values.NewQuantifiedObjectValueOfType(corrB, legB)
+	qovA := mustTestQOV(t, corrA, legA)
+	qovB := mustTestQOV(t, corrB, legB)
 	rc := buildOrdinalJoinRC(t, qovA, qovB)
 	_, mergedType, ok := ordinalJoinSpans(rc)
 	if !ok {
@@ -720,20 +742,16 @@ func TestAdaptLegPositional(t *testing.T) {
 // TestBakedEval_RealPositionalRow pins that a BAKED FieldValue evaluated
 // directly against a real executor *PositionalRow (not a values-package test
 // fake) reads the right slot through the OrdinalRow arm, and an out-of-range
-// bake is a loud values.OrdinalResolutionError carrying the row's names —
-// never a silent NULL.
+// bake is a loud LayoutRuntimeShape ResolutionError — never a silent NULL.
 func TestBakedEval_RealPositionalRow(t *testing.T) {
 	t.Parallel()
 	legB := ojLegTypeBW()
-	qovB := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("b"), legB)
+	qovB := mustTestQOV(t, values.NamedCorrelationIdentifier("b"), legB)
 	row := NewPositionalRow(legB)
 	row.Set(0, int64(2))
 	row.Set(1, int64(20))
 
-	baked1, err := values.NewFieldValueOfOrdinal(qovB, 1)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
+	baked1 := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovB, 1))
 	got, err := baked1.Evaluate(row)
 	if err != nil {
 		t.Fatalf("baked eval over a real PositionalRow: %v", err)
@@ -743,41 +761,33 @@ func TestBakedEval_RealPositionalRow(t *testing.T) {
 	}
 
 	// Out-of-range: bake against a WIDER type than the runtime row (the bake
-	// itself is legal; the row is short) — loud OrdinalResolutionError with
-	// the row's names in the diagnostics.
+	// itself is legal; the row is short) — loud runtime-shape error.
 	wide := values.NewRecordType("", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "W", FieldType: values.NotNullLong, Ordinal: 1},
 		{Name: "X", FieldType: values.NotNullLong, Ordinal: 2},
 	})
-	qovWide := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("wb"), wide)
-	baked2, err := values.NewFieldValueOfOrdinal(qovWide, 2)
-	if err != nil {
-		t.Fatalf("NewFieldValueOfOrdinal: %v", err)
-	}
+	qovWide := mustTestQOV(t, values.NamedCorrelationIdentifier("wb"), wide)
+	baked2 := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovWide, 2))
 	_, err = baked2.Evaluate(row)
-	var ore *values.OrdinalResolutionError
-	if !errors.As(err, &ore) {
-		t.Fatalf("out-of-range baked eval over a real PositionalRow must be a loud *OrdinalResolutionError, got %v", err)
+	var resolutionErr *values.ResolutionError
+	if !errors.As(err, &resolutionErr) || resolutionErr.Code() != values.LayoutRuntimeShape {
+		t.Fatalf("out-of-range baked eval over a real PositionalRow must be LayoutRuntimeShape, got %v", err)
 	}
-	if ore.Ordinal != 2 {
-		t.Fatalf("OrdinalResolutionError.Ordinal = %d, want 2", ore.Ordinal)
-	}
-	if len(ore.Available) != 2 || ore.Available[0] != "ID" || ore.Available[1] != "W" {
-		t.Fatalf("OrdinalResolutionError.Available = %v, want the row's names [ID W] (TypeNames diagnostics)", ore.Available)
+	if resolutionErr.Path != "field.path[0]" || !strings.Contains(resolutionErr.Detail, "shorter") {
+		t.Fatalf("runtime-shape diagnostic = path %q detail %q, want failing field step and short-row detail", resolutionErr.Path, resolutionErr.Detail)
 	}
 }
 
 // TestLegWindow_OutOfRangeIsLoud pins that a leg window's
 // out-of-range miss surfaces through the EXISTING eval machinery as a loud
-// OrdinalResolutionError enriched with the LEG's names — no new eval arm was
-// needed to keep the loud-miss behavior.
+// LayoutRuntimeShape ResolutionError — no silent NULL or neighbouring slot.
 func TestLegWindow_OutOfRangeIsLoud(t *testing.T) {
 	t.Parallel()
 	corrA := values.NamedCorrelationIdentifier("a")
 	corrB := values.NamedCorrelationIdentifier("b")
-	qovA := values.NewQuantifiedObjectValueOfType(corrA, ojLegTypeAV())
-	qovB := values.NewQuantifiedObjectValueOfType(corrB, ojLegTypeBW())
+	qovA := mustTestQOV(t, corrA, ojLegTypeAV())
+	qovB := mustTestQOV(t, corrB, ojLegTypeBW())
 	rc := buildOrdinalJoinRC(t, qovA, qovB)
 	spans, mergedType, ok := ordinalJoinSpans(rc)
 	if !ok {
@@ -786,16 +796,22 @@ func TestLegWindow_OutOfRangeIsLoud(t *testing.T) {
 	merged := ojMergedRow(t, mergedType)
 	binder := &legWindowBinder{spans: spans, row: merged}
 
-	// Hand-built baked node past leg B's width (the constructor would refuse
-	// the bake, so this models a stale/corrupted plan node).
-	stale := &values.FieldValue{Field: "W", Typ: values.NotNullLong, Child: qovB, Resolved: values.NewFieldPathOfSingle("W", 5, true)}
-	_, err := stale.Evaluate(&values.RowEvalContext{Correlations: binder})
-	var ore *values.OrdinalResolutionError
-	if !errors.As(err, &ore) {
-		t.Fatalf("out-of-window baked eval must be a loud *OrdinalResolutionError, got %v", err)
+	// The value was valid against a wider exact declaration, but is evaluated
+	// against the two-slot B window. This models a stale producer/consumer
+	// layout disagreement without making a malformed FieldValue representable.
+	staleFields := make([]values.Field, 6)
+	for i := range staleFields {
+		staleFields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: values.NotNullLong, Ordinal: i}
 	}
-	if len(ore.Available) != 2 || ore.Available[0] != "ID" || ore.Available[1] != "W" {
-		t.Fatalf("OrdinalResolutionError.Available = %v, want LEG B's names [ID W] — the window's TypeNames diagnostics", ore.Available)
+	staleQOV := mustTestQOV(t, corrB, values.NewRecordType("", false, staleFields))
+	stale := mustExecutorConstruct(values.ResolveOrdinalSeedField(staleQOV, 5))
+	_, err := stale.Evaluate(&values.RowEvalContext{Correlations: binder})
+	var resolutionErr *values.ResolutionError
+	if !errors.As(err, &resolutionErr) || resolutionErr.Code() != values.LayoutRuntimeShape {
+		t.Fatalf("out-of-window baked eval must be LayoutRuntimeShape, got %v", err)
+	}
+	if resolutionErr.Path != "field.path[0]" || !strings.Contains(resolutionErr.Detail, "shorter") {
+		t.Fatalf("out-of-window diagnostic = path %q detail %q, want failing field step and short-row detail", resolutionErr.Path, resolutionErr.Detail)
 	}
 }
 

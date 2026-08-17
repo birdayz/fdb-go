@@ -8,7 +8,7 @@ import "testing"
 
 func TestEqualsWithoutChildren_SamePointer(t *testing.T) {
 	t.Parallel()
-	v := &FieldValue{Field: "x", Typ: NullableLong}
+	v := &fieldValue{Field: "x", Typ: NullableLong}
 	if !EqualsWithoutChildren(v, v) {
 		t.Fatal("same pointer should return true")
 	}
@@ -24,7 +24,7 @@ func TestEqualsWithoutChildren_BothNil(t *testing.T) {
 
 func TestEqualsWithoutChildren_OneNil(t *testing.T) {
 	t.Parallel()
-	v := &FieldValue{Field: "x", Typ: NullableLong}
+	v := &fieldValue{Field: "x", Typ: NullableLong}
 	if EqualsWithoutChildren(v, nil) {
 		t.Fatal("(non-nil, nil) should return false")
 	}
@@ -35,8 +35,8 @@ func TestEqualsWithoutChildren_OneNil(t *testing.T) {
 
 func TestEqualsWithoutChildren_FieldValue_Same(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "COL1", Typ: NullableLong}
-	b := &FieldValue{Field: "COL1", Typ: NullableString} // Typ differs — irrelevant
+	a := &fieldValue{Field: "COL1", Typ: NullableLong}
+	b := &fieldValue{Field: "COL1", Typ: NullableString} // Typ differs — irrelevant
 	if !EqualsWithoutChildren(a, b) {
 		t.Fatal("same field name should be true regardless of Typ")
 	}
@@ -44,8 +44,8 @@ func TestEqualsWithoutChildren_FieldValue_Same(t *testing.T) {
 
 func TestEqualsWithoutChildren_FieldValue_Different(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "COL1", Typ: NullableLong}
-	b := &FieldValue{Field: "COL2", Typ: NullableLong}
+	a := &fieldValue{Field: "COL1", Typ: NullableLong}
+	b := &fieldValue{Field: "COL2", Typ: NullableLong}
 	if EqualsWithoutChildren(a, b) {
 		t.Fatal("different field names should return false")
 	}
@@ -120,7 +120,7 @@ func TestEqualsWithoutChildren_ConstantValue_ByteSlice(t *testing.T) {
 
 func TestEqualsWithoutChildren_FieldVsConstant(t *testing.T) {
 	t.Parallel()
-	a := &FieldValue{Field: "x", Typ: NullableLong}
+	a := &fieldValue{Field: "x", Typ: NullableLong}
 	b := &ConstantValue{Value: int64(1), Typ: NullableLong}
 	if EqualsWithoutChildren(a, b) {
 		t.Fatal("FieldValue vs ConstantValue should return false")
@@ -202,8 +202,8 @@ func TestEqualsWithoutChildren_BooleanVsConstant(t *testing.T) {
 func TestEqualsWithoutChildren_QuantifiedObjectValue_Same(t *testing.T) {
 	t.Parallel()
 	corr := NamedCorrelationIdentifier("q1")
-	a := &QuantifiedObjectValue{Correlation: corr, Typ: UnknownType}
-	b := &QuantifiedObjectValue{Correlation: corr, Typ: UnknownType}
+	a := mustQOV(t, corr)
+	b := mustQOV(t, corr)
 	if !EqualsWithoutChildren(a, b) {
 		t.Fatal("same correlation should be equal")
 	}
@@ -211,8 +211,8 @@ func TestEqualsWithoutChildren_QuantifiedObjectValue_Same(t *testing.T) {
 
 func TestEqualsWithoutChildren_QuantifiedObjectValue_Different(t *testing.T) {
 	t.Parallel()
-	a := &QuantifiedObjectValue{Correlation: NamedCorrelationIdentifier("q1"), Typ: UnknownType}
-	b := &QuantifiedObjectValue{Correlation: NamedCorrelationIdentifier("q2"), Typ: UnknownType}
+	a := mustQOV(t, NamedCorrelationIdentifier("q1"))
+	b := mustQOV(t, NamedCorrelationIdentifier("q2"))
 	if EqualsWithoutChildren(a, b) {
 		t.Fatal("different correlations should not be equal")
 	}
@@ -373,8 +373,8 @@ func TestEqualsWithoutChildren_RecordConstructorValue_DifferentFieldCount(t *tes
 
 func TestEqualsWithoutChildren_ScalarFunctionValue_Same(t *testing.T) {
 	t.Parallel()
-	a := NewScalarFunctionValue("UPPER", NullableString, &FieldValue{Field: "x", Typ: NullableString})
-	b := NewScalarFunctionValue("UPPER", NullableString, &FieldValue{Field: "y", Typ: NullableString})
+	a := NewScalarFunctionValue("UPPER", NullableString, &fieldValue{Field: "x", Typ: NullableString})
+	b := NewScalarFunctionValue("UPPER", NullableString, &fieldValue{Field: "y", Typ: NullableString})
 	if !EqualsWithoutChildren(a, b) {
 		t.Fatal("same func name and arg count should be equal regardless of args")
 	}
@@ -382,8 +382,8 @@ func TestEqualsWithoutChildren_ScalarFunctionValue_Same(t *testing.T) {
 
 func TestEqualsWithoutChildren_ScalarFunctionValue_DifferentName(t *testing.T) {
 	t.Parallel()
-	a := NewScalarFunctionValue("UPPER", NullableString, &FieldValue{Field: "x", Typ: NullableString})
-	b := NewScalarFunctionValue("LOWER", NullableString, &FieldValue{Field: "x", Typ: NullableString})
+	a := NewScalarFunctionValue("UPPER", NullableString, &fieldValue{Field: "x", Typ: NullableString})
+	b := NewScalarFunctionValue("LOWER", NullableString, &fieldValue{Field: "x", Typ: NullableString})
 	if EqualsWithoutChildren(a, b) {
 		t.Fatal("different func names should not be equal")
 	}
@@ -392,10 +392,10 @@ func TestEqualsWithoutChildren_ScalarFunctionValue_DifferentName(t *testing.T) {
 func TestEqualsWithoutChildren_ScalarFunctionValue_DifferentArgCount(t *testing.T) {
 	t.Parallel()
 	a := NewScalarFunctionValue("COALESCE", NullableLong,
-		&FieldValue{Field: "x", Typ: NullableLong},
+		&fieldValue{Field: "x", Typ: NullableLong},
 	)
 	b := NewScalarFunctionValue("COALESCE", NullableLong,
-		&FieldValue{Field: "x", Typ: NullableLong},
+		&fieldValue{Field: "x", Typ: NullableLong},
 		&ConstantValue{Value: int64(0), Typ: NullableLong},
 	)
 	if EqualsWithoutChildren(a, b) {
@@ -405,8 +405,8 @@ func TestEqualsWithoutChildren_ScalarFunctionValue_DifferentArgCount(t *testing.
 
 func TestEqualsWithoutChildren_AggregateValue_SameOp(t *testing.T) {
 	t.Parallel()
-	a := &AggregateValue{Op: AggSum, Operand: &FieldValue{Field: "x", Typ: NullableLong}}
-	b := &AggregateValue{Op: AggSum, Operand: &FieldValue{Field: "y", Typ: NullableLong}}
+	a := &AggregateValue{Op: AggSum, Operand: &fieldValue{Field: "x", Typ: NullableLong}}
+	b := &AggregateValue{Op: AggSum, Operand: &fieldValue{Field: "y", Typ: NullableLong}}
 	if !EqualsWithoutChildren(a, b) {
 		t.Fatal("same AggOp should be equal regardless of operand")
 	}
@@ -414,8 +414,8 @@ func TestEqualsWithoutChildren_AggregateValue_SameOp(t *testing.T) {
 
 func TestEqualsWithoutChildren_AggregateValue_DifferentOp(t *testing.T) {
 	t.Parallel()
-	a := &AggregateValue{Op: AggSum, Operand: &FieldValue{Field: "x", Typ: NullableLong}}
-	b := &AggregateValue{Op: AggCount, Operand: &FieldValue{Field: "x", Typ: NullableLong}}
+	a := &AggregateValue{Op: AggSum, Operand: &fieldValue{Field: "x", Typ: NullableLong}}
+	b := &AggregateValue{Op: AggCount, Operand: &fieldValue{Field: "x", Typ: NullableLong}}
 	if EqualsWithoutChildren(a, b) {
 		t.Fatal("different AggOps should not be equal")
 	}
@@ -528,7 +528,7 @@ func TestWithChildren_LeafConstant_EmptySlice(t *testing.T) {
 
 func TestWithChildren_LeafField_EmptySlice(t *testing.T) {
 	t.Parallel()
-	v := &FieldValue{Field: "x", Typ: NullableLong}
+	v := &fieldValue{Field: "x", Typ: NullableLong}
 	result := WithChildren(v, []Value{})
 	if result != v {
 		t.Fatal("leaf value with empty children should return same value")
@@ -591,8 +591,8 @@ func TestWithChildren_RecordConstructorValue(t *testing.T) {
 		{Name: "Y", Value: &ConstantValue{Value: int64(2), Typ: NullableLong}},
 	}}
 
-	newX := &FieldValue{Field: "A", Typ: NullableString}
-	newY := &FieldValue{Field: "B", Typ: NullableString}
+	newX := &fieldValue{Field: "A", Typ: NullableString}
+	newY := &fieldValue{Field: "B", Typ: NullableString}
 
 	result := WithChildren(original, []Value{newX, newY})
 
@@ -635,7 +635,7 @@ func TestWithChildren_CastValue(t *testing.T) {
 		Child:  &ConstantValue{Value: int64(5), Typ: NullableLong},
 		Target: NullableString,
 	}
-	newChild := &FieldValue{Field: "col", Typ: NullableLong}
+	newChild := &fieldValue{Field: "col", Typ: NullableLong}
 	result := WithChildren(original, []Value{newChild})
 
 	c, ok := result.(*CastValue)
@@ -668,9 +668,9 @@ func TestWithChildren_NotValue(t *testing.T) {
 func TestWithChildren_ScalarFunctionValue(t *testing.T) {
 	t.Parallel()
 	original := NewScalarFunctionValue("UPPER", NullableString,
-		&FieldValue{Field: "name", Typ: NullableString},
+		&fieldValue{Field: "name", Typ: NullableString},
 	)
-	newArg := &FieldValue{Field: "title", Typ: NullableString}
+	newArg := &fieldValue{Field: "title", Typ: NullableString}
 	result := WithChildren(original, []Value{newArg})
 
 	s, ok := result.(*ScalarFunctionValue)
@@ -687,8 +687,8 @@ func TestWithChildren_ScalarFunctionValue(t *testing.T) {
 
 func TestWithChildren_AggregateValue_Sum(t *testing.T) {
 	t.Parallel()
-	original := &AggregateValue{Op: AggSum, Operand: &FieldValue{Field: "x", Typ: NullableLong}}
-	newOperand := &FieldValue{Field: "y", Typ: NullableLong}
+	original := &AggregateValue{Op: AggSum, Operand: &fieldValue{Field: "x", Typ: NullableLong}}
+	newOperand := &fieldValue{Field: "y", Typ: NullableLong}
 	result := WithChildren(original, []Value{newOperand})
 
 	a, ok := result.(*AggregateValue)
@@ -718,7 +718,7 @@ func TestWithChildren_PromoteValue(t *testing.T) {
 		Child:  &ConstantValue{Value: int64(5), Typ: NullableLong},
 		Target: NullableDouble,
 	}
-	newChild := &FieldValue{Field: "amount", Typ: NullableLong}
+	newChild := &fieldValue{Field: "amount", Typ: NullableLong}
 	result := WithChildren(original, []Value{newChild})
 
 	p, ok := result.(*PromoteValue)

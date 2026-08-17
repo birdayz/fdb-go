@@ -98,6 +98,8 @@ func withNullability(t Type, nullable bool) Type {
 		return t
 	}
 	switch v := t.(type) {
+	case anyRecordType:
+		return anyRecordType{nullable: nullable}
 	case *PrimitiveType:
 		return &PrimitiveType{TypeCode: v.TypeCode, Nullable: nullable}
 	case *RecordType:

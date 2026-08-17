@@ -284,17 +284,13 @@ func sanitizeName(p string) string {
 // produce, each with the class that pre-empts it.
 //
 // A class nothing emits is normally a dead label, and a dead label is worse
-// than no label because it reads as a covered case. These four are not dead:
+// than no label because it reads as a covered case. These three are not dead:
 // each names a real directive the corpus contains, reached only after another
 // skip already claimed the file. Recording the masking relationship is what
 // keeps that a stated fact rather than an unexplained zero — when the masking
 // class shrinks, these should start appearing, and this table is where someone
 // checks that they did.
 var maskedClasses = map[javacorpus.SkipClass]string{
-	javacorpus.SkipGapTableValuedFunction: "the TVF-in-FROM witness (versions-with-single-type-tests.yamsql) " +
-		"declares its functions in the schema template, which now fails closed as unsupported-DDL:function " +
-		"instead of silently dropping the declarations and running against a template missing them. The gap " +
-		"re-arms when template function DDL lands (RFC-201 Phase 4)",
 	javacorpus.SkipDDLStruct: "EMPTIED by RFC-204 Phase 1: CREATE TYPE AS STRUCT registers, struct " +
 		"columns declare, and every former carrier re-booked to a narrower named class " +
 		"(engine-gap:struct-dml, unsupported-DDL:struct-index, function/view causes) or passes. The class " +

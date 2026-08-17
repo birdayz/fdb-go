@@ -33,18 +33,23 @@ func TestResolveIdentifier_BakesLogicalOrdinal(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve %s: %v", tc.col, err)
 		}
-		fv, ok := v.(*values.FieldValue)
+		fv := mustExprField(t, v)
+		if fv.Path() == nil || fv.Path().Len() != 1 {
+			t.Fatalf("resolve %s: exact path = %v, want one accessor", tc.col, fv.Path())
+		}
+		accessor, ok := fv.Path().Accessor(0)
 		if !ok {
-			t.Fatalf("resolve %s: got %T, want *FieldValue", tc.col, v)
+			t.Fatalf("resolve %s: missing root accessor", tc.col)
 		}
-		if fv.Resolved == nil {
-			t.Fatalf("resolve %s: lazy FieldValue — construction must bind the ordinal at plan time", tc.col)
-		}
-		if got := fv.Resolved.Root().Ordinal; got != tc.want {
+		if got := accessor.Ordinal(); got != tc.want {
 			t.Fatalf("resolve %s: ordinal %d, want %d (declared order)", tc.col, got, tc.want)
 		}
-		if fv.Resolved.FrontierPinned {
+		if fv.Path().IsFrontierPinned() {
 			t.Fatalf("resolve %s: must be UNPINNED (no frontier contract on the common path)", tc.col)
+		}
+		qov := mustExprQOV(t, fv.ChildValue())
+		if qov.Correlation().Name() != "U" {
+			t.Fatalf("resolve %s: owner correlation = %q, want U", tc.col, qov.Correlation().Name())
 		}
 	}
 
@@ -54,7 +59,7 @@ func TestResolveIdentifier_BakesLogicalOrdinal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := v.(*values.FieldValue).Evaluate(values.OrdinalRow(ordinalPredRow{
+	got, err := mustExprField(t, v).Evaluate(values.OrdinalRow(ordinalPredRow{
 		cols: []string{"ID", "NAME", "ACTIVE", "ADMIN"},
 		m:    map[string]any{"ID": int64(1), "NAME": "alice"},
 	}))

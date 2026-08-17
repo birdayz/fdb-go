@@ -7,26 +7,26 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// stackedSorts builds Sort([outerKeys]) over Sort([innerKeys]) over Scan.
-func stackedSorts(outerKeys, innerKeys []expressions.SortKey) *expressions.LogicalSortExpression {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+// stackedSorts builds Sort([outerOrdinal]) over Sort([innerOrdinal]) over Scan.
+// A negative inner ordinal requests an unsorted inner node.
+func stackedSorts(outerOrdinal, innerOrdinal int) *expressions.LogicalSortExpression {
+	scan := sortRewriteScan()
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	innerSort := expressions.NewLogicalSortExpression(innerKeys, innerQ)
+	var innerKeys []expressions.SortKey
+	if innerOrdinal >= 0 {
+		innerKeys = []expressions.SortKey{{Value: sortRewriteField(innerQ, innerOrdinal)}}
+	}
+	innerSort := sortRewriteSort(innerKeys, innerQ)
 	outerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerSort))
-	return expressions.NewLogicalSortExpression(outerKeys, outerQ)
+	outerKeys := []expressions.SortKey{{Value: sortRewriteField(outerQ, outerOrdinal)}}
+	return sortRewriteSort(outerKeys, outerQ)
 }
 
 func TestSortMergeRule_OuterReordersInner(t *testing.T) {
 	t.Parallel()
-	outerKeys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "name", Typ: values.UnknownType}, Reverse: false},
-	}
-	innerKeys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
-	}
-	stacked := stackedSorts(outerKeys, innerKeys)
+	stacked := stackedSorts(3, 2)
 	ref := expressions.InitialOf(stacked)
-	yielded := FireExpressionRule(NewSortMergeRule(), ref)
+	yielded := fireSortRewriteRule(t, NewSortMergeRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}
@@ -38,8 +38,8 @@ func TestSortMergeRule_OuterReordersInner(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("flat sort keys len=%d, want 1", len(keys))
 	}
-	fv, ok := keys[0].Value.(*values.FieldValue)
-	if !ok || fv.Field != "name" {
+	fv, ok := values.AsFieldValue(keys[0].Value)
+	if !ok || fv.DisplayName() != "name" {
 		t.Fatalf("flat sort key[0] = %v, want FieldValue(name)", keys[0].Value)
 	}
 	// Inner should be the Scan, not the inner sort.
@@ -52,16 +52,16 @@ func TestSortMergeRule_DeclinesWhenOuterIsUnsorted(t *testing.T) {
 	t.Parallel()
 	// Outer sort is empty (Unsorted) — eliminating the inner would
 	// silently destroy ordering. Decline.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := sortRewriteScan()
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	innerKeys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
+		{Value: sortRewriteField(innerQ, 2), Reverse: false},
 	}
-	innerSort := expressions.NewLogicalSortExpression(innerKeys, innerQ)
+	innerSort := sortRewriteSort(innerKeys, innerQ)
 	outerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerSort))
-	outerSort := expressions.UnsortedLogicalSortExpression(outerQ)
+	outerSort := mustSortRewriteConstruct(expressions.UnsortedLogicalSortExpression(outerQ))
 	ref := expressions.InitialOf(outerSort)
-	yielded := FireExpressionRule(NewSortMergeRule(), ref)
+	yielded := fireSortRewriteRule(t, NewSortMergeRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d, want 0 (Unsorted outer must NOT eliminate inner)", len(yielded))
 	}
@@ -69,14 +69,14 @@ func TestSortMergeRule_DeclinesWhenOuterIsUnsorted(t *testing.T) {
 
 func TestSortMergeRule_DeclinesOnNonSortInner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := sortRewriteScan()
 	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	sort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
+	sort := sortRewriteSort(
+		[]expressions.SortKey{{Value: sortRewriteField(q, 2)}},
 		q,
 	)
 	ref := expressions.InitialOf(sort)
-	yielded := FireExpressionRule(NewSortMergeRule(), ref)
+	yielded := fireSortRewriteRule(t, NewSortMergeRule(), ref)
 	if len(yielded) != 0 {
 		t.Fatalf("yielded %d, want 0 (inner is Scan, not Sort)", len(yielded))
 	}
@@ -86,24 +86,24 @@ func TestSortMergeRule_TriplyNested_FlattensViaFixpoint(t *testing.T) {
 	t.Parallel()
 	// Sort([k1]) over Sort([k2]) over Sort([k3]) over Scan
 	// Two SortMerge fires should leave Sort([k1]) over Scan.
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := sortRewriteScan()
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	deepSort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "k3", Typ: values.UnknownType}}},
+	deepSort := sortRewriteSort(
+		[]expressions.SortKey{{Value: sortRewriteField(scanQ, 6)}},
 		scanQ,
 	)
 	deepSortQ := expressions.ForEachQuantifier(expressions.InitialOf(deepSort))
-	midSort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "k2", Typ: values.UnknownType}}},
+	midSort := sortRewriteSort(
+		[]expressions.SortKey{{Value: sortRewriteField(deepSortQ, 5)}},
 		deepSortQ,
 	)
 	midSortQ := expressions.ForEachQuantifier(expressions.InitialOf(midSort))
-	topSort := expressions.NewLogicalSortExpression(
-		[]expressions.SortKey{{Value: &values.FieldValue{Field: "k1", Typ: values.UnknownType}}},
+	topSort := sortRewriteSort(
+		[]expressions.SortKey{{Value: sortRewriteField(midSortQ, 4)}},
 		midSortQ,
 	)
 	ref := expressions.InitialOf(topSort)
-	progress, converged := exploreRewriting(NewPlanner([]ExpressionRule{NewSortMergeRule()}, nil), ref)
+	progress, converged := exploreSortRewriting(NewPlanner([]ExpressionRule{NewSortMergeRule()}, nil), ref)
 	if !converged {
 		t.Fatalf("exploration did not converge — tasks=%d", progress)
 	}
@@ -115,8 +115,8 @@ func TestSortMergeRule_TriplyNested_FlattensViaFixpoint(t *testing.T) {
 			continue
 		}
 		if _, scanOK := s.GetInner().GetRangesOver().Get().(*expressions.FullUnorderedScanExpression); scanOK && len(s.GetSortKeys()) == 1 {
-			fv, ok := s.GetSortKeys()[0].Value.(*values.FieldValue)
-			if ok && fv.Field == "k1" {
+			fv, ok := values.AsFieldValue(s.GetSortKeys()[0].Value)
+			if ok && fv.DisplayName() == "k1" {
 				flatFound = true
 				break
 			}
@@ -131,12 +131,9 @@ func TestSortMergeRule_InnerUnsortedStillFires(t *testing.T) {
 	t.Parallel()
 	// Inner is Sort([]) — unsorted. Outer's keys win, dropping the
 	// inner is a structural cleanup. Rule fires.
-	outerKeys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.UnknownType}, Reverse: false},
-	}
-	stacked := stackedSorts(outerKeys, nil) // inner has no keys
+	stacked := stackedSorts(2, -1) // inner has no keys
 	ref := expressions.InitialOf(stacked)
-	yielded := FireExpressionRule(NewSortMergeRule(), ref)
+	yielded := fireSortRewriteRule(t, NewSortMergeRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded %d, want 1", len(yielded))
 	}

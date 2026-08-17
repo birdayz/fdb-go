@@ -15,22 +15,29 @@ import (
 // equality. From that it is easy to conclude that populating `Legs` on a type
 // that previously had none cannot change a plan.
 //
-// It can, and `refineRowTypes` is exactly why. Because `Equals` ignores `Legs`,
-// the flowed-row refinement checks the leg tables BEFORE the equality fast path
-// — otherwise two members stating the same fields under different leg tables
-// would resolve by whichever the memo scan reached first. The check treats an
-// EMPTY table as a STATEMENT ("this row has no buried-leg boundaries"), not as an
-// unstated gap, so a populated table against an empty one is a CONFLICT and the
-// refinement declines.
+// It can, and the reason survives even though the mechanism moved. Because
+// `Equals` ignores `Legs`, ANY guard that cares about boundaries has to compare
+// the leg tables SEPARATELY, before the equality fast path — otherwise two
+// members stating the same fields under different leg tables resolve by
+// whichever the memo scan reached first. That was measured: the same pair flowed
+// a 2-leg row in one insertion order and a 0-leg row in the other.
 //
-// A declined refinement is a plan-level outcome. So a change that populates
-// `Legs` on one producer's type, while a memo sibling for the same quantifier
-// still derives it empty, turns a row that used to refine into one that does not.
+// WHAT THESE TESTS DO AND DO NOT COVER. They drive `refineRowTypes`, which is
+// NOT on the live path — `GetFlowedObjectType` carries the production guard, and
+// its ruling on the populated-vs-empty pair is the OPPOSITE one: an empty table
+// is an unstated gap, so the populated table is ADOPTED and only two disagreeing
+// populated tables are refused (the reasoning is at that call site, including
+// why declining instead lost real plans). So the arms below pin
+// `refineRowTypes`'s own contract, not the planner's behaviour; the planner's is
+// pinned by TestGetFlowedObjectTypeRefusesDisagreeingLegTables and
+// TestGetFlowedObjectTypeRefusesConflictingLegTables, which drive both insertion
+// orders.
 //
-// THAT IS A PRECONDITION, NOT A VETO. It says a leg table must be populated
-// CONSISTENTLY across every producer of a given row, and it says the
-// "Equals/Hash ignore Legs" argument establishes type identity only — never
-// behaviour. Both of those are load-bearing for anything that proposes to make a
+// THE PRECONDITION THAT SURVIVES BOTH RULINGS. A leg table must be populated
+// CONSISTENTLY across every producer of a given row — under the live rule a
+// second producer is fatal when it states DIFFERENT boundaries rather than none
+// — and the "Equals/Hash ignore Legs" argument establishes type identity only,
+// never behaviour. Both are load-bearing for anything that proposes to make a
 // previously-empty leg table non-empty.
 //
 // These are the committed form of that finding. Deleting them restores the

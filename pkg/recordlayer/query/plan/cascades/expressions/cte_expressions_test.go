@@ -11,7 +11,7 @@ import (
 func TestTempTableScan_ConstructionAndAccessor(t *testing.T) {
 	t.Parallel()
 	alias := values.UniqueCorrelationIdentifier()
-	expr := NewTempTableScanExpression(alias)
+	expr := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
 	if expr.GetTempTableAlias() != alias {
 		t.Fatalf("GetTempTableAlias()=%v, want %v", expr.GetTempTableAlias(), alias)
 	}
@@ -20,7 +20,7 @@ func TestTempTableScan_ConstructionAndAccessor(t *testing.T) {
 func TestTempTableScan_GetQuantifiers_Nil(t *testing.T) {
 	t.Parallel()
 	alias := values.UniqueCorrelationIdentifier()
-	expr := NewTempTableScanExpression(alias)
+	expr := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
 	if q := expr.GetQuantifiers(); q != nil {
 		t.Fatalf("GetQuantifiers()=%v, want nil (leaf node)", q)
 	}
@@ -29,7 +29,7 @@ func TestTempTableScan_GetQuantifiers_Nil(t *testing.T) {
 func TestTempTableScan_CanCorrelate_False(t *testing.T) {
 	t.Parallel()
 	alias := values.UniqueCorrelationIdentifier()
-	expr := NewTempTableScanExpression(alias)
+	expr := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
 	if expr.CanCorrelate() {
 		t.Fatal("CanCorrelate() should be false")
 	}
@@ -38,7 +38,7 @@ func TestTempTableScan_CanCorrelate_False(t *testing.T) {
 func TestTempTableScan_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
 	alias := values.UniqueCorrelationIdentifier()
-	expr := NewTempTableScanExpression(alias)
+	expr := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
 	corr := expr.GetCorrelatedToWithoutChildren()
 	if _, ok := corr[alias]; !ok {
 		t.Fatalf("GetCorrelatedToWithoutChildren() should contain the alias %v", alias)
@@ -48,11 +48,30 @@ func TestTempTableScan_GetCorrelatedToWithoutChildren(t *testing.T) {
 	}
 }
 
+func TestTempTableScanIdentityIncludesExactFlowedType(t *testing.T) {
+	t.Parallel()
+
+	alias := values.NamedCorrelationIdentifier("temp")
+	left := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
+	leftTwin := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
+	right := mustExpression(NewTempTableScanExpression(alias, values.NotNullString))
+	if !left.EqualsWithoutChildren(leftTwin, EmptyAliasMap()) ||
+		left.HashCodeWithoutChildren() != leftTwin.HashCodeWithoutChildren() {
+		t.Fatal("same temp alias and exact type did not compare and hash equally")
+	}
+	if left.EqualsWithoutChildren(right, EmptyAliasMap()) {
+		t.Fatal("temp scans with one alias but different exact flowed types compared equal")
+	}
+	if left.HashCodeWithoutChildren() == right.HashCodeWithoutChildren() {
+		t.Fatal("temp scan hash omitted the exact flowed type")
+	}
+}
+
 func TestTempTableScan_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
 	alias := values.UniqueCorrelationIdentifier()
-	a := NewTempTableScanExpression(alias)
-	b := NewTempTableScanExpression(alias)
+	a := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
+	b := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
 	if !a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("same-alias TempTableScanExpressions should be equal")
 	}
@@ -60,8 +79,8 @@ func TestTempTableScan_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestTempTableScan_EqualsWithoutChildren_Different(t *testing.T) {
 	t.Parallel()
-	a := NewTempTableScanExpression(values.UniqueCorrelationIdentifier())
-	b := NewTempTableScanExpression(values.UniqueCorrelationIdentifier())
+	a := mustExpression(NewTempTableScanExpression(values.UniqueCorrelationIdentifier(), values.NotNullLong))
+	b := mustExpression(NewTempTableScanExpression(values.UniqueCorrelationIdentifier(), values.NotNullLong))
 	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("different-alias TempTableScanExpressions should not be equal")
 	}
@@ -70,7 +89,7 @@ func TestTempTableScan_EqualsWithoutChildren_Different(t *testing.T) {
 func TestTempTableScan_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
 	alias := values.UniqueCorrelationIdentifier()
-	scan := NewTempTableScanExpression(alias)
+	scan := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
 	other := &leafScan{name: "T"}
 	if scan.EqualsWithoutChildren(other, EmptyAliasMap()) {
 		t.Fatal("TempTableScanExpression should not equal a different expression type")
@@ -80,8 +99,8 @@ func TestTempTableScan_EqualsWithoutChildren_WrongType(t *testing.T) {
 func TestTempTableScan_HashCodeWithoutChildren_SameAlias(t *testing.T) {
 	t.Parallel()
 	alias := values.UniqueCorrelationIdentifier()
-	a := NewTempTableScanExpression(alias)
-	b := NewTempTableScanExpression(alias)
+	a := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
+	b := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Fatal("same-alias TempTableScanExpressions should have the same hash code")
 	}
@@ -89,8 +108,8 @@ func TestTempTableScan_HashCodeWithoutChildren_SameAlias(t *testing.T) {
 
 func TestTempTableScan_HashCodeWithoutChildren_DifferentAlias(t *testing.T) {
 	t.Parallel()
-	a := NewTempTableScanExpression(values.NamedCorrelationIdentifier("alias_a"))
-	b := NewTempTableScanExpression(values.NamedCorrelationIdentifier("alias_b"))
+	a := mustExpression(NewTempTableScanExpression(values.NamedCorrelationIdentifier("alias_a"), values.NotNullLong))
+	b := mustExpression(NewTempTableScanExpression(values.NamedCorrelationIdentifier("alias_b"), values.NotNullLong))
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different-alias TempTableScanExpressions should (very likely) have different hash codes")
 	}
@@ -99,7 +118,7 @@ func TestTempTableScan_HashCodeWithoutChildren_DifferentAlias(t *testing.T) {
 func TestTempTableScan_GetResultValue(t *testing.T) {
 	t.Parallel()
 	alias := values.UniqueCorrelationIdentifier()
-	expr := NewTempTableScanExpression(alias)
+	expr := mustExpression(NewTempTableScanExpression(alias, values.NotNullLong))
 	if expr.GetResultValue() == nil {
 		t.Fatal("GetResultValue() should not be nil")
 	}
@@ -109,11 +128,11 @@ func TestTempTableScan_GetResultValue(t *testing.T) {
 
 func TestTempTableInsert_ConstructionAndAccessors(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q := ForEachQuantifier(InitialOf(leaf))
 	alias := values.UniqueCorrelationIdentifier()
 
-	expr := NewTempTableInsertExpression(q, alias, true)
+	expr := mustExpression(NewTempTableInsertExpression(q, alias, true))
 	if expr.GetInner().GetAlias() != q.GetAlias() {
 		t.Fatal("GetInner() alias mismatch")
 	}
@@ -127,11 +146,11 @@ func TestTempTableInsert_ConstructionAndAccessors(t *testing.T) {
 
 func TestTempTableInsert_NotOwning(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q := ForEachQuantifier(InitialOf(leaf))
 	alias := values.UniqueCorrelationIdentifier()
 
-	expr := NewTempTableInsertExpression(q, alias, false)
+	expr := mustExpression(NewTempTableInsertExpression(q, alias, false))
 	if expr.IsOwning() {
 		t.Fatal("IsOwning() should be false")
 	}
@@ -139,11 +158,11 @@ func TestTempTableInsert_NotOwning(t *testing.T) {
 
 func TestTempTableInsert_GetQuantifiers(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q := ForEachQuantifier(InitialOf(leaf))
 	alias := values.UniqueCorrelationIdentifier()
 
-	expr := NewTempTableInsertExpression(q, alias, true)
+	expr := mustExpression(NewTempTableInsertExpression(q, alias, true))
 	qs := expr.GetQuantifiers()
 	if len(qs) != 1 {
 		t.Fatalf("GetQuantifiers() len=%d, want 1", len(qs))
@@ -155,9 +174,9 @@ func TestTempTableInsert_GetQuantifiers(t *testing.T) {
 
 func TestTempTableInsert_CanCorrelate_False(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q := ForEachQuantifier(InitialOf(leaf))
-	expr := NewTempTableInsertExpression(q, values.UniqueCorrelationIdentifier(), true)
+	expr := mustExpression(NewTempTableInsertExpression(q, values.UniqueCorrelationIdentifier(), true))
 	if expr.CanCorrelate() {
 		t.Fatal("CanCorrelate() should be false")
 	}
@@ -165,11 +184,11 @@ func TestTempTableInsert_CanCorrelate_False(t *testing.T) {
 
 func TestTempTableInsert_GetCorrelatedToWithoutChildren(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q := ForEachQuantifier(InitialOf(leaf))
 	alias := values.UniqueCorrelationIdentifier()
 
-	expr := NewTempTableInsertExpression(q, alias, true)
+	expr := mustExpression(NewTempTableInsertExpression(q, alias, true))
 	corr := expr.GetCorrelatedToWithoutChildren()
 	if _, ok := corr[alias]; !ok {
 		t.Fatal("GetCorrelatedToWithoutChildren() should contain the alias")
@@ -181,13 +200,13 @@ func TestTempTableInsert_GetCorrelatedToWithoutChildren(t *testing.T) {
 
 func TestTempTableInsert_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q1 := ForEachQuantifier(InitialOf(leaf))
 	q2 := ForEachQuantifier(InitialOf(leaf))
 	alias := values.UniqueCorrelationIdentifier()
 
-	a := NewTempTableInsertExpression(q1, alias, true)
-	b := NewTempTableInsertExpression(q2, alias, true)
+	a := mustExpression(NewTempTableInsertExpression(q1, alias, true))
+	b := mustExpression(NewTempTableInsertExpression(q2, alias, true))
 	if !a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("same alias+owning TempTableInsertExpressions should be equal")
 	}
@@ -195,12 +214,12 @@ func TestTempTableInsert_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestTempTableInsert_EqualsWithoutChildren_DifferentAlias(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q1 := ForEachQuantifier(InitialOf(leaf))
 	q2 := ForEachQuantifier(InitialOf(leaf))
 
-	a := NewTempTableInsertExpression(q1, values.UniqueCorrelationIdentifier(), true)
-	b := NewTempTableInsertExpression(q2, values.UniqueCorrelationIdentifier(), true)
+	a := mustExpression(NewTempTableInsertExpression(q1, values.UniqueCorrelationIdentifier(), true))
+	b := mustExpression(NewTempTableInsertExpression(q2, values.UniqueCorrelationIdentifier(), true))
 	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("different-alias TempTableInsertExpressions should not be equal")
 	}
@@ -208,13 +227,13 @@ func TestTempTableInsert_EqualsWithoutChildren_DifferentAlias(t *testing.T) {
 
 func TestTempTableInsert_EqualsWithoutChildren_DifferentOwning(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q1 := ForEachQuantifier(InitialOf(leaf))
 	q2 := ForEachQuantifier(InitialOf(leaf))
 	alias := values.UniqueCorrelationIdentifier()
 
-	a := NewTempTableInsertExpression(q1, alias, true)
-	b := NewTempTableInsertExpression(q2, alias, false)
+	a := mustExpression(NewTempTableInsertExpression(q1, alias, true))
+	b := mustExpression(NewTempTableInsertExpression(q2, alias, false))
 	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("different-owning TempTableInsertExpressions should not be equal")
 	}
@@ -222,9 +241,9 @@ func TestTempTableInsert_EqualsWithoutChildren_DifferentOwning(t *testing.T) {
 
 func TestTempTableInsert_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q := ForEachQuantifier(InitialOf(leaf))
-	ins := NewTempTableInsertExpression(q, values.UniqueCorrelationIdentifier(), true)
+	ins := mustExpression(NewTempTableInsertExpression(q, values.UniqueCorrelationIdentifier(), true))
 	other := &leafScan{name: "T"}
 	if ins.EqualsWithoutChildren(other, EmptyAliasMap()) {
 		t.Fatal("TempTableInsertExpression should not equal a different expression type")
@@ -233,12 +252,12 @@ func TestTempTableInsert_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestTempTableInsert_HashCodeWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	alias := values.UniqueCorrelationIdentifier()
 	q1 := ForEachQuantifier(InitialOf(leaf))
 	q2 := ForEachQuantifier(InitialOf(leaf))
-	a := NewTempTableInsertExpression(q1, alias, true)
-	b := NewTempTableInsertExpression(q2, alias, true)
+	a := mustExpression(NewTempTableInsertExpression(q1, alias, true))
+	b := mustExpression(NewTempTableInsertExpression(q2, alias, true))
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Fatal("same alias+owning should produce same hash code")
 	}
@@ -246,12 +265,12 @@ func TestTempTableInsert_HashCodeWithoutChildren_Same(t *testing.T) {
 
 func TestTempTableInsert_HashCodeWithoutChildren_DifferentOwning(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	alias := values.UniqueCorrelationIdentifier()
 	q1 := ForEachQuantifier(InitialOf(leaf))
 	q2 := ForEachQuantifier(InitialOf(leaf))
-	a := NewTempTableInsertExpression(q1, alias, true)
-	b := NewTempTableInsertExpression(q2, alias, false)
+	a := mustExpression(NewTempTableInsertExpression(q1, alias, true))
+	b := mustExpression(NewTempTableInsertExpression(q2, alias, false))
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different owning flag should (very likely) produce different hash codes")
 	}
@@ -259,9 +278,9 @@ func TestTempTableInsert_HashCodeWithoutChildren_DifferentOwning(t *testing.T) {
 
 func TestTempTableInsert_GetResultValue(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	q := ForEachQuantifier(InitialOf(leaf))
-	expr := NewTempTableInsertExpression(q, values.UniqueCorrelationIdentifier(), true)
+	expr := mustExpression(NewTempTableInsertExpression(q, values.UniqueCorrelationIdentifier(), true))
 	if expr.GetResultValue() == nil {
 		t.Fatal("GetResultValue() should not be nil")
 	}
@@ -271,13 +290,13 @@ func TestTempTableInsert_GetResultValue(t *testing.T) {
 
 func TestRecursiveUnion_ConstructionAndAccessors(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	initial := ForEachQuantifier(InitialOf(leaf))
 	recursive := ForEachQuantifier(InitialOf(leaf))
 	scanAlias := values.UniqueCorrelationIdentifier()
 	insertAlias := values.UniqueCorrelationIdentifier()
 
-	expr := NewRecursiveUnionExpression(initial, recursive, scanAlias, insertAlias, TraversalPreorder)
+	expr := mustExpression(NewRecursiveUnionExpression(initial, recursive, scanAlias, insertAlias, TraversalPreorder))
 	if expr.GetInitialState().GetAlias() != initial.GetAlias() {
 		t.Fatal("GetInitialState() alias mismatch")
 	}
@@ -297,12 +316,13 @@ func TestRecursiveUnion_ConstructionAndAccessors(t *testing.T) {
 
 func TestRecursiveUnion_GetQuantifiers(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	initial := ForEachQuantifier(InitialOf(leaf))
 	recursive := ForEachQuantifier(InitialOf(leaf))
 
-	expr := NewRecursiveUnionExpression(initial, recursive,
-		values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier(), TraversalAny)
+	expr := mustExpression(NewRecursiveUnionExpression(initial, recursive,
+		values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier(), TraversalAny))
+
 	qs := expr.GetQuantifiers()
 	if len(qs) != 2 {
 		t.Fatalf("GetQuantifiers() len=%d, want 2", len(qs))
@@ -317,14 +337,14 @@ func TestRecursiveUnion_GetQuantifiers(t *testing.T) {
 
 func TestRecursiveUnion_CanCorrelate_True(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	expr := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	expr := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.UniqueCorrelationIdentifier(),
 		values.UniqueCorrelationIdentifier(),
-		TraversalAny,
-	)
+		TraversalAny))
+
 	if !expr.CanCorrelate() {
 		t.Fatal("CanCorrelate() should be true for RecursiveUnionExpression")
 	}
@@ -332,14 +352,14 @@ func TestRecursiveUnion_CanCorrelate_True(t *testing.T) {
 
 func TestRecursiveUnion_GetCorrelatedToWithoutChildren_Empty(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	expr := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	expr := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.UniqueCorrelationIdentifier(),
 		values.UniqueCorrelationIdentifier(),
-		TraversalAny,
-	)
+		TraversalAny))
+
 	corr := expr.GetCorrelatedToWithoutChildren()
 	if len(corr) != 0 {
 		t.Fatalf("GetCorrelatedToWithoutChildren() size=%d, want 0", len(corr))
@@ -348,14 +368,14 @@ func TestRecursiveUnion_GetCorrelatedToWithoutChildren_Empty(t *testing.T) {
 
 func TestRecursiveUnion_TraversalStrategy_Any(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	expr := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	expr := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.UniqueCorrelationIdentifier(),
 		values.UniqueCorrelationIdentifier(),
-		TraversalAny,
-	)
+		TraversalAny))
+
 	if !expr.PreOrderAllowed() {
 		t.Fatal("ANY should allow preorder")
 	}
@@ -372,14 +392,14 @@ func TestRecursiveUnion_TraversalStrategy_Any(t *testing.T) {
 
 func TestRecursiveUnion_TraversalStrategy_Preorder(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	expr := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	expr := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.UniqueCorrelationIdentifier(),
 		values.UniqueCorrelationIdentifier(),
-		TraversalPreorder,
-	)
+		TraversalPreorder))
+
 	if !expr.PreOrderAllowed() {
 		t.Fatal("PREORDER should allow preorder")
 	}
@@ -396,14 +416,14 @@ func TestRecursiveUnion_TraversalStrategy_Preorder(t *testing.T) {
 
 func TestRecursiveUnion_TraversalStrategy_Level(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	expr := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	expr := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.UniqueCorrelationIdentifier(),
 		values.UniqueCorrelationIdentifier(),
-		TraversalLevel,
-	)
+		TraversalLevel))
+
 	if expr.PreOrderAllowed() {
 		t.Fatal("LEVEL should not allow preorder")
 	}
@@ -420,14 +440,14 @@ func TestRecursiveUnion_TraversalStrategy_Level(t *testing.T) {
 
 func TestRecursiveUnion_TraversalStrategy_Postorder(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	expr := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	expr := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.UniqueCorrelationIdentifier(),
 		values.UniqueCorrelationIdentifier(),
-		TraversalPostorder,
-	)
+		TraversalPostorder))
+
 	if expr.PreOrderAllowed() {
 		t.Fatal("POSTORDER should not allow preorder")
 	}
@@ -444,20 +464,20 @@ func TestRecursiveUnion_TraversalStrategy_Postorder(t *testing.T) {
 
 func TestRecursiveUnion_EqualsWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	scanAlias := values.UniqueCorrelationIdentifier()
 	insertAlias := values.UniqueCorrelationIdentifier()
 
-	a := NewRecursiveUnionExpression(
+	a := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, insertAlias, TraversalPreorder,
-	)
-	b := NewRecursiveUnionExpression(
+		scanAlias, insertAlias, TraversalPreorder))
+
+	b := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, insertAlias, TraversalPreorder,
-	)
+		scanAlias, insertAlias, TraversalPreorder))
+
 	if !a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("same aliases+strategy should be equal")
 	}
@@ -465,20 +485,20 @@ func TestRecursiveUnion_EqualsWithoutChildren_Same(t *testing.T) {
 
 func TestRecursiveUnion_EqualsWithoutChildren_DifferentStrategy(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	scanAlias := values.UniqueCorrelationIdentifier()
 	insertAlias := values.UniqueCorrelationIdentifier()
 
-	a := NewRecursiveUnionExpression(
+	a := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, insertAlias, TraversalPreorder,
-	)
-	b := NewRecursiveUnionExpression(
+		scanAlias, insertAlias, TraversalPreorder))
+
+	b := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, insertAlias, TraversalPostorder,
-	)
+		scanAlias, insertAlias, TraversalPostorder))
+
 	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("different strategy should not be equal")
 	}
@@ -486,19 +506,19 @@ func TestRecursiveUnion_EqualsWithoutChildren_DifferentStrategy(t *testing.T) {
 
 func TestRecursiveUnion_EqualsWithoutChildren_DifferentScanAlias(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	insertAlias := values.UniqueCorrelationIdentifier()
 
-	a := NewRecursiveUnionExpression(
+	a := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		values.UniqueCorrelationIdentifier(), insertAlias, TraversalAny,
-	)
-	b := NewRecursiveUnionExpression(
+		values.UniqueCorrelationIdentifier(), insertAlias, TraversalAny))
+
+	b := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		values.UniqueCorrelationIdentifier(), insertAlias, TraversalAny,
-	)
+		values.UniqueCorrelationIdentifier(), insertAlias, TraversalAny))
+
 	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("different scan aliases should not be equal")
 	}
@@ -506,19 +526,19 @@ func TestRecursiveUnion_EqualsWithoutChildren_DifferentScanAlias(t *testing.T) {
 
 func TestRecursiveUnion_EqualsWithoutChildren_DifferentInsertAlias(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	scanAlias := values.UniqueCorrelationIdentifier()
 
-	a := NewRecursiveUnionExpression(
+	a := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, values.UniqueCorrelationIdentifier(), TraversalAny,
-	)
-	b := NewRecursiveUnionExpression(
+		scanAlias, values.UniqueCorrelationIdentifier(), TraversalAny))
+
+	b := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, values.UniqueCorrelationIdentifier(), TraversalAny,
-	)
+		scanAlias, values.UniqueCorrelationIdentifier(), TraversalAny))
+
 	if a.EqualsWithoutChildren(b, EmptyAliasMap()) {
 		t.Fatal("different insert aliases should not be equal")
 	}
@@ -526,14 +546,14 @@ func TestRecursiveUnion_EqualsWithoutChildren_DifferentInsertAlias(t *testing.T)
 
 func TestRecursiveUnion_EqualsWithoutChildren_WrongType(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	expr := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	expr := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.UniqueCorrelationIdentifier(),
 		values.UniqueCorrelationIdentifier(),
-		TraversalAny,
-	)
+		TraversalAny))
+
 	other := &leafScan{name: "T"}
 	if expr.EqualsWithoutChildren(other, EmptyAliasMap()) {
 		t.Fatal("RecursiveUnionExpression should not equal a different expression type")
@@ -542,20 +562,20 @@ func TestRecursiveUnion_EqualsWithoutChildren_WrongType(t *testing.T) {
 
 func TestRecursiveUnion_HashCodeWithoutChildren_Same(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	scanAlias := values.UniqueCorrelationIdentifier()
 	insertAlias := values.UniqueCorrelationIdentifier()
 
-	a := NewRecursiveUnionExpression(
+	a := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, insertAlias, TraversalLevel,
-	)
-	b := NewRecursiveUnionExpression(
+		scanAlias, insertAlias, TraversalLevel))
+
+	b := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, insertAlias, TraversalLevel,
-	)
+		scanAlias, insertAlias, TraversalLevel))
+
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Fatal("same aliases+strategy should produce same hash code")
 	}
@@ -563,20 +583,20 @@ func TestRecursiveUnion_HashCodeWithoutChildren_Same(t *testing.T) {
 
 func TestRecursiveUnion_HashCodeWithoutChildren_DifferentStrategy(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	scanAlias := values.NamedCorrelationIdentifier("scan")
 	insertAlias := values.NamedCorrelationIdentifier("insert")
 
-	a := NewRecursiveUnionExpression(
+	a := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, insertAlias, TraversalPreorder,
-	)
-	b := NewRecursiveUnionExpression(
+		scanAlias, insertAlias, TraversalPreorder))
+
+	b := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
-		scanAlias, insertAlias, TraversalPostorder,
-	)
+		scanAlias, insertAlias, TraversalPostorder))
+
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different strategies should (very likely) produce different hash codes")
 	}
@@ -584,14 +604,14 @@ func TestRecursiveUnion_HashCodeWithoutChildren_DifferentStrategy(t *testing.T) 
 
 func TestRecursiveUnion_GetResultValue(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	expr := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	expr := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.UniqueCorrelationIdentifier(),
 		values.UniqueCorrelationIdentifier(),
-		TraversalAny,
-	)
+		TraversalAny))
+
 	if expr.GetResultValue() == nil {
 		t.Fatal("GetResultValue() should not be nil")
 	}
@@ -599,7 +619,7 @@ func TestRecursiveUnion_GetResultValue(t *testing.T) {
 
 func TestTempTableScan_ChildrenAsSet_False(t *testing.T) {
 	t.Parallel()
-	e := NewTempTableScanExpression(values.NamedCorrelationIdentifier("tt"))
+	e := mustExpression(NewTempTableScanExpression(values.NamedCorrelationIdentifier("tt"), values.NotNullLong))
 	if e.ChildrenAsSet() {
 		t.Fatal("TempTableScan.ChildrenAsSet should be false")
 	}
@@ -607,8 +627,8 @@ func TestTempTableScan_ChildrenAsSet_False(t *testing.T) {
 
 func TestTempTableInsert_ChildrenAsSet_False(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	e := NewTempTableInsertExpression(ForEachQuantifier(InitialOf(leaf)), values.NamedCorrelationIdentifier("tt"), true)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	e := mustExpression(NewTempTableInsertExpression(ForEachQuantifier(InitialOf(leaf)), values.NamedCorrelationIdentifier("tt"), true))
 	if e.ChildrenAsSet() {
 		t.Fatal("TempTableInsert.ChildrenAsSet should be false")
 	}
@@ -616,14 +636,14 @@ func TestTempTableInsert_ChildrenAsSet_False(t *testing.T) {
 
 func TestRecursiveUnion_ChildrenAsSet_False(t *testing.T) {
 	t.Parallel()
-	leaf := NewLogicalValuesExpression(nil)
-	e := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	e := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.NamedCorrelationIdentifier("scan"),
 		values.NamedCorrelationIdentifier("insert"),
-		TraversalAny,
-	)
+		TraversalAny))
+
 	if e.ChildrenAsSet() {
 		t.Fatal("RecursiveUnion.ChildrenAsSet should be false")
 	}
@@ -633,14 +653,14 @@ func TestRecursiveUnion_HashCodeDistinctAcrossStrategies(t *testing.T) {
 	t.Parallel()
 	scan := values.NamedCorrelationIdentifier("s")
 	ins := values.NamedCorrelationIdentifier("i")
-	leaf := NewLogicalValuesExpression(nil)
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
 	hashes := make(map[uint64]TraversalStrategy)
 	for _, s := range []TraversalStrategy{TraversalAny, TraversalPreorder, TraversalLevel, TraversalPostorder} {
-		e := NewRecursiveUnionExpression(
+		e := mustExpression(NewRecursiveUnionExpression(
 			ForEachQuantifier(InitialOf(leaf)),
 			ForEachQuantifier(InitialOf(leaf)),
-			scan, ins, s,
-		)
+			scan, ins, s))
+
 		h := e.HashCodeWithoutChildren()
 		if prev, ok := hashes[h]; ok {
 			t.Errorf("hash collision: %v and %v both produce %d", prev, s, h)
@@ -650,14 +670,14 @@ func TestRecursiveUnion_HashCodeDistinctAcrossStrategies(t *testing.T) {
 }
 
 func BenchmarkRecursiveUnion_HashCodeWithoutChildren(b *testing.B) {
-	leaf := NewLogicalValuesExpression(nil)
-	e := NewRecursiveUnionExpression(
+	leaf := mustExpression(NewLogicalValuesExpression(nil))
+	e := mustExpression(NewRecursiveUnionExpression(
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 		values.NamedCorrelationIdentifier("scan"),
 		values.NamedCorrelationIdentifier("insert"),
-		TraversalLevel,
-	)
+		TraversalLevel))
+
 	// A hash has no success/failure signal to assert, so unlike the other
 	// benchmarks in this package these two can only pin DETERMINISM: repeated
 	// calls on one expression must agree, which is the property the memo
@@ -673,7 +693,7 @@ func BenchmarkRecursiveUnion_HashCodeWithoutChildren(b *testing.B) {
 }
 
 func BenchmarkTempTableScan_HashCodeWithoutChildren(b *testing.B) {
-	e := NewTempTableScanExpression(values.NamedCorrelationIdentifier("tt"))
+	e := mustExpression(NewTempTableScanExpression(values.NamedCorrelationIdentifier("tt"), values.NotNullLong))
 	// Determinism only — see BenchmarkRecursiveUnion_HashCodeWithoutChildren.
 	if a, c := e.HashCodeWithoutChildren(), e.HashCodeWithoutChildren(); a != c {
 		b.Fatalf("HashCodeWithoutChildren is not deterministic: %d then %d", a, c)

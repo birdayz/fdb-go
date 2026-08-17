@@ -8,8 +8,8 @@ import (
 
 func TestRequestedOrdering_NewAndAccessors(t *testing.T) {
 	t.Parallel()
-	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	fieldB := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+	fieldA := propertyField(t, "a", values.NullableLong)
+	fieldB := propertyField(t, "b", values.NullableLong)
 	parts := []RequestedOrderingPart{
 		{Value: fieldA, SortOrder: RequestedSortOrderAscending},
 		{Value: fieldB, SortOrder: RequestedSortOrderDescending},
@@ -49,8 +49,8 @@ func TestRequestedOrdering_Preserve(t *testing.T) {
 
 func TestRequestedOrdering_GetValueRequestedSortOrderMap(t *testing.T) {
 	t.Parallel()
-	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	fieldB := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+	fieldA := propertyField(t, "a", values.NullableLong)
+	fieldB := propertyField(t, "b", values.NullableLong)
 	parts := []RequestedOrderingPart{
 		{Value: fieldA, SortOrder: RequestedSortOrderAscending},
 		{Value: fieldB, SortOrder: RequestedSortOrderDescending},
@@ -71,7 +71,7 @@ func TestRequestedOrdering_GetValueRequestedSortOrderMap(t *testing.T) {
 
 func TestRequestedOrdering_CopiesParts(t *testing.T) {
 	t.Parallel()
-	fieldA := &values.FieldValue{Field: "a", Typ: values.UnknownType}
+	fieldA := propertyField(t, "a", values.NullableLong)
 	parts := []RequestedOrderingPart{
 		{Value: fieldA, SortOrder: RequestedSortOrderAscending},
 	}

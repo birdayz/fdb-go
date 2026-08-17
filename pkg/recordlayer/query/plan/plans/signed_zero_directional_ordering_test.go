@@ -39,16 +39,22 @@ func signedZeroDirectionalRange(t *testing.T, literal any) *predicates.Compariso
 
 // signedZeroDirectionalOrdering builds the rich ordering of a forward index scan
 // on a single DOUBLE key column bound by literal, over PK (ID).
-func signedZeroDirectionalOrdering(t *testing.T, literal any) *properties.RichOrdering {
-	t.Helper()
-	row := values.NewRecordType("", false, []values.Field{
+func signedZeroDirectionalRow() *values.RecordType {
+	return values.NewRecordType("signed_zero", false, []values.Field{
 		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
 		{Name: "Z", FieldType: values.NullableDouble, Ordinal: 1},
 	})
-	idx := NewRecordQueryIndexPlan(
-		"IDX_Z",
-		[]*predicates.ComparisonRange{signedZeroDirectionalRange(t, literal)},
-		[]string{"T"}, row, false /* forward */).
+}
+
+func signedZeroDirectionalOrdering(t *testing.T, literal any) *properties.RichOrdering {
+	t.Helper()
+	row := signedZeroDirectionalRow()
+	idx := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"IDX_Z",
+			[]*predicates.ComparisonRange{signedZeroDirectionalRange(t, literal)},
+			[]string{"T"}, row, false /* forward */)
+	}).
 		WithKeyComponentTypes([]values.Type{values.NullableDouble})
 	w := idx.WithIndexMetadata([]string{"Z"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NullableLong})
@@ -59,10 +65,11 @@ func signedZeroDirectionalOrdering(t *testing.T, literal any) *properties.RichOr
 	return ord
 }
 
-func signedZeroDirectionalRequest(dir properties.RequestedSortOrder) *properties.RequestedOrdering {
+func signedZeroDirectionalRequest(t testing.TB, dir properties.RequestedSortOrder) *properties.RequestedOrdering {
+	t.Helper()
 	return properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value:     &values.FieldValue{Field: "Z", Typ: values.NullableDouble},
+			Value:     testFieldIn(t, signedZeroDirectionalRow(), "requested", "Z"),
 			SortOrder: dir,
 		}},
 		properties.DistinctnessPreserveDistinctness, false)
@@ -79,11 +86,11 @@ func TestIndexScanRichOrdering_SignedZeroEqualityIsDirectionalNotFixed(t *testin
 			t.Parallel()
 			ord := signedZeroDirectionalOrdering(t, literal)
 
-			if !ord.Satisfies(signedZeroDirectionalRequest(properties.RequestedSortOrderAscending)) {
+			if !ord.Satisfies(signedZeroDirectionalRequest(t, properties.RequestedSortOrderAscending)) {
 				t.Fatal("a FORWARD scan opens the two signed-zero blocks in key order, so it " +
 					"does satisfy ORDER BY z ASC; refusing it forfeits a sound claim")
 			}
-			if ord.Satisfies(signedZeroDirectionalRequest(properties.RequestedSortOrderDescending)) {
+			if ord.Satisfies(signedZeroDirectionalRequest(t, properties.RequestedSortOrderDescending)) {
 				t.Fatal("a FORWARD scan must NOT satisfy ORDER BY z DESC. -0.0 and +0.0 are " +
 					"admitted by one equality but rank as TWO sort values " +
 					"(java.lang.Double.compare puts -0.0 first), so the coordinate is SORTED " +
@@ -106,7 +113,7 @@ func TestIndexScanRichOrdering_OrdinaryFloatEqualityStaysFixed(t *testing.T) {
 		properties.RequestedSortOrderAscending,
 		properties.RequestedSortOrderDescending,
 	} {
-		if !ord.Satisfies(signedZeroDirectionalRequest(dir)) {
+		if !ord.Satisfies(signedZeroDirectionalRequest(t, dir)) {
 			t.Fatalf("an equality pinning ONE physical key is FIXED and satisfies ORDER BY z %v", dir)
 		}
 	}

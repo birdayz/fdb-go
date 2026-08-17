@@ -57,8 +57,8 @@ func c3AssertOrdinalSeed(t *testing.T, sel *expressions.SelectExpression) {
 		t.Fatal("ordinal seed RC has no fields")
 	}
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		fv, isFV := values.AsFieldValue(f.Value)
+		if !isFV || fv.Path() == nil || !fv.Path().IsFrontierPinned() {
 			t.Fatalf("seed field %d (%s) is not a FrontierPinned baked reference: %T", i, f.Name, f.Value)
 		}
 	}

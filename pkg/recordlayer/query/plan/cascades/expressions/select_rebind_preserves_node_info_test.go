@@ -41,20 +41,20 @@ func TestSelectWithQuantifiers_PreservesEveryNonQuantifierField(t *testing.T) {
 	rv := values.NewBooleanValue(true)
 	pTrue := predicates.NewConstantPredicate(predicates.TriTrue)
 
-	base := NewSelectExpressionWithJoinType(
+	base := mustExpression(NewSelectExpressionWithJoinType(
 		rv,
 		[]Quantifier{q1, q2},
 		[]predicates.QueryPredicate{pTrue},
 		[]string{"A", "B"},
-		JoinCross,
-	)
+		JoinCross))
+
 	swapped := base.WithSwappedQuantifiers()
 	if !swapped.IsQuantifiersSwapped() {
 		t.Fatal("WithSwappedQuantifiers did not set the marker — the fixture is broken, not the subject")
 	}
 
 	// The rewire the memo performs: same edges, freshly bound quantifier objects.
-	rebound := swapped.WithQuantifiers([]Quantifier{
+	rebound := mustWithQuantifiers(t, swapped, []Quantifier{
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 	})
@@ -99,16 +99,16 @@ func TestSelectWithQuantifiers_DoesNotInventASwap(t *testing.T) {
 	t.Parallel()
 
 	leaf := &leafScan{name: "T"}
-	base := NewSelectExpressionWithAliases(
+	base := mustExpression(NewSelectExpressionWithAliases(
 		values.NewBooleanValue(true),
 		[]Quantifier{ForEachQuantifier(InitialOf(leaf)), ForEachQuantifier(InitialOf(leaf))},
 		nil,
-		[]string{"A", "B"},
-	)
+		[]string{"A", "B"}))
+
 	if base.IsQuantifiersSwapped() {
 		t.Fatal("a freshly built Select must not be marked swapped")
 	}
-	rebound := base.WithQuantifiers([]Quantifier{
+	rebound := mustWithQuantifiers(t, base, []Quantifier{
 		ForEachQuantifier(InitialOf(leaf)),
 		ForEachQuantifier(InitialOf(leaf)),
 	}).(*SelectExpression)

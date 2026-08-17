@@ -88,8 +88,12 @@ var engineGaps = []EngineGap{
 	// escaped.)
 	{"pseudo-field-clash.yamsql", SkipGapPlannerDeclines, `SELECT (t1.id, t1.col1, t1.`, "CQ-72"},
 
-	// `FROM VALUES (42)` — an inline table as a FROM source.
-	{"table-functions.yamsql", SkipGapInlineValues, "InlineTableItemContext", "CQ-72"},
+	// Inline VALUES now parses, plans and executes, including nested authored
+	// column definitions and derived-table predicates. The file progresses to
+	// its first table-valued function in FROM, which the source parser still
+	// rejects explicitly. Pin the statement because the file contains several
+	// later range() queries and only this first blocker is measured here.
+	{"table-functions.yamsql", SkipGapTableValuedFunction, `"select * from range(1, 4)": 0A000: unsupported table source item *antlrgen.TableValuedFunctionContext; only plain table names are supported`, "CQ-72"},
 
 	// A correlated EXISTS whose body is a set operation (UNION ALL).
 	{"union-empty-tables.yamsql", SkipGapCorrelatedExistsSetOp, "correlated EXISTS: unsupported query body shape", "CQ-72"},
@@ -288,13 +292,11 @@ var engineGaps = []EngineGap{
 	// answers through its sanctioned in-memory sort — the same
 	// Go-accepts-what-Java-rejects class join-tests-outer.yamsql carries.
 	{"uuid-non-prepared.yamsql", SkipConformanceGoAccepts, `"select * from ta where b is not null order by b": expecting statement to throw an error 0AF00, however it succeeded`, "CQ-72"},
-	// A lateral unnest of a DERIVED TABLE's array column with AT — the
-	// correlated-unnest-over-subquery shape Cascades declines. Pinned at the
-	// exact statement: this file is 30 queries of PartiQL AT shapes and the
-	// bare 0AF00 text would have counted a decline on ANY of them as this one.
-	// (The %q-formatted statement text escapes the embedded quotes, so the
-	// signature matches the escaped form.)
-	{"array-join-at.yamsql", SkipGapPlannerDeclines, `"SELECT \"subquery\".\"id\" - 100 AS \"id\", \"at\", \"val\" FROM (SELECT \"id\" + 100 AS \"id\", \"arr1\" FROM T1) AS \"subquery\", \"subquery\".\"arr1\" AS \"val\" AT \"at\"": 0AF00: Cascades planner could not plan query`, "CQ-72"},
+	// The former derived-table + AT blocker now executes. The file progresses
+	// through the inline-VALUES lateral cases and stops at its first FROM clause
+	// with two lateral unnests, the same explicit translator gap booked above.
+	// Pin the exact statement because this file has thirty PartiQL AT shapes.
+	{"array-join-at.yamsql", SkipGapMultipleLateralUnnests, `"SELECT T2.\"id\", \"at1\", \"val1\", \"at2\", \"val2\" FROM T2, T2.\"arr1\" AS \"val1\" AT \"at1\", T2.\"arr2\" AS \"val2\" AT \"at2\"": 0AF00: multiple lateral array unnests in one FROM clause are not yet supported`, "RFC-142"},
 
 	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan
 	// time (the type-nullability gate, ExpressionVisitor:1067 semantics
@@ -326,18 +328,45 @@ var engineGaps = []EngineGap{
 	//     whose left is a derived table the predicate references by alias. That
 	//     one is CLOSED — a join-bodied derived table's output row is now
 	//     derived from its own legs, so the comma join plans — and the file
-	//     advances to a JOIN … USING over a derived table whose body PROJECTS A
-	//     COMPUTED EXPRESSION (`select c3 - 2 as c11`). That body has no
-	//     derivable output type, so the USING scope cannot be built and the ON
-	//     upgrade fails closed rather than dropping the predicate into a cross
-	//     product. Pre-existing and independent: the same statement produces the
-	//     same rejection with the derived-join derivation reverted; it was
-	//     unreachable only because the file stopped earlier.
+	//     advanced to a JOIN … USING over a derived table whose body PROJECTS A
+	//     COMPUTED EXPRESSION (`select c3 - 2 as c11`). THAT one is closed too
+	//     under exact-ordinal resolution; the file's live signature is now the
+	//     parenthesised star, booked at its own entry below.
 	//
 	// Both remaining signatures pin the exact statement, so a DIFFERENT failure
 	// in either file stays a hard failure rather than hiding under the entry.
 	{"union.yamsql", SkipGapPlannerDeclines, "select id as W, col1 as X, col2 as Y from t1 union all (select * from t1)", "CQ-72"},
-	{"join-tests.yamsql", SkipGapDerivedJoinOn, "select * from (select c11 as c1, c3 from (select c3 - 2 as c11, c3 from jub) as Z) as Y join", "CQ-72"},
+	// RE-BOOKED because this file's former derived-table-join-on signature is
+	// now CLOSED — that class is retired and its constant deleted, since a label
+	// nothing emits reads as a covered case.
+	// The JOIN … USING over a computed-body derived table (`select c3 - 2 as
+	// c11`) that used to stop this file EXECUTES AND ASSERTS: the exact-ordinal
+	// output row makes the USING scope derivable, so the ON upgrade no longer
+	// fails closed. Measured, not inferred — a per-query outcome trace over the
+	// block shows that statement reaching ASSERT, and the file's asserted-query
+	// count rises 17 → 23 while its class changes. It is the ONLY file whose
+	// ledger line moves: a per-file diff of all 168 skip lines and of every
+	// file's skip-class histogram is otherwise byte-identical to HEAD.
+	//
+	// The file now stops at its next unimplemented shape:
+	//
+	//	select (*) from (select dept.name, project.name from emp, dept, project …) X
+	//
+	// `(*)` is the PARENTHESISED STAR — a record constructor over the expanded
+	// row — which Go does not implement; the expression walker declines it
+	// ("RecordConstructor over STAR"). This is the SAME pre-existing gap, not a
+	// new one: star-expression-metadata.yamsql is booked at `SELECT (*) FROM
+	// foo` and produces the identical `0AF00: projection slot 0 has no resolved
+	// Value` both here and at HEAD, so this entry carries that file's class.
+	//
+	// DO NOT read the two line numbers as "stops earlier". The block does not
+	// execute in file order — the same trace shows line 453 asserting before
+	// line 208 errors — so the position of the stopping statement in the file
+	// says nothing about how far the run got. The asserted-query count is what
+	// says it: this file gets FURTHER than before, and the earlier signature is
+	// replaced rather than kept because a closed gap that can never match again
+	// is exactly the stale entry EngineGaps()' reachability assertion catches.
+	{"join-tests.yamsql", SkipGapStructQuery, `"select (*) from (select dept.name, project.name from emp, dept, project`, "RFC-204 P3"},
 	// Schema-template serialization options (encryption): Go's store layer
 	// does not implement encrypted serialization, so a read that Java fails
 	// with XXF01 (missing/wrong key) succeeds.

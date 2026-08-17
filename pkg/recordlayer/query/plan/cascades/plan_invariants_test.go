@@ -8,6 +8,19 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func invariantRowType() values.Type {
+	return values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
+func mustInvariantConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct plan-invariant fixture: " + err.Error())
+	}
+	return value
+}
+
 // TestValidatePlanInvariants_NilInnerChild is the committed detection proof for
 // RFC-164 WS-2: a non-leaf plan whose required inner is nil (the IN-LIMIT bug
 // shape — GetChildren masks the nil as zero children) must be rejected, while a
@@ -16,23 +29,28 @@ import (
 // violated: ... Fetch(<nil>)") is captured in the PR; this pins the detector.
 func TestValidatePlanInvariants_NilInnerChild(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustInvariantConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, invariantRowType(), false))
 
 	// Genuine leaf — legitimately childless.
 	if err := ValidatePlanInvariants(scan); err != nil {
 		t.Fatalf("scan leaf must pass: %v", err)
 	}
 	// Non-leaf operator with a nil inner — the malformed shape.
-	if err := ValidatePlanInvariants(plans.NewRecordQueryLimitPlan(nil, 5, 0)); err == nil {
+	malformedLimit := &plans.RecordQueryLimitPlan{}
+	if err := ValidatePlanInvariants(malformedLimit); err == nil {
 		t.Fatal("a Limit with a nil inner must violate the no-nil-child invariant")
 	}
 	// Well-formed operator — passes.
-	if err := ValidatePlanInvariants(plans.NewRecordQueryLimitPlan(scan, 5, 0)); err != nil {
+	if err := ValidatePlanInvariants(mustInvariantConstruct(
+		plans.NewRecordQueryLimitPlan(scan, 5, 0))); err != nil {
 		t.Fatalf("well-formed Limit must pass: %v", err)
 	}
-	// Nested: Limit(Limit(nil)) — the inner malformation is reached by the walk.
-	if err := ValidatePlanInvariants(plans.NewRecordQueryLimitPlan(plans.NewRecordQueryLimitPlan(nil, 1, 0), 5, 0)); err == nil {
-		t.Fatal("a nested nil inner must be reached and rejected")
+	// Constructor admission now rejects the nested malformed shape before it can
+	// enter a plan graph; the zero-value fixture above remains the direct detector
+	// proof for legacy/deserialized malformed nodes.
+	if _, err := plans.NewRecordQueryLimitPlan(malformedLimit, 5, 0); err == nil {
+		t.Fatal("a nested malformed inner must be rejected at construction")
 	}
 }
 
@@ -43,7 +61,8 @@ func TestValidatePlanInvariants_NilInnerChild(t *testing.T) {
 // type-encoded / compile-time.
 func TestPlanInvariants_ChildlessClassification(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustInvariantConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, invariantRowType(), false))
 	// Genuine leaves legitimately have zero children.
 	if err := ValidatePlanInvariants(scan); err != nil {
 		t.Errorf("genuine leaf %T must be allowed childless: %v", scan, err)
@@ -52,8 +71,8 @@ func TestPlanInvariants_ChildlessClassification(t *testing.T) {
 	// a zero-leg n-ary set op (the n-ary analog: degenerate, never legitimately
 	// emitted, so flagging it is a true positive, not a false one).
 	for _, p := range []plans.RecordQueryPlan{
-		plans.NewRecordQueryLimitPlan(nil, 1, 0),
-		plans.NewRecordQueryUnionPlan(nil),
+		&plans.RecordQueryLimitPlan{},
+		&plans.RecordQueryUnionPlan{},
 	} {
 		if err := ValidatePlanInvariants(p); err == nil {
 			t.Errorf("childless non-leaf %T must be rejected", p)
@@ -75,10 +94,12 @@ func TestPlanInvariants_ChildlessClassification(t *testing.T) {
 // verified by hand while writing this fix, not asserted here as a tautology.
 func TestValidatePlanInvariants_InJoinSortedClaim(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustInvariantConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, invariantRowType(), false))
 
 	mk := func(sorted, reverse bool, vals []any) *plans.RecordQueryInJoinPlan {
-		p := plans.NewRecordQueryInJoinPlan(scan, "__in_value", sorted, reverse)
+		p := mustInvariantConstruct(plans.NewRecordQueryInJoinPlan(
+			scan, "__in_value", sorted, reverse))
 		p.SetInValues(vals)
 		return p
 	}

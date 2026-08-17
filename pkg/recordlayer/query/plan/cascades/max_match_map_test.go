@@ -7,6 +7,30 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func maxMatchTestQOV(
+	t testing.TB,
+	alias values.CorrelationIdentifier,
+	typ values.Type,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, err := values.NewQuantifiedObjectValue(alias, typ)
+	return mustConstruct(t, qov, err)
+}
+
+func maxMatchTestField(t testing.TB, name string) values.Value {
+	t.Helper()
+	rowType := values.NewRecordType("MaxMatch"+name, false, []values.Field{
+		{Name: name, FieldType: values.NullableLong, Ordinal: 0},
+	})
+	root := maxMatchTestQOV(
+		t,
+		values.NamedCorrelationIdentifier("max_match_"+name),
+		rowType,
+	)
+	field, err := values.ResolveFieldOrdinals(root, []int{0})
+	return mustConstruct(t, field, err)
+}
+
 // ---------------------------------------------------------------------------
 // 1. Leaf value matching
 // ---------------------------------------------------------------------------
@@ -14,8 +38,8 @@ import (
 func TestComputeMaxMatchMap_LeafFieldMatch(t *testing.T) {
 	t.Parallel()
 
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col1")
 
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
@@ -32,11 +56,13 @@ func TestComputeMaxMatchMap_LeafFieldMatch(t *testing.T) {
 	// Verify the mapping points to the right values.
 	m := mmm.GetMap()
 	for q, c := range m {
-		if values.ExplainValue(q) != "col1" {
-			t.Fatalf("expected query key 'col1', got %q", values.ExplainValue(q))
+		queryField, queryOK := values.AsFieldValue(q)
+		if !queryOK || queryField.DisplayName() != "col1" {
+			t.Fatalf("expected exact query field 'col1', got %q", values.ExplainValue(q))
 		}
-		if values.ExplainValue(c) != "col1" {
-			t.Fatalf("expected candidate value 'col1', got %q", values.ExplainValue(c))
+		candidateField, candidateOK := values.AsFieldValue(c)
+		if !candidateOK || candidateField.DisplayName() != "col1" {
+			t.Fatalf("expected exact candidate field 'col1', got %q", values.ExplainValue(c))
 		}
 	}
 }
@@ -58,8 +84,8 @@ func TestComputeMaxMatchMap_LeafQOVMatch(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("q1")
-	qv := &values.QuantifiedObjectValue{Correlation: alias, Typ: values.NullableLong}
-	cv := &values.QuantifiedObjectValue{Correlation: alias, Typ: values.NullableLong}
+	qv := maxMatchTestQOV(t, alias, values.NullableLong)
+	cv := maxMatchTestQOV(t, alias, values.NullableLong)
 
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
@@ -75,7 +101,7 @@ func TestComputeMaxMatchMap_LeafQOVMatch(t *testing.T) {
 func TestComputeMaxMatchMap_SameStructureArithmetic(t *testing.T) {
 	t.Parallel()
 
-	left := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	left := maxMatchTestField(t, "x")
 	right := &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}
 
 	qv := &values.ArithmeticValue{Op: values.OpAdd, Left: left, Right: right}
@@ -92,9 +118,8 @@ func TestComputeMaxMatchMap_SameStructureArithmetic(t *testing.T) {
 func TestComputeMaxMatchMap_SameStructureRCV(t *testing.T) {
 	t.Parallel()
 
-	alias := values.NamedCorrelationIdentifier("q")
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fb := &values.FieldValue{Field: "B", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	fb := maxMatchTestField(t, "B")
 
 	qv := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "a", Value: fa},
@@ -104,8 +129,6 @@ func TestComputeMaxMatchMap_SameStructureRCV(t *testing.T) {
 		values.RecordConstructorField{Name: "a", Value: fa},
 		values.RecordConstructorField{Name: "b", Value: fb},
 	)
-	_ = alias
-
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
 	// Entire RCV matches as a single entry.
@@ -121,8 +144,8 @@ func TestComputeMaxMatchMap_SameStructureRCV(t *testing.T) {
 func TestComputeMaxMatchMap_DifferentFields(t *testing.T) {
 	t.Parallel()
 
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col2", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col2")
 
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
@@ -134,7 +157,7 @@ func TestComputeMaxMatchMap_DifferentFields(t *testing.T) {
 func TestComputeMaxMatchMap_DifferentTypes(t *testing.T) {
 	t.Parallel()
 
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
 	cv := &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}
 
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
@@ -147,7 +170,7 @@ func TestComputeMaxMatchMap_DifferentTypes(t *testing.T) {
 func TestComputeMaxMatchMap_DifferentArithOps(t *testing.T) {
 	t.Parallel()
 
-	left := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	left := maxMatchTestField(t, "x")
 	right := &values.ConstantValue{Value: int64(5), Typ: values.NullableLong}
 
 	// Same children, different operator → root doesn't match, but
@@ -172,8 +195,8 @@ func TestComputeMaxMatchMap_DifferentArithOps(t *testing.T) {
 func TestComputeMaxMatchMap_NestedRCV(t *testing.T) {
 	t.Parallel()
 
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fb := &values.FieldValue{Field: "B", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	fb := maxMatchTestField(t, "B")
 
 	innerQ := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "x", Value: fa},
@@ -202,9 +225,9 @@ func TestComputeMaxMatchMap_NestedRCV(t *testing.T) {
 func TestComputeMaxMatchMap_NestedRCVPartialMatch(t *testing.T) {
 	t.Parallel()
 
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fb := &values.FieldValue{Field: "B", Typ: values.NullableLong}
-	fc := &values.FieldValue{Field: "C", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	fb := maxMatchTestField(t, "B")
+	fc := maxMatchTestField(t, "C")
 
 	innerQ := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "x", Value: fa},
@@ -236,8 +259,13 @@ func TestComputeMaxMatchMap_NestedRCVPartialMatch(t *testing.T) {
 
 	m := mmm.GetMap()
 	for q := range m {
-		if values.ExplainValue(q) != "{x: A}" {
-			t.Fatalf("expected query match key '{x: A}', got %q", values.ExplainValue(q))
+		rcv, ok := q.(*values.RecordConstructorValue)
+		if !ok || len(rcv.Fields) != 1 || rcv.Fields[0].Name != "x" {
+			t.Fatalf("expected one-field inner query constructor, got %q", values.ExplainValue(q))
+		}
+		field, fieldOK := values.AsFieldValue(rcv.Fields[0].Value)
+		if !fieldOK || field.DisplayName() != "A" {
+			t.Fatalf("expected inner query field A, got %q", values.ExplainValue(q))
 		}
 	}
 }
@@ -249,9 +277,9 @@ func TestComputeMaxMatchMap_NestedRCVPartialMatch(t *testing.T) {
 func TestComputeMaxMatchMap_ReorderedRCVChildren(t *testing.T) {
 	t.Parallel()
 
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fb := &values.FieldValue{Field: "B", Typ: values.NullableLong}
-	fc := &values.FieldValue{Field: "C", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	fb := maxMatchTestField(t, "B")
+	fc := maxMatchTestField(t, "C")
 
 	// Query: rcv(a: A, b: B, c: C)
 	qv := values.NewRecordConstructorValue(
@@ -283,9 +311,9 @@ func TestComputeMaxMatchMap_ReorderedRCVChildren(t *testing.T) {
 func TestComputeMaxMatchMap_PartialChildMatch(t *testing.T) {
 	t.Parallel()
 
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fb := &values.FieldValue{Field: "B", Typ: values.NullableLong}
-	fc := &values.FieldValue{Field: "C", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	fb := maxMatchTestField(t, "B")
+	fc := maxMatchTestField(t, "C")
 
 	// Query: rcv(a: A, b: B)
 	// Candidate: rcv(a: A, b: C)
@@ -309,13 +337,68 @@ func TestComputeMaxMatchMap_PartialChildMatch(t *testing.T) {
 	}
 }
 
+func TestRecurseQueryResultValue_InProgressCycleIsPathLocal(t *testing.T) {
+	t.Parallel()
+
+	queryValue := maxMatchTestField(t, "cycle")
+	candidateValue := maxMatchTestField(t, "cycle")
+	memoMap := make(map[values.Value]map[values.Value]matchResult)
+	inProgress := map[values.Value]struct{}{queryValue: {}}
+
+	// Model the exact re-entry created when a record QOV expands to resolved
+	// FieldValues rooted at that same QOV. The active path must decline without
+	// publishing a completed negative result.
+	blocked := recurseQueryResultValue(
+		queryValue,
+		candidateValue,
+		nil,
+		-1,
+		nil,
+		math.MaxInt32,
+		memoMap,
+		inProgress,
+	)
+	blockedResult, ok := blocked[queryValue]
+	if !ok || len(blockedResult.valueMap) != 0 {
+		t.Fatalf("expected the in-progress branch to decline, got %#v", blocked)
+	}
+	if _, cached := memoMap[queryValue]; cached {
+		t.Fatal("an in-progress cycle decline must not become a completed memo result")
+	}
+
+	// Once the ancestor unwinds, the same value is legal on another path and
+	// must receive a full matching attempt. A global negative memo/visited set
+	// would make this retry fail.
+	delete(inProgress, queryValue)
+	retried := recurseQueryResultValue(
+		queryValue,
+		candidateValue,
+		nil,
+		-1,
+		nil,
+		math.MaxInt32,
+		memoMap,
+		inProgress,
+	)
+	retriedResult, ok := retried[queryValue]
+	if !ok || len(retriedResult.valueMap) != 1 {
+		t.Fatalf("expected the released value to match on retry, got %#v", retried)
+	}
+	if len(inProgress) != 0 {
+		t.Fatalf("expected path markers to be released after recursion, got %d", len(inProgress))
+	}
+	if _, cached := memoMap[queryValue]; !cached {
+		t.Fatal("expected the completed retry to remain memoized")
+	}
+}
+
 func TestComputeMaxMatchMap_PartialChildMatch_RangedOver(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("q")
-	qov := &values.QuantifiedObjectValue{Correlation: alias, Typ: values.NullableLong}
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fc := &values.FieldValue{Field: "C", Typ: values.NullableLong}
+	qov := maxMatchTestQOV(t, alias, values.NullableLong)
+	fa := maxMatchTestField(t, "A")
+	fc := maxMatchTestField(t, "C")
 
 	// Query: rcv(a: qov(q), b: A)
 	// Candidate: rcv(a: qov(q), b: C)
@@ -348,17 +431,16 @@ func TestComputeMaxMatchMap_QOVShortCircuit(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("q")
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	flowed := maxMatchTestQOV(t, alias, values.NullableLong)
 
 	// Query: rcv(a: qov(q), b: A) — references alias q
 	qv := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.QuantifiedObjectValue{
-			Correlation: alias, Typ: values.NullableLong,
-		}},
+		values.RecordConstructorField{Name: "a", Value: flowed},
 		values.RecordConstructorField{Name: "b", Value: fa},
 	)
 	// Candidate IS qov(q) — the identity flow
-	cv := &values.QuantifiedObjectValue{Correlation: alias, Typ: values.NullableLong}
+	cv := maxMatchTestQOV(t, alias, values.NullableLong)
 
 	rangedOver := map[values.CorrelationIdentifier]struct{}{alias: {}}
 	mmm := ComputeMaxMatchMap(qv, cv, rangedOver)
@@ -385,8 +467,8 @@ func TestComputeMaxMatchMap_QOVShortCircuit_MultipleAliases(t *testing.T) {
 	alias1 := values.NamedCorrelationIdentifier("q1")
 	alias2 := values.NamedCorrelationIdentifier("q2")
 
-	qv := &values.QuantifiedObjectValue{Correlation: alias1, Typ: values.NullableLong}
-	cv := &values.QuantifiedObjectValue{Correlation: alias1, Typ: values.NullableLong}
+	qv := maxMatchTestQOV(t, alias1, values.NullableLong)
+	cv := maxMatchTestQOV(t, alias1, values.NullableLong)
 
 	// Multiple rangedOverAliases → short-circuit does NOT fire.
 	rangedOver := map[values.CorrelationIdentifier]struct{}{alias1: {}, alias2: {}}
@@ -421,7 +503,7 @@ func TestComputeMaxMatchMap_NilValues(t *testing.T) {
 func TestComputeMaxMatchMap_NilQueryValue(t *testing.T) {
 	t.Parallel()
 
-	cv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	cv := maxMatchTestField(t, "col1")
 	mmm := ComputeMaxMatchMap(nil, cv, nil)
 
 	if mmm.Size() != 0 {
@@ -432,7 +514,7 @@ func TestComputeMaxMatchMap_NilQueryValue(t *testing.T) {
 func TestComputeMaxMatchMap_NilCandidateValue(t *testing.T) {
 	t.Parallel()
 
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
 	mmm := ComputeMaxMatchMap(qv, nil, nil)
 
 	if mmm.Size() != 0 {
@@ -443,8 +525,8 @@ func TestComputeMaxMatchMap_NilCandidateValue(t *testing.T) {
 func TestComputeMaxMatchMap_EmptyRangedOverAliases(t *testing.T) {
 	t.Parallel()
 
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col1")
 	mmm := ComputeMaxMatchMap(qv, cv, map[values.CorrelationIdentifier]struct{}{})
 
 	if mmm.Size() != 1 {
@@ -459,7 +541,7 @@ func TestComputeMaxMatchMap_EmptyRangedOverAliases(t *testing.T) {
 func TestComputeMaxMatchMap_ThreeLevelNesting(t *testing.T) {
 	t.Parallel()
 
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
 
 	// 3-level nesting: rcv(x: rcv(y: rcv(z: A)))
 	innermost := values.NewRecordConstructorValue(
@@ -493,8 +575,8 @@ func TestComputeMaxMatchMap_ThreeLevelNesting(t *testing.T) {
 func TestComputeMaxMatchMap_ThreeLevelPartialMatch(t *testing.T) {
 	t.Parallel()
 
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fb := &values.FieldValue{Field: "B", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	fb := maxMatchTestField(t, "B")
 
 	// Query: rcv(x: rcv(y: rcv(z: A)))
 	innermostQ := values.NewRecordConstructorValue(
@@ -549,7 +631,7 @@ func TestMatchResult_PerfectMatch(t *testing.T) {
 	t.Parallel()
 
 	r := matchResultOf(map[string]maxMatchEntry{
-		"test": {queryValue: &values.FieldValue{Field: "A"}},
+		"test": {queryValue: maxMatchTestField(t, "A")},
 	}, 0)
 
 	if !r.isMatched() {
@@ -581,8 +663,8 @@ func TestTranslateQueryValueMaybe_IdentityMapping(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("candidate")
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col1")
 
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
@@ -591,12 +673,12 @@ func TestTranslateQueryValueMaybe_IdentityMapping(t *testing.T) {
 		t.Fatal("TranslateQueryValueMaybe returned nil for identity mapping")
 	}
 
-	qov, ok := result.(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(result)
 	if !ok {
 		t.Fatalf("expected QuantifiedObjectValue, got %T", result)
 	}
-	if qov.Correlation != alias {
-		t.Fatalf("expected correlation %q, got %q", alias.Name(), qov.Correlation.Name())
+	if qov.Correlation() != alias {
+		t.Fatalf("expected correlation %q, got %q", alias.Name(), qov.Correlation().Name())
 	}
 }
 
@@ -604,8 +686,8 @@ func TestTranslateQueryValueMaybe_EmptyMapping(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("candidate")
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col2", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col2")
 
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
@@ -633,8 +715,8 @@ func TestPullUpMaybe_IdentityMapping(t *testing.T) {
 	queryAlias := values.NamedCorrelationIdentifier("query")
 	candidateAlias := values.NamedCorrelationIdentifier("candidate")
 
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col1")
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
 	tm, ok := mmm.PullUpMaybe(queryAlias, candidateAlias)
@@ -655,8 +737,8 @@ func TestPullUpMaybe_EmptyMapping(t *testing.T) {
 	queryAlias := values.NamedCorrelationIdentifier("query")
 	candidateAlias := values.NamedCorrelationIdentifier("candidate")
 
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col2", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col2")
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
 	tm, ok := mmm.PullUpMaybe(queryAlias, candidateAlias)
@@ -672,9 +754,9 @@ func TestAdjustMaybe_IdentityMapping(t *testing.T) {
 	t.Parallel()
 
 	upperAlias := values.NamedCorrelationIdentifier("upper")
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	upperResult := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col1")
+	upperResult := maxMatchTestField(t, "col1")
 
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
@@ -694,9 +776,9 @@ func TestAdjustMaybe_EmptyMapping(t *testing.T) {
 	t.Parallel()
 
 	upperAlias := values.NamedCorrelationIdentifier("upper")
-	qv := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "col2", Typ: values.NullableLong}
-	upperResult := &values.FieldValue{Field: "col1", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "col1")
+	cv := maxMatchTestField(t, "col2")
+	upperResult := maxMatchTestField(t, "col1")
 
 	mmm := ComputeMaxMatchMap(qv, cv, nil)
 
@@ -755,8 +837,8 @@ func TestMaxMatchMap_Size(t *testing.T) {
 		t.Fatalf("expected size 0, got %d", mmm.Size())
 	}
 
-	qv := &values.FieldValue{Field: "a", Typ: values.NullableLong}
-	cv := &values.FieldValue{Field: "a", Typ: values.NullableLong}
+	qv := maxMatchTestField(t, "a")
+	cv := maxMatchTestField(t, "a")
 	mmm2 := ComputeMaxMatchMap(qv, cv, nil)
 	if mmm2.Size() != 1 {
 		t.Fatalf("expected size 1, got %d", mmm2.Size())
@@ -770,8 +852,8 @@ func TestMaxMatchMap_Size(t *testing.T) {
 func TestFindMatchingReachableCandidate_RCVChild(t *testing.T) {
 	t.Parallel()
 
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fb := &values.FieldValue{Field: "B", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	fb := maxMatchTestField(t, "B")
 
 	// Candidate has A as a child of RCV — A is reachable.
 	candidate := values.NewRecordConstructorValue(
@@ -791,8 +873,8 @@ func TestFindMatchingReachableCandidate_RCVChild(t *testing.T) {
 func TestFindMatchingReachableCandidate_ArithChild(t *testing.T) {
 	t.Parallel()
 
-	fa := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fb := &values.FieldValue{Field: "B", Typ: values.NullableLong}
+	fa := maxMatchTestField(t, "A")
+	fb := maxMatchTestField(t, "B")
 
 	// Candidate is arithmetic — children are NOT reachable.
 	candidate := &values.ArithmeticValue{Op: values.OpAdd, Left: fa, Right: fb}
@@ -809,7 +891,7 @@ func TestTranslateQueryValueMaybe_RangedOverAliasValidation(t *testing.T) {
 	candidateAlias := values.NamedCorrelationIdentifier("candidate")
 	forbiddenAlias := values.NamedCorrelationIdentifier("forbidden")
 
-	forbidden := &values.QuantifiedObjectValue{Correlation: forbiddenAlias, Typ: values.NullableLong}
+	forbidden := maxMatchTestQOV(t, forbiddenAlias, values.NullableLong)
 	qv := forbidden
 	cv := forbidden
 

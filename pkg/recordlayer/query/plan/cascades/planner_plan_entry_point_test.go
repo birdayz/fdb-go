@@ -18,13 +18,13 @@ func TestPlanner_PlanIsBackgroundContextPlanWithContext(t *testing.T) {
 	// same number of tasks, and consume the same single-use lifecycle. A second
 	// entry point that diverged on any of those would be a distinct code path,
 	// which is exactly what routing everything through plan forbids.
-	viaPlan := NewPlanner(DefaultExpressionRules(), nil)
+	viaPlan := plannerLifecycleTestPlanner()
 	planExpr, planTasks, err := viaPlan.Plan(plannerLifecycleTestRef())
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
 
-	viaContext := NewPlanner(DefaultExpressionRules(), nil)
+	viaContext := plannerLifecycleTestPlanner()
 	ctxExpr, ctxTasks, err := viaContext.PlanWithContext(context.Background(), plannerLifecycleTestRef())
 	if err != nil {
 		t.Fatalf("PlanWithContext: %v", err)
@@ -50,7 +50,7 @@ func TestPlanner_PlanIsBackgroundContextPlanWithContext(t *testing.T) {
 	}
 
 	// A nil root is a zero-work no-op on both, and leaves the lifecycle unclaimed.
-	nilRoot := NewPlanner(DefaultExpressionRules(), nil)
+	nilRoot := plannerLifecycleTestPlanner()
 	if got, gotTasks, gotErr := nilRoot.Plan(nil); got != nil || gotTasks != 0 || gotErr != nil {
 		t.Fatalf("Plan(nil) = (%T, %d, %v), want (nil, 0, nil)", got, gotTasks, gotErr)
 	}

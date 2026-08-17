@@ -8,28 +8,42 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func traversalRowType() *values.RecordType {
+	return values.NewRecordType("TRAVERSAL_ROW", false, []values.Field{
+		{Name: "a", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "g", FieldType: values.NullableString, Ordinal: 1},
+		{Name: "v", FieldType: values.NullableLong, Ordinal: 2},
+	})
+}
+
 // helper: build a single scan leaf wrapped in a Reference.
-func testScanRef() (*expressions.FullUnorderedScanExpression, *expressions.Reference) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+func testScanRef(t testing.TB) (*expressions.FullUnorderedScanExpression, *expressions.Reference) {
+	t.Helper()
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, traversalRowType())
+	scan = mustConstruct(t, scan, err)
 	ref := expressions.InitialOf(scan)
 	return scan, ref
 }
 
 // helper: build a filter over a child quantifier.
-func testFilterOver(childRef *expressions.Reference) (*expressions.LogicalFilterExpression, expressions.Quantifier, *expressions.Reference) {
+func testFilterOver(t testing.TB, childRef *expressions.Reference) (*expressions.LogicalFilterExpression, expressions.Quantifier, *expressions.Reference) {
+	t.Helper()
 	q := expressions.ForEachQuantifier(childRef)
-	filter := expressions.NewLogicalFilterExpression(
+	filter, err := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		q,
 	)
+	filter = mustConstruct(t, filter, err)
 	ref := expressions.InitialOf(filter)
 	return filter, q, ref
 }
 
 // helper: build a sort over a child quantifier.
-func testSortOver(childRef *expressions.Reference) (*expressions.LogicalSortExpression, expressions.Quantifier, *expressions.Reference) {
+func testSortOver(t testing.TB, childRef *expressions.Reference) (*expressions.LogicalSortExpression, expressions.Quantifier, *expressions.Reference) {
+	t.Helper()
 	q := expressions.ForEachQuantifier(childRef)
-	sort := expressions.NewLogicalSortExpression(nil, q)
+	sort, err := expressions.NewLogicalSortExpression(nil, q)
+	sort = mustConstruct(t, sort, err)
 	ref := expressions.InitialOf(sort)
 	return sort, q, ref
 }
@@ -37,7 +51,7 @@ func testSortOver(childRef *expressions.Reference) (*expressions.LogicalSortExpr
 func TestTraversal_SingleLeaf(t *testing.T) {
 	t.Parallel()
 
-	_, scanRef := testScanRef()
+	_, scanRef := testScanRef(t)
 	tr := NewTraversal(scanRef)
 
 	if tr.GetRootReference() != scanRef {
@@ -62,8 +76,8 @@ func TestTraversal_SingleLeaf(t *testing.T) {
 func TestTraversal_FilterOverScan(t *testing.T) {
 	t.Parallel()
 
-	scan, scanRef := testScanRef()
-	filter, _, filterRef := testFilterOver(scanRef)
+	scan, scanRef := testScanRef(t)
+	filter, _, filterRef := testFilterOver(t, scanRef)
 
 	tr := NewTraversal(filterRef)
 
@@ -103,8 +117,8 @@ func TestTraversal_FilterOverScan(t *testing.T) {
 func TestTraversal_FindReferencingExpressions(t *testing.T) {
 	t.Parallel()
 
-	_, scanRef := testScanRef()
-	filter, _, filterRef := testFilterOver(scanRef)
+	_, scanRef := testScanRef(t)
+	filter, _, filterRef := testFilterOver(t, scanRef)
 
 	tr := NewTraversal(filterRef)
 
@@ -129,9 +143,9 @@ func TestTraversal_ThreeLevelTree(t *testing.T) {
 	t.Parallel()
 
 	// scan -> filter -> sort
-	scan, scanRef := testScanRef()
-	filter, _, filterRef := testFilterOver(scanRef)
-	sort, _, sortRef := testSortOver(filterRef)
+	scan, scanRef := testScanRef(t)
+	filter, _, filterRef := testFilterOver(t, scanRef)
+	sort, _, sortRef := testSortOver(t, filterRef)
 
 	tr := NewTraversal(sortRef)
 
@@ -225,18 +239,20 @@ func TestTraversal_DAG_SharedChild(t *testing.T) {
 	// both ranging over the same scanRef via different quantifiers.
 	// This tests that the shared child reference is visited only once
 	// and both parents are recorded.
-	scan, scanRef := testScanRef()
+	scan, scanRef := testScanRef(t)
 
 	q1 := expressions.ForEachQuantifier(scanRef)
-	filter1 := expressions.NewLogicalFilterExpression(
+	filter1, err := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		q1,
 	)
+	filter1 = mustConstruct(t, filter1, err)
 	q2 := expressions.ForEachQuantifier(scanRef)
-	filter2 := expressions.NewLogicalFilterExpression(
+	filter2, err := expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriFalse)},
 		q2,
 	)
+	filter2 = mustConstruct(t, filter2, err)
 
 	// Put both filters in the same reference.
 	parentRef := expressions.InitialOf(filter1)
@@ -301,20 +317,25 @@ func TestTraversal_FindReferencingExpressions_Dedup(t *testing.T) {
 	// expression (which has two quantifiers). Calling
 	// FindReferencingExpressions with both child refs should yield the
 	// parent expression only once (dedup).
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"T1"}, nil)
+	scan1, err := expressions.NewFullUnorderedScanExpression([]string{"T1"}, traversalRowType())
+	scan1 = mustConstruct(t, scan1, err)
 	scan1Ref := expressions.InitialOf(scan1)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"T2"}, nil)
+	scan2, err := expressions.NewFullUnorderedScanExpression([]string{"T2"}, traversalRowType())
+	scan2 = mustConstruct(t, scan2, err)
 	scan2Ref := expressions.InitialOf(scan2)
 
 	q1 := expressions.ForEachQuantifier(scan1Ref)
 	q2 := expressions.ForEachQuantifier(scan2Ref)
 
 	// Use a SelectExpression which supports multiple quantifiers.
-	sel := expressions.NewSelectExpression(
-		q1.GetFlowedObjectValue(),
+	resultValue, err := q1.RequireFlowedObjectValue()
+	resultValue = mustConstruct(t, resultValue, err)
+	sel, err := expressions.NewSelectExpression(
+		resultValue,
 		[]expressions.Quantifier{q1, q2},
 		nil,
 	)
+	sel = mustConstruct(t, sel, err)
 	selRef := expressions.InitialOf(sel)
 
 	tr := NewTraversal(selRef)
@@ -347,7 +368,7 @@ func TestTraversal_MatchCandidate_GetTraversal_NonNil(t *testing.T) {
 	// ExpandValueIndex. Verify they return non-nil with correct root.
 	alias := values.UniqueCorrelationIdentifier()
 	vc := newKnownDistinctValueIndexCandidate("idx", []string{"T"}, []string{"a"},
-		[]values.CorrelationIdentifier{alias}, nil, false, nil)
+		[]values.CorrelationIdentifier{alias}, traversalRowType(), false, nil)
 	trav := vc.GetTraversal()
 	if trav == nil {
 		t.Fatal("expected non-nil traversal from ValueIndexScanMatchCandidate")
@@ -357,7 +378,7 @@ func TestTraversal_MatchCandidate_GetTraversal_NonNil(t *testing.T) {
 	}
 
 	ac := NewAggregateIndexMatchCandidate(
-		"agg_idx", []string{"T"}, []string{"g"}, expressions.AggSum, "v", values.UnknownType,
+		"agg_idx", []string{"T"}, []string{"g"}, expressions.AggSum, "v", traversalRowType(),
 		[]values.Type{values.NullableString},
 		1,
 	)

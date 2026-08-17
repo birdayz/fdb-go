@@ -27,15 +27,17 @@ func (s *stallInner) OnNext(context.Context) (recordlayer.RecordCursorResult[Que
 func (s *stallInner) Close() error   { s.closed = true; return nil }
 func (s *stallInner) IsClosed() bool { return s.closed }
 
-// unwrapDistinctHash reaches the distinctHashCursor inside what ExecutePlan
-// returns (a closeHookCursor around it, with no skip/limit applied), so a test
-// can drive the REAL resume path — real adoption, real resume-bytes wiring —
-// and then control what the inner reports.
+// unwrapDistinctHash reaches the distinctHashCursor inside the unwrapped
+// operator cursor (a closeHookCursor around it, with no skip/limit applied), so
+// a test can drive the REAL resume path — real adoption, real resume-bytes
+// wiring — and then control what the inner reports. The public ExecutePlan
+// adapter owns output-layout publication and is deliberately outside this
+// internal cursor-control seam.
 func unwrapDistinctHash(t *testing.T, cur recordlayer.RecordCursor[QueryResult]) *distinctHashCursor {
 	t.Helper()
 	hook, ok := cur.(*closeHookCursor)
 	if !ok {
-		t.Fatalf("ExecutePlan returned %T, want *closeHookCursor", cur)
+		t.Fatalf("executePlanUnwrapped returned %T, want *closeHookCursor", cur)
 	}
 	dh, ok := hook.RecordCursor.(*distinctHashCursor)
 	if !ok {
@@ -100,7 +102,7 @@ func TestDistinctNoProgressPageIsByteStable(t *testing.T) {
 		t.Helper()
 		p := recordlayer.DefaultExecuteProperties()
 		p.State = recordlayer.NewExecuteState(1 << 30)
-		cur, cerr := ExecutePlan(ctx, plan, nil, evalCtx, b1, p)
+		cur, cerr := executePlanUnwrapped(ctx, plan, nil, evalCtx, b1, p)
 		if cerr != nil {
 			t.Fatalf("resume: %v", cerr)
 		}
@@ -154,17 +156,21 @@ func TestDistinctScratchDoesNotLeakOnSingleLimitedPage(t *testing.T) {
 	alias := values.NamedCorrelationIdentifier("limit_distinct_leak")
 	evalCtx := EmptyEvaluationContext()
 	table := evalCtx.GetOrCreateTempTable(alias, nil)
+	rowType := exactTestRowType(values.Field{Name: "V", FieldType: values.NotNullLong})
 	for i := 0; i < n; i++ {
-		if err := table.Add(dmap(map[string]any{"V": int64(i)})); err != nil {
+		if err := table.Add(QueryResult{Positional: &PositionalRow{
+			Type:  rowType,
+			Slots: []any{int64(i)},
+		}}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
 	scratch := NewExecutionScratch()
 	evalCtx = evalCtx.WithExecutionScratch(scratch)
-	plan := plans.NewRecordQueryLimitPlan(
-		plans.NewRecordQueryDistinctPlan(plans.NewRecordQueryTempTableScanPlan(alias)),
+	plan := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(
+		mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(mustTempTableScan(t, evalCtx, alias))),
 		int64(n), 0,
-	)
+	))
 	props := recordlayer.DefaultExecuteProperties()
 	props.State = recordlayer.NewExecuteState(1 << 30)
 	cursor, err := ExecutePlan(ctx, plan, nil, evalCtx, nil, props)

@@ -25,7 +25,10 @@ func TestExecuteProjection_OutputNames(t *testing.T) {
 
 	// Two frontier rows.
 	tt := evalCtx.GetOrCreateTempTable(alias, nil)
-	inType := positionalTypeFromNames([]string{"ID", "V"})
+	inType := exactTestRowType(
+		values.Field{Name: "ID", FieldType: values.NullableLong},
+		values.Field{Name: "V", FieldType: values.NullableLong},
+	)
 	for _, r := range []struct{ id, v int64 }{{1, 10}, {2, 20}} {
 		if err := tt.Add(QueryResult{
 			Positional: &PositionalRow{Type: inType, Slots: []any{r.id, r.v}},
@@ -35,14 +38,15 @@ func TestExecuteProjection_OutputNames(t *testing.T) {
 	}
 
 	// SELECT id, v AS renamed FROM tt — one bare column, one renamed.
-	proj := plans.NewRecordQueryProjectionPlanWithAliases(
+	scan := mustTempTableScan(t, evalCtx, alias)
+	proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
 		[]values.Value{
-			values.NewFieldValueWithResolvedOrdinal("ID", 0, values.UnknownType),
-			values.NewFieldValueWithResolvedOrdinal("V", 1, values.UnknownType),
+			mustTestFieldOrdinal(t, scan.GetResultValue(), 0),
+			mustTestFieldOrdinal(t, scan.GetResultValue(), 1),
 		},
 		[]string{"", "RENAMED"},
-		plans.NewRecordQueryTempTableScanPlan(alias),
-	)
+		scan,
+	))
 	cursor, err := ExecutePlan(ctx, proj, nil, evalCtx, nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
 		t.Fatalf("execute projection: %v", err)

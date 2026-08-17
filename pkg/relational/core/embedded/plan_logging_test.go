@@ -309,15 +309,21 @@ func TestNestedDerivedArithmetic_TypeSurvivesUnmergedProjectionSpine(t *testing.
 	if !ok {
 		t.Fatalf("plan is %T, want *cascadesPlan", p)
 	}
-	// The sentinel only tests the UNMERGED spine while it stays unmerged:
-	// if a future change merges the nested projections, this degrades to
-	// the flat path silently — assert the shape so it fails loudly instead.
-	pr, ok := cp.physicalPlan.(*plans.RecordQueryProjectionPlan)
-	if !ok {
-		t.Fatalf("top plan is %T, want the unmerged outer projection", cp.physicalPlan)
-	}
-	if _, ok := pr.GetInner().(*plans.RecordQueryProjectionPlan); !ok {
-		t.Fatalf("inner plan is %T — the projection spine was merged and this sentinel no longer exercises the ordinal-inheritance path", pr.GetInner())
+	t.Logf("physical plan: %s", cp.physicalPlan.Explain())
+	// The sentinel only tests the UNMERGED spine while it stays unmerged. The
+	// ORDER BY sort is allowed to sit BETWEEN the projection nodes: requiring
+	// them to be immediate parent/child made the test stale as soon as the sort
+	// was represented explicitly, despite the two projection boundaries still
+	// being present. Count the boundaries over the physical tree instead.
+	projectionCount := 0
+	plans.Walk(cp.physicalPlan, func(plan plans.RecordQueryPlan) bool {
+		if _, ok := plan.(*plans.RecordQueryProjectionPlan); ok {
+			projectionCount++
+		}
+		return true
+	})
+	if projectionCount < 2 {
+		t.Fatalf("physical plan has %d projection node(s), want at least two unmerged boundaries", projectionCount)
 	}
 	cols := deriveColumnsFromPlan(cp.physicalPlan, cp.md)
 	doubledIdx := -1
@@ -578,12 +584,35 @@ func TestNestedFullOuter_AncestorNullExtensionReachesLeg(t *testing.T) {
 func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 	t.Parallel()
 	scan := func() plans.RecordQueryPlan {
-		return plans.NewRecordQueryScanPlan([]string{"T"}, cascadesvalues.UnknownType, false)
+		plan, err := plans.NewRecordQueryScanPlan([]string{"T"}, &cascadesvalues.RecordType{Fields: []cascadesvalues.Field{
+			{Name: "K", Ordinal: 0, FieldType: cascadesvalues.NotNullLong},
+		}}, false)
+		if err != nil {
+			t.Fatalf("scan fixture: %v", err)
+		}
+		return plan
 	}
-	innerJoin := plans.NewRecordQueryNestedLoopJoinPlan(
-		scan(), scan(), nil, plans.JoinFullOuter, cascadesvalues.NamedCorrelationIdentifier("X"), cascadesvalues.NamedCorrelationIdentifier("Y"), nil)
-	top := plans.NewRecordQueryNestedLoopJoinPlan(
-		innerJoin, scan(), nil, plans.JoinInner, cascadesvalues.NamedCorrelationIdentifier("A"), cascadesvalues.NamedCorrelationIdentifier("X"), nil)
+	join := func(left, right plans.RecordQueryPlan, kind plans.JoinType, leftAlias, rightAlias string) plans.RecordQueryPlan {
+		// The leg-walk proof only needs the plan's alias topology, but the
+		// fallible RFC-232 constructor also requires an exact retained result.
+		// Project both synthetic legs away into one exact fixture field rather
+		// than passing the formerly tolerated nil result Value.
+		result := cascadesvalues.NewRawRecordConstructorValue(
+			cascadesvalues.RecordConstructorField{
+				Name:  "K",
+				Value: &cascadesvalues.ConstantValue{Value: int64(0), Typ: cascadesvalues.NotNullLong},
+			},
+		)
+		plan, err := plans.NewRecordQueryNestedLoopJoinPlan(
+			left, right, nil, kind, cascadesvalues.NamedCorrelationIdentifier(leftAlias), cascadesvalues.NamedCorrelationIdentifier(rightAlias), result)
+		if err != nil {
+			t.Fatalf("join fixture: %v", err)
+		}
+		return plan
+	}
+	innerJoin := join(
+		scan(), scan(), plans.JoinFullOuter, "X", "Y")
+	top := join(innerJoin, scan(), plans.JoinInner, "A", "X")
 
 	if _, _, found := legPlanFor(top, "X"); found {
 		t.Fatal("a duplicated alias across join levels must DECLINE (scope-ambiguous), not first-match")
@@ -595,10 +624,8 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 	// An interior duplicate INSIDE a matched leg also declines: folds can
 	// break the plan-nesting/SQL-scoping mirror, so shallow-wins shadowing
 	// is not trusted either.
-	nested := plans.NewRecordQueryNestedLoopJoinPlan(
-		scan(), scan(), nil, plans.JoinInner, cascadesvalues.NamedCorrelationIdentifier("Z"), cascadesvalues.NamedCorrelationIdentifier("W"), nil)
-	shadowTop := plans.NewRecordQueryNestedLoopJoinPlan(
-		nested, scan(), nil, plans.JoinInner, cascadesvalues.NamedCorrelationIdentifier("Z"), cascadesvalues.NamedCorrelationIdentifier("Q"), nil)
+	nested := join(scan(), scan(), plans.JoinInner, "Z", "W")
+	shadowTop := join(nested, scan(), plans.JoinInner, "Z", "Q")
 	if _, _, found := legPlanFor(shadowTop, "Z"); found {
 		t.Fatal("an alias duplicated between a leg and its own subtree must DECLINE")
 	}

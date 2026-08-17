@@ -8,6 +8,13 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustPositionalMergeConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct positional-merge fixture: " + err.Error())
+	}
+	return value
+}
+
 // disagreeingStubExpr is a relational expression whose result value flows a
 // chosen ROW type, so a Reference can be given two members that flow DIFFERENT
 // rows — the memo defect expressions.MemberResultTypeDisagreementError reports.
@@ -17,7 +24,8 @@ type disagreeingStubExpr struct {
 }
 
 func (s *disagreeingStubExpr) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(s.name), s.typ)
+	return mustPositionalMergeConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(s.name), s.typ))
 }
 func (s *disagreeingStubExpr) GetQuantifiers() []expressions.Quantifier { return nil }
 func (s *disagreeingStubExpr) CanCorrelate() bool                       { return false }
@@ -33,8 +41,11 @@ func (s *disagreeingStubExpr) EqualsWithoutChildren(other expressions.Relational
 	return ok && o.name == s.name
 }
 
-func (s *disagreeingStubExpr) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return s
+func (s *disagreeingStubExpr) WithQuantifiers(quantifiers []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := requireTestQuantifierArity("disagreeingStubExpr", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // disagreementProbeAlias is the quantifier alias this test's disagreeing
@@ -82,12 +93,12 @@ func TestPositionalMergeObservesMemberDisagreement(t *testing.T) {
 		values.NamedCorrelationIdentifier(disagreementProbeAlias), badRef)
 	good := scanQuantifier("GOOD")
 
-	sel := expressions.NewSelectExpressionWithAliases(
-		good.GetFlowedObjectValue(),
+	sel := mustPositionalMergeConstruct(expressions.NewSelectExpressionWithAliases(
+		mustPositionalMergeConstruct(good.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{bad, good},
 		nil,
 		[]string{disagreementProbeAlias, "GOOD"},
-	)
+	))
 
 	aliasToQ := map[values.CorrelationIdentifier]expressions.Quantifier{
 		bad.GetAlias():  bad,
@@ -145,12 +156,12 @@ func TestPositionalMergeObservesMemberDisagreement(t *testing.T) {
 	// parallel sibling.)
 	okA := scanQuantifier("Q$MERGEAGREEA")
 	okB := scanQuantifier("Q$MERGEAGREEB")
-	okSel := expressions.NewSelectExpressionWithAliases(
-		okA.GetFlowedObjectValue(),
+	okSel := mustPositionalMergeConstruct(expressions.NewSelectExpressionWithAliases(
+		mustPositionalMergeConstruct(okA.RequireFlowedObjectValue()),
 		[]expressions.Quantifier{okA, okB},
 		nil,
 		[]string{"Q$MERGEAGREEA", "Q$MERGEAGREEB"},
-	)
+	))
 	okLower := NewGraphExpansionBuilder()
 	okLower.AddQuantifier(okA)
 	okLower.AddQuantifier(okB)

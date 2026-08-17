@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -8,26 +9,95 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func inExplodeRowType() *values.RecordType {
+	return values.NewRecordType("InExplodeRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NullableLong},
+		{Name: "STATUS", FieldType: values.NullableString},
+		{Name: "AMOUNT", FieldType: values.NullableLong},
+	})
+}
+
+func mustInExplodeConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct IN-to-explode fixture: " + err.Error())
+	}
+	return value
+}
+
+func inExplodeScan(name string) *expressions.FullUnorderedScanExpression {
+	return mustInExplodeConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{name}, inExplodeRowType()))
+}
+
+func inExplodeField(q expressions.Quantifier, ordinal int) values.Value {
+	root := mustInExplodeConstruct(q.RequireFlowedObjectValue())
+	return mustInExplodeConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
+func inExplodeList(value []any, elementType values.Type) *values.ConstantValue {
+	return &values.ConstantValue{
+		Value: value,
+		Typ:   values.NewArrayType(false, elementType),
+	}
+}
+
+func fireInExplodeRule(
+	t testing.TB, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRuleWithMemo(
+		NewInComparisonToExplodeRule(), ref, EmptyPlanContext(), nil)
+	if err != nil {
+		t.Fatalf("FireExpressionRuleWithMemo: %v", err)
+	}
+	return result
+}
+
+func exploreInExplodeRewriting(p *Planner, rootRef *expressions.Reference) (int, bool) {
+	if rootRef == nil {
+		return 0, true
+	}
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
+	}
+	if p.constraintMap == nil {
+		p.constraintMap = NewConstraintMap()
+	}
+	if p.dataAccessConsumed == nil {
+		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	}
+	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
+	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
+	for len(p.stack) > 0 {
+		if p.tasksRun >= p.MaxTasks {
+			return p.tasksRun, false
+		}
+		p.pop().Run(context.Background(), p)
+		p.tasksRun++
+	}
+	return p.tasksRun, true
+}
+
 func TestInComparisonToExplodeRule_BasicExplode(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := inExplodeScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	inList := &values.ConstantValue{Value: []any{int64(1), int64(2), int64(3)}, Typ: values.TypeUnknown}
+	inList := inExplodeList([]any{int64(1), int64(2), int64(3)}, values.NotNullLong)
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.NullableLong},
+		inExplodeField(q, 1),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{inPred},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(filter)
 
-	rule := NewInComparisonToExplodeRule()
-	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+	results := fireInExplodeRule(t, ref)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
@@ -51,13 +121,13 @@ func TestInComparisonToExplodeRule_BasicExplode(t *testing.T) {
 	}
 
 	// ResultValue must be a QOV referencing the inner quantifier.
-	qov, ok := sel.GetResultValue().(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(sel.GetResultValue())
 	if !ok {
 		t.Fatalf("expected QOV result value, got %T", sel.GetResultValue())
 	}
-	if qov.Correlation != qs[0].GetAlias() {
+	if qov.Correlation() != qs[0].GetAlias() {
 		t.Fatalf("QOV should reference inner quantifier alias %v, got %v",
-			qs[0].GetAlias(), qov.Correlation)
+			qs[0].GetAlias(), qov.Correlation())
 	}
 
 	// One quantifier should range over an ExplodeExpression.
@@ -102,14 +172,14 @@ func TestInComparisonToExplodeRule_BasicExplode(t *testing.T) {
 			t.Fatalf("expected ComparisonEquals, got %v", cp.Comparison.Type)
 		}
 		// RHS should be a QOV referencing the explode quantifier.
-		rhsQOV, ok := cp.Comparison.Operand.(*values.QuantifiedObjectValue)
+		rhsQOV, ok := values.AsQuantifiedObjectValue(cp.Comparison.Operand)
 		if !ok {
 			t.Fatalf("equality RHS should be *QuantifiedObjectValue, got %T",
 				cp.Comparison.Operand)
 		}
-		if rhsQOV.Correlation != qs[1].GetAlias() {
+		if rhsQOV.Correlation() != qs[1].GetAlias() {
 			t.Fatalf("equality QOV should correlate to explode alias %v, got %v",
-				qs[1].GetAlias(), rhsQOV.Correlation)
+				qs[1].GetAlias(), rhsQOV.Correlation())
 		}
 	}
 	if !foundInnerFilter {
@@ -120,23 +190,22 @@ func TestInComparisonToExplodeRule_BasicExplode(t *testing.T) {
 func TestInComparisonToExplodeRule_SingleElement(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := inExplodeScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	inList := &values.ConstantValue{Value: []any{int64(6)}, Typ: values.TypeUnknown}
+	inList := inExplodeList([]any{int64(6)}, values.NotNullLong)
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "B", Typ: values.NullableLong},
+		inExplodeField(q, 1),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{inPred},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(filter)
 
-	rule := NewInComparisonToExplodeRule()
-	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+	results := fireInExplodeRule(t, ref)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
@@ -161,27 +230,26 @@ func TestInComparisonToExplodeRule_SingleElement(t *testing.T) {
 func TestInComparisonToExplodeRule_PreservesOtherPredicates(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := inExplodeScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	inList := &values.ConstantValue{Value: []any{"a", "b"}, Typ: values.TypeUnknown}
+	inList := inExplodeList([]any{"a", "b"}, values.NotNullString)
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+		inExplodeField(q, 2),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
 	otherPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "AMOUNT", Typ: values.NullableLong},
+		inExplodeField(q, 3),
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(100)),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{inPred, otherPred},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(filter)
 
-	rule := NewInComparisonToExplodeRule()
-	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+	results := fireInExplodeRule(t, ref)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
@@ -242,22 +310,21 @@ func TestInComparisonToExplodeRule_PreservesOtherPredicates(t *testing.T) {
 func TestInComparisonToExplodeRule_NoInPredicate(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := inExplodeScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
 	eqPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+		inExplodeField(q, 2),
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{eqPred},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(filter)
 
-	rule := NewInComparisonToExplodeRule()
-	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+	results := fireInExplodeRule(t, ref)
 
 	if len(results) != 0 {
 		t.Fatalf("expected 0 yields (no IN predicate), got %d", len(results))
@@ -267,23 +334,22 @@ func TestInComparisonToExplodeRule_NoInPredicate(t *testing.T) {
 func TestInComparisonToExplodeRule_EmptyInList(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := inExplodeScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	inList := &values.ConstantValue{Value: []any{}, Typ: values.TypeUnknown}
+	inList := inExplodeList([]any{}, values.NotNullString)
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+		inExplodeField(q, 2),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{inPred},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(filter)
 
-	rule := NewInComparisonToExplodeRule()
-	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+	results := fireInExplodeRule(t, ref)
 
 	if len(results) != 0 {
 		t.Fatalf("expected 0 yields (empty IN list), got %d", len(results))
@@ -299,32 +365,32 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 		[]string{"Order"},
 		[]string{"STATUS"},
 		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
+		inExplodeRowType(),
 		false,
 		nil,
 	)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := inExplodeScan("Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	inList := &values.ConstantValue{Value: []any{"active", "pending"}, Typ: values.TypeUnknown}
+	inList := inExplodeList([]any{"active", "pending"}, values.NotNullString)
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+		inExplodeField(q, 2),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{inPred},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(filter)
 
 	rules := DefaultExpressionRules()
 	rules = append(rules, NewInComparisonToExplodeRule())
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
-	if _, conv := exploreRewriting(p, ref); !conv {
+	if _, conv := exploreInExplodeRewriting(p, ref); !conv {
 		t.Fatal("planner did not converge")
 	}
 
@@ -366,23 +432,22 @@ func TestInComparisonToExplodeRule_PlannerIntegration(t *testing.T) {
 func TestInComparisonToExplodeRule_ImplementInJoinShape(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := inExplodeScan("T")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	inList := &values.ConstantValue{Value: []any{int64(10), int64(20)}, Typ: values.TypeUnknown}
+	inList := inExplodeList([]any{int64(10), int64(20)}, values.NotNullLong)
 	inPred := predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: "ID", Typ: values.NullableLong},
+		inExplodeField(q, 0),
 		predicates.Comparison{Type: predicates.ComparisonIn, Operand: inList},
 	)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustInExplodeConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{inPred},
 		q,
-	)
+	))
 	ref := expressions.InitialOf(filter)
 
-	rule := NewInComparisonToExplodeRule()
-	results := FireExpressionRuleWithMemo(rule, ref, EmptyPlanContext(), nil)
+	results := fireInExplodeRule(t, ref)
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 yield, got %d", len(results))
@@ -405,15 +470,15 @@ func TestInComparisonToExplodeRule_ImplementInJoinShape(t *testing.T) {
 	}
 
 	// Verify: result value is QOV referencing inner quantifier's alias.
-	qov, ok := sel.GetResultValue().(*values.QuantifiedObjectValue)
+	qov, ok := values.AsQuantifiedObjectValue(sel.GetResultValue())
 	if !ok {
 		t.Fatalf("result value should be *QuantifiedObjectValue, got %T", sel.GetResultValue())
 	}
 	// The inner quantifier is first.
 	innerAlias := qs[0].GetAlias()
-	if qov.Correlation != innerAlias {
+	if qov.Correlation() != innerAlias {
 		t.Fatalf("QOV correlation %v doesn't match inner quantifier alias %v",
-			qov.Correlation, innerAlias)
+			qov.Correlation(), innerAlias)
 	}
 
 	// Verify: explode quantifier ranges over ExplodeExpression.
@@ -467,13 +532,13 @@ func TestInComparisonToExplodeRule_ImplementInJoinShape(t *testing.T) {
 			if cp.Comparison.Type != predicates.ComparisonEquals {
 				continue
 			}
-			rhsQOV, ok := cp.Comparison.Operand.(*values.QuantifiedObjectValue)
+			rhsQOV, ok := values.AsQuantifiedObjectValue(cp.Comparison.Operand)
 			if !ok {
 				continue
 			}
-			if rhsQOV.Correlation != explodeAlias {
+			if rhsQOV.Correlation() != explodeAlias {
 				t.Fatalf("equality QOV correlates to %v, expected explode alias %v",
-					rhsQOV.Correlation, explodeAlias)
+					rhsQOV.Correlation(), explodeAlias)
 			}
 			// Verify the correlation set includes the explode alias.
 			correlated := cp.Comparison.GetCorrelatedTo()

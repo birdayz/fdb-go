@@ -72,16 +72,16 @@ func TestIntegration_VectorIndexScan_KNN(t *testing.T) {
 		}
 
 		// Query vector (12,12): nearest two are (10,10)=id1 then (20,20)=id2.
-		plan := plans.NewRecordQueryVectorIndexPlan(
+		plan := mustExecutorConstruct(plans.NewRecordQueryVectorIndexPlan(
 			"vec_pq",
 			nil, // unpartitioned
-			values.LiteralValue([]float64{12, 12}),
-			values.LiteralValue(2),
+			&values.ConstantValue{Value: []float64{12, 12}, Typ: values.NewArrayType(false, values.NotNullDouble)},
+			&values.ConstantValue{Value: int64(2), Typ: values.NotNullLong},
 			predicates.ComparisonDistanceRankLessThanOrEq,
 			nil, nil,
 			[]string{"Order"},
-			nil,
-		)
+			PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false),
+		))
 
 		// EXPLAIN-pin: the plan must be a BY_DISTANCE vector scan, not a
 		// generic value index scan.
@@ -143,13 +143,14 @@ func TestIntegration_VectorIndexScan_RankLessThan(t *testing.T) {
 			return nil, err
 		}
 		// ROW_NUMBER() < 3 → top 2 (k-1), not 3.
-		plan := plans.NewRecordQueryVectorIndexPlan(
+		plan := mustExecutorConstruct(plans.NewRecordQueryVectorIndexPlan(
 			"vec_pq", nil,
-			values.LiteralValue([]float64{12, 12}),
-			values.LiteralValue(3),
+			&values.ConstantValue{Value: []float64{12, 12}, Typ: values.NewArrayType(false, values.NotNullDouble)},
+			&values.ConstantValue{Value: int64(3), Typ: values.NotNullLong},
 			predicates.ComparisonDistanceRankLessThan,
-			nil, nil, []string{"Order"}, nil,
-		)
+			nil, nil, []string{"Order"},
+			PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false),
+		))
 		cursor, err := ExecutePlan(ctx, plan, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 		if err != nil {
 			t.Fatalf("ExecutePlan: %v", err)

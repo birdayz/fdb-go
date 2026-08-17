@@ -153,7 +153,7 @@ func TestPositionalMergeRowSlotsAreTyped(t *testing.T) {
 		}
 		merges++
 		for i, f := range rc.Fields {
-			qov, isQOV := f.Value.(*values.QuantifiedObjectValue)
+			qov, isQOV := values.AsQuantifiedObjectValue(f.Value)
 			if !isQOV {
 				t.Errorf("%s: %s positional-merge slot %d (%q) is a %T, want a QuantifiedObjectValue "+
 					"— the merge row's slots ARE the legs\n  sql: %s", name, j.kind, i, f.Name, f.Value, sql)
@@ -168,7 +168,7 @@ func TestPositionalMergeRowSlotsAreTyped(t *testing.T) {
 					"The leg type comes from the QUANTIFIER (Quantifier.GetFlowedObjectValueTyped, "+
 					"Java's Quantifier.java:801-803), never from scavenging the select's value "+
 					"surfaces — those are empty exactly when the select's own result value is an "+
-					"untyped flowed row.\n  sql: %s", name, j.kind, i, qov.Correlation, qov.Type(), sql)
+					"untyped flowed row.\n  sql: %s", name, j.kind, i, qov.Correlation(), qov.Type(), sql)
 			}
 		}
 	})
@@ -210,7 +210,12 @@ func TestPositionalMergeRowSlotsAreTyped(t *testing.T) {
 func TestJoinResultValueWithBakedOrdinalsIsRCOrWholeValueReference(t *testing.T) {
 	t.Parallel()
 	bares := 0
+	joins := 0
 	forEachBatteryJoin(t, func(name, sql string, j joinResultValue) {
+		joins++
+		if _, err := values.SnapshotExactType(j.rv.Type()); err != nil {
+			t.Errorf("%s: %s result type is not exact: %v\n  sql: %s", name, j.kind, err, sql)
+		}
 		if j.rv == nil || !values.ContainsBakedOrdinal(j.rv) {
 			return
 		}
@@ -218,8 +223,8 @@ func TestJoinResultValueWithBakedOrdinalsIsRCOrWholeValueReference(t *testing.T)
 			return
 		}
 		bares++
-		fv, isFV := j.rv.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		fv, isFV := values.AsFieldValue(j.rv)
+		if !isFV || fv.Path() == nil || !fv.Path().IsFrontierPinned() {
 			t.Errorf("%s: %s result value carries baked ordinals and is not an RC, but is a %T "+
 				"(%s) rather than a baked reference.\n"+
 				"A non-RC join result value is legitimate only as the WHOLE value the select "+
@@ -231,31 +236,47 @@ func TestJoinResultValueWithBakedOrdinalsIsRCOrWholeValueReference(t *testing.T)
 				"  sql: %s", name, j.kind, j.rv, j.rv.Name(), sql)
 			return
 		}
-		if _, isQOV := fv.Child.(*values.QuantifiedObjectValue); !isQOV {
+		if _, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); !isQOV {
 			t.Errorf("%s: %s bare baked result value reads through a %T rather than a leg "+
 				"QuantifiedObjectValue (%s). A baked ordinal resolves against a LEG's bound row; "+
 				"with no leg QOV at the base there is nothing to bind.\n  sql: %s",
-				name, j.kind, fv.Child, describeAccessors(fv), sql)
+				name, j.kind, fv.ChildValue(), describeAccessors(fv), sql)
 		}
 	})
-	if bares == 0 {
-		t.Error("the battery produced NO bare (non-RC) baked join result value, so this gate is " +
-			"vacuous. That shape is what PartitionSelectRule.java:281+319 mints and what " +
-			"ordinalJoinBuild.Bare exists for; if the planner stopped emitting it, the Bare arm " +
-			"has lost its only planner-side witness and TestFDB_CommaJoin3ProjectedExistsWithEquijoins " +
-			"is no longer covering it.")
+	if joins == 0 {
+		t.Fatal("the battery produced no join result values")
+	}
+	// THE DIRECTION OF THIS GUARD INVERTED, so the guard inverted with it rather
+	// than being relaxed to a log.
+	//
+	// It was a COLLAPSE floor: bares==0 meant the battery had stopped producing
+	// the shape the checks above interrogate, and those checks were then passing
+	// vacuously. RFC-232's exact result/layout construction canonicalizes every
+	// reachable baked join result into an RC, so zero is now the STEADY STATE and
+	// that floor is unsatisfiable — which is exactly the point at which a floor
+	// gets deleted or logged away and stops watching anything in either
+	// direction.
+	//
+	// The alarm now points the other way. A NON-zero count means a bare planner
+	// shape became reachable again: the arms above are suddenly live over a
+	// population nobody has reviewed since it disappeared, and that is a finding
+	// to look at rather than a silent resumption. It is not a failure of the
+	// engine — it is a failure of this test's stated scope, which is why the
+	// message says what to do rather than what broke.
+	if bares != 0 {
+		t.Errorf("%d bare baked join result(s) were selected; this battery has recorded zero since "+
+			"exact result/layout construction began canonicalizing every reachable baked join "+
+			"result into an RC. The bare arms above just went live over a population that has not "+
+			"been reviewed since. Confirm the shape is intended, re-read those assertions against "+
+			"it, and re-baseline this guard to the new count.", bares)
 	}
 }
 
 // describeAccessors renders a baked FieldValue's ordinal path for a failure
 // message.
-func describeAccessors(fv *values.FieldValue) string {
-	if fv.Resolved == nil {
+func describeAccessors(fv values.FieldValue) string {
+	if fv.Path() == nil {
 		return "lazy"
 	}
-	ords := make([]int, len(fv.Resolved.Accessors))
-	for i, a := range fv.Resolved.Accessors {
-		ords[i] = a.Ordinal
-	}
-	return fmt.Sprintf("ordinals %v", ords)
+	return fmt.Sprintf("ordinals %v", fv.Path().Ordinals())
 }

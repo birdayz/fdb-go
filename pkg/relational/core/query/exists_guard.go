@@ -309,9 +309,12 @@ func predicateOperandValues(p predicates.QueryPredicate) []values.Value {
 // the child is not a QuantifiedObjectValue (a shape the guard treats as
 // un-foldable, since it can't be matched to an owning existential quantifier).
 func existsValueAlias(ev *values.ExistsValue) (values.CorrelationIdentifier, bool) {
-	qov, ok := ev.GetChild().(*values.QuantifiedObjectValue)
+	if ev == nil {
+		return values.CorrelationIdentifier{}, false
+	}
+	qov, ok := values.AsQuantifiedObjectValue(ev.GetChild())
 	if !ok {
 		return values.CorrelationIdentifier{}, false
 	}
-	return qov.Correlation, true
+	return qov.Correlation(), true
 }

@@ -19,7 +19,7 @@ import (
 // bare leg QOV).
 
 // s3MergeRC builds RC(_0: QOV(a), _1: QOV(b)) — the lowest merge level.
-func s3MergeRC(qovA, qovB *values.QuantifiedObjectValue) *values.RecordConstructorValue {
+func s3MergeRC(qovA, qovB values.QuantifiedObjectValue) *values.RecordConstructorValue {
 	return values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: values.OrdinalFieldName(0), Value: qovA},
 		values.RecordConstructorField{Name: values.OrdinalFieldName(1), Value: qovB},
@@ -45,7 +45,7 @@ func TestMergeBuild_Constructor(t *testing.T) {
 	}
 	// Structural compare — qov.Type() returns a nullability-wrapped instance,
 	// not the raw pointer.
-	gotA, gotB := build.LegTypes[qovA.Correlation], build.LegTypes[qovB.Correlation]
+	gotA, gotB := build.LegTypes[qovA.Correlation()], build.LegTypes[qovB.Correlation()]
 	if gotA == nil || gotB == nil || len(gotA.Fields) != len(legA.Fields) || len(gotB.Fields) != len(legB.Fields) ||
 		gotA.Fields[1].Name != "V" || gotB.Fields[1].Name != "W" {
 		t.Fatalf("LegTypes must come from the bare QOVs' flowed types, got %v", build.LegTypes)
@@ -82,8 +82,8 @@ func TestMergeBuild_NLJCursor_Nested(t *testing.T) {
 		ojLegQR(t, legB, int64(1), int64(100)),
 	}
 	pred := ojEqPred(
-		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
-		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovB, "ID", 0, values.NotNullLong),
+		mustTestFieldOrdinal(t, qovA, 0),
+		mustTestFieldOrdinal(t, qovB, 0),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
 		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"), []predicates.QueryPredicate{pred}, s3MergeRC(qovA, qovB), EmptyEvaluationContext(), nil)
@@ -113,17 +113,12 @@ func TestMergeBuild_NLJCursor_Nested(t *testing.T) {
 		{Name: values.OrdinalFieldName(0), FieldType: legA, Ordinal: 0},
 		{Name: values.OrdinalFieldName(1), FieldType: legB, Ordinal: 1},
 	})
-	upperQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedType)
-	step0, err := values.NewFieldValueOfOrdinal(upperQOV, 0)
+	upperQOV := mustTestQOV(t, values.NamedCorrelationIdentifier("m"), mergedType)
+	fused, err := values.ResolveFieldOrdinals(upperQOV, []int{0, 1})
 	if err != nil {
-		t.Fatalf("bake _0: %v", err)
+		t.Fatalf("resolve _0#0.V#1: %v", err)
 	}
-	fused, err := values.NewFieldValueOfOrdinal(step0, 1) // _0#0.V#1, fused by SimplifyValue below
-	if err != nil {
-		t.Fatalf("bake V over _0: %v", err)
-	}
-	twoStep := values.SimplifyValue(fused) // compose rule fuses the baked chain
-	got, err := twoStep.Evaluate(&values.RowEvalContext{Correlations: &ordinalBindingStub{id: upperQOV.Correlation, row: pos}})
+	got, err := fused.Evaluate(&values.RowEvalContext{Correlations: &ordinalBindingStub{id: upperQOV.Correlation(), row: pos}})
 	if err != nil || got != int64(10) {
 		t.Fatalf("fused two-step read over the nested merge row = (%v, %v), want (10, nil)", got, err)
 	}
@@ -144,17 +139,11 @@ func TestMergeBuild_MixedUpper(t *testing.T) {
 		{Name: values.OrdinalFieldName(0), FieldType: legA, Ordinal: 0},
 		{Name: values.OrdinalFieldName(1), FieldType: legB, Ordinal: 1},
 	})
-	innerQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), innerMergedType)
-	qovC := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("c"), legC)
+	innerQOV := mustTestQOV(t, values.NamedCorrelationIdentifier("m"), innerMergedType)
+	qovC := mustTestQOV(t, values.NamedCorrelationIdentifier("c"), legC)
 
-	f0, err := values.NewFieldValueOfOrdinal(innerQOV, 0)
-	if err != nil {
-		t.Fatalf("bake _0: %v", err)
-	}
-	f1, err := values.NewFieldValueOfOrdinal(innerQOV, 1)
-	if err != nil {
-		t.Fatalf("bake _1: %v", err)
-	}
+	f0 := mustExecutorConstruct(values.ResolveOrdinalSeedField(innerQOV, 0))
+	f1 := mustExecutorConstruct(values.ResolveOrdinalSeedField(innerQOV, 1))
 	mixed := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: values.OrdinalFieldName(0), Value: f0},
 		values.RecordConstructorField{Name: values.OrdinalFieldName(1), Value: f1},
@@ -167,7 +156,7 @@ func TestMergeBuild_MixedUpper(t *testing.T) {
 	}
 	// The bare leg's type must be collected from the QOV directly, not only
 	// from baked references. Structural compare (nullability wrapping).
-	if gotC := build.LegTypes[qovC.Correlation]; gotC == nil || len(gotC.Fields) != 1 || gotC.Fields[0].Name != "X" {
+	if gotC := build.LegTypes[qovC.Correlation()]; gotC == nil || len(gotC.Fields) != 1 || gotC.Fields[0].Name != "X" {
 		t.Fatalf("bare-QOV leg type missing: %v", build.LegTypes)
 	}
 
@@ -177,7 +166,7 @@ func TestMergeBuild_MixedUpper(t *testing.T) {
 	innerRow := &fakeExecOrdinalRow{names: []string{"_0", "_1"}, slots: []any{legARow, legBRow}}
 	cRow := &fakeExecOrdinalRow{names: []string{"X"}, slots: []any{int64(7)}}
 	binder := &twoLegBinder{
-		outerID: innerQOV.Correlation, innerID: qovC.Correlation,
+		outerID: innerQOV.Correlation(), innerID: qovC.Correlation(),
 		outer: innerRow, inner: cRow,
 	}
 	pos, err := evaluateOrdinalJoinRow(mixed, build.OutputType, binder, nil)
@@ -205,7 +194,7 @@ func TestMergeBuild_FlatMapBuilds(t *testing.T) {
 	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
 	c, err := newFlatMapCursorWithOuterProperties(
 		recordlayer.FromList([]QueryResult{}), nil, nil, nil, EmptyEvaluationContext(),
-		qovA.Correlation, qovB.Correlation,
+		qovA.Correlation(), qovB.Correlation(),
 		s3MergeRC(qovA, qovB), recordlayer.ExecuteProperties{}, false,
 	)
 	if err != nil {
@@ -277,21 +266,40 @@ func (r *fakeExecOrdinalRow) Get(ord int) (any, bool) {
 }
 
 // s3FusedRef builds the fused two-step reference TranslationMap's rebuild
-// produces for a buried leg column: ofOrdinal(merge, slot) composed with the
-// leg-local ordinal (SimplifyValue fires the compose/fuse arm).
-func s3FusedRef(t *testing.T, mergeQOV *values.QuantifiedObjectValue, slot, legOrd int) *values.FieldValue {
+// produces for a buried leg column: a pinned leg-local field translated through
+// the pinned ofOrdinal(merge, slot) replacement. Going through the real
+// translation path is load-bearing: a direct ResolveFieldOrdinals call is an
+// ordinary semantic nested access and deliberately cannot acquire the physical
+// frontier pin that span recovery requires.
+func s3FusedRef(
+	t *testing.T,
+	mergeQOV values.QuantifiedObjectValue,
+	legQOV values.QuantifiedObjectValue,
+	slot, legOrd int,
+) values.Value {
 	t.Helper()
-	step0, err := values.NewFieldValueOfOrdinal(mergeQOV, slot)
+	legField, err := values.ResolveOrdinalSeedField(legQOV, legOrd)
 	if err != nil {
-		t.Fatalf("bake _%d: %v", slot, err)
+		t.Fatalf("resolve leg %s#%d: %v", legQOV.Correlation(), legOrd, err)
 	}
-	inner, err := values.NewFieldValueOfOrdinal(step0, legOrd)
+	mergeSlot, err := values.ResolveOrdinalSeedField(mergeQOV, slot)
 	if err != nil {
-		t.Fatalf("bake leg ordinal %d over _%d: %v", legOrd, slot, err)
+		t.Fatalf("resolve merge _%d: %v", slot, err)
 	}
-	fused, isFV := values.SimplifyValue(inner).(*values.FieldValue)
-	if !isFV || fused.Resolved == nil || len(fused.Resolved.Accessors) != 2 {
-		t.Fatalf("compose must fuse into a two-accessor path, got %T", values.SimplifyValue(inner))
+	translation := values.NewTranslationMapBuilder().
+		When(legQOV.Correlation()).
+		Then(func(values.CorrelationIdentifier, values.Value) values.Value { return mergeSlot }).
+		Build()
+	fused, err := values.TranslateCorrelationsChecked(legField, translation)
+	if err != nil {
+		t.Fatalf("translate leg field through merge slot: %v", err)
+	}
+	view, isFV := values.AsFieldValue(fused)
+	if !isFV {
+		t.Fatalf("translated leg field must remain an admitted FieldValue, got %T (%v)", fused, fused)
+	}
+	if view.Path() == nil || view.Path().Len() != 2 || !view.Path().IsFrontierPinned() {
+		t.Fatalf("translated leg field must be a pinned two-accessor path, got %v", view.Path())
 	}
 	return fused
 }
@@ -309,28 +317,22 @@ func TestTranslatedTopSpans(t *testing.T) {
 	legC := values.NewRecordType("", false, []values.Field{
 		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
 	})
-	qovC := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), legC)
+	qovC := mustTestQOV(t, values.NamedCorrelationIdentifier("C"), legC)
 
 	mergedType := values.NewRecordType("", false, []values.Field{
 		{Name: values.OrdinalFieldName(0), FieldType: legB, Ordinal: 0},
 		{Name: values.OrdinalFieldName(1), FieldType: legC, Ordinal: 1},
 	})
-	mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), mergedType)
+	mergeQOV := mustTestQOV(t, values.NamedCorrelationIdentifier("m"), mergedType)
 
-	a0, err := values.NewFieldValueOfOrdinal(qovA, 0)
-	if err != nil {
-		t.Fatalf("bake A#0: %v", err)
-	}
-	a1, err := values.NewFieldValueOfOrdinal(qovA, 1)
-	if err != nil {
-		t.Fatalf("bake A#1: %v", err)
-	}
+	a0 := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovA, 0))
+	a1 := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovA, 1))
 	top := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "ID", Value: a0},
 		values.RecordConstructorField{Name: "V", Value: a1},
-		values.RecordConstructorField{Name: "ID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
-		values.RecordConstructorField{Name: "W", Value: s3FusedRef(t, mergeQOV, 0, 1)},
-		values.RecordConstructorField{Name: "X", Value: s3FusedRef(t, mergeQOV, 1, 0)},
+		values.RecordConstructorField{Name: "ID", Value: s3FusedRef(t, mergeQOV, qovB, 0, 0)},
+		values.RecordConstructorField{Name: "W", Value: s3FusedRef(t, mergeQOV, qovB, 0, 1)},
+		values.RecordConstructorField{Name: "X", Value: s3FusedRef(t, mergeQOV, qovC, 1, 0)},
 	)
 
 	// The plain seed probe (no legRVs) must DECLINE the fused shape.
@@ -339,7 +341,7 @@ func TestTranslatedTopSpans(t *testing.T) {
 	}
 
 	legRVs := map[values.CorrelationIdentifier]values.Value{
-		mergeQOV.Correlation: s3MergeRC(qovB, qovC),
+		mergeQOV.Correlation(): s3MergeRC(qovB, qovC),
 	}
 	spans, _, ok := ordinalJoinSpansOf(top, legRVs)
 	if !ok {
@@ -381,7 +383,7 @@ func TestSpliceLegSpans(t *testing.T) {
 	legC := values.NewRecordType("", false, []values.Field{
 		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
 	})
-	qovC := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("C"), legC)
+	qovC := mustTestQOV(t, values.NamedCorrelationIdentifier("C"), legC)
 
 	// The box leg: alias "B" (sourceAlias names the box after its rightmost
 	// leaf — the shadowing case), type = the flat {A,B} concat. RAW
@@ -392,11 +394,11 @@ func TestSpliceLegSpans(t *testing.T) {
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 2},
 		{Name: "W", FieldType: values.NotNullLong, Ordinal: 3},
 	}}
-	boxQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("B"), boxType)
+	boxQOV := mustTestQOV(t, values.NamedCorrelationIdentifier("B"), boxType)
 	top := buildOrdinalJoinRC(t, qovC, boxQOV)
 
 	legRVs := map[values.CorrelationIdentifier]values.Value{
-		boxQOV.Correlation: boxSeed, // the box's own seed over legs A, B
+		boxQOV.Correlation(): boxSeed, // the box's own seed over legs A, B
 	}
 	spans, _, ok := ordinalJoinSpansOf(top, legRVs)
 	if !ok {
@@ -435,7 +437,7 @@ func TestSpliceLegSpans(t *testing.T) {
 // decline hash extraction.
 func TestHashJoinDeclinesFusedPred(t *testing.T) {
 	t.Parallel()
-	legA, legB, qovA, _, _ := ojWiringLegs(t)
+	legA, legB, qovA, qovB, _ := ojWiringLegs(t)
 	legC := values.NewRecordType("", false, []values.Field{
 		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
 	})
@@ -443,7 +445,7 @@ func TestHashJoinDeclinesFusedPred(t *testing.T) {
 		{Name: values.OrdinalFieldName(0), FieldType: legB, Ordinal: 0},
 		{Name: values.OrdinalFieldName(1), FieldType: legC, Ordinal: 1},
 	})
-	mergeQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("M"), mergedType)
+	mergeQOV := mustTestQOV(t, values.NamedCorrelationIdentifier("M"), mergedType)
 
 	// 150 merge-shaped inner rows (≥100 arms the hash index): each holds a
 	// nested positional row keyed `_0`/`_1`, one slot per leg. Leg B's
@@ -466,17 +468,14 @@ func TestHashJoinDeclinesFusedPred(t *testing.T) {
 
 	// a.id = m._0.id — the fused two-step rebase shape; the MIXED upper RV
 	// (baked over both legs) makes this a real ordinal-build cursor.
-	aRef, err := values.NewFieldValueOfOrdinal(qovA, 0)
-	if err != nil {
-		t.Fatalf("bake A#0: %v", err)
-	}
+	aRef := mustExecutorConstruct(values.ResolveOrdinalSeedField(qovA, 0))
 	mixed := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "AID", Value: aRef},
-		values.RecordConstructorField{Name: "BID", Value: s3FusedRef(t, mergeQOV, 0, 0)},
+		values.RecordConstructorField{Name: "BID", Value: s3FusedRef(t, mergeQOV, qovB, 0, 0)},
 	)
 	pred := ojEqPred(
-		values.NewCorrelatedFieldValueWithResolvedOrdinal(qovA, "ID", 0, values.NotNullLong),
-		s3FusedRef(t, mergeQOV, 0, 0),
+		mustTestFieldOrdinal(t, qovA, 0),
+		s3FusedRef(t, mergeQOV, qovB, 0, 0),
 	)
 	c := mustNLJCursor(t, recordlayer.FromList(outerRows), innerRows, plans.JoinInner,
 		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("M"), []predicates.QueryPredicate{pred}, mixed, EmptyEvaluationContext(), nil)

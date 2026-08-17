@@ -1,8 +1,6 @@
 package embedded
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -10,7 +8,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// TestUnnestElementQuantifierStaysUntyped pins the boundary that
+// TestUnnestElementQuantifierCarriesExactScalar pins the boundary that
 // values.IsMixedSeedElementType rests on, from the side that can break it.
 //
 // That predicate discriminates a lateral unnest's whole-object ELEMENT from a
@@ -38,17 +36,13 @@ import (
 //
 // The virtual table's column list is a RESOLUTION convenience — it is what makes
 // `SELECT "X"` resolve — never the row the quantifier flows. An unnest element
-// is ONE array element, which is Java's isPrimitive() whole-object case.
+// is ONE array element, which is Java's isPrimitive() whole-object case. Under
+// RFC-232 that object is no longer UNKNOWN: it is the exact declared element
+// type, LONG NOT NULL in this fixture.
 //
-// WHEN THIS GOES RED, do not re-type the element to make it pass. Either the
-// resolver started stating a row for a shadowing source again (fix the
-// resolver), or IsMixedSeedElementType was converted to a STRUCTURAL
-// discrimination — which is the real long-term fix, since a proxy on
-// record-ness cannot survive a migration whose whole direction is adding types.
-// If it is the latter, retarget this test to assert the structural marker
-// instead, and remember the executor's span derivation must agree BIT FOR BIT
-// (that agreement is why the predicate is one function and not two).
-func TestUnnestElementQuantifierStaysUntyped(t *testing.T) {
+// A RECORD here still confuses the element with a leg; UNKNOWN now fails earlier
+// because an exact QuantifiedObjectValue cannot be built. Both are regressions.
+func TestUnnestElementQuantifierCarriesExactScalar(t *testing.T) {
 	t.Parallel()
 
 	const schema = `CREATE TABLE a (aid BIGINT, k BIGINT, PRIMARY KEY (aid))
@@ -62,23 +56,23 @@ CREATE TABLE c (cid BIGINT, arr BIGINT ARRAY, PRIMARY KEY (cid))`
 
 	// Every quantifier object anywhere in the plan's value surfaces, by
 	// correlation, with the type it states.
-	seen := map[string][]string{}
+	seen := map[string][]values.Type{}
 	// resolverMinted is the subset read off an UNPINNED FieldValue — the
 	// resolver's own source-relative bake. The distinction is load-bearing for
 	// the positive control below: the PLANNER also mints quantifier objects for
 	// correlation A and types them (FrontierPinned seed refs), so a control that
 	// merely asks "is anything called A typed" stays green with the resolver's
 	// typing removed entirely. Measured — it did.
-	resolverMinted := map[string][]string{}
+	resolverMinted := map[string][]values.Type{}
 	collect := func(v values.Value) {
 		values.WalkValue(v, func(n values.Value) bool {
-			if fv, isFV := n.(*values.FieldValue); isFV && fv.Resolved != nil && !fv.Resolved.FrontierPinned {
-				if qov, isQ := fv.Child.(*values.QuantifiedObjectValue); isQ {
-					resolverMinted[qov.Correlation.Name()] = append(resolverMinted[qov.Correlation.Name()], fmt.Sprint(qov.Typ))
+			if fv, isFV := values.AsFieldValue(n); isFV && !fv.Path().IsFrontierPinned() {
+				if qov, isQ := values.AsQuantifiedObjectValue(fv.ChildValue()); isQ {
+					resolverMinted[qov.Correlation().Name()] = append(resolverMinted[qov.Correlation().Name()], qov.FlowedType())
 				}
 			}
-			if qov, ok := n.(*values.QuantifiedObjectValue); ok {
-				seen[qov.Correlation.Name()] = append(seen[qov.Correlation.Name()], fmt.Sprint(qov.Typ))
+			if qov, ok := values.AsQuantifiedObjectValue(n); ok {
+				seen[qov.Correlation().Name()] = append(seen[qov.Correlation().Name()], qov.FlowedType())
 			}
 			return true
 		})
@@ -109,7 +103,7 @@ CREATE TABLE c (cid BIGINT, arr BIGINT ARRAY, PRIMARY KEY (cid))`
 	}
 	typedA := false
 	for _, ty := range aTypes {
-		if strings.Contains(ty, "RECORD") {
+		if ty != nil && ty.Code() == values.TypeCodeRecord {
 			typedA = true
 		}
 	}
@@ -121,23 +115,23 @@ CREATE TABLE c (cid BIGINT, arr BIGINT ARRAY, PRIMARY KEY (cid))`
 			"assertion below is vacuous.\n  plan: %s", aTypes, plan.Explain())
 	}
 
-	// THE BOUNDARY. The unnest element's quantifier must NOT state a row.
+	// THE BOUNDARY. The unnest element's quantifier must state the exact scalar.
+	sawX := false
 	for corr, types := range seen {
 		if corr != "X" {
 			continue
 		}
+		sawX = true
 		for _, ty := range types {
-			if strings.Contains(ty, "RECORD") {
-				t.Fatalf("the unnest ELEMENT quantifier %q states a ROW (%s).\n\n"+
-					"  values.IsMixedSeedElementType discriminates the element from a join "+
-					"leg by asking whether this type is a RECORD, so stating one here makes "+
-					"the element read as a leg. The measured consequence is not a plan-shape "+
-					"change — the plan is byte-identical — it is wrong leg windows, which "+
-					"surface as a LOUD \"multi-leg row cannot serve a source-relative "+
-					"ordinal\" on some shapes and as SILENTLY MISSING ROWS on others.\n\n"+
-					"  Read this test's doc comment before making it pass: re-typing the "+
-					"element is the wrong repair.\n  plan: %s", corr, ty, plan.Explain())
+			if ty == nil || ty.Code() != values.TypeCodeLong || ty.IsNullable() {
+				t.Fatalf("the unnest ELEMENT quantifier %q states %v, want exact LONG NOT NULL. "+
+					"The virtual lookup row must not become the flowed type, and UNKNOWN is "+
+					"not an admissible RFC-232 QOV.\n  plan: %s", corr, ty, plan.Explain())
 			}
 		}
+	}
+	if !sawX {
+		t.Fatalf("no exact quantified object for unnest binding X; the virtual scope source "+
+			"likely still exposes UNKNOWN and construction declined.\n  seen: %v\n  plan: %s", seen, plan.Explain())
 	}
 }

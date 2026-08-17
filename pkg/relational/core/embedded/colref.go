@@ -93,20 +93,15 @@ func recordProjQualVsScan(proj *logical.LogicalProject, slot int, upper string, 
 // the degenerate `T.` (a trailing dot is a qualifier to parseColRef and a bare
 // name to the classifier) and an instrument may not move the behaviour it
 // measures.
-func projScopeAlias(fv *values.FieldValue) string {
-	if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-		alias := strings.ToUpper(qov.Correlation.Name())
+func projScopeAlias(fv values.FieldValue) string {
+	if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
+		alias := strings.ToUpper(qov.Correlation().Name())
 		values.RecordQualifierRecovery(values.QualRecSiteProjScopeClassify,
-			values.QualRecCarried, fv.Field, alias)
+			values.QualRecCarried, fv.DisplayName(), alias)
 		return alias
 	}
-	if ref := parseColRef(fv.Field); ref.isQualified() {
-		values.RecordQualifierRecovery(values.QualRecSiteProjScopeClassify,
-			values.QualRecManufactured, fv.Field, "")
-		return strings.ToUpper(ref.table)
-	}
 	values.RecordQualifierRecovery(values.QualRecSiteProjScopeClassify,
-		values.QualRecBare, fv.Field, "")
+		values.QualRecBare, fv.DisplayName(), "")
 	return ""
 }
 
@@ -116,18 +111,18 @@ func projScopeAlias(fv *values.FieldValue) string {
 // split the production line then performed differently would measure the wrong
 // predicate.
 //
-// The counterparty is the projected VALUE. A machinery-minted alias exists
-// because the dedup pinned a projected reference's QUALIFIED spelling, and that
-// reference is a FieldValue over a QuantifiedObjectValue — so the correlation
-// the alias was minted FROM is right there, and whether the qualifier that came
-// off equals it is this site's whole conversion question.
+// The counterparty is the slot's frozen ProjectionAliasSource, captured from
+// structured parse/resolver identity when the machinery minted the alias. It is
+// deliberately not the projected Value: physical planning can correctly move
+// that program onto `_current`, which says where to evaluate it now rather than
+// which authored source supplied the display key.
 //
 // WHAT IS REMOVED is the leaf-preserving strip Java performs: its clearQualifier
 // drops the whole qualifier LIST (LogicalOperator.java:484-487), and a
 // three-segment reference puts BOTH leading segments in that list, so the label
 // is the last segment either way.
 //
-// WHAT IS CLASSIFIED is whether the qualifier agrees with that correlation, and
+// WHAT IS CLASSIFIED is whether the qualifier agrees with that frozen source, and
 // the qualifier is the LEADING segment. The comparison used to be against
 // everything before the LAST dot — the same string at two segments and a
 // different one at three. For `a.n.sk` that read a source "A.N" which exists
@@ -137,10 +132,10 @@ func projScopeAlias(fv *values.FieldValue) string {
 //
 // The classification lives in recordDisplayLabelStrip below, which reads its
 // gate FIRST and re-derives nothing: this function's parse is passed to it.
-func stripDisplayLabelQualifier(label string, v values.Value) (string, bool) {
+func stripDisplayLabelQualifier(label string, source values.ProjectionAliasSource) (string, bool) {
 	ref := parseColRef(label)
 	strips := ref.isQualified() && isPlainQualifiedColumnReference(label)
-	recordDisplayLabelStrip(label, ref.isQualified(), strips, v)
+	recordDisplayLabelStrip(label, ref.isQualified(), strips, source)
 	if !strips {
 		return label, false
 	}
@@ -160,7 +155,11 @@ func stripDisplayLabelQualifier(label string, v values.Value) (string, bool) {
 // bare: the site WAS handed a dotted name and declined by inspecting
 // punctuation in a rendering, which is the opposite finding from never having
 // seen a dot.
-func recordDisplayLabelStrip(label string, qualified, strips bool, v values.Value) {
+func recordDisplayLabelStrip(
+	label string,
+	qualified, strips bool,
+	source values.ProjectionAliasSource,
+) {
 	if !values.LegIdentityCensusEnabled() {
 		return
 	}
@@ -172,16 +171,13 @@ func recordDisplayLabelStrip(label string, qualified, strips bool, v values.Valu
 		values.RecordQualifierRecovery(values.QualRecSiteDisplayLabelStrip, class, label, "")
 		return
 	}
-	// The counterparty is the projected VALUE. A machinery-minted alias exists
-	// because the dedup pinned a projected reference's QUALIFIED spelling, and
-	// that reference is a FieldValue over a QuantifiedObjectValue — so the
-	// correlation the alias was minted FROM is right there, and whether the
-	// qualifier that came off equals it is this site's whole question.
-	ident, present := "", false
-	if fv, isField := v.(*values.FieldValue); isField && fv.Child != nil {
-		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-			ident, present = strings.ToUpper(qov.Correlation.Name()), true
-		}
+	// The counterparty was frozen when the machinery minted the alias. The
+	// projected Value is intentionally NOT consulted: physical planning may
+	// correctly reanchor it onto `_current`, which is an execution carrier and
+	// not the authored source that supplied `A.NAME`.
+	ident, present := "", source.Present
+	if present {
+		ident = strings.ToUpper(source.Source.Name())
 	}
 	switch {
 	case !present:

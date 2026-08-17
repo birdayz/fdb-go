@@ -40,8 +40,8 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *properties.Requeste
 	var reqByCol map[string]values.Value
 	if requested != nil {
 		for _, part := range requested.GetParts() {
-			fv, isFV := part.Value.(*values.FieldValue)
-			if !isFV || fv.Child != nil || fv.Resolved == nil {
+			fv, isFV := values.AsFieldValue(part.Value)
+			if !isFV || fv.ChildValue() == nil || fv.Path().Len() == 0 {
 				continue
 			}
 			col := values.ColumnNameValue(part.Value)
@@ -72,8 +72,15 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *properties.Requeste
 	}
 	out := make([]values.Value, 0, len(keys))
 	for i, k := range keys {
-		fv, isFV := k.(*values.FieldValue)
-		if !isFV || fv.Child != nil || fv.Resolved != nil {
+		fv, isFV := values.AsFieldValue(k)
+		if !isFV {
+			out = append(out, k)
+			continue
+		}
+		// RFC-232 makes every FieldValue fully resolved and childful. There is
+		// no name-only merge key left to bake here; preserve its exact source
+		// root/path. Physical layout selection later binds or reanchors it.
+		if fv.ChildValue() != nil && fv.Path().Len() > 0 {
 			out = append(out, k)
 			continue
 		}
@@ -88,12 +95,8 @@ func bakeMergeComparisonKeys(keys []values.Value, requested *properties.Requeste
 			// lazy (loud at runtime, never a wrong slot).
 			// Single-table branches carry no dups, so this never fires today; it
 			// fences the join-flows-here future.
-			if idx, unique := uniqueUpperFieldIndex(rt, fv.Field); unique {
-				// The ordinal is resolved against rt HERE, so rt is the layout
-				// it indexes and the domain is a proof rather than a claim
-				// (RFC-197 step 0).
-				out = append(out, values.NewFieldValueWithResolvedOrdinalInDomain(fv.Field, idx, fv.Typ, values.OrdinalDomainOfType(rt)))
-				continue
+			if _, unique := uniqueUpperFieldIndex(rt, fv.DisplayName()); unique {
+				return nil // unreachable for admitted FV; never reconstruct by name
 			}
 		}
 		// Still lazy through both authorities. In the FREE suffix (positions
@@ -195,8 +198,8 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	qov, ok := resultValue.(*values.QuantifiedObjectValue)
-	if !ok || qov.Correlation != innerQuantifier.GetAlias() {
+	qov, ok := values.AsQuantifiedObjectValue(resultValue)
+	if !ok || qov.Correlation() != innerQuantifier.GetAlias() {
 		return
 	}
 
@@ -210,10 +213,10 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		explodeAliases[eq.GetAlias()] = struct{}{}
 	}
 
-	bindingNames := make([]string, len(explodeQuantifiers))
+	bindingAliases := make([]values.CorrelationIdentifier, len(explodeQuantifiers))
 	inSources := make([][]any, len(explodeQuantifiers))
 	for i, eq := range explodeQuantifiers {
-		bindingNames[i] = eq.GetAlias().String()
+		bindingAliases[i] = eq.GetAlias()
 		if ref := eq.GetRangesOver(); ref != nil {
 			for _, member := range ref.AllMembers() {
 				if expl, ok := member.(*expressions.ExplodeExpression); ok {
@@ -234,7 +237,22 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		}
 	}
 
-	partitions := ToPlanPartitions(innerRef)
+	// The raw partition key contains only the reduced Ordering property. An
+	// equality-bound index access and an unbounded scan of the same index can
+	// therefore share a partition: both advertise the same plain key sequence,
+	// while their RichOrdering bindings are materially different (A=fixed-to-IN
+	// versus A=sorted). Reading the first member's rich ordering and then cost-
+	// selecting from that mixed partition can bake an InUnion over the unbounded
+	// residual scan, repeating the full scan once per binding and losing the
+	// bounded ordered alternative during group pruning.
+	//
+	// RichOrdering is every property this rule reads to derive its merge keys.
+	// Roll up to that exact property so every member considered for a baked
+	// ordered spine has the same fixed/directional binding contract.
+	partitions := RollUpPlanPartitions(
+		ToPlanPartitions(innerRef),
+		properties.PropRichOrdering,
+	)
 	if len(partitions) == 0 {
 		return
 	}
@@ -251,13 +269,7 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 		}
 		innerExprs := partition.GetExpressions()
 
-		var richOrdering *properties.RichOrdering
-		for _, expr := range innerExprs {
-			if ph, ok := expr.(physicalPlanExpression); ok {
-				richOrdering = computeWrapperRichOrdering(ph)
-				break
-			}
-		}
+		richOrdering, _ := partition.GetPartitionPropertyValue(properties.PropRichOrdering).(*properties.RichOrdering)
 
 		for _, requestedOrdering := range requestedOrderings {
 			if requestedOrdering.IsPreserve() {
@@ -362,9 +374,13 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 				}
 				// The InUnion is its own cascades expression over the live pinned
 				// inner edge (RFC-184 W2); no plan snapshot.
-				inUnionPlan := plans.NewRecordQueryInUnionPlanFromQuantifier(
+				inUnionPlan, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
 					expressions.NewPhysicalQuantifier(expressions.FinalOf(pinned)),
-					bindingNames, comparisonKeys, isReverse, maxSize)
+					bindingAliases, comparisonKeys, isReverse, maxSize)
+				if err != nil {
+					call.Fail(err)
+					return
+				}
 				inUnionPlan.SetInSources(inSources)
 				call.YieldFinalExpression(inUnionPlan)
 			}
@@ -376,9 +392,13 @@ func (r *ImplementInUnionRule) OnMatch(call *ImplementationRuleCall) {
 			// inner edge (RFC-184 W2); its per-ordering winner resolves at
 			// extraction via ref.Winner(). No plan snapshot — the deferred-winner
 			// case.
-			inUnionPlan := plans.NewRecordQueryInUnionPlanFromQuantifier(
+			inUnionPlan, err := plans.NewRecordQueryInUnionPlanFromQuantifierWithBindingAliases(
 				expressions.NewPhysicalQuantifier(newRef),
-				bindingNames, nil, false, 0)
+				bindingAliases, nil, false, 0)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 			inUnionPlan.SetInSources(inSources)
 			call.YieldFinalExpression(inUnionPlan)
 		}
@@ -456,8 +476,20 @@ func adjustBindingsForInUnion(
 		}
 	}
 
-	return properties.NewRichOrdering(adjustedBM, ordering.GetKeys(),
-		ordering.DistinctnessClaim())
+	// Binding promotion changes how a key is compared by the merge; it does
+	// not change the ordering relationships the selected leg already proved.
+	// In particular, an IN-correlated fixed prefix is independent in the
+	// provider's ordering set. Promoting it to CHOOSE must not reconstruct a
+	// new dependency from the storage-key sequence and force that prefix back
+	// in front of the requested suffix. Java's ImplementInUnionRule likewise
+	// creates the adjusted UNION ordering with the provider's existing
+	// ordering set.
+	return properties.NewRichOrderingWithDeps(
+		adjustedBM,
+		ordering.GetKeys(),
+		ordering.OrderingSet().DependencyMap(),
+		ordering.DistinctnessClaim(),
+	)
 }
 
 var _ ImplementationRule = (*ImplementInUnionRule)(nil)

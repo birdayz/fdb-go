@@ -8,11 +8,29 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func wrapPhysicalRowType() *values.RecordType {
+	return values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+	})
+}
+
+func wrapPhysicalFullScan(t testing.TB) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	logical, err := expressions.NewFullUnorderedScanExpression([]string{"T"}, wrapPhysicalRowType())
+	if err != nil {
+		t.Fatalf("construct wrap-physical logical scan: %v", err)
+	}
+	return logical
+}
+
 // TestFindPhysicalExpr_ReturnsWrapperFromReference pins the happy path:
 // a Reference containing a bare scan plan yields that expression.
 func TestFindPhysicalExpr_ReturnsWrapperFromReference(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, wrapPhysicalRowType(), false)
+	if err != nil {
+		t.Fatalf("construct wrap-physical scan: %v", err)
+	}
 	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 	got := findPhysicalExpr(ref)
@@ -36,7 +54,7 @@ func TestFindPhysicalExpr_NilReference(t *testing.T) {
 // logical expressions are present (no physical wrapper).
 func TestFindPhysicalExpr_LogicalOnlyReference(t *testing.T) {
 	t.Parallel()
-	logical := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	logical := wrapPhysicalFullScan(t)
 	ref := expressions.InitialOf(logical)
 	if got := findPhysicalExpr(ref); got != nil {
 		t.Fatalf("findPhysicalExpr(logical-only) = %v, want nil", got)
@@ -47,9 +65,12 @@ func TestFindPhysicalExpr_LogicalOnlyReference(t *testing.T) {
 // when a logical expression was inserted first.
 func TestFindPhysicalExpr_MixedMembers(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, wrapPhysicalRowType(), false)
+	if err != nil {
+		t.Fatalf("construct wrap-physical scan: %v", err)
+	}
 	wrapper := scan
-	logical := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	logical := wrapPhysicalFullScan(t)
 	// Build ref with logical first, then insert physical.
 	ref := expressions.InitialOf(logical)
 	ref.Insert(wrapper)
@@ -66,7 +87,10 @@ func TestFindPhysicalExpr_MixedMembers(t *testing.T) {
 // a Reference containing a bare scan plan yields the scan plan.
 func TestFindPhysicalPlan_ReturnsUnderlyingPlan(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, wrapPhysicalRowType(), false)
+	if err != nil {
+		t.Fatalf("construct wrap-physical scan: %v", err)
+	}
 	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 	got := findPhysicalPlan(ref)

@@ -10,11 +10,11 @@ import (
 // assertion succeeds AND the predicate returns true.
 func TestSatisfyingMatcher_PredicateTrue(t *testing.T) {
 	t.Parallel()
-	m := NewSatisfyingMatcher[*values.FieldValue](
+	m := NewSatisfyingMatcher[values.FieldValue](
 		"FieldNamedX",
-		func(f *values.FieldValue) bool { return f.Field == "x" },
+		func(f values.FieldValue) bool { return f.DisplayName() == "x" },
 	)
-	got := m.BindMatches(NewBindings(), &values.FieldValue{Field: "x", Typ: values.NullableLong})
+	got := m.BindMatches(NewBindings(), mustMatchingField(t, "x", values.NullableLong))
 	if len(got) != 1 {
 		t.Fatalf("expected 1 binding, got %d", len(got))
 	}
@@ -24,11 +24,11 @@ func TestSatisfyingMatcher_PredicateTrue(t *testing.T) {
 // assertion succeeds but predicate returns false.
 func TestSatisfyingMatcher_PredicateFalse(t *testing.T) {
 	t.Parallel()
-	m := NewSatisfyingMatcher[*values.FieldValue](
+	m := NewSatisfyingMatcher[values.FieldValue](
 		"FieldNamedX",
-		func(f *values.FieldValue) bool { return f.Field == "x" },
+		func(f values.FieldValue) bool { return f.DisplayName() == "x" },
 	)
-	if got := m.BindMatches(NewBindings(), &values.FieldValue{Field: "y", Typ: values.NullableLong}); got != nil {
+	if got := m.BindMatches(NewBindings(), mustMatchingField(t, "y", values.NullableLong)); got != nil {
 		t.Errorf("expected nil (predicate false), got %d bindings", len(got))
 	}
 }
@@ -39,9 +39,9 @@ func TestSatisfyingMatcher_PredicateFalse(t *testing.T) {
 func TestSatisfyingMatcher_TypeMismatch(t *testing.T) {
 	t.Parallel()
 	predicateRan := false
-	m := NewSatisfyingMatcher[*values.FieldValue](
+	m := NewSatisfyingMatcher[values.FieldValue](
 		"FieldNamedX",
-		func(f *values.FieldValue) bool {
+		func(f values.FieldValue) bool {
 			predicateRan = true
 			return true
 		},
@@ -79,16 +79,16 @@ func TestSatisfyingMatcher_RejectsNilPredicate(t *testing.T) {
 			t.Fatal("expected panic on nil predicate")
 		}
 	}()
-	_ = NewSatisfyingMatcher[*values.FieldValue]("X", nil)
+	_ = NewSatisfyingMatcher[values.FieldValue]("X", nil)
 }
 
 // TestSatisfyingMatcher_DistinctIdentity pins distinct map-key
 // identity for two NewSatisfyingMatcher instances.
 func TestSatisfyingMatcher_DistinctIdentity(t *testing.T) {
 	t.Parallel()
-	a := NewSatisfyingMatcher[*values.FieldValue]("A", func(f *values.FieldValue) bool { return true })
-	b := NewSatisfyingMatcher[*values.FieldValue]("B", func(f *values.FieldValue) bool { return true })
-	in := &values.FieldValue{Field: "x", Typ: values.NullableLong}
+	a := NewSatisfyingMatcher[values.FieldValue]("A", func(f values.FieldValue) bool { return true })
+	b := NewSatisfyingMatcher[values.FieldValue]("B", func(f values.FieldValue) bool { return true })
+	in := mustMatchingField(t, "x", values.NullableLong)
 
 	bindings := NewBindings()
 	for _, partial := range a.BindMatches(bindings, in) {

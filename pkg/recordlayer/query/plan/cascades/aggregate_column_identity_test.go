@@ -17,12 +17,33 @@ func TestAggColumnMatches_NestedShadowsTopLevel(t *testing.T) {
 	t.Parallel()
 
 	src := values.NamedCorrelationIdentifier("T")
-	flatCity := values.NewFieldValue(values.NewQuantifiedObjectValue(src), "CITY", values.UnknownType)
-	nestedAddrCity := values.NewFieldValue(
-		values.NewFieldValue(values.NewQuantifiedObjectValue(src), "ADDR", values.UnknownType),
-		"CITY", values.UnknownType)
-	bakedCity := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(src), "CITY", 0, values.UnknownType)
+	rowType := &values.RecordType{Fields: []values.Field{
+		{Name: "CITY", Ordinal: 0, FieldType: values.NullableString},
+		{Name: "ADDR", Ordinal: 1, FieldType: &values.RecordType{Nullable: true, Fields: []values.Field{
+			{Name: "CITY", Ordinal: 0, FieldType: values.NullableString},
+		}}},
+		{Name: "NAME", Ordinal: 2, FieldType: values.NullableString},
+	}}
+	root, err := values.NewQuantifiedObjectValue(src, rowType)
+	if err != nil {
+		t.Fatalf("construct exact row root: %v", err)
+	}
+	flatRequest, err := values.FieldByName("CITY")
+	if err != nil {
+		t.Fatalf("construct CITY request: %v", err)
+	}
+	flatCity, err := values.ResolveFieldAccess(root, []values.FieldRequest{flatRequest})
+	if err != nil {
+		t.Fatalf("resolve flat CITY: %v", err)
+	}
+	nestedAddrCity, err := values.ResolveFieldOrdinals(root, []int{1, 0})
+	if err != nil {
+		t.Fatalf("resolve ADDR.CITY: %v", err)
+	}
+	bakedCity, err := values.ResolveFieldOrdinals(root, []int{0})
+	if err != nil {
+		t.Fatalf("resolve ordinal CITY: %v", err)
+	}
 
 	if aggColumnMatches(nestedAddrCity, "CITY") {
 		t.Fatal("nested addr.city matched a top-level CITY aggregate column (would aggregate wrong column)")
@@ -37,7 +58,11 @@ func TestAggColumnMatches_NestedShadowsTopLevel(t *testing.T) {
 	if !aggColumnMatches(flatCity, "city") {
 		t.Fatal("aggregate column match is not case-insensitive")
 	}
-	if aggColumnMatches(values.NewFieldValue(values.NewQuantifiedObjectValue(src), "NAME", values.UnknownType), "CITY") {
+	name, err := values.ResolveFieldOrdinals(root, []int{2})
+	if err != nil {
+		t.Fatalf("resolve NAME: %v", err)
+	}
+	if aggColumnMatches(name, "CITY") {
 		t.Fatal("column NAME matched aggregate column CITY")
 	}
 }

@@ -24,32 +24,21 @@ func TestTranslateLeafPredicates(t *testing.T) {
 		{Name: values.OrdinalFieldName(0), FieldType: legA, Ordinal: 0},
 		{Name: values.OrdinalFieldName(1), FieldType: legB, Ordinal: 1},
 	})
-	qovA := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("a"), legA)
-	qovB := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("b"), legB)
-	upperQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("u"), merged)
-	legOrdinal := map[values.CorrelationIdentifier]int{qovA.Correlation: 0, qovB.Correlation: 1}
+	qovA := mustQOV(t, values.NamedCorrelationIdentifier("a"), legA)
+	qovB := mustQOV(t, values.NamedCorrelationIdentifier("b"), legB)
+	upperQOV := mustQOV(t, values.NamedCorrelationIdentifier("u"), merged)
+	legOrdinal := map[values.CorrelationIdentifier]int{qovA.Correlation(): 0, qovB.Correlation(): 1}
 	m := values.NewTranslationMapBuilder().
-		When(qovA.Correlation).Then(func(a values.CorrelationIdentifier, _ values.Value) values.Value {
-		fv, err := values.NewFieldValueOfOrdinal(upperQOV, legOrdinal[a])
-		if err != nil {
-			t.Fatalf("merge-map bake: %v", err)
-		}
-		return fv
+		When(qovA.Correlation()).Then(func(a values.CorrelationIdentifier, _ values.Value) values.Value {
+		return mustResolveFieldOrdinals(t, upperQOV, legOrdinal[a])
 	}).
-		When(qovB.Correlation).Then(func(a values.CorrelationIdentifier, _ values.Value) values.Value {
-		fv, err := values.NewFieldValueOfOrdinal(upperQOV, legOrdinal[a])
-		if err != nil {
-			t.Fatalf("merge-map bake: %v", err)
-		}
-		return fv
+		When(qovB.Correlation()).Then(func(a values.CorrelationIdentifier, _ values.Value) values.Value {
+		return mustResolveFieldOrdinals(t, upperQOV, legOrdinal[a])
 	}).
 		Build()
 
-	lhs, err := values.NewFieldValueOfOrdinal(qovA, 0) // a.ID baked
-	if err != nil {
-		t.Fatalf("bake: %v", err)
-	}
-	rhs := values.NewFieldValue(qovB, "W", values.NotNullLong) // b.W lazy
+	lhs := mustResolveFieldOrdinals(t, qovA, 0) // a.ID
+	rhs := mustResolveFieldOrdinals(t, qovB, 0) // b.W
 	pred := NewAnd(&ComparisonPredicate{
 		Operand:    lhs,
 		Comparison: Comparison{Type: ComparisonEquals, Operand: rhs},
@@ -60,22 +49,19 @@ func TestTranslateLeafPredicates(t *testing.T) {
 		t.Fatal("predicate with map-matched aliases must be rebuilt")
 	}
 	cmp := out.(*AndPredicate).SubPredicates[0].(*ComparisonPredicate)
-	newLHS := cmp.Operand.(*values.FieldValue)
-	if newLHS.Child != upperQOV || newLHS.Resolved == nil || len(newLHS.Resolved.Accessors) != 2 {
+	newLHS, ok := values.AsFieldValue(cmp.Operand)
+	if !ok || newLHS.ChildValue() != upperQOV || newLHS.Path().Len() != 2 {
 		t.Fatalf("LHS did not rebase+fuse over the upper QOV: %+v", newLHS)
 	}
-	newRHS := cmp.Comparison.Operand.(*values.FieldValue)
-	if newRHS.Resolved != nil {
-		t.Fatal("lazy RHS must not fuse")
-	}
-	if inner, ok := newRHS.Child.(*values.FieldValue); !ok || inner.Child != upperQOV {
-		t.Fatalf("lazy RHS child = %v, want the baked replacement over the upper QOV", newRHS.Child)
+	newRHS, ok := values.AsFieldValue(cmp.Comparison.Operand)
+	if !ok || newRHS.ChildValue() != upperQOV || newRHS.Path().Len() != 2 {
+		t.Fatalf("RHS did not rebase+fuse over the upper QOV: %+v", newRHS)
 	}
 
 	// Unrelated predicate: pointer-identical through the whole spine, and the
 	// identity map short-circuits before any walk.
-	other := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("zz"), values.NotNullLong)
-	unrelated := NewAnd(NewValuePredicate(values.NewFieldValue(other, "X", values.NotNullLong)))
+	other := mustQOV(t, values.NamedCorrelationIdentifier("zz"), values.NotNullLong)
+	unrelated := NewAnd(NewValuePredicate(other))
 	if got := TranslateLeafPredicates(unrelated, m); got != unrelated {
 		t.Fatal("predicate with no matching aliases must return the input pointer")
 	}
@@ -93,10 +79,15 @@ func TestTranslateLeafPredicates_ValueBearingFields(t *testing.T) {
 	t.Parallel()
 	oldAlias := values.NamedCorrelationIdentifier("src")
 	newAlias := values.NamedCorrelationIdentifier("dst")
-	oldQOV := values.NewQuantifiedObjectValue(oldAlias)
+	rowType := values.NewRecordType("translation_row", false, []values.Field{
+		{Name: "EMB", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "V", FieldType: values.NotNullLong, Ordinal: 2},
+	})
+	oldQOV := mustQOV(t, oldAlias, rowType)
 	m := values.NewTranslationMapBuilder().
 		When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
-		return values.NewQuantifiedObjectValue(newAlias)
+		return mustQOV(t, newAlias, rowType)
 	}).Build()
 	refersNew := func(v values.Value) bool {
 		_, has := values.GetCorrelatedToOfValue(v)[newAlias]
@@ -108,9 +99,9 @@ func TestTranslateLeafPredicates_ValueBearingFields(t *testing.T) {
 	vecCmp := Comparison{
 		Type:        ComparisonDistanceRankLessThanOrEq,
 		Operand:     &values.ConstantValue{Value: int64(5), Typ: values.NotNullLong},
-		QueryVector: values.NewFieldValue(oldQOV, "EMB", nil),
+		QueryVector: mustResolveFieldOrdinals(t, oldQOV, 0),
 	}
-	vecPred := &ComparisonPredicate{Operand: values.NewFlatFieldValue("EMB", nil), Comparison: vecCmp}
+	vecPred := &ComparisonPredicate{Operand: predicateTestField(t, "EMB", nil), Comparison: vecCmp}
 	out := TranslateLeafPredicates(vecPred, m).(*ComparisonPredicate)
 	if out == vecPred || !refersNew(out.Comparison.QueryVector) {
 		t.Fatalf("QueryVector not rebased: %v", out.Comparison.QueryVector)
@@ -122,9 +113,9 @@ func TestTranslateLeafPredicates_ValueBearingFields(t *testing.T) {
 	// PredicateWithValueAndRanges: anchor value + a range comparison operand
 	// both reference the source alias.
 	pvr := NewPredicateWithValueAndRanges(
-		values.NewFieldValue(oldQOV, "ID", values.NotNullLong),
+		mustResolveFieldOrdinals(t, oldQOV, 1),
 		[]*RangeConstraints{NewRangeConstraints(
-			[]Comparison{{Type: ComparisonEquals, Operand: values.NewFieldValue(oldQOV, "V", values.NotNullLong)}},
+			[]Comparison{{Type: ComparisonEquals, Operand: mustResolveFieldOrdinals(t, oldQOV, 2)}},
 			nil,
 		)},
 	)
@@ -159,12 +150,10 @@ func TestTranslateLeafPredicates_ValueBearingFields(t *testing.T) {
 		When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
 		return &values.ConstantValue{Value: int64(7), Typ: values.NotNullLong}
 	}).Build()
-	deferredPVR := NewPredicateWithValueAndRanges(
-		values.NewFlatFieldValue("ID", values.NotNullLong),
-		[]*RangeConstraints{NewRangeConstraints(
-			nil,
-			[]Comparison{{Type: ComparisonEquals, Operand: values.NewQuantifiedObjectValue(oldAlias)}},
-		)},
+	deferredPVR := NewPredicateWithValueAndRanges(predicateTestField(t, "ID", values.NotNullLong), []*RangeConstraints{NewRangeConstraints(
+		nil,
+		[]Comparison{{Type: ComparisonEquals, Operand: mustQOV(t, oldAlias)}},
+	)},
 	)
 	outConst := TranslateLeafPredicates(deferredPVR, constMap).(*PredicateWithValueAndRanges)
 	reclassified := outConst.GetRanges()[0]
@@ -194,40 +183,50 @@ func TestTranslationMapBuilder_Snapshot(t *testing.T) {
 // translates an ExistentialValuePredicate's embedded QOV (Java
 // ExistentialValuePredicate.translateLeafPredicate:94-100 — a default-arm
 // silent skip would silently fail to translate it), and that a map whose
-// replacement is NOT a QOV panics loudly through the Must constructor rather
-// than yielding a mis-shaped predicate.
+// replacement is NOT a QOV fails atomically rather than yielding a mis-shaped
+// predicate or panicking after partial reconstruction.
 func TestTranslateLeafPredicates_Existential(t *testing.T) {
 	t.Parallel()
 	oldAlias := values.NamedCorrelationIdentifier("ex")
 	newAlias := values.NamedCorrelationIdentifier("ex2")
-	pred := NewExistentialAlias(oldAlias)
+	pred := mustExistentialAlias(t, oldAlias)
 
 	renamed := TranslateLeafPredicates(pred, values.NewTranslationMapBuilder().
 		When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
-		return values.NewQuantifiedObjectValue(newAlias)
+		return mustQOV(t, newAlias)
 	}).Build())
 	ev, ok := renamed.(*ExistentialValuePredicate)
 	if !ok || renamed == QueryPredicate(pred) {
 		t.Fatalf("existential predicate must be rebuilt, got %T", renamed)
 	}
-	if qov, ok := ev.Value.(*values.QuantifiedObjectValue); !ok || qov.Correlation != newAlias {
+	if qov, ok := values.AsQuantifiedObjectValue(ev.Value); !ok || qov.Correlation() != newAlias {
 		t.Fatalf("existential QOV = %v, want translated to %v", ev.Value, newAlias)
 	}
 	if ev.Comparison.Type != ComparisonIsNotNull {
 		t.Fatal("comparison must be preserved through the rebuild")
 	}
 
-	// Non-QOV replacement: loud panic (the Must constructor's invariant),
-	// never a silently mis-shaped predicate.
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Error("non-QOV replacement for an existential QOV must panic")
-			}
-		}()
-		TranslateLeafPredicates(pred, values.NewTranslationMapBuilder().
-			When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
-			return values.NewFlatFieldValue("X", values.NotNullLong)
-		}).Build())
-	}()
+	// Non-QOV replacement: the checked authority returns no predicate and a
+	// stable structural code. The legacy Value-only wrapper fails closed with
+	// nil and must not resurrect the old panic/partial-graph behavior.
+	invalidMap := values.NewTranslationMapBuilder().
+		When(oldAlias).Then(func(_ values.CorrelationIdentifier, _ values.Value) values.Value {
+		return predicateTestField(t, "X", values.NotNullLong)
+	}).Build()
+	invalid, err := TranslateLeafPredicatesChecked(pred, invalidMap)
+	if invalid != nil || err == nil {
+		t.Fatalf("invalid checked translation = (%T,%v), want nil,error", invalid, err)
+	}
+	coded, ok := err.(interface {
+		Code() values.ResolutionErrorCode
+	})
+	if !ok || coded.Code() != values.RewriteInvalidCallbackOutput {
+		t.Fatalf("invalid checked translation error = %v, want RewriteInvalidCallbackOutput", err)
+	}
+	if got := TranslateLeafPredicates(pred, invalidMap); got != nil {
+		t.Fatalf("legacy invalid translation = %T, want nil fail-closed", got)
+	}
+	if qov, ok := values.AsQuantifiedObjectValue(pred.Value); !ok || qov.Correlation() != oldAlias {
+		t.Fatal("failed translation mutated its input predicate")
+	}
 }

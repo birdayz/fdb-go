@@ -4,6 +4,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // FilterMergeRule consolidates a LogicalFilter whose inner Quantifier
@@ -51,16 +52,50 @@ func (r *FilterMergeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Concatenate predicate lists. Outer first preserves the SQL
-	// textual ordering (WHERE p_outer applied to rows from p_inner).
-	merged := make([]predicates.QueryPredicate, 0, len(outer.GetPredicates())+len(inner.GetPredicates()))
-	merged = append(merged, outer.GetPredicates()...)
-	merged = append(merged, inner.GetPredicates()...)
-
 	// New filter ranges over what the INNER filter ranged over —
 	// strip the redundant inner filter from the chain.
 	newInnerQ := inner.GetInner()
-	rewritten := expressions.NewLogicalFilterExpression(merged, newInnerQ)
+	outerInput, err := outer.GetInner().RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	replacementInput, err := newInnerQ.RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+
+	// The outer predicates are declared against the intermediate filter edge.
+	// Removing that edge without moving its exact declaration strands those
+	// predicates on an alias no runtime operator binds. Translate only the
+	// complete declared edge (correlation plus exact row type) onto the edge
+	// that replaces it. Foreign correlations and same-correlation retained
+	// windows of another exact type stay untouched and therefore remain loud.
+	//
+	// Concatenate outer first to preserve SQL textual ordering (the outer
+	// filter reads first in the source query, applies first to the row stream).
+	merged := make([]predicates.QueryPredicate, 0, len(outer.GetPredicates())+len(inner.GetPredicates()))
+	for _, predicate := range outer.GetPredicates() {
+		translated, translateErr := predicates.TransformEmbeddedValuesChecked(
+			predicate,
+			func(value values.Value) (values.Value, error) {
+				return values.TranslateDeclaredEdgeRoot(value, outerInput, replacementInput)
+			},
+		)
+		if translateErr != nil {
+			call.Fail(translateErr)
+			return
+		}
+		merged = append(merged, translated)
+	}
+	merged = append(merged, inner.GetPredicates()...)
+
+	rewritten, err := expressions.NewLogicalFilterExpression(merged, newInnerQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.Yield(rewritten)
 }
 

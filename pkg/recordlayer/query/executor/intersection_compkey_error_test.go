@@ -19,18 +19,24 @@ import (
 // evalFailKeyVals returns comparison-key values whose evaluation fails
 // against a 1-slot scalar row: the resolved ordinal 5 misses (loud) in
 // FieldValue.Evaluate's ordinal read.
-func evalFailKeyVals() []values.Value {
-	return []values.Value{values.NewFieldValueWithResolvedOrdinal("X", 5, values.NullableLong)}
+func evalFailKeyVals(t testing.TB) []values.Value {
+	t.Helper()
+	fields := make([]values.Field, 6)
+	for i := range fields {
+		fields[i] = values.Field{Name: values.OrdinalFieldName(i), FieldType: values.NullableLong}
+	}
+	root := mustTestQOV(t, values.UniqueCorrelationIdentifier(), exactTestRowType(fields...))
+	return []values.Value{mustTestFieldOrdinal(t, root, 5)}
 }
 
 func TestIntersectionCompKeyFunc_EvalFailure_ReturnsError(t *testing.T) {
 	t.Parallel()
 	for name, fn := range map[string]func(QueryResult) (any, error){
 		"intersection": func(qr QueryResult) (any, error) {
-			return intersectionCompKeyFunc(evalFailKeyVals())(qr)
+			return intersectionCompKeyFunc(evalFailKeyVals(t))(qr)
 		},
 		"multiIntersection": func(qr QueryResult) (any, error) {
-			return multiIntersectionCompKeyFunc(evalFailKeyVals())(qr)
+			return multiIntersectionCompKeyFunc(evalFailKeyVals(t))(qr)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

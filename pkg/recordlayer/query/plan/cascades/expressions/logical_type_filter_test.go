@@ -9,7 +9,7 @@ func TestLogicalTypeFilter_Construction(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	tf := NewLogicalTypeFilterExpression([]string{"Order", "Customer"}, q)
+	tf := mustExpression(NewLogicalTypeFilterExpression([]string{"Order", "Customer"}, q))
 	// Result is canonical (sorted, deduped).
 	want := []string{"Customer", "Order"}
 	if got := tf.GetRecordTypes(); !reflect.DeepEqual(got, want) {
@@ -27,7 +27,7 @@ func TestLogicalTypeFilter_Construction_Dedupes(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	tf := NewLogicalTypeFilterExpression([]string{"Order", "Order", "Customer", "Customer"}, q)
+	tf := mustExpression(NewLogicalTypeFilterExpression([]string{"Order", "Order", "Customer", "Customer"}, q))
 	want := []string{"Customer", "Order"}
 	if got := tf.GetRecordTypes(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("types=%v, want %v", got, want)
@@ -38,10 +38,10 @@ func TestLogicalTypeFilter_EqualsWithoutChildren(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	tf1 := NewLogicalTypeFilterExpression([]string{"Order", "Customer"}, q)
-	tf1Twin := NewLogicalTypeFilterExpression([]string{"Customer", "Order"}, q) // different order
-	tf2 := NewLogicalTypeFilterExpression([]string{"Order"}, q)                 // subset
-	tf3 := NewLogicalTypeFilterExpression([]string{"Order", "Sale"}, q)         // different name
+	tf1 := mustExpression(NewLogicalTypeFilterExpression([]string{"Order", "Customer"}, q))
+	tf1Twin := mustExpression(NewLogicalTypeFilterExpression([]string{"Customer", "Order"}, q)) // different order
+	tf2 := mustExpression(NewLogicalTypeFilterExpression([]string{"Order"}, q))                 // subset
+	tf3 := mustExpression(NewLogicalTypeFilterExpression([]string{"Order", "Sale"}, q))         // different name
 	if !tf1.EqualsWithoutChildren(tf1Twin, EmptyAliasMap()) {
 		t.Fatal("type filters with permuted but identical sets reported unequal")
 	}
@@ -60,9 +60,9 @@ func TestLogicalTypeFilter_HashCodeStable(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	tf1 := NewLogicalTypeFilterExpression([]string{"Order", "Customer"}, q)
-	tf1Twin := NewLogicalTypeFilterExpression([]string{"Customer", "Order"}, q)
-	tf2 := NewLogicalTypeFilterExpression([]string{"Order"}, q)
+	tf1 := mustExpression(NewLogicalTypeFilterExpression([]string{"Order", "Customer"}, q))
+	tf1Twin := mustExpression(NewLogicalTypeFilterExpression([]string{"Customer", "Order"}, q))
+	tf2 := mustExpression(NewLogicalTypeFilterExpression([]string{"Order"}, q))
 	if tf1.HashCodeWithoutChildren() != tf1Twin.HashCodeWithoutChildren() {
 		t.Fatal("permuted-but-equal type filters produced different hashes")
 	}
@@ -75,7 +75,7 @@ func TestLogicalTypeFilter_Empty(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	tf := NewLogicalTypeFilterExpression(nil, q)
+	tf := mustExpression(NewLogicalTypeFilterExpression(nil, q))
 	if got := tf.GetRecordTypes(); len(got) != 0 {
 		t.Fatalf("empty filter returned %v, want []", got)
 	}

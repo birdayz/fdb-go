@@ -15,8 +15,8 @@ func FuzzComputeMaxMatchMap_NoPanic(f *testing.F) {
 		nc := int(nCandFields % 5)
 		na := int(aliasCount % 3)
 
-		query := makeRandomValue(nq, "q")
-		cand := makeRandomValue(nc, "c")
+		query := makeRandomValue(t, nq, "q")
+		cand := makeRandomValue(t, nc, "c")
 		aliases := make(map[values.CorrelationIdentifier]struct{})
 		for i := 0; i < na; i++ {
 			aliases[values.NamedCorrelationIdentifier("a"+string(rune('0'+i)))] = struct{}{}
@@ -29,15 +29,32 @@ func FuzzComputeMaxMatchMap_NoPanic(f *testing.F) {
 	})
 }
 
-func makeRandomValue(nFields int, prefix string) values.Value {
+func makeRandomValue(t testing.TB, nFields int, prefix string) values.Value {
+	t.Helper()
 	if nFields == 0 {
-		return values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(prefix))
+		qov, err := values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier(prefix),
+			values.NotNullLong,
+		)
+		return mustConstruct(t, qov, err)
 	}
+	rowFields := make([]values.Field, nFields)
+	for i := range rowFields {
+		rowFields[i] = values.Field{
+			Name:      prefix + "_f" + string(rune('a'+i)),
+			FieldType: values.NullableLong,
+			Ordinal:   i,
+		}
+	}
+	rowType := values.NewRecordType(prefix+"Row", false, rowFields)
+	root, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(prefix), rowType)
+	root = mustConstruct(t, root, err)
 	fields := make([]values.RecordConstructorField, nFields)
 	for i := 0; i < nFields; i++ {
+		field, resolveErr := values.ResolveFieldOrdinals(root, []int{i})
 		fields[i] = values.RecordConstructorField{
 			Name:  prefix + "_f" + string(rune('a'+i)),
-			Value: &values.FieldValue{Field: prefix + "_f" + string(rune('a'+i)), Typ: values.UnknownType},
+			Value: mustConstruct(t, field, resolveErr),
 		}
 	}
 	return &values.RecordConstructorValue{Fields: fields}
@@ -49,10 +66,8 @@ func TestExpandRecordValue_WithRecordType(t *testing.T) {
 		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
 		{Name: "B", FieldType: values.NullableString, Ordinal: 1},
 	})
-	qov := &values.QuantifiedObjectValue{
-		Correlation: values.NamedCorrelationIdentifier("q"),
-		Typ:         rt,
-	}
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q"), rt)
+	qov = mustConstruct(t, qov, err)
 
 	expanded := expandRecordValue(qov)
 	if expanded == nil {
@@ -72,10 +87,11 @@ func TestExpandRecordValue_WithRecordType(t *testing.T) {
 
 func TestExpandRecordValue_NonRecordType(t *testing.T) {
 	t.Parallel()
-	qov := &values.QuantifiedObjectValue{
-		Correlation: values.NamedCorrelationIdentifier("q"),
-		Typ:         values.NullableLong,
-	}
+	qov, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("q"),
+		values.NullableLong,
+	)
+	qov = mustConstruct(t, qov, err)
 	expanded := expandRecordValue(qov)
 	if expanded != nil {
 		t.Fatal("should not expand QOV with non-Record type")
@@ -84,9 +100,13 @@ func TestExpandRecordValue_NonRecordType(t *testing.T) {
 
 func TestExpandRecordValue_AlreadyRCV(t *testing.T) {
 	t.Parallel()
-	rcv := &values.RecordConstructorValue{Fields: []values.RecordConstructorField{
-		{Name: "x", Value: &values.FieldValue{Field: "x"}},
-	}}
+	rcv := &values.RecordConstructorValue{Fields: []values.RecordConstructorField{{
+		Name: "x",
+		Value: &values.ConstantValue{
+			Value: int64(1),
+			Typ:   values.NotNullLong,
+		},
+	}}}
 	results := expandValueForMatching(rcv)
 	if len(results) != 0 {
 		t.Fatal("should not expand an already-RCV value")
@@ -104,13 +124,15 @@ func TestMaxMatchMap_ExpansionHelpsMatching(t *testing.T) {
 		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
 		{Name: "B", FieldType: values.NullableString, Ordinal: 1},
 	})
-	query := &values.QuantifiedObjectValue{
-		Correlation: values.NamedCorrelationIdentifier("q"),
-		Typ:         rt,
-	}
+	query, queryErr := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q"), rt)
+	query = mustConstruct(t, query, queryErr)
+	fieldA, fieldAErr := values.ResolveFieldOrdinals(query, []int{0})
+	fieldA = mustConstruct(t, fieldA, fieldAErr)
+	fieldB, fieldBErr := values.ResolveFieldOrdinals(query, []int{1})
+	fieldB = mustConstruct(t, fieldB, fieldBErr)
 	candidate := &values.RecordConstructorValue{Fields: []values.RecordConstructorField{
-		{Name: "A", Value: &values.FieldValue{Field: "A", Typ: values.NullableLong}},
-		{Name: "B", Value: &values.FieldValue{Field: "B", Typ: values.NullableString}},
+		{Name: "A", Value: fieldA},
+		{Name: "B", Value: fieldB},
 	}}
 
 	mmm := ComputeMaxMatchMap(query, candidate, nil)
@@ -119,12 +141,12 @@ func TestMaxMatchMap_ExpansionHelpsMatching(t *testing.T) {
 	}
 	// Verify individual field matches exist.
 	for _, entry := range mmm.mapping {
-		fv, ok := entry.queryValue.(*values.FieldValue)
+		fv, ok := values.AsFieldValue(entry.queryValue)
 		if !ok {
 			continue
 		}
-		if fv.Field != "A" && fv.Field != "B" {
-			t.Fatalf("unexpected matched field: %s", fv.Field)
+		if fv.DisplayName() != "A" && fv.DisplayName() != "B" {
+			t.Fatalf("unexpected matched field: %s", fv.DisplayName())
 		}
 	}
 }

@@ -3,6 +3,8 @@
 # Verifies that ORDER BY on indexed columns produces correct results
 # in both ASC and DESC directions. The Cascades planner should pick
 # ordered index scans when available, avoiding in-memory sort.
+# RFC-232 Explain output renders the aggregate's physical output through
+# `_current` and retains the source-qualified root on its enforced sort key.
 name: index_scan_direction
 schema_template: |
   CREATE TABLE events (
@@ -74,9 +76,13 @@ tests:
       - [5, 'login']
       - [2, 'logout']
 
-  # Covering index scan with ORDER BY
+  # Covering index scan with ORDER BY. The BETWEEN upper bound remains a
+  # residual below the fetch, but ID (PK suffix) and TS are both present in the
+  # index entry. MergeProjectionAndFetchRule and ImplementProjectionRule each
+  # independently elide Fetch(PredicatesFilter(Covering)); disabling BOTH
+  # restores that fetch and fails this positive RFC-220 covering pin.
   - query: SELECT id, ts FROM events WHERE ts BETWEEN 100 AND 200 ORDER BY ts
-    plan_contains: "PredicatesFilter(IndexScan(IDX_TS, [<>])"
+    plan_contains: "Project([_current.ID#0, _current.TS#1], PredicatesFilter(IndexScan(IDX_TS, [<>] COVERING), [1 preds]))"
     plan_not_contains: "InMemorySort"
     rows:
       - [1, 100]
@@ -92,7 +98,7 @@ tests:
 
   # Multi-value aggregate with indexed filter
   - query: SELECT category, COUNT(*), MIN(ts), MAX(ts) FROM events GROUP BY category ORDER BY category
-    plan_contains: "StreamingAgg(keys=[CATEGORY#2], InMemorySort([CATEGORY#2 ASC], Scan(EVENTS)))"
+    plan_contains: "Project([_current.CATEGORY#0, _current.COUNT(*)#1, _current.MIN(TS)#2, _current.MAX(TS)#3], StreamingAgg(keys=[_current.CATEGORY#2], InMemorySort([_current.CATEGORY#2 ASC], Scan(EVENTS))))"
     rows:
       - ['error', 2, 50, 300]
       - ['login', 3, 100, 250]

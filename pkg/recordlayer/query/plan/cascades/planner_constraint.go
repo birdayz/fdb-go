@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 // PlannerConstraint is a typed key for constraints that flow between
@@ -16,6 +17,13 @@ type PlannerConstraint[T any] struct {
 
 // RequestedOrderingConstraintKey is the constraint key for requested orderings.
 var RequestedOrderingConstraintKey = &PlannerConstraint[[]*properties.RequestedOrdering]{name: "requestedOrdering"}
+
+// OrdinalLayoutConstraintKey accumulates the exact physical input layouts
+// required by finalized parents of a group. OptimizeInputs pushes one
+// positional requirement per child edge; OptimizeGroup retains the cheapest
+// final satisfying every accumulated requirement instead of allowing the
+// group's single global winner to erase a costlier compatible alternative.
+var OrdinalLayoutConstraintKey = &PlannerConstraint[[]plans.OrdinalLayoutRequirement]{name: "ordinalLayout"}
 
 // ReferencedFieldsConstraintKey is the constraint key for referenced
 // fields. Pushed top-down by PushReferencedFieldsThrough* rules to
@@ -101,9 +109,10 @@ func init() {
 
 // combineForKey returns the per-key lattice combine (Java dispatches
 // through PlannerConstraint.combine): orderings use the
-// subsumption-aware union, referenced fields the set union. An unknown
-// key is conservatively always-changed (over-ticking errs toward
-// re-exploration, never toward missing a push).
+// subsumption-aware union, referenced fields the set union, and ordinal
+// layouts the semantic requirement union. An unknown key is conservatively
+// always-changed (over-ticking errs toward re-exploration, never toward
+// missing a push).
 func combineForKey(key any) func(existing, pushed any) (any, bool) {
 	switch key {
 	case any(RequestedOrderingConstraintKey):
@@ -118,6 +127,52 @@ func combineForKey(key any) func(existing, pushed any) (any, bool) {
 			add, _ := pushed.(*ReferencedFields)
 			return CombineReferencedFields(cur, add)
 		}
+	case any(OrdinalLayoutConstraintKey):
+		return func(existing, pushed any) (any, bool) {
+			cur, _ := existing.([]plans.OrdinalLayoutRequirement)
+			add, _ := pushed.([]plans.OrdinalLayoutRequirement)
+			return combineOrdinalLayoutRequirements(cur, add)
+		}
 	}
 	return func(_, pushed any) (any, bool) { return pushed, true }
+}
+
+// combineOrdinalLayoutRequirements is an order-preserving set union. The
+// requirement objects are sealed immutable views; only the containing slice
+// needs copying when the lattice grows. Nil requirements are not valid plan
+// properties and are ignored defensively at this generic constraint boundary.
+func combineOrdinalLayoutRequirements(
+	current, added []plans.OrdinalLayoutRequirement,
+) ([]plans.OrdinalLayoutRequirement, bool) {
+	fresh := make([]plans.OrdinalLayoutRequirement, 0, len(added))
+	for _, candidate := range added {
+		if candidate == nil {
+			continue
+		}
+		duplicate := false
+		for _, existing := range current {
+			if plans.OrdinalLayoutRequirementsEqual(existing, candidate) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			for _, existing := range fresh {
+				if plans.OrdinalLayoutRequirementsEqual(existing, candidate) {
+					duplicate = true
+					break
+				}
+			}
+		}
+		if !duplicate {
+			fresh = append(fresh, candidate)
+		}
+	}
+	if len(fresh) == 0 {
+		return current, false
+	}
+	combined := make([]plans.OrdinalLayoutRequirement, 0, len(current)+len(fresh))
+	combined = append(combined, current...)
+	combined = append(combined, fresh...)
+	return combined, true
 }

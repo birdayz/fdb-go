@@ -27,24 +27,34 @@ import (
 // already PK-distinct, while required Unique must materialize a physical
 // PK-distinct operator. It therefore participates in memo identity.
 type LogicalUniqueExpression struct {
-	inner    Quantifier
-	required bool
+	inner       Quantifier
+	required    bool
+	resultValue values.QuantifiedObjectValue
 }
 
 // NewLogicalUniqueExpression builds an ordinary, absorbable Unique over inner.
-func NewLogicalUniqueExpression(inner Quantifier) *LogicalUniqueExpression {
-	return &LogicalUniqueExpression{inner: inner}
+func NewLogicalUniqueExpression(inner Quantifier) (*LogicalUniqueExpression, error) {
+	resultValue, err := requireFlowedResult("LogicalUniqueExpression", inner)
+	if err != nil {
+		return nil, err
+	}
+	return &LogicalUniqueExpression{inner: inner, resultValue: resultValue}, nil
 }
 
 // NewRequiredLogicalUniqueExpression builds a Unique whose physical
 // PK-distinct operator must be retained even when the input is already
 // distinct. This mode is dormant until a cardinality-safe E-to-ForEach
 // mapping explicitly requests it.
-func NewRequiredLogicalUniqueExpression(inner Quantifier) *LogicalUniqueExpression {
-	return &LogicalUniqueExpression{
-		inner:    inner,
-		required: true,
+func NewRequiredLogicalUniqueExpression(inner Quantifier) (*LogicalUniqueExpression, error) {
+	resultValue, err := requireFlowedResult("LogicalUniqueExpression", inner)
+	if err != nil {
+		return nil, err
 	}
+	return &LogicalUniqueExpression{
+		inner:       inner,
+		required:    true,
+		resultValue: resultValue,
+	}, nil
 }
 
 // GetInner returns the inner Quantifier.
@@ -57,7 +67,7 @@ func (e *LogicalUniqueExpression) IsRequired() bool { return e.required }
 // GetResultValue returns the inner's flowed object value — Unique
 // doesn't reshape rows, only filters.
 func (e *LogicalUniqueExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return e.resultValue
 }
 
 // GetQuantifiers returns the single inner Quantifier.
@@ -94,10 +104,14 @@ func (e *LogicalUniqueExpression) HashCodeWithoutChildren() uint64 {
 	return 251*31 + 1
 }
 
-func (e *LogicalUniqueExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *LogicalUniqueExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("LogicalUniqueExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	if e.required {
+		return NewRequiredLogicalUniqueExpression(quantifiers[0])
+	}
+	return NewLogicalUniqueExpression(quantifiers[0])
 }
 
 var _ RelationalExpression = (*LogicalUniqueExpression)(nil)

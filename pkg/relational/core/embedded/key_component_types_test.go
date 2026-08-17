@@ -363,10 +363,17 @@ func TestMetadataIndexDefRejectsUnsafePrimaryKeyCoverage(t *testing.T) {
 	if pk := candidate.GetPKColumnNames(); len(pk) != 0 {
 		t.Fatalf("unsafe candidate retained PK coverage names %v", pk)
 	}
-	if _, pushable := candidate.PushValueThroughFetch(
-		&values.FieldValue{Field: "ORDER_ID", Typ: values.NotNullLong},
-		values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier(),
-	); pushable {
+	sourceAlias := values.UniqueCorrelationIdentifier()
+	targetAlias := values.UniqueCorrelationIdentifier()
+	source, err := values.NewQuantifiedObjectValue(sourceAlias, candidate.GetBaseType())
+	if err != nil {
+		t.Fatalf("source QOV: %v", err)
+	}
+	orderID, err := values.ResolveFieldOrdinals(source, []int{0})
+	if err != nil {
+		t.Fatalf("ORDER_ID field: %v", err)
+	}
+	if _, pushable := candidate.PushValueThroughFetch(orderID, sourceAlias, targetAlias); pushable {
 		t.Fatal("SELECT ORDER_ID was incorrectly coverable from (ID,literal) PK")
 	}
 }
@@ -388,13 +395,17 @@ func TestUnsafePrimaryKeySuffixCannotOverwriteCoveredIndexColumn(t *testing.T) {
 		t.Fatalf("candidate count = %d, want 1", len(candidates))
 	}
 	candidate := candidates[0].(*cascades.ValueIndexScanMatchCandidate)
-	orderDomain := values.OrdinalDomainOfType(candidate.GetBaseType())
-	if _, pushable := candidate.PushValueThroughFetch(
-		values.NewFieldValueWithResolvedOrdinalInDomain(
-			"ORDER_ID", 0, values.NotNullLong, orderDomain,
-		),
-		values.UniqueCorrelationIdentifier(), values.UniqueCorrelationIdentifier(),
-	); !pushable {
+	sourceAlias := values.UniqueCorrelationIdentifier()
+	targetAlias := values.UniqueCorrelationIdentifier()
+	source, err := values.NewQuantifiedObjectValue(sourceAlias, candidate.GetBaseType())
+	if err != nil {
+		t.Fatalf("source QOV: %v", err)
+	}
+	orderID, err := values.ResolveFieldOrdinals(source, []int{0})
+	if err != nil {
+		t.Fatalf("ORDER_ID field: %v", err)
+	}
+	if _, pushable := candidate.PushValueThroughFetch(orderID, sourceAlias, targetAlias); !pushable {
 		t.Fatal("index root ORDER_ID should remain directly coverable")
 	}
 	fetch, ok := candidate.ToScanPlan(nil, false).(*plans.RecordQueryFetchFromPartialRecordPlan)

@@ -11,7 +11,11 @@ import (
 // fixtureScan returns a real RelationalExpression we can stuff into a
 // Reference for rule-call tests.
 func fixtureScan(name string) expressions.RelationalExpression {
-	return expressions.NewFullUnorderedScanExpression([]string{name}, values.UnknownType)
+	scan, err := expressions.NewFullUnorderedScanExpression([]string{name}, values.NotNullLong)
+	if err != nil {
+		panic("fixtureScan invariant: " + err.Error())
+	}
+	return scan
 }
 
 func TestExpressionRuleCall_NilContextNormalised(t *testing.T) {
@@ -26,37 +30,33 @@ func TestExpressionRuleCall_NilContextNormalised(t *testing.T) {
 	}
 }
 
-func TestExpressionRuleCall_YieldInsertsIntoReference(t *testing.T) {
+func TestExpressionRuleCall_YieldStagesWithoutMutatingReference(t *testing.T) {
 	t.Parallel()
 	ref := expressions.InitialOf(fixtureScan("T"))
 	rc := NewExpressionRuleCall(ref, matching.NewBindings(), EmptyPlanContext())
 	newScan := fixtureScan("U")
-	if inserted := rc.Yield(newScan); !inserted {
-		t.Fatal("Yield reported duplicate on a structurally-distinct expression")
-	}
-	if got := ref.Members(); len(got) != 2 {
-		t.Fatalf("Reference has %d members, want 2", len(got))
+	rc.Yield(newScan)
+	if got := ref.Members(); len(got) != 1 {
+		t.Fatalf("Reference changed before the driver committed the rule: has %d members, want 1", len(got))
 	}
 	if rc.Yielded()[0] != newScan {
 		t.Fatal("Yielded() didn't record the yielded expression")
 	}
 }
 
-func TestExpressionRuleCall_YieldDedupes(t *testing.T) {
+func TestExpressionRuleCall_YieldDefersDeduplicationToCommit(t *testing.T) {
 	t.Parallel()
 	ref := expressions.InitialOf(fixtureScan("T"))
 	rc := NewExpressionRuleCall(ref, matching.NewBindings(), EmptyPlanContext())
 	dup := fixtureScan("T") // same canonical form as the existing member
-	if inserted := rc.Yield(dup); inserted {
-		t.Fatal("Yield reported success on a structurally-equivalent duplicate — should dedup")
-	}
+	rc.Yield(dup)
 	if got := ref.Members(); len(got) != 1 {
-		t.Fatalf("Reference grew despite dedup — has %d members, want 1", len(got))
+		t.Fatalf("Reference changed before commit — has %d members, want 1", len(got))
 	}
-	// Yielded() still records the call (rule's intent), even though
-	// Reference dedup absorbed the result.
+	// Yielded records intent; the driver decides whether commit-time
+	// deduplication absorbs it after the rule has completed successfully.
 	if got := rc.Yielded(); len(got) != 1 {
-		t.Fatalf("Yielded() size=%d after dedup, want 1 (records rule's intent)", len(got))
+		t.Fatalf("Yielded() size=%d, want 1 (records rule intent)", len(got))
 	}
 }
 

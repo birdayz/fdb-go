@@ -101,7 +101,6 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 			SortOrder: properties.ProvidedSortOrderAscending,
 		}
 	}
-
 	// Each ordering proof is tied to the exact executable spine selected above.
 	// A final singleton reference prevents a later generic child relink from
 	// swapping in an unordered sibling after the merge has dropped its sort.
@@ -112,14 +111,16 @@ func (r *ImplementIntersectionRule) OnMatch(call *ExpressionRuleCall) {
 		))
 	}
 
-	intersection := plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(
+	intersection, err := plans.NewRecordQueryIntersectionPlanFromQuantifiersWithOrdering(
 		childQs,
 		comparisonParts,
 		false,
 	)
-	if intersection != nil {
-		call.Yield(intersection)
+	if err != nil {
+		call.Fail(err)
+		return
 	}
+	call.Yield(intersection)
 }
 
 var _ ExpressionRule = (*ImplementIntersectionRule)(nil)

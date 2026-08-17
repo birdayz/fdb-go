@@ -47,12 +47,21 @@ import (
 
 // qualifiedOperand builds the operand shape a resolver-bound `SUM(alias.col)`
 // carries: a FieldValue whose child is the quantifier it reads from.
-func qualifiedOperand(alias, leaf string) *values.FieldValue {
-	return &values.FieldValue{
-		Field: leaf,
-		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias)),
-		Typ:   values.UnknownType,
+func qualifiedOperand(alias, leaf string) values.Value {
+	row := &values.RecordType{Fields: []values.Field{{Name: leaf, Ordinal: 0, FieldType: values.NotNullLong}}}
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(alias), row)
+	if err != nil {
+		panic(err)
 	}
+	request, err := values.FieldByName(leaf)
+	if err != nil {
+		panic(err)
+	}
+	field, err := values.ResolveFieldAccess(qov, []values.FieldRequest{request})
+	if err != nil {
+		panic(err)
+	}
+	return field
 }
 
 // The collision dimension: same leaf, two quantifiers, no parse text.
@@ -114,8 +123,9 @@ func TestAggregateResultColumnName_UnqualifiedAndStarSpellingsUnchanged(t *testi
 	t.Parallel()
 
 	bare := expressions.AggregateSpec{
-		Function: expressions.AggCount,
-		Operand:  &values.FieldValue{Field: "AMOUNT", Typ: values.UnknownType},
+		Function:    expressions.AggCount,
+		Operand:     qualifiedOperand("T", "AMOUNT"),
+		OperandName: "AMOUNT",
 	}
 	if got, want := expressions.AggregateResultColumnName(bare), "COUNT(AMOUNT)"; got != want {
 		t.Errorf("childless operand rendered %q, want %q — the two rendering copies "+

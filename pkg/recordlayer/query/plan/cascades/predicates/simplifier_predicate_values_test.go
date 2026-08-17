@@ -52,7 +52,7 @@ func TestSimplifyPredicateValues_ComparisonRHSFold(t *testing.T) {
 		Right: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong},
 	}
 	pred := &ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "NAME", Typ: values.NullableLong},
+		Operand: predicateTestField(t, "NAME", values.NullableLong),
 		Comparison: Comparison{
 			Type:    ComparisonEquals,
 			Operand: rhs,
@@ -71,7 +71,7 @@ func TestSimplifyPredicateValues_ComparisonRHSFold(t *testing.T) {
 		t.Fatalf("expected RHS=3, got %v", cv.Value)
 	}
 	// LHS untouched: still a FieldValue.
-	if _, isField := got.Operand.(*values.FieldValue); !isField {
+	if _, isField := values.AsFieldValue(got.Operand); !isField {
 		t.Fatalf("expected LHS to remain a FieldValue, got %T", got.Operand)
 	}
 }
@@ -82,7 +82,7 @@ func TestSimplifyPredicateValues_AndRecurses(t *testing.T) {
 	t.Parallel()
 	pred := &AndPredicate{SubPredicates: []QueryPredicate{
 		&ComparisonPredicate{
-			Operand: &values.FieldValue{Field: "NAME"},
+			Operand: predicateTestField(t, "NAME", values.NullableLong),
 			Comparison: Comparison{
 				Type: ComparisonEquals,
 				Operand: &values.ArithmeticValue{
@@ -93,7 +93,7 @@ func TestSimplifyPredicateValues_AndRecurses(t *testing.T) {
 			},
 		},
 		&ComparisonPredicate{
-			Operand: &values.FieldValue{Field: "ID"},
+			Operand: predicateTestField(t, "ID", values.NullableLong),
 			Comparison: Comparison{
 				Type: ComparisonEquals,
 				Operand: &values.ArithmeticValue{
@@ -129,7 +129,7 @@ func TestSimplifyPredicateValues_AndRecurses(t *testing.T) {
 func TestSimplifyPredicateValues_NotRecurses(t *testing.T) {
 	t.Parallel()
 	inner := &ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "ID"},
+		Operand: predicateTestField(t, "ID", values.NullableLong),
 		Comparison: Comparison{
 			Type: ComparisonEquals,
 			Operand: &values.ArithmeticValue{
@@ -158,7 +158,7 @@ func TestSimplifyPredicateValues_NotRecurses(t *testing.T) {
 func TestSimplifyPredicateValues_PointerStableWhenNoFold(t *testing.T) {
 	t.Parallel()
 	pred := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "ID"},
+		Operand:    predicateTestField(t, "ID", values.NullableLong),
 		Comparison: NewLiteralComparison(ComparisonEquals, int64(5)),
 	}
 	if SimplifyPredicateValues(pred) != pred {
@@ -222,7 +222,7 @@ func TestSimplifyPredicateValues_OrRecurses(t *testing.T) {
 		Operand:    op,
 		Comparison: NewLiteralComparison(ComparisonEquals, int64(5)),
 	}
-	right := &ValuePredicate{Value: &values.FieldValue{Field: "x", Typ: values.TypeBool}}
+	right := &ValuePredicate{Value: predicateTestField(t, "x", values.TypeBool)}
 
 	or := &OrPredicate{SubPredicates: []QueryPredicate{left, right}}
 	out := SimplifyPredicateValues(or)
@@ -256,11 +256,11 @@ func TestSimplifyPredicateValues_OrRecurses(t *testing.T) {
 func TestSimplifyPredicateValues_OrPointerStableWhenNoFold(t *testing.T) {
 	t.Parallel()
 	leaf1 := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "x", Typ: values.NullableLong},
+		Operand:    predicateTestField(t, "x", values.NullableLong),
 		Comparison: NewLiteralComparison(ComparisonEquals, int64(1)),
 	}
 	leaf2 := &ComparisonPredicate{
-		Operand:    &values.FieldValue{Field: "y", Typ: values.NullableLong},
+		Operand:    predicateTestField(t, "y", values.NullableLong),
 		Comparison: NewLiteralComparison(ComparisonGreaterThan, int64(0)),
 	}
 	or := &OrPredicate{SubPredicates: []QueryPredicate{leaf1, leaf2}}

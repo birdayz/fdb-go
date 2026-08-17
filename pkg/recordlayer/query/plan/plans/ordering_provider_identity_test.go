@@ -23,7 +23,6 @@ package plans
 // at all and the ordering claim is dropped.
 
 import (
-	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
@@ -83,7 +82,9 @@ func TestIndexPlanRichOrderingKeysCarryIdentity(t *testing.T) {
 	t.Parallel()
 
 	layout := providerLayout()
-	plan := NewRecordQueryIndexPlan("idx", nil, []string{"SCORES"}, layout, false).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx", nil, []string{"SCORES"}, layout, false)
+	}).
 		WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
 		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
@@ -109,7 +110,9 @@ func TestIndexPlanPlainOrderingKeysCarryIdentity(t *testing.T) {
 	t.Parallel()
 
 	layout := providerLayout()
-	plan := NewRecordQueryIndexPlan("idx", nil, []string{"SCORES"}, layout, false).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx", nil, []string{"SCORES"}, layout, false)
+	}).
 		WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
 		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
@@ -131,10 +134,12 @@ func TestPKScanOrderingKeysCarryIdentity(t *testing.T) {
 	t.Parallel()
 
 	layout := providerLayout()
-	plan := NewRecordQueryScanPlan([]string{"SCORES"}, layout, false).
+	plan := mustChecked(t, func() (*RecordQueryScanPlan, error) {
+		return NewRecordQueryScanPlan([]string{"SCORES"}, layout, false)
+	}).
 		WithPrimaryKey([]values.Value{
-			&values.FieldValue{Field: "GAME", Typ: values.NullableString},
-			&values.FieldValue{Field: "ID", Typ: values.NotNullLong},
+			testFieldIn(t, layout, "pk_identity", "GAME"),
+			testFieldIn(t, layout, "pk_identity", "ID"),
 		}).
 		WithKeyComponentTypes([]values.Type{values.NullableString, values.NotNullLong})
 
@@ -174,9 +179,11 @@ func TestEqualityBoundPrefixKeysAlsoCarryIdentity(t *testing.T) {
 	if !eq.Ok {
 		t.Fatalf("test setup: could not build an equality comparison range")
 	}
-	plan := NewRecordQueryIndexPlan(
-		"idx", []*predicates.ComparisonRange{eq.Range},
-		[]string{"SCORES"}, layout, false).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan(
+			"idx", []*predicates.ComparisonRange{eq.Range},
+			[]string{"SCORES"}, layout, false)
+	}).
 		WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableLong}).
 		WithIndexMetadata([]string{"GAME", "SCORE"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong})
@@ -195,7 +202,7 @@ func TestEqualityBoundPrefixKeysAlsoCarryIdentity(t *testing.T) {
 	}
 }
 
-// TestUnresolvableProviderKeyStaysLazyRatherThanGuessing pins the fail-closed
+// TestUnresolvableProviderKeyMakesOrderingAbstain pins the fail-closed
 // direction, and it is as load-bearing as the positive cases.
 //
 // A multi-record-type index flows a degraded row type with no single declared
@@ -204,23 +211,19 @@ func TestEqualityBoundPrefixKeysAlsoCarryIdentity(t *testing.T) {
 // rather than an ordinal against a layout it cannot name. Minting a domain here
 // to make the token non-zero would be the ordinal conflation the token exists
 // to prevent, wearing a proof's clothes.
-func TestUnresolvableProviderKeyStaysLazyRatherThanGuessing(t *testing.T) {
+func TestUnresolvableProviderKeyMakesOrderingAbstain(t *testing.T) {
 	t.Parallel()
 
-	plan := NewRecordQueryIndexPlan("idx", nil, []string{"A", "B"}, values.UnknownType, false).
+	plan := mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+		return NewRecordQueryIndexPlan("idx", nil, []string{"A", "B"}, exactTestRecordType(), false)
+	}).
 		WithKeyComponentTypes([]values.Type{values.NullableString}).
 		WithIndexMetadata([]string{"GAME"}, nil, false)
 
 	ordering := plan.HintRichOrdering()
 	keys := ordering.GetKeys()
-	if len(keys) != 1 {
-		t.Fatalf("index rich ordering keys = %d, want 1", len(keys))
-	}
-	if ident, ok := values.OrderingIdentityOf(keys[0]); ok {
-		t.Fatalf("provided key %q claims identity %+v against a layout with no "+
-			"declared column order. An ordinal nothing can verify reads as "+
-			"authoritative and is strictly worse than no ordinal at all.",
-			values.ExplainValue(keys[0]), ident)
+	if len(keys) != 0 {
+		t.Fatalf("index rich ordering keys = %#v, want an empty ordering because GAME cannot be resolved against the exact flowed layout", keys)
 	}
 }
 
@@ -244,12 +247,24 @@ func TestAggregateProvidersStateTheirOutputLayout(t *testing.T) {
 
 	t.Run("aggregate index scan", func(t *testing.T) {
 		t.Parallel()
+		groupLayout := values.NewRecordType("orders", false, []values.Field{
+			{Name: "REGION", FieldType: values.NullableString, Ordinal: 0},
+			{Name: "STATUS", FieldType: values.NullableString, Ordinal: 1},
+		})
+		resultLayout := values.NewRecordType("aggregate_result", false, []values.Field{
+			{Name: "REGION", FieldType: values.NullableString, Ordinal: 0},
+			{Name: "STATUS", FieldType: values.NullableString, Ordinal: 1},
+			{Name: "COUNT(*)", FieldType: values.NotNullLong, Ordinal: 2},
+		})
 
-		plan := NewRecordQueryAggregateIndexPlan(
-			NewRecordQueryIndexPlan("IDX_AGG", nil, []string{"ORDERS"}, values.UnknownType, false).
-				WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableString}),
-			"ORDERS", values.UnknownType, "COUNT",
-		).WithGroupColumns([]string{"REGION", "STATUS"}, "")
+		plan := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
+			return NewRecordQueryAggregateIndexPlan(mustChecked(t, func() (*RecordQueryIndexPlan, error) {
+				return NewRecordQueryIndexPlan("IDX_AGG", nil, []string{"ORDERS"}, groupLayout, false)
+			}).
+				WithKeyComponentTypes([]values.Type{values.NullableString, values.NullableString}), "ORDERS", resultLayout, "COUNT",
+			)
+		}).WithGroupColumns([]string{"REGION", "STATUS"}, "").
+			WithGroupColumnLayout(groupLayout)
 
 		ordering := plan.HintOrdering()
 		if !ordering.IsKnown || len(ordering.Keys) != 2 {
@@ -302,22 +317,30 @@ func TestAggregateProvidersStateTheirOutputLayout(t *testing.T) {
 		// child-relative by construction (the merge cursor evaluates it against
 		// each stream), and the ordering the plan ADVERTISES is over its own
 		// output — two different layouts that agree on the grouping ordinals.
+		childLayout := values.NewRecordType("aggregate_child", false, []values.Field{
+			{Name: "REGION", FieldType: values.NullableString, Ordinal: 0},
+			{Name: "SUM(V)", FieldType: values.NullableLong, Ordinal: 1},
+			{Name: "unused", FieldType: values.NullableLong, Ordinal: 2},
+			{Name: "COUNT(*)", FieldType: values.NullableLong, Ordinal: 3},
+		})
 		comparisonKey := []values.Value{
-			values.NewFieldValueWithResolvedOrdinal("REGION", 0, values.UnknownType),
+			testFieldIn(t, childLayout, "aggregate_child", "REGION"),
 		}
 		resultValue := values.NewRecordConstructorValue(
 			values.RecordConstructorField{Name: "REGION", Value: comparisonKey[0]},
 			values.RecordConstructorField{
 				Name:  "SUM(V)",
-				Value: values.NewFieldValueWithResolvedOrdinal("SUM(V)", 1, values.UnknownType),
+				Value: testFieldIn(t, childLayout, "aggregate_child", "SUM(V)"),
 			},
 			values.RecordConstructorField{
 				Name:  "COUNT(*)",
-				Value: values.NewFieldValueWithResolvedOrdinal("COUNT(*)", 3, values.UnknownType),
+				Value: testFieldIn(t, childLayout, "aggregate_child", "COUNT(*)"),
 			},
 		)
-		plan := NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
-			nil, comparisonKey, resultValue)
+		plan := mustChecked(t, func() (*RecordQueryMultiIntersectionOnValuesPlan, error) {
+			return NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+				nil, comparisonKey, resultValue)
+		})
 		if plan == nil {
 			t.Fatal("test setup: plan construction declined")
 		}
@@ -332,6 +355,11 @@ func TestAggregateProvidersStateTheirOutputLayout(t *testing.T) {
 				"comparison key carries an ordinal with no layout, and handing "+
 				"it out as the advertised ordering makes it unaddressable",
 				values.ExplainValue(ordering.Keys[0]))
+		}
+		if ident.Correlation != values.CurrentCorrelation() {
+			t.Fatalf("advertised key is rooted at %v, want the plan output's tagged current carrier %v; "+
+				"a child-relative or freshly minted named root cannot satisfy an ORDER BY over the emitted row",
+				ident.Correlation, values.CurrentCorrelation())
 		}
 		wantDomain := values.OrdinalDomainOfColumnNames(
 			[]string{"REGION", "SUM(V)", "COUNT(*)"})
@@ -371,32 +399,14 @@ func TestInMemorySortHintOrderingStatesTheKeyValueNotItsRendering(t *testing.T) 
 
 	// A CORRELATED leg reference — the shape whose SortKey.Field is the full
 	// explain rendering rather than a bare column name.
-	key := &values.FieldValue{
-		Field:    "AID",
-		Typ:      values.NullableLong,
-		Child:    values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("q$7")),
-		Resolved: values.NewFieldPathOfSingle("AID", 0, false),
-	}
+	keyLayout := values.NewRecordType("sort_input", false, []values.Field{
+		{Name: "AID", FieldType: values.NullableLong, Ordinal: 0},
+	})
+	key := testFieldIn(t, keyLayout, "q$7", "AID")
 	rendered := values.ExplainValue(key)
 
-	// CONTROL, so this test cannot pass for the wrong reason. Two facts have to
-	// hold before the assertion below means anything: the rendering really is
-	// the flat-dotted shape, and a lazy FieldValue carrying it really is
-	// declined by the match-domain identity. If either stops being true the
-	// defect is no longer expressible and this test would go green vacuously.
-	if !strings.Contains(rendered, ".") || !strings.Contains(rendered, "#") {
-		t.Fatalf("control: ExplainValue of a correlated key rendered %q, which "+
-			"is not the dotted `#ordinal` shape this test is about — the "+
-			"renderer changed and this pin no longer expresses the defect",
-			rendered)
-	}
-	if _, ok := values.AccessorNamePath(&values.FieldValue{Field: rendered, Typ: values.UnknownType}); ok {
-		t.Fatalf("control: AccessorNamePath ACCEPTED a lazy field carrying the "+
-			"rendering %q. The decline this test exists to avoid is gone, so a "+
-			"pass below would prove nothing", rendered)
-	}
-	// CONTROL: the key itself must be addressable, otherwise the assertion
-	// below is satisfied by a value that is merely a different kind of broken.
+	// The key itself must be addressable; exact FieldValue construction no
+	// longer permits tests to synthesize the old lazy dotted-name impostor.
 	if _, ok := values.AccessorNamePath(key); !ok {
 		t.Fatalf("control: AccessorNamePath declined the baked key itself, so " +
 			"there is no identity for HintOrdering to state")
@@ -466,7 +476,7 @@ func TestInMemorySortHintOrderingIsUnknownWhenUnbaked(t *testing.T) {
 
 	// A key that IS baked still advertises, so the assertion above is the nil
 	// arm and not the whole function going dark.
-	baked := values.NewFlatFieldValue("SCORE", values.UnknownType)
+	baked := testFieldIn(t, providerLayout(), "sort", "SCORE")
 	ok := (&RecordQueryInMemorySortPlan{sortKeys: []SortKey{
 		{Field: "SCORE", Desc: true, NullsFirst: false, ValueExpr: baked},
 	}}).HintOrdering()

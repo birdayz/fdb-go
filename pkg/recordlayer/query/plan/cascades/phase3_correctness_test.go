@@ -67,19 +67,23 @@ func exploreAndVerify(t *testing.T, ref *expressions.Reference, rules []Expressi
 func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 	t.Parallel()
 
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan1 := phase3Scan(t, "Order")
 	scan1Ref := expressions.InitialOf(scan1)
 	q1 := expressions.ForEachQuantifier(scan1Ref)
 
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"Customer"}, values.UnknownType)
+	scan2 := phase3Scan(t, "Customer")
 	scan2Ref := expressions.InitialOf(scan2)
 	q2 := expressions.ForEachQuantifier(scan2Ref)
 
-	sel := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+	selValue, selErr := expressions.NewSelectExpression(
+		values.NewRawRecordConstructorValue(
+			values.RecordConstructorField{Name: "ORDER", Value: phase3FlowedValue(t, q1)},
+			values.RecordConstructorField{Name: "CUSTOMER", Value: phase3FlowedValue(t, q2)},
+		),
 		[]expressions.Quantifier{q1, q2},
 		nil,
 	)
+	sel := mustConstruct(t, selValue, selErr)
 	ref := expressions.InitialOf(sel)
 
 	rules := DefaultExpressionRules()
@@ -96,11 +100,12 @@ func TestPlanner_NLJFromSelectWithTwoQuantifiers(t *testing.T) {
 func TestPlanner_LimitProducesPhysicalPlan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	limit := expressions.NewLogicalLimitExpression(10, 0, q)
+	limitValue, limitErr := expressions.NewLogicalLimitExpression(10, 0, q)
+	limit := mustConstruct(t, limitValue, limitErr)
 	ref := expressions.InitialOf(limit)
 
 	rules := DefaultExpressionRules()
@@ -117,17 +122,20 @@ func TestPlanner_LimitProducesPhysicalPlan(t *testing.T) {
 func TestPlanner_GroupByProducesAggregation(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	groupBy := expressions.NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "STATUS", Typ: values.TypeString}},
+	groupByValue, groupByErr := expressions.NewGroupByExpression(
+		[]values.Value{phase3Field(t, q, 0)},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}},
+			{Function: expressions.AggCount, Operand: &values.ConstantValue{
+				Value: int64(1), Typ: values.NotNullLong,
+			}},
 		},
 		q,
 	)
+	groupBy := mustConstruct(t, groupByValue, groupByErr)
 	ref := expressions.InitialOf(groupBy)
 
 	rules := DefaultExpressionRules()
@@ -154,16 +162,16 @@ func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 	insertAlias := values.UniqueCorrelationIdentifier()
 
 	// Initial state: a simple scan.
-	initialScan := expressions.NewFullUnorderedScanExpression([]string{"Tree"}, values.UnknownType)
+	initialScan := phase3Scan(t, "Tree")
 	initialRef := expressions.InitialOf(initialScan)
 	initialQ := expressions.ForEachQuantifier(initialRef)
 
 	// Recursive state: a temp table scan.
-	tempScan := expressions.NewTempTableScanExpression(tempAlias)
+	tempScan := mustTempTableScan(t, tempAlias, phase3RowType())
 	recursiveRef := expressions.InitialOf(tempScan)
 	recursiveQ := expressions.ForEachQuantifier(recursiveRef)
 
-	recUnion := expressions.NewRecursiveUnionExpression(
+	recUnion := mustRecursiveUnion(t,
 		initialQ,
 		recursiveQ,
 		tempAlias,
@@ -186,14 +194,15 @@ func TestPlanner_RecursiveUnionProducesDfsJoin(t *testing.T) {
 func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}},
+	projValue, projErr := expressions.NewLogicalProjectionExpression(
+		[]values.Value{phase3Field(t, q, 1)},
 		q,
 	)
+	proj := mustConstruct(t, projValue, projErr)
 	ref := expressions.InitialOf(proj)
 
 	rules := DefaultExpressionRules()
@@ -213,11 +222,12 @@ func TestPlanner_ProjectionOverScanProducesPhysicalProjection(t *testing.T) {
 func TestPlanner_InsertOverScanProducesPhysicalInsert(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	ins := expressions.NewInsertExpression(q, "Order", values.UnknownType)
+	insValue, insErr := expressions.NewInsertExpression(q, "Order", phase3RowType())
+	ins := mustConstruct(t, insValue, insErr)
 	ref := expressions.InitialOf(ins)
 
 	rules := allRules()
@@ -233,11 +243,12 @@ func TestPlanner_InsertOverScanProducesPhysicalInsert(t *testing.T) {
 func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	del := expressions.NewDeleteExpression(q, "Order")
+	delValue, delErr := expressions.NewDeleteExpression(q, "Order")
+	del := mustConstruct(t, delValue, delErr)
 	ref := expressions.InitialOf(del)
 
 	rules := allRules()
@@ -261,15 +272,16 @@ func TestPlanner_DeleteOverScanProducesPhysicalDelete(t *testing.T) {
 func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 	t.Parallel()
 
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan1 := phase3Scan(t, "Order")
 	scan1Ref := expressions.InitialOf(scan1)
 	q1 := expressions.ForEachQuantifier(scan1Ref)
 
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"Customer"}, values.UnknownType)
+	scan2 := phase3Scan(t, "Customer")
 	scan2Ref := expressions.InitialOf(scan2)
 	q2 := expressions.ForEachQuantifier(scan2Ref)
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{q1, q2})
+	unionValue, unionErr := expressions.NewLogicalUnionExpression([]expressions.Quantifier{q1, q2})
+	union := mustConstruct(t, unionValue, unionErr)
 	ref := expressions.InitialOf(union)
 
 	rules := DefaultExpressionRules()
@@ -307,31 +319,35 @@ func TestPlanner_UnionOverTwoScansProducesPhysicalUnion(t *testing.T) {
 func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing.T) {
 	t.Parallel()
 
-	rt := &values.RecordType{
-		RecordName: "Order",
-		Fields: []values.Field{{
-			Name:      "ID",
-			FieldType: values.NullableLong,
-			Ordinal:   0,
-		}},
-	}
-	comparisonKey := &values.FieldValue{Field: "ID", Typ: values.NullableLong}
-	scan1 := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false).
+	rt := values.NewRecordType("Order", false, []values.Field{{
+		Name:      "ID",
+		FieldType: values.NullableLong,
+		Ordinal:   0,
+	}})
+	keyRootValue, keyRootErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("intersection_key"), rt)
+	keyRoot := mustConstruct(t, keyRootValue, keyRootErr)
+	comparisonKeyValue, comparisonKeyErr := values.ResolveFieldOrdinals(keyRoot, []int{0})
+	comparisonKey := mustConstruct(t, comparisonKeyValue, comparisonKeyErr)
+	scan1Value, scan1Err := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false)
+	scan1 := mustConstruct(t, scan1Value, scan1Err).
 		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{comparisonKey})
 	scan1Ref := expressions.InitialOf(scan1)
 	q1 := expressions.ForEachQuantifier(scan1Ref)
 
-	scan2 := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false).
+	scan2Value, scan2Err := plans.NewRecordQueryScanPlan([]string{"Order"}, rt, false)
+	scan2 := mustConstruct(t, scan2Value, scan2Err).
 		WithKeyComponentTypes([]values.Type{values.NullableLong}).
 		WithPrimaryKey([]values.Value{comparisonKey})
 	scan2Ref := expressions.InitialOf(scan2)
 	q2 := expressions.ForEachQuantifier(scan2Ref)
 
-	intersection := expressions.NewLogicalIntersectionExpression(
+	intersectionValue, intersectionErr := expressions.NewLogicalIntersectionExpression(
 		[]expressions.Quantifier{q1, q2},
 		[]values.Value{comparisonKey},
 	)
+	intersection := mustConstruct(t, intersectionValue, intersectionErr)
 	ref := expressions.InitialOf(intersection)
 
 	rules := DefaultExpressionRules()
@@ -349,16 +365,17 @@ func TestPlanner_IntersectionOverTwoScansProducesPhysicalIntersection(t *testing
 func TestPlanner_SortOverScanStaysLogical(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	sort := expressions.NewLogicalSortExpression(
+	sortValue, sortErr := expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "CREATED_AT", Typ: values.NullableLong}, Reverse: false},
+			{Value: phase3Field(t, q, 2), Reverse: false},
 		},
 		q,
 	)
+	sort := mustConstruct(t, sortValue, sortErr)
 	ref := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
@@ -382,11 +399,11 @@ func TestPlanner_SortOverScanStaysLogical(t *testing.T) {
 func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	filter := expressions.NewLogicalFilterExpression(
+	filter := phase3Filter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		q,
 	)
@@ -406,11 +423,12 @@ func TestPlanner_FilterOverScanProducesPhysicalFilter(t *testing.T) {
 func TestPlanner_TypeFilterOverScanProducesPhysicalTypeFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order", "Customer"}, values.UnknownType)
+	scan := mustFullUnorderedScan(t, []string{"Order", "Customer"}, phase3RowType())
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	typeFilter := expressions.NewLogicalTypeFilterExpression([]string{"Order"}, q)
+	typeFilterValue, typeFilterErr := expressions.NewLogicalTypeFilterExpression([]string{"Order"}, q)
+	typeFilter := mustConstruct(t, typeFilterValue, typeFilterErr)
 	ref := expressions.InitialOf(typeFilter)
 
 	rules := DefaultExpressionRules()
@@ -436,11 +454,12 @@ func TestPlanner_DistinctOverScanElided(t *testing.T) {
 	rowType := values.NewRecordType("Order", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong},
 	})
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, rowType)
+	scan := mustFullUnorderedScan(t, []string{"Order"}, rowType)
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	distinct := expressions.NewLogicalDistinctExpression(q)
+	distinctValue, distinctErr := expressions.NewLogicalDistinctExpression(q)
+	distinct := mustConstruct(t, distinctValue, distinctErr)
 	ref := expressions.InitialOf(distinct)
 
 	rules := DefaultExpressionRules()
@@ -497,13 +516,15 @@ func explainPlan(expr expressions.RelationalExpression) string {
 func TestPlanner_UpdateOverScanProducesPhysicalUpdate(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := phase3Scan(t, "Order")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
-	update := expressions.NewUpdateExpression(q, "Order", []expressions.UpdateTransform{
-		{FieldPath: "STATUS", NewValue: &values.ConstantValue{Value: "SHIPPED", Typ: values.TypeString}},
-	})
+	updateValue, updateErr := expressions.NewUpdateExpression(
+		q, "Order", phase3RowType(), []expressions.UpdateTransform{
+			{FieldPath: "STATUS", NewValue: values.LiteralValue("SHIPPED")},
+		})
+	update := mustConstruct(t, updateValue, updateErr)
 	ref := expressions.InitialOf(update)
 
 	rules := allRules()
@@ -523,15 +544,15 @@ func TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion(t *testing.T) {
 	tempAlias := values.UniqueCorrelationIdentifier()
 	insertAlias := values.UniqueCorrelationIdentifier()
 
-	initialScan := expressions.NewFullUnorderedScanExpression([]string{"Tree"}, values.UnknownType)
+	initialScan := phase3Scan(t, "Tree")
 	initialRef := expressions.InitialOf(initialScan)
 	initialQ := expressions.ForEachQuantifier(initialRef)
 
-	tempScan := expressions.NewTempTableScanExpression(tempAlias)
+	tempScan := mustTempTableScan(t, tempAlias, phase3RowType())
 	recursiveRef := expressions.InitialOf(tempScan)
 	recursiveQ := expressions.ForEachQuantifier(recursiveRef)
 
-	recUnion := expressions.NewRecursiveUnionExpression(
+	recUnion := mustRecursiveUnion(t,
 		initialQ,
 		recursiveQ,
 		tempAlias,
@@ -554,10 +575,11 @@ func TestPlanner_RecursiveLevelUnionProducesPhysicalLevelUnion(t *testing.T) {
 func TestPlanner_ValuesProducesPhysicalValues(t *testing.T) {
 	t.Parallel()
 
-	vals := expressions.NewLogicalValuesExpression([]values.Value{
-		&values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
-		&values.ConstantValue{Value: "hello", Typ: values.TypeString},
+	valsValue, valsErr := expressions.NewLogicalValuesExpression([]values.Value{
+		&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+		&values.ConstantValue{Value: "hello", Typ: values.NotNullString},
 	})
+	vals := mustConstruct(t, valsValue, valsErr)
 	ref := expressions.InitialOf(vals)
 
 	rules := DefaultExpressionRules()

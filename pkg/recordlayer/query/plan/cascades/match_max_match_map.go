@@ -32,14 +32,23 @@ func buildMatchMaxMatchMap(
 	candidateResultValue values.Value,
 	boundAliasMap *AliasMap,
 ) *MaxMatchMap {
-	rebase := make(values.AliasMap)
+	pairs := make([]values.AliasPair, 0, len(boundAliasMap.Sources()))
 	rangedOver := make(map[values.CorrelationIdentifier]struct{})
 	for _, src := range boundAliasMap.Sources() {
 		tgt := boundAliasMap.GetTarget(src)
-		rebase[src] = tgt
+		pairs = append(pairs, values.AliasPair{Source: src, Target: tgt})
 		rangedOver[tgt] = struct{}{}
 	}
-	translated := values.RebaseValue(queryResultValue, rebase)
+	rebase, err := values.NewAliasMap(pairs)
+	if err != nil {
+		return nil
+	}
+	// A failed rebase returns the same nil this function already uses for "no
+	// match map", so it must not reach ComputeMaxMatchMap with a nil tree.
+	translated, err := values.RebaseValueChecked(queryResultValue, rebase)
+	if err != nil {
+		return nil
+	}
 	return ComputeMaxMatchMapWithEquivalence(
 		translated,
 		candidateResultValue,

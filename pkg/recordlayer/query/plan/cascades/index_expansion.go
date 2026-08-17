@@ -90,10 +90,21 @@ func expandFlatValueIndex(candidate MatchCandidate) *Traversal {
 	columnNames := candidate.GetColumnNames()
 	sargableAliases := candidate.GetSargableAliases()
 	recordTypes := candidate.GetRecordTypes()
+	baseType, ok := candidateBaseType(candidate)
+	if !ok {
+		return nil
+	}
 
-	// Base scan: FullUnorderedScanExpression over the candidate's record types.
-	scan := expressions.NewFullUnorderedScanExpression(recordTypes, values.UnknownType)
+	// Base scan: FullUnorderedScanExpression over the candidate's exact row.
+	scan, err := expressions.NewFullUnorderedScanExpression(recordTypes, baseType)
+	if err != nil {
+		return nil
+	}
 	baseQuantifier := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	baseObject, err := baseQuantifier.RequireFlowedObjectValue()
+	if err != nil {
+		return nil
+	}
 
 	// Build the graph expansion: one Placeholder per index column.
 	builder := NewGraphExpansionBuilder()
@@ -110,17 +121,26 @@ func expandFlatValueIndex(candidate MatchCandidate) *Traversal {
 	// side builds, so the predicate (and, via the same provider, the sort)
 	// binds by Value-tree equality. Mirrors Java's match candidate carrying
 	// the column's Value (CardinalityFunctionKeyExpression.toValue()).
-	baseAlias := baseQuantifier.GetAlias()
 	provider, _ := candidate.(columnValueProvider)
 	for i, alias := range sargableAliases {
 		var colValue values.Value
 		if provider != nil {
-			colValue = provider.ColumnValue(i, values.NewQuantifiedObjectValue(baseAlias))
+			colValue = provider.ColumnValue(i, baseObject)
 		} else {
-			colValue = values.NewFieldValue(
-				values.NewQuantifiedObjectValue(baseAlias),
-				columnNames[i], values.UnknownType,
-			)
+			if i >= len(columnNames) {
+				return nil
+			}
+			request, requestErr := values.FieldByName(columnNames[i])
+			if requestErr != nil {
+				return nil
+			}
+			colValue, requestErr = values.ResolveFieldAccess(baseObject, []values.FieldRequest{request})
+			if requestErr != nil {
+				return nil
+			}
+		}
+		if colValue == nil {
+			return nil
 		}
 		ph := predicates.NewPlaceholder(alias, colValue)
 		builder.AddPredicate(ph)
@@ -142,7 +162,7 @@ func expandFlatValueIndex(candidate MatchCandidate) *Traversal {
 	// .yamsql's COVERING expectations are the re-arm witness).
 	if vc, isValue := candidate.(*ValueIndexScanMatchCandidate); isValue && vc.predicateProto != nil {
 		converted, convErr := indexPredicateToQueryPredicate(
-			vc.predicateProto, values.NewQuantifiedObjectValue(baseAlias))
+			vc.predicateProto, baseObject)
 		if convErr != nil {
 			// An unconvertible stored predicate (unknown proto arm) leaves
 			// the candidate's entry set unknowable — exclude the candidate.
@@ -160,17 +180,34 @@ func expandFlatValueIndex(candidate MatchCandidate) *Traversal {
 	// as the result value. The sealed expansion must have no result columns
 	// (we only added predicates/placeholders, no columns), so
 	// BuildSelectWithResultValue is the right call.
-	selectExpr := sealed.BuildSelectWithResultValue(baseQuantifier.GetFlowedObjectValue())
+	selectExpr, err := sealed.BuildSelectWithResultValue(baseObject)
+	if err != nil {
+		return nil
+	}
 
 	// Wrap in MatchableSortExpression — the sort is defined by the
 	// sargable aliases (one per index key column), not reversed.
-	matchableSort := expressions.NewMatchableSortExpressionFromExpr(
+	matchableSort, err := expressions.NewMatchableSortExpressionFromExpr(
 		sargableAliases,
 		false,
 		selectExpr,
 	)
+	if err != nil {
+		return nil
+	}
 
 	return NewTraversal(expressions.InitialOf(matchableSort))
+}
+
+func candidateBaseType(candidate MatchCandidate) (values.Type, bool) {
+	typed, ok := candidate.(interface{ GetBaseType() values.Type })
+	if !ok || typed.GetBaseType() == nil {
+		return nil, false
+	}
+	if _, err := values.SnapshotExactType(typed.GetBaseType()); err != nil {
+		return nil, false
+	}
+	return typed.GetBaseType(), true
 }
 
 // fanOutKeyExpansionState is the immutable traversal context plus a shared
@@ -212,16 +249,17 @@ func expandFanOutValueIndex(
 		return nil, false
 	}
 
-	baseType := values.Type(values.UnknownType)
-	if withBaseType, ok := candidate.(interface{ GetBaseType() values.Type }); ok {
-		if typ := withBaseType.GetBaseType(); typ != nil {
-			baseType = typ
-		}
+	baseType, ok := candidateBaseType(candidate)
+	if !ok {
+		return nil, false
 	}
-	scan := expressions.NewFullUnorderedScanExpression(
+	scan, err := expressions.NewFullUnorderedScanExpression(
 		candidate.GetRecordTypes(),
-		values.UnknownType,
+		baseType,
 	)
+	if err != nil {
+		return nil, false
+	}
 	baseQuantifier := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	ordinal := 0
 	state := fanOutKeyExpansionState{
@@ -246,14 +284,24 @@ func expandFanOutValueIndex(
 		keyExpansion.GetPlaceholders(),
 	)
 	sealed := completeExpansion.Seal()
-	selectExpression := sealed.BuildSelectWithResultValue(
-		baseQuantifier.GetFlowedObjectValue(),
+	baseObject, err := baseQuantifier.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, false
+	}
+	selectExpression, err := sealed.BuildSelectWithResultValue(
+		baseObject,
 	)
-	matchableSort := expressions.NewMatchableSortExpressionFromExpr(
+	if err != nil {
+		return nil, false
+	}
+	matchableSort, err := expressions.NewMatchableSortExpressionFromExpr(
 		candidate.GetSargableAliases(),
 		false,
 		selectExpression,
 	)
+	if err != nil {
+		return nil, false
+	}
 	return NewTraversal(expressions.InitialOf(matchableSort)), true
 }
 
@@ -313,6 +361,9 @@ func expandFanOutField(
 			path,
 			false,
 		)
+		if value == nil {
+			return nil, false
+		}
 		placeholder := predicates.NewPlaceholder(parameterAlias, value)
 		return NewGraphExpansion(
 			nil,
@@ -328,15 +379,21 @@ func expandFanOutField(
 			path,
 			true,
 		)
-		elementType := arrayElementType(collectionType)
-		explode := expressions.NewExplodeExpression(collection)
+		_, elementOK := arrayElementType(collectionType)
+		if collection == nil || !elementOK {
+			return nil, false
+		}
+		explode, err := expressions.NewExplodeExpression(collection)
+		if err != nil {
+			return nil, false
+		}
 		explodeQuantifier := expressions.ForEachQuantifier(
 			expressions.InitialOf(explode),
 		)
-		elementValue := values.NewQuantifiedObjectValueOfType(
-			explodeQuantifier.GetAlias(),
-			elementType,
-		)
+		elementValue, err := explodeQuantifier.RequireFlowedObjectValue()
+		if err != nil {
+			return nil, false
+		}
 		placeholder := predicates.NewPlaceholder(parameterAlias, elementValue)
 
 		// Java Field/FanOut: the placeholder is a predicate of the inner
@@ -348,7 +405,10 @@ func expandFanOutField(
 			[]expressions.Quantifier{explodeQuantifier},
 			[]*predicates.Placeholder{placeholder},
 		)
-		innerSelect := innerExpansion.Seal().BuildSelect()
+		innerSelect, err := innerExpansion.Seal().BuildSelect()
+		if err != nil {
+			return nil, false
+		}
 		childQuantifier := expressions.ForEachQuantifier(
 			expressions.InitialOf(innerSelect),
 		)
@@ -443,9 +503,16 @@ func expandFanOutNesting(
 			collectionPath,
 			true,
 		)
-		elementType := arrayElementType(collectionType)
+		elementType, elementOK := arrayElementType(collectionType)
+		if collection == nil || !elementOK {
+			return nil, false
+		}
+		explode, err := expressions.NewExplodeExpression(collection)
+		if err != nil {
+			return nil, false
+		}
 		explodeQuantifier := expressions.ForEachQuantifier(
-			expressions.InitialOf(expressions.NewExplodeExpression(collection)),
+			expressions.InitialOf(explode),
 		)
 
 		childState := state
@@ -477,7 +544,10 @@ func expandFanOutNesting(
 			innerQuantifiers,
 			childExpansion.GetPlaceholders(),
 		)
-		innerSelect := innerExpansion.Seal().BuildSelect()
+		innerSelect, err := innerExpansion.Seal().BuildSelect()
+		if err != nil {
+			return nil, false
+		}
 		childQuantifier := expressions.ForEachQuantifier(
 			expressions.InitialOf(innerSelect),
 		)
@@ -499,17 +569,17 @@ func fanOutFlowedColumns(
 	quantifier expressions.Quantifier,
 	flowedType values.Type,
 ) []GraphExpansionColumn {
-	typedObject := values.NewQuantifiedObjectValueOfType(
-		quantifier.GetAlias(),
-		flowedType,
-	)
+	typedObject, err := values.NewQuantifiedObjectValue(quantifier.GetAlias(), flowedType)
+	if err != nil {
+		return nil
+	}
 	recordType, ok := flowedType.(*values.RecordType)
 	if !ok || len(recordType.Fields) == 0 {
 		return []GraphExpansionColumn{{Value: typedObject}}
 	}
 	columns := make([]GraphExpansionColumn, 0, len(recordType.Fields))
 	for ordinal, field := range recordType.Fields {
-		fieldValue, err := values.NewFieldValueOfOrdinal(typedObject, ordinal)
+		fieldValue, err := values.ResolveFieldOrdinals(typedObject, []int{ordinal})
 		if err != nil {
 			return []GraphExpansionColumn{{Value: typedObject}}
 		}
@@ -521,10 +591,9 @@ func fanOutFlowedColumns(
 	return columns
 }
 
-// fanOutFieldPathValue builds the same positional-root value the SQL lateral
-// unnest lowering uses. The top-level record slot is baked by ordinal. For a
-// collection path, nested proto-message suffixes remain name-addressed
-// (ordinal -1); ordinary scalar paths resolve every available nested ordinal.
+// fanOutFieldPathValue resolves a complete metadata path against the exact
+// candidate row type. Unsupported or ambiguous paths decline the candidate;
+// no partial/name-only FieldValue is published.
 func fanOutFieldPathValue(
 	baseAlias values.CorrelationIdentifier,
 	baseType values.Type,
@@ -532,101 +601,40 @@ func fanOutFieldPathValue(
 	collectionPath bool,
 ) (values.Value, values.Type) {
 	if len(path) == 0 {
-		return values.NewQuantifiedObjectValueOfType(baseAlias, baseType),
-			values.UnknownType
+		qov, err := values.NewQuantifiedObjectValue(baseAlias, baseType)
+		if err != nil {
+			return nil, nil
+		}
+		return qov, qov.Type()
 	}
 
-	recordType, ok := baseType.(*values.RecordType)
-	if !ok {
-		return lazyFanOutFieldPathValue(baseAlias, path), values.UnknownType
-	}
-	rootOrdinal, rootField, ok := recordTypeField(recordType, path[0])
-	if !ok {
-		return lazyFanOutFieldPathValue(baseAlias, path), values.UnknownType
-	}
-	baseObject := values.NewQuantifiedObjectValueOfType(baseAlias, baseType)
-	rootValue, err := values.NewFieldValueOfOrdinal(baseObject, rootOrdinal)
+	baseObject, err := values.NewQuantifiedObjectValue(baseAlias, baseType)
 	if err != nil {
-		return lazyFanOutFieldPathValue(baseAlias, path), values.UnknownType
+		return nil, nil
 	}
-
-	leafType := rootField.FieldType
-	if len(path) == 1 {
-		rootValue.Typ = leafType
-		return rootValue, leafType
-	}
-
-	suffix := make([]values.ResolvedAccessor, 0, len(path)-1)
-	currentType := rootField.FieldType
-	for _, segment := range path[1:] {
-		accessor := values.ResolvedAccessor{
-			Field:   strings.ToUpper(segment),
-			Ordinal: -1,
-		}
-		if nestedType, nested := currentType.(*values.RecordType); nested {
-			if ordinal, field, found := recordTypeField(nestedType, segment); found {
-				if !collectionPath {
-					accessor.Ordinal = ordinal
-				}
-				accessor.Field = field.Name
-				currentType = field.FieldType
-				leafType = field.FieldType
-			} else {
-				currentType = values.UnknownType
-				leafType = values.UnknownType
-			}
-		} else {
-			currentType = values.UnknownType
-			leafType = values.UnknownType
-		}
-		suffix = append(suffix, accessor)
-	}
-	return &values.FieldValue{
-		Field: strings.ToUpper(path[len(path)-1]),
-		Typ:   leafType,
-		Child: rootValue.Child,
-		Resolved: rootValue.Resolved.WithSuffix(
-			&values.FieldPath{Accessors: suffix},
-		),
-	}, leafType
-}
-
-func lazyFanOutFieldPathValue(
-	baseAlias values.CorrelationIdentifier,
-	path []string,
-) values.Value {
-	var value values.Value = values.NewQuantifiedObjectValue(baseAlias)
-	for _, segment := range path {
-		value = values.NewFieldValue(
-			value,
-			strings.ToUpper(segment),
-			values.UnknownType,
-		)
-	}
-	return value
-}
-
-func recordTypeField(
-	recordType *values.RecordType,
-	name string,
-) (int, values.Field, bool) {
-	if recordType == nil {
-		return 0, values.Field{}, false
-	}
-	for ordinal, field := range recordType.Fields {
-		if strings.EqualFold(field.Name, name) {
-			return ordinal, field, true
+	requests := make([]values.FieldRequest, len(path))
+	for i, segment := range path {
+		requests[i], err = values.FieldByName(strings.ToUpper(segment))
+		if err != nil {
+			return nil, nil
 		}
 	}
-	return 0, values.Field{}, false
+	resolved, err := values.ResolveFieldAccess(baseObject, requests)
+	if err != nil {
+		return nil, nil
+	}
+	_ = collectionPath // the exact path has one representation in both contexts.
+	return resolved, resolved.Type()
 }
 
-func arrayElementType(typ values.Type) values.Type {
+func arrayElementType(typ values.Type) (values.Type, bool) {
 	if arrayType, ok := typ.(*values.ArrayType); ok &&
 		arrayType.ElementType != nil {
-		return arrayType.ElementType
+		if _, err := values.SnapshotExactType(arrayType.ElementType); err == nil {
+			return arrayType.ElementType, true
+		}
 	}
-	return values.UnknownType
+	return nil, false
 }
 
 func appendPath(prefix []string, segment string) []string {

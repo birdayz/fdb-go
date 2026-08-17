@@ -223,19 +223,27 @@ tests:
     rows:
       - [1]
       - [2]
-  # Codex-caught: an UNDERIVABLE nested CTE (join-shaped body) shadowing an
-  # outer same-name CTE must not leave the OUTER schema visible to the
-  # enclosing body — before the fix the enclosing body's reads validated
-  # against outer c1(w)'s schema and baked foreign ordinals over the inner's
-  # row (silent wrong slot). With the shadow eviction the shape declines
-  # LOUD: join-bodied CTE schema derivation is the documented ON-only reach
-  # gap, so c2's registration declines and the named read cannot plan.
-  # Correct-or-loud; rows ([1,1],[2,2]) when join-bodied derivation lands.
+  # A nested CTE with a join-shaped body, shadowing an outer same-name CTE.
+  # The shadow must not leave the OUTER schema visible to the enclosing body —
+  # before the eviction, the enclosing body's reads validated against outer
+  # c1(w)'s schema and baked foreign ordinals over the inner's row (silent
+  # wrong slot). The shape then declined LOUD, because a join-bodied CTE's
+  # schema was guessed from its FROM legs by name and no such guess was
+  # complete. That guess is retired — the row is the built body's exact result
+  # type — so the shape answers, and the rows are the ones this entry named as
+  # the expected outcome while it was still declining.
+  #
+  # The values discriminate the shadow: inner c1 is a self-join on t (ids
+  # 1..4), c2 filters it to {1,2}, and outer c1(w) is {1,2,3,4}; w = a keeps
+  # exactly the two pairs. Reading the OUTER generation for the inner name
+  # would not narrow to {1,2}.
   - query: |-
       WITH c1(w) AS (SELECT id FROM t),
            c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM c1 WHERE id <= 2)
       SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
-    error_code: "0AF00"
+    rows:
+      - [1, 1]
+      - [2, 2]
   # Deletion-as-eviction left ABSENCE, and absence falls back to the CATALOG:
   # here the underivable nested CTE shadows the BASE TABLE t itself, and its
   # output column `id` deliberately carries V values (reversed mapping). The
@@ -249,16 +257,25 @@ tests:
       WITH c2(a) AS (WITH t AS (SELECT x.v AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id FROM t WHERE id <= 2)
       SELECT a FROM c2 ORDER BY a
     rows: []
-  # A COMPUTED enclosing projection routes through the projection resolver
-  # (buildProjectionResolverWithCTEScopes), which AddSource'd the tombstone
-  # unchecked — Scope.ResolveColumn nil-dereferenced (recovered → XX000 on a
-  # valid-shaped query). AddSource now rejects nil-Table sources at the
-  # chokepoint, so EVERY resolver path declines clean.
+  # The COMPUTED-projection twin of the entry above. It routes through the
+  # projection resolver (buildProjectionResolverWithCTEScopes), which AddSource'd
+  # the underivable-CTE tombstone unchecked — Scope.ResolveColumn
+  # nil-dereferenced (recovered → XX000 on a valid-shaped query). AddSource
+  # rejects nil-Table sources at the chokepoint, so no resolver path can
+  # dereference one; with the body's row published there is no tombstone here
+  # any more, and the computed column answers.
+  #
+  # a = id + 1 over {1,2,3,4} is {2,3,4,5}, and w is {1,2,3,4}: the join keeps
+  # 2,3,4 and drops both ends. A shape that ignored the +1 would return all
+  # four pairs.
   - query: |-
       WITH c1(w) AS (SELECT id FROM t),
            c2(a) AS (WITH c1 AS (SELECT x.id AS id FROM t AS x, t AS y WHERE x.id = y.id) SELECT id + 1 FROM c1)
       SELECT w, a FROM c1, c2 WHERE w = a ORDER BY w
-    error_code: "0AF00"
+    rows:
+      - [2, 2]
+      - [3, 3]
+      - [4, 4]
   # Alias-arity validation must not be bypassed by a tombstoned (underivable)
   # body: the derivable branch's 42F10 check never ran for this class, so a
   # two-alias list over a statically one-column body executed instead of

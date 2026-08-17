@@ -8,37 +8,67 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func queryPredicateFixture() (expressions.Quantifier, values.QuantifiedObjectValue) {
+	rowType := values.NewRecordType("QueryPredicateRuleRow", false, []values.Field{
+		{Name: "NAME", FieldType: values.NullableString},
+		{Name: "A", FieldType: values.NullableLong},
+		{Name: "B", FieldType: values.NullableString},
+		{Name: "X", FieldType: values.NullableLong},
+	})
+	scan := mustTypeRewriteConstruct(expressions.NewFullUnorderedScanExpression([]string{"T"}, rowType))
+	q := expressions.ForEachQuantifier(expressions.InitialOf(scan))
+	return q, mustTypeRewriteConstruct(q.RequireFlowedObjectValue())
+}
+
+func queryPredicateField(root values.Value, ordinal int) values.Value {
+	return mustTypeRewriteConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
+func queryPredicateSelect(
+	q expressions.Quantifier,
+	root values.Value,
+	preds []predicates.QueryPredicate,
+) *expressions.SelectExpression {
+	return mustTypeRewriteConstruct(expressions.NewSelectExpression(
+		root, []expressions.Quantifier{q}, preds))
+}
+
+func fireQueryPredicateRule(
+	t testing.TB, rule ExpressionRule, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return result
+}
+
 // TestQueryPredicateSimplification_FoldsArithmetic verifies that a
 // ComparisonPredicate with an ArithmeticValue operand (e.g., name = 1+2)
 // is simplified to name = 3.
 func TestQueryPredicateSimplification_FoldsArithmetic(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, scanRoot := queryPredicateFixture()
 
 	// name = 1 + 2 (ArithmeticValue)
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "NAME"},
+		Operand: queryPredicateField(scanRoot, 0),
 		Comparison: predicates.Comparison{
 			Type: predicates.ComparisonEquals,
 			Operand: &values.ArithmeticValue{
-				Left:  &values.ConstantValue{Value: int64(1)},
+				Left:  &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 				Op:    values.OpAdd,
-				Right: &values.ConstantValue{Value: int64(2)},
+				Right: &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong},
 			},
 		},
 	}
 
-	sel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
-		[]expressions.Quantifier{scanQ},
-		[]predicates.QueryPredicate{pred},
-	)
+	sel := queryPredicateSelect(scanQ, scanRoot, []predicates.QueryPredicate{pred})
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewQueryPredicateSimplificationRule(), selRef)
+	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -66,27 +96,21 @@ func TestQueryPredicateSimplification_FoldsArithmetic(t *testing.T) {
 func TestQueryPredicateSimplification_NoChangeNoYield(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, scanRoot := queryPredicateFixture()
 
 	// Simple predicate — nothing to fold.
 	pred := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "NAME"},
+		Operand: queryPredicateField(scanRoot, 0),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: "foo"},
+			Operand: &values.ConstantValue{Value: "foo", Typ: values.NotNullString},
 		},
 	}
 
-	sel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
-		[]expressions.Quantifier{scanQ},
-		[]predicates.QueryPredicate{pred},
-	)
+	sel := queryPredicateSelect(scanQ, scanRoot, []predicates.QueryPredicate{pred})
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewQueryPredicateSimplificationRule(), selRef)
+	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (nothing to simplify), got %d", len(yielded))
 	}
@@ -97,18 +121,12 @@ func TestQueryPredicateSimplification_NoChangeNoYield(t *testing.T) {
 func TestQueryPredicateSimplification_NoPredicates(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, scanRoot := queryPredicateFixture()
 
-	sel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
-		[]expressions.Quantifier{scanQ},
-		nil,
-	)
+	sel := queryPredicateSelect(scanQ, scanRoot, nil)
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewQueryPredicateSimplificationRule(), selRef)
+	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
 	if len(yielded) != 0 {
 		t.Fatalf("expected 0 yields (no predicates), got %d", len(yielded))
 	}
@@ -120,39 +138,33 @@ func TestQueryPredicateSimplification_NoPredicates(t *testing.T) {
 func TestQueryPredicateSimplification_MultiplePredicates(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, scanRoot := queryPredicateFixture()
 
 	// First predicate: foldable (2+3)
 	pred1 := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "A"},
+		Operand: queryPredicateField(scanRoot, 1),
 		Comparison: predicates.Comparison{
 			Type: predicates.ComparisonEquals,
 			Operand: &values.ArithmeticValue{
-				Left:  &values.ConstantValue{Value: int64(2)},
+				Left:  &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong},
 				Op:    values.OpAdd,
-				Right: &values.ConstantValue{Value: int64(3)},
+				Right: &values.ConstantValue{Value: int64(3), Typ: values.NotNullLong},
 			},
 		},
 	}
 	// Second predicate: not foldable
 	pred2 := &predicates.ComparisonPredicate{
-		Operand: &values.FieldValue{Field: "B"},
+		Operand: queryPredicateField(scanRoot, 2),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: &values.ConstantValue{Value: "hello"},
+			Operand: &values.ConstantValue{Value: "hello", Typ: values.NotNullString},
 		},
 	}
 
-	sel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
-		[]expressions.Quantifier{scanQ},
-		[]predicates.QueryPredicate{pred1, pred2},
-	)
+	sel := queryPredicateSelect(scanQ, scanRoot, []predicates.QueryPredicate{pred1, pred2})
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewQueryPredicateSimplificationRule(), selRef)
+	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}
@@ -194,33 +206,27 @@ func TestQueryPredicateSimplification_MultiplePredicates(t *testing.T) {
 func TestQueryPredicateSimplification_AndPredicate(t *testing.T) {
 	t.Parallel()
 
-	scan := &expressions.FullUnorderedScanExpression{}
-	scanRef := expressions.InitialOf(scan)
-	scanQ := expressions.ForEachQuantifier(scanRef)
+	scanQ, scanRoot := queryPredicateFixture()
 
 	andPred := predicates.NewAnd(
 		&predicates.ComparisonPredicate{
-			Operand: &values.FieldValue{Field: "X"},
+			Operand: queryPredicateField(scanRoot, 3),
 			Comparison: predicates.Comparison{
 				Type: predicates.ComparisonEquals,
 				Operand: &values.ArithmeticValue{
-					Left:  &values.ConstantValue{Value: int64(10)},
+					Left:  &values.ConstantValue{Value: int64(10), Typ: values.NotNullLong},
 					Op:    values.OpAdd,
-					Right: &values.ConstantValue{Value: int64(20)},
+					Right: &values.ConstantValue{Value: int64(20), Typ: values.NotNullLong},
 				},
 			},
 		},
 		predicates.NewConstantPredicate(predicates.TriTrue),
 	)
 
-	sel := expressions.NewSelectExpression(
-		scanQ.GetFlowedObjectValue(),
-		[]expressions.Quantifier{scanQ},
-		[]predicates.QueryPredicate{andPred},
-	)
+	sel := queryPredicateSelect(scanQ, scanRoot, []predicates.QueryPredicate{andPred})
 	selRef := expressions.InitialOf(sel)
 
-	yielded := FireExpressionRule(NewQueryPredicateSimplificationRule(), selRef)
+	yielded := fireQueryPredicateRule(t, NewQueryPredicateSimplificationRule(), selRef)
 	if len(yielded) < 1 {
 		t.Fatalf("expected at least 1 yield, got %d", len(yielded))
 	}

@@ -17,20 +17,29 @@ import (
 // buildDistinctOverProjection produces, plus the filter whose conjuncts are the
 // only thing R2 reads.
 func buildFilteredDistinctOverT(
+	t testing.TB,
 	projected []values.Value, preds []predicates.QueryPredicate,
 ) *expressions.Reference {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, distinctScanType("T"))
+	t.Helper()
+	scan, scanErr := expressions.NewFullUnorderedScanExpression([]string{"T"}, distinctScanType("T"))
+	scan = mustConstruct(t, scan, scanErr)
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 
-	filter := expressions.NewLogicalFilterExpression(preds, scanQ)
+	filter, filterErr := expressions.NewLogicalFilterExpression(preds, scanQ)
+	filter = mustConstruct(t, filter, filterErr)
 	filterQ := expressions.ForEachQuantifier(expressions.InitialOf(filter))
 
-	proj := expressions.NewLogicalProjectionExpression(projected, filterQ)
+	proj, projErr := expressions.NewLogicalProjectionExpression(projected, filterQ)
+	proj = mustConstruct(t, proj, projErr)
 	projRef := expressions.InitialOf(proj)
-	projRef.Insert(makeFakePlanWrapper("T"))
+	// A physical member of a projection group must flow the projection's exact
+	// row, not the wider base scan row. Memo admission rejects mixed result
+	// types before the distinct proof can inspect this group.
+	projRef.Insert(makeFakePlanWrapperForType("T", proj.GetResultValue().Type(), false))
 
-	distinct := expressions.NewLogicalDistinctExpression(
+	distinct, distinctErr := expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(projRef))
+	distinct = mustConstruct(t, distinct, distinctErr)
 	return expressions.InitialOf(distinct)
 }
 
@@ -63,9 +72,9 @@ func fireFilteredDistinctOver(
 		candidates:      candidates,
 		readableIndexes: AllIndexesReadable(),
 	}
-	results := FireImplementationRuleWithContext(
+	results := mustFireImplementationRuleWithContext(t,
 		NewImplementDistinctFinalRule(),
-		buildFilteredDistinctOverT(cols, preds), ctx, nil)
+		buildFilteredDistinctOverT(t, cols, preds), ctx, nil)
 	for _, result := range results {
 		fired = true
 		if _, ok := result.(*plans.RecordQueryDistinctPlan); ok {
@@ -250,7 +259,7 @@ func nullableCompositeCandidate() []MatchCandidate {
 			values.UniqueCorrelationIdentifier(),
 			values.UniqueCorrelationIdentifier(),
 		},
-		values.UnknownType,
+		distinctScanType("T"),
 		true,
 		nil,
 		&scalar,

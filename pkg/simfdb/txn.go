@@ -48,6 +48,13 @@ type simTxn struct {
 	// Read only by tests.
 	viewRowsTouched int
 
+	// wholeViewBuilds counts UNBOUNDED buildView calls — the ones that clone, map and
+	// sort the entire keyspace regardless of what the caller asked for. viewRowsTouched
+	// cannot stand in for it: that counter measures how much of a RANGE a bounded build
+	// walked, and the whole-keyspace build is the case where no range bounded anything.
+	// Read only by tests.
+	wholeViewBuilds int
+
 	readVersion int64
 	rvSet       bool
 	// rvInstant is when the read version was pinned, on the ENV clock — the sim's
@@ -473,6 +480,7 @@ func (tx *simTxn) get(key fdb.KeyConvertible, snapshot bool) fdb.FutureByteSlice
 // key selectors for GetKey and GetRange. A transient map coalesces per-key state; the result
 // is re-sorted so iteration order is deterministic regardless of map order.
 func (tx *simTxn) buildView() []fdb.KeyValue {
+	tx.wholeViewBuilds++
 	m := make(map[string][]byte)
 	tx.db.mu.Lock()
 	for _, e := range tx.db.store.entries {
@@ -890,7 +898,22 @@ func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []
 	// resolveRange). Taking the anchor instead under-conflicts on a backward selector —
 	// LastLessThan(k) resolves BELOW k, so rows the transaction really read fall outside the
 	// recorded range and a concurrent write to them does not conflict.
-	view := tx.buildView()
+	// Built only when a bound actually needs it. buildView clones, maps and SORTS the
+	// WHOLE keyspace, and resolveRangeBound's two trivial arms return before reading a
+	// single element of it — so for every exact range in the tree (KeyRange, subspace,
+	// Tuple all report FirstGreaterOrEqual bounds) this was an O(keyspace·log keyspace)
+	// build per GetRange whose result was discarded unread. It measured 17.7% of total
+	// CPU in `sort.Strings` alone on a 20k-row SimFDB scan benchmark, on the read path
+	// that every SimFDB-backed test drives.
+	//
+	// selectorResolvesViaGetKey is the same predicate resolveRangeBound branches on, not
+	// a second opinion about it, which is what makes the nil safe: a selector it reports
+	// false for cannot reach the view, and the conflict loop below only resolves the ones
+	// it reports true for.
+	var view []fdb.KeyValue
+	if selectorResolvesViaGetKey(bks) || selectorResolvesViaGetKey(eks) {
+		view = tx.buildView()
+	}
 	begin = resolveRangeBound(view, bks)
 	end = resolveRangeBound(view, eks)
 
@@ -939,11 +962,15 @@ func (tx *simTxn) resolveRangeForRead(r fdb.Range, snapshot bool) (begin, end []
 //     resolution, which is index-based over the merged view, with GetKey's own clamps: the
 //     empty key before the first key, endKeyMarker past the last.
 func resolveRangeBound(view []fdb.KeyValue, ks fdb.KeySelector) []byte {
-	if !ks.OrEqual && ks.Offset == 1 { // FirstGreaterOrEqual — trivial
-		return []byte(ks.Key.FDBKey())
-	}
-	if ks.OrEqual && ks.Offset == 1 { // FirstGreaterThan(k) == FirstGreaterOrEqual(k+\x00)
-		return keyAfter([]byte(ks.Key.FDBKey()))
+	// The two trivial arms are gated on selectorResolvesViaGetKey rather than on a
+	// second copy of its predicates: getRange SKIPS building the view when that
+	// function reports false for both bounds, so a drift between the two would not
+	// be a wrong answer, it would be a nil view reaching the index walk below.
+	if !selectorResolvesViaGetKey(ks) {
+		if ks.OrEqual { // FirstGreaterThan(k) == FirstGreaterOrEqual(k+\x00)
+			return keyAfter([]byte(ks.Key.FDBKey()))
+		}
+		return []byte(ks.Key.FDBKey()) // FirstGreaterOrEqual — the key itself
 	}
 	switch idx := resolveSelector(view, ks); {
 	case idx < 0:

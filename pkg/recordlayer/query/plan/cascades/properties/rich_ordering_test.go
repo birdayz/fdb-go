@@ -7,16 +7,18 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-func fieldVal(name string) values.Value {
-	return &values.FieldValue{Field: name, Typ: values.UnknownType}
+func fieldVal(t testing.TB, name string) values.Value {
+	t.Helper()
+	return propertyField(t, name, values.NullableLong)
 }
 
-// outputSlot is a reference to a record constructor's OUTPUT SLOT — the shape a
-// resolved reference to a projection output carries. Push-down selects the
-// member by that ordinal (RFC-197 item 3); fieldVal above is the LAZY carrier,
-// which pushes down to nothing.
-func outputSlot(name string, ordinal int) values.Value {
-	return values.NewFieldValueWithResolvedOrdinal(name, ordinal, values.UnknownType)
+// outputSlot is a reference to a record constructor's OUTPUT SLOT, rooted at
+// that output's exact owner. Push-down selects the member by ordinal; carrying
+// the owner prevents an unrelated source field with the same ordinal from
+// masquerading as an output coordinate.
+func outputSlot(t testing.TB, alias values.CorrelationIdentifier, resultValue values.Value, ordinal int) values.Value {
+	t.Helper()
+	return propertyFieldFromOrdinal(t, mustQOV(t, alias, resultValue.Type()), ordinal)
 }
 
 func TestRichOrdering_EmptyOrdering(t *testing.T) {
@@ -34,9 +36,9 @@ func TestRichOrdering_Satisfies_EmptyRequest(t *testing.T) {
 	t.Parallel()
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
-			fieldVal("a"): {SortedBinding(ProvidedSortOrderAscending)},
+			fieldVal(t, "a"): {SortedBinding(ProvidedSortOrderAscending)},
 		},
-		[]values.Value{fieldVal("a")},
+		[]values.Value{fieldVal(t, "a")},
 		NotDistinct())
 	req := PreserveOrdering()
 	if !o.Satisfies(req) {
@@ -46,7 +48,7 @@ func TestRichOrdering_Satisfies_EmptyRequest(t *testing.T) {
 
 func TestRichOrdering_Satisfies_SingleKey(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -64,7 +66,7 @@ func TestRichOrdering_Satisfies_SingleKey(t *testing.T) {
 
 func TestRichOrdering_Satisfies_DirectionMismatch(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -82,7 +84,7 @@ func TestRichOrdering_Satisfies_DirectionMismatch(t *testing.T) {
 
 func TestRichOrdering_Satisfies_AnyDirection(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderDescending)},
@@ -100,8 +102,8 @@ func TestRichOrdering_Satisfies_AnyDirection(t *testing.T) {
 
 func TestRichOrdering_Satisfies_SkipsFixedKeys(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {FixedBinding("eq-5")},
@@ -120,9 +122,9 @@ func TestRichOrdering_Satisfies_SkipsFixedKeys(t *testing.T) {
 
 func TestRichOrdering_Satisfies_WrongKey(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
-	c := fieldVal("c")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -186,8 +188,8 @@ func TestAreAllBindingsFixed(t *testing.T) {
 
 func TestRichOrdering_IsSingularNonFixedValue(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -205,9 +207,9 @@ func TestRichOrdering_IsSingularNonFixedValue(t *testing.T) {
 
 func TestConcatOrderings_Basic(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
-	c := fieldVal("c")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
 
 	outer := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
@@ -237,7 +239,7 @@ func TestConcatOrderings_Basic(t *testing.T) {
 
 func TestConcatOrderings_SkipsDuplicates(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 
 	outer := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
@@ -256,7 +258,7 @@ func TestConcatOrderings_SkipsDuplicates(t *testing.T) {
 
 func TestConcatOrderings_RejectsNonDistinctOuter(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	outer := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -274,8 +276,8 @@ func TestConcatOrderings_RejectsNonDistinctOuter(t *testing.T) {
 
 func TestMergeOrderings_CompatibleDirections(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
 
 	o1 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
@@ -300,7 +302,7 @@ func TestMergeOrderings_CompatibleDirections(t *testing.T) {
 
 func TestMergeOrderings_IncompatibleDirections(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 
 	o1 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
@@ -319,8 +321,8 @@ func TestMergeOrderings_IncompatibleDirections(t *testing.T) {
 
 func TestEnumerateSatisfyingKeys_SimpleMatch(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -343,7 +345,7 @@ func TestEnumerateSatisfyingKeys_SimpleMatch(t *testing.T) {
 
 func TestEnumerateSatisfyingKeys_DirectionMismatch(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -362,7 +364,7 @@ func TestEnumerateSatisfyingKeys_DirectionMismatch(t *testing.T) {
 
 func TestEnumerateSatisfyingKeys_PreserveReturnsAllKeys(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -377,9 +379,9 @@ func TestEnumerateSatisfyingKeys_PreserveReturnsAllKeys(t *testing.T) {
 
 func TestSatisfies_FixedKeyReorderableInPartialOrder(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
-	c := fieldVal("c")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {FixedBinding("eq-3")},
@@ -411,9 +413,9 @@ func TestSatisfies_FixedKeyReorderableInPartialOrder(t *testing.T) {
 
 func TestEnumerateSatisfyingKeys_MultiplePermsWithFixedKeys(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
-	c := fieldVal("c")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {FixedBinding("eq")},
@@ -439,8 +441,8 @@ func TestEnumerateSatisfyingKeys_MultiplePermsWithFixedKeys(t *testing.T) {
 
 func TestDirectionalOrderingParts_Basic(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -464,7 +466,7 @@ func TestDirectionalOrderingParts_Basic(t *testing.T) {
 func TestNaturalComparisonKeyValues_OnlyRawTupleDirections(t *testing.T) {
 	t.Parallel()
 
-	key := fieldVal("key")
+	key := fieldVal(t, "key")
 	tests := []struct {
 		name    string
 		order   ProvidedSortOrder
@@ -504,10 +506,10 @@ func TestNaturalComparisonKeyValues_OnlyRawTupleDirections(t *testing.T) {
 func TestIntersectionOrdering_ExcludesFixedKeysAndPreservesDescendingRequest(t *testing.T) {
 	t.Parallel()
 
-	leftFixed := fieldVal("a")
-	rightFixed := fieldVal("b")
-	sortKey := fieldVal("sort_key")
-	id := fieldVal("id")
+	leftFixed := fieldVal(t, "a")
+	rightFixed := fieldVal(t, "b")
+	sortKey := fieldVal(t, "sort_key")
+	id := fieldVal(t, "id")
 
 	left := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
@@ -530,19 +532,22 @@ func TestIntersectionOrdering_ExcludesFixedKeysAndPreservesDescendingRequest(t *
 	if !merged.IsDistinct() {
 		t.Fatal("intersection ordering must be distinct")
 	}
-	counts := make(map[string]int)
-	for _, key := range merged.GetKeys() {
-		counts[values.ColumnNameValue(key)]++
-	}
-	for _, name := range []string{"a", "b", "sort_key", "id"} {
-		if counts[name] != 1 {
-			t.Fatalf("merged key %q occurs %d times, want exactly once; all counts = %v", name, counts[name], counts)
+	for _, expected := range []values.Value{leftFixed, rightFixed, sortKey, id} {
+		count := 0
+		for _, key := range merged.GetKeys() {
+			if values.ValuesStructurallyEqual(key, expected) {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("merged key %q occurs %d times, want exactly once", values.ExplainValue(expected), count)
 		}
 	}
 
-	// The request is deliberately rebuilt with a different case and Value
-	// identity. Direction lookup must use semantic/normalized key identity.
-	requestedSort := fieldVal("SORT_KEY")
+	// Direction lookup must retain the exact requested coordinate. RFC-232 no
+	// longer permits a separately minted named QOV to impersonate this source
+	// merely because its rendered column differs only by case.
+	requestedSort := sortKey
 	requested := NewRequestedOrdering(
 		[]RequestedOrderingPart{{
 			Value:     requestedSort,
@@ -572,8 +577,8 @@ func TestIntersectionOrdering_ExcludesFixedKeysAndPreservesDescendingRequest(t *
 func TestIntersectionOrdering_FixedPrefixFreesPrimaryKey(t *testing.T) {
 	t.Parallel()
 
-	prefix := fieldVal("a")
-	primaryKey := fieldVal("pk")
+	prefix := fieldVal(t, "a")
+	primaryKey := fieldVal(t, "pk")
 	left := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			prefix:     {SortedBinding(ProvidedSortOrderAscending)},
@@ -614,16 +619,8 @@ func TestIntersectionOrdering_FixedPrefixFreesPrimaryKey(t *testing.T) {
 func TestRichOrdering_DoesNotCollapseDifferentBakedOrdinals(t *testing.T) {
 	t.Parallel()
 
-	provided := values.NewFieldValueWithResolvedOrdinal(
-		"DUP",
-		0,
-		values.UnknownType,
-	)
-	requestedOtherSlot := values.NewFieldValueWithResolvedOrdinal(
-		"DUP",
-		1,
-		values.UnknownType,
-	)
+	provided := propertyFieldAt(t, "DUP", 0, values.NullableLong)
+	requestedOtherSlot := propertyFieldAt(t, "DUP", 1, values.NullableLong)
 	ordering := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			provided: {SortedBinding(ProvidedSortOrderAscending)},
@@ -646,22 +643,22 @@ func TestRichOrdering_DoesNotCollapseDifferentBakedOrdinals(t *testing.T) {
 		t.Fatalf("different baked ordinal produced intersection comparison keys: %#v", got)
 	}
 
-	lazyRequest := NewRequestedOrdering(
+	sameSlotRequest := NewRequestedOrdering(
 		[]RequestedOrderingPart{{
-			Value:     fieldVal("dup"),
+			Value:     propertyFieldAt(t, "DUP", 0, values.NullableLong),
 			SortOrder: RequestedSortOrderAscending,
 		}},
 		DistinctnessNotDistinct,
 		false,
 	)
-	if !ordering.Satisfies(lazyRequest) {
-		t.Fatal("a lazy flat request should still bridge to its uniquely baked provider")
+	if !ordering.Satisfies(sameSlotRequest) {
+		t.Fatal("an exact request for the same baked slot must satisfy its provider")
 	}
 }
 
 func TestConcatOrderings_DistinctnessComesFromInner(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	outer := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
 		[]values.Value{a}, DistinctOverAllKeys())
@@ -679,7 +676,7 @@ func TestConcatOrderings_DistinctnessComesFromInner(t *testing.T) {
 
 func TestRichOrdering_Satisfies_DistinctRequest(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	requested := NewRequestedOrdering(
 		[]RequestedOrderingPart{{
 			Value:     a,
@@ -710,7 +707,7 @@ func TestRichOrdering_Satisfies_DistinctRequest(t *testing.T) {
 
 func TestCreateUnionOrdering_DeepCopy(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
 		[]values.Value{a}, DistinctOverAllKeys())
@@ -725,8 +722,8 @@ func TestCreateUnionOrdering_DeepCopy(t *testing.T) {
 
 func TestMergeOrderings_DisjointKeys(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
 	o1 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {SortedBinding(ProvidedSortOrderAscending)}},
 		[]values.Value{a}, NotDistinct())
@@ -741,8 +738,8 @@ func TestMergeOrderings_DisjointKeys(t *testing.T) {
 
 func TestEnumerateCompatibleRequestedOrderings_Basic(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -771,7 +768,7 @@ func TestEnumerateCompatibleRequestedOrderings_Basic(t *testing.T) {
 
 func TestEnumerateCompatibleRequestedOrderings_IncompatibleDirection(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -790,9 +787,9 @@ func TestEnumerateCompatibleRequestedOrderings_IncompatibleDirection(t *testing.
 
 func TestSatisfiesGroupingValues_Basic(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
-	c := fieldVal("c")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -821,7 +818,7 @@ func TestSatisfiesGroupingValues_Empty(t *testing.T) {
 
 func TestSatisfiesGroupingValues_MissingValue(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {SortedBinding(ProvidedSortOrderAscending)},
@@ -829,7 +826,7 @@ func TestSatisfiesGroupingValues_MissingValue(t *testing.T) {
 		[]values.Value{a},
 		NotDistinct())
 	gv := map[string]struct{}{
-		values.ExplainValue(fieldVal("z")): {},
+		values.ExplainValue(fieldVal(t, "z")): {},
 	}
 	if o.SatisfiesGroupingValues(gv) {
 		t.Fatal("should not satisfy with missing value")
@@ -838,8 +835,8 @@ func TestSatisfiesGroupingValues_MissingValue(t *testing.T) {
 
 func TestSatisfiesGroupingValues_FixedKeysSkippable(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {FixedBinding("eq")},
@@ -857,7 +854,7 @@ func TestSatisfiesGroupingValues_FixedKeysSkippable(t *testing.T) {
 
 func TestMergeOrderings_MergesFixedBindings(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 
 	o1 := NewRichOrdering(
 		map[values.Value][]OrderingBinding{a: {FixedBinding("eq-5")}},
@@ -876,8 +873,8 @@ func TestMergeOrderings_MergesFixedBindings(t *testing.T) {
 
 func TestRichOrdering_PullUp(t *testing.T) {
 	t.Parallel()
-	keyA := fieldVal("a")
-	keyB := fieldVal("b")
+	keyA := fieldVal(t, "a")
+	keyB := fieldVal(t, "b")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyA: {SortedBinding(ProvidedSortOrderAscending)},
@@ -885,15 +882,15 @@ func TestRichOrdering_PullUp(t *testing.T) {
 		},
 		[]values.Value{keyA, keyB}, NotDistinct())
 
-	renamed := fieldVal("x")
-	mapping := map[string]values.Value{"a": renamed}
+	renamed := fieldVal(t, "x")
+	mapping := map[string]values.Value{values.ExplainValue(keyA): renamed}
 	pulled := o.PullUp(mapping)
 
 	if len(pulled.GetKeys()) != 1 {
 		t.Fatalf("expected 1 key after pullup, got %d", len(pulled.GetKeys()))
 	}
-	if values.ExplainValue(pulled.GetKeys()[0]) != "x" {
-		t.Fatalf("expected key 'x', got %q", values.ExplainValue(pulled.GetKeys()[0]))
+	if !values.ValuesStructurallyEqual(pulled.GetKeys()[0], renamed) {
+		t.Fatalf("expected key %q, got %q", values.ExplainValue(renamed), values.ExplainValue(pulled.GetKeys()[0]))
 	}
 	bindings := pulled.GetBindingMap()[renamed]
 	if len(bindings) != 1 || SortOrderOf(bindings) != ProvidedSortOrderAscending {
@@ -903,15 +900,15 @@ func TestRichOrdering_PullUp(t *testing.T) {
 
 func TestRichOrdering_PullUp_AllMapped(t *testing.T) {
 	t.Parallel()
-	keyA := fieldVal("a")
+	keyA := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyA: {FixedBinding(nil)},
 		},
 		[]values.Value{keyA}, DistinctOverAllKeys())
 
-	mapped := fieldVal("b")
-	pulled := o.PullUp(map[string]values.Value{"a": mapped})
+	mapped := fieldVal(t, "b")
+	pulled := o.PullUp(map[string]values.Value{values.ExplainValue(keyA): mapped})
 	if len(pulled.GetKeys()) != 1 {
 		t.Fatalf("expected 1 key, got %d", len(pulled.GetKeys()))
 	}
@@ -922,11 +919,11 @@ func TestRichOrdering_PullUp_AllMapped(t *testing.T) {
 
 func TestRichOrdering_PullUp_NoMatch(t *testing.T) {
 	t.Parallel()
-	keyA := fieldVal("a")
+	keyA := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{keyA: {SortedBinding(ProvidedSortOrderAscending)}},
 		[]values.Value{keyA}, NotDistinct())
-	pulled := o.PullUp(map[string]values.Value{"z": fieldVal("w")})
+	pulled := o.PullUp(map[string]values.Value{"z": fieldVal(t, "w")})
 	if len(pulled.GetKeys()) != 0 {
 		t.Fatalf("expected 0 keys when no mapping matches, got %d", len(pulled.GetKeys()))
 	}
@@ -935,8 +932,8 @@ func TestRichOrdering_PullUp_NoMatch(t *testing.T) {
 func TestRichOrdering_PullUpThroughValue_RecordConstructor(t *testing.T) {
 	t.Parallel()
 	// Ordering: keys [FV("x"), FV("y")], x ASC, y DESC
-	keyX := fieldVal("x")
-	keyY := fieldVal("y")
+	keyX := propertyField(t, "x", values.NullableLong)
+	keyY := propertyField(t, "y", values.NullableString)
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyX: {SortedBinding(ProvidedSortOrderAscending)},
@@ -946,41 +943,42 @@ func TestRichOrdering_PullUpThroughValue_RecordConstructor(t *testing.T) {
 
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
-		values.RecordConstructorField{Name: "b", Value: &values.FieldValue{Field: "y", Typ: values.NullableString}},
+		values.RecordConstructorField{Name: "a", Value: propertyField(t, "x", values.NullableLong)},
+		values.RecordConstructorField{Name: "b", Value: propertyField(t, "y", values.NullableString)},
 	)
 
-	pulled := o.PullUpThroughValue(resultValue, alias)
+	pulled := mustPullUpThroughValue(t, o, resultValue, alias)
 
 	if len(pulled.GetKeys()) != 2 {
 		t.Fatalf("expected 2 keys, got %d", len(pulled.GetKeys()))
 	}
-	if values.ExplainValue(pulled.GetKeys()[0]) != "q1.a" {
-		t.Fatalf("expected first key 'q1.a', got %q", values.ExplainValue(pulled.GetKeys()[0]))
-	}
-	if values.ExplainValue(pulled.GetKeys()[1]) != "q1.b" {
-		t.Fatalf("expected second key 'q1.b', got %q", values.ExplainValue(pulled.GetKeys()[1]))
-	}
-
 	// Pull-up has crossed into q1's output scope, so a request in that scope
 	// must carry the same anchor. A flat "a" key no longer has enough identity
 	// to distinguish same-named columns from different candidate legs.
+	outputQOV := mustQOV(t, alias, exactRecord(
+		values.Field{Name: "a", FieldType: values.NullableLong, Ordinal: 0},
+		values.Field{Name: "b", FieldType: values.NullableString, Ordinal: 1},
+	))
+	if !values.ValuesStructurallyEqual(pulled.GetKeys()[0], propertyFieldFrom(t, outputQOV, "a")) {
+		t.Fatalf("first pulled key = %q, want output field a", values.ExplainValue(pulled.GetKeys()[0]))
+	}
+	if !values.ValuesStructurallyEqual(pulled.GetKeys()[1], propertyFieldFrom(t, outputQOV, "b")) {
+		t.Fatalf("second pulled key = %q, want output field b", values.ExplainValue(pulled.GetKeys()[1]))
+	}
 	requested := NewRequestedOrdering(
 		[]RequestedOrderingPart{
 			{
-				Value: values.NewFieldValue(
-					values.NewQuantifiedObjectValue(alias),
-					"a",
-					values.NullableLong,
-				),
+				Value: propertyFieldFrom(t,
+					outputQOV,
+					"a"),
+
 				SortOrder: RequestedSortOrderAscending,
 			},
 			{
-				Value: values.NewFieldValue(
-					values.NewQuantifiedObjectValue(alias),
-					"b",
-					values.NullableString,
-				),
+				Value: propertyFieldFrom(t,
+					outputQOV,
+					"b"),
+
 				SortOrder: RequestedSortOrderDescending,
 			},
 		},
@@ -992,11 +990,32 @@ func TestRichOrdering_PullUpThroughValue_RecordConstructor(t *testing.T) {
 	}
 }
 
+func TestRichOrdering_PullUpThroughValue_PropagatesValueError(t *testing.T) {
+	t.Parallel()
+
+	key := values.LiteralValue(int64(1))
+	ordering := NewRichOrdering(
+		map[values.Value][]OrderingBinding{
+			key: {SortedBinding(ProvidedSortOrderAscending)},
+		},
+		[]values.Value{key},
+		NotDistinct(),
+	)
+
+	pulled, err := ordering.PullUpThroughValue(key, values.CorrelationIdentifier{})
+	if err == nil {
+		t.Fatal("PullUpThroughValue with a zero output alias returned nil error")
+	}
+	if pulled != nil {
+		t.Fatalf("PullUpThroughValue returned %#v with an error, want nil", pulled)
+	}
+}
+
 func TestRichOrdering_PullUpThroughValue_PartialMatch(t *testing.T) {
 	t.Parallel()
 	// Only some keys match the result value.
-	keyX := fieldVal("x")
-	keyZ := fieldVal("z")
+	keyX := fieldVal(t, "x")
+	keyZ := fieldVal(t, "z")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyX: {SortedBinding(ProvidedSortOrderAscending)},
@@ -1006,23 +1025,26 @@ func TestRichOrdering_PullUpThroughValue_PartialMatch(t *testing.T) {
 
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "a", Value: propertyField(t, "x", values.NullableLong)},
 	)
 
-	pulled := o.PullUpThroughValue(resultValue, alias)
+	pulled := mustPullUpThroughValue(t, o, resultValue, alias)
 
 	if len(pulled.GetKeys()) != 1 {
 		t.Fatalf("expected 1 key (z dropped), got %d", len(pulled.GetKeys()))
 	}
-	if values.ExplainValue(pulled.GetKeys()[0]) != "q1.a" {
-		t.Fatalf("expected key 'q1.a', got %q", values.ExplainValue(pulled.GetKeys()[0]))
+	expectedQOV := mustQOV(t, alias, exactRecord(
+		values.Field{Name: "a", FieldType: values.NullableLong},
+	))
+	if !values.ValuesStructurallyEqual(pulled.GetKeys()[0], propertyFieldFrom(t, expectedQOV, "a")) {
+		t.Fatalf("expected output field a, got %q", values.ExplainValue(pulled.GetKeys()[0]))
 	}
 }
 
 func TestRichOrdering_PullUpThroughValue_PreservesIndependentKeys(t *testing.T) {
 	t.Parallel()
-	keyX := fieldVal("x")
-	keyY := fieldVal("y")
+	keyX := fieldVal(t, "x")
+	keyY := fieldVal(t, "y")
 	ordering := NewRichOrderingWithDeps(
 		map[values.Value][]OrderingBinding{
 			keyX: {SortedBinding(ProvidedSortOrderAscending)},
@@ -1037,26 +1059,28 @@ func TestRichOrdering_PullUpThroughValue_PreservesIndependentKeys(t *testing.T) 
 		values.RecordConstructorField{Name: "b", Value: keyY},
 	)
 
-	pulled := ordering.PullUpThroughValue(resultValue, alias)
+	pulled := mustPullUpThroughValue(t, ordering, resultValue, alias)
 	if got := pulled.OrderingSet().DependencyMap().Size(); got != 0 {
 		t.Fatalf("pull-up invented %d dependencies between independent keys", got)
 	}
+	outputQOV := mustQOV(t, alias, exactRecord(
+		values.Field{Name: "a", FieldType: values.NullableLong, Ordinal: 0},
+		values.Field{Name: "b", FieldType: values.NullableLong, Ordinal: 1},
+	))
 	reversed := NewRequestedOrdering(
 		[]RequestedOrderingPart{
 			{
-				Value: values.NewFieldValue(
-					values.NewQuantifiedObjectValue(alias),
-					"b",
-					values.UnknownType,
-				),
+				Value: propertyFieldFrom(t,
+					outputQOV,
+					"b"),
+
 				SortOrder: RequestedSortOrderAscending,
 			},
 			{
-				Value: values.NewFieldValue(
-					values.NewQuantifiedObjectValue(alias),
-					"a",
-					values.UnknownType,
-				),
+				Value: propertyFieldFrom(t,
+					outputQOV,
+					"a"),
+
 				SortOrder: RequestedSortOrderAscending,
 			},
 		},
@@ -1070,9 +1094,9 @@ func TestRichOrdering_PullUpThroughValue_PreservesIndependentKeys(t *testing.T) 
 
 func TestRichOrdering_PullUpThroughValue_DropsDependentWithMissingPrerequisite(t *testing.T) {
 	t.Parallel()
-	keyA := fieldVal("a")
-	keyB := fieldVal("b")
-	keyC := fieldVal("c")
+	keyA := fieldVal(t, "a")
+	keyB := fieldVal(t, "b")
+	keyC := fieldVal(t, "c")
 	deps := combinatorics.NewSetMultimap[string]()
 	deps.Put(values.ExplainValue(keyB), values.ExplainValue(keyA))
 	deps.Put(values.ExplainValue(keyC), values.ExplainValue(keyB))
@@ -1091,18 +1115,22 @@ func TestRichOrdering_PullUpThroughValue_DropsDependentWithMissingPrerequisite(t
 		values.RecordConstructorField{Name: "last", Value: keyC},
 	)
 
-	pulled := ordering.PullUpThroughValue(resultValue, alias)
+	pulled := mustPullUpThroughValue(t, ordering, resultValue, alias)
 	if got := len(pulled.GetKeys()); got != 1 {
 		t.Fatalf("expected only the independent prefix after dropping b, got %d keys", got)
 	}
-	if got := values.ExplainValue(pulled.GetKeys()[0]); got != "out.first" {
-		t.Fatalf("surviving key = %q, want out.first", got)
+	expectedQOV := mustQOV(t, alias, exactRecord(
+		values.Field{Name: "first", FieldType: values.NullableLong},
+		values.Field{Name: "last", FieldType: values.NullableLong},
+	))
+	if !values.ValuesStructurallyEqual(pulled.GetKeys()[0], propertyFieldFrom(t, expectedQOV, "first")) {
+		t.Fatalf("surviving key = %q, want output field first", values.ExplainValue(pulled.GetKeys()[0]))
 	}
 }
 
 func TestRichOrdering_PullUpThroughValue_PreservesBindings(t *testing.T) {
 	t.Parallel()
-	keyX := fieldVal("x")
+	keyX := fieldVal(t, "x")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyX: {FixedBinding(nil)},
@@ -1111,10 +1139,10 @@ func TestRichOrdering_PullUpThroughValue_PreservesBindings(t *testing.T) {
 
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "renamed", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "renamed", Value: propertyField(t, "x", values.NullableLong)},
 	)
 
-	pulled := o.PullUpThroughValue(resultValue, alias)
+	pulled := mustPullUpThroughValue(t, o, resultValue, alias)
 	if !pulled.IsDistinct() {
 		t.Fatal("expected distinct flag preserved")
 	}
@@ -1126,9 +1154,16 @@ func TestRichOrdering_PullUpThroughValue_PreservesBindings(t *testing.T) {
 
 func TestRichOrdering_PushDownThroughValue_RecordConstructor(t *testing.T) {
 	t.Parallel()
-	// Ordering in output space: keys [FV("a"), FV("b")], a ASC, b DESC
-	keyA := outputSlot("a", 0)
-	keyB := outputSlot("b", 1)
+	upperAlias := values.NamedCorrelationIdentifier("q1")
+	sourceX := propertyField(t, "x", values.NullableLong)
+	sourceY := propertyField(t, "y", values.NullableString)
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: sourceX},
+		values.RecordConstructorField{Name: "b", Value: sourceY},
+	)
+	// Ordering in output space: keys [FV("a"), FV("b")], a ASC, b DESC.
+	keyA := outputSlot(t, upperAlias, resultValue, 0)
+	keyB := outputSlot(t, upperAlias, resultValue, 1)
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyA: {SortedBinding(ProvidedSortOrderAscending)},
@@ -1136,22 +1171,16 @@ func TestRichOrdering_PushDownThroughValue_RecordConstructor(t *testing.T) {
 		},
 		[]values.Value{keyA, keyB}, NotDistinct())
 
-	upperAlias := values.NamedCorrelationIdentifier("q1")
-	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
-		values.RecordConstructorField{Name: "b", Value: &values.FieldValue{Field: "y", Typ: values.NullableString}},
-	)
-
 	pushed := o.PushDownThroughValue(resultValue, upperAlias)
 
 	if len(pushed.GetKeys()) != 2 {
 		t.Fatalf("expected 2 keys, got %d", len(pushed.GetKeys()))
 	}
-	if values.ExplainValue(pushed.GetKeys()[0]) != "x" {
-		t.Fatalf("expected first key 'x', got %q", values.ExplainValue(pushed.GetKeys()[0]))
+	if !values.ValuesStructurallyEqual(pushed.GetKeys()[0], sourceX) {
+		t.Fatalf("first key = %q, want exact source x", values.ExplainValue(pushed.GetKeys()[0]))
 	}
-	if values.ExplainValue(pushed.GetKeys()[1]) != "y" {
-		t.Fatalf("expected second key 'y', got %q", values.ExplainValue(pushed.GetKeys()[1]))
+	if !values.ValuesStructurallyEqual(pushed.GetKeys()[1], sourceY) {
+		t.Fatalf("second key = %q, want exact source y", values.ExplainValue(pushed.GetKeys()[1]))
 	}
 }
 
@@ -1160,8 +1189,8 @@ func TestRichOrdering_PullUpPushDown_RoundTrip(t *testing.T) {
 	// The constructor's INPUTS are baked source-relative reads, which is what the
 	// translator produces and what makes pull-up carry the ordinal through — the
 	// push-down back down selects the member by that ordinal, never by a name.
-	keyX := outputSlot("x", 0)
-	keyY := outputSlot("y", 1)
+	keyX := propertyField(t, "x", values.NullableLong)
+	keyY := propertyField(t, "y", values.NullableString)
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			keyX: {SortedBinding(ProvidedSortOrderAscending)},
@@ -1176,7 +1205,7 @@ func TestRichOrdering_PullUpPushDown_RoundTrip(t *testing.T) {
 	)
 
 	// PullUp: x→a, y→b
-	pulled := o.PullUpThroughValue(resultValue, alias)
+	pulled := mustPullUpThroughValue(t, o, resultValue, alias)
 	// PushDown back: a→x, b→y
 	restored := pulled.PushDownThroughValue(resultValue, alias)
 
@@ -1196,28 +1225,29 @@ func TestRichOrdering_PullUpThroughValue_NilOrdering(t *testing.T) {
 	var o *RichOrdering
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "a", Value: propertyField(t, "x", values.NullableLong)},
 	)
-	if o.PullUpThroughValue(resultValue, alias) != nil {
+	if mustPullUpThroughValue(t, o, resultValue, alias) != nil {
 		t.Fatal("expected nil for nil ordering")
 	}
 }
 
 func TestRequestedOrdering_PushDownThroughValue(t *testing.T) {
 	t.Parallel()
+	upperAlias := values.NamedCorrelationIdentifier("q1")
+	sourceX := propertyField(t, "x", values.NullableLong)
+	sourceY := propertyField(t, "y", values.NullableString)
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: sourceX},
+		values.RecordConstructorField{Name: "b", Value: sourceY},
+	)
 	req := NewRequestedOrdering(
 		[]RequestedOrderingPart{
-			{Value: outputSlot("a", 0), SortOrder: RequestedSortOrderAscending},
-			{Value: outputSlot("b", 1), SortOrder: RequestedSortOrderDescending},
+			{Value: outputSlot(t, upperAlias, resultValue, 0), SortOrder: RequestedSortOrderAscending},
+			{Value: outputSlot(t, upperAlias, resultValue, 1), SortOrder: RequestedSortOrderDescending},
 		},
 		DistinctnessNotDistinct,
 		false,
-	)
-
-	upperAlias := values.NamedCorrelationIdentifier("q1")
-	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
-		values.RecordConstructorField{Name: "b", Value: &values.FieldValue{Field: "y", Typ: values.NullableString}},
 	)
 
 	pushed := req.PushDownThroughValue(resultValue, upperAlias)
@@ -1226,14 +1256,14 @@ func TestRequestedOrdering_PushDownThroughValue(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("expected 2 parts, got %d", len(parts))
 	}
-	if values.ExplainValue(parts[0].Value) != "x" {
-		t.Fatalf("expected first value 'x', got %q", values.ExplainValue(parts[0].Value))
+	if !values.ValuesStructurallyEqual(parts[0].Value, sourceX) {
+		t.Fatalf("first value = %q, want exact source x", values.ExplainValue(parts[0].Value))
 	}
 	if parts[0].SortOrder != RequestedSortOrderAscending {
 		t.Fatalf("expected ascending, got %v", parts[0].SortOrder)
 	}
-	if values.ExplainValue(parts[1].Value) != "y" {
-		t.Fatalf("expected second value 'y', got %q", values.ExplainValue(parts[1].Value))
+	if !values.ValuesStructurallyEqual(parts[1].Value, sourceY) {
+		t.Fatalf("second value = %q, want exact source y", values.ExplainValue(parts[1].Value))
 	}
 	if parts[1].SortOrder != RequestedSortOrderDescending {
 		t.Fatalf("expected descending, got %v", parts[1].SortOrder)
@@ -1245,7 +1275,7 @@ func TestRequestedOrdering_PushDownThroughValue_Preserve(t *testing.T) {
 	req := PreserveOrdering()
 	alias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "a", Value: propertyField(t, "x", values.NullableLong)},
 	)
 	pushed := req.PushDownThroughValue(resultValue, alias)
 	if !pushed.IsPreserve() {
@@ -1255,18 +1285,18 @@ func TestRequestedOrdering_PushDownThroughValue_Preserve(t *testing.T) {
 
 func TestRequestedOrdering_PushDownThroughValue_PartialDrop(t *testing.T) {
 	t.Parallel()
+	upperAlias := values.NamedCorrelationIdentifier("q1")
+	sourceX := propertyField(t, "x", values.NullableLong)
+	resultValue := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "a", Value: sourceX},
+	)
 	req := NewRequestedOrdering(
 		[]RequestedOrderingPart{
-			{Value: outputSlot("a", 0), SortOrder: RequestedSortOrderAscending},
-			{Value: outputSlot("z", 7), SortOrder: RequestedSortOrderDescending}, // not in result
+			{Value: outputSlot(t, upperAlias, resultValue, 0), SortOrder: RequestedSortOrderAscending},
+			{Value: values.LiteralValue(int64(7)), SortOrder: RequestedSortOrderDescending},
 		},
 		DistinctnessNotDistinct,
 		false,
-	)
-
-	upperAlias := values.NamedCorrelationIdentifier("q1")
-	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
 	)
 
 	pushed := req.PushDownThroughValue(resultValue, upperAlias)
@@ -1274,8 +1304,8 @@ func TestRequestedOrdering_PushDownThroughValue_PartialDrop(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("expected 1 part (z dropped), got %d", len(parts))
 	}
-	if values.ExplainValue(parts[0].Value) != "x" {
-		t.Fatalf("expected value 'x', got %q", values.ExplainValue(parts[0].Value))
+	if !values.ValuesStructurallyEqual(parts[0].Value, sourceX) {
+		t.Fatalf("value = %q, want exact source x", values.ExplainValue(parts[0].Value))
 	}
 }
 
@@ -1283,7 +1313,7 @@ func TestRequestedOrdering_PushDownThroughValue_AllDropped(t *testing.T) {
 	t.Parallel()
 	req := NewRequestedOrdering(
 		[]RequestedOrderingPart{
-			{Value: fieldVal("z"), SortOrder: RequestedSortOrderAscending},
+			{Value: values.LiteralValue(int64(7)), SortOrder: RequestedSortOrderAscending},
 		},
 		DistinctnessNotDistinct,
 		false,
@@ -1291,7 +1321,7 @@ func TestRequestedOrdering_PushDownThroughValue_AllDropped(t *testing.T) {
 
 	upperAlias := values.NamedCorrelationIdentifier("q1")
 	resultValue := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "a", Value: &values.FieldValue{Field: "x", Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "a", Value: propertyField(t, "x", values.NullableLong)},
 	)
 
 	pushed := req.PushDownThroughValue(resultValue, upperAlias)
@@ -1302,9 +1332,9 @@ func TestRequestedOrdering_PushDownThroughValue_AllDropped(t *testing.T) {
 
 func TestRichOrdering_GetEqualityBoundValues(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
-	c := fieldVal("c")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {FixedBinding(nil)},
@@ -1330,7 +1360,7 @@ func TestRichOrdering_GetEqualityBoundValues(t *testing.T) {
 
 func TestRichOrdering_GetEqualityBoundValues_MixedBindings(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {FixedBinding(nil), SortedBinding(ProvidedSortOrderAscending)},
@@ -1354,9 +1384,9 @@ func TestRichOrdering_GetEqualityBoundValues_Empty(t *testing.T) {
 
 func TestRichOrdering_GetOrderingKeys(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
-	b := fieldVal("b")
-	c := fieldVal("c")
+	a := fieldVal(t, "a")
+	b := fieldVal(t, "b")
+	c := fieldVal(t, "c")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {FixedBinding(nil)},
@@ -1376,7 +1406,7 @@ func TestRichOrdering_GetOrderingKeys(t *testing.T) {
 
 func TestRichOrdering_GetOrderingKeys_AllFixed(t *testing.T) {
 	t.Parallel()
-	a := fieldVal("a")
+	a := fieldVal(t, "a")
 	o := NewRichOrdering(
 		map[values.Value][]OrderingBinding{
 			a: {FixedBinding(nil)},

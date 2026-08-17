@@ -7,14 +7,43 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func smallImplementRowType() *values.RecordType {
+	return values.NewRecordType("SmallImplementRuleRow", false, []values.Field{{
+		Name: "ID", FieldType: values.NotNullLong,
+	}})
+}
+
+func mustSmallImplementConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct small implementation-rule fixture: " + err.Error())
+	}
+	return value
+}
+
+func smallImplementScan(recordType string) *expressions.FullUnorderedScanExpression {
+	return mustSmallImplementConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, smallImplementRowType()))
+}
+
+func fireSmallImplementRule(
+	t testing.TB, rule ExpressionRule, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return result
+}
+
 func TestImplementLimit_Fires(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallImplementScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	lim := expressions.NewLogicalLimitExpression(10, 0, scanQ)
+	lim := mustSmallImplementConstruct(expressions.NewLogicalLimitExpression(10, 0, scanQ))
 	ref := expressions.InitialOf(lim)
 
 	rules := DefaultExpressionRules()
@@ -36,11 +65,11 @@ func TestImplementLimit_Fires(t *testing.T) {
 func TestImplementLimit_WithOffset(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallImplementScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	lim := expressions.NewLogicalLimitExpression(5, 20, scanQ)
+	lim := mustSmallImplementConstruct(expressions.NewLogicalLimitExpression(5, 20, scanQ))
 	ref := expressions.InitialOf(lim)
 
 	rules := DefaultExpressionRules()
@@ -68,11 +97,11 @@ func TestImplementLimit_WithOffset(t *testing.T) {
 func TestImplementLimit_LimitOverScan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := smallImplementScan("T")
 	scanRef := expressions.InitialOf(scan)
 	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	lim := expressions.NewLogicalLimitExpression(10, 0, scanQ)
+	lim := mustSmallImplementConstruct(expressions.NewLogicalLimitExpression(10, 0, scanQ))
 	ref := expressions.InitialOf(lim)
 
 	rules := DefaultExpressionRules()

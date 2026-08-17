@@ -1,20 +1,28 @@
 package cascades
 
 import (
+	"fmt"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRebaseLayoutConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct rebase-layout fixture: " + err.Error())
+	}
+	return value
+}
+
 // legRowType is a join leg's own row layout — what its quantifier flows, and
 // therefore the domain a leg-relative ordinal indexes.
 func legRowType(cols ...string) *values.RecordType {
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
-		fields[i] = values.Field{Name: c, FieldType: values.UnknownType, Ordinal: i}
+		fields[i] = values.Field{Name: c, FieldType: values.NotNullLong, Ordinal: i}
 	}
-	return &values.RecordType{Fields: fields}
+	return values.NewRecordType("RebaseLegRow", false, fields)
 }
 
 // legRead is a BARE column read off a join leg: the leg's quantifier flows the
@@ -22,23 +30,54 @@ func legRowType(cols ...string) *values.RecordType {
 // in that type — the resolver's construction bind (expr.go:278-284), which is
 // what reaches this rebase. A FrontierPinned bake reaching it is a planner bug
 // the rebase asserts on, so the fixture must not build one.
-func legRead(leg string, rt *values.RecordType, ordinal int) *values.FieldValue {
-	qov := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(leg), rt)
-	return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		qov, rt.Fields[ordinal].Name, ordinal, values.UnknownType, values.OrdinalDomainOfType(rt),
-	)
+func legRead(leg string, rt *values.RecordType, ordinal int) values.FieldValue {
+	qov := mustRebaseLayoutConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(leg), rt))
+	resolved := mustRebaseLayoutConstruct(values.ResolveFieldOrdinals(qov, []int{ordinal}))
+	field, ok := values.AsFieldValue(resolved)
+	if !ok {
+		panic(fmt.Sprintf("resolved leg read is %T, not FieldValue", resolved))
+	}
+	return field
 }
 
 // legRC builds the positional RecordConstructorValue concat a FlatMap outer
 // carries: each slot is a bare read off one leg, names bare (duplicates across
 // legs allowed — the layout is positional, and the whole point is that two
 // legs' same-named columns are different columns).
-func legRC(reads ...*values.FieldValue) *values.RecordConstructorValue {
+func legRC(reads ...values.FieldValue) *values.RecordConstructorValue {
 	fields := make([]values.RecordConstructorField, len(reads))
 	for i, r := range reads {
-		fields[i] = values.RecordConstructorField{Name: r.Field, Value: r}
+		fields[i] = values.RecordConstructorField{Name: r.DisplayName(), Value: r}
 	}
-	return values.NewRecordConstructorValue(fields...)
+	return values.NewRawRecordConstructorValue(fields...)
+}
+
+func fusedLegRead(leg string) values.FieldValue {
+	nested := values.NewRecordType("RebaseNested", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	rootType := values.NewRecordType("RebaseFusedLeg", false, []values.Field{
+		{Name: "ADDRESS", FieldType: nested, Ordinal: 0},
+	})
+	root := mustRebaseLayoutConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(leg), rootType))
+	resolved := mustRebaseLayoutConstruct(values.ResolveFieldOrdinals(root, []int{0, 0}))
+	field, ok := values.AsFieldValue(resolved)
+	if !ok {
+		panic(fmt.Sprintf("resolved fused leg read is %T, not FieldValue", resolved))
+	}
+	return field
+}
+
+func rebaseMergedRowType(arity int) values.Type {
+	fields := make([]values.Field, arity)
+	for i := range fields {
+		fields[i] = values.Field{
+			Name: values.OrdinalFieldName(i), FieldType: values.NotNullLong, Ordinal: i,
+		}
+	}
+	return values.NewRecordType("RebaseMergedRow", false, fields)
 }
 
 // TestBuriedLegOrdinalLayout pins the COLUMN IDENTITY → global-ordinal
@@ -56,19 +95,20 @@ func TestBuriedLegOrdinalLayout(t *testing.T) {
 	aID, aFlag := legRead("A", aType, 0), legRead("A", aType, 1)
 	bID, bAID := legRead("B", bType, 0), legRead("B", bType, 1)
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	fm := plans.NewRecordQueryFlatMapPlan(
+	scan := mustRebaseLayoutConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, legRowType("SCAN_ID"), false))
+	fm := mustRebaseLayoutConstruct(plans.NewRecordQueryFlatMapPlan(
 		scan, scan,
 		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"),
 		legRC(aID, aFlag, bID, bAID),
 		false,
-	)
+	))
 	layout := buriedLegOrdinalLayout(fm)
 	if layout == nil {
 		t.Fatal("RC-concat FlatMap outer must derive a layout")
 	}
 	for _, tc := range []struct {
-		read *values.FieldValue
+		read values.FieldValue
 		want int
 	}{{aID, 0}, {aFlag, 1}, {bID, 2}, {bAID, 3}} {
 		id, ok := legSlotIdentity(tc.read)
@@ -89,30 +129,29 @@ func TestBuriedLegOrdinalLayout(t *testing.T) {
 		t.Fatal("A.ID and B.ID share one identity — ordinal 0 of two legs are different columns")
 	}
 
-	// A LAZY slot states no identity and mints no key, so a layout of only lazy
-	// slots is no layout at all. It used to mint a name-built key for every one
-	// of them.
-	lazySlot := values.NewFieldValue(
-		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), aType),
-		"ID", values.UnknownType,
-	)
-	fmLazy := plans.NewRecordQueryFlatMapPlan(
+	// A fused nested slot states no BARE-leg identity and mints no key, so a
+	// layout containing only such slots is no layout at all. RFC-232 no longer
+	// admits the former unresolved/lazy FieldValue adversary.
+	fusedSlot := fusedLegRead("A")
+	fmFused := mustRebaseLayoutConstruct(plans.NewRecordQueryFlatMapPlan(
 		scan, scan,
 		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"),
-		values.NewRecordConstructorValue(values.RecordConstructorField{Name: "ID", Value: lazySlot}),
+		values.NewRawRecordConstructorValue(values.RecordConstructorField{Name: "ID", Value: fusedSlot}),
 		false,
-	)
-	if got := buriedLegOrdinalLayout(fmLazy); got != nil {
-		t.Fatalf("a constructor of LAZY slots states no layout, got %v", got)
+	))
+	if got := buriedLegOrdinalLayout(fmFused); got != nil {
+		t.Fatalf("a constructor of fused nested slots states no bare-leg layout, got %v", got)
 	}
 
 	// Underivable: a FlatMap whose result value is not an RC concat.
-	fmNoRC := plans.NewRecordQueryFlatMapPlan(
+	scalarResult := mustRebaseLayoutConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("A"), values.NotNullLong))
+	fmNoRC := mustRebaseLayoutConstruct(plans.NewRecordQueryFlatMapPlan(
 		scan, scan,
 		values.NamedCorrelationIdentifier("A"), values.NamedCorrelationIdentifier("B"),
-		values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("A")), "ID", values.UnknownType),
+		scalarResult,
 		false,
-	)
+	))
 	if buriedLegOrdinalLayout(fmNoRC) != nil {
 		t.Fatal("non-RC FlatMap outer must not claim a layout")
 	}
@@ -122,11 +161,11 @@ func TestBuriedLegOrdinalLayout(t *testing.T) {
 	// every key it could mint would be a name. Declining costs the lazy
 	// qualified mint, which is what an underivable outer already gets.
 	rt := legRowType("X", "Y")
-	typedScan := plans.NewRecordQueryScanPlan([]string{"T"}, rt, false)
-	nlj := plans.NewRecordQueryNestedLoopJoinPlan(
+	typedScan := mustRebaseLayoutConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, rt, false))
+	nlj := mustRebaseLayoutConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
 		typedScan, typedScan, nil, plans.JoinInner, values.NamedCorrelationIdentifier("L"), values.NamedCorrelationIdentifier("R"),
 		values.NewRecordConstructorValue(),
-	)
+	))
 	if got := buriedLegOrdinalLayout(nlj); got != nil {
 		t.Fatalf("the NLJ-chain shape states only column NAMES and must decline, got %v", got)
 	}
@@ -146,6 +185,7 @@ func TestBuriedLegOrdinalLayout(t *testing.T) {
 func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	t.Parallel()
 	mergedCorr := values.NamedCorrelationIdentifier("$m")
+	mergedType := rebaseMergedRowType(5)
 	aType := legRowType("A_ID", "FLAG")
 	legRef := legRead("A", aType, 0)
 	legID, ok := legSlotIdentity(legRef)
@@ -154,13 +194,14 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	}
 
 	// Layout answers → born baked at the global ordinal.
-	baked := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
-	fv, isFV := baked.(*values.FieldValue)
+	baked := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, mergedType,
+		map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
+	fv, isFV := values.AsFieldValue(baked)
 	if !isFV {
 		t.Fatalf("got %T", baked)
 	}
-	if fv.Resolved == nil || fv.Resolved.Root().Ordinal != 3 {
-		t.Fatalf("want baked ordinal 3, got resolved=%v", fv.Resolved)
+	if fv.Path() == nil || len(fv.Path().Ordinals()) != 1 || fv.Path().Ordinals()[0] != 3 {
+		t.Fatalf("want baked ordinal 3, got path=%v", fv.Path())
 	}
 	// THE RE-ANCHORED NODE MUST NOT SPELL ITS LEG. Java re-anchors a collapsed
 	// alias as `FieldValue.ofOrdinalNumber(QOV(newUpper), index)`
@@ -178,16 +219,16 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	// back — and the message names what that costs, because the failure looks
 	// cosmetic and is not: a leg-qualified name on this node is a string key the
 	// executor's merged-row binder can resolve by, which is the whole channel.
-	if want := values.OrdinalFieldName(3); fv.Field != want {
+	if want := values.OrdinalFieldName(3); fv.DisplayName() != want {
 		t.Fatalf("display field: got %q, want %q — the re-anchored node must carry "+
 			"Java's null-named ordinal accessor (FieldValue.java:335-338, reached from "+
 			"PartitionSelectRule.java:296-303), not a leg-qualified string. The "+
 			"collapsed alias CEASES TO EXIST at a re-anchor, so there is nothing left "+
 			"to spell; a name like \"A.A_ID\" here is the RFC-197 leg-in-the-name "+
-			"channel returning at rebaseOuterLegValue's ARM 1.", fv.Field, want)
+			"channel returning at rebaseOuterLegValue's ARM 1.", fv.DisplayName(), want)
 	}
-	if qov, isQ := fv.Child.(*values.QuantifiedObjectValue); !isQ || qov.Correlation != mergedCorr {
-		t.Fatalf("child must be QOV($m), got %T", fv.Child)
+	if qov, isQ := values.AsQuantifiedObjectValue(fv.ChildValue()); !isQ || qov.Correlation() != mergedCorr {
+		t.Fatalf("child must be QOV($m), got %T", fv.ChildValue())
 	}
 
 	// A layout entry for the SAME column of a DIFFERENT leg must not answer. The
@@ -197,7 +238,8 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	// different row type would let the domain do the refusing and the test would
 	// pass with the correlation dropped entirely.
 	otherLegID, _ := legSlotIdentity(legRead("B", aType, 0))
-	miss := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{otherLegID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
+	miss := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, mergedType,
+		map[values.ColumnIdentity]int{otherLegID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	if miss != values.Value(legRef) {
 		t.Fatalf("a SELF-JOIN twin leg's identical column answered the lookup: the read "+
 			"was rewritten to %v — ordinal 0 of two quantifiers are different columns, "+
@@ -207,24 +249,23 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 			"that leg's own window.", miss)
 	}
 
-	// A LAZY reference states no identity, so it finds nothing rather than
-	// finding whatever its display name spells — and, since the mint is gone,
-	// finding nothing means it is returned as it arrived.
-	lazyRef := values.NewFieldValue(
-		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("A"), aType),
-		"A_ID", values.UnknownType,
-	)
-	lazyOut := rebaseOuterLegValue(lazyRef, []string{"A"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
-	if lazyOut != values.Value(lazyRef) {
-		t.Fatalf("a lazy reference was rewritten to %v. It states no identity, so the "+
+	// A fused nested reference states no bare-leg identity, so it finds nothing
+	// rather than finding whatever its display name spells. RFC-232 removes the
+	// former unresolved/lazy carrier while preserving this decline arm.
+	fusedRef := fusedLegRead("A")
+	fusedOut := rebaseOuterLegValue(fusedRef, []string{"A"}, mergedCorr, mergedType,
+		map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
+	if fusedOut != values.Value(fusedRef) {
+		t.Fatalf("a fused nested reference was rewritten to %v. It states no bare-leg identity, so the "+
 			"layout cannot key it and there is nothing left to key it BY except its "+
-			"display name — which is the channel this arm no longer has.", lazyOut)
+			"display name — which is the channel this arm no longer has.", fusedOut)
 	}
 
 	// No layout → the PASS-THROUGH. The read already names its leg and already
 	// carries its ordinal in that leg's domain, so re-anchoring it onto the merge
 	// correlation would trade a stated identity for a name.
-	lazy2 := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, nil, nil, legRebaseOrigin{Site: legRebaseSiteExists})
+	lazy2 := rebaseOuterLegValue(legRef, []string{"A"}, mergedCorr, mergedType,
+		nil, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	if lazy2 != values.Value(legRef) {
 		t.Fatalf("a nil layout rewrote the read to %v. With no merged layout to state "+
 			"an ordinal in, the reference's OWN leg-local ordinal is the only honest "+
@@ -232,7 +273,8 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 	}
 
 	// Non-matching leg → untouched.
-	same := rebaseOuterLegValue(legRef, []string{"Z"}, mergedCorr, map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
+	same := rebaseOuterLegValue(legRef, []string{"Z"}, mergedCorr, mergedType,
+		map[values.ColumnIdentity]int{legID: 3}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 	if same != legRef {
 		t.Fatal("non-matching leg must return the value unchanged")
 	}
@@ -274,30 +316,32 @@ func TestRebaseOuterLegValue_OrdinalFirst(t *testing.T) {
 func TestMergedOuterLegAliasesIsIdentitiesOnly(t *testing.T) {
 	t.Parallel()
 	mergedCorr := values.NamedCorrelationIdentifier("$m")
+	mergedType := rebaseMergedRowType(5)
 	rt := legRowType("K")
 
 	// assertRebasedByAliasSet drives the rebase with a layout the read's own
 	// identity keys, so a MATCHED alias re-anchors onto the merged ordinal and an
 	// unmatched one returns the read untouched.
-	assertRebasedByAliasSet := func(t *testing.T, set []string, ref *values.FieldValue, because string) {
+	assertRebasedByAliasSet := func(t *testing.T, set []string, ref values.FieldValue, because string) {
 		t.Helper()
 		id, ok := legSlotIdentity(ref)
 		if !ok {
 			t.Fatal("test setup: a bare leg read must state an identity")
 		}
-		out := rebaseOuterLegValue(ref, set, mergedCorr, map[values.ColumnIdentity]int{id: 4}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
-		fv, isFV := out.(*values.FieldValue)
+		out := rebaseOuterLegValue(ref, set, mergedCorr, mergedType,
+			map[values.ColumnIdentity]int{id: 4}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
+		fv, isFV := values.AsFieldValue(out)
 		if !isFV {
 			t.Fatalf("rebase returned %T", out)
 		}
-		if fv == ref || fv.Resolved == nil || fv.Resolved.Root().Ordinal != 4 {
+		if fv == ref || fv.Path() == nil || len(fv.Path().Ordinals()) != 1 || fv.Path().Ordinals()[0] != 4 {
 			t.Errorf("reference to leg %s was NOT re-anchored (alias set %v).\n  %s\n"+
 				"  An un-rebased leg reference is unbound inside the FlatMap: it evaluates\n"+
-				"  to NULL and the EXISTS drops rows.", ref.Child, set, because)
+				"  to NULL and the EXISTS drops rows.", ref.ChildValue(), set, because)
 			return
 		}
-		if qov, isQ := fv.Child.(*values.QuantifiedObjectValue); !isQ || qov.Correlation != mergedCorr {
-			t.Errorf("re-anchored child = %T, want QOV($m)", fv.Child)
+		if qov, isQ := values.AsQuantifiedObjectValue(fv.ChildValue()); !isQ || qov.Correlation() != mergedCorr {
+			t.Errorf("re-anchored child = %T, want QOV($m)", fv.ChildValue())
 		}
 	}
 
@@ -334,7 +378,8 @@ func TestMergedOuterLegAliasesIsIdentitiesOnly(t *testing.T) {
 		ref := legRead("E", rt, 0)
 		id, _ := legSlotIdentity(ref)
 		set := mergedOuterLegAliases(values.NamedCorrelationIdentifier("Z"))
-		out := rebaseOuterLegValue(ref, set, mergedCorr, map[values.ColumnIdentity]int{id: 4}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
+		out := rebaseOuterLegValue(ref, set, mergedCorr, mergedType,
+			map[values.ColumnIdentity]int{id: 4}, nil, legRebaseOrigin{Site: legRebaseSiteExists})
 		if out != values.Value(ref) {
 			t.Fatalf("a read whose leg the alias set does not name was rewritten to %v "+
 				"(set %v). The set is what decides which correlations this arm may touch; "+

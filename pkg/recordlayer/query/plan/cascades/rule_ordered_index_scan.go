@@ -185,14 +185,39 @@ func (r *OrderedIndexScanRule) OnMatch(call *ExpressionRuleCall) {
 // the candidate column is a plain FieldValue built from the declared column name
 // (base alias irrelevant — the comparison is alias-invariant at the root).
 func sortKeyMatchesColumn(skValue values.Value, provider columnValueProvider, i int, colName string) bool {
-	base := values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+	var base values.QuantifiedObjectValue
+	values.WalkValue(skValue, func(node values.Value) bool {
+		if base != nil {
+			return false
+		}
+		if qov, ok := values.AsQuantifiedObjectValue(node); ok {
+			base = qov
+			return false
+		}
+		return true
+	})
+	if base == nil {
+		return false
+	}
 	var colValue values.Value
 	if provider != nil {
 		colValue = provider.ColumnValue(i, base)
 	} else {
-		colValue = values.NewFieldValue(base, colName, values.UnknownType)
+		record, ok := base.FlowedType().(*values.RecordType)
+		if !ok {
+			return false
+		}
+		ordinal, unique := uniqueUpperFieldIndex(record, colName)
+		if !unique {
+			return false
+		}
+		var err error
+		colValue, err = values.ResolveFieldOrdinals(base, []int{ordinal})
+		if err != nil {
+			return false
+		}
 	}
-	return valuesMatchColumn(skValue, colValue)
+	return colValue != nil && valuesMatchColumn(skValue, colValue)
 }
 
 // requestedOrderedBytesDirection expresses a sort key's requested direction in
@@ -246,9 +271,9 @@ func orderedFullScanAlternatives(
 	ref *expressions.Reference,
 	requested *properties.RequestedOrdering,
 	ctx PlanContext,
-) []expressions.RelationalExpression {
+) ([]expressions.RelationalExpression, error) {
 	if ref == nil || requested == nil || requested.IsPreserve() || ctx == nil {
-		return nil
+		return nil, nil
 	}
 	scanRef := ref
 	if findFullScan(scanRef) == nil {
@@ -267,21 +292,23 @@ func orderedFullScanAlternatives(
 			break
 		}
 		if physicalScan == nil {
-			return nil
+			return nil, nil
 		}
-		scanRef = expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression(
-				physicalScan.GetRecordTypes(),
-				physicalScan.GetFlowedType(),
-			),
+		logicalScan, err := expressions.NewFullUnorderedScanExpression(
+			physicalScan.GetRecordTypes(),
+			physicalScan.GetFlowedType(),
 		)
+		if err != nil {
+			return nil, err
+		}
+		scanRef = expressions.InitialOf(logicalScan)
 	}
 
 	parts := requested.GetParts()
 	sortKeys := make([]expressions.SortKey, len(parts))
 	for i, part := range parts {
 		if !part.SortOrder.IsDirectional() {
-			return nil
+			return nil, nil
 		}
 		sortKeys[i] = expressions.SortKey{
 			Value:   part.Value,
@@ -294,18 +321,28 @@ func orderedFullScanAlternatives(
 		}
 	}
 
-	privateSortRef := expressions.InitialOf(
-		expressions.NewLogicalSortExpression(
-			sortKeys,
-			expressions.ForEachQuantifier(scanRef),
-		),
+	logicalSort, err := expressions.NewLogicalSortExpression(
+		sortKeys,
+		expressions.ForEachQuantifier(scanRef),
 	)
+	if err != nil {
+		return nil, err
+	}
+	privateSortRef := expressions.InitialOf(logicalSort)
 	var result []expressions.RelationalExpression
-	result = append(result, FireExpressionRuleWithMemo(
-		NewOrderedIndexScanRule(), privateSortRef, ctx, nil)...)
-	result = append(result, FireExpressionRuleWithMemo(
-		NewOrderedPrimaryScanRule(), privateSortRef, ctx, nil)...)
-	return result
+	indexResults, err := FireExpressionRuleWithMemo(
+		NewOrderedIndexScanRule(), privateSortRef, ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	result = append(result, indexResults...)
+	primaryResults, err := FireExpressionRuleWithMemo(
+		NewOrderedPrimaryScanRule(), privateSortRef, ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	result = append(result, primaryResults...)
+	return result, nil
 }
 
 var _ ExpressionRule = (*OrderedIndexScanRule)(nil)

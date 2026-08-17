@@ -27,7 +27,13 @@ import (
 func TestComputePrimaryKey_IndexScanStructuralPK(t *testing.T) {
 	t.Parallel()
 
-	bare := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, values.UnknownType, false)
+	rowType := values.NewRecordType("T", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+	})
+	barePlan, err := plans.NewRecordQueryIndexPlan("IDX", nil, []string{"T"}, rowType, false)
+	bare := mustConstruct(t, barePlan, err)
+	resolvedIndexID, err := values.ResolveFieldOrdinals(bare.GetResultValue(), []int{0})
+	indexID := mustConstruct(t, resolvedIndexID, err)
 
 	// No structural PK stamped → abstain (nil). By-name PK metadata is NOT
 	// surfaced as a common PK.
@@ -39,7 +45,7 @@ func TestComputePrimaryKey_IndexScanStructuralPK(t *testing.T) {
 	}
 
 	// Stamped structural PK → surfaced.
-	structPK := []values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}}
+	structPK := []values.Value{indexID}
 	stamped := bare.WithCommonPrimaryKey(structPK)
 	if pk := computePrimaryKey(stamped); pk == nil {
 		t.Fatal("a stamped index scan must surface its structural common PK")
@@ -50,11 +56,11 @@ func TestComputePrimaryKey_IndexScanStructuralPK(t *testing.T) {
 	// share the leaf name "ID" but differ structurally (bare Field vs
 	// record-type-prefixed) → NO common PK, so ImplementDistinctUnionRule cannot
 	// dedup them (which would drop rows — the M5 hazard).
-	flat := bare.WithCommonPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}})
-	flatSame := bare.WithCommonPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}})
+	flat := bare.WithCommonPrimaryKey([]values.Value{indexID})
+	flatSame := bare.WithCommonPrimaryKey([]values.Value{indexID})
 	prefixed := bare.WithCommonPrimaryKey([]values.Value{
 		values.NewRecordTypeValue(nil),
-		&values.FieldValue{Field: "ID", Typ: values.UnknownType},
+		indexID,
 	})
 	if commonPKFromChildren([]plans.RecordQueryPlan{flat, flatSame}) == nil {
 		t.Fatal("two legs with identical structural PKs must share a common PK (safe dedup)")
@@ -64,8 +70,11 @@ func TestComputePrimaryKey_IndexScanStructuralPK(t *testing.T) {
 	}
 
 	// Primary scan still carries its PK values (unchanged).
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-		WithPrimaryKey([]values.Value{&values.FieldValue{Field: "ID", Typ: values.UnknownType}})
+	scanPlan, err := plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false)
+	scan := mustConstruct(t, scanPlan, err)
+	resolvedScanID, err := values.ResolveFieldOrdinals(scan.GetResultValue(), []int{0})
+	scanID := mustConstruct(t, resolvedScanID, err)
+	scan = scan.WithPrimaryKey([]values.Value{scanID})
 	if pk := computePrimaryKey(scan); pk == nil {
 		t.Fatal("primary scan must still carry its PK values")
 	}

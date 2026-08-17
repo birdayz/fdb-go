@@ -14,10 +14,10 @@ func TestImplementTempTableScan_Fires(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("tt_scan")
-	scanExpr := expressions.NewTempTableScanExpression(alias)
+	scanExpr := mustTempTableScan(t, alias, values.NotNullLong)
 	ref := expressions.InitialOf(scanExpr)
 
-	yielded := FireExpressionRule(NewImplementTempTableScanRule(), ref)
+	yielded := mustFireExpressionRule(t, NewImplementTempTableScanRule(), ref)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTempTableScanRule yielded %d, want 1", len(yielded))
 	}
@@ -36,7 +36,7 @@ func TestImplementTempTableScan_ViaPlanner(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("tt_scan_planner")
-	scanExpr := expressions.NewTempTableScanExpression(alias)
+	scanExpr := mustTempTableScan(t, alias, values.NotNullLong)
 	ref := expressions.InitialOf(scanExpr)
 
 	rules := DefaultExpressionRules()
@@ -63,7 +63,7 @@ func TestImplementTempTableScan_PlanOutput(t *testing.T) {
 	t.Parallel()
 
 	alias := values.NamedCorrelationIdentifier("tt_scan_plan")
-	scanExpr := expressions.NewTempTableScanExpression(alias)
+	scanExpr := mustTempTableScan(t, alias, values.NotNullLong)
 	ref := expressions.InitialOf(scanExpr)
 
 	rules := DefaultExpressionRules()
@@ -94,21 +94,17 @@ func TestImplementTempTableInsert_FiresAfterScanImplemented(t *testing.T) {
 	t.Parallel()
 
 	// FullUnorderedScan → Reference → TempTableInsertExpression(ForEach(ref), alias, true)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong)
 	innerRef := expressions.InitialOf(scan)
 	alias := values.NamedCorrelationIdentifier("tti_fire")
 
-	insert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(innerRef),
-		alias,
-		true,
-	)
+	insert := mustTempTableInsert(t, expressions.ForEachQuantifier(innerRef), alias, true)
 	topRef := expressions.InitialOf(insert)
 
 	// Implement the inner scan first (PrimaryScanRule fires on FullUnorderedScan).
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), innerRef)
 
-	yielded := FireExpressionRule(NewImplementTempTableInsertRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementTempTableInsertRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementTempTableInsertRule yielded %d, want 1", len(yielded))
 	}
@@ -133,18 +129,15 @@ func TestImplementTempTableInsert_FiresAfterScanImplemented(t *testing.T) {
 func TestImplementTempTableInsert_NoFireWithoutPhysicalInner(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong)
 	innerRef := expressions.InitialOf(scan)
 
-	insert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(innerRef),
-		values.NamedCorrelationIdentifier("tti_nofire"),
-		true,
-	)
+	insert := mustTempTableInsert(t, expressions.ForEachQuantifier(innerRef),
+		values.NamedCorrelationIdentifier("tti_nofire"), true)
 	topRef := expressions.InitialOf(insert)
 
 	// Do NOT implement the inner scan — rule should not fire.
-	yielded := FireExpressionRule(NewImplementTempTableInsertRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementTempTableInsertRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementTempTableInsertRule fired without physical inner; yielded %d", len(yielded))
 	}
@@ -153,15 +146,11 @@ func TestImplementTempTableInsert_NoFireWithoutPhysicalInner(t *testing.T) {
 func TestImplementTempTableInsert_ViaPlanner(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := mustFullUnorderedScan(t, []string{"Order"}, values.NotNullLong)
 	innerRef := expressions.InitialOf(scan)
 	alias := values.NamedCorrelationIdentifier("tti_planner")
 
-	insert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(innerRef),
-		alias,
-		true,
-	)
+	insert := mustTempTableInsert(t, expressions.ForEachQuantifier(innerRef), alias, true)
 	topRef := expressions.InitialOf(insert)
 
 	rules := DefaultExpressionRules()
@@ -188,49 +177,49 @@ func TestImplementTempTableInsert_ViaPlanner(t *testing.T) {
 
 // --- ImplementRecursiveDfsJoinRule ---
 
+func buildRecursiveCTETestTree(
+	t testing.TB,
+	scanAlias, insertAlias values.CorrelationIdentifier,
+	strategy expressions.TraversalStrategy,
+) (topRef *expressions.Reference, initialScanRef, initialRef, recursiveScanRef, recursiveRef *expressions.Reference) {
+	t.Helper()
+	initialScan := mustFullUnorderedScan(t, []string{"Seed"}, values.NotNullLong)
+	initialScanRef = expressions.InitialOf(initialScan)
+	initialInsert := mustTempTableInsert(
+		t, expressions.ForEachQuantifier(initialScanRef), insertAlias, true)
+	initialRef = expressions.InitialOf(initialInsert)
+
+	recursiveScan := mustFullUnorderedScan(t, []string{"Step"}, values.NotNullLong)
+	recursiveScanRef = expressions.InitialOf(recursiveScan)
+	recursiveInsert := mustTempTableInsert(
+		t, expressions.ForEachQuantifier(recursiveScanRef), insertAlias, false)
+	recursiveRef = expressions.InitialOf(recursiveInsert)
+
+	recUnion := mustRecursiveUnion(
+		t,
+		expressions.ForEachQuantifier(initialRef),
+		expressions.ForEachQuantifier(recursiveRef),
+		scanAlias, insertAlias, strategy,
+	)
+	topRef = expressions.InitialOf(recUnion)
+	return
+}
+
 func TestImplementRecursiveDfsJoin_TraversalAny_YieldsPreorder(t *testing.T) {
 	t.Parallel()
 
 	scanAlias := values.NamedCorrelationIdentifier("tt_scan_rdj")
 	insertAlias := values.NamedCorrelationIdentifier("tt_insert_rdj")
 
-	// Initial leg: TempTableInsert(FullUnorderedScan, alias, true)
-	initialScan := expressions.NewFullUnorderedScanExpression([]string{"Seed"}, values.UnknownType)
-	initialScanRef := expressions.InitialOf(initialScan)
-	initialInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(initialScanRef),
-		insertAlias,
-		true,
-	)
-	initialRef := expressions.InitialOf(initialInsert)
-
-	// Recursive leg: TempTableInsert(FullUnorderedScan, alias, false)
-	// (simulating the recursive step — in real use this would scan the temp table)
-	recursiveScan := expressions.NewFullUnorderedScanExpression([]string{"Step"}, values.UnknownType)
-	recursiveScanRef := expressions.InitialOf(recursiveScan)
-	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveScanRef),
-		insertAlias,
-		false,
-	)
-	recursiveRef := expressions.InitialOf(recursiveInsert)
-
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(initialRef),
-		expressions.ForEachQuantifier(recursiveRef),
-		scanAlias,
-		insertAlias,
-		expressions.TraversalAny,
-	)
-	topRef := expressions.InitialOf(recUnion)
+	topRef, initialScanRef, initialRef, recursiveScanRef, recursiveRef := buildRecursiveCTETestTree(t, scanAlias, insertAlias, expressions.TraversalAny)
 
 	// Implement inner plans first.
-	FireExpressionRule(NewPrimaryScanRule(), initialScanRef)
-	FireExpressionRule(NewImplementTempTableInsertRule(), initialRef)
-	FireExpressionRule(NewPrimaryScanRule(), recursiveScanRef)
-	FireExpressionRule(NewImplementTempTableInsertRule(), recursiveRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), initialScanRef)
+	mustFireExpressionRule(t, NewImplementTempTableInsertRule(), initialRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), recursiveScanRef)
+	mustFireExpressionRule(t, NewImplementTempTableInsertRule(), recursiveRef)
 
-	yielded := FireExpressionRule(NewImplementRecursiveDfsJoinRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveDfsJoinRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementRecursiveDfsJoinRule yielded %d, want 1", len(yielded))
 	}
@@ -260,39 +249,14 @@ func TestImplementRecursiveDfsJoin_TraversalPostorder(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("tt_scan_post")
 	insertAlias := values.NamedCorrelationIdentifier("tt_insert_post")
 
-	initialScan := expressions.NewFullUnorderedScanExpression([]string{"Seed"}, values.UnknownType)
-	initialScanRef := expressions.InitialOf(initialScan)
-	initialInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(initialScanRef),
-		insertAlias,
-		true,
-	)
-	initialRef := expressions.InitialOf(initialInsert)
+	topRef, initialScanRef, initialRef, recursiveScanRef, recursiveRef := buildRecursiveCTETestTree(t, scanAlias, insertAlias, expressions.TraversalPostorder)
 
-	recursiveScan := expressions.NewFullUnorderedScanExpression([]string{"Step"}, values.UnknownType)
-	recursiveScanRef := expressions.InitialOf(recursiveScan)
-	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveScanRef),
-		insertAlias,
-		false,
-	)
-	recursiveRef := expressions.InitialOf(recursiveInsert)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), initialScanRef)
+	mustFireExpressionRule(t, NewImplementTempTableInsertRule(), initialRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), recursiveScanRef)
+	mustFireExpressionRule(t, NewImplementTempTableInsertRule(), recursiveRef)
 
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(initialRef),
-		expressions.ForEachQuantifier(recursiveRef),
-		scanAlias,
-		insertAlias,
-		expressions.TraversalPostorder,
-	)
-	topRef := expressions.InitialOf(recUnion)
-
-	FireExpressionRule(NewPrimaryScanRule(), initialScanRef)
-	FireExpressionRule(NewImplementTempTableInsertRule(), initialRef)
-	FireExpressionRule(NewPrimaryScanRule(), recursiveScanRef)
-	FireExpressionRule(NewImplementTempTableInsertRule(), recursiveRef)
-
-	yielded := FireExpressionRule(NewImplementRecursiveDfsJoinRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveDfsJoinRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementRecursiveDfsJoinRule yielded %d, want 1", len(yielded))
 	}
@@ -310,40 +274,15 @@ func TestImplementRecursiveDfsJoin_TraversalLevel_DoesNotFire(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("tt_scan_lvl")
 	insertAlias := values.NamedCorrelationIdentifier("tt_insert_lvl")
 
-	initialScan := expressions.NewFullUnorderedScanExpression([]string{"Seed"}, values.UnknownType)
-	initialScanRef := expressions.InitialOf(initialScan)
-	initialInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(initialScanRef),
-		insertAlias,
-		true,
-	)
-	initialRef := expressions.InitialOf(initialInsert)
-
-	recursiveScan := expressions.NewFullUnorderedScanExpression([]string{"Step"}, values.UnknownType)
-	recursiveScanRef := expressions.InitialOf(recursiveScan)
-	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveScanRef),
-		insertAlias,
-		false,
-	)
-	recursiveRef := expressions.InitialOf(recursiveInsert)
-
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(initialRef),
-		expressions.ForEachQuantifier(recursiveRef),
-		scanAlias,
-		insertAlias,
-		expressions.TraversalLevel,
-	)
-	topRef := expressions.InitialOf(recUnion)
+	topRef, initialScanRef, initialRef, recursiveScanRef, recursiveRef := buildRecursiveCTETestTree(t, scanAlias, insertAlias, expressions.TraversalLevel)
 
 	// Implement inners so lack of physical plan is not the blocker.
-	FireExpressionRule(NewPrimaryScanRule(), initialScanRef)
-	FireExpressionRule(NewImplementTempTableInsertRule(), initialRef)
-	FireExpressionRule(NewPrimaryScanRule(), recursiveScanRef)
-	FireExpressionRule(NewImplementTempTableInsertRule(), recursiveRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), initialScanRef)
+	mustFireExpressionRule(t, NewImplementTempTableInsertRule(), initialRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), recursiveScanRef)
+	mustFireExpressionRule(t, NewImplementTempTableInsertRule(), recursiveRef)
 
-	yielded := FireExpressionRule(NewImplementRecursiveDfsJoinRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveDfsJoinRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementRecursiveDfsJoinRule should NOT fire for TraversalLevel; yielded %d", len(yielded))
 	}
@@ -355,35 +294,11 @@ func TestImplementRecursiveDfsJoin_NoFireWithoutPhysicalInner(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("tt_scan_nf")
 	insertAlias := values.NamedCorrelationIdentifier("tt_insert_nf")
 
-	initialScan := expressions.NewFullUnorderedScanExpression([]string{"Seed"}, values.UnknownType)
-	initialScanRef := expressions.InitialOf(initialScan)
-	initialInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(initialScanRef),
-		insertAlias,
-		true,
-	)
-	initialRef := expressions.InitialOf(initialInsert)
-
-	recursiveScan := expressions.NewFullUnorderedScanExpression([]string{"Step"}, values.UnknownType)
-	recursiveScanRef := expressions.InitialOf(recursiveScan)
-	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveScanRef),
-		insertAlias,
-		false,
-	)
-	recursiveRef := expressions.InitialOf(recursiveInsert)
-
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(initialRef),
-		expressions.ForEachQuantifier(recursiveRef),
-		scanAlias,
-		insertAlias,
-		expressions.TraversalAny,
-	)
-	topRef := expressions.InitialOf(recUnion)
+	topRef, _, _, _, _ := buildRecursiveCTETestTree(
+		t, scanAlias, insertAlias, expressions.TraversalAny)
 
 	// Do NOT implement inner plans — rule should not fire.
-	yielded := FireExpressionRule(NewImplementRecursiveDfsJoinRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveDfsJoinRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementRecursiveDfsJoinRule fired without physical inners; yielded %d", len(yielded))
 	}
@@ -395,32 +310,8 @@ func TestImplementRecursiveDfsJoin_ViaPlanner(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("tt_scan_plan")
 	insertAlias := values.NamedCorrelationIdentifier("tt_insert_plan")
 
-	initialScan := expressions.NewFullUnorderedScanExpression([]string{"Seed"}, values.UnknownType)
-	initialScanRef := expressions.InitialOf(initialScan)
-	initialInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(initialScanRef),
-		insertAlias,
-		true,
-	)
-	initialRef := expressions.InitialOf(initialInsert)
-
-	recursiveScan := expressions.NewFullUnorderedScanExpression([]string{"Step"}, values.UnknownType)
-	recursiveScanRef := expressions.InitialOf(recursiveScan)
-	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveScanRef),
-		insertAlias,
-		false,
-	)
-	recursiveRef := expressions.InitialOf(recursiveInsert)
-
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(initialRef),
-		expressions.ForEachQuantifier(recursiveRef),
-		scanAlias,
-		insertAlias,
-		expressions.TraversalAny,
-	)
-	topRef := expressions.InitialOf(recUnion)
+	topRef, _, _, _, _ := buildRecursiveCTETestTree(
+		t, scanAlias, insertAlias, expressions.TraversalAny)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, EmptyPlanContext()).
@@ -448,32 +339,8 @@ func TestImplementRecursiveDfsJoin_PlanOutput(t *testing.T) {
 	scanAlias := values.NamedCorrelationIdentifier("tt_scan_out")
 	insertAlias := values.NamedCorrelationIdentifier("tt_insert_out")
 
-	initialScan := expressions.NewFullUnorderedScanExpression([]string{"Seed"}, values.UnknownType)
-	initialScanRef := expressions.InitialOf(initialScan)
-	initialInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(initialScanRef),
-		insertAlias,
-		true,
-	)
-	initialRef := expressions.InitialOf(initialInsert)
-
-	recursiveScan := expressions.NewFullUnorderedScanExpression([]string{"Step"}, values.UnknownType)
-	recursiveScanRef := expressions.InitialOf(recursiveScan)
-	recursiveInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveScanRef),
-		insertAlias,
-		false,
-	)
-	recursiveRef := expressions.InitialOf(recursiveInsert)
-
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(initialRef),
-		expressions.ForEachQuantifier(recursiveRef),
-		scanAlias,
-		insertAlias,
-		expressions.TraversalAny,
-	)
-	topRef := expressions.InitialOf(recUnion)
+	topRef, _, _, _, _ := buildRecursiveCTETestTree(
+		t, scanAlias, insertAlias, expressions.TraversalAny)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, EmptyPlanContext()).
@@ -513,50 +380,29 @@ func TestImplementRecursiveDfsJoin_PlanOutput(t *testing.T) {
 // tree with the given strategy and returns the top-level reference plus
 // the inner references needed for pre-implementing inner plans.
 func buildLevelUnionTree(
+	t testing.TB,
 	strategy expressions.TraversalStrategy,
 ) (topRef *expressions.Reference, initialScanRef, initialRef, recursiveScanRef, recursiveRef *expressions.Reference) {
+	t.Helper()
 	scanAlias := values.UniqueCorrelationIdentifier()
 	insertAlias := values.UniqueCorrelationIdentifier()
-
-	initScan := expressions.NewFullUnorderedScanExpression([]string{"Seed"}, values.UnknownType)
-	initialScanRef = expressions.InitialOf(initScan)
-	initInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(initialScanRef),
-		insertAlias, true,
-	)
-	initialRef = expressions.InitialOf(initInsert)
-
-	recScan := expressions.NewFullUnorderedScanExpression([]string{"Step"}, values.UnknownType)
-	recursiveScanRef = expressions.InitialOf(recScan)
-	recInsert := expressions.NewTempTableInsertExpression(
-		expressions.ForEachQuantifier(recursiveScanRef),
-		insertAlias, false,
-	)
-	recursiveRef = expressions.InitialOf(recInsert)
-
-	recUnion := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(initialRef),
-		expressions.ForEachQuantifier(recursiveRef),
-		scanAlias, insertAlias, strategy,
-	)
-	topRef = expressions.InitialOf(recUnion)
-	return
+	return buildRecursiveCTETestTree(t, scanAlias, insertAlias, strategy)
 }
 
-func implementInnerCTEPlans(initialScanRef, initialRef, recursiveScanRef, recursiveRef *expressions.Reference) {
-	FireExpressionRule(NewPrimaryScanRule(), initialScanRef)
-	FireExpressionRule(NewImplementTempTableInsertRule(), initialRef)
-	FireExpressionRule(NewPrimaryScanRule(), recursiveScanRef)
-	FireExpressionRule(NewImplementTempTableInsertRule(), recursiveRef)
+func implementInnerCTEPlans(t testing.TB, initialScanRef, initialRef, recursiveScanRef, recursiveRef *expressions.Reference) {
+	mustFireExpressionRule(t, NewPrimaryScanRule(), initialScanRef)
+	mustFireExpressionRule(t, NewImplementTempTableInsertRule(), initialRef)
+	mustFireExpressionRule(t, NewPrimaryScanRule(), recursiveScanRef)
+	mustFireExpressionRule(t, NewImplementTempTableInsertRule(), recursiveRef)
 }
 
 func TestImplementRecursiveLevelUnion_TraversalLevel_Fires(t *testing.T) {
 	t.Parallel()
 
-	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalLevel)
-	implementInnerCTEPlans(isr, ir, rsr, rr)
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(t, expressions.TraversalLevel)
+	implementInnerCTEPlans(t, isr, ir, rsr, rr)
 
-	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveLevelUnionRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementRecursiveLevelUnionRule yielded %d, want 1", len(yielded))
 	}
@@ -578,10 +424,10 @@ func TestImplementRecursiveLevelUnion_TraversalLevel_Fires(t *testing.T) {
 func TestImplementRecursiveLevelUnion_TraversalAny_Fires(t *testing.T) {
 	t.Parallel()
 
-	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalAny)
-	implementInnerCTEPlans(isr, ir, rsr, rr)
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(t, expressions.TraversalAny)
+	implementInnerCTEPlans(t, isr, ir, rsr, rr)
 
-	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveLevelUnionRule(), topRef)
 	if len(yielded) != 1 {
 		t.Fatalf("ImplementRecursiveLevelUnionRule yielded %d for TraversalAny, want 1", len(yielded))
 	}
@@ -593,10 +439,10 @@ func TestImplementRecursiveLevelUnion_TraversalAny_Fires(t *testing.T) {
 func TestImplementRecursiveLevelUnion_TraversalPreorder_DoesNotFire(t *testing.T) {
 	t.Parallel()
 
-	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalPreorder)
-	implementInnerCTEPlans(isr, ir, rsr, rr)
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(t, expressions.TraversalPreorder)
+	implementInnerCTEPlans(t, isr, ir, rsr, rr)
 
-	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveLevelUnionRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementRecursiveLevelUnionRule should NOT fire for TraversalPreorder; yielded %d", len(yielded))
 	}
@@ -605,10 +451,10 @@ func TestImplementRecursiveLevelUnion_TraversalPreorder_DoesNotFire(t *testing.T
 func TestImplementRecursiveLevelUnion_TraversalPostorder_DoesNotFire(t *testing.T) {
 	t.Parallel()
 
-	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalPostorder)
-	implementInnerCTEPlans(isr, ir, rsr, rr)
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(t, expressions.TraversalPostorder)
+	implementInnerCTEPlans(t, isr, ir, rsr, rr)
 
-	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveLevelUnionRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementRecursiveLevelUnionRule should NOT fire for TraversalPostorder; yielded %d", len(yielded))
 	}
@@ -617,9 +463,9 @@ func TestImplementRecursiveLevelUnion_TraversalPostorder_DoesNotFire(t *testing.
 func TestImplementRecursiveLevelUnion_NoFireWithoutPhysicalInner(t *testing.T) {
 	t.Parallel()
 
-	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalLevel)
+	topRef, _, _, _, _ := buildLevelUnionTree(t, expressions.TraversalLevel)
 	// Do NOT implement inner plans.
-	yielded := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	yielded := mustFireExpressionRule(t, NewImplementRecursiveLevelUnionRule(), topRef)
 	if len(yielded) != 0 {
 		t.Fatalf("ImplementRecursiveLevelUnionRule fired without physical inners; yielded %d", len(yielded))
 	}
@@ -628,7 +474,7 @@ func TestImplementRecursiveLevelUnion_NoFireWithoutPhysicalInner(t *testing.T) {
 func TestImplementRecursiveLevelUnion_ViaPlanner(t *testing.T) {
 	t.Parallel()
 
-	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalLevel)
+	topRef, _, _, _, _ := buildLevelUnionTree(t, expressions.TraversalLevel)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, EmptyPlanContext()).
@@ -653,7 +499,7 @@ func TestImplementRecursiveLevelUnion_ViaPlanner(t *testing.T) {
 func TestImplementRecursiveLevelUnion_PlanOutput(t *testing.T) {
 	t.Parallel()
 
-	topRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalLevel)
+	topRef, _, _, _, _ := buildLevelUnionTree(t, expressions.TraversalLevel)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, EmptyPlanContext()).
@@ -694,19 +540,19 @@ func TestImplementRecursiveLevelUnion_BothRulesFire_TraversalAny(t *testing.T) {
 	// once: physical yields land ONLY in FinalMembers and OptimizeGroup
 	// prunes finals to the winner (Java's prune-to-1), so the losing
 	// alternative is not visible in AllMembers() after Plan().
-	topRef, isr, ir, rsr, rr := buildLevelUnionTree(expressions.TraversalAny)
-	implementInnerCTEPlans(isr, ir, rsr, rr)
-	levelYields := FireExpressionRule(NewImplementRecursiveLevelUnionRule(), topRef)
+	topRef, isr, ir, rsr, rr := buildLevelUnionTree(t, expressions.TraversalAny)
+	implementInnerCTEPlans(t, isr, ir, rsr, rr)
+	levelYields := mustFireExpressionRule(t, NewImplementRecursiveLevelUnionRule(), topRef)
 	if len(levelYields) != 1 || !IsPhysicalRecursiveLevelUnion(levelYields[0]) {
 		t.Fatalf("TraversalAny: ImplementRecursiveLevelUnionRule must yield the LevelUnion alternative; got %d yields", len(levelYields))
 	}
-	dfsYields := FireExpressionRule(NewImplementRecursiveDfsJoinRule(), topRef)
+	dfsYields := mustFireExpressionRule(t, NewImplementRecursiveDfsJoinRule(), topRef)
 	if len(dfsYields) != 1 || !IsPhysicalRecursiveDfsJoin(dfsYields[0]) {
 		t.Fatalf("TraversalAny: ImplementRecursiveDfsJoinRule must yield the DFS alternative; got %d yields", len(dfsYields))
 	}
 
 	// WINNER: the full planner keeps exactly one of the two alternatives.
-	planRef, _, _, _, _ := buildLevelUnionTree(expressions.TraversalAny)
+	planRef, _, _, _, _ := buildLevelUnionTree(t, expressions.TraversalAny)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, EmptyPlanContext()).

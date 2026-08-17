@@ -89,17 +89,32 @@ CREATE TABLE tw (id BIGINT, partner BIGINT, k BIGINT, PRIMARY KEY (id))`
 		t.Parallel()
 		merged := values.NamedCorrelationIdentifier("q$control")
 		rt := values.NewRecordType("P", false, []values.Field{
-			{Name: "ID", FieldType: values.UnknownType, Ordinal: 0},
+			{Name: "P.ID", FieldType: values.NotNullLong, Ordinal: 0},
 		})
-		witness := plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"P"}, values.Type(rt), false),
+		scan, err := plans.NewRecordQueryScanPlan([]string{"P"}, values.Type(rt), false)
+		if err != nil {
+			t.Fatalf("scan witness: %v", err)
+		}
+		owner, err := values.NewQuantifiedObjectValue(merged, rt)
+		if err != nil {
+			t.Fatalf("witness QOV: %v", err)
+		}
+		dotted, err := values.ResolveFieldOrdinals(owner, []int{0})
+		if err != nil {
+			t.Fatalf("witness field: %v", err)
+		}
+		witness, err := plans.NewRecordQueryPredicatesFilterPlan(
+			scan,
 			[]predicates.QueryPredicate{
 				predicates.NewComparisonPredicate(
-					values.NewFieldValue(values.NewQuantifiedObjectValue(merged), "P.ID", values.UnknownType),
+					dotted,
 					predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 				),
 			},
 		)
+		if err != nil {
+			t.Fatalf("filter witness: %v", err)
+		}
 		got := dottedMergedRowKeysOf(witness)
 		if len(got) != 1 || got[0] != "P.ID@q$control" {
 			t.Fatalf("dottedMergedRowKeysOf missed a planted dotted merged-row key: "+
@@ -247,25 +262,25 @@ func (r legLocalRead) describe() string {
 func legLocalReadsOf(plan plans.RecordQueryPlan) []legLocalRead {
 	var out []legLocalRead
 	visit := func(v values.Value) values.Value {
-		fv, ok := v.(*values.FieldValue)
+		fv, ok := values.AsFieldValue(v)
 		if !ok {
 			return v
 		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 		if !isQOV {
 			return v
 		}
-		legDomain := values.OrdinalDomainOfType(qov.Typ)
+		legDomain := values.OrdinalDomainOfType(qov.FlowedType())
 		if !legDomain.IsKnown() {
 			return v
 		}
-		if fv.Resolved == nil {
+		if fv.Path() == nil {
 			return v
 		}
-		if _, single := fv.Resolved.Single(); !single {
+		if fv.Path().Len() != 1 {
 			return v
 		}
-		id, identityOK := fv.CorrelatedIdentityIn(legDomain)
+		id, identityOK := values.CorrelatedFieldIdentityIn(v, legDomain)
 		// The identity must also be IN the domain it was asked about — a
 		// ColumnIdentity carries its domain, and a match on the ordinal alone
 		// would accept a slot number that means something else here.
@@ -273,10 +288,10 @@ func legLocalReadsOf(plan plans.RecordQueryPlan) []legLocalRead {
 			identityOK = false
 		}
 		out = append(out, legLocalRead{
-			field:      fv.Field,
-			corr:       qov.Correlation.Name(),
-			ordinal:    fv.Resolved.Root().Ordinal,
-			pathDomain: fv.Resolved.Domain,
+			field:      fv.DisplayName(),
+			corr:       qov.Correlation().Name(),
+			ordinal:    fv.Path().Ordinals()[0],
+			pathDomain: fv.Path().RootDomain(),
 			legDomain:  legDomain,
 			identityOK: identityOK,
 		})
@@ -294,9 +309,9 @@ func legLocalReadsOf(plan plans.RecordQueryPlan) []legLocalRead {
 func dottedMergedRowKeysOf(plan plans.RecordQueryPlan) []string {
 	var out []string
 	walkPlanValues(plan, func(v values.Value) values.Value {
-		if fv, ok := v.(*values.FieldValue); ok && strings.Contains(fv.Field, ".") {
-			if q, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
-				out = append(out, fmt.Sprintf("%s@%s", fv.Field, q.Correlation.Name()))
+		if fv, ok := values.AsFieldValue(v); ok && strings.Contains(fv.DisplayName(), ".") {
+			if q, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
+				out = append(out, fmt.Sprintf("%s@%s", fv.DisplayName(), q.Correlation().Name()))
 			}
 		}
 		return v

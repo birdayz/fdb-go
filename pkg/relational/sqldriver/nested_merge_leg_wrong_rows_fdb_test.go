@@ -292,11 +292,13 @@ func TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO tc (cid, k, cv, cw) VALUES (1, 901, 951, 971)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO tp (pid, owner) VALUES (401, 1)")
 
+	delivered := 0
 	rows, qErr := db.QueryContext(ctx,
 		`SELECT tc.k, EXISTS (SELECT 1 FROM tp WHERE tp.owner = ta.aid) FROM ta, tb, tc`)
 	if qErr == nil {
 		defer rows.Close()
 		for rows.Next() {
+			delivered++
 		}
 		qErr = rows.Err()
 	}
@@ -306,19 +308,30 @@ func TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud(t *testing.T) {
 			"  loudly before AND after RFC-200's nested acceptance, so its repair is\n" +
 			"  independent of that work.")
 	}
-	// BOTH substrings. The first names the CONTEXT that could not serve the read,
-	// the second names the OUTCOME; a failure that kept one and lost the other
-	// would be a different defect wearing the same message.
-	for _, want := range []string{
-		"multi-leg row cannot serve a source-relative ordinal",
-		"no frontier row resolved",
-	} {
-		if !strings.Contains(qErr.Error(), want) {
-			t.Fatalf("the predicate-free fold failed without %q: %v\n"+
-				"  It is LOUD that makes this defect survivable — no wrong row reaches a "+
-				"user. A different failure, and above all a SILENT one, changes what this "+
-				"pin records.", want, qErr)
-		}
+	// The pin records the failure CLASS, not a message. It is LOUD that makes
+	// this defect survivable — no wrong row reaches a user — and the two
+	// properties that establish it are that the query fails and that it hands
+	// back nothing on the way.
+	//
+	// The internal WORDING is deliberately not asserted. It has already moved
+	// once for a reason that changed nothing about the defect: the read used to
+	// die naming the context that could not serve it ("multi-leg row cannot
+	// serve a source-relative ordinal" / "no frontier row resolved"), and under
+	// the ordinal layout the same shape is refused one level earlier, at the
+	// carrier ("row type and layout carrier type disagree"). Pinning either
+	// spelling makes this test report a wording change as a defect change.
+	if delivered != 0 {
+		t.Fatalf("the predicate-free fold delivered %d row(s) before failing with %v.\n"+
+			"  Rows escaping ahead of the failure is the SILENT half this pin exists to "+
+			"exclude — a partial answer is a wrong answer.", delivered, qErr)
+	}
+	// A 42-class failure would mean the fixture drifted — the query stopped
+	// being the shape under test and started being rejected as malformed —
+	// which would make the two assertions above pass for the wrong reason.
+	if strings.Contains(qErr.Error(), "SQLSTATE 42") || strings.Contains(qErr.Error(), "42703") {
+		t.Fatalf("the predicate-free fold was rejected as a malformed query: %v\n"+
+			"  The schema or the SELECT list has drifted; this pin no longer describes "+
+			"the three-source projected-EXISTS fold.", qErr)
 	}
 }
 

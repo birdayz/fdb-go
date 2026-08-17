@@ -80,7 +80,13 @@ func (r *SplitSelectExtractIndependentQuantifiersRule) OnMatch(call *ExpressionR
 		return
 	}
 
-	// Step 1: Identify ForEach quantifiers ranging over ExplodeExpressions.
+	// Step 1: Identify ForEach quantifiers ranging over IN-source Explodes.
+	// ARRAY<RECORD> is a relation source (inline VALUES), not an independent IN
+	// list: extracting it away from a correlated lateral child manufactures a
+	// lower whole-row QOV whose alias can collide with that child's binding at
+	// physical FlatMap relink. The shared classifier is the authority used by
+	// both implementation rules, so split and implementation cannot disagree
+	// about which Explode owns the scalar-IN lifecycle.
 	explodeAliases := map[values.CorrelationIdentifier]struct{}{}
 	for _, q := range quantifiers {
 		if q.Kind() != expressions.QuantifierForEach {
@@ -90,7 +96,8 @@ func (r *SplitSelectExtractIndependentQuantifiersRule) OnMatch(call *ExpressionR
 		if ref == nil {
 			continue
 		}
-		if getExplodeExpressionFromRef(ref) != nil {
+		if explode := getExplodeExpressionFromRef(ref); explode != nil &&
+			isSupportedExplodeValue(explode.GetCollectionValue()) {
 			explodeAliases[q.GetAlias()] = struct{}{}
 		}
 	}
@@ -183,11 +190,15 @@ func (r *SplitSelectExtractIndependentQuantifiersRule) OnMatch(call *ExpressionR
 
 	// Inner SelectExpression: non-eligible quantifiers + all predicates
 	// + the original result value.
-	lowerSelect := expressions.NewSelectExpression(
+	lowerSelect, err := expressions.NewSelectExpression(
 		sel.GetResultValue(),
 		lowerQuantifiers,
 		sel.GetPredicates(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	lowerRef := call.MemoizeExpression(lowerSelect)
 	lowerQ := expressions.ForEachQuantifier(lowerRef)
 
@@ -198,11 +209,20 @@ func (r *SplitSelectExtractIndependentQuantifiersRule) OnMatch(call *ExpressionR
 	outerQuantifiers = append(outerQuantifiers, upperQuantifiers...)
 	outerQuantifiers = append(outerQuantifiers, lowerQ)
 
-	outerSelect := expressions.NewSelectExpression(
-		lowerQ.GetFlowedObjectValue(),
+	flowed, err := lowerQ.RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	outerSelect, err := expressions.NewSelectExpression(
+		flowed,
 		outerQuantifiers,
 		nil, // no predicates
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 
 	call.Yield(outerSelect)
 }

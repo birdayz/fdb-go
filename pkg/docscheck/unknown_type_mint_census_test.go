@@ -54,48 +54,27 @@ const unknownTypeMintAllowedFile = "pkg/relational/api/datatype_primitive.go"
 // composite-literal UnknownType mints. Measured; on any mismatch
 // TestUnknownTypeMintCensus prints the live census to re-pin from.
 var knownUnknownTypeMints = map[string]int{
-	"pkg/recordlayer/primary_key_translation.go": 2,
-	// absentAggregateRow: the filler a group-existence merge substitutes for a
-	// child index that holds NO entry for the driving stream's group. There is
-	// no stored value whose type could be read, and the child plan it stands in
-	// for carries UnknownType as its own result type, so deriving would launder
-	// Unknown through one more hop rather than answer it. Only the row's WIDTH
-	// is load-bearing — the merged row takes its grouping values from the
-	// driving stream and its aggregate through the plan's result value.
+	// An aggregate group may have no stored child row. This width-only filler
+	// cannot recover a value type from an absent datum.
 	"pkg/recordlayer/query/executor/executor_new_plans.go": 1,
-	"pkg/recordlayer/query/executor/positional_row.go":     1,
-	// query_result.go is GONE from the census. Its single mint was
-	// PositionalTypeForDescriptor stamping UnknownType on every field of a
-	// stored record's row layout, and it was the supply side of a real
-	// wrong-answer bug rather than a theoretical one: the sargable match
-	// candidates share that layout, so a type-directed planner rule asking
-	// "is this column a FLOAT/DOUBLE?" got "cannot tell" on the index path
-	// while the full-scan leaf — which types the same columns — got "yes",
-	// and an unsound ORDER BY sort elision survived on exactly the predicated
-	// shapes. The descriptor knew the answer the whole time; the layout now
-	// asks values.FieldTypeForProtoField for it.
-	"pkg/recordlayer/query/plan/cascades/intersector_primary_key.go":        1,
-	"pkg/recordlayer/query/plan/cascades/max_match_map.go":                  1,
-	"pkg/recordlayer/query/plan/cascades/primary_scan_match_candidate.go":   1,
-	"pkg/recordlayer/query/plan/cascades/rule_aggregate_data_access.go":     1,
-	"pkg/recordlayer/query/plan/cascades/rule_implement_unordered_union.go": 1,
-	"pkg/recordlayer/query/plan/cascades/rule_in_to_explode.go":             1,
-	"pkg/recordlayer/query/plan/cascades/rule_ordered_primary_scan.go":      1,
-	"pkg/recordlayer/query/plan/cascades/rule_primary_scan.go":              1,
-	"pkg/recordlayer/query/plan/cascades/values/value_derived.go":           1,
-	"pkg/recordlayer/query/plan/cascades/values/values.go":                  3,
-	"pkg/recordlayer/query/plan/cascades/vector_index_match_candidate.go":   1,
-	"pkg/recordlayer/query/plan/cascades/windowed_index_match_candidate.go": 1,
-	// Was 2. The second was RecordQueryInMemorySortPlan.HintOrdering minting a
-	// lazy FieldValue from SortKey.Field when ValueExpr was nil — an advertiser
-	// re-entering a DISPLAY rendering as an identity, and more permissive than
-	// the executor of the same struct, which rejects a nil ValueExpr outright.
-	// That arm now returns an UNKNOWN ordering instead of minting.
-	"pkg/recordlayer/query/plan/plans/ordering.go":              1,
-	"pkg/recordlayer/query/plan/plans/streaming_aggregation.go": 1,
-	"pkg/relational/core/embedded/logical_predicate.go":         2,
-	"pkg/relational/core/query/cascades_translator.go":          18,
-	"pkg/relational/core/query/clustered_outer_scalar.go":       2,
+
+	// Name-only positional metadata has no descriptor/type authority. It is a
+	// compatibility boundary and never admits an exact QOV.
+	"pkg/recordlayer/query/executor/positional_row.go": 1,
+
+	// DerivedValue is the explicit placeholder node for a derivation whose type
+	// has not yet been supplied.
+	"pkg/recordlayer/query/plan/cascades/values/value_derived.go": 1,
+
+	// ParameterValue's two construction arms cannot know a runtime binding's
+	// type before evaluation.
+	"pkg/recordlayer/query/plan/cascades/values/values.go": 2,
+
+	// Translator survivors are best-effort metadata-only fallbacks: projection
+	// output without an exact value, unnest syntax before element typing, and
+	// fieldsFromColumnNames' name-only compatibility row. The last retires with
+	// that dead helper below; this pin is exact for the present corpus.
+	"pkg/relational/core/query/cascades_translator.go": 2,
 }
 
 // scanUnknownTypeMints reports every reference to UnknownType that appears

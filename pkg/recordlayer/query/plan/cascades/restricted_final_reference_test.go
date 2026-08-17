@@ -11,6 +11,19 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRestrictedFinalConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct restricted-final fixture: " + err.Error())
+	}
+	return value
+}
+
+func restrictedFinalRowType() values.Type {
+	return values.NewRecordType("", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
 // The restriction has TWO entry points — ExpressionRuleCall.MemoizeMemberPlansFromOther
 // and ImplementationRuleCall.MemoizeFinalExpressionsFromOther — and only the
 // first was pinned. The second was the one carrying the live defect, across
@@ -39,18 +52,23 @@ func restrictedSourceRef(t *testing.T) (
 ) {
 	t.Helper()
 
-	childRef := expressions.InitialOf(
-		plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false))
+	childScan := mustRestrictedFinalConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"Order"}, restrictedFinalRowType(), false))
+	childRef := expressions.InitialOf(childScan)
 	computeRefPlanProperties(childRef)
 
 	// A filter over a primary scan delegates record-level distinctness to its
 	// child, so it reports DistinctRecords.
-	distinct = plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(
+	distinct = mustRestrictedFinalConstruct(plans.NewRecordQueryPredicatesFilterPlanFromQuantifier(
 		expressions.ForEachQuantifier(childRef),
-		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)})
+		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)}))
 	// A projection can map two records onto one tuple, so it does not.
-	nonDistinct = plans.NewRecordQueryProjectionPlanFromQuantifier(
-		nil, nil, expressions.ForEachQuantifier(childRef))
+	projectionQ := expressions.ForEachQuantifier(childRef)
+	projectionRoot := mustRestrictedFinalConstruct(projectionQ.RequireFlowedObjectValue())
+	projectionID := mustRestrictedFinalConstruct(values.ResolveFieldOrdinals(
+		projectionRoot, []int{0}))
+	nonDistinct = mustRestrictedFinalConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{projectionID}, nil, projectionQ))
 
 	ref = expressions.InitialOf(distinct)
 	ref.Insert(nonDistinct)
@@ -191,7 +209,8 @@ func TestRestrictedFinalReferencePanicsOnANonMember(t *testing.T) {
 	// A plan that is a perfectly good expression but belongs to a DIFFERENT
 	// group — the shape a refactor would introduce by passing the wrong
 	// reference alongside the right members.
-	stranger := plans.NewRecordQueryScanPlan([]string{"Customer"}, values.UnknownType, false)
+	stranger := mustRestrictedFinalConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"Customer"}, restrictedFinalRowType(), false))
 
 	call := &ImplementationRuleCall{}
 	defer func() {

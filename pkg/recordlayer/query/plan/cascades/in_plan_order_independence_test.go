@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -78,9 +79,111 @@ type inCorpusSpec struct {
 	extraMaps int
 }
 
+type inNamedPlan struct {
+	name string
+	plan plans.RecordQueryPlan
+}
+
+func assertInPlanStrictPreference(
+	t testing.TB,
+	less func(expressions.RelationalExpression, expressions.RelationalExpression) bool,
+	winner, loser expressions.RelationalExpression,
+) {
+	t.Helper()
+	if !less(winner, loser) {
+		t.Fatalf("expected %T to be strictly preferred over %T", winner, loser)
+	}
+	if less(loser, winner) {
+		t.Fatalf("cost comparator also prefers %T over %T", loser, winner)
+	}
+}
+
 func (s inCorpusSpec) indexName() string { return "idx_" + s.name }
 
 func (s inCorpusSpec) bindingName(i int) string { return fmt.Sprintf("%s_bind%d", s.name, i) }
+
+func inPlanRowType() *values.RecordType {
+	return values.NewRecordType("InPlanRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
+func inPlanBinding(t testing.TB, name string) values.Value {
+	t.Helper()
+	value, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(name), values.NotNullLong)
+	return mustConstruct(t, value, err)
+}
+
+func inPlanEqualityRange(t testing.TB, operand values.Value) *predicates.ComparisonRange {
+	t.Helper()
+	result := predicates.EmptyComparisonRange().Merge(&predicates.Comparison{
+		Type:    predicates.ComparisonEquals,
+		Operand: operand,
+	})
+	if !result.Ok || result.Range == nil {
+		t.Fatalf("build IN-plan equality range for %v", operand)
+	}
+	return result.Range
+}
+
+func inPlanIndex(
+	t testing.TB,
+	name string,
+	ranges []*predicates.ComparisonRange,
+) *plans.RecordQueryIndexPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryIndexPlan(name, ranges, []string{"T"}, inPlanRowType(), false)
+	return mustConstruct(t, plan, err)
+}
+
+func inPlanPrimaryScan(
+	t testing.TB,
+	ranges []*predicates.ComparisonRange,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryScanPlan([]string{"T"}, inPlanRowType(), false)
+	return mustConstruct(t, plan, err).WithScanComparisons(ranges)
+}
+
+func inPlanFetch(t testing.TB, inner plans.RecordQueryPlan) *plans.RecordQueryFetchFromPartialRecordPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryFetchFromPartialRecordPlan(
+		inner, nil, inner.GetResultType(), plans.FetchIndexRecordsPrimaryKey)
+	return mustConstruct(t, plan, err)
+}
+
+func inPlanTypeFilter(t testing.TB, inner plans.RecordQueryPlan) *plans.RecordQueryTypeFilterPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, inner)
+	return mustConstruct(t, plan, err)
+}
+
+func inPlanMap(t testing.TB, inner plans.RecordQueryPlan) *plans.RecordQueryMapPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryMapPlan(inner, inner.GetResultValue())
+	return mustConstruct(t, plan, err)
+}
+
+func inPlanJoin(
+	t testing.TB,
+	inner plans.RecordQueryPlan,
+	bindingName string,
+) *plans.RecordQueryInJoinPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryInJoinPlan(inner, bindingName, false, false)
+	return mustConstruct(t, plan, err)
+}
+
+func inPlanUnion(
+	t testing.TB,
+	inner plans.RecordQueryPlan,
+	bindingNames []string,
+) *plans.RecordQueryInUnionPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryInUnionPlan(inner, bindingNames, nil, false)
+	return mustConstruct(t, plan, err)
+}
 
 // build materialises the spec. The inner chain is shared by every kind so the
 // only structural difference between an IN-rooted and a plain candidate of the
@@ -95,43 +198,38 @@ func (s inCorpusSpec) build(t *testing.T) plans.RecordQueryPlan {
 
 	var ranges []*predicates.ComparisonRange
 	for i := 0; i < s.sargedBindings; i++ {
-		ranges = append(ranges, rungEqualityRange(
-			t,
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(s.bindingName(i))),
-		))
+		ranges = append(ranges, inPlanEqualityRange(t, inPlanBinding(t, s.bindingName(i))))
 	}
 
 	var cur plans.RecordQueryPlan
 	if s.kind == "primaryScan" {
 		// The scan carries the same comparisons an index leaf would, so the
 		// primary-vs-index rung's search-argument component is probed too.
-		cur = plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-			WithScanComparisons(ranges)
+		cur = inPlanPrimaryScan(t, ranges)
 	} else {
-		cur = plans.NewRecordQueryIndexPlan(s.indexName(), ranges, []string{"T"}, values.UnknownType, false)
+		cur = inPlanIndex(t, s.indexName(), ranges)
 	}
 	for i := 0; i < s.fetches; i++ {
-		cur = plans.NewRecordQueryFetchFromPartialRecordPlan(cur, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey)
+		cur = inPlanFetch(t, cur)
 	}
 	if s.typeFilter {
-		cur = plans.NewRecordQueryTypeFilterPlan([]string{"T"}, cur)
+		cur = inPlanTypeFilter(t, cur)
 	}
 	for i := 0; i < s.extraMaps; i++ {
-		cur = plans.NewRecordQueryMapPlan(cur, nil)
+		cur = inPlanMap(t, cur)
 	}
 
 	switch s.kind {
 	case "inJoin":
-		return plans.NewRecordQueryInJoinPlan(cur, s.bindingName(0), false, false)
+		return inPlanJoin(t, cur, s.bindingName(0))
 	case "inUnion":
 		names := make([]string, numBindings)
 		for i := range names {
 			names[i] = s.bindingName(i)
 		}
-		return plans.NewRecordQueryInUnionPlan(cur, names, nil, false)
+		return inPlanUnion(t, cur, names)
 	case "wrappedIn":
-		return plans.NewRecordQueryMapPlan(
-			plans.NewRecordQueryInJoinPlan(cur, s.bindingName(0), false, false), nil)
+		return inPlanMap(t, inPlanJoin(t, cur, s.bindingName(0)))
 	case "plain", "primaryScan":
 		return cur
 	default:
@@ -148,7 +246,7 @@ func (s inCorpusSpec) build(t *testing.T) plans.RecordQueryPlan {
 //	unSARGed IN vs unSARGed IN     — the pair both orientations used to call "worse"
 //	SARGed IN   vs SARGed IN
 //	IN          vs non-IN (plain, Map-wrapped IN, primary scan)
-func buildInPlanCorpus(t *testing.T) []namedPlan {
+func buildInPlanCorpus(t *testing.T) []inNamedPlan {
 	t.Helper()
 
 	specs := []inCorpusSpec{
@@ -205,9 +303,9 @@ func buildInPlanCorpus(t *testing.T) []namedPlan {
 		{name: "primaryScan_tf_fetch1", kind: "primaryScan", typeFilter: true, fetches: 1},
 	}
 
-	out := make([]namedPlan, 0, len(specs))
+	out := make([]inNamedPlan, 0, len(specs))
 	for _, s := range specs {
-		out = append(out, namedPlan{name: s.name, plan: s.build(t)})
+		out = append(out, inNamedPlan{name: s.name, plan: s.build(t)})
 	}
 	return out
 }
@@ -441,21 +539,14 @@ func TestCostModel_InPlanComparisonIsOrderIndependent(t *testing.T) {
 func TestCostModel_UnsargedInPlansRankedByRealRungs(t *testing.T) {
 	t.Parallel()
 
-	cheap := plans.NewRecordQueryInJoinPlan(
-		plans.NewRecordQueryFetchFromPartialRecordPlan(
-			plans.NewRecordQueryIndexPlan("idx_unsarged_cheap", nil, []string{"T"}, values.UnknownType, false),
-			nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey),
-		"bind_cheap", false, false)
-
-	expensive := plans.NewRecordQueryInJoinPlan(
-		plans.NewRecordQueryFetchFromPartialRecordPlan(
-			plans.NewRecordQueryFetchFromPartialRecordPlan(
-				plans.NewRecordQueryFetchFromPartialRecordPlan(
-					plans.NewRecordQueryIndexPlan("idx_unsarged_expensive", nil, []string{"T"}, values.UnknownType, false),
-					nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey),
-				nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey),
-			nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey),
-		"bind_expensive", false, false)
+	cheap := inPlanJoin(t,
+		inPlanFetch(t, inPlanIndex(t, "idx_unsarged_cheap", nil)),
+		"bind_cheap")
+	expensiveInner := plans.RecordQueryPlan(inPlanIndex(t, "idx_unsarged_expensive", nil))
+	for range 3 {
+		expensiveInner = inPlanFetch(t, expensiveInner)
+	}
+	expensive := inPlanJoin(t, expensiveInner, "bind_expensive")
 
 	// Preconditions: both are unSARGed IN-plans (penalty 1), and the fetch
 	// rung genuinely separates them.
@@ -479,7 +570,7 @@ func TestCostModel_UnsargedInPlansRankedByRealRungs(t *testing.T) {
 		t.Fatalf("compareInPlan(unsarged, unsarged) = %d, want 0 so the fetch rung can decide", got)
 	}
 
-	assertStrictPlanningPreference(t, PlanningCostModelLess, cheap, expensive)
+	assertInPlanStrictPreference(t, PlanningCostModelLess, cheap, expensive)
 
 	// And the verdict must be the fetch rung's, not the hash's: assert the
 	// hash would have ordered them the OTHER way, so a hash-decided outcome
@@ -506,19 +597,14 @@ func TestCostModel_SargedInPlanBeatsUnsargedThroughFullChain(t *testing.T) {
 	t.Parallel()
 
 	bindingName := "in_bind"
-	sarged := plans.NewRecordQueryInJoinPlan(
-		plans.NewRecordQueryFetchFromPartialRecordPlan(
-			plans.NewRecordQueryIndexPlan(
-				"idx_chain_sarged",
-				[]*predicates.ComparisonRange{rungEqualityRange(
-					t, values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(bindingName)))},
-				[]string{"T"}, values.UnknownType, false),
-			nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey),
-		bindingName, false, false)
+	sargedRange := inPlanEqualityRange(t, inPlanBinding(t, bindingName))
+	sarged := inPlanJoin(t,
+		inPlanFetch(t, inPlanIndex(t, "idx_chain_sarged", []*predicates.ComparisonRange{sargedRange})),
+		bindingName)
 
-	unsarged := plans.NewRecordQueryInJoinPlan(
-		plans.NewRecordQueryIndexPlan("idx_chain_unsarged", nil, []string{"T"}, values.UnknownType, false),
-		"other_bind", false, false)
+	unsarged := inPlanJoin(t,
+		inPlanIndex(t, "idx_chain_unsarged", nil),
+		"other_bind")
 
 	if penalty, applicable := compareInOperator(sarged); !applicable || penalty != 0 {
 		t.Fatalf("sarged compareInOperator = (%d,%v), want (0,true)", penalty, applicable)
@@ -534,7 +620,7 @@ func TestCostModel_SargedInPlanBeatsUnsargedThroughFullChain(t *testing.T) {
 			sargedOps.fetchCount, unsargedOps.fetchCount)
 	}
 
-	assertStrictPlanningPreference(t, PlanningCostModelLess, sarged, unsarged)
+	assertInPlanStrictPreference(t, PlanningCostModelLess, sarged, unsarged)
 }
 
 // TestOptimizeGroup_InPlanWinnerIsInsertionOrderIndependent is the
@@ -555,29 +641,22 @@ func TestOptimizeGroup_InPlanWinnerIsInsertionOrderIndependent(t *testing.T) {
 	// comparison used to be decided by nothing at all.
 	build := func() []expressions.RelationalExpression {
 		sargedRange := func(binding string) []*predicates.ComparisonRange {
-			return []*predicates.ComparisonRange{rungEqualityRange(
-				t, values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(binding)))}
+			return []*predicates.ComparisonRange{
+				inPlanEqualityRange(t, inPlanBinding(t, binding)),
+			}
 		}
-		sargedCheap := plans.NewRecordQueryInJoinPlan(
-			plans.NewRecordQueryIndexPlan("idx_group_sarged_cheap", sargedRange("g_sc"),
-				[]string{"T"}, values.UnknownType, false),
-			"g_sc", false, false)
-		sargedCostly := plans.NewRecordQueryInJoinPlan(
-			plans.NewRecordQueryFetchFromPartialRecordPlan(
-				plans.NewRecordQueryIndexPlan("idx_group_sarged_costly", sargedRange("g_sk"),
-					[]string{"T"}, values.UnknownType, false),
-				nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey),
-			"g_sk", false, false)
-		unsargedA := plans.NewRecordQueryInJoinPlan(
-			plans.NewRecordQueryIndexPlan("idx_group_unsarged_a", nil,
-				[]string{"T"}, values.UnknownType, false),
-			"g_ua", false, false)
-		unsargedB := plans.NewRecordQueryInJoinPlan(
-			plans.NewRecordQueryFetchFromPartialRecordPlan(
-				plans.NewRecordQueryIndexPlan("idx_group_unsarged_b", nil,
-					[]string{"T"}, values.UnknownType, false),
-				nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey),
-			"g_ub", false, false)
+		sargedCheap := inPlanJoin(t,
+			inPlanIndex(t, "idx_group_sarged_cheap", sargedRange("g_sc")),
+			"g_sc")
+		sargedCostly := inPlanJoin(t,
+			inPlanFetch(t, inPlanIndex(t, "idx_group_sarged_costly", sargedRange("g_sk"))),
+			"g_sk")
+		unsargedA := inPlanJoin(t,
+			inPlanIndex(t, "idx_group_unsarged_a", nil),
+			"g_ua")
+		unsargedB := inPlanJoin(t,
+			inPlanFetch(t, inPlanIndex(t, "idx_group_unsarged_b", nil)),
+			"g_ub")
 		return []expressions.RelationalExpression{sargedCheap, sargedCostly, unsargedA, unsargedB}
 	}
 
@@ -605,14 +684,13 @@ func TestOptimizeGroup_InPlanWinnerIsInsertionOrderIndependent(t *testing.T) {
 
 	winnerFor := func(order []int) string {
 		members := build()
-		ref := expressions.InitialOf(
-			expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+		ref := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, inPlanRowType()))
 		for _, idx := range order {
 			ref.InsertFinal(members[idx])
 		}
 		p := NewPlanner(nil, nil)
 		p.constraintMap = NewConstraintMap()
-		(&OptimizeGroupTask{Phase: PhasePlanning, Ref: ref}).Run(plannerTestContext(), p)
+		(&OptimizeGroupTask{Phase: PhasePlanning, Ref: ref}).Run(context.Background(), p)
 		w := ref.Winner()
 		if w == nil {
 			t.Fatalf("no winner elected for insertion order %v", order)

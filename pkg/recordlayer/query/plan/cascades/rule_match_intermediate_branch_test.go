@@ -23,16 +23,18 @@ type matchIntermediateStructuralTwoLegFixture struct {
 }
 
 func newMatchIntermediateStructuralTwoLegFixture(
+	t testing.TB,
 	name string,
 ) *matchIntermediateStructuralTwoLegFixture {
+	t.Helper()
 	recordTypes := []string{"A", "B"}
 	fixture := &matchIntermediateStructuralTwoLegFixture{}
 	for _, recordType := range recordTypes {
-		queryScan := expressions.NewFullUnorderedScanExpression(
+		queryScan := mustMatchScan(t,
 			[]string{recordType},
-			values.UnknownType,
+			matchRuleRowType(),
 		)
-		queryScanRef := expressions.InitialOf(queryScan)
+		queryScanRef := mustMatchInitial(t, queryScan)
 		fixture.queryScans = append(fixture.queryScans, queryScan)
 		fixture.queryScanRefs = append(fixture.queryScanRefs, queryScanRef)
 		fixture.queryQuantifiers = append(
@@ -40,11 +42,11 @@ func newMatchIntermediateStructuralTwoLegFixture(
 			expressions.ForEachQuantifier(queryScanRef),
 		)
 
-		candidateScan := expressions.NewFullUnorderedScanExpression(
+		candidateScan := mustMatchScan(t,
 			[]string{recordType},
-			values.UnknownType,
+			matchRuleRowType(),
 		)
-		candidateScanRef := expressions.InitialOf(candidateScan)
+		candidateScanRef := mustMatchInitial(t, candidateScan)
 		fixture.candidateScans = append(fixture.candidateScans, candidateScan)
 		fixture.candidateScanRefs = append(
 			fixture.candidateScanRefs,
@@ -56,20 +58,18 @@ func newMatchIntermediateStructuralTwoLegFixture(
 		)
 	}
 
-	fixture.querySelect = expressions.NewSelectExpression(
+	fixture.querySelect = mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		fixture.queryQuantifiers,
 		nil,
 	)
-	fixture.querySelectRef = expressions.InitialOf(fixture.querySelect)
-	fixture.candidateSelect = expressions.NewSelectExpression(
+	fixture.querySelectRef = mustMatchInitial(t, fixture.querySelect)
+	fixture.candidateSelect = mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		fixture.candidateQs,
 		nil,
 	)
-	fixture.candidateSelectRef = expressions.InitialOf(
-		fixture.candidateSelect,
-	)
+	fixture.candidateSelectRef = mustMatchInitial(t, fixture.candidateSelect)
 	fixture.candidate = &testMatchCandidate{
 		name:      name,
 		traversal: NewTraversal(fixture.candidateSelectRef),
@@ -154,7 +154,7 @@ func matchIntermediateStructuralEqualityRange(
 func TestMatchIntermediateStructural_LaterChildSurvivesAliasConflict(t *testing.T) {
 	t.Parallel()
 
-	fixture := newMatchIntermediateStructuralTwoLegFixture(
+	fixture := newMatchIntermediateStructuralTwoLegFixture(t,
 		"idx_structural_alias_branch",
 	)
 	// This first A child contradicts the complete skeleton's
@@ -213,7 +213,7 @@ func TestMatchIntermediateStructural_LaterChildSurvivesAliasConflict(t *testing.
 func TestMatchIntermediateStructural_RetainsValidChildProducts(t *testing.T) {
 	t.Parallel()
 
-	fixture := newMatchIntermediateStructuralTwoLegFixture(
+	fixture := newMatchIntermediateStructuralTwoLegFixture(t,
 		"idx_structural_child_products",
 	)
 	parameter := values.UniqueCorrelationIdentifier()
@@ -333,7 +333,7 @@ func TestExpandIntermediateChildPartialMatches_CallbackReceivesStableSnapshots(
 ) {
 	t.Parallel()
 
-	fixture := newMatchIntermediateStructuralTwoLegFixture(
+	fixture := newMatchIntermediateStructuralTwoLegFixture(t,
 		"idx_structural_callback_snapshots",
 	)
 	parameter := values.UniqueCorrelationIdentifier()
@@ -444,7 +444,7 @@ func TestExpandIntermediateChildPartialMatches_RetainsMetadataAlternatives(
 ) {
 	t.Parallel()
 
-	fixture := newMatchIntermediateStructuralTwoLegFixture(
+	fixture := newMatchIntermediateStructuralTwoLegFixture(t,
 		"idx_structural_metadata_alternatives",
 	)
 	fixture.seedChild(t, 0, 0, EmptyAliasMap(), nil)
@@ -594,46 +594,46 @@ func TestExpandIntermediateChildPartialMatches_DeferralRejectionIsBranchLocal(
 ) {
 	t.Parallel()
 
-	queryLeaf := expressions.NewFullUnorderedScanExpression(
+	queryLeaf := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryLeafRef := expressions.InitialOf(queryLeaf)
+	queryLeafRef := mustMatchInitial(t, queryLeaf)
 	unmatchedForEach := expressions.ForEachQuantifier(queryLeafRef)
-	nonDeferableQuery := expressions.NewSelectExpression(
-		values.NewRecordConstructorValue(),
+	nonDeferableQuery := mustMatchSelect(t,
+		mustMatchFlowed(t, unmatchedForEach),
 		[]expressions.Quantifier{unmatchedForEach},
 		nil,
 	)
-	queryChildRef := expressions.InitialOf(nonDeferableQuery)
-	deferableQuery := expressions.NewFullUnorderedScanExpression(
+	queryChildRef := mustMatchInitial(t, nonDeferableQuery)
+	deferableQuery := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	if !queryChildRef.Insert(deferableQuery) {
+	if !mustMatchInsert(t, queryChildRef, deferableQuery) {
 		t.Fatal("failed to add the deferable child alternative")
 	}
 
 	queryQ := expressions.ForEachQuantifier(queryChildRef)
-	querySelect := expressions.NewSelectExpression(
+	querySelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{queryQ},
 		nil,
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression(
+	candidateScan := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateQ := expressions.ForEachQuantifier(candidateScanRef)
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateQ},
 		nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	candidate := &testMatchCandidate{
 		name:      "idx_select_deferral_branch",
 		traversal: NewTraversal(candidateSelectRef),
@@ -754,31 +754,31 @@ func TestExpandIntermediateChildPartialMatches_DeferralRejectionIsBranchLocal(
 func TestMatchIntermediateStructural_ResultCapRefireDoesNotPage(t *testing.T) {
 	t.Parallel()
 
-	queryScan := expressions.NewFullUnorderedScanExpression(
+	queryScan := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	queryScanRef := expressions.InitialOf(queryScan)
+	queryScanRef := mustMatchInitial(t, queryScan)
 	queryQ := expressions.ForEachQuantifier(queryScanRef)
-	querySelect := expressions.NewSelectExpression(
+	querySelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{queryQ},
 		nil,
 	)
-	querySelectRef := expressions.InitialOf(querySelect)
+	querySelectRef := mustMatchInitial(t, querySelect)
 
-	candidateScan := expressions.NewFullUnorderedScanExpression(
+	candidateScan := mustMatchScan(t,
 		[]string{"T"},
-		values.UnknownType,
+		matchRuleRowType(),
 	)
-	candidateScanRef := expressions.InitialOf(candidateScan)
+	candidateScanRef := mustMatchInitial(t, candidateScan)
 	candidateQ := expressions.ForEachQuantifier(candidateScanRef)
-	candidateSelect := expressions.NewSelectExpression(
+	candidateSelect := mustMatchSelect(t,
 		values.NewRecordConstructorValue(),
 		[]expressions.Quantifier{candidateQ},
 		nil,
 	)
-	candidateSelectRef := expressions.InitialOf(candidateSelect)
+	candidateSelectRef := mustMatchInitial(t, candidateSelect)
 	candidate := &testMatchCandidate{
 		name:      "idx_structural_result_cap",
 		traversal: NewTraversal(candidateSelectRef),

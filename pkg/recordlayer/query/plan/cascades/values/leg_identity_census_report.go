@@ -53,9 +53,61 @@ func ReportLegIdentityCensus(w io.Writer, label string) {
 // not checked" while quietly also not checking the five things that are always
 // checkable.
 func AssertLegIdentityCensus(w io.Writer, floors map[LegIdentitySite]int64) bool {
+	return AssertLegIdentityCensusWith(w, LegIdentityExpectations{Floors: floors})
+}
+
+// LegIdentityExpectations is what one CORPUS expects of the census. It exists
+// because a site can sit at zero for three different reasons and they need three
+// different guards — a floor watches for COLLAPSE, and once zero is the steady
+// state the alarm INVERTS to growth.
+type LegIdentityExpectations struct {
+	// Floors is the population each site must report over the UNFILTERED corpus.
+	// Dropped under a -test.run filter, which is why it cannot carry a zero: a
+	// guard that vanishes under narrowing cannot watch a revival.
+	Floors map[LegIdentitySite]int64
+
+	// DeclaredEmpty names sites this corpus MEASURED at zero although their
+	// recorders still stand, mapped to why. A DISPLACED reader is the case: the
+	// code is reachable in principle and this suite no longer routes through it.
+	//
+	// Checked in the STALE direction — a declared site reporting traffic FAILS,
+	// so the declaration cannot outlive the condition that made it honest. The
+	// check runs under a filter too, and safely: a narrowed run is a SUBSET, so
+	// it cannot exceed a population the whole suite measured at zero.
+	DeclaredEmpty map[LegIdentitySite]string
+
+	// Retired names sites whose recorder has NO production caller at all, mapped
+	// to why. Unlike DeclaredEmpty this is a fact about the TREE, so its failure
+	// text tells the reader that something came back rather than that a corpus
+	// moved.
+	Retired map[LegIdentitySite]string
+}
+
+// AssertLegIdentityCensusWith is AssertLegIdentityCensus with the zero-side
+// guards a corpus may declare. See LegIdentityExpectations.
+func AssertLegIdentityCensusWith(w io.Writer, exp LegIdentityExpectations) bool {
 	failed := false
+	floors := exp.Floors
 	for _, site := range LegIdentitySites() {
 		c := LegIdentityCensusOf(site)
+		if why, ok := exp.Retired[site]; ok && c.Total != 0 {
+			failed = true
+			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Total = %d, want 0 — it is RETIRED.\n"+
+				"  %s\n"+
+				"  This site's alarm is INVERTED: zero is the steady state and traffic is the\n"+
+				"  finding. Do not add a floor to match — find what reintroduced the reader.\n",
+				site, c.Total, why)
+		}
+		if why, ok := exp.DeclaredEmpty[site]; ok && c.Total != 0 {
+			failed = true
+			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s declares an EMPTY population and reported\n"+
+				"  Total = %d. %s\n"+
+				"  This is not a defect, it is the DECLARATION GOING STALE: the reader was\n"+
+				"  DISPLACED, not deleted, and the corpus has started routing through it again.\n"+
+				"  Re-read the site, then replace this declaration with a real floor so the\n"+
+				"  population is watched for collapse the way its siblings are.\n",
+				site, c.Total, why)
+		}
 		if floor, ok := floors[site]; ok && c.Total < floor {
 			failed = true
 			fmt.Fprintf(w, "LEG IDENTITY CENSUS FAIL: site %s reported Total = %d, want >= %d.\n"+

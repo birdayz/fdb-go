@@ -36,17 +36,23 @@ import (
 func TestLegRef_AdmitsANestedUnpinnedRefAndStillDeclinesMachineryOutput(t *testing.T) {
 	t.Parallel()
 
-	nestedUnpinned := func(corr, root, leaf string) *values.FieldValue {
-		return &values.FieldValue{
-			Field: root,
-			Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corr)),
-			Typ:   values.NotNullLong,
-			Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
-				{Field: root, Ordinal: 2},
-				{Field: leaf, Ordinal: 0},
-			}},
-		}
+	nestedType := &values.RecordType{Fields: []values.Field{{Name: "SK", Ordinal: 0, FieldType: values.NotNullLong}}}
+	legType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "SK", Ordinal: 1, FieldType: values.NotNullLong},
+		{Name: "N", Ordinal: 2, FieldType: nestedType},
+	}}
+	legValue := func(corr string, ordinals ...int) values.Value {
+		return exactTestField(t, exactTestQOV(t, corr, legType), ordinals...)
 	}
+	nestedUnpinned := func(corr, _, _ string) values.Value { return legValue(corr, 2, 0) }
+	flat := legValue("M", 1)
+	pinned, err := values.ResolveOrdinalSeedField(exactTestQOV(t, "M", legType), 1)
+	if err != nil {
+		t.Fatalf("pinned seed field: %v", err)
+	}
+	dottedType := &values.RecordType{Fields: []values.Field{{Name: "M.N", Ordinal: 0, FieldType: values.NotNullLong}}}
+	dotted := exactTestField(t, exactTestQOV(t, "S", dottedType), 0)
 
 	for _, tc := range []struct {
 		name    string
@@ -65,57 +71,24 @@ func TestLegRef_AdmitsANestedUnpinnedRefAndStillDeclinesMachineryOutput(t *testi
 		{
 			// The single-accessor twin, unchanged — the arm that always worked
 			// and whose behaviour the widening must not disturb.
-			name: "flat baked leg read",
-			value: &values.FieldValue{
-				Field: "SK",
-				Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
-				Typ:   values.NotNullLong,
-				Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
-					{Field: "SK", Ordinal: 1},
-				}},
-			},
+			name:    "flat baked leg read",
+			value:   flat,
 			wantKey: "M", wantOK: true,
 		},
 		{
 			// The walk's OWN output: NewFieldValueOfOrdinal over a composed
 			// frontier. Its ordinal already indexes that row.
-			name: "machinery output, single accessor",
-			value: &values.FieldValue{
-				Field: "SK",
-				Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
-				Typ:   values.NotNullLong,
-				Resolved: &values.FieldPath{
-					FrontierPinned: true,
-					Accessors:      []values.ResolvedAccessor{{Field: "SK", Ordinal: 4}},
-				},
-			},
+			name:   "machinery output, single accessor",
+			value:  pinned,
 			wantOK: false,
 		},
 		{
-			// FUSED machinery output. Multi-accessor AND pinned — under the old
-			// spelling the arity clause carried this decline, so dropping arity
-			// without keying on the pin would have re-baked it.
-			name: "machinery output, fused two-step",
-			value: &values.FieldValue{
-				Field: "SK",
-				Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
-				Typ:   values.NotNullLong,
-				Resolved: &values.FieldPath{
-					FrontierPinned: true,
-					Accessors: []values.ResolvedAccessor{
-						{Field: "N", Ordinal: 4},
-						{Field: "SK", Ordinal: 0},
-					},
-				},
-			},
-			wantOK: false,
-		},
-		{
-			// The merged-row qualified channel keeps its own decline: the child
-			// names the MERGED row and the dot in the name carries the leg.
-			name:   "flat-dotted merged-row read",
-			value:  &values.FieldValue{Field: "M.N", Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("S")), Typ: values.NotNullLong},
-			wantOK: false,
+			// Under RFC-232 the exact QOV owns attribution. A literal dot in the
+			// field's display name cannot erase or manufacture correlation
+			// identity; this is a source-S reference because QOV(S) says so.
+			name:    "literal-dotted field on an exact owner",
+			value:   dotted,
+			wantKey: "S", wantOK: true,
 		},
 	} {
 		key, ok := legRef(tc.value)
@@ -129,7 +102,7 @@ func TestLegRef_AdmitsANestedUnpinnedRefAndStillDeclinesMachineryOutput(t *testi
 	legTyp := &values.RecordType{Fields: []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "SK", FieldType: values.NotNullLong, Ordinal: 1},
-		{Name: "N", FieldType: values.NotNullLong, Ordinal: 2},
+		{Name: "N", FieldType: nestedType, Ordinal: 2},
 	}}
 
 	crossLeg := &predicates.ComparisonPredicate{
@@ -200,15 +173,7 @@ func TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName(t *test
 
 	// The fused shape exactly as it is minted: DISPLAY name "SK" (the leaf),
 	// resolved path rooted at "N".
-	fused := &values.FieldValue{
-		Field: "SK",
-		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
-		Typ:   values.NotNullLong,
-		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
-			{Field: "N", Ordinal: 2},
-			{Field: "SK", Ordinal: 0},
-		}},
-	}
+	fused := exactTestFieldView(t, exactTestField(t, exactTestQOV(t, "M", window), 2, 0))
 	idx, suffix, ok := legRefRootInWindow(fused, window)
 	if !ok {
 		t.Fatal("legRefRootInWindow declined a fused nested reference whose ROOT column " +
@@ -220,7 +185,7 @@ func TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName(t *test
 			"name lands on a real column of the wrong type, and no ordinal check downstream "+
 			"can reject it.", idx)
 	}
-	if len(suffix) != 1 || suffix[0].Field != "SK" {
+	if len(suffix) != 1 || suffix[0] != 0 {
 		t.Errorf("suffix = %v, want one accessor SK — the descent must survive the "+
 			"re-anchor, or the predicate compares the whole struct", suffix)
 	}
@@ -228,14 +193,7 @@ func TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName(t *test
 	// The FLAT twin over the same window keeps the name lookup, so the fix is not
 	// a blanket switch to accessors: a single-accessor node's display name IS its
 	// column name, and it must still resolve to slot 1 rather than to N.
-	flat := &values.FieldValue{
-		Field: "SK",
-		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
-		Typ:   values.NotNullLong,
-		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
-			{Field: "SK", Ordinal: 1},
-		}},
-	}
+	flat := exactTestFieldView(t, exactTestField(t, exactTestQOV(t, "M", window), 1))
 	flatIdx, flatSuffix, flatOK := legRefRootInWindow(flat, window)
 	if !flatOK || flatIdx != 1 || len(flatSuffix) != 0 {
 		t.Errorf("flat reference resolved to (%d, %v, %v), want (1, [], true) — the "+
@@ -244,15 +202,9 @@ func TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName(t *test
 
 	// An ABSENT root declines rather than falling back to the display name, which
 	// is the property that keeps a decline from becoming a wrong-slot read.
-	absent := &values.FieldValue{
-		Field: "SK",
-		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("M")),
-		Typ:   values.NotNullLong,
-		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
-			{Field: "NOPE", Ordinal: 0},
-			{Field: "SK", Ordinal: 0},
-		}},
-	}
+	absentRoot := &values.RecordType{Fields: []values.Field{{Name: "SK", Ordinal: 0, FieldType: values.NotNullLong}}}
+	absentType := &values.RecordType{Fields: []values.Field{{Name: "NOPE", Ordinal: 0, FieldType: absentRoot}}}
+	absent := exactTestFieldView(t, exactTestField(t, exactTestQOV(t, "M", absentType), 0, 0))
 	if _, _, ok := legRefRootInWindow(absent, window); ok {
 		t.Error("a fused reference whose ROOT column is absent from the window resolved " +
 			"anyway — a fallback to the leaf display name would find the flat SK and " +
@@ -281,16 +233,11 @@ func TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName(t *test
 // TestLegRefRootInWindow_ResolvesTheRootAccessorNotTheLeafDisplayName, whose
 // node carries the LEAF display name over a root accessor and a colliding flat
 // column.
-func nestedLegDescent(corr, root, leaf string) *values.FieldValue {
-	return &values.FieldValue{
-		Field: root,
-		Child: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corr)),
-		Typ:   values.UnknownType,
-		Resolved: &values.FieldPath{Accessors: []values.ResolvedAccessor{
-			{Field: root, Ordinal: 0},
-			{Field: leaf, Ordinal: 0},
-		}},
-	}
+func nestedLegDescent(t testing.TB, corr, root, leaf string) values.Value {
+	t.Helper()
+	nested := &values.RecordType{Fields: []values.Field{{Name: leaf, Ordinal: 0, FieldType: values.NotNullLong}}}
+	leg := &values.RecordType{Fields: []values.Field{{Name: root, Ordinal: 0, FieldType: nested}}}
+	return exactTestField(t, exactTestQOV(t, corr, leg), 0, 0)
 }
 
 // classifyLegConjunct is the FOURTH legRef consumer and the only one that
@@ -326,7 +273,9 @@ func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 	}
 	classify := func(t *testing.T, pred predicates.QueryPredicate) boxConjVerdict {
 		t.Helper()
-		f := b2BoxShapeWithPred(pred)
+		box := logical.NewJoin(scan("T4", "T4"), scan("T", "T"), logical.JoinLeft, "")
+		u := &logical.LogicalUnnest{Segments: []string{"T4", "SARR"}, Alias: "X"}
+		f := &logical.LogicalFilter{Input: logical.NewJoin(box, u, logical.JoinInner, ""), Predicate: pred}
 		j := f.Input.(*logical.LogicalJoin)
 		return newChainedSpineTranslator(t).classifyBoxLegConjunct(
 			j.Left.(*logical.LogicalJoin), j.Right.(*logical.LogicalUnnest), f.Predicate)
@@ -334,7 +283,7 @@ func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 
 	// The ROOT column exists in T4's buried window, so the reference resolves
 	// and the gather may own the shape.
-	if got := classify(t, eqConst(nestedLegDescent("T4", "ID", "LEAF"))); got != boxConjBakeable {
+	if got := classify(t, eqConst(nestedLegDescent(t, "T4", "ID", "LEAF"))); got != boxConjBakeable {
 		t.Errorf("classifyBoxLegConjunct over a nested descent whose ROOT column resolves = %d, "+
 			"want Bakeable(%d)", got, boxConjBakeable)
 	}
@@ -343,7 +292,7 @@ func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 	// gate widened, legRef refused this node, no arm matched it, and the conjunct
 	// classified Bakeable — the gather admitting a reference the bake cannot
 	// resolve. An always-Bakeable classifier passes the arm above and fails here.
-	if got := classify(t, eqConst(nestedLegDescent("T4", "NO_SUCH_COL", "LEAF"))); got != boxConjUnbakeable {
+	if got := classify(t, eqConst(nestedLegDescent(t, "T4", "NO_SUCH_COL", "LEAF"))); got != boxConjUnbakeable {
 		t.Errorf("classifyBoxLegConjunct over a nested descent whose ROOT column is ABSENT "+
 			"from the buried window = %d, want Unbakeable(%d). A Bakeable verdict here admits "+
 			"the gather for a reference the bake cannot resolve — the wrong-slot class",
@@ -378,45 +327,41 @@ func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 // wrong-slot read; doing only the root derivation drops the descent. If you
 // widen it, this pin must be REPLACED by one asserting the fused two-step
 // address, not deleted — a deleted pin is how the halfway state ships.
-func TestRebaseLegRefsToBox_DeclinesANestedDescent(t *testing.T) {
+func TestRebaseLegRefsToBoxFusesAnExactNestedDescent(t *testing.T) {
 	t.Parallel()
 
 	leg := values.NamedCorrelationIdentifier("L")
+	nestedType := &values.RecordType{Fields: []values.Field{{Name: "SK", FieldType: values.NotNullLong, Ordinal: 0}}}
 	legType := &values.RecordType{Fields: []values.Field{
-		{Name: "N", FieldType: values.UnknownType, Ordinal: 0},
+		{Name: "N", FieldType: nestedType, Ordinal: 0},
 	}}
 	// Leg L starts at merged offset 2, so a leg-relative ordinal and the merged
 	// ordinal it would have to mean are different numbers — a leg at offset 0
 	// would make a half-rebase invisible.
 	mergedType := &values.RecordType{Fields: []values.Field{
-		{Name: "X", FieldType: values.UnknownType, Ordinal: 0},
-		{Name: "Y", FieldType: values.UnknownType, Ordinal: 1},
-		{Name: "N", FieldType: values.UnknownType, Ordinal: 2},
+		{Name: "X", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "Y", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "N", FieldType: nestedType, Ordinal: 2},
 	}}
 	windows := map[values.CorrelationIdentifier]values.OrdinalSeedLegWindow{
 		leg: {Kind: values.LegKindFlatRun, Offset: 2, Typ: legType, Alias: leg},
 	}
-	boxQOV := values.NewQuantifiedObjectValueOfType(
-		values.NamedCorrelationIdentifier("$box"), mergedType)
+	boxQOV := exactTestQOV(t, "$box", mergedType)
 
-	nested := nestedLegDescent("L", "N", "SK")
+	nested := nestedLegDescent(t, "L", "N", "SK")
 	out, ok := rebaseLegRefsToBox(nested, windows, mergedType, boxQOV)
-	if ok {
-		t.Fatal("rebaseLegRefsToBox admitted a NESTED leg descent. If the guard was widened " +
-			"on purpose, the fuse of Accessors[1:] must land in the same change and this pin " +
-			"must be replaced by one asserting the FUSED two-step address. Admitting without " +
-			"fusing bakes the enclosing struct's address and drops the descent — wrong rows")
+	if !ok {
+		t.Fatal("rebaseLegRefsToBox declined an exact nested leg descent whose full fused path is addressable")
 	}
-	fv, isFV := out.(*values.FieldValue)
+	fv, isFV := values.AsFieldValue(out)
 	if !isFV {
-		t.Fatalf("a declined reference must come back a FieldValue, got %T", out)
+		t.Fatalf("rebased nested reference = %T, want exact FieldValue", out)
 	}
-	if fv.Resolved == nil || len(fv.Resolved.Accessors) != 2 {
-		t.Fatalf("the declined node must come back UNTOUCHED (2 accessors), got %v — a "+
-			"half-rewritten node is the shape the survivor check cannot classify", fv.Resolved)
+	if got := fv.Path().Ordinals(); len(got) != 2 || got[0] != 2 || got[1] != 0 {
+		t.Fatalf("rebased nested path = %v, want merged-root plus suffix [2 0]", got)
 	}
-	if got := fv.Resolved.Root().Ordinal; got != 0 {
-		t.Fatalf("the declined node's root ordinal moved to %d; it must stay LEG-relative (0). "+
-			"A silently re-anchored root is a merged address that reads a foreign column", got)
+	owner, ownerOK := values.AsQuantifiedObjectValue(fv.ChildValue())
+	if !ownerOK || owner.Correlation() != boxQOV.Correlation() || !owner.FlowedType().Equals(mergedType) {
+		t.Fatalf("rebased nested owner = %v, want exact box-output QOV", owner)
 	}
 }

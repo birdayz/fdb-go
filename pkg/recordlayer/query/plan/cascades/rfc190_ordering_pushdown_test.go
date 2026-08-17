@@ -7,14 +7,44 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustRFC190PushdownConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct RFC-190 pushdown fixture: " + err.Error())
+	}
+	return value
+}
+
+func rfc190PushdownCType() *values.RecordType {
+	return values.NewRecordType("RFC190Customer", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "NAME", FieldType: values.NullableString},
+		{Name: "PRIORITY", FieldType: values.NullableLong},
+	})
+}
+
+func rfc190PushdownIType() *values.RecordType {
+	return values.NewRecordType("RFC190Item", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "NAME", FieldType: values.NullableString},
+		{Name: "TITLE", FieldType: values.NullableString},
+	})
+}
+
+func rfc190PushdownField(
+	alias values.CorrelationIdentifier,
+	rowType values.Type,
+	ordinal int,
+) values.Value {
+	root := mustRFC190PushdownConstruct(values.NewQuantifiedObjectValue(alias, rowType))
+	return mustRFC190PushdownConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
 func TestRFC190OrderingPushdownScopesJoinKeysToOwningChild(t *testing.T) {
 	t.Parallel()
 	cAlias := values.NamedCorrelationIdentifier("C")
 	iAlias := values.NamedCorrelationIdentifier("I")
-	cName := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(cAlias), "NAME", 1, values.UnknownType)
-	iTitle := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(iAlias), "TITLE", 2, values.UnknownType)
+	cName := rfc190PushdownField(cAlias, rfc190PushdownCType(), 1)
+	iTitle := rfc190PushdownField(iAlias, rfc190PushdownIType(), 2)
 	result := values.NewRecordConstructorValue(
 		values.RecordConstructorField{Name: "NAME", Value: cName},
 		values.RecordConstructorField{Name: "TITLE", Value: iTitle},
@@ -51,13 +81,18 @@ func TestRFC190OrderingPushdownUsesLegLocalOrdinalBeforeConstructorOrdinal(t *te
 	t.Parallel()
 	cAlias := values.NamedCorrelationIdentifier("C")
 	iAlias := values.NamedCorrelationIdentifier("I")
-	cPriority := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(cAlias), "PRIORITY", 2, values.UnknownType)
-	iTitle := values.NewCorrelatedFieldValueWithResolvedOrdinal(
-		values.NewQuantifiedObjectValue(iAlias), "TITLE", 2, values.UnknownType)
+	cPriority := rfc190PushdownField(cAlias, rfc190PushdownCType(), 2)
+	iTitle := rfc190PushdownField(iAlias, rfc190PushdownIType(), 2)
+	localAlias := values.NamedCorrelationIdentifier("LOCAL")
+	localType := values.NewRecordType("RFC190Local", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "NAME", FieldType: values.NullableString},
+	})
+	localID := rfc190PushdownField(localAlias, localType, 0)
+	localName := rfc190PushdownField(localAlias, localType, 1)
 	result := values.NewRecordConstructorValue(
-		values.RecordConstructorField{Name: "ID", Value: values.NewFlatFieldValue("ID", values.UnknownType)},
-		values.RecordConstructorField{Name: "NAME", Value: values.NewFlatFieldValue("NAME", values.UnknownType)},
+		values.RecordConstructorField{Name: "ID", Value: localID},
+		values.RecordConstructorField{Name: "NAME", Value: localName},
 		values.RecordConstructorField{Name: "PRIORITY", Value: cPriority},
 		values.RecordConstructorField{Name: "TITLE", Value: iTitle},
 	)

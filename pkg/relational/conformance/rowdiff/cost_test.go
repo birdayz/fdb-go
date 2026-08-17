@@ -16,8 +16,8 @@ import (
 // the sensitivity net for the check itself (RFC-182 OQ-5, cost axis).
 func TestCheckPlanCost_SpuriousSort(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan(nil, nil, false)
-	sorted := plans.NewRecordQueryInMemorySortPlan(scan, nil)
+	scan := rowdiffTestScan(t, false)
+	sorted := rowdiffTestSort(t, scan, []plans.SortKey{{Field: "B"}})
 
 	// A bare single-table SELECT with a WHERE and no ordering requirement.
 	bare := Query{Where: leaf("A", predicates.ComparisonEquals, int64(1))}
@@ -45,7 +45,7 @@ func TestCheckPlanCost_SpuriousSort(t *testing.T) {
 	// CLEAN: a set operation legitimately merge-sorts its index-scan inputs
 	// into a common primary-key order even without a query ORDER BY (the OR
 	// lowering). The sort lives UNDER the union, so the whole plan is excused.
-	union := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{sorted, scan})
+	union := rowdiffTestUnorderedUnion(t, []plans.RecordQueryPlan{sorted, scan})
 	if got := checkPlanCost(union, bare); len(got) != 0 {
 		t.Fatalf("sort beneath a set operation flagged: %v", got)
 	}

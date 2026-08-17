@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -10,9 +11,170 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustReferenceWinnerConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct reference-winner fixture: " + err.Error())
+	}
+	return value
+}
+
+func referenceWinnerRowType(recordType string, columns ...string) *values.RecordType {
+	fields := make([]values.Field, len(columns))
+	for ordinal, column := range columns {
+		fieldType := values.NullableLong
+		if column == "STATUS" {
+			fieldType = values.NullableString
+		}
+		fields[ordinal] = values.Field{Name: column, FieldType: fieldType, Ordinal: ordinal}
+	}
+	return values.NewRecordType(recordType, false, fields)
+}
+
+func referenceWinnerFullScan(
+	t testing.TB,
+	recordType string,
+	columns ...string,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustReferenceWinnerConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, referenceWinnerRowType(recordType, columns...)))
+}
+
+func referenceWinnerPlanScan(
+	t testing.TB,
+	recordType string,
+	columns ...string,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	return mustReferenceWinnerConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordType}, referenceWinnerRowType(recordType, columns...), false))
+}
+
+func referenceWinnerField(
+	t testing.TB,
+	owner values.Value,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	return mustReferenceWinnerConstruct(values.ResolveFieldOrdinals(owner, []int{ordinal}))
+}
+
+func referenceWinnerQuantifiedField(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	root := mustReferenceWinnerConstruct(quantifier.RequireFlowedObjectValue())
+	return referenceWinnerField(t, root, ordinal)
+}
+
+func referenceWinnerStatusCandidate(rowType values.Type) *ValueIndexScanMatchCandidate {
+	createsDuplicates := false
+	return NewValueIndexScanMatchCandidateWithFunctions(
+		"Order$status",
+		[]string{"Order"},
+		[]string{"STATUS"},
+		nil,
+		[]values.CorrelationIdentifier{values.UniqueCorrelationIdentifier()},
+		rowType,
+		false,
+		nil,
+		&createsDuplicates,
+	).WithKeyComponentTypes([]values.Type{values.NullableString})
+}
+
+type referenceWinnerPlanContext struct {
+	candidates []MatchCandidate
+}
+
+func (*referenceWinnerPlanContext) GetPlannerConfiguration() PlannerConfiguration {
+	configuration := DefaultPlannerConfiguration()
+	configuration.SingleReadVersion = true
+	return configuration
+}
+
+func (c *referenceWinnerPlanContext) GetMatchCandidates() []MatchCandidate {
+	return c.candidates
+}
+
+func (*referenceWinnerPlanContext) GetPrimaryKeyColumns(string) []string { return nil }
+
+func referenceWinnerExploreRewriting(p *Planner, rootRef *expressions.Reference) (int, bool) {
+	if rootRef == nil {
+		return 0, true
+	}
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
+	}
+	if p.constraintMap == nil {
+		p.constraintMap = NewConstraintMap()
+	}
+	if p.dataAccessConsumed == nil {
+		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	}
+	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
+	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
+	for len(p.stack) > 0 {
+		if p.tasksRun >= p.MaxTasks {
+			return p.tasksRun, false
+		}
+		p.pop().Run(context.Background(), p)
+		p.tasksRun++
+	}
+	return p.tasksRun, true
+}
+
+func mustReferenceWinnerFireExpressionRule(
+	t testing.TB,
+	rule ExpressionRule,
+	ref *expressions.Reference,
+) {
+	t.Helper()
+	if _, err := FireExpressionRule(rule, ref); err != nil {
+		t.Fatalf("FireExpressionRule() unexpected error: %v", err)
+	}
+}
+
+func mustReferenceWinnerWithQuantifiers(
+	t testing.TB,
+	expression expressions.RelationalExpression,
+	quantifiers []expressions.Quantifier,
+) expressions.RelationalExpression {
+	t.Helper()
+	return mustReferenceWinnerConstruct(expression.WithQuantifiers(quantifiers))
+}
+
+func referenceWinnerSortedMemberOn(
+	t testing.TB,
+	fields ...string,
+) expressions.RelationalExpression {
+	t.Helper()
+	rowFields := fields
+	if len(fields) == 1 && (fields[0] == "A" || fields[0] == "B") {
+		// The semantic-equality fixture needs both children to flow the SAME
+		// exact row shape; only the ordering coordinate may differ.
+		rowFields = []string{"A", "B"}
+	}
+	inner := referenceWinnerPlanScan(t, "T", rowFields...)
+	keys := make([]plans.SortKey, len(fields))
+	for keyOrdinal, field := range fields {
+		fieldOrdinal := keyOrdinal
+		if len(rowFields) == 2 && len(fields) == 1 && field == "B" {
+			fieldOrdinal = 1
+		}
+		keys[keyOrdinal] = plans.SortKey{
+			Field:      field,
+			ValueExpr:  referenceWinnerField(t, inner.GetResultValue(), fieldOrdinal),
+			NullsFirst: true,
+		}
+	}
+	return mustReferenceWinnerConstruct(plans.NewRecordQueryInMemorySortPlan(inner, keys))
+}
+
 func TestReference_Winner_NoWinner(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := referenceWinnerFullScan(t, "T", "ID")
 	ref := expressions.InitialOf(scan)
 	if ref.Winner() != nil {
 		t.Fatal("expected nil winner")
@@ -24,7 +186,7 @@ func TestReference_Winner_NoWinner(t *testing.T) {
 
 func TestReference_Winner_SetAndGet(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, nil)
+	scan := referenceWinnerFullScan(t, "T", "ID")
 	ref := expressions.InitialOf(scan)
 	ref.SetWinner(scan)
 	if ref.Winner() != scan {
@@ -37,8 +199,8 @@ func TestReference_Winner_SetAndGet(t *testing.T) {
 
 func TestReference_Winner_Overwrites(t *testing.T) {
 	t.Parallel()
-	scan1 := expressions.NewFullUnorderedScanExpression([]string{"A"}, nil)
-	scan2 := expressions.NewFullUnorderedScanExpression([]string{"B"}, nil)
+	scan1 := referenceWinnerFullScan(t, "A", "ID")
+	scan2 := referenceWinnerFullScan(t, "B", "ID")
 	ref := expressions.InitialOf(scan1)
 	ref.Insert(scan2)
 
@@ -49,6 +211,39 @@ func TestReference_Winner_Overwrites(t *testing.T) {
 	}
 }
 
+func TestReference_WinnerInvalidatedByMemberGrowth(t *testing.T) {
+	t.Parallel()
+
+	first := referenceWinnerFullScan(t, "A", "ID")
+	second := referenceWinnerFullScan(t, "B", "ID")
+	third := referenceWinnerFullScan(t, "C", "ID")
+	ref := expressions.InitialOf(first)
+
+	ref.SetWinner(first)
+	if !ref.Insert(second) {
+		t.Fatal("expected exploratory member growth")
+	}
+	if ref.HasWinner() {
+		t.Fatal("exploratory member growth retained a winner stamped over the old member set")
+	}
+
+	ref.SetWinner(second)
+	if !ref.InsertFinal(third) {
+		t.Fatal("expected final member growth")
+	}
+	if ref.HasWinner() {
+		t.Fatal("final member growth retained a winner stamped over the old physical candidate set")
+	}
+
+	ref.SetWinner(third)
+	if ref.InsertFinal(third) {
+		t.Fatal("duplicate final insertion unexpectedly mutated the member set")
+	}
+	if ref.Winner() != third {
+		t.Fatal("duplicate insertion invalidated an otherwise-current winner")
+	}
+}
+
 func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	t.Parallel()
 
@@ -56,34 +251,27 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 	// MEMBER of the scan Reference — no winner stamping. Extraction must
 	// elide the sort by scanning the child's members' derived rich
 	// orderings (Planner.OrderedChildWinner).
-	a1 := values.UniqueCorrelationIdentifier()
-	cand := newKnownDistinctValueIndexCandidate(
-		"Order$status",
-		[]string{"Order"},
-		[]string{"STATUS"},
-		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
-		false,
-		nil,
-	)
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+	rowType := referenceWinnerRowType("Order", "STATUS")
+	cand := referenceWinnerStatusCandidate(rowType)
+	ctx := &referenceWinnerPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := mustReferenceWinnerConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, rowType))
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	sort := expressions.NewLogicalSortExpression(
+	sort := mustReferenceWinnerConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+			{Value: referenceWinnerQuantifiedField(t, q, 0)},
 		},
 		q,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	// Explore so the planner's Memo and exploration state are populated.
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
-	exploreRewriting(p, sortRef)
+	referenceWinnerExploreRewriting(p, sortRef)
 
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	scanPlan := cand.ToScanPlan(emptyPrefix, false)
@@ -117,34 +305,27 @@ func TestSortElimination_ViaChildOrderedMember(t *testing.T) {
 func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 	t.Parallel()
 
-	a1 := values.UniqueCorrelationIdentifier()
-	cand := newKnownDistinctValueIndexCandidate(
-		"Order$status",
-		[]string{"Order"},
-		[]string{"STATUS"},
-		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
-		false,
-		nil,
-	)
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+	rowType := referenceWinnerRowType("Order", "STATUS")
+	cand := referenceWinnerStatusCandidate(rowType)
+	ctx := &referenceWinnerPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := mustReferenceWinnerConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, rowType))
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 	nullsLast := false
-	sort := expressions.NewLogicalSortExpression(
+	sort := mustReferenceWinnerConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}, NullsFirst: &nullsLast},
+			{Value: referenceWinnerQuantifiedField(t, q, 0), NullsFirst: &nullsLast},
 		},
 		q,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules())
-	exploreRewriting(p, sortRef)
+	referenceWinnerExploreRewriting(p, sortRef)
 
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	scanPlan := cand.ToScanPlan(emptyPrefix, false)
@@ -174,16 +355,8 @@ func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 	t.Parallel()
 
-	a1 := values.UniqueCorrelationIdentifier()
-	cand := newKnownDistinctValueIndexCandidate(
-		"Order$status",
-		[]string{"Order"},
-		[]string{"STATUS"},
-		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
-		false,
-		nil,
-	)
+	rowType := referenceWinnerRowType("Order", "STATUS")
+	cand := referenceWinnerStatusCandidate(rowType)
 	emptyPrefix := map[values.CorrelationIdentifier]*predicates.ComparisonRange{}
 	idxPlan := extractIndexPlan(cand.ToScanPlan(emptyPrefix, false))
 	if idxPlan == nil {
@@ -193,9 +366,10 @@ func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 
 	// The wrapper's child group: cheap unordered scan (stamped overall
 	// winner) + the ordered index scan.
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scanExpr := mustReferenceWinnerConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, rowType))
 	innerRef := expressions.InitialOf(scanExpr)
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	mustReferenceWinnerFireExpressionRule(t, NewPrimaryScanRule(), innerRef)
 	cheap := findPhysicalExpr(innerRef)
 	if cheap == nil {
 		t.Fatal("no physical scan")
@@ -206,19 +380,25 @@ func TestSortElimination_PinsOrderedSpineThroughWrapper(t *testing.T) {
 	innerRef.SetWinner(cheap) // generic extraction would relink to THIS
 
 	// The order-preserving filter wrapper over that group.
-	filterWrap := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+	filterBase := mustReferenceWinnerConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		mustReferenceWinnerConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false)),
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
+	))
+	filterWrap := mustReferenceWinnerWithQuantifiers(t, filterBase,
+		[]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
 	filterRef := expressions.InitialOf(filterWrap)
 
-	sort := expressions.NewLogicalSortExpression(
+	filterQ := expressions.ForEachQuantifier(filterRef)
+	sort := mustReferenceWinnerConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+			{Value: referenceWinnerQuantifiedField(t, filterQ, 0)},
 		},
-		expressions.ForEachQuantifier(filterRef),
-	)
+		filterQ,
+	))
 	sortRef := expressions.InitialOf(sort)
+	// LogicalSort is the one non-physical selector result extraction may
+	// consume: it is only a probe for immediate, physical sort elision.
+	sortRef.SetWinner(sort)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
@@ -269,9 +449,11 @@ func subtreeContainsIndexScan(e expressions.RelationalExpression) bool {
 func TestSortElimination_DeclinesWhenSpineUnpinnable(t *testing.T) {
 	t.Parallel()
 
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	rowType := referenceWinnerRowType("Order", "STATUS")
+	scanExpr := mustReferenceWinnerConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, rowType))
 	innerRef := expressions.InitialOf(scanExpr)
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	mustReferenceWinnerFireExpressionRule(t, NewPrimaryScanRule(), innerRef)
 	cheap := findPhysicalExpr(innerRef)
 	if cheap == nil {
 		t.Fatal("no physical scan")
@@ -279,18 +461,21 @@ func TestSortElimination_DeclinesWhenSpineUnpinnable(t *testing.T) {
 	innerRef.InsertFinal(cheap)
 	innerRef.SetWinner(cheap)
 
-	filterWrap := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
+	filterBase := mustReferenceWinnerConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+		mustReferenceWinnerConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false)),
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
+	))
+	filterWrap := mustReferenceWinnerWithQuantifiers(t, filterBase,
+		[]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
 	filterRef := expressions.InitialOf(filterWrap)
 
-	sort := expressions.NewLogicalSortExpression(
+	filterQ := expressions.ForEachQuantifier(filterRef)
+	sort := mustReferenceWinnerConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+			{Value: referenceWinnerQuantifiedField(t, filterQ, 0)},
 		},
-		expressions.ForEachQuantifier(filterRef),
-	)
+		filterQ,
+	))
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	if w := p.OrderedChildWinner(sort, filterRef); w != nil {
 		t.Fatalf("a delegating wrapper over an orderless group must not satisfy; got %T", w)
@@ -304,45 +489,38 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 	// The filter creates PartialMatches via matching rules, data access
 	// produces an ordered index scan, and ImplementSortRule eliminates
 	// the sort when it finds the ordered scan in the filter Reference.
-	a1 := values.UniqueCorrelationIdentifier()
-	cand := newKnownDistinctValueIndexCandidate(
-		"Order$status",
-		[]string{"Order"},
-		[]string{"STATUS"},
-		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
-		false,
-		nil,
-	)
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+	rowType := referenceWinnerRowType("Order", "STATUS")
+	cand := referenceWinnerStatusCandidate(rowType)
+	ctx := &referenceWinnerPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := mustReferenceWinnerConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, rowType))
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustReferenceWinnerConstruct(expressions.NewLogicalFilterExpression(
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "STATUS", Typ: values.TypeString},
+				referenceWinnerQuantifiedField(t, q, 0),
 				predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, "a"),
 			),
 		},
 		q,
-	)
+	))
 	filterRef := expressions.InitialOf(filter)
 	filterQ := expressions.ForEachQuantifier(filterRef)
-	sort := expressions.NewLogicalSortExpression(
+	sort := mustReferenceWinnerConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+			{Value: referenceWinnerQuantifiedField(t, filterQ, 0)},
 		},
 		filterQ,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
-	plan, _, err := p.Plan(sortRef)
+	plan, _, err := p.PlanWithContext(context.Background(), sortRef)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
@@ -360,40 +538,36 @@ func TestSortElimination_ViaDataAccessOrderingWinner(t *testing.T) {
 func TestPlan_OrderedMemberSelectable(t *testing.T) {
 	t.Parallel()
 
-	a1 := values.UniqueCorrelationIdentifier()
-	cand := newKnownDistinctValueIndexCandidate(
-		"Order$status",
-		[]string{"Order"},
-		[]string{"STATUS"},
-		[]values.CorrelationIdentifier{a1},
-		values.UnknownType,
-		false,
-		nil,
-	)
-	ctx := &indexTestPlanContext{candidates: []MatchCandidate{cand}}
+	rowType := referenceWinnerRowType("Order", "STATUS")
+	cand := referenceWinnerStatusCandidate(rowType)
+	ctx := &referenceWinnerPlanContext{candidates: []MatchCandidate{cand}}
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := mustReferenceWinnerConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, rowType))
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
-	sort := expressions.NewLogicalSortExpression(
+	sortKey := referenceWinnerQuantifiedField(t, q, 0)
+	sort := mustReferenceWinnerConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+			{Value: sortKey},
 		},
 		q,
-	)
+	))
 	sortRef := expressions.InitialOf(sort)
 
 	rules := DefaultExpressionRules()
 	p := NewPlanner(rules, ctx).
 		WithPlanningExpressionRules(BatchAExpressionRules()).
 		WithImplementationRules(DefaultImplementationRules())
-	p.Plan(sortRef)
+	if _, _, err := p.PlanWithContext(context.Background(), sortRef); err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
 
 	// OrderedIndexScanRule produces an ordered index scan at the sort
 	// level; bestSatisfyingMember must find it for a STATUS ASC request.
 	reqOrd := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value:     &values.FieldValue{Field: "STATUS", Typ: values.UnknownType},
+			Value:     sortKey,
 			SortOrder: properties.RequestedSortOrderAscending,
 		}},
 		properties.DistinctnessPreserveDistinctness, false)
@@ -415,18 +589,21 @@ func TestPlan_OrderedMemberSelectable(t *testing.T) {
 func TestFinalOfChildrenVisibleToSemanticEquality(t *testing.T) {
 	t.Parallel()
 
-	childA := sortedMemberOn(t, "A")
-	childB := sortedMemberOn(t, "B")
+	childA := referenceWinnerSortedMemberOn(t, "A")
+	childB := referenceWinnerSortedMemberOn(t, "B")
 
 	mk := func(child expressions.RelationalExpression) expressions.RelationalExpression {
-		return plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+		base := mustReferenceWinnerConstruct(plans.NewRecordQueryPredicatesFilterPlan(
+			mustReferenceWinnerConstruct(plans.NewRecordQueryScanPlan(
+				[]string{"T"}, child.GetResultValue().Type(), false)),
 			[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
-		).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(expressions.FinalOf(child))})
+		))
+		return mustReferenceWinnerWithQuantifiers(t, base,
+			[]expressions.Quantifier{expressions.ForEachQuantifier(expressions.FinalOf(child))})
 	}
 	w1, w2 := mk(childA), mk(childB)
 
-	ref := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	ref := expressions.InitialOf(referenceWinnerFullScan(t, "T", "A", "B"))
 	ref.InsertFinal(w1)
 	ref.InsertFinal(w2)
 	if got := len(ref.FinalMembers()); got != 2 {
@@ -454,21 +631,27 @@ func TestSortElimination_FiresThroughCollapsedDistinct(t *testing.T) {
 
 	// Ordered member that is NOT leaf-replaceable: a projection wrapper
 	// delegating over an in-memory sort on STATUS.
-	sorted := sortedMemberOn(t, "STATUS")
+	sorted := referenceWinnerSortedMemberOn(t, "STATUS")
 	sortedRef := expressions.InitialOf(sorted)
-	orderedProjection := plans.NewRecordQueryProjectionPlanFromQuantifier(
-		[]values.Value{values.NewFlatFieldValue("STATUS", values.UnknownType)},
+	projectionQ := expressions.ForEachQuantifier(sortedRef)
+	orderedProjection := mustReferenceWinnerConstruct(plans.NewRecordQueryProjectionPlanFromQuantifier(
+		[]values.Value{referenceWinnerQuantifiedField(t, projectionQ, 0)},
 		nil,
-		expressions.ForEachQuantifier(sortedRef),
-	)
+		projectionQ,
+	))
 
 	// The distinct's source group: cheap unordered scan (winner) + the
 	// non-leaf-replaceable ordered projection. Generic extraction would relink
 	// the distinct's inner to the WINNER (unordered) and need the sort; the
 	// ordered-spine pin relinks it to the projection instead.
-	scanExpr := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	// The projection's output schema is the exact row shape that the shared
+	// source group must flow; using the underlying record's named type would
+	// make the two members ineligible for one Reference under RFC-232.
+	rowType := orderedProjection.GetResultValue().Type()
+	scanExpr := mustReferenceWinnerConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"Order"}, rowType))
 	innerRef := expressions.InitialOf(scanExpr)
-	FireExpressionRule(NewPrimaryScanRule(), innerRef)
+	mustReferenceWinnerFireExpressionRule(t, NewPrimaryScanRule(), innerRef)
 	cheap := findPhysicalExpr(innerRef)
 	if cheap == nil {
 		t.Fatal("no physical scan")
@@ -480,18 +663,23 @@ func TestSortElimination_FiresThroughCollapsedDistinct(t *testing.T) {
 
 	// The distinct is its own cascades expression now (RFC-184 W2, no
 	// physicalDistinctWrapper) ranging over the source group.
-	distinctWrap := plans.NewRecordQueryDistinctPlan(
-		plans.NewRecordQueryScanPlan([]string{"Order"}, values.UnknownType, false),
-	).WithQuantifiers([]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
+	distinctBase := mustReferenceWinnerConstruct(plans.NewRecordQueryDistinctPlan(
+		mustReferenceWinnerConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false))))
+	distinctWrap := mustReferenceWinnerWithQuantifiers(t, distinctBase,
+		[]expressions.Quantifier{expressions.ForEachQuantifier(innerRef)})
 	distinctRef := expressions.InitialOf(distinctWrap)
 
-	sort := expressions.NewLogicalSortExpression(
+	distinctQ := expressions.ForEachQuantifier(distinctRef)
+	sort := mustReferenceWinnerConstruct(expressions.NewLogicalSortExpression(
 		[]expressions.SortKey{
-			{Value: &values.FieldValue{Field: "STATUS", Typ: values.UnknownType}},
+			{Value: referenceWinnerQuantifiedField(t, distinctQ, 0)},
 		},
-		expressions.ForEachQuantifier(distinctRef),
-	)
+		distinctQ,
+	))
 	sortRef := expressions.InitialOf(sort)
+	// LogicalSort is the one non-physical selector result extraction may
+	// consume: it is only a probe for immediate, physical sort elision.
+	sortRef.SetWinner(sort)
 
 	p := NewPlanner(DefaultExpressionRules(), nil)
 	plan, err := ExtractBestPlanFromSelector(sortRef, p, properties.DefaultStatistics{})
@@ -506,7 +694,7 @@ func TestSortElimination_FiresThroughCollapsedDistinct(t *testing.T) {
 	}
 	dp, ok := plan.(*plans.RecordQueryDistinctPlan)
 	if !ok {
-		t.Fatalf("expected the elided root to be *plans.RecordQueryDistinctPlan, got %T (%s)", plan, describePlan(plan))
+		t.Fatalf("expected the elided root to be *plans.RecordQueryDistinctPlan, got %T", plan)
 	}
 	if _, ok := dp.GetInner().(*plans.RecordQueryProjectionPlan); !ok {
 		t.Fatalf("the pin must relink the distinct's inner to the ORDERED projection (proving the relink reached the executable plan, not the unordered winner); got inner %T", dp.GetInner())

@@ -20,7 +20,7 @@ func TestHasNonInnerConjunct(t *testing.T) {
 
 	innerRef := func(name, col string) predicates.QueryPredicate {
 		return predicates.NewComparisonPredicate(
-			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(name)), col, values.UnknownType),
+			qualRecTestField(t, name, col),
 			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 		)
 	}
@@ -71,7 +71,7 @@ func TestScopeAmbiguousName(t *testing.T) {
 
 	refPred := func(name, col string) predicates.QueryPredicate {
 		return predicates.NewComparisonPredicate(
-			values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(name)), col, values.UnknownType),
+			qualRecTestField(t, name, col),
 			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 		)
 	}
@@ -130,7 +130,7 @@ func TestScopeAmbiguousName(t *testing.T) {
 		foldable := predicates.NewComparisonPredicate(
 			values.NewScalarFunctionValue("COALESCE", values.UnknownType,
 				values.LiteralValue(int64(1)),
-				values.NewFieldValue(values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("ST")), "C", values.UnknownType),
+				qualRecTestField(t, "ST", "C"),
 			),
 			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(1))},
 		)

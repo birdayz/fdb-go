@@ -41,6 +41,14 @@ type ScopeSource struct {
 	// dependency on cascades/values/CorrelationIdentifier — callers wrap
 	// this into a cascades.values.CorrelationIdentifier themselves.
 	CorrelationName string
+	// AdditionalQualifiers are query-block-local spellings that may qualify
+	// this source without changing its runtime correlation identity. The narrow
+	// live use is Java's table-first alias/schema collision: in
+	// `FROM PA AS s, s.PB AS B`, where `s` is also the active schema, `PA.ID`
+	// continues to address the PA source even though its range alias is `s`.
+	// Ordinary aliased sources leave this empty, so SQL's usual alias-hides-table
+	// rule and the correlation mint remain unchanged.
+	AdditionalQualifiers []Identifier
 	// Shadowing marks a source whose columns SHADOW same-named columns of
 	// non-shadowing sources at this scope level (instead of colliding into
 	// an ambiguity error). A lateral array unnest (`FROM t, t.arr AS x`)
@@ -50,6 +58,17 @@ type ScopeSource struct {
 	// shadowing match is taken and the non-shadowing matches are ignored;
 	// two shadowing matches are still ambiguous.
 	Shadowing bool
+	// FlowedColumns is the exact row layout carried by this source's quantified
+	// object when that layout differs from the columns exposed for SQL name
+	// resolution. It is nil for ordinary tables and for a scalar lateral-unnest
+	// element (whose quantified object is the whole element). WITH ORDINALITY is
+	// the motivating row-valued virtual source: SQL exposes the AS/AT aliases,
+	// while an AT-only source still physically carries the unexposed element in
+	// slot 0 and the ordinal in slot 1.
+	FlowedColumns []Column
+	// FlowedNullable is the record-level nullability of FlowedColumns. It is
+	// meaningful only when FlowedColumns is non-empty.
+	FlowedNullable bool
 	// HiddenColumns names columns of this source that UNQUALIFIED
 	// references skip — Java's Expression visibility
 	// (SemanticAnalyzer.java:468: an unqualified reference ignores a
@@ -59,6 +78,18 @@ type ScopeSource struct {
 	// what makes a bare reference to the USING column resolve the LEFT
 	// copy instead of being ambiguous. Keys are UPPER-folded bare names.
 	HiddenColumns map[string]struct{}
+}
+
+func (s ScopeSource) matchesQualifier(qualifier Identifier) bool {
+	if s.Alias.EqualsIgnoreQuoting(qualifier) {
+		return true
+	}
+	for _, alternate := range s.AdditionalQualifiers {
+		if alternate.EqualsIgnoreQuoting(qualifier) {
+			return true
+		}
+	}
+	return false
 }
 
 // hidesColumn reports whether this source hides id from UNQUALIFIED
@@ -452,7 +483,7 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 					}{structCol, src, acc})
 				}
 			}
-			if !src.Alias.EqualsIgnoreQuoting(qualifier) {
+			if !src.matchesQualifier(qualifier) {
 				continue
 			}
 			if !aliasSeen {
@@ -502,6 +533,82 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{
 		Alias: qualifier, Available: avail,
 	}
+}
+
+// ResolveSourceQualifiedPath resolves a path whose leading segment is already
+// proven by the grammar/caller to name a FROM source. Unlike ResolvePathNested,
+// it does not also consider the leading segment as a struct column. That
+// distinction is load-bearing for a self-named lateral source such as
+// `FROM t, t.records AS item, item.item AS leaf`: the ordinary SQL expression
+// `item.item` is intentionally ambiguous when both the source-qualified and
+// struct-relative rules answer it, but the FROM-item classifier has already
+// established that the first ITEM names the preceding source.
+//
+// Duplicate source aliases retain Java's per-attribute ambiguity rule: all
+// alias-matching sources at one scope level are considered, and more than one
+// complete match is loud. Zero matches fall through to the parent exactly as
+// ResolvePathNested does. Callers must not use this method to impose source
+// precedence on an ordinary expression whose leading segment has not already
+// been classified as a source alias.
+func (s *Scope) ResolveSourceQualifiedPath(segs []Identifier) (Column, ScopeSource, []NestedAccessor, error) {
+	if len(segs) < 2 {
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{}
+	}
+	qualifier := segs[0]
+	leaf := segs[len(segs)-1]
+	var firstAliasTable QualifiedName
+	aliasSeen := false
+	for cur := s; cur != nil; cur = cur.parent {
+		var matches []struct {
+			col       Column
+			src       ScopeSource
+			accessors []NestedAccessor
+		}
+		for _, src := range cur.sources {
+			if !src.matchesQualifier(qualifier) {
+				continue
+			}
+			if !aliasSeen {
+				aliasSeen = true
+				firstAliasTable = src.Table.Name()
+			}
+			for _, c := range matchingColumns(src.Table, segs[1]) {
+				accessors, found := descendStruct(c, segs[2:])
+				if !found {
+					continue
+				}
+				matches = append(matches, struct {
+					col       Column
+					src       ScopeSource
+					accessors []NestedAccessor
+				}{c, src, accessors})
+			}
+		}
+		switch len(matches) {
+		case 1:
+			return matches[0].col, matches[0].src, matches[0].accessors, nil
+		case 0:
+			continue
+		default:
+			sources := make([]Identifier, 0, len(matches))
+			for _, match := range matches {
+				sources = append(sources, match.src.Alias)
+			}
+			return Column{}, ScopeSource{}, nil, &AmbiguousColumnError{
+				Id: leaf, Qualifier: qualifier, Path: segs,
+				Matches: len(matches), Sources: sources,
+			}
+		}
+	}
+	if aliasSeen {
+		return Column{}, ScopeSource{}, nil, &ColumnNotFoundError{TableName: firstAliasTable, Id: leaf}
+	}
+	all := s.AllSourcesRecursive()
+	available := make([]Identifier, 0, len(all))
+	for _, src := range all {
+		available = append(available, src.Alias)
+	}
+	return Column{}, ScopeSource{}, nil, &SourceNotFoundError{Alias: qualifier, Available: available}
 }
 
 // AmbiguousColumnError is returned when a column reference matches

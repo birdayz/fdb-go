@@ -30,6 +30,7 @@ type MatchableSortExpression struct {
 	sortParameterIDs []values.CorrelationIdentifier
 	isReverse        bool
 	inner            Quantifier
+	resultValue      values.QuantifiedObjectValue
 }
 
 // NewMatchableSortExpression constructs a MatchableSortExpression with
@@ -38,14 +39,19 @@ func NewMatchableSortExpression(
 	sortParameterIDs []values.CorrelationIdentifier,
 	isReverse bool,
 	inner Quantifier,
-) *MatchableSortExpression {
+) (*MatchableSortExpression, error) {
+	resultValue, err := requireFlowedResult("MatchableSortExpression", inner)
+	if err != nil {
+		return nil, err
+	}
 	ids := make([]values.CorrelationIdentifier, len(sortParameterIDs))
 	copy(ids, sortParameterIDs)
 	return &MatchableSortExpression{
 		sortParameterIDs: ids,
 		isReverse:        isReverse,
 		inner:            inner,
-	}
+		resultValue:      resultValue,
+	}, nil
 }
 
 // NewMatchableSortExpressionFromExpr is a convenience constructor that
@@ -55,7 +61,7 @@ func NewMatchableSortExpressionFromExpr(
 	sortParameterIDs []values.CorrelationIdentifier,
 	isReverse bool,
 	innerExpr RelationalExpression,
-) *MatchableSortExpression {
+) (*MatchableSortExpression, error) {
 	return NewMatchableSortExpression(
 		sortParameterIDs,
 		isReverse,
@@ -150,15 +156,16 @@ func (e *MatchableSortExpression) HashCodeWithoutChildren() uint64 {
 // GetResultValue returns the inner Quantifier's flowed object value.
 // The sort doesn't change the row shape, only the order.
 func (e *MatchableSortExpression) GetResultValue() values.Value {
-	return e.inner.GetFlowedObjectValue()
+	return e.resultValue
 }
 
 // WithQuantifiers returns a copy of this expression with the given
 // quantifiers replacing the original children (single child expected).
-func (e *MatchableSortExpression) WithQuantifiers(quantifiers []Quantifier) RelationalExpression {
-	cp := *e
-	cp.inner = quantifiers[0]
-	return &cp
+func (e *MatchableSortExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("MatchableSortExpression", len(quantifiers), 1); err != nil {
+		return nil, err
+	}
+	return NewMatchableSortExpression(e.sortParameterIDs, e.isReverse, quantifiers[0])
 }
 
 var _ RelationalExpression = (*MatchableSortExpression)(nil)

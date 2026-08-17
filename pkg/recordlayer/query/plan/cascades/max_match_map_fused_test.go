@@ -1,12 +1,9 @@
 package cascades
 
-// max-match-map must handle FUSED multi-accessor paths — the shape
-// TranslationMap composition produces once two baked FieldValue steps collapse
-// into one multi-accessor node. This file pins prefix matching and Java's
-// ExpandFusedFieldValueRule, ported into MATCHING ONLY
-// (MaxMatchMapSimplificationRuleSet.java:50 — never into the general
-// simplifier; ComposeFieldValueOverFieldValueRule.java:41-43's stack-overflow
-// warning is why they never co-reside).
+// RFC-232 makes a FieldValue one exact, QOV-rooted full path. These tests pin
+// the max-match behavior of fused multi-accessor paths and, just as
+// importantly, the admission boundary that prevents the old chained and
+// caller-renamed representations from re-entering the matcher.
 
 import (
 	"testing"
@@ -14,262 +11,159 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// w3FusedRef builds the fused two-step ofOrdinal(m, slot).ofOrdinal(legOrd)
-// reference the partition rule's rebase produces.
-func w3FusedRef(t *testing.T, mergeQOV *values.QuantifiedObjectValue, slot, legOrd int) *values.FieldValue {
+func maxMatchResolve(
+	t testing.TB,
+	child values.Value,
+	ordinals ...int,
+) values.Value {
 	t.Helper()
-	step0, err := values.NewFieldValueOfOrdinal(mergeQOV, slot)
-	if err != nil {
-		t.Fatalf("bake _%d: %v", slot, err)
-	}
-	inner, err := values.NewFieldValueOfOrdinal(step0, legOrd)
-	if err != nil {
-		t.Fatalf("bake %d over _%d: %v", legOrd, slot, err)
-	}
-	fused, isFV := values.SimplifyValue(inner).(*values.FieldValue)
-	if !isFV || fused.Resolved == nil || len(fused.Resolved.Accessors) != 2 {
-		t.Fatalf("compose must fuse, got %T", values.SimplifyValue(inner))
-	}
-	return fused
+	resolved, err := values.ResolveFieldOrdinals(child, ordinals)
+	return mustConstruct(t, resolved, err)
 }
 
-func w3MergeQOV(name string) *values.QuantifiedObjectValue {
-	leg := values.NewRecordType("", false, []values.Field{
+func maxMatchField(
+	t testing.TB,
+	value values.Value,
+	wantPathLen int,
+) values.FieldValue {
+	t.Helper()
+	field, ok := values.AsFieldValue(value)
+	if !ok || field.Path() == nil || field.Path().Len() != wantPathLen {
+		t.Fatalf("value = %T/%v, want exact FieldValue with %d accessors", value, value, wantPathLen)
+	}
+	if _, ok := values.AsQuantifiedObjectValue(field.ChildValue()); !ok {
+		t.Fatalf("field child = %T, want exact QOV root", field.ChildValue())
+	}
+	return field
+}
+
+// w3FusedRef builds the exact two-step m[slot][legOrd] reference the
+// partition-rule rebase produces.
+func w3FusedRef(
+	t testing.TB,
+	mergeQOV values.QuantifiedObjectValue,
+	slot, legOrd int,
+) values.FieldValue {
+	t.Helper()
+	return maxMatchField(t, maxMatchResolve(t, mergeQOV, slot, legOrd), 2)
+}
+
+func w3MergeQOV(t testing.TB, name string) values.QuantifiedObjectValue {
+	t.Helper()
+	leg := values.NewRecordType("Leg", false, []values.Field{
 		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
 		{Name: "Y", FieldType: values.NotNullLong, Ordinal: 1},
 	})
-	merged := values.NewRecordType("", false, []values.Field{
+	merged := values.NewRecordType("Merged", false, []values.Field{
 		{Name: values.OrdinalFieldName(0), FieldType: leg, Ordinal: 0},
 	})
-	return values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(name), merged)
+	qov, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(name),
+		merged,
+	)
+	return mustConstruct(t, qov, err)
 }
 
-// TestMaxMatchMap_FusedVsFused pins the direct case: a fused query
-// value matches an identical fused candidate (structural equality over the
-// ordinal path), and — post-identity-flip — a candidate whose path carries
-// DIFFERENT display names at the same ordinals matches too (names are
-// rendering, not identity; Java ResolvedAccessor.equals is ordinal-only).
 func TestMaxMatchMap_FusedVsFused(t *testing.T) {
 	t.Parallel()
-	m := w3MergeQOV("m")
+	m := w3MergeQOV(t, "m")
 	qv := w3FusedRef(t, m, 0, 1)
 	cv := w3FusedRef(t, m, 0, 1)
 	if mmm := ComputeMaxMatchMap(qv, cv, nil); mmm.Size() < 1 {
-		t.Fatal("identical fused paths must max-match")
+		t.Fatal("identical exact fused paths must max-match")
 	}
 
-	// Name-divergent twin: same child, same ordinal path, renamed steps.
-	renamed := &values.FieldValue{
-		Field: "RENAMED",
-		Typ:   qv.Typ,
-		Child: qv.Child,
-		Resolved: values.NewFieldPathOfSingle("OTHER", 0, true).
-			WithSuffix(values.NewFieldPathOfSingle("RENAMED", 1, true)),
-	}
-	if mmm := ComputeMaxMatchMap(qv, renamed, nil); mmm.Size() < 1 {
-		t.Fatal("name-divergent fused twins (same ordinals) must max-match — ordinal-only identity")
+	// Display names are derived from the exact root; a caller cannot publish a
+	// same-ordinal clone carrying invented names and bypass that identity.
+	request, err := values.FieldByNameAndOrdinal("RENAMED", 1)
+	request = mustConstruct(t, request, err)
+	if renamed, resolveErr := values.ResolveFieldAccess(
+		maxMatchResolve(t, m, 0),
+		[]values.FieldRequest{request},
+	); resolveErr == nil || renamed != nil {
+		t.Fatalf("invented display name unexpectedly published a fused field: (%v, %v)", renamed, resolveErr)
 	}
 }
 
-// TestMaxMatchMap_FusedVsChained pins the ported
-// ExpandFusedFieldValueRule (matching-only, Java's exact placement -
-// MaxMatchMapSimplificationRuleSet.java:50): the QUERY side is the FUSED
-// one-node form (the compose rule's output), the CANDIDATE side the CHAINED
-// two-node form (FieldValue over FieldValue - the pre-compose shape
-// candidate builders produce). The expansion splits the fused path's last
-// step so the pieces match - without it this returned NO match (verified red
-// before the port).
+// Resolving one step over an already-resolved exact field composes into the
+// canonical full path immediately. There is no admitted chained FieldValue
+// alternative for matching to expand.
 func TestMaxMatchMap_FusedVsChained(t *testing.T) {
 	t.Parallel()
-	m := w3MergeQOV("m")
-	qv := w3FusedRef(t, m, 0, 1)
-
-	// The chained candidate: outer lazy-ish baked step over an inner baked
-	// step — the PRE-compose shape (two nodes, one accessor each).
-	innerStep, err := values.NewFieldValueOfOrdinal(m, 0)
-	if err != nil {
-		t.Fatalf("bake _0: %v", err)
-	}
-	chained, err := values.NewFieldValueOfOrdinal(innerStep, 1)
-	if err != nil {
-		t.Fatalf("bake 1 over _0: %v", err)
-	}
-
-	mmm := ComputeMaxMatchMap(qv, chained, nil)
-	if mmm.Size() < 1 {
-		t.Fatal("fused query vs chained candidate must match through the ported ExpandFusedFieldValueRule (red without it)")
+	m := w3MergeQOV(t, "m")
+	direct := w3FusedRef(t, m, 0, 1)
+	step0 := maxMatchResolve(t, m, 0)
+	sequential := maxMatchField(t, maxMatchResolve(t, step0, 1), 2)
+	if mmm := ComputeMaxMatchMap(direct, sequential, nil); mmm.Size() < 1 {
+		t.Fatal("direct and sequentially resolved canonical paths must match")
 	}
 }
 
-// TestMaxMatchMap_FusedVsChained_ThreeAccessor pins the DEEPER
-// dimension the two-accessor pin missed (a review catch): a THREE-accessor
-// fused path (a doubly-nested merge — `m._0._0.C`) must match a fully-CHAINED
-// three-node candidate. The last-accessor-only split left the 2-accessor
-// prefix fused, and the matcher compares the child before it could re-split,
-// so this returned NO match (verified red before the full-unchain fix). The
-// port now fully unchains in one step — Java's re-explored end state reached
-// directly.
+func maxMatchNestedQOV(
+	t testing.TB,
+	name string,
+	depth int,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	var typ values.Type = values.NotNullLong
+	for level := depth - 1; level >= 0; level-- {
+		fieldName := values.OrdinalFieldName(0)
+		if level == depth-1 {
+			fieldName = "C"
+		}
+		typ = values.NewRecordType("Nested", false, []values.Field{
+			{Name: fieldName, FieldType: typ, Ordinal: 0},
+		})
+	}
+	qov, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier(name),
+		typ,
+	)
+	return mustConstruct(t, qov, err)
+}
+
+func maxMatchSequentialZeroPath(
+	t testing.TB,
+	root values.Value,
+	depth int,
+) values.FieldValue {
+	t.Helper()
+	current := root
+	for i := 0; i < depth; i++ {
+		current = maxMatchResolve(t, current, 0)
+	}
+	return maxMatchField(t, current, depth)
+}
+
 func TestMaxMatchMap_FusedVsChained_ThreeAccessor(t *testing.T) {
 	t.Parallel()
-	leaf := values.NewRecordType("", false, []values.Field{{Name: "C", FieldType: values.NotNullLong, Ordinal: 0}})
-	mid := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: leaf, Ordinal: 0}})
-	top := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: mid, Ordinal: 0}})
-	q := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), top)
-
-	s0, err := values.NewFieldValueOfOrdinal(q, 0)
-	if err != nil {
-		t.Fatalf("bake _0: %v", err)
-	}
-	s1, err := values.NewFieldValueOfOrdinal(s0, 0)
-	if err != nil {
-		t.Fatalf("bake _0._0: %v", err)
-	}
-	s2, err := values.NewFieldValueOfOrdinal(s1, 0)
-	if err != nil {
-		t.Fatalf("bake _0._0.C: %v", err)
-	}
-	fused, isFV := values.SimplifyValue(s2).(*values.FieldValue)
-	if !isFV || len(fused.Resolved.Accessors) != 3 {
-		t.Fatalf("compose must fuse to a 3-accessor path, got %T (accessors=%v)", values.SimplifyValue(s2), fused)
-	}
-
-	// The chained candidate: three single-accessor nodes (never composed).
-	c0, err := values.NewFieldValueOfOrdinal(q, 0)
-	if err != nil {
-		t.Fatalf("chained _0: %v", err)
-	}
-	c1, err := values.NewFieldValueOfOrdinal(c0, 0)
-	if err != nil {
-		t.Fatalf("chained _0._0: %v", err)
-	}
-	c2, err := values.NewFieldValueOfOrdinal(c1, 0)
-	if err != nil {
-		t.Fatalf("chained _0._0.C: %v", err)
-	}
-	if len(c2.Resolved.Accessors) != 1 {
-		t.Fatalf("chained candidate node must carry ONE accessor, got %d", len(c2.Resolved.Accessors))
-	}
-
-	if mmm := ComputeMaxMatchMap(fused, c2, nil); mmm.Size() < 1 {
-		t.Fatal("3-accessor fused must match the fully-chained candidate — the last-accessor-only split missed this (full-unchain fix)")
+	q := maxMatchNestedQOV(t, "m", 3)
+	direct := maxMatchField(t, maxMatchResolve(t, q, 0, 0, 0), 3)
+	sequential := maxMatchSequentialZeroPath(t, q, 3)
+	if mmm := ComputeMaxMatchMap(direct, sequential, nil); mmm.Size() < 1 {
+		t.Fatal("three-step direct and sequential canonical paths must match")
 	}
 }
 
-// TestMaxMatchMap_FusedVsOneStepSplit pins the PARTIALLY-fused
-// candidate dimension (a review catch): a 3-accessor fused query must
-// also match a ONE-STEP-SPLIT candidate `FV(FV(m,[_0,_0]),[C])` — inner fused
-// (2 accessors), outer single. Emitting only the fully-chained form regressed
-// this shape (the old two-node split had matched it); the expansion now emits
-// every split form (Java's full re-explored member set), so both the
-// fully-chained and the partially-fused candidate shapes match. Red-verified
-// before the all-forms fix.
 func TestMaxMatchMap_FusedVsOneStepSplit(t *testing.T) {
 	t.Parallel()
-	leaf := values.NewRecordType("", false, []values.Field{{Name: "C", FieldType: values.NotNullLong, Ordinal: 0}})
-	mid := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: leaf, Ordinal: 0}})
-	top := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: mid, Ordinal: 0}})
-	q := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), top)
-
-	s0, err := values.NewFieldValueOfOrdinal(q, 0)
-	if err != nil {
-		t.Fatalf("bake _0: %v", err)
-	}
-	s1, err := values.NewFieldValueOfOrdinal(s0, 0)
-	if err != nil {
-		t.Fatalf("bake _0._0: %v", err)
-	}
-	s2, err := values.NewFieldValueOfOrdinal(s1, 0)
-	if err != nil {
-		t.Fatalf("bake _0._0.C: %v", err)
-	}
-	fused, isFV := values.SimplifyValue(s2).(*values.FieldValue)
-	if !isFV || len(fused.Resolved.Accessors) != 3 {
-		t.Fatalf("query must fuse to 3 accessors, got %v", fused)
-	}
-
-	// One-step-split candidate: inner fused m._0._0 (2 accessors), outer reads C.
-	c0, err := values.NewFieldValueOfOrdinal(q, 0)
-	if err != nil {
-		t.Fatalf("cand _0: %v", err)
-	}
-	c1, err := values.NewFieldValueOfOrdinal(c0, 0)
-	if err != nil {
-		t.Fatalf("cand _0._0: %v", err)
-	}
-	innerFused, isFV := values.SimplifyValue(c1).(*values.FieldValue)
-	if !isFV || len(innerFused.Resolved.Accessors) != 2 {
-		t.Fatalf("candidate inner must fuse to 2 accessors, got %v", innerFused)
-	}
-	outer, err := values.NewFieldValueOfOrdinal(innerFused, 0)
-	if err != nil {
-		t.Fatalf("build one-step outer: %v", err)
-	}
-	if len(outer.Resolved.Accessors) != 1 || len(outer.Child.(*values.FieldValue).Resolved.Accessors) != 2 {
-		t.Fatalf("one-step candidate malformed: outer=%d child=%d accessors",
-			len(outer.Resolved.Accessors), len(outer.Child.(*values.FieldValue).Resolved.Accessors))
-	}
-
-	if mmm := ComputeMaxMatchMap(fused, outer, nil); mmm.Size() < 1 {
-		t.Fatal("3-accessor fused must match the ONE-STEP-SPLIT candidate — all split forms emitted (fully-chained-only regressed this)")
+	q := maxMatchNestedQOV(t, "m", 3)
+	direct := maxMatchField(t, maxMatchResolve(t, q, 0, 0, 0), 3)
+	prefix := maxMatchField(t, maxMatchResolve(t, q, 0, 0), 2)
+	resolvedOuter := maxMatchField(t, maxMatchResolve(t, prefix, 0), 3)
+	if mmm := ComputeMaxMatchMap(direct, resolvedOuter, nil); mmm.Size() < 1 {
+		t.Fatal("resolving a suffix over a fused prefix must remain matchable")
 	}
 }
 
-// TestMaxMatchMap_FusedVsMidSplit_FourAccessor pins the MIDDLE split
-// form (completeness pin): a 4-accessor fused query vs a p=2 candidate
-// FV(FV(FV(m,[_0,_0]),[_0]),[C]) — a 2-accessor fused prefix AND a 2-node
-// chained suffix simultaneously (neither fully-fused nor fully-chained). The
-// all-forms loop emits this p=2 member; the end pins (fully-chained p=1,
-// one-step p=n-1) don't exercise a form with both a multi-accessor prefix and
-// a multi-node suffix.
 func TestMaxMatchMap_FusedVsMidSplit_FourAccessor(t *testing.T) {
 	t.Parallel()
-	l3 := values.NewRecordType("", false, []values.Field{{Name: "C", FieldType: values.NotNullLong, Ordinal: 0}})
-	l2 := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: l3, Ordinal: 0}})
-	l1 := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: l2, Ordinal: 0}})
-	top := values.NewRecordType("", false, []values.Field{{Name: values.OrdinalFieldName(0), FieldType: l1, Ordinal: 0}})
-	q := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("m"), top)
-
-	chain := func(depth int) *values.FieldValue {
-		t.Helper()
-		var cur values.Value = q
-		var fv *values.FieldValue
-		for i := 0; i < depth; i++ {
-			next, err := values.NewFieldValueOfOrdinal(cur, 0)
-			if err != nil {
-				t.Fatalf("bake step %d: %v", i, err)
-			}
-			cur, fv = next, next
-		}
-		return fv
-	}
-
-	// Query: 4-accessor fused m._0._0._0.C.
-	fused, isFV := values.SimplifyValue(chain(4)).(*values.FieldValue)
-	if !isFV || len(fused.Resolved.Accessors) != 4 {
-		t.Fatalf("query must fuse to 4 accessors, got %v", fused)
-	}
-
-	// Candidate p=2 form: inner fused m._0._0 (2 accessors), then two single
-	// single-accessor nodes (._0, then .C).
-	innerFused, isFV := values.SimplifyValue(chain(2)).(*values.FieldValue)
-	if !isFV || len(innerFused.Resolved.Accessors) != 2 {
-		t.Fatalf("candidate inner must fuse to 2 accessors, got %v", innerFused)
-	}
-	mid, err := values.NewFieldValueOfOrdinal(innerFused, 0)
-	if err != nil {
-		t.Fatalf("build mid node: %v", err)
-	}
-	outer, err := values.NewFieldValueOfOrdinal(mid, 0)
-	if err != nil {
-		t.Fatalf("build outer node: %v", err)
-	}
-	if len(outer.Resolved.Accessors) != 1 || len(mid.Resolved.Accessors) != 1 ||
-		len(innerFused.Resolved.Accessors) != 2 {
-		t.Fatalf("p=2 candidate malformed: outer=%d mid=%d inner=%d",
-			len(outer.Resolved.Accessors), len(mid.Resolved.Accessors), len(innerFused.Resolved.Accessors))
-	}
-
-	if mmm := ComputeMaxMatchMap(fused, outer, nil); mmm.Size() < 1 {
-		t.Fatal("4-accessor fused must match the p=2 mid-split candidate (2-accessor prefix + 2 chained) — all split forms emitted")
+	q := maxMatchNestedQOV(t, "m", 4)
+	direct := maxMatchField(t, maxMatchResolve(t, q, 0, 0, 0, 0), 4)
+	prefix := maxMatchField(t, maxMatchResolve(t, q, 0, 0), 2)
+	mid := maxMatchField(t, maxMatchResolve(t, prefix, 0), 3)
+	resolvedOuter := maxMatchField(t, maxMatchResolve(t, mid, 0), 4)
+	if mmm := ComputeMaxMatchMap(direct, resolvedOuter, nil); mmm.Size() < 1 {
+		t.Fatal("four-step direct and incrementally resolved canonical paths must match")
 	}
 }

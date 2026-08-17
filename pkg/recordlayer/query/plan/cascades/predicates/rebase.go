@@ -2,89 +2,84 @@ package predicates
 
 import "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
-// RebasePredicate replaces correlation references in a predicate tree
-// according to the alias map. Returns the original predicate if no
-// references match. Handles ComparisonPredicate, AndPredicate,
-// OrPredicate, NotPredicate, ValuePredicate, ExistentialValuePredicate,
-// ConstantPredicate.
+// RebasePredicate IS DELIBERATELY ABSENT. It was the "compatibility, error-less
+// spelling" of RebasePredicateChecked and it returned nil on failure, which its
+// own doc called failing closed.
 //
-// Ports Java's QueryPredicate.rebase(AliasMap).
-func RebasePredicate(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
-	if p == nil || len(aliases) == 0 {
-		return p
+// Nil is not closed. At every one of its six production call sites nil was
+// indistinguishable from a legitimate absence: five appended it into a
+// predicate LIST, where a nil element is a predicate that is simply not there,
+// and the sixth returned it as the NO-JOIN-PREDICATE sentinel of a correlated
+// EXISTS — so a failed rebase turned the subquery into one matching every outer
+// row, with no error and a plausible row count.
+//
+// RFC-232 is what took that from theoretical to reachable: the failure
+// originates in values.RebaseValueChecked, and exact types are precisely what
+// gave value reconstruction something to reject. Deleting the wrapper is the
+// fix rather than avoiding it, because the next caller who wants "the one
+// without the error return" will otherwise find it.
+//
+// Use RebasePredicateChecked and route the error.
+
+// RebasePredicateChecked replaces correlation references in every embedded
+// Value tree through the checked rewrite authority, then rebases the one
+// correlation stored outside a Value (Placeholder.ParameterAlias). The whole
+// predicate graph is invocation-local and atomic: an invalid FieldValue
+// reconstruction returns an error and no partial predicate.
+func RebasePredicateChecked(p QueryPredicate, aliases values.AliasMap) (QueryPredicate, error) {
+	if p == nil {
+		return p, nil
 	}
+	rebased, err := TransformEmbeddedValuesChecked(p, func(value values.Value) (values.Value, error) {
+		return values.RebaseValueChecked(value, aliases)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return rebasePredicateMetadata(rebased, aliases), nil
+}
+
+func rebasePredicateMetadata(p QueryPredicate, aliases values.AliasMap) QueryPredicate {
 	switch pred := p.(type) {
-	case *ComparisonPredicate:
-		newOperand := values.RebaseValue(pred.Operand, aliases)
-		newCompOperand := values.RebaseValue(pred.Comparison.Operand, aliases)
-		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
-			return p
-		}
-		// Copy the whole Comparison and replace ONLY the rebased RHS operand,
-		// preserving Escape (the LIKE escape rune) AND every other Comparison
-		// subclass field (ParameterName, the Text* fields, the DistanceRank
-		// vector fields). A partial {Type, Operand, Escape} reconstruction would
-		// silently drop the rest and change the comparison's semantics.
-		cmp := pred.Comparison
-		cmp.Operand = newCompOperand
-		return &ComparisonPredicate{
-			Operand:    newOperand,
-			Comparison: cmp,
-		}
-	case *ValuePredicate:
-		newVal := values.RebaseValue(pred.Value, aliases)
-		if newVal == pred.Value {
-			return p
-		}
-		return NewValuePredicate(newVal)
 	case *AndPredicate:
-		return rebaseNary(pred, pred.SubPredicates, aliases, func(subs []QueryPredicate) QueryPredicate {
+		return rebasePredicateMetadataNary(pred, pred.SubPredicates, aliases, func(subs []QueryPredicate) QueryPredicate {
 			return NewAnd(subs...)
 		})
 	case *OrPredicate:
-		return rebaseNary(pred, pred.SubPredicates, aliases, func(subs []QueryPredicate) QueryPredicate {
+		return rebasePredicateMetadataNary(pred, pred.SubPredicates, aliases, func(subs []QueryPredicate) QueryPredicate {
 			return NewOr(subs...)
 		})
 	case *NotPredicate:
-		newChild := RebasePredicate(pred.Child, aliases)
+		newChild := rebasePredicateMetadata(pred.Child, aliases)
 		if newChild == pred.Child {
 			return p
 		}
 		return NewNot(newChild)
-	case *ExistentialValuePredicate:
-		// RFC-141: rebase the QuantifiedObjectValue operand's alias via the
-		// shared value path; the comparison (NOT_NULL) carries unchanged.
-		newVal := values.RebaseValue(pred.Value, aliases)
-		if newVal == pred.Value {
-			return p
-		}
-		return MustNewExistentialValuePredicate(newVal, pred.Comparison)
 	case *Placeholder:
 		newAlias := pred.ParameterAlias
-		if mapped, ok := aliases[newAlias]; ok {
-			newAlias = mapped
+		if aliases != nil {
+			if mapped, ok := aliases.Target(newAlias); ok {
+				newAlias = mapped
+			}
 		}
-		newVal := values.RebaseValue(pred.Value, aliases)
-		if newAlias == pred.ParameterAlias && newVal == pred.Value {
+		if newAlias == pred.ParameterAlias {
 			return p
 		}
 		return &Placeholder{
 			ParameterAlias: newAlias,
-			Value:          newVal,
+			Value:          pred.Value,
 			CompRange:      pred.CompRange,
 		}
-	case *ConstantPredicate:
-		return p
 	default:
 		return p
 	}
 }
 
-func rebaseNary(orig QueryPredicate, subs []QueryPredicate, aliases values.AliasMap, build func([]QueryPredicate) QueryPredicate) QueryPredicate {
+func rebasePredicateMetadataNary(orig QueryPredicate, subs []QueryPredicate, aliases values.AliasMap, build func([]QueryPredicate) QueryPredicate) QueryPredicate {
 	changed := false
 	newSubs := make([]QueryPredicate, len(subs))
 	for i, s := range subs {
-		newSubs[i] = RebasePredicate(s, aliases)
+		newSubs[i] = rebasePredicateMetadata(s, aliases)
 		if newSubs[i] != s {
 			changed = true
 		}

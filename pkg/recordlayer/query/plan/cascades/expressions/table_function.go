@@ -1,6 +1,8 @@
 package expressions
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -37,12 +39,20 @@ import (
 // result type (Java does the same).
 type TableFunctionExpression struct {
 	streamValue values.Value
+	resultType  values.ExactTypeHandle
 }
 
 // NewTableFunctionExpression builds a TableFunction over the given
 // streaming Value.
-func NewTableFunctionExpression(stream values.Value) *TableFunctionExpression {
-	return &TableFunctionExpression{streamValue: stream}
+func NewTableFunctionExpression(stream values.Value) (*TableFunctionExpression, error) {
+	if stream == nil {
+		return nil, fmt.Errorf("TableFunctionExpression stream: value is nil")
+	}
+	resultType, err := snapshotExpressionResultType("TableFunctionExpression", stream.Type())
+	if err != nil {
+		return nil, err
+	}
+	return &TableFunctionExpression{streamValue: stream, resultType: resultType}, nil
 }
 
 // GetValue returns the wrapped streaming Value.
@@ -53,10 +63,7 @@ func (e *TableFunctionExpression) GetValue() values.Value {
 // GetResultValue returns a QueriedValue typed at the streaming
 // Value's result type.
 func (e *TableFunctionExpression) GetResultValue() values.Value {
-	if e.streamValue == nil {
-		return values.NewQueriedValue(nil, values.UnknownType)
-	}
-	return values.NewQueriedValue(nil, e.streamValue.Type())
+	return values.NewQueriedValue(nil, e.resultType.Type())
 }
 
 // GetQuantifiers returns the empty slice — leaf-shaped.
@@ -114,8 +121,11 @@ func (e *TableFunctionExpression) HashCodeWithoutChildren() uint64 {
 	return h
 }
 
-func (e *TableFunctionExpression) WithQuantifiers(_ []Quantifier) RelationalExpression {
-	return e
+func (e *TableFunctionExpression) WithQuantifiers(quantifiers []Quantifier) (RelationalExpression, error) {
+	if err := requireQuantifierArity("TableFunctionExpression", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return e, nil
 }
 
 var _ RelationalExpression = (*TableFunctionExpression)(nil)

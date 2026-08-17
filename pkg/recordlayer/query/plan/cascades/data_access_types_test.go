@@ -26,8 +26,11 @@ func (s *stubRelExpr) EqualsWithoutChildren(other expressions.RelationalExpressi
 	return ok && o.name == s.name
 }
 
-func (s *stubRelExpr) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return s
+func (s *stubRelExpr) WithQuantifiers(quantifiers []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := requireTestQuantifierArity("stubRelExpr", len(quantifiers), 0); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // ---------------------------------------------------------------------------

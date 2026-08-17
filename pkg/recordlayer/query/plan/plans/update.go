@@ -15,23 +15,18 @@ import (
 // shape used by the logical UpdateExpression — Java carries them
 // through to the physical plan unchanged.
 //
-// Result type: same as inner.
+// Result type: the Java-shaped two-field record {OLD: inner, NEW: target}.
 type RecordQueryUpdatePlan struct {
 	PlanExprBase
 	innerQ           expressions.Quantifier
 	targetRecordType string
+	targetType       values.ExactTypeHandle
 	transforms       []expressions.UpdateTransform
 }
 
 // NewRecordQueryUpdatePlan constructs the UPDATE plan.
-func NewRecordQueryUpdatePlan(inner RecordQueryPlan, targetRecordType string, transforms []expressions.UpdateTransform) *RecordQueryUpdatePlan {
-	copied := make([]expressions.UpdateTransform, len(transforms))
-	copy(copied, transforms)
-	return &RecordQueryUpdatePlan{
-		innerQ:           QuantifierOverPlan(inner),
-		targetRecordType: targetRecordType,
-		transforms:       copied,
-	}
+func NewRecordQueryUpdatePlan(inner RecordQueryPlan, targetRecordType string, transforms []expressions.UpdateTransform) (*RecordQueryUpdatePlan, error) {
+	return NewRecordQueryUpdatePlanFromQuantifier(QuantifierOverPlan(inner), targetRecordType, transforms)
 }
 
 // NewRecordQueryUpdatePlanFromQuantifier builds an UPDATE whose child is a LIVE
@@ -41,24 +36,64 @@ func NewRecordQueryUpdatePlan(inner RecordQueryPlan, targetRecordType string, tr
 // child edge directly: the memo holds it without a physical wrapper, and
 // GetInner / GetQuantifiers / GetResultValue all resolve through the one live
 // edge (RFC-184 W2). transforms are copied, unchanged from NewRecordQueryUpdatePlan.
-func NewRecordQueryUpdatePlanFromQuantifier(innerQ expressions.Quantifier, targetRecordType string, transforms []expressions.UpdateTransform) *RecordQueryUpdatePlan {
+func NewRecordQueryUpdatePlanFromQuantifier(innerQ expressions.Quantifier, targetRecordType string, transforms []expressions.UpdateTransform) (*RecordQueryUpdatePlan, error) {
+	flowedType, err := innerQ.GetFlowedObjectType()
+	if err != nil {
+		return nil, err
+	}
+	return NewRecordQueryUpdatePlanFromQuantifierWithTargetType(innerQ, targetRecordType, flowedType, transforms)
+}
+
+// NewRecordQueryUpdatePlanFromQuantifierWithTargetType preserves the target
+// schema carried by the logical UpdateExpression. The legacy convenience
+// constructor derives this from the input because ordinary updates do not
+// change record type; the rule path calls this form so memo admission can prove
+// the exact logical and physical OLD/NEW contracts agree.
+func NewRecordQueryUpdatePlanFromQuantifierWithTargetType(
+	innerQ expressions.Quantifier,
+	targetRecordType string,
+	targetType values.Type,
+	transforms []expressions.UpdateTransform,
+) (*RecordQueryUpdatePlan, error) {
+	oldType, err := innerQ.GetFlowedObjectType()
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryUpdatePlan OLD type: %w", err)
+	}
+	if _, ok := oldType.(*values.RecordType); !ok {
+		return nil, fmt.Errorf("RecordQueryUpdatePlan OLD type: expected record, got %v", oldType)
+	}
+	if _, ok := targetType.(*values.RecordType); !ok {
+		return nil, fmt.Errorf("RecordQueryUpdatePlan NEW type: expected record, got %v", targetType)
+	}
+	exactTarget, err := values.SnapshotExactType(targetType)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryUpdatePlan NEW type: %w", err)
+	}
+	resultType := &values.RecordType{Fields: []values.Field{
+		{Name: "OLD", Ordinal: 0, FieldType: oldType},
+		{Name: "NEW", Ordinal: 1, FieldType: exactTarget.Type()},
+	}}
+	base, err := newPlanExprBaseForType("RecordQueryUpdatePlan", resultType)
+	if err != nil {
+		return nil, err
+	}
 	copied := make([]expressions.UpdateTransform, len(transforms))
 	copy(copied, transforms)
 	return &RecordQueryUpdatePlan{
+		PlanExprBase:     base,
 		innerQ:           innerQ,
 		targetRecordType: targetRecordType,
+		targetType:       exactTarget,
 		transforms:       copied,
-	}
+	}, nil
 }
 
 // GetInner returns the source plan, dereferenced through the quantifier.
 func (p *RecordQueryUpdatePlan) GetInner() RecordQueryPlan { return planFromQuantifier(p.innerQ) }
 
-// GetResultValue returns the flowed object value of the live child quantifier —
-// UPDATE passes its inner's rows through, so the result identity is the inner's,
-// the value physicalUpdateWrapper.GetResultValue supplied (RFC-184 W2).
+// GetResultValue returns the stable current QOV for {OLD,NEW}.
 func (p *RecordQueryUpdatePlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -73,17 +108,19 @@ func (p *RecordQueryUpdatePlan) GetQuantifiers() []expressions.Quantifier {
 // GetTargetRecordType returns the destination record-type name.
 func (p *RecordQueryUpdatePlan) GetTargetRecordType() string { return p.targetRecordType }
 
+// GetTargetType returns a defensive exact target type.
+func (p *RecordQueryUpdatePlan) GetTargetType() values.Type {
+	if p.targetType == nil {
+		return nil
+	}
+	return p.targetType.Type()
+}
+
 // GetTransforms returns the per-row transform list (read-only).
 func (p *RecordQueryUpdatePlan) GetTransforms() []expressions.UpdateTransform { return p.transforms }
 
 // GetResultType returns the inner's result type.
-func (p *RecordQueryUpdatePlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryUpdatePlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryUpdatePlan) GetChildren() []RecordQueryPlan {
@@ -103,7 +140,7 @@ func (p *RecordQueryUpdatePlan) GetChildren() []RecordQueryPlan {
 // Java's targetType/coercionTrie/computationValue have no Go counterpart yet;
 // they join identity when they land.
 func (p *RecordQueryUpdatePlan) structuralKey() *structuralKey {
-	k := newStructuralKey().Str(p.targetRecordType)
+	k := newStructuralKey().Str(p.targetRecordType).Type(p.GetTargetType())
 	for _, tr := range p.transforms {
 		k.Str(tr.FieldPath).Value(tr.NewValue)
 	}
@@ -144,13 +181,20 @@ func (p *RecordQueryUpdatePlan) EqualsWithoutChildren(other expressions.Relation
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryUpdatePlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryUpdatePlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryUpdatePlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
-	cp.innerQ = qs[0]
-	return &cp
+	rebuilt, err := NewRecordQueryUpdatePlanFromQuantifierWithTargetType(
+		qs[0], p.targetRecordType, p.GetTargetType(), p.transforms)
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = rebuilt.PlanExprBase
+	cp.innerQ = rebuilt.innerQ
+	cp.targetType = rebuilt.targetType
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -162,7 +206,7 @@ func (p *RecordQueryUpdatePlan) WithChildren(qs []expressions.Quantifier) (expre
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryUpdatePlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

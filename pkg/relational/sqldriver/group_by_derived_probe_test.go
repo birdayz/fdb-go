@@ -38,11 +38,18 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 
 	// A NESTED group-key reference inside a computed projection (`x.col1` within
 	// `x.col1 + 10`) bakes to its logical ordinal — the explain renders
-	// `(COL1#0 + 10)`. groupByOutputBaker must never leave such a key LAZY on
+	// `COL1#0 + 10`. groupByOutputBaker must never leave such a key LAZY on
 	// the accident that its bare name `COL1` happens to resolve by GetByName
-	// (which would render the bare `(COL1 + 10)`). This pins the uniform bake
+	// (which would render the bare `COL1 + 10`). This pins the uniform bake
 	// FIRES (the `#0` ordinal marker). Rows correctness is pinned by
 	// derived_col1_plus_10 below.
+	//
+	// The assertion is the `#0` MARKER, not the whole parenthesised rendering:
+	// a resolved reference renders under its owning correlation
+	// (`_current.COL1#0`), so pinning `(COL1#0` also pinned the ABSENCE of a
+	// qualifier — a separate claim this case is not about, and one the ordinal
+	// model changed. Both halves are asserted, because "contains #0" alone
+	// passes on a plan that ALSO still carries a lazy copy.
 	t.Run("nested_group_key_bakes_ordinal", func(t *testing.T) {
 		rows, err := db.QueryContext(ctx, "EXPLAIN SELECT x.col1 + 10 FROM (SELECT col1 FROM t1) AS x GROUP BY x.col1 ORDER BY 1")
 		if err != nil {
@@ -53,8 +60,10 @@ func TestFDB_GroupByDerivedTableComputedExpr(t *testing.T) {
 		var plan string
 		g.Expect(rows.Scan(&plan)).To(gomega.Succeed())
 		// The nested group key bakes: `COL1#0`, not a bare lazy `COL1 + 10`.
-		g.Expect(plan).To(gomega.ContainSubstring("(COL1#0 + 10)"),
+		g.Expect(plan).To(gomega.ContainSubstring("COL1#0 + 10"),
 			"nested group key must bake to its logical ordinal; plan=%s", plan)
+		g.Expect(plan).NotTo(gomega.ContainSubstring("(COL1 + 10)"),
+			"no lazy, unbaked copy of the computed key may survive; plan=%s", plan)
 	})
 
 	// The baked `#0` marker stays OUT of the user-visible column label: an

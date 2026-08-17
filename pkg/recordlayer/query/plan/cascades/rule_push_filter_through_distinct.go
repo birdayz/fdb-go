@@ -3,6 +3,8 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PushFilterThroughDistinctRule pushes a LogicalFilter under a
@@ -50,12 +52,60 @@ func (r *PushFilterThroughDistinctRule) OnMatch(call *ExpressionRuleCall) {
 	if !ok {
 		return
 	}
+	// The filter predicate is rooted at the quantifier over Distinct.  Once it
+	// moves below Distinct it must read Distinct's input quantifier instead;
+	// reusing the old alias leaves an unbound QOV in the rewritten expression.
+	rebasedPredicates, err := rebasePushFilterPredicates(
+		f.GetPredicates(), f.GetInner().GetAlias(), dist.GetInner().GetAlias())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	// Build Filter(P, dist.inner-source) — REUSE dist's inner
 	// Quantifier so the pushed Filter shares the same Reference
 	// pointer as the input.
-	pushed := expressions.NewLogicalFilterExpression(f.GetPredicates(), dist.GetInner())
+	pushed, err := expressions.NewLogicalFilterExpression(rebasedPredicates, dist.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	pushedQ := expressions.ForEachQuantifier(call.MemoizeExpression(pushed))
-	call.Yield(expressions.NewLogicalDistinctExpression(pushedQ))
+	outer, err := expressions.NewLogicalDistinctExpression(pushedQ)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.Yield(outer)
+}
+
+// rebasePushFilterPredicates is the checked alias-transition authority shared
+// by the logical filter-pushdown rules.  Predicate rebuilding is atomic: an
+// incompatible exact FieldValue root returns an error instead of publishing a
+// nil or partially rebased predicate tree.
+func rebasePushFilterPredicates(
+	input []predicates.QueryPredicate,
+	source, target values.CorrelationIdentifier,
+) ([]predicates.QueryPredicate, error) {
+	if source == target {
+		return append([]predicates.QueryPredicate(nil), input...), nil
+	}
+	aliases, err := values.NewAliasMap([]values.AliasPair{{Source: source, Target: target}})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]predicates.QueryPredicate, len(input))
+	for i, predicate := range input {
+		result[i], err = predicates.TransformEmbeddedValuesChecked(
+			predicate,
+			func(value values.Value) (values.Value, error) {
+				return values.RebaseValueChecked(value, aliases)
+			},
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 var _ ExpressionRule = (*PushFilterThroughDistinctRule)(nil)

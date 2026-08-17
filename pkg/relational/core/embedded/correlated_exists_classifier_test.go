@@ -2,11 +2,96 @@ package embedded
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+const unnestExistsOuterOnlyDDL = `
+CREATE TABLE MA (ID BIGINT, ARR INTEGER ARRAY, C INTEGER, PRIMARY KEY (ID))
+CREATE TABLE JU (ID BIGINT, K INTEGER, PRIMARY KEY (ID))`
+
+// TestUnnestExistsOuterOnlyConjunctPlans pins the under-EXISTS placement of a
+// conjunct that reads only the lateral unnest's outer table. Positive and
+// negative polarity share the same buried predicate program: MA.ID must remain
+// below the existential cardinality boundary, where it is evaluated once per
+// unnested outer row. Hoisting it outside NOT EXISTS changes the truth table,
+// while leaving the exact MA-rooted read unrebased makes translation decline.
+func TestUnnestExistsOuterOnlyConjunctPlans(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "exists",
+			sql:  `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`,
+		},
+		{
+			name: "not_exists",
+			sql:  `SELECT "X" FROM MA, MA."ARR" AS "X" WHERE NOT EXISTS (SELECT 1 FROM JU WHERE MA."ID" = 1)`,
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanQueryForTest(tc.sql, unnestExistsOuterOnlyDDL, nil)
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			for _, want := range []string{"FlatMap(", "FirstOrDefault("} {
+				if !strings.Contains(plan, want) {
+					t.Fatalf("outer-only EXISTS lost its nested cardinality boundary %q: %s", want, plan)
+				}
+			}
+			if strings.Contains(plan, "<nil>") {
+				t.Fatalf("outer-only EXISTS retained a nil child: %s", plan)
+			}
+		})
+	}
+}
+
+// TestCorrelatedExistsWithInnerLateralUnnestPlans pins the builder/type
+// boundary for an EXISTS whose own FROM list contains a lateral unnest. That
+// inner LogicalUnnest intentionally carries source syntax rather than a
+// CorrelatedCollection; its enclosing LogicalJoin must still acquire an exact
+// element row before the existential QOV is minted. AS+AT is the width-sensitive
+// twin: both element and ordinal slots must survive exact typing.
+func TestCorrelatedExistsWithInnerLateralUnnestPlans(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "scalar element",
+			sql:  `SELECT ID FROM JU WHERE EXISTS (SELECT 1 FROM MA, MA.ARR AS X WHERE X = JU.K)`,
+		},
+		{
+			name: "element with ordinality",
+			sql:  `SELECT ID FROM JU WHERE EXISTS (SELECT 1 FROM MA, MA.ARR AS X AT POS WHERE X = JU.K AND POS >= 1)`,
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			plan, err := PlanQueryForTest(tc.sql, unnestExistsOuterOnlyDDL, nil)
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			for _, want := range []string{"FlatMap(", "FirstOrDefault(", "Explode("} {
+				if !strings.Contains(plan, want) {
+					t.Fatalf("correlated inner unnest lost %q: %s", want, plan)
+				}
+			}
+			if strings.Contains(plan, "<nil>") || strings.Contains(plan, "Unknown") {
+				t.Fatalf("correlated inner unnest retained an inexact carrier: %s", plan)
+			}
+		})
+	}
+}
 
 // TestSplitConjunctsByOuterRef_Shadowing pins the ON-conjunct classifier that
 // decides whether a correlated-EXISTS join's ON conjunct is a liftable outer
@@ -18,9 +103,18 @@ import (
 func TestSplitConjunctsByOuterRef_Shadowing(t *testing.T) {
 	// eqOf builds `QOV(a) = QOV(b)` — GetCorrelatedToOfPredicate yields {a, b}.
 	eqOf := func(a, b string) predicates.QueryPredicate {
+		typ := &values.RecordType{Fields: []values.Field{{Name: "K", Ordinal: 0, FieldType: values.NotNullLong}}}
+		left, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a), typ)
+		if err != nil {
+			t.Fatalf("left QOV: %v", err)
+		}
+		right, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(b), typ)
+		if err != nil {
+			t.Fatalf("right QOV: %v", err)
+		}
 		return predicates.NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(a)),
-			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(b))},
+			left,
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: right},
 		)
 	}
 	set := func(names ...string) map[string]struct{} {

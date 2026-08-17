@@ -204,10 +204,11 @@ func (p *PlanPartition) GetExpressionPropertyValue(
 // getPartitionPropertyValue without also porting its rollUpTo silently drops
 // the guarantee the read depends on.
 //
-// ImplementInUnionRule is the known outstanding case: it consumes this raw and
-// takes the rich ordering from its first physical member. Converting it needs
-// more than roll-up. It also pins a single member (pinOrderedSpine), and that
-// pin is compensating for a SEPARATE defect one layer down:
+// ImplementInUnionRule now rolls the raw partitions up by PropRichOrdering
+// before deriving merge keys, so an equality-bound access cannot share a
+// representative with an unbounded directional scan. It also pins a single
+// member (pinOrderedSpine), and that pin compensates for a SEPARATE defect one
+// layer down:
 // MemoizeFinalExpressionsFromOther (implementation_rule.go:124-151) mints a
 // fresh Reference without a constraint entry, so OptimizeGroupTask's
 // per-ordering retention (unified_tasks.go:663-666) looks up the new reference,
@@ -301,7 +302,7 @@ func orderingPartitionHash(o properties.Ordering) uint64 {
 	}
 	h := fnv.New64a()
 	for i, k := range o.Keys {
-		if fv, ok := k.(*values.FieldValue); ok {
+		if fv, ok := values.AsFieldValue(k); ok {
 			// Hash the FULL accessor NAME path, not just the leaf Field: two
 			// same-leaf-name ordering keys from different sources (addr.city vs a
 			// top-level city, or two self-join legs' x) must land in DIFFERENT
@@ -316,7 +317,7 @@ func orderingPartitionHash(o properties.Ordering) uint64 {
 					h.Write([]byte{0}) // separator: ["a","bc"] must not collide with ["ab","c"]
 				}
 			} else {
-				h.Write([]byte(fv.Field))
+				h.Write([]byte(fv.DisplayName()))
 			}
 		} else {
 			h.Write([]byte(values.ExplainValue(k)))

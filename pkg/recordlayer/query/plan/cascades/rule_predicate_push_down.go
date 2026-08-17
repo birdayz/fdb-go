@@ -116,7 +116,11 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 
 		var newBelowExpressions []expressions.RelationalExpression
 		for _, member := range childRef.AllMembers() {
-			pushed := pushPredicateToExpression(call, pushable, pushQ, member)
+			pushed, err := pushPredicateToExpression(call, pushable, pushQ, member)
+			if err != nil {
+				call.Fail(err)
+				return
+			}
 			if pushed != nil {
 				newBelowExpressions = append(newBelowExpressions, pushed)
 			}
@@ -152,16 +156,55 @@ func (r *PredicatePushDownRule) OnMatch(call *ExpressionRuleCall) {
 		}
 
 		// Build the new SelectExpression with the remaining (fixed) predicates.
-		newSel := expressions.NewSelectExpressionWithJoinType(
+		newSel, err := expressions.NewSelectExpressionWithJoinType(
 			sel.GetResultValue(),
 			newQuantifiers,
 			fixed,
 			sel.GetSourceAliases(),
 			sel.GetJoinType(),
 		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		call.Yield(newSel)
 		return // One quantifier per rule firing, matching Java's behavior.
 	}
+}
+
+// pushedAliasDenotesSelectRow reports whether the row produced by a Select is
+// the same exact row the pushed quantifier's alias names.
+//
+// It is the precondition for substituting the alias by that Select's result
+// value, and it is a TYPE question rather than a naming one: two rows that
+// agree on shape agree on what every ordinal in a pushed predicate addresses,
+// and two that do not cannot both be what the alias means. An edge that cannot
+// state its flowed row answers no — the substitution has nothing to check
+// against, and an unchecked one is the silent wrong-column read.
+func pushedAliasDenotesSelectRow(
+	pushQuantifier expressions.Quantifier,
+	resultValue values.Value,
+) bool {
+	if resultValue == nil {
+		return false
+	}
+	flowed, err := pushQuantifier.RequireFlowedObjectValue()
+	if err != nil || flowed == nil || flowed.FlowedType() == nil {
+		return false
+	}
+	return values.QuantifiedRowShapesAgree(flowed.FlowedType(), resultValue.Type())
+}
+
+// rebasedAliasesDenoteOneRow reports whether two quantifiers flow the same
+// exact row, which is what an alias-only predicate rebase between them assumes.
+// A quantifier that cannot state its flowed row answers no.
+func rebasedAliasesDenoteOneRow(from, to expressions.Quantifier) bool {
+	fromFlowed, fromErr := from.RequireFlowedObjectValue()
+	toFlowed, toErr := to.RequireFlowedObjectValue()
+	if fromErr != nil || toErr != nil || fromFlowed == nil || toFlowed == nil {
+		return false
+	}
+	return values.QuantifiedRowShapesAgree(fromFlowed.FlowedType(), toFlowed.FlowedType())
 }
 
 // pushPredicateToExpression is the Go equivalent of Java's PushToVisitor.
@@ -173,7 +216,7 @@ func pushPredicateToExpression(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	belowExpression expressions.RelationalExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	switch expr := belowExpression.(type) {
 	case *expressions.LogicalFilterExpression:
 		return pushIntoLogicalFilter(originalPredicates, pushQuantifier, expr)
@@ -189,7 +232,7 @@ func pushPredicateToExpression(
 		return pushThroughUnique(call, originalPredicates, pushQuantifier, expr)
 	default:
 		// By default, we cannot push things down. Return nil.
-		return nil
+		return nil, nil
 	}
 }
 
@@ -201,26 +244,51 @@ func pushIntoLogicalFilter(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	filter *expressions.LogicalFilterExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	inner := filter.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
-		return nil
+		return nil, nil
+	}
+	// An alias-only rebase keeps every ORDINAL and changes only which row they
+	// are read from, so the two rows have to be the same row. Reached on
+	// `… LEFT JOIN emp e ON … WHERE e.id IS NULL AND NOT EXISTS (…)`, where
+	// `E.ID#0 IS NULL` was rebased onto a preserved leg aliased D and became
+	// `D.ID#0 IS NULL` — a predicate on a DIFFERENT column, which the access
+	// path then turned into a scan range on DEPT's primary key.
+	if !rebasedAliasesDenoteOneRow(pushQuantifier, inner) {
+		return nil, nil
 	}
 
 	// Rebase: pushQuantifier.alias -> inner.alias
-	aliasMap := values.AliasMap{
-		pushQuantifier.GetAlias(): inner.GetAlias(),
+	aliasMap, err := values.NewAliasMap([]values.AliasPair{{
+		Source: pushQuantifier.GetAlias(),
+		Target: inner.GetAlias(),
+	}})
+	if err != nil {
+		return nil, err
 	}
 
 	// Combine: existing filter predicates + rebased original predicates.
 	newPredicates := make([]predicates.QueryPredicate, 0, len(filter.GetPredicates())+len(originalPredicates))
 	newPredicates = append(newPredicates, filter.GetPredicates()...)
 	for _, p := range originalPredicates {
-		newPredicates = append(newPredicates, predicates.RebasePredicate(p, aliasMap))
+		// CHECKED. The error-less spelling returns nil on a failed rebase, and a
+		// nil appended here is not a dropped rebase — it is a nil element in a
+		// predicate list, which downstream reads as a predicate that is not
+		// there. Losing a pushed-down predicate returns rows the query excluded.
+		rebased, rerr := predicates.RebasePredicateChecked(p, aliasMap)
+		if rerr != nil {
+			return nil, rerr
+		}
+		newPredicates = append(newPredicates, rebased)
 	}
 
+	flowed, err := inner.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, err
+	}
 	return expressions.NewSelectExpression(
-		inner.GetFlowedObjectValue(),
+		flowed,
 		[]expressions.Quantifier{inner},
 		newPredicates,
 	)
@@ -254,13 +322,13 @@ func pushIntoSelect(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	selectExpr *expressions.SelectExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	// An OUTER-join child (FULL/LEFT/RIGHT) is opaque to predicate
 	// absorption: see the function doc. ChildrenAsSet() is Go's existing
 	// commutative/inner-equivalent marker (select.go) — false for every
 	// outer join type, matching the opacity gate every sibling rule uses.
 	if !selectExpr.ChildrenAsSet() {
-		return nil
+		return nil, nil
 	}
 
 	// A plain parent edge can still range over a Select that owns the strict
@@ -269,11 +337,24 @@ func pushIntoSelect(
 	// predicate to hide a second row before cardinality is checked. Treat the
 	// nested carrier as opaque just like a directly flagged push quantifier.
 	if hasStrictSingleQuantifier(selectExpr.GetQuantifiers()) {
-		return nil
+		return nil, nil
 	}
 
 	// Build a TranslationMap: pushQuantifier.alias -> selectExpr.resultValue.
 	resultValue := selectExpr.GetResultValue()
+	// The substitution replaces the alias's whole ROW, so the row this Select
+	// produces has to BE the row the alias denotes. When it is not, the
+	// ordinals travel unchanged into a different layout and the predicate
+	// silently reads a different column: pushing `E.ID#0 IS NULL` into a Select
+	// whose result is a join box `{D.ID, D.DNAME, E.ID, …}` rewrites it to
+	// `D.ID#0 IS NULL`, which then matched DEPT's primary key and became a scan
+	// range on the PRESERVED leg. `SELECT d.dname FROM dept d LEFT JOIN emp e ON
+	// e.dept_id = d.id WHERE e.id IS NULL AND NOT EXISTS (…)` returned no rows
+	// instead of the one department with no employees, and the plan showed no
+	// trace of the conjunct at all.
+	if !pushedAliasDenotesSelectRow(pushQuantifier, resultValue) {
+		return nil, nil
+	}
 	tmBuilder := NewTranslationMapBuilder()
 	tmBuilder.When(pushQuantifier.GetAlias()).Then(func(_ values.CorrelationIdentifier, _ values.LeafValue) values.Value {
 		return resultValue
@@ -284,7 +365,16 @@ func pushIntoSelect(
 	newPredicates := make([]predicates.QueryPredicate, 0, len(selectExpr.GetPredicates())+len(originalPredicates))
 	newPredicates = append(newPredicates, selectExpr.GetPredicates()...)
 	for _, p := range originalPredicates {
-		newPredicates = append(newPredicates, translatePredicateCorrelations(p, tm))
+		// A predicate that cannot be re-expressed against the child Select's
+		// result value simply does not push. Declining leaves it where it is,
+		// above this Select, where it is still correct — the alternative is a
+		// predicate rebuilt around a nil operand, which is not a worse plan but
+		// an impossible one.
+		translated, ok := translatePredicateCorrelations(p, tm)
+		if !ok {
+			return nil, nil
+		}
+		newPredicates = append(newPredicates, translated)
 	}
 
 	return expressions.NewSelectExpressionWithJoinType(
@@ -306,23 +396,53 @@ func pushOverChild(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	child expressions.Quantifier,
-) expressions.Quantifier {
+) (expressions.Quantifier, bool, error) {
+	// Same precondition as pushIntoLogicalFilter's rebase: ordinals survive the
+	// alias change untouched, so the two aliases must name the same row.
+	//
+	// THE DECLINE IS ITS OWN RESULT, not a zero Quantifier. Returning
+	// (Quantifier{}, nil) made "do not push this predicate" -- a lawful,
+	// expected answer -- indistinguishable from success at every caller, since
+	// they all tested only the error. The zero value then reached an expression
+	// constructor, RequireFlowedObjectValue rejected a quantifier with no
+	// Reference, and the rule call FAILED THE WHOLE PLANNING RUN over a
+	// predicate it merely should not have pushed.
+	if !rebasedAliasesDenoteOneRow(pushQuantifier, child) {
+		return expressions.Quantifier{}, false, nil
+	}
 	// Rebase: pushQuantifier.alias -> child.alias
-	aliasMap := values.AliasMap{
-		pushQuantifier.GetAlias(): child.GetAlias(),
+	aliasMap, err := values.NewAliasMap([]values.AliasPair{{
+		Source: pushQuantifier.GetAlias(),
+		Target: child.GetAlias(),
+	}})
+	if err != nil {
+		return expressions.Quantifier{}, false, err
 	}
 
 	newPredicates := make([]predicates.QueryPredicate, len(originalPredicates))
 	for i, p := range originalPredicates {
-		newPredicates[i] = predicates.RebasePredicate(p, aliasMap)
+		// CHECKED — see the sibling loop above for why a nil element here is a
+		// silently dropped predicate rather than a reported failure.
+		rebased, rerr := predicates.RebasePredicateChecked(p, aliasMap)
+		if rerr != nil {
+			return expressions.Quantifier{}, false, rerr
+		}
+		newPredicates[i] = rebased
 	}
 
-	newSelect := expressions.NewSelectExpression(
-		child.GetFlowedObjectValue(),
+	flowed, err := child.RequireFlowedObjectValue()
+	if err != nil {
+		return expressions.Quantifier{}, false, err
+	}
+	newSelect, err := expressions.NewSelectExpression(
+		flowed,
 		[]expressions.Quantifier{child},
 		newPredicates,
 	)
-	return expressions.ForEachQuantifier(call.MemoizeExpression(newSelect))
+	if err != nil {
+		return expressions.Quantifier{}, false, err
+	}
+	return expressions.ForEachQuantifier(call.MemoizeExpression(newSelect)), true, nil
 }
 
 // pushThroughUnion pushes predicates through a LogicalUnionExpression by
@@ -333,14 +453,23 @@ func pushThroughUnion(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	union *expressions.LogicalUnionExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	qs := union.GetQuantifiers()
 	newChildren := make([]expressions.Quantifier, len(qs))
 	for i, q := range qs {
 		if q.Kind() != expressions.QuantifierForEach {
-			return nil
+			return nil, nil
 		}
-		newChildren[i] = pushOverChild(call, originalPredicates, pushQuantifier, q)
+		newChild, pushed, err := pushOverChild(call, originalPredicates, pushQuantifier, q)
+		if err != nil {
+			return nil, err
+		}
+		if !pushed {
+			// One leg that cannot take the predicate means the union cannot:
+			// pushing into the others only would change what the union returns.
+			return nil, nil
+		}
+		newChildren[i] = newChild
 	}
 	return expressions.NewLogicalUnionExpression(newChildren)
 }
@@ -353,12 +482,18 @@ func pushThroughSort(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	sort *expressions.LogicalSortExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	inner := sort.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
-		return nil
+		return nil, nil
 	}
-	newChild := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, pushed, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	if err != nil {
+		return nil, err
+	}
+	if !pushed {
+		return nil, nil
+	}
 	return expressions.NewLogicalSortExpression(sort.GetSortKeys(), newChild)
 }
 
@@ -370,12 +505,18 @@ func pushThroughDistinct(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	distinct *expressions.LogicalDistinctExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	inner := distinct.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
-		return nil
+		return nil, nil
 	}
-	newChild := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, pushed, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	if err != nil {
+		return nil, err
+	}
+	if !pushed {
+		return nil, nil
+	}
 	return expressions.NewLogicalDistinctExpression(newChild)
 }
 
@@ -387,12 +528,18 @@ func pushThroughUnique(
 	originalPredicates []predicates.QueryPredicate,
 	pushQuantifier expressions.Quantifier,
 	unique *expressions.LogicalUniqueExpression,
-) expressions.RelationalExpression {
+) (expressions.RelationalExpression, error) {
 	inner := unique.GetInner()
 	if inner.Kind() != expressions.QuantifierForEach {
-		return nil
+		return nil, nil
 	}
-	newChild := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	newChild, pushed, err := pushOverChild(call, originalPredicates, pushQuantifier, inner)
+	if err != nil {
+		return nil, err
+	}
+	if !pushed {
+		return nil, nil
+	}
 	return unique.WithQuantifiers([]expressions.Quantifier{newChild})
 }
 

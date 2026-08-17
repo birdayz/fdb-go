@@ -9,6 +9,21 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustPlanTest[T any](t testing.TB, constructor func() (T, error)) T {
+	t.Helper()
+	result, err := constructor()
+	if err != nil {
+		t.Fatalf("construction failed: %v", err)
+	}
+	return result
+}
+
+func recursiveTestType() values.Type {
+	return values.NewRecordType("recursive_row", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
 // TestRecursiveLevelUnion_CanCorrelateFalse_PropagatesOuterAlias pins the fix
 // for the DIVERGENCES "UNSAFE, fix first" item: the physical
 // RecordQueryRecursiveLevelUnionPlan must NOT anchor a Cascades correlation
@@ -31,24 +46,35 @@ func TestRecursiveLevelUnion_CanCorrelateFalse_PropagatesOuterAlias(t *testing.T
 	// collision. (A recursion never reads a sibling leg by its quantifier
 	// alias; the level binding rides the temp table, so an "X" appearing on a
 	// leg's correlated-to set is an EXTERNAL correlation, not the recursion.)
-	initialScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	initialScan := mustPlanTest(t, func() (*plans.RecordQueryScanPlan, error) {
+		return plans.NewRecordQueryScanPlan([]string{"T"}, recursiveTestType(), false)
+	})
 	initialQ := expressions.NamedPhysicalQuantifier(outer, expressions.FinalOf(initialScan))
 
 	// Recursive leg: a filter correlated to the outer alias "X".
-	recScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	recScan := mustPlanTest(t, func() (*plans.RecordQueryScanPlan, error) {
+		return plans.NewRecordQueryScanPlan([]string{"T"}, recursiveTestType(), false)
+	})
+	outerValue := mustPlanTest(t, func() (values.QuantifiedObjectValue, error) {
+		return values.NewQuantifiedObjectValue(outer, recursiveTestType())
+	})
 	pred := predicates.NewComparisonPredicate(
-		values.NewQuantifiedObjectValue(outer),
+		outerValue,
 		predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 	)
-	recFilter := plans.NewRecordQueryPredicatesFilterPlan(recScan, []predicates.QueryPredicate{pred})
+	recFilter := mustPlanTest(t, func() (*plans.RecordQueryPredicatesFilterPlan, error) {
+		return plans.NewRecordQueryPredicatesFilterPlan(recScan, []predicates.QueryPredicate{pred})
+	})
 	recursiveQ := expressions.NewPhysicalQuantifier(expressions.FinalOf(recFilter))
 
-	plan := plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
-		initialQ, recursiveQ,
-		values.NamedCorrelationIdentifier("scan"),
-		values.NamedCorrelationIdentifier("insert"),
-		false,
-	)
+	plan := mustPlanTest(t, func() (*plans.RecordQueryRecursiveLevelUnionPlan, error) {
+		return plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+			initialQ, recursiveQ,
+			values.NamedCorrelationIdentifier("scan"),
+			values.NamedCorrelationIdentifier("insert"),
+			false,
+		)
+	})
 
 	if plan.CanCorrelate() {
 		t.Fatal("RecordQueryRecursiveLevelUnionPlan.CanCorrelate() must be false (Java parity)")
@@ -76,21 +102,29 @@ func TestFlatMapPlan_WithQuantifiers_NoStalePlanSnapshot(t *testing.T) {
 	t.Parallel()
 
 	scan := func(name string) *plans.RecordQueryScanPlan {
-		return plans.NewRecordQueryScanPlan([]string{name}, values.UnknownType, false)
+		return mustPlanTest(t, func() (*plans.RecordQueryScanPlan, error) {
+			return plans.NewRecordQueryScanPlan([]string{name}, recursiveTestType(), false)
+		})
 	}
 	q := func(p plans.RecordQueryPlan) expressions.Quantifier {
 		return expressions.NewPhysicalQuantifier(expressions.FinalOf(p))
 	}
 
-	fm := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
-		q(scan("OUTER_OLD")), q(scan("INNER_OLD")),
-		values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"),
-		values.NewNullValue(values.UnknownType), false,
-	)
+	fm := mustPlanTest(t, func() (*plans.RecordQueryFlatMapPlan, error) {
+		return plans.NewRecordQueryFlatMapPlanFromQuantifiers(
+			q(scan("OUTER_OLD")), q(scan("INNER_OLD")),
+			values.NamedCorrelationIdentifier("o"), values.NamedCorrelationIdentifier("i"),
+			&values.ConstantValue{Value: int64(0), Typ: values.NotNullLong}, false,
+		)
+	})
 
-	swapped := fm.WithQuantifiers([]expressions.Quantifier{
+	swappedExpr, err := fm.WithQuantifiers([]expressions.Quantifier{
 		q(scan("OUTER_NEW")), q(scan("INNER_NEW")),
-	}).(*plans.RecordQueryFlatMapPlan)
+	})
+	if err != nil {
+		t.Fatalf("WithQuantifiers: %v", err)
+	}
+	swapped := swappedExpr.(*plans.RecordQueryFlatMapPlan)
 
 	children := swapped.GetChildren()
 	if len(children) != 2 {

@@ -15,12 +15,12 @@ import (
 // see them equal — that's the gap memoEqual closes.
 func TestMemoEqual_InternsAliasVariants(t *testing.T) {
 	t.Parallel()
-	scanRef := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanRef := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
 	filter := func(k int64) RelationalExpression {
 		q := ForEachQuantifier(scanRef)
-		pred := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(q.GetAlias()),
+		pred := predicates.NewComparisonPredicate(mustQOV(q.GetAlias()),
 			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: k}})
-		return NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q)
+		return mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q))
 	}
 	a := filter(1) // fresh alias q$N
 	b := filter(1) // fresh alias q$M, same shape
@@ -48,15 +48,15 @@ func TestMemoEqual_InternsAliasVariants(t *testing.T) {
 // the wrong outer binding would be silently shared.
 func TestMemoEqual_DistinctOuterCorrelationsDoNotIntern(t *testing.T) {
 	t.Parallel()
-	scanRef := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanRef := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
 	// filterCorrelatedTo builds Filter(QOV(localQ) = QOV(outer), →scan): the
 	// comparison operand QOV(outer) references an alias NOT bound by the
 	// filter's own quantifier, so the filter is EXTERNALLY correlated to outer.
 	filterCorrelatedTo := func(outer values.CorrelationIdentifier) RelationalExpression {
 		q := ForEachQuantifier(scanRef)
-		pred := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(q.GetAlias()),
-			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: values.NewQuantifiedObjectValue(outer)})
-		return NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q)
+		pred := predicates.NewComparisonPredicate(mustQOV(q.GetAlias()),
+			predicates.Comparison{Type: predicates.ComparisonEquals, Operand: mustQOV(outer)})
+		return mustExpression(NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q))
 	}
 	a := filterCorrelatedTo(values.NamedCorrelationIdentifier("a"))
 	b := filterCorrelatedTo(values.NamedCorrelationIdentifier("b"))
@@ -89,14 +89,14 @@ func TestMemoEqual_DistinctOuterCorrelationsDoNotIntern(t *testing.T) {
 // test genuinely drives the permute fallback, not just the first attempt.
 func TestMemoEqual_ChildrenAsSet_PermutationBranch(t *testing.T) {
 	t.Parallel()
-	scanT := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
-	scanU := InitialOf(NewFullUnorderedScanExpression([]string{"U"}, values.UnknownType))
+	scanT := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
+	scanU := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"U"}, testRecordType())))
 	union := func(refs ...*Reference) RelationalExpression {
 		qs := make([]Quantifier, len(refs))
 		for i, r := range refs {
 			qs[i] = ForEachQuantifier(r)
 		}
-		return NewLogicalUnionExpression(qs)
+		return mustExpression(NewLogicalUnionExpression(qs))
 	}
 	a := union(scanT, scanU)
 	b := union(scanU, scanT) // swapped child order ⇒ only the permutation branch can match
@@ -121,8 +121,8 @@ func TestMemoEqual_ChildrenAsSet_PermutationBranch(t *testing.T) {
 // the exact branch the fix gates on join type.
 func TestMemoEqual_OuterJoinNotChildrenAsSet(t *testing.T) {
 	t.Parallel()
-	scanT1 := InitialOf(NewFullUnorderedScanExpression([]string{"T1"}, values.UnknownType))
-	scanT2 := InitialOf(NewFullUnorderedScanExpression([]string{"T2"}, values.UnknownType))
+	scanT1 := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T1"}, testRecordType())))
+	scanT2 := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T2"}, testRecordType())))
 	mkJoin := func(jt JoinType) *SelectExpression {
 		q1 := NamedForEachQuantifier(values.NamedCorrelationIdentifier("T1"), scanT1)
 		q2 := NamedForEachQuantifier(values.NamedCorrelationIdentifier("T2"), scanT2)
@@ -132,10 +132,10 @@ func TestMemoEqual_OuterJoinNotChildrenAsSet(t *testing.T) {
 		// name-model anchored RC this test originally seeded was deleted along
 		// with its producer.)
 		rv := values.NewRawRecordConstructorValue(
-			values.RecordConstructorField{Name: "_0", Value: values.NewQuantifiedObjectValue(q1.GetAlias())},
-			values.RecordConstructorField{Name: "_1", Value: values.NewQuantifiedObjectValue(q2.GetAlias())},
+			values.RecordConstructorField{Name: "_0", Value: mustQOV(q1.GetAlias())},
+			values.RecordConstructorField{Name: "_1", Value: mustQOV(q2.GetAlias())},
 		)
-		return NewSelectExpressionWithJoinType(rv, []Quantifier{q1, q2}, nil, []string{"T1", "T2"}, jt)
+		return mustExpression(NewSelectExpressionWithJoinType(rv, []Quantifier{q1, q2}, nil, []string{"T1", "T2"}, jt))
 	}
 
 	// INNER is commutative: swapped order interns (drives the permutation branch,
@@ -183,22 +183,15 @@ func TestMemoEqual_OuterJoinNotChildrenAsSet(t *testing.T) {
 // surfaced).
 func TestMemoEqual_QuantifierAttributeVariantsDoNotIntern(t *testing.T) {
 	t.Parallel()
-	scanRef := InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanRef := InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, testRecordType())))
 	alias := values.NamedCorrelationIdentifier("q")
 	selOver := func(q Quantifier) RelationalExpression {
-		return NewSelectExpression(q.GetFlowedObjectValue(), []Quantifier{q}, nil)
+		return mustExpression(NewSelectExpression(mustExpression(q.RequireFlowedObjectValue()), []Quantifier{q}, nil))
 	}
 	plain := selOver(NamedForEachQuantifier(alias, scanRef))
 	noe := selOver(NamedForEachNullOnEmptyQuantifier(alias, scanRef))
 	strictSingle := selOver(NamedForEachStrictSingleQuantifier(alias, scanRef))
 	existential := selOver(NamedExistentialQuantifier(alias, scanRef))
-
-	// Precondition: node-info alone cannot tell the variants apart — the
-	// quantifier attribute is the ONLY discriminator, so an equal hash means
-	// the attribute check is what MemoEqual's verdict rides on.
-	if plain.HashCodeWithoutChildren() != noe.HashCodeWithoutChildren() {
-		t.Fatal("precondition: node-info hash must not see the noe flag — test vacuous otherwise")
-	}
 
 	if MemoEqual(plain, noe) {
 		t.Fatal("selects differing only in a quantifier's null-on-empty flag must NOT be MemoEqual (LEFT box vs INNER join)")

@@ -47,8 +47,8 @@ func TestUnnestUnderExistsGatesOrdinal(t *testing.T) {
 	// Every OUTER field is a baked frontier-pinned ofOrdinal (the ordinal seed).
 	outerType := tr.ordinalLegType(scan("Order", "o"))
 	for i := 0; i < len(outerType.Fields); i++ {
-		fv, isFV := rc.Fields[i].Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		fv, isFV := values.AsFieldValue(rc.Fields[i].Value)
+		if !isFV || !fv.Path().IsFrontierPinned() {
 			t.Fatalf("outer field %d = %T, want a baked frontier-pinned ofOrdinal", i, rc.Fields[i].Value)
 		}
 	}
@@ -100,6 +100,118 @@ func TestSeedWindowAuthority(t *testing.T) {
 	if w, _ := values.OrdinalSeedLegWindows(atRC); w == nil {
 		t.Fatal("fully-baked AS+AT seed yielded NO executor windows — it must be non-nil (pristine path)")
 	}
+}
+
+// TestUnnestExistsOrdinalRebasePinsTheFullPath pins the contract between the
+// translator's buried-EXISTS rebase and the positional executor. The rebased
+// root is a machinery-owned slot in the merged seed, so it must be frontier
+// pinned; a nested member remains an ordinary semantic suffix. Using the
+// general field resolver here produces the same ordinals and exact leaf type,
+// but silently drops the pin and makes unnestExistsRefSurvivesUnbaked reject
+// the otherwise valid predicate.
+func TestUnnestExistsOrdinalRebasePinsTheFullPath(t *testing.T) {
+	t.Parallel()
+	nestedType := &values.RecordType{RecordName: "NESTED", Fields: []values.Field{
+		{Name: "LEAF", Ordinal: 0, FieldType: values.NotNullLong},
+	}}
+	outerType := &values.RecordType{RecordName: "MA", Fields: []values.Field{
+		{Name: "N", Ordinal: 0, FieldType: nestedType},
+	}}
+	mergedType := &values.RecordType{RecordName: "MERGED", Fields: []values.Field{
+		{Name: "N", Ordinal: 0, FieldType: nestedType},
+		{Name: "EL", Ordinal: 1, FieldType: nestedType},
+	}}
+	mergedCorr := values.NamedCorrelationIdentifier("X")
+
+	assertPath := func(t *testing.T, value values.Value, correlation string, pinned bool, want ...int) values.FieldValue {
+		t.Helper()
+		field := exactTestFieldView(t, value)
+		if field.Path().IsFrontierPinned() != pinned {
+			t.Fatalf("path %v frontier-pinned = %v, want %v", field.Path().Ordinals(), field.Path().IsFrontierPinned(), pinned)
+		}
+		got := field.Path().Ordinals()
+		if len(got) != len(want) {
+			t.Fatalf("path = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("path = %v, want %v", got, want)
+			}
+		}
+		owner, ok := values.AsQuantifiedObjectValue(field.ChildValue())
+		if !ok || owner.Correlation() != values.NamedCorrelationIdentifier(correlation) {
+			t.Fatalf("owner = %v, want exact QOV(%s)", field.ChildValue(), correlation)
+		}
+		return field
+	}
+
+	t.Run("outer leg", func(t *testing.T) {
+		t.Parallel()
+		ordinary := exactTestField(t, exactTestQOV(t, "MA", outerType), 0, 0)
+		assertPath(t, ordinary, "MA", false, 0, 0)
+		predicate := predicates.NewComparisonPredicate(ordinary, predicates.Comparison{
+			Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(7)),
+		})
+		out, ok := rebaseUnnestOuterLegPredicateOrdinal(
+			predicate, outerType, mergedType, map[string]struct{}{"MA": {}}, mergedCorr)
+		if !ok {
+			t.Fatal("exact nested outer-leg rebase declined")
+		}
+		comparison, ok := out.(*predicates.ComparisonPredicate)
+		if !ok {
+			t.Fatalf("rebased predicate = %T, want comparison", out)
+		}
+		field := assertPath(t, comparison.Operand, "X", true, 0, 0)
+		if !field.ResultType().Equals(values.NotNullLong) {
+			t.Fatalf("rebased leaf type = %v, want LONG", field.ResultType())
+		}
+		// Values are immutable: the semantic source-relative read itself must not
+		// acquire a physical pin as a side effect of rebasing its predicate.
+		assertPath(t, ordinary, "MA", false, 0, 0)
+
+		wrongNested := &values.RecordType{RecordName: "NESTED", Fields: []values.Field{
+			{Name: "LEAF", Ordinal: 0, FieldType: values.NotNullString},
+		}}
+		wrongMerged := &values.RecordType{RecordName: "MERGED", Fields: []values.Field{
+			{Name: "N", Ordinal: 0, FieldType: wrongNested},
+			{Name: "EL", Ordinal: 1, FieldType: nestedType},
+		}}
+		if _, ok := rebaseUnnestOuterLegPredicateOrdinal(
+			predicate, outerType, wrongMerged, map[string]struct{}{"MA": {}}, mergedCorr); ok {
+			t.Fatal("outer-leg rebase admitted a merged slot with a different exact leaf type")
+		}
+	})
+
+	t.Run("element", func(t *testing.T) {
+		t.Parallel()
+		ordinary := exactTestField(t, exactTestQOV(t, "X", mergedType), 1, 0)
+		assertPath(t, ordinary, "X", false, 1, 0)
+		predicate := predicates.NewComparisonPredicate(ordinary, predicates.Comparison{
+			Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(7)),
+		})
+		out := bakeUnnestElementRefOrdinal(
+			predicate, map[string]int{"EL": 1}, mergedCorr, mergedType)
+		comparison, ok := out.(*predicates.ComparisonPredicate)
+		if !ok {
+			t.Fatalf("baked predicate = %T, want comparison", out)
+		}
+		assertPath(t, comparison.Operand, "X", true, 1, 0)
+		assertPath(t, ordinary, "X", false, 1, 0)
+
+		// A same-named member owned by the existential's inner table is not an
+		// unnest element. It stays source-relative and unpinned.
+		foreignType := &values.RecordType{RecordName: "INNER", Fields: []values.Field{
+			{Name: "EL", Ordinal: 0, FieldType: nestedType},
+		}}
+		foreign := exactTestField(t, exactTestQOV(t, "INNER", foreignType), 0, 0)
+		foreignPredicate := predicates.NewComparisonPredicate(foreign, predicates.Comparison{
+			Type: predicates.ComparisonEquals, Operand: values.LiteralValue(int64(7)),
+		})
+		foreignOut := bakeUnnestElementRefOrdinal(
+			foreignPredicate, map[string]int{"EL": 1}, mergedCorr, mergedType)
+		foreignComparison := foreignOut.(*predicates.ComparisonPredicate)
+		assertPath(t, foreignComparison.Operand, "INNER", false, 0, 0)
+	})
 }
 
 // TestMultiAliasOuterGatesOrdinal pins the coupled fix that lets a
@@ -585,11 +697,11 @@ func TestOuterConjunctNarrowing(t *testing.T) {
 		pred predicates.QueryPredicate
 		want bool
 	}{
-		{"box-leg", corrEq("FOA", "K", "FOC", "CK"), true},
-		{"flow-leg", corrEq("FOB", "K", "FOC", "CK"), true},
-		{"element-only", corrEq("X", "EL", "X", "EL2"), false},
-		{"and-elements", predicates.NewAnd(corrEq("X", "EL", "X", "EL2"), corrEq("X", "A", "X", "B")), false},
-		{"and-mixed", predicates.NewAnd(corrEq("X", "EL", "X", "EL2"), corrEq("FOA", "K", "FOC", "CK")), true},
+		{"box-leg", corrEq(t, "FOA", "K", "FOC", "CK"), true},
+		{"flow-leg", corrEq(t, "FOB", "K", "FOC", "CK"), true},
+		{"element-only", corrEq(t, "X", "EL", "X", "EL2"), false},
+		{"and-elements", predicates.NewAnd(corrEq(t, "X", "EL", "X", "EL2"), corrEq(t, "X", "A", "X", "B")), false},
+		{"and-mixed", predicates.NewAnd(corrEq(t, "X", "EL", "X", "EL2"), corrEq(t, "FOA", "K", "FOC", "CK")), true},
 		{"nil", nil, false},
 	} {
 		if got := nonExistsConjunctRefsOuterLeg(tc.pred, boxAliases); got != tc.want {

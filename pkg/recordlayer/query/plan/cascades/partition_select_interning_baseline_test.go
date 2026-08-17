@@ -35,12 +35,23 @@ func fullChainPlanner() *Planner {
 // plans, more tasks).
 func planChainTasks(t *testing.T, n int) int {
 	t.Helper()
-	ref := expressions.InitialOf(buildOrdinalChainSelect(n))
+	ref := expressions.InitialOf(buildOrdinalChainSelect(t, n))
 	_, tasks, err := fullChainPlanner().Plan(ref)
 	if err != nil {
 		t.Fatalf("%d-table chain Plan: %v (tasks=%d)", n, err, tasks)
 	}
 	return tasks
+}
+
+func interningBaselineQuantifier(
+	t testing.TB,
+	name string,
+	rowType values.Type,
+) expressions.Quantifier {
+	t.Helper()
+	scan := mustFullUnorderedScan(t, []string{name}, rowType)
+	return expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier(name), expressions.InitialOf(scan))
 }
 
 // TestPartitionSelect_ChainInterningBaseline is the RFC-077 7.5 task-count gate.
@@ -73,28 +84,39 @@ func planChainTasks(t *testing.T, n int) int {
 func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 	t.Parallel()
 
-	t1 := scanQuantifier("T1")
-	t2 := scanQuantifier("T2")
+	t1Type := values.NewRecordType("T1", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	t2Type := values.NewRecordType("T2", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	t1 := interningBaselineQuantifier(t, "T1", t1Type)
+	t2 := interningBaselineQuantifier(t, "T2", t2Type)
+	t1RootValue, t1RootErr := t1.RequireFlowedObjectValue()
+	t1Root := mustConstruct(t, t1RootValue, t1RootErr)
+	t2RootValue, t2RootErr := t2.RequireFlowedObjectValue()
+	t2Root := mustConstruct(t, t2RootValue, t2RootErr)
 
 	// (b) The positional merge row (IsPositionalMergeRC: unnamed `_i` columns
 	// over bare QOVs — PartitionSelectRule's positionalMergeCase shape). Same
 	// rationale: the collapsed lower's quantifiers are planner-internal, so
 	// alias-identity dedup would re-explode shared sub-products per
 	// bipartition.
-	posMergeSel := expressions.NewSelectExpressionWithAliases(
+	posMergeValue, posMergeErr := expressions.NewSelectExpressionWithAliases(
 		values.NewRawRecordConstructorValue(
-			values.RecordConstructorField{Name: "_0", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T1"))},
-			values.RecordConstructorField{Name: "_1", Value: values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("T2"))},
+			values.RecordConstructorField{Name: "_0", Value: t1Root},
+			values.RecordConstructorField{Name: "_1", Value: t2Root},
 		),
 		[]expressions.Quantifier{t1, t2}, nil, []string{"T1", "T2"},
 	)
+	posMergeSel := mustConstruct(t, posMergeValue, posMergeErr)
 	if !posMergeSel.InternsAliasAware() {
 		t.Error("a positional merge row (IsPositionalMergeRC) must intern alias-aware")
 	}
 
 	// (c) The ordinal JOIN-SEED result value (IsOrdinalJoinRV: every field a
 	// pinned baked leg reference over ≥2 quantifiers).
-	if !buildOrdinalChainSelect(2).InternsAliasAware() {
+	if !buildOrdinalChainSelect(t, 2).InternsAliasAware() {
 		t.Error("an ordinal join-seed RC (IsOrdinalJoinRV) must intern alias-aware")
 	}
 
@@ -102,40 +124,33 @@ func TestSelectExpression_InternsAliasAware_GatedToMergeSelects(t *testing.T) {
 	// element — a whole-leg reference is as position-determined as a pinned
 	// bake, so the gathered unnest select interns alias-aware too (it
 	// participates in re-enumeration; identity dedup would re-explode its
-	// sub-products). An UNTYPED bare QOV keeps declining — the CTE-rename/lazy
-	// rationale is untouched.
+	// sub-products). RFC-232 makes the old untyped-QOV negative fixture
+	// unrepresentable; the ordinary projection below is the fail-closed control.
 	srcType := values.NewRecordType("SRC", false, []values.Field{
 		{Name: "SID", FieldType: values.NotNullLong, Ordinal: 0},
 	})
-	srcQOV := values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier("S"), srcType)
-	srcFV, sErr := values.NewFieldValueOfOrdinal(srcQOV, 0)
-	if sErr != nil {
-		t.Fatalf("bake SRC#0: %v", sErr)
-	}
+	srcQOVValue, srcQOVErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("S"), srcType)
+	srcQOV := mustConstruct(t, srcQOVValue, srcQOVErr)
+	srcFV := mustOrdinalSeedField(t, srcQOV, 0)
+	elementQOVValue, elementQOVErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("EL"), values.NotNullLong)
+	elementQOV := mustConstruct(t, elementQOVValue, elementQOVErr)
 	mixedRC := values.NewRawRecordConstructorValue(
 		values.RecordConstructorField{Name: "SID", Value: srcFV},
-		values.RecordConstructorField{Name: "EL", Value: values.NewQuantifiedObjectValueOfType(
-			values.NamedCorrelationIdentifier("EL"), values.NotNullLong)},
+		values.RecordConstructorField{Name: "EL", Value: elementQOV},
 	)
 	if !values.IsOrdinalJoinRV(mixedRC) {
 		t.Error("a mixed unnest seed (baked run + bare TYPED element QOV) must classify IsOrdinalJoinRV")
 	}
-	untypedRC := values.NewRawRecordConstructorValue(
-		values.RecordConstructorField{Name: "SID", Value: srcFV},
-		values.RecordConstructorField{Name: "EL", Value: values.NewQuantifiedObjectValue(
-			values.NamedCorrelationIdentifier("EL"))},
-	)
-	if values.IsOrdinalJoinRV(untypedRC) {
-		t.Error("an UNTYPED bare QOV field must keep declining IsOrdinalJoinRV (no leg contract)")
-	}
-
 	// A plain projection select (e.g. a CTE column rename's body) must NOT opt in:
 	// its quantifier aliases are externally resolved by identity, so alias-aware
 	// dedup would pick a survivor whose columns the consumer reads as NULL.
-	projSel := expressions.NewSelectExpressionWithAliases(
-		t1.GetFlowedObjectValue(),
+	projValue, projErr := expressions.NewSelectExpressionWithAliases(
+		t1Root,
 		[]expressions.Quantifier{t1}, nil, []string{"T1"},
 	)
+	projSel := mustConstruct(t, projValue, projErr)
 	if projSel.InternsAliasAware() {
 		t.Error("a non-merge projection select must NOT intern alias-aware (reopens the CTE silent-NULL regression)")
 	}
@@ -187,7 +202,7 @@ func TestPartitionSelect_MergeAliasPlanHashStable(t *testing.T) {
 		GetRecordQueryPlan() plans.RecordQueryPlan
 	}
 	planOnce := func() plans.RecordQueryPlan {
-		e, _, err := fullChainPlanner().Plan(expressions.InitialOf(buildOrdinalChainSelect(3)))
+		e, _, err := fullChainPlanner().Plan(expressions.InitialOf(buildOrdinalChainSelect(t, 3)))
 		if err != nil {
 			t.Fatalf("Plan: %v", err)
 		}
@@ -215,11 +230,12 @@ func TestPartitionSelect_MergeAliasPlanHashStable(t *testing.T) {
 // TestPartitionSelect_ChainInterningBaseline is the RFC-077 7.5 task-count
 // gate over the ORDINAL-seeded chain (the sole production path since the
 // name-model producer was deleted). It pins the join-re-enumeration task
-// count for 3- and 4-table chains so any
-// memo-interning touch is held to a tight tolerance: if alias-aware
-// Reference.Insert/InsertFinal interning regresses, the count doubles
-// (29915 → 60044 with a naive per-occurrence alias). The pinned numbers are
-// the only thing that catches it — a bare "must not regress" is a vibe.
+// count for 3- and 4-table chains so any memo-admission or interning touch is
+// held to a tight tolerance. Historically alias-aware interning prevented the
+// 29915 → 60044 per-occurrence-alias blow-up; after RFC-232, prepared admission
+// drops deduped proposals before scheduling, so disabling tier 3 is an exact
+// no-op on this corpus. TestAliasAwareInterningShadowDelta pins that handoff,
+// while the gate and prepared-equality unit tests retain direct tier coverage.
 func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 	t.Parallel()
 
@@ -287,8 +303,33 @@ func TestPartitionSelect_ChainInterningBaseline(t *testing.T) {
 		// trimmed 2786→2468 / 13721→10255: PLANNING pure LOGICAL finals
 		// are fail-to-plan sentinels and no longer rule-explored each
 		// round (the member loop owns every implementable form).
-		{3, 2468},
-		{4, 10255},
+		//
+		// RFC-232 prepared whole-batch admission initially dropped 2468→1380
+		// (3-table, -44%) / 10255→8627 (4-table, -16%): the commit reports
+		// exactly which ExpressionRule proposals became new memo members, and
+		// only those insertions schedule ExploreExpr/OptimizeInputs work. A
+		// proposal absorbed by memo equality is not a member and has no new
+		// subtree to explore; the former downstream tasks were phantom work.
+		// Removing those descendants also moves this corpus's alias-aware shadow
+		// to zero: enabling/disabling tier 3 now produces identical members/tasks.
+		// The ordering-aware pending-exploration fix then moved those counts to
+		// 1524/11237: a child task already pending below parent transforms is moved
+		// ahead of that parent rather than being treated as completed. The extra
+		// work is the previously skipped, correctness-required child exploration
+		// pinned by FuzzPlanner_PlanFullPipeline/1c96bcee4188ef3e.
+		//
+		// Exact selected-inner predicate normalization then moved 1524→1484 and
+		// 11237→10965. A correlated PredicatesFilter can own an outer-row Value
+		// whose logical root retains a nominal record name while the selected
+		// FlatMap binds the same alias with an anonymous physical carrier. Once
+		// that predicate is rebuilt against the selected carrier, the memo uses the
+		// corrected plan-backed inner instead of continuing to explore the stale
+		// nominal alternative. A controlled mutation that disables only this
+		// predicate rebuild restores 1524/11237 exactly and reproduces the three
+		// executor.layout type-mismatch witnesses; the enabled path is deterministic
+		// and removes only that invalid work.
+		{3, 1484},
+		{4, 10965},
 	}
 	for _, tc := range cases {
 		got := planChainTasks(t, tc.tables)

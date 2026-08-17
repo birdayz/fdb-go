@@ -7,12 +7,29 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
-// fieldVal builds an untyped field reference for ordering tests. The
+// fieldVal builds an exact field reference for ordering tests. The
 // properties package's ordering tests carry an identical copy: unexported
 // test helpers cannot cross a package boundary, and a three-line
 // constructor is not worth an exported testutil package.
 func fieldVal(name string) values.Value {
-	return &values.FieldValue{Field: name, Typ: values.UnknownType}
+	row := values.NewRecordType("SetPlanHelperRow", false, []values.Field{
+		{Name: "a", FieldType: values.NotNullLong},
+		{Name: "b", FieldType: values.NotNullLong},
+	})
+	root, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("SET_PLAN_HELPER"), row)
+	if err != nil {
+		panic("set-plan helper QOV: " + err.Error())
+	}
+	ordinal := 0
+	if name == "b" {
+		ordinal = 1
+	}
+	field, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	if err != nil {
+		panic("set-plan helper field: " + err.Error())
+	}
+	return field
 }
 
 func TestResolveComparisonDirection_AllDescending(t *testing.T) {
@@ -56,8 +73,8 @@ func TestResolveComparisonDirection_Empty(t *testing.T) {
 
 func TestAdjustFixedBindings_ForwardDirection(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	b := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+	a := fieldVal("a")
+	b := fieldVal("b")
 	parts := []properties.ProvidedOrderingPart{
 		{Value: a, SortOrder: properties.ProvidedSortOrderAscending},
 		{Value: b, SortOrder: properties.ProvidedSortOrderFixed},
@@ -73,8 +90,8 @@ func TestAdjustFixedBindings_ForwardDirection(t *testing.T) {
 
 func TestAdjustFixedBindings_ReverseDirection(t *testing.T) {
 	t.Parallel()
-	a := &values.FieldValue{Field: "a", Typ: values.UnknownType}
-	b := &values.FieldValue{Field: "b", Typ: values.UnknownType}
+	a := fieldVal("a")
+	b := fieldVal("b")
 	parts := []properties.ProvidedOrderingPart{
 		{Value: a, SortOrder: properties.ProvidedSortOrderDescending},
 		{Value: b, SortOrder: properties.ProvidedSortOrderFixed},

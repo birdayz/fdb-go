@@ -22,12 +22,13 @@ func fireConstraintOnlyRule(
 	if len(bindings) != 1 {
 		t.Fatalf("%T matcher produced %d bindings, want one", rule, len(bindings))
 	}
-	rule.OnMatch(&ImplementationRuleCall{
+	call := &ImplementationRuleCall{
 		Bindings:       bindings[0],
 		Reference:      ref,
 		Constraints:    constraints,
 		constraintOnly: true,
-	})
+	}
+	mustRunRequestedOrderingRule(t, rule, call)
 }
 
 func requirePushedOrdering(
@@ -49,63 +50,34 @@ func requirePushedOrdering(
 func TestPushRequestedOrderingThroughSelectRule_TranslatesToChild(t *testing.T) {
 	t.Parallel()
 
-	childRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
-	childQ := expressions.ForEachQuantifier(childRef)
-	childID := values.NewFieldValue(
-		values.NewQuantifiedObjectValue(childQ.GetAlias()),
-		"ID",
-		values.NullableLong,
-	)
-	sel := expressions.NewSelectExpression(
-		values.NewRecordConstructorValue(
-			values.RecordConstructorField{Name: "OUT_ID", Value: childID},
-		),
-		[]expressions.Quantifier{childQ},
-		nil,
-	)
-	selRef := expressions.InitialOf(sel)
-
-	// The parent orders by the select's OUTPUT SLOT 0. A resolved reference to a
-	// projection output carries that ordinal, and push-down selects the member by
-	// it (RFC-197 item 3) — a lazy "OUT_ID" carrier would push down to nothing.
+	child := requestedOrderingQuantifier("T", "select_child")
+	childID := requestedOrderingField(child, "ID")
+	result := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "OUT_ID", Value: childID})
+	selectExpr := mustRequestedOrderingConstruct(expressions.NewSelectExpression(
+		result, []expressions.Quantifier{child}, nil))
+	selectRef := expressions.InitialOf(selectExpr)
 	parentOrdering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value:     values.NewFieldValueWithResolvedOrdinal("OUT_ID", 0, values.NullableLong),
+			Value:     requestedOrderingCurrentOutputField(selectExpr.GetResultValue(), 0),
 			SortOrder: properties.RequestedSortOrderDescending,
 		}},
 		properties.DistinctnessNotDistinct,
 		false,
 	)
 	constraints := NewConstraintMap()
-	Set(
-		constraints,
-		selRef,
-		RequestedOrderingConstraintKey,
-		[]*properties.RequestedOrdering{parentOrdering},
-	)
+	Set(constraints, selectRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{parentOrdering})
 
 	fireConstraintOnlyRule(
-		t,
-		NewPushRequestedOrderingThroughSelectRule(),
-		sel,
-		selRef,
-		constraints,
-	)
+		t, NewPushRequestedOrderingThroughSelectRule(), selectExpr, selectRef, constraints)
 
-	pushed := requirePushedOrdering(t, constraints, childRef)
+	pushed := requirePushedOrdering(t, constraints, child.GetRangesOver())
 	parts := pushed.GetParts()
 	if len(parts) != 1 {
 		t.Fatalf("pushed ordering has %d parts, want one", len(parts))
 	}
-	if !values.ValuesStructurallyEqual(parts[0].Value, childID) {
-		t.Fatalf(
-			"pushed ordering value = %s, want child value %s",
-			values.ExplainValue(parts[0].Value),
-			values.ExplainValue(childID),
-		)
-	}
+	assertRequestedOrderingField(t, parts[0].Value, requestedOrderingCurrentField(child, "ID"))
 	if parts[0].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("pushed sort order = %v, want descending", parts[0].SortOrder)
 	}
@@ -114,26 +86,24 @@ func TestPushRequestedOrderingThroughSelectRule_TranslatesToChild(t *testing.T) 
 func TestPushRequestedOrderingThroughSelectExistentialRule_PushesPreserve(t *testing.T) {
 	t.Parallel()
 
-	existsRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"EXISTS_T"}, values.UnknownType),
-	)
+	existsScan := requestedOrderingScan("EXISTS_T")
+	existsRef := expressions.InitialOf(existsScan)
 	existsQ := expressions.ExistentialQuantifier(existsRef)
-	sel := expressions.NewSelectExpression(
-		values.LiteralValue(true),
+	selectExpr := mustRequestedOrderingConstruct(expressions.NewSelectExpression(
+		&values.ConstantValue{Value: true, Typ: values.NotNullBoolean},
 		[]expressions.Quantifier{existsQ},
 		nil,
-	)
-	selRef := expressions.InitialOf(sel)
+	))
+	selectRef := expressions.InitialOf(selectExpr)
 	constraints := NewConstraintMap()
 
 	fireConstraintOnlyRule(
 		t,
 		NewPushRequestedOrderingThroughSelectExistentialRule(),
-		sel,
-		selRef,
+		selectExpr,
+		selectRef,
 		constraints,
 	)
-
 	if pushed := requirePushedOrdering(t, constraints, existsRef); !pushed.IsPreserve() {
 		t.Fatalf("existential child ordering = %#v, want preserve", pushed.GetParts())
 	}
@@ -142,90 +112,77 @@ func TestPushRequestedOrderingThroughSelectExistentialRule_PushesPreserve(t *tes
 func TestPushRequestedOrderingThroughInLikeSelectRule_PushesToInner(t *testing.T) {
 	t.Parallel()
 
-	explodeRef := expressions.InitialOf(
-		expressions.NewExplodeExpression(values.LiteralValue([]any{int64(1), int64(2)})),
-	)
-	explodeQ := expressions.ForEachQuantifier(explodeRef)
-	baseRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
-	baseQ := expressions.ForEachQuantifier(baseRef)
+	explode := mustRequestedOrderingConstruct(expressions.NewExplodeExpression(
+		&values.ConstantValue{
+			Value: []any{int64(1), int64(2)},
+			Typ:   values.NewArrayType(false, values.NotNullLong),
+		},
+	))
+	explodeRef := expressions.InitialOf(explode)
+	explodeQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("select_explode"), explodeRef)
+	explodeValue := mustRequestedOrderingConstruct(explodeQ.RequireFlowedObjectValue())
+	baseQ := requestedOrderingQuantifier("T", "select_base")
 	correlationPredicate := predicates.NewComparisonPredicate(
-		values.NewQuantifiedObjectValue(explodeQ.GetAlias()),
+		explodeValue,
 		predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)),
 	)
-	correlatedInner := expressions.NewLogicalFilterExpression(
-		[]predicates.QueryPredicate{correlationPredicate},
-		baseQ,
-	)
+	correlatedInner := mustRequestedOrderingConstruct(expressions.NewLogicalFilterExpression(
+		[]predicates.QueryPredicate{correlationPredicate}, baseQ))
 	innerRef := expressions.InitialOf(correlatedInner)
-	innerQ := expressions.ForEachQuantifier(innerRef)
+	innerQ := expressions.NamedForEachQuantifier(
+		values.NamedCorrelationIdentifier("select_inner"), innerRef)
 	if _, correlated := innerQ.GetCorrelatedTo()[explodeQ.GetAlias()]; !correlated {
 		t.Fatal("positive IN-like fixture is not correlated to its explode quantifier")
 	}
-	sel := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(innerQ.GetAlias()),
-		[]expressions.Quantifier{explodeQ, innerQ},
-		nil,
-	)
-	selRef := expressions.InitialOf(sel)
-
+	innerResult := mustRequestedOrderingConstruct(innerQ.RequireFlowedObjectValue())
+	selectExpr := mustRequestedOrderingConstruct(expressions.NewSelectExpression(
+		innerResult, []expressions.Quantifier{explodeQ, innerQ}, nil))
+	selectRef := expressions.InitialOf(selectExpr)
 	parentOrdering := properties.NewRequestedOrdering(
 		[]properties.RequestedOrderingPart{{
-			Value:     values.NewFlatFieldValue("ID", values.NullableLong),
+			Value:     requestedOrderingField(innerQ, "ID"),
 			SortOrder: properties.RequestedSortOrderAscending,
 		}},
 		properties.DistinctnessNotDistinct,
 		false,
 	)
 	constraints := NewConstraintMap()
-	Set(
-		constraints,
-		selRef,
-		RequestedOrderingConstraintKey,
-		[]*properties.RequestedOrdering{parentOrdering},
-	)
+	Set(constraints, selectRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{parentOrdering})
 
 	fireConstraintOnlyRule(
 		t,
 		NewPushRequestedOrderingThroughInLikeSelectRule(),
-		sel,
-		selRef,
+		selectExpr,
+		selectRef,
 		constraints,
 	)
-
 	pushed := requirePushedOrdering(t, constraints, innerRef)
 	if pushed != parentOrdering {
-		t.Fatal("IN-like SELECT did not push the parent ordering verbatim")
+		t.Fatal("IN-like SELECT did not push the exact parent ordering object verbatim")
 	}
 }
 
 func TestPushRequestedOrderingThroughRecursiveUnionRule_PushesPreserveToBothLegs(t *testing.T) {
 	t.Parallel()
 
-	initialRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"SEED"}, values.UnknownType),
-	)
-	recursiveRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"STEP"}, values.UnknownType),
-	)
-	union := expressions.NewRecursiveUnionExpression(
-		expressions.ForEachQuantifier(initialRef),
-		expressions.ForEachQuantifier(recursiveRef),
+	initialRef := expressions.InitialOf(requestedOrderingScan("SEED"))
+	recursiveRef := expressions.InitialOf(requestedOrderingScan("STEP"))
+	union := mustRequestedOrderingConstruct(expressions.NewRecursiveUnionExpression(
+		expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("recursive_initial"), initialRef),
+		expressions.NamedForEachQuantifier(
+			values.NamedCorrelationIdentifier("recursive_step"), recursiveRef),
 		values.NamedCorrelationIdentifier("recursive_scan"),
 		values.NamedCorrelationIdentifier("recursive_insert"),
 		expressions.TraversalPreorder,
-	)
+	))
 	unionRef := expressions.InitialOf(union)
-
 	preserve := properties.PreserveOrdering()
 	constraints := NewConstraintMap()
-	Set(
-		constraints,
-		unionRef,
-		RequestedOrderingConstraintKey,
-		[]*properties.RequestedOrdering{preserve},
-	)
+	Set(constraints, unionRef, RequestedOrderingConstraintKey,
+		[]*properties.RequestedOrdering{preserve})
 
 	fireConstraintOnlyRule(
 		t,
@@ -234,7 +191,6 @@ func TestPushRequestedOrderingThroughRecursiveUnionRule_PushesPreserveToBothLegs
 		unionRef,
 		constraints,
 	)
-
 	for name, ref := range map[string]*expressions.Reference{
 		"initial":   initialRef,
 		"recursive": recursiveRef,

@@ -87,9 +87,14 @@ func (r *RemoveRangeOneRule) OnMatch(call *ExpressionRuleCall) {
 			}
 		}
 		remainingAliases := removeSourceAliasAt(sel.GetSourceAliases(), i)
-		call.Yield(expressions.NewSelectExpressionWithJoinType(
+		rewritten, err := expressions.NewSelectExpressionWithJoinType(
 			sel.GetResultValue(), remaining, sel.GetPredicates(), remainingAliases, sel.GetJoinType(),
-		))
+		)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(rewritten)
 		return
 	}
 }

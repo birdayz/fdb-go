@@ -28,11 +28,11 @@ func TestEmptyGraphExpansion(t *testing.T) {
 func TestBuilderAddColumnsPredicatesQuantifiersPlaceholders(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "A", Typ: values.NullableLong}
+	fv := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
 	alias := values.UniqueCorrelationIdentifier()
 	ph := predicates.NewPlaceholder(alias, fv)
 
-	ref := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	ref := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong))
 	q := expressions.ForEachQuantifier(ref)
 
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -64,8 +64,8 @@ func TestBuilderAddColumnsPredicatesQuantifiersPlaceholders(t *testing.T) {
 func TestMergeGraphExpansions(t *testing.T) {
 	t.Parallel()
 
-	fvA := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fvB := &values.FieldValue{Field: "B", Typ: values.TypeString}
+	fvA := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
+	fvB := &values.ConstantValue{Value: "b", Typ: values.NotNullString}
 
 	aliasA := values.UniqueCorrelationIdentifier()
 	aliasB := values.UniqueCorrelationIdentifier()
@@ -106,7 +106,7 @@ func TestMergeGraphExpansions(t *testing.T) {
 func TestSealDeduplicatesPlaceholdersByAlias(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "X", Typ: values.NullableLong}
+	fv := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
 	alias := values.UniqueCorrelationIdentifier()
 
 	// Two placeholders with the same alias but added separately —
@@ -136,7 +136,7 @@ func TestSealDeduplicatesPlaceholdersByAlias(t *testing.T) {
 func TestSealNoPlaceholders(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "COL", Typ: values.NullableLong}
+	fv := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
 
 	ge := NewGraphExpansionBuilder().
@@ -160,7 +160,7 @@ func TestSealNoPlaceholders(t *testing.T) {
 func TestBuildSelectWithResultValue(t *testing.T) {
 	t.Parallel()
 
-	ref := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	ref := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong))
 	q := expressions.ForEachQuantifier(ref)
 
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
@@ -173,8 +173,11 @@ func TestBuildSelectWithResultValue(t *testing.T) {
 
 	sealed := ge.Seal()
 
-	resultValue := &values.FieldValue{Field: "RESULT", Typ: values.NullableLong}
-	sel := sealed.BuildSelectWithResultValue(resultValue)
+	resultValue := values.Value(&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong})
+	sel, err := sealed.BuildSelectWithResultValue(resultValue)
+	if err != nil {
+		t.Fatalf("BuildSelectWithResultValue() error = %v", err)
+	}
 
 	if sel == nil {
 		t.Fatal("expected non-nil SelectExpression")
@@ -190,32 +193,32 @@ func TestBuildSelectWithResultValue(t *testing.T) {
 	}
 }
 
-func TestBuildSelectWithResultValuePanicsOnNonEmptyColumns(t *testing.T) {
+func TestBuildSelectWithResultValueReturnsErrorOnNonEmptyColumns(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "A", Typ: values.NullableLong}
+	fv := values.Value(&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong})
 	ge := NewGraphExpansionBuilder().
 		AddColumn("A", fv).
 		Build()
 
 	sealed := ge.Seal()
 
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic from BuildSelectWithResultValue with non-empty columns")
-		}
-	}()
-	sealed.BuildSelectWithResultValue(fv)
+	selectExpr, err := sealed.BuildSelectWithResultValue(fv)
+	if err == nil {
+		t.Fatal("BuildSelectWithResultValue() error = nil, want non-empty-column error")
+	}
+	if selectExpr != nil {
+		t.Fatalf("BuildSelectWithResultValue() = %v after error, want nil", selectExpr)
+	}
 }
 
 func TestBuildSelect(t *testing.T) {
 	t.Parallel()
 
-	ref := expressions.InitialOf(&expressions.FullUnorderedScanExpression{})
+	ref := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong))
 	q := expressions.ForEachQuantifier(ref)
 
-	fv := &values.FieldValue{Field: "Y", Typ: values.NullableLong}
+	fv := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
 
 	ge := NewGraphExpansionBuilder().
 		AddColumn("Y", fv).
@@ -223,7 +226,10 @@ func TestBuildSelect(t *testing.T) {
 		Build()
 
 	sealed := ge.Seal()
-	sel := sealed.BuildSelect()
+	sel, err := sealed.BuildSelect()
+	if err != nil {
+		t.Fatalf("BuildSelect() error = %v", err)
+	}
 
 	if sel == nil {
 		t.Fatal("expected non-nil SelectExpression")
@@ -246,13 +252,13 @@ func TestSealDuplicateColumnNames(t *testing.T) {
 
 	// Two columns with the same name should both become unnamed
 	// after sealing (Java behavior).
-	fv1 := &values.FieldValue{Field: "A", Typ: values.NullableLong}
-	fv2 := &values.FieldValue{Field: "B", Typ: values.TypeString}
+	fv1 := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
+	fv2 := &values.ConstantValue{Value: "b", Typ: values.NotNullString}
 
 	ge := NewGraphExpansionBuilder().
 		AddColumn("DUP", fv1).
 		AddColumn("DUP", fv2).
-		AddColumn("UNIQUE", &values.FieldValue{Field: "C", Typ: values.TypeBool}).
+		AddColumn("UNIQUE", &values.ConstantValue{Value: true, Typ: values.NotNullBoolean}).
 		Build()
 
 	sealed := ge.Seal()
@@ -277,11 +283,11 @@ func TestSealDuplicateColumnNames(t *testing.T) {
 func TestGetPlaceholdersOnSealed(t *testing.T) {
 	t.Parallel()
 
-	fv := &values.FieldValue{Field: "Z", Typ: values.NullableLong}
+	fv := &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}
 	alias1 := values.UniqueCorrelationIdentifier()
 	alias2 := values.UniqueCorrelationIdentifier()
 	ph1 := predicates.NewPlaceholder(alias1, fv)
-	ph2 := predicates.NewPlaceholder(alias2, &values.FieldValue{Field: "W", Typ: values.TypeString})
+	ph2 := predicates.NewPlaceholder(alias2, &values.ConstantValue{Value: "w", Typ: values.NotNullString})
 
 	ge := NewGraphExpansion(
 		nil,
@@ -305,7 +311,7 @@ func TestGetPlaceholdersOnSealed(t *testing.T) {
 func TestNewGraphExpansionDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
-	cols := []GraphExpansionColumn{{Name: "A", Value: &values.FieldValue{Field: "A"}}}
+	cols := []GraphExpansionColumn{{Name: "A", Value: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}}}
 	ge := NewGraphExpansion(cols, nil, nil, nil)
 
 	// Mutate the original slice — should not affect the expansion.
@@ -319,12 +325,12 @@ func TestBuilderDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
 	b := NewGraphExpansionBuilder().
-		AddColumn("X", &values.FieldValue{Field: "X"})
+		AddColumn("X", &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong})
 
 	ge := b.Build()
 
 	// Adding to builder after Build should not affect the built expansion.
-	b.AddColumn("Y", &values.FieldValue{Field: "Y"})
+	b.AddColumn("Y", &values.ConstantValue{Value: int64(2), Typ: values.NotNullLong})
 	if len(ge.GetResultColumns()) != 1 {
 		t.Fatalf("expected 1 column after Build, got %d", len(ge.GetResultColumns()))
 	}

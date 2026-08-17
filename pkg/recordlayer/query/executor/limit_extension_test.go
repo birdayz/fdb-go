@@ -7,6 +7,7 @@ package executor
 import (
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -16,8 +17,9 @@ func TestExecuteLimit_PropagatesRowLimit(t *testing.T) {
 	t.Parallel()
 
 	// Create a limit plan with limit=5, offset=2.
-	innerPlan := plans.NewRecordQueryScanPlan(nil, nil, false)
-	limitPlan := plans.NewRecordQueryLimitPlan(innerPlan, 5, 2)
+	innerType := exactTestRowType(values.Field{Name: "ID", FieldType: values.NotNullLong})
+	innerPlan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, innerType, false))
+	limitPlan := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(innerPlan, 5, 2))
 
 	// The effective limit for the inner should be 5+2=7.
 	// We can't easily test the propagation without FDB, but we can
@@ -38,8 +40,9 @@ func TestExecuteLimit_ZeroLimit(t *testing.T) {
 	t.Parallel()
 
 	// A LIMIT 0 plan should have limit=0.
-	innerPlan := plans.NewRecordQueryScanPlan(nil, nil, false)
-	limitPlan := plans.NewRecordQueryLimitPlan(innerPlan, 0, 0)
+	innerType := exactTestRowType(values.Field{Name: "ID", FieldType: values.NotNullLong})
+	innerPlan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, innerType, false))
+	limitPlan := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(innerPlan, 0, 0))
 
 	if limitPlan.GetLimit() != 0 {
 		t.Fatalf("expected limit=0, got %d", limitPlan.GetLimit())

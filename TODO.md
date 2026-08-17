@@ -11530,6 +11530,15 @@ None is speculative: each was re-verified against the tree before booking.
   (Both budget baselines are ±2% pins; `plan_shape.golden` does not move, so
   this is purely a planning-effort regression, not a plan-quality one.)
 
+  THOSE ARE HISTORICAL DELTAS, TAKEN AGAINST A BASELINE THAT HAS SINCE MOVED —
+  do not compare them to a measurement of the current tree. The 3-spoke star's
+  sentinel was 9481 when this was measured and is 13226 today (RFC-232's exact
+  resolution; the whole chain is in `ordinal_star_planning_budget_test.go`'s
+  `wantTasks` comment). What survives the move is the SHAPE of the finding — a
+  value-keyed set grows wherever two quantifiers share a leaf name, and the
+  hub+5 arm stops planning outright — not the absolute numbers. Re-measure
+  against the sentinel of the day before quoting a percentage.
+
   So the conversion is correct and cannot land until the coupling changes. Fix
   the coupling FIRST, then land the value-keyed referenced-fields set and drop
   the `referenced_fields.go:125` entry from `pkg/docscheck`'s
@@ -11951,11 +11960,15 @@ None is speculative: each was re-verified against the tree before booking.
 
     That reader is NOT load-bearing: neutering the binder entirely, and
     separately binding every leg to the WRONG window, both leave the whole
-    suite green, and `TestFDB_MergedLegBinding_ReaderShapeIsRedundant` runs
-    that exact query down BOTH resolution routes in one process
-    (`EvaluationContext.WithMergedLegReadBypass`) and asserts the rows agree.
-    So the suite's greenness is "the reads are redundant", not "the bindings
-    are correct". The box-gather half is pinned by
+    suite green, and the redundancy pin ran that exact query down BOTH
+    resolution routes in one process
+    (`EvaluationContext.WithMergedLegReadBypass`), asserting the rows agree.
+    So the suite's greenness was "the reads are redundant", not "the bindings
+    are correct". THE ORDINAL MODEL THEN REMOVED THE READS: a leg reference
+    resolves by baked slot, so the binder's windows are built and consulted by
+    nobody, the redundancy license is retired, and the standing pin is
+    `TestFDB_MergedLegBinding_NothingReadsTheBinder` — which asserts the shape
+    still BINDS and is still not read, so the zero is over a shape that ran. The box-gather half is pinned by
     `TestFDB_MergedLegBinding_LiveBoxGatherShape`; the standing numbers are
     reported by `executor.FormatMergedLegBindingCensus` from the sqldriver
     `TestMain`.
@@ -12001,13 +12014,17 @@ None is speculative: each was re-verified against the tree before booking.
     **The gap that matters is elsewhere, and it has no instrument at all.** The
     load-bearing claim on this path is "the bindings are not load-bearing" — and
     what supports it is a HAND-RUN mutation: bind every leg to the wrong window,
-    observe the suite stays green. Nothing in CI does that. The redundancy pin
-    (`TestFDB_MergedLegBinding_ReaderShapeIsRedundant`) runs the reader shape
-    down both routes via `EvaluationContext.WithMergedLegReadBypass` and compares
-    rows, which proves the two ROUTES agree; it does not bind a wrong window, so
-    it cannot notice the day a binding starts to matter. Until a wrong-window arm
-    is standing, "not load-bearing" is a claim whose evidence expired the moment
-    it was measured. NOT BUILT HERE — see the phase-3 status list.
+    observe the suite stays green. Nothing in CI did that. The redundancy pin ran
+    the reader shape down both routes via
+    `EvaluationContext.WithMergedLegReadBypass` and compared rows, which proves
+    the two ROUTES agree; it did not bind a wrong window, so it could not notice
+    the day a binding started to matter. THAT GAP IS CLOSED:
+    `TestFDB_MergedLegBinding_WrongWindowsAreUnobservable` stands the wrong-window
+    mutation as a test — every window rotated onto a SIBLING leg's span, rows
+    asserted unchanged, with an engagement floor so it cannot go green by ceasing
+    to reach the binder. The redundancy pin beside it is now
+    `TestFDB_MergedLegBinding_NothingReadsTheBinder`, since under the ordinal
+    model there is no read to route twice.
 
     Consequence for CQ-53's remainder: the shadowing and first-claim-wins
     semantics are, on the shapes that run, UNOBSERVABLE — and the
@@ -13880,7 +13897,7 @@ None is speculative: each was re-verified against the tree before booking.
   `UnknownType` is a non-nil `*PrimitiveType`. So the instrument reported
   `typed=true` for all 102, and a typing sweep would have read as complete on the
   day it started. Pinned by
-  `TestFoldStep1Census_BareQOVWitnessSeparatesTypedFromUntyped` in both
+  `TestFoldStep1Census_BareQOVWitnessReportsAdmittedExactTypes` in both
   directions.
 
   ---
@@ -16420,33 +16437,32 @@ None is speculative: each was re-verified against the tree before booking.
   source, query root) exactly as RFC-226 §5 now prescribes, not a rider on a
   change whose own §1 was refuted once already.
 
-- [ ] **CQ-102 (SMALL, query surface): a COMPUTED aggregate argument types its
+- [x] **CQ-102 (SMALL, query surface): a COMPUTED aggregate argument types its
   output UNKNOWN, so arithmetic over it across a derived-table boundary demotes
-  to Integer.** The flat-argument half is CLOSED — `aggregateOutputColumn` types
-  COUNT/AVG/SUM/MIN/MAX from Java's PhysicalOperator table, and
-  `TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary` pins each rule
-  separately. `MIN(col2 + 1)` is the residue.
+  to Integer.** CLOSED. `SELECT G + 1 FROM (SELECT MIN(col2 + 1) AS G FROM t1)
+  AS Y` now reports BIGINT, matching Java's LONG, and the residual pin that
+  asserted the wrong answer has been folded into
+  `TestFDB_AggregateOutputTypeCrossesTheDerivedBoundary`'s table as two ordinary
+  arms (the outer arithmetic and the inner read).
 
-  MEASURED, and the residual is pinned by that same test's last subtest, which
-  asserts today's wrong answer with a three-state message so it fails toward
-  noticing when it flips:
+  The fix was the ordering change this item prescribed, arrived at from the
+  other end: `buildDerivedTableSourceFromTerm`'s aggregate arm now takes its
+  types from the body's own exact result row — `ExactLogicalResultType`, the
+  same derivation the translator runs — instead of from `aggOutputCols`, which
+  runs before any scope exists and therefore had no resolver to walk the
+  argument expression with. `aggOutputCols` remains the output-NAME authority;
+  the manual schema stays only as the fallback for a body that cannot prove a
+  complete representable row.
 
-  ```
-  SELECT G     FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y  -> BIGINT
-  SELECT G + 1 FROM (SELECT MIN(col2 + 1) AS G FROM t1) AS Y  -> INTEGER  (Java: LONG)
-  ```
-
-  NOT A MISSING CAPABILITY, which is what makes it small: the inner read already
-  reports BIGINT, so the type IS derivable at plan time. What is absent is the
-  SCOPE-level derivation — `aggOutputCols` runs before the aggregate body's
-  semantic scope exists, so it has no resolver to walk the argument expression
-  with. That is the same ordering wall `buildDerivedTableSourceFromTerm` names
-  where it declines a computed projection outright.
-
-  THE FIX IS AN ORDERING CHANGE, not a typing table: build the body's scope
-  before typing its outputs, the way `buildFromOnlySelectScope` already does for
-  star expansion. Its blast radius is when the scope is constructed, which is why
-  it did not ride along with the typing fix.
+  Two restrictions came off with it, both of which were dropping exactly-
+  derivable rows: the exact path used to be attempted only for a post-aggregate
+  EXPRESSION (`SUM(v)*2`), never for an aggregate over a computed ARGUMENT, and
+  never for a JOINED body at all. One UNKNOWN column makes the WHOLE derived row
+  inexact, so a perfectly-known grouping key beside it stopped resolving too —
+  which is why this also closed `ORDER BY key "TOTAL_VALUE" has no resolved
+  Value` on `SELECT sub.category, sub.total_value FROM (... SUM(price * qty) AS
+  total_value ... GROUP BY category) sub ORDER BY sub.total_value`, and the same
+  shape over a joined body.
 
 - [x] **A member predicate over a correlated UNNEST binding returns ZERO ROWS**
   · M · found while auditing name-keyed reads of a fused nested reference
@@ -17787,46 +17803,16 @@ None is speculative: each was re-verified against the tree before booking.
   post-aggregate-only guards provably could not reach — so it is also the
   cleanest evidence that the guard belongs at construction.
 
-- [x] **`groupByOutputOrdinals`' `keys[full] = ord` last-wins store is CLOSED, a
-  guard there is INERT AND NON-NEUTRAL, and this is the second time the site has
-  been mistaken for live.** Booked so a third reader does not re-propose it.
+- [x] **The former `groupByOutputOrdinals` last-wins store and its
+  `groupByOutputBaker` consumer are retired.** Their pre-RFC-232 corpus
+  measurement found no consultation on a collided name; RFC-232 then removed
+  the compatibility channel altogether and now carries each aggregate output
+  as an exact ordinal value.
 
-  The RFC-197 block above records the hazard as closed by
-  `groupKeyOrdinalByStructure`. Measured directly, over
-  `//pkg/relational/sqldriver:sqldriver_test` at **6158 `=== RUN` lines**, with
-  the store and all three consumers (`cascades_translator.go` ORDER BY ~:1044,
-  baker-stripped ~:1168, baker-direct ~:1190) instrumented:
-
-  - **21 collisions built**, over 2 distinct names (`K`, `NAME`) — down from 29 over 4, because the `A.R.V.Z` and `C1` collisions belonged to shapes the output-construction pull-up now refuses outright;
-  - **15 consumer consultations**;
-  - **ZERO consultations on a collided name.** The two populations are DISJOINT.
-
-  Scope is written into the claim on purpose: that reading is the
-  `//pkg/relational/sqldriver` target ONLY. The yamsql corpus and
-  `//pkg/relational/core/embedded` were NOT instrumented.
-
-  **Why it is closed:** the rebase loops now record the slot at the composition
-  that decides it and mark it `FrontierPinned`, so references arrive already
-  bound and the baker returns before any name lookup. Confirmed by mutation —
-  forcing `groupKeyOrdinalByStructure` to always decline (making the last-wins map
-  the SOLE decider at all three consumers) left the full corpus GREEN
-  and returned byte-identical correct rows for six deliberately-constructed
-  collision shapes over two tables sharing leaf `K` with DIFFERENT values, driving
-  all three consumers (SELECT-list, HAVING, ORDER BY asc and desc). The mutation
-  was confirmed landed: it reddens
-  `//pkg/relational/core/query:query_test -test.run=TestGroupKeyOrdinalByStructure_Arms`.
-
-  **A guard at that store is not merely inert — it is NON-NEUTRAL where it would
-  fire.** Deleting the colliding entry flips `:1150`'s `if _, hit := keyOrds[key];
-  !hit` into its stripped-alias branch and drops `:1185` to `return node`
-  (unbaked, lazy name read). So the cheap-looking "mirror `addKeyAlias`" change
-  would alter behaviour on shapes with no demonstrated defect behind them.
-
-  **Scoped datum for the `Resolved == nil` residual** the RFC-197 block names:
-  at 6158 subtests, **9 of the 15 consultations are declines** (6 ORDER BY,
-  3 baker-stripped) and NONE is on a collided name — so the decline arm is
-  reachable, but has never met an ambiguous name. That is the falsifier to watch:
-  a decline ON a collided name is the residual going live.
+  The live mutation-sensitive guards are
+  `//pkg/relational/core/embedded:embedded_test -test.run='TestGroupKeyPullUpGuard_(ConstructionKeepsTwoQuantifiersApart|ExactBoundaryBinderRefusesAMultiMatch)'`.
+  They prove distinct owners do not collapse and an ambiguous exact boundary
+  declines, without depending on a display-name map or a retired test helper.
 
 ## factorycorpus/full stalls at 6x its runtime, and master cannot see it
 
@@ -17860,3 +17846,611 @@ the corpus is **8150** (roughly doubled on 2026-08-11 by #720).
 Open question, and the reason this is booked rather than fixed: whether the
 contention is `--local_test_jobs=4` interacting with per-scenario parallelism, or
 a runner-level resource limit. Both are checkable; neither was checked.
+
+- [x] **A pushed LIMIT hid the covering-index rewrite.** `SELECT id FROM rp
+  WHERE region = 'eu' ORDER BY plan DESC LIMIT 1` planned a FETCHING index scan
+  where a covering one was available. Not a cost bug and not an index-matching
+  bug — an EXPLORATION gap. FIXED by deleting the Go-only
+  `PushLimitThroughProjectionRule` (rule + tests + rule-set entry), which is
+  what Java's structure already implies: Java carries a row limit in
+  `ExecuteProperties.setReturnedRowLimit()` at execution and has no
+  limit-pushing planner rule at all, so there is nothing to push and nothing to
+  prune against.
+
+  ```
+  before: Project([_current.ID#0], Limit(1, IndexScan(IDX_REGION_PLAN, [=, *]) REVERSE))
+  after:  Limit(1, Project([_current.ID#0], IndexScan(IDX_REGION_PLAN, [=, *] COVERING) REVERSE))
+  ```
+
+  The mechanism, because it generalises: the rule ran in REWRITING, and
+  `OptimizeGroupTask`'s partition-retention block is gated to PLANNING, so
+  REWRITING pruned to the single pushed survivor and the un-pushed
+  `LogicalLimit(Projection)` — whose inner group holds the covering winner —
+  never reached the phase where the covering rewrite runs. Instrumented at
+  `ImplementLimitRule`: with the push enabled it ran exactly ONCE, over the
+  pushed `Limit(IndexScan)`, and never over the original. The cost model was
+  never consulted; the better member was ABSENT, not outranked. Any REWRITING
+  rule that rebuilds a node above a prunable group can do this again.
+
+  Pinned in `embedded.TestLimitOverProjectionKeepsTheCoveringRewrite` (the
+  reachability half, no FDB needed) and in `order_by_elimination.yaml`, whose
+  COVERING expectation is restored. Blast radius was four items: that entry,
+  `limit_join.yaml` test[2] (now pins `Limit(1, ` — its intent is the
+  `plan_not_contains: NestedLoopJoin` beside it, and the `FlatMap` it named was
+  a nesting detail the push happened to expose), the rule-type census, and the
+  probe test above, converted from a measured-negative to a positive pin.
+
+  LATENT, NOT NEW: record NAMES leaving exact-type identity (Java's
+  `Type.Record.equals` compares typeCode, nullability and fields only) changed
+  which members the memo ADMITS and therefore the order rules fire in — the
+  traversal walked into a hole that was already there. Three other
+  `order_by_elimination` entries moved at the same time and were pure
+  LIMIT/PROJECT nesting ties; two of them pinned OPPOSITE nestings for the same
+  query modulo `DESC`, which is what a pinned tie looks like. Those are now
+  pinned on what the query determines (no `InMemorySort`, the reverse scan).
+
+- [x] **The RFC-201 factory corpus plan-shape re-bless — DONE, and the tool's
+  generator lookup is fixed.** `cmd/factory-rebless-plan-shapes` matched every
+  committed scenario against `factory.Candidates(seed)`, the DEFAULT generator,
+  while the corpus records a generator NAME per file — so every file from a
+  non-default generator was compared against an unrelated candidate and the tool
+  refused on the first one with a "feature vector moved" report of a family
+  change that never happened. It now buckets by (generator, seed) and resolves
+  through `factory.CandidatesForGenerator`, the same lookup
+  `determinism_test.go` uses; `recipe_lookup_test.go` pins both halves.
+
+  With the correct lookup the drift is **245 of 8150 scenarios across 38 family
+  files**, and the whole corpus diff is **490 lines: 245 `# plan-shape:` and 245
+  `# dedup-key:` headers, nothing else** — no query, schema, setup or frozen
+  row moved, which is what says this was a rendering change and not a rows
+  regression. `TestFDB_FactoryCorpusFull` re-executes the re-blessed corpus
+  against a real cluster.
+
+  Authorized by `retirements/2026-08-16-rfc232-exact-ordinal-resolution.json`
+  (base commit 2e4c5ebec). Two causes are recorded there: sort keys now render
+  from the Value the plan evaluates rather than the spelling it was constructed
+  with, and a nested read on an outer join's null-supplying leg now reanchors
+  onto the joined carrier. The second was a live BUG the drift concealed — see
+  `TestReanchorCrossesANullabilityWidenedLegRootIntoANestedPath`.
+
+- [ ] **`refineRowTypes` / `refineFieldTypes` are dead, and the tests that
+  document them now pin unreachable code.** RFC-232 replaced the member-agreement
+  reduction in `Quantifier.GetFlowedObjectType` with strict `Equals` plus an
+  explicit leg-table rule, so `expressions/refineRowTypes` and `refineFieldTypes`
+  have no production caller — the only callers in `pkg/` are in
+  `leg_table_population_blast_radius_test.go`. (Positive control for that sweep:
+  the same grep for `legTablesAgree` returns its definition plus its live call
+  site, so the zero is a real absence.)
+
+  A test on dead code is worse than no test: those four cases report green while
+  exercising nothing the planner runs, and their stated ruling — that a populated
+  leg table against an empty one is a CONFLICT — is now the OPPOSITE of the live
+  one, which adopts the stated boundaries (see the call site in `quantifier.go`
+  for why). A reader who finds that file first will take away a rule the engine
+  does not follow.
+
+  DONE when the two functions are deleted, `leg_table_population_blast_radius_test.go`
+  drives `GetFlowedObjectType` instead (keeping its argument, which is still
+  correct and load-bearing: populating `Legs` is NOT behaviour-neutral even
+  though `Equals`/`Hash` ignore it), and the prose sites that describe
+  `refineRowTypes` as the tree's protection are re-pointed — `values/values.go`,
+  `values/dotted_row_type_producer_census.go`, `executor/leg_column_provenance_census.go`,
+  `core/query/clustered_outer_seed_contract_test.go` and
+  `sqldriver/embedded_fdb_test.go` each assert it.
+
+  Also drop the now-unused UNKNOWN/stated refinement with them, and PIN the
+  assumption that replaced it: every member of a Reference is exactly typed, which
+  is what makes strict `Equals` safe where master refined.
+
+## CTE main queries skip the 42702/42703 projection gates
+
+- [ ] A main query whose FROM is a CTE gets a **nil resolver**, so every
+  projection column gate is skipped and an invalid reference dies downstream as
+  an opaque `0AF00: projection slot 0 has no resolved Value` — naming neither
+  the column nor the CTE.
+
+  Measured, not inferred. Instrumenting the guard in
+  `PlanVisitor.visitSimpleTableBody` (`plan_visitor.go`, the block introduced by
+  `if resolver != nil && sq.projCols != nil && …`) over
+  `TestCTEStarBodyPublishesSQLLabels` prints `cteScopes=0` for every arm whose
+  FROM is the CTE `D`, and `resolver=false` for each. With the map empty,
+  `buildSelectScope`'s `addSource` falls through the CTE branch to
+  `analyzer.ResolveTable("D")`, which misses because D is not a catalog table,
+  `addSource` returns false and the whole resolver is nil. `logical_predicate.go`
+  has a parallel scope build that DOES populate the map; the visitor path does
+  not.
+
+  Two concrete wrong codes, both pinned as arms of
+  `pkg/relational/sqldriver/cte_star_output_label_test.go` — read the gap note
+  above that test's function, which points back here:
+  - `WITH D AS (SELECT * FROM A, B, …) SELECT D."K" FROM D` — `K` is declared by
+    both legs, so this is 42702 Ambiguous, and reports 0AF00.
+  - `… SELECT A."AID" FROM D` — `A` is not a source at this level, so this is a
+    source-not-found "cannot be resolved", and reports 0AF00.
+
+  Those two arms assert **0AF00 today**. That assertion is the gap, not the
+  contract: fixing this makes them fail, and they must be re-armed to the real
+  codes in the same change.
+
+  Pre-existing and independent of the exact-resolution work — the same queries
+  fail the same way on master. Not a wrong ANSWER (both queries are invalid and
+  both are rejected); a wrong DIAGNOSIS, and a whole class of column gates not
+  running. Expect populating the map to newly ENABLE gates on a broad class of
+  CTE queries, so budget a full-suite lap for shapes that currently pass only
+  because the gate is silent.
+
+## The cost model decides blocking-vs-streaming on a criterion that never reads a cardinality
+
+`PlanningCostModel` criterion #2 (max data-access cardinality) is GATED on at
+least one operand having a KNOWN whole-plan maximum. Two full scans have none,
+so it abstains and criterion #3 — residual predicate count — decides instead. A
+sorted plan that sargs its predicate into an index range carries 0 residuals; a
+streaming plan that reads an ordered index and filters carries 1. So a BLOCKING
+operator is ranked against a STREAMING one by how much of the predicate reached
+the access path, which is a category error between plans of different shape even
+with perfect statistics.
+
+MEASURED, and the population matters because both halves are needed to read it:
+`statsNil=true` on 82 of 82 comparisons on `refactor/rfc197-mandatory-resolved`
+and 23 of 23 on master, at `9a39b5006`. So NO cardinality is supplied on this
+path in EITHER tree — the blindness is pre-existing, not introduced by RFC-232.
+At the deciding comparison: `cardGate=false residA=0 residB=1`.
+
+IT IS A COIN FLIP, NOT A REGRESSION, and the correction is worth keeping because
+the first reading of it was wrong. `SELECT DISTINCT cat FROM t WHERE val > 0
+ORDER BY cat` plans as `InMemorySort(IndexScan(IDX_VAL, [<>]))` on the branch and
+`PredicatesFilter(IndexScan(IDX_CAT, [*]))` on master. Sweeping the threshold
+over 300 rows showed each tree's plan is INVARIANT to selectivity — which says
+neither reads a cardinality, NOT that either is better. Read the access bounds:
+`[<>]` is bounded and `[*]` is not, so at 9/300 matching rows the BRANCH plan
+reads 9 where master reads 300, and at 300/300 master's avoids a sort the branch
+pays for. Each tree is right at one end of the range and blind at both.
+
+THREE SHAPES WHERE SUPPRESSING THE FALLBACK IS WRONG, kept because they are the
+acceptance tests for any fix and they refute the obvious one. Declining the
+in-memory sort whenever a satisfying streaming alternative exists gives:
+
+    SELECT id FROM rp WHERE region = 'us' AND plan > 'a' ORDER BY id
+      InMemorySort(IndexScan(IDX_REGION_PLAN, [=, <>]))  ->  PredicatesFilter(Scan(RP))
+    SELECT a, b, c FROM ab WHERE a = 1 ORDER BY c
+      InMemorySort(Scan(AB, [=]))  ->  PredicatesFilter(IndexScan(IDX_AB_C, [*] COVERING))
+    SELECT id, v, name FROM t WHERE v >= 20 ORDER BY name
+      InMemorySort(IndexScan(IDX_V, [<>]))  ->  PredicatesFilter(IndexScan(IDX_NAME, [*]))
+
+Each trades a tightly bounded access plus a small sort for reading everything.
+Corpus-wide that rule gives 52 "improvements" and 3 red `plan_contains` targets;
+the 52 are coin flips landing better, not decisions made correctly. An
+access-BOUNDEDNESS rule does not fix it either: in the DISTINCT case above the
+SORTED plan is the more bounded one, so boundedness declines to suppress exactly
+where suppression was wanted.
+
+- [ ] Port Java's `CardinalitiesProperty` and supply criterion #2. This is the
+      only fix that decides all four shapes correctly at both ends of the range.
+      It is filling an input the cost model ALREADY asks for and abstains
+      without — not a new mechanism, and explicitly NOT part of RFC-232.
+- [ ] Interim, if the preorder survives it: forbid criterion #3 from being
+      reached when the operands differ in blocking-ness, falling through to a
+      shape-neutral criterion. `cost_model_total_preorder_test.go` maintains
+      total-preorder as an invariant, so "incomparable" may not be expressible;
+      verify the fall-through leaves the preorder total before shipping.
+
+## RFC-232 plans an IN-list query ~7x slower than master, and the memo is why
+
+Not per-row and not the chosen plan: `SELECT id, val FROM t WHERE val IN (…)
+ORDER BY id` produces a byte-identical plan on both trees, and the branch takes
+**37.3 ms/op against master's 5.3** on `BenchmarkInListExecution`
+(pkg/simfdb/hunt/sqlhunt, file byte-identical on both trees). Measured with the
+SIMULATOR EQUALISED — master carrying this branch's two pkg/simfdb allocation
+commits — so the difference is the engine.
+
+Planning is on the hot path at all because **the plan cache never survives a
+`database/sql` round trip**: `ResetSession` invalidates it and the pool calls
+that on every connection reuse, so every query re-plans. True on BOTH trees.
+That is a separate, pre-existing defect and a large one; it is what makes
+planning cost user-visible at all.
+
+The chain, each step reproducible:
+
+- pprof: the branch's timed loop is ~100% `cascadesGenerator.Plan`.
+- The planner's OWN counter (`p.tasksRun`): the SELECT runs **2271 tasks vs
+  master's 734** (3.09x). The INSERT in the same run is **41 on both** — a
+  built-in control showing this is shape-specific, not global.
+- Task mix scales uniformly (TransformExpr 1989/825, ExploreGroup 1745/494,
+  OptimizeGroup 612/129, InitiatePlannerPhase 8/8), which is the signature of a
+  bigger memo rather than one rule misfiring.
+- Memo members that HASH EQUAL but compare UNEQUAL, counted in
+  `PreparedMemberDuplicateWithHashes` on both trees (probe presence verified on
+  each): branch **1203**, master **105**. By type, branch/master —
+  ProjectionPlan 828/45, InJoinPlan 144/0, InMemorySortPlan 108/18,
+  PredicatesFilterPlan 90/0, FetchFromPartialRecord 33/0, LogicalFilter 0/42.
+  Projections are 69% of the branch's.
+
+RULED OUT by experiment, each reverted: semantic HASH granularity (coarsening
+the QOV hash to master's bare tag changed the task count by ZERO), and QOV
+semantic EQUALITY on the type axis (both ignoring the exact type entirely and
+using `exactRowShapesAgree` changed it by ZERO). The over-discrimination is not
+Value-level type identity.
+
+RESOLVED — and the duplicate-member reading above was the SYMPTOM, not the
+cause. The projection duplicates are real (198 distinct hash-equal-but-unequal
+projection pairs on the small reproducer, zero on master), but canonicalising
+their anchoring removes all 198 and moves the benchmark by ~4%. They were
+downstream of a much larger population.
+
+The cause is an ordering-space mismatch that RFC-232 exposed. Java rebases a
+sort's ordering values from the inner quantifier's alias onto
+`Quantifier.current()` before pushing the constraint
+(`PushRequestedOrderingThroughSortRule.java:77-85`, and again inside
+`RequestedOrdering.pushDown`); Go pushed the sort keys verbatim. That was
+invisible while Go's sort keys carried no correlation — an unrooted key rebases
+to nothing and pushes down through anything — and became live the moment
+FieldValues carried an exact root.
+
+The request then arrived at the child rooted at a correlation nothing below the
+sort has heard of, the select below could not express it over its result,
+declined every part, and returned **Preserve**. A Preserve request is satisfied
+by EVERY access path, so the zero-prefix gate in data access stopped discarding
+useless full index scans: `WHERE cat IN (...) ORDER BY id` kept IDX_VAL — an
+index on a column the query neither orders by nor filters on — as a candidate
+beside IDX_CAT and the primary scan.
+
+- [x] Fixed in `requestedOrderingAtInnerCurrent`, applied at all three push
+      sites (`PushRequestedOrderingThroughSortRule`, `ImplementSortRule`,
+      `ImplementInMemorySortRule`), plus the select push-down's mirror-image
+      half: it passed the CHILD's alias as the upper base of `Value.pushDown`
+      where Java passes `Quantifier.current()`. Measured on the IN-list shape:
+      planner tasks 2247 -> 829 (master 734), memo members 42 -> 26 (master 25),
+      IDX_VAL kept 58 -> 0 (master 0), wall clock 39.5ms -> 9.9ms (master 5.25).
+      `TestOrderingRequestSurvivesSortThroughSelectToScan` drives sort ->
+      select -> scan in one test and mutation-checks every arm.
+- [ ] The projection-anchoring duplicates remain, unfixed and now small. The
+      obvious fix — canonicalising an unselected input program onto the
+      reserved-current handle in `reanchorCurrentValueForInput` — was built and
+      REVERTED: it contradicts
+      `TestInMemorySortPlan_SelectedFlatMapOutputRelinkKeepsExactOutputOrdinal`,
+      which pins that exploratory construction preserves the pointer-exact
+      edge-bound key for the relink path to translate. Reconcile those two
+      before trying it again. The other alternative — threading an AliasMap
+      through `planEqualsAsExpression` — CANNOT fire as-is: the memo passes
+      `EmptyAliasMap()` to plans, and reaching a real map requires opting plans
+      into `InternsAliasAware`, whose own doc calls that a landmine for
+      expressions whose aliases are externally resolved. A plan's quantifier
+      alias IS resolved at execution, so that route trades a perf bug for a
+      wrong-bindings bug.
+- [ ] Separately: make the plan cache survive `ResetSession`. The cache key
+      already carries DBPath, schema, metadata version and planner options, so
+      the blanket invalidation looks redundant with the key rather than
+      load-bearing — but prove that before removing it.
+
+INSTRUMENTATION NOTE, because it cost several false readings here: `go test`
+SWALLOWS a passing test's stdout unless `-v` is given. Every "the probe printed
+nothing" conclusion in this area was wrong for that reason. Always run probes
+with `-count=1 -v`, and verify the probe is present in the file it is supposed
+to be in — a `perl -0pi` substitution matching a common pattern lands in the
+FIRST function that matches, which is not always the intended one.
+
+## RFC-232 still costs 1.26-1.7x master on three benchmarks, and what is left is measured
+
+**SUPERSEDED for the RATIOS — read "RFC-232 overhead after the row-path and merge
+campaign" at the end of this file for the current numbers, which cover nine
+benchmarks and the 1M stress suite rather than three benchmarks. The "what is
+left" list below is still live: those items were not what the campaign closed.**
+
+The branch's planning and per-row overhead was ground down from up to 7.5x to
+the numbers below. Each side was measured with the SIMULATOR EQUALISED (master
+carrying this branch's two `pkg/simfdb` allocation commits), so the comparison
+is of the engine.
+
+| workload | at branch start | now | master | ratio |
+|---|---|---|---|---|
+| `TestStatsInvariant_PurePlannerSweep` (pure planner) | 253s | 194s | 151s | 1.28x |
+| `BenchmarkInListExecution` (plan + execute one query) | 39.5ms | 8.9ms | 5.25ms | 1.70x |
+| `BenchmarkScanAllWide` (20k rows, 30 iterations) | 89.5ms | 82.5ms | 64.8ms | 1.27x |
+| allocated bytes, planner sweep | 238GB | ~124GB | 102GB | 1.22x |
+
+The wall clock tracks allocated bytes almost exactly on this workload (GC mark
+is ~44% of samples on BOTH trees), so allocation is the lever and the remaining
+gap is the remaining allocation delta. What closed: interning the exact types
+(primitives statically, composites through a probe that runs before the node is
+built), shrinking `part` from 312 to 96 bytes, a real singleton for the empty
+alias map, a list instead of a hash map for per-row edge bindings, and moving
+the read-only type readers onto the shared thawed graph.
+
+What is left, in order, all of it branch-only unless noted:
+
+- `exactType.thaw` — 13.8GB, of which 90% arrives through the PUBLIC
+  `QuantifiedObjectValue.Type()`. That accessor is pinned to return a fresh
+  graph by `TestRFC232QOVSnapshotsAndDefensivelyThawsItsType` and the pin is
+  right, so the saving has to come from the CALLERS. The three biggest are
+  `values.PullUpValue` (1.75GB), `plans.newPlanExprBaseWithProperties` (1.24GB)
+  and `cascades.admitMemoExpression` (0.94GB), and all three are
+  thaw-then-re-snapshot round trips: they want the exact handle the value
+  already carries. An `ExactTypeOfValue(Value) (ExactTypeHandle, bool)` that
+  returns `qov.flowed` directly removes both halves at once, and is now exactly
+  equivalent because interning makes the round trip return the same object.
+- [ ] `newStructuralKey` — 8.9GB plus ~12GB in the builder methods past the
+      inline array. Both halves are one term: a key is built and thrown away on
+      every dedup comparison, twice per equality. The structural fix is to stop
+      returning a heap pointer — fold into a caller-provided stack local so
+      escape analysis can keep it there — which is a signature change across all
+      44 plan types and worth measuring on two of them first.
+- [ ] `GetCorrelatedToOfValue` — 8.1GB in the map the walk fills (master pays
+      4.1GB, so this is 2x a SHARED cost, not branch-only). Correlation sets are
+      almost always 0-2 entries; a small-slice representation would remove the
+      bucket allocation for both trees. The return type is
+      `map[CorrelationIdentifier]struct{}` across the whole planner, so this is
+      an API change, not a local one.
+- `physicalFlowedRecordType` (1.65GB) and `LayoutWithSeedLegs` (1.32GB) MUTATE
+  the graph they thaw, so they are correctly excluded from the shared-graph
+  treatment. Do not "fix" them.
+
+## RFC-232 overhead after the row-path and merge campaign
+
+Supersedes the ratios in "RFC-232 still costs 1.26-1.7x master on three
+benchmarks" above.
+
+**Population of the "now" column, because the first attempt at this table was
+confounded and the confound was invisible:** baseline is the branch's true
+MERGE-BASE `7d0435536`, not an older master — an earlier baseline sat at
+`9a39b5006`, three commits behind, which put the branch side on Go 1.26.6 and the
+master side on 1.26.5. `MODULE.bazel` derives the Bazel Go SDK with
+`go_sdk.from_file(go_mod = "//:go.mod")`, so a `go.mod` version bump reaches the
+benchmark binaries and that was a compiler difference sitting inside the ratio.
+Both sides are now Go 1.26.6, with the SIMULATOR EQUALISED (the baseline carrying
+this branch's two `pkg/simfdb` allocation commits) so the comparison is of the
+engine, built sequentially from distinct binaries (md5-checked distinct) and run
+sequentially at `-test.benchtime=1s -test.count=3`.
+
+Re-measured that way, every ratio below held to within 0.04 of the confounded
+first attempt — so the confound was real but not material. That is now measured
+rather than assumed. Caveat on the statistics: at n=3 benchstat reports `~` for
+every row because p=0.100 is the floor for a 3+3 Mann-Whitney, so the evidence
+here is the tight spread (time ±1-3%, alloc/op ±0%), not a significance test.
+
+**The 1M stress figures were re-measured at the merge-base too, and one of them was
+REFUTED — the only claim in this campaign whose conclusion the confound actually
+changed.** `group_by_customer_having` was booked at **0.98x** (parity with master).
+At the true merge-base it is **1.54x**. Two samples per side, very tight: baseline
+0.49s / 0.51s, branch 0.78s / 0.76s.
+
+The reason is the part the earlier caveat got wrong. It assumed the confound could
+only shift a ratio by the ~0.04 the micro-benchmarks showed. But the stale baseline
+was missing #750 and #751, which changed `cascades_generator.go` by 266 lines — and
+master got materially FASTER on this particular query as a result. So 0.98x was not a
+noisy version of the truth; it was measured against a slower master. **A confound is
+not a bounded error term.** It moved one row by 0.56x while leaving the other nine
+within 0.04, and there was no way to know which from the size of the others.
+
+The whole-suite figure did survive: **baseline 174.58s, branch 178.00s = 1.020x**
+(samples 173.99/175.17 vs 177.86/178.14), against the 1.026x booked earlier.
+
+Conditions, so this can be seen to go stale: baseline `7d0435536` + the `pkg/simfdb`
+equalisation patch, both sides Go 1.26.6, built and run SEQUENTIALLY, load average
+2.1-3.6 throughout on 24 cores, `--nocache_test_results`, 24 `=== RUN` lines confirmed
+on every run. Sequential execution is what makes the ratio valid under non-zero
+background load: both sides see the same machine.
+
+Ratios are branch / master. "Before" is the head at the start of this campaign,
+which is where the superseded block's numbers were taken.
+
+| benchmark | ratio before | ratio now | branch allocs/op vs master |
+|---|---|---|---|
+| `BenchmarkScanAllWide` | 1.31x | **1.17x** | 645k vs 684k — below |
+| `BenchmarkScanOneColumn` | — | **1.17x** | 645k vs 684k — below |
+| `BenchmarkScanOrdered` | — | **1.17x** | 648k vs 686k — below |
+| `BenchmarkPlanInList` | 1.39x | **1.25x** | 750k vs 778k — below |
+| `BenchmarkIndexRange` | 1.33x | **1.25x** | 232k vs 257k — below |
+| `BenchmarkAggregateGroupsPlain` | 2.07x | **1.26x** | 161k vs 168k — below |
+| `BenchmarkAggregateGroupsHaving` | 2.03x | **1.35x** | 176k vs 177k — below |
+| `BenchmarkScanFilterSparse` | 1.63x | **1.53x** | 14.3k vs 9.3k — **ABOVE** |
+| `BenchmarkInListExecution` | 1.70x | **1.56x** | 82.9k vs 57.3k — **ABOVE** |
+| `group_by_customer_having` (1M stress) | 1.88x | **1.54x** | — |
+
+Whole-suite wall clock on the 1M stress test, at the merge-base and n=2: **master
+174.58s, branch 178.00s = 1.020x**.
+
+Allocation COUNTS are below master on **7 of the 9** sqlhunt benchmarks — which is
+what the table above shows, row by row. Read the count off the table, not off this
+sentence.
+
+One of those seven is not worth leaning on: `AggregateGroupsHaving` is 176k vs 177k,
+a 0.6% gap, well inside the `±0%`/`~` noise this entry declares two paragraphs up.
+So **six** are below by a margin that means anything, and the seventh is below only
+by sign. State it that way rather than picking one number.
+
+A draft of this entry said "6 of 9" and claimed the re-measurement had REFUTED an
+earlier 7-of-9. That was wrong in both halves: the count is 7, and the earlier 7 was
+never refuted — the noise-margin judgement about `AggregateGroupsHaving` was being
+silently folded into a count while the table beside it still said "below". The
+correction was the error, not the thing it corrected.
+
+The two genuinely above are `ScanFilterSparse` and `InListExecution`, and they are
+also the two worst time ratios (1.53x, 1.56x) — which is one story, not two: both are
+dominated by PLANNING rather than by row throughput, so the row-path work in this
+campaign could not touch them. They are the workloads the plan-time-rebind milestone
+below is aimed at. What closed the rest: minting a scan/projection row already carrying its plan's layout so the
+output boundary takes an identity fast path instead of copying every row; one
+per-row allocation for the frontier binding holder instead of three; a
+`RecordCursorResult` that holds its value inline instead of boxing it once per row
+per cursor level; a two-entry comparison-key program cache on the merge legs; and
+eliding the compensation projection when an aggregate leaf already publishes the
+GROUP BY row.
+
+Those nine benchmarks are the instrument this whole campaign was measured with, and
+until `bench-ci` gained `//pkg/simfdb/hunt/sqlhunt:sqlhunt_test` NOTHING ran them —
+`bazelisk test` never passes `-test.bench`. They are gating there now.
+
+### The next milestone is plan-time rebinding, and it needs a Graefe gate
+
+The residual is not a list of allocation sites; it is one architectural fact.
+**Go reconciles logical to physical ordinals per ROW at runtime, where Java rebinds
+once at PLAN time.** Java's planner rebinds every FieldValue ordinal against the
+physical quantifier's actual flowed type (`Value.translateCorrelations`,
+`Value.java:339`), so a baked ordinal IS the physical slot and no runtime adapter
+exists. Go seeds gated-join legs with the LOGICAL table-shaped leg type while a
+physical leg may emit a row typed by its own plan output, so the two layouts can be
+permutations of each other and the boundary gathers slots into leg order on every
+row. The divergence is already documented at the fix site —
+`pkg/recordlayer/query/executor/ordinal_join.go:1042` — which is the durable half
+of this entry; this entry is the other half, and neither is complete without the
+other.
+
+Retiring the per-row gather means making Go's seed bake against the CHOSEN physical
+leg layout, which is a change to RFC-232's runtime half rather than a local
+optimisation. It is deliberately NOT started: it needs a Graefe ACK on the design
+before implementation, and starting it would have invalidated the review laps in
+flight on the campaign above.
+
+- [ ] Bake join-leg FieldValue ordinals against the selected physical leg layout,
+      so `ordinal_join.go`'s per-row permutation gather can be deleted. Read
+      `Value.translateCorrelations` and `TranslationMap` first; the Go seed sites
+      are the gated-join leg constructors. Gated on a Graefe ACK of the design.
+
+- [x] Re-measure the two 1M stress figures at the true merge-base `7d0435536` —
+      DONE, n=2 per side, and it REFUTED one of them. `group_by_customer_having` is
+      1.54x, not the 0.98x parity booked from the stale baseline; the suite total held
+      at 1.020x. The entry above carries the numbers and the reason. Note for next
+      time: the prediction in this item — "the conclusion survives either way, so this
+      is about the NUMBERS" — was WRONG, and wrong in the direction that matters. A
+      confound is not a bounded error term just because it was small on nine other
+      rows.
+
+### Two more milestones the review surfaced, both port-faithful
+
+- [ ] **Memoize the structural key / structural hash per plan object.** Java computes
+      each expression's structural hash ONCE per object —
+      `Suppliers.memoize(this::computeHashCodeWithoutChildren)` at
+      `cascades/expressions/AbstractRelationalExpression.java:43`, exposed as
+      `final int hashCodeWithoutChildren()` (`:58`), with `RelationalExpression`
+      short-circuiting `semanticEquals` on it — and its `equalsWithoutChildren`
+      allocates nothing. **Go has 132 non-test `structuralKey()` call sites and ZERO
+      memoization** (measured: `grep -rn 'structuralKey()' pkg/ --include='*.go' |
+      grep -v _test.go | wc -l` = 132; `sync.Once|cachedHash|hashOnce|memoHash` in
+      `pkg/recordlayer/query/plan/plans/` = 0 non-test, positive control 23 non-test
+      `sync.Once` in `pkg/recordlayer/` — 27 if tests are counted, and the two numbers
+      are over different populations, so the non-test one is the control that matches
+      the zero). Every `Equal()` and every `Hash()` rebuilds a key.
+
+      **PREREQUISITE NOBODY HAD BOOKED, found by checking the precondition rather than
+      accepting it: Go's plans are NOT uniformly immutable after construction, and the
+      memo cannot be a plain field on the shared base.** Two `RecordQueryAggregateIndexPlan`
+      builders wrote to the receiver and returned it, alone among 57 siblings that do
+      `cp := *p` — and one of them, `WithLiveGroupsOnly`, writes a field that IS folded
+      into `structuralKey`. Fixed to copy, pinned by
+      `TestAggregateIndexBuildersCopyRatherThanMutateIdentity`, but the shape of the
+      problem is what matters here:
+
+      Those 57 `cp := *p` copies are the real obstacle. A memo held on `PlanExprBase`
+      would be inherited by every shallow copy — and `WithXxx` exists precisely to
+      change identity-bearing fields (`scanComparisons`, `liveGroupsOnly`,
+      `keyComponentTypes`), so the copy's inherited key would describe the pre-change
+      plan. The memo would then serve a stale identity and the dedup would intern two
+      structurally different plans as one, which is exactly the failure the
+      `liveGroupsOnly` key comment warns about. There is no compiler help: forget one
+      copy site and it fails silently. An `atomic.Pointer` memo makes it louder but not
+      safer — `go vet`'s copylocks would reject all 57 copies, and the package imports
+      no `sync/atomic` today.
+
+      Java does not face this because its plans have no `WithXxx` mutators at all;
+      `Suppliers.memoize` sits on an object built once by a constructor. So the design
+      question to settle FIRST is whether Go routes every plan copy through one helper
+      that clears the memo, or drops the copy-builders in favour of constructors. That
+      is a Cascades design change and needs a Graefe ACK before implementation, per the
+      review-cadence rule.
+
+      This campaign's answer to that term was to SHRINK the key — `part` 312 -> 96
+      bytes, `structuralKeyInlineParts` 8 -> 4 — a real ~6x win on a cost **Java does
+      not pay at all**. Go's plans are immutable after construction, which is the same
+      precondition `Suppliers.memoize` relies on, so the port-faithful fix is
+      available and is strictly better than shrinking. Do NOT delete
+      `plan_structural_key_size_test.go` when this lands: a memoized key still gets
+      built once per object, so its size still matters, just less.
+
+- [ ] **Make the empty `AliasMap` singleton immutable by TYPE, not by doc.** Java's is
+      backed by `ImmutableBiMap` (`AliasMap.java:169`), so a write is a compile/runtime
+      error at the type. Go's is a plain map whose read-only-ness is asserted in a doc
+      paragraph, and `alias_map_singleton_test.go` pins its IDENTITY rather than its
+      immutability — so a future writer through the singleton is caught by nothing. Any
+      mutation of the shared empty map corrupts every alias map in the process.
+
+## Every self-hosted CI job dies at `actions/checkout` with HTTP 429, nightlies included
+
+Found while trying to get PR #752 green; it is repo-wide and not specific to that
+branch. **Not a test failure** — the jobs never reach a build step. Zero `DATA RACE`,
+zero test output, no code executed.
+
+The signature is "died at an ACTION-TARBALL download", not a fixed log length, and
+that distinction matters because the first shape found was uniform and the second was
+not. Most failures are a 21-line log: three `429 (Too Many Requests)` from
+`codeload.github.com` for `actions/checkout`, then `Failed to download archive ...
+after 3 attempts`. But a 24-line variant *cleared* `actions/checkout` on retry and then
+died the same way on `actions/setup-go`, and its warnings include a **503 Service
+Unavailable** as well as 429s. GitHub's own GraphQL API was returning 503s in the same
+window (a `gh pr comment` failed that way), so the TRIGGER was a platform-wide
+degradation rather than a steady-state rate limit on this repo.
+
+EXPOSURE SCALES WITH HOW MANY ACTIONS A JOB FETCHES, which is why one job kept
+looking like the "real" failure while its siblings passed. `ci.yml` has 8 `uses:`
+against 2 each in `claude.yml` and `hosted-smoke.yml`, and its `Build, Lint & Test`
+job pulls `checkout` + `setup-go` + `upload-artifact` — three independent chances to
+lose the dice roll. Observed exactly that: one run cleared `checkout`, cleared
+`setup-go` on a retry, then died on `upload-artifact`. So a job dying while its
+siblings pass is NOT evidence that the failure is specific to that job's work.
+
+That does not change the fix, and it is the reason the fix is worth doing: a runner
+with a local action cache is immune to a codeload incident, whereas one that refetches
+per job fails every job for the duration. Do not expect the 21-line log as a
+fingerprint — match on the download failure, whichever action it names.
+
+**IT IS NOT A CLEAN RUNNER SPLIT, and an earlier draft of this entry said it was.** That
+draft claimed `ubuntu-latest` jobs were "green on every run" because "GitHub-hosted
+runners resolve actions through an internal cache". Refuted: `hosted-smoke.yml`, which
+is `runs-on: ubuntu-latest`, died on `actions/setup-go` with the same three 429s at 36
+log lines. **GitHub-hosted runners fetch action tarballs from codeload too.** The
+observation behind the wrong claim was real — hosted jobs did pass far more often — but
+the explanation was too strong, and it was built from a run-level status list that
+happened to show successes.
+
+| workflow | `runs-on` | `uses:` per file | observed |
+|---|---|---|---|
+| `hosted-smoke.yml` | `ubuntu-latest` | 2 | mostly green, **but has died on the 429** |
+| `claude.yml` | `hetzner-fdb-vm` | 2 | dies |
+| `ci.yml`, `nightly-*.yml` | `hetzner-fdb-vm` | 8 | dies most often |
+
+What actually predicts exposure is the NUMBER of action tarballs a job fetches, not the
+runner. Six sequential `gh run rerun --failed` attempts produced 24 consecutive job
+failures and got WORSE rather than clearing, so retrying is not the remedy — each
+attempt is another codeload request. What eventually worked was retrying patiently
+across ~40 minutes as the platform recovered.
+
+The fix below is therefore justified more narrowly than that draft implied: it is not
+"self-hosted is uniquely broken", it is that **a self-hosted runner is the only one we
+can give a local action cache to.** GitHub's runners are not ours to configure.
+
+**Three consequences, and the second and third are the expensive ones.**
+
+1. PR CI cannot go green on any branch while the window is open. It DID go green on
+   this branch once the platform recovered — 6/6 checks on eec351505 — so the outage is
+   transient rather than permanent; the point is that it consumed most of a shift and
+   the retries had to be classified by hand to avoid reading an infra death as a test
+   failure.
+2. **The `@claude` review gate is silently unavailable.** `claude.yml` is
+   `issue_comment`-triggered and runs on the self-hosted VM, so a review request posts
+   the comment, the workflow fires, and it dies at checkout — leaving a PR comment with
+   no reply. That reads exactly like "the reviewer has not got to it yet". Confirmed on
+   run 32036682884: fired, `completed/failure`, 22-line log, 3 429s.
+3. **Every nightly safety net is down** — fuzz, rowdiff, factory, oracles, coverage,
+   stress, libfdbc differential are all `hetzner-fdb-vm`. A green-looking absence of
+   nightly failures currently means the nightlies are not running, which is the
+   fail-open direction.
+
+- [ ] Give the `hetzner-fdb-vm` runner an action-archive cache so it stops re-fetching
+      action tarballs from codeload per job — the runner reads
+      `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE` for exactly this. The runner is provisioned
+      from `infra/main.tf`, so this is a terraform change plus an apply, which is why it
+      is booked rather than done inline. Verify by re-running any `hetzner-fdb-vm` job
+      and confirming its log passes the "Download action repository" step.
+- [ ] While there: a job that dies before its first real step should be
+      distinguishable from a job whose tests failed. Right now both render as a red
+      check, and the only way to tell them apart is a 21-line log — which is how this
+      spent a while looking like a code regression.

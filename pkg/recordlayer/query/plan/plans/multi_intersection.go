@@ -115,14 +115,9 @@ func NewRecordQueryMultiIntersectionOnValuesPlan(
 	children []RecordQueryPlan,
 	comparisonKey []values.Value,
 	resultValue values.Value,
-) *RecordQueryMultiIntersectionOnValuesPlan {
-	cpKeys := make([]values.Value, len(comparisonKey))
-	copy(cpKeys, comparisonKey)
-	return &RecordQueryMultiIntersectionOnValuesPlan{
-		childQs:       QuantifiersOverPlans(children),
-		comparisonKey: cpKeys,
-		resultValue:   resultValue,
-	}
+) (*RecordQueryMultiIntersectionOnValuesPlan, error) {
+	return NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
+		QuantifiersOverPlans(children), comparisonKey, resultValue)
 }
 
 // NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers builds an N-way
@@ -136,14 +131,19 @@ func NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(
 	qs []expressions.Quantifier,
 	comparisonKey []values.Value,
 	resultValue values.Value,
-) *RecordQueryMultiIntersectionOnValuesPlan {
+) (*RecordQueryMultiIntersectionOnValuesPlan, error) {
+	base, err := newPlanExprBaseForValue("RecordQueryMultiIntersectionOnValuesPlan", resultValue)
+	if err != nil {
+		return nil, err
+	}
 	cpKeys := make([]values.Value, len(comparisonKey))
 	copy(cpKeys, comparisonKey)
 	return &RecordQueryMultiIntersectionOnValuesPlan{
+		PlanExprBase:  base,
 		childQs:       append([]expressions.Quantifier(nil), qs...),
 		comparisonKey: cpKeys,
 		resultValue:   resultValue,
-	}
+	}, nil
 }
 
 // GetChildren returns the input plans, dereferenced through the quantifiers
@@ -172,22 +172,13 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) GetComparisonKey() []values.V
 // The final arm defers to PlanExprBase rather than repeating its fresh
 // stand-in, so a 0-stream plan answers exactly what every other plan answers.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) GetResultValue() values.Value {
-	if p.resultValue != nil {
-		return p.resultValue
-	}
-	if len(p.childQs) == 0 {
-		return p.PlanExprBase.GetResultValue()
-	}
-	return p.childQs[0].GetFlowedObjectValue()
+	return p.resultValue
 }
 
 // GetResultType returns the result Value's type if a resultValue is
 // set, or UnknownType otherwise.
 func (p *RecordQueryMultiIntersectionOnValuesPlan) GetResultType() values.Type {
-	if p.resultValue != nil {
-		return p.resultValue.Type()
-	}
-	return values.UnknownType
+	return p.resultValue.Type()
 }
 
 // structuralKey lists the fields that distinguish this multi-intersection in
@@ -226,10 +217,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) Explain() string {
 			parts[i] = child.Explain()
 		}
 	}
-	keys := make([]string, len(p.comparisonKey))
-	for i, k := range p.comparisonKey {
-		keys[i] = values.ExplainValue(k)
-	}
+	keys := values.ExplainPlanValues(p.comparisonKey)
 	if idx := p.DrivingStreamIndex(); idx >= 0 {
 		// Plan-visible because it changes the answer: a reader of EXPLAIN must be
 		// able to tell the group-existence merge from an intersection, and which
@@ -261,19 +249,59 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) GetQuantifiers() []expression
 	return p.childQs
 }
 
-// WithQuantifiers returns a copy ranging over the given child quantifiers —
-// Java's copy-on-write withChildrenReferences. The receiver is never mutated,
-// which is what keeps a memoized plan safe to share; the incoming slice is
-// copied so the caller cannot alias the copy's storage either.
+// WithQuantifiers atomically rebuilds the merge over the replacement child
+// edges. Comparison keys and the result constructor may retain any of those
+// edge aliases, so all positional old→new pairs participate in one checked
+// rebase before PlanExprBase is reconstructed.
 //
 // The arity check matters more here than for a plain set operation:
 // resultValue picks up one aggregate per stream by position, so a
 // different-length child list would not describe the same row.
-func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != len(p.childQs) {
-		return p
+func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryMultiIntersectionOnValuesPlan", len(qs), len(p.childQs)); err != nil {
+		return nil, err
 	}
-	cp := *p
+	pairs := make([]values.AliasPair, 0, len(qs))
+	for i := range qs {
+		oldInput, err := p.childQs[i].RequireFlowedObjectValue()
+		if err != nil {
+			return nil, fmt.Errorf("RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers old child %d: %w", i, err)
+		}
+		newInput, err := qs[i].RequireFlowedObjectValue()
+		if err != nil {
+			return nil, fmt.Errorf("RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers new child %d: %w", i, err)
+		}
+		if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+			return nil, fmt.Errorf(
+				"RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers child %d type changed from %s to %s",
+				i, oldInput.FlowedType(), newInput.FlowedType())
+		}
+		if oldInput.Correlation() != newInput.Correlation() {
+			pairs = append(pairs, values.AliasPair{
+				Source: oldInput.Correlation(), Target: newInput.Correlation(),
+			})
+		}
+	}
+	aliasMap, err := values.NewAliasMap(pairs)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers alias map: %w", err)
+	}
+	rebasedKeys := make([]values.Value, len(p.comparisonKey))
+	for i, key := range p.comparisonKey {
+		rebasedKeys[i], err = values.RebaseValueChecked(key, aliasMap)
+		if err != nil {
+			return nil, fmt.Errorf("RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers comparison key %d: %w", i, err)
+		}
+	}
+	rebasedResult, err := values.RebaseValueChecked(p.resultValue, aliasMap)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers result Value: %w", err)
+	}
+	rebuilt, err := NewRecordQueryMultiIntersectionOnValuesPlanFromQuantifiers(qs, rebasedKeys, rebasedResult)
+	if err != nil {
+		return nil, err
+	}
+	rebuilt.drivingAlias = p.drivingAlias
 	// Carry the group-existence designation across the relink. WithQuantifiers
 	// replaces the streams with fresh quantifiers over the finalized references,
 	// and those carry NEW aliases — so an alias stored verbatim stops resolving
@@ -286,10 +314,9 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressi
 	// re-expressed as the NEW stream's alias, so it stays an alias — a bare
 	// index would still be wrong under any future reordering relink.
 	if driving := p.DrivingStreamIndex(); driving >= 0 {
-		cp.drivingAlias = qs[driving].GetAlias()
+		rebuilt.drivingAlias = qs[driving].GetAlias()
 	}
-	cp.childQs = append([]expressions.Quantifier(nil), qs...)
-	return &cp
+	return rebuilt, nil
 }
 
 // IsIntersection implements properties.IntersectionExpression — the marker
@@ -301,11 +328,11 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) IsIntersection() {}
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
 // interface). The multi-intersection carries its streams as LIVE memo edges, so
-// the relink is a quantifier swap: WithQuantifiers rebinds the streams and
+// the relink rebuilds the streams and every retained Value program before
 // GetChildren re-resolves through the new references (RFC-184 W2, replacing
 // physicalMultiIntersectionWrapper.WithChildren).
 func (p *RecordQueryMultiIntersectionOnValuesPlan) WithChildren(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

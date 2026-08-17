@@ -8,6 +8,38 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustAllImplConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct all-implementation-rules fixture: " + err.Error())
+	}
+	return value
+}
+
+func allImplRowType() values.Type {
+	return values.NewRecordType("AllImplRow", false, []values.Field{
+		{Name: "id", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
+func allImplScan(recordType string) *plans.RecordQueryScanPlan {
+	return mustAllImplConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordType}, allImplRowType(), false))
+}
+
+func allImplScanWithPK(recordType string) (*plans.RecordQueryScanPlan, *expressions.Reference) {
+	root := mustAllImplConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("all_impl_pk"), allImplRowType()))
+	pk := mustAllImplConstruct(values.ResolveOrdinalSeedField(root, 0))
+	scan := allImplScan(recordType).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithPrimaryKey([]values.Value{pk})
+	ref := expressions.InitialOf(scan)
+	pm := NewPlanPropertiesMap()
+	pm.Add(scan)
+	ref.SetPlanProperties(pm)
+	return scan, ref
+}
+
 func TestAllImplRules_DefaultListHas7Rules(t *testing.T) {
 	t.Parallel()
 	rules := DefaultImplementationRules()
@@ -25,35 +57,35 @@ func TestAllImplRules_DefaultListHas7Rules(t *testing.T) {
 func TestAllImplRules_UniqueOverDistinctUnion_WithPK_DirectFire(t *testing.T) {
 	t.Parallel()
 
-	_, refA := makeScanWithPK("T", "id")
-	_, refB := makeScanWithPK("T", "id")
+	_, refA := allImplScanWithPK("T")
+	_, refB := allImplScanWithPK("T")
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	union := mustAllImplConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(refA),
 		expressions.ForEachQuantifier(refB),
-	})
+	}))
 	unionRef := expressions.InitialOf(union)
 
-	distinct := expressions.NewLogicalDistinctExpression(
-		expressions.ForEachQuantifier(unionRef))
+	distinct := mustAllImplConstruct(expressions.NewLogicalDistinctExpression(
+		expressions.ForEachQuantifier(unionRef)))
 	distinctRef := expressions.InitialOf(distinct)
 
-	unique := expressions.NewLogicalUniqueExpression(
-		expressions.ForEachQuantifier(distinctRef))
+	unique := mustAllImplConstruct(expressions.NewLogicalUniqueExpression(
+		expressions.ForEachQuantifier(distinctRef)))
 	rootRef := expressions.InitialOf(unique)
 
 	for _, rule := range DefaultImplementationRules() {
-		FireImplementationRule(rule, unionRef)
+		mustFireImplementationRule(t, rule, unionRef)
 	}
 	computeRefPlanProperties(unionRef)
 
 	for _, rule := range DefaultImplementationRules() {
-		FireImplementationRule(rule, distinctRef)
+		mustFireImplementationRule(t, rule, distinctRef)
 	}
 	computeRefPlanProperties(distinctRef)
 
 	for _, rule := range DefaultImplementationRules() {
-		FireImplementationRule(rule, rootRef)
+		mustFireImplementationRule(t, rule, rootRef)
 	}
 
 	finals := rootRef.AllMembers()
@@ -65,7 +97,7 @@ func TestAllImplRules_UniqueOverDistinctUnion_WithPK_DirectFire(t *testing.T) {
 func TestAllImplRules_SelectNoPredicatesPassThrough(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := allImplScan("T")
 	sw := scan
 	innerRef := expressions.InitialOf(sw)
 	pm := NewPlanPropertiesMap()
@@ -73,15 +105,16 @@ func TestAllImplRules_SelectNoPredicatesPassThrough(t *testing.T) {
 	innerRef.SetPlanProperties(pm)
 
 	q := expressions.ForEachQuantifier(innerRef)
-	sel := expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(q.GetAlias()),
+	result := mustAllImplConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), allImplRowType()))
+	sel := mustAllImplConstruct(expressions.NewSelectExpression(
+		result,
 		[]expressions.Quantifier{q},
 		nil,
-	)
+	))
 	rootRef := expressions.InitialOf(sel)
 
 	for _, rule := range DefaultImplementationRules() {
-		FireImplementationRule(rule, rootRef)
+		mustFireImplementationRule(t, rule, rootRef)
 	}
 
 	finals := rootRef.AllMembers()
@@ -100,36 +133,36 @@ func TestAllImplRules_SelectNoPredicatesPassThrough(t *testing.T) {
 func TestAllImplRules_UnorderedUnionThreeLegs(t *testing.T) {
 	t.Parallel()
 
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
+	scanA := allImplScan("A")
 	swA := scanA
 	refA := expressions.InitialOf(swA)
 	pmA := NewPlanPropertiesMap()
 	pmA.Add(swA)
 	refA.SetPlanProperties(pmA)
 
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	scanB := allImplScan("B")
 	swB := scanB
 	refB := expressions.InitialOf(swB)
 	pmB := NewPlanPropertiesMap()
 	pmB.Add(swB)
 	refB.SetPlanProperties(pmB)
 
-	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
+	scanC := allImplScan("C")
 	swC := scanC
 	refC := expressions.InitialOf(swC)
 	pmC := NewPlanPropertiesMap()
 	pmC.Add(swC)
 	refC.SetPlanProperties(pmC)
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	union := mustAllImplConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(refA),
 		expressions.ForEachQuantifier(refB),
 		expressions.ForEachQuantifier(refC),
-	})
+	}))
 	rootRef := expressions.InitialOf(union)
 
 	for _, rule := range DefaultImplementationRules() {
-		FireImplementationRule(rule, rootRef)
+		mustFireImplementationRule(t, rule, rootRef)
 	}
 
 	finals := rootRef.AllMembers()

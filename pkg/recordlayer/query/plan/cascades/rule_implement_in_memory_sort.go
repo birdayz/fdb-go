@@ -10,8 +10,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -111,8 +109,15 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	}
 
 	// Top-down: push ordering constraint to inner reference so
-	// downstream rules (index scans) can satisfy it.
-	requestedOrdering := sortExpressionToRequestedOrdering(s)
+	// downstream rules (index scans) can satisfy it. It crosses into the inner
+	// reference's own current-row space first, exactly as the dedicated push
+	// rule does — see requestedOrderingAtInnerCurrent.
+	requestedOrdering, err := requestedOrderingAtInnerCurrent(
+		sortExpressionToRequestedOrdering(s), s.GetInner())
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	call.PushConstraint(innerRef, []*properties.RequestedOrdering{requestedOrdering})
 
 	// Guard: only yield the sort if the inner group has a physical plan to sort.
@@ -130,12 +135,7 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		// against the positional row. Field is DISPLAY-ONLY (Explain + the
 		// ordering-hint name match). A key that somehow escaped the
 		// translator's bake fails loud at evaluation — never a name read.
-		field := ""
-		if fv, ok := sk.Value.(*values.FieldValue); ok && fv.Child == nil {
-			field = strings.ToUpper(values.ColumnNameValue(sk.Value))
-		} else {
-			field = values.ExplainValue(sk.Value)
-		}
+		field := values.ExplainValue(sk.Value)
 		nf := !sk.Reverse // default: ASC→true, DESC→false
 		if sk.NullsFirst != nil {
 			nf = *sk.NullsFirst
@@ -155,7 +155,27 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 	// orders-driven join order the group won rather than pinning a re-scan loser
 	// (RFC-069).
 	innerQ := expressions.ForEachQuantifier(innerRef)
-	call.YieldFinalExpression(plans.NewRecordQueryInMemorySortPlanFromQuantifier(innerQ, planKeys))
+	logicalEdge, err := s.GetInner().RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	physicalEdge, err := innerQ.RequireFlowedObjectValue()
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	primaryKeys, err := rebasePhysicalSortKeys(planKeys, logicalEdge, physicalEdge)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	primarySort, err := plans.NewRecordQueryInMemorySortPlanFromQuantifier(innerQ, primaryKeys)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
+	call.YieldFinalExpression(primarySort)
 
 	// Also yield InMemorySort alternatives for InJoin/InUnion members
 	// and restricted Fetch plans (index scans with bound predicates).
@@ -200,8 +220,47 @@ func (r *ImplementInMemorySortRule) OnMatch(call *ImplementationRuleCall) {
 		// exact plan. NewRecordQueryInMemorySortPlan builds a bare sort over a
 		// frozen (QuantifierOverPlan) edge holding ph's plan; cost and extraction
 		// both resolve that one member (RFC-184 W2, no physicalInMemorySortWrapper).
-		call.YieldFinalExpression(plans.NewRecordQueryInMemorySortPlan(ph.GetRecordQueryPlan(), planKeys))
+		alternativeQ := plans.QuantifierOverPlan(ph.GetRecordQueryPlan())
+		alternativeEdge, err := alternativeQ.RequireFlowedObjectValue()
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		alternativeKeys, err := rebasePhysicalSortKeys(planKeys, logicalEdge, alternativeEdge)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		alternative, err := plans.NewRecordQueryInMemorySortPlanFromQuantifier(alternativeQ, alternativeKeys)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.YieldFinalExpression(alternative)
 	}
+}
+
+func rebasePhysicalSortKeys(
+	keys []plans.SortKey,
+	source, target values.QuantifiedObjectValue,
+) ([]plans.SortKey, error) {
+	result := append([]plans.SortKey(nil), keys...)
+	var err error
+	for i := range result {
+		// A join's logical edge is conventionally named after one of its legs.
+		// Alias-only rebasing therefore rewrites that leg's QOV onto the whole
+		// joined-row edge even though their exact types disagree, destroying the
+		// leg identity before the selected FlatMap can map it to an output slot.
+		// The declared-edge bridge requires correlation AND exact type, so a true
+		// edge-relative key moves while same-named retained source windows survive
+		// for the producer/materializer lineage pass.
+		result[i].ValueExpr, err = values.TranslateDeclaredEdgeRoot(
+			result[i].ValueExpr, source, target)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func (r *ImplementInMemorySortRule) GetRequestedOrderings(

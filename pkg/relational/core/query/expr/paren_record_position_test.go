@@ -165,7 +165,7 @@ func TestParenColumn_ArithmeticOperand_StaysScalar(t *testing.T) {
 	// alone: the surviving left operand is the bare column.
 	var sawBareColumn bool
 	for _, c := range v.Children() {
-		if fv, isField := c.(*values.FieldValue); isField && fv.Field == "ID" {
+		if fv, isField := values.AsFieldValue(c); isField && fv.DisplayName() == "ID" {
 			sawBareColumn = true
 		}
 		if _, isRecord := c.(*values.RecordConstructorValue); isRecord {
@@ -198,12 +198,12 @@ func TestParenColumn_ComparisonOperand_StaysScalar(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected a plain *ComparisonPredicate, got %T", pred)
 	}
-	fv, ok := cp.Operand.(*values.FieldValue)
+	fv, ok := values.AsFieldValue(cp.Operand)
 	if !ok {
 		t.Fatalf("the compared operand is the FLATTENED column, not a one-field "+
 			"record; got %T", cp.Operand)
 	}
-	if fv.Field != "ID" {
-		t.Fatalf("operand column: got %q, want ID", fv.Field)
+	if fv.DisplayName() != "ID" {
+		t.Fatalf("operand column: got %q, want ID", fv.DisplayName())
 	}
 }

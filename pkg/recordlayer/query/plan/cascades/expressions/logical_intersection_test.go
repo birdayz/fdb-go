@@ -14,7 +14,7 @@ func TestLogicalIntersection_Construction(t *testing.T) {
 		ForEachQuantifier(InitialOf(leaf)),
 	}
 	keys := []values.Value{values.NewBooleanValue(true)}
-	x := NewLogicalIntersectionExpression(qs, keys)
+	x := mustExpression(NewLogicalIntersectionExpression(qs, keys))
 	if got := x.GetQuantifiers(); len(got) != 2 {
 		t.Fatalf("size=%d, want 2", len(got))
 	}
@@ -32,7 +32,7 @@ func TestLogicalIntersection_DefensiveCopy(t *testing.T) {
 	q := ForEachQuantifier(InitialOf(leaf))
 	srcQs := []Quantifier{q}
 	srcKs := []values.Value{values.NewBooleanValue(true)}
-	x := NewLogicalIntersectionExpression(srcQs, srcKs)
+	x := mustExpression(NewLogicalIntersectionExpression(srcQs, srcKs))
 	srcQs[0] = ForEachQuantifier(InitialOf(leaf))
 	srcKs[0] = values.NewBooleanValue(false)
 	if x.GetQuantifiers()[0].GetAlias() != q.GetAlias() {
@@ -49,8 +49,8 @@ func TestLogicalIntersection_EqualsWithoutChildren_SameKeys(t *testing.T) {
 	q := ForEachQuantifier(InitialOf(leaf))
 	keysA := []values.Value{values.NewBooleanValue(true)}
 	keysB := []values.Value{values.NewBooleanValue(true)} // same Explain text
-	x1 := NewLogicalIntersectionExpression([]Quantifier{q}, keysA)
-	x2 := NewLogicalIntersectionExpression([]Quantifier{q}, keysB)
+	x1 := mustExpression(NewLogicalIntersectionExpression([]Quantifier{q}, keysA))
+	x2 := mustExpression(NewLogicalIntersectionExpression([]Quantifier{q}, keysB))
 	if !x1.EqualsWithoutChildren(x2, EmptyAliasMap()) {
 		t.Fatal("intersections with structurally identical comparison keys reported unequal")
 	}
@@ -62,8 +62,8 @@ func TestLogicalIntersection_EqualsWithoutChildren_DifferentKeys(t *testing.T) {
 	q := ForEachQuantifier(InitialOf(leaf))
 	keysT := []values.Value{values.NewBooleanValue(true)}
 	keysF := []values.Value{values.NewBooleanValue(false)}
-	x1 := NewLogicalIntersectionExpression([]Quantifier{q}, keysT)
-	x2 := NewLogicalIntersectionExpression([]Quantifier{q}, keysF)
+	x1 := mustExpression(NewLogicalIntersectionExpression([]Quantifier{q}, keysT))
+	x2 := mustExpression(NewLogicalIntersectionExpression([]Quantifier{q}, keysF))
 	if x1.EqualsWithoutChildren(x2, EmptyAliasMap()) {
 		t.Fatal("intersections with different comparison keys reported equal")
 	}
@@ -73,8 +73,8 @@ func TestLogicalIntersection_NotEqualToUnion(t *testing.T) {
 	t.Parallel()
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
-	x := NewLogicalIntersectionExpression([]Quantifier{q}, nil)
-	u := NewLogicalUnionExpression([]Quantifier{q})
+	x := mustExpression(NewLogicalIntersectionExpression([]Quantifier{q}, nil))
+	u := mustExpression(NewLogicalUnionExpression([]Quantifier{q}))
 	if x.EqualsWithoutChildren(u, EmptyAliasMap()) {
 		t.Fatal("intersection reported equal to union")
 	}
@@ -85,8 +85,8 @@ func TestLogicalIntersection_HashCodeStable(t *testing.T) {
 	leaf := &leafScan{name: "T"}
 	q := ForEachQuantifier(InitialOf(leaf))
 	keys := []values.Value{values.NewBooleanValue(true)}
-	x1 := NewLogicalIntersectionExpression([]Quantifier{q}, keys)
-	x2 := NewLogicalIntersectionExpression([]Quantifier{q}, []values.Value{values.NewBooleanValue(true)})
+	x1 := mustExpression(NewLogicalIntersectionExpression([]Quantifier{q}, keys))
+	x2 := mustExpression(NewLogicalIntersectionExpression([]Quantifier{q}, []values.Value{values.NewBooleanValue(true)}))
 	if x1.HashCodeWithoutChildren() != x2.HashCodeWithoutChildren() {
 		t.Fatal("intersections with structurally identical comparison keys produced different hashes")
 	}

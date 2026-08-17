@@ -6,6 +6,27 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func translationMapQOV(alias values.CorrelationIdentifier, typ values.Type) values.LeafValue {
+	qov, err := values.NewQuantifiedObjectValue(alias, typ)
+	if err != nil {
+		panic("construct translation-map QOV: " + err.Error())
+	}
+	leaf, ok := qov.(values.LeafValue)
+	if !ok {
+		panic("exact QOV does not implement LeafValue")
+	}
+	return leaf
+}
+
+func requireTranslatedQOV(t testing.TB, value values.Value) values.QuantifiedObjectValue {
+	t.Helper()
+	qov, ok := values.AsQuantifiedObjectValue(value)
+	if !ok {
+		t.Fatalf("result should be an exact QOV, got %T", value)
+	}
+	return qov
+}
+
 func TestEmptyTranslationMap_ContainsSourceAlias(t *testing.T) {
 	t.Parallel()
 	tm := EmptyTranslationMap()
@@ -86,21 +107,15 @@ func TestTranslationMapOfAliases_ApplyTranslationFunction_QuantifiedObjectValue(
 	tgt := values.NamedCorrelationIdentifier("tgt")
 	tm := TranslationMapOfAliases(src, tgt)
 
-	qov := &values.QuantifiedObjectValue{
-		Correlation: src,
-		Typ:         values.NullableLong,
-	}
+	qov := translationMapQOV(src, values.NullableLong)
 
 	result := tm.ApplyTranslationFunction(src, qov)
-	rebased, ok := result.(*values.QuantifiedObjectValue)
-	if !ok {
-		t.Fatalf("result should be *QuantifiedObjectValue, got %T", result)
+	rebased := requireTranslatedQOV(t, result)
+	if rebased.Correlation() != tgt {
+		t.Errorf("rebased correlation = %v, want %v", rebased.Correlation(), tgt)
 	}
-	if rebased.Correlation != tgt {
-		t.Errorf("rebased correlation = %v, want %v", rebased.Correlation, tgt)
-	}
-	if rebased.Typ != values.NullableLong {
-		t.Errorf("rebased type should be preserved, got %v", rebased.Typ)
+	if !rebased.FlowedType().Equals(values.NullableLong) {
+		t.Errorf("rebased type should be preserved, got %v", rebased.FlowedType())
 	}
 }
 
@@ -173,28 +188,23 @@ func TestRebaseWithAliasMap_MultipleEntries(t *testing.T) {
 	}
 
 	// Apply translation to a QOV with alias a -> should get x.
-	qovA := &values.QuantifiedObjectValue{Correlation: a, Typ: values.UnknownType}
+	rowType := values.NewRecordType("translation_row", false, []values.Field{{Name: "ID", FieldType: values.NotNullLong}})
+	qovA := translationMapQOV(a, rowType)
 	resultA := tm.ApplyTranslationFunction(a, qovA)
-	rebasedA, ok := resultA.(*values.QuantifiedObjectValue)
-	if !ok {
-		t.Fatalf("result should be *QuantifiedObjectValue, got %T", resultA)
-	}
-	if rebasedA.Correlation != x {
-		t.Errorf("rebased a correlation = %v, want %v", rebasedA.Correlation, x)
+	rebasedA := requireTranslatedQOV(t, resultA)
+	if rebasedA.Correlation() != x {
+		t.Errorf("rebased a correlation = %v, want %v", rebasedA.Correlation(), x)
 	}
 
 	// Apply translation to a QOV with alias b -> should get y.
-	qovB := &values.QuantifiedObjectValue{Correlation: b, Typ: values.NullableString}
+	qovB := translationMapQOV(b, values.NullableString)
 	resultB := tm.ApplyTranslationFunction(b, qovB)
-	rebasedB, ok := resultB.(*values.QuantifiedObjectValue)
-	if !ok {
-		t.Fatalf("result should be *QuantifiedObjectValue, got %T", resultB)
+	rebasedB := requireTranslatedQOV(t, resultB)
+	if rebasedB.Correlation() != y {
+		t.Errorf("rebased b correlation = %v, want %v", rebasedB.Correlation(), y)
 	}
-	if rebasedB.Correlation != y {
-		t.Errorf("rebased b correlation = %v, want %v", rebasedB.Correlation, y)
-	}
-	if rebasedB.Typ != values.NullableString {
-		t.Errorf("rebased b type should be preserved, got %v", rebasedB.Typ)
+	if !rebasedB.FlowedType().Equals(values.NullableString) {
+		t.Errorf("rebased b type should be preserved, got %v", rebasedB.FlowedType())
 	}
 }
 
@@ -221,27 +231,21 @@ func TestBuilder_WhenThen_SingleEntry(t *testing.T) {
 
 	tm := NewTranslationMapBuilder().
 		When(src).Then(func(_ values.CorrelationIdentifier, lv values.LeafValue) values.Value {
-		return &values.QuantifiedObjectValue{
-			Correlation: custom,
-			Typ:         values.NullableBoolean,
-		}
+		return translationMapQOV(custom, values.NullableBoolean)
 	}).Build()
 
 	if !tm.ContainsSourceAlias(src) {
 		t.Error("should contain source alias")
 	}
 
-	qov := &values.QuantifiedObjectValue{Correlation: src, Typ: values.UnknownType}
+	qov := translationMapQOV(src, values.NotNullLong)
 	result := tm.ApplyTranslationFunction(src, qov)
-	rebased, ok := result.(*values.QuantifiedObjectValue)
-	if !ok {
-		t.Fatalf("result should be *QuantifiedObjectValue, got %T", result)
+	rebased := requireTranslatedQOV(t, result)
+	if rebased.Correlation() != custom {
+		t.Errorf("rebased correlation = %v, want %v", rebased.Correlation(), custom)
 	}
-	if rebased.Correlation != custom {
-		t.Errorf("rebased correlation = %v, want %v", rebased.Correlation, custom)
-	}
-	if rebased.Typ != values.NullableBoolean {
-		t.Errorf("rebased type = %v, want NullableBoolean", rebased.Typ)
+	if !rebased.FlowedType().Equals(values.NullableBoolean) {
+		t.Errorf("rebased type = %v, want NullableBoolean", rebased.FlowedType())
 	}
 }
 
@@ -265,7 +269,7 @@ func TestBuilder_WhenThen_MultipleEntries(t *testing.T) {
 		t.Error("should contain alias b")
 	}
 
-	qovA := &values.QuantifiedObjectValue{Correlation: a, Typ: values.UnknownType}
+	qovA := translationMapQOV(a, values.NotNullLong)
 	resultA := tm.ApplyTranslationFunction(a, qovA)
 	constA, ok := resultA.(*values.ConstantValue)
 	if !ok {
@@ -275,7 +279,7 @@ func TestBuilder_WhenThen_MultipleEntries(t *testing.T) {
 		t.Errorf("translated value = %v, want translated_a", constA.Value)
 	}
 
-	qovB := &values.QuantifiedObjectValue{Correlation: b, Typ: values.UnknownType}
+	qovB := translationMapQOV(b, values.NotNullLong)
 	resultB := tm.ApplyTranslationFunction(b, qovB)
 	constB, ok := resultB.(*values.ConstantValue)
 	if !ok {
@@ -295,7 +299,7 @@ func TestBuilder_WhenAny(t *testing.T) {
 
 	tm := NewTranslationMapBuilder().
 		WhenAny([]values.CorrelationIdentifier{a, b, c}).Then(func(_ values.CorrelationIdentifier, lv values.LeafValue) values.Value {
-		return &values.QuantifiedObjectValue{Correlation: tgt, Typ: values.UnknownType}
+		return translationMapQOV(tgt, values.NotNullLong)
 	}).Build()
 
 	for _, alias := range []values.CorrelationIdentifier{a, b, c} {
@@ -358,7 +362,7 @@ func TestApplyTranslationFunction_PanicsOnMissing(t *testing.T) {
 	t.Parallel()
 	tm := EmptyTranslationMap()
 	alias := values.NamedCorrelationIdentifier("missing")
-	qov := &values.QuantifiedObjectValue{Correlation: alias, Typ: values.UnknownType}
+	qov := translationMapQOV(alias, values.NotNullLong)
 
 	defer func() {
 		r := recover()
@@ -386,25 +390,19 @@ func TestTranslationMapOfAliases_PreservesType(t *testing.T) {
 
 	// Apply with a QOV that has a specific type — the type should
 	// be preserved through the rebase.
-	recordType := &values.RecordType{
-		Nullable: false,
-		Fields: []values.Field{
-			{Name: "id", FieldType: values.NotNullLong, Ordinal: 0},
-			{Name: "name", FieldType: values.NullableString, Ordinal: 1},
-		},
-	}
-	qov := &values.QuantifiedObjectValue{Correlation: src, Typ: recordType}
+	recordType := values.NewRecordType("translation_record", false, []values.Field{
+		{Name: "id", FieldType: values.NotNullLong},
+		{Name: "name", FieldType: values.NullableString},
+	})
+	qov := translationMapQOV(src, recordType)
 	result := tm.ApplyTranslationFunction(src, qov)
-	rebased, ok := result.(*values.QuantifiedObjectValue)
-	if !ok {
-		t.Fatalf("result should be *QuantifiedObjectValue, got %T", result)
+	rebased := requireTranslatedQOV(t, result)
+	if rebased.Correlation() != tgt {
+		t.Errorf("correlation = %v, want %v", rebased.Correlation(), tgt)
 	}
-	if rebased.Correlation != tgt {
-		t.Errorf("correlation = %v, want %v", rebased.Correlation, tgt)
-	}
-	rt, ok := rebased.Typ.(*values.RecordType)
+	rt, ok := rebased.FlowedType().(*values.RecordType)
 	if !ok {
-		t.Fatalf("type should be *RecordType, got %T", rebased.Typ)
+		t.Fatalf("type should be *RecordType, got %T", rebased.FlowedType())
 	}
 	if len(rt.Fields) != 2 {
 		t.Errorf("fields count = %d, want 2", len(rt.Fields))
@@ -418,7 +416,7 @@ func TestBuilder_GetAliasMap_Present(t *testing.T) {
 
 	tm := NewTranslationMapBuilder().
 		When(src).Then(func(_ values.CorrelationIdentifier, lv values.LeafValue) values.Value {
-		return &values.QuantifiedObjectValue{Correlation: custom, Typ: values.UnknownType}
+		return translationMapQOV(custom, values.NotNullLong)
 	}).Build()
 
 	// Builder always builds with an alias map (even if the alias map
@@ -567,24 +565,21 @@ func TestLeafValue_QuantifiedObjectValue(t *testing.T) {
 	src := values.NamedCorrelationIdentifier("src")
 	tgt := values.NamedCorrelationIdentifier("tgt")
 
-	qov := &values.QuantifiedObjectValue{Correlation: src, Typ: values.NullableLong}
+	qov := translationMapQOV(src, values.NullableLong)
 
 	// QuantifiedObjectValue implements LeafValue.
 	var lv values.LeafValue = qov
 	result := lv.RebaseLeaf(tgt)
 
-	rebased, ok := result.(*values.QuantifiedObjectValue)
-	if !ok {
-		t.Fatalf("result should be *QuantifiedObjectValue, got %T", result)
+	rebased := requireTranslatedQOV(t, result)
+	if rebased.Correlation() != tgt {
+		t.Errorf("correlation = %v, want %v", rebased.Correlation(), tgt)
 	}
-	if rebased.Correlation != tgt {
-		t.Errorf("correlation = %v, want %v", rebased.Correlation, tgt)
-	}
-	if rebased.Typ != values.NullableLong {
+	if !rebased.FlowedType().Equals(values.NullableLong) {
 		t.Errorf("type should be preserved")
 	}
 	// Should be a new value, not the same pointer.
-	if rebased == qov {
+	if values.Value(rebased) == values.Value(qov) {
 		t.Error("RebaseLeaf should return a new value")
 	}
 }

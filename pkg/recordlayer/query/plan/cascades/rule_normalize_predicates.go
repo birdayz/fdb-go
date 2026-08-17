@@ -73,13 +73,17 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 	cnfConjuncts := andConjuncts(cnf)
 
 	// Step 4: Yield with original quantifiers and metadata preserved.
-	result := expressions.NewSelectExpressionWithJoinType(
+	result, err := expressions.NewSelectExpressionWithJoinType(
 		sel.GetResultValue(),
 		sel.GetQuantifiers(),
 		cnfConjuncts,
 		sel.GetSourceAliases(),
 		sel.GetJoinType(),
 	)
+	if err != nil {
+		call.Fail(err)
+		return
+	}
 	r.normalized[sel] = struct{}{}
 	r.normalized[result] = struct{}{}
 	call.Yield(result)

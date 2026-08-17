@@ -183,9 +183,8 @@ func (c *ValueIndexScanMatchCandidate) orderingKeyLayout() *values.RecordType {
 // bakeOrderingColumn resolves a METADATA column name (an index key column, a
 // primary-key column) to a domained ordinal in the candidate's record row
 // layout, so the ordering key it mints carries an identity instead of a display
-// name. A name that does not resolve stays LAZY — an unaddressable ordering key
-// costs an elision, an ordinal against the wrong layout reads as authoritative
-// and addresses another row.
+// name. A name that does not resolve returns nil: unresolved FieldValues are no
+// longer Values, and an unaddressable ordering key must decline the claim.
 //
 // Resolution is UNIQUE-match, matching the runtime authority this key is
 // verified against (bakedIntersectionKeys). It must not be first-match: the
@@ -206,20 +205,79 @@ func (c *ValueIndexScanMatchCandidate) bakeOrderingColumn(name string) values.Va
 // and both feed the same set-operation merge, so they must agree on the domain
 // token or the merge collapses.
 func bakeOrderingColumnIn(layout *values.RecordType, name string) values.Value {
-	lazy := values.NewFieldValue(nil, name, values.UnknownType)
 	if layout == nil {
-		return lazy
-	}
-	domain := values.OrdinalDomainOfType(layout)
-	if !domain.IsKnown() {
-		return lazy
+		return nil
 	}
 	ordinal, unique := uniqueUpperFieldIndex(layout, name)
 	if !unique {
-		return lazy
+		return nil
 	}
-	return values.NewFieldValueWithResolvedOrdinalInDomain(
-		name, ordinal, values.UnknownType, domain)
+	root, ok := orderingKeyCarrier(layout)
+	if !ok {
+		return nil
+	}
+	resolved, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+	if err != nil {
+		return nil
+	}
+	return resolved
+}
+
+// resolvedColumnsInRow converts metadata column labels into immutable,
+// QOV-rooted ordinal accesses against the one authoritative row layout. It is
+// intentionally all-or-nothing: a missing or duplicate label makes the whole
+// key unavailable instead of returning a partially typed key whose remaining
+// coordinates could be mistaken for a complete primary key.
+func resolvedColumnsInRow(layout values.Type, columns []string) []values.Value {
+	if len(columns) == 0 {
+		return nil
+	}
+	record, ok := layout.(*values.RecordType)
+	if !ok || record == nil {
+		return nil
+	}
+	root, ok := orderingKeyCarrier(record)
+	if !ok {
+		return nil
+	}
+	result := make([]values.Value, len(columns))
+	for i, column := range columns {
+		ordinal, unique := uniqueUpperFieldIndex(record, column)
+		if !unique {
+			return nil
+		}
+		resolved, err := values.ResolveFieldOrdinals(root, []int{ordinal})
+		if err != nil {
+			return nil
+		}
+		result[i] = resolved
+	}
+	return result
+}
+
+// orderingKeyCarrier mints the stable owner-current phase root for metadata
+// ordering keys over a record row. Independent scan candidates over the same
+// exact row type must state the same root: their primary-key suffixes are
+// compared across legs when an intersection ordering is merged. A fresh unique
+// correlation per candidate makes the same (domain, ordinal) look like two
+// different columns and silently deletes the merge ordering.
+//
+// The values-owned layout factory is the only legal way to mint this tagged
+// current root. The identity tile states the ordinary scan representation; no
+// source windows are needed because these keys address the emitted row itself.
+func orderingKeyCarrier(record *values.RecordType) (values.QuantifiedObjectValue, bool) {
+	if record == nil {
+		return nil, false
+	}
+	var tiles []values.OrdinalTileSpec
+	if width := len(record.Fields); width > 0 {
+		tiles = []values.OrdinalTileSpec{{Start: 0, Width: width, Kind: values.OrdinalTileFlat}}
+	}
+	layout, err := values.NewOrdinalLayoutForCarrierType(record, tiles, nil)
+	if err != nil {
+		return nil, false
+	}
+	return layout.Carrier(), true
 }
 
 // orderingColumnValue is ColumnValue for the ordering-key mint: the same Value
@@ -566,7 +624,36 @@ func NewValueIndexScanMatchCandidateWithFunctions(
 // matching both consult, so a CARDINALITY() query value binds to the index by
 // Value-tree equality (Java: the match candidate carries the column's Value).
 func (c *ValueIndexScanMatchCandidate) ColumnValue(i int, base values.Value) values.Value {
-	fv := values.NewFieldValue(base, c.columnNames[i], values.UnknownType)
+	if i < 0 || i >= len(c.columnNames) {
+		return nil
+	}
+	if base == nil {
+		layout := c.orderingKeyLayout()
+		if layout == nil {
+			return nil
+		}
+		var err error
+		base, err = values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier(), layout)
+		if err != nil {
+			return nil
+		}
+	}
+	qov, ok := values.AsQuantifiedObjectValue(base)
+	if !ok {
+		return nil
+	}
+	record, ok := qov.FlowedType().(*values.RecordType)
+	if !ok {
+		return nil
+	}
+	ordinal, unique := uniqueUpperFieldIndex(record, c.columnNames[i])
+	if !unique {
+		return nil
+	}
+	fv, err := values.ResolveFieldOrdinals(qov, []int{ordinal})
+	if err != nil {
+		return nil
+	}
 	if i < len(c.columnFunctions) {
 		if c.columnFunctions[i] == FunctionKindCardinality {
 			return values.NewCardinalityValue(fv)
@@ -824,6 +911,9 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 		}
 
 		colValue := c.orderingColumnValue(idx)
+		if colValue == nil {
+			break
+		}
 
 		// A plain column orders tuple-naturally; an order-wrapped column
 		// orders in its function's direction (forward scan), flipped whole —
@@ -883,6 +973,9 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 				break
 			}
 			colValue := c.bakeOrderingColumn(col)
+			if colValue == nil {
+				break
+			}
 			sortOrder := MatchedSortOrderAscending
 			if isReverse {
 				sortOrder = MatchedSortOrderDescending
@@ -974,25 +1067,32 @@ func (c *ValueIndexScanMatchCandidate) ToScanPlan(
 			comps[i] = predicates.EmptyComparisonRange()
 		}
 	}
-	indexPlan := plans.NewRecordQueryIndexPlan(
+	indexPlan, err := plans.NewRecordQueryIndexPlan(
 		c.indexName,
 		comps,
 		c.recordTypes,
 		c.flowedType,
 		reverse,
 	)
+	if err != nil {
+		return nil
+	}
 	indexPlan = stampIndexMetadata(c, indexPlan)
 
 	// Build the TranslateValueFunction for this index: translates
 	// FieldValues whose field name matches a covered index column.
 	translateFn := c.buildTranslateValueFunction()
 
-	return plans.NewRecordQueryFetchFromPartialRecordPlan(
+	fetch, err := plans.NewRecordQueryFetchFromPartialRecordPlan(
 		indexPlan,
 		translateFn,
 		c.flowedType,
 		plans.FetchIndexRecordsPrimaryKey,
 	)
+	if err != nil {
+		return nil
+	}
+	return fetch
 }
 
 // GetBaseType returns the base record type for this candidate.
@@ -1251,128 +1351,36 @@ func (c *ValueIndexScanMatchCandidate) buildTranslateValueFunction() plans.Trans
 	coveredSets := c.coveredOrdinalSets(coveredColumns)
 
 	return func(value values.Value, sourceAlias, targetAlias values.CorrelationIdentifier) (values.Value, bool) {
-		switch v := value.(type) {
-		case *values.FieldValue:
-			// Only a TOP-LEVEL bare column translates by covered-column name;
-			// decline a CHAINED accessor (v.Child is itself a FieldValue). Java's
-			// pushValueThroughFetch (ScanWithFetchMatchCandidate.java ~51-76) matches
-			// the WHOLE value tree — accessor chain included — against a provided
-			// index Value via semanticEquals, so a chained accessor (e.g. ADDR.CITY,
-			// FieldValue{CITY, Child: FieldValue{ADDR, …}}) whose LEAF name happens to
-			// collide with a covered top-level column is NOT the same indexed Value;
-			// translating it here to a flat read of the index entry's CITY column
-			// would return wrong rows/values. A BARE column reference — v.Child a
-			// source QuantifiedObjectValue, OR a baked leaf (Child nil / a resolved
-			// ordinal, the post-ordinalization shape) — is the covering case and
-			// still translates by covered name. Only a FieldValue-over-FieldValue is
-			// a genuine chain; declining it (rather than dropping v.Child) lets the
-			// recursive-decomposition path handle a deeper match or report not-pushable.
-			// ALLOWLIST (not a chained-only blocklist): a bare column is Child==nil (a
-			// baked leaf / resolved ordinal — the post-ordinalization shape) OR
-			// THIS SOURCE's QuantifiedObjectValue directly. ANY other child — a
-			// FieldValue chain, a composite like a RecordConstructorValue, or
-			// ANOTHER QUANTIFIER's object value — is not the indexed Value and must
-			// decline (else its accessor structure is silently dropped, or a
-			// foreign row's column is read as this row's).
-			//
-			// The correlation is checked, not assumed: it is the FIRST element of
-			// column identity (RFC-197 — identity is (correlation, domain,
-			// ordinal path)), and it is the ONLY element that can separate two
-			// quantifiers over the SAME TABLE. Their layouts are identical by
-			// construction, so their domain tokens are equal and the ordinal check
-			// below passes for both; a self-join's `t2.city` would be rebased onto
-			// targetAlias and read the index entry belonging to `t1` — wrong row,
-			// silently, and the pushability oracle would additionally report the
-			// foreign column "available below the fetch" to the covering rules.
-			//
-			// Java refuses the same rebase structurally: its equivalence map
-			// equates ONLY sourceAlias with the candidate's baseAlias
-			// (ScanWithFetchMatchCandidate.java:60), so a value over any other
-			// quantifier can never semanticEquals a provided index value and never
-			// reaches the rebase arm (:66-68). Java then falls through to "return
-			// the value unchanged, pushable" (:71) because a value not correlated
-			// to sourceAlias survives its final filter (:75). Go declines instead:
-			// Go's own-row columns do NOT reliably carry sourceAlias — a column of
-			// the fetched row can be correlated to the TABLE alias while
-			// sourceAlias is the filter's QUANTIFIER alias (the two-namespace
-			// defect documented at rule_push_filter_through_fetch.go:273-279), so
-			// "not sourceAlias ⇒ foreign row ⇒ pass through" would readmit exactly
-			// the wrong-rows hole that comment closed. Until the namespaces are
-			// one, the covered-column set stays the only authority and an
-			// unprovable correlation declines. A declined push is recoverable.
-			if v.Child != nil {
-				qov, isBareSource := v.Child.(*values.QuantifiedObjectValue)
-				if !isBareSource || qov.Correlation != sourceAlias {
-					return nil, false
-				}
+		if field, isField := values.AsFieldValue(value); isField {
+			// A covering translation is valid only for one top-level field of
+			// this exact source object. Fused paths and foreign correlations
+			// decline instead of falling back to the display name.
+			root, isSource := values.AsQuantifiedObjectValue(field.ChildValue())
+			if !isSource || root.Correlation() != sourceAlias || field.Path().Len() != 1 {
+				return nil, false
 			}
-			// A CHILDLESS baked reference has no correlation to check, and needs
-			// none: it reads the row currently being evaluated, and there is no way
-			// to express "the other quantifier's column" without a child to name
-			// that quantifier. So within the record-descriptor frontier the
-			// (domain, ordinal) pair below fully determines the column, and the
-			// correlation element is supplied by the rule's own quantifier context
-			// — this fetch's row is what the predicate above it is evaluated
-			// against (the shape rule_push_filter_through_fetch.go:262-267
-			// describes: after ordinalization a bare column is Child == nil with an
-			// EMPTY correlation set, which is why that rule routes every accessor
-			// through the covered-column set instead of asking correlation).
-			//
-			// The covering question is asked and answered in ORDINALS, in a
-			// stated DOMAIN (RFC-197 item 1). The index definition's column
-			// names were resolved against each record type's descriptor when
-			// this function was built; here the reference must prove its own
-			// ordinal indexes THAT layout.
-			//
-			// The fetch's inner presents its partial record in the record's
-			// LOGICAL slot layout (descriptor-shaped, non-covered fields nil —
-			// the covering-scan row-shaping in executor.go /
-			// flat_map_cursor.go). So the pushed reference's frontier IS the
-			// record descriptor, the same layout as the target, and an ordinal
-			// proven to index it reads the same slot on both sides. That
-			// proof used to be the comment you are reading; it is now the
-			// predicate OrdinalIn checks, which is why BOTH the source-relative
-			// and the frontier-pinned single-accessor forms are admitted (each
-			// states the layout it indexes) and why everything else declines:
-			//
-			//   - a FUSED multi-accessor path (composeFieldOverField collapses
-			//     `t.addr.city` into ONE node — Child=QOV, Resolved=[ADDR,CITY],
-			//     Field="CITY") has an ADDR-relative root ordinal, and its leaf
-			//     name colliding with a covered column is exactly the trap;
-			//   - a pinned reference into an assembled MERGED row (a join box's
-			//     leg window) carries a leg-relative ordinal that is not a
-			//     record-descriptor ordinal at all — the same integer meaning a
-			//     different column, the failure mode a name comparison cannot
-			//     even express;
-			//   - a LAZY reference has no ordinal, and the display name it
-			//     still carries is not a fallback.
-			//
-			// Each of those declines the push. A declined push is a filter that
-			// stays above the fetch — recoverable; a wrong ordinal is wrong
-			// rows.
-			//
-			// Preserving the ordinal for the admitted case is load-bearing in
-			// the other direction too: a pushed predicate later evaluated as a
-			// residual (a join key on an indexed column that lost the index
-			// bound to a competing IS NULL) hits the executor's
-			// no-name-fallback path and fails LOUD if it arrives lazy.
-			if ord, domain, covered := pushCoveredOrdinal(coveredSets, v); covered {
-				return values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-					values.NewQuantifiedObjectValue(targetAlias),
-					v.Field, ord, v.Typ, domain,
-				), true
+			ordinal, _, rowType, covered := pushCoveredOrdinalWithType(coveredSets, field)
+			if !covered {
+				return nil, false
 			}
-			return nil, false
-		case *values.QuantifiedObjectValue:
-			if v.Correlation == sourceAlias {
-				// The index entry provides individual covered fields, not the
-				// complete logical record. Java's pushability gate accepts a
-				// source-correlated FieldValue or record constructor, but never
-				// a whole QuantifiedObjectValue; accepting it would let SELECT
-				// * eliminate the Fetch and return a partial index row.
+			target, err := values.NewQuantifiedObjectValue(targetAlias, rowType)
+			if err != nil {
+				return nil, false
+			}
+			translated, err := values.ResolveFieldOrdinals(target, []int{ordinal})
+			if err != nil {
+				return nil, false
+			}
+			return translated, true
+		}
+		if object, isObject := values.AsQuantifiedObjectValue(value); isObject {
+			if object.Correlation() == sourceAlias {
+				// A partial index row cannot satisfy a whole-object read.
 				return nil, false
 			}
 			return value, true
+		}
+		switch value.(type) {
 		case *values.ConstantValue:
 			return value, true
 		default:

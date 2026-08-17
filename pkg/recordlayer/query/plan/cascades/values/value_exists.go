@@ -11,7 +11,7 @@ import "reflect"
 //	EXISTS (SELECT ... FROM t WHERE ...)
 //	  ↔  ExistsValue{Value: QuantifiedObjectValue{Correlation: αsubq}}
 //
-// The child is a *QuantifiedObjectValue over the subquery's
+// The child is a *quantifiedObjectValue over the subquery's
 // existential quantifier. EXISTS is true iff that quantifier's object
 // (the current row of the subplan) is non-null — i.e. the subplan
 // yielded at least one row (Java's `getChild().eval() != null`).
@@ -24,21 +24,27 @@ import "reflect"
 // Type is non-null boolean (EXISTS always has a definite truth value —
 // even on empty subqueries it returns FALSE).
 type ExistsValue struct {
-	// Value is the child Value — a *QuantifiedObjectValue over the
+	// Value is the child Value — a *quantifiedObjectValue over the
 	// existential quantifier's object. The correlation is carried by
 	// this child, NOT by ExistsValue itself.
 	Value Value
 }
 
-// NewExistsValue constructs the Value over the existential alias. The
-// signature is preserved so callers that pass an alias don't change:
-// it wraps the alias in a QuantifiedObjectValue child.
-func NewExistsValue(alias CorrelationIdentifier) *ExistsValue {
-	return &ExistsValue{Value: NewQuantifiedObjectValue(alias)}
+// NewExistsValue constructs EXISTS over an exact existential object. The
+// QOV's flowed type is explicit and constructor failures are propagated.
+func NewExistsValue(
+	alias CorrelationIdentifier,
+	flowed Type,
+) (*ExistsValue, error) {
+	qov, err := NewQuantifiedObjectValue(alias, flowed)
+	if err != nil {
+		return nil, err
+	}
+	return &ExistsValue{Value: qov}, nil
 }
 
 // NewExistsValueWithChild constructs the Value over an explicit child
-// (a *QuantifiedObjectValue). Mirrors Java's `new ExistsValue(value)`.
+// (a *quantifiedObjectValue). Mirrors Java's `new ExistsValue(value)`.
 func NewExistsValueWithChild(v Value) *ExistsValue {
 	return &ExistsValue{Value: v}
 }
@@ -82,10 +88,10 @@ func (v *ExistsValue) Evaluate(ctx any) (any, error) {
 	// Positional row (the outer row) — which would wrongly report TRUE for an empty subquery.
 	// So when the child is a quantifier, look up its existential binding DIRECTLY (never that
 	// frontier-row fallback): unbound or null ⇒ FALSE.
-	if qov, ok := v.Value.(*QuantifiedObjectValue); ok {
+	if qov, ok := v.Value.(*quantifiedObjectValue); ok {
 		switch c := ctx.(type) {
 		case CorrelationBinder: // *RowEvalContext also satisfies this
-			bound, ok := c.GetCorrelationBinding(qov.Correlation)
+			bound, ok := c.GetCorrelationBinding(qov.correlation)
 			// !isNilBinding (not bare `bound != nil`): the binder returns an `any`, so a
 			// typed-nil row (e.g. a nil map[string]any boxed into the interface) is non-nil to
 			// `!=` and would wrongly report TRUE for an empty subquery.

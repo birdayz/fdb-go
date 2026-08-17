@@ -173,7 +173,8 @@ func TestScalarFunctionCatalogResultStrategies(t *testing.T) {
 	intValue := &ConstantValue{Value: int64(3), Typ: NotNullInt}
 	doubleValue := &ConstantValue{Value: float64(1.5), Typ: NotNullDouble}
 	boolValue := &ConstantValue{Value: true, Typ: NotNullBoolean}
-	unknownValue := &FieldValue{Field: "mystery", Typ: UnknownType}
+	unknownValue := &fieldValue{Field: "mystery", Typ: UnknownType}
+	nullValue := NewNullValue(UnknownType)
 
 	tests := []struct {
 		name string
@@ -188,6 +189,9 @@ func TestScalarFunctionCatalogResultStrategies(t *testing.T) {
 		{name: "ABS", args: []Value{intValue}, want: NotNullInt},
 		{name: "MOD", args: []Value{intValue, doubleValue}, want: NullableDouble},
 		{name: "COALESCE", args: []Value{unknownValue, doubleValue}, want: UnknownType},
+		{name: "COALESCE", args: []Value{nullValue, nullValue}, want: NullType},
+		{name: "GREATEST", args: []Value{nullValue}, want: NullType},
+		{name: "LEAST", args: []Value{nullValue}, want: NullType},
 	}
 	for _, test := range tests {
 		test := test

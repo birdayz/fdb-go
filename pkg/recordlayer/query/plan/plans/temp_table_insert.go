@@ -23,30 +23,27 @@ func NewRecordQueryTempTableInsertPlan(
 	inner RecordQueryPlan,
 	alias values.CorrelationIdentifier,
 	owning bool,
-) *RecordQueryTempTableInsertPlan {
-	return &RecordQueryTempTableInsertPlan{
-		innerQ:         QuantifierOverPlan(inner),
-		tempTableAlias: alias,
-		owning:         owning,
-	}
+) (*RecordQueryTempTableInsertPlan, error) {
+	return NewRecordQueryTempTableInsertPlanFromQuantifier(QuantifierOverPlan(inner), alias, owning)
 }
 
 // NewRecordQueryTempTableInsertPlanFromQuantifier builds an insert whose child is
-// a LIVE memo quantifier (the implementation rule passes a ForEachQuantifier over
-// the freshly-memoized winner) instead of a snapshot over a single plan. This
-// makes the plan its own cascades expression carrying its child edge directly:
-// the memo holds it without a physical wrapper, and GetInner / GetQuantifiers all
-// resolve through the one live edge (RFC-184 W2).
+// a LIVE memo quantifier.
 func NewRecordQueryTempTableInsertPlanFromQuantifier(
 	innerQ expressions.Quantifier,
 	alias values.CorrelationIdentifier,
 	owning bool,
-) *RecordQueryTempTableInsertPlan {
+) (*RecordQueryTempTableInsertPlan, error) {
+	base, err := newPlanExprBaseForQuantifier("RecordQueryTempTableInsertPlan", innerQ)
+	if err != nil {
+		return nil, err
+	}
 	return &RecordQueryTempTableInsertPlan{
+		PlanExprBase:   base,
 		innerQ:         innerQ,
 		tempTableAlias: alias,
 		owning:         owning,
-	}
+	}, nil
 }
 
 func (p *RecordQueryTempTableInsertPlan) GetInner() RecordQueryPlan {
@@ -68,7 +65,9 @@ func (p *RecordQueryTempTableInsertPlan) GetTempTableAlias() values.CorrelationI
 
 func (p *RecordQueryTempTableInsertPlan) IsOwning() bool { return p.owning }
 
-func (p *RecordQueryTempTableInsertPlan) GetResultType() values.Type { return values.UnknownType }
+func (p *RecordQueryTempTableInsertPlan) GetResultType() values.Type {
+	return p.GetResultValue().Type()
+}
 
 func (p *RecordQueryTempTableInsertPlan) GetChildren() []RecordQueryPlan {
 	inner := p.GetInner()
@@ -115,13 +114,18 @@ func (p *RecordQueryTempTableInsertPlan) EqualsWithoutChildren(other expressions
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryTempTableInsertPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryTempTableInsertPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryTempTableInsertPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
 	cp.innerQ = qs[0]
-	return &cp
+	base, err := newPlanExprBaseForQuantifier("RecordQueryTempTableInsertPlan", qs[0])
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = base
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -134,7 +138,7 @@ func (p *RecordQueryTempTableInsertPlan) WithChildren(qs []expressions.Quantifie
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryTempTableInsertPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

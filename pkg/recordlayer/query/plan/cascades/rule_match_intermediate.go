@@ -1294,7 +1294,7 @@ func bindOrientedComparison(
 		// Don't push a type-incompatible comparison (e.g. a BIGINT column vs a
 		// string literal) into a scan range — it must surface as a residual so
 		// the executor raises the type error, not silently produce an empty range.
-		if fv, ok := orient.column.(*values.FieldValue); ok {
+		if fv, ok := values.AsFieldValue(orient.column); ok {
 			if !comparisonTypesCompatible(fv, &orient.comparison) {
 				continue
 			}
@@ -1338,7 +1338,7 @@ func comparandIndependentOfSource(comparand values.Value, sourceAlias values.Cor
 	// FieldValue (a source column with its correlation elided) is NOT independent.
 	readsColumn := false
 	values.WalkValue(comparand, func(node values.Value) bool {
-		if _, ok := node.(*values.FieldValue); ok {
+		if _, ok := values.AsFieldValue(node); ok {
 			readsColumn = true
 			return false
 		}
@@ -1372,8 +1372,8 @@ func valuesMatchColumn(queryValue, placeholderValue values.Value) bool {
 	// QOV belongs to the matched source; the candidate QOV is the placeholder's
 	// own flowed element. Both-QOV is therefore the scalar-element analogue of
 	// equal accessor paths. Never broaden one-QOV/one-FieldValue.
-	if _, queryIsObject := queryValue.(*values.QuantifiedObjectValue); queryIsObject {
-		if _, placeholderIsObject := placeholderValue.(*values.QuantifiedObjectValue); !placeholderIsObject {
+	if _, queryIsObject := values.AsQuantifiedObjectValue(queryValue); queryIsObject {
+		if _, placeholderIsObject := values.AsQuantifiedObjectValue(placeholderValue); !placeholderIsObject {
 			return false
 		}
 		// The whole-object equivalence is only valid for concrete primitive

@@ -9,6 +9,30 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustPropertiesOrderConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct plan-properties-order fixture: " + err.Error())
+	}
+	return value
+}
+
+func propertiesOrderScan(recordType string) *plans.RecordQueryScanPlan {
+	rowType := values.NewRecordType("PropertiesRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	return mustPropertiesOrderConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordType}, rowType, false))
+}
+
+func propertiesOrderAggregation(recordType string) *plans.RecordQueryStreamingAggregationPlan {
+	child := propertiesOrderScan(recordType)
+	return mustPropertiesOrderConstruct(plans.NewRecordQueryStreamingAggregationPlan(
+		child, nil, []expressions.AggregateSpec{{
+			Function: expressions.AggSum,
+			Operand:  &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+		}}))
+}
+
 // TestPlanPropertiesMap_InsertionOrder verifies that Expressions()
 // returns wrappers in the exact order they were Add()ed. Without the
 // insertion-order tracking (the `order` field), Go map iteration
@@ -23,11 +47,7 @@ func TestPlanPropertiesMap_InsertionOrder(t *testing.T) {
 		pm := NewPlanPropertiesMap()
 		wrappers := make([]physicalPlanExpression, n)
 		for i := 0; i < n; i++ {
-			scan := plans.NewRecordQueryScanPlan(
-				[]string{fmt.Sprintf("Type%d", i)},
-				values.UnknownType,
-				false,
-			)
+			scan := propertiesOrderScan(fmt.Sprintf("Type%d", i))
 			wrappers[i] = scan
 			pm.Add(wrappers[i])
 		}
@@ -51,7 +71,7 @@ func TestPlanPropertiesMap_InsertionOrder(t *testing.T) {
 func TestPlanPropertiesMap_DuplicateAdd(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := propertiesOrderScan("T")
 	w := scan
 
 	pm := NewPlanPropertiesMap()
@@ -81,11 +101,11 @@ func TestToPartitionsFromMap_DeterministicOrder(t *testing.T) {
 	//   - RecordQueryScanPlan  → distinct=true,  stored=true
 	//   - RecordQueryStreamingAggregationPlan → distinct=false, stored=false
 	// Interleave them so insertion order matters.
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
-	aggD := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
-	aggE := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
+	scanA := propertiesOrderScan("A")
+	scanB := propertiesOrderScan("B")
+	scanC := propertiesOrderScan("C")
+	aggD := propertiesOrderAggregation("D")
+	aggE := propertiesOrderAggregation("E")
 
 	wA := scanA
 	wB := scanB

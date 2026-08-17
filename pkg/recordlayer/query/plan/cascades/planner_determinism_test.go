@@ -8,6 +8,29 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func mustDeterminismConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner-determinism fixture: " + err.Error())
+	}
+	return value
+}
+
+func determinismRowType() values.Type {
+	return values.NewRecordType("DeterminismRow", false, []values.Field{
+		{Name: "A", FieldType: values.NotNullLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NotNullLong, Ordinal: 1},
+	})
+}
+
+func determinismRoot(q expressions.Quantifier) values.Value {
+	flowedType := mustDeterminismConstruct(q.GetFlowedObjectType())
+	return mustDeterminismConstruct(values.NewQuantifiedObjectValue(q.GetAlias(), flowedType))
+}
+
+func determinismField(root values.Value, ordinal int) values.Value {
+	return mustDeterminismConstruct(values.ResolveFieldOrdinals(root, []int{ordinal}))
+}
+
 // TestPlanDeterminism_ExtractedPlanStable verifies that Plan() produces
 // the exact same physical plan explain string across 20 independent
 // runs on the same logical tree with the same rules and index context.
@@ -19,29 +42,27 @@ func TestPlanDeterminism_ExtractedPlanStable(t *testing.T) {
 	t.Parallel()
 
 	buildTree := func() (*expressions.Reference, PlanContext) {
-		scan := expressions.NewFullUnorderedScanExpression(
-			[]string{"T"}, values.UnknownType)
+		scan := mustDeterminismConstruct(expressions.NewFullUnorderedScanExpression(
+			[]string{"T"}, determinismRowType()))
 		scanRef := expressions.InitialOf(scan)
 		scanQ := expressions.ForEachQuantifier(scanRef)
+		scanRoot := determinismRoot(scanQ)
 
-		filter := expressions.NewLogicalFilterExpression(
+		filter := mustDeterminismConstruct(expressions.NewLogicalFilterExpression(
 			[]predicates.QueryPredicate{
-				&predicates.ComparisonPredicate{
-					Operand: &values.FieldValue{Field: "A", Typ: values.UnknownType},
-					Comparison: predicates.Comparison{
-						Type:    predicates.ComparisonEquals,
-						Operand: &values.ConstantValue{Value: int64(1)},
-					},
-				},
-			}, scanQ)
+				predicates.NewComparisonPredicate(
+					determinismField(scanRoot, 0),
+					predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1))),
+			}, scanQ))
 		filterRef := expressions.InitialOf(filter)
 		filterQ := expressions.ForEachQuantifier(filterRef)
+		filterRoot := determinismRoot(filterQ)
 
-		proj := expressions.NewLogicalProjectionExpression(
+		proj := mustDeterminismConstruct(expressions.NewLogicalProjectionExpression(
 			[]values.Value{
-				&values.FieldValue{Field: "A", Typ: values.UnknownType},
-				&values.FieldValue{Field: "B", Typ: values.UnknownType},
-			}, filterQ)
+				determinismField(filterRoot, 0),
+				determinismField(filterRoot, 1),
+			}, filterQ))
 		rootRef := expressions.InitialOf(proj)
 
 		ctx := NewPlanContextFromIndexDefs([]IndexDef{
@@ -98,6 +119,11 @@ func (d *stubIndexDef) IndexRecordTypes() []string       { return d.recordTypes 
 func (d *stubIndexDef) IndexIsUnique() bool              { return d.unique }
 func (d *stubIndexDef) IndexPrimaryKeyColumns() []string { return nil }
 func (d *stubIndexDef) IndexCreatesDuplicates() bool     { return false }
+func (d *stubIndexDef) IndexRowType() values.Type        { return determinismRowType() }
 func (d *stubIndexDef) IndexKeyComponentTypes() []values.Type {
-	return syntheticIndexKeyTypes(len(d.columns))
+	result := make([]values.Type, len(d.columns))
+	for i := range result {
+		result[i] = values.NotNullLong
+	}
+	return result
 }

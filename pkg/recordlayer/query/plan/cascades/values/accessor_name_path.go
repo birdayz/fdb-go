@@ -47,7 +47,7 @@ func AccessorNamePath(v Value) ([]string, bool) {
 	var rev []string // collected leaf→root, reversed to root→leaf before return
 	cur := v
 	for {
-		fv, ok := cur.(*FieldValue)
+		fv, ok := cur.(*fieldValue)
 		if !ok {
 			// Reached a non-FieldValue node: the root (QuantifiedObjectValue and
 			// friends — excluded) or nil. The accessor path is what we collected.
@@ -152,57 +152,120 @@ func ColumnNamePathsEqual(a, b Value) bool {
 //   - a field rooted at its owning SELECT quantifier and the same source-local
 //     candidate field.
 //
-// The second bridge requires exactly one QOV-rooted side and compares the
-// complete accessor name path. When both values carry baked paths, their
-// ordinal paths must also agree; this prevents a QOV-rooted NAME#1 from
-// collapsing with source-local NAME#2. A baked value may still bridge to a
-// lazy value with the same complete name path. Callers must scope a request to
-// its owning quantifier before using this bridge.
+// The second bridge normally requires exactly one QOV-rooted side and compares
+// the complete accessor name path. There is one deliberately narrower rooted
+// exception: a values-owned tagged-current root may bridge to one ordinary
+// named root. That is the physical-provider -> logical-request phase boundary;
+// two named roots remain ambiguous (self-join hazard), and two independently
+// minted current roots name different owner phases. A shared current handle is
+// accepted only for an otherwise structurally identical value.
+//
+// When both values carry baked paths, their ordinal paths must also agree; this
+// prevents a QOV-rooted NAME#1 from collapsing with source-local NAME#2. A
+// baked value may still bridge to a lazy value with the same complete name
+// path. Callers must scope a request to its owning quantifier before using this
+// bridge.
 func CanBridgeOrderingValueRoots(left, right Value) bool {
 	if CanBridgeOrderingFieldValues(left, right) {
 		return true
 	}
-	leftQOV, leftOK := orderingValueHasQOVRoot(left)
-	rightQOV, rightOK := orderingValueHasQOVRoot(right)
-	if !leftOK || !rightOK || leftQOV == rightQOV ||
+	leftRoot, leftOK := orderingValueQOVRoot(left)
+	rightRoot, rightOK := orderingValueQOVRoot(right)
+	if !leftOK || !rightOK || !orderingValueTypesEqual(left, right) ||
 		!ColumnNamePathsEqual(left, right) {
 		return false
 	}
+
+	leftRooted := leftRoot != nil
+	rightRooted := rightRoot != nil
+	switch {
+	case leftRooted != rightRooted:
+		// Existing qualified-to-source-local bridge. A named value whose text
+		// copies the reserved current spelling is not a current owner handle and
+		// cannot acquire current's phase privilege through this path.
+		root := leftRoot
+		if root == nil {
+			root = rightRoot
+		}
+		if isNamedCurrentForgery(root) {
+			return false
+		}
+	case leftRooted && rightRooted:
+		leftCurrent := leftRoot.correlation.isCurrent()
+		rightCurrent := rightRoot.correlation.isCurrent()
+		if leftCurrent == rightCurrent {
+			// Two ordinary roots are ambiguous. Two current roots are the same
+			// phase only when they share the exact owner-minted handle.
+			return leftCurrent && leftRoot == rightRoot &&
+				ValuesStructurallyEqual(left, right)
+		}
+		namedRoot := leftRoot
+		if leftCurrent {
+			namedRoot = rightRoot
+		}
+		if isNamedCurrentForgery(namedRoot) {
+			return false
+		}
+	default:
+		return false
+	}
+
 	leftResolved := orderingValueResolvedPath(left)
 	rightResolved := orderingValueResolvedPath(right)
 	return leftResolved == nil || rightResolved == nil ||
 		leftResolved.Equals(rightResolved)
 }
 
-func orderingValueResolvedPath(value Value) *FieldPath {
+func orderingValueTypesEqual(left, right Value) bool {
+	leftType, rightType := left.Type(), right.Type()
+	return leftType != nil && rightType != nil && leftType.Equals(rightType)
+}
+
+// isNamedCurrentForgery reports whether root is an ORDINARY named correlation
+// whose text copies the reserved current spelling. Such a root must not acquire
+// current's phase privilege through the bridge above.
+//
+// The comparison FOLDS CASE. The reserved handle is spelled `_current` in
+// lowercase, but a user correlation reaches here through the SQL path, which
+// upper-folds every alias — so `FROM t AS _current` arrives as `_CURRENT` and an
+// exact-match guard waves it straight through, which is precisely the input the
+// guard exists to catch. Nothing else distinguishes the two: correlationKind is
+// private and cannot be forged, so the KIND check below is what proves this is
+// not the real handle, and this one is what recognises the impostor.
+func isNamedCurrentForgery(root *quantifiedObjectValue) bool {
+	return root != nil && !root.correlation.isCurrent() &&
+		strings.EqualFold(root.correlation.Name(), CurrentCorrelation().Name())
+}
+
+func orderingValueResolvedPath(value Value) *fieldPath {
 	if cardinality, ok := value.(*CardinalityValue); ok {
 		value = cardinality.Child
 	}
-	field, ok := value.(*FieldValue)
+	field, ok := value.(*fieldValue)
 	if !ok {
 		return nil
 	}
 	return field.Resolved
 }
 
-func orderingValueHasQOVRoot(value Value) (bool, bool) {
+func orderingValueQOVRoot(value Value) (*quantifiedObjectValue, bool) {
 	if cardinality, ok := value.(*CardinalityValue); ok {
 		value = cardinality.Child
 	}
 	for {
-		field, ok := value.(*FieldValue)
+		field, ok := value.(*fieldValue)
 		if !ok {
-			return false, false
+			return nil, false
 		}
 		switch child := field.Child.(type) {
 		case nil:
-			return false, true
-		case *QuantifiedObjectValue:
-			return child != nil, child != nil
-		case *FieldValue:
+			return nil, true
+		case *quantifiedObjectValue:
+			return child, child != nil
+		case *fieldValue:
 			value = child
 		default:
-			return false, false
+			return nil, false
 		}
 	}
 }

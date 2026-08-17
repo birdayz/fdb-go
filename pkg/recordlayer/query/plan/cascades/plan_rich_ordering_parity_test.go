@@ -26,6 +26,71 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRichOrderingConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct rich-ordering fixture: " + err.Error())
+	}
+	return value
+}
+
+func richOrderingFieldType(name string) values.Type {
+	switch name {
+	case "STATUS", "EMAIL", "TAG":
+		return values.NullableString
+	default:
+		return values.NullableLong
+	}
+}
+
+func richOrderingRowType(groups ...[]string) values.Type {
+	seen := map[string]struct{}{}
+	fields := make([]values.Field, 0)
+	for _, names := range groups {
+		for _, name := range names {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			fields = append(fields, values.Field{
+				Name: name, FieldType: richOrderingFieldType(name), Ordinal: len(fields),
+			})
+		}
+	}
+	if len(fields) == 0 {
+		fields = append(fields, values.Field{Name: "VALUE", FieldType: values.NullableLong, Ordinal: 0})
+	}
+	return values.NewRecordType("RichOrderingRow", false, fields)
+}
+
+func richOrderingKeyTypes(names []string) []values.Type {
+	types := make([]values.Type, len(names))
+	for i, name := range names {
+		types[i] = richOrderingFieldType(name)
+	}
+	return types
+}
+
+func richOrderingFields(names ...string) []values.Value {
+	rowType := richOrderingRowType(names)
+	root := mustRichOrderingConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("rich_ordering"), rowType))
+	fields := make([]values.Value, len(names))
+	for i := range names {
+		fields[i] = mustRichOrderingConstruct(values.ResolveOrdinalSeedField(root, i))
+	}
+	return fields
+}
+
+func richEqualityRange(t *testing.T, literal any) *predicates.ComparisonRange {
+	t.Helper()
+	cmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, literal)
+	res := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !res.Ok {
+		t.Fatal("failed to build equality comparison range")
+	}
+	return res.Range
+}
+
 // assertRichOrderingsEqual compares two rich orderings by key sequence,
 // per-key bindings, and distinctness — the whole observable surface.
 func assertRichOrderingsEqual(t *testing.T, want, got *properties.RichOrdering) {
@@ -120,7 +185,7 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			name:          "eq-prefix forward with PK suffix",
 			columnNames:   []string{"STATUS"},
 			pkColumnNames: []string{"ID"},
-			ranges:        []*predicates.ComparisonRange{equalityRange(t, "active")},
+			ranges:        []*predicates.ComparisonRange{richEqualityRange(t, "active")},
 			wantFields:    []string{"STATUS", "ID"},
 			wantFixed:     []bool{true, false},
 		},
@@ -129,7 +194,7 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			columnNames:   []string{"STATUS"},
 			pkColumnNames: []string{"ID"},
 			reverse:       true,
-			ranges:        []*predicates.ComparisonRange{equalityRange(t, "active")},
+			ranges:        []*predicates.ComparisonRange{richEqualityRange(t, "active")},
 			wantFields:    []string{"STATUS", "ID"},
 			wantFixed:     []bool{true, false},
 		},
@@ -137,7 +202,7 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			name:          "trimmed PK suffix",
 			columnNames:   []string{"B"},
 			pkColumnNames: []string{"A", "B", "C"},
-			ranges:        []*predicates.ComparisonRange{equalityRange(t, int64(20))},
+			ranges:        []*predicates.ComparisonRange{richEqualityRange(t, int64(20))},
 			wantFields:    []string{"B", "A", "C"},
 			wantFixed:     []bool{true, false, false},
 		},
@@ -153,7 +218,7 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			name:          "multi-column index, partial equality prefix",
 			columnNames:   []string{"A", "B", "C"},
 			pkColumnNames: []string{"ID"},
-			ranges:        []*predicates.ComparisonRange{equalityRange(t, int64(1))},
+			ranges:        []*predicates.ComparisonRange{richEqualityRange(t, int64(1))},
 			wantFields:    []string{"A", "B", "C", "ID"},
 			wantFixed:     []bool{true, false, false, false},
 		},
@@ -161,7 +226,7 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			name:          "fan-out index (empty PK columns)",
 			columnNames:   []string{"TAG"},
 			pkColumnNames: nil,
-			ranges:        []*predicates.ComparisonRange{equalityRange(t, "x")},
+			ranges:        []*predicates.ComparisonRange{richEqualityRange(t, "x")},
 			wantFields:    []string{"TAG"},
 			wantFixed:     []bool{true},
 		},
@@ -175,9 +240,9 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			columnNames:   []string{"A", "B", "C"},
 			pkColumnNames: []string{"ID"},
 			ranges: []*predicates.ComparisonRange{
-				equalityRange(t, int64(1)),
+				richEqualityRange(t, int64(1)),
 				nonEqualityRange(t, int64(3)),
-				equalityRange(t, int64(9)),
+				richEqualityRange(t, int64(9)),
 			},
 			wantFields: []string{"A", "B", "C", "ID"},
 			wantFixed:  []bool{true, false, false, false},
@@ -188,11 +253,12 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			idx := plans.NewRecordQueryIndexPlan(
-				"IDX", tc.ranges, []string{"T"}, values.UnknownType, tc.reverse,
-			).WithKeyComponentTypes(syntheticIndexKeyTypes(len(tc.columnNames))).
+			idx := mustRichOrderingConstruct(plans.NewRecordQueryIndexPlan(
+				"IDX", tc.ranges, []string{"T"},
+				richOrderingRowType(tc.columnNames, tc.pkColumnNames), tc.reverse,
+			)).WithKeyComponentTypes(richOrderingKeyTypes(tc.columnNames)).
 				WithIndexMetadata(tc.columnNames, tc.pkColumnNames, tc.unique).
-				WithPrimaryKeyComponentTypes(syntheticIndexKeyTypes(len(tc.pkColumnNames)))
+				WithPrimaryKeyComponentTypes(richOrderingKeyTypes(tc.pkColumnNames))
 
 			// The index scan is its own cascades expression now (RFC-184 W2): the
 			// memo asks the PLAN's HintRichOrdering directly (no physicalIndexScanWrapper
@@ -215,8 +281,8 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 			}
 			gbm := got.GetBindingMap()
 			for i, field := range tc.wantFields {
-				fv, ok := gkeys[i].(*values.FieldValue)
-				if !ok || fv.Field != field {
+				fv, ok := values.AsFieldValue(gkeys[i])
+				if !ok || fv.DisplayName() != field {
 					t.Fatalf("key %d = %s, want field %q", i, values.ExplainValue(gkeys[i]), field)
 				}
 				bindings := bindingsFor(gbm, gkeys[i])
@@ -241,10 +307,7 @@ func TestRichOrderingParity_IndexScan(t *testing.T) {
 func TestRichOrderingParity_PrimaryScan(t *testing.T) {
 	t.Parallel()
 
-	pk := []values.Value{
-		&values.FieldValue{Field: "A", Typ: values.UnknownType},
-		&values.FieldValue{Field: "B", Typ: values.UnknownType},
-	}
+	pk := richOrderingFields("A", "B")
 
 	cases := []struct {
 		name    string
@@ -255,12 +318,12 @@ func TestRichOrderingParity_PrimaryScan(t *testing.T) {
 		{name: "reverse, no comparisons", reverse: true},
 		{
 			name:   "forward, eq-bound PK prefix",
-			ranges: []*predicates.ComparisonRange{equalityRange(t, int64(1))},
+			ranges: []*predicates.ComparisonRange{richEqualityRange(t, int64(1))},
 		},
 		{
 			name:    "reverse, eq-bound PK prefix",
 			reverse: true,
-			ranges:  []*predicates.ComparisonRange{equalityRange(t, int64(1))},
+			ranges:  []*predicates.ComparisonRange{richEqualityRange(t, int64(1))},
 		},
 	}
 
@@ -268,9 +331,10 @@ func TestRichOrderingParity_PrimaryScan(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			scan := plans.NewRecordQueryScanPlan(
-				[]string{"T"}, values.UnknownType, tc.reverse,
-			).WithScanComparisons(tc.ranges).WithPrimaryKey(pk)
+			scan := mustRichOrderingConstruct(plans.NewRecordQueryScanPlan(
+				[]string{"T"}, richOrderingRowType([]string{"A", "B"}), tc.reverse,
+			)).WithScanComparisons(tc.ranges).WithPrimaryKey(pk).
+				WithKeyComponentTypes(richOrderingKeyTypes([]string{"A", "B"}))
 
 			w := scan
 			assertRichOrderingsEqual(t, w.HintRichOrdering(), scan.HintRichOrdering())
@@ -282,7 +346,8 @@ func TestRichOrderingParity_PrimaryScan(t *testing.T) {
 func TestRichOrderingParity_PrimaryScanWithoutPK(t *testing.T) {
 	t.Parallel()
 
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := mustRichOrderingConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, richOrderingRowType(), false))
 	w := scan
 
 	assertRichOrderingsEqual(t, w.HintRichOrdering(), scan.HintRichOrdering())
@@ -298,6 +363,11 @@ func TestRichOrderingParity_PrimaryScanWithoutPK(t *testing.T) {
 // caller's synthesize-from-HintOrdering fallback.
 func TestRichOrderingParity_VectorIndexScan(t *testing.T) {
 	t.Parallel()
+	vectorRowType := values.NewRecordType("Docs", false, []values.Field{
+		{Name: "TENANT", FieldType: values.NullableString, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "EMBEDDING", FieldType: values.NewArrayType(false, values.NotNullDouble), Ordinal: 2},
+	})
 
 	cases := []struct {
 		name          string
@@ -306,7 +376,7 @@ func TestRichOrderingParity_VectorIndexScan(t *testing.T) {
 		{name: "unprefixed K-NN"},
 		{
 			name:          "partition-prefixed K-NN",
-			prefixCompare: []*predicates.ComparisonRange{equalityRange(t, "tenant-a")},
+			prefixCompare: []*predicates.ComparisonRange{richEqualityRange(t, "tenant-a")},
 		},
 	}
 
@@ -314,13 +384,19 @@ func TestRichOrderingParity_VectorIndexScan(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			vec := plans.NewRecordQueryVectorIndexPlan(
+			vec := mustRichOrderingConstruct(plans.NewRecordQueryVectorIndexPlan(
 				"VIDX", tc.prefixCompare,
 				values.LiteralValue([]float64{1, 2, 3}),
 				values.LiteralValue(10),
 				predicates.ComparisonDistanceRankLessThanOrEq,
-				nil, nil, []string{"DOCS"}, values.UnknownType,
-			)
+				nil, nil, []string{"DOCS"}, vectorRowType,
+			)).WithPartitionKeyComponentTypes(richOrderingKeyTypes(
+				func() []string {
+					if len(tc.prefixCompare) == 0 {
+						return nil
+					}
+					return []string{"STATUS"}
+				}()))
 			// RFC-184 W2: the vector scan is its own bare plan expression (no
 			// physicalVectorIndexScanWrapper); the memo member IS the plan, so its
 			// HintRichOrdering is the plan's directly.
@@ -355,14 +431,14 @@ func TestRichOrderingParity_FetchFromPartialRecord(t *testing.T) {
 			name:          "covering scan, eq prefix, PK suffix",
 			columnNames:   []string{"STATUS"},
 			pkColumnNames: []string{"ID"},
-			ranges:        []*predicates.ComparisonRange{equalityRange(t, "active")},
+			ranges:        []*predicates.ComparisonRange{richEqualityRange(t, "active")},
 		},
 		{
 			name:          "reverse covering scan",
 			columnNames:   []string{"STATUS"},
 			pkColumnNames: []string{"ID"},
 			reverse:       true,
-			ranges:        []*predicates.ComparisonRange{equalityRange(t, "active")},
+			ranges:        []*predicates.ComparisonRange{richEqualityRange(t, "active")},
 		},
 		{
 			name:          "unique covering scan, no comparisons",
@@ -374,7 +450,7 @@ func TestRichOrderingParity_FetchFromPartialRecord(t *testing.T) {
 			name:          "multi-column index, partial eq prefix",
 			columnNames:   []string{"A", "B", "C"},
 			pkColumnNames: []string{"ID"},
-			ranges:        []*predicates.ComparisonRange{equalityRange(t, int64(1))},
+			ranges:        []*predicates.ComparisonRange{richEqualityRange(t, int64(1))},
 		},
 	}
 
@@ -382,16 +458,19 @@ func TestRichOrderingParity_FetchFromPartialRecord(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			idx := plans.NewRecordQueryIndexPlan(
-				"IDX", tc.ranges, []string{"T"}, values.UnknownType, tc.reverse,
-			).WithIndexMetadata(tc.columnNames, tc.pkColumnNames, tc.unique)
+			rowType := richOrderingRowType(tc.columnNames, tc.pkColumnNames)
+			idx := mustRichOrderingConstruct(plans.NewRecordQueryIndexPlan(
+				"IDX", tc.ranges, []string{"T"}, rowType, tc.reverse,
+			)).WithKeyComponentTypes(richOrderingKeyTypes(tc.columnNames)).
+				WithIndexMetadata(tc.columnNames, tc.pkColumnNames, tc.unique).
+				WithPrimaryKeyComponentTypes(richOrderingKeyTypes(tc.pkColumnNames))
 
 			// The fetch's child edge: QuantifierOverPlan mints a fresh singleton
 			// holding the index PLAN, which is its own cascades expression now
 			// (RFC-184 W2 — no physicalIndexScanWrapper).
-			fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
-				idx, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
-			)
+			fetch := mustRichOrderingConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+				idx, nil, rowType, plans.FetchIndexRecordsPrimaryKey,
+			))
 
 			// The fetch must delegate the source index scan's rich ordering — a fetch
 			// preserves it. Non-vacuous: the index carries a real ordering from its
@@ -407,15 +486,17 @@ func TestRichOrderingParity_FetchOverUnorderedSource(t *testing.T) {
 	t.Parallel()
 
 	// A PK-less primary scan models no ordering.
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	fetch := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		scan, nil, values.UnknownType, plans.FetchIndexRecordsPrimaryKey,
-	)
-	w := plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
+	rowType := richOrderingRowType()
+	scan := mustRichOrderingConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, rowType, false))
+	fetch := mustRichOrderingConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		scan, nil, rowType, plans.FetchIndexRecordsPrimaryKey,
+	))
+	w := mustRichOrderingConstruct(plans.NewRecordQueryFetchFromPartialRecordPlanFromQuantifier(
 		expressions.NewPhysicalQuantifier(
 			expressions.FinalOfAtStage(scan, expressions.StageCanonical)),
 		fetch.GetTranslateValueFunction(), fetch.GetResultType(), fetch.GetFetchIndexRecords(),
-	)
+	))
 
 	assertRichOrderingsEqual(t, w.HintRichOrdering(), fetch.HintRichOrdering())
 	if len(fetch.HintRichOrdering().GetKeys()) != 0 {

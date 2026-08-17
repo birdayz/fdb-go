@@ -113,10 +113,10 @@ func TestProtoFieldToRowValue_UUID(t *testing.T) {
 
 	// STRUCT descent: a fused path rec.u lands on a UUID leaf via the
 	// proto-message descent arm → [16]byte.
-	fused := &FieldValue{
+	fused := &fieldValue{
 		Field: "U",
-		Resolved: &FieldPath{
-			Accessors:      []ResolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "rec", Ordinal: -1}, {Field: "u", Ordinal: -1}},
+		Resolved: &fieldPath{
+			Accessors:      []resolvedAccessor{{Field: "ROOT", Ordinal: 0}, {Field: "rec", Ordinal: -1}, {Field: "u", Ordinal: -1}},
 			FrontierPinned: true,
 		},
 	}

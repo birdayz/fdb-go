@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"errors"
 	"fmt"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -33,9 +34,335 @@ import (
 // to answer differently (a set-op overrides ChildrenAsSet, a correlating
 // operator overrides CanCorrelate and GetCorrelatedToWithoutChildren).
 //
-// Deliberately a zero-size struct: embedding it must not change any plan's
-// memory layout, its construction, or its hash.
-type PlanExprBase struct{}
+// resultValue is populated by the owning plan's fallible constructor. Keeping
+// it here gives plans that merely pass through a child one stable result
+// identity without forcing every such plan to repeat a field. A zero value is
+// intentionally invalid: struct literals that bypass construction no longer
+// receive an untyped, freshly-minted compatibility QOV.
+type PlanExprBase struct {
+	resultValue               values.Value
+	ordinalPhysicalProperties OrdinalPhysicalProperties
+}
+
+// newPlanExprBaseWithProperties is the one admission point for a concrete
+// result carrier and its physical-property view. Keeping the result Value and
+// property in one returned base prevents a constructor from publishing a
+// layout through ProvidedOutputLayout without publishing the same layout to
+// physical-property selection (or vice versa).
+func newPlanExprBaseWithProperties(
+	owner string,
+	resultValue values.Value,
+	required []OrdinalLayoutRequirement,
+	provided values.OrdinalLayout,
+) (PlanExprBase, error) {
+	if resultValue == nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: value is nil", owner)
+	}
+	resultType, err := values.ExactTypeForValue(resultValue)
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
+	}
+	if err := values.ValidateOrdinalLayoutAdmission(provided); err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s ordinal physical properties: %w", owner, err)
+	}
+	// This is the one place holding BOTH halves of a row's description, so it is
+	// where they get joined. The layout states the row's physical shape; the
+	// result value states which source owns which slots. A layout that publishes
+	// a merged box as ONE window has no way to know the second, and a carrier
+	// without it flows a row whose qualified reads resolve into the FIRST leg —
+	// silently, because the type is the right width either way.
+	provided = values.LayoutWithSeedLegs(provided, resultValue)
+	carrier := provided.Carrier()
+	// Shared graphs on both sides: this compares two rows and keeps neither.
+	if !values.SharedExactType(resultType).Equals(values.SharedFlowedType(carrier)) {
+		return PlanExprBase{}, fmt.Errorf(
+			"%s ordinal physical properties: carrier type %s disagrees with result type %s",
+			owner, carrier.FlowedType(), resultType.Type())
+	}
+	properties, err := NewOrdinalPhysicalProperties(required, nil, provided)
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s ordinal physical properties: %w", owner, err)
+	}
+	return PlanExprBase{
+		resultValue:               resultValue,
+		ordinalPhysicalProperties: properties,
+	}, nil
+}
+
+// newPlanExprBaseWithProvidedLayout publishes only an output layout. This is
+// the honest default for leaves and output-producing operators whose retained
+// Value closure has not yet been represented as an evaluation program.
+func newPlanExprBaseWithProvidedLayout(
+	owner string,
+	resultValue values.Value,
+	provided values.OrdinalLayout,
+) (PlanExprBase, error) {
+	return newPlanExprBaseWithProperties(owner, resultValue, nil, provided)
+}
+
+// newPassThroughPlanExprBase publishes the exact selected child layout as both
+// the one required input and the provided output. It is intentionally usable
+// only after a concrete child layout has been obtained; callers with a dynamic
+// or unresolved child must not fabricate an input requirement from its type.
+func newPassThroughPlanExprBase(
+	owner string,
+	resultValue values.Value,
+	layout values.OrdinalLayout,
+) (PlanExprBase, error) {
+	requirement, err := RequireExactLayout(layout)
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s required input layout: %w", owner, err)
+	}
+	return newPlanExprBaseWithProperties(
+		owner, resultValue, []OrdinalLayoutRequirement{requirement}, layout)
+}
+
+func newPlanExprBaseForType(owner string, flowedType values.Type) (PlanExprBase, error) {
+	exactType, err := values.SnapshotExactType(flowedType)
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
+	}
+	layout, err := newIdentityOutputLayout(exactType.Type())
+	if err != nil {
+		if isExactErasedRecord(exactType.Type()) {
+			resultValue, resultErr := values.NewQuantifiedObjectValue(
+				values.UniqueCorrelationIdentifier(), exactType.Type())
+			if resultErr != nil {
+				return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, resultErr)
+			}
+			return PlanExprBase{resultValue: resultValue}, nil
+		}
+		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
+	}
+	return newPlanExprBaseWithProvidedLayout(owner, layout.Carrier(), layout)
+}
+
+func newPlanExprBaseForQuantifier(owner string, quantifier expressions.Quantifier) (PlanExprBase, error) {
+	resultValue, err := quantifier.RequireFlowedObjectValue()
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
+	}
+	selectedChild := selectedPlanFromQuantifier(quantifier)
+	child := selectedChild
+	if child == nil {
+		child = planTypeFromQuantifier(quantifier)
+	}
+	if child != nil {
+		layout, layoutErr := child.ProvidedOutputLayout()
+		if layoutErr == nil {
+			// A physical pass-through emits the child's carrier unchanged. Reuse
+			// that exact current handle as both the result Value and provided
+			// layout owner. Publishing the child-edge QOV here would claim a
+			// source binding the preserved layout does not provide; evaluating it
+			// against the emitted row would then fail UnboundCorrelation.
+			if !resultValue.Type().Equals(values.PhysicalCarrierType(layout)) {
+				return PlanExprBase{}, fmt.Errorf(
+					"%s provided output layout: carrier type %s disagrees with child-edge type %s",
+					owner, values.PhysicalCarrierType(layout), resultValue.Type())
+			}
+			if selectedChild != nil {
+				return newPassThroughPlanExprBase(owner, layout.Carrier(), layout)
+			}
+			// A live exploratory group has not selected one physical child yet.
+			// Preserve the existing provided-layout view used for type/shape
+			// planning, but do not turn one currently visible alternative into a
+			// required input contract. Reconstruction after winner selection
+			// atomically replaces this with the exact requirement above.
+			return newPlanExprBaseWithProvidedLayout(owner, layout.Carrier(), layout)
+		}
+		var unavailable *OrdinalLayoutUnavailableError
+		if !errors.As(layoutErr, &unavailable) || unavailable.Code != OrdinalLayoutDynamicCarrier {
+			return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, layoutErr)
+		}
+		return PlanExprBase{resultValue: resultValue}, nil
+	}
+	// A physical quantifier without a selected child layout can state only the
+	// ordinary identity carrier for its exact flowed type. It still must not
+	// publish the edge QOV alongside a layout that cannot bind that alias.
+	return newPlanExprBaseForType(owner, resultValue.Type())
+}
+
+func newPlanExprBaseForFirstQuantifier(owner string, quantifiers []expressions.Quantifier) (PlanExprBase, error) {
+	if len(quantifiers) == 0 {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: at least one input quantifier is required", owner)
+	}
+	base, err := newPlanExprBaseForQuantifier(owner, quantifiers[0])
+	if err != nil {
+		return PlanExprBase{}, err
+	}
+	firstType := base.resultValue.Type()
+	for i := 1; i < len(quantifiers); i++ {
+		flowedType, err := quantifiers[i].GetFlowedObjectType()
+		if err != nil {
+			return PlanExprBase{}, fmt.Errorf("%s input quantifier %d: %w", owner, i, err)
+		}
+		if !firstType.Equals(flowedType) {
+			return PlanExprBase{}, fmt.Errorf(
+				"%s result Value: input quantifier 0 type %s disagrees with input quantifier %d type %s",
+				owner, firstType, i, flowedType)
+		}
+	}
+	if len(quantifiers) > 1 && base.ordinalPhysicalProperties != nil {
+		// RequiredInputLayouts is positionally parallel to input edges. The
+		// first-quantifier helper knows which layout the operator currently
+		// publishes, but it has not established one compatible exact layout for
+		// every remaining leg. Retaining the first child's single requirement
+		// here would therefore publish a partial vector. N-ary owners gain their
+		// requirements when they select and validate all concrete child layouts.
+		layout := base.ordinalPhysicalProperties.ProvidedOutputLayout()
+		base, err = newPlanExprBaseWithProvidedLayout(owner, base.resultValue, layout)
+		if err != nil {
+			return PlanExprBase{}, err
+		}
+	}
+	return base, nil
+}
+
+func newPlanExprBaseForValue(owner string, resultValue values.Value) (PlanExprBase, error) {
+	if resultValue == nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: value is nil", owner)
+	}
+	exactType, err := values.ExactTypeForValue(resultValue)
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
+	}
+	layout, err := newIdentityOutputLayout(exactType.Type())
+	if err != nil {
+		if isExactErasedRecord(exactType.Type()) {
+			return PlanExprBase{resultValue: resultValue}, nil
+		}
+		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
+	}
+	return newPlanExprBaseWithProvidedLayout(owner, resultValue, layout)
+}
+
+// newPlanExprBaseForProvidedLayout admits an output-producing plan whose
+// physical carrier is more specific than the identity layout implied by its
+// logical result type. The layout is validated by the values-owned factory
+// before reaching this helper; this boundary checks the remaining owner
+// invariant and keeps the original result program, whose source roots describe
+// the windows the layout publishes.
+func newPlanExprBaseForProvidedLayout(
+	owner string,
+	resultValue values.Value,
+	layout values.OrdinalLayout,
+) (PlanExprBase, error) {
+	if resultValue == nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: value is nil", owner)
+	}
+	if err := values.ValidateOrdinalLayoutAdmission(layout); err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
+	}
+	resultType, err := values.ExactTypeForValue(resultValue)
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, err)
+	}
+	if !resultType.Type().Equals(values.PhysicalCarrierType(layout)) {
+		return PlanExprBase{}, fmt.Errorf(
+			"%s provided output layout: carrier type %s disagrees with result type %s",
+			owner, values.PhysicalCarrierType(layout), resultType.Type())
+	}
+	return newPlanExprBaseWithProvidedLayout(owner, resultValue, layout)
+}
+
+func newPlanExprBaseForRetainedResult(
+	owner string,
+	resultValue values.Value,
+	nullSupplying []values.QuantifiedObjectValue,
+) (PlanExprBase, error) {
+	if resultValue == nil {
+		return PlanExprBase{}, fmt.Errorf("%s result Value: value is nil", owner)
+	}
+	if !values.ContainsBakedOrdinal(resultValue) && !values.IsPositionalMergeRC(resultValue) {
+		return newPlanExprBaseForValue(owner, resultValue)
+	}
+	if _, ok := resultValue.(*values.RecordConstructorValue); !ok {
+		// The executor's ordinal-build bare arm emits the selected object or
+		// scalar itself; it has no new flat carrier or retained-source windows.
+		return newPlanExprBaseForValue(owner, resultValue)
+	}
+	layout, err := values.NewFlatOrdinalLayoutForRetainedResult(resultValue, nullSupplying)
+	if err != nil {
+		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
+	}
+	return newPlanExprBaseForProvidedLayout(owner, resultValue, layout)
+}
+
+// exactQOVForResultSource finds the one exact source root retained by a result
+// program for alias. A missing source is valid: a completely projected-away
+// null-supplying leg has no output window and therefore needs no presence bit.
+func exactQOVForResultSource(
+	alias values.CorrelationIdentifier,
+	resultValue values.Value,
+) (values.QuantifiedObjectValue, error) {
+	var found values.QuantifiedObjectValue
+	var conflict error
+	values.WalkValue(resultValue, func(value values.Value) bool {
+		qov, ok := values.AsQuantifiedObjectValue(value)
+		if !ok || qov.Correlation() != alias {
+			return true
+		}
+		if found != nil && !found.FlowedType().Equals(qov.FlowedType()) {
+			conflict = fmt.Errorf(
+				"correlation %s has conflicting exact types %s and %s",
+				alias.Name(), found.FlowedType(), qov.FlowedType())
+			return false
+		}
+		found = qov
+		return true
+	})
+	if conflict != nil {
+		return nil, conflict
+	}
+	return found, nil
+}
+
+func isExactErasedRecord(typ values.Type) bool {
+	if typ == nil || typ.Code() != values.TypeCodeRecord {
+		return false
+	}
+	_, concrete := typ.(*values.RecordType)
+	return !concrete
+}
+
+// newIdentityOutputLayout builds the one-to-one physical representation used
+// by result-producing plans until they state a more specialized layout. A
+// record's ordinary fields are one exact flat tile; the zero-field record has
+// no tiles. Non-record values use the scalar carrier. The values factories do
+// the final exact/private validation, including rejecting erased records,
+// placeholders, NULL, and relation types rather than publishing an unknown
+// physical property.
+func newIdentityOutputLayout(typ values.Type) (values.OrdinalLayout, error) {
+	if typ != nil && typ.Code() == values.TypeCodeRecord {
+		recordType, ok := typ.(*values.RecordType)
+		if !ok || recordType == nil {
+			// Route erased/foreign record shapes through the values-owned
+			// validator so callers receive the stable layout error.
+			return values.NewOrdinalLayoutForCarrierType(typ, nil, nil)
+		}
+		var tiles []values.OrdinalTileSpec
+		if width := len(recordType.Fields); width > 0 {
+			tiles = []values.OrdinalTileSpec{{
+				Start: 0,
+				Width: width,
+				Kind:  values.OrdinalTileFlat,
+			}}
+		}
+		return values.NewOrdinalLayoutForCarrierType(typ, tiles, nil)
+	}
+	return values.NewScalarOrdinalLayoutForCarrierType(typ)
+}
+
+// validateQuantifierArity rejects a reconstruction before the receiver can be
+// copied or indexed. WithQuantifiers is a planner boundary: returning the old
+// expression for a malformed child list hides a broken rewrite, while indexing
+// a short list panics after the caller has already begun planning work.
+func validateQuantifierArity(planName string, got, want int) error {
+	if got == want {
+		return nil
+	}
+	return fmt.Errorf("%w: %s requires %d, got %d", expressions.ErrQuantifierArity, planName, want, got)
+}
 
 // CanCorrelate reports whether this operator anchors a correlation between
 // its children. False for the physical operators that simply consume their
@@ -66,36 +393,47 @@ func (PlanExprBase) GetCorrelatedToWithoutChildren() map[values.CorrelationIdent
 // behaviour today.
 func (PlanExprBase) GetQuantifiers() []expressions.Quantifier { return nil }
 
-// GetResultValue returns a value standing for the rows this plan emits.
-//
-// Matches what the physical wrappers return — a fresh QuantifiedObjectValue —
-// so behaviour is unchanged as the wrapper layer is retired. The rich row
-// TYPE remains available through GetResultType.
-//
-// FOUR PLANS SHADOW THIS with their own resultValue field: Map, FlatMap,
-// NestedLoopJoin and MultiIntersectionOnValues. That is the richer answer and
-// matches Java (RecordQueryFlatMapPlan.getResultValue returns the result
-// value), but those fields are unguarded constructor parameters, and the
-// surrounding code nil-checks them (map.go, multi_intersection.go), so nil
-// looks reachable — a hazard once step 2 starts dereferencing this while
-// traversing plans as expressions.
-//
-// Measured before relying on it: instrumenting all four to report a nil
-// resultValue found ZERO occurrences across the 2407-query corpus and the
-// entire Go test suite. The nil checks are defensive, not reachable, so no
-// guard is added here — one that never fires would be noise, and papering
-// over the accessor is the wrong layer anyway. If step 2 ever needs the
-// invariant enforced, the place is construction (Java's resultValue is
-// @Nonnull), not this method.
-//
-// One asymmetry, now resolved: the multi-intersection's nil-fallback returns the
-// FIRST INNER's flowed object value, not a fresh stand-in — so a blanket non-nil
-// guard here would silently change that answer. The multi-intersection owns its
-// quantifiers and owns the fallback with them (multi_intersection.go's
-// GetResultValue), which is why the retired physicalMultiIntersectionWrapper held
-// no information the plan lacks (RFC-184 W2).
-func (PlanExprBase) GetResultValue() values.Value {
-	return values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier())
+// GetResultValue returns the exact, stable Value admitted by the owner
+// constructor. It never resolves on demand and never mints a correlation.
+func (b PlanExprBase) GetResultValue() values.Value {
+	return b.resultValue
+}
+
+// OrdinalPhysicalProperties returns the immutable physical-property view
+// admitted atomically with this plan's result Value. Dynamic exact carriers do
+// not invent an unknown layout/property; zero or bypass-constructed bases are
+// malformed in the same typed way as ProvidedOutputLayout.
+func (b PlanExprBase) OrdinalPhysicalProperties() (OrdinalPhysicalProperties, error) {
+	if properties, ok := AsOrdinalPhysicalProperties(b.ordinalPhysicalProperties); ok {
+		return properties, nil
+	}
+	if b.resultValue != nil && isExactErasedRecord(b.resultValue.Type()) {
+		return nil, &OrdinalLayoutUnavailableError{Code: OrdinalLayoutDynamicCarrier}
+	}
+	return nil, &OrdinalLayoutUnavailableError{Code: OrdinalLayoutMalformedPlan}
+}
+
+// admittedProvidedOutputLayout is the non-fallible read used only by physical
+// identity builders. Malformed zero-value test adversaries retain their prior
+// nil-layout identity instead of panicking; public consumers use the fallible
+// methods above and below.
+func (b PlanExprBase) admittedProvidedOutputLayout() values.OrdinalLayout {
+	properties, ok := AsOrdinalPhysicalProperties(b.ordinalPhysicalProperties)
+	if !ok {
+		return nil
+	}
+	return properties.ProvidedOutputLayout()
+}
+
+// ProvidedOutputLayout returns the immutable layout admitted atomically with
+// the result Value. Plan reconstruction either retains this layout for an
+// output-producing node or rebuilds the base from its replacement input.
+func (b PlanExprBase) ProvidedOutputLayout() (values.OrdinalLayout, error) {
+	properties, err := b.OrdinalPhysicalProperties()
+	if err != nil {
+		return nil, err
+	}
+	return properties.ProvidedOutputLayout(), nil
 }
 
 // QuantifierOverPlan wraps a child plan in the Quantifier a parent plan
@@ -166,13 +504,14 @@ func plansFromQuantifiers(qs []expressions.Quantifier) []RecordQueryPlan {
 //	(RecordQueryPlan) Iterables.getOnlyElement(
 //	        getRangesOver().getFinalExpressions())
 //
-// Java can say getOnlyElement because a group is pruned to one final
-// expression by the time anything dereferences it. That property holds here
-// too — verified across the whole corpus and pinned by
-// TestOneFinalPlanPerReference — which is what makes this step possible at
-// all; without it a quantifier would have no single answer and the parent
-// would need a second stored pointer, which is exactly the duplication that
-// produced the nil-inner shell class.
+// Java makes that dereference total by pruning a group to one final. Go keeps
+// multiple finals when distinct physical properties require them and makes
+// the dereference total with a stamped OPTIMIZE winner instead. A detached
+// final singleton is the exact-selection fallback, and an exploratory member
+// is consulted only for an in-progress group that has not finalized yet.
+// RFC-224's TestExtractionIsUnambiguous verifies the selected Reference path
+// after the task stack drains; it deliberately does not assert Java's
+// singleton-final mechanism.
 //
 // Two accommodations Java does not need, both temporary:
 //   - a member may still be a physical WRAPPER rather than a plan while the
@@ -233,6 +572,225 @@ func planTypeFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
 		return p
 	}
 	return firstPlanFromMembers(ref.Members())
+}
+
+// selectedPlanFromQuantifier returns a concrete physical selection, never an
+// arbitrary exploratory alternative. A stored winner is authoritative; a
+// final singleton is the pinned-plan shape. In-progress exploratory groups
+// return nil even when they happen to contain one member, since that group may
+// still grow before optimization.
+func selectedPlanFromQuantifier(q expressions.Quantifier) RecordQueryPlan {
+	ref := q.GetRangesOver()
+	if ref == nil {
+		return nil
+	}
+	if winner := ref.Winner(); winner != nil {
+		return planOfMember(winner)
+	}
+	// A singleton in the FINAL lane is a concrete selection only when the
+	// reference is detached (FinalOf/FinalOfAtStage): those references have no
+	// exploratory members. A live memo group keeps its logical/canonical
+	// members while implementation rules add finals. Seeing the first final in
+	// that mixed group does not select it -- more access paths can still arrive
+	// later in the same exploration round. Treating it as selected freezes every
+	// pass-through parent to that first plan's exact layout (normally Scan), so
+	// subsequently generated IndexScan/FlatMap alternatives are incompatible at
+	// extraction even when they are cheaper.
+	if len(ref.Members()) != 0 {
+		return nil
+	}
+	// Multiple physical finals before optimization are alternatives, not a
+	// selected child. Constructor-time result/layout derivation may inspect one
+	// for its common type, but must not panic or pretend one is the winner; the
+	// extracted/relinked parent will receive the actual selected singleton.
+	var selected RecordQueryPlan
+	for _, member := range ref.FinalMembers() {
+		plan := planOfMember(member)
+		if plan == nil || plan == selected {
+			continue
+		}
+		if selected != nil {
+			return nil
+		}
+		selected = plan
+	}
+	return selected
+}
+
+// selectedInputOrdinalLayout returns the exact physical layout of a concrete
+// selected child. Live memo edges have no selected member yet, and legacy
+// dynamic-record children cannot state an ordinal layout; both deliberately
+// return ok=false so construction can remain exploratory until extraction
+// relinks the parent over a concrete singleton.
+func selectedInputOrdinalLayout(q expressions.Quantifier) (layout values.OrdinalLayout, ok bool, err error) {
+	child := selectedPlanFromQuantifier(q)
+	if child == nil {
+		return nil, false, nil
+	}
+	layout, err = child.ProvidedOutputLayout()
+	if err == nil {
+		return layout, true, nil
+	}
+	var unavailable *OrdinalLayoutUnavailableError
+	if errors.As(err, &unavailable) && unavailable.Code == OrdinalLayoutDynamicCarrier {
+		return nil, false, nil
+	}
+	return nil, false, err
+}
+
+// reanchorCurrentValueForInput normalizes an executable Value program onto the
+// selected child's exact carrier handle. Reserved-current roots move to that
+// exact handle, and source-relative fields supplied by the child's layout map
+// to their carrier ordinals.
+// CurrentCorrelation names a physical row phase, not a globally interchangeable
+// alias: a materializing child (for example InMemorySort) publishes a fresh
+// current handle even when its row type is unchanged. Retaining the upstream
+// handle would therefore make the program unbindable at runtime.
+//
+// Non-current roots absent from the layout are intentionally preserved. They
+// can name a declared physical edge or an outer binding and are validated by
+// the operator-specific admission path.
+func reanchorCurrentValueForInput(
+	value values.Value,
+	inputQ expressions.Quantifier,
+) (values.Value, error) {
+	if value == nil {
+		return nil, nil
+	}
+	layout, selected, err := selectedInputOrdinalLayout(inputQ)
+	if err != nil {
+		return nil, err
+	}
+	if !selected {
+		return value, nil
+	}
+	target := layout.Carrier()
+	if target == nil {
+		return nil, fmt.Errorf("selected input layout has no carrier")
+	}
+	edge, err := inputQ.RequireFlowedObjectValue()
+	if err != nil {
+		return nil, err
+	}
+	// A parent's physical edge denotes the selected child's OUTPUT phase. Map
+	// that declaration before consulting materializer lineage: a sort's lineage
+	// accepts values rooted in its INPUT phase, while an edge-rooted value is
+	// already expressed at the sort output boundary.
+	normalized, err := values.TranslateDeclaredEdgeRoot(value, edge, target)
+	if err != nil {
+		return nil, err
+	}
+	selectedChild := selectedPlanFromQuantifier(inputQ)
+	// A materializer owns the complete input-to-output lineage. Give it the
+	// source-relative program before the generic producer matcher runs: in a
+	// chained FlatMap, a buried S.NAME must first cross the outer positional
+	// merge's exact S window. Matching it directly against the upper flattened
+	// RC sees only one top-level NAME (R.NAME) and would incorrectly select that
+	// unrelated slot by the generic unique-name fallback.
+	if materializer, ok := descendantValueMaterializer(selectedChild); ok {
+		return materializer.reanchorInputValueToOutput(normalized)
+	}
+	producer := selectedChild.GetResultValue()
+	if retained, ok := descendantRetainedResultProducer(selectedChild); ok {
+		producer = retained
+	}
+	// The producer may be a layout-preserving DESCENDANT's result program, not
+	// selectedChild's own, so the owned set is derived from the producer itself
+	// rather than from selectedChild's quantifiers — those are the wrong legs
+	// the moment the walk descends. Anything else arriving here is an outer
+	// binding or a declared edge the operator-specific admission path validates,
+	// and this producer has no evidence for it; the ownership set is what keeps
+	// a same-named slot from answering on its behalf.
+	normalized, err = values.ReanchorOwnedValueThroughProducer(
+		normalized, producer, target, producerOwnedCorrelations(producer))
+	if err != nil {
+		return nil, err
+	}
+	normalized, err = values.ReanchorValueForLayout(normalized, target, layout)
+	if err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+// inputValueMaterializer exposes the plan-time lineage needed to cross an
+// operator that intentionally drops its child's source windows. Its runtime
+// output remains current-only; this method is solely a checked rewrite from a
+// pre-bound input program to the materialized output carrier.
+type inputValueMaterializer interface {
+	reanchorInputValueToOutput(values.Value) (values.Value, error)
+}
+
+func childValueMaterializer(plan RecordQueryPlan) (inputValueMaterializer, bool) {
+	materializer, ok := plan.(inputValueMaterializer)
+	return materializer, ok
+}
+
+// descendantValueMaterializer walks only exact row-preserving unary edges. A
+// wrapper such as LIMIT keeps its child's precise provided-layout handle, so a
+// projection above LIMIT still needs the lineage authority of a materializing
+// sort below it. The walk stops as soon as a wrapper changes the layout or row
+// type; source-window provenance must never leak through a reshaping operator.
+func descendantValueMaterializer(plan RecordQueryPlan) (inputValueMaterializer, bool) {
+	for plan != nil {
+		if materializer, ok := childValueMaterializer(plan); ok {
+			return materializer, true
+		}
+		unary, ok := plan.(interface{ GetInner() RecordQueryPlan })
+		if !ok {
+			return nil, false
+		}
+		inner := unary.GetInner()
+		if inner == nil {
+			return nil, false
+		}
+		outerLayout, outerErr := plan.ProvidedOutputLayout()
+		innerLayout, innerErr := inner.ProvidedOutputLayout()
+		if outerErr != nil || innerErr != nil ||
+			outerLayout.Carrier() != innerLayout.Carrier() ||
+			!outerLayout.RawEqual(innerLayout) {
+			return nil, false
+		}
+		plan = inner
+	}
+	return nil, false
+}
+
+// descendantRetainedResultProducer finds the positional result program hidden
+// by exact pass-through unary wrappers. PredicatesFilter, LIMIT, and similar
+// nodes preserve their child's exact layout carrier but publish that carrier as
+// their own bare result Value. A parent projection still needs the underlying
+// NLJ/other RC to prove that logical A.ID is output ordinal 0; the wrapper's bare
+// current QOV contains no source-lineage information.
+//
+// The walk uses the same exact row/layout identity gate as materializer lookup.
+// It cannot cross a reshaping or freshly materializing operator, so source
+// windows never leak across a producer boundary.
+func descendantRetainedResultProducer(plan RecordQueryPlan) (values.Value, bool) {
+	for plan != nil {
+		if result := plan.GetResultValue(); result != nil {
+			if _, ok := result.(*values.RecordConstructorValue); ok {
+				return result, true
+			}
+		}
+		unary, ok := plan.(interface{ GetInner() RecordQueryPlan })
+		if !ok {
+			return nil, false
+		}
+		inner := unary.GetInner()
+		if inner == nil {
+			return nil, false
+		}
+		outerLayout, outerErr := plan.ProvidedOutputLayout()
+		innerLayout, innerErr := inner.ProvidedOutputLayout()
+		if outerErr != nil || innerErr != nil ||
+			outerLayout.Carrier() != innerLayout.Carrier() ||
+			!outerLayout.RawEqual(innerLayout) {
+			return nil, false
+		}
+		plan = inner
+	}
+	return nil, false
 }
 
 // onlyPlanFromFinalMembers is Java's `Iterables.getOnlyElement` half of

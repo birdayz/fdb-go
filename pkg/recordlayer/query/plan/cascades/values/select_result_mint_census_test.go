@@ -18,37 +18,23 @@ func TestSelectResultMintCensus_SeparatesTypedFromUntyped(t *testing.T) {
 	t.Parallel()
 
 	corr := NamedCorrelationIdentifier("A")
-	rowType := &RecordType{Fields: []Field{{Name: "ID", Ordinal: 0}, {Name: "K", Ordinal: 1}}}
+	rowType := &RecordType{Fields: []Field{
+		{Name: "ID", FieldType: NotNullLong, Ordinal: 0},
+		{Name: "K", FieldType: NotNullLong, Ordinal: 1},
+	}}
 
 	for _, tc := range []struct {
 		name  string
-		qov   *QuantifiedObjectValue
+		qov   *quantifiedObjectValue
 		typed bool
 		spell string
 	}{
 		{
 			// What Java always builds: overQuantifier.getFlowedObjectValue().
 			name:  "a typed mint reports its ARITY",
-			qov:   NewQuantifiedObjectValueOfType(corr, rowType),
+			qov:   mustQOV(t, corr, rowType),
 			typed: true,
 			spell: "RecordType(2)",
-		},
-		{
-			// What the translator actually builds, and what Java cannot express.
-			name:  "a bare mint reports UNKNOWN, not an arity",
-			qov:   NewQuantifiedObjectValue(corr),
-			typed: false,
-			spell: "UNKNOWN",
-		},
-		{
-			// An explicit UnknownType is untyped for the same reason the implicit
-			// one is: the placeholder is the absence of a type, not a type. A
-			// `Typ != nil` spelling would call this typed, which is the tautology
-			// that let a whole population read as converted on day one.
-			name:  "an EXPLICIT UnknownType is untyped too",
-			qov:   NewQuantifiedObjectValueOfType(corr, UnknownType),
-			typed: false,
-			spell: "UNKNOWN",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,22 +54,22 @@ func TestSelectResultMintCensus_SeparatesTypedFromUntyped(t *testing.T) {
 
 // The mint census's assertion arms, driven from counter states.
 //
-// The polarity of the untyped floor is the arm that matters and it reads
-// backwards: an untyped QOV is a Java divergence, so the count going DOWN is the
-// good direction and must still fail — a closing gap and a darkening site are
-// indistinguishable from a smaller number.
+// The untyped arm's polarity INVERTED once. While Go could mint an untyped QOV —
+// a value Java cannot build at all — the count going DOWN was the failing
+// direction, because a closing gap and a darkening site are indistinguishable
+// from a smaller number. NewQuantifiedObjectValue now requires an exact type, so
+// zero is the steady state and GROWTH is what the arm watches.
 func TestSelectResultMintCensus_AssertionArmsGoRed(t *testing.T) {
 	t.Parallel()
 
 	base := func() SelectResultMintCounters {
 		var c SelectResultMintCounters
 		c.Calls = [SelectResultMintSiteCount]int{100}
-		c.UntypedQOV = [SelectResultMintSiteCount]int{100}
+		c.TypedQOV = [SelectResultMintSiteCount]int{100}
 		return c
 	}
 	floors := &SelectResultMintFloors{
-		Calls:           [SelectResultMintSiteCount]int{10},
-		UntypedQOVFloor: [SelectResultMintSiteCount]int{10},
+		Calls: [SelectResultMintSiteCount]int{10},
 	}
 
 	t.Run("a calibrated state PASSES", func(t *testing.T) {
@@ -95,92 +81,53 @@ func TestSelectResultMintCensus_AssertionArmsGoRed(t *testing.T) {
 		}
 	})
 
-	t.Run("the untyped population DISAPPEARING is RED", func(t *testing.T) {
+	t.Run("an untyped mint REVIVING is RED", func(t *testing.T) {
 		t.Parallel()
 		c := base()
-		c.UntypedQOV[SelectResultMintExistsSelect] = 0
-		c.TypedQOV[SelectResultMintExistsSelect] = 100
+		c.UntypedQOV[SelectResultMintExistsSelect] = 1
+		c.TypedQOV[SelectResultMintExistsSelect] = 99
 		var b strings.Builder
 		if !assertSelectResultMintCounters(&b, c, floors) {
-			t.Fatal("the untyped mint population going to zero must fail. It is a floor on a " +
-				"DIVERGENCE: Java cannot build an untyped QOV at all, so a silent drop is " +
-				"either the gap closing or the site going dark, and the two look identical " +
-				"from a smaller number.")
+			t.Fatal("a single untyped mint must fail. NewQuantifiedObjectValue requires an " +
+				"exact type, so one here means a mint path has appeared that reaches " +
+				"around that requirement — and the ordinal model rests on every QOV " +
+				"carrying the row it addresses.")
+		}
+		if !strings.Contains(b.String(), "want 0") {
+			t.Fatalf("failure message does not state the expectation: %s", b.String())
+		}
+	})
+
+	t.Run("the untyped zero holds on a NARROWED run", func(t *testing.T) {
+		t.Parallel()
+		// nil floors is the narrowed-run configuration (-test.run drops the
+		// calibrations). The revival alarm must survive it: a gate that only
+		// watches a retired population on full runs stops watching it exactly when
+		// someone is iterating on the code that would revive it.
+		c := base()
+		c.UntypedQOV[SelectResultMintExistsSelect] = 1
+		c.TypedQOV[SelectResultMintExistsSelect] = 99
+		var b strings.Builder
+		if !assertSelectResultMintCounters(&b, c, nil) {
+			t.Fatalf("the untyped-QOV zero must hold with no floors:\n%s", b.String())
 		}
 	})
 
 	t.Run("the site going DARK is RED", func(t *testing.T) {
 		t.Parallel()
-		// THE CALL FLOOR IS ONLY REACHABLE WHERE THE UNTYPED FLOOR IS UNSET, and
-		// this subtest has to be configured for that or it tests nothing.
-		//
-		// The partition (typed + untyped + other == calls) is asserted
-		// unconditionally, so calls >= untyped >= UntypedQOVFloor. Wherever a site
-		// carries an untyped floor at least as large as its call floor, the call
-		// floor cannot fire under ANY admissible state — the untyped floor fires
-		// first, every time. That is the harness's calibration exactly (see
-		// selectResultMintFloors, which therefore leaves Calls unset), and it is
-		// why zeroing both counters against the shared `floors` above would prove
-		// nothing about this arm.
-		//
-		// So the arm is driven at the configuration where it IS live: a site with
-		// no untyped floor, which is what a future TYPED mint site would look like.
-		callFloorOnly := &SelectResultMintFloors{
-			Calls: [SelectResultMintSiteCount]int{10},
-		}
+		// The CALL floor is now the only floor on this census, so dropping the call
+		// count below it is the whole perturbation. It used to need care: the
+		// untyped floor subsumed the call floor at every admissible state, so a
+		// naive zeroing of both never reached this arm at all.
 		var c SelectResultMintCounters
 		var b strings.Builder
-		if !assertSelectResultMintCounters(&b, c, callFloorOnly) {
-			t.Fatal("a mint site making zero constructions must fail when nothing else " +
-				"floors it — otherwise every zero recorded beside it reads as an absent " +
-				"SHAPE when it is an absent population.")
+		if !assertSelectResultMintCounters(&b, c, floors) {
+			t.Fatal("a mint site making zero constructions must fail — otherwise every " +
+				"zero recorded beside it reads as an absent SHAPE when it is an absent " +
+				"population.")
 		}
 		if !strings.Contains(b.String(), "gone dark") {
 			t.Fatalf("the CALL floor must be the arm that fired:\n%s", b.String())
-		}
-	})
-
-	t.Run("the call floor is SUBSUMED where an untyped floor covers it", func(t *testing.T) {
-		t.Parallel()
-		// The negative half of the subtest above, and the reason
-		// selectResultMintFloors leaves Calls unset. This is not a nice-to-have
-		// property note: a floor that cannot fail under any admissible state reads
-		// as coverage and is not, and this one would have sat in the harness
-		// looking like a dark-site guard while the untyped floor did all the work.
-		both := &SelectResultMintFloors{
-			Calls:           [SelectResultMintSiteCount]int{10},
-			UntypedQOVFloor: [SelectResultMintSiteCount]int{10},
-		}
-		for calls := 0; calls < 10; calls++ {
-			for untyped := 0; untyped <= calls; untyped++ {
-				var c SelectResultMintCounters
-				c.Calls[SelectResultMintExistsSelect] = calls
-				c.UntypedQOV[SelectResultMintExistsSelect] = untyped
-				c.OtherRV[SelectResultMintExistsSelect] = calls - untyped
-				var b strings.Builder
-				if !assertSelectResultMintCounters(&b, c, both) {
-					t.Fatalf("calls=%d untyped=%d must fail SOMETHING", calls, untyped)
-				}
-				if !strings.Contains(b.String(), "want >= 10. This is a FLOOR on a DIVERGENCE") {
-					t.Fatalf("calls=%d untyped=%d: the UNTYPED floor must be the arm that "+
-						"fires wherever it is >= the call floor. If a state exists where the "+
-						"call floor fires alone, the subsumption argument is wrong and "+
-						"selectResultMintFloors should carry a real Calls value:\n%s",
-						calls, untyped, b.String())
-				}
-			}
-		}
-	})
-
-	t.Run("a partition gap is RED", func(t *testing.T) {
-		t.Parallel()
-		c := base()
-		c.Calls[SelectResultMintExistsSelect] = 200
-		var b strings.Builder
-		if !assertSelectResultMintCounters(&b, c, floors) {
-			t.Fatal("typed + untyped + other must sum to calls. A gap is an arm that returns " +
-				"before recording, and it makes every number beside it a subset printing as " +
-				"a total.")
 		}
 	})
 }
@@ -200,7 +147,7 @@ func TestSelectResultMintCensus_GateOffRecordsNothing(t *testing.T) {
 	defer SetLegIdentityCensusEnabled(restore)
 
 	before := SelectResultMintCensus()
-	rv := NewQuantifiedObjectValue(NamedCorrelationIdentifier("GATEOFF"))
+	rv := mustQOV(t, NamedCorrelationIdentifier("GATEOFF"))
 	RecordSelectResultMint(SelectResultMintExistsSelect, rv)
 	after := SelectResultMintCensus()
 
@@ -232,7 +179,7 @@ func TestSelectResultMintCensus_SnapshotDeepCopiesShapes(t *testing.T) {
 	defer SetLegIdentityCensusEnabled(restore)
 
 	RecordSelectResultMint(SelectResultMintExistsSelect,
-		NewQuantifiedObjectValue(NamedCorrelationIdentifier("SNAP1")))
+		mustQOV(t, NamedCorrelationIdentifier("SNAP1")))
 	snap := SelectResultMintCensus()
 	shapes := snap.Shapes[SelectResultMintExistsSelect]
 	if len(shapes) == 0 {
@@ -246,7 +193,7 @@ func TestSelectResultMintCensus_SnapshotDeepCopiesShapes(t *testing.T) {
 	was := shapes[key]
 
 	RecordSelectResultMint(SelectResultMintExistsSelect,
-		NewQuantifiedObjectValue(NamedCorrelationIdentifier("SNAP2")))
+		mustQOV(t, NamedCorrelationIdentifier("SNAP2")))
 
 	if got := snap.Shapes[SelectResultMintExistsSelect][key]; got != was {
 		t.Fatalf("shape %q in a SNAPSHOT moved %d -> %d when the census was written again. "+

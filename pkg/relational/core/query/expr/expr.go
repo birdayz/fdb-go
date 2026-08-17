@@ -88,7 +88,8 @@ import (
 // BuildExists receives the inner Query context from an
 // ExistsExpressionAtomContext and returns:
 //   - alias: a unique CorrelationIdentifier for the existential quantifier
-//   - err: non-nil when the inner query cannot be planned
+//   - flowed: the inner plan's exact whole-row type
+//   - err: non-nil when the inner query cannot be planned or typed exactly
 //
 // BuildScalar receives the inner Query context from a
 // SubqueryExpressionAtomContext (scalar subquery) and returns:
@@ -102,7 +103,7 @@ import (
 // Resolver creates an ExistentialValuePredicate or ScalarSubqueryValue
 // referencing the alias.
 type SubqueryPlanner interface {
-	BuildExists(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, err error)
+	BuildExists(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, flowed values.Type, err error)
 	BuildScalar(query antlrgen.IQueryContext) (alias values.CorrelationIdentifier, typ values.Type, err error)
 }
 
@@ -194,9 +195,9 @@ func (r *Resolver) functionCatalog() *semantic.FunctionCatalog {
 // `n` is a struct column, as opposed to `t.sk` where `t` is a FROM source.
 //
 // The fact comes from the semantic layer's own accessor chain, never from the
-// shape of the produced Value: fuseNestedAccessors happens to yield a
-// multi-accessor FieldPath today, but the number of accessors a root reference
-// carries is a property of the source kind, so counting them would be an
+// shape of the produced Value: exact field resolution yields a multi-accessor
+// FieldPath today, but the number of accessors a root reference carries is a
+// property of the source kind, so counting them would be an
 // inference where the analyzer already states the answer. The accessor chain is
 // the analogue of Java's lookupNestedField result — INFERRED FROM JAVA SOURCE,
 // SemanticAnalyzer.java:578-601, not observed against a running server; what IS
@@ -300,75 +301,6 @@ func (r *Resolver) ResolveIdentifierPath(segs []semantic.Identifier) (values.Val
 		refID = col.Id
 	}
 	return r.resolveScopedColumn(col, src, qualifier, refID, accessors)
-}
-
-// fuseNestedAccessorsIfAny is fuseNestedAccessors for the mints that may or may
-// not have descended — a qualified reference is `alias.col` (no chain) or
-// `struct.member` (a chain) and the mint cannot tell which until the semantic
-// layer answers. An empty chain returns the root unchanged, which is what makes
-// every one of those mints safe to route through the fuse unconditionally.
-//
-// It exists so no mint has to write the `len(accessors) > 0` test itself:
-// skipping that test is not a compile error and not a runtime error — it is a
-// silent read of the whole struct where a member was named.
-func fuseNestedAccessorsIfAny(root values.Value, accessors []semantic.NestedAccessor) (values.Value, error) {
-	if len(accessors) == 0 {
-		return root, nil
-	}
-	return fuseNestedAccessors(root, accessors)
-}
-
-// fuseNestedAccessors appends a struct descent onto an already-built root
-// column reference, producing ONE FieldValue over a multi-accessor path —
-// Java's FieldValue.ofFieldsAndFuseIfPossible (FieldValue.java:325-332).
-//
-// The receiver governs the root: FieldPath.WithSuffix keeps the root path's
-// domain and pin, which is correct because those describe the layout the ROOT
-// ordinal indexes and nothing about the nested steps. The nested accessors
-// carry their own per-step ordinals (position in the enclosing struct's
-// declared field list) and names; the evaluator reads a nested proto message
-// by name and a positional nested row by ordinal (descendResolvedPath).
-//
-// The value's declared type becomes the LEAF's type — the reference denotes
-// the leaf, not the struct it descended through. Its display Field becomes the
-// LEAF's name for the same reason, and to agree with every other mint of this
-// shape: Java's fused FieldValue has no root-name accessor at all, and the one
-// single-name question that can be asked of it — getLastFieldName
-// (FieldValue.java:134-135, delegating to FieldPath.getLastFieldName at
-// FieldValue.java:463-466, which reads getOptionalFieldNames().get(size()-1)) —
-// answers with the LAST accessor. Copying the node whole left Field naming the
-// struct ROOT while Typ and Resolved described the leaf, so a consumer reading
-// Field got a different answer depending on which mint produced the value.
-func fuseNestedAccessors(root values.Value, accessors []semantic.NestedAccessor) (values.Value, error) {
-	fv, ok := root.(*values.FieldValue)
-	if !ok || fv.Resolved == nil {
-		// Every arm of resolveScopedColumn returns a resolved FieldValue or an
-		// error, so this is unreachable from SQL. It is loud rather than a
-		// silent pass-through of the ROOT: returning the struct where the leaf
-		// was asked for is a wrong-column read, which is the one outcome a
-		// descent must never produce.
-		return nil, &NestedDescentError{Root: root}
-	}
-	suffix := make([]values.ResolvedAccessor, len(accessors))
-	for i, a := range accessors {
-		suffix[i] = values.ResolvedAccessor{Field: a.Name, Ordinal: a.Ordinal}
-	}
-	leaf := accessors[len(accessors)-1]
-	out := *fv
-	out.Resolved = fv.Resolved.WithSuffix(&values.FieldPath{Accessors: suffix})
-	out.Typ = columnCascadesType(leaf.Col)
-	out.Field = leaf.Name
-	return &out, nil
-}
-
-// NestedDescentError reports a struct descent whose root reference is not a
-// resolved FieldValue, so the accessor suffix has nothing to attach to.
-type NestedDescentError struct {
-	Root values.Value
-}
-
-func (e *NestedDescentError) Error() string {
-	return fmt.Sprintf("nested field access cannot descend from a %T root reference", e.Root)
 }
 
 // resolveScopedColumn turns an already-resolved (column, source) pair into the
@@ -496,11 +428,21 @@ func (e *UnresolvableOrdinalError) Error() string {
 //
 // nil when the source declares no column order, which is exactly the condition
 // sourceColumnOrdinal declines on, so the two answers cannot disagree.
+// SourceRowType is the exported view of sourceRowType, for callers outside this
+// package that hold a resolved ScopeSource and need the row it flows — the
+// enclosing-WITH bindings a derived body must be typed against, in particular.
+func SourceRowType(src semantic.ScopeSource) *values.RecordType {
+	return sourceRowType(src)
+}
+
 func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 	if src.Table == nil {
 		return nil
 	}
 	cols := src.Table.Columns()
+	if len(src.FlowedColumns) > 0 {
+		cols = src.FlowedColumns
+	}
 	if len(cols) == 0 {
 		return nil
 	}
@@ -508,7 +450,7 @@ func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 	for i, c := range cols {
 		fields[i] = values.Field{Name: c.Id.Name(), FieldType: columnCascadesType(c), Ordinal: i}
 	}
-	return &values.RecordType{Fields: fields}
+	return &values.RecordType{Nullable: src.FlowedNullable, Fields: fields}
 }
 
 // flowedTypeFor is the SINGLE authority on the type a reference's quantifier
@@ -540,13 +482,6 @@ func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 // The DOMAIN is deliberately NOT narrowed the same way: the domain names the
 // layout the resolved ORDINAL indexes, which is the virtual table's column list
 // either way. Only what the quantifier FLOWS is in question here.
-func flowedTypeFor(src semantic.ScopeSource, rowType *values.RecordType) values.Type {
-	if src.Shadowing {
-		return values.UnknownType
-	}
-	return rowType
-}
-
 // sourceColumnOrdinal returns the 0-based position of field within the
 // resolved source's declared column order — the LOGICAL ordinal of the
 // column in the row the source flows. Matching is case-insensitive first-match
@@ -567,17 +502,71 @@ func flowedTypeFor(src semantic.ScopeSource, rowType *values.RecordType) values.
 // The flowed type is returned as a values.Type, not a *RecordType, so a caller
 // CANNOT reach past the decision to the raw row: the shadowing narrowing is
 // applied here once, for everyone, by construction.
-func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, values.Type, values.OrdinalDomain, bool) {
+func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, *values.RecordType, bool) {
 	rowType := sourceRowType(src)
 	if rowType == nil {
-		return 0, nil, values.OrdinalDomain{}, false
+		return 0, nil, false
 	}
 	for i, f := range rowType.Fields {
 		if strings.EqualFold(f.Name, field) {
-			return i, flowedTypeFor(src, rowType), values.OrdinalDomainOfType(rowType), true
+			return i, rowType, true
 		}
 	}
-	return 0, nil, values.OrdinalDomain{}, false
+	return 0, nil, false
+}
+
+// resolvedSourceColumnRef constructs the exact whole-object QOV first, then
+// resolves the complete semantic path atomically. A shadowing source is an
+// UNNEST element: its virtual one-column table is lookup metadata, while the
+// QOV flows the element itself. Therefore the virtual root step is omitted and
+// a scalar element is represented by the QOV directly.
+func resolvedSourceColumnRef(col semantic.Column, src semantic.ScopeSource, accessors []semantic.NestedAccessor) (values.Value, error) {
+	field := col.Id.Name()
+	ordinal, rowType, ok := sourceColumnOrdinal(src, field)
+	if !ok {
+		return nil, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
+	}
+	corrName := src.CorrelationName
+	if corrName == "" {
+		corrName = src.Alias.Name()
+	}
+	if corrName == "" {
+		return nil, fmt.Errorf("column %q has no correlation identity", field)
+	}
+
+	// A scalar lateral-unnest binding uses its virtual table only to resolve
+	// the element name: the QOV is the whole element. WITH ORDINALITY supplies
+	// FlowedColumns and therefore carries a genuine row QOV whose AS/AT columns
+	// are addressed by their physical ordinals.
+	wholeShadowingObject := src.Shadowing && len(src.FlowedColumns) == 0
+	flowed := values.Type(rowType)
+	if wholeShadowingObject {
+		flowed = columnCascadesType(col)
+	}
+	qov, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(corrName), flowed)
+	if err != nil {
+		return nil, fmt.Errorf("resolve column %q exact source type: %w", field, err)
+	}
+	if wholeShadowingObject && len(accessors) == 0 {
+		return qov, nil
+	}
+
+	path := make([]values.FieldRequest, 0, 1+len(accessors))
+	if !wholeShadowingObject {
+		root, requestErr := values.FieldByNameAndOrdinal(field, ordinal)
+		if requestErr != nil {
+			return nil, requestErr
+		}
+		path = append(path, root)
+	}
+	for _, accessor := range accessors {
+		request, requestErr := values.FieldByNameAndOrdinal(accessor.Name, accessor.Ordinal)
+		if requestErr != nil {
+			return nil, requestErr
+		}
+		path = append(path, request)
+	}
+	return values.ResolveFieldAccess(qov, path)
 }
 
 // sourceRelativeColumnRef is THE mint for a column reference that needs no
@@ -589,16 +578,7 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, values.Ty
 // so that "which mint" is a question about the reference's correlation and
 // never a question about whether the descent survives.
 func sourceRelativeColumnRef(col semantic.Column, src semantic.ScopeSource, accessors []semantic.NestedAccessor) (values.Value, error) {
-	field := col.Id.Name()
-	// The row type is discarded here and ONLY here: this arm emits a childless
-	// reference, which has no quantifier object to carry it. Its domain still
-	// states the layout the ordinal indexes.
-	ord, _, domain, ok := sourceColumnOrdinal(src, field)
-	if !ok {
-		return nil, &UnresolvableOrdinalError{Field: field, Source: src.Alias.Name()}
-	}
-	root := values.NewFieldValueWithResolvedOrdinalInDomain(field, ord, columnCascadesType(col), domain)
-	return fuseNestedAccessorsIfAny(root, accessors)
+	return resolvedSourceColumnRef(col, src, accessors)
 }
 
 // correlatedColumnRef is THE mint for a column reference that binds a
@@ -647,31 +627,7 @@ func sourceRelativeColumnRef(col semantic.Column, src semantic.ScopeSource, acce
 // reason flowedTypeFor states: the domain names the layout the ordinal indexes,
 // which is the virtual table's column list either way.
 func correlatedColumnRef(col semantic.Column, src semantic.ScopeSource, accessors []semantic.NestedAccessor) (values.Value, error) {
-	// OUTPUT column name verbatim (see ResolveIdentifier).
-	field := col.Id.Name()
-	ord, flowed, domain, ok := sourceColumnOrdinal(src, field)
-	if !ok {
-		// Unresolvable (computed alias, empty derived-table catalog) is LOUD at
-		// plan time — never a lazy FieldValue that dies later as a runtime
-		// OrdinalResolutionError or, worse, reads by name.
-		return nil, &UnresolvableOrdinalError{Field: field, Source: src.CorrelationName}
-	}
-	// The quantifier object CARRIES the row it flows, as Java's always does
-	// (Quantifier.java:801-803). It used to be minted untyped, and the cost was
-	// measured rather than theoretical: every consumer that derives a frontier
-	// from this child — `legSlotIdentity` and the join-rebase machinery through
-	// it — got an UNKNOWN domain and declined the reference, beside the correct
-	// ordinal stamped on its own path one argument later. All 126 leg-correlated
-	// reads on the real-FDB corpus declined that way, which is what left the
-	// qualified-name channel carrying reads that already knew their slot.
-	root := values.NewCorrelatedFieldValueWithResolvedOrdinalInDomain(
-		values.NewQuantifiedObjectValueOfType(values.NamedCorrelationIdentifier(src.CorrelationName), flowed),
-		field,
-		ord,
-		columnCascadesType(col),
-		domain,
-	)
-	return fuseNestedAccessorsIfAny(root, accessors)
+	return resolvedSourceColumnRef(col, src, accessors)
 }
 
 // ResolveQualifiedProjection resolves a QUALIFIED projection reference on the
@@ -1986,7 +1942,15 @@ func structColumnType(col semantic.Column) values.Type {
 			FieldType: columnCascadesType(f),
 		})
 	}
-	return values.NewRecordType(col.Type, col.Nullable, fields)
+	name := col.StructTypeName
+	if name == "" {
+		// Synthetic semantic catalogs predate nominal STRUCT identity and use
+		// Type="RECORD" as both kind and fixture name. Keep those fixtures
+		// usable while production rlcatalog columns carry the descriptor's exact
+		// full name in StructTypeName.
+		name = col.Type
+	}
+	return values.NewRecordType(name, col.Nullable, fields)
 }
 
 // columnCascadesType maps a resolved semantic.Column to its cascades

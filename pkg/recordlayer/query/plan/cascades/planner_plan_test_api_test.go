@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 )
 
 // Plan runs the planning pipeline under context.Background().
@@ -17,4 +18,19 @@ import (
 // planning tests terse.
 func (p *Planner) Plan(rootRef *expressions.Reference) (expressions.RelationalExpression, int, error) {
 	return p.plan(context.Background(), rootRef)
+}
+
+// withPlanExtractorForTest replaces only this Planner's post-drain extractor.
+// Keeping the setter test-only prevents production callers from bypassing the
+// physical-only extraction contract.
+func (p *Planner) withPlanExtractorForTest(
+	extractor func(
+		context.Context,
+		*expressions.Reference,
+		BestMemberSelector,
+		properties.StatisticsProvider,
+	) (expressions.RelationalExpression, error),
+) *Planner {
+	p.extractPlan = extractor
+	return p
 }

@@ -6,73 +6,43 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
-	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
 var errPlannerLifecycleExtraction = errors.New("planner lifecycle extraction failure")
 
+func mustLifecycleConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct planner-lifecycle fixture: " + err.Error())
+	}
+	return value
+}
+
+func lifecycleRowType() values.Type {
+	return values.NewRecordType("LifecycleRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
 func plannerTestContext() context.Context { return context.Background() }
 
-// plannerLifecycleExtractionErrorExpr is a physical leaf whose extraction
-// rebuilder fails. It exercises a post-task error exit, distinct from the
-// task-cap exit covered below.
-type plannerLifecycleExtractionErrorExpr struct {
-	plan plans.RecordQueryPlan
-}
-
-func (e *plannerLifecycleExtractionErrorExpr) GetResultValue() values.Value {
-	return values.NewNullValue(values.UnknownType)
-}
-
-func (*plannerLifecycleExtractionErrorExpr) GetQuantifiers() []expressions.Quantifier {
-	return nil
-}
-
-func (*plannerLifecycleExtractionErrorExpr) CanCorrelate() bool  { return false }
-func (*plannerLifecycleExtractionErrorExpr) ChildrenAsSet() bool { return false }
-func (*plannerLifecycleExtractionErrorExpr) HashCodeWithoutChildren() uint64 {
-	return 0x637136
-}
-
-func (*plannerLifecycleExtractionErrorExpr) GetCorrelatedToWithoutChildren() map[values.CorrelationIdentifier]struct{} {
-	return nil
-}
-
-func (e *plannerLifecycleExtractionErrorExpr) EqualsWithoutChildren(
-	other expressions.RelationalExpression,
-	_ *expressions.AliasMap,
-) bool {
-	_, ok := other.(*plannerLifecycleExtractionErrorExpr)
-	return ok
-}
-
-func (e *plannerLifecycleExtractionErrorExpr) WithQuantifiers(
-	_ []expressions.Quantifier,
-) expressions.RelationalExpression {
-	return e
-}
-
-func (e *plannerLifecycleExtractionErrorExpr) GetRecordQueryPlan() plans.RecordQueryPlan {
-	return e.plan
-}
-
-func (*plannerLifecycleExtractionErrorExpr) WithChildren(
-	_ []expressions.Quantifier,
-) (expressions.RelationalExpression, error) {
-	return nil, errPlannerLifecycleExtraction
-}
-
 func plannerLifecycleTestRef() *expressions.Reference {
-	return expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	scan := mustLifecycleConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"T"}, lifecycleRowType()))
+	return expressions.InitialOf(scan)
+}
+
+func plannerLifecycleTestPlanner() *Planner {
+	return NewPlanner(DefaultExpressionRules(), nil).
+		WithPlanningExpressionRules(BatchAExpressionRules()).
+		WithImplementationRules(DefaultImplementationRules())
 }
 
 func TestPlanner_RejectsSecondPlanAfterSuccess(t *testing.T) {
 	t.Parallel()
 
-	p := NewPlanner(DefaultExpressionRules(), nil)
+	p := plannerLifecycleTestPlanner()
 	firstRef := plannerLifecycleTestRef()
 	firstPlan, firstTasks, err := p.Plan(firstRef)
 	if err != nil {
@@ -200,9 +170,15 @@ func TestPlanner_RejectsRetryAfterCapError(t *testing.T) {
 func TestPlanner_RejectsRetryAfterExtractionError(t *testing.T) {
 	t.Parallel()
 
-	bad := &plannerLifecycleExtractionErrorExpr{plan: plans.NewRecordQueryValuesPlan(nil)}
-	p := NewPlanner(nil, nil)
-	firstPlan, firstTasks, err := p.Plan(expressions.InitialOf(bad))
+	p := plannerLifecycleTestPlanner().withPlanExtractorForTest(func(
+		context.Context,
+		*expressions.Reference,
+		BestMemberSelector,
+		properties.StatisticsProvider,
+	) (expressions.RelationalExpression, error) {
+		return nil, errPlannerLifecycleExtraction
+	})
+	firstPlan, firstTasks, err := p.Plan(plannerLifecycleTestRef())
 	if !errors.Is(err, errPlannerLifecycleExtraction) {
 		t.Fatalf("first Plan err=%v, want extraction failure", err)
 	}
@@ -255,7 +231,7 @@ func TestPlanner_RejectsRetryAfterExtractionError(t *testing.T) {
 func TestPlanner_NilPlanDoesNotConsumeSingleUseLifecycle(t *testing.T) {
 	t.Parallel()
 
-	p := NewPlanner(DefaultExpressionRules(), nil)
+	p := plannerLifecycleTestPlanner()
 	if plan, tasks, err := p.Plan(nil); err != nil || plan != nil || tasks != 0 {
 		t.Fatalf("Plan(nil) = (%T, %d, %v), want (nil, 0, nil)", plan, tasks, err)
 	}

@@ -398,7 +398,7 @@ func TestTranslatePlannerError_CancellationPassesThrough(t *testing.T) {
 
 // TestPlannerCapHit_ProductionSelectPathSQLSTATE drives the real production
 // SELECT planning path (planSelectCascades — the callsite that discarded
-// planErr) with a join wide enough to genuinely exhaust the 100_000-task
+// planErr) with a join wide enough to genuinely exhaust the configured task
 // budget. It proves the WIRING, not just the classifier: no cap is injected and
 // no seam is used, so the query must actually trip cascades.ErrPlannerCapHit
 // inside the planner and come back out as a class-54 program-limit error
@@ -407,7 +407,7 @@ func TestPlannerCapHit_ProductionSelectPathSQLSTATE(t *testing.T) {
 	t.Parallel()
 
 	g, md := newLoggingGenerator(t, ordersSchema, nil)
-	// Six-way self-join: join enumeration exceeds 100_000 tasks well before the
+	// Six-way self-join: join enumeration exceeds the configured cap well before the
 	// memo converges. Four legs plan fine, so this is the cap tripping and not
 	// an unplannable shape.
 	q := parseQuery(t, "SELECT a.id FROM orders a, orders b, orders c, orders d, orders e, orders f "+
@@ -442,8 +442,8 @@ func TestPlannerCapHit_ProductionSelectPathSQLSTATE(t *testing.T) {
 	if !ok {
 		t.Fatalf("no max_task_count in context %v", apiErr.Context)
 	}
-	if limit != 100_000 {
-		t.Fatalf("max_task_count = %d, want the configured 100000", limit)
+	if limit != embeddedPlannerMaxTasks {
+		t.Fatalf("max_task_count = %d, want the configured %d", limit, embeddedPlannerMaxTasks)
 	}
 	observed, ok := apiErr.Context["task_count"].(int)
 	if !ok {

@@ -11,11 +11,15 @@ import (
 // aliasVariantFilter builds Filter(QOV(q)=1, →scanRef) with a FRESH quantifier
 // alias each call — two such filters are equivalent but differ in the alias
 // their predicate references.
-func aliasVariantFilter(scanRef *expressions.Reference) expressions.RelationalExpression {
+func aliasVariantFilter(t testing.TB, scanRef *expressions.Reference) expressions.RelationalExpression {
+	t.Helper()
 	q := expressions.ForEachQuantifier(scanRef)
-	pred := predicates.NewComparisonPredicate(values.NewQuantifiedObjectValue(q.GetAlias()),
-		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}})
-	return expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q)
+	qovValue, err := values.NewQuantifiedObjectValue(q.GetAlias(), values.NotNullLong)
+	qov := mustConstruct(t, qovValue, err)
+	pred := predicates.NewComparisonPredicate(qov,
+		predicates.Comparison{Type: predicates.ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong}})
+	filter, err := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, q)
+	return mustConstruct(t, filter, err)
 }
 
 // TestMemoActivation_InternsAliasVariants proves the PR-A activation: the memo
@@ -23,12 +27,12 @@ func aliasVariantFilter(scanRef *expressions.Reference) expressions.RelationalEx
 // MemoizeExpression — which it could NOT before (alias-sensitive interning).
 func TestMemoActivation_InternsAliasVariants(t *testing.T) {
 	t.Parallel()
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanRef := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong))
 	m := NewMemo(nil)
 	m.RegisterReference(scanRef)
 
-	refA := m.MemoizeExpression(aliasVariantFilter(scanRef))
-	refB := m.MemoizeExpression(aliasVariantFilter(scanRef))
+	refA := m.MemoizeExpression(aliasVariantFilter(t, scanRef))
+	refB := m.MemoizeExpression(aliasVariantFilter(t, scanRef))
 
 	if refA.Canonical() != refB.Canonical() {
 		t.Fatal("ACTIVATION FAILED: alias-variant filters should intern to the SAME Reference now")
@@ -42,13 +46,13 @@ func TestMemoActivation_InternsAliasVariants(t *testing.T) {
 func TestMemoActivation_BroadInterningCollapsesK(t *testing.T) {
 	t.Parallel()
 	const k = 6
-	scanRef := expressions.InitialOf(expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))
+	scanRef := expressions.InitialOf(mustFullUnorderedScan(t, []string{"T"}, values.NotNullLong))
 	m := NewMemo(nil)
 	m.RegisterReference(scanRef)
 
 	canon := map[*expressions.Reference]struct{}{}
 	for i := 0; i < k; i++ {
-		ref := m.MemoizeExpression(aliasVariantFilter(scanRef)) // fresh alias each time
+		ref := m.MemoizeExpression(aliasVariantFilter(t, scanRef)) // fresh alias each time
 		canon[ref.Canonical()] = struct{}{}
 	}
 	if len(canon) != 1 {

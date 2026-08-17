@@ -14,11 +14,116 @@ import (
 //	  → Filter([pInner])
 //	    → Scan(Order)
 func buildNestedFilter(pOuter, pInner predicates.QueryPredicate) *expressions.LogicalFilterExpression {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := filterRuleScan("Order")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	innerFilter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pInner}, scanQ)
+	innerFilter := filterRuleFilter([]predicates.QueryPredicate{pInner}, scanQ)
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerFilter))
-	return expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pOuter}, innerQ)
+	return filterRuleFilter([]predicates.QueryPredicate{pOuter}, innerQ)
+}
+
+func requireFilterMergeOnlyCorrelation(
+	t testing.TB,
+	predicate predicates.QueryPredicate,
+	want values.CorrelationIdentifier,
+) {
+	t.Helper()
+	correlated := predicates.GetCorrelatedToOfPredicate(predicate)
+	if len(correlated) != 1 {
+		t.Fatalf("predicate correlations = %v, want only %q", correlated, want.Name())
+	}
+	if _, ok := correlated[want]; !ok {
+		t.Fatalf("predicate correlations = %v, want only %q", correlated, want.Name())
+	}
+}
+
+func TestFilterMergeRule_TranslatesOnlyExactOuterEdge(t *testing.T) {
+	t.Parallel()
+
+	replacementAlias := values.NamedCorrelationIdentifier("T")
+	scanQ := expressions.NamedForEachQuantifier(
+		replacementAlias,
+		expressions.InitialOf(filterRuleScan("T")),
+	)
+	innerPredicate := qFieldPred(t, scanQ, "x", predicates.Comparison{Type: predicates.ComparisonIsNotNull})
+	innerFilter := filterRuleFilter([]predicates.QueryPredicate{innerPredicate}, scanQ)
+
+	outerAlias := values.NamedCorrelationIdentifier("D")
+	outerQ := expressions.NamedForEachQuantifier(outerAlias, expressions.InitialOf(innerFilter))
+	ownedPredicate := qFieldPred(t, outerQ, "a", predicates.Comparison{Type: predicates.ComparisonIsNotNull})
+
+	foreignAlias := values.NamedCorrelationIdentifier("FOREIGN")
+	foreignQ := expressions.NamedForEachQuantifier(
+		foreignAlias,
+		expressions.InitialOf(filterRuleScan("FOREIGN")),
+	)
+	foreignPredicate := qFieldPred(t, foreignQ, "b", predicates.Comparison{Type: predicates.ComparisonIsNotNull})
+
+	// A retained source window may conventionally reuse the removed edge's
+	// alias. Its different exact record identity is authoritative — and that
+	// identity is the row's SHAPE: the RecordName is provenance and compares
+	// equal (Java's Type.Record.equals), so the window carries an extra column
+	// the edge's row does not. The predicate below still reads `c`, which is
+	// byte-identical on both, so the alias and the accessor coincide exactly as
+	// the case intends and only the row shape tells them apart.
+	retainedType := values.NewRecordType("RetainedFilterWindow", false, []values.Field{
+		{Name: "a", FieldType: values.NullableLong},
+		{Name: "b", FieldType: values.NullableLong},
+		{Name: "c", FieldType: values.NullableLong},
+		{Name: "x", FieldType: values.NullableLong},
+		{Name: "retained_only", FieldType: values.NullableLong},
+	})
+	retainedScan := mustFilterConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{"RETAINED"}, retainedType))
+	retainedQ := expressions.NamedForEachQuantifier(
+		outerAlias,
+		expressions.InitialOf(retainedScan),
+	)
+	retainedPredicate := qFieldPred(t, retainedQ, "c", predicates.Comparison{Type: predicates.ComparisonIsNotNull})
+
+	outerFilter := filterRuleFilter(
+		[]predicates.QueryPredicate{ownedPredicate, foreignPredicate, retainedPredicate},
+		outerQ,
+	)
+	yielded := fireFilterRule(t, NewFilterMergeRule(), expressions.InitialOf(outerFilter))
+	if len(yielded) != 1 {
+		t.Fatalf("FilterMergeRule yielded %d expressions, want 1", len(yielded))
+	}
+	merged, ok := yielded[0].(*expressions.LogicalFilterExpression)
+	if !ok {
+		t.Fatalf("yielded type = %T, want *LogicalFilterExpression", yielded[0])
+	}
+	mergedPredicates := merged.GetPredicates()
+	if len(mergedPredicates) != 4 {
+		t.Fatalf("merged predicate count = %d, want 4", len(mergedPredicates))
+	}
+
+	if mergedPredicates[0] == ownedPredicate {
+		t.Fatal("owned outer predicate was not rebuilt onto the replacement edge")
+	}
+	requireFilterMergeOnlyCorrelation(t, mergedPredicates[0], replacementAlias)
+	if mergedPredicates[1] != foreignPredicate {
+		t.Fatal("foreign predicate was rebuilt")
+	}
+	requireFilterMergeOnlyCorrelation(t, mergedPredicates[1], foreignAlias)
+	if mergedPredicates[2] != retainedPredicate {
+		t.Fatal("same-alias predicate with a different exact type was rebuilt")
+	}
+	requireFilterMergeOnlyCorrelation(t, mergedPredicates[2], outerAlias)
+	if mergedPredicates[3] != innerPredicate {
+		t.Fatal("inner predicate was rebuilt")
+	}
+	requireFilterMergeOnlyCorrelation(t, mergedPredicates[3], replacementAlias)
+
+	// The rule is copy-on-write: its source graph still declares the outer
+	// predicate on D, and both guarded predicates remain pointer-identical.
+	requireFilterMergeOnlyCorrelation(t, ownedPredicate, outerAlias)
+	requireFilterMergeOnlyCorrelation(t, foreignPredicate, foreignAlias)
+	requireFilterMergeOnlyCorrelation(t, retainedPredicate, outerAlias)
+	if outerFilter.GetPredicates()[0] != ownedPredicate ||
+		outerFilter.GetPredicates()[1] != foreignPredicate ||
+		outerFilter.GetPredicates()[2] != retainedPredicate {
+		t.Fatal("source outer filter predicates were mutated")
+	}
 }
 
 func TestFilterMergeRule_FiresOnNestedFilter(t *testing.T) {
@@ -29,7 +134,7 @@ func TestFilterMergeRule_FiresOnNestedFilter(t *testing.T) {
 	ref := expressions.InitialOf(outer)
 
 	rule := NewFilterMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireFilterRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("FilterMergeRule yielded %d expressions, want 1", len(yielded))
 	}
@@ -61,14 +166,14 @@ func TestFilterMergeRule_FiresOnNestedFilter(t *testing.T) {
 
 func TestFilterMergeRule_DeclinesOnSingleFilter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := filterRuleScan("Order")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{pred}, scanQ)
+	filter := filterRuleFilter([]predicates.QueryPredicate{pred}, scanQ)
 	ref := expressions.InitialOf(filter)
 
 	rule := NewFilterMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireFilterRule(t, rule, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("FilterMergeRule fired on a single Filter (no nested inner) — yielded %d, want 0", len(yielded))
 	}
@@ -76,10 +181,10 @@ func TestFilterMergeRule_DeclinesOnSingleFilter(t *testing.T) {
 
 func TestFilterMergeRule_DeclinesOnNonFilter(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := filterRuleScan("Order")
 	ref := expressions.InitialOf(scan)
 	rule := NewFilterMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireFilterRule(t, rule, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("FilterMergeRule fired on a Scan (no Filter at all) — yielded %d, want 0", len(yielded))
 	}
@@ -91,20 +196,20 @@ func TestFilterMergeRule_PredicateOrderPreserved(t *testing.T) {
 	// FilterMergeRule fires once at a time (operates on the OUTER level).
 	// First fire merges (p1, p2) → Filter(p1, p2) → Filter(p3) → Scan.
 	// (Subsequent fires would continue, but we test one fire here.)
-	scan := expressions.NewFullUnorderedScanExpression([]string{"Order"}, values.UnknownType)
+	scan := filterRuleScan("Order")
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
 	p3 := predicates.NewConstantPredicate(predicates.TriTrue)
-	f3 := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{p3}, scanQ)
+	f3 := filterRuleFilter([]predicates.QueryPredicate{p3}, scanQ)
 	f3Q := expressions.ForEachQuantifier(expressions.InitialOf(f3))
 	p2 := predicates.NewConstantPredicate(predicates.TriFalse)
-	f2 := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{p2}, f3Q)
+	f2 := filterRuleFilter([]predicates.QueryPredicate{p2}, f3Q)
 	f2Q := expressions.ForEachQuantifier(expressions.InitialOf(f2))
 	p1 := predicates.NewConstantPredicate(predicates.TriTrue)
-	f1 := expressions.NewLogicalFilterExpression([]predicates.QueryPredicate{p1}, f2Q)
+	f1 := filterRuleFilter([]predicates.QueryPredicate{p1}, f2Q)
 	ref := expressions.InitialOf(f1)
 
 	rule := NewFilterMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireFilterRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}

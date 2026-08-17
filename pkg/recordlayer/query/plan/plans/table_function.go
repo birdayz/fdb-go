@@ -23,21 +23,24 @@ type RecordQueryTableFunctionPlan struct {
 	resultValue values.Value
 }
 
-func NewRecordQueryTableFunctionPlan(streamValue values.Value) *RecordQueryTableFunctionPlan {
-	return &RecordQueryTableFunctionPlan{
-		streamValue: streamValue,
-		resultValue: values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+func NewRecordQueryTableFunctionPlan(streamValue values.Value) (*RecordQueryTableFunctionPlan, error) {
+	if streamValue == nil {
+		return nil, fmt.Errorf("RecordQueryTableFunctionPlan: stream Value is nil")
 	}
+	base, err := newPlanExprBaseForType("RecordQueryTableFunctionPlan", streamValue.Type())
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryTableFunctionPlan{
+		PlanExprBase: base,
+		streamValue:  streamValue,
+		resultValue:  base.resultValue,
+	}, nil
 }
 
 func (p *RecordQueryTableFunctionPlan) GetStreamValue() values.Value { return p.streamValue }
 
-func (p *RecordQueryTableFunctionPlan) GetResultType() values.Type {
-	if p.streamValue == nil {
-		return values.UnknownType
-	}
-	return p.streamValue.Type()
-}
+func (p *RecordQueryTableFunctionPlan) GetResultType() values.Type { return p.resultValue.Type() }
 
 func (p *RecordQueryTableFunctionPlan) GetChildren() []RecordQueryPlan { return nil }
 
@@ -77,18 +80,17 @@ func (p *RecordQueryTableFunctionPlan) EqualsWithoutChildren(other expressions.R
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryTableFunctionPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryTableFunctionPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryTableFunctionPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetResultValue returns the table function's STABLE per-instance result value —
 // the single correlation identity a bare table function carries as its own memo
-// expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
-// struct-literal test plans that bypass the constructor (resultValue is nil).
+// expression (RFC-184 W2).
 func (p *RecordQueryTableFunctionPlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 

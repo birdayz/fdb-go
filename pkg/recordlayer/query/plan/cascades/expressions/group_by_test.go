@@ -24,8 +24,8 @@ func TestIsCountStar(t *testing.T) {
 		{"COUNT(1)", AggregateSpec{Function: AggCount, Operand: &values.ConstantValue{Value: int64(1)}}, true},
 		{"COUNT(NULL)", AggregateSpec{Function: AggCount, Operand: &values.ConstantValue{Value: nil}}, true},
 		{"COUNT(TRUE)", AggregateSpec{Function: AggCount, Operand: &values.ConstantValue{Value: true}}, true},
-		{"COUNT(col)", AggregateSpec{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}, false},
-		{"SUM(col)", AggregateSpec{Function: AggSum, Operand: &values.FieldValue{Field: "amount", Typ: values.UnknownType}}, false},
+		{"COUNT(col)", AggregateSpec{Function: AggCount, Operand: testField("id", values.NotNullLong)}, false},
+		{"SUM(col)", AggregateSpec{Function: AggSum, Operand: testField("amount", values.NotNullLong)}, false},
 		{"SUM(const) is not count-star", AggregateSpec{Function: AggSum, Operand: &values.ConstantValue{Value: int64(1)}}, false},
 		{"MAX(*)-shape non-count", AggregateSpec{Function: AggMax, Operand: nil}, false},
 	}
@@ -38,16 +38,16 @@ func TestIsCountStar(t *testing.T) {
 
 func TestGroupByExpression_EqualsWithoutChildren_SameKeys(t *testing.T) {
 	t.Parallel()
-	a := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
-	b := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
+	a := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("region", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
+	b := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("region", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
 	if !a.EqualsWithoutChildren(b, nil) {
 		t.Fatal("same GroupBy keys should be equal")
 	}
@@ -55,16 +55,16 @@ func TestGroupByExpression_EqualsWithoutChildren_SameKeys(t *testing.T) {
 
 func TestGroupByExpression_EqualsWithoutChildren_DifferentKeys(t *testing.T) {
 	t.Parallel()
-	a := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
-	b := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "city", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
+	a := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("region", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
+	b := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("city", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
 	if a.EqualsWithoutChildren(b, nil) {
 		t.Fatal("different GroupBy keys should NOT be equal")
 	}
@@ -72,16 +72,16 @@ func TestGroupByExpression_EqualsWithoutChildren_DifferentKeys(t *testing.T) {
 
 func TestGroupByExpression_EqualsWithoutChildren_DifferentAggFunctions(t *testing.T) {
 	t.Parallel()
-	a := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
-	b := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggSum, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
+	a := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("region", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
+	b := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("region", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggSum, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
 	if a.EqualsWithoutChildren(b, nil) {
 		t.Fatal("different aggregate functions should NOT be equal")
 	}
@@ -89,16 +89,16 @@ func TestGroupByExpression_EqualsWithoutChildren_DifferentAggFunctions(t *testin
 
 func TestGroupByExpression_EqualsWithoutChildren_DifferentAggOperands(t *testing.T) {
 	t.Parallel()
-	a := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
-	b := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "name", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
+	a := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("region", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
+	b := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("region", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("name", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
 	if a.EqualsWithoutChildren(b, nil) {
 		t.Fatal("different aggregate operands should NOT be equal")
 	}
@@ -106,16 +106,16 @@ func TestGroupByExpression_EqualsWithoutChildren_DifferentAggOperands(t *testing
 
 func TestGroupByExpression_HashCodeWithoutChildren_Distinct(t *testing.T) {
 	t.Parallel()
-	a := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "region", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
-	b := NewGroupByExpression(
-		[]values.Value{&values.FieldValue{Field: "city", Typ: values.UnknownType}},
-		[]AggregateSpec{{Function: AggCount, Operand: &values.FieldValue{Field: "id", Typ: values.UnknownType}}},
-		ForEachQuantifier(InitialOf(NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType))),
-	)
+	a := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("region", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
+	b := mustExpression(NewGroupByExpression(
+		[]values.Value{testField("city", values.NotNullLong)},
+		[]AggregateSpec{{Function: AggCount, Operand: testField("id", values.NotNullLong)}},
+		ForEachQuantifier(InitialOf(mustExpression(NewFullUnorderedScanExpression([]string{"T"}, values.NotNullLong))))))
+
 	if a.HashCodeWithoutChildren() == b.HashCodeWithoutChildren() {
 		t.Fatal("different GroupBy keys should produce different hash codes (collision possible but unlikely with these inputs)")
 	}

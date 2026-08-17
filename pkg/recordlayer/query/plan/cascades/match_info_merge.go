@@ -456,34 +456,56 @@ func pullUpGroupByValue(
 			// shortcut translates the alias while preserving the concrete
 			// queried-record carrier. The generic MatchValue rule would
 			// instead produce a QuantifiedObjectValue.
-			return values.RebaseValue(
-				quantifiedRecord,
-				values.AliasMap{quantifiedRecord.Alias: upperAlias},
-			), true
+			aliases, err := values.NewAliasMap([]values.AliasPair{{
+				Source: quantifiedRecord.Alias,
+				Target: upperAlias,
+			}})
+			if err != nil {
+				return nil, false
+			}
+			// Checked, because `nil, true` in this function is the LEGITIMATE
+			// "no pull-up available" answer: a rebase that failed would return
+			// exactly that and be read as a lawful decline by the caller.
+			rebased, rebaseErr := values.RebaseValueChecked(quantifiedRecord, aliases)
+			if rebaseErr != nil {
+				return nil, false
+			}
+			return rebased, true
 		}
-		return values.NewQuantifiedObjectValueOfType(
+		qov, err := values.NewQuantifiedObjectValue(
 			upperAlias,
 			resultValue.Type(),
-		), true
+		)
+		return qov, err == nil
 	}
 
-	switch result := resultValue.(type) {
-	case *values.QuantifiedObjectValue:
+	if result, isQOV := values.AsQuantifiedObjectValue(resultValue); isQOV {
 		if containsUnanchoredFieldValue(value) {
 			return nil, true
 		}
 		allowedAliases := copyCorrelationSet(constantAliases)
-		allowedAliases[result.Correlation] = struct{}{}
+		allowedAliases[result.Correlation()] = struct{}{}
 		if !correlationSetContainsAll(
 			allowedAliases,
 			values.GetCorrelatedToOfValue(value),
 		) {
 			return nil, true
 		}
-		return values.RebaseValue(
-			value,
-			values.AliasMap{result.Correlation: upperAlias},
-		), true
+		aliases, err := values.NewAliasMap([]values.AliasPair{{
+			Source: result.Correlation(),
+			Target: upperAlias,
+		}})
+		if err != nil {
+			return nil, false
+		}
+		rebased, rebaseErr := values.RebaseValueChecked(value, aliases)
+		if rebaseErr != nil {
+			return nil, false
+		}
+		return rebased, true
+	}
+
+	switch result := resultValue.(type) {
 	case *values.QuantifiedRecordValue:
 		if containsUnanchoredFieldValue(value) {
 			return nil, true
@@ -496,10 +518,18 @@ func pullUpGroupByValue(
 		) {
 			return nil, true
 		}
-		return values.RebaseValue(
-			value,
-			values.AliasMap{result.Alias: upperAlias},
-		), true
+		aliases, err := values.NewAliasMap([]values.AliasPair{{
+			Source: result.Alias,
+			Target: upperAlias,
+		}})
+		if err != nil {
+			return nil, false
+		}
+		rebased, rebaseErr := values.RebaseValueChecked(value, aliases)
+		if rebaseErr != nil {
+			return nil, false
+		}
+		return rebased, true
 	case *values.ObjectValue:
 		// Java ObjectValue is a plain LeafValue, not a QuantifiedValue.
 		// It has neither the quantified passthrough shortcut nor a
@@ -514,13 +544,17 @@ func pullUpGroupByValue(
 		// deliberately not special-cased here: their recursive rule
 		// traversal must detect every result, including ambiguity, before a
 		// one-result API can return.
-		return values.PullUpValue(value, resultValue, upperAlias), true
+		pulled, err := values.PullUpValue(value, resultValue, upperAlias)
+		return pulled, err == nil
 	}
 
-	upperBase := values.NewQuantifiedObjectValueOfType(
+	upperBase, err := values.NewQuantifiedObjectValue(
 		upperAlias,
 		resultValue.Type(),
 	)
+	if err != nil {
+		return nil, false
+	}
 	var unique []values.Value
 	for _, compensation := range compensations {
 		candidate := compensation(upperBase)
@@ -568,6 +602,35 @@ func collectGroupPullUpCompensations(
 			func(upper values.Value) values.Value { return upper },
 		}
 	}
+	if resultField, isField := values.AsFieldValue(result); isField {
+		// MatchOrCompensateFieldValueRule also consumes a field
+		// compensation produced by the result's child. The most important
+		// form is field(record{x: lower}, x): simplify the constructor
+		// projection first, then compare canonical ordinal paths.
+		if simplified := values.SimplifyValue(result); simplified != result {
+			return collectGroupPullUpCompensations(requested, simplified)
+		}
+
+		requestedField, ok := values.AsFieldValue(requested)
+		if !ok {
+			return nil
+		}
+		resultBase, resultPath, resultOK := decomposeGroupFieldPath(resultField)
+		requestedBase, requestedPath, requestedOK := decomposeGroupFieldPath(requestedField)
+		if !resultOK || !requestedOK || resultBase == nil ||
+			!values.ValuesStructurallyEqual(resultBase, requestedBase) {
+			return nil
+		}
+		suffix, prefixOK := stripGroupFieldPathPrefix(requestedPath, resultPath)
+		if !prefixOK {
+			return nil
+		}
+		return []groupPullUpCompensation{
+			func(upper values.Value) values.Value {
+				return applyGroupFieldPath(upper, suffix, requested.Type())
+			},
+		}
+	}
 
 	switch result := result.(type) {
 	case *values.RecordConstructorValue:
@@ -601,49 +664,12 @@ func collectGroupPullUpCompensations(
 		}
 		return compensations
 
-	case *values.FieldValue:
-		// MatchOrCompensateFieldValueRule also consumes a field
-		// compensation produced by the result's child. The most important
-		// form is field(record{x: lower}, x): the constructor first prefixes
-		// a child's compensation with x, then the enclosing field removes
-		// that same prefix. Go's value simplifier performs the equivalent
-		// constructor projection, after which the recursive matcher retains
-		// only the downstream compensation.
-		if simplified := values.SimplifyValue(result); simplified != result {
-			return collectGroupPullUpCompensations(requested, simplified)
+	default:
+		resultQOV, isResultQOV := values.AsQuantifiedObjectValue(result)
+		if !isResultQOV {
+			break
 		}
-
-		requestedField, ok := requested.(*values.FieldValue)
-		if !ok {
-			return nil
-		}
-		resultBase, resultPath, resultOK := decomposeGroupFieldPath(result)
-		requestedBase, requestedPath, requestedOK := decomposeGroupFieldPath(requestedField)
-		if !resultOK ||
-			!requestedOK ||
-			resultBase == nil ||
-			!values.ValuesStructurallyEqual(resultBase, requestedBase) {
-			return nil
-		}
-		suffix, prefixOK := stripGroupFieldPathPrefix(
-			requestedPath,
-			resultPath,
-		)
-		if !prefixOK {
-			return nil
-		}
-		return []groupPullUpCompensation{
-			func(upper values.Value) values.Value {
-				return applyGroupFieldPath(
-					upper,
-					suffix,
-					requested.Type(),
-				)
-			},
-		}
-
-	case *values.QuantifiedObjectValue:
-		if requestedField, ok := requested.(*values.FieldValue); ok {
+		if requestedField, ok := values.AsFieldValue(requested); ok {
 			requestedBase, requestedPath, pathOK := decomposeGroupFieldPath(requestedField)
 			if !pathOK ||
 				requestedBase == nil ||
@@ -660,20 +686,20 @@ func collectGroupPullUpCompensations(
 				},
 			}
 		}
-		if _, isQuantifiedObject := requested.(*values.QuantifiedObjectValue); isQuantifiedObject {
+		if _, isQuantifiedObject := values.AsQuantifiedObjectValue(requested); isQuantifiedObject {
 			return nil
 		}
 		correlatedTo := values.GetCorrelatedToOfValue(requested)
 		if len(correlatedTo) != 1 {
 			return nil
 		}
-		if _, matchesResultAlias := correlatedTo[result.Correlation]; !matchesResultAlias {
+		if _, matchesResultAlias := correlatedTo[resultQOV.Correlation()]; !matchesResultAlias {
 			return nil
 		}
 		return []groupPullUpCompensation{
 			func(upper values.Value) values.Value {
 				translation := values.NewTranslationMapBuilder().
-					When(result.Correlation).
+					When(resultQOV.Correlation()).
 					Then(func(
 						_ values.CorrelationIdentifier,
 						_ values.Value,
@@ -701,37 +727,29 @@ type groupFieldPathStep struct {
 // constructor output, but prefix arithmetic without a base could conflate two
 // sources.
 func decomposeGroupFieldPath(
-	field *values.FieldValue,
+	field values.FieldValue,
 ) (values.Value, []groupFieldPathStep, bool) {
-	if field == nil || field.Child == nil {
+	if field == nil || field.ChildValue() == nil || field.Path() == nil {
 		return nil, nil, false
 	}
-
-	base := field.Child
-	var path []groupFieldPathStep
-	if childField, ok := field.Child.(*values.FieldValue); ok {
-		var childOK bool
-		base, path, childOK = decomposeGroupFieldPath(childField)
-		if !childOK {
+	pathView := field.Path()
+	if pathView.Len() == 0 {
+		return nil, nil, false
+	}
+	path := make([]groupFieldPathStep, 0, pathView.Len())
+	for i, ordinal := range pathView.Ordinals() {
+		accessor, ok := pathView.Accessor(i)
+		if !ok {
 			return nil, nil, false
 		}
-	}
-
-	if field.Resolved == nil {
-		path = append(path, groupFieldPathStep{field: field.Field})
-		return base, path, true
-	}
-	if len(field.Resolved.Accessors) == 0 {
-		return nil, nil, false
-	}
-	for _, accessor := range field.Resolved.Accessors {
+		name, _ := accessor.DisplayName()
 		path = append(path, groupFieldPathStep{
-			field:    accessor.Field,
-			ordinal:  accessor.Ordinal,
+			field:    name,
+			ordinal:  ordinal,
 			resolved: true,
 		})
 	}
-	return base, path, true
+	return field.ChildValue(), path, true
 }
 
 func stripGroupFieldPathPrefix(
@@ -763,60 +781,21 @@ func applyGroupFieldPath(
 	path []groupFieldPathStep,
 	resultType values.Type,
 ) values.Value {
-	current := base
-	for i, step := range path {
-		stepType := values.UnknownType
-		if i == len(path)-1 {
-			stepType = resultType
-		}
-		if !step.resolved {
-			current = &values.FieldValue{
-				Field: step.field,
-				Typ:   stepType,
-				Child: current,
-			}
-			continue
-		}
-
-		// DERIVE the domain rather than mint it unknown. The step reads a
-		// field OUT OF `current`, so the layout its ordinal indexes is
-		// current's own result type — the rebuilt reference states the same
-		// layout the decomposed one resolved against, and a pull-up through
-		// this walk stops degrading a domain-checkable node into one that
-		// fails closed.
-		//
-		// This is RFC-197's working rule ("derive the domain when the child is
-		// typed; store the token only when it is not"), and it is why Java
-		// needs no token at all: Java's FieldValue.childValue is non-null and
-		// typed, so the frontier always rides the child. A child that is not a
-		// record type derives the UNKNOWN token — unchanged fail-closed
-		// behaviour, now by measurement instead of by omission.
-		stepPath := values.NewFieldPathOfSingleInDomain(
-			step.field,
-			step.ordinal,
-			false,
-			values.OrdinalDomainOfType(current.Type()),
-		)
-		if inner, ok := current.(*values.FieldValue); ok &&
-			inner.Resolved != nil &&
-			inner.Child != nil {
-			fused := inner.Resolved.WithSuffix(stepPath)
-			current = &values.FieldValue{
-				Field:    fused.Last().Field,
-				Typ:      stepType,
-				Child:    inner.Child,
-				Resolved: fused,
-			}
-			continue
-		}
-		current = &values.FieldValue{
-			Field:    step.field,
-			Typ:      stepType,
-			Child:    current,
-			Resolved: stepPath,
-		}
+	if len(path) == 0 {
+		return base
 	}
-	return current
+	ordinals := make([]int, len(path))
+	for i, step := range path {
+		if !step.resolved || step.ordinal < 0 {
+			return nil
+		}
+		ordinals[i] = step.ordinal
+	}
+	resolved, err := values.ResolveFieldOrdinals(base, ordinals)
+	if err != nil || !sameExactType(resolved.Type(), resultType) {
+		return nil
+	}
+	return resolved
 }
 
 func groupPullUpValueIsConstant(
@@ -838,17 +817,10 @@ func groupPullUpValueIsConstant(
 			*values.QueriedValue:
 			allowed = false
 			return false
-		case *values.FieldValue:
-			field := node.(*values.FieldValue)
-			if field.Child == nil {
-				// Java FieldValue always has a base. Go's legacy flat
-				// representation carries no correlation and therefore
-				// cannot be proven constant in a multi-source parent.
-				allowed = false
-				return false
-			}
-			return true
 		default:
+			if _, ok := values.AsFieldValue(node); ok {
+				return true
+			}
 			return true
 		}
 	})
@@ -856,16 +828,8 @@ func groupPullUpValueIsConstant(
 }
 
 func containsUnanchoredFieldValue(value values.Value) bool {
-	found := false
-	values.WalkValue(value, func(node values.Value) bool {
-		field, ok := node.(*values.FieldValue)
-		if ok && field.Child == nil {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
+	// Every admitted RFC-232 FieldValue is QOV-rooted by construction.
+	return false
 }
 
 func copyCorrelationSet(

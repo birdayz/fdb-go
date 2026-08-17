@@ -10,7 +10,7 @@ func TestSemanticEqualsUnderAliasMap_AliasAware(t *testing.T) {
 	t.Parallel()
 	mk := func(c values.CorrelationIdentifier) QueryPredicate {
 		return NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(c),
+			mustQOV(t, c),
 			Comparison{Type: ComparisonEquals, Operand: &values.ConstantValue{Value: int64(1)}},
 		)
 	}
@@ -18,11 +18,11 @@ func TestSemanticEqualsUnderAliasMap_AliasAware(t *testing.T) {
 	qb := values.NamedCorrelationIdentifier("q_b")
 	a, b := mk(qa), mk(qb)
 
-	aliases := values.AliasMap{qa: qb}
+	aliases := mustAliasMap(t, values.AliasPair{Source: qa, Target: qb})
 	if !SemanticEqualsUnderAliasMap(a, b, aliases) {
 		t.Fatal("alias-variant predicates must be equal under the mapping")
 	}
-	if SemanticEqualsUnderAliasMap(a, b, values.AliasMap{}) {
+	if SemanticEqualsUnderAliasMap(a, b, nil) {
 		t.Fatal("must NOT be equal under empty alias map (different aliases)")
 	}
 	// Consistency with the alias-invariant hash.
@@ -30,11 +30,11 @@ func TestSemanticEqualsUnderAliasMap_AliasAware(t *testing.T) {
 		t.Fatal("equal-under-aliases predicates must have equal SemanticHashCode")
 	}
 	// Identity: same alias equal under empty map.
-	if !SemanticEqualsUnderAliasMap(mk(qa), mk(qa), values.AliasMap{}) {
+	if !SemanticEqualsUnderAliasMap(mk(qa), mk(qa), nil) {
 		t.Fatal("identical predicates must be equal under empty map")
 	}
 	// Negative: different constant.
-	c := NewComparisonPredicate(values.NewQuantifiedObjectValue(qa),
+	c := NewComparisonPredicate(mustQOV(t, qa),
 		Comparison{Type: ComparisonEquals, Operand: &values.ConstantValue{Value: int64(2)}})
 	if SemanticEqualsUnderAliasMap(a, c, aliases) {
 		t.Fatal("different RHS constant must not be equal")

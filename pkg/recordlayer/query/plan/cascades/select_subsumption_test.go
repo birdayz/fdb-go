@@ -122,7 +122,11 @@ func TestValidateSelectSubsumptionMappingExistentialToForEachCardinalityGate(
 			if quantifier.Kind() == expressions.QuantifierExistential {
 				queryPredicates = append(
 					queryPredicates,
-					predicates.NewExistentialAlias(quantifier.GetAlias()),
+					mustExistentialAlias(
+						t,
+						quantifier.GetAlias(),
+						selectSubsumptionTestRowType(),
+					),
 				)
 			}
 		}
@@ -309,7 +313,11 @@ func TestSelectSubsumptionMappingExistentialToExistentialNeedsNoDistinct(
 	query := selectSubsumptionTestSelect(
 		queryQuantifiers,
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(queryQuantifiers[1].GetAlias()),
+			mustExistentialAlias(
+				t,
+				queryQuantifiers[1].GetAlias(),
+				selectSubsumptionTestRowType(),
+			),
 		},
 		expressions.JoinInner,
 	)
@@ -394,7 +402,8 @@ func TestEnumerateSelectSubsumptionMappingsRejectsUnownedExactButVisitsForEachSu
 			queryQuantifiers[0].GetAlias(),
 			candidateQuantifiers[0].GetAlias(),
 		) {
-		t.Fatalf("visited alias map = %#v, want FE binding", aliasMaps[0].ForwardMap())
+		forward, err := aliasMaps[0].ForwardMap()
+		t.Fatalf("visited alias map = %#v (error %v), want FE binding", forward, err)
 	}
 }
 
@@ -501,10 +510,7 @@ func TestSelectSubsumptionChildMatchesCanBeDeferred(t *testing.T) {
 		ref,
 	)
 	deferable := selectSubsumptionTestPartialMatch(
-		expressions.NewFullUnorderedScanExpression(
-			[]string{"deferable"},
-			values.UnknownType,
-		),
+		selectSubsumptionTestScan("deferable"),
 	)
 	notDeferable := selectSubsumptionTestPartialMatch(
 		selectSubsumptionTestSelect(
@@ -886,7 +892,8 @@ func TestValidateSelectSubsumptionMappingCompleteForEachCoverage(t *testing.T) {
 			queryQuantifiers[2].GetAlias(),
 			candidateQuantifiers[2].GetAlias(),
 		) {
-		t.Fatalf("unexpected selected alias map: %#v", aliasMap.ForwardMap())
+		forward, err := aliasMap.ForwardMap()
+		t.Fatalf("unexpected selected alias map: %#v (error %v)", forward, err)
 	}
 
 	tests := []struct {
@@ -1000,37 +1007,35 @@ func TestValidateSelectSubsumptionMappingMatchedExistentialOwnership(
 		{queryIndex: 1, candidateIndex: 1},
 	}
 
-	exactOwner := predicates.NewExistentialAlias(queryExistentialAlias)
+	exactOwner := mustExistentialAlias(
+		t,
+		queryExistentialAlias,
+		selectSubsumptionTestRowType(),
+	)
 	comparisonLookalike := predicates.NewComparisonPredicate(
-		values.NewQuantifiedObjectValue(queryExistentialAlias),
+		selectSubsumptionTestQOV(queryExistentialAlias, selectSubsumptionTestRowType()),
 		predicates.Comparison{Type: predicates.ComparisonIsNotNull},
 	)
 	extraCorrelationOwner := predicates.MustNewExistentialValuePredicate(
-		values.NewQuantifiedObjectValue(queryExistentialAlias),
+		selectSubsumptionTestQOV(queryExistentialAlias, selectSubsumptionTestRowType()),
 		predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(queryForEachAlias),
+			Operand: selectSubsumptionTestQOV(queryForEachAlias, selectSubsumptionTestRowType()),
 		},
 	)
 	malformedOwner := &predicates.ExistentialValuePredicate{
 		Value: values.LiteralValue(int64(1)),
 		Comparison: predicates.Comparison{
 			Type: predicates.ComparisonEquals,
-			Operand: values.NewQuantifiedObjectValue(
+			Operand: selectSubsumptionTestQOV(
 				queryExistentialAlias,
+				selectSubsumptionTestRowType(),
 			),
 		},
 	}
 	var typedNilAnd *predicates.AndPredicate
-	var typedNilQOV *values.QuantifiedObjectValue
-	typedNilValueOwner := &predicates.ExistentialValuePredicate{
-		Value: typedNilQOV,
-		Comparison: predicates.Comparison{
-			Type: predicates.ComparisonIsNotNull,
-		},
-	}
 	nonExistentialComparisonOwner := predicates.MustNewExistentialValuePredicate(
-		values.NewQuantifiedObjectValue(queryExistentialAlias),
+		selectSubsumptionTestQOV(queryExistentialAlias, selectSubsumptionTestRowType()),
 		predicates.Comparison{Type: predicates.ComparisonIsNull},
 	)
 
@@ -1081,8 +1086,9 @@ func TestValidateSelectSubsumptionMappingMatchedExistentialOwnership(
 		{
 			"owner names another existential",
 			[]predicates.QueryPredicate{
-				predicates.NewExistentialAlias(
+				mustExistentialAlias(t,
 					values.NamedCorrelationIdentifier("other_exists"),
+					selectSubsumptionTestRowType(),
 				),
 			},
 			false,
@@ -1095,11 +1101,6 @@ func TestValidateSelectSubsumptionMappingMatchedExistentialOwnership(
 		{
 			"typed nil conjunction fails closed",
 			[]predicates.QueryPredicate{typedNilAnd},
-			false,
-		},
-		{
-			"typed nil existential value fails closed",
-			[]predicates.QueryPredicate{typedNilValueOwner},
 			false,
 		},
 		{
@@ -1167,9 +1168,9 @@ func TestValidateSelectSubsumptionMappingUnmatchedExistentialDependencies(
 		queryQuantifiers,
 		[]predicates.QueryPredicate{
 			// The selected existential has the exact required owner.
-			predicates.NewExistentialAlias(queryDependencyAlias),
+			mustExistentialAlias(t, queryDependencyAlias, selectSubsumptionTestRowType()),
 			// The unselected existential is a local predicate correlation.
-			predicates.NewExistentialAlias(queryUnmatchedAlias),
+			mustExistentialAlias(t, queryUnmatchedAlias, selectSubsumptionTestRowType()),
 		},
 		expressions.JoinInner,
 	)
@@ -1256,9 +1257,9 @@ func TestValidateSelectSubsumptionMappingUnmatchedExistentialDiamondDependencies
 	query := selectSubsumptionTestSelect(
 		queryQuantifiers,
 		[]predicates.QueryPredicate{
-			predicates.NewExistentialAlias(queryLeftAlias),
-			predicates.NewExistentialAlias(queryRightAlias),
-			predicates.NewExistentialAlias(queryTipAlias),
+			mustExistentialAlias(t, queryLeftAlias, selectSubsumptionTestRowType()),
+			mustExistentialAlias(t, queryRightAlias, selectSubsumptionTestRowType()),
+			mustExistentialAlias(t, queryTipAlias, selectSubsumptionTestRowType()),
 		},
 		expressions.JoinInner,
 	)
@@ -1326,7 +1327,7 @@ func TestSelectSubsumptionUnmatchedLocalCorrelationRequiresExistential(
 	}
 	queryPredicates := []predicates.QueryPredicate{
 		predicates.NewComparisonPredicate(
-			values.NewQuantifiedObjectValue(forEachAlias),
+			selectSubsumptionTestField(forEachAlias, "x"),
 			predicates.NewLiteralComparison(
 				predicates.ComparisonEquals,
 				int64(1),
@@ -1352,21 +1353,18 @@ func selectSubsumptionTestSelect(
 	queryPredicates []predicates.QueryPredicate,
 	joinType expressions.JoinType,
 ) *expressions.SelectExpression {
-	return expressions.NewSelectExpressionWithJoinType(
-		values.LiteralValue(int64(1)),
+	return selectSubsumptionMust(expressions.NewSelectExpressionWithJoinType(
+		&values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
 		quantifiers,
 		queryPredicates,
 		nil,
 		joinType,
-	)
+	))
 }
 
 func selectSubsumptionTestLeafRef() *expressions.Reference {
-	return expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression(
-			[]string{"select_subsumption_test"},
-			values.UnknownType,
-		),
+	return selectSubsumptionTestInitial(
+		selectSubsumptionTestScan("select_subsumption_test"),
 	)
 }
 
@@ -1392,7 +1390,7 @@ func selectSubsumptionTestCorrelatedRefMany(
 		correlatedPredicates = append(
 			correlatedPredicates,
 			predicates.NewComparisonPredicate(
-				values.NewQuantifiedObjectValue(dependency),
+				selectSubsumptionTestField(dependency, "x"),
 				predicates.NewLiteralComparison(
 					predicates.ComparisonEquals,
 					int64(1),
@@ -1400,11 +1398,11 @@ func selectSubsumptionTestCorrelatedRefMany(
 			),
 		)
 	}
-	return expressions.InitialOf(
-		expressions.NewLogicalFilterExpression(
+	return selectSubsumptionTestInitial(
+		selectSubsumptionMust(expressions.NewLogicalFilterExpression(
 			correlatedPredicates,
 			inner,
-		),
+		)),
 	)
 }
 
@@ -1424,11 +1422,70 @@ func selectSubsumptionTestPartialMatch(
 	return NewPartialMatch(
 		EmptyAliasMap(),
 		nil,
-		expressions.InitialOf(queryExpression),
+		selectSubsumptionTestInitial(queryExpression),
 		queryExpression,
 		nil,
 		matchInfo,
 	)
+}
+
+// selectSubsumptionMust is reserved for static test fixtures whose exact type
+// is part of the fixture itself. Constructor failure means the fixture is
+// invalid, so publishing a zero value would hide the RFC-232 admission error.
+func selectSubsumptionMust[T any](value T, err error) T {
+	if err != nil {
+		panic("construct select-subsumption fixture: " + err.Error())
+	}
+	return value
+}
+
+func selectSubsumptionTestRowType() *values.RecordType {
+	fields := []values.Field{
+		{Name: "x", FieldType: values.NotNullLong},
+		{Name: "y", FieldType: values.NotNullLong},
+		{Name: "QUERY_PART", FieldType: values.NotNullLong},
+		{Name: "CANDIDATE_PART", FieldType: values.NotNullLong},
+		{Name: "Q", FieldType: values.NotNullLong},
+		{Name: "C", FieldType: values.NotNullLong},
+		{Name: "LHS", FieldType: values.NotNullLong},
+		{Name: "RHS", FieldType: values.NotNullLong},
+		{Name: "EMB", FieldType: values.NewArrayType(false, values.NotNullDouble)},
+		{Name: "ID", FieldType: values.NotNullLong},
+		{Name: "V", FieldType: values.NotNullLong},
+		{Name: "P", FieldType: values.NotNullLong},
+	}
+	return values.NewRecordType("select_subsumption_row", false, fields)
+}
+
+func selectSubsumptionTestQOV(
+	alias values.CorrelationIdentifier,
+	typ values.Type,
+) values.QuantifiedObjectValue {
+	return selectSubsumptionMust(values.NewQuantifiedObjectValue(alias, typ))
+}
+
+func selectSubsumptionTestField(
+	alias values.CorrelationIdentifier,
+	name string,
+) values.Value {
+	request := selectSubsumptionMust(values.FieldByName(name))
+	return selectSubsumptionMust(values.ResolveFieldAccess(
+		selectSubsumptionTestQOV(alias, selectSubsumptionTestRowType()),
+		[]values.FieldRequest{request},
+	))
+}
+
+func selectSubsumptionTestScan(name string) *expressions.FullUnorderedScanExpression {
+	return selectSubsumptionMust(expressions.NewFullUnorderedScanExpression(
+		[]string{name},
+		selectSubsumptionTestRowType(),
+	))
+}
+
+func selectSubsumptionTestInitial(
+	expression expressions.RelationalExpression,
+) *expressions.Reference {
+	return selectSubsumptionMust(InitialOf(expression))
 }
 
 func selectSubsumptionTestMappingsEqual(

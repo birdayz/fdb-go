@@ -13,6 +13,12 @@ import (
 type RecordQueryExplodePlan struct {
 	PlanExprBase
 	collectionValue values.Value
+	// resultType is the immutable constructor-time snapshot shared by the
+	// result carrier and runtime row materializer. collectionValue remains an
+	// ordinary Value graph and can be rebuilt/mutated by planning; rereading its
+	// Type after admission would let execution emit a row outside the already
+	// published exact output layout.
+	resultType values.ExactTypeHandle
 	// withOrdinality, when true, makes executePlan emit a 2-field record
 	// (element, 1-based ordinal) per element instead of the bare element.
 	// Mirrors Java's `RecordQueryExplodePlan.withOrdinality`.
@@ -29,21 +35,43 @@ type RecordQueryExplodePlan struct {
 }
 
 // NewRecordQueryExplodePlan builds a bare (non-ordinal) Explode plan.
-func NewRecordQueryExplodePlan(collectionValue values.Value) *RecordQueryExplodePlan {
-	return &RecordQueryExplodePlan{
-		collectionValue: collectionValue,
-		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
-	}
+func NewRecordQueryExplodePlan(collectionValue values.Value) (*RecordQueryExplodePlan, error) {
+	return newRecordQueryExplodePlan(collectionValue, false)
 }
 
 // NewRecordQueryExplodePlanWithOrdinality builds an Explode plan that
 // also emits a 1-based ordinal alongside each element.
-func NewRecordQueryExplodePlanWithOrdinality(collectionValue values.Value, withOrdinality bool) *RecordQueryExplodePlan {
+func NewRecordQueryExplodePlanWithOrdinality(collectionValue values.Value, withOrdinality bool) (*RecordQueryExplodePlan, error) {
+	return newRecordQueryExplodePlan(collectionValue, withOrdinality)
+}
+
+func newRecordQueryExplodePlan(collectionValue values.Value, withOrdinality bool) (*RecordQueryExplodePlan, error) {
+	if collectionValue == nil {
+		return nil, fmt.Errorf("RecordQueryExplodePlan: collection Value is nil")
+	}
+	arrayType, ok := collectionValue.Type().(*values.ArrayType)
+	if !ok || arrayType == nil || arrayType.ElementType == nil {
+		return nil, fmt.Errorf("RecordQueryExplodePlan: collection Value must have an exact ARRAY type")
+	}
+	resultType := arrayType.ElementType
+	if withOrdinality {
+		resultType = values.ExplodeOrdinalityResultType(resultType)
+	}
+	base, err := newPlanExprBaseForType("RecordQueryExplodePlan", resultType)
+	if err != nil {
+		return nil, err
+	}
+	exactResult, err := values.SnapshotExactType(resultType)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryExplodePlan result type: %w", err)
+	}
 	return &RecordQueryExplodePlan{
+		PlanExprBase:    base,
 		collectionValue: collectionValue,
 		withOrdinality:  withOrdinality,
-		resultValue:     values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
-	}
+		resultValue:     base.resultValue,
+		resultType:      exactResult,
+	}, nil
 }
 
 func (p *RecordQueryExplodePlan) GetCollectionValue() values.Value { return p.collectionValue }
@@ -54,6 +82,16 @@ func (p *RecordQueryExplodePlan) IsWithOrdinality() bool { return p.withOrdinali
 // GetElementType returns the array element type, or UnknownType when the
 // collection is not array-typed.
 func (p *RecordQueryExplodePlan) GetElementType() values.Type {
+	if p.resultType != nil {
+		resultType := p.resultType.Type()
+		if p.withOrdinality {
+			if row, ok := resultType.(*values.RecordType); ok && len(row.Fields) > 0 {
+				return row.Fields[0].FieldType
+			}
+			return values.UnknownType
+		}
+		return resultType
+	}
 	if p.collectionValue == nil {
 		return values.UnknownType
 	}
@@ -64,6 +102,9 @@ func (p *RecordQueryExplodePlan) GetElementType() values.Type {
 }
 
 func (p *RecordQueryExplodePlan) GetResultType() values.Type {
+	if p.resultType != nil {
+		return p.resultType.Type()
+	}
 	elem := p.GetElementType()
 	if p.withOrdinality {
 		return values.ExplodeOrdinalityResultType(elem)
@@ -113,8 +154,11 @@ func (p *RecordQueryExplodePlan) EqualsWithoutChildren(other expressions.Relatio
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryExplodePlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryExplodePlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryExplodePlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetResultValue returns the explode's STABLE per-instance result value — the
@@ -122,9 +166,6 @@ func (p *RecordQueryExplodePlan) WithQuantifiers(_ []expressions.Quantifier) exp
 // (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
 // struct-literal test plans that bypass the constructor (resultValue is nil).
 func (p *RecordQueryExplodePlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 

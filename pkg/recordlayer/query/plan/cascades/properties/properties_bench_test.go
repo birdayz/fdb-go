@@ -1,11 +1,10 @@
-package properties_test
+package properties
 
 import (
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -18,56 +17,56 @@ import (
 // type-switch + maybe one Reference.Get).
 
 func BenchmarkEstimateCost_FilterOverScan(b *testing.B) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	filter := expressions.NewLogicalFilterExpression(
+	scan := mustFullUnorderedScanExpression(b, []string{"T"}, propertyTestFlowedType())
+	pred := predicates.NewValuePredicate(propertyField(b, "active", values.TypeBool))
+	filter := mustLogicalFilterExpression(b,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = properties.EstimateCost(filter)
+		_ = EstimateCost(filter)
 	}
 }
 
 func BenchmarkEstimateCardinality_FilterOverScan(b *testing.B) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
-	pred := predicates.NewValuePredicate(&values.FieldValue{Field: "active", Typ: values.TypeBool})
-	filter := expressions.NewLogicalFilterExpression(
+	scan := mustFullUnorderedScanExpression(b, []string{"T"}, propertyTestFlowedType())
+	pred := predicates.NewValuePredicate(propertyField(b, "active", values.TypeBool))
+	filter := mustLogicalFilterExpression(b,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(scan)),
-	)
+		expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = properties.EstimateCardinality(filter)
+		_ = EstimateCardinality(filter)
 	}
 }
 
 func BenchmarkEstimateOrdering_SortOverScan(b *testing.B) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(b, []string{"T"}, propertyTestFlowedType())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(b, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	sort := mustLogicalSortExpression(b, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = properties.EstimateOrdering(sort)
+		_ = EstimateOrdering(sort)
 	}
 }
 
 func BenchmarkIsOrdered_FilterOverSort(b *testing.B) {
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := mustFullUnorderedScanExpression(b, []string{"T"}, propertyTestFlowedType())
 	keys := []expressions.SortKey{
-		{Value: &values.FieldValue{Field: "id", Typ: values.NotNullLong}},
+		{Value: propertyField(b, "id", values.NotNullLong)},
 	}
-	sort := expressions.NewLogicalSortExpression(keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
+	sort := mustLogicalSortExpression(b, keys, expressions.ForEachQuantifier(expressions.InitialOf(scan)))
 	pred := predicates.NewConstantPredicate(predicates.TriTrue)
-	filter := expressions.NewLogicalFilterExpression(
+	filter := mustLogicalFilterExpression(b,
 		[]predicates.QueryPredicate{pred},
-		expressions.ForEachQuantifier(expressions.InitialOf(sort)),
-	)
+		expressions.ForEachQuantifier(expressions.InitialOf(sort)))
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = properties.IsOrdered(filter)
+		_ = IsOrdered(filter)
 	}
 }

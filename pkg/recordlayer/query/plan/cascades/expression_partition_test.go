@@ -9,13 +9,28 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func expressionPartitionRowType() *values.RecordType {
+	return values.NewRecordType("PartitionRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+}
+
+func expressionPartitionScan(
+	t testing.TB,
+	recordTypes ...string,
+) *plans.RecordQueryScanPlan {
+	t.Helper()
+	plan, err := plans.NewRecordQueryScanPlan(recordTypes, expressionPartitionRowType(), false)
+	return mustConstruct(t, plan, err)
+}
+
 // ---------------------------------------------------------------------------
 // PlanPartition accessors
 // ---------------------------------------------------------------------------
 
 func TestPlanPartition_GetPlans(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := expressionPartitionScan(t, "T")
 	wrapper := scan
 
 	pp := NewPlanPartition(
@@ -36,7 +51,7 @@ func TestPlanPartition_GetPlans(t *testing.T) {
 
 func TestPlanPartition_GetExpressions(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := expressionPartitionScan(t, "T")
 	wrapper := scan
 
 	pp := NewPlanPartition(
@@ -92,7 +107,7 @@ func TestPlanPartition_IsStoredRecord(t *testing.T) {
 
 func TestPlanPartition_HasPrimaryKey(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := expressionPartitionScan(t, "T")
 	sw := scan
 	pp := NewPlanPartition(
 		properties.PropertyMap{},
@@ -122,7 +137,7 @@ func TestPlanPartition_HasPrimaryKey(t *testing.T) {
 
 func TestPlanPartition_GetOrdering(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := expressionPartitionScan(t, "T")
 	sw := scan
 	want := properties.Ordering{IsKnown: true}
 	pp := NewPlanPartition(
@@ -149,7 +164,7 @@ func TestPlanPartition_GetOrdering(t *testing.T) {
 
 func TestToPlanPartitions_WithPrecomputedPropertiesMap(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
+	scanA := expressionPartitionScan(t, "A")
 	wA := scanA
 
 	// Pre-compute properties and set on reference.
@@ -176,12 +191,13 @@ func TestToPlanPartitions_WithPrecomputedPropertiesMap(t *testing.T) {
 func TestToPlanPartitions_GroupsByDistinctAndStored(t *testing.T) {
 	t.Parallel()
 	// Two wrappers with different properties should land in different partitions.
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
+	scanA := expressionPartitionScan(t, "A")
 	wA := scanA
 
 	// Streaming agg has distinct=false, stored=false. Since RFC-184 W2 the memo
 	// holds the bare *plans.RecordQueryStreamingAggregationPlan (no wrapper).
-	aggPlan := plans.NewRecordQueryStreamingAggregationPlan(nil, nil, nil)
+	aggPlan, err := plans.NewRecordQueryStreamingAggregationPlan(scanA, nil, nil)
+	aggPlan = mustConstruct(t, aggPlan, err)
 	wB := aggPlan
 
 	ref := expressions.InitialOf(wA)
@@ -199,7 +215,7 @@ func TestToPlanPartitions_GroupsByDistinctAndStored(t *testing.T) {
 
 func TestToPlanPartitions_FallbackWhenNoPropertiesMap(t *testing.T) {
 	t.Parallel()
-	scan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
+	scan := expressionPartitionScan(t, "T")
 	wrapper := scan
 	ref := expressions.InitialOf(wrapper)
 	// Don't set plan properties — triggers fallback.
@@ -231,8 +247,8 @@ func TestToPlanPartitions_NilRef(t *testing.T) {
 
 func TestRollUpPlanPartitions_MergeAll(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
+	scanA := expressionPartitionScan(t, "A")
+	scanB := expressionPartitionScan(t, "B")
 	wA := scanA
 	wB := scanB
 
@@ -257,9 +273,9 @@ func TestRollUpPlanPartitions_MergeAll(t *testing.T) {
 
 func TestRollUpPlanPartitions_RetainSingleProperty(t *testing.T) {
 	t.Parallel()
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	scanC := plans.NewRecordQueryScanPlan([]string{"C"}, values.UnknownType, false)
+	scanA := expressionPartitionScan(t, "A")
+	scanB := expressionPartitionScan(t, "B")
+	scanC := expressionPartitionScan(t, "C")
 	wA := scanA
 	wB := scanB
 	wC := scanC

@@ -30,19 +30,12 @@ type RecordQueryInsertPlan struct {
 	PlanExprBase
 	innerQ           expressions.Quantifier
 	targetRecordType string
-	targetType       values.Type
+	targetType       values.ExactTypeHandle
 }
 
 // NewRecordQueryInsertPlan constructs the INSERT plan.
-func NewRecordQueryInsertPlan(inner RecordQueryPlan, targetRecordType string, targetType values.Type) *RecordQueryInsertPlan {
-	if targetType == nil {
-		targetType = values.UnknownType
-	}
-	return &RecordQueryInsertPlan{
-		innerQ:           QuantifierOverPlan(inner),
-		targetRecordType: targetRecordType,
-		targetType:       targetType,
-	}
+func NewRecordQueryInsertPlan(inner RecordQueryPlan, targetRecordType string, targetType values.Type) (*RecordQueryInsertPlan, error) {
+	return NewRecordQueryInsertPlanFromQuantifier(QuantifierOverPlan(inner), targetRecordType, targetType)
 }
 
 // NewRecordQueryInsertPlanFromQuantifier builds an INSERT whose child is a LIVE
@@ -52,15 +45,24 @@ func NewRecordQueryInsertPlan(inner RecordQueryPlan, targetRecordType string, ta
 // child edge directly: the memo holds it without a physical wrapper, and
 // GetInner / GetQuantifiers / GetResultValue all resolve through the one live
 // edge (RFC-184 W2).
-func NewRecordQueryInsertPlanFromQuantifier(innerQ expressions.Quantifier, targetRecordType string, targetType values.Type) *RecordQueryInsertPlan {
-	if targetType == nil {
-		targetType = values.UnknownType
+func NewRecordQueryInsertPlanFromQuantifier(innerQ expressions.Quantifier, targetRecordType string, targetType values.Type) (*RecordQueryInsertPlan, error) {
+	exactTarget, err := values.SnapshotExactType(targetType)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryInsertPlan target type: %w", err)
+	}
+	if _, ok := exactTarget.Type().(*values.RecordType); !ok {
+		return nil, fmt.Errorf("RecordQueryInsertPlan target type: expected record, got %v", targetType)
+	}
+	base, err := newPlanExprBaseForType("RecordQueryInsertPlan", exactTarget.Type())
+	if err != nil {
+		return nil, err
 	}
 	return &RecordQueryInsertPlan{
+		PlanExprBase:     base,
 		innerQ:           innerQ,
 		targetRecordType: targetRecordType,
-		targetType:       targetType,
-	}
+		targetType:       exactTarget,
+	}, nil
 }
 
 // GetInner returns the source plan, dereferenced through the quantifier.
@@ -70,7 +72,7 @@ func (p *RecordQueryInsertPlan) GetInner() RecordQueryPlan { return planFromQuan
 // INSERT passes its inner's rows through, so the result identity is the inner's,
 // the value physicalInsertWrapper.GetResultValue supplied (RFC-184 W2).
 func (p *RecordQueryInsertPlan) GetResultValue() values.Value {
-	return p.innerQ.GetFlowedObjectValue()
+	return p.PlanExprBase.GetResultValue()
 }
 
 // GetQuantifiers reports the real child quantifier, overriding
@@ -87,17 +89,16 @@ func (p *RecordQueryInsertPlan) GetTargetRecordType() string { return p.targetRe
 
 // GetTargetType returns the rich Type the inserted rows must
 // conform to.
-func (p *RecordQueryInsertPlan) GetTargetType() values.Type { return p.targetType }
+func (p *RecordQueryInsertPlan) GetTargetType() values.Type {
+	if p.targetType == nil {
+		return nil
+	}
+	return p.targetType.Type()
+}
 
 // GetResultType returns the inner's result type — INSERT typically
 // returns the inserted rows for cursor consumption.
-func (p *RecordQueryInsertPlan) GetResultType() values.Type {
-	inner := p.GetInner()
-	if inner == nil {
-		return values.UnknownType
-	}
-	return inner.GetResultType()
-}
+func (p *RecordQueryInsertPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the inner plan as the only child.
 func (p *RecordQueryInsertPlan) GetChildren() []RecordQueryPlan {
@@ -112,7 +113,7 @@ func (p *RecordQueryInsertPlan) GetChildren() []RecordQueryPlan {
 // the target Type (equals-only — the hash omits it, matching the hand-rolled
 // hash which folded only targetRecordType). Drives both Equals and Hash.
 func (p *RecordQueryInsertPlan) structuralKey() *structuralKey {
-	return newStructuralKey().Str(p.targetRecordType).Type(p.targetType)
+	return newStructuralKey().Str(p.targetRecordType).Type(p.GetTargetType())
 }
 
 // EqualsWithoutChildren compares targetRecordType + targetType.
@@ -148,13 +149,20 @@ func (p *RecordQueryInsertPlan) EqualsWithoutChildren(other expressions.Relation
 
 // WithQuantifiers returns a copy ranging over the given child quantifier —
 // Java's copy-on-write withChild(Reference).
-func (p *RecordQueryInsertPlan) WithQuantifiers(qs []expressions.Quantifier) expressions.RelationalExpression {
-	if len(qs) != 1 {
-		return p
+func (p *RecordQueryInsertPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryInsertPlan", len(qs), 1); err != nil {
+		return nil, err
 	}
 	cp := *p
+	rebuilt, err := NewRecordQueryInsertPlanFromQuantifier(
+		qs[0], p.targetRecordType, p.GetTargetType())
+	if err != nil {
+		return nil, err
+	}
+	cp.PlanExprBase = rebuilt.PlanExprBase
 	cp.innerQ = qs[0]
-	return &cp
+	cp.targetType = rebuilt.targetType
+	return &cp, nil
 }
 
 // WithChildren is the extraction/relink hook (plan_extraction.go's WithChildren
@@ -166,7 +174,7 @@ func (p *RecordQueryInsertPlan) WithChildren(qs []expressions.Quantifier) (expre
 	if len(qs) != 1 {
 		return nil, fmt.Errorf("RecordQueryInsertPlan.WithChildren: expected 1 child, got %d", len(qs))
 	}
-	return p.WithQuantifiers(qs), nil
+	return p.WithQuantifiers(qs)
 }
 
 // GetRecordQueryPlan returns the plan itself.

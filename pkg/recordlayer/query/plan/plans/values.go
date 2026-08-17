@@ -1,6 +1,7 @@
 package plans
 
 import (
+	"fmt"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -25,11 +26,20 @@ type RecordQueryValuesPlan struct {
 	resultValue values.Value
 }
 
-func NewRecordQueryValuesPlan(columns []values.Value) *RecordQueryValuesPlan {
-	return &RecordQueryValuesPlan{
-		columns:     columns,
-		resultValue: values.NewQuantifiedObjectValue(values.UniqueCorrelationIdentifier()),
+func NewRecordQueryValuesPlan(columns []values.Value) (*RecordQueryValuesPlan, error) {
+	rowValue, err := values.ProjectionResultValue(columns, nil)
+	if err != nil {
+		return nil, fmt.Errorf("RecordQueryValuesPlan result row: %w", err)
 	}
+	base, err := newPlanExprBaseForType("RecordQueryValuesPlan", rowValue.Type())
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryValuesPlan{
+		PlanExprBase: base,
+		columns:      append([]values.Value(nil), columns...),
+		resultValue:  base.resultValue,
+	}, nil
 }
 
 func (p *RecordQueryValuesPlan) GetColumns() []values.Value { return p.columns }
@@ -39,13 +49,15 @@ func (p *RecordQueryValuesPlan) GetColumns() []values.Value { return p.columns }
 // expression (RFC-184 W2). Falls back to PlanExprBase (a fresh QOV per call) for
 // struct-literal test plans that bypass the constructor (resultValue is nil).
 func (p *RecordQueryValuesPlan) GetResultValue() values.Value {
-	if p.resultValue == nil {
-		return p.PlanExprBase.GetResultValue()
-	}
 	return p.resultValue
 }
 
-func (p *RecordQueryValuesPlan) GetResultType() values.Type { return values.UnknownType }
+func (p *RecordQueryValuesPlan) GetResultType() values.Type {
+	if qov, ok := values.AsQuantifiedObjectValue(p.resultValue); ok {
+		return qov.FlowedType()
+	}
+	return nil
+}
 
 func (p *RecordQueryValuesPlan) GetChildren() []RecordQueryPlan { return nil }
 
@@ -88,8 +100,11 @@ func (p *RecordQueryValuesPlan) EqualsWithoutChildren(other expressions.Relation
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryValuesPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryValuesPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryValuesPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

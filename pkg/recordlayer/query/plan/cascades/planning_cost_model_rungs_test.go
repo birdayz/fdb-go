@@ -11,6 +11,102 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func mustRungConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct cost-model rung fixture: " + err.Error())
+	}
+	return value
+}
+
+func rungRowType() values.Type {
+	return values.NewRecordType("CostRungRow", false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 1},
+		{Name: "K", FieldType: values.NullableLong, Ordinal: 2},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 3},
+	})
+}
+
+func rungScan(recordType string) *plans.RecordQueryScanPlan {
+	return mustRungConstruct(plans.NewRecordQueryScanPlan(
+		[]string{recordType}, rungRowType(), false))
+}
+
+func rungIndex(name string, ranges []*predicates.ComparisonRange) *plans.RecordQueryIndexPlan {
+	return mustRungConstruct(plans.NewRecordQueryIndexPlan(
+		name, ranges, []string{"T"}, rungRowType(), false))
+}
+
+func rungResultValue() values.Value {
+	return values.NewRawRecordConstructorValue(values.RecordConstructorField{
+		Name:  "VALUE",
+		Value: &values.ConstantValue{Value: int64(1), Typ: values.NotNullLong},
+	})
+}
+
+func rungLongLiteral(value int64) values.Value {
+	return &values.ConstantValue{Value: value, Typ: values.NotNullLong}
+}
+
+func rungUnion(children ...plans.RecordQueryPlan) *plans.RecordQueryUnorderedUnionPlan {
+	return mustRungConstruct(plans.NewRecordQueryUnorderedUnionPlan(children))
+}
+
+func rungFilter(
+	inner plans.RecordQueryPlan, predicates ...predicates.QueryPredicate,
+) *plans.RecordQueryPredicatesFilterPlan {
+	return mustRungConstruct(plans.NewRecordQueryPredicatesFilterPlan(inner, predicates))
+}
+
+func rungSort(inner plans.RecordQueryPlan) *plans.RecordQueryInMemorySortPlan {
+	return mustRungConstruct(plans.NewRecordQueryInMemorySortPlan(inner, nil))
+}
+
+func rungTypeFilter(types []string, inner plans.RecordQueryPlan) *plans.RecordQueryTypeFilterPlan {
+	return mustRungConstruct(plans.NewRecordQueryTypeFilterPlan(types, inner))
+}
+
+func rungLimit(inner plans.RecordQueryPlan, limit, offset int64) *plans.RecordQueryLimitPlan {
+	return mustRungConstruct(plans.NewRecordQueryLimitPlan(inner, limit, offset))
+}
+
+func rungInJoin(inner plans.RecordQueryPlan, binding string) *plans.RecordQueryInJoinPlan {
+	return mustRungConstruct(plans.NewRecordQueryInJoinPlan(inner, binding, false, false))
+}
+
+func rungMap(inner plans.RecordQueryPlan) *plans.RecordQueryMapPlan {
+	return mustRungConstruct(plans.NewRecordQueryMapPlan(inner, rungResultValue()))
+}
+
+func rungCoveringIndex(index *plans.RecordQueryIndexPlan) *plans.RecordQueryCoveringIndexPlan {
+	return mustRungConstruct(plans.NewRecordQueryCoveringIndexPlan(index))
+}
+
+func rungFetch(inner plans.RecordQueryPlan) *plans.RecordQueryFetchFromPartialRecordPlan {
+	return mustRungConstruct(plans.NewRecordQueryFetchFromPartialRecordPlan(
+		inner, nil, rungRowType(), plans.FetchIndexRecordsPrimaryKey))
+}
+
+func rungNLJ(
+	outer, inner plans.RecordQueryPlan,
+	joinPredicates []predicates.QueryPredicate,
+) *plans.RecordQueryNestedLoopJoinPlan {
+	return mustRungConstruct(plans.NewRecordQueryNestedLoopJoinPlan(
+		outer,
+		inner,
+		joinPredicates,
+		plans.JoinInner,
+		values.NamedCorrelationIdentifier("outer"),
+		values.NamedCorrelationIdentifier("inner"),
+		rungResultValue(),
+	))
+}
+
+func rungFullScan(recordType string) *expressions.FullUnorderedScanExpression {
+	return mustRungConstruct(expressions.NewFullUnorderedScanExpression(
+		[]string{recordType}, rungRowType()))
+}
+
 func assertStrictPlanningPreference(
 	t *testing.T,
 	less func(expressions.RelationalExpression, expressions.RelationalExpression) bool,
@@ -40,8 +136,13 @@ func rungEqualityRange(t *testing.T, operand values.Value) *predicates.Compariso
 }
 
 func rungPredicate(field string) predicates.QueryPredicate {
+	root := mustRungConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("cost_rung_predicate"), rungRowType()))
+	request := mustRungConstruct(values.FieldByName(field))
+	resolved := mustRungConstruct(values.ResolveFieldAccess(
+		root, []values.FieldRequest{request}))
 	return predicates.NewComparisonPredicate(
-		&values.FieldValue{Field: field, Typ: values.NullableLong},
+		resolved,
 		predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(1)),
 	)
 }
@@ -53,14 +154,8 @@ func rungPredicate(field string) predicates.QueryPredicate {
 func TestPlanningCostModel_RungOrderResidualBeforeDataAccess(t *testing.T) {
 	t.Parallel()
 
-	noResidual := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-	})
-	oneResidual := plans.NewRecordQueryPredicatesFilterPlan(
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-		[]predicates.QueryPredicate{rungPredicate("K")},
-	)
+	noResidual := rungUnion(rungScan("T"), rungScan("T"))
+	oneResidual := rungFilter(rungScan("T"), rungPredicate("K"))
 
 	if got := countResidualPredicatesWithContext(noResidual, nil); got != 0 {
 		t.Fatalf("zero-residual candidate has %d residual conjuncts, want 0", got)
@@ -85,14 +180,8 @@ func TestPlanningCostModel_RungOrderResidualBeforeDataAccess(t *testing.T) {
 func TestPlanningCostModel_RungOrderDataAccessBeforeSort(t *testing.T) {
 	t.Parallel()
 
-	oneAccessWithSort := plans.NewRecordQueryInMemorySortPlan(
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-		nil,
-	)
-	twoAccessesWithoutSort := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-	})
+	oneAccessWithSort := rungSort(rungScan("T"))
+	twoAccessesWithoutSort := rungUnion(rungScan("T"), rungScan("T"))
 
 	opsWinner := findExpressionsByType(oneAccessWithSort, nil, nil)
 	opsLoser := findExpressionsByType(twoAccessesWithoutSort, nil, nil)
@@ -118,14 +207,9 @@ func TestPlanningCostModel_RungOrderDataAccessBeforeSort(t *testing.T) {
 func TestPlanningCostModel_RungOrderSortBeforeTypeFilterCount(t *testing.T) {
 	t.Parallel()
 
-	sortFreeTypeHeavy := plans.NewRecordQueryTypeFilterPlan(
-		[]string{"T1", "T2", "T3"},
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-	)
-	sortedWithoutTypeFilter := plans.NewRecordQueryInMemorySortPlan(
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-		nil,
-	)
+	sortFreeTypeHeavy := rungTypeFilter(
+		[]string{"T1", "T2", "T3"}, rungScan("T"))
+	sortedWithoutTypeFilter := rungSort(rungScan("T"))
 
 	opsWinner := findExpressionsByType(sortFreeTypeHeavy, nil, nil)
 	opsLoser := findExpressionsByType(sortedWithoutTypeFilter, nil, nil)
@@ -153,22 +237,10 @@ func TestPlanningCostModel_RungOrderSortBeforeTypeFilterCount(t *testing.T) {
 func TestPlanningCostModel_RungOrderTypeFilterCountBeforeDepth(t *testing.T) {
 	t.Parallel()
 
-	fewerTypesShallow := plans.NewRecordQueryTypeFilterPlan(
-		[]string{"T1"},
-		plans.NewRecordQueryLimitPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-			10,
-			0,
-		),
-	)
-	moreTypesDeep := plans.NewRecordQueryLimitPlan(
-		plans.NewRecordQueryTypeFilterPlan(
-			[]string{"T1", "T2"},
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
-		),
-		10,
-		0,
-	)
+	fewerTypesShallow := rungTypeFilter(
+		[]string{"T1"}, rungLimit(rungScan("T"), 10, 0))
+	moreTypesDeep := rungLimit(
+		rungTypeFilter([]string{"T1", "T2"}, rungScan("T")), 10, 0)
 
 	if got := costExprDepth(fewerTypesShallow, matchTypeFilter); got != 0 {
 		t.Fatalf("shallow type-filter depth = %d, want 0", got)
@@ -186,29 +258,29 @@ func TestPlanningCostModel_RungOrderTypeFilterCountBeforeDepth(t *testing.T) {
 func TestPlanningCostModel_RecursiveCTERungBeforeSort(t *testing.T) {
 	t.Parallel()
 
-	dfs := plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
+	dfs := mustRungConstruct(plans.NewRecordQueryRecursiveDfsJoinPlanFromQuantifiers(
 		expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			rungScan("T"),
 		)),
 		expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			rungScan("T"),
 		)),
 		values.NamedCorrelationIdentifier("prior"),
 		plans.DfsPreorder,
 		false,
-	)
-	level := plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
+	))
+	level := mustRungConstruct(plans.NewRecordQueryRecursiveLevelUnionPlanFromQuantifiers(
 		expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			rungScan("T"),
 		)),
 		expressions.NewPhysicalQuantifier(expressions.InitialOf(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+			rungScan("T"),
 		)),
 		values.NamedCorrelationIdentifier("scan"),
 		values.NamedCorrelationIdentifier("insert"),
 		false,
-	)
-	sortedDFS := plans.NewRecordQueryInMemorySortPlan(dfs, nil)
+	))
+	sortedDFS := rungSort(dfs)
 
 	if cmp := compareRecursiveCTE(sortedDFS, level); cmp >= 0 {
 		t.Fatalf("compareRecursiveCTE(Sort(DFS), level) = %d, want < 0", cmp)
@@ -234,24 +306,24 @@ func TestPlanningCostModel_JoinOrderingWinnerFlipsWithStatistics(t *testing.T) {
 
 	aliasA := values.NamedCorrelationIdentifier("a")
 	aliasB := values.NamedCorrelationIdentifier("b")
-	scanA := plans.NewRecordQueryScanPlan([]string{"A"}, values.UnknownType, false)
-	scanB := plans.NewRecordQueryScanPlan([]string{"B"}, values.UnknownType, false)
-	aThenB := plans.NewRecordQueryFlatMapPlan(
+	scanA := rungScan("A")
+	scanB := rungScan("B")
+	aThenB := mustRungConstruct(plans.NewRecordQueryFlatMapPlan(
 		scanA,
 		scanB,
 		aliasA,
 		aliasB,
-		values.LiteralValue(int64(1)),
+		rungResultValue(),
 		false,
-	)
-	bThenA := plans.NewRecordQueryFlatMapPlan(
+	))
+	bThenA := mustRungConstruct(plans.NewRecordQueryFlatMapPlan(
 		scanB,
 		scanA,
 		aliasB,
 		aliasA,
-		values.LiteralValue(int64(1)),
+		rungResultValue(),
 		false,
-	)
+	))
 
 	aSmall := properties.MapStatistics{PerType: map[string]float64{"A": 10, "B": 10_000}}
 	bSmall := properties.MapStatistics{PerType: map[string]float64{"A": 10_000, "B": 10}}
@@ -286,22 +358,18 @@ func makeInRungCandidates(
 	bindingName := "in_value"
 	var ranges []*predicates.ComparisonRange
 	if sarged {
+		bindingQOV := mustRungConstruct(values.NewQuantifiedObjectValue(
+			values.NamedCorrelationIdentifier(bindingName), values.NotNullLong))
 		ranges = []*predicates.ComparisonRange{
 			rungEqualityRange(
 				t,
-				values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(bindingName)),
+				bindingQOV,
 			),
 		}
 	}
-	index := plans.NewRecordQueryIndexPlan(
-		"idx_in_rung",
-		ranges,
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	)
-	inJoin := plans.NewRecordQueryInJoinPlan(index, bindingName, false, false)
-	limit := plans.NewRecordQueryLimitPlan(index, 1, 0)
+	index := rungIndex("idx_in_rung", ranges)
+	inJoin := rungInJoin(index, bindingName)
+	limit := rungLimit(index, 1, 0)
 	return inJoin, limit
 }
 
@@ -350,31 +418,10 @@ func TestPlanningCostModel_InJoinCountRung(t *testing.T) {
 	t.Parallel()
 
 	index := func() *plans.RecordQueryIndexPlan {
-		return plans.NewRecordQueryIndexPlan(
-			"idx_nested_in_rung",
-			nil,
-			[]string{"T"},
-			values.UnknownType,
-			false,
-		)
+		return rungIndex("idx_nested_in_rung", nil)
 	}
-	moreInJoins := plans.NewRecordQueryMapPlan(
-		plans.NewRecordQueryInJoinPlan(
-			plans.NewRecordQueryInJoinPlan(index(), "inner_in", false, false),
-			"outer_in",
-			false,
-			false,
-		),
-		nil,
-	)
-	fewerInJoins := plans.NewRecordQueryMapPlan(
-		plans.NewRecordQueryLimitPlan(
-			plans.NewRecordQueryInJoinPlan(index(), "single_in", false, false),
-			1,
-			0,
-		),
-		nil,
-	)
+	moreInJoins := rungMap(rungInJoin(rungInJoin(index(), "inner_in"), "outer_in"))
+	fewerInJoins := rungMap(rungLimit(rungInJoin(index(), "single_in"), 1, 0))
 
 	if _, applicable := compareInOperator(moreInJoins); applicable {
 		t.Fatal("root Map unexpectedly activated the root-only IN penalty")
@@ -404,8 +451,8 @@ func TestPlanningCostModel_InJoinCountRung(t *testing.T) {
 func TestPlanningCostModel_PrimaryIndexWinnerFlipsWithConfiguration(t *testing.T) {
 	t.Parallel()
 
-	primary := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-	index := plans.NewRecordQueryIndexPlan("idx", nil, []string{"T"}, values.UnknownType, false)
+	primary := rungScan("T")
+	index := rungIndex("idx", nil)
 
 	preferScan := &prefTestCtx{pref: PreferScan}
 	assertStrictPlanningPreference(
@@ -437,25 +484,15 @@ func TestPlanningCostModel_PrimaryIndexWinnerFlipsWithConfiguration(t *testing.T
 func TestPlanningCostModel_PrimaryIndexSARGRichIndexWins(t *testing.T) {
 	t.Parallel()
 
-	shared := rungEqualityRange(t, values.LiteralValue(int64(1)))
-	extra := rungEqualityRange(t, values.LiteralValue(int64(2)))
-	primaryScan := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	shared := rungEqualityRange(t, rungLongLiteral(1))
+	extra := rungEqualityRange(t, rungLongLiteral(2))
+	primaryScan := rungScan("T").
 		WithScanComparisons([]*predicates.ComparisonRange{shared})
-	primary := plans.NewRecordQueryTypeFilterPlan([]string{"T"}, primaryScan)
-	richIndex := plans.NewRecordQueryIndexPlan(
-		"idx_sarg_rich",
-		[]*predicates.ComparisonRange{shared, extra},
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	)
-	leanIndex := plans.NewRecordQueryIndexPlan(
-		"idx_sarg_lean",
-		[]*predicates.ComparisonRange{shared},
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	)
+	primary := rungTypeFilter([]string{"T"}, primaryScan)
+	richIndex := rungIndex(
+		"idx_sarg_rich", []*predicates.ComparisonRange{shared, extra})
+	leanIndex := rungIndex(
+		"idx_sarg_lean", []*predicates.ComparisonRange{shared})
 	ctx := &prefTestCtx{pref: PreferScan}
 
 	opsPrimary := findExpressionsByType(primary, nil, ctx)
@@ -499,23 +536,14 @@ func TestPlanningCostModel_PrimaryIndexSARGRichIndexWins(t *testing.T) {
 func TestPlanningCostModel_PrimaryVsIndexRungIgnoresSortBearingPlans(t *testing.T) {
 	t.Parallel()
 
-	shared := rungEqualityRange(t, values.LiteralValue(int64(1)))
-	extra := rungEqualityRange(t, values.LiteralValue(int64(2)))
-	primary := plans.NewRecordQueryTypeFilterPlan(
+	shared := rungEqualityRange(t, rungLongLiteral(1))
+	extra := rungEqualityRange(t, rungLongLiteral(2))
+	primary := rungTypeFilter(
 		[]string{"T"},
-		plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
-			WithScanComparisons([]*predicates.ComparisonRange{shared}),
+		rungScan("T").WithScanComparisons([]*predicates.ComparisonRange{shared}),
 	)
-	sortedIndex := plans.NewRecordQueryInMemorySortPlan(
-		plans.NewRecordQueryIndexPlan(
-			"idx_sorted_sarg_rich",
-			[]*predicates.ComparisonRange{shared, extra},
-			[]string{"T"},
-			values.UnknownType,
-			false,
-		),
-		nil,
-	)
+	sortedIndex := rungSort(rungIndex(
+		"idx_sorted_sarg_rich", []*predicates.ComparisonRange{shared, extra}))
 	ctx := &prefTestCtx{pref: PreferScan}
 	opsPrimary := findExpressionsByType(primary, nil, ctx)
 	opsSorted := findExpressionsByType(sortedIndex, nil, ctx)
@@ -551,15 +579,10 @@ func TestPlanningCostModel_FetchCountBeforeFetchDepth(t *testing.T) {
 	t.Parallel()
 
 	index := func() *plans.RecordQueryIndexPlan {
-		return plans.NewRecordQueryIndexPlan("idx_fetch_total", nil, []string{"T"}, values.UnknownType, false)
+		return rungIndex("idx_fetch_total", nil)
 	}
-	lowerTotalDeeper := plans.NewRecordQueryLimitPlan(index(), 10, 0)
-	higherTotalShallower := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		index(),
-		nil,
-		values.UnknownType,
-		plans.FetchIndexRecordsPrimaryKey,
-	)
+	lowerTotalDeeper := rungLimit(index(), 10, 0)
+	higherTotalShallower := rungFetch(index())
 
 	opsWinner := findExpressionsByType(lowerTotalDeeper, nil, nil)
 	opsLoser := findExpressionsByType(higherTotalShallower, nil, nil)
@@ -598,29 +621,16 @@ func TestPlanningCostModel_SargRichIndexBeatsSargPoorIndex(t *testing.T) {
 	t.Parallel()
 
 	// rich: covering index bound on one column, plus an explicit fetch.
-	rich := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		plans.NewRecordQueryCoveringIndexPlan(plans.NewRecordQueryIndexPlan(
-			"idx_sarg_rich_leg",
-			[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
-			[]string{"T"},
-			values.UnknownType,
-			false,
-		).WithIndexMetadata([]string{"K"}, nil, false)),
-		nil,
-		values.UnknownType,
-		plans.FetchIndexRecordsPrimaryKey,
-	)
+	rich := rungFetch(rungCoveringIndex(rungIndex(
+		"idx_sarg_rich_leg",
+		[]*predicates.ComparisonRange{rungEqualityRange(t, rungLongLiteral(1))},
+	).WithIndexMetadata([]string{"K"}, nil, false)))
 	// poor: unbound non-covering index scan, whose fetch is implicit.
-	poor := plans.NewRecordQueryIndexPlan(
-		"idx_sarg_poor_leg", nil, []string{"T"}, values.UnknownType, false)
+	poor := rungIndex("idx_sarg_poor_leg", nil)
 	// control: the same shape as poor, but bound like rich.
-	control := plans.NewRecordQueryIndexPlan(
+	control := rungIndex(
 		"idx_sarg_control_leg",
-		[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	)
+		[]*predicates.ComparisonRange{rungEqualityRange(t, rungLongLiteral(1))})
 
 	opsRich := concretePlanCounts(rich, nil)
 	opsPoor := concretePlanCounts(poor, nil)
@@ -678,33 +688,21 @@ func TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields(t *testing.T)
 	// Both candidates carry ONE search argument so criterion #7, which ranks the
 	// contested band by search-argument count, ties them and the index-fetch
 	// block below actually gets to decide.
-	implicit := plans.NewRecordQueryIndexPlan(
+	implicit := rungIndex(
 		"idx_implicit_fetch",
-		[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
-		[]string{"T"},
-		values.UnknownType,
-		false,
-	)
-	explicitIndex := plans.NewRecordQueryCoveringIndexPlan(plans.NewRecordQueryIndexPlan(
+		[]*predicates.ComparisonRange{rungEqualityRange(t, rungLongLiteral(1))})
+	explicitIndex := rungCoveringIndex(rungIndex(
 		"idx_explicit_fetch",
-		[]*predicates.ComparisonRange{rungEqualityRange(t, values.LiteralValue(int64(1)))},
-		[]string{"T"},
-		values.UnknownType,
-		false,
+		[]*predicates.ComparisonRange{rungEqualityRange(t, rungLongLiteral(1))},
 	).WithIndexMetadata([]string{"K"}, nil, false))
-	explicit := plans.NewRecordQueryFetchFromPartialRecordPlan(
-		explicitIndex,
-		nil,
-		values.UnknownType,
-		plans.FetchIndexRecordsPrimaryKey,
-	)
+	explicit := rungFetch(explicitIndex)
 	ctx := &indexTestPlanContext{candidates: []MatchCandidate{
 		newKnownDistinctValueIndexCandidate(
 			"idx_implicit_fetch",
 			[]string{"T"},
 			[]string{"A", "B", "C"},
 			nil,
-			values.UnknownType,
+			rungRowType(),
 			false,
 			nil,
 		),
@@ -713,7 +711,7 @@ func TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields(t *testing.T)
 			[]string{"T"},
 			[]string{"K"},
 			nil,
-			values.UnknownType,
+			rungRowType(),
 			false,
 			nil,
 		),
@@ -754,34 +752,14 @@ func TestPlanningCostModel_ExplicitFetchCountBeforeUnmatchedFields(t *testing.T)
 func makeNLJPredicateRungCandidates(
 	suffix int,
 ) (morePredicates, fewerPredicates *plans.RecordQueryNestedLoopJoinPlan) {
-	outer := plans.NewRecordQueryScanPlan(
-		[]string{fmt.Sprintf("OUTER_%d", suffix)},
-		values.UnknownType,
-		false,
-	)
-	inner := plans.NewRecordQueryScanPlan(
-		[]string{fmt.Sprintf("INNER_%d", suffix)},
-		values.UnknownType,
-		false,
-	)
+	outer := rungScan(fmt.Sprintf("OUTER_%d", suffix))
+	inner := rungScan(fmt.Sprintf("INNER_%d", suffix))
 	first := rungPredicate("A")
 	second := rungPredicate("B")
-	morePredicates = plans.NewRecordQueryNestedLoopJoinPlan(
-		outer,
-		inner,
-		[]predicates.QueryPredicate{first, second},
-		plans.JoinInner,
-		values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner"),
-		nil,
-	)
-	fewerPredicates = plans.NewRecordQueryNestedLoopJoinPlan(
-		outer,
-		inner,
-		[]predicates.QueryPredicate{predicates.NewAnd(first, second)},
-		plans.JoinInner,
-		values.NamedCorrelationIdentifier("outer"), values.NamedCorrelationIdentifier("inner"),
-		nil,
-	)
+	morePredicates = rungNLJ(
+		outer, inner, []predicates.QueryPredicate{first, second})
+	fewerPredicates = rungNLJ(
+		outer, inner, []predicates.QueryPredicate{predicates.NewAnd(first, second)})
 	return morePredicates, fewerPredicates
 }
 
@@ -833,15 +811,11 @@ func TestPlanningCostModel_DefaultOnEmptyRung(t *testing.T) {
 	var winner plans.RecordQueryPlan
 	var loser *plans.RecordQueryDefaultOnEmptyPlan
 	for suffix := 0; suffix < 1_000; suffix++ {
-		scan := plans.NewRecordQueryScanPlan(
-			[]string{fmt.Sprintf("DOE_%d", suffix)},
-			values.UnknownType,
-			false,
-		)
-		defaultOnEmpty := plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(
+		scan := rungScan(fmt.Sprintf("DOE_%d", suffix))
+		defaultOnEmpty := mustRungConstruct(plans.NewRecordQueryDefaultOnEmptyPlanFromQuantifier(
 			expressions.NewPhysicalQuantifier(expressions.InitialOf(scan)),
-			values.NewNullValue(values.UnknownType),
-		)
+			values.NewNullValue(rungRowType()),
+		))
 		if costExprHash(defaultOnEmpty) < costExprHash(scan) {
 			winner, loser = scan, defaultOnEmpty
 			break
@@ -872,26 +846,20 @@ func makeScalarFallbackCandidates(
 ) (cheaper, costlier plans.RecordQueryPlan) {
 	t.Helper()
 	indexName := fmt.Sprintf("SCALAR_%d", suffix)
-	cheaper = plans.NewRecordQueryIndexPlan(
+	cheaper = rungIndex(
 		indexName,
 		[]*predicates.ComparisonRange{
-			rungEqualityRange(t, values.LiteralValue(int64(1))),
+			rungEqualityRange(t, rungLongLiteral(1)),
 		},
-		[]string{"T"},
-		values.UnknownType,
-		false,
 	)
 	rangeComparison := predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(1))
 	merged := predicates.EmptyComparisonRange().Merge(&rangeComparison)
 	if !merged.Ok {
 		t.Fatal("failed to create range comparison")
 	}
-	costlier = plans.NewRecordQueryIndexPlan(
+	costlier = rungIndex(
 		indexName,
 		[]*predicates.ComparisonRange{merged.Range},
-		[]string{"T"},
-		values.UnknownType,
-		false,
 	)
 	return cheaper, costlier
 }
@@ -941,11 +909,14 @@ func makeRewritingRungSelect(
 	preds []predicates.QueryPredicate,
 ) *expressions.SelectExpression {
 	quantifier := expressions.ForEachQuantifier(inner)
-	return expressions.NewSelectExpression(
-		values.NewQuantifiedObjectValue(quantifier.GetAlias()),
+	flowedType := mustRungConstruct(quantifier.GetFlowedObjectType())
+	root := mustRungConstruct(values.NewQuantifiedObjectValue(
+		quantifier.GetAlias(), flowedType))
+	return mustRungConstruct(expressions.NewSelectExpression(
+		root,
 		[]expressions.Quantifier{quantifier},
 		preds,
-	)
+	))
 }
 
 // TestRewritingCostModel_ResidualConjunctRung covers the third REWRITING
@@ -954,9 +925,7 @@ func makeRewritingRungSelect(
 func TestRewritingCostModel_ResidualConjunctRung(t *testing.T) {
 	t.Parallel()
 
-	scanRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	scanRef := expressions.InitialOf(rungFullScan("T"))
 	oneConjunct := makeRewritingRungSelect(
 		scanRef,
 		[]predicates.QueryPredicate{rungPredicate("A")},
@@ -989,9 +958,7 @@ func TestRewritingCostModel_ResidualConjunctRung(t *testing.T) {
 func TestRewritingCostModel_PredicateDepthRung(t *testing.T) {
 	t.Parallel()
 
-	scanRef := expressions.InitialOf(
-		expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType),
-	)
+	scanRef := expressions.InitialOf(rungFullScan("T"))
 	predicate := rungPredicate("A")
 
 	pushedInner := makeRewritingRungSelect(

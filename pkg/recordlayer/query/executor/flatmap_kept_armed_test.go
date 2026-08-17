@@ -19,11 +19,16 @@ import (
 // continuation the matching row will hand to its inner plan.
 func flatMapArmedFixture(t *testing.T, outer recordlayer.RecordCursor[QueryResult], savedPK tuple.Tuple, armedBytes []byte) *flatMapCursor {
 	t.Helper()
-	inner := plans.NewRecordQueryValuesPlan([]values.Value{&values.ConstantValue{Value: int64(7)}})
+	outerType := exactTestRowType(values.Field{Name: "K", FieldType: values.NullableLong})
+	outerPlan := mustExecutorConstruct(plans.NewRecordQueryScanPlan(nil, outerType, false))
+	inner := mustExecutorConstruct(plans.NewRecordQueryValuesPlan([]values.Value{
+		&values.ConstantValue{Value: int64(7), Typ: values.NotNullLong},
+	}))
+	innerAlias := values.NamedCorrelationIdentifier("I")
 	c, err := newFlatMapCursorWithOuterProperties(
-		outer, plans.NewRecordQueryValuesPlan(nil), inner, nil, EmptyEvaluationContext(),
-		values.NamedCorrelationIdentifier("O"), values.NamedCorrelationIdentifier("I"),
-		values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier("I")), recordlayer.ExecuteProperties{}, false,
+		outer, outerPlan, inner, nil, EmptyEvaluationContext(),
+		values.NamedCorrelationIdentifier("O"), innerAlias,
+		mustTestQOV(t, innerAlias, inner.GetResultType()), recordlayer.ExecuteProperties{}, false,
 	)
 	if err != nil {
 		t.Fatalf("newFlatMapCursorWithOuterProperties: %v", err)

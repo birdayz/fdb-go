@@ -556,4 +556,79 @@ func TestFDB_ChainedUnnest(t *testing.T) {
 			t.Fatal("distinct AS/AT chain returned zero rows — the dup guard must not block valid WITH ORDINALITY chains")
 		}
 	})
+
+	// The outer-row-vs-retained-window collision, end to end. In a chained
+	// unnest the FlatMap's merged outer row is BOUND under the same correlation
+	// as a source it RETAINS — X for the `{element, ordinal}` window, Y for the
+	// scalar element — so one WHERE conjunct carries two QOVs that share a name
+	// and have different exact types. The whole-row binding is moved to a fresh
+	// alias so the two stay distinguishable; without that move these queries do
+	// not plan at all (the join's logical-source retarget refuses the ambiguous
+	// declaration), which is how the defect presented.
+	//
+	// Rows, not just a plan: the rename is only correct if the predicate still
+	// reads the merged row on one side and the retained window on the other. A
+	// rename that pointed BOTH at the merged row would plan happily and answer
+	// wrong, so each arm is chosen to drop rows on both sides of the comparison.
+	t.Run("AS+AT chain: the ordinal window and the merged outer row stay distinct", func(t *testing.T) {
+		// `OX >= T4.ID` — OX is the retained AT window, T4.ID a merged-row column.
+		// id1 elem OX=1 (1>=1) keeps SUB 100,200; id1 elem OX=2 (2>=1) keeps 300;
+		// id2 elem OX=1 (1>=2) is DROPPED. Both sides are live: an OX read that
+		// resolved against the merged row instead would not produce 2 here, and an
+		// ID read that resolved against the window would not drop id2.
+		const q = `SELECT "Y", "OX" FROM T4, T4."SARR" AS "X" AT "OX", "X"."SUB" AS "Y" WHERE "OX" >= T4."ID"`
+		assertColumns(t, q, []string{"Y", "OX"})
+		_, rows := queryRows(t, q)
+		got := make([]string, 0, len(rows))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
+		}
+		sort.Strings(got)
+		want := []string{"100|1", "200|1", "300|2"}
+		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+			t.Fatalf("AS+AT chain under a window/outer-row predicate\n got=%v\nwant=%v", got, want)
+		}
+
+		// The exact shape that failed to plan, kept verbatim: `T4.ID > OX` keeps
+		// only id2's OX=1 element. One row, and it is the row that proves the
+		// comparison did not silently invert with the rename.
+		_, one := queryRows(t, `SELECT "Y" FROM T4, T4."SARR" AS "X" AT "OX", "X"."SUB" AS "Y" WHERE T4."ID" > "OX"`)
+		single := make([]string, 0, len(one))
+		for _, r := range one {
+			single = append(single, positionalPipeSprint(r))
+		}
+		if fmt.Sprintf("%v", single) != fmt.Sprintf("%v", []string{"400"}) {
+			t.Fatalf("T4.ID > OX chain = %v, want [400]", single)
+		}
+	})
+
+	t.Run("forked chain: two legs off one element, predicate on the merged row", func(t *testing.T) {
+		// Two chain links share the owner X (`X.SUB AS Y` and `X.SUBSTRUCT AS Z`),
+		// so the merged outer row retains Y's scalar under the same correlation the
+		// row itself is bound with.
+		const q = `SELECT "Y", "Z"."LEAF" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", "X"."SUBSTRUCT" AS "Z" WHERE T4."ID" < "Y"`
+		_, rows := queryRows(t, q)
+		got := make([]string, 0, len(rows))
+		for _, r := range rows {
+			got = append(got, positionalPipeSprint(r))
+		}
+		sort.Strings(got)
+		// id1 elem0: SUB[100,200] × SUBSTRUCT[LEAF 1, LEAF 2] → 4 rows.
+		// id1 elem1: SUB[300] × SUBSTRUCT[] → none (the empty fork leg wins).
+		// id2 elem0: SUB[400] × SUBSTRUCT[LEAF 5] → 1 row.
+		want := []string{"100|1", "100|2", "200|1", "200|2", "400|5"}
+		if fmt.Sprintf("%v", got) != fmt.Sprintf("%v", want) {
+			t.Fatalf("forked chain\n got=%v\nwant=%v", got, want)
+		}
+
+		// The verbatim failing shape answers ZERO rows, and that is the CORRECT
+		// answer (every ID is below every SUB value) — asserted so the empty
+		// result is pinned as an answer rather than read as the planning refusal
+		// it used to be.
+		if _, none := queryRows(t,
+			`SELECT "Y", "Z"."LEAF" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y", "X"."SUBSTRUCT" AS "Z" WHERE T4."ID" > "Y"`,
+		); len(none) != 0 {
+			t.Fatalf("T4.ID > Y forked chain returned %d rows, want 0 — every ID is below every SUB value", len(none))
+		}
+	})
 }

@@ -22,7 +22,14 @@ go_library(
 
 go_test(
     name = "sqldriver_test",
-    # size="large" => 900s bazel timeout. The suite holds 432 FDB-container
+    size = "large",
+    # `size` sets the SHARD/RESOURCE class here, not the deadline — the explicit
+    # `timeout` below overrides what size would imply, so read the two
+    # separately. The paragraphs that follow argue the DEADLINE; size="large"
+    # would give 900s on its own, and the CI measurements at the end are why
+    # that is not the deadline this target runs under.
+    #
+    # The suite holds 432 FDB-container
     # test files with 1292 top-level test functions; the default medium 300s
     # is only safe when the suite runs ALONE on the runner — CI schedules
     # container-heavy targets concurrently (one shared Docker daemon), and a
@@ -38,7 +45,39 @@ go_test(
     # scheduling defect, fixed in ci.yml by scoping
     # the lane, NOT a budget defect here: raising this budget would have hidden
     # a starving runner behind a bigger number.
-    size = "large",
+    #
+    # IT IS A BUDGET DEFECT NOW, and the difference from that earlier case is
+    # that it was measured SOLO — no co-scheduling to blame. Solo under -race it
+    # MEASURED 944s against the large budget's 900s, and CI did worse still:
+    # co-scheduled it exceeded even a 3600s budget, so this runner is far more
+    # contention-sensitive than the dev box and a local number cannot be
+    # translated into a CI one by a constant.
+    #
+    # The planner work since then took the solo LOCAL figure to 603s — the cost
+    # was memo admission re-admitting every existing member per batch,
+    # re-deriving every member's hash per intent, and rebuilding a structural key
+    # per comparison — and the heaviest tests here are the planner-cap ones that
+    # pay it. 603s is 67% of large: it fits, and read alone it says this target
+    # was raised past a budget it did not need.
+    #
+    # THE LOCAL FIGURE IS NOT THE ONE THAT DECIDES, and CI says so directly. On
+    # the 4-vCPU runner, with the lane scoping in place and nothing else to
+    # blame, cmd/test-budget measured this target at:
+    #
+    #     lane        wall     % of eternal   % of large (900s)
+    #     suite       11m00s   18%            73%
+    #     race        14m14s   24%            95%
+    #
+    # 854s under -race is past the 90% line the repo's own budget gate FAILS on,
+    # so `large` would not be a tighter budget here — it would be a red lane. The
+    # gap between 603s local and 854s CI is the whole argument: the two numbers
+    # are the same suite under the same detector, and a 4-core box is not a
+    # 24-thread box scaled by a constant.
+    #
+    # WATCH 854s (race) and 660s (suite), and watch them CI-to-CI. Both should
+    # FALL if the remaining allocation work lands, not rise. The local figure is
+    # useful only as a ratio between two trees, never as headroom.
+    timeout = "eternal",
     srcs = [
         "agg_continuation_straddle_fdb_test.go",
         "agg_index_residual_drop_probe_test.go",
@@ -159,6 +198,8 @@ go_test(
         "crosstype_const_sarg_fdb_test.go",
         "cte_alias_propagation_probe_test.go",
         "cte_box_unnest_on_resolution_probe_fdb_test.go",
+        "cte_column_list_label_fdb_test.go",
+        "cte_star_output_label_test.go",
         "current_timestamp_crosspage_test.go",
         "current_timestamp_join_shapes_test.go",
         "current_timestamp_stability_test.go",
@@ -199,6 +240,7 @@ go_test(
         "drop_schema_ifexists_conformance_probe_test.go",
         "dsn_ddl_scope_option_test.go",
         "dsn_tags_test.go",
+        "duec_held_window_test.go",
         "duec_race_off_test.go",
         "duec_race_on_test.go",
         "duec_regime_detector_test.go",
@@ -287,6 +329,7 @@ go_test(
         "indexable_types_probe_test.go",
         "indexed_float_sarg_probe_test.go",
         "injoin_sorted_claim_fdb_test.go",
+        "inline_values_fdb_test.go",
         "inlist_index_probe_test.go",
         "inmemory_sort_row_domain_fdb_test.go",
         "insert_atomicity_probe_test.go",
@@ -406,6 +449,7 @@ go_test(
         "ordinal_reference_probe_test.go",
         "outer_join_derived_body_nullability_fdb_test.go",
         "outer_join_filter_probe_test.go",
+        "outer_join_nested_field_binding_fdb_test.go",
         "outer_join_parity_fdb_test.go",
         "outer_join_types_probe_test.go",
         "outer_join_under_chained_unnest_decline_test.go",
@@ -639,6 +683,7 @@ go_test(
         "//pkg/relational/core/keyspace",
         "//pkg/relational/core/metadata",
         "//pkg/relational/core/query",
+        "//pkg/relational/core/rowstruct",
         "//pkg/simfdb",
         "//pkg/testcontainers/foundationdb",
         "@com_github_onsi_gomega//:gomega",

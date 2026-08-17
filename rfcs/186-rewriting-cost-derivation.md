@@ -84,9 +84,10 @@ the assert does NOT fire on a PLANNING multi-final group. Convert the four sites
 - the deep tie-break hash — same split.
 
 Implementation order (instrument-first, as PERMANENT harness infra — not a one-off script):
-the invariant checker lives next to the existing `final_member_invariant.go`
-(`VerifyOneFinalPlanPerReference` / `Planner.SetVerifyOneFinal`) as a REWRITING-phase
-counterpart checking `len(FinalMembers()) == 1` at the `OptimizeGroupTask` compare site,
+the invariant checker lives next to the extraction-path verifier in
+`final_member_invariant.go` (`VerifyExtractionIsUnambiguous` / RFC-224) as a
+REWRITING-phase counterpart checking `len(FinalMembers()) == 1` at the
+`OptimizeGroupTask` compare site,
 enabled permanently in the test harness. Expected 0 violations by bottom-up task order
 (OptimizeInputs schedules child OptimizeGroup before the parent compares; REWRITING
 PruneToSet keeps exactly `{bestFinal}`). Any violation is a task-ordering bug to fix FIRST —

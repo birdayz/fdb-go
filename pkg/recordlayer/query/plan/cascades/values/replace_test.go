@@ -256,14 +256,14 @@ func TestReplace_ScalarFunctionValue(t *testing.T) {
 	sfv := &ScalarFunctionValue{
 		FuncName: "UPPER",
 		Args: []Value{
-			&FieldValue{Field: "name", Typ: NullableString},
+			&fieldValue{Field: "name", Typ: NullableString},
 		},
 		Typ: NullableString,
 	}
 
 	result := Replace(sfv, func(v Value) Value {
-		if f, ok := v.(*FieldValue); ok && f.Field == "name" {
-			return &FieldValue{Field: "title", Typ: NullableString}
+		if f, ok := v.(*fieldValue); ok && f.Field == "name" {
+			return &fieldValue{Field: "title", Typ: NullableString}
 		}
 		return v
 	})
@@ -275,9 +275,9 @@ func TestReplace_ScalarFunctionValue(t *testing.T) {
 	if s.FuncName != "UPPER" {
 		t.Fatalf("function name should be preserved")
 	}
-	f, ok := s.Args[0].(*FieldValue)
+	f, ok := s.Args[0].(*fieldValue)
 	if !ok {
-		t.Fatalf("expected *FieldValue arg, got %T", s.Args[0])
+		t.Fatalf("expected *fieldValue arg, got %T", s.Args[0])
 	}
 	if f.Field != "title" {
 		t.Fatalf("expected field 'title', got %q", f.Field)
@@ -363,12 +363,12 @@ func TestReplace_AggregateValue(t *testing.T) {
 	t.Parallel()
 	agg := &AggregateValue{
 		Op:      AggSum,
-		Operand: &FieldValue{Field: "amount", Typ: NullableLong},
+		Operand: &fieldValue{Field: "amount", Typ: NullableLong},
 	}
 
 	result := Replace(agg, func(v Value) Value {
-		if f, ok := v.(*FieldValue); ok && f.Field == "amount" {
-			return &FieldValue{Field: "total", Typ: NullableLong}
+		if f, ok := v.(*fieldValue); ok && f.Field == "amount" {
+			return &fieldValue{Field: "total", Typ: NullableLong}
 		}
 		return v
 	})
@@ -377,9 +377,9 @@ func TestReplace_AggregateValue(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *AggregateValue, got %T", result)
 	}
-	f, ok := a.Operand.(*FieldValue)
+	f, ok := a.Operand.(*fieldValue)
 	if !ok {
-		t.Fatalf("expected operand *FieldValue, got %T", a.Operand)
+		t.Fatalf("expected operand *fieldValue, got %T", a.Operand)
 	}
 	if f.Field != "total" {
 		t.Fatalf("expected field 'total', got %q", f.Field)
@@ -494,15 +494,15 @@ func TestReplace_DerivedValue(t *testing.T) {
 	t.Parallel()
 	dv := &DerivedValue{
 		ChildrenList: []Value{
-			&FieldValue{Field: "a", Typ: NullableLong},
-			&FieldValue{Field: "b", Typ: NullableString},
+			&fieldValue{Field: "a", Typ: NullableLong},
+			&fieldValue{Field: "b", Typ: NullableString},
 		},
 		ResultType: UnknownType,
 	}
 
 	result := Replace(dv, func(v Value) Value {
-		if f, ok := v.(*FieldValue); ok && f.Field == "a" {
-			return &FieldValue{Field: "x", Typ: NullableLong}
+		if f, ok := v.(*fieldValue); ok && f.Field == "a" {
+			return &fieldValue{Field: "x", Typ: NullableLong}
 		}
 		return v
 	})
@@ -511,9 +511,9 @@ func TestReplace_DerivedValue(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *DerivedValue, got %T", result)
 	}
-	f, ok := d.ChildrenList[0].(*FieldValue)
+	f, ok := d.ChildrenList[0].(*fieldValue)
 	if !ok {
-		t.Fatalf("expected *FieldValue, got %T", d.ChildrenList[0])
+		t.Fatalf("expected *fieldValue, got %T", d.ChildrenList[0])
 	}
 	if f.Field != "x" {
 		t.Fatalf("expected field 'x', got %q", f.Field)
@@ -548,14 +548,14 @@ func TestReplace_ReplaceRootWithDifferentType(t *testing.T) {
 func TestReplace_CollateValue(t *testing.T) {
 	t.Parallel()
 	cv := NewCollateValue(
-		&FieldValue{Field: "name", Typ: NullableString},
+		&fieldValue{Field: "name", Typ: NullableString},
 		&ConstantValue{Value: "en_US", Typ: NullableString},
 		nil,
 	)
 
 	result := Replace(cv, func(v Value) Value {
-		if f, ok := v.(*FieldValue); ok && f.Field == "name" {
-			return &FieldValue{Field: "title", Typ: NullableString}
+		if f, ok := v.(*fieldValue); ok && f.Field == "name" {
+			return &fieldValue{Field: "title", Typ: NullableString}
 		}
 		return v
 	})
@@ -564,9 +564,9 @@ func TestReplace_CollateValue(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *CollateValue, got %T", result)
 	}
-	f, ok := c.StringChild.(*FieldValue)
+	f, ok := c.StringChild.(*fieldValue)
 	if !ok {
-		t.Fatalf("expected *FieldValue, got %T", c.StringChild)
+		t.Fatalf("expected *fieldValue, got %T", c.StringChild)
 	}
 	if f.Field != "title" {
 		t.Fatalf("expected 'title', got %q", f.Field)
@@ -607,17 +607,17 @@ func TestReplace_ConditionSelectorValue(t *testing.T) {
 func TestReplaceLeavesOnceMaybe_SelfReferentialTerminates(t *testing.T) {
 	t.Parallel()
 	b := NamedCorrelationIdentifier("B")
-	orig := NewQuantifiedObjectValue(b) // a leaf
+	orig := mustQOV(t, b) // a leaf
 
 	calls := 0
 	replaceFn := func(node Value) Value {
-		qov, ok := node.(*QuantifiedObjectValue)
-		if !ok || qov.Correlation != b {
+		qov, ok := node.(*quantifiedObjectValue)
+		if !ok || qov.Correlation() != b {
 			return node
 		}
 		calls++
 		// The replacement CONTAINS a new same-alias (B) leaf — the self-reference.
-		return NewFieldValue(NewQuantifiedObjectValue(b), "col", UnknownType)
+		return newFieldValue(mustQOV(t, b), "col", UnknownType)
 	}
 
 	got := ReplaceLeavesOnceMaybe(orig, replaceFn)
@@ -626,12 +626,12 @@ func TestReplaceLeavesOnceMaybe_SelfReferentialTerminates(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("replaceFn applied %d times, want exactly 1 (new-leaf guard must break the self-reference)", calls)
 	}
-	fv, ok := got.(*FieldValue)
+	fv, ok := got.(*fieldValue)
 	if !ok {
-		t.Fatalf("result = %T, want *FieldValue (the single replacement)", got)
+		t.Fatalf("result = %T, want *fieldValue (the single replacement)", got)
 	}
-	if _, ok := fv.Child.(*QuantifiedObjectValue); !ok {
-		t.Fatalf("replacement's child = %T, want the un-re-replaced *QuantifiedObjectValue(B)", fv.Child)
+	if _, ok := fv.Child.(*quantifiedObjectValue); !ok {
+		t.Fatalf("replacement's child = %T, want the un-re-replaced *quantifiedObjectValue(B)", fv.Child)
 	}
 }
 
@@ -643,12 +643,12 @@ func TestReplaceLeavesOnceMaybe_SelfReferentialTerminates(t *testing.T) {
 // columns (dept.id / emp.id) conflate to the first occurrence.
 func TestLegAwareRootOrdinal(t *testing.T) {
 	t.Parallel()
-	qov := func(name string) *QuantifiedObjectValue {
-		return NewQuantifiedObjectValue(NamedCorrelationIdentifier(name))
+	qov := func(name string) *quantifiedObjectValue {
+		return mustQOV(t, NamedCorrelationIdentifier(name))
 	}
 	// ref builds a SourceRelativeBaked reference over leg `corr`.
-	ref := func(corr, field string, ord int) *FieldValue {
-		return NewCorrelatedFieldValueWithResolvedOrdinal(qov(corr), field, ord, UnknownType)
+	ref := func(corr, field string, ord int) *fieldValue {
+		return newCorrelatedFieldValueWithResolvedOrdinal(qov(corr), field, ord, UnknownType)
 	}
 	legField := func(name, corr string, ord int) RecordConstructorField {
 		return RecordConstructorField{Name: name, Value: ref(corr, name, ord)}
@@ -741,7 +741,7 @@ func TestLegAwareRootOrdinal(t *testing.T) {
 
 	// (5) fallbackOrd survives for the one shape that never needed a leg-relative
 	// rebase: a CHILDLESS reference names no leg, so its own ordinal stands.
-	if got := LegAwareRootOrdinal(NewFieldValueWithResolvedOrdinal("ID", 0, UnknownType), 0, noLegSeed, -42); got != -42 {
+	if got := LegAwareRootOrdinal(newFieldValueWithResolvedOrdinal("ID", 0, UnknownType), 0, noLegSeed, -42); got != -42 {
 		t.Errorf("a childless reference names no leg to rebase against, so fallbackOrd must "+
 			"stand; got %d", got)
 	}

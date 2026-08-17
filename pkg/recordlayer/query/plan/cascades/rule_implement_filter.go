@@ -108,10 +108,15 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		}
 		seen[m] = true
 		innerAlias := f.GetInner().GetAlias()
-		innerQ := expressions.ForEachQuantifier(call.MemoizeMemberPlansFromOther(
+		innerQ := expressions.NamedForEachQuantifier(innerAlias, call.MemoizeMemberPlansFromOther(
 			innerRef, []expressions.RelationalExpression{m}))
-		call.Yield(plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
-			innerQ, f.GetPredicates(), innerAlias))
+		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
+			innerQ, f.GetPredicates(), innerAlias)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		call.Yield(filterPlan)
 	}
 	for _, ordering := range orderings {
 		// satisfied deliberately DISCARDED (RFC-186 §2C): this wrapper is an
@@ -140,7 +145,11 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		// parent that captures this leg. A frozen snapshot strands the pre-push
 		// filter once the merged group canonicalizes to the pushed one.
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-		filterPlan := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ, f.GetPredicates(), innerAlias)
+		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ, f.GetPredicates(), innerAlias)
+		if err != nil {
+			call.Fail(err)
+			return
+		}
 		call.Yield(filterPlan)
 	}
 }

@@ -106,28 +106,30 @@ type RecordQueryLoadByKeysPlan struct {
 }
 
 // NewRecordQueryLoadByKeysPlan constructs the plan from a KeysSource.
-func NewRecordQueryLoadByKeysPlan(keysSource KeysSource) *RecordQueryLoadByKeysPlan {
-	return &RecordQueryLoadByKeysPlan{keysSource: keysSource}
+func NewRecordQueryLoadByKeysPlan(keysSource KeysSource, flowedType values.Type) (*RecordQueryLoadByKeysPlan, error) {
+	base, err := newPlanExprBaseForType("RecordQueryLoadByKeysPlan", flowedType)
+	if err != nil {
+		return nil, err
+	}
+	return &RecordQueryLoadByKeysPlan{PlanExprBase: base, keysSource: keysSource}, nil
 }
 
 // NewRecordQueryLoadByKeysPlanFromKeys constructs the plan from an
 // explicit list of primary key tuples.
-func NewRecordQueryLoadByKeysPlanFromKeys(primaryKeys []tuple.Tuple) *RecordQueryLoadByKeysPlan {
-	return &RecordQueryLoadByKeysPlan{keysSource: NewPrimaryKeysKeySource(primaryKeys)}
+func NewRecordQueryLoadByKeysPlanFromKeys(primaryKeys []tuple.Tuple, flowedType values.Type) (*RecordQueryLoadByKeysPlan, error) {
+	return NewRecordQueryLoadByKeysPlan(NewPrimaryKeysKeySource(primaryKeys), flowedType)
 }
 
 // NewRecordQueryLoadByKeysPlanFromParameter constructs the plan from
 // a named parameter.
-func NewRecordQueryLoadByKeysPlanFromParameter(parameter string) *RecordQueryLoadByKeysPlan {
-	return &RecordQueryLoadByKeysPlan{keysSource: NewParameterKeySource(parameter)}
+func NewRecordQueryLoadByKeysPlanFromParameter(parameter string, flowedType values.Type) (*RecordQueryLoadByKeysPlan, error) {
+	return NewRecordQueryLoadByKeysPlan(NewParameterKeySource(parameter), flowedType)
 }
 
 // GetKeysSource returns the key source.
 func (p *RecordQueryLoadByKeysPlan) GetKeysSource() KeysSource { return p.keysSource }
 
-// GetResultType returns UnknownType — the actual type depends on the
-// record type loaded at execution time.
-func (p *RecordQueryLoadByKeysPlan) GetResultType() values.Type { return values.UnknownType }
+func (p *RecordQueryLoadByKeysPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns nil — this is a leaf plan.
 func (p *RecordQueryLoadByKeysPlan) GetChildren() []RecordQueryPlan { return nil }
@@ -194,8 +196,11 @@ func (p *RecordQueryLoadByKeysPlan) EqualsWithoutChildren(other expressions.Rela
 
 // WithQuantifiers returns this plan unchanged — it has no quantifiers to
 // replace while children are raw pointers (RFC-183 P5 step 1).
-func (p *RecordQueryLoadByKeysPlan) WithQuantifiers(_ []expressions.Quantifier) expressions.RelationalExpression {
-	return p
+func (p *RecordQueryLoadByKeysPlan) WithQuantifiers(qs []expressions.Quantifier) (expressions.RelationalExpression, error) {
+	if err := validateQuantifierArity("RecordQueryLoadByKeysPlan", len(qs), 0); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // GetRecordQueryPlan returns the plan itself.

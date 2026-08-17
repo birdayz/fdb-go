@@ -12,24 +12,33 @@ import (
 func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *testing.T) {
 	t.Parallel()
 
+	rowType := values.NewRecordType("CostRow", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
 	filteredScan := func() *plans.RecordQueryPredicatesFilterPlan {
-		return plans.NewRecordQueryPredicatesFilterPlan(
-			plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false),
+		scan, err := plans.NewRecordQueryScanPlan([]string{"T"}, rowType, false)
+		scan = mustConstruct(t, scan, err)
+		filter, err := plans.NewRecordQueryPredicatesFilterPlan(
+			scan,
 			[]predicates.QueryPredicate{
 				predicates.NewConstantPredicate(predicates.TriTrue),
 			},
 		)
+		return mustConstruct(t, filter, err)
 	}
-	plain := plans.NewRecordQueryProjectionPlan(nil, filteredScan())
+	plain, err := plans.NewRecordQueryProjectionPlan(nil, filteredScan())
+	plain = mustConstruct(t, plain, err)
 	repeatedInner := filteredScan()
-	inUnion := plans.NewRecordQueryInUnionPlan(
+	inUnion, err := plans.NewRecordQueryInUnionPlan(
 		repeatedInner,
 		[]string{"in_value"},
 		nil,
 		false,
 	)
+	inUnion = mustConstruct(t, inUnion, err)
 	inUnion.SetInSources([][]any{{int64(1), int64(2)}})
-	repeated := plans.NewRecordQueryProjectionPlan(nil, inUnion)
+	repeated, err := plans.NewRecordQueryProjectionPlan(nil, inUnion)
+	repeated = mustConstruct(t, repeated, err)
 
 	if _, applicable := compareInOperator(plain); applicable {
 		t.Fatal("root Projection unexpectedly activated the root-only IN penalty")

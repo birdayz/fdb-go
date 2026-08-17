@@ -819,11 +819,7 @@ func correlatedInnerFieldKey(
 	innerAlias values.CorrelationIdentifier,
 	frontier values.OrdinalDomain,
 ) (values.ColumnIdentity, bool) {
-	fv, isField := v.(*values.FieldValue)
-	if !isField {
-		return values.ColumnIdentity{}, false
-	}
-	key, ok := fv.CorrelatedIdentityIn(frontier)
+	key, ok := values.CorrelatedFieldIdentityIn(v, frontier)
 	if !ok || !values.SameLeg(key.Correlation, innerAlias) {
 		return values.ColumnIdentity{}, false
 	}
@@ -944,13 +940,10 @@ func innerLeafUniqueKeyOrdinals(plan RecordQueryPlan, layout values.Type) (map[v
 				// comment.
 				continue
 			}
-			fv, ok := v.(*values.FieldValue)
-			if !ok || fv.Child != nil {
-				return nil, false // composite/nested PK component — fail closed
-			}
-			key, ok := values.OrdinalOfNameIn(layout, fv.Field)
+			key, ok := values.CorrelatedFieldIdentityIn(
+				v, values.OrdinalDomainOfType(layout))
 			if !ok {
-				return nil, false
+				return nil, false // composite/nested or foreign-layout component — fail closed
 			}
 			if _, duplicate := want[key]; duplicate {
 				return nil, false

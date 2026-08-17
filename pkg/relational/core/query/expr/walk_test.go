@@ -44,12 +44,9 @@ func TestWalkExpression_BareColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	fv, ok := v.(*values.FieldValue)
-	if !ok {
-		t.Fatalf("expected *FieldValue, got %T", v)
-	}
-	if fv.Field != "NAME" {
-		t.Fatalf("Field: got %q", fv.Field)
+	fv := mustExprField(t, v)
+	if fv.DisplayName() != "NAME" {
+		t.Fatalf("Field: got %q", fv.DisplayName())
 	}
 }
 
@@ -63,22 +60,15 @@ func TestWalkExpression_QualifiedColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	fv := v.(*values.FieldValue)
-	if fv.Field != "NAME" {
-		t.Fatalf("qualified column Field: got %q, want NAME", fv.Field)
+	fv := mustExprField(t, v)
+	if fv.DisplayName() != "NAME" {
+		t.Fatalf("qualified column Field: got %q, want NAME", fv.DisplayName())
 	}
 }
 
-// TestWalkExpression_SingleVsMultiSourceFieldQualification pins the
-// resolver invariant the CTE ON-only derivation's positional-frontier
-// admission rests on (derivedEmittedBareNames): a SINGLE-source scope
-// resolves a QUALIFIED ref to a CHILD-LESS FieldValue whose Field is the
-// BARE output name (needsQualification = len(sources) > 1 in
-// ResolveIdentifier) — so the runtime key is bare in both the positional
-// row and the name-keyed Datum, and survives a sort-continuation resume.
-// With a SECOND source the qualification moves to the QOV CHILD — Field
-// stays bare, never dotted. If either half changes, the derivation's claim
-// rules must be re-derived before this test is touched.
+// TestWalkExpression_SingleVsMultiSourceFieldQualification proves that both
+// scope shapes publish exact, QOV-owned positional references. Qualification
+// changes the owner identity, never the field's semantic display name.
 func TestWalkExpression_SingleVsMultiSourceFieldQualification(t *testing.T) {
 	t.Parallel()
 	a, s := buildScope(t)
@@ -89,9 +79,16 @@ func TestWalkExpression_SingleVsMultiSourceFieldQualification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("single-source walk: %v", err)
 	}
-	fv := v.(*values.FieldValue)
-	if fv.Field != "NAME" || fv.Child != nil {
-		t.Fatalf("single-source qualified ref: got Field=%q Child=%v, want bare NAME with no child", fv.Field, fv.Child)
+	fv := mustExprField(t, v)
+	if fv.DisplayName() != "NAME" {
+		t.Fatalf("single-source qualified ref: got display name %q, want NAME", fv.DisplayName())
+	}
+	qov := mustExprQOV(t, fv.ChildValue())
+	if qov.Correlation().Name() != "U" {
+		t.Fatalf("single-source owner = %q, want U", qov.Correlation().Name())
+	}
+	if fv.Path().Len() != 1 || fv.Path().Ordinals()[0] != 1 {
+		t.Fatalf("single-source path = %v, want [1]", fv.Path().Ordinals())
 	}
 
 	// Multi-source scope: fresh scope with CorrelationName set on both legs
@@ -123,12 +120,16 @@ func TestWalkExpression_SingleVsMultiSourceFieldQualification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("multi-source resolve: %v", err)
 	}
-	fv2 := v2.(*values.FieldValue)
-	if fv2.Field != "NAME" {
-		t.Fatalf("multi-source qualified ref Field: got %q, want bare NAME (qualification rides the child)", fv2.Field)
+	fv2 := mustExprField(t, v2)
+	if fv2.DisplayName() != "NAME" {
+		t.Fatalf("multi-source qualified ref Field: got %q, want bare NAME", fv2.DisplayName())
 	}
-	if fv2.Child == nil {
-		t.Fatal("multi-source qualified ref: want a QOV child carrying the correlation, got none")
+	qov2 := mustExprQOV(t, fv2.ChildValue())
+	if qov2.Correlation().Name() != "U" {
+		t.Fatalf("multi-source owner = %q, want U", qov2.Correlation().Name())
+	}
+	if qov.FlowedType().Code() != values.TypeCodeRecord || qov2.FlowedType().Code() != values.TypeCodeRecord {
+		t.Fatalf("owners must both flow exact records, got %v and %v", qov.FlowedType(), qov2.FlowedType())
 	}
 }
 
@@ -453,7 +454,7 @@ func TestWalkPredicate_LogicalXor(t *testing.T) {
 	// future XorPredicate type lands, update this. Bare boolean operands
 	// lift to `col = TRUE` (RFC-146), as Java's toUnderlyingPredicate does
 	// in every predicate position.
-	const wantExplain = "((ACTIVE#2 = TRUE OR ADMIN#3 = TRUE) AND NOT (ACTIVE#2 = TRUE AND ADMIN#3 = TRUE))"
+	const wantExplain = "((U.ACTIVE#2 = TRUE OR U.ADMIN#3 = TRUE) AND NOT (U.ACTIVE#2 = TRUE AND U.ADMIN#3 = TRUE))"
 	if got := pred.Explain(); got != wantExplain {
 		t.Fatalf("Explain:\n  got:  %q\n  want: %q", got, wantExplain)
 	}
@@ -517,8 +518,11 @@ func TestWalkPredicate_FeedsSimplifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
-	if got, want := simplified.Explain(), "ID#0 = 1"; got != want {
+	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	if err != nil {
+		t.Fatalf("simplify: %v", err)
+	}
+	if got, want := simplified.Explain(), "U.ID#0 = 1"; got != want {
 		t.Fatalf("simplified: got %q, want %q", got, want)
 	}
 }
@@ -569,7 +573,10 @@ func TestWalkPredicate_NotParenComparison(t *testing.T) {
 	}
 	// Through the simplifier: NOT(id = 1) → id <> 1 via
 	// NotComparisonRewriteRule.
-	simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	if err != nil {
+		t.Fatalf("simplify: %v", err)
+	}
 	cp, ok := simplified.(*predicates.ComparisonPredicate)
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate after simplify, got %T", simplified)
@@ -1184,8 +1191,11 @@ func TestWalker_E2E_SimplifyRichTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-	simplified := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
-	if got, want := simplified.Explain(), "ID#0 > 0"; got != want {
+	simplified, err := cascades.Simplify(pred, cascades.DefaultSimplifyRules())
+	if err != nil {
+		t.Fatalf("simplify: %v", err)
+	}
+	if got, want := simplified.Explain(), "U.ID#0 > 0"; got != want {
 		t.Fatalf("simplified: got %q, want %q", got, want)
 	}
 }
@@ -1390,8 +1400,8 @@ func TestWalkExpression_CastInteger(t *testing.T) {
 	if cv.Target != values.NullableInt {
 		t.Fatalf("Target: got %v, want NullableInt", cv.Target)
 	}
-	fv, ok := cv.Child.(*values.FieldValue)
-	if !ok || fv.Field != "NAME" {
+	fv, ok := values.AsFieldValue(cv.Child)
+	if !ok || fv.DisplayName() != "NAME" {
 		t.Fatalf("Child: got %v", cv.Child)
 	}
 }
@@ -1691,7 +1701,7 @@ func TestWalkPredicate_ScalarFunctionInComparison(t *testing.T) {
 	if _, ok := cp.Operand.(*values.ScalarFunctionValue); !ok {
 		t.Fatalf("expected LHS *ScalarFunctionValue, got %T", cp.Operand)
 	}
-	want := "UPPER(NAME#1) = 'ALICE'"
+	want := "UPPER(U.NAME#1) = 'ALICE'"
 	if got := cp.Explain(); got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
@@ -1753,7 +1763,7 @@ func TestWalkPredicate_ParameterizedComparison(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *ComparisonPredicate, got %T", pred)
 	}
-	if _, ok := cp.Operand.(*values.FieldValue); !ok {
+	if _, ok := values.AsFieldValue(cp.Operand); !ok {
 		t.Fatalf("expected LHS *FieldValue, got %T", cp.Operand)
 	}
 	pv, ok := cp.Comparison.Operand.(*values.ParameterValue)
@@ -1765,7 +1775,7 @@ func TestWalkPredicate_ParameterizedComparison(t *testing.T) {
 	}
 	// Plan-cache key seam: render the predicate as `NAME = ?1` so two
 	// queries with different bind values share the same Explain.
-	want := "NAME#1 = ?1"
+	want := "U.NAME#1 = ?1"
 	if got := cp.Explain(); got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
@@ -1800,7 +1810,7 @@ func TestWalkPredicate_MultiplePositionalParameters(t *testing.T) {
 	if got[0] != 1 || got[1] != 2 {
 		t.Fatalf("ordinals: got %v, want [1 2]", got)
 	}
-	want := "(ID#0 = ?1 AND NAME#1 = ?2)"
+	want := "(U.ID#0 = ?1 AND U.NAME#1 = ?2)"
 	if exp := and.Explain(); exp != want {
 		t.Fatalf("Explain: got %q, want %q", exp, want)
 	}
@@ -1824,7 +1834,7 @@ func TestWalkPredicate_NamedParameterizedComparison(t *testing.T) {
 	if pv.ParamName != "user" {
 		t.Fatalf("ParamName: got %q, want 'user'", pv.ParamName)
 	}
-	if got, want := cp.Explain(), "NAME#1 = ?user"; got != want {
+	if got, want := cp.Explain(), "U.NAME#1 = ?user"; got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 }

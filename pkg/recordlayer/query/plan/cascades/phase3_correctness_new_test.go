@@ -11,6 +11,52 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
+func phase3RowType() *values.RecordType {
+	return values.NewRecordType("phase3_row", false, []values.Field{
+		{Name: "STATUS", FieldType: values.NotNullString, Ordinal: 0},
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 1},
+		{Name: "CREATED_AT", FieldType: values.NullableLong, Ordinal: 2},
+	})
+}
+
+func phase3Scan(
+	t testing.TB,
+	recordType string,
+) *expressions.FullUnorderedScanExpression {
+	t.Helper()
+	return mustFullUnorderedScan(t, []string{recordType}, phase3RowType())
+}
+
+func phase3FlowedValue(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+) values.QuantifiedObjectValue {
+	t.Helper()
+	flowedValue, flowedErr := quantifier.RequireFlowedObjectValue()
+	return mustConstruct(t, flowedValue, flowedErr)
+}
+
+func phase3Field(
+	t testing.TB,
+	quantifier expressions.Quantifier,
+	ordinal int,
+) values.Value {
+	t.Helper()
+	fieldValue, fieldErr := values.ResolveFieldOrdinals(
+		phase3FlowedValue(t, quantifier), []int{ordinal})
+	return mustConstruct(t, fieldValue, fieldErr)
+}
+
+func phase3Filter(
+	t testing.TB,
+	preds []predicates.QueryPredicate,
+	quantifier expressions.Quantifier,
+) *expressions.LogicalFilterExpression {
+	t.Helper()
+	filterValue, filterErr := expressions.NewLogicalFilterExpression(preds, quantifier)
+	return mustConstruct(t, filterValue, filterErr)
+}
+
 // ---------------------------------------------------------------------------
 // 1. UniqueOverDistinctOverScan: both Unique and Distinct are absorbed
 //    because the underlying scan is already distinct by primary key.
@@ -20,17 +66,19 @@ import (
 func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := phase3Scan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
-	distinct := expressions.NewLogicalDistinctExpression(
+	distinctValue, distinctErr := expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(scanRef),
 	)
+	distinct := mustConstruct(t, distinctValue, distinctErr)
 	distinctRef := expressions.InitialOf(distinct)
 
-	unique := expressions.NewLogicalUniqueExpression(
+	uniqueValue, uniqueErr := expressions.NewLogicalUniqueExpression(
 		expressions.ForEachQuantifier(distinctRef),
 	)
+	unique := mustConstruct(t, uniqueValue, uniqueErr)
 	rootRef := expressions.InitialOf(unique)
 
 	planWithImplRulesAndContext(
@@ -100,12 +148,13 @@ func TestPhase3_UniqueOverDistinctOverScan(t *testing.T) {
 func TestPhase3_LimitOverScan(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := phase3Scan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
-	limit := expressions.NewLogicalLimitExpression(10, 0,
+	limitValue, limitErr := expressions.NewLogicalLimitExpression(10, 0,
 		expressions.ForEachQuantifier(scanRef),
 	)
+	limit := mustConstruct(t, limitValue, limitErr)
 	rootRef := expressions.InitialOf(limit)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
@@ -150,10 +199,10 @@ func TestPhase3_LimitOverScan(t *testing.T) {
 func TestPhase3_FilterOnly(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := phase3Scan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
-	filter := expressions.NewLogicalFilterExpression(
+	filter := phase3Filter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		expressions.ForEachQuantifier(scanRef),
 	)
@@ -176,18 +225,20 @@ func TestPhase3_FilterOnly(t *testing.T) {
 func TestPhase3_DistinctOverUnion(t *testing.T) {
 	t.Parallel()
 
-	scanA := expressions.NewFullUnorderedScanExpression([]string{"A"}, values.UnknownType)
-	scanB := expressions.NewFullUnorderedScanExpression([]string{"B"}, values.UnknownType)
+	scanA := phase3Scan(t, "A")
+	scanB := phase3Scan(t, "B")
 
-	union := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+	unionValue, unionErr := expressions.NewLogicalUnionExpression([]expressions.Quantifier{
 		expressions.ForEachQuantifier(expressions.InitialOf(scanA)),
 		expressions.ForEachQuantifier(expressions.InitialOf(scanB)),
 	})
+	union := mustConstruct(t, unionValue, unionErr)
 	unionRef := expressions.InitialOf(union)
 
-	distinct := expressions.NewLogicalDistinctExpression(
+	distinctValue, distinctErr := expressions.NewLogicalDistinctExpression(
 		expressions.ForEachQuantifier(unionRef),
 	)
+	distinct := mustConstruct(t, distinctValue, distinctErr)
 	rootRef := expressions.InitialOf(distinct)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
@@ -231,24 +282,27 @@ func TestPhase3_DistinctOverUnion(t *testing.T) {
 func TestPhase3_ProjectionOverFilter(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := phase3Scan(t, "T")
 	scanRef := expressions.InitialOf(scan)
+	scanQ := expressions.ForEachQuantifier(scanRef)
 
-	filter := expressions.NewLogicalFilterExpression(
+	filter := phase3Filter(t,
 		[]predicates.QueryPredicate{
 			predicates.NewComparisonPredicate(
-				&values.FieldValue{Field: "status", Typ: values.TypeString},
+				phase3Field(t, scanQ, 0),
 				predicates.NewLiteralComparison(predicates.ComparisonEquals, "active"),
 			),
 		},
-		expressions.ForEachQuantifier(scanRef),
+		scanQ,
 	)
 	filterRef := expressions.InitialOf(filter)
+	filterQ := expressions.ForEachQuantifier(filterRef)
 
-	proj := expressions.NewLogicalProjectionExpression(
-		[]values.Value{&values.FieldValue{Field: "ID", Typ: values.NullableLong}},
-		expressions.ForEachQuantifier(filterRef),
+	projValue, projErr := expressions.NewLogicalProjectionExpression(
+		[]values.Value{phase3Field(t, filterQ, 1)},
+		filterQ,
 	)
+	proj := mustConstruct(t, projValue, projErr)
 	rootRef := expressions.InitialOf(proj)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
@@ -291,15 +345,16 @@ func TestPhase3_ProjectionOverFilter(t *testing.T) {
 func TestPhase3_SelectNoPredicates(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := phase3Scan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 	q := expressions.ForEachQuantifier(scanRef)
 
 	// Result value = QuantifiedObjectValue referencing the single
 	// quantifier's alias → isQuantifiedObjectValueFor returns true.
-	rv := values.NewQuantifiedObjectValue(q.GetAlias())
+	rv := phase3FlowedValue(t, q)
 
-	sel := expressions.NewSelectExpression(rv, []expressions.Quantifier{q}, nil)
+	selValue, selErr := expressions.NewSelectExpression(rv, []expressions.Quantifier{q}, nil)
+	sel := mustConstruct(t, selValue, selErr)
 	rootRef := expressions.InitialOf(sel)
 
 	// Explicitly include ImplementSimpleSelectRule.
@@ -361,14 +416,15 @@ func TestPhase3_SelectNoPredicates(t *testing.T) {
 func TestPhase3_PlanPropertyInvariant_ScanIsDistinct(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := phase3Scan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
 	// Wrap in something so the planner visits the scanRef as an inner
 	// Reference. Unique is the simplest wrapper.
-	unique := expressions.NewLogicalUniqueExpression(
+	uniqueValue, uniqueErr := expressions.NewLogicalUniqueExpression(
 		expressions.ForEachQuantifier(scanRef),
 	)
+	unique := mustConstruct(t, uniqueValue, uniqueErr)
 	rootRef := expressions.InitialOf(unique)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())
@@ -417,19 +473,20 @@ func TestPhase3_PlanPropertyInvariant_ScanIsDistinct(t *testing.T) {
 func TestPhase3_PlanPropertyInvariant_FilterInheritsDistinct(t *testing.T) {
 	t.Parallel()
 
-	scan := expressions.NewFullUnorderedScanExpression([]string{"T"}, values.UnknownType)
+	scan := phase3Scan(t, "T")
 	scanRef := expressions.InitialOf(scan)
 
-	filter := expressions.NewLogicalFilterExpression(
+	filter := phase3Filter(t,
 		[]predicates.QueryPredicate{predicates.NewConstantPredicate(predicates.TriTrue)},
 		expressions.ForEachQuantifier(scanRef),
 	)
 	filterRef := expressions.InitialOf(filter)
 
 	// Wrap in Unique so the planner visits everything.
-	unique := expressions.NewLogicalUniqueExpression(
+	uniqueValue, uniqueErr := expressions.NewLogicalUniqueExpression(
 		expressions.ForEachQuantifier(filterRef),
 	)
+	unique := mustConstruct(t, uniqueValue, uniqueErr)
 	rootRef := expressions.InitialOf(unique)
 
 	planWithImplRules(t, rootRef, DefaultImplementationRules())

@@ -103,7 +103,27 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 	verdict := boxConjBakeable
 	for _, conj := range splitNonExistsPredicates(pred) {
 		predicates.ReplaceValues(conj, func(v values.Value) values.Value {
-			switch nv := v.(type) {
+			if qov, isQOV := values.AsQuantifiedObjectValue(v); isQOV {
+				if _, ok := allowed[strings.ToUpper(qov.Correlation().Name())]; !ok {
+					verdict = boxConjUnbakeable
+				}
+				return v
+			}
+			if field, isField := values.AsFieldValue(v); isField {
+				if key, isRef := legRef(v); isRef {
+					if w, isLeg := legTypes[key]; isLeg {
+						if w.leafTyp == nil {
+							verdict = boxConjUnbakeable
+						} else if _, _, resolved := legRefRootInWindow(field, w.leafTyp); !resolved {
+							verdict = boxConjUnbakeable
+						}
+					} else if _, isBoxLeg := boxLegs[key]; isBoxLeg {
+						verdict = boxConjUnbakeable
+					}
+				}
+				return v
+			}
+			switch v.(type) {
 			case *values.ScalarSubqueryValue:
 				// A scalar-subquery conjunct BAKES. The subquery is a leaf
 				// (Children()==nil) — the bake closure leaves it untouched, only the
@@ -126,31 +146,6 @@ func (t *cascadesTranslator) classifyLegConjunct(legs []clusterLeg, gateJoin *lo
 				// cluster strands at PHYSICALIZATION ("not a physical plan"), an
 				// orthogonal pre-existing limitation — not a scalar-subquery bind gap.
 				verdict = boxConjUnbakeable
-			case *values.QuantifiedObjectValue:
-				if _, ok := allowed[strings.ToUpper(nv.Correlation.Name())]; !ok {
-					verdict = boxConjUnbakeable // a foreign correlation (e.g. a scalar-subquery alias)
-				}
-			case *values.FieldValue:
-				if key, isRef := legRef(v); isRef {
-					if w, isLeg := legTypes[key]; isLeg {
-						if w.leafTyp == nil {
-							verdict = boxConjUnbakeable
-						} else if _, _, resolved := legRefRootInWindow(nv, w.leafTyp); !resolved {
-							verdict = boxConjUnbakeable
-						}
-					} else if _, isBoxLeg := boxLegs[key]; isBoxLeg {
-						// A BOX-LEG alias with NO seed-map window (a
-						// transparent-filter-wrapped operand can appear in
-						// outerBoundAliases without a buried entry). Baking is
-						// impossible and the gathered select never binds the
-						// alias — Unbakeable, never a silent unbound QOV.
-						verdict = boxConjUnbakeable
-					}
-				} else if nv.Child == nil && strings.Contains(nv.Field, ".") {
-					// A dotted frontier read — cannot be positively attributed to
-					// a window here; keep the name-model path (fail-open).
-					verdict = boxConjUnbakeable
-				}
 			}
 			return v
 		})

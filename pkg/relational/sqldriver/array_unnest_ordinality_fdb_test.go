@@ -1485,23 +1485,24 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		unnestMustContain(t, plan, "WITH ORDINALITY")
 	})
 
-	t.Run("R6 P3 AT on a bare source alias is WRONG_OBJECT_TYPE", func(t *testing.T) {
-		// Wrong-error-code hazard: `FROM T1, T1 AT ord` — AT is present
-		// but there are NO field segments (the source is the bare table/alias `T1`,
-		// not `T1.field`). Segment 0 (T1) resolves to a visible scan, so it reaches
-		// the known-source branch with an EMPTY field name. Before the fix that
-		// branch reported UNDEFINED_COLUMN for the empty column name (42703). Since
-		// this is AT-on-a-table/source (not on an array field), it must converge
-		// with the other AT-on-table rejection paths → WRONG_OBJECT_TYPE (42809).
-		// RFC-142.
-		assertRejected(t, md, `SELECT "ID", "AT" FROM T1, T1 AT "AT"`, api.ErrCodeWrongObjectType)
+	t.Run("R6 P3 AT on a repeated bare source alias is DUPLICATE_ALIAS", func(t *testing.T) {
+		// `FROM T1, T1 AT ord` carries two independent declaration errors: AT on
+		// a table is a wrong object, but the AT-bearing second source is first
+		// classified as an unnest declaration and defaults its element alias to
+		// its final source segment, T1. That alias duplicates the already-bound
+		// outer T1 source. The FROM-scope declaration authority therefore reports
+		// DUPLICATE_ALIAS (42712) before object-type validation. This is the same
+		// shadowing-source rule pinned by the ordinary AS/AT collision tests; the
+		// neighbouring `FROM T1, U AT O` controls remain 42809 because U does not
+		// duplicate T1. RFC-142.
+		assertRejected(t, md, `SELECT "ID", "AT" FROM T1, T1 AT "AT"`, api.ErrCodeDuplicateAlias)
 	})
 
-	t.Run("R6 P3 AT on a bare aliased source is WRONG_OBJECT_TYPE", func(t *testing.T) {
-		// The aliased form `FROM T1 AS Y, Y AT ord` — `Y` is a visible source alias
-		// with no field segment; AT on the bare source is still invalid. Pins the
-		// fix across the alias-led shape, not just the table-name-led one.
-		assertRejected(t, md, `SELECT "ID", "AT" FROM T1 AS "Y", "Y" AT "AT"`, api.ErrCodeWrongObjectType)
+	t.Run("R6 P3 AT on a repeated bare aliased source is DUPLICATE_ALIAS", func(t *testing.T) {
+		// Alias-led twin: the AT-bearing source defaults its element alias to Y,
+		// which duplicates the outer `T1 AS Y` binding. The exact FROM declaration
+		// error (42712) precedes the later AT-on-table type error here too.
+		assertRejected(t, md, `SELECT "ID", "AT" FROM T1 AS "Y", "Y" AT "AT"`, api.ErrCodeDuplicateAlias)
 	})
 
 	// --- AT on a SINGLE-segment table source: the WRONG_OBJECT_TYPE must NOT be
@@ -1697,10 +1698,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// join in the FROM, the old silent decline dropped that ON and
 		// cross-producted (the fail-closed fix's unnest arm; review catch:
 		// the shared adder closure originally escaped the drop-risk
-		// taxonomy). Must be a loud 0AF00, never silent rows.
+		// taxonomy). The complete FROM-list declaration check now catches the
+		// duplicate U binding before the older generic drop-risk fallback, so the
+		// authoritative error is DUPLICATE_ALIAS (42712), never silent rows.
 		assertRejected(t, md,
 			`SELECT 1 FROM T1 JOIN "U" ON "U"."ID" = T1."ID", T1."ARR1" AS "U"`,
-			api.ErrCodeUnsupportedQuery)
+			api.ErrCodeDuplicateAlias)
 	})
 
 	t.Run("control: normal explicit INNER JOIN with ON is unaffected", func(t *testing.T) {
@@ -1892,15 +1895,16 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	//
 	// The bug is a PLAN-CONSTRUCTION divergence in the catalog builder, so the
 	// revert-proof axis is the inner plan SHAPE rendered in EXPLAIN (the inner SELECT
-	// plan of an EXISTS subquery is rendered inline). The inner PROJECTION reads the
-	// qualified `V.V` (the unnest element); the inner SORT KEY now reads the element
-	// POSITIONALLY — `.V#3`, a baked ordinal at the element's seed slot (GD's run
+	// plan of an EXISTS subquery is rendered inline). The inner PROJECTION and SORT
+	// KEY now read the element POSITIONALLY from the selected physical current
+	// carrier at ordinal 3 (GD's run
 	// ID/ARR/SARR is slots 0-2, so the mid-list element V is slot 3) — because ORDER BY
 	// over a gathered ordinal seed bakes leg-column AND element keys through the SAME
 	// authority the GROUP BY path uses (translateSort → gatheredSeedBakeContext →
-	// bakeGatheredGroupValue; element-first, so bare `V` shadows GW.V). On revert the
-	// sort is the bare, GW.V-clobbered `InMemorySort([V DESC]`; a mis-bind to GW.V would
-	// bake `.V#5` (GW.V's slot), never `.V#3`. (A scalar-subquery-over-unnest's value is
+	// bakeGatheredGroupValue; element-first, so bare `V` shadows GW.V). The sort's
+	// display label remains `V`; its retained ValueExpr's exact current root and
+	// ordinal are the addressing proof. A mis-bind to GW.V would use slot 5, never
+	// slot 3. (A scalar-subquery-over-unnest's value is
 	// not yet pre-evaluated in execution — a separate gap — so the plan-shape assertion
 	// is the faithful proof here, exactly as the column-type tests assert on the Value.)
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest projection AND sort key", func(t *testing.T) {
@@ -1910,40 +1914,41 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		// The inner projection reads the qualified element V.V; the inner sort reads it
-		// POSITIONALLY at the element slot (.V#3), never the bare V that mergeRows
-		// clobbers with GW.V and never GW.V's own slot (.V#5).
-		unnestMustContain(t, explain, "Project([V.V#0]")
-		unnestMustContain(t, explain, ".V#3 DESC]")
+		// Explain renders the sort's display label only. Inspect the retained Value
+		// programs so a bare-label rendering cannot be confused with runtime name lookup.
+		if !unnestProjectionHasCurrentOrdinal(plan, 3) || !unnestSortHasCurrentOrdinal(plan, 3) {
+			t.Fatalf("inner projection/sort did not bind exact current ordinal 3: %s", explain)
+		}
 		unnestMustNotContain(t, explain, "Project([V],")
-		unnestMustNotContain(t, explain, "InMemorySort([V DESC]")
-		unnestMustNotContain(t, explain, ".V#5 DESC]")
 	})
 
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest sort key ASC", func(t *testing.T) {
-		// The ASC mirror pins the sort-key half independent of DESC: the sort key bakes
-		// to the element slot (.V#3) for either direction, never GW.V's (.V#5) or bare V.
+		// The ASC mirror pins the sort-key half independent of DESC: the sort key
+		// addresses current slot 3 for either direction, never GW.V's slot 5.
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
 			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW ORDER BY "V" ASC)`, md, nil)
 		if perr != nil {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		unnestMustContain(t, explain, ".V#3 ASC]")
-		unnestMustNotContain(t, explain, "InMemorySort([V ASC]")
-		unnestMustNotContain(t, explain, ".V#5 ASC]")
+		if !unnestSortHasCurrentOrdinal(plan, 3) {
+			t.Fatalf("inner ASC sort did not bind exact current ordinal 3: %s", explain)
+		}
 	})
 
 	t.Run("R26 P2a catalog-builder subquery qualifies the shadowed unnest bare projection no ORDER BY", func(t *testing.T) {
-		// The projection half in isolation (no ORDER BY): the inner SELECT projects the
-		// qualified V.V, not the GW.V-clobbered bare V. Pre-fix `Project([V],`. RFC-142.
+		// The projection half in isolation (no ORDER BY): the inner SELECT projects
+		// exact current ordinal 3, not the GW.V-clobbered bare V. Pre-fix
+		// `Project([V],`. RFC-142.
 		plan, perr := embedded.PlanRecordQueryWithMetadata(
 			`SELECT "ID" FROM U WHERE EXISTS (SELECT "V" FROM GD, GD."ARR" AS "V", GW)`, md, nil)
 		if perr != nil {
 			t.Fatalf("plan: %v", perr)
 		}
 		explain := plan.Explain()
-		unnestMustContain(t, explain, "Project([V.V#0]")
+		if !unnestProjectionHasCurrentOrdinal(plan, 3) {
+			t.Fatalf("inner projection did not bind exact current ordinal 3: %s", explain)
+		}
 		unnestMustNotContain(t, explain, "Project([V],")
 	})
 
@@ -3587,13 +3592,14 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		})
 		// GLOBAL aggregate COUNT(*) references no column, so it keeps the FLAT
 		// gathered seed — 1 WSRC row × {7,8} × 3 WAUX = 6. The one Project is
-		// the universal public aggregate-output boundary; pin exactly one so no
+		// the universal public aggregate-output boundary; its selected physical
+		// result is rooted in the exact current carrier. Pin exactly one so no
 		// additional gathered-seed wrap can return.
 		exGCount := assertRows(t, `SELECT COUNT(*) AS "N" FROM WSRC, WSRC."WARR" AS "EL", WAUX`, []string{
 			"N=6",
 		})
 		if strings.Count(exGCount, "Project(") != 1 ||
-			!strings.Contains(exGCount, "Project([COUNT(*)#0]") {
+			!strings.Contains(exGCount, "Project([_current.COUNT(*)#0]") {
 			t.Fatalf("global COUNT(*) must keep the flat seed with exactly one public output Project, got: %s", exGCount)
 		}
 		// GLOBAL aggregate whose OPERAND references the element (SUM(EL)) ORDINALIZES via
@@ -4718,9 +4724,9 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 	}
 
 	// atProjType plans `sql` and returns the planned VALUE for the projection
-	// whose user-facing label is `wantLabel` (the bare leaf of the projection's
-	// FieldValue / the explicit alias). It walks down through the top Projection
-	// plan's parallel projection/alias lists.
+	// whose user-facing label is `wantLabel`. RFC-232 projection programs may
+	// carry an exact QOV rather than a FieldValue for a whole scalar leg, so the
+	// frozen output schema — not the Value's display form — owns this lookup.
 	atProjValue := func(t *testing.T, sql, wantField string) values.Value {
 		t.Helper()
 		plan, perr := embedded.PlanRecordQueryWithMetadata(sql, md, nil)
@@ -4732,17 +4738,21 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 			t.Fatalf("plan %q: root is %T, want *RecordQueryProjectionPlan\n%s", sql, plan, plan.Explain())
 		}
 		projections := proj.GetProjections()
-		for _, pv := range projections {
-			fv, ok := pv.(*values.FieldValue)
-			if ok && strings.EqualFold(fv.Field, wantField) {
-				return pv
+		outputNames := proj.GetOutputNames()
+		aliases := proj.GetAliases()
+		for i := range projections {
+			outputNameMatches := i < len(outputNames) && strings.EqualFold(outputNames[i], wantField)
+			aliasMatches := i < len(aliases) && strings.EqualFold(aliases[i], wantField)
+			if outputNameMatches || aliasMatches {
+				return projections[i]
 			}
 		}
 		// Fall back: if a single projection, return it (the AT-only / computed shapes).
 		if len(projections) == 1 {
 			return projections[0]
 		}
-		t.Fatalf("plan %q: no projection with field %q found\n%s", sql, wantField, plan.Explain())
+		t.Fatalf("plan %q: no projection with field %q found (outputs=%v aliases=%v)\n%s",
+			sql, wantField, outputNames, aliases, plan.Explain())
 		return nil
 	}
 
@@ -4768,6 +4778,11 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 		if !typ.Equals(values.NotNullInt) {
 			t.Fatalf("AT projection type = %s, want %s (values.NotNullInt)", typ.String(), values.NotNullInt.String())
 		}
+		if got, want := colLabelsOf(t,
+			`SELECT "ID", "VAL", "AT" FROM T1, T1."ARR1" AS "VAL" AT "AT"`),
+			[]string{"ID", "VAL", "AT"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("AT projection labels = %v, want %v — the scalar leg display name must not rename the ordinal", got, want)
+		}
 	})
 
 	t.Run("AT-only projection type is non-null INT", func(t *testing.T) {
@@ -4776,6 +4791,11 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 		v := atProjValue(t, `SELECT "ID", "AT" FROM T1, T1."ARR1" AT "AT"`, "AT")
 		if v.Type() == nil || v.Type().Code() != values.TypeCodeInt || v.Type().IsNullable() {
 			t.Fatalf("AT-only ordinal type = %v, want non-null INT", v.Type())
+		}
+		if got, want := colLabelsOf(t,
+			`SELECT "ID", "AT" FROM T1, T1."ARR1" AT "AT"`),
+			[]string{"ID", "AT"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("AT-only projection labels = %v, want %v — ARR1 is the source collection, not the ordinal output name", got, want)
 		}
 	})
 
@@ -4861,15 +4881,13 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 			embedded.ResultColumnNullabilityForPlan(plan, md)
 	}
 
-	t.Run("R31 P2b ordinal reports NOT NULL while the element stays NULLABLE in the same query", func(t *testing.T) {
+	t.Run("R31 P2b ordinal and exact element both report NOT NULL in the same query", func(t *testing.T) {
 		// `SELECT * FROM T1, T1.ARR1 AS V AT O`. Columns: ID (BIGINT pk), ARR1
 		// (array), V (the element), O (the 1-based ordinal). V and O are BOTH synthesized
 		// values with no backing descriptor field. The ordinal O must report NOT NULL
-		// (values.NotNullInt — Java's INT NOT NULL ordinal); the element V must report
-		// NULLABLE (the engine types a scalar array element nullable). This single query
-		// is the precise revert dimension: pre-fix BOTH defaulted to nullable (O wrong); a
-		// naive blanket "no-descriptor → NOT NULL" would make BOTH not-null (V wrong);
-		// only the Value-type-derived fix gives O=NOT NULL, V=NULLABLE. RFC-142.
+		// (values.NotNullInt — Java's INT NOT NULL ordinal). ARR1 declares a NON-NULL
+		// INT element, so RFC-232's exact element QOV makes V non-null as well; the old
+		// nullable expectation came from the erased/no-descriptor fallback. RFC-142/232.
 		labels, nulls := colNullsOf(t, `SELECT * FROM T1, T1."ARR1" AS "V" AT "O"`)
 		wantLabels := []string{"ID", "ARR1", "STRARR", "V", "O"}
 		if fmt.Sprintf("%v", labels) != fmt.Sprintf("%v", wantLabels) {
@@ -4880,11 +4898,10 @@ func TestFDB_ArrayUnnestOrdinalityColumnType(t *testing.T) {
 			t.Fatalf("ordinal O nullability = %d, want %d (ColumnNoNulls); pre-fix the synthesized ordinal defaulted to ColumnNullable; all=%v",
 				got, api.ColumnNoNulls, nulls)
 		}
-		// V (second-to-last) must stay NULLABLE — guards against a blanket NOT-NULL
-		// override (which would make every descriptor-less column NOT NULL).
-		if got := nulls[len(nulls)-2]; got != api.ColumnNullable {
-			t.Fatalf("element V nullability = %d, want %d (ColumnNullable); a blanket no-descriptor→NOT-NULL fix would regress this; all=%v",
-				got, api.ColumnNullable, nulls)
+		// V (second-to-last) inherits the array's exact NON-NULL element type.
+		if got := nulls[len(nulls)-2]; got != api.ColumnNoNulls {
+			t.Fatalf("element V nullability = %d, want %d (ColumnNoNulls from ARR1's exact element type); all=%v",
+				got, api.ColumnNoNulls, nulls)
 		}
 		// The PK ID reports NULLABLE via its real descriptor: every scalar
 		// column is proto OPTIONAL (scalar NOT NULL is unexpressible — Java
@@ -4934,12 +4951,69 @@ func unnestMustNotContain(t *testing.T, plan, substr string) {
 	}
 }
 
+// unnestIsCurrentOrdinal verifies the executable addressing program, rather
+// than its display-only field label.  RFC-232 sort Explain text deliberately
+// keeps the authored label, while ValueExpr carries the exact physical owner
+// and ordinal used at runtime.
+func unnestIsCurrentOrdinal(value values.Value, ordinal int) bool {
+	field, ok := values.AsFieldValue(value)
+	if !ok {
+		return false
+	}
+	root, ok := values.AsQuantifiedObjectValue(field.ChildValue())
+	if !ok || root.Correlation() != values.CurrentCorrelation() {
+		return false
+	}
+	path := field.Path()
+	if path == nil {
+		return false
+	}
+	ordinals := path.Ordinals()
+	return len(ordinals) == 1 && ordinals[0] == ordinal
+}
+
+func unnestProjectionHasCurrentOrdinal(plan plans.RecordQueryPlan, ordinal int) bool {
+	found := false
+	plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
+		projection, ok := node.(*plans.RecordQueryProjectionPlan)
+		if !ok {
+			return true
+		}
+		for _, value := range projection.GetProjections() {
+			if unnestIsCurrentOrdinal(value, ordinal) {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func unnestSortHasCurrentOrdinal(plan plans.RecordQueryPlan, ordinal int) bool {
+	found := false
+	plans.Walk(plan, func(node plans.RecordQueryPlan) bool {
+		sortPlan, ok := node.(*plans.RecordQueryInMemorySortPlan)
+		if !ok {
+			return true
+		}
+		for _, key := range sortPlan.GetSortKeys() {
+			if unnestIsCurrentOrdinal(key.ValueExpr, ordinal) {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
+}
+
 func unnestSprint(v any) string {
 	switch x := v.(type) {
 	case nil:
 		return "<nil>"
 	case string:
 		return x
+	case *executor.PositionalRow:
+		return unnestOrdinalRecordSprint(x)
 	}
 	// A SLICE slot is rendered element-wise rather than handed to fmt whole.
 	//
@@ -4966,6 +5040,50 @@ func unnestSprint(v any) string {
 		}
 	}
 	return unnestCollapseSpaces(fmt.Sprint(v))
+}
+
+// unnestOrdinalRecordSprint is the structural counterpart of protobuf's text
+// rendering for a record-valued UNNEST element. The executor deliberately
+// keeps such an element as an exact PositionalRow so chained FieldValues can
+// continue to read it by ordinal; test rendering must not leak that Go
+// transport's pointer-bearing fmt form. It renders from the immutable
+// RecordType + slots, preserving field and repeated-element order.
+func unnestOrdinalRecordSprint(row *executor.PositionalRow) string {
+	if row == nil {
+		return "<nil>"
+	}
+	if row.Type == nil || len(row.Type.Fields) != len(row.Slots) {
+		return fmt.Sprintf("<MALFORMED ORDINAL RECORD: type=%v slots=%d>", row.Type, len(row.Slots))
+	}
+	parts := make([]string, 0, len(row.Slots))
+	for i, field := range row.Type.Fields {
+		value := row.Slots[i]
+		if value == nil {
+			continue
+		}
+		if arrayType, ok := field.FieldType.(*values.ArrayType); ok {
+			rv := reflect.ValueOf(value)
+			if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+				parts = append(parts, field.Name+":"+unnestSprint(value))
+				continue
+			}
+			for j := 0; j < rv.Len(); j++ {
+				element := rv.Index(j).Interface()
+				if arrayType.ElementType != nil && arrayType.ElementType.Code() == values.TypeCodeRecord {
+					parts = append(parts, field.Name+":{"+unnestSprint(element)+"}")
+				} else {
+					parts = append(parts, field.Name+":"+unnestSprint(element))
+				}
+			}
+			continue
+		}
+		if field.FieldType != nil && field.FieldType.Code() == values.TypeCodeRecord {
+			parts = append(parts, field.Name+":{"+unnestSprint(value)+"}")
+			continue
+		}
+		parts = append(parts, field.Name+":"+unnestSprint(value))
+	}
+	return strings.Join(parts, " ")
 }
 
 // unnestCollapseSpaces makes the non-string rendering STABLE ACROSS BUILDS.

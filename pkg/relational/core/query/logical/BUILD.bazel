@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "logical",
     srcs = [
+        "inline_values.go",
         "operator.go",
         "operators.go",
     ],
@@ -16,6 +17,10 @@ go_library(
 
 go_test(
     name = "logical_test",
-    srcs = ["operators_test.go"],
+    srcs = [
+        "inline_values_test.go",
+        "operators_test.go",
+    ],
     embed = [":logical"],
+    deps = ["//pkg/recordlayer/query/plan/cascades/values"],
 )

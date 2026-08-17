@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -1097,10 +1098,38 @@ func encodeSortContinuation(
 		if bErr != nil {
 			return nil, fmt.Errorf("failed to encode sorted record slots for continuation: %w", bErr)
 		}
-		payload := []any{nil, false, map[string]any{
+		positional := map[string]any{
 			"n": names,
 			"b": blob, // typed-codec slot blob; json.Marshal base64-encodes []byte
-		}}
+		}
+		// "p" — the per-row MATCH STATE of every null-supplying window, in window
+		// order. It has to be carried because it cannot be recovered: an unmatched
+		// outer-join leg and a matched leg whose columns are all SQL NULL have
+		// identical slots and different meaning, so the slot blob alone cannot
+		// answer the question the binder asks. Without it a resumed row reached
+		// the binder with no match state at all and the read failed loudly
+		// (`null-supplying window has no row match state`) — every buffered row
+		// after a page boundary on a `LEFT JOIN … ORDER BY` was unreadable.
+		//
+		// Omitted entirely when the layout has no null-supplying window, so the
+		// common token is byte-identical to before.
+		if layout := qr.Positional.Layout; layout != nil {
+			if sources := layout.NullSupplyingWindowSources(); len(sources) > 0 {
+				matches := make([]bool, len(sources))
+				for si, source := range sources {
+					if qr.Positional.LayoutPresence == nil {
+						return nil, fmt.Errorf("sort continuation: a buffered row's layout has %d null-supplying window(s) but the row carries no match state — encoding it would mint a token whose resumed rows cannot be read", len(sources))
+					}
+					matched, known := qr.Positional.LayoutPresence.MatchState(source)
+					if !known {
+						return nil, fmt.Errorf("sort continuation: null-supplying window %q has unknown match state — a guess here is an unmatched row served as matched", source.Correlation().Name())
+					}
+					matches[si] = matched
+				}
+				positional["p"] = matches
+			}
+		}
+		payload := []any{nil, false, positional}
 		jsonBytes, jErr := json.Marshal(payload)
 		if jErr != nil {
 			return nil, fmt.Errorf("failed to marshal sorted record for continuation: %w", jErr)
@@ -1135,7 +1164,27 @@ func encodeSortContinuation(
 // minimum_key): true means the inner was exhausted when the continuation was
 // taken and buf is the remaining SORTED output — the resumed cursor must go
 // straight to emit (loaded=true), never re-run the fill loop.
-func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (innerContinuation []byte, buf []QueryResult, innerExhausted bool, err error) {
+func decodeSortContinuation(
+	data []byte,
+	resolve protoDescriptorResolver,
+	expectedLayouts ...values.OrdinalLayout,
+) (innerContinuation []byte, buf []QueryResult, innerExhausted bool, err error) {
+	if len(expectedLayouts) > 1 {
+		return nil, nil, false, fmt.Errorf("sort continuation: %d expected layouts, want at most one", len(expectedLayouts))
+	}
+	var expectedLayout values.OrdinalLayout
+	var expectedType *values.RecordType
+	if len(expectedLayouts) == 1 {
+		expectedLayout = expectedLayouts[0]
+		if expectedLayout == nil || expectedLayout.CarrierKind() != values.OrdinalCarrierRecord || expectedLayout.Carrier() == nil {
+			return nil, nil, false, fmt.Errorf("sort continuation: expected layout is not a concrete record carrier")
+		}
+		var ok bool
+		expectedType, ok = values.PhysicalCarrierType(expectedLayout).(*values.RecordType)
+		if !ok || expectedType == nil {
+			return nil, nil, false, fmt.Errorf("sort continuation: expected record layout carries %T", values.PhysicalCarrierType(expectedLayout))
+		}
+	}
 	msg := &gen.MemorySortContinuation{}
 	if err := proto.Unmarshal(data, msg); err != nil {
 		return nil, nil, false, fmt.Errorf("failed to unmarshal sort continuation: %w", err)
@@ -1167,6 +1216,7 @@ func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (inner
 		var pp struct {
 			N []string `json:"n"`
 			B []byte   `json:"b"` // typed-codec slot blob (base64 in JSON)
+			P []bool   `json:"p"` // null-supplying window match state, in window order
 		}
 		if jErr := json.Unmarshal(wrapper[2], &pp); jErr != nil {
 			return nil, nil, false, fmt.Errorf("failed to unmarshal sorted record %d positional payload in continuation: %w", i, jErr)
@@ -1194,7 +1244,59 @@ func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (inner
 			}
 			slots[si] = rv
 		}
-		positional := &PositionalRow{Type: positionalTypeFromNames(pp.N), Slots: slots}
+		rowType := positionalTypeFromNames(pp.N)
+		if expectedType != nil {
+			if len(expectedType.Fields) != len(pp.N) {
+				return nil, nil, false, fmt.Errorf(
+					"sorted record %d: continuation has %d columns, selected plan expects %d",
+					i, len(pp.N), len(expectedType.Fields),
+				)
+			}
+			for fieldOrdinal := range expectedType.Fields {
+				if expectedType.Fields[fieldOrdinal].Name != pp.N[fieldOrdinal] {
+					return nil, nil, false, fmt.Errorf(
+						"sorted record %d: continuation column %d is %q, selected plan expects %q",
+						i, fieldOrdinal, pp.N[fieldOrdinal], expectedType.Fields[fieldOrdinal].Name,
+					)
+				}
+			}
+			for fieldOrdinal := range slots {
+				if slotErr := validateContinuationDatum(slots[fieldOrdinal], expectedType.Fields[fieldOrdinal].FieldType); slotErr != nil {
+					return nil, nil, false, fmt.Errorf(
+						"sorted record %d column %d (%q): %w",
+						i, fieldOrdinal, expectedType.Fields[fieldOrdinal].Name, slotErr,
+					)
+				}
+			}
+			rowType = expectedType
+		}
+		positional := &PositionalRow{Type: rowType, Slots: slots}
+		if expectedLayout != nil {
+			positional.Layout = expectedLayout
+			// Restore the match state the encoder carried. A null-supplying
+			// window's state is not derivable from the slots — a matched all-NULL
+			// leg and an unmatched leg are identical there — so a row whose layout
+			// needs it and whose token does not carry it is rejected rather than
+			// served with a guess. That is the same fail-closed rule the column
+			// alignment above uses, applied to the one fact the slots cannot state.
+			sources := expectedLayout.NullSupplyingWindowSources()
+			if len(sources) > 0 {
+				if len(pp.P) != len(sources) {
+					return nil, nil, false, fmt.Errorf(
+						"sorted record %d: continuation carries %d null-supplying match state(s), selected plan has %d — restart the query",
+						i, len(pp.P), len(sources))
+				}
+				matches := make([]values.WindowMatch, len(sources))
+				for si, source := range sources {
+					matches[si] = values.WindowMatch{Source: source, Matched: pp.P[si]}
+				}
+				presence, pErr := values.NewWindowMatchPresence(matches)
+				if pErr != nil {
+					return nil, nil, false, fmt.Errorf("sorted record %d match state: %w", i, pErr)
+				}
+				positional.LayoutPresence = presence
+			}
+		}
 		var pk tuple.Tuple
 		if sr.PrimaryKey != nil {
 			var pkErr error
@@ -1207,4 +1309,78 @@ func decodeSortContinuation(data []byte, resolve protoDescriptorResolver) (inner
 	}
 
 	return msg.Continuation, buf, innerExhausted, nil
+}
+
+func validateContinuationDatum(value any, expected values.Type) error {
+	if expected == nil {
+		return fmt.Errorf("selected plan has no exact field type")
+	}
+	if value == nil {
+		if expected.IsNullable() {
+			return nil
+		}
+		return fmt.Errorf("SQL NULL is not valid for %s", expected)
+	}
+	switch expected.Code() {
+	case values.TypeCodeBoolean:
+		if _, ok := value.(bool); ok {
+			return nil
+		}
+	case values.TypeCodeInt:
+		switch value.(type) {
+		case int, int32, int64:
+			return nil
+		}
+	case values.TypeCodeLong:
+		switch value.(type) {
+		case int, int32, int64, uint64, *big.Int, big.Int:
+			return nil
+		}
+	case values.TypeCodeFloat, values.TypeCodeDouble:
+		switch value.(type) {
+		case float32, float64:
+			return nil
+		}
+	case values.TypeCodeString, values.TypeCodeDate, values.TypeCodeTimestamp:
+		if _, ok := value.(string); ok {
+			return nil
+		}
+	case values.TypeCodeBytes, values.TypeCodeVersion:
+		if _, ok := value.([]byte); ok {
+			return nil
+		}
+	case values.TypeCodeUuid:
+		switch value.(type) {
+		case [16]byte, tuple.UUID:
+			return nil
+		}
+	case values.TypeCodeEnum:
+		switch value.(type) {
+		case int, int32, int64:
+			return nil
+		}
+	case values.TypeCodeRecord:
+		if _, ok := value.(proto.Message); ok {
+			return nil
+		}
+		if _, ok := value.(values.OrdinalRow); ok {
+			return nil
+		}
+	case values.TypeCodeArray:
+		array, ok := value.([]any)
+		if !ok {
+			break
+		}
+		arrayType, ok := expected.(*values.ArrayType)
+		if !ok || arrayType.ElementType == nil {
+			return fmt.Errorf("selected plan has an erased ARRAY element type")
+		}
+		for elementIndex := range array {
+			if err := validateContinuationDatum(array[elementIndex], arrayType.ElementType); err != nil {
+				return fmt.Errorf("array element %d: %w", elementIndex, err)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("runtime value %T does not match %s", value, expected)
 }

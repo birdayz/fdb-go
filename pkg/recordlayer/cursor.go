@@ -107,8 +107,16 @@ func (c *StartContinuation) IsEnd() bool {
 //   - A result WITH a value (HasNext=true) must NOT have an EndContinuation
 //   - A result with SourceExhausted MUST have an EndContinuation
 //   - A result with any other NoNextReason must NOT have an EndContinuation
+//
+// The value is held BY VALUE, not behind a pointer, and hasNext is what
+// distinguishes "has a value" — the pointer carried no information the flag does
+// not. Boxing it cost one heap allocation per emitted row PER CURSOR LEVEL, and a
+// plan is a stack of cursors: on a 20k-row wide scan whose plan is a projection
+// over a scan, the boxes were the largest single allocator in the row path.
+// GetValue still refuses to answer without a value, so the zero T a no-next
+// result now carries is unreachable.
 type RecordCursorResult[T any] struct {
-	value        *T
+	value        T
 	continuation RecordCursorContinuation
 	noNextReason NoNextReason
 	hasNext      bool
@@ -128,7 +136,7 @@ func NewResultWithValue[T any](value T, continuation RecordCursorContinuation) R
 		panic("cannot return end continuation with next value")
 	}
 	return RecordCursorResult[T]{
-		value:        &value,
+		value:        value,
 		continuation: continuation,
 		hasNext:      true,
 	}
@@ -164,7 +172,7 @@ func (r RecordCursorResult[T]) GetValue() T {
 	if !r.hasNext {
 		panic("GetValue called on RecordCursorResult with no value (check HasNext() first)")
 	}
-	return *r.value
+	return r.value
 }
 
 // GetContinuation returns the continuation for resuming the cursor
@@ -201,7 +209,7 @@ func MapResult[T, R any](result RecordCursorResult[T], fn func(T) R) RecordCurso
 	if !result.hasNext {
 		return NewResultNoNext[R](result.noNextReason, result.continuation)
 	}
-	mapped := fn(*result.value)
+	mapped := fn(result.value)
 	return NewResultWithValue(mapped, result.continuation)
 }
 

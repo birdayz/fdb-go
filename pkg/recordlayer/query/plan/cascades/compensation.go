@@ -142,7 +142,7 @@ func ComputeResultCompensation(pm PartialMatch, rootOfMatchPullUp *PullUp) *Comp
 	}
 
 	var rcf *ResultCompensationFunction
-	if qov, ok := pulledUp.(*values.QuantifiedObjectValue); ok && qov.Correlation == rootOfMatchPullUp.GetCandidateAlias() {
+	if qov, ok := values.AsQuantifiedObjectValue(pulledUp); ok && qov.Correlation() == rootOfMatchPullUp.GetCandidateAlias() {
 		rcf = NoResultCompensation()
 	} else {
 		rcf = ResultCompensationOfValue(pulledUp)
@@ -339,15 +339,22 @@ func (m *PredicateCompensationMap) Entries() ([]predicates.QueryPredicate, []Pre
 // ApplyCompensations applies all compensation functions in this map
 // via the given translation map and returns the collected residual
 // predicates. Ports the iteration in Java's ForMatch.apply().
-func (m *PredicateCompensationMap) ApplyCompensations(tm TranslationMap) []predicates.QueryPredicate {
+// The bool is false when any single compensation could not be expressed; see
+// PredicateCompensationFunc.ApplyCompensationForPredicate for why a partial
+// answer is not an acceptable substitute.
+func (m *PredicateCompensationMap) ApplyCompensations(tm TranslationMap) ([]predicates.QueryPredicate, bool) {
 	if m == nil {
-		return nil
+		return nil, true
 	}
 	var result []predicates.QueryPredicate
 	for _, fn := range m.values {
-		result = append(result, fn.ApplyCompensationForPredicate(tm)...)
+		applied, ok := fn.ApplyCompensationForPredicate(tm)
+		if !ok {
+			return nil, false
+		}
+		result = append(result, applied...)
 	}
-	return result
+	return result, true
 }
 
 // Amend creates a new PredicateCompensationMap with all compensation
@@ -484,7 +491,10 @@ func (f *ResultCompensationFunction) ApplyCompensationForResult(tm TranslationMa
 	if tm == nil || tm.DefinesOnlyIdentities() {
 		return f.resultVal
 	}
-	return translateValueCorrelations(f.resultVal, tm)
+	// A failed translation returns nil, which this function's sole caller
+	// already reads as "cannot compensate" and declines on.
+	translated, _ := translateValueCorrelations(f.resultVal, tm)
+	return translated
 }
 
 // ---------------------------------------------------------------------------
@@ -860,7 +870,10 @@ func (c *ForMatchCompensation) Apply(
 		translationMap = translationMapFunc(matchedForEachAlias)
 	}
 
-	compensatedPreds := c.predicateCompensationMap.ApplyCompensations(translationMap)
+	compensatedPreds, compensable := c.predicateCompensationMap.ApplyCompensations(translationMap)
+	if !compensable {
+		return nil, false
+	}
 
 	// Collect correlations referenced by compensated predicates.
 	compensatedCorrelations := make(map[values.CorrelationIdentifier]struct{})
@@ -907,7 +920,11 @@ func (c *ForMatchCompensation) Apply(
 
 		if len(toBePulledUp) == 0 {
 			// Then-branch: simple filter, no join needed.
-			expr = expressions.NewLogicalFilterExpression(compensatedPreds, newBaseQ)
+			filtered, err := expressions.NewLogicalFilterExpression(compensatedPreds, newBaseQ)
+			if err != nil {
+				return nil, false
+			}
+			expr = filtered
 		} else {
 			// Else-branch: build a SelectExpression that joins the base scan
 			// with the pulled-up quantifiers and applies compensation predicates.
@@ -921,16 +938,28 @@ func (c *ForMatchCompensation) Apply(
 			}
 			expansion := builder.Build()
 			sealed := expansion.Seal()
-			expr = sealed.BuildSelectWithResultValue(newBaseQ.GetFlowedObjectValue())
+			flowed, err := newBaseQ.RequireFlowedObjectValue()
+			if err != nil {
+				return nil, false
+			}
+			selected, err := sealed.BuildSelectWithResultValue(flowed)
+			if err != nil {
+				return nil, false
+			}
+			expr = selected
 		}
 	}
 
 	if c.requiresPrimaryKeyDistinct {
 		// Distinct belongs after every child and local residual filter, but
 		// before ApplyFinal reshapes the row and can hide its primary key.
-		expr = expressions.NewRequiredLogicalUniqueExpression(
+		unique, err := expressions.NewRequiredLogicalUniqueExpression(
 			newCompensationBaseQuantifier(matchedForEachAlias, expr),
 		)
+		if err != nil {
+			return nil, false
+		}
+		expr = unique
 	}
 
 	return expr, true
@@ -973,7 +1002,11 @@ func (c *ForMatchCompensation) ApplyFinal(
 	builder.AddQuantifier(newBaseQ)
 	expansion := builder.Build()
 	sealed := expansion.Seal()
-	return sealed.BuildSelectWithResultValue(resultVal), true
+	selected, err := sealed.BuildSelectWithResultValue(resultVal)
+	if err != nil {
+		return nil, false
+	}
+	return selected, true
 }
 
 // ApplyAllNeeded applies both filter compensation (Apply) and result

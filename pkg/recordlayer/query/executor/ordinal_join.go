@@ -210,17 +210,20 @@ func positionalMergeSpans(rc *values.RecordConstructorValue) (spans []legSpan, m
 	for i, f := range rc.Fields {
 		// Guaranteed by IsPositionalMergeRC: a bare QOV of a DISTINCT quantifier,
 		// named OrdinalFieldName(i) in position order.
-		qov := f.Value.(*values.QuantifiedObjectValue)
+		qov, admitted := values.AsQuantifiedObjectValue(f.Value)
+		if !admitted {
+			return nil, nil, false
+		}
 		mergedFields[i] = values.Field{Name: f.Name, FieldType: qov.Type(), Ordinal: i}
 		// The per-slot record test BINDS the type and requires non-nil — the same
 		// test the planner twin makes, for the same reason: routing it through
 		// IsMixedSeedElementType would classify a nil-typed slot as nested and hand
 		// a nil LegType to every reader of this span.
-		legType, isRT := qov.Typ.(*values.RecordType)
+		legType, isRT := qov.FlowedType().(*values.RecordType)
 		if !isRT || legType == nil {
 			elemName := strings.ToUpper(f.Name)
 			spansList = append(spansList, legSpan{
-				Alias: qov.Correlation, Kind: values.LegKindFlatRun,
+				Alias: qov.Correlation(), Kind: values.LegKindFlatRun,
 				LegType: &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: qov.Type(), Ordinal: 0}}},
 				Offset:  i, Width: 1,
 			})
@@ -235,7 +238,7 @@ func positionalMergeSpans(rc *values.RecordConstructorValue) (spans []legSpan, m
 			return nil, nil, false
 		}
 		spansList = append(spansList, legSpan{
-			Alias: qov.Correlation, Kind: values.LegKindNested,
+			Alias: qov.Correlation(), Kind: values.LegKindNested,
 			LegType: legType, Offset: i, Width: 1,
 		})
 	}
@@ -302,7 +305,7 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 	}
 	for i := 0; i < n; i++ {
 		f := rc.Fields[i]
-		if elemQOV, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
+		if elemQOV, isQOV := values.AsQuantifiedObjectValue(f.Value); isQOV {
 			// The element test is values.IsMixedSeedElementType on BOTH sides, not a
 			// second copy of it here: this walk and the planner's must agree bit for
 			// bit about which field is the element, because disagreeing about that
@@ -312,21 +315,21 @@ func unnestMixedSeedSpans(v values.Value) (spans []legSpan, mergedType *values.R
 				if !coverageOK() {
 					return nil, nil, false // an unfinished leg run before the element
 				}
-				if _, dup := seen[elemQOV.Correlation.String()]; dup {
+				if _, dup := seen[elemQOV.Correlation().String()]; dup {
 					return nil, nil, false
 				}
-				seen[elemQOV.Correlation.String()] = struct{}{}
+				seen[elemQOV.Correlation().String()] = struct{}{}
 				elemName := strings.ToUpper(f.Name)
 				elemLegType := &values.RecordType{Fields: []values.Field{{Name: elemName, FieldType: elemQOV.Type(), Ordinal: 0}}}
 				mergedFields[i] = values.Field{Name: elemName, FieldType: elemQOV.Type(), Ordinal: i}
-				spansList = append(spansList, legSpan{Alias: elemQOV.Correlation, Kind: values.LegKindFlatRun, LegType: elemLegType, Offset: i, Width: 1})
+				spansList = append(spansList, legSpan{Alias: elemQOV.Correlation(), Kind: values.LegKindFlatRun, LegType: elemLegType, Offset: i, Width: 1})
 				curIdx = -1
 				hasElement = true
 				continue
 			}
 		}
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		fv, isFV := values.AsFieldValue(f.Value)
+		if !isFV || fv.Path() == nil || !fv.Path().IsFrontierPinned() {
 			return nil, nil, false
 		}
 		alias, legType, ord, resolved := resolveSpanLeaf(fv, f.Name, nil)
@@ -383,8 +386,8 @@ func ordinalJoinSpansOf(v values.Value, legRVs map[values.CorrelationIdentifier]
 	// values declines it. Pinned as a both-decline case in the cross-agreement fixture.
 	seen := make(map[values.CorrelationIdentifier]struct{}, len(rc.Fields))
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		fv, isFV := values.AsFieldValue(f.Value)
+		if !isFV || fv.Path() == nil || !fv.Path().IsFrontierPinned() {
 			// Not every field a PINNED baked leg ref — not the seed. Unpinned
 			// baked nodes (the recursive-CTE wrap) carry no join-frontier
 			// contract; the probe keys on the FrontierPinned bit, not bare
@@ -491,17 +494,20 @@ func mergedLegsOfSpans(spans []legSpan) []values.RecordTypeLeg {
 // fail-safe, the caller reports no windows and downstream stays loud rather
 // than mis-windowed. The depth cap is a defensive backstop — plan-derived
 // legRVs form a tree, so a cycle is impossible by construction.
-func resolveSpanLeaf(fv *values.FieldValue, fieldName string, legRVs map[values.CorrelationIdentifier]values.Value) (alias values.CorrelationIdentifier, legType *values.RecordType, legOrd int, ok bool) {
-	qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+func resolveSpanLeaf(fv values.FieldValue, fieldName string, legRVs map[values.CorrelationIdentifier]values.Value) (alias values.CorrelationIdentifier, legType *values.RecordType, legOrd int, ok bool) {
+	if fv == nil || fv.Path() == nil {
+		return alias, nil, 0, false
+	}
+	qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 	if !isQOV {
 		return alias, nil, 0, false
 	}
-	alias = qov.Correlation
+	alias = qov.Correlation()
 	legType, isRT := qov.Type().(*values.RecordType)
 	if !isRT {
 		return alias, nil, 0, false
 	}
-	accs := fv.Resolved.Accessors
+	accs := fv.Path().Ordinals()
 	for depth := 0; len(accs) > 1; depth++ {
 		if depth > 32 {
 			return alias, nil, 0, false
@@ -510,35 +516,38 @@ func resolveSpanLeaf(fv *values.FieldValue, fieldName string, legRVs map[values.
 		if !isRC {
 			return alias, nil, 0, false
 		}
-		i := accs[0].Ordinal
+		i := accs[0]
 		if i < 0 || i >= len(rc.Fields) {
 			return alias, nil, 0, false
 		}
-		switch slot := rc.Fields[i].Value.(type) {
-		case *values.QuantifiedObjectValue:
-			alias = slot.Correlation
-			if legType, isRT = slot.Type().(*values.RecordType); !isRT {
-				return alias, nil, 0, false
-			}
-			accs = accs[1:]
-		case *values.FieldValue:
-			if slot.Resolved == nil || !slot.Resolved.FrontierPinned {
-				return alias, nil, 0, false
-			}
-			slotQOV, isQ := slot.Child.(*values.QuantifiedObjectValue)
-			if !isQ {
-				return alias, nil, 0, false
-			}
-			alias = slotQOV.Correlation
+		slot := rc.Fields[i].Value
+		if slotQOV, isQOV := values.AsQuantifiedObjectValue(slot); isQOV {
+			alias = slotQOV.Correlation()
 			if legType, isRT = slotQOV.Type().(*values.RecordType); !isRT {
 				return alias, nil, 0, false
 			}
-			composed := make([]values.ResolvedAccessor, 0, len(slot.Resolved.Accessors)+len(accs)-1)
-			composed = append(composed, slot.Resolved.Accessors...)
-			accs = append(composed, accs[1:]...)
-		default:
-			return alias, nil, 0, false
+			accs = accs[1:]
+			continue
 		}
+		if slotFV, isFV := values.AsFieldValue(slot); isFV {
+			if slotFV.Path() == nil || !slotFV.Path().IsFrontierPinned() {
+				return alias, nil, 0, false
+			}
+			slotQOV, isQ := values.AsQuantifiedObjectValue(slotFV.ChildValue())
+			if !isQ {
+				return alias, nil, 0, false
+			}
+			alias = slotQOV.Correlation()
+			if legType, isRT = slotQOV.Type().(*values.RecordType); !isRT {
+				return alias, nil, 0, false
+			}
+			slotOrdinals := slotFV.Path().Ordinals()
+			composed := make([]int, 0, len(slotOrdinals)+len(accs)-1)
+			composed = append(composed, slotOrdinals...)
+			accs = append(composed, accs[1:]...)
+			continue
+		}
+		return alias, nil, 0, false
 	}
 	// A TERMINAL slot that is a bare NON-RECORD QOV of a
 	// quantifier we hold a legRV for is the gathered unnest's MIXED element
@@ -556,12 +565,12 @@ func resolveSpanLeaf(fv *values.FieldValue, fieldName string, legRVs map[values.
 	// bit-identical, which is how a copy stays until one of them is edited. The
 	// non-record test is load-bearing against whole-leg record slots (the pristine
 	// positional-merge RC), which must keep resolving as merge-leg runs.
-	term := accs[0].Ordinal
+	term := accs[0]
 	if rc, isRC := legRVs[alias].(*values.RecordConstructorValue); isRC && term >= 0 && term < len(rc.Fields) {
-		if slotQOV, isQ := rc.Fields[term].Value.(*values.QuantifiedObjectValue); isQ {
+		if slotQOV, isQ := values.AsQuantifiedObjectValue(rc.Fields[term].Value); isQ {
 			if values.IsMixedSeedElementType(slotQOV.Type()) {
 				elemName := strings.ToUpper(fieldName)
-				return slotQOV.Correlation, &values.RecordType{Fields: []values.Field{
+				return slotQOV.Correlation(), &values.RecordType{Fields: []values.Field{
 					{Name: elemName, FieldType: slotQOV.Type(), Ordinal: 0},
 				}}, 0, true
 			}
@@ -753,11 +762,14 @@ type legWindowRow struct {
 	// premise this marker was added under, and the census refuted it: over a full
 	// sqldriver run ZERO of the binder's reads shadow, all of them are unshadowed,
 	// and declining them entirely still changes no row
-	// (TestFDB_MergedLegBinding_ReaderShapeIsRedundant). "The only binding" and
-	// "load-bearing" are therefore different properties: the corpus's reads are the
-	// first without being the second, because the value they resolve never reaches
-	// an answer. Load-bearing is settled per reader shape by running both routes,
-	// not by reading this flag.
+	// (measured by running the shape down both resolution routes). "The only
+	// binding" and "load-bearing" are therefore different properties: those reads
+	// were the first without being the second, because the value they resolved
+	// never reached an answer. The ordinal model has since removed the reads
+	// entirely — TestFDB_MergedLegBinding_NothingReadsTheBinder pins that the shape
+	// still binds and is still not read — so the flag now describes a channel with
+	// no consumer at all. Load-bearing is settled per reader shape by running both
+	// routes, never by reading this flag.
 	//
 	// Recorded only while the leg-identity census gate is on; the map probe is not
 	// something the per-outer-row path should pay for in production.
@@ -819,6 +831,88 @@ type legWindowBinder struct {
 	base  values.CorrelationBinder
 	spans []legSpan
 	row   values.OrdinalRow
+}
+
+// exactLocalBinding resolves one declared leg window and returns the exact
+// record type which owns that window. The boolean means the correlation is
+// locally claimed; a claimed malformed window is an error and must not fall
+// through to an enclosing binding with the same alias.
+func (b *legWindowBinder) exactLocalBinding(
+	id values.CorrelationIdentifier,
+) (values.OrdinalRow, *values.RecordType, bool, error) {
+	for _, s := range b.spans {
+		if !values.SameLeg(s.Alias, id) {
+			continue
+		}
+		if s.LegType != nil {
+			if w, ok := buriedLegWindow(b.row, s, id); ok {
+				return w, w.legType, true, nil
+			}
+		}
+		if s.LegType == nil || s.Offset < 0 || s.Width < 0 || s.Width != len(s.LegType.Fields) {
+			return nil, nil, true, layoutBindingError(values.LayoutRuntimeShape,
+				"local leg window has no exact record type or invalid bounds")
+		}
+		return &legWindowRow{parent: b.row, legType: s.LegType, offset: s.Offset, width: s.Width}, s.LegType, true, nil
+	}
+	for _, s := range b.spans {
+		if s.LegType == nil {
+			continue
+		}
+		for _, buried := range s.LegType.Legs {
+			if !values.SameLeg(buried.Alias, id) {
+				continue
+			}
+			w, ok := buriedLegWindow(b.row, s, id)
+			if !ok {
+				return nil, nil, true, layoutBindingError(values.LayoutRuntimeShape,
+					"buried local leg window has invalid bounds")
+			}
+			return w, w.legType, true, nil
+		}
+	}
+	return nil, nil, false, nil
+}
+
+// GetQuantifiedBinding gives exact QOV reads the same local-leg precedence as
+// GetCorrelationBinding, while rejecting a same-alias foreign exact type
+// before it can borrow either this row or an enclosing binding.
+func (b *legWindowBinder) GetQuantifiedBinding(view values.QuantifiedObjectValue) (any, bool, error) {
+	exact, ok := values.AsQuantifiedObjectValue(view)
+	if !ok || exact == nil {
+		return nil, false, layoutBindingError(values.CorrelationForeignValue, "leg-window lookup QOV is not exact")
+	}
+	window, declared, claimed, err := b.exactLocalBinding(exact.Correlation())
+	if err != nil {
+		return nil, false, err
+	}
+	if claimed {
+		if declared == nil || !values.QuantifiedRowShapesAgree(declared, exact.FlowedType()) {
+			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
+				"leg-window lookup type disagrees with the local exact leg")
+		}
+		return window, true, nil
+	}
+	return (&evaluationObjectBinder{base: b.base}).GetQuantifiedBinding(view)
+}
+
+func (b *legWindowBinder) IsExplicitNullQuantifiedBinding(view values.QuantifiedObjectValue) (bool, error) {
+	exact, ok := values.AsQuantifiedObjectValue(view)
+	if !ok || exact == nil {
+		return false, layoutBindingError(values.CorrelationForeignValue, "leg-window absence QOV is not exact")
+	}
+	_, declared, claimed, err := b.exactLocalBinding(exact.Correlation())
+	if err != nil {
+		return false, err
+	}
+	if claimed {
+		if declared == nil || !values.QuantifiedRowShapesAgree(declared, exact.FlowedType()) {
+			return false, layoutBindingError(values.CorrelationTypeConflict,
+				"leg-window absence type disagrees with the local exact leg")
+		}
+		return false, nil
+	}
+	return (&evaluationObjectBinder{base: b.base}).IsExplicitNullQuantifiedBinding(view)
 }
 
 // GetCorrelationBinding implements values.CorrelationBinder: a span alias gets
@@ -1203,6 +1297,27 @@ func evaluateOrdinalJoinRow(rc *values.RecordConstructorValue, mergedType *value
 	// nil for the NLJ path — harmless.
 	evalCtx := &values.RowEvalContext{Correlations: bindings, ScalarSubqueries: scalarSubqueriesFromBinder(bindings), Clock: clock}
 	for i, f := range rc.Fields {
+		// Join-leg QOVs are whole record objects. The cursor adapters guarantee
+		// an OrdinalRow (or present nil for an unmatched leg); reject a hostile
+		// direct binder before the exact FieldValue's Java-compatible
+		// non-record=>NULL behavior could turn a malformed executor boundary into
+		// a plausible row of NULLs.
+		if field, isField := values.AsFieldValue(f.Value); isField {
+			if qov, isQOV := values.AsQuantifiedObjectValue(field.ChildValue()); isQOV && bindings != nil && qov.FlowedType().Code() == values.TypeCodeRecord {
+				if bound, present := bindings.GetCorrelationBinding(qov.Correlation()); present && bound != nil {
+					if _, isOrdinal := bound.(values.OrdinalRow); !isOrdinal {
+						ordinal := -1
+						if path := field.Path(); path != nil {
+							ordinals := path.Ordinals()
+							if len(ordinals) > 0 {
+								ordinal = ordinals[0]
+							}
+						}
+						return nil, &values.BakedNameContextError{Field: field.DisplayName(), Ordinal: ordinal}
+					}
+				}
+			}
+		}
 		v, err := f.Value.Evaluate(evalCtx)
 		if err != nil {
 			return nil, err
@@ -1273,22 +1388,22 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 	var legs []values.RecordTypeLeg
 	lastCorr := ""
 	for i, f := range rc.Fields {
-		fv, isFV := f.Value.(*values.FieldValue)
+		fv, isFV := values.AsFieldValue(f.Value)
 		if !isFV {
 			lastCorr = ""
 			continue
 		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 		if !isQOV {
 			lastCorr = ""
 			continue
 		}
-		corr := qov.Correlation.Name()
+		corr := qov.Correlation().Name()
 		if corr == lastCorr {
 			continue
 		}
 		lastCorr = corr
-		if rt, isRT := qov.Typ.(*values.RecordType); isRT {
+		if rt, isRT := qov.FlowedType().(*values.RecordType); isRT {
 			if len(rt.Legs) > 0 {
 				// A clustered box run: its name is the rightmost LEAF's (the
 				// sourceBinding convention), which the buried bounds already
@@ -1306,7 +1421,7 @@ func rcOutputType(rc *values.RecordConstructorValue) *values.RecordType {
 			} else {
 				legs = append(legs, values.NewRecordTypeLeg(
 					// rcOutputType's top-level box RUN.
-					values.LegKindFlatRun, qov.Correlation, corr, i, len(rt.Fields)))
+					values.LegKindFlatRun, qov.Correlation(), corr, i, len(rt.Fields)))
 			}
 		}
 	}
@@ -1336,11 +1451,11 @@ func legTypesFromResultValue(rv values.Value) (map[values.CorrelationIdentifier]
 	legs := make(map[values.CorrelationIdentifier]*values.RecordType)
 	var err error
 	values.WalkValue(rv, func(n values.Value) bool {
-		fv, isFV := n.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
-			return true // only PINNED seed refs carry join-leg types
+		fv, isFV := values.AsFieldValue(n)
+		if !isFV || fv.Path() == nil {
+			return true
 		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
+		qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
 		if !isQOV {
 			return true
 		}
@@ -1348,16 +1463,16 @@ func legTypesFromResultValue(rv values.Value) (map[values.CorrelationIdentifier]
 		if !isRT {
 			return true
 		}
-		prev, seen := legs[qov.Correlation]
+		prev, seen := legs[qov.Correlation()]
 		if !seen {
-			legs[qov.Correlation] = rt
+			legs[qov.Correlation()] = rt
 			return true
 		}
 		if len(prev.Fields) != len(rt.Fields) && err == nil {
 			err = fmt.Errorf("leg %s carries DIVERGENT types (%d vs %d fields) across the "+
 				"result value's baked references — all references must copy the one "+
 				"planner-constructed typed QOV (planner bug; malformed plan)",
-				qov.Correlation, len(prev.Fields), len(rt.Fields))
+				qov.Correlation(), len(prev.Fields), len(rt.Fields))
 		}
 		return true
 	})
@@ -1392,6 +1507,22 @@ type ordinalJoinBuild struct {
 	// OutputType is the built positional row's single authoritative type
 	// (rcOutputType; == ordinalJoinSpans' mergedType for the pristine seed).
 	OutputType *values.RecordType
+	// OutputLayout is the selected immutable physical address space attached to
+	// every row this build emits. It replaces RecordType.Legs as runtime QOV
+	// binding authority; folded/partial sources are simply absent windows.
+	OutputLayout values.OrdinalLayout
+	// OutputLayoutFromPlan records that OutputLayout is the selected plan's
+	// admitted physical contract rather than the executor's legacy derivation
+	// from RC. configureNullSupplying must preserve that exact contract: it may
+	// contain proof-backed scalar windows which are not syntactically visible in
+	// RC and therefore cannot be reconstructed here.
+	OutputLayoutFromPlan bool
+	// OutputSourceOrigins maps a proof-backed output-window source to the exact
+	// NLJ leg and exact selected-child source which supplied it. It is used only
+	// to derive null-extension presence: a present child row proves an ordinary
+	// source matched, while a child source which was itself null-supplying must
+	// propagate that child's exact per-row match state.
+	OutputSourceOrigins map[values.CorrelationIdentifier]outputSourceOrigin
 	// Spans + WindowsOK: the decline-only leg-window eligibility probe
 	// (ordinalJoinSpans — pristine seed only). WindowsOK false for a folded
 	// RV: the output is a plain projection row, downstream gets no windows.
@@ -1429,6 +1560,12 @@ type ordinalJoinBuild struct {
 	Clock values.StatementClock
 }
 
+type outputSourceOrigin struct {
+	topLegAlias        values.CorrelationIdentifier
+	childSource        values.QuantifiedObjectValue
+	childNullSupplying bool
+}
+
 // newOrdinalJoinBuild probes a join plan's result value at cursor
 // construction. nil (disabled) when rv is nil or carries no baked ordinal —
 // the non-build cursor path (identity pass-through / fold).
@@ -1457,6 +1594,21 @@ type ordinalJoinBuild struct {
 // pushed-down SARGs read by ordinal, then wraps the flowed leg row in a 1-slot
 // scalar row.
 func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBuild, error) {
+	return newOrdinalJoinBuildWithOutputLayout(rv, preds, nil, nil)
+}
+
+// newOrdinalJoinBuildWithOutputLayout is the selected-plan counterpart of
+// newOrdinalJoinBuild. The plan-owned layout is authoritative because it can
+// carry exact retained-source proofs which are no longer present as QOV nodes
+// in rv. sourceOrigins is an equally exact construction-time proof used only
+// for null-supplying window presence; both inputs are defensively admitted and
+// copied before the cursor retains them.
+func newOrdinalJoinBuildWithOutputLayout(
+	rv values.Value,
+	preds []predicates.QueryPredicate,
+	outputLayout values.OrdinalLayout,
+	sourceOrigins map[values.CorrelationIdentifier]outputSourceOrigin,
+) (*ordinalJoinBuild, error) {
 	// Two build triggers:
 	//   - a FrontierPinned baked reference anywhere in the RV (the flat
 	//     seed, its folds, and the post-translation MIXED upper shape whose
@@ -1464,10 +1616,33 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 	//   - the positional-merge RC (ALL fields bare `_i`-named QOVs —
 	//     the lowest merge level carries no baked refs at all, but its rows
 	//     must build positional: the level above reads them by ordinal).
-	if rv == nil || (!values.ContainsBakedOrdinal(rv) && !values.IsPositionalMergeRC(rv)) {
+	if rv == nil {
 		return nil, nil
 	}
 	rc, isRC := rv.(*values.RecordConstructorValue)
+	// The legacy no-layout constructor uses the structural bake/merge probe to
+	// distinguish an ordinal build from a name-model join whose emitted row is
+	// the direct concatenation of its two children. Every selected NLJ has an
+	// output layout, so its mere presence is not a build trigger: forcing an
+	// ordinary one-level RC through evaluation discards mergeRows' leg windows
+	// and shadows the exact child bindings used by filters above the join.
+	//
+	// A selected layout forces RC evaluation only when it proves mergeRows cannot
+	// realize the selected program: either the layout carries proof-only retained
+	// sources, the RC descends through a nested object inside a leg while the
+	// physical children arrive boxed, or one output slot retains a whole record
+	// QOV. Plain child concatenation cannot realize the last shape: it would
+	// append the record's fields instead of placing the whole object in that one
+	// exact selected-carrier slot. In all three cases the RC must be evaluated to
+	// produce the selected flat carrier. Non-RC values retain the existing
+	// baked-only Bare admission, and the legacy constructor retains its ordinary
+	// semantic-RC decline.
+	planBackedRC := outputLayout != nil && isRC &&
+		(len(sourceOrigins) > 0 || recordConstructorReadsNestedLegPath(rc) ||
+			recordConstructorRetainsWholeRecordSlot(rc))
+	if !values.ContainsBakedOrdinal(rv) && !values.IsPositionalMergeRC(rv) && !planBackedRC {
+		return nil, nil
+	}
 	if !isRC {
 		// A BARE (non-RC) baked result value: the select's output is not an
 		// assembled row but a SINGLE flowed value read out of a leg. Java's
@@ -1524,12 +1699,12 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 	// of a load-bearing invariant).
 	var rawLegs map[values.CorrelationIdentifier]struct{}
 	for _, f := range rc.Fields {
-		if qov, isQOV := f.Value.(*values.QuantifiedObjectValue); isQOV {
+		if qov, isQOV := values.AsQuantifiedObjectValue(f.Value); isQOV {
 			if rt, isRT := qov.Type().(*values.RecordType); isRT {
-				if prev, seen := legTypes[qov.Correlation]; !seen {
-					legTypes[qov.Correlation] = rt
+				if prev, seen := legTypes[qov.Correlation()]; !seen {
+					legTypes[qov.Correlation()] = rt
 				} else if len(prev.Fields) != len(rt.Fields) {
-					return nil, fmt.Errorf("leg %s carries DIVERGENT types (%d vs %d fields) across the RV's bare-QOV and baked-reference sources — all references must copy the one planner-constructed typed QOV (planner bug; malformed plan)", qov.Correlation, len(prev.Fields), len(rt.Fields))
+					return nil, fmt.Errorf("leg %s carries DIVERGENT types (%d vs %d fields) across the RV's bare-QOV and baked-reference sources — all references must copy the one planner-constructed typed QOV (planner bug; malformed plan)", qov.Correlation(), len(prev.Fields), len(rt.Fields))
 				}
 			} else {
 				// A bare QOV over a NON-record type: the lateral-unnest
@@ -1538,20 +1713,179 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 				if rawLegs == nil {
 					rawLegs = map[values.CorrelationIdentifier]struct{}{}
 				}
-				rawLegs[qov.Correlation] = struct{}{}
+				rawLegs[qov.Correlation()] = struct{}{}
 			}
 		}
 	}
 	widenLegTypesFromPredicates(legTypes, preds)
-	return &ordinalJoinBuild{
-		Enabled:    true,
-		RC:         rc,
-		OutputType: rcOutputType(rc),
-		Spans:      spans,
-		WindowsOK:  windowsOK,
-		LegTypes:   legTypes,
-		RawLegs:    rawLegs,
-	}, nil
+	outputType := rcOutputType(rc)
+	derivedLayout, err := values.NewFlatOrdinalLayoutForRetainedResult(rc, nil)
+	if err != nil {
+		return nil, fmt.Errorf("ordinal join output layout: %w", err)
+	}
+	fromPlan := outputLayout != nil
+	if !fromPlan && len(sourceOrigins) > 0 {
+		return nil, layoutBindingError(values.LayoutSourceNotProvided,
+			"nested-loop join source origins require a selected output layout")
+	}
+	if fromPlan {
+		if err := values.ValidateOrdinalLayoutAdmission(outputLayout); err != nil {
+			return nil, fmt.Errorf("ordinal join selected output layout: %w", err)
+		}
+		if outputLayout.CarrierKind() != values.OrdinalCarrierRecord ||
+			outputLayout.Carrier() == nil ||
+			!values.PhysicalCarrierType(outputLayout).Equals(outputType) {
+			return nil, layoutBindingError(values.LayoutCarrierMismatch,
+				"selected nested-loop join layout disagrees with the result program")
+		}
+		declared := make(map[values.CorrelationIdentifier]struct{})
+		for _, source := range outputLayout.WindowSources() {
+			declared[source.Correlation()] = struct{}{}
+		}
+		for source, origin := range sourceOrigins {
+			if source.IsZero() || origin.topLegAlias.IsZero() || origin.childSource == nil {
+				return nil, layoutBindingError(values.CorrelationZero,
+					"nested-loop join output-source origin contains a zero correlation")
+			}
+			if origin.childSource.Correlation() != source {
+				return nil, layoutBindingError(values.CorrelationForeignValue,
+					"nested-loop join output-source origin names a different child source")
+			}
+			if _, ok := declared[source]; !ok {
+				return nil, layoutBindingError(values.LayoutSourceNotProvided,
+					"nested-loop join source origin is absent from the selected output layout")
+			}
+		}
+		derivedLayout = outputLayout
+	}
+	retainedOrigins := make(map[values.CorrelationIdentifier]outputSourceOrigin, len(sourceOrigins))
+	for source, origin := range sourceOrigins {
+		retainedOrigins[source] = origin
+	}
+	build := &ordinalJoinBuild{
+		Enabled:              true,
+		RC:                   rc,
+		OutputType:           outputType,
+		OutputLayout:         derivedLayout,
+		OutputLayoutFromPlan: fromPlan,
+		OutputSourceOrigins:  retainedOrigins,
+		Spans:                spans,
+		WindowsOK:            windowsOK,
+		LegTypes:             legTypes,
+		RawLegs:              rawLegs,
+	}
+	// Both leg-type sources are now populated (legTypesFromResultValue, the bare
+	// QOV pass and widenLegTypesFromPredicates have all run), so this is the
+	// first point at which they can be compared. widenLegTypesFromPlan runs the
+	// same assertion again after it adds plan-discovered legs.
+	if err := build.assertLegTypeSourcesAgree(); err != nil {
+		return nil, err
+	}
+	return build, nil
+}
+
+// recordConstructorReadsNestedLegPath reports the one selected-layout RC shape
+// which a plain concat of child rows cannot realize: a field descends through a
+// nested record owned by a quantified leg. A one-accessor field is already a
+// natural child slot and must keep the ordinary mergeRows path (and its exact
+// leg windows). Childless/computed values do not prove a nested physical leg.
+func recordConstructorReadsNestedLegPath(rc *values.RecordConstructorValue) bool {
+	if rc == nil {
+		return false
+	}
+	nested := false
+	values.WalkValue(rc, func(value values.Value) bool {
+		field, ok := values.AsFieldValue(value)
+		if !ok || field.Path() == nil || field.Path().Len() <= 1 {
+			return true
+		}
+		if _, ok := values.AsQuantifiedObjectValue(field.ChildValue()); !ok {
+			return true
+		}
+		nested = true
+		return false
+	})
+	return nested
+}
+
+// recordConstructorRetainsWholeRecordSlot reports a direct exact record QOV in
+// one RC output slot. NewFlatOrdinalLayoutForRetainedResult publishes that QOV
+// as an ObjectPath source, and the selected-layout carrier check below requires
+// the same exact record type at the same ordinal before a build is returned.
+// A scalar QOV remains a natural one-slot child value and is not authority to
+// leave mergeRows; ordinary flat one-level RCs likewise retain their leg-window
+// preserving concatenation path.
+func recordConstructorRetainsWholeRecordSlot(rc *values.RecordConstructorValue) bool {
+	if rc == nil {
+		return false
+	}
+	for _, field := range rc.Fields {
+		qov, ok := values.AsQuantifiedObjectValue(field.Value)
+		if !ok {
+			continue
+		}
+		if !values.IsMixedSeedElementType(qov.FlowedType()) {
+			return true
+		}
+	}
+	return false
+}
+
+// configureNullSupplying rebuilds the output layout with explicit per-row
+// presence for the named join legs. The exact QOV roots are discovered from
+// the admitted result program; a missing/differently-typed root is a malformed
+// plan, never a reason to infer presence from all-NULL field values.
+func (b *ordinalJoinBuild) configureNullSupplying(correlations ...values.CorrelationIdentifier) error {
+	if b == nil || b.RC == nil || len(correlations) == 0 {
+		return nil
+	}
+	if b.OutputLayoutFromPlan {
+		// RecordQueryNestedLoopJoinPlan constructed this exact layout with the
+		// join type in hand, including every admitted source's null-supplying
+		// bit. Re-deriving from RC would silently erase proof-only scalar
+		// sources. Per-row presence for such sources is derived from their exact
+		// child origins in evaluateBound.
+		return nil
+	}
+	wanted := make(map[values.CorrelationIdentifier]struct{}, len(correlations))
+	for _, correlation := range correlations {
+		wanted[correlation] = struct{}{}
+	}
+	found := make(map[values.CorrelationIdentifier]values.QuantifiedObjectValue, len(correlations))
+	var conflict error
+	values.WalkValue(b.RC, func(value values.Value) bool {
+		qov, ok := values.AsQuantifiedObjectValue(value)
+		if !ok {
+			return true
+		}
+		if _, needed := wanted[qov.Correlation()]; !needed {
+			return true
+		}
+		if previous, exists := found[qov.Correlation()]; exists && !previous.FlowedType().Equals(qov.FlowedType()) {
+			conflict = fmt.Errorf("null-supplying leg %s has conflicting exact types", qov.Correlation())
+			return false
+		}
+		found[qov.Correlation()] = qov
+		return true
+	})
+	if conflict != nil {
+		return conflict
+	}
+	nullSources := make([]values.QuantifiedObjectValue, 0, len(correlations))
+	for _, correlation := range correlations {
+		qov, exists := found[correlation]
+		if !exists {
+			// A completely projected-away leg needs no output window or presence.
+			continue
+		}
+		nullSources = append(nullSources, qov)
+	}
+	layout, err := values.NewFlatOrdinalLayoutForRetainedResult(b.RC, nullSources)
+	if err != nil {
+		return fmt.Errorf("ordinal join null-supplying layout: %w", err)
+	}
+	b.OutputLayout = layout
+	return nil
 }
 
 // widenLegTypesFromPredicates adds the leg types the join PREDICATES carry to
@@ -1564,14 +1898,14 @@ func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*o
 func widenLegTypesFromPredicates(legTypes map[values.CorrelationIdentifier]*values.RecordType, preds []predicates.QueryPredicate) {
 	for _, p := range preds {
 		predicates.ReplaceValues(p, func(v values.Value) values.Value {
-			fv, isFV := v.(*values.FieldValue)
-			if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+			fv, isFV := values.AsFieldValue(v)
+			if !isFV || fv.Path() == nil {
 				return v
 			}
-			if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+			if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
 				if rt, isRT := qov.Type().(*values.RecordType); isRT {
-					if _, seen := legTypes[qov.Correlation]; !seen {
-						legTypes[qov.Correlation] = rt
+					if _, seen := legTypes[qov.Correlation()]; !seen {
+						legTypes[qov.Correlation()] = rt
 					}
 				}
 			}
@@ -1615,22 +1949,38 @@ func (b *ordinalJoinBuild) widenLegTypesFromPlan(plan plans.RecordQueryPlan) err
 	// The walk continues widening LegTypes after a capture; harmless — the
 	// caller (newFlatMapCursorWithOuterProperties) discards the whole build on error.
 	walkBakedRefs(plan, func(v values.Value) values.Value {
-		fv, isFV := v.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		fv, isFV := values.AsFieldValue(v)
+		if !isFV || fv.Path() == nil {
 			return v
 		}
-		if qov, isQOV := fv.Child.(*values.QuantifiedObjectValue); isQOV {
+		if qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue()); isQOV {
+			// Reserved current names the local physical row phase of whichever
+			// operator owns this predicate/SARG. A nested inner plan can contain
+			// several such phases with legitimately different widths; none is a
+			// FlatMap leg identity. Folding them into LegTypes under the one
+			// `_current` key creates a false divergence and can never help the leg
+			// adapter, whose lookups are by the FlatMap's named outer/inner aliases.
+			if qov.Correlation() == values.CurrentCorrelation() {
+				return v
+			}
 			if rt, isRT := qov.Type().(*values.RecordType); isRT {
-				if prev, seen := b.LegTypes[qov.Correlation]; !seen {
-					b.LegTypes[qov.Correlation] = rt
+				if prev, seen := b.LegTypes[qov.Correlation()]; !seen {
+					b.LegTypes[qov.Correlation()] = rt
 				} else if len(prev.Fields) != len(rt.Fields) && divergence == nil {
-					divergence = fmt.Errorf("leg %s carries DIVERGENT baked types (%d vs %d fields) across the RV/predicate/SARG sources — all baked references must copy the one seed-constructed typed QOV (planner bug; malformed plan)", qov.Correlation, len(prev.Fields), len(rt.Fields))
+					divergence = fmt.Errorf("leg %s carries DIVERGENT baked types (%d vs %d fields) across the RV/predicate/SARG sources — all baked references must copy the one seed-constructed typed QOV (planner bug; malformed plan)", qov.Correlation(), len(prev.Fields), len(rt.Fields))
 				}
 			}
 		}
 		return v
 	})
-	return divergence
+	if divergence != nil {
+		return divergence
+	}
+	// A leg this walk ADDED can newly collide with the seed leg window, so the
+	// two-source agreement is re-asserted here rather than only at construction.
+	// The walk never overwrites an existing entry (the arm above reports instead),
+	// so a leg that agreed before still agrees.
+	return b.assertLegTypeSourcesAgree()
 }
 
 // walkBakedRefs walks a physical plan tree's predicate surfaces —
@@ -1724,12 +2074,12 @@ func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.Correlati
 	// process — is captured and returned after the walk.
 	var divergence error
 	walkBakedRefs(plan, func(v values.Value) values.Value {
-		fv, isFV := v.(*values.FieldValue)
-		if !isFV || fv.Resolved == nil || !fv.Resolved.FrontierPinned {
+		fv, isFV := values.AsFieldValue(v)
+		if !isFV || fv.Path() == nil || !fv.Path().IsFrontierPinned() {
 			return v
 		}
-		qov, isQOV := fv.Child.(*values.QuantifiedObjectValue)
-		if !isQOV || qov.Correlation != outerAlias {
+		qov, isQOV := values.AsQuantifiedObjectValue(fv.ChildValue())
+		if !isQOV || qov.Correlation() != outerAlias {
 			return v
 		}
 		if rt, isRT := qov.Type().(*values.RecordType); isRT {
@@ -1744,11 +2094,28 @@ func probeOuterBakedType(plan plans.RecordQueryPlan, outerAlias values.Correlati
 	return found, divergence
 }
 
-// legType resolves the adapter's leg type for a leg alias: from the spans when
-// the RV is the pristine seed (WindowsOK), else from the RV's baked references
-// (LegTypes), else nil (no baked reference names this leg — the adapter then
-// only passes a positional row through or yields a zero-width row).
+// legType resolves the adapter's leg type for a leg alias.
+//
+// THE BAKED REFERENCES ARE THE AUTHORITY. LegTypes carries the types recovered
+// from the RV's own baked leg references, widened from the join predicates and
+// from the plan walk, so it is the type the expressions that will actually be
+// EVALUATED were constructed against. Spans are the pristine-seed leg-window
+// walk — a positional description of the seed RC, available only when
+// WindowsOK, and invisible for a folded RV whose output is a plain projection
+// row. So a span types a leg only when no baked reference names it.
+//
+// WHEN BOTH NAME A LEG THEY DESCRIBE ONE FLOWED ROW, so agreement is an
+// invariant rather than a coincidence — which means the order below decides
+// nothing on a well-formed plan. A disagreement is a malformed plan, not a
+// preference to resolve, and it is rejected by assertLegTypeSourcesAgree at
+// BUILD time rather than here: the two sources are fixed for the cursor's
+// lifetime, so re-deciding per row would pay for the check on every row of
+// every join and still have nowhere to report it from (pairBinder has no error
+// return). Checked once at the boundary, this stays a plain accessor.
 func (b *ordinalJoinBuild) legType(id values.CorrelationIdentifier) *values.RecordType {
+	if exact := b.LegTypes[id]; exact != nil {
+		return exact
+	}
 	if b.WindowsOK {
 		for _, s := range b.Spans {
 			if s.Alias == id {
@@ -1756,7 +2123,36 @@ func (b *ordinalJoinBuild) legType(id values.CorrelationIdentifier) *values.Reco
 			}
 		}
 	}
-	return b.LegTypes[id]
+	return nil
+}
+
+// assertLegTypeSourcesAgree rejects a build whose two leg-type sources describe
+// one leg with different widths. It runs after every widening has been applied,
+// so LegTypes is final.
+//
+// Without it, legType's precedence silently picks a winner and the leg is
+// adapted to a width the other half of the plan does not expect — the failure
+// then surfaces far downstream as an ordinal that resolves into the wrong
+// column, or not at all. This is the same class as the two DIVERGENT reports
+// legTypesFromResultValue and widenLegTypesFromPlan already make, and it is
+// worded the same way so all three read as one rule.
+func (b *ordinalJoinBuild) assertLegTypeSourcesAgree() error {
+	if !b.WindowsOK {
+		// Spans describe the pristine seed only; a folded RV has no second
+		// source to disagree with.
+		return nil
+	}
+	for _, s := range b.Spans {
+		exact := b.LegTypes[s.Alias]
+		if exact == nil || s.LegType == nil {
+			continue
+		}
+		if len(exact.Fields) != len(s.LegType.Fields) {
+			return fmt.Errorf("leg %s carries DIVERGENT types (%d vs %d fields) between the RV's baked references and the seed leg window — both describe the same flowed row (planner bug; malformed plan)",
+				s.Alias, len(exact.Fields), len(s.LegType.Fields))
+		}
+	}
+	return nil
 }
 
 // legRows adapts the two join legs into the BUILD-time binding map: alias →
@@ -1765,7 +2161,7 @@ func (b *ordinalJoinBuild) legType(id values.CorrelationIdentifier) *values.Reco
 // NULL leg (LEFT/FULL null padding): its alias maps to nil, PRESENT — the
 // binder then returns (nil, true) and the leg's baked references evaluate to
 // NULL (the null extension falls out of evaluation).
-func (b *ordinalJoinBuild) legRows(outerAlias, innerAlias string, outer, inner *QueryResult) (map[values.CorrelationIdentifier]values.OrdinalRow, map[values.CorrelationIdentifier]any, error) {
+func (b *ordinalJoinBuild) legRows(outerAlias, innerAlias values.CorrelationIdentifier, outer, inner *QueryResult) (map[values.CorrelationIdentifier]values.OrdinalRow, map[values.CorrelationIdentifier]any, error) {
 	legs := make(map[values.CorrelationIdentifier]values.OrdinalRow, 2)
 	raw := make(map[values.CorrelationIdentifier]any)
 	if err := b.bindLeg(legs, raw, outerAlias, outer); err != nil {
@@ -1777,8 +2173,27 @@ func (b *ordinalJoinBuild) legRows(outerAlias, innerAlias string, outer, inner *
 	return legs, raw, nil
 }
 
-func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, alias string, qr *QueryResult) error {
-	id := values.NamedCorrelationIdentifier(alias)
+func (b *ordinalJoinBuild) bindLeg(legs map[values.CorrelationIdentifier]values.OrdinalRow, raw map[values.CorrelationIdentifier]any, id values.CorrelationIdentifier, qr *QueryResult) error {
+	// FirstOrDefault's empty record arm carries an exact-width shell so layout
+	// validation remains possible, with LayoutPresence stating that the WHOLE
+	// quantified object is absent. Bind that object as NULL before any scalar
+	// unwrap or record adaptation. Inferring presence from the non-nil shell
+	// makes EXISTS over an empty record subplan unconditionally true; inferring
+	// absence from nil slots would misclassify a matched all-NULL record.
+	if qr != nil && qr.Positional != nil {
+		_, explicitAbsent, err := qr.Positional.wholeObjectBinding()
+		if err != nil {
+			return err
+		}
+		if explicitAbsent {
+			if _, isRaw := b.RawLegs[id]; isRaw {
+				raw[id] = nil
+			} else {
+				legs[id] = nil
+			}
+			return nil
+		}
+	}
 	// A RAW leg (a bare-QOV non-record unnest element) binds its whole flowed
 	// scalar — never adapted to a (non-record → empty) OrdinalRow. The element
 	// flows as a 1-slot `_0` PositionalRow (scalarPositionalRow), so bind the
@@ -1875,7 +2290,93 @@ func (b *ordinalJoinBuild) evaluateBound(bindings values.CorrelationBinder) (*Po
 	if b.Bare != nil {
 		return evaluateOrdinalJoinBareRow(b.Bare, bindings, b.Clock)
 	}
-	return evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings, b.Clock)
+	row, err := evaluateOrdinalJoinRow(b.RC, b.OutputType, bindings, b.Clock)
+	if err != nil {
+		return nil, err
+	}
+	if b.OutputLayout != nil {
+		presenceBindings := bindings
+		var sourcePresence *outputSourcePresenceBinder
+		if len(b.OutputSourceOrigins) > 0 {
+			sourcePresence = &outputSourcePresenceBinder{
+				base: bindings, origins: b.OutputSourceOrigins,
+			}
+			presenceBindings = sourcePresence
+		}
+		presence, presenceErr := values.NewWindowMatchPresenceFromCorrelations(
+			b.OutputLayout, presenceBindings)
+		if sourcePresence != nil && sourcePresence.err != nil {
+			return nil, sourcePresence.err
+		}
+		if presenceErr != nil {
+			return nil, presenceErr
+		}
+		row.Layout = b.OutputLayout
+		row.LayoutPresence = presence
+	}
+	return row, nil
+}
+
+// outputSourcePresenceBinder translates only the physical presence question
+// for a proof-backed retained source to the selected child leg which supplied
+// it. It is deliberately not an evaluation binder: the value is read from its
+// exact output window after the row has been built. Presence instead follows
+// the leg and, for a nested null-supplying source, the child row's exact match
+// state. A matched all-NULL object remains distinct from an absent object.
+type outputSourcePresenceBinder struct {
+	base    values.CorrelationBinder
+	origins map[values.CorrelationIdentifier]outputSourceOrigin
+	err     error
+}
+
+func (b *outputSourcePresenceBinder) GetCorrelationBinding(
+	id values.CorrelationIdentifier,
+) (any, bool) {
+	if b == nil || b.base == nil {
+		return nil, false
+	}
+	if origin, ok := b.origins[id]; ok {
+		value, present := b.base.GetCorrelationBinding(origin.topLegAlias)
+		if !present {
+			b.err = layoutBindingError(values.LayoutPresenceMissing,
+				"retained output source origin leg is absent")
+			return nil, false
+		}
+		if value == nil {
+			return nil, true
+		}
+		row, ok := value.(*PositionalRow)
+		if !ok || row == nil || row.Layout == nil {
+			b.err = layoutBindingError(values.LayoutRuntimeShape,
+				"retained output source origin is not an exact positional row")
+			return nil, false
+		}
+		childNullSupplying, childErr := values.LayoutWindowNullSupplying(
+			row.Layout, origin.childSource)
+		if childErr != nil {
+			b.err = fmt.Errorf("retained output source child layout: %w", childErr)
+			return nil, false
+		}
+		if childNullSupplying != origin.childNullSupplying {
+			b.err = layoutBindingError(values.LayoutInvalidWindow,
+				"retained output source null-supplying proof disagrees with the child layout")
+			return nil, false
+		}
+		if !origin.childNullSupplying {
+			return value, true
+		}
+		matched, matchErr := values.OrdinalWindowMatchState(
+			row.Layout, row.LayoutPresence, origin.childSource)
+		if matchErr != nil {
+			b.err = fmt.Errorf("retained output source match state: %w", matchErr)
+			return nil, false
+		}
+		if !matched {
+			return nil, true
+		}
+		return value, true
+	}
+	return b.base.GetCorrelationBinding(id)
 }
 
 // twoLegBinder is the NLJ cursor's per-pair leg binder: exactly the join's
@@ -1892,6 +2393,8 @@ func (b *ordinalJoinBuild) evaluateBound(bindings values.CorrelationBinder) (*Po
 type twoLegBinder struct {
 	outerID, innerID values.CorrelationIdentifier
 	outer, inner     values.OrdinalRow
+	outerType        *values.RecordType
+	innerType        *values.RecordType
 	base             values.CorrelationBinder
 }
 
@@ -1914,10 +2417,61 @@ func (b *twoLegBinder) GetCorrelationBinding(id values.CorrelationIdentifier) (a
 	return nil, false
 }
 
+// GetQuantifiedBinding preserves the pair-local leg precedence of the legacy
+// correlation binder in the exact namespace. A same-alias QOV with another
+// exact type is a foreign owner and cannot fall through to the ambient context.
+func (b *twoLegBinder) GetQuantifiedBinding(view values.QuantifiedObjectValue) (any, bool, error) {
+	exact, ok := values.AsQuantifiedObjectValue(view)
+	if !ok || exact == nil {
+		return nil, false, layoutBindingError(values.CorrelationForeignValue, "join-pair lookup QOV is not exact")
+	}
+	switch exact.Correlation() {
+	case b.outerID:
+		if b.outerType == nil || !values.QuantifiedRowShapesAgree(b.outerType, exact.FlowedType()) {
+			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
+				fmt.Sprintf("outer join-pair lookup %s: read as %s, local leg %s",
+					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+					values.DescribeType(b.outerType)))
+		}
+		return b.outer, true, nil
+	case b.innerID:
+		if b.innerType == nil || !values.QuantifiedRowShapesAgree(b.innerType, exact.FlowedType()) {
+			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
+				fmt.Sprintf("inner join-pair lookup %s: read as %s, local leg %s",
+					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
+					values.DescribeType(b.innerType)))
+		}
+		return b.inner, true, nil
+	}
+	return (&evaluationObjectBinder{base: b.base}).GetQuantifiedBinding(view)
+}
+
+func (b *twoLegBinder) IsExplicitNullQuantifiedBinding(view values.QuantifiedObjectValue) (bool, error) {
+	exact, ok := values.AsQuantifiedObjectValue(view)
+	if !ok || exact == nil {
+		return false, layoutBindingError(values.CorrelationForeignValue, "join-pair absence QOV is not exact")
+	}
+	switch exact.Correlation() {
+	case b.outerID:
+		if b.outerType == nil || !values.QuantifiedRowShapesAgree(b.outerType, exact.FlowedType()) {
+			return false, layoutBindingError(values.CorrelationTypeConflict,
+				"outer join-pair absence type disagrees with the local exact leg")
+		}
+		return b.outer == nil, nil
+	case b.innerID:
+		if b.innerType == nil || !values.QuantifiedRowShapesAgree(b.innerType, exact.FlowedType()) {
+			return false, layoutBindingError(values.CorrelationTypeConflict,
+				"inner join-pair absence type disagrees with the local exact leg")
+		}
+		return b.inner == nil, nil
+	}
+	return (&evaluationObjectBinder{base: b.base}).IsExplicitNullQuantifiedBinding(view)
+}
+
 // evaluate is the one-shot build: adapt both legs (nil pointer = NULL leg),
 // then evaluate the RC per-field into a PositionalRow under OutputType. base
 // resolves outer correlations beyond the two legs (may be nil).
-func (b *ordinalJoinBuild) evaluate(outerAlias, innerAlias string, outer, inner *QueryResult, base values.CorrelationBinder) (*PositionalRow, error) {
+func (b *ordinalJoinBuild) evaluate(outerAlias, innerAlias values.CorrelationIdentifier, outer, inner *QueryResult, base values.CorrelationBinder) (*PositionalRow, error) {
 	legs, raw, err := b.legRows(outerAlias, innerAlias, outer, inner)
 	if err != nil {
 		return nil, err
@@ -2112,7 +2666,7 @@ func unwrapToJoinPlan(input plans.RecordQueryPlan) plans.RecordQueryPlan {
 			// the seed RC is its own authority, everything else declines in
 			// joinPlanSpansTyped. An INNER-identity RV (FirstOrDefault-style
 			// shapes) re-emits INNER rows and must NOT unwrap to the outer.
-			if qov, ok := p.GetResultValue().(*values.QuantifiedObjectValue); ok && qov.Correlation == p.GetOuterAlias() {
+			if qov, ok := values.AsQuantifiedObjectValue(p.GetResultValue()); ok && qov.Correlation() == p.GetOuterAlias() {
 				input = p.GetOuter()
 				continue
 			}
@@ -2211,14 +2765,23 @@ func innerIsOrdinalityExplode(input plans.RecordQueryPlan) bool {
 // the Correlations bindings (the bare merged row misreads them leg-relative:
 // a wrong-slot hazard).
 func legWindowRowContext(pos values.OrdinalRow, ec *EvaluationContext, spans []legSpan) *values.RowEvalContext {
+	legs := &legWindowBinder{base: correlationBase(ec), spans: spans, row: pos}
 	rc := &values.RowEvalContext{
 		Positional:   &spanAwareRow{parent: pos, spans: spans},
-		Correlations: &legWindowBinder{base: correlationBase(ec), spans: spans, row: pos},
+		Correlations: legs,
 	}
 	if ec != nil {
 		rc.Binder = ec
 		rc.ScalarSubqueries = ec.scalarSubqueries
 		rc.Clock = ec
+		// Installing an exact object binder changes QOV evaluation from
+		// correlation-then-positional to exact-only. Do so only when there is an
+		// ambient exact object to preserve; a current-only predicate deliberately
+		// retains the positional fallback until its producer supplies an exact
+		// current carrier handle.
+		if len(ec.quantifiedBindings) > 0 {
+			rc.Objects = legs
+		}
 	}
 	return rc
 }

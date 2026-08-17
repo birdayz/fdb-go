@@ -1,7 +1,6 @@
 package cascades
 
 import (
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 )
 
@@ -37,23 +36,25 @@ func (a *expressionRuleAdapter) OnMatch(implCall *ImplementationRuleCall) {
 		RunContext:  implCall.RunContext,
 		Constraints: implCall.Constraints,
 		memo:        implCall.memo,
-		yieldFn: func(expr expressions.RelationalExpression) bool {
-			if implCall.CancellationErr() != nil {
-				return false
-			}
-			implCall.Yield(expr)
-			return true
-		},
 	}
 	a.rule.OnMatch(call)
-	if implCall.memo != nil && implCall.CancellationErr() == nil {
-		for _, y := range call.yieldedExps {
-			if implCall.CancellationErr() != nil {
-				return
-			}
-			implCall.memo.AddExpression(implCall.Reference, y)
-		}
+	if err := call.Err(); err != nil {
+		implCall.Fail(err)
+		return
 	}
+	// Hand the inner call's staged child inserts to the OUTER call rather than
+	// committing them here. This driver's preflight can still reject the batch
+	// after the rule body returned, and an insert committed at the inner
+	// boundary would survive that rejection — which is the exact leak staging
+	// exists to close, reintroduced one level down.
+	implCall.AdoptStagedInserts(call.stagedInserts)
+	call.stagedInserts = nil
+	for _, y := range call.Yielded() {
+		implCall.Yield(y)
+	}
+	// The implementation driver publishes this topology effect together
+	// with the staged final-member insertions, after full-batch validation.
+	implCall.indexYieldedInMemo = true
 }
 
 var _ ImplementationRule = (*expressionRuleAdapter)(nil)

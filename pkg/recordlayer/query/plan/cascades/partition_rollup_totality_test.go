@@ -27,8 +27,13 @@ import (
 // key that ignores DistinctRecords they would share a partition.
 func twoMemberRefWithDisagreeingProperty(t *testing.T) (*expressions.Reference, expressions.RelationalExpression, expressions.RelationalExpression) {
 	t.Helper()
-	scan := plans.NewRecordQueryScanPlan([]string{"Order"}, nil, false)
-	proj := plans.NewRecordQueryProjectionPlan(nil, scan)
+	rowType := values.NewRecordType("Order", false, []values.Field{
+		{Name: "ID", FieldType: values.NotNullLong, Ordinal: 0},
+	})
+	scanValue, scanErr := plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false)
+	scan := mustConstruct(t, scanValue, scanErr)
+	projValue, projErr := plans.NewRecordQueryProjectionPlan(nil, scan)
+	proj := mustConstruct(t, projValue, projErr)
 
 	ref := expressions.FinalOfAtStage(scan, expressions.StageCanonical)
 	ref.InsertFinal(proj)
@@ -152,8 +157,17 @@ func TestRollUp_SplitsMembersThatDisagree(t *testing.T) {
 // in the suite distinguishes two orderings by their set alone.
 func TestRichOrderingsEqual_SeparatesOrderingSets(t *testing.T) {
 	t.Parallel()
-	keyA := values.NewFieldValueWithResolvedOrdinal("A", 0, values.NullableLong)
-	keyB := values.NewFieldValueWithResolvedOrdinal("B", 1, values.NullableLong)
+	rowType := values.NewRecordType("ordering_keys", false, []values.Field{
+		{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
+		{Name: "B", FieldType: values.NullableLong, Ordinal: 1},
+	})
+	rootValue, rootErr := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("rollup_ordering"), rowType)
+	root := mustConstruct(t, rootValue, rootErr)
+	keyAValue, keyAErr := values.ResolveFieldOrdinals(root, []int{0})
+	keyA := mustConstruct(t, keyAValue, keyAErr)
+	keyBValue, keyBErr := values.ResolveFieldOrdinals(root, []int{1})
+	keyB := mustConstruct(t, keyBValue, keyBErr)
 	keys := []values.Value{keyA, keyB}
 	bindings := map[values.Value][]properties.OrderingBinding{
 		keyA: {properties.SortedBinding(properties.ProvidedSortOrderAscending)},

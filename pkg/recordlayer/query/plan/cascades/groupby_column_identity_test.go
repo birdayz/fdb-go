@@ -16,13 +16,25 @@ func TestOrderingSatisfiesGroupingKeys_NestedShadow(t *testing.T) {
 	t.Parallel()
 
 	src := values.NamedCorrelationIdentifier("T")
+	addressType := values.NewRecordType("Address", false, []values.Field{
+		{Name: "CITY", FieldType: values.NotNullString, Ordinal: 0},
+	})
+	rowType := values.NewRecordType("GroupingRow", false, []values.Field{
+		{Name: "CITY", FieldType: values.NotNullString, Ordinal: 0},
+		{Name: "ADDR", FieldType: addressType, Ordinal: 1},
+	})
+	root, err := values.NewQuantifiedObjectValue(src, rowType)
+	root = mustConstruct(t, root, err)
+	resolve := func(ordinals ...int) values.Value {
+		t.Helper()
+		value, resolveErr := values.ResolveFieldOrdinals(root, ordinals)
+		return mustConstruct(t, value, resolveErr)
+	}
 	flat := func() values.Value {
-		return values.NewFieldValue(values.NewQuantifiedObjectValue(src), "CITY", values.UnknownType)
+		return resolve(0)
 	}
 	nested := func() values.Value {
-		return values.NewFieldValue(
-			values.NewFieldValue(values.NewQuantifiedObjectValue(src), "ADDR", values.UnknownType),
-			"CITY", values.UnknownType)
+		return resolve(1, 0)
 	}
 	ordOn := func(k values.Value) properties.Ordering {
 		return properties.Ordering{IsKnown: true, Keys: []values.Value{k}, Descending: []bool{false}}

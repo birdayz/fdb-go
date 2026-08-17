@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -8,17 +9,74 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
+func typeRewriteRowType() *values.RecordType {
+	return values.NewRecordType("TypeRewriteRow", false, []values.Field{{
+		Name: "ID", FieldType: values.NotNullLong,
+	}})
+}
+
+func mustTypeRewriteConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct type-rewrite fixture: " + err.Error())
+	}
+	return value
+}
+
+func typeRewriteScan(recordTypes ...string) *expressions.FullUnorderedScanExpression {
+	return mustTypeRewriteConstruct(expressions.NewFullUnorderedScanExpression(
+		recordTypes, typeRewriteRowType()))
+}
+
+func typeRewriteFilter(
+	recordTypes []string, inner expressions.Quantifier,
+) *expressions.LogicalTypeFilterExpression {
+	return mustTypeRewriteConstruct(expressions.NewLogicalTypeFilterExpression(recordTypes, inner))
+}
+
+func fireTypeRewriteRule(
+	t testing.TB, rule ExpressionRule, ref *expressions.Reference,
+) []expressions.RelationalExpression {
+	t.Helper()
+	result, err := FireExpressionRule(rule, ref)
+	if err != nil {
+		t.Fatalf("FireExpressionRule: %v", err)
+	}
+	return result
+}
+
+func exploreTypeRewriting(p *Planner, rootRef *expressions.Reference) (int, bool) {
+	if p.memo == nil {
+		p.memo = NewMemo(rootRef)
+	}
+	if p.constraintMap == nil {
+		p.constraintMap = NewConstraintMap()
+	}
+	if p.dataAccessConsumed == nil {
+		p.dataAccessConsumed = make(map[*expressions.Reference]int)
+	}
+	p.push(&OptimizeGroupTask{Phase: PhaseRewriting, Ref: rootRef})
+	p.push(&ExploreGroupTask{Phase: PhaseRewriting, Ref: rootRef})
+	for len(p.stack) > 0 {
+		if p.tasksRun >= p.MaxTasks {
+			return p.tasksRun, false
+		}
+		p.pop().Run(context.Background(), p)
+		p.tasksRun++
+	}
+	return p.tasksRun, true
+}
+
 func TestTypeFilterMergeRule_Intersects(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression(nil, values.UnknownType)
+	scan := typeRewriteScan()
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	innerTF := expressions.NewLogicalTypeFilterExpression([]string{"Order", "Customer", "Sale"}, scanQ)
+	innerTF := typeRewriteFilter([]string{"Order", "Customer", "Sale"}, scanQ)
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerTF))
-	outerTF := expressions.NewLogicalTypeFilterExpression([]string{"Order", "Sale"}, innerQ)
+	outerTF := typeRewriteFilter([]string{"Order", "Sale"}, innerQ)
 	ref := expressions.InitialOf(outerTF)
 
 	rule := NewTypeFilterMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireTypeRewriteRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
@@ -31,14 +89,14 @@ func TestTypeFilterMergeRule_Intersects(t *testing.T) {
 
 func TestTypeFilterMergeRule_EmptyIntersection(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression(nil, values.UnknownType)
+	scan := typeRewriteScan()
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	innerTF := expressions.NewLogicalTypeFilterExpression([]string{"Order"}, scanQ)
+	innerTF := typeRewriteFilter([]string{"Order"}, scanQ)
 	innerQ := expressions.ForEachQuantifier(expressions.InitialOf(innerTF))
-	outerTF := expressions.NewLogicalTypeFilterExpression([]string{"Customer"}, innerQ)
+	outerTF := typeRewriteFilter([]string{"Customer"}, innerQ)
 	ref := expressions.InitialOf(outerTF)
 	rule := NewTypeFilterMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireTypeRewriteRule(t, rule, ref)
 	if len(yielded) != 1 {
 		t.Fatalf("yielded=%d, want 1 (empty-intersection still emits, just with no types)", len(yielded))
 	}
@@ -50,12 +108,12 @@ func TestTypeFilterMergeRule_EmptyIntersection(t *testing.T) {
 
 func TestTypeFilterMergeRule_DeclinesOnSingle(t *testing.T) {
 	t.Parallel()
-	scan := expressions.NewFullUnorderedScanExpression(nil, values.UnknownType)
+	scan := typeRewriteScan()
 	scanQ := expressions.ForEachQuantifier(expressions.InitialOf(scan))
-	tf := expressions.NewLogicalTypeFilterExpression([]string{"Order"}, scanQ)
+	tf := typeRewriteFilter([]string{"Order"}, scanQ)
 	ref := expressions.InitialOf(tf)
 	rule := NewTypeFilterMergeRule()
-	yielded := FireExpressionRule(rule, ref)
+	yielded := fireTypeRewriteRule(t, rule, ref)
 	if len(yielded) != 0 {
 		t.Fatalf("rule fired on a single TypeFilter — yielded %d, want 0", len(yielded))
 	}

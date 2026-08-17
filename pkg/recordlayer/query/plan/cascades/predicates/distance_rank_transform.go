@@ -91,6 +91,6 @@ func TransformRowNumberDistanceRankMaybe(rn *values.RowNumberValue, cmpType Comp
 // isFieldValue reports whether v is a column reference (the indexed vector
 // side of a distance function, as opposed to the constant query vector).
 func isFieldValue(v values.Value) bool {
-	_, ok := v.(*values.FieldValue)
+	_, ok := values.AsFieldValue(v)
 	return ok
 }

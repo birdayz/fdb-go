@@ -18,8 +18,8 @@ package embedded
 //	                   name/alias, raising ErrCodeUndefinedColumn on a mismatch.
 //	                   Counterparty: the slot's ProjectionRefs triple.
 //	displayLabelStrip  the machinery-alias display label, guarded by the
-//	                   PARENTHESIS HEURISTIC. Counterparty: the projected
-//	                   value's correlation.
+//	                   PARENTHESIS HEURISTIC. Counterparty: the slot's frozen
+//	                   structured alias source.
 //
 // A single merged "parseColRef" number could answer the conversion question for
 // none of them.
@@ -99,57 +99,45 @@ func qualRecDelta(t *testing.T, site values.QualifierRecoverySite, class values.
 	return after[site][class] - before[site][class]
 }
 
-func qov(name string) values.Value {
-	return values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(name))
+func qualRecTestField(t testing.TB, correlation, fieldName string) values.FieldValue {
+	t.Helper()
+	rowType := &values.RecordType{Fields: []values.Field{
+		{Name: fieldName, Ordinal: 0, FieldType: values.NotNullLong},
+	}}
+	owner, err := values.NewQuantifiedObjectValue(values.NamedCorrelationIdentifier(correlation), rowType)
+	if err != nil {
+		t.Fatalf("QOV %q: %v", correlation, err)
+	}
+	resolved, err := values.ResolveFieldOrdinals(owner, []int{0})
+	if err != nil {
+		t.Fatalf("field %q: %v", fieldName, err)
+	}
+	field, ok := values.AsFieldValue(resolved)
+	if !ok {
+		t.Fatalf("resolved %q is not an exact field", fieldName)
+	}
+	return field
 }
 
-// TestQualRecWiring_ProjScopeClassifyCountsEveryArm pins the three classes
-// projScopeAlias can reach.
-//
-// AGREED is structurally impossible here and that is the site's finding, not an
-// omission: the split runs in the ELSE of the correlation check, so a call that
-// splits is by construction a call with no identity to agree with. This site
-// cannot be converted by a local edit — there is nothing local to convert TO.
-func TestQualRecWiring_ProjScopeClassifyCountsEveryArm(t *testing.T) {
+// Exact field values always carry their owner correlation. A semantic field
+// name containing a dot remains one field and cannot manufacture a scope alias.
+func TestQualRecWiring_ProjScopeClassifyCarriesExactOwner(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name  string
-		fv    *values.FieldValue
-		class values.QualifierRecoveryClass
-		want  string
-		why   string
+		name string
+		fv   values.FieldValue
+		want string
 	}{
 		{
-			name:  "carried",
-			fv:    values.NewFieldValue(qov("T2"), "SK", values.UnknownType),
-			class: values.QualRecCarried,
-			want:  "T2",
-			why: "the correlation IS the alias — carried, no string sliced. Counted so " +
-				"the site's converted share is visible: a census reporting only the " +
-				"split arm could not tell a site that mostly carries from one that " +
-				"mostly manufactures, and that is the difference between a mechanical " +
-				"conversion and a producer change",
+			name: "ordinary",
+			fv:   qualRecTestField(t, "T2", "SK"),
+			want: "T2",
 		},
 		{
-			name:  "MANUFACTURED",
-			fv:    values.NewFlatFieldValue("T2.SK", values.UnknownType),
-			class: values.QualRecManufactured,
-			want:  "T2",
-			why: "a dotted rendered name with NO correlation on it: the alias that " +
-				"decides inner- vs outer-scoping is manufactured out of the bytes " +
-				"before the last dot. BOTH corpora report 0 here — 71 sqldriver calls " +
-				"and 15 production calls in this package — so nothing but this pin goes " +
-				"red when the recorder leaves this branch",
-		},
-		{
-			name:  "bare",
-			fv:    values.NewFlatFieldValue("SK", values.UnknownType),
-			class: values.QualRecBare,
-			want:  "",
-			why: "no dot, nothing manufactured — and it is this site's whole production " +
-				"population on both corpora (60 of 71 sqldriver calls, all 15 here), so " +
-				"it is the bucket whose floor would go quietly false",
+			name: "dotted_semantic_name",
+			fv:   qualRecTestField(t, "OWNER", "T2.SK"),
+			want: "OWNER",
 		},
 	}
 
@@ -157,19 +145,16 @@ func TestQualRecWiring_ProjScopeClassifyCountsEveryArm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var got string
-			delta := qualRecDelta(t, values.QualRecSiteProjScopeClassify, tc.class, func() {
+			delta := qualRecDelta(t, values.QualRecSiteProjScopeClassify, values.QualRecCarried, func() {
 				got = projScopeAlias(tc.fv)
 			})
 			if delta < 1 {
-				t.Fatalf("projScopeClassify recorded %d %v decision(s) for %q — want at least 1.\n%s",
-					delta, tc.class, tc.fv.Field, tc.why)
+				t.Fatalf("projScopeClassify recorded %d carried decision(s) for %q — want at least 1",
+					delta, tc.fv.DisplayName())
 			}
-			// The recorder must sit inside the branch that DECIDES, not beside
-			// it: pinning the class without the alias would pass for a recorder
-			// moved to the far side of the if.
 			if got != tc.want {
-				t.Fatalf("projScopeAlias(%q) = %q, want %q — the recorder and the decision "+
-					"have come apart", tc.fv.Field, got, tc.want)
+				t.Fatalf("projScopeAlias(%q) = %q, want exact owner %q",
+					tc.fv.DisplayName(), got, tc.want)
 			}
 		})
 	}
@@ -281,10 +266,10 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name  string
-		label string
-		v     values.Value
-		class values.QualifierRecoveryClass
+		name   string
+		label  string
+		source values.ProjectionAliasSource
+		class  values.QualifierRecoveryClass
 		// wantOut/wantStripped are the OUTCOME, asserted beside the census
 		// class. The census says which decision was FILED; these say what the
 		// caller was actually handed, and the two are independent — the class
@@ -298,7 +283,7 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 		{
 			name:         "AGREED",
 			label:        "A.NAME",
-			v:            values.NewFieldValue(qov("A"), "NAME", values.UnknownType),
+			source:       values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
 			class:        values.QualRecAgreed,
 			wantOut:      "NAME",
 			wantStripped: true,
@@ -309,7 +294,7 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 		{
 			name:         "DIVERGED",
 			label:        "A.NAME",
-			v:            values.NewFieldValue(qov("Z"), "NAME", values.UnknownType),
+			source:       values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("Z")),
 			class:        values.QualRecDiverged,
 			wantOut:      "NAME",
 			wantStripped: true,
@@ -320,7 +305,7 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 		{
 			name:         "MANUFACTURED",
 			label:        "A.NAME",
-			v:            values.NewFlatFieldValue("NAME", values.UnknownType),
+			source:       values.ProjectionAliasSource{},
 			class:        values.QualRecManufactured,
 			wantOut:      "NAME",
 			wantStripped: true,
@@ -333,7 +318,7 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 		{
 			name:         "heuristicDecline",
 			label:        "SUM(A.VAL).X",
-			v:            values.NewFieldValue(qov("A"), "VAL", values.UnknownType),
+			source:       values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
 			class:        values.QualRecHeuristicDecline,
 			wantOut:      "SUM(A.VAL).X",
 			wantStripped: false,
@@ -346,7 +331,7 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 		{
 			name:         "bare",
 			label:        "NAME",
-			v:            values.NewFlatFieldValue("NAME", values.UnknownType),
+			source:       values.ProjectionAliasSource{},
 			class:        values.QualRecBare,
 			wantOut:      "NAME",
 			wantStripped: false,
@@ -355,7 +340,7 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 		{
 			name:         "AGREED_three_segment",
 			label:        "A.N.SK",
-			v:            values.NewFieldValue(qov("A"), "N", values.UnknownType),
+			source:       values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
 			class:        values.QualRecAgreed,
 			wantOut:      "SK",
 			wantStripped: true,
@@ -369,7 +354,7 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 		{
 			name:         "DIVERGED_three_segment",
 			label:        "Z.N.SK",
-			v:            values.NewFieldValue(qov("A"), "N", values.UnknownType),
+			source:       values.NewProjectionAliasSource(values.NamedCorrelationIdentifier("A")),
 			class:        values.QualRecDiverged,
 			wantOut:      "SK",
 			wantStripped: true,
@@ -387,7 +372,7 @@ func TestQualRecWiring_DisplayLabelStripCountsEveryArm(t *testing.T) {
 			var gotOut string
 			var gotStripped bool
 			got := qualRecDelta(t, values.QualRecSiteDisplayLabelStrip, tc.class, func() {
-				gotOut, gotStripped = stripDisplayLabelQualifier(tc.label, tc.v)
+				gotOut, gotStripped = stripDisplayLabelQualifier(tc.label, tc.source)
 			})
 			if got < 1 {
 				t.Fatalf("displayLabelStrip recorded %d %v decision(s) for %q — want at least 1.\n%s",

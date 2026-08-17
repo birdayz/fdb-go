@@ -34,16 +34,9 @@ import (
 func TestGroupByOrderingPushIsNeverDistinctAndNeverExhaustive(t *testing.T) {
 	t.Parallel()
 
-	inputRow := values.NewRecordType("", false, []values.Field{
-		{Name: "REGION", FieldType: values.NullableLong, Ordinal: 0},
-		{Name: "AMOUNT", FieldType: values.NullableLong, Ordinal: 1},
-	})
-	domain := values.OrdinalDomainOfType(inputRow)
-
-	region := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"REGION", 0, values.UnknownType, domain)
-	amount := values.NewFieldValueWithResolvedOrdinalInDomain(
-		"AMOUNT", 1, values.UnknownType, domain)
+	input := requestedOrderingQuantifier("T", "groupby_distinctness_input")
+	region := requestedOrderingField(input, "REGION")
+	amount := requestedOrderingField(input, "AMOUNT")
 
 	// Two grouping keys, a request naming only the first. The leftover key is
 	// what makes Java's :161 gate's right disjunct false, so this is the exact
@@ -80,6 +73,8 @@ func TestGroupByOrderingPushIsNeverDistinctAndNeverExhaustive(t *testing.T) {
 			"is what this test's DISTINCT-with-leftovers shape depends on",
 			len(got.GetParts()), len(groupingKeys))
 	}
+	assertRequestedOrderingField(t, got.GetParts()[0].Value, region)
+	assertRequestedOrderingField(t, got.GetParts()[1].Value, amount)
 
 	if got.IsDistinct() {
 		t.Errorf("the ordering pushed to the group-by's child is DISTINCT.\n\n" +

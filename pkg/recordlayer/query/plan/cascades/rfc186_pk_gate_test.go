@@ -18,6 +18,29 @@ type pkGateTestCtx struct {
 
 func (c *pkGateTestCtx) GetPrimaryKeyColumns(string) []string { return c.pk }
 
+func mustPKGateConstruct[T any](value T, err error) T {
+	if err != nil {
+		panic("construct PK-gate fixture: " + err.Error())
+	}
+	return value
+}
+
+func pkGateRowType() *values.RecordType {
+	return values.NewRecordType("PKGateRow", false, []values.Field{
+		{Name: "TENANT", FieldType: values.NullableLong},
+		{Name: "ORDER", FieldType: values.NullableLong},
+	})
+}
+
+func pkGatePrimaryKey() []values.Value {
+	root := mustPKGateConstruct(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("pk_gate"), pkGateRowType()))
+	return []values.Value{
+		mustPKGateConstruct(values.ResolveFieldOrdinals(root, []int{0})),
+		mustPKGateConstruct(values.ResolveFieldOrdinals(root, []int{1})),
+	}
+}
+
 func pkGateComparison(t *testing.T, comparisonType predicates.ComparisonType, v any) *predicates.ComparisonRange {
 	t.Helper()
 	cmp := predicates.NewLiteralComparison(comparisonType, v)
@@ -36,12 +59,9 @@ func pkGateEq(t *testing.T, v any) *predicates.ComparisonRange {
 // TestPKFullyEqualityBound pins RFC-186 §2B's shared predicate arms.
 func TestPKFullyEqualityBound(t *testing.T) {
 	t.Parallel()
-	pk2 := []values.Value{
-		&values.FieldValue{Field: "TENANT", Typ: values.UnknownType},
-		&values.FieldValue{Field: "ORDER", Typ: values.UnknownType},
-	}
+	pk2 := pkGatePrimaryKey()
 	scan := func(recordTypes []string, pk []values.Value, comps ...*predicates.ComparisonRange) *plans.RecordQueryScanPlan {
-		plan := plans.NewRecordQueryScanPlan(recordTypes, values.UnknownType, false)
+		plan := mustPKGateConstruct(plans.NewRecordQueryScanPlan(recordTypes, pkGateRowType(), false))
 		if pk != nil {
 			plan = plan.WithPrimaryKey(pk)
 		}
@@ -164,12 +184,10 @@ func TestConcreteJoinCost_CompositePKPrefixNotPointProbe(t *testing.T) {
 	t.Parallel()
 	stats := properties.DefaultStatistics{}
 	compositeCtx := &pkGateTestCtx{pk: []string{"TENANT", "ORDER"}}
-	pk2 := []values.Value{
-		&values.FieldValue{Field: "TENANT", Typ: values.UnknownType},
-		&values.FieldValue{Field: "ORDER", Typ: values.UnknownType},
-	}
+	pk2 := pkGatePrimaryKey()
 
-	prefix := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	prefix := mustPKGateConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, pkGateRowType(), false)).
 		WithPrimaryKey(pk2).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong})
@@ -177,7 +195,8 @@ func TestConcreteJoinCost_CompositePKPrefixNotPointProbe(t *testing.T) {
 		t.Fatalf("composite-PK prefix bind priced as point probe (cardinality=1); want selectivity estimate")
 	}
 
-	full := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	full := mustPKGateConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, pkGateRowType(), false)).
 		WithPrimaryKey(pk2).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
@@ -192,7 +211,8 @@ func TestConcreteJoinCost_CompositePKPrefixNotPointProbe(t *testing.T) {
 
 	// Without either a plan stamp or context, equality coverage is unproven
 	// and must fall back to selectivity pricing.
-	unstampedFull := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false).
+	unstampedFull := mustPKGateConstruct(plans.NewRecordQueryScanPlan(
+		[]string{"T"}, pkGateRowType(), false)).
 		WithScanComparisons([]*predicates.ComparisonRange{pkGateEq(t, int64(7)), pkGateEq(t, int64(9))}).
 		WithKeyComponentTypes([]values.Type{values.NullableLong, values.NullableLong})
 	if cost := concretePlanCost(unstampedFull, stats, nil); cost.Cardinality == 1 {
@@ -217,8 +237,9 @@ func TestConcreteJoinCost_DispatchesToHintCost(t *testing.T) {
 
 	t.Run("limit caps cardinality", func(t *testing.T) {
 		t.Parallel()
-		inner := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-		limit := plans.NewRecordQueryLimitPlan(inner, 7, 0)
+		inner := mustPKGateConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"T"}, pkGateRowType(), false))
+		limit := mustPKGateConstruct(plans.NewRecordQueryLimitPlan(inner, 7, 0))
 		got := concretePlanCost(limit, stats, nil)
 		want := limit.HintCost([]properties.Cost{concretePlanCost(inner, stats, nil)}, stats)
 		if got != want {
@@ -234,9 +255,12 @@ func TestConcreteJoinCost_DispatchesToHintCost(t *testing.T) {
 
 	t.Run("union sums children", func(t *testing.T) {
 		t.Parallel()
-		a := plans.NewRecordQueryScanPlan([]string{"T"}, values.UnknownType, false)
-		b := plans.NewRecordQueryScanPlan([]string{"U"}, values.UnknownType, false)
-		union := plans.NewRecordQueryUnorderedUnionPlan([]plans.RecordQueryPlan{a, b})
+		a := mustPKGateConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"T"}, pkGateRowType(), false))
+		b := mustPKGateConstruct(plans.NewRecordQueryScanPlan(
+			[]string{"U"}, pkGateRowType(), false))
+		union := mustPKGateConstruct(plans.NewRecordQueryUnorderedUnionPlan(
+			[]plans.RecordQueryPlan{a, b}))
 		got := concretePlanCost(union, stats, nil)
 		ca := concretePlanCost(a, stats, nil)
 		cb := concretePlanCost(b, stats, nil)

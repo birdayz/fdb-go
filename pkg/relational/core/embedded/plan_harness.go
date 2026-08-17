@@ -122,18 +122,18 @@ func PlanPhysicalDMLForTestWithReachability(
 	return planPhysicalDMLForTest(sql, schemaDDL, stats, reach)
 }
 
-// planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-183 P5
-// one-final check, whose result it RETURNS rather than parking in a package
-// variable.
+// planPhysicalForTest is PlanPhysicalForTest plus the optional RFC-224
+// extraction-path check, whose report it RETURNS rather than parking in a
+// package variable.
 //
 // The flag and the violations used to be package-level globals. They were
-// guarded by a mutex that only serialized planAndVerifyOneFinal against
+// guarded by a mutex that only serialized the invariant helper against
 // ITSELF: the reads live in this function, which ~40 parallel tests call
 // directly without ever taking that lock. So the flag was read concurrently
 // with being written (a genuine data race, -race flags it), and worse, a
 // concurrent caller would enable the check for itself and overwrite the
 // violations the real caller was about to read. The symptom is a SILENT
-// PASS — the one-final test reporting someone else's empty result.
+// PASS — the invariant test reporting someone else's empty result.
 //
 // Threading it through a parameter deletes the shared state instead of
 // locking it. The signature widening is confined to this unexported helper,
@@ -141,7 +141,7 @@ func PlanPhysicalDMLForTestWithReachability(
 //
 // reach is the same treatment applied to RFC-183's reachability tally, which
 // was package state in cascades for the same reason and failed the same way —
-// with the inverse symptom. The one-final globals could report someone else's
+// with the inverse symptom. The verifier globals could report someone else's
 // EMPTY result (a silent pass); the reachability globals reported everyone's
 // SUMMED result (edges=53748 for a true 17916). Both are the same bug: a
 // measurement whose scope is the process rather than the caller. nil = collect
@@ -153,10 +153,10 @@ func PlanPhysicalDMLForTestWithReachability(
 func planPhysicalForTest(
 	sql, schemaDDL string,
 	stats properties.StatisticsProvider,
-	verifyOneFinal bool,
+	verifyExtraction bool,
 	reach *cascades.ReachabilityCollector,
 	popts plannerOptions,
-) (plans.RecordQueryPlan, []string, error) {
+) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
 	tmpl, err := buildSchemaTemplateFromDDL(schemaDDL)
 	if err != nil {
 		return nil, nil, fmt.Errorf("schema DDL: %w", err)
@@ -241,7 +241,7 @@ func planPhysicalForTest(
 	// SELECT plans with the SELECT planning rule set (Batch-A). The DML harness
 	// (planPhysicalDMLForTest) appends DMLImplementationRules; everything from
 	// the planner build onward is identical, so it lives in the shared tail.
-	return planReferenceToPhysical(ref, md, stats, cascades.BatchAExpressionRules(), verifyOneFinal, reach, popts)
+	return planReferenceToPhysical(ref, md, stats, cascades.BatchAExpressionRules(), verifyExtraction, reach, popts)
 }
 
 // planReferenceToPhysical is the shared planning tail of the no-FDB harness
@@ -253,17 +253,17 @@ func planPhysicalForTest(
 // wrappers can be implemented. Everything from planner construction onward is
 // identical, so it is written once here.
 //
-// verifyOneFinal and reach carry RFC-183's per-Planner accounting (see
+// verifyExtraction and reach carry caller-scoped planner accounting (see
 // planPhysicalForTest); both are inert (false / nil) for the corpus dump.
 func planReferenceToPhysical(
 	ref *expressions.Reference,
 	md *recordlayer.RecordMetaData,
 	stats properties.StatisticsProvider,
 	planningRules []cascades.ExpressionRule,
-	verifyOneFinal bool,
+	verifyExtraction bool,
 	reach *cascades.ReachabilityCollector,
 	popts plannerOptions,
-) (plans.RecordQueryPlan, []string, error) {
+) (plans.RecordQueryPlan, *cascades.ExtractionVerificationReport, error) {
 	// The no-FDB harness has no connection, so its callers resolve api.Options
 	// themselves — plannerOptionsFrom(nil), the Java defaults, for every entry
 	// point but PlanQueryForTestWithDisabledRules. It still goes through
@@ -271,11 +271,11 @@ func planReferenceToPhysical(
 	// in how a planner is built.
 	planner := newCascadesPlanner(md, popts, planningRules, stats)
 
-	// RFC-183 P5 precondition: does every reference reachable at extraction
-	// hold at most ONE physical final? That is what Java's getRangesOverPlan
-	// assumes. Off by default -- it walks the whole reference graph.
-	if verifyOneFinal {
-		planner.SetVerifyOneFinal(true)
+	// RFC-224: every Reference the extractor selects must resolve to a
+	// physical member, and property-retained multi-final groups must be
+	// coherent. Off by default because it performs a second selected-path walk.
+	if verifyExtraction {
+		planner.SetVerifyExtractionUnambiguous(true)
 	}
 	// RFC-186: the REWRITING coherence check is enabled PERMANENTLY —
 	// cost-property derivation traverses each child reference's DESIGNATED
@@ -291,9 +291,10 @@ func planReferenceToPhysical(
 	planner.SetReachabilityCollector(reach)
 
 	bestExpr, _, planErr := planner.PlanWithContext(context.Background(), ref)
-	var oneFinalViolations []string
-	if verifyOneFinal {
-		oneFinalViolations = planner.OneFinalViolations()
+	var extractionReport *cascades.ExtractionVerificationReport
+	if verifyExtraction {
+		report := planner.ExtractionVerification()
+		extractionReport = &report
 	}
 	if rv := planner.RewritingCoherenceViolations(); len(rv) > 0 {
 		return nil, nil, fmt.Errorf(
@@ -323,7 +324,7 @@ func planReferenceToPhysical(
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
 		return nil, nil, fmt.Errorf("plan invariant violated: %w", err)
 	}
-	return physPlan, oneFinalViolations, nil
+	return physPlan, extractionReport, nil
 }
 
 // planPhysicalDMLForTest is the no-FDB DML twin of planPhysicalForTest. It
