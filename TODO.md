@@ -18317,7 +18317,10 @@ flight on the campaign above.
 
 ### Two more milestones the review surfaced, both port-faithful
 
-- [ ] **Memoize the structural key / structural hash per plan object.** Java computes
+- [x] **Memoize the structural key / structural hash per plan object.** SHIPPED — see
+      the resolution paragraph at the end of this item before reading the analysis
+      below, which is preserved as the reasoning that led there and contains one
+      superseded claim called out in place. Java computes
       each expression's structural hash ONCE per object —
       `Suppliers.memoize(this::computeHashCodeWithoutChildren)` at
       `cascades/expressions/AbstractRelationalExpression.java:43`, exposed as
@@ -18353,18 +18356,49 @@ flight on the campaign above.
 
       Java does not face this because its plans have no `WithXxx` mutators at all;
       `Suppliers.memoize` sits on an object built once by a constructor. So the design
-      question to settle FIRST is whether Go routes every plan copy through one helper
-      that clears the memo, or drops the copy-builders in favour of constructors. That
-      is a Cascades design change and needs a Graefe ACK before implementation, per the
-      review-cadence rule.
+      question posed here was whether Go routes every plan copy through one helper that
+      clears the memo, or drops the copy-builders in favour of constructors.
 
-      This campaign's answer to that term was to SHRINK the key — `part` 312 -> 96
-      bytes, `structuralKeyInlineParts` 8 -> 4 — a real ~6x win on a cost **Java does
-      not pay at all**. Go's plans are immutable after construction, which is the same
-      precondition `Suppliers.memoize` relies on, so the port-faithful fix is
-      available and is strictly better than shrinking. Do NOT delete
-      `plan_structural_key_size_test.go` when this lands: a memoized key still gets
-      built once per object, so its size still matters, just less.
+      An earlier draft of this item ALSO asserted, a few lines below, that "Go's plans
+      are immutable after construction, which is the same precondition
+      `Suppliers.memoize` relies on". That directly contradicted the prerequisite
+      recorded above and was the older, superseded text — written before the two
+      `RecordQueryAggregateIndexPlan` builders were found writing their receiver. It is
+      removed rather than left to be read as agreement, since a reader arriving at it
+      first would conclude the precondition already held.
+
+      The other half of that paragraph stands and is not superseded: this campaign's
+      answer to the term was to SHRINK the key — `part` 312 -> 96 bytes,
+      `structuralKeyInlineParts` 8 -> 4 — a real ~6x win on a cost **Java does not pay
+      at all**. Do NOT delete `plan_structural_key_size_test.go`: a memoized key still
+      gets built once per object, so its size still matters, just less.
+
+      **RESOLUTION — the answer was NEITHER of the two options above.** No copy helper,
+      no move to constructors. The memo is a `*hashMemoCell` on `PlanExprBase` holding
+      an `atomic.Pointer[hashMemoState]`, where the state pairs a hash with the plan it
+      was computed FOR. An atomic reached through a pointer is never itself copied, so
+      `cp := *p` keeps compiling and `go vet`'s copylocks has nothing to reject; the
+      cell is shared by the copy, and correctness comes from an owner check enforced on
+      BOTH sides — a copy that finds the cell foreign-owned computes its hash and
+      declines to store, because an unconditional store would make the two evict each
+      other on every comparison. The cell starts empty, and laziness is a correctness
+      requirement rather than an optimisation: the `WithQuantifiers` rebuild paths write
+      `drivingAlias` / `outputNameOverrides` / `distinctProofIndexName` — all in the key
+      — onto an already-constructed plan.
+
+      **The immutability precondition is now TRUE AND ENFORCED, which it was not when
+      this item was written.** Three further in-place setters (`SetInValues`,
+      `SetSourceKind`, `SetInSources`) turned up beyond the two aggregate-index ones and
+      were converted to copying builders, and `pkg/docscheck`'s
+      `TestMemoIdentityTypesNeverWriteTheirReceiver` now ratchets it at zero over the 67
+      types whose fields ARE memo identity. So the precondition the older text asserted
+      on faith is the thing that finally holds — by gate, not by assumption. That
+      matters specifically for this memo: an in-place write leaves the pointer
+      identical, so the owner check passes and serves a pre-mutation hash for
+      post-mutation content, which is the one staleness an identity check structurally
+      cannot see.
+
+      Measured 1.184x -> 1.150x on the pure-planner sweep (2.8%). Reviewed and ACK'd.
 
 - [ ] **Make the empty `AliasMap` singleton immutable by TYPE, not by doc.** Java's is
       backed by `ImmutableBiMap` (`AliasMap.java:169`), so a write is a compile/runtime
@@ -18514,11 +18548,45 @@ sweep constructs, never gets a second read. The remaining term is therefore key
 construction for plans that are compared once, and that is not memoizable; it is the
 `part`/`structuralKey` size work this campaign already did.
 
-- [ ] Next lever for the planner sweep, if one is wanted: the copies. A `cp := *p`
-      rebuild shares its original's cell and therefore never memoizes (deliberate — see
-      the write-side owner check). Every `WithXxx` in a rule path produces such a copy,
-      so the memo is dark on exactly the plans a rewrite rule touches most. Giving a
-      copy its own cell needs a hook `cp := *p` does not have; the shape to investigate
-      is whether the base constructor can be re-entered on the rebuild paths that
-      already build a fresh `PlanExprBase` (e.g. `WithInner`), which get a fresh cell
-      today and are the cheap half of this.
+- [x] Next lever for the planner sweep — the copies — INVESTIGATED, PRICED, AND
+      REJECTED. Do not re-derive this; the numbers are below.
+
+      The hypothesis was that a `cp := *p` rebuild shares its original's cell and so
+      never memoizes, leaving the memo dark on exactly the plans a rewrite rule touches
+      most. **The census refutes it by a factor of three.** Instrumenting the cell over
+      `TestStatsInvariant_PurePlannerSweep`:
+
+      ```
+      reads=3071048  HIT=2223470 (72.4%)  MISS_EMPTY=649360 (21.1%)  MISS_FOREIGN=198218 (6.5%)
+                     storeOK=649360        storeDeclined=198218
+      ```
+
+      The residue is dominated by ONCE-HASHED OBJECTS (21.1%), not by dark copies
+      (6.5%). Those are unmemoizable by construction — a hit requires the same object to
+      be hashed twice — so the 2.8% the memo buys is at the CEILING, not below it. Total
+      hash-call cost is roughly `2.8 / 0.724 ~= 3.9%` of planner time (assumes uniform
+      per-call cost and negligible lookup cost, so: an estimate, not a proof). Converting
+      every foreign miss to a hit is therefore worth `0.065 x 3.9% ~= 0.25%`.
+
+      A quarter of one percent, against loosening the field whose write-once discipline
+      is the entire reason no atomic sits on the plan struct, across ~57 copy sites.
+      Rejected by measurement rather than by taste.
+
+      **Corrected invariant wording, since the strict phrasing would misdirect whoever
+      revisits this:** the requirement on `PlanExprBase.hashMemo` is NOT "written only in
+      the constructor" — it is "never written after the object may be SHARED".
+      Publication safety, not immutability. A builder doing
+      `cp := *p; cp.hashMemo = newHashMemoCell(); return &cp` writes to an object no
+      other goroutine can observe yet and would need no atomic. So the hook EXISTS; it is
+      the price that rules it out, not the mechanics. The same correction is recorded at
+      `newHashMemoCell` in `plan_structural_hash_memo.go`, which points back here.
+
+      The census itself is pinned as a test rather than left as a deleted probe:
+      `TestMemoStoreDecisionIsDeterminedByReadClassification` (plans) asserts the read
+      classification is TOTAL and the store decision fully determined by it — the pairing
+      `storeOK == MISS_EMPTY` and `storeDeclined == MISS_FOREIGN` that held to the unit
+      over three million operations — and fixes the hit count, so a memo going DARK is
+      distinguishable from one merely being asked more. Those two regressions have
+      opposite responses, and the counts are the only thing that separates them. Verified
+      by mutation: with the memo read removed from one plan type, all four
+      single-invariant memo tests still pass and only the census pair fails.

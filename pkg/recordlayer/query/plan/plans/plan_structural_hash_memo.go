@@ -92,10 +92,21 @@ func (b *PlanExprBase) storeStructuralHash(owner any, hash uint64) {
 // newHashMemoCell allocates the cell a plan's base carries for its whole life.
 //
 // THE POINTER IS WRITTEN EXACTLY ONCE, HERE, AND NEVER REASSIGNED. That is what lets
-// the field be a plain pointer with no atomic and no noCopy: it is immutable after
-// construction, so no read can race a write to it. A builder that ever re-points it
-// would turn the field itself into shared mutable state and force an atomic back onto
-// the plan struct, which the copy form forbids.
+// the field be a plain pointer with no atomic and no noCopy: no read can race a write
+// to it.
+//
+// State the requirement precisely, because the obvious phrasing is stricter than the
+// truth and would misdirect anyone who later needs to move this. The invariant is NOT
+// "written only in the constructor" — it is "never written after the object may be
+// SHARED". Publication safety, not immutability. A builder doing
+// `cp := *p; cp.hashMemo = newHashMemoCell(); return &cp` writes to an object no other
+// goroutine can observe yet, so it would need no atomic either.
+//
+// That hook is real and it is deliberately not taken: giving every copy its own cell
+// was measured at ~0.25% of planner time, against loosening the one field whose
+// write-once discipline is the entire reason no atomic sits on the plan struct, across
+// ~57 copy sites. The measurement and its derivation are in TODO.md under the
+// structural-hash memo item; do not re-derive it.
 //
 // The cell starts EMPTY. It must never be populated during construction: several plans
 // finish initialising themselves after their constructor returns — the
