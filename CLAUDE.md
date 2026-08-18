@@ -276,6 +276,28 @@ so this one can only move by 0.04". A stale baseline moved ONE row by 0.56x whil
 leaving nine within 0.04, and the nine told you nothing about the one. Re-measure;
 don't extrapolate.
 
+**A RATIO IS A FACT ABOUT TWO TREES, SO WRITE BOTH SHAS — "vs master" EXPIRES.**
+This is not the stale-baseline rule above, and obeying that one does not save you.
+A measurement taken correctly, at the true merge-base, with its baseline SHA
+written down, still rots: master MOVES, and the sentence around the number keeps
+saying "vs master" while the comparison it describes silently becomes one nobody
+made. It happened here to a booked **1.150x planner-sweep regression** that the
+whole campaign was organised around. The baseline had merged in the meantime —
+one row of that very table named a commit that was by then master's second parent
+— so the 1.184x being clawed back was master's own code. Re-measured against the
+current merge-base the branch was **0.958x: faster, never slower.**
+
+The failure is worse than a wrong number because it is self-reinforcing: work gets
+scheduled to close a gap that does not exist, and every result confirms the gap,
+because the stale baseline is still there to confirm it.
+
+So: name both SHAs, state what each WAS at the time ("`7d0435536`, the merge-base
+on 2026-08-11"), and re-measure the baseline — not just the branch — whenever the
+number is about to be quoted in a decision. And when the two baselines disagree,
+measure the OLD one too: the difference between them is a real quantity about
+master, and here it was master getting 1.178x slower, which is a finding in its
+own right rather than an error term.
+
 Compare row counts + durations. Record results in `TODO.md` "Stress test 1M baseline" table. Key thresholds: point lookups <5ms, full scans ~3s/1M, index equality <10ms.
 
 ## Java compatibility — non-negotiable
