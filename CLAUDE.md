@@ -276,6 +276,23 @@ so this one can only move by 0.04". A stale baseline moved ONE row by 0.56x whil
 leaving nine within 0.04, and the nine told you nothing about the one. Re-measure;
 don't extrapolate.
 
+**A CENSUS LOCATES WORK; ONLY A PROFILE PRICES IT.** These are different
+questions and a census answers only the first, yet a call-site count reads as a
+cost estimate — it is a number, it is large, and it sits next to the thing you
+are about to change. An RFC here was motivated by 33 `Equals`-shaped call sites
+and, after converting every one of them, moved total allocation by **0.3%**. The
+profile that motivated the RFC could have priced it directly:
+`go tool pprof -peek 'thaw$'` is one command and would have shown, before any
+code was written, that the hot callers were a different set entirely. The
+wall-clock win that did arrive came from a site the census never highlighted —
+one function rebuilding a whole Type graph, recursively, to read a slice length.
+
+This is not the "scope every count" rule wearing a new hat. That rule is about
+counting the right POPULATION; this one is about the count answering a question
+it was never asked. A perfectly scoped census still prices nothing. When the
+change is motivated by cost, the artifact in the RFC must be the cost
+measurement, and the census belongs beside it as the work-list.
+
 **A RATIO IS A FACT ABOUT TWO TREES, SO WRITE BOTH SHAS — "vs master" EXPIRES.**
 This is not the stale-baseline rule above, and obeying that one does not save you.
 A measurement taken correctly, at the true merge-base, with its baseline SHA

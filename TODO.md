@@ -18628,7 +18628,13 @@ construction for plans that are compared once, and that is not memoizable; it is
       plan types, because the wiring was hand-applied at 42 sites and an unrouted type
       returns a CORRECT hash — a pure performance regression a green suite cannot see.
 
-- [ ] **Stop thawing a whole Type graph to answer a boolean.** MEASURED, not
+- [x] **Stop thawing a whole Type graph to answer a boolean.** DONE via RFC-233,
+      but read the closing note appended at the END of this file first: this
+      item's framing — that the waste is in the comparisons — was REFUTED by the
+      after-profile. The comparisons were converted and bought 0.3% of allocation
+      volume; the wall-clock win came from the two internal derivations. The
+      original measurement below stands; the diagnosis of WHERE it sat did not.
+      MEASURED, not
       suspected: `exactType.thaw` is the SINGLE LARGEST allocator in the planner at
       **8.87 GB of 112.01 GB (7.92%)** over `TestStatsInvariant_PurePlannerSweep`
       (`go test -memprofile`, 171s run, branch `perf/plan-structural-hash-memo`
@@ -18737,3 +18743,44 @@ measurement obeyed it. What decays is a RATIO's MEANING: a ratio is a fact about
 two trees, and naming one of them "master" makes it a fact about a moving
 reference. Write the ratio against a SHA and say what that SHA was at the time,
 or the number silently starts describing a comparison nobody made.
+
+### RFC-233 closed: what it bought, and what its premise got wrong
+
+Both gates ACK'd (Graefe on the implementation after two NAK laps; Torvalds on the
+implementation after one). Codex is externally blocked until 2026-08-20 05:30 by a
+usage limit — verified by probe, not assumed.
+
+**What landed.** Non-test `.FlowedType()` occurrences under `pkg/` went 191 -> 102
+(141 lines -> 83); `Equals`-shaped 33 -> 0; existence checks 13 -> 0;
+`QuantifiedRowShapesAgree` call sites 16 -> 1. `thaw` went 8.87 GB -> 7.23 GB and
+205M -> 175.7M objects. Wall clock **0.958x vs merge-base `d31bf28e0`** — the
+branch is 4.2% FASTER than the master it forks from, taken as three adjacent
+base/head pairs.
+
+**What the premise got wrong, since it is the more useful half.** RFC-233 §2 said
+"the waste is concentrated in comparisons" and built the case on a census of 33
+`Equals`-shaped lines. Converting all of them moved total allocation by 0.3%. A
+census counts SITES; it says nothing about the allocation attributable to them.
+`go tool pprof -peek 'thaw$'` answers the second question directly, takes one
+command, and would have shown before any code was written that thaw's callers are
+`Type()` and two internal derivations. Most of the wall-clock win came from
+`LayoutWithSeedLegs`, which was thawing a whole graph recursively to read
+`len(record.Fields)`.
+
+The generalisable form, and it is not the same as the existing "scope every
+count" rule: **a census locates work; only a profile prices it.** Never let a
+census stand in for the pricing when the profile that motivated the RFC can
+answer it directly.
+
+**Two defects fell out of the work, both fixed and pinned rather than filed.**
+`QuantifiedRowShapesAgree` was PARTIAL — it normalised via `WithNullability`,
+which refuses to flip RELATION, NONE and ANY, and so panicked on three type
+classes, asymmetrically (only when the left operand happened to be nullable). And
+a CTE reference's column-alias list renamed IN PLACE on a slice `legColumns` hands
+back shared from `cteColumnsScope`, so one reference rewrote the definition's
+schema for every later reader.
+
+**Follow-on is RFC-234** (`rfcs/234-a-type-is-immutable-so-stop-rebuilding-it.md`),
+which takes the target the profile actually names: `Type()`/`FlowedType()`'s
+defensive rebuild, 72.1% of thaw at ~127M objects per sweep. It needs its own
+Graefe+Torvalds lap before implementation.
