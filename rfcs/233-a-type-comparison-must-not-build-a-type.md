@@ -1,10 +1,10 @@
 # RFC-233: A type comparison must not build a type
 
-**Status:** PROPOSED — measured, designed, not yet implemented.
-**Base:** `ed4045adb` (branch `perf/plan-structural-hash-memo`, PR #754)
+**Status:** PROPOSED (v2). v1 was NAK'd on a false premise; see §7.
+**Base:** `34e6f0dc1` (branch `perf/plan-structural-hash-memo`, PR #754)
 **Relates to:** RFC-232 (exact `FieldValue`/QOV resolution), RFC-197
 **Wire impact:** none. No key, record, index, continuation, or protobuf plan
-encoding changes. This is a read-side planner change only.
+encoding changes. Read-side planner only.
 
 ## 1. Decision and scope
 
@@ -13,34 +13,32 @@ an ordinary `Type` graph.
 
 After this change:
 
-- type EQUALITY between two exact-carrying values is answered by interned handle
-  identity, not by thawing both sides and walking them;
-- an existence check on a flowed type is answered from the handle, not by
-  thawing and comparing to `nil`;
-- `Type()` and `FlowedType()` keep returning a FRESH graph, unchanged. That
-  contract is deliberately pinned and this RFC does not touch it.
+- type EQUALITY between exact-carrying values is answered by `exactTypesEqual`;
+- row-SHAPE agreement is answered by `exactRowShapesAgree`;
+- an existence check is answered from handle nil-ness;
+- a value carrying no handle falls back to `SharedFlowedType` rather than
+  `FlowedType()`, so a miss costs a cache read instead of a graph rebuild;
+- `Type()` and `FlowedType()` keep returning a FRESH graph, unchanged.
 
-Explicitly out of scope: memoizing `thaw` itself. See §4.
+Three of those four primitives already exist. This RFC is mostly ROUTING.
 
-## 2. Why — the measurement, not a suspicion
+## 2. Why — the measurement
 
-RFC-232 left the planner slower than master. The gap resisted CPU profiling
-because it is not a hot spot: on `TestStatsInvariant_PurePlannerSweep` no
-application node exceeds ~2.3% flat.
-
-The profile shape explains why. **The planner is allocation-bound**, measured on
-a 171s run of that sweep at `ed4045adb`:
+The RFC-232 gap resisted CPU profiling for a structural reason rather than an
+elusive one: **the planner is allocation-bound.** Measured over a 171s run of
+`TestStatsInvariant_PurePlannerSweep`:
 
 | runtime node | cumulative |
 |---|---|
 | `runtime.gcDrain` | **42.72%** |
 | `runtime.scanSpan` | 31.61% |
-| `runtime.scanObjectsSmall` | 23.28% |
 | `runtime.mallocgc` | 16.78% |
 
-Against a profile shaped like that, cutting allocation is the only lever that
-moves anything. So the question is what allocates. Over the same sweep, 112.01 GB
-total:
+No application node exceeds ~2.3% flat. A diffuse CPU profile is the EXPECTED
+output for a workload shaped like this, which reframes the earlier "nothing above
+2%" result from a dead end into a diagnosis.
+
+Over the same sweep, 112.01 GB total:
 
 | site | alloc | share |
 |---|---|---|
@@ -48,104 +46,157 @@ total:
 | `GetCorrelatedToOfValue.func1` | 8.17 GB | 7.29% |
 | `newStructuralKey` | 8.10 GB | 7.23% |
 
-`thaw` is the single largest allocator in the planner, and what it allocates is
-pure waste: it rebuilds an ordinary `Type` graph from an INTERNED, IMMUTABLE
-exact handle, producing an identical graph every call.
+`thaw` is the single largest allocator in the planner, and the waste concentrates
+in comparisons: `a.FlowedType().Equals(b.FlowedType())` allocates two complete
+graphs to produce one bool.
 
-Its callers are the hot ones — `QOV.FlowedType` (28.5% of thaw),
-`exactType.Type` (28.0%), `physicalFlowedRecordType` (14.5%),
-`LayoutWithSeedLegs` (12.1%), `fieldValue.Type` (9.8%).
+The census below is stated in OCCURRENCES with the command that produced it,
+because the first draft of this table reported `grep -c` output as call-site
+counts. `grep -c` counts LINES, and 41 of these lines carry two calls — which is
+exactly what the pattern above looks like. Population: non-test sources under
+`pkg/`.
 
-**The waste concentrates in comparisons.** Of 141 non-test `.FlowedType()` call
-sites:
-
-| shape | sites | available win |
+| shape | measured | command |
 |---|---|---|
-| `.FlowedType().Equals(…)` / `Equals(….FlowedType())` | 53 | full, exactly equivalent |
-| `.FlowedType() == nil` / `!= nil` | 13 | full, no thaw needed |
-| `QuantifiedRowShapesAgree(…)` | 20 | positive short-circuit only (§3.2) |
+| `.FlowedType()` total | **141 lines / 191 occurrences** | `grep -ro '\.FlowedType()'` |
+| `Equals`-shaped | 33 lines | `grep -rn '\.FlowedType()\.Equals(\|Equals([a-zA-Z_]*\.FlowedType())'` |
+| existence checks | 13 | `grep -ro '\.FlowedType() [=!]= nil'` |
 
-`a.FlowedType().Equals(b.FlowedType())` allocates TWO complete graphs to produce
-one bool.
+`QuantifiedRowShapesAgree` is counted SEPARATELY and is NOT a subset of the rows
+above: 16 real call sites (20 raw identifier hits, less 3 prose comments and the
+definition), of which only 10 also carry a `.FlowedType()` call. Presenting it
+inside the same partition was a second error in the same table.
 
 ## 3. Design
 
-### 3.1 Handle identity IS type identity
+### 3.1 `exactTypesEqual`, NOT pointer identity
 
-The exact table interns: every path building an exact node routes through it, so
-two structurally equal types are the SAME object. That is not an aspiration —
-`TestEveryExactNodeIsInterned` pins it, and `ExactTypeForValue`'s doc already
-states the long way round returns the same OBJECT, which is what licenses that
-shortcut today.
+Handle identity is **strictly stricter** than `Type.Equals`, so substituting it
+would be wrong in the plan-changing direction. `RecordType.Equals` compares
+`Nullable` and `Fields` and deliberately ignores `RecordName` (matching Java);
+`EnumType.Equals` ignores `EnumName` for the same reason. The intern probe does
+the opposite — `exactProbe.matches` rejects on `existing.name != p.name` — and
+`exact_type_intern.go`'s own header states the asymmetry as intentional:
 
-So for two values carrying handles, `ea == eb` is exactly equivalent to
-`a.FlowedType().Equals(b.FlowedType())`, in BOTH directions, at O(1) and zero
-allocation.
+> IDENTITY HERE IS FINER THAN CANONICAL IDENTITY, deliberately. … Two types that
+> are `exactTypesEqual` may still be two objects; **nothing depends on the
+> converse.**
 
-### 3.2 `QuantifiedRowShapesAgree` gets only a positive short-circuit
+Two records differing only in `RecordName` therefore give `Equals=true` with
+`handleIdentity=false`. That is a FALSE NEGATIVE: the planner would conclude the
+types differ where they are equal.
 
-That predicate is nullability-TOLERANT: when nullability differs it does not
-reduce to `Equals`. Handles differ by nullability, so handle identity implies
-agreement but handle inequality implies nothing. This RFC therefore uses it only
-as a fast TRUE and falls through otherwise. Stating this explicitly because the
-symmetric-looking case is where a "same thing, cheaper" change would silently
-alter planner decisions.
+`exactTypesEqual` is the correct primitive and already exists: pointer fast path,
+then hash, then `bytes.Equal` on canonical bytes — and the canonical encoding
+excludes the name **precisely because `Equals` does**. It is Equals-equivalent by
+CONSTRUCTION rather than by an interning premise, while keeping the O(1) win for
+the dominant same-pointer case.
 
-### 3.3 The pattern already exists in-tree
+### 3.2 No carve-out for shape agreement
 
-This extends a mechanism rather than inventing one. `OrdinalDomainOfQuantified`
-already takes the handle via `exactTypeOfValue`, answers from it, memoizes the
-answer on the node (`exactType.ordinalDomain`), and goes the long way only for a
-foreign QOV view that carries no handle. `thawShared()` exists for the internal
-non-allocating case. The new helpers follow that shape exactly, including the
-fallback.
+v1 proposed treating `QuantifiedRowShapesAgree` as fast-TRUE-only because it is
+nullability-tolerant. That reasoning was sound but unnecessary:
+`exactRowShapesAgree` already exists as its exact-handle twin, built on
+`exactTypesEqual` and already nullability-tolerant. It is symmetric. Use it.
 
-## 4. Rejected: memoizing `thaw`
+### 3.3 The design does not depend on interning completeness
 
-The obvious move — cache the thawed graph on the interned handle, since the
-handle is immutable — is WRONG, and it is worth recording why so nobody
-re-derives it.
+A consequence worth stating, because it retires a gate v1 leaned on.
+`exactTypesEqual` compares canonical bytes, so it is correct even for a node that
+never entered the table. That matters concretely: `sharedPrimitiveExactType`'s
+fallback for an unadmitted code builds `&exactType{…}` directly, bypassing
+`internedExactType`, and only calls `finishCanonical()`. Under pointer identity
+that node would compare unequal to everything forever; under `exactTypesEqual` it
+compares correctly.
 
-`Type()`'s freshness is a pinned contract.
-`rfc232_qov_exact_identity_test.go` mutates a `Type()` result:
+So `TestEveryExactNodeIsInterned` is NOT a correctness gate for this change —
+which is good, because it drives only primitive, record and relation shapes, and
+never enum, array or `anyRecord`. It remains a valuable SHARING pin; it is simply
+not load-bearing here.
 
-```go
-first.RecordName = "THAW-MUTATED"
-first.Fields[0].Name = "THAW-FIELD-MUTATED"
-second := qov.Type().(*values.RecordType)   // must still read "R" / "ID"
-```
+### 3.4 Make the fallback cheap, and the win reaches every read site
 
-and requires a later `Type()` to be unaffected. A cache breaks that
-deliberately. Partial schemes fail too: sharing the top node fails the
-`RecordName` assertion, and sharing the `Fields` slice fails the field-name
-assertion. Sharing child primitives would hand out globals that a caller could
-corrupt.
+For a value carrying no handle, route to `SharedFlowedType` / `SharedExactType`
+rather than `FlowedType()`. Those read `thawCache` on the interned node, so a
+miss costs a cache read instead of a rebuild. This extends the benefit past the comparison sites to every site that only READS
+the type — all 191 occurrences, not just the 33 Equals-shaped lines.
 
-The correct response is to stop CALLING thaw on the comparison paths, not to
-make thaw cheaper. That also leaves the mutation contract — and the test — fully
-intact, which is the conservative direction.
+## 4. `Type()`'s fresh-graph promise stays
 
-## 5. Expected effect, and how it will be judged
+Narrowly stated, because v1 got this factually wrong: **thaw is already
+memoized.** `thawCache` + `thawShared` cache the thawed graph on the interned
+handle, and it ships publicly as `SharedFlowedType`/`SharedExactType`. What
+cannot be memoized is the PUBLIC promise that `Type()`/`FlowedType()` hand back a
+graph the caller may mutate — pinned by `rfc232_qov_exact_identity_test.go`,
+which mutates a `Type()` result and requires a later one to be unaffected.
 
-Removing the comparison and existence thaws should eliminate a large fraction of
-that 8.87 GB. It is deliberately NOT predicted as a wall-clock number here:
-allocation volume and time are different currencies, and this codebase has
-already been burned once by assuming otherwise — 8.9 GB attributed to
-`newStructuralKey` bought only 2.8% when memoized.
+Changing that contract is REJECTED. It would mean loosening a defensive
+immutability guarantee across ~141 call sites to buy what `SharedFlowedType`
+already provides at zero aliasing risk.
 
-The claim to be tested is the ratio on `TestStatsInvariant_PurePlannerSweep`,
-n>=2 per side, sequential, against the true merge-base, per the stress-comparison
-recipe. Current position: **1.150x** vs master (down from 1.184x pre-memo);
-end-to-end 1M is 1.020x.
 
-## 6. Risk
+### 4.1 Why not just route comparisons through `thawShared()`?
 
-The equality substitution is exact, so the risk is not in the arithmetic — it is
-in whether every compared value actually carries a handle. A value that does not
-falls back to the existing path, so a miss costs performance and never
-correctness.
+The obvious cheaper-looking alternative, and it must be answered here or the next
+engineer will "simplify" this change into the weaker one.
 
-The pin required: a test asserting the fast path and the slow path AGREE on the
-same inputs, driven over both carrying-handle and foreign-view cases, so a future
-divergence between interning and `Equals` is caught here rather than as a wrong
-plan.
+`thawShared()` gets you amortized-zero ALLOCATION — its doc cites ~4M saved
+allocations on a 20k-row scan — but the comparison it feeds is still
+`Type.Equals`, an O(n) walk over the thawed graph. `exactTypesEqual` is O(1) in
+the dominant same-pointer case and, failing that, a hash compare plus one
+`bytes.Equal` over a canonical encoding. So routing through `thawShared` fixes
+the allocation and leaves the walk; comparing handles fixes both.
+
+That is also why §3.4 routes only the READ-ONLY fallback through
+`SharedFlowedType`: for a value that carries no handle there is nothing to
+compare by handle, so amortizing the rebuild is the whole available win.
+## 5. Expected effect
+
+Deliberately no predicted wall-clock number: allocation volume and time are
+different currencies, and this campaign was already burned once assuming
+otherwise — 8.9 GB attributed to `newStructuralKey` bought 2.8% when memoized.
+
+The claim to test is the ratio on `TestStatsInvariant_PurePlannerSweep`, n>=2 per
+side, sequential, against the true merge-base. Current position: **1.150x** vs
+master (from 1.184x pre-memo); end-to-end 1M is 1.020x.
+
+## 6. Risk and the required pin
+
+The risk is entirely in the arithmetic, not the fallback — v1 asserted the
+opposite and that inversion is what let the false premise through. Both existing
+name tests (`TestRecordTypeEqualsIgnoresRecordName`,
+`TestExactInterningKeepsRecordNamesApart`) stay GREEN under the wrong
+substitution, because neither observes a comparison SITE.
+
+So the required pin is a differential one: over inputs that include records
+differing ONLY in `RecordName`, enums differing only in `EnumName`, and values
+carrying no handle, the fast path and the existing slow path must return the SAME
+answer. That test fails against v1's design and passes against v2's, which is the
+property that makes it worth having.
+
+## 7. What v1 got wrong
+
+Recorded rather than silently revised, because the error is instructive.
+
+v1 claimed handle identity was exactly `Type.Equals` "in BOTH directions", citing
+interning. The converse direction is false by deliberate design, stated in the
+interning file's own header — the doc was there and the RFC contradicted it. v1
+also asserted thaw was un-memoized when `thawCache` has shipped all along, and
+its risk section claimed the arithmetic was safe and the fallback was the risk,
+which is backwards.
+
+The common shape: every one of those was a claim about the code written from
+intent rather than from reading it. That is the same failure CLAUDE.md's
+scope-sentence rule names for gates, appearing here in a design document.
+
+v1 also built its motivation table out of `grep -c` output and reported it as
+call-site counts. `grep -c` counts LINES: the population is 141 lines but 191
+occurrences, because 41 lines carry two calls — which is precisely the
+`a.FlowedType().Equals(b.FlowedType())` shape the RFC is about. The
+`QuantifiedRowShapesAgree` row was worse: a raw identifier count including three
+prose comments and the definition, presented as a subset of a population only 10
+of its lines belong to. Every error ran the same direction, overstating the win.
+
+That one is not merely instructive, it is embarrassing in a useful way: the
+`grep -c` counts LINES rule was committed to CLAUDE.md in the same push as the
+table that violated it.
