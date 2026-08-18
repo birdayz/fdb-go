@@ -279,8 +279,11 @@ func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 		return false
 	}
 	qov, ok := values.AsQuantifiedObjectValue(p.projections[0])
+	if !ok {
+		return false
+	}
 	row := values.FlowedExactType(qov)
-	return ok && row != nil && row.Code() == values.TypeCodeRecord &&
+	return row != nil && row.Code() == values.TypeCodeRecord &&
 		qov.Correlation() == p.innerQ.GetAlias()
 }
 

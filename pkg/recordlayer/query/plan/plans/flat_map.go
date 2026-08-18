@@ -218,7 +218,10 @@ func flatMapBaseWithRetainedSources(
 	if rc, isRC := resultValue.(*values.RecordConstructorValue); isRC && rc != nil {
 		for _, field := range rc.Fields {
 			source, isSource := values.AsQuantifiedObjectValue(field.Value)
-			if row := values.FlowedExactType(source); !isSource || row == nil || row.Code() != values.TypeCodeRecord {
+			if !isSource {
+				continue
+			}
+			if row := values.FlowedExactType(source); row == nil || row.Code() != values.TypeCodeRecord {
 				continue
 			}
 			for _, leg := range legs {
