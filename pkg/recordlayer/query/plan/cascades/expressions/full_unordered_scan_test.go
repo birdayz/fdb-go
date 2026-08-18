@@ -8,7 +8,13 @@ import (
 
 func TestFullUnorderedScanStoresExactTypeAndCanonicalNames(t *testing.T) {
 	t.Parallel()
-	row := rowOfTypes("ID", values.NotNullLong, "V", values.NullableString)
+	// Built inline rather than via rowOfTypes: this test MUTATES it below, and a
+	// graph from a helper carries the helper's provenance. See the same note in
+	// quantifier_test.go.
+	row := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "V", Ordinal: 1, FieldType: values.NullableString},
+	}}
 	scan := mustExpression(NewFullUnorderedScanExpression([]string{"Order", "Customer", "Order"}, row))
 	if got := scan.GetRecordTypes(); len(got) != 2 || got[0] != "Customer" || got[1] != "Order" {
 		t.Fatalf("record types = %v, want sorted and deduplicated names", got)

@@ -156,7 +156,8 @@ func TestRFC232QOVTypePreservesSuppliedNullability(t *testing.T) {
 func TestRFC232QOVSnapshotsAndSharesItsThawedType(t *testing.T) {
 	t.Parallel()
 
-	fieldType := values.NewPrimitiveType(values.TypeCodeLong, false)
+	// Built as a literal, not via the constructor: this test MUTATES it below.
+	fieldType := &values.PrimitiveType{TypeCode: values.TypeCodeLong}
 	supplied := &values.RecordType{
 		RecordName: "R",
 		Nullable:   false,

@@ -93,7 +93,16 @@ func TestNamedQuantifiersPreserveAliasAndKind(t *testing.T) {
 
 func TestRequireFlowedObjectValueReturnsExactView(t *testing.T) {
 	t.Parallel()
-	row := rowOfTypes("A", values.NotNullLong, "B", values.NullableString)
+	// Built inline rather than via rowOfTypes because this test MUTATES it below
+	// to prove snapshot isolation, and a graph from a helper carries the helper's
+	// provenance rather than this function's. rowOfTypes does allocate, but that
+	// is a fact about another function's body — the typeimmutable gate cannot see
+	// through a call and should not, since the invariant it protects is exactly
+	// "the writer built it".
+	row := &values.RecordType{Fields: []values.Field{
+		{Name: "A", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "B", Ordinal: 1, FieldType: values.NullableString},
+	}}
 	alias := values.NamedCorrelationIdentifier("Q")
 	q := NamedForEachQuantifier(alias, InitialOf(&typedStubExpr{name: "source", typ: row}))
 

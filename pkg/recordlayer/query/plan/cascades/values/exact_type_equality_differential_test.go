@@ -50,10 +50,18 @@ func differentialCorpus() []differentialCorpusEntry {
 		return &PrimitiveType{TypeCode: code, Nullable: nullable}
 	}
 	rec := func(name string, nullable bool, fields ...Field) Type {
-		for i := range fields {
-			fields[i].Ordinal = i
+		// Copy the variadic slice before numbering it. Go allocates a fresh slice
+		// for a spread of individual arguments, so today every caller here is
+		// safe — but `rec(n, false, existing...)` passes the caller's slice
+		// straight through, and the ordinals would be written into it. A one-line
+		// copy removes the hazard instead of resting on how the callers happen to
+		// spell themselves.
+		owned := make([]Field, len(fields))
+		copy(owned, fields)
+		for i := range owned {
+			owned[i].Ordinal = i
 		}
-		return &RecordType{RecordName: name, Nullable: nullable, Fields: fields}
+		return &RecordType{RecordName: name, Nullable: nullable, Fields: owned}
 	}
 	field := func(name string, typ Type) Field { return Field{Name: name, FieldType: typ} }
 
