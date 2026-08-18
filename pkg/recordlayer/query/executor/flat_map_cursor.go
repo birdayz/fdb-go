@@ -531,7 +531,7 @@ func exactPlanObjectBinding(
 			!values.FlowedTypeEquals(object, row.Type.Fields[0].FieldType) {
 			return nil, false, layoutBindingError(values.LayoutTypeMismatch, "scalar plan object disagrees with its positional transport")
 		}
-		if row.Slots[0] == nil && !object.FlowedType().IsNullable() {
+		if row.Slots[0] == nil && !values.FlowedExactType(object).IsNullable() {
 			return nil, false, layoutBindingError(values.LayoutNullabilityMismatch, "non-nullable scalar plan object is SQL NULL")
 		}
 		return row.Slots[0], false, nil

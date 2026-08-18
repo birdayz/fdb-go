@@ -282,8 +282,10 @@ func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 	if !ok {
 		return false
 	}
-	row := values.FlowedExactType(qov)
-	return row != nil && row.Code() == values.TypeCodeRecord &&
+	// FlowedExactType is never nil for a value AsQuantifiedObjectValue
+	// accepted — it refuses one that cannot state a row. Pinned by
+	// TestAcceptedQuantifiersAlwaysStateARow.
+	return values.FlowedExactType(qov).Code() == values.TypeCodeRecord &&
 		qov.Correlation() == p.innerQ.GetAlias()
 }
 

@@ -221,7 +221,8 @@ func flatMapBaseWithRetainedSources(
 			if !isSource {
 				continue
 			}
-			if row := values.FlowedExactType(source); row == nil || row.Code() != values.TypeCodeRecord {
+			// Never nil once isSource holds; see TestAcceptedQuantifiersAlwaysStateARow.
+			if values.FlowedExactType(source).Code() != values.TypeCodeRecord {
 				continue
 			}
 			for _, leg := range legs {

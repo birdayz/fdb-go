@@ -313,9 +313,7 @@ func (t *cascadesTranslator) exactProjectionWithOutputSchema(
 				if i < len(aliases) {
 					alias = aliases[i]
 				}
-				qov, isQOV := values.AsQuantifiedObjectValue(projected[i])
-				if alias != "" || !isQOV || values.FlowedExactType(qov) == nil ||
-					qov.FlowedType().Code() == values.TypeCodeRecord ||
+				if alias != "" || !values.QuantifierFlowsAScalarRow(projected[i]) ||
 					derived.Fields[i].Name == outputNames[i] {
 					continue
 				}
@@ -971,9 +969,22 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		// against this layout.
 		cols := t.derivedOutputColumns(o.Body)
 		if len(o.ColumnAliases) == len(cols) {
-			for i := range cols {
-				cols[i].Name = strings.ToUpper(o.ColumnAliases[i])
+			// Copy before renaming. legColumns hands back SHARED slices on two
+			// arms — a pre-translated CTE's schema comes straight out of
+			// cteColumnsScope, and a nested CTE body returns whatever its own
+			// derivation returned — so renaming in place rewrites the schema the
+			// translator will hand to the NEXT reader of that CTE. The rename is
+			// this reference's alias list, not the definition's.
+			//
+			// ordinal_seed.go's legColumns caller already defends against the same
+			// aliasing ("Copy-on-wrap: legColumns may hand back shared slices");
+			// this is the arm that did not.
+			renamed := make([]values.Field, len(cols))
+			copy(renamed, cols)
+			for i := range renamed {
+				renamed[i].Name = strings.ToUpper(o.ColumnAliases[i])
 			}
+			return renamed
 		}
 		return cols
 	}
@@ -6416,7 +6427,7 @@ func (t *cascadesTranslator) exactGatheredCTEGroupKeyValue(
 		return nil, false, nil
 	}
 	seedQOV, ok := values.AsQuantifiedObjectValue(bake.seedQOV)
-	if !ok || values.FlowedExactType(seedQOV) == nil {
+	if !ok {
 		return nil, false, nil
 	}
 	seedRow, ok := seedQOV.FlowedType().(*values.RecordType)

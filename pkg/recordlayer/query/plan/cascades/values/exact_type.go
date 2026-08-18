@@ -775,9 +775,19 @@ func QuantifiedRowShapesAgree(left, right Type) bool {
 // against the old expression, including its panics.
 //
 // The default arm answers false for a Type implementation from outside this
-// package. That is not a fallback, it is the same answer: the interface contract
-// requires every implementation to compare Code AND Nullable at minimum, the two
-// bits differ here, so the old expression could only have returned false too.
+// package, and that IS a behaviour change rather than the same answer. The
+// reason first written here — "the contract requires comparing Nullable, the
+// bits differ, so the old expression returned false too" — is wrong: the bits
+// differ between left and the ORIGINAL right, while Equals sees the NORMALISED
+// right, whose bit already equals left's. A contract-abiding foreign left with a
+// matching payload therefore answered true before and answers false now.
+//
+// It is unreachable: the six Equals implementations under pkg/ are all in
+// type.go, the interface is satisfied nowhere else, and adding a seventh is what
+// would arm this. It is taken deliberately rather than papered over, because the
+// alternative — dispatching an unknown left back through Equals with a rebuilt
+// operand — restores in full the two defects this function exists to remove, and
+// restores them for the one input class that does not exist.
 func typeShapesAgreeBelowTheTop(left, right Type) bool {
 	switch l := left.(type) {
 	case anyRecordType:

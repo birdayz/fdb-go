@@ -763,3 +763,268 @@ func TestQuantifiedRowShapesAgreeIsSymmetric(t *testing.T) {
 		t.Fatalf("degenerate sweep: %d agreeing, %d disagreeing", agreeing, disagreeing)
 	}
 }
+
+// TestAcceptedQuantifiersAlwaysStateARow pins the invariant three call sites now
+// rely on to drop a nil check: a value AsQuantifiedObjectValue ACCEPTS always has
+// a flowed handle, so FlowedExactType on it is never nil.
+//
+// It spans two functions and nothing else observes it. Without this, dropping
+// `flowed == nil` from AsQuantifiedObjectValue's refusal — which reads like a
+// redundant guard, since the constructor already requires a handle — turns
+// `FlowedExactType(qov).Code()` at those sites into a nil-interface panic.
+func TestAcceptedQuantifiersAlwaysStateARow(t *testing.T) {
+	t.Parallel()
+
+	corpus := differentialCorpus()
+	accepted := 0
+	for i, entry := range corpus {
+		qov, err := NewQuantifiedObjectValue(
+			NamedCorrelationIdentifier("q"+uitoa(uint64(i))), entry.typ)
+		if err != nil {
+			continue
+		}
+		if _, ok := AsQuantifiedObjectValue(qov); !ok {
+			t.Fatalf("%s: a constructed QOV was refused by AsQuantifiedObjectValue", entry.label)
+		}
+		accepted++
+		if FlowedExactType(qov) == nil {
+			t.Errorf("%s: AsQuantifiedObjectValue accepted it but FlowedExactType is nil — "+
+				"the call sites that dropped their nil check now panic", entry.label)
+		}
+	}
+	if accepted == 0 {
+		t.Fatal("no corpus entry produced an accepted QOV, so this pinned nothing")
+	}
+
+	// The refusal side, because the invariant is a BICONDITIONAL in use: the
+	// sites drop the nil check only because a handle-less value never gets past
+	// AsQuantifiedObjectValue in the first place.
+	handleless := &quantifiedObjectValue{correlation: NamedCorrelationIdentifier("q")}
+	if _, ok := AsQuantifiedObjectValue(handleless); ok {
+		t.Error("AsQuantifiedObjectValue accepted a value with no flowed handle; every " +
+			"site that dropped its nil check is now a panic waiting for that value")
+	}
+	if FlowedExactType(handleless) != nil {
+		t.Error("FlowedExactType must answer nil for a value with no flowed handle")
+	}
+}
+
+// TestHandleAccessorsMatchTheThawedGraph pins the equality that licenses roughly
+// nine substitutions of `handle.Type().Code()` by `handle.Code()` and
+// `.Type().IsNullable()` by `.IsNullable()`.
+//
+// The accessors read the snapshot's own fields; the thawed graph is built from
+// those same fields by a SEPARATE switch in thaw(). Two derivations of one fact,
+// which is exactly the shape that drifts — thaw's RELATION arm, for instance,
+// drops nullability entirely because RelationType has none to carry, and the
+// handle's nullable field does not.
+func TestHandleAccessorsMatchTheThawedGraph(t *testing.T) {
+	t.Parallel()
+
+	corpus := differentialCorpus()
+	handles := snapshotCorpus(t, corpus)
+	checked := 0
+	for i, entry := range corpus {
+		thawed := handles[i].Type()
+		if thawed == nil {
+			t.Fatalf("%s: Type() is nil for a snapshotted handle", entry.label)
+		}
+		if got, want := handles[i].Code(), thawed.Code(); got != want {
+			t.Errorf("%s: handle.Code() = %v but Type().Code() = %v", entry.label, got, want)
+		}
+		if got, want := handles[i].IsNullable(), thawed.IsNullable(); got != want {
+			t.Errorf("%s: handle.IsNullable() = %v but Type().IsNullable() = %v",
+				entry.label, got, want)
+		}
+		checked++
+	}
+	if checked < corpusFloorForAccessors {
+		t.Fatalf("checked %d handles, floor is %d", checked, corpusFloorForAccessors)
+	}
+
+	// A nil handle must answer rather than panic, because the substitution sites
+	// call these on a handle whose nil-ness they have just tested — or, at the
+	// three sites that dropped that test, on one the invariant above says cannot
+	// be nil. Both readings need a total accessor.
+	var absent *exactType
+	if got := absent.Code(); got != TypeCodeUnknown {
+		t.Errorf("nil handle Code() = %v, want TypeCodeUnknown — a handle that states "+
+			"no type has no other honest answer", got)
+	}
+	if absent.IsNullable() {
+		t.Error("nil handle IsNullable() must be false: absence of a type is not a nullable type")
+	}
+}
+
+// corpusFloorForAccessors keeps the accessor sweep from silently shrinking. It
+// is the corpus size as built, so adding a shape is free and losing one fails.
+const corpusFloorForAccessors = 58
+
+// TestTheOtherFlowedHelpersAgreeWithTheirSlowPath covers the four helpers the
+// differential sweep above did not: FlowedRowShapesAgree, FlowedRowShapeEquals,
+// ExactTypesEqual and QuantifierFlowsAScalarRow.
+//
+// Two pinned helpers out of six is the coverage the sweep actually had, in a file
+// whose own doc says plumbing mistakes are "the mistakes a rewrite across 33 call
+// sites actually makes". Each of these is a distinct piece of plumbing — a
+// different handle reached, a different operand order, a different slow path —
+// and none of them is exercised by testing the other two.
+func TestTheOtherFlowedHelpersAgreeWithTheirSlowPath(t *testing.T) {
+	t.Parallel()
+
+	corpus := differentialCorpus()
+	handles := snapshotCorpus(t, corpus)
+
+	type entry struct {
+		label  string
+		typ    Type
+		handle *exactType
+		qov    QuantifiedObjectValue
+	}
+	var entries []entry
+	for i, c := range corpus {
+		qov, err := NewQuantifiedObjectValue(
+			NamedCorrelationIdentifier("q"+uitoa(uint64(i))), c.typ)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, entry{c.label, c.typ, handles[i], qov})
+	}
+	if len(entries) == 0 {
+		t.Fatal("no corpus entry produced a QOV; this test pinned nothing")
+	}
+
+	var (
+		shapesTrue, shapesFalse int
+		exactTrue, exactFalse   int
+	)
+	for i := range entries {
+		for j := range entries {
+			wantShape := QuantifiedRowShapesAgree(entries[i].typ, entries[j].typ)
+			if got := FlowedRowShapesAgree(entries[i].qov, entries[j].qov); got != wantShape {
+				t.Errorf("FlowedRowShapesAgree(%s, %s) = %v, want %v",
+					entries[i].label, entries[j].label, got, wantShape)
+			}
+			// Both orientations: six executor call sites had the declared row on
+			// the left and route to this helper quantifier-first.
+			if got := FlowedRowShapeEquals(entries[i].qov, entries[j].typ); got != wantShape {
+				t.Errorf("FlowedRowShapeEquals(%s, type %s) = %v, want %v",
+					entries[i].label, entries[j].label, got, wantShape)
+			}
+			if got := FlowedRowShapeEquals(entries[j].qov, entries[i].typ); got != wantShape {
+				t.Errorf("FlowedRowShapeEquals(%s, type %s) = %v, want %v",
+					entries[j].label, entries[i].label, got, wantShape)
+			}
+			if wantShape {
+				shapesTrue++
+			} else {
+				shapesFalse++
+			}
+
+			wantExact := entries[i].typ.Equals(entries[j].typ)
+			if got := ExactTypesEqual(entries[i].handle, entries[j].handle); got != wantExact {
+				t.Errorf("ExactTypesEqual(%s, %s) = %v, want %v",
+					entries[i].label, entries[j].label, got, wantExact)
+			}
+			if wantExact {
+				exactTrue++
+			} else {
+				exactFalse++
+			}
+		}
+	}
+	if shapesTrue == 0 || shapesFalse == 0 || exactTrue == 0 || exactFalse == 0 {
+		t.Fatalf("degenerate sweep: shapes %d/%d, exact %d/%d",
+			shapesTrue, shapesFalse, exactTrue, exactFalse)
+	}
+
+	// QuantifierFlowsAScalarRow: a QOV whose row is not a RECORD. Both classes
+	// must be populated, or the predicate could be a constant and still pass.
+	scalar, record := 0, 0
+	for _, e := range entries {
+		got := QuantifierFlowsAScalarRow(e.qov)
+		want := e.typ.Code() != TypeCodeRecord
+		if got != want {
+			t.Errorf("QuantifierFlowsAScalarRow(%s) = %v, want %v", e.label, got, want)
+		}
+		if want {
+			scalar++
+		} else {
+			record++
+		}
+	}
+	if scalar == 0 || record == 0 {
+		t.Fatalf("QuantifierFlowsAScalarRow saw %d scalar rows and %d record rows; "+
+			"both classes must be present", scalar, record)
+	}
+	// A non-quantifier answers false rather than panicking — the two call sites
+	// hand it an arbitrary projected Value.
+	if QuantifierFlowsAScalarRow(nil) {
+		t.Error("QuantifierFlowsAScalarRow(nil) must be false")
+	}
+	if QuantifierFlowsAScalarRow(NewNullValue(&PrimitiveType{TypeCode: TypeCodeLong})) {
+		t.Error("QuantifierFlowsAScalarRow of a non-quantifier must be false")
+	}
+	if ExactTypesEqual(nil, nil) {
+		t.Error("ExactTypesEqual(nil, nil) must be false: two absent handles do not " +
+			"denote one type. This differs from the retired expressions.typeEquals " +
+			"shim, which answered true for two nil Types; no constructor can store a " +
+			"nil handle, so the change is unreachable and is recorded, not hidden")
+	}
+}
+
+// TestFlowedHelpersRefuseAValueThatCannotStateARow pins the arm the totality
+// test above missed, and it is the arm that answered TRUE.
+//
+// The wrapper-pointer guard in FlowedTypesEqual and FlowedRowShapesAgree does not
+// catch a live quantifier whose HANDLE is absent, and forwarding two nil handles
+// to exactTypesEqual answers `left == right` — true. That is correct for
+// exactTypesEqual, which is asked whether two handles denote one type, and wrong
+// here, where the question is whether two VALUES flow the same row.
+//
+// It is the one direction the API promises never to take: a value that cannot
+// answer must REFUSE, never agree.
+func TestFlowedHelpersRefuseAValueThatCannotStateARow(t *testing.T) {
+	t.Parallel()
+
+	row := &RecordType{RecordName: "R", Fields: []Field{
+		{Name: "ID", FieldType: &PrimitiveType{TypeCode: TypeCodeLong}, Ordinal: 0},
+	}}
+	good, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("q"), row)
+	if err != nil {
+		t.Fatalf("building the usable side failed: %v", err)
+	}
+	// A live wrapper with no handle. It cannot come from the constructor, which
+	// is the reason the guard was missing and the reason this has to be built by
+	// hand: the type is package-private, so this test is the only place the
+	// shape can exist at all.
+	var handleless QuantifiedObjectValue = &quantifiedObjectValue{
+		correlation: NamedCorrelationIdentifier("h"),
+	}
+
+	cases := []struct {
+		name string
+		got  bool
+	}{
+		{"FlowedTypesEqual(handleless, handleless)", FlowedTypesEqual(handleless, handleless)},
+		{"FlowedTypesEqual(handleless, good)", FlowedTypesEqual(handleless, good)},
+		{"FlowedTypesEqual(good, handleless)", FlowedTypesEqual(good, handleless)},
+		{"FlowedRowShapesAgree(handleless, handleless)", FlowedRowShapesAgree(handleless, handleless)},
+		{"FlowedRowShapesAgree(handleless, good)", FlowedRowShapesAgree(handleless, good)},
+		{"FlowedRowShapesAgree(good, handleless)", FlowedRowShapesAgree(good, handleless)},
+		{"FlowedTypeEquals(handleless, row)", FlowedTypeEquals(handleless, row)},
+		{"FlowedRowShapeEquals(handleless, row)", FlowedRowShapeEquals(handleless, row)},
+	}
+	for _, c := range cases {
+		if c.got {
+			t.Errorf("%s = true; a value that cannot state a row must REFUSE, never agree", c.name)
+		}
+	}
+
+	// The positive control: the guards must not have swallowed the real answers.
+	if !FlowedTypesEqual(good, good) || !FlowedRowShapesAgree(good, good) ||
+		!FlowedTypeEquals(good, row) || !FlowedRowShapeEquals(good, row) {
+		t.Error("a usable quantifier no longer agrees with itself; the refusal guards " +
+			"are over-broad")
+	}
+}

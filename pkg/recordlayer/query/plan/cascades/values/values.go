@@ -5206,6 +5206,17 @@ func FlowedTypesEqual(left, right QuantifiedObjectValue) bool {
 	if !lok || !rok || l == nil || r == nil {
 		return false
 	}
+	// The HANDLES are checked separately from the wrappers, and that is not
+	// belt-and-braces. exactTypesEqual answers `left == right` for two nils —
+	// correct for it, since it is asked whether two handles denote one type and
+	// two absences are the same absence. It is the wrong answer HERE, where the
+	// question is whether two VALUES flow the same row: a value that cannot
+	// state a row has not thereby agreed with another that also cannot.
+	// Forwarding without this check made the pair answer TRUE, which is the one
+	// direction this API promises never to take.
+	if l.flowed == nil || r.flowed == nil {
+		return false
+	}
 	return exactTypesEqual(l.flowed, r.flowed)
 }
 
@@ -5271,8 +5282,11 @@ func QuantifierFlowsAScalarRow(value Value) bool {
 	if !ok {
 		return false
 	}
-	row := FlowedExactType(qov)
-	return row != nil && row.Code() != TypeCodeRecord
+	// No nil test on the handle: AsQuantifiedObjectValue refuses a value
+	// that cannot state a row, so accepting one implies it has a handle.
+	// TestAcceptedQuantifiersAlwaysStateARow pins that pairing, because it is
+	// an invariant spanning two functions and nothing else observes it.
+	return FlowedExactType(qov).Code() != TypeCodeRecord
 }
 
 // FlowedRowShapesAgree reports whether two quantified object values denote the
@@ -5288,6 +5302,11 @@ func FlowedRowShapesAgree(left, right QuantifiedObjectValue) bool {
 	l, lok := left.(*quantifiedObjectValue)
 	r, rok := right.(*quantifiedObjectValue)
 	if !lok || !rok || l == nil || r == nil {
+		return false
+	}
+	// Two absent handles are not one row — see FlowedTypesEqual for why the
+	// handle check cannot be left to exactRowShapesAgree.
+	if l.flowed == nil || r.flowed == nil {
 		return false
 	}
 	return exactRowShapesAgree(l.flowed, r.flowed)

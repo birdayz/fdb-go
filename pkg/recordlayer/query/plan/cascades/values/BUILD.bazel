@@ -149,6 +149,7 @@ go_test(
         "dotted_row_type_producer_census_test.go",
         "dotted_witness_attribution_census_test.go",
         "equals_without_children_test.go",
+        "erased_record_arms_test.go",
         "eval_must_test.go",
         "exact_handle_shortcut_test.go",
         "exact_primitive_sharing_test.go",

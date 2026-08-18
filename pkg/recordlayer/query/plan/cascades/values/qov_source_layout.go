@@ -150,11 +150,17 @@ func LayoutWithSeedLegs(layout OrdinalLayout, resultValue Value) OrdinalLayout {
 	// off it: 1.34 GB over a single planner sweep, 15.8% of everything thaw
 	// allocated, for a field count that is a slice length on an immutable node.
 	//
-	// anyRecord is excluded because the thawed form was too, and not by accident:
-	// the erased record thaws to anyRecordType rather than *RecordType, so the
-	// type assertion failed and the function returned the layout untouched. It
-	// has no field list, and treating it as a zero-field record would claim a
-	// tiling over a row whose shape is unknown.
+	// anyRecord is excluded because the thawed form excluded it: the erased
+	// record thaws to anyRecordType rather than *RecordType, so the type
+	// assertion failed and the layout came back untouched.
+	//
+	// The exclusion is DEFENCE, not an observable arm, and saying so is the
+	// honest version — dropping it changes no answer today, because an erased
+	// record reports zero fields and SeedTilingLegs refuses a width of zero. That
+	// refusal is what makes this redundant, so it is what
+	// TestSeedTilingLegsRefusesAZeroWidthRow pins: relax it and this guard
+	// becomes load-bearing, and a row whose shape is unknown starts claiming a
+	// tiling.
 	carrierRow := concrete.carrier.flowed
 	if carrierRow == nil || carrierRow.code != TypeCodeRecord || carrierRow.anyRecord {
 		return layout
