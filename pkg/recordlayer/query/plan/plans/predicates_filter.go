@@ -86,6 +86,21 @@ func NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ expression
 			return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan predicate %d input carrier: %w", i, err)
 		}
 	}
+	// INVARIANT: a physical filter may only carry predicates a ROW can answer.
+	// A structural predicate — EXISTS, a sargable, a placeholder — has an
+	// unconditional non-answer as its Eval, so a filter holding one rejects every
+	// row and reports success. That is indistinguishable from an empty table, which
+	// is why this is enforced at the single constructor every physical filter
+	// funnels through rather than asked of each rule that builds one: three rules
+	// build physical filters and two of them had forgotten the conversion.
+	// Callers residualise with predicates.ToResidualPredicate, exactly as Java maps
+	// QueryPredicate::toResidualPredicate at each of its filter-building sites.
+	for i, pr := range normalized {
+		if bad, isStructural := predicates.FindStructuralPredicate(pr); isStructural {
+			return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan predicate %d is structural (%T: %s) and cannot be evaluated against a row; residualise it with predicates.ToResidualPredicate before building a filter", i, bad, bad.Explain())
+		}
+	}
+
 	return &RecordQueryPredicatesFilterPlan{
 		PlanExprBase: base,
 		innerQ:       innerQ,
