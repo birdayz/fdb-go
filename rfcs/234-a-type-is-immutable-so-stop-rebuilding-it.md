@@ -1,6 +1,6 @@
 # RFC-234: A Type is immutable, so stop rebuilding it
 
-**Status:** PROPOSED (v2). v1 was NAK'd twice — once for pricing an
+**Status:** ACCEPTED (v2, ACK from both gates). v1 was NAK'd twice — once for pricing an
 object-count argument in space, once for a gate rule that would have failed 17
 legitimate sites. See §9.
 **Base:** branch `perf/plan-structural-hash-memo`, PR #754
@@ -16,8 +16,9 @@ the immutability that makes sharing safe becomes an enforced gate covering
 tests as well as production sources.
 
 The defensive rebuild those three perform protects a mutability that, measured
-over the whole tree, no production code uses — and that exactly four test files
-DO use, which is the substantive cost of this change and is priced in §7.
+over the whole tree, no production code uses — and that TEST code does use. That
+is the substantive cost of this change and it is priced in §7, including the part
+of it the experiment did NOT surface.
 
 ## 2. Why — measured with the instrument the argument is about
 
@@ -138,9 +139,10 @@ constructed one to six lines earlier — with one exception that has to be state
 rather than folded into the count.
 
 **`restoreQOVRecordLayout` writes `record.Legs` on a PARAMETER**, and recurses
-into `record.Fields[i].FieldType`. It is safe only because its single caller
-passes a fresh `thaw()`. That is a one-caller invariant, it is not expressed
-anywhere today, and §6's gate must express it — particularly since §7 nominates
+into `record.Fields[i].FieldType`. It is safe only because its single EXTERNAL
+caller passes a fresh `thaw()` — there are two call sites and the second is its
+own recursion, which inherits the first's provenance. That is a one-caller
+invariant, it is not expressed anywhere today, and §6's gate must express it — particularly since §7 nominates
 that same caller as the next optimization.
 
 The name-only version of this census reported 22 hits and was WRONG about 18 —
@@ -159,15 +161,56 @@ assignment from a package other than `values`", which would have failed 17 of th
 > written was constructed by the same function, or was received under an
 > explicit contract that says so.
 
-Concretely the gate must catch four shapes v1 did not enumerate:
+Concretely the gate must catch five shapes v1 did not enumerate:
 
 1. the shallow copy-on-write `withLegs := *record`, which SHARES `Fields` with
    its source — so `withLegs.Fields[i].X = …` writes the interned graph even
-   though `withLegs` looks local;
+   though `withLegs` looks local.
+
+   **This one is a dataflow problem and not a pattern, and the implementer must
+   know that before starting.** Writes of the form `X[i].F = …` whose element
+   resolves to `values.Field` number **17 in non-test sources and 49 including
+   tests** (deduped by position; `packages.Load` with `Tests: true` loads each
+   package three times and the raw count triple-reports). Every one is into a
+   local today, and telling those apart from a write through a shallow-COW alias
+   requires tracing the slice base back to a construction site. A syntactic rule
+   is therefore either over-permissive across all 49 or reds legitimate ones. The
+   gate resolves provenance by REACHABILITY — from the write, back through
+   assignments, to either a composite literal / `make` in the same function or a
+   parameter — and shape 2 below is what a parameter resolves to;
 2. a write through a parameter, which is `restoreQOVRecordLayout`'s shape and
    needs the one-caller invariant named at the site and asserted;
 3. `++`/`--` (`*ast.IncDecStmt`, not `*ast.AssignStmt`) and address-of;
-4. **test files.** v1 excluded them and §7 shows that is exactly backwards.
+4. **the fourth accessor, which is NOT in scope and must not be flipped with the
+   three that are.** `fieldValue.ResultType` (`field_value.go:78`) looks like
+   `fieldValue.Type` (`values.go:793`) and is a different function. Flipping it
+   instead of, or in addition to, the three raises the failure count from 7 to 18
+   and makes it run-to-run NONDETERMINISTIC — measured by a reviewer who made
+   exactly that substitution and saw 18, then 8, then a stable 7 once corrected.
+   The three-accessor flip is stable at 7 across three runs. A not-covered list
+   that omits this hands the implementer a nondeterministic suite and no reason;
+
+5. **test files**, where the mutation actually lives. v1 excluded them and §7
+   shows that is exactly backwards. Deduped by position over 293 package
+   variants: **81 sites total, 60 of them in `_test.go`** against 21 in
+   production. And the test side writes fields production NEVER touches —
+
+   | target | tests | production |
+   |---|---|---|
+   | `Field.Name` | 17 | 4 |
+   | `Field.FieldType` | 11 | 4 |
+   | `RecordType.Legs` | 6 | 4 |
+   | `RecordType.RecordName` | 5 | **0** |
+   | `RecordType.Fields` | 5 | **0** |
+   | `Field.Ordinal` | 4 | 9 |
+   | `RelationType.InnerType` | 3 | **0** |
+   | `PrimitiveType.TypeCode` | 3 | **0** |
+   | `ArrayType.ElementType` | 3 | **0** |
+   | `PrimitiveType.Nullable` | 2 | **0** |
+   | `RecordType.Nullable` | 1 | **0** |
+
+   Seven of the eleven targets are exercised ONLY by tests. A gate scoped to
+   production sources would have watched the half that was already clean.
 
 The gate must also fail loudly on a package that does not load. The scratch
 instrument printed a REDUCED count when a package had errors, which is the
@@ -200,6 +243,20 @@ and it is order-dependent. It is the strongest argument in this RFC for the gate
 covering test files — a rule that stopped at production sources would have left
 exactly this in place.
 
+**The seven are not the whole population, and the part that did NOT fire matters
+more than the part that did.** `rfc232_field_value_test.go:540,549` mutates the
+results of `accessor.FieldType()` and `field.ResultType()`, which is the same
+retired contract — and it stayed GREEN under the flip, because those two
+accessors still route through `thaw()` (they survive in the experiment's profile
+at 0.42% and 0.07% of the remaining thaw). So it is LATENT: caught by §6's
+provenance rule, since the graph came from an accessor rather than from
+construction, but not caught by the suite.
+
+Naming it is the point. §8 nominates `physicalFlowedRecordType` as the follow-on,
+and that change is what would arm this site. Left unnamed, its first real firing
+reads as a NEW finding rather than as the untested branch it has been all along —
+which is the most expensive way to discover a bug in your own instrument.
+
 ## 8. Scope, and what is NOT in it
 
 `physicalFlowedRecordType` stays out, and the exclusion is priced in the same
@@ -213,10 +270,21 @@ escapes into `OrdinalSeedLegWindow.Typ`).
 `resolveAgainstQOV` (10.31M, 5.87% of thaw) is likewise left alone.
 
 Migrating individual call sites to the already-shipped `SharedFlowedType` is
-NOT the alternative: 102 non-test `.FlowedType()` occurrences remain after
-RFC-233, each needing a per-site retention judgement, to reach a subset of what
-flipping the accessor reaches in six lines. The accessor flip plus a gate is
-both smaller and stronger.
+NOT the alternative. After RFC-233 there remain
+
+```sh
+grep -rno '\.FlowedType()' pkg --include='*.go' | grep -v '_test\.go:' | wc -l          # 99
+grep -rno '\.FlowedType()' pkg --include='*.go' | grep -v '_test\.go:' \
+  | awk -F: '{print $1":"$2}' | sort -u | wc -l                                          # 80
+grep -rno '\.FlowedType()' pkg --include='*.go' | wc -l                                  # 292 (control)
+```
+
+**80 lines / 99 occurrences**, each needing a per-site retention judgement, to
+reach a subset of what flipping the accessor reaches in six lines. (v1 said 102;
+that was measured before the last of RFC-233's conversions landed, and it was the
+only figure in the document with no command beside it — which is the rule that
+bit RFC-233 in the first place.) The accessor flip plus a gate is both smaller
+and stronger.
 
 ## 9. Expected effect, and how it will be measured
 

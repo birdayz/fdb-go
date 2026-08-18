@@ -276,6 +276,24 @@ so this one can only move by 0.04". A stale baseline moved ONE row by 0.56x whil
 leaving nine within 0.04, and the nine told you nothing about the one. Re-measure;
 don't extrapolate.
 
+**`git add -A` STAGES WHATEVER ELSE IS EDITING THE WORKTREE — AND SOMETHING ELSE
+USUALLY IS.** Reviewer agents, probes and experiments run in this checkout, not in
+an isolated copy, so `add -A` snapshots the tree at one instant rather than your
+change. It happened here: a reviewer was mid-way through a six-line accessor
+experiment when `git add -A && git commit` ran, and the INDEX captured his flip
+while the worktree later held his restore. The commit would have shipped an
+unreviewed behaviour change under a message about a documentation edit.
+
+The pre-commit hook caught it — `just test` went red, `git commit` aborted,
+nothing landed. Note what that means: **`--no-verify` would have shipped it**,
+which is the concrete reason that flag is banned rather than discouraged.
+
+Two habits, the first cheap. Stage by PATH (`git add <files>`) when anything else
+might be running. And after any `add -A`, read `git diff --cached --stat` before
+committing — it diffs against HEAD, so a file you did not touch appearing in it is
+the whole signal. A staged change you cannot explain is not noise to be resolved
+by committing.
+
 **A CENSUS LOCATES WORK; ONLY A PROFILE PRICES IT.** These are different
 questions and a census answers only the first, yet a call-site count reads as a
 cost estimate — it is a number, it is large, and it sits next to the thing you
