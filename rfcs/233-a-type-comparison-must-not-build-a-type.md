@@ -1,6 +1,7 @@
 # RFC-233: A type comparison must not build a type
 
-**Status:** PROPOSED (v2). v1 was NAK'd on a false premise; see §7.
+**Status:** IMPLEMENTED (v2). v1 was NAK'd on a false premise; see §7. §2's
+motivating premise was then refuted by the after-profile; see §5.
 **Base:** `34e6f0dc1` (branch `perf/plan-structural-hash-memo`, PR #754)
 **Relates to:** RFC-232 (exact `FieldValue`/QOV resolution), RFC-197
 **Wire impact:** none. No key, record, index, continuation, or protobuf plan
@@ -171,15 +172,54 @@ the allocation and leaves the walk; comparing handles fixes both.
 That is also why §3.4 routes only the READ-ONLY fallback through
 `SharedFlowedType`: for a value that carries no handle there is nothing to
 compare by handle, so amortizing the rebuild is the whole available win.
-## 5. Expected effect
+## 5. Effect — measured, and smaller than the census implied
 
-Deliberately no predicted wall-clock number: allocation volume and time are
+No wall-clock number was predicted, deliberately: allocation volume and time are
 different currencies, and this campaign was already burned once assuming
 otherwise — 8.9 GB attributed to `newStructuralKey` bought 2.8% when memoized.
+That caution was warranted twice over, because the census turned out to be the
+wrong instrument for a different reason as well.
 
-The claim to test is the ratio on `TestStatsInvariant_PurePlannerSweep`, n>=2 per
-side, sequential, against the true merge-base. Current position: **1.150x** vs
-master (from 1.184x pre-memo); end-to-end 1M is 1.020x.
+**The premise in §2 that "the waste is concentrated in comparisons" is REFUTED by
+the after-profile.** Converting every comparison site moved `thaw` from 8.87 GB
+to 8.31 GB and total allocation from 112.01 GB to 111.63 GB — 0.3%. The census
+counted call SITES and never measured the allocation attributable to them, and
+the two are not the same fact. After the change, thaw's callers are:
+
+| caller | share of thaw |
+|---|---|
+| `QOV.FlowedType` (83.6% of it via the generic `Type()`) | 27.0% |
+| `exactType.Type` (`newPlanExprBaseForType`, `GetFlowedObjectType`) | 26.2% |
+| `physicalFlowedRecordType` | 19.4% |
+| `LayoutWithSeedLegs` | 15.8% |
+| `fieldValue.Type` | 7.2% |
+
+So the cost was never in the comparisons; it is in `Type()` — the generic
+accessor whose fresh-graph contract §4 declines to change — and in two internal
+derivations. `LayoutWithSeedLegs` was thawing a whole graph, recursively, to read
+`len(record.Fields)`; it now reads the handle and is gone from the list.
+`physicalFlowedRecordType` was PRICED AND REJECTED, not deferred: it thaws and
+then WRITES leg boundaries into the result, so it cannot share, and memoizing it
+needs a per-QOV cell — the same shape whose per-copy cost was already measured at
+~0.25% of planner time for plans, against a 1.5%-of-allocation-volume target
+whose wall-clock value is demonstrably a fraction of that.
+
+The wall-clock result, on `TestStatsInvariant_PurePlannerSweep`, three ADJACENT
+base/head pairs so both sides see the same machine, `go test -count=1`:
+
+| tree | samples | mean |
+|---|---|---|
+| merge-base `d31bf28e0` | 178.383, 178.013, 177.976 | **178.12s** |
+| branch `cbbb8f850` | 170.653, 170.627, 170.676 | **170.65s** |
+
+**0.958x** — the branch is 4.2% faster than the master it forks from. Paired
+ratios 0.957 / 0.959 / 0.959.
+
+The `1.150x vs master` this section used to quote was measured against
+`7d0435536`, which is no longer the merge-base: `f4f7d7bc5`, the "pre-memo"
+baseline in that table, has since merged. Master itself is 1.178x slower than
+`7d0435536` on this sweep — the RFC-232 overhead, landed on master while the
+branch was in flight. TODO.md's last entry carries the full re-measurement.
 
 ## 6. Risk and the required pin
 
@@ -247,3 +287,26 @@ The stale v1 claims had also settled into `TODO.md` (the 62-of-141 figure, the
 the next reader would have found them. Correcting only the copy you remember
 writing is not correcting the claim; that entry now carries the same census and
 points back here.
+
+## 8. What v2 got wrong
+
+Symmetry with §7, and for the same reason: the error is more useful than the fix.
+
+§2 said "the waste is concentrated in comparisons" and built the case on a census
+of 33 `Equals`-shaped lines. Converting all of them moved total allocation by
+0.3%. A census counts SITES; it says nothing about the allocation attributable to
+them, and the profile that motivated the RFC could have answered the second
+question directly — `-peek` on `thaw` takes one command and would have shown,
+before any code was written, that the callers are `Type()` and two internal
+derivations rather than the comparison sites.
+
+§3.2's "It is symmetric" was asserted about `QuantifiedRowShapesAgree` and
+`exactRowShapesAgree` without probing it. On 5,460 of 160,000 probed pairs the
+former did not return anything at all — it PANICKED, because it normalised by
+calling `WithNullability`, which refuses to flip RELATION. Two further panic
+classes (NONE, ANY) were found afterwards by the differential test. Fixing that
+made the comparison total and, incidentally, allocation-free, which is the one
+part of this RFC that removed a defect rather than a cost.
+
+The shape both share with §7's errors: a claim about the code written from the
+argument rather than from a measurement that was already available.

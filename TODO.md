@@ -18398,7 +18398,9 @@ flight on the campaign above.
       post-mutation content, which is the one staleness an identity check structurally
       cannot see.
 
-      Measured 1.184x -> 1.150x on the pure-planner sweep (2.8%). Reviewed and ACK'd.
+      Measured 1.184x -> 1.150x against `7d0435536` on the pure-planner sweep (2.8%).
+      That baseline is no longer the merge-base and the ratio is not "vs master" any
+      more; see the re-measurement at the end of this file. Reviewed and ACK'd.
 
 - [ ] **Make the empty `AliasMap` singleton immutable by TYPE, not by doc.** Java's is
       backed by `ImmutableBiMap` (`AliasMap.java:169`), so a write is a compile/runtime
@@ -18531,14 +18533,22 @@ measured over in the first place — the SQL benchmarks under-show it because th
 lives in the memo's member loop, not in any one query. Same machine, sequential,
 `--nocache_test_results`:
 
-| tree | samples | mean | vs master |
+| tree | samples | mean | vs `7d0435536` |
 |---|---|---|---|
-| master (merge-base `7d0435536`) | 149.04, 149.95 | **149.50s** | — |
-| branch, pre-memo (`f4f7d7bc5`) | 177.14, 176.79 | **176.97s** | 1.184x |
-| branch, all 42 memoized | 172.51, 171.48, 171.85 | **171.95s** | **1.150x** |
+| `7d0435536` (merge-base AT THE TIME) | 149.04, 149.95 | **149.50s** | — |
+| pre-memo (`f4f7d7bc5`) | 177.14, 176.79 | **176.97s** | 1.184x |
+| all 42 memoized | 172.51, 171.48, 171.85 | **171.95s** | **1.150x** |
 
 Within-group spreads are 0.2-0.6%, well under the 2.8% the memo moves, so this is signal
-rather than noise. The planner-sweep ratio goes 1.184x -> 1.150x.
+rather than noise. The ratio against `7d0435536` goes 1.184x -> 1.150x.
+
+**THE "vs master" READING OF THAT LAST COLUMN IS DEAD — do not carry it forward.**
+The column compares against `7d0435536`, which was the merge-base when these rows
+were taken and is not any more: `f4f7d7bc5` has since merged and master is
+`d31bf28e0`. So the 1.184x baseline for the memo is now MASTER's own code, and
+against the current merge-base the branch is 0.958x — faster, not slower. The
+re-measurement is the last entry in this file; read it before quoting any number
+from this table.
 
 Why it is only 2.8% when `newStructuralKey` was measured at 8.9GB: the memo removes the
 key rebuild on a HIT, and a hit requires the same plan OBJECT to be hashed twice. The
@@ -18679,3 +18689,51 @@ construction for plans that are compared once, and that is not memoizable; it is
       change: needs a Graefe ACK on both RFC and implementation before merge, per the
       review-cadence rule. Not for PR #754, which is green and already ACK'd by three
       gates — this is its own change.
+
+### The planner-sweep ratio was booked against a baseline that is no longer the merge-base
+
+`1.150x vs master` is stale, and stale in the way that matters: the number was
+right when it was measured and its MEANING inverted underneath it, because master
+moved.
+
+The table under "Structural-hash memo" states its baseline honestly as
+`7d0435536` — that WAS the merge-base then. PR #752 has since merged and the
+merge-base is `d31bf28e0`, 64 commits later. The decisive detail is that one row
+of that table, `branch, pre-memo (f4f7d7bc5)`, names a commit that is now ON
+MASTER: `f4f7d7bc5` is the second parent of `d31bf28e0`. So the whole 1.184x the
+memo was clawing back is master's code, not the branch's.
+
+Re-measured on the same machine, sequentially, same toolchain (`go.mod` and
+`MODULE.bazel` are byte-identical across the range, so the Bazel Go SDK cannot
+differ), `go test -count=1` on `TestStatsInvariant_PurePlannerSweep`:
+
+| tree | samples | mean |
+|---|---|---|
+| `7d0435536` (the OLD merge-base) | 151.223, 151.249 | **151.24s** |
+| `d31bf28e0` (the CURRENT merge-base) | 178.635, 178.029, 177.817, 178.140, 178.383, 178.013, 177.976 | **178.14s** |
+| branch `cbbb8f850` | 170.653, 170.627, 170.676 | **170.65s** |
+
+**Master itself is 1.178x slower on this sweep than the baseline every ratio in
+that table was taken against.** That is the RFC-232 exact-resolution overhead —
+already booked, and the whole subject of this campaign. It simply landed on
+master while the branch was in flight, which is why the branch's number looked
+like a regression it never had.
+
+**Against the CURRENT merge-base the branch is 0.958x — 4.2% FASTER than the
+master it forks from.** Taken as three ADJACENT base/head pairs so both sides see
+the same machine within minutes of each other: 0.957, 0.959, 0.959. Within-side
+spread is 0.03% on the branch and 0.46% on the base.
+
+One sample is reported and excluded: a 178.904s branch run taken while the
+machine was at load 4-5. It stands alone against six branch samples in
+170.6-172.4 and against a base side that did NOT move under the same load, so it
+is an outlier rather than a load effect — but it is written down here because a
+discarded sample nobody can see is indistinguishable from one that was never
+taken.
+
+The generalizable lesson is not the stale-baseline rule already in CLAUDE.md.
+That rule says the baseline must BE the merge-base at measurement time, and this
+measurement obeyed it. What decays is a RATIO's MEANING: a ratio is a fact about
+two trees, and naming one of them "master" makes it a fact about a moving
+reference. Write the ratio against a SHA and say what that SHA was at the time,
+or the number silently starts describing a comparison nobody made.
