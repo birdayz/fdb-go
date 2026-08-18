@@ -18637,19 +18637,34 @@ construction for plans that are compared once, and that is not memoizable; it is
       `physicalFlowedRecordType` (14.5%), `LayoutWithSeedLegs` (12.1%),
       `fieldValue.Type` (9.8%).
 
-      **The waste is concentrated in comparisons.** 62 of the 141 non-test
-      `.FlowedType()` call sites are comparison-shaped — `Equals(`, `== nil`,
-      `!= nil`, `QuantifiedRowShapesAgree`. Each `a.FlowedType().Equals(b.FlowedType())`
-      allocates TWO complete graphs to produce one bool. Because the exact table
-      interns, `handleA == handleB` answers the same question by pointer, with zero
-      allocation — and that equivalence is not an approximation: `ExactTypeForValue`'s
-      doc already states the long way round returns the same OBJECT.
+      **The waste is concentrated in comparisons.** Stated in OCCURRENCES, because
+      `grep -c` counts LINES and 50 of these lines carry two calls — which is exactly
+      the `a.FlowedType().Equals(b.FlowedType())` shape at issue. Over non-test
+      sources under `pkg/`: 141 lines / 191 occurrences total (91 lines with one call,
+      50 with two), of which 33 lines are `Equals`-shaped and 13 are `== nil` /
+      `!= nil` existence checks. `QuantifiedRowShapesAgree` is a SEPARATE population,
+      not a subset: 16 real call sites, only 10 of which also carry a `.FlowedType()`
+      call. Each `a.FlowedType().Equals(b.FlowedType())` allocates TWO complete graphs
+      to produce one bool.
 
-      **Do NOT try to memoize `thaw` itself.** Its freshness is a PINNED contract, not
-      a defensive habit: `rfc232_qov_exact_identity_test.go` mutates a `Type()` result
+      **The answer is `exactTypesEqual`, NOT handle pointer identity.** Identity is
+      strictly STRICTER than `Type.Equals` and substituting it is wrong in the
+      plan-changing direction: interning keys on the record/enum NAME while
+      `RecordType.Equals` and `EnumType.Equals` deliberately ignore it (matching
+      Java), so two Equals-equal records hold two handles and identity reports them
+      different. `exactTypesEqual` compares canonical bytes whose encoding excludes
+      the name precisely because `Equals` does, so it is Equals-equivalent by
+      construction while keeping the O(1) same-pointer fast path.
+      `exactRowShapesAgree` is the corresponding twin for `QuantifiedRowShapesAgree`.
+
+      **`thaw` IS already memoized — for shared readers.** `exactType.thawCache` +
+      `thawShared()` cache the thawed graph and ship publicly as
+      `SharedFlowedType`/`SharedExactType`. What cannot be memoized is the PUBLIC
+      promise that `Type()`/`FlowedType()` hand back a graph the caller may mutate:
+      `rfc232_qov_exact_identity_test.go` mutates a `Type()` result
       (`first.RecordName`, `first.Fields[0].Name`) and requires a later `Type()` to be
-      unaffected. Caching the graph breaks that test deliberately. The fix is to stop
-      CALLING thaw on the comparison paths, not to make thaw cheaper.
+      unaffected. So the fix is to stop CALLING `thaw` on the comparison paths, and to
+      route read-only non-comparison readers through `SharedFlowedType`.
 
       The pattern to follow already exists in this file's own neighbourhood:
       `OrdinalDomainOfQuantified` takes the handle via `exactTypeOfValue`, answers from
@@ -18658,6 +18673,9 @@ construction for plans that are compared once, and that is not memoizable; it is
       non-allocating case. So this is extending an established mechanism, not inventing
       one.
 
-      Query-engine change: needs an RFC and a Graefe ACK on both RFC and
-      implementation before merge, per the review-cadence rule. Not for PR #754, which
-      is green and already ACK'd by three gates — this is its own change.
+      The design is `rfcs/233-a-type-comparison-must-not-build-a-type.md`; read it
+      before touching this item, and keep the two in sync — the RFC's §2 census and
+      the numbers above are the same measurement and rot together. Query-engine
+      change: needs a Graefe ACK on both RFC and implementation before merge, per the
+      review-cadence rule. Not for PR #754, which is green and already ACK'd by three
+      gates — this is its own change.

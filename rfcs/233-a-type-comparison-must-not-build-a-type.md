@@ -50,17 +50,38 @@ Over the same sweep, 112.01 GB total:
 in comparisons: `a.FlowedType().Equals(b.FlowedType())` allocates two complete
 graphs to produce one bool.
 
-The census below is stated in OCCURRENCES with the command that produced it,
-because the first draft of this table reported `grep -c` output as call-site
-counts. `grep -c` counts LINES, and 41 of these lines carry two calls — which is
-exactly what the pattern above looks like. Population: non-test sources under
-`pkg/`.
+The census below is stated in OCCURRENCES, because the first draft of this table
+reported `grep -c` output as call-site counts. `grep -c` counts LINES, and **50**
+of these lines carry two calls — which is exactly what the pattern above looks
+like. The distribution is 91 lines with one call and 50 with two, so
+91 + 2×50 = 191 over 141 lines; the arithmetic is stated because the first
+correction of this row said 41, and 141 + 41 = 182 ≠ 191 refutes it without
+needing to re-run anything.
 
-| shape | measured | command |
-|---|---|---|
-| `.FlowedType()` total | **141 lines / 191 occurrences** | `grep -ro '\.FlowedType()'` |
-| `Equals`-shaped | 33 lines | `grep -rn '\.FlowedType()\.Equals(\|Equals([a-zA-Z_]*\.FlowedType())'` |
-| existence checks | 13 | `grep -ro '\.FlowedType() [=!]= nil'` |
+Population: non-test sources under `pkg/`. Every command below is pasteable AS
+WRITTEN and carries that population itself — the previous draft printed bare
+patterns with no path, no `--include` and no test exclusion, which reproduce
+different numbers (`grep -ro '\.FlowedType()'` alone gives 392). Note the quoted
+glob: unquoted, fish does not expand `--include=*.go` and the command silently
+returns zero.
+
+```sh
+# 141 lines / 191 occurrences
+grep -rno '\.FlowedType()' pkg --include='*.go' | grep -v '_test\.go:' | wc -l
+grep -rno '\.FlowedType()' pkg --include='*.go' | grep -v '_test\.go:' \
+  | awk -F: '{print $1":"$2}' | sort -u | wc -l
+# 33 Equals-shaped lines
+grep -rn "\.FlowedType()\.Equals(\|Equals([a-zA-Z_]*\.FlowedType())" pkg --include='*.go' \
+  | grep -v '_test\.go:' | wc -l
+# 13 existence checks
+grep -rno '\.FlowedType() [=!]= nil' pkg --include='*.go' | grep -v '_test\.go:' | wc -l
+```
+
+| shape | measured |
+|---|---|
+| `.FlowedType()` total | **141 lines / 191 occurrences** |
+| `Equals`-shaped | 33 lines |
+| existence checks | 13 |
 
 `QuantifiedRowShapesAgree` is counted SEPARATELY and is NOT a subset of the rows
 above: 16 real call sites (20 raw identifier hits, less 3 prose comments and the
@@ -131,7 +152,7 @@ graph the caller may mutate — pinned by `rfc232_qov_exact_identity_test.go`,
 which mutates a `Type()` result and requires a later one to be unaffected.
 
 Changing that contract is REJECTED. It would mean loosening a defensive
-immutability guarantee across ~141 call sites to buy what `SharedFlowedType`
+immutability guarantee across 141 call SITES spread over 191 occurrences to buy what `SharedFlowedType`
 already provides at zero aliasing risk.
 
 
@@ -168,11 +189,22 @@ name tests (`TestRecordTypeEqualsIgnoresRecordName`,
 `TestExactInterningKeepsRecordNamesApart`) stay GREEN under the wrong
 substitution, because neither observes a comparison SITE.
 
-So the required pin is a differential one: over inputs that include records
-differing ONLY in `RecordName`, enums differing only in `EnumName`, and values
-carrying no handle, the fast path and the existing slow path must return the SAME
-answer. That test fails against v1's design and passes against v2's, which is the
-property that makes it worth having.
+So the required pin is a differential one, and it is BUILT rather than described:
+`exact_type_equality_differential_test.go` sweeps all 3,364 ORDERED pairs of a 58-entry
+type corpus and requires `exactTypesEqual` to equal `Type.Equals` and
+`exactRowShapesAgree` to equal `QuantifiedRowShapesAgree`, pair for pair. Ordered
+rather than unordered because `Equals` dispatches on the receiver's concrete type,
+so a mismatched pair takes two different code paths depending on which side is the
+receiver.
+
+It was verified by MUTATION, not by passing: replacing `exactTypesEqual`'s body
+with `return left == right` — v1's design, exactly — produces **22 disagreements**,
+naming the record-name pairs, the enum-name pairs and a nested-inner-name pair.
+Both existing name tests stay green under that same mutation. The corpus also
+carries its own vacuity guard, because the sweep is only as strong as its
+population: a separate arm asserts that at least one `Equals`-equal pair holds two
+DISTINCT handles, and names the record and enum pairs specifically, so a corpus
+that keeps some disagreement while losing either half still fails.
 
 ## 7. What v1 got wrong
 
@@ -191,7 +223,7 @@ scope-sentence rule names for gates, appearing here in a design document.
 
 v1 also built its motivation table out of `grep -c` output and reported it as
 call-site counts. `grep -c` counts LINES: the population is 141 lines but 191
-occurrences, because 41 lines carry two calls — which is precisely the
+occurrences, because 50 lines carry two calls — which is precisely the
 `a.FlowedType().Equals(b.FlowedType())` shape the RFC is about. The
 `QuantifiedRowShapesAgree` row was worse: a raw identifier count including three
 prose comments and the definition, presented as a subset of a population only 10
@@ -200,3 +232,18 @@ of its lines belong to. Every error ran the same direction, overstating the win.
 That one is not merely instructive, it is embarrassing in a useful way: the
 `grep -c` counts LINES rule was committed to CLAUDE.md in the same push as the
 table that violated it.
+
+And v2's FIRST correction of that row was itself wrong: it said 41 lines carry
+two calls, when the figure is 50. The number was never measured — it was
+back-derived, and the sentence announcing that the previous draft had shipped an
+unmeasured count shipped an unmeasured count. Worse, the document already
+contained its own refutation: 141 + 41 = 182, not 191. That is why the
+distribution and the arithmetic now sit in §2 next to the number rather than
+behind it — a total that does not decompose is a number nobody can check, which
+is the whole complaint against the first version.
+
+The stale v1 claims had also settled into `TODO.md` (the 62-of-141 figure, the
+"not an approximation" premise, and the "do NOT memoize thaw" instruction), where
+the next reader would have found them. Correcting only the copy you remember
+writing is not correcting the claim; that entry now carries the same census and
+points back here.
