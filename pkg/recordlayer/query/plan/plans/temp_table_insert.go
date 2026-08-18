@@ -90,7 +90,12 @@ func (p *RecordQueryTempTableInsertPlan) EqualsPlanWithoutChildren(other RecordQ
 }
 
 func (p *RecordQueryTempTableInsertPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("temptableinsert|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("temptableinsert|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryTempTableInsertPlan) Explain() string {

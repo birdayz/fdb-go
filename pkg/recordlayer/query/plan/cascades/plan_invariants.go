@@ -98,7 +98,7 @@ func isGenuineLeafPlan(plan plans.RecordQueryPlan) bool {
 // IsSorted() actually carries values in that order — the invariant that
 // keeps sortInJoinValues (in_source.go) from rotting back into a landmine:
 // a future construction site that sets sorted=true without sorting the
-// values it hands to SetInValues would trip this the moment the plan is
+// values it hands to WithInValues would trip this the moment the plan is
 // extracted, in the SAME always-on paths that already gate every other
 // structural invariant (the no-FDB plan harness, the production generator,
 // and FuzzPlanner_Invariants).

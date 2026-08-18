@@ -70,7 +70,12 @@ func (p *RecordQueryUnorderedUnionPlan) EqualsPlanWithoutChildren(other RecordQu
 }
 
 func (p *RecordQueryUnorderedUnionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("unorderedunionplan")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("unorderedunionplan")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryUnorderedUnionPlan) Explain() string {

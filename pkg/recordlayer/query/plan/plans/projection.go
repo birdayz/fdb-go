@@ -279,7 +279,13 @@ func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 		return false
 	}
 	qov, ok := values.AsQuantifiedObjectValue(p.projections[0])
-	return ok && qov.FlowedType() != nil && qov.FlowedType().Code() == values.TypeCodeRecord &&
+	if !ok {
+		return false
+	}
+	// FlowedExactType is never nil for a value AsQuantifiedObjectValue
+	// accepted — it refuses one that cannot state a row. Pinned by
+	// TestAcceptedQuantifiersAlwaysStateARow.
+	return values.FlowedExactType(qov).Code() == values.TypeCodeRecord &&
 		qov.Correlation() == p.innerQ.GetAlias()
 }
 
@@ -376,7 +382,12 @@ func (p *RecordQueryProjectionPlan) EqualsPlanWithoutChildren(other RecordQueryP
 }
 
 func (p *RecordQueryProjectionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("projplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("projplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryProjectionPlan) Explain() string {
@@ -427,7 +438,7 @@ func (p *RecordQueryProjectionPlan) WithQuantifiers(qs []expressions.Quantifier)
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryProjectionPlan.WithQuantifiers new input: %w", err)
 	}
-	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+	if !values.FlowedTypesEqual(oldInput, newInput) {
 		return nil, fmt.Errorf(
 			"RecordQueryProjectionPlan.WithQuantifiers input type changed from %s to %s",
 			oldInput.FlowedType(), newInput.FlowedType())

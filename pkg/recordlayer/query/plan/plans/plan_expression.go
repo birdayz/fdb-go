@@ -42,6 +42,10 @@ import (
 type PlanExprBase struct {
 	resultValue               values.Value
 	ordinalPhysicalProperties OrdinalPhysicalProperties
+	// hashMemo caches HashCodeWithoutChildren for the ONE plan that claims it. Set
+	// exactly once, by the constructor below, and never reassigned — see
+	// newHashMemoCell for why that immutability is what keeps this a plain pointer.
+	hashMemo *hashMemoCell
 }
 
 // newPlanExprBaseWithProperties is the one admission point for a concrete
@@ -86,6 +90,7 @@ func newPlanExprBaseWithProperties(
 	return PlanExprBase{
 		resultValue:               resultValue,
 		ordinalPhysicalProperties: properties,
+		hashMemo:                  newHashMemoCell(),
 	}, nil
 }
 
@@ -130,7 +135,7 @@ func newPlanExprBaseForType(owner string, flowedType values.Type) (PlanExprBase,
 			if resultErr != nil {
 				return PlanExprBase{}, fmt.Errorf("%s result Value: %w", owner, resultErr)
 			}
-			return PlanExprBase{resultValue: resultValue}, nil
+			return PlanExprBase{resultValue: resultValue, hashMemo: newHashMemoCell()}, nil
 		}
 		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
 	}
@@ -174,7 +179,7 @@ func newPlanExprBaseForQuantifier(owner string, quantifier expressions.Quantifie
 		if !errors.As(layoutErr, &unavailable) || unavailable.Code != OrdinalLayoutDynamicCarrier {
 			return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, layoutErr)
 		}
-		return PlanExprBase{resultValue: resultValue}, nil
+		return PlanExprBase{resultValue: resultValue, hashMemo: newHashMemoCell()}, nil
 	}
 	// A physical quantifier without a selected child layout can state only the
 	// ordinary identity carrier for its exact flowed type. It still must not
@@ -229,7 +234,7 @@ func newPlanExprBaseForValue(owner string, resultValue values.Value) (PlanExprBa
 	layout, err := newIdentityOutputLayout(exactType.Type())
 	if err != nil {
 		if isExactErasedRecord(exactType.Type()) {
-			return PlanExprBase{resultValue: resultValue}, nil
+			return PlanExprBase{resultValue: resultValue, hashMemo: newHashMemoCell()}, nil
 		}
 		return PlanExprBase{}, fmt.Errorf("%s provided output layout: %w", owner, err)
 	}
@@ -302,7 +307,7 @@ func exactQOVForResultSource(
 		if !ok || qov.Correlation() != alias {
 			return true
 		}
-		if found != nil && !found.FlowedType().Equals(qov.FlowedType()) {
+		if found != nil && !values.FlowedTypesEqual(found, qov) {
 			conflict = fmt.Errorf(
 				"correlation %s has conflicting exact types %s and %s",
 				alias.Name(), found.FlowedType(), qov.FlowedType())

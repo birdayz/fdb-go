@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "typeimmutable",
+    srcs = ["analyzer.go"],
+    importpath = "fdb.dev/pkg/linters/typeimmutable",
+    visibility = ["//visibility:public"],
+    deps = ["@org_golang_x_tools//go/analysis"],
+)
+
+go_test(
+    name = "typeimmutable_test",
+    srcs = ["analyzer_test.go"],
+    data = [
+        # keep: MODULE.bazel anchors the repo-root walk; type.go is what
+        # TestFreshConstructorsReallyAllocate parses. Both must be present or the
+        # test fails — it may not skip, because a skipped constructor check leaves
+        # every name on the allowlist unverified under a green target.
+        "//:MODULE.bazel",
+        "//pkg/recordlayer/query/plan/cascades/values:type.go",
+    ],
+    embed = [":typeimmutable"],
+)

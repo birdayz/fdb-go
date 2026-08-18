@@ -8,7 +8,13 @@ import (
 
 func TestFullUnorderedScanStoresExactTypeAndCanonicalNames(t *testing.T) {
 	t.Parallel()
-	row := rowOfTypes("ID", values.NotNullLong, "V", values.NullableString)
+	// Built inline rather than via rowOfTypes: this test MUTATES it below, and a
+	// graph from a helper carries the helper's provenance. See the same note in
+	// quantifier_test.go.
+	row := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "V", Ordinal: 1, FieldType: values.NullableString},
+	}}
 	scan := mustExpression(NewFullUnorderedScanExpression([]string{"Order", "Customer", "Order"}, row))
 	if got := scan.GetRecordTypes(); len(got) != 2 || got[0] != "Customer" || got[1] != "Order" {
 		t.Fatalf("record types = %v, want sorted and deduplicated names", got)
@@ -19,10 +25,16 @@ func TestFullUnorderedScanStoresExactTypeAndCanonicalNames(t *testing.T) {
 	if len(values.GetCorrelatedToOfValue(scan.GetResultValue())) != 0 {
 		t.Fatal("source scan result is unexpectedly correlation-bearing")
 	}
-	copyType := scan.GetFlowedType().(*values.RecordType)
-	copyType.Fields[0].Name = "MUTATED"
+	// GetFlowedType hands back the SHARED graph — mutating it here would write
+	// through to an interned handle and corrupt unrelated parallel tests. The
+	// sharing is asserted instead, and isolation is asserted where it still
+	// holds: against the caller's own graph. See RFC-234.
+	if a, b := scan.GetFlowedType(), scan.GetFlowedType(); a != b {
+		t.Fatalf("GetFlowedType returned two graphs (%p, %p); the defensive copy is back", a, b)
+	}
+	row.Fields[0].Name = "CALLER_MUTATED"
 	if got := scan.GetFlowedType().(*values.RecordType).Fields[0].Name; got != "ID" {
-		t.Fatalf("mutating returned type changed stored snapshot: %q", got)
+		t.Fatalf("a caller's later edit reached the stored snapshot: %q", got)
 	}
 }
 

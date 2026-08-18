@@ -7,7 +7,7 @@ package sqldriver_test
 // SELECT DISTINCT is a Go-only extension (Java's fdb-relational does not dedup
 // it). The pre-fix executeDistinct rebuilt its seen-set FRESH per page, so with
 // EXECUTION_SCANNED_ROWS_LIMIT forcing many mid-run breaks every straddling
-// duplicate leaked. The streaming distinct (RecordQueryDistinctPlan.Streaming,
+// duplicate leaked. The streaming distinct (RecordQueryDistinctPlan.streaming,
 // set by ImplementDistinctFinalRule when the inner ordering makes equal rows
 // adjacent) carries only the last emitted key through the DedupContinuation and
 // dedups cleanly across pages.

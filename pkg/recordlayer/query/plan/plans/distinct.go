@@ -36,7 +36,7 @@ type RecordQueryDistinctPlan struct {
 	//     COPIES the flag unchanged — sound only because shell completion
 	//     relinks the SAME, identically-ordered inner, not a different one.
 	// Default false is the safe hash-set fallback. See TODO.md C5.
-	Streaming bool
+	streaming bool
 
 	// The R3 residual dedup. Set together, by WithNarrowedDedup only, and read
 	// by the executor and by EXPLAIN. Both are in structuralKey; see the
@@ -59,6 +59,28 @@ func NewRecordQueryDistinctPlan(inner RecordQueryPlan) (*RecordQueryDistinctPlan
 	return NewRecordQueryDistinctPlanFromQuantifier(QuantifierOverPlan(inner), false)
 }
 
+// NewRecordQueryStreamingDistinctPlan is NewRecordQueryDistinctPlan with the
+// ordering-critical streaming flag set.
+//
+// It exists so the flag can be chosen at CONSTRUCTION and nowhere else. It used to
+// be an exported field, which made it settable on a finished plan from any package —
+// and it is the FIRST component of this plan's structuralKey, so such a write
+// rewrites the identity of a plan the memo may already hold, under an unchanged
+// pointer that the memo's owner check cannot distinguish from the original.
+//
+// There is deliberately no WithStreaming builder. A copying builder would be safe
+// for the memo but wrong for this field: streaming is sound only when the inner is
+// ordered by the dedup key, so it must be DERIVED from the inner rather than
+// applied to a plan afterwards. Making construction the only entry point keeps that
+// derivation and the flag in one place.
+func NewRecordQueryStreamingDistinctPlan(inner RecordQueryPlan) (*RecordQueryDistinctPlan, error) {
+	return NewRecordQueryDistinctPlanFromQuantifier(QuantifierOverPlan(inner), true)
+}
+
+// IsStreaming reports whether this distinct uses the adjacent-dedup executor. See
+// the field doc for the ordering precondition that makes it sound.
+func (p *RecordQueryDistinctPlan) IsStreaming() bool { return p.streaming }
+
 // NewRecordQueryDistinctPlanFromQuantifier builds a distinct whose child is a
 // supplied memo quantifier instead of a snapshot over a single plan. This makes
 // the plan its own cascades expression carrying its child edge directly — the
@@ -78,7 +100,7 @@ func NewRecordQueryDistinctPlanFromQuantifier(innerQ expressions.Quantifier, str
 	if err != nil {
 		return nil, err
 	}
-	return &RecordQueryDistinctPlan{PlanExprBase: base, innerQ: innerQ, Streaming: streaming}, nil
+	return &RecordQueryDistinctPlan{PlanExprBase: base, innerQ: innerQ, streaming: streaming}, nil
 }
 
 // GetInner returns the inner plan, dereferenced through the quantifier.
@@ -137,7 +159,7 @@ func (p *RecordQueryDistinctPlan) GetQuantifiers() []expressions.Quantifier {
 // seen every key the narrowing omitted, and drops rows it must emit. Collapsing
 // the two in the memo is what would let that happen silently.
 func (p *RecordQueryDistinctPlan) structuralKey() *structuralKey {
-	k := newStructuralKey().Bool(p.Streaming).
+	k := newStructuralKey().Bool(p.streaming).
 		Str(p.narrowedProofIndexName).
 		Int(len(p.narrowedExemptSlots))
 	for _, slot := range p.narrowedExemptSlots {
@@ -193,7 +215,7 @@ func (p *RecordQueryDistinctPlan) structuralKey() *structuralKey {
 // That is the same SOLE-LICENSE reasoning the elision arm applies — a stamp
 // records a dependency the plan's correctness rests on and nothing else.
 func (p *RecordQueryDistinctPlan) WithNarrowedDedup(indexName string, exemptSlots []int) *RecordQueryDistinctPlan {
-	if indexName == "" || p.Streaming {
+	if indexName == "" || p.streaming {
 		return p
 	}
 	cp := *p
@@ -229,7 +251,12 @@ func (p *RecordQueryDistinctPlan) EqualsPlanWithoutChildren(other RecordQueryPla
 
 // HashCodeWithoutChildren discriminates on type and the Streaming mode.
 func (p *RecordQueryDistinctPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("distinctplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("distinctplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Distinct(inner), plus the R3 narrowing when present.

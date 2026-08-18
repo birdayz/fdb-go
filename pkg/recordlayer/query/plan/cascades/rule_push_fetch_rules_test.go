@@ -1319,8 +1319,8 @@ func TestPushInJoinThroughFetchRule_Fires(t *testing.T) {
 				true,
 				true,
 			))
-			inJoin.SetInValues(tc.inValues)
-			inJoin.SetSourceKind(tc.sourceKind)
+			inJoin = inJoin.WithInValues(tc.inValues)
+			inJoin = inJoin.WithSourceKind(tc.sourceKind)
 
 			yielded := mustFireImplementationRule(t,
 				NewPushInJoinThroughFetchRule(),

@@ -49,7 +49,7 @@ func (e *TempTableScanExpression) EqualsWithoutChildren(other RelationalExpressi
 		return false
 	}
 	return e.tempTableAlias == o.tempTableAlias &&
-		typeEquals(e.resultType.Type(), o.resultType.Type())
+		values.ExactTypesEqual(e.resultType, o.resultType)
 }
 
 func (e *TempTableScanExpression) HashCodeWithoutChildren() uint64 {

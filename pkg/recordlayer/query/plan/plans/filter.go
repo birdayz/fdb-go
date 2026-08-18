@@ -91,7 +91,12 @@ func (p *RecordQueryFilterPlan) EqualsPlanWithoutChildren(other RecordQueryPlan)
 // display text: renderings are for humans, carry no identity contract, and
 // drift independently of equality.
 func (p *RecordQueryFilterPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("filterplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("filterplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Filter([P1, P2], inner).
@@ -130,7 +135,7 @@ func (p *RecordQueryFilterPlan) WithQuantifiers(qs []expressions.Quantifier) (ex
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFilterPlan.WithQuantifiers new input: %w", err)
 	}
-	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+	if !values.FlowedTypesEqual(oldInput, newInput) {
 		return nil, fmt.Errorf(
 			"RecordQueryFilterPlan.WithQuantifiers input type changed from %s to %s",
 			oldInput.FlowedType(), newInput.FlowedType())

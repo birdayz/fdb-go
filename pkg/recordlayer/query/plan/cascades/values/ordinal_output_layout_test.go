@@ -331,19 +331,29 @@ func TestRetainedWholeObjectPublishesTwoLevelExactWindows(t *testing.T) {
 		{Name: "ID", Ordinal: 0, FieldType: NotNullLong},
 		{Name: "NAME", Ordinal: 1, FieldType: NullableString},
 	})
-	middleType := NewRecordType("MIDDLE_ROW", false, []Field{
-		{Name: "LEAF_BOX", Ordinal: 0, FieldType: leafType},
-		{Name: "MIDDLE_ID", Ordinal: 1, FieldType: NotNullLong},
-	})
-	middleType.Legs = []RecordTypeLeg{
-		NewRecordTypeLeg(LegKindNested, leafAlias, "LEAF", 0, 1),
+	// Legs stated in the literal rather than assigned after: a graph from a
+	// constructor CALL carries the callee's provenance, and writing to one is the
+	// shape the typeimmutable gate refuses. Building it whole is both shorter and
+	// the thing the gate is asking for.
+	middleType := &RecordType{
+		RecordName: "MIDDLE_ROW",
+		Fields: []Field{
+			{Name: "LEAF_BOX", Ordinal: 0, FieldType: leafType},
+			{Name: "MIDDLE_ID", Ordinal: 1, FieldType: NotNullLong},
+		},
+		Legs: []RecordTypeLeg{
+			NewRecordTypeLeg(LegKindNested, leafAlias, "LEAF", 0, 1),
+		},
 	}
-	outerType := NewRecordType("OUTER_ROW", false, []Field{
-		{Name: "MIDDLE_BOX", Ordinal: 0, FieldType: middleType},
-		{Name: "OUTER_ID", Ordinal: 1, FieldType: NotNullLong},
-	})
-	outerType.Legs = []RecordTypeLeg{
-		NewRecordTypeLeg(LegKindNested, middleAlias, "MIDDLE", 0, 1),
+	outerType := &RecordType{
+		RecordName: "OUTER_ROW",
+		Fields: []Field{
+			{Name: "MIDDLE_BOX", Ordinal: 0, FieldType: middleType},
+			{Name: "OUTER_ID", Ordinal: 1, FieldType: NotNullLong},
+		},
+		Legs: []RecordTypeLeg{
+			NewRecordTypeLeg(LegKindNested, middleAlias, "MIDDLE", 0, 1),
+		},
 	}
 	outer := mustLayoutSourceQOV(t, outerAlias.Name(), outerType)
 	layout, err := NewFlatOrdinalLayoutForRetainedResult(

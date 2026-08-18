@@ -62,7 +62,7 @@ func NewRecordQueryInJoinPlanWithBindingAlias(
 // inner is a SHARED group whose per-ordering winner resolves at extraction via
 // ref.Winner() (planFromQuantifier) — the deferred-winner case. The plan carries
 // the inner edge once, with no wrapper snapshot (RFC-184 W2). Callers still
-// replay SetInValues / SetSourceKind afterward (the constructor drops them).
+// replay WithInValues / WithSourceKind afterward (the constructor drops them).
 func NewRecordQueryInJoinPlanFromQuantifier(
 	innerQ expressions.Quantifier,
 	bindingName string,
@@ -137,12 +137,72 @@ func (p *RecordQueryInJoinPlan) GetBindingName() string { return p.bindingAlias.
 func (p *RecordQueryInJoinPlan) GetBindingAlias() values.CorrelationIdentifier {
 	return p.bindingAlias
 }
-func (p *RecordQueryInJoinPlan) IsSorted() bool               { return p.sorted }
-func (p *RecordQueryInJoinPlan) IsReverse() bool              { return p.reverse }
-func (p *RecordQueryInJoinPlan) GetInValues() []any           { return p.inValues }
-func (p *RecordQueryInJoinPlan) SetInValues(vals []any)       { p.inValues = vals }
-func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind  { return p.sourceKind }
-func (p *RecordQueryInJoinPlan) SetSourceKind(k InSourceKind) { p.sourceKind = k }
+func (p *RecordQueryInJoinPlan) IsSorted() bool  { return p.sorted }
+func (p *RecordQueryInJoinPlan) IsReverse() bool { return p.reverse }
+
+// GetInValues returns the LIVE slice; callers must not write through it. inValues is
+// in this plan's structuralKey, so an element write rewrites its identity with the
+// pointer unchanged, which the memo's owner check cannot see. It is not copied here
+// because cost.go reads it per costing call in the planner's hot loop; sharing is
+// broken at the write end instead (see WithInValues).
+func (p *RecordQueryInJoinPlan) GetInValues() []any          { return p.inValues }
+func (p *RecordQueryInJoinPlan) GetSourceKind() InSourceKind { return p.sourceKind }
+
+// WithInValues and WithSourceKind return COPIES, because a plan method must never
+// write through its receiver.
+//
+// inValues is in this plan's structuralKey, so an in-place write rewrites the identity
+// of a plan the memo may already hold — under an UNCHANGED owner, which the
+// structural-hash memo's owner check cannot detect, because it compares identity and
+// not content. sourceKind is NOT in the key and was therefore harmless; it copies too,
+// so the rule is "a plan method does not write its receiver" with no per-field
+// exception a reader has to look up.
+func (p *RecordQueryInJoinPlan) WithInValues(vals []any) *RecordQueryInJoinPlan {
+	cp := *p
+	// Copy the slice, not just the header. Returning a fresh plan that shares its
+	// caller's backing array leaves two owners of one identity-bearing array — and
+	// the rule paths really do hand the SAME array to two plans (the push-through-
+	// fetch rules pass one plan's GetInValues straight into another's builder). A
+	// later element write through either would rewrite both plans' structural keys
+	// with their pointers unchanged, which is the one staleness the memo's owner
+	// check cannot see. The sibling constructors already copy; this closes the
+	// builder to match.
+	cp.inValues = copyPreservingNil(vals)
+	return &cp
+}
+
+// copyPreservingNil duplicates an IN-list, keeping a nil slice nil and an EMPTY
+// non-nil slice empty and non-nil.
+//
+// That distinction is not pedantry, it is a cost input: the cost model reads nil as
+// "in-list size UNKNOWN at plan time" and empty-non-nil as "known to be EMPTY",
+// which produce different fanouts and therefore different plans. The idiomatic
+// `append([]any(nil), src...)` gets this wrong in the empty case — appending zero
+// elements to nil yields nil — so it silently converts "known empty" into
+// "unknown". Three arms of TestInUnionHintCost_UsesValueCombinationCount caught
+// exactly that, including the nested case `[][]any{nil, {}}` where one dimension is
+// unknown and its sibling is known-empty.
+//
+// The copy is deep to the SLICE level, not the element level. IN values are `any`,
+// and `[]byte` is a supported IN value type, so two plans still share any `[]byte`
+// payload passed to both. Nothing writes through one today — the same was true of
+// the slice level this closes — so it is the identical class one layer down rather
+// than a live defect. Copying every element would mean type-switching on `any` in a
+// planner path, which is not worth paying for a hazard with no writer.
+func copyPreservingNil(src []any) []any {
+	if src == nil {
+		return nil
+	}
+	dup := make([]any, len(src))
+	copy(dup, src)
+	return dup
+}
+
+func (p *RecordQueryInJoinPlan) WithSourceKind(k InSourceKind) *RecordQueryInJoinPlan {
+	cp := *p
+	cp.sourceKind = k
+	return &cp
+}
 
 func (p *RecordQueryInJoinPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
@@ -182,7 +242,12 @@ func (p *RecordQueryInJoinPlan) EqualsPlanWithoutChildren(other RecordQueryPlan)
 }
 
 func (p *RecordQueryInJoinPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("injoinplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("injoinplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // inValuesEqual compares two static IN-list comparands element-wise. The lists

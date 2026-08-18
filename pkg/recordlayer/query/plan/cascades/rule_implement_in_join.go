@@ -223,9 +223,9 @@ func (r *ImplementInJoinRule) OnMatch(call *ImplementationRuleCall) {
 							return
 						}
 						if inValues != nil {
-							inJoinPlan.SetInValues(inValues)
+							inJoinPlan = inJoinPlan.WithInValues(inValues)
 						}
-						inJoinPlan.SetSourceKind(classifyInSourceKind(source.quantifier))
+						inJoinPlan = inJoinPlan.WithSourceKind(classifyInSourceKind(source.quantifier))
 						currentRef = call.MemoizeFinalExpression(inJoinPlan)
 					}
 

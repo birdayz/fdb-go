@@ -208,7 +208,12 @@ func (p *RecordQueryPredicatesFilterPlan) EqualsPlanWithoutChildren(other Record
 // display text: renderings are for humans, carry no identity contract, and
 // drift independently of equality.
 func (p *RecordQueryPredicatesFilterPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("predicatesfilterplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("predicatesfilterplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders PredicatesFilter(inner, [pred1, pred2, ...]).
@@ -260,7 +265,7 @@ func (p *RecordQueryPredicatesFilterPlan) WithQuantifiers(qs []expressions.Quant
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan.WithQuantifiers new input: %w", err)
 	}
-	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+	if !values.FlowedTypesEqual(oldInput, newInput) {
 		return nil, fmt.Errorf(
 			"RecordQueryPredicatesFilterPlan.WithQuantifiers input type changed from %s to %s",
 			oldInput.FlowedType(), newInput.FlowedType())

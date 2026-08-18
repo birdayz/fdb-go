@@ -93,7 +93,7 @@ func TestIntegration_InJoinRowContinuation_OneRowPerTx(t *testing.T) {
 	bindingID := values.NamedCorrelationIdentifier(bindingName)
 	makePlan := func() plans.RecordQueryPlan {
 		p := mustExecutorConstruct(plans.NewRecordQueryInJoinPlan(priceProbeIndexPlan(t, bindingID), bindingName, false, false))
-		p.SetInValues([]any{int64(150), int64(50), int64(250)})
+		p = p.WithInValues([]any{int64(150), int64(50), int64(250)})
 		return p
 	}
 
@@ -121,7 +121,7 @@ func TestIntegration_InUnionRowContinuation_OneRowPerTx(t *testing.T) {
 	makePlan := func() plans.RecordQueryPlan {
 		inner := priceProbeIndexPlan(t, bindingID)
 		p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(inner, []string{bindingName}, orderMergeKeys(t, inner.GetResultValue()), false))
-		p.SetInSources([][]any{{int64(250), int64(50), int64(150)}})
+		p = p.WithInSources([][]any{{int64(250), int64(50), int64(150)}})
 		return p
 	}
 
@@ -147,7 +147,7 @@ func TestIntegration_InUnionDuplicateValues_DedupAcrossResumes(t *testing.T) {
 	makePlan := func() plans.RecordQueryPlan {
 		inner := priceProbeIndexPlan(t, bindingID)
 		p := mustExecutorConstruct(plans.NewRecordQueryInUnionPlan(inner, []string{bindingName}, orderMergeKeys(t, inner.GetResultValue()), false))
-		p.SetInSources([][]any{{int64(50), int64(150), int64(50)}}) // 50 twice: legs 0 and 2 are identical scans
+		p = p.WithInSources([][]any{{int64(50), int64(150), int64(50)}}) // 50 twice: legs 0 and 2 are identical scans
 		return p
 	}
 

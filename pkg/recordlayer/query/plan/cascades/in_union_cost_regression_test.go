@@ -36,7 +36,7 @@ func TestPlanningCostModel_InUnionRepeatedFullScanCannotWinScalarFallback(t *tes
 		false,
 	)
 	inUnion = mustConstruct(t, inUnion, err)
-	inUnion.SetInSources([][]any{{int64(1), int64(2)}})
+	inUnion = inUnion.WithInSources([][]any{{int64(1), int64(2)}})
 	repeated, err := plans.NewRecordQueryProjectionPlan(nil, inUnion)
 	repeated = mustConstruct(t, repeated, err)
 

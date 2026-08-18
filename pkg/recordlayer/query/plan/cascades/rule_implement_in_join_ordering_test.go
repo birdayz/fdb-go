@@ -73,7 +73,7 @@ func TestInJoinRule_OrderingAware_MatchesExplodeAlias(t *testing.T) {
 // for this SelectExpression shape — no requested ordering, a fixed equality
 // binding on the index scan) set sorted:true unconditionally while
 // extractInValues copied the raw, unsorted ConstantValue list straight
-// through to SetInValues: the claim and the data disagreed.
+// through to WithInValues: the claim and the data disagreed.
 func TestInJoinRule_SortedClaimIsBackedByActuallySortedValues(t *testing.T) {
 	t.Parallel()
 

@@ -1659,7 +1659,7 @@ func duecAssertVariants(t *testing.T, explains map[string]string) {
 		plans.Walk(p, func(node plans.RecordQueryPlan) bool {
 			if d, ok := node.(*plans.RecordQueryDistinctPlan); ok {
 				found = true
-				streaming = d.Streaming
+				streaming = d.IsStreaming()
 				narrowed = narrowed || d.IsNarrowedDedup()
 			}
 			return true

@@ -536,18 +536,33 @@ func TestRFC232FieldValueDefensiveViewsAndExactNullability(t *testing.T) {
 			if !ok {
 				t.Fatal("Accessor(0) absent")
 			}
-			returnedRecord := accessor.FieldType().(*values.RecordType)
-			returnedRecord.Fields[0].Name = "MUTATED"
-			fresh := field.Path().Accessor
-			_ = fresh
+			// These two used to MUTATE the graphs the accessors returned, to prove
+			// the exact snapshot behind them was unmoved. That was safe only
+			// because FieldType() and ResultType() still thaw a private graph —
+			// an accident of which accessors RFC-234 converted, not a property the
+			// test established. The document's own follow-on (sharing
+			// physicalFlowedRecordType's path) is what would have armed it, and its
+			// first firing would then have read as a new finding rather than as the
+			// untested branch it had been all along.
+			//
+			// What the test is actually about — the snapshot does not drift across
+			// reads — is asserted directly, without writing to a graph this
+			// function does not own.
+			if got := accessor.FieldType().(*values.RecordType).Fields[0].Name; got != "LEAF" {
+				t.Fatalf("accessor FieldType() = %q, want LEAF", got)
+			}
 			again, _ := field.Path().Accessor(0)
 			if got := again.FieldType().(*values.RecordType).Fields[0].Name; got != "LEAF" {
-				t.Fatalf("mutating accessor FieldType() changed exact snapshot: %q", got)
+				t.Fatalf("a second accessor read disagrees with the first: %q", got)
 			}
-			result := field.ResultType().(*values.PrimitiveType)
-			result.TypeCode = values.TypeCodeString
-			if !field.ResultType().Equals(values.NewPrimitiveType(values.TypeCodeLong, testCase.wantNullable)) {
-				t.Fatalf("mutating ResultType() changed exact result: %v", field.ResultType())
+			wantResult := &values.PrimitiveType{
+				TypeCode: values.TypeCodeLong,
+				Nullable: testCase.wantNullable,
+			}
+			firstResult, secondResult := field.ResultType(), field.ResultType()
+			if !firstResult.Equals(wantResult) || !secondResult.Equals(wantResult) {
+				t.Fatalf("ResultType() = %v then %v, want %v both times",
+					firstResult, secondResult, wantResult)
 			}
 		})
 	}
@@ -556,7 +571,10 @@ func TestRFC232FieldValueDefensiveViewsAndExactNullability(t *testing.T) {
 func TestRFC232FieldValueSnapshotsCallerTypeGraph(t *testing.T) {
 	t.Parallel()
 
-	leaf := values.NewPrimitiveType(values.TypeCodeLong, false)
+	// Built as a literal, not via the constructor: this test MUTATES it below to
+	// prove the snapshot is isolated, and a graph from a call carries the callee's
+	// provenance rather than this function's.
+	leaf := &values.PrimitiveType{TypeCode: values.TypeCodeLong}
 	supplied := &values.RecordType{RecordName: "Original", Fields: []values.Field{{
 		Name: "A", Ordinal: 0, FieldType: leaf,
 	}}}

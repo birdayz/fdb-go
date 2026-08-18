@@ -151,7 +151,7 @@ func pullUpNullSupplyingSource(
 	resultValue values.Value,
 	source values.QuantifiedObjectValue,
 ) (values.Value, values.QuantifiedObjectValue, error) {
-	if source == nil || source.FlowedType() == nil || source.FlowedType().IsNullable() {
+	if row := values.FlowedExactType(source); row == nil || row.IsNullable() {
 		return resultValue, source, nil
 	}
 	nullable, err := values.NewQuantifiedObjectValue(
@@ -218,7 +218,11 @@ func flatMapBaseWithRetainedSources(
 	if rc, isRC := resultValue.(*values.RecordConstructorValue); isRC && rc != nil {
 		for _, field := range rc.Fields {
 			source, isSource := values.AsQuantifiedObjectValue(field.Value)
-			if !isSource || source.FlowedType() == nil || source.FlowedType().Code() != values.TypeCodeRecord {
+			if !isSource {
+				continue
+			}
+			// Never nil once isSource holds; see TestAcceptedQuantifiersAlwaysStateARow.
+			if values.FlowedExactType(source).Code() != values.TypeCodeRecord {
 				continue
 			}
 			for _, leg := range legs {
@@ -264,7 +268,7 @@ func flatMapBaseWithRetainedSources(
 			continue
 		}
 		for _, source := range childLayout.WindowSources() {
-			if source == nil || source.FlowedType() == nil {
+			if values.FlowedExactType(source) == nil {
 				continue
 			}
 			childNullSupplying, nullErr := values.LayoutWindowNullSupplying(childLayout, source)
@@ -459,12 +463,12 @@ func (p *RecordQueryFlatMapPlan) WithQuantifiers(qs []expressions.Quantifier) (e
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryFlatMapPlan.WithQuantifiers new inner input: %w", err)
 	}
-	if !oldOuter.FlowedType().Equals(newOuter.FlowedType()) {
+	if !values.FlowedTypesEqual(oldOuter, newOuter) {
 		return nil, fmt.Errorf(
 			"RecordQueryFlatMapPlan.WithQuantifiers outer input type changed from %s to %s",
 			oldOuter.FlowedType(), newOuter.FlowedType())
 	}
-	if !oldInner.FlowedType().Equals(newInner.FlowedType()) {
+	if !values.FlowedTypesEqual(oldInner, newInner) {
 		return nil, fmt.Errorf(
 			"RecordQueryFlatMapPlan.WithQuantifiers inner input type changed from %s to %s",
 			oldInner.FlowedType(), newInner.FlowedType())
@@ -909,7 +913,12 @@ func (p *RecordQueryFlatMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan
 }
 
 func (p *RecordQueryFlatMapPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("flatmap|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("flatmap|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders both legs UNGUARDED, exactly as the raw-pointer form did: a

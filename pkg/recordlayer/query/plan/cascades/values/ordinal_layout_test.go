@@ -636,12 +636,22 @@ func TestOrdinalLayoutSnapshotsEveryMutableInputAndGetter(t *testing.T) {
 	fixture.nestedType.Fields = nil
 	fixture.fieldSourceType.Fields = nil
 
+	// The INPUT mutations above are the half of this test that still holds, and
+	// they are the important half: a caller editing the graphs it handed in must
+	// not reach the snapshot. The getter half inverted. FlowedType returns the
+	// SHARED thawed graph now, so mutating it here would write through to an
+	// INTERNED handle and corrupt every other value flowing this row — this file
+	// alone builds several — rather than proving isolation. What is asserted is
+	// the sharing, which nothing else observes and which a reintroduced defensive
+	// copy would silently undo at 128.9M objects per planner sweep. See RFC-234.
 	getterType := layout.Carrier().FlowedType().(*RecordType)
-	getterType.RecordName = "GETTER_MUTATED"
-	getterType.Fields[0] = Field{Name: "GETTER_MUTATED", Ordinal: 0, FieldType: NullableInt}
 	secondGetter := layout.Carrier().FlowedType().(*RecordType)
+	if getterType != secondGetter {
+		t.Fatalf("carrier FlowedType returned two graphs (%p, %p); the defensive copy is back",
+			getterType, secondGetter)
+	}
 	if secondGetter.RecordName != "Carrier" || secondGetter.Fields[0].Name != "OUTER_LONG" {
-		t.Fatalf("carrier FlowedType getter leaked mutation: %#v", secondGetter)
+		t.Fatalf("input mutation reached the carrier's snapshot: %#v", secondGetter)
 	}
 
 	if !layout.RawEqual(independent) || !independent.RawEqual(layout) {

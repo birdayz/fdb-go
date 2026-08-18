@@ -109,7 +109,7 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 	if !ok {
 		t.Fatalf("filter's inner = %T, want *RecordQueryDistinctPlan", inner)
 	}
-	if !dp.Streaming {
+	if !dp.IsStreaming() {
 		t.Fatal("pushed distinct must be Streaming=true — the filter's inner is ordered by the " +
 			"dedup key G, so a constructor rebuild that dropped Streaming would revert to the " +
 			"memory-heavy hash-set")
@@ -168,7 +168,7 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 	if !ok {
 		t.Fatalf("fetch's inner = %T, want *RecordQueryDistinctPlan", inner)
 	}
-	if !dp.Streaming {
+	if !dp.IsStreaming() {
 		t.Fatal("pushed distinct must be Streaming=true — the fetch's inner is ordered by the " +
 			"dedup key G, so a constructor rebuild that dropped Streaming would revert to the " +
 			"memory-heavy hash-set")

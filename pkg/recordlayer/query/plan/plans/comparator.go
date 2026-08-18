@@ -126,7 +126,12 @@ func (p *RecordQueryComparatorPlan) EqualsPlanWithoutChildren(other RecordQueryP
 // HashCodeWithoutChildren mixes comparison keys (semantic Value hashes),
 // reference index, and reverse flag.
 func (p *RecordQueryComparatorPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("comparatorplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("comparatorplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Comparator(child1, child2, ..., ref=N).

@@ -77,7 +77,7 @@ func newRecursiveUnionExpression(
 	if err != nil {
 		return nil, err
 	}
-	if !typeEquals(initialResult.FlowedType(), recursiveResult.FlowedType()) {
+	if !values.FlowedTypesEqual(initialResult, recursiveResult) {
 		return nil, fmt.Errorf("RecursiveUnionExpression result: initial type %v disagrees with recursive type %v", initialResult.FlowedType(), recursiveResult.FlowedType())
 	}
 	resultType, err := snapshotExpressionResultType("RecursiveUnionExpression", initialResult.FlowedType())

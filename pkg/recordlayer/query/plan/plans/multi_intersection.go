@@ -203,7 +203,12 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) EqualsPlanWithoutChildren(oth
 // HashCodeWithoutChildren folds the type discriminator, comparison key
 // values, and result value (semantic Value hashes — see writeValueHash).
 func (p *RecordQueryMultiIntersectionOnValuesPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("multiintersectiononvaluesplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("multiintersectiononvaluesplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders MultiIntersection(child1, child2, ...; keys=[...]).
@@ -271,7 +276,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressi
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers new child %d: %w", i, err)
 		}
-		if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+		if !values.FlowedTypesEqual(oldInput, newInput) {
 			return nil, fmt.Errorf(
 				"RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers child %d type changed from %s to %s",
 				i, oldInput.FlowedType(), newInput.FlowedType())

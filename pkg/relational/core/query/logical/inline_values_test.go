@@ -23,7 +23,21 @@ func TestNewInlineValuesFreezesExactRowType(t *testing.T) {
 			}),
 		},
 	)
-	rowType := row.Type().(*values.RecordType)
+	// The row type is spelled out rather than taken from row.Type(), because the
+	// mutation below is the point of this test and it must land in a graph THIS
+	// function owns. A graph from an accessor carries the callee's provenance,
+	// and under RFC-234 several accessors hand back the graph cached on an
+	// interned handle — mutating one of those corrupts every value flowing the
+	// shape, including in tests running in parallel. Asserted equal to row.Type()
+	// first, so spelling it out cannot drift from what the constructor produces.
+	rowType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", Ordinal: 0, FieldType: values.NotNullLong},
+		{Name: "ARR", Ordinal: 1, FieldType: &values.ArrayType{ElementType: values.NotNullLong}},
+	}}
+	if !rowType.Equals(row.Type()) {
+		t.Fatalf("the spelled-out row type %v has drifted from the constructor's %v",
+			rowType, row.Type())
+	}
 	collection := values.NewArrayConstructorValue(rowType, []values.Value{row})
 
 	source, err := NewInlineValues("V", collection)

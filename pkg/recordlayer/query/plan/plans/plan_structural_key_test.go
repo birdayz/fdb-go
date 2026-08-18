@@ -127,9 +127,8 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 		return NewRecordQueryDistinctPlan(scan)
 	}))
 	dStream := mustChecked(t, func() (*RecordQueryDistinctPlan, error) {
-		return NewRecordQueryDistinctPlan(scan)
+		return NewRecordQueryStreamingDistinctPlan(scan)
 	})
-	dStream.Streaming = true
 	assertPlanKeyUnequal(t, d1, dStream)
 
 	// typefilter — the record-type list (dedupSortedStrings-normalized at
@@ -347,7 +346,7 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 		p := mustChecked(t, func() (*RecordQueryInJoinPlan, error) {
 			return NewRecordQueryInJoinPlan(scan, binding, false, false)
 		})
-		p.SetInValues(vals)
+		p = p.WithInValues(vals)
 		return p
 	}
 	assertPlanKeyEqual(t,
@@ -363,7 +362,7 @@ func TestMigratedPlans_StructuralKeyContract(t *testing.T) {
 		p := mustChecked(t, func() (*RecordQueryInUnionPlan, error) {
 			return NewRecordQueryInUnionPlan(scan, bindings, keys, false)
 		})
-		p.SetInSources(sources)
+		p = p.WithInSources(sources)
 		return p
 	}
 	assertPlanKeyEqual(t,

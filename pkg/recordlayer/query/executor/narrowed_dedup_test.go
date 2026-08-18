@@ -216,8 +216,7 @@ func TestNarrowedDedupFor_StreamingPlanNeverNarrows(t *testing.T) {
 	innerType := exactTestRowType(values.Field{Name: "EMAIL", FieldType: values.NullableString})
 	inner := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, innerType, false))
 
-	streaming := mustExecutorConstruct(plans.NewRecordQueryDistinctPlan(inner))
-	streaming.Streaming = true
+	streaming := mustExecutorConstruct(plans.NewRecordQueryStreamingDistinctPlan(inner))
 	if narrowedDedupFor(streaming.WithNarrowedDedup("IDX_EMAIL", []int{0})) != nil {
 		t.Fatal("the executor read a narrowing off a streaming distinct; the " +
 			"streaming branch returns before this reader is reached, so the " +

@@ -790,7 +790,7 @@ func (f *fieldValue) Name() string { return "field" }
 // from the catalog set Typ to the non-nullable form.
 func (f *fieldValue) Type() Type {
 	if f != nil && f.resultType != nil {
-		return f.resultType.thaw()
+		return f.resultType.thawShared()
 	}
 	if f.Typ == nil {
 		return UnknownType
@@ -5137,7 +5137,7 @@ func (q *quantifiedObjectValue) FlowedType() Type {
 	if q == nil || q.flowed == nil {
 		return nil
 	}
-	return q.flowed.thaw()
+	return q.flowed.thawShared()
 }
 
 // SharedFlowedType is FlowedType WITHOUT the defensive copy, for readers that
@@ -5172,25 +5172,212 @@ func SharedExactType(handle ExactTypeHandle) Type {
 	return exact.thawShared()
 }
 
+// FlowedTypesEqual reports whether two quantified object values flow the same
+// row type. It is what `left.FlowedType().Equals(right.FlowedType())` asks,
+// answered from the immutable exact handles, building NEITHER graph.
+//
+// The spelling it replaces allocates two complete Type graphs to produce one
+// bool, and thaw was the single largest allocator in the planner because of it.
+// The handles are already there: a quantified object value IS an exact handle
+// plus a correlation, and comparing two handles is a pointer test, then a hash,
+// then one bytes.Equal over a canonical encoding.
+//
+// It is `exactTypesEqual` and NOT handle pointer identity, and the difference is
+// the whole reason this function exists rather than being written inline at each
+// call site. Identity is strictly STRICTER than Type.Equals: the intern table
+// keys on the record and enum NAME, while RecordType.Equals and EnumType.Equals
+// deliberately ignore it to match Java. Two Equals-equal rows can therefore hold
+// two handles, and an identity test would call them different — a false
+// negative, in the direction that changes plans. The canonical encoding
+// exact_type.go builds excludes the name precisely because Equals does, which is
+// what makes this substitution equal by construction rather than by an argument
+// about interning. exact_type_equality_differential_test.go sweeps every ordered
+// pair of a type corpus to keep it that way, and fails on 22 pairs if anyone
+// "simplifies" this to `==`.
+//
+// A value that cannot state a flowed row answers FALSE rather than panicking, as
+// the expression it replaces did when the LEFT side was unusable — and answered
+// false, inconsistently, when the right side was. Every caller here is asking
+// whether two rows are the same, and "cannot tell" and "not the same" lead to
+// the same fail-safe branch: rebuild, refuse the rewrite, miss the lookup.
+func FlowedTypesEqual(left, right QuantifiedObjectValue) bool {
+	l, lok := left.(*quantifiedObjectValue)
+	r, rok := right.(*quantifiedObjectValue)
+	if !lok || !rok || l == nil || r == nil {
+		return false
+	}
+	// The HANDLES are checked separately from the wrappers, and that is not
+	// belt-and-braces. exactTypesEqual answers `left == right` for two nils —
+	// correct for it, since it is asked whether two handles denote one type and
+	// two absences are the same absence. It is the wrong answer HERE, where the
+	// question is whether two VALUES flow the same row: a value that cannot
+	// state a row has not thereby agreed with another that also cannot.
+	// Forwarding without this check made the pair answer TRUE, which is the one
+	// direction this API promises never to take.
+	if l.flowed == nil || r.flowed == nil {
+		return false
+	}
+	return exactTypesEqual(l.flowed, r.flowed)
+}
+
+// FlowedTypeEquals reports whether value flows exactly typ.
+//
+// The other side is an ordinary Type here — a layout's carrier, a plan's
+// declared row, a query result — so there is no second handle to compare
+// against and the graph has to be walked. What this avoids is BUILDING one:
+// SharedFlowedType hands back the thawed graph cached on the interned handle,
+// so the walk runs against a value that is allocated once per interned type for
+// the life of the process instead of once per call.
+//
+// Argument order does not affect the answer. Every Type implementation's Equals
+// type-asserts the operand to its own concrete type before comparing anything,
+// so all six are symmetric, and a call site that had the ordinary type on the
+// left reads the same through here. TestTypeEqualsIsSymmetricOverTheCorpus pins
+// that rather than leaving it as a claim, because it is the one property that
+// lets these call sites be rewritten without checking each one's orientation.
+//
+// The result is READ-ONLY on the value's side and this function never lets it
+// escape — that is the whole reason the shared graph is safe here while
+// FlowedType stays the default everywhere the graph is stored or handed onward.
+func FlowedTypeEquals(value QuantifiedObjectValue, typ Type) bool {
+	shared := SharedFlowedType(value)
+	if shared == nil || typ == nil {
+		return false
+	}
+	return shared.Equals(typ)
+}
+
+// FlowedExactType returns value's flowed row as its exact handle, or nil when
+// the value cannot state one.
+//
+// It is the cheap replacement for `value.FlowedType()` at every site that only
+// interrogates the row — is there one, what code is it, is it nullable — rather
+// than needing an ordinary graph. FlowedType builds that graph, recursively, and
+// those sites then read one field off it and drop it.
+//
+// The nil is an UNTYPED nil, deliberately. Returning the (*exactType)(nil) that
+// a bad value carries would give callers a non-nil interface wrapping a nil
+// pointer, so the `!= nil` test every one of these sites performs would answer
+// TRUE for a value with no row — silently inverting the guard it replaced.
+func FlowedExactType(value QuantifiedObjectValue) ExactTypeHandle {
+	exact, ok := value.(*quantifiedObjectValue)
+	if !ok || exact == nil || exact.flowed == nil {
+		return nil
+	}
+	return exact.flowed
+}
+
+// QuantifierFlowsAScalarRow reports whether value is a quantified object value
+// whose flowed row is NOT a record — the shape an UNNEST leg over a scalar array
+// produces, where the quantifier's "row" is one bare value rather than a struct.
+//
+// It exists because both callers were spelling the same three-part test inline
+// (is it a QOV, can it state a row, is that row a non-record) and the middle
+// part is only there to make the third safe. Naming the question keeps the guard
+// from being read as redundant and dropped, which would turn "cannot state a
+// row" into "flows a scalar row" — the wrong answer, and a silently wrong output
+// LABEL rather than a crash.
+func QuantifierFlowsAScalarRow(value Value) bool {
+	qov, ok := AsQuantifiedObjectValue(value)
+	if !ok {
+		return false
+	}
+	// No nil test on the handle: AsQuantifiedObjectValue refuses a value
+	// that cannot state a row, so accepting one implies it has a handle.
+	// TestAcceptedQuantifiersAlwaysStateARow pins that pairing, because it is
+	// an invariant spanning two functions and nothing else observes it.
+	return FlowedExactType(qov).Code() != TypeCodeRecord
+}
+
+// FlowedRowShapesAgree reports whether two quantified object values denote the
+// SAME BOUND ROW, answered from the exact handles. It is
+// QuantifiedRowShapesAgree's question — see that function for why the top-level
+// nullable bit is excluded from a row's shape and why one alias legitimately
+// carries two QOVs differing only there — with neither graph built.
+//
+// Same relation, not an approximation of it: exactRowShapesAgree is the
+// handle-side twin, and every ordered pair of a type corpus is swept in
+// exact_type_equality_differential_test.go to keep the two answering alike.
+func FlowedRowShapesAgree(left, right QuantifiedObjectValue) bool {
+	l, lok := left.(*quantifiedObjectValue)
+	r, rok := right.(*quantifiedObjectValue)
+	if !lok || !rok || l == nil || r == nil {
+		return false
+	}
+	// Two absent handles are not one row — see FlowedTypesEqual for why the
+	// handle check cannot be left to exactRowShapesAgree.
+	if l.flowed == nil || r.flowed == nil {
+		return false
+	}
+	return exactRowShapesAgree(l.flowed, r.flowed)
+}
+
+// FlowedRowShapeEquals is FlowedRowShapesAgree against an ordinary Type — a
+// declared row an executor binding carries, say — where there is no second
+// handle to compare with.
+//
+// It routes the quantifier's side through the SHARED thawed graph, so the walk
+// runs against a graph allocated once per interned type rather than once per
+// call. That is the whole saving available on this shape; see FlowedTypeEquals.
+func FlowedRowShapeEquals(value QuantifiedObjectValue, typ Type) bool {
+	shared := SharedFlowedType(value)
+	if shared == nil || typ == nil {
+		return false
+	}
+	return QuantifiedRowShapesAgree(shared, typ)
+}
+
+// ExactTypesEqual reports whether two exact handles denote the same type. It is
+// FlowedTypesEqual for callers that hold bare handles rather than quantifiers —
+// an expression's snapshotted target or result type, say — and it exists for the
+// same reason: `left.Type().Equals(right.Type())` builds two whole graphs to
+// answer a boolean, and both operands were already immutable identities.
+//
+// Read its contract off exactTypesEqual, not off pointer identity: two handles
+// can denote one type and still be two objects, because interning keys on the
+// record and enum name that Type.Equals ignores.
+//
+// Two absent handles are NOT equal, matching FlowedTypesEqual. `Type()` on a nil
+// handle yields a nil Type and the comparison it replaces panicked there, so
+// there is no prior answer to preserve — and "neither side can state a type" is
+// not evidence that they state the same one.
+func ExactTypesEqual(left, right ExactTypeHandle) bool {
+	l, lok := left.(*exactType)
+	r, rok := right.(*exactType)
+	if !lok || !rok || l == nil || r == nil {
+		return false
+	}
+	return exactTypesEqual(l, r)
+}
+
 // Children returns an empty slice — the quantifier is a leaf in
 // the Value tree, with its correlation link being external metadata
 // (not a child Value).
 func (*quantifiedObjectValue) Children() []Value { return []Value{} }
 
-// Type returns a fresh copy of the exact flowed type. Nullability widening is
+// Type returns the SHARED thawed graph, read-only. Nullability widening is
 // performed once at the quantifier edge, not unconditionally here.
 //
-// The fresh copy is DELIBERATE and is pinned by
-// TestRFC232QOVSnapshotsAndDefensivelyThawsItsType, which mutates one Type()
-// result and requires the next to be unaffected. It was tried as a shared
-// read-only graph — Type() is the generic accessor the planner calls while
-// hashing and comparing, and it accounted for 78% of the allocations under
-// FlowedType — and the pin correctly rejected it: unlike the constant-valued
-// implementations that return package singletons, this graph is derived per
-// call from a handle whose identity a QOV and every memo boundary depend on.
+// It used to return a fresh copy on every call, defensively, and that copy was
+// the largest single object allocation in the planner: `exactType.thaw` at
+// 175.7M objects per planner sweep, 11.52% of everything allocated, of which
+// this accessor and its two siblings were 73%. Sharing removed 128.9M of them.
 //
-// SharedFlowedType is the named opt-out for readers that only ask the graph a
-// question, and it is where that saving belongs.
+// The defence it provided was a permission no production code exercised — a
+// go/types census over 103 packages found 21 writes into a Type field and every
+// one is into a graph its own function had just constructed. What DOES mutate a
+// Type is test code, at 60 sites, which is why the immutability gate covers test
+// files and not only production sources. RFC-234 carries the census and the
+// measurement.
+//
+// CALLERS MUST TREAT THE RESULT AS READ-ONLY. The graph is cached on an INTERNED
+// handle, so a mutation does not corrupt one caller's copy — it corrupts every
+// value that flows that shape, process-wide, including across parallel tests.
+// That failure mode is not hypothetical: flipping this accessor with the old
+// tests in place made one test's mutation reach two unrelated tests through the
+// intern table.
+//
+// FlowedType is the same graph under the name that says which type it is.
 func (q *quantifiedObjectValue) Type() Type { return q.FlowedType() }
 
 // Name returns the debug-print kind.

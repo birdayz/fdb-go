@@ -171,7 +171,12 @@ func (p *RecordQueryRecursiveDfsJoinPlan) EqualsPlanWithoutChildren(other Record
 }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("recursivedfs|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("recursivedfs|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryRecursiveDfsJoinPlan) Explain() string {

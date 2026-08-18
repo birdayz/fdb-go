@@ -130,7 +130,7 @@ If you're tempted to add a 5-line note explaining a divergence, write it as a co
 
 **A TEST FILTER THAT MATCHES NOTHING REPORTS GREEN.** `--test.run` / `--test_filter` with a name that matches no test function runs zero tests and the target still passes — Bazel will print `Executed 1 out of 1 test: 1 test passes` for a target that executed nothing you asked for. So a green from a narrowed run is a statement about the FILTER until you have checked the filter matches: confirm the pattern against the actual function names, or read the per-test output and count what ran. Never bank a narrowed green as evidence without that check.
 
-**A GREEN FROM AN EMPTY SET IS THE DOMINANT FALSE POSITIVE — AND IT WEARS AT LEAST FOURTEEN FACES.** The narrowed-filter case above is one instance of a general failure: a reporting layer that cannot distinguish *passed* from *never ran* renders both as success, so the absence of a result reads as the absence of a problem. Fourteen confirmed here:
+**A GREEN FROM AN EMPTY SET IS THE DOMINANT FALSE POSITIVE — AND IT WEARS AT LEAST FIFTEEN FACES.** The narrowed-filter case above is one instance of a general failure: a reporting layer that cannot distinguish *passed* from *never ran* renders both as success, so the absence of a result reads as the absence of a problem. Fifteen confirmed here:
 
 - a `--test.run` pattern matching no function (`TestFieldNameDecision` for a test actually named `TestFieldNameNeverDecides` — `PASS`, zero `=== RUN` lines);
 - Bazel serving a cached result, printing `Executed 0 out of 1 test: 1 test passes` — a green that ran nothing this invocation. Re-run with `--nocache_test_results` before banking it;
@@ -147,7 +147,17 @@ If you're tempted to add a 5-line note explaining a divergence, write it as a co
 - **a wait-for-completion predicate that an EMPTY population satisfies.** `all(jobs are completed)` is vacuously TRUE for zero jobs, so a loop written as "wait until nothing is pending, then check for failures" declares itself settled the instant it observes an empty list — and then finds no failures in it and reports success. Confirmed here: a CI grinder queried a run created seconds earlier, GitHub had not yet populated `.jobs`, and it printed `ALL GREEN` for a run that was still `queued` with four 2-line job logs. The author of that loop had been auditing for this exact family all shift and guarded the *classification* of failures scrupulously while leaving the *population* unchecked — which is why this face is worth naming separately from the two around it: it is not a misreading of an absent result, it is a loop concluding it is DONE because there is nothing to wait for. A completion test must require a non-empty, fully-populated set FIRST (`total >= expected`), treat a partial set as "not ready" rather than "green", and assert the success count explicitly (`passed == expected`) instead of inferring green from an empty failure list.
 - **a waiter whose pattern matches its own command line, so it can never fire.** `while pgrep -f some-marker; do sleep …; done` contains `some-marker` in the `pgrep` process's own argv, so `pgrep` finds itself, the condition never goes false, and the loop spins forever — reporting neither "finished" nor "still running". Confirmed twice here; the second time it had been described in a report as *"the commit process exited"*, a conclusion the loop was structurally incapable of reaching. The same self-match inflates any `pgrep -c` by one and makes `pkill -f` a self-kill that leaves the real target alive. This face is nastier than the others because it attacks the *remedy* for the face above it: the prescribed way to confirm a run is gone is the thing that silently never confirms it. Anchor the pattern so it cannot match itself (`pgrep -f '[s]ome-marker'`), match on the PID you launched rather than on text, or use the harness's own completion signal — and never report a process state from a loop you have not shown can terminate.
 
+- **a MUTATION that never applied, verified by a run that then passes.** Mutation testing is the prescribed way to show a gate can fire, and it inverts into the same false green the moment the edit silently misses: a `perl` pattern with one tab too many, a `sed` anchored on text that `gofumpt` has since reflowed, a replacement whose result does not compile. All three produce a green — the first two because the code is unchanged, the third because the target never ran (`FAILED TO BUILD` / `Executed 0 out of 1`, which a `grep` for `--- FAIL` renders as silence). This face is the most dangerous of the family because it corrupts the *instrument used to validate the other instruments*: every "I mutation-verified it" claim rests on the mutation having landed. Confirmed four times in a single session, twice by an author auditing for this exact family. Never interpret a mutation run without first proving the mutation is present — `grep -c` the mutated text in the same invocation — and read the build result, not only the test result. Assert NON-ZERO and assert the EFFECT; do not assert the predicted count. The arithmetic is itself a claim that fails the same way everything else here fails: `grep -c` counts LINES, so three names on one line is 1 and not 3, and an author who wrote this very rule miscounted its expected value three times in a dozen uses. It is the conjunction that is load-bearing — the mutation is present AND something reddened that did not before.
+
 The defence is always the same and it is cheap: **confirm the population is non-empty before interpreting the verdict.** Count the `=== RUN` lines, count the checks, count the rows. A gate must separate three states — passed, failed, and never-ran — because collapsing the third into the first fails OPEN, which is the direction that ships bugs. When you report a green, you are implicitly claiming something ran; make that claim checkable.
+
+**A GATE'S SCOPE SENTENCE MUST BE WRITTEN BY PROBING WHAT IT CATCHES, NOT BY DESCRIBING WHAT YOU JUST WROTE.** This is the fifteenth face's discipline applied to documentation, and it is the failure mode that survives every other check: the algorithm is right, the arms all pass, the ratchet sits at zero — and the sentence saying what it covers is broader than the code. Nothing fails, because a comment cannot fail.
+
+Measured here across six review rounds on one gate: **every single finding was a scope claim exceeding coverage, and not once a wrong algorithm.** "This closes the read end" caught 2 of 9 write spellings. "A local the call was assigned to" missed `var x = …` and alias-of-an-alias. "A range variable is a copy so mutating it is correctly silent" was false for interface payloads and pointees. Each of those sentences was written by describing the code just added, and each was true of that code and false of the claim.
+
+The compounding version is worse: a layer added to fix one over-claim arrives with its own. Three of the six findings were in code written to close the previous finding.
+
+So when a layer lands, enumerate the spellings it follows rather than characterising them — a list can be checked against reality and a characterisation cannot — and write the NOT-covered list FIRST, from shapes you actually ran, before the covered one. If a shape sits inside what the positive claim asserts, it is not a documentation gap, it is a bug in the gate.
 
 **EVERY PROOF GETS COMMITTED AS A TEST — never as a throwaway probe you delete.** If you wrote a scratch probe to establish a fact, and that fact justified a decision, the probe becomes a test. No exceptions. The instinct is to delete it once it has "done its job", and that is exactly backwards: the conclusion outlives the measurement, so the measurement is what has to survive. A deleted probe is the same failure as a filed-instead-of-fixed finding — the knowledge evaporates, and the next person either re-derives it or silently breaks the assumption it rested on.
 
@@ -265,6 +275,63 @@ booked "parity with master" into a 1.5x regression once already.
 so this one can only move by 0.04". A stale baseline moved ONE row by 0.56x while
 leaving nine within 0.04, and the nine told you nothing about the one. Re-measure;
 don't extrapolate.
+
+**`git add -A` STAGES WHATEVER ELSE IS EDITING THE WORKTREE — AND SOMETHING ELSE
+USUALLY IS.** Reviewer agents, probes and experiments run in this checkout, not in
+an isolated copy, so `add -A` snapshots the tree at one instant rather than your
+change. It happened here: a reviewer was mid-way through a six-line accessor
+experiment when `git add -A && git commit` ran, and the INDEX captured his flip
+while the worktree later held his restore. The commit would have shipped an
+unreviewed behaviour change under a message about a documentation edit.
+
+The pre-commit hook caught it — `just test` went red, `git commit` aborted,
+nothing landed. Note what that means: **`--no-verify` would have shipped it**,
+which is the concrete reason that flag is banned rather than discouraged.
+
+Two habits, the first cheap. Stage by PATH (`git add <files>`) when anything else
+might be running. And after any `add -A`, read `git diff --cached --stat` before
+committing — it diffs against HEAD, so a file you did not touch appearing in it is
+the whole signal. A staged change you cannot explain is not noise to be resolved
+by committing.
+
+**A CENSUS LOCATES WORK; ONLY A PROFILE PRICES IT.** These are different
+questions and a census answers only the first, yet a call-site count reads as a
+cost estimate — it is a number, it is large, and it sits next to the thing you
+are about to change. An RFC here was motivated by 33 `Equals`-shaped call sites
+and, after converting every one of them, moved total allocation by **0.3%**. The
+profile that motivated the RFC could have priced it directly:
+`go tool pprof -peek 'thaw$'` is one command and would have shown, before any
+code was written, that the hot callers were a different set entirely. The
+wall-clock win that did arrive came from a site the census never highlighted —
+one function rebuilding a whole Type graph, recursively, to read a slice length.
+
+This is not the "scope every count" rule wearing a new hat. That rule is about
+counting the right POPULATION; this one is about the count answering a question
+it was never asked. A perfectly scoped census still prices nothing. When the
+change is motivated by cost, the artifact in the RFC must be the cost
+measurement, and the census belongs beside it as the work-list.
+
+**A RATIO IS A FACT ABOUT TWO TREES, SO WRITE BOTH SHAS — "vs master" EXPIRES.**
+This is not the stale-baseline rule above, and obeying that one does not save you.
+A measurement taken correctly, at the true merge-base, with its baseline SHA
+written down, still rots: master MOVES, and the sentence around the number keeps
+saying "vs master" while the comparison it describes silently becomes one nobody
+made. It happened here to a booked **1.150x planner-sweep regression** that the
+whole campaign was organised around. The baseline had merged in the meantime —
+one row of that very table named a commit that was by then master's second parent
+— so the 1.184x being clawed back was master's own code. Re-measured against the
+current merge-base the branch was **0.958x: faster, never slower.**
+
+The failure is worse than a wrong number because it is self-reinforcing: work gets
+scheduled to close a gap that does not exist, and every result confirms the gap,
+because the stale baseline is still there to confirm it.
+
+So: name both SHAs, state what each WAS at the time ("`7d0435536`, the merge-base
+on 2026-08-11"), and re-measure the baseline — not just the branch — whenever the
+number is about to be quoted in a decision. And when the two baselines disagree,
+measure the OLD one too: the difference between them is a real quantity about
+master, and here it was master getting 1.178x slower, which is a finding in its
+own right rather than an error term.
 
 Compare row counts + durations. Record results in `TODO.md` "Stress test 1M baseline" table. Key thresholds: point lookups <5ms, full scans ~3s/1M, index equality <10ms.
 

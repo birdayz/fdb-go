@@ -144,15 +144,33 @@ func LayoutWithSeedLegs(layout OrdinalLayout, resultValue Value) OrdinalLayout {
 	if concrete.carrier.sourceLayout != nil && len(concrete.carrier.sourceLayout.legs) > 0 {
 		return layout
 	}
-	record, isRecord := concrete.carrier.flowed.thaw().(*RecordType)
-	if !isRecord || record == nil {
+	// The handle answers both questions this needs — is the carrier a concrete
+	// record, and how many top-level fields does it have — so nothing is thawed.
+	// It used to build the whole Type graph, recursively, and read len(Fields)
+	// off it: 1.34 GB over a single planner sweep, 15.8% of everything thaw
+	// allocated, for a field count that is a slice length on an immutable node.
+	//
+	// anyRecord is excluded because the thawed form excluded it: the erased
+	// record thaws to anyRecordType rather than *RecordType, so the type
+	// assertion failed and the layout came back untouched.
+	//
+	// The exclusion is DEFENCE, not an observable arm, and saying so is the
+	// honest version — dropping it changes no answer today, because an erased
+	// record reports zero fields and SeedTilingLegs refuses a width of zero. That
+	// refusal is what makes this redundant, so it is what
+	// TestSeedTilingLegsRefusesAZeroWidthRow pins: relax it and this guard
+	// becomes load-bearing, and a row whose shape is unknown starts claiming a
+	// tiling.
+	carrierRow := concrete.carrier.flowed
+	if carrierRow == nil || carrierRow.code != TypeCodeRecord || carrierRow.anyRecord {
 		return layout
 	}
-	legs := SeedTilingLegs(resultValue, len(record.Fields))
+	fieldCount := len(carrierRow.fields)
+	legs := SeedTilingLegs(resultValue, fieldCount)
 	if legs == nil {
 		return layout
 	}
-	nested := make([]*qovRecordLayout, len(record.Fields))
+	nested := make([]*qovRecordLayout, fieldCount)
 	if concrete.carrier.sourceLayout != nil {
 		copy(nested, concrete.carrier.sourceLayout.fields)
 	}

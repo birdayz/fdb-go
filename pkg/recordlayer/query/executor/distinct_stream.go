@@ -19,7 +19,7 @@ import (
 // (TODO.md C5).
 //
 // REQUIRES the inner ordered so equal rows are adjacent. The planner
-// (ImplementDistinctFinalRule) sets RecordQueryDistinctPlan.Streaming only when
+// (ImplementDistinctFinalRule) sets RecordQueryDistinctPlan.streaming only when
 // it guarantees that ordering (an ordered index today; an inserted sort in the
 // follow-up). Over UNORDERED input this would silently drop non-adjacent
 // duplicates and keep adjacent ones — a wrong-rows hazard — hence the flag gate.

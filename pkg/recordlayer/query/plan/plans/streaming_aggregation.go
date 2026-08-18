@@ -288,7 +288,12 @@ func (p *RecordQueryStreamingAggregationPlan) EqualsPlanWithoutChildren(other Re
 }
 
 func (p *RecordQueryStreamingAggregationPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("streamagg|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("streamagg|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryStreamingAggregationPlan) Explain() string {
@@ -329,7 +334,7 @@ func (p *RecordQueryStreamingAggregationPlan) WithQuantifiers(qs []expressions.Q
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryStreamingAggregationPlan.WithQuantifiers new input: %w", err)
 	}
-	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+	if !values.FlowedTypesEqual(oldInput, newInput) {
 		return nil, fmt.Errorf(
 			"RecordQueryStreamingAggregationPlan.WithQuantifiers input type changed from %s to %s",
 			oldInput.FlowedType(), newInput.FlowedType())
@@ -379,7 +384,7 @@ func validateStreamingAggregationOldInputRoots(
 			return true
 		}
 		if root.Correlation() == input.Correlation() {
-			if root.FlowedType().Equals(input.FlowedType()) {
+			if values.FlowedTypesEqual(root, input) {
 				return true
 			}
 			if !selected {
@@ -407,7 +412,7 @@ func validateStreamingAggregationOldInputRoots(
 				rootErr = fmt.Errorf("current QOV root is not the selected input layout carrier")
 				return false
 			}
-			if !selected && !root.FlowedType().Equals(input.FlowedType()) {
+			if !selected && !values.FlowedTypesEqual(root, input) {
 				rootErr = fmt.Errorf(
 					"current QOV root type %s disagrees with input edge type %s",
 					root.FlowedType(), input.FlowedType())

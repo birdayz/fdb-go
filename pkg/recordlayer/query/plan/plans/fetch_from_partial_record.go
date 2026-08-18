@@ -165,7 +165,12 @@ func (p *RecordQueryFetchFromPartialRecordPlan) EqualsPlanWithoutChildren(other 
 }
 
 func (p *RecordQueryFetchFromPartialRecordPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("fetchfrompartialrecordplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("fetchfrompartialrecordplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Fetch(inner).

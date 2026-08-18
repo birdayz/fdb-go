@@ -140,21 +140,35 @@ func RecordSelectResultMint(site SelectResultMintSite, rv Value) {
 // UnknownType singleton: an equivalent unknown built elsewhere is just as
 // untyped, and keying on the shared variable would call it typed. `Typ != nil`
 // would be a tautology — every constructible QOV has a non-nil Typ.
+// Both this and the spelling below read the HANDLE rather than FlowedType().
+// They are census helpers, so they run on every minted QOV whether or not the
+// census is reporting, and FlowedType() would build — and drop — a whole Type
+// graph per call to read one field off it.
+//
+// The nil receiver guard is not defensive noise: FlowedType() answers nil for a
+// nil receiver, so it was already total, and reading the field directly is what
+// makes the check necessary.
 func quantifiedObjectValueCarriesAType(qov *quantifiedObjectValue) bool {
-	return qov.FlowedType() != nil && qov.FlowedType().Code() != TypeCodeUnknown
+	return qov != nil && qov.flowed != nil && qov.flowed.code != TypeCodeUnknown
 }
 
 // describeMintedQOVType spells the flowed type, with a record's ARITY, because
 // the boolean above and the spelling answer different questions: a mint counted
 // as typed-but-not-a-row is a different fact from one carrying a real row.
+//
+// anyRecord is excluded from the arity arm deliberately, preserving what the
+// thawed spelling did: the erased record thaws to anyRecordType, which is not a
+// *RecordType, so it fell through to the bare code and printed RECORD. It has no
+// field list to count, and printing RecordType(0) for it would make the erased
+// shape indistinguishable from the concrete zero-field unit record.
 func describeMintedQOVType(qov *quantifiedObjectValue) string {
-	if qov.FlowedType() == nil {
+	if qov == nil || qov.flowed == nil {
 		return "<nil>"
 	}
-	if rt, ok := qov.FlowedType().(*RecordType); ok {
-		return fmt.Sprintf("RecordType(%d)", len(rt.Fields))
+	if qov.flowed.code == TypeCodeRecord && !qov.flowed.anyRecord {
+		return fmt.Sprintf("RecordType(%d)", len(qov.flowed.fields))
 	}
-	return qov.FlowedType().Code().String()
+	return qov.flowed.code.String()
 }
 
 // SelectResultMintOriginOf reports the site that MINTED rv, and whether any did.

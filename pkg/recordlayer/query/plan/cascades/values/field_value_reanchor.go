@@ -565,7 +565,7 @@ func quantifiedRootsDenoteTheSameRow(candidate, requested *quantifiedObjectValue
 	if requested.correlation.isCurrent() {
 		return false
 	}
-	return QuantifiedRowShapesAgree(candidate.flowed.Type(), requested.flowed.Type())
+	return exactRowShapesAgree(candidate.flowed, requested.flowed)
 }
 
 // leafColumnAppearsMoreThanOnce reports whether more than one of rc's output

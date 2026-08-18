@@ -146,7 +146,7 @@ func (e *UpdateExpression) EqualsWithoutChildren(other RelationalExpression, ali
 	if e.targetRecordType != o.targetRecordType {
 		return false
 	}
-	if !typeEquals(e.targetType.Type(), o.targetType.Type()) {
+	if !values.ExactTypesEqual(e.targetType, o.targetType) {
 		return false
 	}
 	if len(e.transforms) != len(o.transforms) {

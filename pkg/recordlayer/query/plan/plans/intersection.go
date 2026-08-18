@@ -256,7 +256,12 @@ func (p *RecordQueryIntersectionPlan) EqualsPlanWithoutChildren(other RecordQuer
 // Values (semantic hashes — see writeValueHash), pairing with the semantic
 // key equality above so equal⟹same-hash holds.
 func (p *RecordQueryIntersectionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("intersectionplan")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("intersectionplan")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Intersection(inner1, inner2, ...), appending REVERSE only

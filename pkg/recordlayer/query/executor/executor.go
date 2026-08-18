@@ -2143,7 +2143,7 @@ func executeDistinct(
 	// (gen.DedupContinuation). This is the fix for the fresh-per-page hash-set's
 	// cross-page re-admission (TODO.md C5) — a Go-internal continuation, since
 	// SELECT DISTINCT is a Go-only extension.
-	if p.Streaming {
+	if p.IsStreaming() {
 		var innerCont []byte
 		var lastKey string
 		var hasLast bool
@@ -3657,7 +3657,7 @@ func nestedLoopJoinOutputSourceOrigins(
 
 	origins := make(map[values.CorrelationIdentifier]outputSourceOrigin)
 	for _, outputSource := range outputLayout.WindowSources() {
-		if outputSource == nil || outputSource.FlowedType() == nil {
+		if values.FlowedExactType(outputSource) == nil {
 			continue
 		}
 		outputNullSupplying, outputNullErr := values.LayoutWindowNullSupplying(
@@ -3688,7 +3688,7 @@ func nestedLoopJoinOutputSourceOrigins(
 						return nil, layoutBindingError(values.CorrelationTypeConflict,
 							"nested-loop join retained source has no nullable selected-child type")
 					}
-					if !expectedType.Equals(childSource.FlowedType()) {
+					if !values.FlowedTypeEquals(childSource, expectedType) {
 						widenedSource, widenErr := values.NewQuantifiedObjectValue(
 							childSource.Correlation(), expectedType)
 						if widenErr != nil {
@@ -3697,7 +3697,7 @@ func nestedLoopJoinOutputSourceOrigins(
 						expectedSource = widenedSource
 					}
 				}
-				compatible := expectedSource.FlowedType().Equals(outputSource.FlowedType())
+				compatible := values.FlowedTypesEqual(expectedSource, outputSource)
 				if !compatible {
 					normalized, normalizeErr := values.TranslateLogicalSourceNameNormalization(
 						expectedSource, expectedSource.Correlation(), outputSource)

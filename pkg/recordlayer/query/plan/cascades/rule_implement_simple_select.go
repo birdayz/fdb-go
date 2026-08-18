@@ -222,7 +222,7 @@ func isSimplePassthroughOf(v values.Value, q expressions.Quantifier) bool {
 		// never a dropped one.
 		return false
 	}
-	return qov.FlowedType().Equals(flowedType)
+	return values.FlowedTypeEquals(qov, flowedType)
 }
 
 var _ ImplementationRule = (*ImplementSimpleSelectRule)(nil)

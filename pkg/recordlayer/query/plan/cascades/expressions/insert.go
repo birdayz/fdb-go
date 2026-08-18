@@ -107,7 +107,7 @@ func (e *InsertExpression) EqualsWithoutChildren(other RelationalExpression, _ *
 	if e.targetRecordType != o.targetRecordType {
 		return false
 	}
-	return typeEquals(e.targetType.Type(), o.targetType.Type())
+	return values.ExactTypesEqual(e.targetType, o.targetType)
 }
 
 // HashCodeWithoutChildren mixes a class-discriminating constant with
@@ -127,24 +127,3 @@ func (e *InsertExpression) WithQuantifiers(quantifiers []Quantifier) (Relational
 }
 
 var _ RelationalExpression = (*InsertExpression)(nil)
-
-// typeEquals is a pragma-shim for Type equality. Each Type subtype in
-// values/ has its own Equals(Type) method but the Type interface
-// itself doesn't declare it. Until the interface gains Equals (B0
-// follow-on), this shim type-switches.
-func typeEquals(a, b values.Type) bool {
-	switch ta := a.(type) {
-	case *values.PrimitiveType:
-		return ta.Equals(b)
-	case *values.RecordType:
-		return ta.Equals(b)
-	case *values.ArrayType:
-		return ta.Equals(b)
-	case *values.EnumType:
-		return ta.Equals(b)
-	case *values.RelationType:
-		return ta.Equals(b)
-	default:
-		return a == b // singleton fallback (UnknownType, NullType, NoneType, AnyType)
-	}
-}

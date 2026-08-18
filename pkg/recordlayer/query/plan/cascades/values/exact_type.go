@@ -9,12 +9,34 @@ import (
 )
 
 // ExactTypeHandle is an immutable read view of a checked type snapshot.
-// Type returns a fresh ordinary graph and CanonicalBytes returns a defensive
-// copy, so no caller can mutate the identity held by a QOV or memo boundary.
+//
+// Type returns the SHARED thawed graph and callers must treat it as READ-ONLY;
+// CanonicalBytes still returns a defensive copy, because those bytes ARE the
+// identity a QOV and every memo boundary compare on, and handing out the slice
+// would let a caller move an interning key.
+//
+// The asymmetry is deliberate and is the whole shape of RFC-234: the ordinary
+// Type graph is a DERIVATION of the identity and nothing in production writes to
+// one, so it can be shared; the canonical bytes are the identity itself.
 type ExactTypeHandle interface {
 	Type() Type
 	CanonicalBytes() []byte
 	RelationInner() (ExactTypeHandle, bool)
+
+	// Code and IsNullable answer the two questions a caller most often wants
+	// from a handle, WITHOUT thawing it. Both were previously reachable only as
+	// `handle.Type().Code()`, which builds an entire Type graph — recursively,
+	// for a record — and discards it to read one field. thaw was the largest
+	// single allocator in the planner, and this was one of the routes into it.
+	//
+	// They are on the INTERFACE rather than beside it as free functions because
+	// a handle that cannot state its own code is not a type identity, and
+	// because the interface is sealed by isExactTypeHandleView: no
+	// implementation outside this package can exist, so widening it breaks
+	// nobody.
+	Code() TypeCode
+	IsNullable() bool
+
 	isExactTypeHandleView()
 }
 
@@ -115,11 +137,41 @@ func (e *exactType) thawShared() Type {
 
 func (*exactType) isExactTypeHandleView() {}
 
+// Code reports the snapshotted type's TypeCode. A nil handle answers
+// TypeCodeUnknown, which is the code the type system already uses for "no
+// resolved type" — a nil handle states no type, so it has no other honest
+// answer, and returning it keeps the accessor total where Type().Code() was not.
+func (e *exactType) Code() TypeCode {
+	if e == nil {
+		return TypeCodeUnknown
+	}
+	return e.code
+}
+
+// IsNullable reports whether the snapshotted type's TOP level admits NULL.
+// Nested nullability lives on the children, exactly as it does on the thawed
+// graph. A nil handle answers false: absence of a type is not a nullable type.
+func (e *exactType) IsNullable() bool {
+	if e == nil {
+		return false
+	}
+	return e.nullable
+}
+
+// Type returns the SHARED thawed graph, read-only — see the ExactTypeHandle
+// interface doc for the contract and QOV.Type for the measurement that motivated
+// dropping the defensive copy.
+//
+// The graph is cached on THIS handle, and handles are interned, so a caller that
+// writes to the result corrupts every value flowing that shape rather than its
+// own copy. Anything that needs to modify the graph must build one:
+// thaw() is the private, unshared form and physicalFlowedRecordType is the one
+// caller that legitimately uses it.
 func (e *exactType) Type() Type {
 	if e == nil {
 		return nil
 	}
-	return e.thaw()
+	return e.thawShared()
 }
 
 func (e *exactType) CanonicalBytes() []byte {
@@ -702,7 +754,111 @@ func QuantifiedRowShapesAgree(left, right Type) bool {
 	if left.IsNullable() == right.IsNullable() {
 		return left.Equals(right)
 	}
-	return left.Equals(WithNullability(right, left.IsNullable()))
+	return typeShapesAgreeBelowTheTop(left, right)
+}
+
+// typeShapesAgreeBelowTheTop answers "equal apart from the top-level nullable
+// bit" WITHOUT rebuilding either side, and it is the arm QuantifiedRowShapesAgree
+// takes when the two bits differ.
+//
+// The obvious way to say that is left.Equals(WithNullability(right, …)), and it
+// was how this read. It is wrong twice.
+//
+// It PANICS on three type classes, and the panic is not a contract check.
+// WithNullability refuses to flip RELATION (never nullable), NONE (never
+// nullable) and ANY (always nullable), because for those a flip is a programming
+// error — a correct and deliberate guard, in a function that is being asked to
+// BUILD a type. Reached through this comparison it fires on half the input class
+// and only by accident: with a RELATION on the right the panic needs the LEFT
+// side to be nullable, and a non-nullable left answers false for the identical
+// input. A guard that crashes on one caller and answers on another is not
+// guarding anything, and both those callers are asking a question, not
+// requesting a type. The reachable shape is real, not theoretical: this runs on
+// an arbitrary Value's Type() at two rule sites, against a quantifier's flowed
+// row that an outer join legitimately widens to nullable.
+//
+// It also ALLOCATES. WithNullability on a RecordType builds a whole new
+// RecordType — on a planner-hot comparison path, to produce one bool.
+//
+// The relation this computes is the SAME one, established by construction rather
+// than by claim. Every Equals implementation type-asserts other to its own
+// concrete type and then compares Nullable plus a payload, and WithNullability
+// preserves the concrete type while setting Nullable to exactly the value the
+// left side carries. So the Nullable comparison inside that Equals passes by
+// construction and can decide nothing, leaving precisely "same concrete type,
+// and payload-equal" — which is what the switch below computes directly. The
+// per-pair agreement is pinned in exact_type_equality_differential_test.go
+// against the old expression, including its panics.
+//
+// The default arm answers false for a Type implementation from outside this
+// package, and that IS a behaviour change rather than the same answer. The
+// reason first written here — "the contract requires comparing Nullable, the
+// bits differ, so the old expression returned false too" — is wrong: the bits
+// differ between left and the ORIGINAL right, while Equals sees the NORMALISED
+// right, whose bit already equals left's. A contract-abiding foreign left with a
+// matching payload therefore answered true before and answers false now.
+//
+// It is unreachable: the six Equals implementations under pkg/ are all in
+// type.go, the interface is satisfied nowhere else, and adding a seventh is what
+// would arm this. It is taken deliberately rather than papered over, because the
+// alternative — dispatching an unknown left back through Equals with a rebuilt
+// operand — restores in full the two defects this function exists to remove, and
+// restores them for the one input class that does not exist.
+func typeShapesAgreeBelowTheTop(left, right Type) bool {
+	switch l := left.(type) {
+	case anyRecordType:
+		_, ok := right.(anyRecordType)
+		return ok
+	case *PrimitiveType:
+		r, ok := right.(*PrimitiveType)
+		return ok && l.TypeCode == r.TypeCode
+	case *RecordType:
+		r, ok := right.(*RecordType)
+		if !ok || len(l.Fields) != len(r.Fields) {
+			return false
+		}
+		for i := range l.Fields {
+			if !l.Fields[i].Equals(r.Fields[i]) {
+				return false
+			}
+		}
+		// RecordName is deliberately not compared, because RecordType.Equals
+		// does not compare it either — provenance, not shape, matching Java.
+		return true
+	case *ArrayType:
+		r, ok := right.(*ArrayType)
+		if !ok {
+			return false
+		}
+		if l.ElementType == nil || r.ElementType == nil {
+			return l.ElementType == r.ElementType
+		}
+		return l.ElementType.Equals(r.ElementType)
+	case *EnumType:
+		r, ok := right.(*EnumType)
+		if !ok || len(l.Values) != len(r.Values) {
+			return false
+		}
+		for i := range l.Values {
+			if !l.Values[i].Equals(r.Values[i]) {
+				return false
+			}
+		}
+		return true
+	case *RelationType:
+		// Unreachable from QuantifiedRowShapesAgree: RelationType.IsNullable is a
+		// constant false, so a relation on the LEFT can only reach the equal-bits
+		// arm above. Spelled out anyway, because this function states a relation
+		// over Types and a hole in it becomes a wrong answer the moment anything
+		// else calls it — and because a `default` swallowing RELATION would read
+		// as deliberate.
+		r, ok := right.(*RelationType)
+		if !ok || l.IsErased() != r.IsErased() {
+			return false
+		}
+		return l.IsErased() || l.InnerType.Equals(r.InnerType)
+	}
+	return false
 }
 
 // DescribeType renders a Type as a compact, comparable shape for a diagnostic:

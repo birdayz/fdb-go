@@ -200,7 +200,12 @@ func (p *RecordQueryScanPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) b
 }
 
 func (p *RecordQueryScanPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("scanplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("scanplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders a one-line label.

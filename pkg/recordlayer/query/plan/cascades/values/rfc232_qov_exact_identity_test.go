@@ -133,10 +133,31 @@ func TestRFC232QOVTypePreservesSuppliedNullability(t *testing.T) {
 	}
 }
 
-func TestRFC232QOVSnapshotsAndDefensivelyThawsItsType(t *testing.T) {
+// TestRFC232QOVSnapshotsAndSharesItsThawedType asserts two DIFFERENT things, and
+// only one of them changed when Type() stopped copying.
+//
+// The snapshot half — a caller mutating the graph it supplied cannot reach the
+// QOV — is unchanged and matters MORE under sharing, not less: it is what keeps
+// a caller's later edit out of a graph the whole process now reads.
+//
+// The freshness half inverted. It used to require that mutating one Type()
+// result leaves the next unaffected; the guard's direction is now the opposite,
+// because the alarm moved. What is dangerous is no longer "the graph is shared"
+// but "a Type was mutated at all", and that is watched by the immutability gate
+// rather than here. So this asserts the SAME POINTER: a reintroduced defensive
+// copy is a performance regression of 128.9M objects per planner sweep, and
+// without this assertion nothing would notice it.
+//
+// The mutation that used to live here is deleted rather than moved. Under
+// sharing it wrote through to an INTERNED handle, and interning keys on shape,
+// so it corrupted two unrelated tests that happened to snapshot the same record
+// — order-dependently, under t.Parallel(). That is what the gate exists to
+// prevent, and a test may not be the one place it is allowed.
+func TestRFC232QOVSnapshotsAndSharesItsThawedType(t *testing.T) {
 	t.Parallel()
 
-	fieldType := values.NewPrimitiveType(values.TypeCodeLong, false)
+	// Built as a literal, not via the constructor: this test MUTATES it below.
+	fieldType := &values.PrimitiveType{TypeCode: values.TypeCodeLong}
 	supplied := &values.RecordType{
 		RecordName: "R",
 		Nullable:   false,
@@ -166,14 +187,18 @@ func TestRFC232QOVSnapshotsAndDefensivelyThawsItsType(t *testing.T) {
 		t.Fatalf("caller mutation reached exact QOV snapshot: %#v", first)
 	}
 
-	// Type() itself returns a fresh graph. Mutating one thaw cannot mutate the
-	// next thaw or the cached hash.
-	first.RecordName = "THAW-MUTATED"
-	first.Fields[0].Name = "THAW-FIELD-MUTATED"
+	// Type() returns the SHARED graph: the same pointer, every call. Asserted
+	// because a reintroduced defensive copy passes every correctness test in this
+	// file and costs 128.9M objects per planner sweep.
 	second := qov.Type().(*values.RecordType)
-	if second.RecordName != "R" || second.Fields[0].Name != "ID" {
-		t.Fatalf("mutation of one Type() result reached a later result: %#v", second)
+	if first != second {
+		t.Fatalf("QOV.Type() returned two different graphs (%p, %p); the defensive "+
+			"copy is back. It was removed deliberately — see RFC-234 — and nothing "+
+			"else in the suite observes its return", first, second)
 	}
+	// The identity is unmoved by any of the above. The hash is computed from the
+	// canonical bytes, which CanonicalBytes still copies defensively precisely
+	// because they ARE the identity rather than a derivation of it.
 	if afterHash := values.SemanticHashCode(qov); afterHash != beforeHash {
 		t.Fatalf("QOV hash changed after external type mutation: %d -> %d", beforeHash, afterHash)
 	}

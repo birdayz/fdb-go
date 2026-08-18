@@ -154,7 +154,12 @@ func (p *RecordQueryLoadByKeysPlan) EqualsPlanWithoutChildren(other RecordQueryP
 // HashCodeWithoutChildren mixes the type discriminator + key source
 // string representation.
 func (p *RecordQueryLoadByKeysPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("loadbykeysplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("loadbykeysplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders LoadByKeys(source).

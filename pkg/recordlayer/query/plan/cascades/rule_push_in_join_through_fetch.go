@@ -98,9 +98,9 @@ func (r *PushInJoinThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 	if inValues := inJoinPlan.GetInValues(); inValues != nil {
-		pushedInJoinPlan.SetInValues(inValues)
+		pushedInJoinPlan = pushedInJoinPlan.WithInValues(inValues)
 	}
-	pushedInJoinPlan.SetSourceKind(inJoinPlan.GetSourceKind())
+	pushedInJoinPlan = pushedInJoinPlan.WithSourceKind(inJoinPlan.GetSourceKind())
 
 	// Memoize the pushed InJoin.
 	pushedInJoinRef := call.MemoizeFinalExpression(pushedInJoinPlan)

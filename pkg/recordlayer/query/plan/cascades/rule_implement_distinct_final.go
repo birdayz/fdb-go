@@ -869,7 +869,7 @@ func newPhysicalDistinctFor(call *ImplementationRuleCall, member expressions.Rel
 // executor: the member's ordering must make the whole-row dedup key adjacent
 // (equal rows contiguous), the same adjacency predicate streaming aggregation
 // uses for its grouping keys. This is the SOLE gate for
-// RecordQueryDistinctPlan.Streaming and MUST be re-evaluated at every site that
+// RecordQueryDistinctPlan.streaming and MUST be re-evaluated at every site that
 // (re)builds a distinct over a different inner — the push-through-filter/fetch
 // rules included — so a rebuild never silently downgrades a streaming distinct
 // to the memory-heavy hash-set, nor promotes an unordered inner to

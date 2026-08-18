@@ -892,7 +892,7 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 	if !ok {
 		t.Fatalf("newPhysicalDistinctFor = %T, want *plans.RecordQueryDistinctPlan", got)
 	}
-	if !dp.Streaming {
+	if !dp.IsStreaming() {
 		t.Fatal("streaming-eligible member must yield Streaming=true")
 	}
 	innerRef := dp.GetInnerQuantifier().GetRangesOver()
@@ -916,7 +916,7 @@ func TestNewPhysicalDistinctFor_FreezesStreamingInner(t *testing.T) {
 	if !ok {
 		t.Fatalf("newPhysicalDistinctFor = %T, want *plans.RecordQueryDistinctPlan", gotPlain)
 	}
-	if dpPlain.Streaming {
+	if dpPlain.IsStreaming() {
 		t.Fatal("non-streaming-eligible member must yield Streaming=false")
 	}
 	plainInnerRef := dpPlain.GetInnerQuantifier().GetRangesOver()

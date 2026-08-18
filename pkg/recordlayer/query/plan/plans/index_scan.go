@@ -413,7 +413,12 @@ func (p *RecordQueryIndexPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) 
 }
 
 func (p *RecordQueryIndexPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("indexplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("indexplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders a one-line label. A bare index scan is never covering — a

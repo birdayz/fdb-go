@@ -6019,7 +6019,7 @@ func fieldValueMatchesAggregateGroupKey(candidate, key values.Value, agg *logica
 	cq, cHasQOV := values.AsQuantifiedObjectValue(cf.ChildValue())
 	kq, kHasQOV := values.AsQuantifiedObjectValue(kf.ChildValue())
 	return cHasQOV && kHasQOV && cq.Correlation() == kq.Correlation() &&
-		cq.FlowedType().Equals(kq.FlowedType())
+		values.FlowedTypesEqual(cq, kq)
 }
 
 func normalizeAggregateBindingName(s string) string {

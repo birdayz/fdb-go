@@ -20,7 +20,7 @@ import (
 // explode alias against the index scan's fixed equality binding and sets
 // sorted=true unconditionally. Before this fix, extractInValues copied the
 // literal list straight from the SQL text's (3, 1, 2) order into
-// SetInValues, so the plan claimed sorted=true while iterating 3, 1, 2.
+// WithInValues, so the plan claimed sorted=true while iterating 3, 1, 2.
 //
 // There is no ORDER BY here on purpose: this query has no downstream
 // InMemorySort to correct row order, so the raw row sequence IS the

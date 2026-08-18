@@ -465,11 +465,11 @@ func cardinalityCostShapes() []cardinalityCostShape {
 		p := mustBuild(t, captureBuild(plans.NewRecordQueryInJoinPlan(
 			pointLookupScan(t, "INJ_PP", "ID"), "inj_binding", false, false)))
 
-		p.SetInValues([]any{int64(1), int64(2), int64(3)})
+		p = p.WithInValues([]any{int64(1), int64(2), int64(3)})
 		return p
 	})
 	add("inJoin/unboundedInList_blindSpot", func(t *testing.T) plans.RecordQueryPlan {
-		// No SetInValues call -> the in-list size is unknown at plan time, so
+		// No WithInValues call -> the in-list size is unknown at plan time, so
 		// the property abstains (UnknownMaxCardinality) -- documented BLIND
 		// SPOT: the cost model still charges a conservative default (10 rows).
 		return mustBuild(t, captureBuild(plans.NewRecordQueryInJoinPlan(
@@ -483,7 +483,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 			child, []string{"inu_b"},
 			[]values.Value{mustCardinalityField(t, child, "K")}, false)))
 
-		p.SetInSources([][]any{{int64(1), int64(2), int64(3)}})
+		p = p.WithInSources([][]any{{int64(1), int64(2), int64(3)}})
 		return p
 	})
 	add("inUnion/emptySource", func(t *testing.T) plans.RecordQueryPlan {
@@ -492,7 +492,7 @@ func cardinalityCostShapes() []cardinalityCostShape {
 			child, []string{"inu_b2"},
 			[]values.Value{mustCardinalityField(t, child, "K")}, false)))
 
-		p.SetInSources([][]any{{}})
+		p = p.WithInSources([][]any{{}})
 		return p
 	})
 

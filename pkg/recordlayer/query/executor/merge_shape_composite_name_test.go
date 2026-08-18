@@ -70,8 +70,18 @@ func TestRowIsMergeShapedOverCompositeColumn(t *testing.T) {
 	}
 
 	// And on a row carrying explicit leg boundaries, which is the other arm.
-	legged := NewPositionalRow(positionalTypeFromNames([]string{"A", "B"}))
-	legged.Type.Legs = []values.RecordTypeLeg{{Start: 0, Width: 2}}
+	// The leg table is stated in the type this test BUILDS, rather than written
+	// into a graph a constructor handed back. positionalTypeFromNames does
+	// allocate, but that is a fact about another function; a Type graph is shared
+	// under RFC-234 and the writer has to own what it writes.
+	leggedType := &values.RecordType{
+		Fields: []values.Field{
+			{Name: "A", FieldType: values.UnknownType, Ordinal: 0},
+			{Name: "B", FieldType: values.UnknownType, Ordinal: 1},
+		},
+		Legs: []values.RecordTypeLeg{{Start: 0, Width: 2}},
+	}
+	legged := NewPositionalRow(leggedType)
 	if !rowIsMergeShaped(legged) {
 		t.Fatal("a row with leg boundaries stopped reading as merge-shaped")
 	}

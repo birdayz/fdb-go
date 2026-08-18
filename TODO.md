@@ -1366,7 +1366,7 @@ closed rather than silently alter rows or output schema.
   through would have meant a parallel representation, not a fix.
   `in_source.go` now holds `sortInJoinValues(vals, reverse) (sorted []any,
   ok bool)`, the actual Java port, called from `OnMatch` right before
-  `SetInValues` — sorts a copy with `sort.SliceStable` (Java's `List.sort`
+  `WithInValues` — sorts a copy with `sort.SliceStable` (Java's `List.sort`
   is stable too) over `values.CompareOrdered` (new,
   `values/compare_ordered.go` — moved out of the executor's
   `compareValues`, which is now a one-line delegate, so the sort and the
@@ -18317,7 +18317,10 @@ flight on the campaign above.
 
 ### Two more milestones the review surfaced, both port-faithful
 
-- [ ] **Memoize the structural key / structural hash per plan object.** Java computes
+- [x] **Memoize the structural key / structural hash per plan object.** SHIPPED — see
+      the resolution paragraph at the end of this item before reading the analysis
+      below, which is preserved as the reasoning that led there and contains one
+      superseded claim called out in place. Java computes
       each expression's structural hash ONCE per object —
       `Suppliers.memoize(this::computeHashCodeWithoutChildren)` at
       `cascades/expressions/AbstractRelationalExpression.java:43`, exposed as
@@ -18353,18 +18356,51 @@ flight on the campaign above.
 
       Java does not face this because its plans have no `WithXxx` mutators at all;
       `Suppliers.memoize` sits on an object built once by a constructor. So the design
-      question to settle FIRST is whether Go routes every plan copy through one helper
-      that clears the memo, or drops the copy-builders in favour of constructors. That
-      is a Cascades design change and needs a Graefe ACK before implementation, per the
-      review-cadence rule.
+      question posed here was whether Go routes every plan copy through one helper that
+      clears the memo, or drops the copy-builders in favour of constructors.
 
-      This campaign's answer to that term was to SHRINK the key — `part` 312 -> 96
-      bytes, `structuralKeyInlineParts` 8 -> 4 — a real ~6x win on a cost **Java does
-      not pay at all**. Go's plans are immutable after construction, which is the same
-      precondition `Suppliers.memoize` relies on, so the port-faithful fix is
-      available and is strictly better than shrinking. Do NOT delete
-      `plan_structural_key_size_test.go` when this lands: a memoized key still gets
-      built once per object, so its size still matters, just less.
+      An earlier draft of this item ALSO asserted, a few lines below, that "Go's plans
+      are immutable after construction, which is the same precondition
+      `Suppliers.memoize` relies on". That directly contradicted the prerequisite
+      recorded above and was the older, superseded text — written before the two
+      `RecordQueryAggregateIndexPlan` builders were found writing their receiver. It is
+      removed rather than left to be read as agreement, since a reader arriving at it
+      first would conclude the precondition already held.
+
+      The other half of that paragraph stands and is not superseded: this campaign's
+      answer to the term was to SHRINK the key — `part` 312 -> 96 bytes,
+      `structuralKeyInlineParts` 8 -> 4 — a real ~6x win on a cost **Java does not pay
+      at all**. Do NOT delete `plan_structural_key_size_test.go`: a memoized key still
+      gets built once per object, so its size still matters, just less.
+
+      **RESOLUTION — the answer was NEITHER of the two options above.** No copy helper,
+      no move to constructors. The memo is a `*hashMemoCell` on `PlanExprBase` holding
+      an `atomic.Pointer[hashMemoState]`, where the state pairs a hash with the plan it
+      was computed FOR. An atomic reached through a pointer is never itself copied, so
+      `cp := *p` keeps compiling and `go vet`'s copylocks has nothing to reject; the
+      cell is shared by the copy, and correctness comes from an owner check enforced on
+      BOTH sides — a copy that finds the cell foreign-owned computes its hash and
+      declines to store, because an unconditional store would make the two evict each
+      other on every comparison. The cell starts empty, and laziness is a correctness
+      requirement rather than an optimisation: the `WithQuantifiers` rebuild paths write
+      `drivingAlias` / `outputNameOverrides` / `distinctProofIndexName` — all in the key
+      — onto an already-constructed plan.
+
+      **The immutability precondition is now TRUE AND ENFORCED, which it was not when
+      this item was written.** Three further in-place setters (then named `SetInValues`,
+      `SetSourceKind`, `SetInSources`; now `WithXxx`) turned up beyond the two aggregate-index ones and
+      were converted to copying builders, and `pkg/docscheck`'s
+      `TestMemoIdentityTypesNeverWriteTheirReceiver` now ratchets it at zero over the 67
+      types whose fields ARE memo identity. So the precondition the older text asserted
+      on faith is the thing that finally holds — by gate, not by assumption. That
+      matters specifically for this memo: an in-place write leaves the pointer
+      identical, so the owner check passes and serves a pre-mutation hash for
+      post-mutation content, which is the one staleness an identity check structurally
+      cannot see.
+
+      Measured 1.184x -> 1.150x against `7d0435536` on the pure-planner sweep (2.8%).
+      That baseline is no longer the merge-base and the ratio is not "vs master" any
+      more; see the re-measurement at the end of this file. Reviewed and ACK'd.
 
 - [ ] **Make the empty `AliasMap` singleton immutable by TYPE, not by doc.** Java's is
       backed by `ImmutableBiMap` (`AliasMap.java:169`), so a write is a compile/runtime
@@ -18454,3 +18490,330 @@ can give a local action cache to.** GitHub's runners are not ours to configure.
       distinguishable from a job whose tests failed. Right now both render as a red
       check, and the only way to tell them apart is a 21-line log — which is how this
       spent a while looking like a code regression.
+
+### Measured and REJECTED: the group_by_customer_having residual is not one term
+
+Profiled the 1.54x query's proxy (`BenchmarkAggregateGroupsHaving`, plan+execute, 3s,
+CPU + alloc profiles both sides at the merge-base) to find the lever before building
+anything. There isn't one. `go tool pprof -diff_base` over a 10.92s sample shows NO
+node above ~2% of total: the largest positive flat deltas are `RecordType.Equals`
+(+0.14s, 1.28%), `initEdgeObjectBinder` (+0.10s), `mapResultCursor.OnNext` (+0.05s),
+against a per-op gap of ~4.1ms. **The regression is diffuse across the row path, not
+concentrated**, which is why the campaign's wins came from removing whole allocations
+rather than from speeding any one function.
+
+Two things tried and rejected, recorded so they are not retried:
+
+- **A pointer-identity fast path on `RecordType.Equals`.** The reasoning was good and
+  the measurement killed it: the comparison is structural and recursive and runs per row
+  per edge in `initEdgeObjectBinder`, and the branch's operands are interned
+  (`SharedFlowedType`) where master's are not, so it looked like a differential win.
+  Measured: `AggregateGroupsHaving` 16.098ms -> 16.179ms, i.e. noise, and no benchmark
+  moved. Reverted. `RecordType.Equals` at 1.28% of samples cannot pay for a 34% gap.
+- **Instrumenting that comparison to count pointer coincidence** returned
+  `sameObject=0 different=0` across the whole executor package — the record arm never
+  fired in those tests, so the profiled `Equals` cost comes from elsewhere. Anyone
+  re-opening this should find the real caller first rather than assuming the edge binder.
+
+What this means for the milestone above: structural-key memoization is still the right
+next lever for the PLANNING-dominated benchmarks (`ScanFilterSparse` 1.53x,
+`InListExecution` 1.56x, whose allocation counts are ABOVE master), but it should not be
+expected to close `group_by_customer_having`, which is execution-dominated and diffuse.
+Those are two different problems and this entry exists so they are not conflated.
+
+### Structural-hash memo: rolled out to all 42 plan types, measured on the right population
+
+Design ACK'd (helper-free variant: a constructor-allocated cell reached by pointer,
+owner-checked on read AND write). All 42 `HashCodeWithoutChildren` declarations in
+`plans` now route through it — verified by walking each declaration body, not by a grep
+count, since a looser grep reports 46 by counting doc-comment lines.
+
+Measured on `TestStatsInvariant_PurePlannerSweep`, which is the population this term was
+measured over in the first place — the SQL benchmarks under-show it because the cost
+lives in the memo's member loop, not in any one query. Same machine, sequential,
+`--nocache_test_results`:
+
+| tree | samples | mean | vs `7d0435536` |
+|---|---|---|---|
+| `7d0435536` (merge-base AT THE TIME) | 149.04, 149.95 | **149.50s** | — |
+| pre-memo (`f4f7d7bc5`) | 177.14, 176.79 | **176.97s** | 1.184x |
+| all 42 memoized | 172.51, 171.48, 171.85 | **171.95s** | **1.150x** |
+
+Within-group spreads are 0.2-0.6%, well under the 2.8% the memo moves, so this is signal
+rather than noise. The ratio against `7d0435536` goes 1.184x -> 1.150x.
+
+**THE "vs master" READING OF THAT LAST COLUMN IS DEAD — do not carry it forward.**
+The column compares against `7d0435536`, which was the merge-base when these rows
+were taken and is not any more: `f4f7d7bc5` has since merged and master is
+`d31bf28e0`. So the 1.184x baseline for the memo is now MASTER's own code, and
+against the current merge-base the branch is 0.958x — faster, not slower. The
+re-measurement is the last entry in this file; read it before quoting any number
+from this table.
+
+Why it is only 2.8% when `newStructuralKey` was measured at 8.9GB: the memo removes the
+key rebuild on a HIT, and a hit requires the same plan OBJECT to be hashed twice. The
+memo's member loop does exactly that — it re-hashes each stored member against every
+probe — but a plan that is hashed once and discarded, which is most of what a planner
+sweep constructs, never gets a second read. The remaining term is therefore key
+construction for plans that are compared once, and that is not memoizable; it is the
+`part`/`structuralKey` size work this campaign already did.
+
+- [x] Next lever for the planner sweep — the copies — INVESTIGATED, PRICED, AND
+      REJECTED. Do not re-derive this; the numbers are below.
+
+      The hypothesis was that a `cp := *p` rebuild shares its original's cell and so
+      never memoizes, leaving the memo dark on exactly the plans a rewrite rule touches
+      most. **The census refutes it by a factor of three.** Instrumenting the cell over
+      `TestStatsInvariant_PurePlannerSweep`:
+
+      ```
+      reads=3071048  HIT=2223470 (72.4%)  MISS_EMPTY=649360 (21.1%)  MISS_FOREIGN=198218 (6.5%)
+                     storeOK=649360        storeDeclined=198218
+      ```
+
+      The residue is dominated by ONCE-HASHED OBJECTS (21.1%), not by dark copies
+      (6.5%). Those are unmemoizable by construction — a hit requires the same object to
+      be hashed twice — so the 2.8% the memo buys is at the CEILING, not below it. Total
+      hash-call cost is roughly `2.8 / 0.724 ~= 3.9%` of planner time (assumes uniform
+      per-call cost and negligible lookup cost, so: an estimate, not a proof). Converting
+      every foreign miss to a hit is therefore worth `0.065 x 3.9% ~= 0.25%`.
+
+      **Read 0.25% as a GROSS benefit, not a net one, in both directions.** The 2.8% it
+      is derived from is itself a NET measurement — hits saved a hash, but every read
+      now pays a lookup and every miss pays a store plus an allocation — so `2.8/0.724`
+      UNDERSTATES gross hash cost. And the lever's own cost is unpriced: one extra cell
+      plus a state allocation at each of ~57 copy sites. The true net is below 0.25% and
+      could plausibly be negative. That does not weaken the rejection, it strengthens it.
+
+      A quarter of one percent at best, against loosening the field whose write-once
+      discipline is the entire reason no atomic sits on the plan struct, across ~57 copy
+      sites. Rejected by measurement rather than by taste.
+
+      **Corrected invariant wording, since the strict phrasing would misdirect whoever
+      revisits this:** the requirement on `PlanExprBase.hashMemo` is NOT "written only in
+      the constructor" — it is "never written after the object may be SHARED".
+      Publication safety, not immutability. A builder doing
+      `cp := *p; cp.hashMemo = newHashMemoCell(); return &cp` writes to an object no
+      other goroutine can observe yet and would need no atomic. So the hook EXISTS; it is
+      the price that rules it out, not the mechanics. The same correction is recorded at
+      `newHashMemoCell` in `plan_structural_hash_memo.go`, which points back here.
+
+      The census itself is pinned as a test rather than left as a deleted probe:
+      `TestMemoStoreDecisionIsDeterminedByReadClassification` (plans) asserts the read
+      classification is TOTAL and the store decision fully determined by it — the pairing
+      `storeOK == MISS_EMPTY` and `storeDeclined == MISS_FOREIGN` that held to the unit
+      over three million operations.
+
+      **A first draft of that test also claimed to detect the memo going DARK, and it
+      did not. The claim was wrong and is recorded here because it is the instructive
+      part.** Remove the memo read AND make `storeStructuralHash` decline whenever the
+      cell is populated — the second half is behaviour-preserving on its own — and every
+      census assertion still passed against a fully dark memo. The observer inferred
+      "hit" from `before.owner == plan`, the same state the memo itself consults, so it
+      could never disagree with the code it audited; and its value check was vacuous
+      because a recompute is deterministic and returns the identical hash. Textbook
+      paired-assertion vacuity, in a test written to prevent exactly that.
+
+      What actually witnesses the read is `TestAMemoizedReadIsServedFromTheCell`: it
+      plants a hash the recompute CANNOT produce, under the plan's own ownership, and
+      requires that value back. Under the same dark-memo mutation all six other memo
+      tests pass and only this one fails. Separately,
+      `TestMemoIsCorrectUnderConcurrentSharers` exercises the dimension the atomic
+      exists for and nothing covered — several goroutines hashing plans that share one
+      cell — and `storeStructuralHash` now uses CompareAndSwap so the no-live-race claim
+      holds globally rather than per-observation.
+
+      The ROUTING is a separate failure mode and has its own gate:
+      `TestEveryPlanRoutesItsStructuralHashThroughTheMemo` (docscheck) ratchets 42 of 42
+      plan types, because the wiring was hand-applied at 42 sites and an unrouted type
+      returns a CORRECT hash — a pure performance regression a green suite cannot see.
+
+- [x] **Stop thawing a whole Type graph to answer a boolean.** DONE via RFC-233,
+      but read the closing note appended at the END of this file first: this
+      item's framing — that the waste is in the comparisons — was REFUTED by the
+      after-profile. The comparisons were converted and bought 0.3% of allocation
+      volume; the wall-clock win came from the two internal derivations. The
+      original measurement below stands; the diagnosis of WHERE it sat did not.
+      MEASURED, not
+      suspected: `exactType.thaw` is the SINGLE LARGEST allocator in the planner at
+      **8.87 GB of 112.01 GB (7.92%)** over `TestStatsInvariant_PurePlannerSweep`
+      (`go test -memprofile`, 171s run, branch `perf/plan-structural-hash-memo`
+      @ `ed4045adb`). For context the next two are `GetCorrelatedToOfValue.func1`
+      at 8.17 GB and `newStructuralKey` at 8.10 GB.
+
+      The planner is ALLOCATION-BOUND, which is why this is the right target and why
+      the diffuse CPU profile found nothing: on the same run `runtime.gcDrain` is
+      **42.72% cumulative**, `scanSpan` 31.61%, `mallocgc` 16.78%. No application
+      node exceeds ~2.3% flat. Cutting allocation is the only lever that moves a
+      profile shaped like that.
+
+      `thaw` rebuilds an ordinary Type graph from an INTERNED, immutable exact
+      handle — an identical graph every time. Its callers are the hot ones:
+      `QOV.FlowedType` (28.5% of thaw), `exactType.Type` (28.0%),
+      `physicalFlowedRecordType` (14.5%), `LayoutWithSeedLegs` (12.1%),
+      `fieldValue.Type` (9.8%).
+
+      **The waste is concentrated in comparisons.** Stated in OCCURRENCES, because
+      `grep -c` counts LINES and 50 of these lines carry two calls — which is exactly
+      the `a.FlowedType().Equals(b.FlowedType())` shape at issue. Over non-test
+      sources under `pkg/`: 141 lines / 191 occurrences total (91 lines with one call,
+      50 with two), of which 33 lines are `Equals`-shaped and 13 are `== nil` /
+      `!= nil` existence checks. `QuantifiedRowShapesAgree` is a SEPARATE population,
+      not a subset: 16 real call sites, only 10 of which also carry a `.FlowedType()`
+      call. Each `a.FlowedType().Equals(b.FlowedType())` allocates TWO complete graphs
+      to produce one bool.
+
+      **The answer is `exactTypesEqual`, NOT handle pointer identity.** Identity is
+      strictly STRICTER than `Type.Equals` and substituting it is wrong in the
+      plan-changing direction: interning keys on the record/enum NAME while
+      `RecordType.Equals` and `EnumType.Equals` deliberately ignore it (matching
+      Java), so two Equals-equal records hold two handles and identity reports them
+      different. `exactTypesEqual` compares canonical bytes whose encoding excludes
+      the name precisely because `Equals` does, so it is Equals-equivalent by
+      construction while keeping the O(1) same-pointer fast path.
+      `exactRowShapesAgree` is the corresponding twin for `QuantifiedRowShapesAgree`.
+
+      **`thaw` IS already memoized — for shared readers.** `exactType.thawCache` +
+      `thawShared()` cache the thawed graph and ship publicly as
+      `SharedFlowedType`/`SharedExactType`. What cannot be memoized is the PUBLIC
+      promise that `Type()`/`FlowedType()` hand back a graph the caller may mutate:
+      `rfc232_qov_exact_identity_test.go` mutates a `Type()` result
+      (`first.RecordName`, `first.Fields[0].Name`) and requires a later `Type()` to be
+      unaffected. So the fix is to stop CALLING `thaw` on the comparison paths, and to
+      route read-only non-comparison readers through `SharedFlowedType`.
+
+      The pattern to follow already exists in this file's own neighbourhood:
+      `OrdinalDomainOfQuantified` takes the handle via `exactTypeOfValue`, answers from
+      it, memoizes on the node (`exactType.ordinalDomain`), and falls back to the long
+      way only for a foreign QOV view. `thawShared()` exists for the internal
+      non-allocating case. So this is extending an established mechanism, not inventing
+      one.
+
+      The design is `rfcs/233-a-type-comparison-must-not-build-a-type.md`; read it
+      before touching this item, and keep the two in sync — the RFC's §2 census and
+      the numbers above are the same measurement and rot together. Query-engine
+      change: needs a Graefe ACK on both RFC and implementation before merge, per the
+      review-cadence rule. Not for PR #754, which is green and already ACK'd by three
+      gates — this is its own change.
+
+### The planner-sweep ratio was booked against a baseline that is no longer the merge-base
+
+`1.150x vs master` is stale, and stale in the way that matters: the number was
+right when it was measured and its MEANING inverted underneath it, because master
+moved.
+
+The table under "Structural-hash memo" states its baseline honestly as
+`7d0435536` — that WAS the merge-base then. PR #752 has since merged and the
+merge-base is `d31bf28e0`, 64 commits later. The decisive detail is that one row
+of that table, `branch, pre-memo (f4f7d7bc5)`, names a commit that is now ON
+MASTER: `f4f7d7bc5` is the second parent of `d31bf28e0`. So the whole 1.184x the
+memo was clawing back is master's code, not the branch's.
+
+Re-measured on the same machine, sequentially, same toolchain (`go.mod` and
+`MODULE.bazel` are byte-identical across the range, so the Bazel Go SDK cannot
+differ), `go test -count=1` on `TestStatsInvariant_PurePlannerSweep`:
+
+| tree | samples | mean |
+|---|---|---|
+| `7d0435536` (the OLD merge-base) | 151.223, 151.249 | **151.24s** |
+| `d31bf28e0` (the CURRENT merge-base) | 178.635, 178.029, 177.817, 178.140, 178.383, 178.013, 177.976 | **178.14s** |
+| branch `cbbb8f850` | 170.653, 170.627, 170.676 | **170.65s** |
+
+**Master itself is 1.178x slower on this sweep than the baseline every ratio in
+that table was taken against.** That is the RFC-232 exact-resolution overhead —
+already booked, and the whole subject of this campaign. It simply landed on
+master while the branch was in flight, which is why the branch's number looked
+like a regression it never had.
+
+**Against the CURRENT merge-base the branch is 0.958x — 4.2% FASTER than the
+master it forks from.** Taken as three ADJACENT base/head pairs so both sides see
+the same machine within minutes of each other: 0.957, 0.959, 0.959. Within-side
+spread is 0.03% on the branch and 0.46% on the base.
+
+One sample is reported and excluded: a 178.904s branch run taken while the
+machine was at load 4-5. It stands alone against six branch samples in
+170.6-172.4 and against a base side that did NOT move under the same load, so it
+is an outlier rather than a load effect — but it is written down here because a
+discarded sample nobody can see is indistinguishable from one that was never
+taken.
+
+The generalizable lesson is not the stale-baseline rule already in CLAUDE.md.
+That rule says the baseline must BE the merge-base at measurement time, and this
+measurement obeyed it. What decays is a RATIO's MEANING: a ratio is a fact about
+two trees, and naming one of them "master" makes it a fact about a moving
+reference. Write the ratio against a SHA and say what that SHA was at the time,
+or the number silently starts describing a comparison nobody made.
+
+### RFC-233 closed: what it bought, and what its premise got wrong
+
+Both gates ACK'd (Graefe on the implementation after two NAK laps; Torvalds on the
+implementation after one). Codex is externally blocked until 2026-08-20 05:30 by a
+usage limit — verified by probe, not assumed.
+
+**What landed.** Non-test `.FlowedType()` occurrences under `pkg/` went 191 -> 102
+(141 lines -> 83); `Equals`-shaped 33 -> 0; existence checks 13 -> 0;
+`QuantifiedRowShapesAgree` call sites 16 -> 1. `thaw` went 8.87 GB -> 7.23 GB and
+205M -> 175.7M objects. Wall clock **0.958x vs merge-base `d31bf28e0`** — the
+branch is 4.2% FASTER than the master it forks from, taken as three adjacent
+base/head pairs.
+
+**What the premise got wrong, since it is the more useful half.** RFC-233 §2 said
+"the waste is concentrated in comparisons" and built the case on a census of 33
+`Equals`-shaped lines. Converting all of them moved total allocation by 0.3%. A
+census counts SITES; it says nothing about the allocation attributable to them.
+`go tool pprof -peek 'thaw$'` answers the second question directly, takes one
+command, and would have shown before any code was written that thaw's callers are
+`Type()` and two internal derivations. Most of the wall-clock win came from
+`LayoutWithSeedLegs`, which was thawing a whole graph recursively to read
+`len(record.Fields)`.
+
+The generalisable form, and it is not the same as the existing "scope every
+count" rule: **a census locates work; only a profile prices it.** Never let a
+census stand in for the pricing when the profile that motivated the RFC can
+answer it directly.
+
+**Two defects fell out of the work, both fixed and pinned rather than filed.**
+`QuantifiedRowShapesAgree` was PARTIAL — it normalised via `WithNullability`,
+which refuses to flip RELATION, NONE and ANY, and so panicked on three type
+classes, asymmetrically (only when the left operand happened to be nullable). And
+a CTE reference's column-alias list renamed IN PLACE on a slice `legColumns` hands
+back shared from `cteColumnsScope`, so one reference rewrote the definition's
+schema for every later reader.
+
+**Follow-on is RFC-234** (`rfcs/234-a-type-is-immutable-so-stop-rebuilding-it.md`),
+which takes the target the profile actually names: `Type()`/`FlowedType()`'s
+defensive rebuild, 72.1% of thaw at ~127M objects per sweep. It needs its own
+Graefe+Torvalds lap before implementation.
+
+### RFC-234 landed: the branch is 6.7% faster than its merge-base
+
+`Type()`/`FlowedType()`/`fieldValue.Type()` return the shared thawed graph, and
+`pkg/linters/typeimmutable` — a nogo analyzer, so it fails the BUILD with full
+type information on every package including tests — makes the immutability that
+licenses it an enforced rule rather than a census reading.
+
+| tree | samples | mean |
+|---|---|---|
+| merge-base `d31bf28e0` | 178.070, 178.214, 178.033 | **178.11s** |
+| branch `1cd9c3c22` | 166.158, 166.303, 166.008 | **166.16s** |
+
+**0.933x**, paired ratios 0.9331 / 0.9332 / 0.9325. RFC-234 alone is worth 2.6%
+(170.65s → 166.16s). Allocation: `exactType.thaw` 175.7M → 46.8M objects
+(−73.3%), total 1.525B → 1.400B (−8.18%).
+
+**The gate found what the suite could not.** Two mutations of accessor results in
+`rfc232_field_value_test.go` stayed GREEN under the accessor flip, because
+`FieldType()` and `ResultType()` still thaw privately — latent, and armed by this
+RFC's own follow-on. Also a variadic `fields ...Field` numbered in place, which
+writes the caller's slice whenever a caller spreads an existing one.
+
+**What is left, priced in objects.** After this, `thaw` is 46.8M and its callers
+are `physicalFlowedRecordType` (68.9%, 32.0M — thaws then WRITES leg boundaries,
+so it needs the no-layout path split out before it can share) and
+`resolveAgainstQOV` (22.4%, 10.5M — cold interning misses, irreducible). The next
+lever after that is the correlatedTo/children cluster:
+`GetCorrelatedToOfPredicate` at 96.0M objects cumulative and
+`GetCorrelatedToOfValue` at 68.4M, both of which **Java memoizes** on
+`AbstractValue`, `AbstractQueryPredicate` and `AbstractRelationalExpression` and
+Go does not memoize at all. That is a straight Java-alignment gap and the largest
+remaining one.

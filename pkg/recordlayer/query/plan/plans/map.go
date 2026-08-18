@@ -95,7 +95,12 @@ func (p *RecordQueryMapPlan) EqualsPlanWithoutChildren(other RecordQueryPlan) bo
 }
 
 func (p *RecordQueryMapPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("mapplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("mapplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 // Explain renders Map(inner, result).

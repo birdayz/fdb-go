@@ -20,8 +20,23 @@ type RecordQueryInUnionPlan struct {
 	bindingAliases []values.CorrelationIdentifier
 	comparisonKeys []values.Value
 	reverse        bool
-	maxSize        int
-	inSources      [][]any
+	// maxSize is DELIBERATELY EXCLUDED from structuralKey, and the reason is not
+	// self-evident — it changes whether the rule produces this plan at all, which is
+	// exactly the shape of thing identity normally has to carry (compare
+	// liveGroupsOnly on the aggregate-index plan, which IS in its key for precisely
+	// that reason).
+	//
+	// It is safe to exclude only because it is a per-RUN constant: every value comes
+	// from GetPlannerConfiguration().AttemptFailedInJoinAsUnionMaxSize
+	// (rule_implement_in_union.go), so no two InUnion plans within one planner run can
+	// differ in it, and the memo therefore never has two candidates to confuse.
+	//
+	// THAT ARGUMENT EXPIRES the moment maxSize becomes per-plan — a per-call override,
+	// a hint, a rule that derives it from the IN-list — at which point two plans
+	// differing only in maxSize would intern as one and whichever arrived first would
+	// be served. Add it to structuralKey in the same change that makes it vary.
+	maxSize   int
+	inSources [][]any
 }
 
 func NewRecordQueryInUnionPlan(
@@ -75,21 +90,6 @@ func newRecordQueryInUnionPlanFromQuantifier(
 	}, nil
 }
 
-func NewRecordQueryInUnionPlanWithMaxSize(
-	inner RecordQueryPlan,
-	bindingNames []string,
-	comparisonKeys []values.Value,
-	reverse bool,
-	maxSize int,
-) (*RecordQueryInUnionPlan, error) {
-	p, err := NewRecordQueryInUnionPlan(inner, bindingNames, comparisonKeys, reverse)
-	if err != nil {
-		return nil, err
-	}
-	p.maxSize = maxSize
-	return p, nil
-}
-
 func NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
 	inner RecordQueryPlan,
 	bindingAliases []values.CorrelationIdentifier,
@@ -106,7 +106,7 @@ func NewRecordQueryInUnionPlanWithBindingAliasesAndMaxSize(
 // inner may be a SHARED multi-member group (the unordered path) whose per-ordering
 // winner resolves at extraction via ref.Winner() (planFromQuantifier) — the
 // deferred-winner case. The plan carries the inner edge once, with no wrapper
-// snapshot (RFC-184 W2). Callers still replay SetInSources afterward.
+// snapshot (RFC-184 W2). Callers still replay WithInSources afterward.
 func NewRecordQueryInUnionPlanFromQuantifier(
 	innerQ expressions.Quantifier,
 	bindingNames []string,
@@ -189,8 +189,60 @@ func (p *RecordQueryInUnionPlan) GetBindingAliases() []values.CorrelationIdentif
 func (p *RecordQueryInUnionPlan) GetComparisonKeys() []values.Value { return p.comparisonKeys }
 func (p *RecordQueryInUnionPlan) IsReverse() bool                   { return p.reverse }
 func (p *RecordQueryInUnionPlan) GetMaxSize() int                   { return p.maxSize }
-func (p *RecordQueryInUnionPlan) GetInSources() [][]any             { return p.inSources }
-func (p *RecordQueryInUnionPlan) SetInSources(sources [][]any)      { p.inSources = sources }
+
+// GetInSources returns the LIVE slice; callers must not write through it. See
+// WithInSources for why sharing is broken at the write end rather than here: cost.go
+// reads these per costing call, so a defensive copy would sit in the planner's hot
+// loop.
+func (p *RecordQueryInUnionPlan) GetInSources() [][]any { return p.inSources }
+
+// WithInSources returns a COPY carrying the materialized IN sources, because a plan
+// method must never write through its receiver.
+//
+// inSources is in this plan's structuralKey, so writing it in place rewrites the
+// identity of a plan that may already be in the memo — and since the structural-hash
+// memo landed, under an UNCHANGED owner, which is the one staleness the memo's owner
+// check cannot see: it compares identity, not content. Every caller happened to set
+// before yielding, so nothing was ever wrong; that is exactly the "guarded by
+// accident" shape, with no rule keeping it true.
+//
+// Scope of that claim, because an unscoped count is the thing this repo keeps
+// getting wrong: across WithInValues, WithSourceKind and WithInSources together,
+// 8 invocations in NON-TEST sources, spread over 4 rule files and 4 enclosing
+// functions. An earlier draft said "five call sites", which is not the count under
+// any definition.
+//
+// Deliberately no test-inclusive total here. A first correction added one, and it
+// was false on arrival: the very commit that wrote "40 invocations including tests"
+// went on to add five more test arms, so the number was stale before it was pushed.
+// A figure that moves whenever anyone writes a test cannot stay true in a comment.
+// The non-test count is the one that means something — it is the set that has to be
+// audited when this rule changes — and it is stable.
+func (p *RecordQueryInUnionPlan) WithInSources(sources [][]any) *RecordQueryInUnionPlan {
+	cp := *p
+	// Deep enough to break sharing at both levels: the outer slice AND each inner
+	// list. The push-set-operation-through-fetch rule passes one plan's
+	// GetInSources() directly into another plan's builder, so without this two
+	// memoized plans own one array and an element write rewrites both structural
+	// keys under unchanged pointers — invisible to the memo's owner check, which
+	// compares identity rather than content.
+	//
+	// NIL-NESS IS LOAD-BEARING AND MUST SURVIVE THE COPY. The cost model reads a nil
+	// source list as "in-list size unknown at plan time" and an EMPTY one as "known
+	// to be empty" — different costs, different plans. `make([][]any, 0)` is non-nil,
+	// so copying unconditionally silently converts the first into the second; that
+	// broke three TestInUnionHintCost_UsesValueCombinationCount arms. The inner
+	// `append([]any(nil), …)` already preserves nil for a nil element.
+	if sources != nil {
+		cp.inSources = make([][]any, len(sources))
+		for i, src := range sources {
+			cp.inSources[i] = copyPreservingNil(src)
+		}
+	} else {
+		cp.inSources = nil
+	}
+	return &cp
+}
 
 // LiteralFanout returns the exact number of child executions represented by
 // the plan-time IN sources. Each source is one binding dimension, so the
@@ -281,7 +333,12 @@ func (p *RecordQueryInUnionPlan) EqualsPlanWithoutChildren(other RecordQueryPlan
 }
 
 func (p *RecordQueryInUnionPlan) HashCodeWithoutChildren() uint64 {
-	return p.structuralKey().Hash("inunionplan|")
+	if hash, ok := p.cachedStructuralHash(p); ok {
+		return hash
+	}
+	hash := p.structuralKey().Hash("inunionplan|")
+	p.storeStructuralHash(p, hash)
+	return hash
 }
 
 func (p *RecordQueryInUnionPlan) Explain() string {
