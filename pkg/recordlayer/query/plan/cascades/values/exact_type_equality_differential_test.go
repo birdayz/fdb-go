@@ -295,9 +295,16 @@ func TestPointerIdentityWouldBeWrongAndThisCorpusProvesIt(t *testing.T) {
 // is a claim about two independent implementations, which is exactly the claim a
 // differential sweep exists to check.
 //
-// WithNullability panics on a RelationType, so relation entries are excluded
-// from the reference side — and the exclusion is COUNTED, because silently
-// skipping entries is how a sweep ends up reporting green over three of them.
+// Nothing is excluded from this sweep. The first version of it dropped the
+// three RELATION entries, because QuantifiedRowShapesAgree used to PANIC on a
+// relation operand — and an exclusion written to route around a crash is an
+// exclusion that hides one. It is a measurement gap of exactly the shape
+// CLAUDE.md calls a green over an empty set: the sweep reported agreement over a
+// region where one side had no answer at all.
+//
+// QuantifiedRowShapesAgree is total now (see typeShapesAgreeBelowTheTop), so the
+// region is swept rather than skipped, and the count is asserted at zero so the
+// next person to hit a panic here cannot make it go away the same way.
 func TestExactRowShapesAgreeIsQuantifiedRowShapesAgree(t *testing.T) {
 	t.Parallel()
 	corpus := differentialCorpus()
@@ -311,9 +318,13 @@ func TestExactRowShapesAgreeIsQuantifiedRowShapesAgree(t *testing.T) {
 		comparable = append(comparable, i)
 	}
 	if excluded := len(corpus) - len(comparable); excluded != 3 {
-		t.Fatalf("expected exactly 3 relation entries excluded from the QRSA "+
-			"reference sweep (WithNullability panics on RELATION), got %d — the "+
-			"corpus changed and the exclusion has to be re-justified", excluded)
+		t.Fatalf("expected exactly 3 RELATION entries in the corpus, got %d", excluded)
+	}
+	// Sweep EVERYTHING; `comparable` is computed only to assert the relation
+	// entries are present and are no longer being routed around.
+	comparable = comparable[:0]
+	for i := range corpus {
+		comparable = append(comparable, i)
 	}
 
 	var agreedTrue, agreedFalse int
@@ -353,5 +364,192 @@ func TestExactRowShapesAgreeIsQuantifiedRowShapesAgree(t *testing.T) {
 		t.Fatal("no pair in the corpus is shape-equal but not exactly equal, so this " +
 			"sweep never exercised the top-level nullability tolerance that " +
 			"distinguishes exactRowShapesAgree from exactTypesEqual")
+	}
+}
+
+// legacyQuantifiedRowShapesAgree is the expression QuantifiedRowShapesAgree used
+// to evaluate, kept HERE rather than deleted because it is the reference the
+// replacement is differentially checked against.
+//
+// It returns (answer, panicked). Its panics are the point: they are what made
+// the old form partial, and a reference that crashed the test process could not
+// be used as a reference at all.
+func legacyQuantifiedRowShapesAgree(left, right Type) (agree, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			agree, panicked = false, true
+		}
+	}()
+	if left == nil || right == nil {
+		return false, false
+	}
+	if left.IsNullable() == right.IsNullable() {
+		return left.Equals(right), false
+	}
+	return left.Equals(WithNullability(right, left.IsNullable())), false
+}
+
+// panicProneTypes are the three classes WithNullability refuses to flip, which
+// is what made the old comparison partial. NONE and ANY are NOT snapshottable —
+// snapshotExactType refuses them as placeholders — so they cannot appear in the
+// exact-handle corpus and are only reachable through the ordinary-Type surface,
+// which is exactly the surface QuantifiedRowShapesAgree exposes.
+func panicProneTypes() []differentialCorpusEntry {
+	return []differentialCorpusEntry{
+		{label: "relation/long", typ: &RelationType{InnerType: &PrimitiveType{TypeCode: TypeCodeLong}}},
+		{label: "relation/record", typ: &RelationType{InnerType: &RecordType{
+			Fields: []Field{{Name: "ID", FieldType: &PrimitiveType{TypeCode: TypeCodeLong}}},
+		}}},
+		{label: "none", typ: NoneType},
+		{label: "any", typ: AnyType},
+	}
+}
+
+// TestQuantifiedRowShapesAgreeIsTotalWhereItUsedToCrash pins the behaviour change
+// this comparison's rewrite makes, in both directions at once: WHERE the old
+// expression had an answer the new one gives the same answer, and where the old
+// one had NO answer the new one answers false.
+//
+// Splitting those two claims would let either half pass alone. A rewrite that
+// returned a constant false is total and never disagrees with a panic; a rewrite
+// that kept the panic agrees everywhere it answers. Only the pair is a proof.
+//
+// The panic classes are asserted to be NON-EMPTY and enumerated by class, because
+// the whole justification for the rewrite is that the old form crashed on inputs
+// its callers can produce. If that set ever empties — someone gives RELATION a
+// nullable bit, or WithNullability stops guarding NONE/ANY — this test would
+// otherwise keep passing while measuring nothing.
+func TestQuantifiedRowShapesAgreeIsTotalWhereItUsedToCrash(t *testing.T) {
+	t.Parallel()
+
+	corpus := append(differentialCorpus(), panicProneTypes()...)
+
+	var (
+		answered  int
+		disagreed int
+		crashed   []string
+	)
+	for i := range corpus {
+		for j := range corpus {
+			want, panicked := legacyQuantifiedRowShapesAgree(corpus[i].typ, corpus[j].typ)
+			got := QuantifiedRowShapesAgree(corpus[i].typ, corpus[j].typ)
+			if panicked {
+				crashed = append(crashed, corpus[i].label+" vs "+corpus[j].label)
+				if got {
+					// The direction matters. Turning a crash into TRUE would let a
+					// rule newly fire; turning it into FALSE can only stop one.
+					t.Errorf("QuantifiedRowShapesAgree(%s, %s) = true where the old "+
+						"expression panicked — a crash may only become a refusal, never "+
+						"an agreement, or the rewrite lets a rule fire that never could",
+						corpus[i].label, corpus[j].label)
+				}
+				continue
+			}
+			answered++
+			if got != want {
+				disagreed++
+				t.Errorf("QuantifiedRowShapesAgree(%s, %s) = %v, old expression = %v",
+					corpus[i].label, corpus[j].label, got, want)
+			}
+		}
+	}
+
+	if len(crashed) == 0 {
+		t.Fatal("the old expression never panicked over this corpus, so this test " +
+			"measured nothing about the totality it exists to pin. Either the " +
+			"RELATION/NONE/ANY entries were dropped from panicProneTypes, or " +
+			"WithNullability stopped refusing to flip them — in which case " +
+			"typeShapesAgreeBelowTheTop's justification needs rereading, not this test " +
+			"relaxing")
+	}
+	if answered == 0 {
+		t.Fatal("the old expression panicked on EVERY pair, so the agreement half of " +
+			"this test is vacuous")
+	}
+
+	// Enumerate the classes by name. A set that keeps the relation crashes while
+	// losing NONE and ANY would still be non-empty above, and would silently stop
+	// covering the two classes nobody found by hand.
+	byClass := map[string]int{}
+	for _, pair := range crashed {
+		switch {
+		case containsWord(pair, "none"):
+			byClass["none"]++
+		case containsWord(pair, "any"):
+			byClass["any"]++
+		case containsWord(pair, "relation"):
+			byClass["relation"]++
+		}
+	}
+	for _, class := range []string{"relation", "none", "any"} {
+		if byClass[class] == 0 {
+			t.Errorf("no crashing pair in class %q; WithNullability refuses to flip "+
+				"RELATION, NONE and ANY and all three are reachable through this "+
+				"comparison, so all three must be represented", class)
+		}
+	}
+}
+
+// containsWord reports whether label contains word as a whole path segment of a
+// "left vs right" pair label. Substring matching would let "relation/record"
+// count as the record class.
+func containsWord(pair, word string) bool {
+	start := 0
+	for i := 0; i <= len(pair); i++ {
+		if i == len(pair) || pair[i] == '/' || pair[i] == ' ' {
+			if pair[start:i] == word {
+				return true
+			}
+			start = i + 1
+		}
+	}
+	return false
+}
+
+// TestQuantifiedRowShapesAgreeAllocatesNothing pins the second half of the
+// rewrite's justification. The old expression called WithNullability, which
+// builds a whole new RecordType to answer a boolean — on a comparison the
+// planner runs per rule firing and the executor runs per row.
+//
+// A performance property with no test is a property that silently regresses:
+// reintroducing a normalising rebuild would pass every correctness arm above.
+func TestQuantifiedRowShapesAgreeAllocatesNothing(t *testing.T) {
+	t.Parallel()
+
+	// A record pair that takes the differing-bits arm — the arm that used to
+	// allocate — and agrees, so the walk runs to completion rather than
+	// short-circuiting on the first field.
+	fields := []Field{
+		{Name: "ID", FieldType: &PrimitiveType{TypeCode: TypeCodeLong}, Ordinal: 0},
+		{Name: "VAL", FieldType: &PrimitiveType{TypeCode: TypeCodeString, Nullable: true}, Ordinal: 1},
+	}
+	left := &RecordType{RecordName: "R", Nullable: true, Fields: fields}
+	right := &RecordType{RecordName: "R", Nullable: false, Fields: fields}
+	if !QuantifiedRowShapesAgree(left, right) {
+		t.Fatal("the probe pair must AGREE, or the walk short-circuits and the " +
+			"allocation measurement covers only the first field")
+	}
+
+	// testing.Benchmark rather than testing.AllocsPerRun: this test runs under
+	// t.Parallel() as every test here must, and AllocsPerRun panics outright when
+	// called from a parallel test. Benchmark measures the same quantity with no
+	// such restriction.
+	result := testing.Benchmark(func(b *testing.B) {
+		var agree bool
+		for i := 0; i < b.N; i++ {
+			agree = QuantifiedRowShapesAgree(left, right)
+		}
+		if !agree {
+			b.Fatal("unexpected disagreement")
+		}
+	})
+	if result.N == 0 {
+		t.Fatal("the benchmark ran zero iterations, so its allocation figure " +
+			"describes nothing")
+	}
+	if allocs := result.AllocsPerOp(); allocs != 0 {
+		t.Errorf("QuantifiedRowShapesAgree allocated %d objects per call on the "+
+			"differing-nullability arm over %d iterations; it must allocate none. "+
+			"A normalising rebuild has been reintroduced", allocs, result.N)
 	}
 }

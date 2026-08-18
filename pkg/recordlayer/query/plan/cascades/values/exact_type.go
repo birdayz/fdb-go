@@ -702,7 +702,101 @@ func QuantifiedRowShapesAgree(left, right Type) bool {
 	if left.IsNullable() == right.IsNullable() {
 		return left.Equals(right)
 	}
-	return left.Equals(WithNullability(right, left.IsNullable()))
+	return typeShapesAgreeBelowTheTop(left, right)
+}
+
+// typeShapesAgreeBelowTheTop answers "equal apart from the top-level nullable
+// bit" WITHOUT rebuilding either side, and it is the arm QuantifiedRowShapesAgree
+// takes when the two bits differ.
+//
+// The obvious way to say that is left.Equals(WithNullability(right, …)), and it
+// was how this read. It is wrong twice.
+//
+// It PANICS on three type classes, and the panic is not a contract check.
+// WithNullability refuses to flip RELATION (never nullable), NONE (never
+// nullable) and ANY (always nullable), because for those a flip is a programming
+// error — a correct and deliberate guard, in a function that is being asked to
+// BUILD a type. Reached through this comparison it fires on half the input class
+// and only by accident: with a RELATION on the right the panic needs the LEFT
+// side to be nullable, and a non-nullable left answers false for the identical
+// input. A guard that crashes on one caller and answers on another is not
+// guarding anything, and both those callers are asking a question, not
+// requesting a type. The reachable shape is real, not theoretical: this runs on
+// an arbitrary Value's Type() at two rule sites, against a quantifier's flowed
+// row that an outer join legitimately widens to nullable.
+//
+// It also ALLOCATES. WithNullability on a RecordType builds a whole new
+// RecordType — on a planner-hot comparison path, to produce one bool.
+//
+// The relation this computes is the SAME one, established by construction rather
+// than by claim. Every Equals implementation type-asserts other to its own
+// concrete type and then compares Nullable plus a payload, and WithNullability
+// preserves the concrete type while setting Nullable to exactly the value the
+// left side carries. So the Nullable comparison inside that Equals passes by
+// construction and can decide nothing, leaving precisely "same concrete type,
+// and payload-equal" — which is what the switch below computes directly. The
+// per-pair agreement is pinned in exact_type_equality_differential_test.go
+// against the old expression, including its panics.
+//
+// The default arm answers false for a Type implementation from outside this
+// package. That is not a fallback, it is the same answer: the interface contract
+// requires every implementation to compare Code AND Nullable at minimum, the two
+// bits differ here, so the old expression could only have returned false too.
+func typeShapesAgreeBelowTheTop(left, right Type) bool {
+	switch l := left.(type) {
+	case anyRecordType:
+		_, ok := right.(anyRecordType)
+		return ok
+	case *PrimitiveType:
+		r, ok := right.(*PrimitiveType)
+		return ok && l.TypeCode == r.TypeCode
+	case *RecordType:
+		r, ok := right.(*RecordType)
+		if !ok || len(l.Fields) != len(r.Fields) {
+			return false
+		}
+		for i := range l.Fields {
+			if !l.Fields[i].Equals(r.Fields[i]) {
+				return false
+			}
+		}
+		// RecordName is deliberately not compared, because RecordType.Equals
+		// does not compare it either — provenance, not shape, matching Java.
+		return true
+	case *ArrayType:
+		r, ok := right.(*ArrayType)
+		if !ok {
+			return false
+		}
+		if l.ElementType == nil || r.ElementType == nil {
+			return l.ElementType == r.ElementType
+		}
+		return l.ElementType.Equals(r.ElementType)
+	case *EnumType:
+		r, ok := right.(*EnumType)
+		if !ok || len(l.Values) != len(r.Values) {
+			return false
+		}
+		for i := range l.Values {
+			if !l.Values[i].Equals(r.Values[i]) {
+				return false
+			}
+		}
+		return true
+	case *RelationType:
+		// Unreachable from QuantifiedRowShapesAgree: RelationType.IsNullable is a
+		// constant false, so a relation on the LEFT can only reach the equal-bits
+		// arm above. Spelled out anyway, because this function states a relation
+		// over Types and a hole in it becomes a wrong answer the moment anything
+		// else calls it — and because a `default` swallowing RELATION would read
+		// as deliberate.
+		r, ok := right.(*RelationType)
+		if !ok || l.IsErased() != r.IsErased() {
+			return false
+		}
+		return l.IsErased() || l.InnerType.Equals(r.InnerType)
+	}
+	return false
 }
 
 // DescribeType renders a Type as a compact, comparable shape for a diagnostic:
