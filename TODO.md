@@ -18784,3 +18784,36 @@ schema for every later reader.
 which takes the target the profile actually names: `Type()`/`FlowedType()`'s
 defensive rebuild, 72.1% of thaw at ~127M objects per sweep. It needs its own
 Graefe+Torvalds lap before implementation.
+
+### RFC-234 landed: the branch is 6.7% faster than its merge-base
+
+`Type()`/`FlowedType()`/`fieldValue.Type()` return the shared thawed graph, and
+`pkg/linters/typeimmutable` — a nogo analyzer, so it fails the BUILD with full
+type information on every package including tests — makes the immutability that
+licenses it an enforced rule rather than a census reading.
+
+| tree | samples | mean |
+|---|---|---|
+| merge-base `d31bf28e0` | 178.070, 178.214, 178.033 | **178.11s** |
+| branch `1cd9c3c22` | 166.158, 166.303, 166.008 | **166.16s** |
+
+**0.933x**, paired ratios 0.9331 / 0.9332 / 0.9325. RFC-234 alone is worth 2.6%
+(170.65s → 166.16s). Allocation: `exactType.thaw` 175.7M → 46.8M objects
+(−73.3%), total 1.525B → 1.400B (−8.18%).
+
+**The gate found what the suite could not.** Two mutations of accessor results in
+`rfc232_field_value_test.go` stayed GREEN under the accessor flip, because
+`FieldType()` and `ResultType()` still thaw privately — latent, and armed by this
+RFC's own follow-on. Also a variadic `fields ...Field` numbered in place, which
+writes the caller's slice whenever a caller spreads an existing one.
+
+**What is left, priced in objects.** After this, `thaw` is 46.8M and its callers
+are `physicalFlowedRecordType` (68.9%, 32.0M — thaws then WRITES leg boundaries,
+so it needs the no-layout path split out before it can share) and
+`resolveAgainstQOV` (22.4%, 10.5M — cold interning misses, irreducible). The next
+lever after that is the correlatedTo/children cluster:
+`GetCorrelatedToOfPredicate` at 96.0M objects cumulative and
+`GetCorrelatedToOfValue` at 68.4M, both of which **Java memoizes** on
+`AbstractValue`, `AbstractQueryPredicate` and `AbstractRelationalExpression` and
+Go does not memoize at all. That is a straight Java-alignment gap and the largest
+remaining one.

@@ -1,6 +1,6 @@
 # RFC-234: A Type is immutable, so stop rebuilding it
 
-**Status:** ACCEPTED (v2, ACK from both gates). v1 was NAK'd twice — once for pricing an
+**Status:** IMPLEMENTED (v2, ACK from both gates; measured at 0.933x). v1 was NAK'd twice — once for pricing an
 object-count argument in space, once for a gate rule that would have failed 17
 legitimate sites. See §9.
 **Base:** branch `perf/plan-structural-hash-memo`, PR #754
@@ -293,10 +293,28 @@ objects (−8.18%) and −73.3% of thaw. Two prior data points bracket the
 translation: the structural-hash memo removed ~8.9 GB for 2.8%; RFC-233 removed
 ~1.6 GB for ~1.4%.
 
-The claim to test is the ratio on `TestStatsInvariant_PurePlannerSweep`, taken as
-ADJACENT base/head pairs, n>=3, against `d31bf28e0` — the current merge-base,
-named as a SHA because a ratio called "vs master" expires. Current position:
-**0.958x**.
+Measured, on `TestStatsInvariant_PurePlannerSweep`, as three ADJACENT base/head
+pairs so both sides see the same machine within minutes, `go test -count=1`:
+
+| tree | samples | mean |
+|---|---|---|
+| merge-base `d31bf28e0` | 178.070, 178.214, 178.033 | **178.11s** |
+| branch `1cd9c3c22` | 166.158, 166.303, 166.008 | **166.16s** |
+
+**0.933x.** Paired ratios 0.9331 / 0.9332 / 0.9325; within-side spread 0.10% on
+the base and 0.18% on the branch. The branch entered this change at 0.958x, so
+RFC-234 itself is worth **2.6%** — 170.65s to 166.16s.
+
+That lands where §8's brackets said it would and slightly above the midpoint,
+which is the expected direction: the memo removed ~8.9 GB for 2.8% and RFC-233
+removed ~1.6 GB for ~1.4%, and this removed 5.2 GB but **129.1M objects**, a
+larger share of the object count than of the space. `gcBgMarkWorker` walks
+objects.
+
+The branch is now 6.7% faster than the master it forks from. The ratio is named
+against a SHA rather than "vs master" because the previous figure in this
+position expired exactly that way — see the CLAUDE.md rule and TODO.md's
+re-measurement entry.
 
 ## 10. What v1 got wrong
 
