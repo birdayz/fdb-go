@@ -109,10 +109,22 @@ func TestRequireFlowedObjectValueReturnsExactView(t *testing.T) {
 		t.Fatalf("QOV = (%v, %v), want (%v, %v)", recognized.Correlation(), recognized.FlowedType(), alias, row)
 	}
 
-	copyType := recognized.FlowedType().(*values.RecordType)
-	copyType.Fields[0].Name = "MUTATED"
+	// FlowedType hands back the SHARED graph, so this no longer mutates it to
+	// prove isolation — under sharing that mutation writes through to an INTERNED
+	// handle and corrupts every other value flowing this shape, including in
+	// tests running in parallel. What is asserted instead is the sharing itself,
+	// because a reintroduced defensive copy passes every other assertion here and
+	// costs 128.9M objects per planner sweep.
+	if a, b := recognized.FlowedType(), recognized.FlowedType(); a != b {
+		t.Fatalf("FlowedType returned two graphs (%p, %p); the defensive copy is "+
+			"back — see RFC-234", a, b)
+	}
+	// Isolation from the CALLER's graph is the half that did not change, and it
+	// matters more now: `row` is the caller's, and an edit to it must not reach a
+	// snapshot the whole process reads.
+	row.Fields[0].Name = "CALLER_MUTATED"
 	if got := recognized.FlowedType().(*values.RecordType).Fields[0].Name; got != "A" {
-		t.Fatalf("mutating a returned flowed type changed the stored snapshot: %q", got)
+		t.Fatalf("a caller's later edit reached the stored snapshot: %q", got)
 	}
 }
 

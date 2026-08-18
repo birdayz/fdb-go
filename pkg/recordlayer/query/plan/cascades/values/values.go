@@ -790,7 +790,7 @@ func (f *fieldValue) Name() string { return "field" }
 // from the catalog set Typ to the non-nullable form.
 func (f *fieldValue) Type() Type {
 	if f != nil && f.resultType != nil {
-		return f.resultType.thaw()
+		return f.resultType.thawShared()
 	}
 	if f.Typ == nil {
 		return UnknownType
@@ -5137,7 +5137,7 @@ func (q *quantifiedObjectValue) FlowedType() Type {
 	if q == nil || q.flowed == nil {
 		return nil
 	}
-	return q.flowed.thaw()
+	return q.flowed.thawShared()
 }
 
 // SharedFlowedType is FlowedType WITHOUT the defensive copy, for readers that
@@ -5355,20 +5355,29 @@ func ExactTypesEqual(left, right ExactTypeHandle) bool {
 // (not a child Value).
 func (*quantifiedObjectValue) Children() []Value { return []Value{} }
 
-// Type returns a fresh copy of the exact flowed type. Nullability widening is
+// Type returns the SHARED thawed graph, read-only. Nullability widening is
 // performed once at the quantifier edge, not unconditionally here.
 //
-// The fresh copy is DELIBERATE and is pinned by
-// TestRFC232QOVSnapshotsAndDefensivelyThawsItsType, which mutates one Type()
-// result and requires the next to be unaffected. It was tried as a shared
-// read-only graph — Type() is the generic accessor the planner calls while
-// hashing and comparing, and it accounted for 78% of the allocations under
-// FlowedType — and the pin correctly rejected it: unlike the constant-valued
-// implementations that return package singletons, this graph is derived per
-// call from a handle whose identity a QOV and every memo boundary depend on.
+// It used to return a fresh copy on every call, defensively, and that copy was
+// the largest single object allocation in the planner: `exactType.thaw` at
+// 175.7M objects per planner sweep, 11.52% of everything allocated, of which
+// this accessor and its two siblings were 73%. Sharing removed 128.9M of them.
 //
-// SharedFlowedType is the named opt-out for readers that only ask the graph a
-// question, and it is where that saving belongs.
+// The defence it provided was a permission no production code exercised — a
+// go/types census over 103 packages found 21 writes into a Type field and every
+// one is into a graph its own function had just constructed. What DOES mutate a
+// Type is test code, at 60 sites, which is why the immutability gate covers test
+// files and not only production sources. RFC-234 carries the census and the
+// measurement.
+//
+// CALLERS MUST TREAT THE RESULT AS READ-ONLY. The graph is cached on an INTERNED
+// handle, so a mutation does not corrupt one caller's copy — it corrupts every
+// value that flows that shape, process-wide, including across parallel tests.
+// That failure mode is not hypothetical: flipping this accessor with the old
+// tests in place made one test's mutation reach two unrelated tests through the
+// intern table.
+//
+// FlowedType is the same graph under the name that says which type it is.
 func (q *quantifiedObjectValue) Type() Type { return q.FlowedType() }
 
 // Name returns the debug-print kind.

@@ -251,12 +251,18 @@ func TestReferencePreparedApplyAndReadsAreDefensive(t *testing.T) {
 	if !resultType.Equals(want) {
 		t.Fatalf("ResultType = %v, want %v", resultType, want)
 	}
-	// ResultType thaws on every read; mutating the returned graph cannot alter
-	// the exact type stored by the Reference.
-	resultType.(*values.RelationType).InnerType = values.NotNullString
+	// ResultType hands back the SHARED thawed graph. Mutating it here would write
+	// through to an INTERNED handle — corrupting every other value flowing
+	// RELATION<LONG NOT NULL>, including in tests running in parallel — so what is
+	// asserted is the sharing itself, which nothing else in this file observes and
+	// which a reintroduced defensive copy would silently undo. See RFC-234.
 	again, err := reference.ResultType()
 	if err != nil || !again.Equals(want) {
-		t.Fatalf("stored result type changed through caller graph: (%v, %v)", again, err)
+		t.Fatalf("ResultType is not stable across reads: (%v, %v)", again, err)
+	}
+	if resultType != again {
+		t.Fatalf("ResultType returned two graphs (%p, %p); the defensive copy is back",
+			resultType, again)
 	}
 }
 

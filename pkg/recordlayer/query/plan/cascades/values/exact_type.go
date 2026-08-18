@@ -9,8 +9,15 @@ import (
 )
 
 // ExactTypeHandle is an immutable read view of a checked type snapshot.
-// Type returns a fresh ordinary graph and CanonicalBytes returns a defensive
-// copy, so no caller can mutate the identity held by a QOV or memo boundary.
+//
+// Type returns the SHARED thawed graph and callers must treat it as READ-ONLY;
+// CanonicalBytes still returns a defensive copy, because those bytes ARE the
+// identity a QOV and every memo boundary compare on, and handing out the slice
+// would let a caller move an interning key.
+//
+// The asymmetry is deliberate and is the whole shape of RFC-234: the ordinary
+// Type graph is a DERIVATION of the identity and nothing in production writes to
+// one, so it can be shared; the canonical bytes are the identity itself.
 type ExactTypeHandle interface {
 	Type() Type
 	CanonicalBytes() []byte
@@ -151,11 +158,20 @@ func (e *exactType) IsNullable() bool {
 	return e.nullable
 }
 
+// Type returns the SHARED thawed graph, read-only — see the ExactTypeHandle
+// interface doc for the contract and QOV.Type for the measurement that motivated
+// dropping the defensive copy.
+//
+// The graph is cached on THIS handle, and handles are interned, so a caller that
+// writes to the result corrupts every value flowing that shape rather than its
+// own copy. Anything that needs to modify the graph must build one:
+// thaw() is the private, unshared form and physicalFlowedRecordType is the one
+// caller that legitimately uses it.
 func (e *exactType) Type() Type {
 	if e == nil {
 		return nil
 	}
-	return e.thaw()
+	return e.thawShared()
 }
 
 func (e *exactType) CanonicalBytes() []byte {
