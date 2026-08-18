@@ -146,7 +146,7 @@ func initEdgeObjectBinder(
 			}
 		}
 		if previous, exists := binder.binding(exact.Correlation()); exists {
-			if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(previous.qov), flowed) {
+			if !values.FlowedRowShapeEquals(previous.qov, flowed) {
 				return nil, layoutBindingError(values.CorrelationTypeConflict, fmt.Sprintf("edge %d reuses one correlation with another exact type", edgeIndex))
 			}
 			continue
@@ -169,7 +169,7 @@ func (b *edgeObjectBinder) IsExplicitNullQuantifiedBinding(view values.Quantifie
 		return false, layoutBindingError(values.CorrelationForeignValue, "edge null-presence lookup QOV is not exact")
 	}
 	if binding, exists := b.binding(exact.Correlation()); exists {
-		if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(binding.qov), values.SharedFlowedType(exact)) {
+		if !values.FlowedRowShapesAgree(binding.qov, exact) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				fmt.Sprintf("edge null-presence lookup %s: read as %s, declared %s",
 					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
@@ -189,7 +189,7 @@ func (b *edgeObjectBinder) GetQuantifiedBinding(view values.QuantifiedObjectValu
 		return nil, false, layoutBindingError(values.CorrelationForeignValue, "edge lookup QOV is not exact")
 	}
 	if binding, exists := b.binding(exact.Correlation()); exists {
-		if !values.QuantifiedRowShapesAgree(values.SharedFlowedType(binding.qov), values.SharedFlowedType(exact)) {
+		if !values.FlowedRowShapesAgree(binding.qov, exact) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
 				fmt.Sprintf("edge lookup %s: read as %s, declared %s",
 					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),

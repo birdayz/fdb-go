@@ -307,7 +307,7 @@ func exactQOVForResultSource(
 		if !ok || qov.Correlation() != alias {
 			return true
 		}
-		if found != nil && !found.FlowedType().Equals(qov.FlowedType()) {
+		if found != nil && !values.FlowedTypesEqual(found, qov) {
 			conflict = fmt.Errorf(
 				"correlation %s has conflicting exact types %s and %s",
 				alias.Name(), found.FlowedType(), qov.FlowedType())

@@ -482,7 +482,7 @@ func (ec *EvaluationContext) withQuantifiedBinding(
 	entries := bindings[correlation]
 	replaced := false
 	for i := range entries {
-		if entries[i].qov.FlowedType().Equals(exact.FlowedType()) {
+		if values.FlowedTypesEqual(entries[i].qov, exact) {
 			entries[i] = quantifiedRuntimeBinding{qov: exact, value: val, explicitAbsent: explicitAbsent}
 			replaced = true
 			break
@@ -586,7 +586,7 @@ func (ec *EvaluationContext) GetQuantifiedBinding(view values.QuantifiedObjectVa
 	}
 	entries := ec.quantifiedBindings[exact.Correlation()]
 	for _, entry := range entries {
-		if values.QuantifiedRowShapesAgree(entry.qov.FlowedType(), exact.FlowedType()) {
+		if values.FlowedRowShapesAgree(entry.qov, exact) {
 			return entry.value, true, nil
 		}
 	}
@@ -611,7 +611,7 @@ func (ec *EvaluationContext) IsExplicitNullQuantifiedBinding(view values.Quantif
 	}
 	entries := ec.quantifiedBindings[exact.Correlation()]
 	for _, entry := range entries {
-		if values.QuantifiedRowShapesAgree(entry.qov.FlowedType(), exact.FlowedType()) {
+		if values.FlowedRowShapesAgree(entry.qov, exact) {
 			return entry.explicitAbsent, nil
 		}
 	}

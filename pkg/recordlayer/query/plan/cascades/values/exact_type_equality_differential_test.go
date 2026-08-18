@@ -553,3 +553,213 @@ func TestQuantifiedRowShapesAgreeAllocatesNothing(t *testing.T) {
 			"A normalising rebuild has been reintroduced", allocs, result.N)
 	}
 }
+
+// TestTypeEqualsIsSymmetricOverTheCorpus pins the property that lets the
+// comparison call sites be rewritten without checking each one's orientation.
+//
+// About a third of the sites RFC-233 converts had the ordinary type on the left
+// and the quantifier on the right — `window.Equals(root.FlowedType())` — and the
+// helper they route to takes the quantifier first. That rewrite is only sound if
+// Equals is symmetric. It is, because every implementation type-asserts the
+// operand to its own concrete type before comparing anything, so a mismatched
+// pair is refused by whichever side is the receiver. But "is" is a claim about
+// six implementations, and a seventh could be added.
+//
+// The panic-prone entries are included here because symmetry has to hold on the
+// placeholder types too: Equals itself never builds a type, so unlike
+// QuantifiedRowShapesAgree there is nothing here that could refuse to answer.
+func TestTypeEqualsIsSymmetricOverTheCorpus(t *testing.T) {
+	t.Parallel()
+	corpus := append(differentialCorpus(), panicProneTypes()...)
+
+	var symmetricTrue, symmetricFalse int
+	for i := range corpus {
+		for j := range corpus {
+			forward := corpus[i].typ.Equals(corpus[j].typ)
+			backward := corpus[j].typ.Equals(corpus[i].typ)
+			if forward != backward {
+				t.Errorf("Equals is asymmetric: %s.Equals(%s) = %v but "+
+					"%s.Equals(%s) = %v — every call site RFC-233 rewrote with the "+
+					"operands swapped is now suspect",
+					corpus[i].label, corpus[j].label, forward,
+					corpus[j].label, corpus[i].label, backward)
+				continue
+			}
+			if forward {
+				symmetricTrue++
+			} else {
+				symmetricFalse++
+			}
+		}
+	}
+	if symmetricTrue == 0 || symmetricFalse == 0 {
+		t.Fatalf("degenerate sweep: %d symmetric-true, %d symmetric-false — both "+
+			"must be non-zero, or an implementation returning a constant is symmetric "+
+			"and this proves nothing", symmetricTrue, symmetricFalse)
+	}
+}
+
+// TestFlowedTypeHelpersAgreeWithTheSpellingTheyReplace is the differential for
+// the two public helpers themselves, over real quantified object values rather
+// than over bare types.
+//
+// The arithmetic is already pinned above; what is NOT pinned there is the
+// PLUMBING — that FlowedTypesEqual reaches the right handle, that
+// FlowedTypeEquals hands the shared graph to Equals in a state equal to the
+// fresh one, and that neither confuses the two operands. Those are the mistakes
+// a rewrite across 33 call sites actually makes, and none of them would show up
+// in a sweep over types.
+func TestFlowedTypeHelpersAgreeWithTheSpellingTheyReplace(t *testing.T) {
+	t.Parallel()
+
+	// Only object-or-scalar roots: NewQuantifiedObjectValue refuses NULL and
+	// RELATION at the root, so the corpus is filtered and the filter is COUNTED.
+	corpus := differentialCorpus()
+	type qovEntry struct {
+		label string
+		typ   Type
+		qov   QuantifiedObjectValue
+	}
+	var entries []qovEntry
+	for i, entry := range corpus {
+		qov, err := NewQuantifiedObjectValue(
+			NamedCorrelationIdentifier("q"+uitoa(uint64(i))), entry.typ)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, qovEntry{label: entry.label, typ: entry.typ, qov: qov})
+	}
+	if rejected := len(corpus) - len(entries); rejected != 5 {
+		t.Fatalf("expected exactly 5 corpus entries refused as QOV roots (3 RELATION "+
+			"+ 2 NULL primitives), got %d — the corpus changed and this filter has to "+
+			"be re-derived rather than relaxed", rejected)
+	}
+
+	var agreedTrue, agreedFalse int
+	for i := range entries {
+		for j := range entries {
+			want := entries[i].typ.Equals(entries[j].typ)
+
+			if got := FlowedTypesEqual(entries[i].qov, entries[j].qov); got != want {
+				t.Errorf("FlowedTypesEqual(%s, %s) = %v, want %v",
+					entries[i].label, entries[j].label, got, want)
+			}
+			// Both orientations of the mixed helper, because the call sites use
+			// both and the symmetry pin above is what licenses that.
+			if got := FlowedTypeEquals(entries[i].qov, entries[j].typ); got != want {
+				t.Errorf("FlowedTypeEquals(%s, type %s) = %v, want %v",
+					entries[i].label, entries[j].label, got, want)
+			}
+			if got := FlowedTypeEquals(entries[j].qov, entries[i].typ); got != want {
+				t.Errorf("FlowedTypeEquals(%s, type %s) = %v, want %v",
+					entries[j].label, entries[i].label, got, want)
+			}
+			if want {
+				agreedTrue++
+			} else {
+				agreedFalse++
+			}
+		}
+	}
+	if agreedTrue == 0 || agreedFalse == 0 {
+		t.Fatalf("degenerate sweep: %d true, %d false", agreedTrue, agreedFalse)
+	}
+}
+
+// TestFlowedTypeHelpersAnswerRatherThanCrash pins the one behavioural difference
+// the rewrite introduces: an unusable operand.
+//
+// `left.FlowedType().Equals(right.FlowedType())` panicked when the LEFT value
+// could not state a row — FlowedType returns a nil Type and the method call goes
+// through a nil interface — and answered false when the RIGHT one could not. The
+// helpers answer false for both. That is the fail-safe direction at every call
+// site (rebuild, refuse the rewrite, miss the lookup) and it is asserted rather
+// than assumed, because "returns false on nil" is exactly the property a later
+// nil-guard cleanup would delete as dead.
+func TestFlowedTypeHelpersAnswerRatherThanCrash(t *testing.T) {
+	t.Parallel()
+
+	row := &RecordType{RecordName: "R", Fields: []Field{
+		{Name: "ID", FieldType: &PrimitiveType{TypeCode: TypeCodeLong}, Ordinal: 0},
+	}}
+	good, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("q"), row)
+	if err != nil {
+		t.Fatalf("building the usable side failed: %v", err)
+	}
+	var unusable QuantifiedObjectValue // nil interface
+
+	// The old spelling really did crash on the left operand. Established here
+	// rather than asserted, so the justification for the change is measured.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the replaced expression did NOT panic on a nil left operand, " +
+					"so the totality claim in FlowedTypesEqual's doc is stale and the " +
+					"doc needs correcting, not this test deleting")
+			}
+		}()
+		_ = unusable.FlowedType().Equals(good.FlowedType())
+	}()
+
+	if FlowedTypesEqual(unusable, good) {
+		t.Error("FlowedTypesEqual(nil, good) must be false")
+	}
+	if FlowedTypesEqual(good, unusable) {
+		t.Error("FlowedTypesEqual(good, nil) must be false")
+	}
+	if FlowedTypesEqual(unusable, unusable) {
+		t.Error("FlowedTypesEqual(nil, nil) must be false: two values that cannot " +
+			"state a row are not thereby the SAME row")
+	}
+	if FlowedTypeEquals(unusable, row) {
+		t.Error("FlowedTypeEquals(nil, row) must be false")
+	}
+	if FlowedTypeEquals(good, nil) {
+		t.Error("FlowedTypeEquals(good, nil) must be false")
+	}
+	if !FlowedTypeEquals(good, row) {
+		t.Error("FlowedTypeEquals(good, its own row) must be true — the guards above " +
+			"must not have swallowed the positive case")
+	}
+}
+
+// TestQuantifiedRowShapesAgreeIsSymmetric pins the property the executor's
+// conversion relies on. Six call sites had the declared row on the LEFT and the
+// quantifier on the right — `QuantifiedRowShapesAgree(b.outerType,
+// exact.FlowedType())` — and route to a helper that takes the quantifier first.
+//
+// It is a separate claim from TestTypeEqualsIsSymmetricOverTheCorpus, because
+// the differing-bits arm is a hand-written walk rather than a dispatch through
+// Equals: it switches on the LEFT operand's concrete type and type-asserts the
+// right, so an asymmetry there would be invisible to the Equals sweep.
+//
+// The panic-prone entries are included: QuantifiedRowShapesAgree is total now,
+// so it has an answer for every pair, and "symmetric" has to hold on the pairs
+// that used to crash too — those are exactly the ones whose two orientations
+// took different code paths before.
+func TestQuantifiedRowShapesAgreeIsSymmetric(t *testing.T) {
+	t.Parallel()
+	corpus := append(differentialCorpus(), panicProneTypes()...)
+
+	var agreeing, disagreeing int
+	for i := range corpus {
+		for j := range corpus {
+			forward := QuantifiedRowShapesAgree(corpus[i].typ, corpus[j].typ)
+			backward := QuantifiedRowShapesAgree(corpus[j].typ, corpus[i].typ)
+			if forward != backward {
+				t.Errorf("QuantifiedRowShapesAgree is asymmetric on (%s, %s): %v vs %v "+
+					"— the six executor call sites rewritten with the operands swapped "+
+					"are now wrong", corpus[i].label, corpus[j].label, forward, backward)
+				continue
+			}
+			if forward {
+				agreeing++
+			} else {
+				disagreeing++
+			}
+		}
+	}
+	if agreeing == 0 || disagreeing == 0 {
+		t.Fatalf("degenerate sweep: %d agreeing, %d disagreeing", agreeing, disagreeing)
+	}
+}

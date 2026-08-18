@@ -314,7 +314,7 @@ func (t *cascadesTranslator) exactProjectionWithOutputSchema(
 					alias = aliases[i]
 				}
 				qov, isQOV := values.AsQuantifiedObjectValue(projected[i])
-				if alias != "" || !isQOV || qov.FlowedType() == nil ||
+				if alias != "" || !isQOV || values.FlowedExactType(qov) == nil ||
 					qov.FlowedType().Code() == values.TypeCodeRecord ||
 					derived.Fields[i].Name == outputNames[i] {
 					continue
@@ -419,8 +419,7 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 			// parse-tree reference may override that name: punctuation in the
 			// rendered expression cannot distinguish a qualified A.B from the
 			// one-segment quoted identifier "A.B".
-			if qov, isQOV := values.AsQuantifiedObjectValue(projectedValue); isQOV &&
-				qov.FlowedType() != nil && qov.FlowedType().Code() != values.TypeCodeRecord {
+			if values.QuantifierFlowsAScalarRow(projectedValue) {
 				if ref := projectionRefAt(p, i); ref.Present {
 					// splitColumnRef already applied SQL identifier semantics:
 					// unquoted names are folded, while quoted names retain their
@@ -1334,7 +1333,7 @@ func bindPostAggregateNode(
 		} else if field, isField := values.AsFieldValue(node); isField {
 			if owner, hasOwner := values.AsQuantifiedObjectValue(field.ChildValue()); hasOwner &&
 				owner.Correlation() == outputOwner.Correlation() &&
-				owner.FlowedType().Equals(outputOwner.FlowedType()) {
+				values.FlowedTypesEqual(owner, outputOwner) {
 				return node, nil
 			}
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
@@ -6417,7 +6416,7 @@ func (t *cascadesTranslator) exactGatheredCTEGroupKeyValue(
 		return nil, false, nil
 	}
 	seedQOV, ok := values.AsQuantifiedObjectValue(bake.seedQOV)
-	if !ok || seedQOV.FlowedType() == nil {
+	if !ok || values.FlowedExactType(seedQOV) == nil {
 		return nil, false, nil
 	}
 	seedRow, ok := seedQOV.FlowedType().(*values.RecordType)
@@ -7027,7 +7026,7 @@ func translateDerivedSortKeyToPhysicalInput(
 	if !ok || declaration.Correlation() != target.Correlation() {
 		return value, nil
 	}
-	if declaration.FlowedType().Equals(target.FlowedType()) {
+	if values.FlowedTypesEqual(declaration, target) {
 		return value, nil
 	}
 	return values.TranslateProjectionInputNameNormalization(value, declaration, target)
@@ -7279,7 +7278,7 @@ func (t *cascadesTranslator) translateProject(p *logical.LogicalProject) express
 	// exact leaf type agree; only top-level field names may differ.
 	if logicalDerivedProjectionInput(p.Input) {
 		logicalInputType, logicalTypeErr := ExactLogicalResultType(p.Input, t.md)
-		if logicalTypeErr == nil && !logicalInputType.Equals(projectionInput.FlowedType()) {
+		if logicalTypeErr == nil && !values.FlowedTypeEquals(projectionInput, logicalInputType) {
 			declaration, declarationErr := values.NewQuantifiedObjectValue(
 				projectionInput.Correlation(), logicalInputType)
 			if declarationErr != nil {
@@ -9914,7 +9913,7 @@ func translateRecursiveCTEConsumerValue(
 		return nil, fmt.Errorf("recursive CTE consumer bridge has a nil Value or root")
 	}
 	commonRoot := values.MaximumType(declaration.FlowedType(), target.FlowedType())
-	if commonRoot == nil || !commonRoot.Equals(target.FlowedType()) {
+	if commonRoot == nil || !values.FlowedTypeEquals(target, commonRoot) {
 		return nil, fmt.Errorf("recursive CTE declared row %s does not widen exactly to %s",
 			declaration.FlowedType(), target.FlowedType())
 	}
@@ -9927,7 +9926,7 @@ func translateRecursiveCTEConsumerValue(
 		if field, isField := values.AsFieldValue(node); isField {
 			root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
 			if !isRoot || root.Correlation() != declaration.Correlation() ||
-				!root.FlowedType().Equals(declaration.FlowedType()) {
+				!values.FlowedTypesEqual(root, declaration) {
 				return node
 			}
 			resolved, err := values.ResolveFieldOrdinals(target, field.Path().Ordinals())
@@ -9946,7 +9945,7 @@ func translateRecursiveCTEConsumerValue(
 		}
 		if root, isRoot := values.AsQuantifiedObjectValue(node); isRoot &&
 			root.Correlation() == declaration.Correlation() &&
-			root.FlowedType().Equals(declaration.FlowedType()) {
+			values.FlowedTypesEqual(root, declaration) {
 			return target
 		}
 		return node

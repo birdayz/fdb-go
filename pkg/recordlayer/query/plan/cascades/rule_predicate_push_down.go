@@ -189,10 +189,10 @@ func pushedAliasDenotesSelectRow(
 		return false
 	}
 	flowed, err := pushQuantifier.RequireFlowedObjectValue()
-	if err != nil || flowed == nil || flowed.FlowedType() == nil {
+	if err != nil || flowed == nil || values.FlowedExactType(flowed) == nil {
 		return false
 	}
-	return values.QuantifiedRowShapesAgree(flowed.FlowedType(), resultValue.Type())
+	return values.FlowedRowShapeEquals(flowed, resultValue.Type())
 }
 
 // rebasedAliasesDenoteOneRow reports whether two quantifiers flow the same
@@ -204,7 +204,7 @@ func rebasedAliasesDenoteOneRow(from, to expressions.Quantifier) bool {
 	if fromErr != nil || toErr != nil || fromFlowed == nil || toFlowed == nil {
 		return false
 	}
-	return values.QuantifiedRowShapesAgree(fromFlowed.FlowedType(), toFlowed.FlowedType())
+	return values.FlowedRowShapesAgree(fromFlowed, toFlowed)
 }
 
 // pushPredicateToExpression is the Go equivalent of Java's PushToVisitor.

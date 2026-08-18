@@ -230,8 +230,8 @@ func nestedLoopJoinBaseWithRetainedScalarSources(
 			continue
 		}
 		for _, source := range childLayout.WindowSources() {
-			if source == nil || source.FlowedType() == nil ||
-				source.FlowedType().Code() == values.TypeCodeRecord {
+			if row := values.FlowedExactType(source); row == nil ||
+				row.Code() == values.TypeCodeRecord {
 				continue
 			}
 			childValue, reanchorErr := materializer.reanchorInputValueToOutput(source)

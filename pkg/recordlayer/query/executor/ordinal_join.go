@@ -887,7 +887,7 @@ func (b *legWindowBinder) GetQuantifiedBinding(view values.QuantifiedObjectValue
 		return nil, false, err
 	}
 	if claimed {
-		if declared == nil || !values.QuantifiedRowShapesAgree(declared, exact.FlowedType()) {
+		if declared == nil || !values.FlowedRowShapeEquals(exact, declared) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
 				"leg-window lookup type disagrees with the local exact leg")
 		}
@@ -906,7 +906,7 @@ func (b *legWindowBinder) IsExplicitNullQuantifiedBinding(view values.Quantified
 		return false, err
 	}
 	if claimed {
-		if declared == nil || !values.QuantifiedRowShapesAgree(declared, exact.FlowedType()) {
+		if declared == nil || !values.FlowedRowShapeEquals(exact, declared) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				"leg-window absence type disagrees with the local exact leg")
 		}
@@ -1861,7 +1861,7 @@ func (b *ordinalJoinBuild) configureNullSupplying(correlations ...values.Correla
 		if _, needed := wanted[qov.Correlation()]; !needed {
 			return true
 		}
-		if previous, exists := found[qov.Correlation()]; exists && !previous.FlowedType().Equals(qov.FlowedType()) {
+		if previous, exists := found[qov.Correlation()]; exists && !values.FlowedTypesEqual(previous, qov) {
 			conflict = fmt.Errorf("null-supplying leg %s has conflicting exact types", qov.Correlation())
 			return false
 		}
@@ -2427,7 +2427,7 @@ func (b *twoLegBinder) GetQuantifiedBinding(view values.QuantifiedObjectValue) (
 	}
 	switch exact.Correlation() {
 	case b.outerID:
-		if b.outerType == nil || !values.QuantifiedRowShapesAgree(b.outerType, exact.FlowedType()) {
+		if b.outerType == nil || !values.FlowedRowShapeEquals(exact, b.outerType) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
 				fmt.Sprintf("outer join-pair lookup %s: read as %s, local leg %s",
 					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
@@ -2435,7 +2435,7 @@ func (b *twoLegBinder) GetQuantifiedBinding(view values.QuantifiedObjectValue) (
 		}
 		return b.outer, true, nil
 	case b.innerID:
-		if b.innerType == nil || !values.QuantifiedRowShapesAgree(b.innerType, exact.FlowedType()) {
+		if b.innerType == nil || !values.FlowedRowShapeEquals(exact, b.innerType) {
 			return nil, false, layoutBindingError(values.CorrelationTypeConflict,
 				fmt.Sprintf("inner join-pair lookup %s: read as %s, local leg %s",
 					exact.Correlation().Name(), values.DescribeType(exact.FlowedType()),
@@ -2453,13 +2453,13 @@ func (b *twoLegBinder) IsExplicitNullQuantifiedBinding(view values.QuantifiedObj
 	}
 	switch exact.Correlation() {
 	case b.outerID:
-		if b.outerType == nil || !values.QuantifiedRowShapesAgree(b.outerType, exact.FlowedType()) {
+		if b.outerType == nil || !values.FlowedRowShapeEquals(exact, b.outerType) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				"outer join-pair absence type disagrees with the local exact leg")
 		}
 		return b.outer == nil, nil
 	case b.innerID:
-		if b.innerType == nil || !values.QuantifiedRowShapesAgree(b.innerType, exact.FlowedType()) {
+		if b.innerType == nil || !values.FlowedRowShapeEquals(exact, b.innerType) {
 			return false, layoutBindingError(values.CorrelationTypeConflict,
 				"inner join-pair absence type disagrees with the local exact leg")
 		}

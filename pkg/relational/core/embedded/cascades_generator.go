@@ -3850,7 +3850,7 @@ func deriveColumnsFromProjectionlessExplode(explode *plans.RecordQueryExplodePla
 	}
 	layout, err := explode.ProvidedOutputLayout()
 	if err != nil || layout == nil || layout.Carrier() == nil ||
-		!layout.Carrier().FlowedType().Equals(rowType) {
+		!values.FlowedTypeEquals(layout.Carrier(), rowType) {
 		return nil
 	}
 
@@ -4528,8 +4528,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 		if i < len(outputNames) && outputNames[i] != "" {
 			cd.Name = outputNames[i]
 			if alias == "" {
-				if qov, isQOV := values.AsQuantifiedObjectValue(v); isQOV &&
-					qov.FlowedType() != nil && qov.FlowedType().Code() != values.TypeCodeRecord {
+				if values.QuantifierFlowsAScalarRow(v) {
 					cd.Label = outputNames[i]
 				} else if _, isReference := values.AsFieldValue(v); isReference &&
 					!projectionLabelAlreadyUsed(cols[:i], cd.Label) {

@@ -282,7 +282,7 @@ func pullUpRequestedOrderingToMatchTop(
 			}
 			root, isRoot := values.AsQuantifiedObjectValue(field.ChildValue())
 			if !isRoot || root == nil || root.Correlation() == values.CurrentCorrelation() ||
-				!root.FlowedType().Equals(queryResult.Type()) {
+				!values.FlowedTypeEquals(root, queryResult.Type()) {
 				return requested
 			}
 			if _, isExternal := external[root.Correlation()]; isExternal {

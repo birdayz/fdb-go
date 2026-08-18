@@ -276,7 +276,7 @@ func (p *RecordQueryMultiIntersectionOnValuesPlan) WithQuantifiers(qs []expressi
 		if err != nil {
 			return nil, fmt.Errorf("RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers new child %d: %w", i, err)
 		}
-		if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+		if !values.FlowedTypesEqual(oldInput, newInput) {
 			return nil, fmt.Errorf(
 				"RecordQueryMultiIntersectionOnValuesPlan.WithQuantifiers child %d type changed from %s to %s",
 				i, oldInput.FlowedType(), newInput.FlowedType())

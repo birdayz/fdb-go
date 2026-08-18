@@ -182,7 +182,7 @@ func newInMemorySortPlanExprBase(innerQ expressions.Quantifier) (PlanExprBase, e
 		if layoutErr != nil {
 			return PlanExprBase{}, fmt.Errorf("%s required input layout: %w", owner, layoutErr)
 		}
-		if !values.PhysicalCarrierType(childLayout).Equals(input.FlowedType()) {
+		if !values.FlowedTypeEquals(input, values.PhysicalCarrierType(childLayout)) {
 			return PlanExprBase{}, fmt.Errorf(
 				"%s required input layout: child carrier type %s disagrees with edge type %s",
 				owner, values.PhysicalCarrierType(childLayout), input.FlowedType())
@@ -350,7 +350,7 @@ func (p *RecordQueryInMemorySortPlan) WithQuantifiers(qs []expressions.Quantifie
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryInMemorySortPlan.WithQuantifiers new input: %w", err)
 	}
-	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+	if !values.FlowedTypesEqual(oldInput, newInput) {
 		return nil, fmt.Errorf(
 			"RecordQueryInMemorySortPlan.WithQuantifiers input type changed from %s to %s",
 			oldInput.FlowedType(), newInput.FlowedType())

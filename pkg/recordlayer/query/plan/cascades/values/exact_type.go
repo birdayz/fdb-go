@@ -15,6 +15,21 @@ type ExactTypeHandle interface {
 	Type() Type
 	CanonicalBytes() []byte
 	RelationInner() (ExactTypeHandle, bool)
+
+	// Code and IsNullable answer the two questions a caller most often wants
+	// from a handle, WITHOUT thawing it. Both were previously reachable only as
+	// `handle.Type().Code()`, which builds an entire Type graph — recursively,
+	// for a record — and discards it to read one field. thaw was the largest
+	// single allocator in the planner, and this was one of the routes into it.
+	//
+	// They are on the INTERFACE rather than beside it as free functions because
+	// a handle that cannot state its own code is not a type identity, and
+	// because the interface is sealed by isExactTypeHandleView: no
+	// implementation outside this package can exist, so widening it breaks
+	// nobody.
+	Code() TypeCode
+	IsNullable() bool
+
 	isExactTypeHandleView()
 }
 
@@ -114,6 +129,27 @@ func (e *exactType) thawShared() Type {
 }
 
 func (*exactType) isExactTypeHandleView() {}
+
+// Code reports the snapshotted type's TypeCode. A nil handle answers
+// TypeCodeUnknown, which is the code the type system already uses for "no
+// resolved type" — a nil handle states no type, so it has no other honest
+// answer, and returning it keeps the accessor total where Type().Code() was not.
+func (e *exactType) Code() TypeCode {
+	if e == nil {
+		return TypeCodeUnknown
+	}
+	return e.code
+}
+
+// IsNullable reports whether the snapshotted type's TOP level admits NULL.
+// Nested nullability lives on the children, exactly as it does on the thawed
+// graph. A nil handle answers false: absence of a type is not a nullable type.
+func (e *exactType) IsNullable() bool {
+	if e == nil {
+		return false
+	}
+	return e.nullable
+}
 
 func (e *exactType) Type() Type {
 	if e == nil {

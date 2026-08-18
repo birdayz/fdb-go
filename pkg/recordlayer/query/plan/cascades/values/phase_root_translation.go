@@ -561,12 +561,12 @@ func TranslateNullExtendedPhaseRoot(
 	if exactSource == exactTarget {
 		return value, nil
 	}
-	if !QuantifiedRowShapesAgree(exactSource.flowed.Type(), exactTarget.flowed.Type()) {
+	if !exactRowShapesAgree(exactSource.flowed, exactTarget.flowed) {
 		return nil, resolutionError(LayoutTypeMismatch, "null-extended.target",
 			"source and target are not the same row: source "+describeExactType(exactSource.flowed)+
 				", target "+describeExactType(exactTarget.flowed))
 	}
-	if exactSource.flowed.Type().IsNullable() || !exactTarget.flowed.Type().IsNullable() {
+	if exactSource.flowed.nullable || !exactTarget.flowed.nullable {
 		return nil, resolutionError(LayoutTypeMismatch, "null-extended.target",
 			"a null-extension widens a present row to an absent-capable one; source nullable="+
 				boolText(exactSource.flowed.Type().IsNullable())+", target nullable="+

@@ -279,7 +279,8 @@ func (p *RecordQueryProjectionPlan) IsIdentity() bool {
 		return false
 	}
 	qov, ok := values.AsQuantifiedObjectValue(p.projections[0])
-	return ok && qov.FlowedType() != nil && qov.FlowedType().Code() == values.TypeCodeRecord &&
+	row := values.FlowedExactType(qov)
+	return ok && row != nil && row.Code() == values.TypeCodeRecord &&
 		qov.Correlation() == p.innerQ.GetAlias()
 }
 
@@ -432,7 +433,7 @@ func (p *RecordQueryProjectionPlan) WithQuantifiers(qs []expressions.Quantifier)
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryProjectionPlan.WithQuantifiers new input: %w", err)
 	}
-	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+	if !values.FlowedTypesEqual(oldInput, newInput) {
 		return nil, fmt.Errorf(
 			"RecordQueryProjectionPlan.WithQuantifiers input type changed from %s to %s",
 			oldInput.FlowedType(), newInput.FlowedType())

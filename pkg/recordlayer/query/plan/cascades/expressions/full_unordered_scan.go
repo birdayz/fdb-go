@@ -126,7 +126,7 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 	if !ok {
 		return false
 	}
-	if !typeEquals(e.flowedType.Type(), o.flowedType.Type()) {
+	if !values.ExactTypesEqual(e.flowedType, o.flowedType) {
 		return false
 	}
 	if len(e.recordTypes) != len(o.recordTypes) {

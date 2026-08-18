@@ -82,7 +82,7 @@ func NewLayoutPositionalRow(typ *values.RecordType, layout values.OrdinalLayout)
 		}
 	}
 	carrier := layout.Carrier()
-	if carrier == nil || !typ.Equals(carrier.FlowedType()) {
+	if carrier == nil || !values.FlowedTypeEquals(carrier, typ) {
 		return nil, &values.ResolutionError{
 			ErrorCode: values.LayoutCarrierMismatch,
 			Path:      "positional.layout",

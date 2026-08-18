@@ -1447,7 +1447,7 @@ func translatePredicateLogicalSource(
 ) ([]predicates.QueryPredicate, error) {
 	isRetainedWindow := func(root values.QuantifiedObjectValue) bool {
 		for _, window := range retainedWindows {
-			if window != nil && window.Equals(root.FlowedType()) {
+			if window != nil && values.FlowedTypeEquals(root, window) {
 				return true
 			}
 		}
@@ -1471,7 +1471,7 @@ func translatePredicateLogicalSource(
 						declaration = root
 						return true
 					}
-					if !declaration.FlowedType().Equals(root.FlowedType()) {
+					if !values.FlowedTypesEqual(declaration, root) {
 						// Stop this Value walk; the error is returned after it.
 						conflicting = root
 						return false
@@ -2048,12 +2048,12 @@ func admitCorrelatedFastPathOuterValue(
 		normalizedRoot, hasRoot := values.AsQuantifiedObjectValue(
 			normalizedField.ChildValue())
 		claimed := normalized != outerValue
-		if !claimed && root.FlowedType().Equals(candidate.root.FlowedType()) {
+		if !claimed && values.FlowedTypesEqual(root, candidate.root) {
 			claimed = true
 		}
 		if !claimed || !hasRoot ||
 			normalizedRoot.Correlation() != candidate.root.Correlation() ||
-			!normalizedRoot.FlowedType().Equals(candidate.root.FlowedType()) ||
+			!values.FlowedTypesEqual(normalizedRoot, candidate.root) ||
 			!normalizedField.ResultType().Equals(outerValue.ResultType()) {
 			continue
 		}

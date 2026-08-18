@@ -265,7 +265,7 @@ func (p *RecordQueryPredicatesFilterPlan) WithQuantifiers(qs []expressions.Quant
 	if err != nil {
 		return nil, fmt.Errorf("RecordQueryPredicatesFilterPlan.WithQuantifiers new input: %w", err)
 	}
-	if !oldInput.FlowedType().Equals(newInput.FlowedType()) {
+	if !values.FlowedTypesEqual(oldInput, newInput) {
 		return nil, fmt.Errorf(
 			"RecordQueryPredicatesFilterPlan.WithQuantifiers input type changed from %s to %s",
 			oldInput.FlowedType(), newInput.FlowedType())
