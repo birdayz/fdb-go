@@ -12,51 +12,82 @@ import "testing"
 // first one a green it does not earn and the second one no scrutiny.
 
 // TestSeedTilingLegsRefusesAZeroWidthRow pins the fact that makes
-// LayoutWithSeedLegs' anyRecord guard REDUNDANT rather than load-bearing.
+// LayoutWithSeedLegs' anyRecord guard REDUNDANT rather than load-bearing:
+// SeedTilingLegs yields nothing for a zero-width row. Dropping
+// `|| carrierRow.anyRecord` changes no answer because an erased record reports
+// zero fields and lands here.
 //
-// Dropping `|| carrierRow.anyRecord` from that guard changes no answer, because
-// an erased record reports zero fields and this refusal stops the walk one step
-// later. That is a negative result and it is exactly the kind that rots: the
-// guard reads as though it decides something, so a later reader may relax this
-// refusal — the thing actually doing the work — without seeing that it re-arms
-// the guard above it.
+// It pins the OUTCOME, not a particular guard, and that distinction was
+// measured rather than chosen. Two independent checks produce it — the
+// `width <= 0` refusal at the top, and `cursor != width` at the bottom, which a
+// zero width can never satisfy because every leg has positive width — so
+// relaxing EITHER alone leaves the answer unchanged and this test green.
+// Relaxing both together makes SeedTilingLegs hand back 2 legs for a row of no
+// columns, and this test reddens naming the count.
+//
+// Recorded because the obvious single-guard mutation is not a valid vacuity
+// probe here, and reading a green from it as "the test is vacuous" would be as
+// wrong as reading it as "the guard is load-bearing". The first version of this
+// test WAS vacuous, for a different reason: its seed produced zero windows, so
+// SeedTilingLegs returned nil at every width including its own.
 func TestSeedTilingLegsRefusesAZeroWidthRow(t *testing.T) {
 	t.Parallel()
 
-	// A seed that WOULD tile if the width allowed it, so the refusal under test
-	// is the width and not an unrelated decline. Built from two record-typed
-	// quantifiers, which is the flat-run shape OrdinalSeedLegWindows recognises.
-	leg := func(name string, n int) Type {
-		fields := make([]Field, n)
-		for i := range fields {
-			fields[i] = Field{
-				Name:      name + uitoa(uint64(i)),
-				FieldType: &PrimitiveType{TypeCode: TypeCodeLong},
-				Ordinal:   i,
+	// The seed must be one OrdinalSeedLegWindows actually recognises, or the
+	// refusal under test never runs and the whole test is vacuous. It is a flat
+	// RUN of baked FieldValue leaves per leg — one per column, ordinal-addressed
+	// off that leg's quantifier — not a record constructor whose fields are the
+	// quantifiers themselves. The first version of this test used the latter,
+	// produced ZERO windows, and stayed green under the very mutation it existed
+	// to catch, while its own comment claimed the seed "WOULD tile if the width
+	// allowed it".
+	leg := func(corr CorrelationIdentifier, cols ...string) []RecordConstructorField {
+		t.Helper()
+		fields := make([]Field, len(cols))
+		for i, c := range cols {
+			fields[i] = Field{Name: c, FieldType: NotNullLong, Ordinal: i}
+		}
+		qov := mustQOV(t, corr, &RecordType{Fields: fields})
+		out := make([]RecordConstructorField, len(cols))
+		for i, c := range cols {
+			fv, err := newFieldValueOfOrdinal(qov, i)
+			if err != nil {
+				t.Fatalf("baking %s.%s: %v", corr.Name(), c, err)
 			}
+			fv.Field = c
+			out[i] = RecordConstructorField{Name: c, Value: fv}
 		}
-		return &RecordType{RecordName: name, Fields: fields}
+		return out
 	}
-	left, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("L"), leg("L", 2))
-	if err != nil {
-		t.Fatalf("left leg: %v", err)
-	}
-	right, err := NewQuantifiedObjectValue(NamedCorrelationIdentifier("R"), leg("R", 2))
-	if err != nil {
-		t.Fatalf("right leg: %v", err)
-	}
-	seed := NewRecordConstructorValue(
-		RecordConstructorField{Name: "L", Value: left},
-		RecordConstructorField{Name: "R", Value: right},
-	)
+	seed := NewRawRecordConstructorValue(append(
+		leg(NamedCorrelationIdentifier("L"), "A1", "A2"),
+		leg(NamedCorrelationIdentifier("R"), "B1")...)...)
 
-	for _, width := range []int{0, -1} {
-		if legs := SeedTilingLegs(seed, width); legs != nil {
+	// THE POSITIVE CONTROL, asserted first and in the same test: at its true
+	// width this seed DOES tile. Without it, every assertion below passes for a
+	// seed that tiles at no width at all.
+	const width = 3
+	tiled := SeedTilingLegs(seed, width)
+	if len(tiled) != 2 {
+		t.Fatalf("SeedTilingLegs(seed, %d) returned %d legs, want 2 — the seed does "+
+			"not tile at its own width, so the refusals below measure nothing",
+			width, len(tiled))
+	}
+
+	for _, w := range []int{0, -1} {
+		if legs := SeedTilingLegs(seed, w); legs != nil {
 			t.Errorf("SeedTilingLegs(seed, %d) returned %d legs; it must refuse a "+
-				"non-positive width. LayoutWithSeedLegs' anyRecord guard is redundant "+
-				"ONLY because of this refusal — relaxing it makes that guard the only "+
-				"thing stopping an erased record from claiming a tiling", width, len(legs))
+				"non-positive width. A row of no columns cannot be TILED, and that is "+
+				"what makes LayoutWithSeedLegs. anyRecord guard redundant — with this "+
+				"answer changed, that guard is the only thing left stopping an erased "+
+				"record from claiming a leg table", w, len(legs))
 		}
+	}
+	// A width the seed does not fill is refused too, which is the arm that shows
+	// the refusal is about the WIDTH rather than about the seed being unusable.
+	if legs := SeedTilingLegs(seed, width+1); legs != nil {
+		t.Errorf("SeedTilingLegs(seed, %d) returned %d legs for a seed that tiles %d "+
+			"slots; a partial tiling must be refused", width+1, len(legs), width)
 	}
 }
 

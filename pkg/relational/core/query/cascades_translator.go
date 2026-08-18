@@ -986,6 +986,11 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 			}
 			return renamed
 		}
+		// No alias list, so nothing is rewritten and the callee's slice is handed
+		// straight back — which is the whole reason the arm above copies. Every
+		// caller of derivedOutputColumns treats the result as READ-ONLY; a writer
+		// added here must copy first, because legColumns' pre-translated-CTE arm
+		// returns cteColumnsScope's own slice.
 		return cols
 	}
 	return nil
@@ -6430,7 +6435,10 @@ func (t *cascadesTranslator) exactGatheredCTEGroupKeyValue(
 	if !ok {
 		return nil, false, nil
 	}
-	seedRow, ok := seedQOV.FlowedType().(*values.RecordType)
+	// SharedFlowedType, not FlowedType: the row below is only interrogated
+	// (FieldIndexUnique) and never retained or modified, so the defensive
+	// rebuild is pure waste on a path the planner runs per gathered CTE key.
+	seedRow, ok := values.SharedFlowedType(seedQOV).(*values.RecordType)
 	if !ok || seedRow == nil {
 		return nil, false, nil
 	}
