@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "cardinality.go",
         "cardinality_bounds.go",
+        "collected_statistics.go",
         "comparisons_property.go",
         "coordinate_bound_claim.go",
         "cost.go",

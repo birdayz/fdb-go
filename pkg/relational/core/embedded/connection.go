@@ -1071,3 +1071,69 @@ var (
 	_ driver.NamedValueChecker  = (*EmbeddedConnection)(nil)
 	_ driver.Tx                 = (*embeddedTx)(nil)
 )
+
+// CollectStatistics gathers per-record-type row counts for this connection's
+// schema and stores them for the planner to read (RFC-236).
+//
+// It is an OFFLINE maintenance operation that happens to be reachable through a
+// connection: it scans every record in the store, so it belongs in a
+// `frl stats collect` run or a scheduled job, never on a query path. The
+// connection is simply the thing that already knows the database path, the
+// schema, the catalog and the keyspace.
+//
+// Reach it from a *sql.DB with Conn.Raw:
+//
+//	conn.Raw(func(dc any) error {
+//	    _, err := dc.(*embedded.EmbeddedConnection).CollectStatistics(ctx, opts)
+//	    return err
+//	})
+//
+// Collection does NOT invalidate cached plans. A plan built before this ran
+// keeps serving from the per-connection cache until its scope changes, so a
+// freshly collected statistic reaches only queries planned after it. That is a
+// stated limitation of phase 1, not an oversight — see RFC-236.
+func (c *EmbeddedConnection) CollectStatistics(
+	ctx context.Context,
+	opts recordlayer.CollectOptions,
+) (*recordlayer.CollectionReport, error) {
+	if c.closed.Load() {
+		return nil, driver.ErrBadConn
+	}
+	if c.sess == nil || c.sess.DB == nil || c.sess.Schema == "" {
+		return nil, api.NewError(api.ErrCodeInvalidParameter,
+			"CollectStatistics requires a connection bound to a schema")
+	}
+	if err := c.ensureMetaData(ctx); err != nil {
+		return nil, err
+	}
+	md := c.cachedMetaData()
+	if md == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema,
+			"no metadata for schema %q", c.sess.Schema)
+	}
+	storeSubspace, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	if err != nil {
+		return nil, err
+	}
+	return recordlayer.CollectStatistics(ctx, c.sess.DB,
+		func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+			return c.newStoreBuilder().SetContext(rtx).
+				SetMetaDataProvider(md).SetSubspace(storeSubspace).CreateOrOpen()
+		},
+		recordlayer.NewStatisticsSubspace(c.sess.Keyspace.StatisticsSubspace()),
+		opts)
+}
+
+// ClearStatistics removes this schema's collected statistics.
+func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
+	if c.sess == nil || c.sess.DB == nil || c.sess.Schema == "" {
+		return api.NewError(api.ErrCodeInvalidParameter,
+			"ClearStatistics requires a connection bound to a schema")
+	}
+	storeSubspace, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	if err != nil {
+		return err
+	}
+	return recordlayer.ClearStatistics(ctx, c.sess.DB,
+		recordlayer.NewStatisticsSubspace(c.sess.Keyspace.StatisticsSubspace()), storeSubspace)
+}

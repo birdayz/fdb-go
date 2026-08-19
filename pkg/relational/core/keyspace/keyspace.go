@@ -24,6 +24,12 @@ import (
 const (
 	SysName     = "__SYS"
 	CatalogName = "CATALOG"
+	// StatsName roots collected planner statistics (RFC-236). It is a SIBLING
+	// of every schema subspace, never a child, because a schema subspace IS a
+	// record store subspace and that namespace belongs to Java —
+	// FDBRecordStoreKeyspace defines 0-10 and is (UNSTABLE). Statistics are
+	// a Go-side optimization and must not add a byte inside it.
+	StatsName = "__STATS"
 )
 
 // RelationalKeyspace provides FDB subspace resolution for the relational layer.
@@ -73,4 +79,24 @@ func ParseDBPath(dbPath string) ([]string, error) {
 		}
 	}
 	return parts, nil
+}
+
+// StatisticsSubspace returns the root under which collected planner statistics
+// live (RFC-236). Statistics for a given store are keyed BELOW this by that
+// store's own subspace prefix, which is what makes the scheme layout-agnostic:
+// a store is its prefix, whether it came from a relational schema, a hand-built
+// store, or a Java-authored layout.
+//
+// It deliberately takes no (dbPath, schema): the per-store keying happens one
+// level down, so one root serves every store in this keyspace and the collector
+// needs no relational concepts at all.
+//
+// TENANTS: FDB tenants are separate keyspaces, so a store's prefix is only
+// meaningful within its tenant — two tenants may hold byte-identical prefixes
+// for different stores. A tenant-scoped deployment must therefore build its
+// RelationalKeyspace on a root inside that tenant, which it already does, since
+// `root` is whatever the caller opened. Nothing here can mix tenants that the
+// caller has not already mixed.
+func (k *RelationalKeyspace) StatisticsSubspace() subspace.Subspace {
+	return k.root.Sub(tuple.Tuple{StatsName})
 }
