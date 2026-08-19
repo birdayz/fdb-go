@@ -310,6 +310,17 @@ func newPermutedAggregateIndexCursor(
 		valueStart: physicalGroupingPrefixCount,
 		valueEnd:   totalSize - (gke.GetGroupingCount() - physicalGroupingPrefixCount),
 		posType:    posType,
+		// The MIN flavour needs the stored extremum repaired when it is NULL —
+		// see recordlayer.PermutedMinIgnoringNulls. The ordinary subspace's
+		// value span is stated in ORIGINAL column order, which is where the
+		// repair reads, and differs from the permuted span above whenever
+		// permutedSize is non-zero.
+		store:             store,
+		index:             idx,
+		repairNullMin:     recordlayer.IsPermutedMinIndex(idx),
+		ordinaryValueFrom: gke.GetGroupingCount(),
+		ordinaryValueTo:   totalSize,
+		isolationLevel:    scanProps.ExecuteProperties.IsolationLevel,
 	}, nil
 }
 
@@ -323,6 +334,18 @@ type permutedAggregateIndexCursor struct {
 	valueEnd   int
 	posType    *values.RecordType
 	closed     bool
+
+	// The MIN null repair. store/index/isolationLevel are what the repair reads
+	// with; ordinaryValueFrom/To bound the aggregated columns in the ORDINARY
+	// subspace's key order, which is not the permuted order valueStart/valueEnd
+	// describe. repairNullMin is false for PERMUTED_MAX, where a stored NULL
+	// extremum is already the right answer.
+	store             *recordlayer.FDBRecordStore
+	index             *recordlayer.Index
+	repairNullMin     bool
+	ordinaryValueFrom int
+	ordinaryValueTo   int
+	isolationLevel    recordlayer.IsolationLevel
 }
 
 func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -342,19 +365,44 @@ func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.
 	// sits after the value at key[valueEnd:]. Normalize into the row domain the
 	// same way the covering/aggregate cursors do (UUID → [16]byte, float32 →
 	// float64) so residual HAVING/sort/joins compare consistently.
-	for i := 0; i < c.groupCount && i < len(slots); i++ {
+	//
+	// groupKey collects the same columns as a tuple, because the MIN null repair
+	// below reads the ordinary subspace, which is keyed in this original order.
+	groupKey := make(tuple.Tuple, 0, c.groupCount)
+	for i := 0; i < c.groupCount; i++ {
 		ki := i
 		if i >= c.valueStart {
 			ki = c.valueEnd + (i - c.valueStart)
 		}
-		if ki < len(key) {
+		if ki >= len(key) {
+			continue
+		}
+		groupKey = append(groupKey, key[ki])
+		if i < len(slots) {
 			slots[i] = tupleElementToRowValue(key[ki])
 		}
 	}
 
 	// Aggregate value: the single grouped column at key[valueStart:valueEnd].
 	if aggOrd := c.groupCount; aggOrd < len(slots) && c.valueStart < c.valueEnd && c.valueStart < len(key) {
-		slots[aggOrd] = tupleElementToRowValue(key[c.valueStart])
+		extremum := key[c.valueStart]
+		// A NULL extremum on a MIN index does not mean the group has no value —
+		// NULL merely outranks every value in the stored comparison. Resolve the
+		// smallest non-NULL value from the ordinary subspace; a nil answer there
+		// means the group really is all-NULL and the stored NULL stands.
+		if extremum == nil && c.repairNullMin && len(groupKey) == c.groupCount {
+			repaired, err := recordlayer.PermutedMinIgnoringNulls(
+				ctx, recordlayer.OrdinaryIndexScanner(c.store, c.index), c.index.Name,
+				groupKey, c.ordinaryValueFrom, c.ordinaryValueTo, c.isolationLevel)
+			if err != nil {
+				return recordlayer.NewResultNoNext[QueryResult](
+					recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
+			}
+			if len(repaired) > 0 {
+				extremum = repaired[0]
+			}
+		}
+		slots[aggOrd] = tupleElementToRowValue(extremum)
 	}
 
 	qr := QueryResult{Positional: &PositionalRow{Type: c.posType, Slots: slots}}
