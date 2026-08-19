@@ -10097,7 +10097,8 @@ func assertSelectResultMintCensus(w io.Writer) bool {
 }
 
 // mergeSlotTypingFloor is the measured population of positional-merge slots the
-// real-FDB corpus builds (22,354), floored well below it so an ordinary corpus
+// real-FDB corpus builds (22,354 on the run this was derived from; the total
+// moves with rule firings, ~22.4k), floored well below it so an ordinary corpus
 // edit does not trip the guard while a collapse still does.
 const mergeSlotTypingFloor = 2000
 

@@ -575,14 +575,19 @@ func legProvidedAliases(leg expressions.Quantifier) map[values.CorrelationIdenti
 //     quantifier, so the arity is 1+E and the null-on-empty lives INSIDE the
 //     box, where a top-level flag test cannot reach it.
 //
-// NOT covered, deliberately, and each shape was run rather than reasoned about:
-// a box nested more than one level down (the rewrite prepends its box directly,
-// so a deeper one is somebody else's expression); a rewritten form whose join
-// type is not INNER (the rewrite always emits INNER); and a box sitting anywhere
-// but first (the rewrite prepends). A form outside this list is not recognized
-// and the rule re-fires, which costs a memo member — the safe direction, since
-// failing to recognize duplicates is cheaper than declining a legitimate
-// rewrite.
+// NOT covered, and each of these has a committed arm rather than an argument:
+// a rewritten form whose join type is not INNER (the rewrite always emits
+// INNER); a box nested more than one level down (the rewrite prepends its box
+// directly, so a deeper one is somebody else's expression); and a box sitting
+// anywhere but first (the rewrite prepends).
+//
+// A form outside that list is not recognized, so the rule re-fires — and because
+// this rule is registered in two phases and mints a fresh
+// UniqueCorrelationIdentifier per firing, that is UNBOUNDED memo growth, not one
+// wasted member. It is still the direction to fail in: over-recognizing
+// SUPPRESSES a legitimate rewrite, and a shape that never gets its plan is worse
+// than a memo that grows. The remedy for an unrecognized shape is to add it here
+// with an arm, not to loosen the test.
 func isRewrittenOuterJoinForm(other *expressions.SelectExpression, originalArity, existentialCount int) bool {
 	if other == nil || other.GetJoinType() != expressions.JoinInner {
 		return false

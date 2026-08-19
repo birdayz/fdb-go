@@ -285,6 +285,18 @@ func TestDivergenceHolds(t *testing.T) {
 			want:  false,
 		},
 		{
+			// COMPOSITE cells: the key descends into them. A top-level-only render
+			// flattens the cell, so these two rows would collide — and that is the
+			// UNSAFE direction on the one guard whose job is to refuse a wrong-value
+			// divergence. Java emits nested JsonArray/JsonObject, so a STRUCT or
+			// ARRAY column produces exactly this shape.
+			name: "unordered: composite cells that FLATTEN alike are different rows",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: [][]any{{[]any{"a", "b c"}}}},
+			java: rows([][]any{{[]any{"a b", "c"}}}),
+			go_:  rows([][]any{{[]any{"a", "b c"}}}),
+			want: false,
+		},
+		{
 			// The multiset key carries TYPE, so a value that merely RENDERS the same
 			// is a different row. A key built from fmt.Sprint alone would call these
 			// equal and let a real wrong-type divergence through.

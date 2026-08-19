@@ -128,6 +128,31 @@ func TestRewriteOuterJoin_IdempotencyRecognizesBothRewrittenForms(t *testing.T) 
 			why: "the arity alone must not satisfy the guard — an unrelated 2-quantifier box beside an existential is not a null-extended pair",
 		},
 		{
+			// A box nested one level DEEPER than the rewrite ever prepends. The
+			// descent looks exactly one level down, so this must not match: a
+			// null-on-empty found at arbitrary depth belongs to somebody else's
+			// expression, and matching it would suppress a legitimate rewrite.
+			name: "a box nested TWO levels down is not this rule's output",
+			build: func(t *testing.T) *expressions.SelectExpression {
+				innerBox := boxOver(t, plainQ(t, "L", "LEFT"), nullOnEmptyQ(t, "R", "RIGHT"))
+				outerBox := boxOver(t, innerBox)
+				return sel(t, expressions.JoinInner, outerBox, plainQ(t, "E", "EXQ"))
+			},
+			originalArity: 3, existentialCount: 1, want: false,
+			why: "the rewrite prepends its box directly, so only one level down is its own shape",
+		},
+		{
+			// The box present but NOT first. The rewrite always prepends, so a box
+			// in second position is not the form it emits.
+			name: "a box sitting anywhere but FIRST is not this rule's output",
+			build: func(t *testing.T) *expressions.SelectExpression {
+				box := boxOver(t, plainQ(t, "L", "LEFT"), nullOnEmptyQ(t, "R", "RIGHT"))
+				return sel(t, expressions.JoinInner, plainQ(t, "E", "EXQ"), box)
+			},
+			originalArity: 3, existentialCount: 1, want: false,
+			why: "position is the claim — the descent reads quants[0], and a box elsewhere is another expression",
+		},
+		{
 			name: "BOXED arity but the first quantifier is a SCAN, not a box",
 			build: func(t *testing.T) *expressions.SelectExpression {
 				return sel(t, expressions.JoinInner, plainQ(t, "L", "LEFT"), plainQ(t, "E", "EXQ"))

@@ -144,6 +144,12 @@ var _ = Describe("ProjectedExistsOverLeftJoinJavaProbe", func() {
 				"%s: Go no longer agrees with Java on a shape that was measured to agree. For the "+
 					"two projected-EXISTS-over-LEFT-JOIN rows this is the box regressing; for the "+
 					"controls it is the null-extension being lost or kept wrongly.", p.name)
+			// Engine-to-engine, not both-to-a-literal. The two comparisons above go
+			// through fmt.Sprint, which equates float64(10) with "10"; this one is
+			// exact, so a divergence in how the two engines TYPE the same answer
+			// cannot hide behind a shared rendering.
+			Expect(gr.Rows.Rows).To(Equal(jr.Rows.Rows),
+				"%s: the engines render alike but their values differ in TYPE.", p.name)
 		}
 	})
 })

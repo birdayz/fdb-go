@@ -34,6 +34,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -859,17 +860,22 @@ var _ = Describe("RunSql Harness", func() {
 // sameRowMultiset reports whether two result sets contain the same rows
 // disregarding SEQUENCE — the guard under DivergenceUnorderedRowOrderDiffers.
 //
-// The key carries each element's TYPE as well as its value, and separates
-// elements unambiguously, so it is exactly as strict as the reflect.DeepEqual the
-// rest of the harness uses on non-annotated entries — only insensitive to the
-// order of ROWS. A weaker key would matter: rendering a row with fmt.Sprint alone
-// equates float64(5) with the string "5", and makes ["a b","c"] and ["a","b c"]
-// the same row. Both runners already normalise numerics to float64
-// (go_runner.go), so nothing is gained by being loose here and a real
-// wrong-value divergence would be absorbed.
+// The key carries each element's TYPE as well as its value and separates elements
+// unambiguously, so a dropped row, a duplicated row or a changed value all break
+// the comparison and only ROW ORDER does not — which is exactly the scope the
+// annotation may excuse.
 //
-// A dropped row, a duplicated row or a changed value all break the comparison;
-// only order does not, which is exactly the scope the annotation may excuse.
+// It renders RECURSIVELY, and that is not decoration. `%v` flattens a composite
+// cell, so a top-level-only key collides `[["a","b c"]]` with `[["a b","c"]]` —
+// the UNSAFE direction, on the one helper whose whole justification is that it
+// cannot absorb a wrong-value bug. Not reachable from the two entries annotated
+// today (both scalar BIGINT), but the Java side emits nested JsonObject and
+// JsonArray, so a STRUCT or ARRAY column decodes to exactly such a cell.
+//
+// It is NOT claimed to be equivalent to reflect.DeepEqual, and the difference
+// runs the safe way: `%v` renders -0.0 and 0.0 differently, so the key separates
+// two values DeepEqual calls equal. Over-strict refuses an annotation; the
+// converse would license one.
 //
 // Counting is by MULTISET, not by set: `[1 1 2]` and `[1 2 2]` are different
 // answers and a set comparison would call them equal.
@@ -900,9 +906,41 @@ func sameRowMultiset(a, b [][]any) bool {
 func rowMultisetKey(row []any) string {
 	var b strings.Builder
 	for _, cell := range row {
-		fmt.Fprintf(&b, "%T\x1f%v\x1e", cell, cell)
+		writeMultisetCell(&b, cell)
+		b.WriteByte(0x1e)
 	}
 	return b.String()
+}
+
+// writeMultisetCell renders one cell, descending into the composite shapes the
+// two runners actually produce: Java decodes a JsonArray to []any and a
+// JsonObject to map[string]any, and Go's driver mirrors that. Map keys are sorted
+// so an equal map cannot key two ways.
+func writeMultisetCell(b *strings.Builder, cell any) {
+	switch v := cell.(type) {
+	case []any:
+		b.WriteString("[")
+		for _, elem := range v {
+			writeMultisetCell(b, elem)
+			b.WriteByte(0x1d)
+		}
+		b.WriteString("]")
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteString("{")
+		for _, k := range keys {
+			fmt.Fprintf(b, "%q\x1c", k)
+			writeMultisetCell(b, v[k])
+			b.WriteByte(0x1d)
+		}
+		b.WriteString("}")
+	default:
+		fmt.Fprintf(b, "%T\x1f%v", cell, cell)
+	}
 }
 
 // orderByPattern matches an ORDER BY in a corpus query. Used only to REFUSE the

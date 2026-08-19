@@ -40,6 +40,14 @@ func (r *PartitionSelectRule) positionalMergeCase(
 	// its child never does). DECLINE the collapse and leave the select to
 	// the per-quantifier NLJ implementation (DefaultOnEmpty — Java's
 	// planPartitionToPhysical), never a silently mis-merged null extension.
+	//
+	// SCOPE, because one merge DOES collapse a null-on-empty leg and this decline
+	// must not be read as forbidding that: RewriteOuterJoinRule's BOX puts the
+	// preserved and null-supplying legs into one positional merge together. It is
+	// sound for the reason this decline is not — both sides of the extension sit
+	// inside the SAME box, so the null-extension stays per-outer-row rather than
+	// being split across a lower and an upper. What this guard refuses is
+	// collapsing a null-on-empty leg into a lower whose PARTNER stays outside it.
 	liveSet := make(map[values.CorrelationIdentifier]struct{}, len(live))
 	for _, a := range live {
 		liveSet[a] = struct{}{}
@@ -217,8 +225,15 @@ func (r *PartitionSelectRule) positionalMergeCase(
 // How much traffic it carries is now MEASURED rather than argued, because an
 // argument about which shapes can reach a fallback is what a change to the
 // fallback invalidates silently (see recordMergeSlotTyping). Measured over the
-// whole real-FDB corpus at 22394 merge slots: 21736 typed by the quantifier, 0
-// recovered here, 658 stating a non-row scalar, 0 stating nothing at all.
+// whole real-FDB corpus, one run: 22394 merge slots — 21736 typed by the
+// quantifier, 0 recovered here, 658 stating a non-row scalar, 0 stating nothing
+// at all.
+//
+// THE TOTAL IS A MAGNITUDE, NOT A PIN. These are rule FIRINGS, and the memo may
+// explore a rule once or many times for one query depending on exploration
+// order, so the denominator moves run to run — sibling readings of the same
+// corpus report 22,354 and 22,362. Quote it as ~22.4k or quote nothing. The
+// load-bearing number is the one that does NOT move: Untyped stays 0.
 //
 // THE RESIDUAL COLLAPSED, AND THAT IS WHY THE COUNTER IS NOW ASSERTED AT ZERO
 // RATHER THAN REPORTED. An earlier reading of this same site recorded 750 slots

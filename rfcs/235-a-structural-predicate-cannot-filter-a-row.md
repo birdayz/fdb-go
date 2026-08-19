@@ -430,14 +430,21 @@ rather than regenerated, and the stress comparison §9 makes a gate.
 
 ## 12. Phase 2 — the retirement, implemented
 
-`rule_implement_nested_loop_join.go`: **6,532 → 4,894 lines**. Whole change on top
-of phase 1, measured at review time rather than when the section was drafted:
-**73 tracked files changed, 1,933 insertions, 12,369 deletions, 26 files removed,
-plus 6 new files.** An earlier revision of this line said 5,208 lines and
-"45 files, 651 insertions, 10,990 deletions" — true when written, and stale by
-the end of the same phase, because the dead-code cascade the retirement exposed
-kept growing the deletion. A number with no stated measurement point decays
-without ever looking wrong.
+`rule_implement_nested_loop_join.go`: **6,532 → 4,894 lines** (`wc -l`, phase-2
+head). Whole change on top of phase 1, at that same head — `git diff --stat
+4510d453d..HEAD`:
+
+    82 files changed, 3278 insertions(+), 12389 deletions(-)
+    7 added, 22 deleted, 53 modified
+
+THE COMMAND AND THE ANCHOR ARE PART OF THE CLAIM, because this line has now been
+wrong twice. It first said 5,208 lines and "45 files, 651 insertions, 10,990
+deletions"; the correction said 4,894 and "73 files, 1,933 insertions, 12,369
+deletions". Both were true when written and stale within the same phase — the
+dead-code cascade the retirement exposed kept growing, and then the review round
+grew it again. A number with no stated measurement point decays without ever
+looking wrong, so this one names the baseline commit and the command that
+produces it rather than asking a reader to trust the figure.
 
 | deleted | lines |
 |---|---|
@@ -457,7 +464,7 @@ been silently wrong:
 - **The merge-slot typing census.** It rode inside `leg_local_bake_census.go` but
   measures the POSITIONAL MERGE, which outlives the arm. Its counters, partition
   identity and floor were carried over and rewired into the corpus gate; it reads
-  22,394 slots / 0 untyped. A live path with no instrument is how the silent
+  ~22.4k slots / 0 untyped (the denominator moves with rule firings; the zero does not). A live path with no instrument is how the silent
   zero-rows defect it watches for gets back in.
 
   **NOT "extracted whole", and the difference matters twice.** An earlier

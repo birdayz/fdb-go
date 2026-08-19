@@ -8735,7 +8735,8 @@ runs on a loaded box, which is exactly why it is the right instrument for this a
 **2026-08-19 (RFC-235 — the existential peel and the three-quantifier NLJ arm's
 retirement):** baseline `e24f338e7896f1ea75c9bb016c2ca69b3ab6f93f`, which WAS the
 merge-base of `nlj-existential-peel` on this date, run in a worktree named for
-that SHA; branch side at `4510d453d` plus the uncommitted phase-2 tree. Both
+that SHA; branch side at `f2f367851`, whose tree is the one measured (it was the
+uncommitted phase-2 worktree at measurement time and was committed unchanged). Both
 SHAs are named because "vs master" expires: master moves and the sentence stops
 describing the comparison anyone made. Same filesystem (`df -T .` = **xfs**, 98%
 used); the box is XFS, so CLAUDE.md's ~95% ext4 threshold does not transfer and
@@ -18922,7 +18923,8 @@ duplicated or altered row cannot hide under it), requires the query to have NO
 `ORDER BY` (same-multiset-different-order is exactly what a dropped sort looks
 like), keys the comparison on each element's TYPE as well as its value, and fails
 when the engines start agreeing so a fixed tie-break cannot leave a stale pin.
-Eleven unit arms drive it and the permutation guard is mutation-verified.
+Twelve unit arms drive it; the permutation guard and the recursive key are both
+mutation-verified.
 
 What REMAINS an owner call is the cost model itself, not the annotation.
 

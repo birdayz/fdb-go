@@ -25,6 +25,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -157,6 +158,117 @@ func TestFDB_JoinBodiedExistsOverLeftJoin(t *testing.T) {
 					t.Fatalf("%s: row %d = %q, want %q (full: %v vs %v)",
 						tc.name, i, got[i], tc.want[i], got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+// TestFDB_BuriedAliasShadowingIsRejectedUpstream is a NEGATIVE result, pinned
+// because the conclusion it supports is load-bearing.
+//
+// The fix above maps every alias BOUND INSIDE an existential's subgraph to that
+// existential, so a hoisted predicate naming a subquery-internal alias stays
+// above the null-extension. The map keys on a NAME, and a
+// CorrelationIdentifier's name is not unique across scopes — nothing uniquifies
+// a table binding across nesting levels. So a predicate naming an ENCLOSING
+// alias whose name is re-bound inside one of this select's existentials would be
+// classified above by mistake, lifting a genuine ON-conjunct over the
+// null-extension and degrading LEFT JOIN to INNER silently. That is the same
+// failure class the fix closes, mirrored.
+//
+// It does not reproduce, and the reason is upstream of the planner entirely: the
+// shape needs a correlation to an enclosing alias INSIDE an OUTER JOIN's ON
+// clause, and the SQL layer refuses exactly that with 0A000
+// (`CorrelatedExistsError`, logical_predicate.go). The rewrite rule never sees
+// the select, so the collision has nothing to act on.
+//
+// THIS TEST PINS THE REJECTION, NOT THE RULE. If the 0A000 is ever relaxed —
+// which is a reasonable thing to want, since Java accepts more here — the
+// name-collision path becomes reachable and silent. What re-arms it is this test
+// going green in the OTHER direction: an accepted query instead of a refusal.
+// The durable fix at that point is to carry predicate ownership from
+// `existsInnerCorrelation`, which knows it at translation, rather than
+// re-deriving it by alias intersection in two rules.
+func TestFDB_BuriedAliasShadowingIsRejectedUpstream(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/shadowreject")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /shadowreject")
+	mwjoMustExec(t, setup, ctx,
+		"CREATE SCHEMA TEMPLATE shadowreject "+
+			"CREATE TABLE t (id BIGINT, z BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE a (k BIGINT, id BIGINT, PRIMARY KEY (k)) "+
+			"CREATE TABLE b (k BIGINT, z BIGINT, PRIMARY KEY (k))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /shadowreject/s WITH TEMPLATE shadowreject")
+	dsn := fmt.Sprintf("fdbsql:///shadowreject?cluster_file=%s&schema=s", clusterFilePath)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	// a's only row has NO matching b (k=5 vs k=9), so the LEFT JOIN would
+	// null-extend b — which is what makes a wrongly-lifted ON conjunct
+	// observable, if the query were ever planned.
+	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 100)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO a VALUES (5, 1)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b VALUES (9, 100)")
+
+	for _, tc := range []struct {
+		name string
+		sql  string
+	}{
+		{
+			// The collision itself: `t` is bound outside AND re-bound inside the
+			// nested existential.
+			name: "shadowed_enclosing_alias",
+			sql: "SELECT id FROM t WHERE EXISTS (" +
+				"SELECT 1 FROM a LEFT JOIN b ON b.k = a.k AND b.z = t.z " +
+				"WHERE EXISTS (SELECT 1 FROM t WHERE t.id = a.id))",
+		},
+		{
+			// CONTROL, and it is what identifies the refusal's real cause: no name
+			// is shadowed here, and it is refused identically. So the rejection is
+			// about the correlation in the OUTER JOIN's ON clause, not about the
+			// shadowing — which is why relaxing it re-arms the collision.
+			name: "unshadowed_control_refused_identically",
+			sql: "SELECT id FROM t WHERE EXISTS (" +
+				"SELECT 1 FROM a LEFT JOIN b ON b.k = a.k AND b.z = t.z " +
+				"WHERE EXISTS (SELECT 1 FROM b AS b2 WHERE b2.k = a.k))",
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rows, err := db.QueryContext(ctx, tc.sql)
+			if err == nil {
+				defer rows.Close()
+				var got []string
+				for rows.Next() {
+					var s sql.NullString
+					if scanErr := rows.Scan(&s); scanErr != nil {
+						t.Fatalf("scan: %v", scanErr)
+					}
+					got = append(got, s.String)
+				}
+				t.Fatalf("%s: the query was ACCEPTED and returned %v.\n"+
+					"  This is the re-arming signal, not a pass. The buried-alias map in\n"+
+					"  RewriteOuterJoinRule keys on an alias NAME, and this shape re-binds an\n"+
+					"  enclosing name inside an existential — so a genuine ON-conjunct can now be\n"+
+					"  lifted above the null-extension, degrading LEFT JOIN to INNER silently.\n"+
+					"  Correct answer here is [1] (a's row is null-extended and the inner EXISTS\n"+
+					"  holds); [] means the conjunct was lifted. Carry predicate ownership from\n"+
+					"  existsInnerCorrelation instead of re-deriving it by alias intersection.",
+					tc.name, got)
+			}
+			if !strings.Contains(err.Error(), "correlation inside an OUTER") {
+				t.Fatalf("%s: refused, but NOT by the guard this test pins.\n  got: %v\n"+
+					"  The pin is specifically that a correlation inside an OUTER JOIN ON clause is\n"+
+					"  rejected upstream; a different refusal means the shape now reaches the\n"+
+					"  planner by some other route and the name-collision hazard needs re-checking.",
+					tc.name, err)
 			}
 		})
 	}

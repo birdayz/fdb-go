@@ -131,8 +131,10 @@ func FormatMergeSlotTypingCensus() string {
 // The polarity matches its siblings and the censusGate contract
 // (census_gate_reporting_test.go): run returns FAILED, not OK. Getting it
 // backwards makes a clean census report as a failure, which is how this was
-// caught — the gate fired on 22,362 slots with a holding partition and zero
-// untyped.
+// caught — the gate fired on a run reporting 22,362 slots with a holding
+// partition and zero untyped. That total is one SAMPLE of a population that
+// moves with memo exploration order (~22.4k; see positional_merge.go), which is
+// why the floor below is an order of magnitude under it rather than an equality.
 //
 // Two directions, and they are not the same alarm. The PARTITION identity going
 // wrong means the instrument miscounts, so every share it reports is
