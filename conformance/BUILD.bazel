@@ -78,6 +78,7 @@ go_test(
         "count_not_null_index_conformance_test.go",
         "count_updates_index_conformance_test.go",
         "covering_index_conformance_test.go",
+        "cross_join_order_mechanism_probe_test.go",
         "crud_test.go",
         "customer_conformance_test.go",
         "delete_all_conformance_test.go",

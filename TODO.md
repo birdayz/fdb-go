@@ -18866,12 +18866,27 @@ Go's Cascades reaches a genuine cost TIE on the two nestings of an unconstrained
 cross product and resolves it with a hash that consumes identifiers. The same
 query, differing only in the names of the tables it reads, plans opposite
 nestings — and since neither has an `ORDER BY`, the row ORDER a user sees
-depends on what the tables are called. Java is stable: the first `FROM` item is
-outermost in every spelling measured.
+depends on what the tables are called.
 
-Java rarely reaches this tie at all. It prunes each `Reference` to one member
-mid-phase; Go does not. `pkg/recordlayer/query/plan/cascades/planning_cost_model.go:562`
-states this beside the tie-break it wraps.
+JAVA IS NOT THE FIXED POINT — THAT WAS AN INFERENCE FROM TOO FEW SPELLINGS, AND
+IT IS REFUTED. An earlier revision of this entry said "Java is stable: the first
+`FROM` item is outermost in every spelling measured", and concluded Java rarely
+reaches the tie because it prunes each `Reference` to one member. The scoping was
+honest and the inference was wrong. Swept over EIGHT table-name pairs (each also
+in its reversed spelling) at two cardinality arrangements — 16 combinations,
+`conformance/cross_join_order_mechanism_probe_test.go`:
+
+    Java deviates from FROM order in 10 of 16
+    Java and Go disagree in 14 of 16
+    cardinality changes NOTHING in either engine: both arrangements of a given
+      name pair always answer the same way
+
+Java's `PlanningCostModel.compare` ends in
+`Integer.compare(planHash(a), planHash(b))` (`PlanningCostModel.java:320-326`) and
+its `ImplementNestedLoopJoinRule` matches its two quantifiers with
+`SetMatcher.exactlyInAnyOrder`, so Java generates BOTH nestings and breaks the
+tie on a hash over plan structure — exactly as Go does, with a different hash.
+Both engines are identifier-driven; neither guarantees FROM order.
 
 MEASURED, not inferred:
 
@@ -18899,15 +18914,17 @@ rather than preventing it.
 
 THE FIX IS A COST-MODEL CHANGE AND NEEDS ITS OWN RFC + GRAEFE ACK: either give
 Go Java's prune-to-1, or replace the identifier-sensitive tie-break with a
-stable one. THOSE TWO ARE NOT PEERS. Java's own final tie-break is
-`Integer.compare(planHash(a), planHash(b))` (`PlanningCostModel.java:322-326`),
-which is identifier-sensitive too; what makes Java stable is PRUNE-TO-1, so it
-rarely reaches the tie. Porting prune-to-1 is therefore the Java-alignment
-option, while a declaration-order tie-break is a Go invention that happens to
-match Java's output here — an earlier revision of this entry recommended the
-second on the grounds that it "matches Java's observable behaviour", which
-confuses the output with the mechanism. Either carries a full golden re-audit and
-a stress re-baseline.
+stable one. NEITHER IS A JAVA-ALIGNMENT OPTION, because there is no Java
+behaviour to align WITH: Java is identifier-driven here too (10 of 16 spellings
+deviate from FROM order). Porting prune-to-1 would not produce a stable nesting —
+the comparison it prunes with is the same planHash-terminated compare — and
+matching Java exactly would mean reproducing Java's planHash bit-for-bit over
+plan structures, which is neither a stated goal nor wire-relevant.
+
+So the remaining question is NOT parity. It is whether Go should guarantee a
+rename-invariant nesting as a quality property of its own, which is a
+Go-beyond-Java choice and should be argued as one. Either way it carries a full
+golden re-audit and a stress re-baseline.
 
 THE ANNOTATION ROUTE WAS EXTENDED, and this paragraph records what it cost.
 `plandiff.DivergenceDirection` had five values and every one was "Java is wrong"
