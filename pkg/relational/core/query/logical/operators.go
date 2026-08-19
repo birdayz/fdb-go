@@ -721,7 +721,7 @@ type LogicalJoin struct {
 	// OnExistsSubqueries carries EXISTS subqueries lifted from the ON clause
 	// (RFC-154 §5). The cascades translator turns each into an existential
 	// quantifier on the join's SelectExpression, so the NLJ rule's
-	// implementJoinWithExistential path builds the semi-join. Only populated for
+	// the existential peel path builds the semi-join. Only populated for
 	// INNER joins (OUTER EXISTS-in-ON is deferred — RFC-154 §5.2b).
 	OnExistsSubqueries []ExistsSubquery
 }

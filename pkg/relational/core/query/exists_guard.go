@@ -163,7 +163,7 @@ func emittedScopeValues(e expressions.RelationalExpression) []values.Value {
 // wrapper that is NOT a directly-handled semi-join shape — i.e. it is neither a
 // top-level existential nor a single-NOT-wrapped existential. Such a predicate
 // falls into the regular-predicate bucket of the NLJ rule's
-// implementExistentialSelect / implementJoinWithExistential, where the empty
+// implementExistentialSelect / the existential peel, where the empty
 // FirstOrDefault inner emits its NULL default that no residual filter removes,
 // so EVERY outer row silently passes (a silent wrong result). The production
 // path rejects such a plan with ErrCodeUnsupportedQuery rather than ship wrong

@@ -2478,11 +2478,11 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 === comma_join_exists.yaml#0
 sql:   SELECT p.id, e.eid FROM p, e WHERE p.id = e.eref AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600) ORDER BY p.id, e.eid
-plan:  Project([_current.ID#0, _current.EID#2], InMemorySort([_current.ID#0 ASC, _current.EID#2 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(P), Scan(E)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0, _current.EID#2], InMemorySort([_current.ID#0 ASC, _current.EID#2 ASC], FlatMap(outer=FlatMap(outer=Scan(E), inner=Scan(P, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
@@ -2491,11 +2491,11 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === comma_join_exists.yaml#1
 sql:   SELECT p.id, e.sal FROM p, e WHERE p.id = e.eref AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600) ORDER BY p.id, e.sal
-plan:  Project([_current.ID#0, _current.SAL#4], InMemorySort([_current.ID#0 ASC, _current.SAL#4 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(P), Scan(E)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0, _current.SAL#4], InMemorySort([_current.ID#0 ASC, _current.SAL#4 ASC], FlatMap(outer=FlatMap(outer=Scan(E), inner=Scan(P, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
@@ -2504,11 +2504,11 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === comma_join_exists.yaml#2
 sql:   SELECT p.id FROM p, e WHERE p.id = e.eref AND EXISTS (SELECT 1 FROM e e2 WHERE e2.eref = p.id AND e2.sal > 600) ORDER BY p.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(P), Scan(E)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(E), inner=Scan(P, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(E), [2 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
@@ -3018,12 +3018,12 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === correlated_exists_advanced.yaml#0
 sql:   SELECT DISTINCT e.name FROM emp AS e, task AS t WHERE e.id = t.emp_id AND EXISTS (SELECT 1 FROM task WHERE emp_id = e.id AND prio > 4) ORDER BY e.name
-plan:  Distinct(Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(EMP), Scan(TASK)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TASK), [2 preds])), [1 preds])))))
+plan:  Distinct(Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=FlatMap(outer=Scan(TASK), inner=Scan(EMP, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(TASK), [2 preds])), [1 preds])))))
 shape: RecordQueryDistinctPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryFlatMapPlan
 shape:           RecordQueryScanPlan
 shape:           RecordQueryScanPlan
 shape:         RecordQueryPredicatesFilterPlan
@@ -3127,11 +3127,11 @@ sql:   SELECT fname FROM emp WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = 
 plan:  <PLAN-ERROR: 42703: no FROM source aliased as BOGUS>
 === correlated_subquery_probes.yaml#11
 sql:   SELECT e.fname FROM emp AS e, project AS p WHERE e.id = p.emp_id AND EXISTS (SELECT 1 FROM project WHERE emp_id = e.id) ORDER BY e.id
-plan:  Project([_current.FNAME#1], InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(EMP), Scan(PROJECT)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
+plan:  Project([_current.FNAME#1], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(PROJECT), inner=Scan(EMP, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
@@ -3182,18 +3182,18 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === correlated_subquery_probes.yaml#16
 sql:   SELECT DISTINCT e.fname FROM emp AS e, project AS p WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = e.id) ORDER BY e.fname
-plan:  Distinct(Project([_current.FNAME#1], InMemorySort([_current.FNAME#1 ASC], FlatMap(outer=NestedLoopJoin(INNER, Scan(EMP), Scan(PROJECT)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])))))
+plan:  Distinct(Project([_current.FNAME#1], InMemorySort([_current.FNAME#1 ASC], NestedLoopJoin(INNER, FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds])), Scan(PROJECT)))))
 shape: RecordQueryDistinctPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryInMemorySortPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryFlatMapPlan
 shape:           RecordQueryScanPlan
-shape:           RecordQueryScanPlan
-shape:         RecordQueryPredicatesFilterPlan
-shape:           RecordQueryFirstOrDefaultPlan
-shape:             RecordQueryPredicatesFilterPlan
-shape:               RecordQueryScanPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === correlated_subquery_probes.yaml#17
 sql:   UPDATE emp SET dept_id = 99 WHERE EXISTS (SELECT 1 FROM project WHERE emp_id = emp.id)
 plan:  Update(EMP, [1 transforms], UnorderedPrimaryKeyDistinct(FlatMap(outer=Scan(EMP), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECT), [1 preds])), [1 preds]))))
@@ -5853,17 +5853,18 @@ sql:   SELECT COUNT(*) FROM orders HAVING EXISTS (SELECT k FROM flags)
 plan:  <PLAN-ERROR: 0AF00: Cascades translation failed>
 === exists.yaml#7
 sql:   SELECT o.id FROM orders AS o, flags AS f WHERE EXISTS (SELECT k FROM flags) ORDER BY o.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, Scan(ORDERS), Scan(FLAGS)), inner=PredicatesFilter(FirstOrDefault(Project([_current.K#0], Scan(FLAGS))), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, Scan(FLAGS), NestedLoopJoin(INNER, Map(PredicatesFilter(FirstOrDefault(Project([_current.K#0], Scan(FLAGS))), [1 preds]), {_0: 1}), Scan(ORDERS)))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
 shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryMapPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryFirstOrDefaultPlan
+shape:               RecordQueryProjectionPlan
+shape:                 RecordQueryScanPlan
 shape:         RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryScanPlan
 === exists_multi_table_inner.yaml#0
 sql:   SELECT a.name FROM authors a WHERE EXISTS ( SELECT 1 FROM books b, awards w WHERE b.author_id = a.id AND w.book_id = b.id ) ORDER BY a.name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=Scan(AUTHORS), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(NestedLoopJoin(INNER, Scan(AWARDS), Scan(BOOKS)), [2 preds])), [1 preds]))))
@@ -9723,11 +9724,11 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === left_join_exists_combo.yaml#1
 sql:   SELECT c.name FROM companies c, employees e WHERE e.company_id = c.id AND EXISTS (SELECT 1 FROM projects p WHERE p.company_id = c.id) ORDER BY c.name
-plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(COMPANIES), Scan(EMPLOYEES)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECTS), [1 preds])), [1 preds]))))
+plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], FlatMap(outer=FlatMap(outer=Scan(EMPLOYEES), inner=Scan(COMPANIES, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(PROJECTS), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
@@ -11004,11 +11005,11 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === nested_correlation_over_a_join.yaml#2
 sql:   SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id WHERE EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co) ORDER BY t1.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T1), Scan(T3)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(T3), inner=Scan(T1, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
@@ -11017,11 +11018,11 @@ shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === nested_correlation_over_a_join.yaml#3
 sql:   SELECT t1.id FROM t1 JOIN t3 ON t3.t1_id = t1.id WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = n.co) ORDER BY t1.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T1), Scan(T3)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(T3), inner=Scan(T1, [=])), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
@@ -13647,11 +13648,11 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#3
 sql:   SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.sk
-plan:  Project([_current.T1.ID#0, _current.H#1], InMemorySort([_current.T1.N.SK#2 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T3), Scan(T1)), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+plan:  Project([_current.T1.ID#0, _current.H#1], InMemorySort([_current.T1.N.SK#2 ASC], FlatMap(outer=FlatMap(outer=Scan(T3), inner=Scan(T1, [=])), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryFirstOrDefaultPlan
@@ -13659,11 +13660,11 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === projected_exists_nested_sort_key.yaml#4
 sql:   SELECT t1.id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = t1.id) AS h FROM t1 JOIN t3 ON t3.t1_id = t1.id ORDER BY n.co
-plan:  Project([_current.T1.ID#0, _current.H#1], InMemorySort([_current.T1.N.CO#2 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T3), Scan(T1)), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
+plan:  Project([_current.T1.ID#0, _current.H#1], InMemorySort([_current.T1.N.CO#2 ASC], FlatMap(outer=FlatMap(outer=Scan(T3), inner=Scan(T1, [=])), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryFirstOrDefaultPlan
@@ -13700,18 +13701,18 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#2
 sql:   WITH c AS (SELECT id, v FROM t1) SELECT c.id, t1_id FROM c, t3 WHERE t3.t1_id = c.id AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = c.id) ORDER BY c.id
-plan:  Project([_current.ID#0, _current.T1_ID#3], InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0, _current.V#1], Scan(T1)), Scan(T3)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0, _current.T1_ID#3], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T3), FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryFirstOrDefaultPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#3
 sql:   SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3 WHERE t3.t1_id = d.id ORDER BY d.id
 plan:  Project([_current.ID#0, _current.T1_ID#3], FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=PredicatesFilter(Scan(T3), [1 preds])))
@@ -13723,30 +13724,30 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#4
 sql:   SELECT d.id, t1_id, EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id) AS h FROM (SELECT id, v FROM t1) AS d, t3 WHERE t3.t1_id = d.id ORDER BY d.id
-plan:  InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Scan(T3), Project([_current.ID#0, _current.V#1], Scan(T1))), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))
+plan:  InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0, _current.V#1], Scan(T1)), Scan(T3)), inner=FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds]))))
 shape: RecordQueryInMemorySortPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 shape:     RecordQueryFirstOrDefaultPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
 === projected_exists_over_a_derived_source.yaml#5
 sql:   SELECT d.id, t1_id FROM (SELECT id, v FROM t1) AS d, t3 WHERE t3.t1_id = d.id AND EXISTS (SELECT 1 FROM t2 WHERE t2.t1_id = d.id) ORDER BY d.id
-plan:  Project([_current.ID#0, _current.T1_ID#3], InMemorySort([_current.ID#0 ASC], FlatMap(outer=NestedLoopJoin(INNER, [1 preds], Project([_current.ID#0, _current.V#1], Scan(T1)), Scan(T3)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds]))))
+plan:  Project([_current.ID#0, _current.T1_ID#3], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(T3), FlatMap(outer=Project([_current.ID#0, _current.V#1], Scan(T1)), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(T2), [1 preds])), [1 preds])))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
-shape:       RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryPredicatesFilterPlan
-shape:             RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryFirstOrDefaultPlan
+shape:             RecordQueryPredicatesFilterPlan
+shape:               RecordQueryScanPlan
 === qualified_star.yaml#0
 sql:   SELECT a.* FROM a ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(A))
@@ -15803,10 +15804,10 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 === subquery_in.yaml#10
 sql:   SELECT id FROM a WHERE a.v IS NOT NULL AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v = a.v) AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.v IS NULL) ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds])), inner=PredicatesFilter(FirstOrDefault(Project([1], PredicatesFilter(Scan(B), [1 preds]))), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [1 preds])), [1 preds])), Map(PredicatesFilter(FirstOrDefault(Project([1], PredicatesFilter(Scan(B), [1 preds]))), [1 preds]), {_0: 1}))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
@@ -15814,17 +15815,18 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryFirstOrDefaultPlan
 shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryPredicatesFilterPlan
-shape:               RecordQueryScanPlan
+shape:       RecordQueryMapPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryFirstOrDefaultPlan
+shape:             RecordQueryProjectionPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === subquery_in.yaml#11
 sql:   SELECT id FROM a WHERE a.v IS NOT NULL AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v = a.v) AND NOT EXISTS (SELECT 1 FROM b AS sub WHERE sub.id = 101 AND sub.v IS NULL) ORDER BY id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [2 preds])), [1 preds])), inner=PredicatesFilter(FirstOrDefault(Project([1], PredicatesFilter(Scan(B, [=]), [1 preds]))), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, FlatMap(outer=PredicatesFilter(Scan(A), [1 preds]), inner=PredicatesFilter(FirstOrDefault(PredicatesFilter(Scan(B), [2 preds])), [1 preds])), Map(PredicatesFilter(FirstOrDefault(Project([1], PredicatesFilter(Scan(B, [=]), [1 preds]))), [1 preds]), {_0: 1}))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryFlatMapPlan
+shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
@@ -15832,11 +15834,12 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryFirstOrDefaultPlan
 shape:             RecordQueryPredicatesFilterPlan
 shape:               RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryFirstOrDefaultPlan
-shape:           RecordQueryProjectionPlan
-shape:             RecordQueryPredicatesFilterPlan
-shape:               RecordQueryScanPlan
+shape:       RecordQueryMapPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryFirstOrDefaultPlan
+shape:             RecordQueryProjectionPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
 === subquery_in.yaml#12
 sql:   SELECT DISTINCT a.id FROM a, b WHERE a.v = b.v ORDER BY a.id
 plan:  Distinct(Project([_current.ID#0], FlatMap(outer=Scan(A), inner=PredicatesFilter(Scan(B), [1 preds]))))

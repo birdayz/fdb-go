@@ -11,7 +11,7 @@ package sqldriver_test
 // THE SHAPE IS A *PROJECTED*-EXISTS FOLD OVER THREE SOURCES WITH EQUIJOINS, and
 // every clause of that was arrived at by measurement rather than reading:
 //
-//   - PROJECTED, not WHERE-EXISTS. foldStep1Seed's condition (2) declines a
+//   - PROJECTED, not WHERE-EXISTS. The step-1 seed fold's condition (2) declined a
 //     plain WHERE-EXISTS as `rv-no-exist-ref` — its projection sits ABOVE the
 //     existential level, so there is nothing to fold — and no step-1 seed is
 //     built at all. Measured: with a WHERE-EXISTS fixture all four mutation
@@ -26,7 +26,7 @@ package sqldriver_test
 // ARM IS NOT ENTERED. Measured directly: the seed-window reader census reports
 // `NESTED-HIT 0` at both keyed readers over the whole corpus, and mutating the
 // fused two-step address back to flat `Offset + legOrdinal` leaves this test
-// GREEN. The nested acceptance is live at the LAYOUT (the foldStep1Seed census
+// GREEN. The nested acceptance is live at the LAYOUT (the step-1 seed census
 // moved 78→138 ACCEPTs exactly as predicted, and existentialRebase grew 962 →
 // 1086, which is RFC-200 §6's own prediction confirmed) — but every window those
 // reads select is a FLAT top-level run. A nested SUB-window is only selected by
@@ -261,7 +261,8 @@ func TestFDB_NestedMergeLegProjectedExistsFold(t *testing.T) {
 //
 // `SELECT tc.k, EXISTS (...) FROM ta, tb, tc` with NO join predicate fails
 // loudly. Measured with the nested acceptance DISABLED as well (by disabling
-// legOrdinalSafety's FlatMap arm, the one line that activates it): same error,
+// the FlatMap arm that activated it, in the physical leg walk since retired
+// with the three-quantifier arm): same error,
 // same message. Pre-existing, not an RFC-200 regression, and LOUD rather than
 // silent — no wrong row reaches a user.
 func TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud(t *testing.T) {

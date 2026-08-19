@@ -342,12 +342,12 @@ func isNamedCall(fun ast.Expr, name string) bool {
 // TestIsNamedCallSeesQualifiedCalls pins the matcher extension itself.
 //
 // It is pinned directly rather than through a table entry because there is no
-// cross-package entry in censusOnlyHelpers TODAY — values.SelectResultMintOriginOf
-// is the one qualified census-only reader, and it is called only from
-// describeFlatMapResultOrigin, which the table already guards; adding it would
-// demand a redundant inner gate rather than catch anything. So the extension's
-// whole value is prospective, and a prospective capability with no test is a
-// capability nobody will find out is broken. The negative direction is asserted
+// cross-package entry in censusOnlyHelpers TODAY. There was one: values.SelectResultMintOriginOf
+// was read from describeFlatMapResultOrigin, which the table guarded — and both
+// retired with the fold-step-1 seed census (RFC-235), so the qualified reader now
+// has no production caller to gate at all. That makes the extension's value
+// entirely prospective, and a prospective capability with no test is a capability
+// nobody will find out is broken. The negative direction is asserted
 // too: matching on the SELECTOR name alone must not start matching neighbours.
 func TestIsNamedCallSeesQualifiedCalls(t *testing.T) {
 	t.Parallel()
@@ -417,19 +417,6 @@ var censusOnlyHelpers = []censusOnlyHelper{
 			"qualifier per sort key. Ungated, every sort key of every EXISTS fold over a join " +
 			"pays that allocation with the census off, and a gate inside recordExistsSortSplit " +
 			"cannot recover it: the cost is incurred building the ARGUMENT",
-	},
-	{
-		file:     "pkg/recordlayer/query/plan/cascades/fold_step1_seed_census.go",
-		fn:       "describeFlatMapResultOrigin",
-		minCalls: 1,
-		why: "it takes flatMapProducerMu, a PROCESS-GLOBAL mutex, and its only reader is " +
-			"classifyDeclinedLeg — which is not a census function at all. classifyDeclinedLeg " +
-			"runs inside reconstructFoldStep1Seed on the production seed path, for every " +
-			"declined leg of every EXISTS-over-join firing, census on or off. Read ungated it " +
-			"put a global lock acquisition on that path to build a witness string that the " +
-			"disabled census then dropped. This is the SAME class as the recorders above and " +
-			"a DIFFERENT shape: not a recorder classifying ahead of its gate, but a " +
-			"production function reading a census instrument inline",
 	},
 }
 

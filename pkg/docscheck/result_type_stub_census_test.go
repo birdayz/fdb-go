@@ -448,7 +448,17 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 	// after exact filter normalization and made every PK point probe over-decline;
 	// the physical carrier is the stronger and necessary authority. The stable
 	// census therefore moves 30 -> 29.
-	const wantForward, wantGuarded, wantPropagated = 1, 14, 29
+	// RFC-235 then retired the physical leg-concat walk that the three-quantifier
+	// NLJ arm drove, taking THREE classified reads with it — the only movement
+	// here that is a deletion rather than a migration. Two were GUARDED and paired
+	// a `recordResultTypeRead` with an immediate exact-shape test on the same
+	// value (`planBuriedLegConcat` type-asserting a leg's row to *RecordType,
+	// `planRowRecordType` switching on it); one was PROPAGATED, passing a plan's
+	// declared type straight into a rebuilt fetch plan. Nothing replaced them: the
+	// walk had no production caller once the arm went, so these are reads that
+	// stopped happening rather than reads that moved to a stronger authority. The
+	// stable census moves GUARDED 14 -> 12 and PROPAGATED 29 -> 28.
+	const wantForward, wantGuarded, wantPropagated = 1, 12, 28
 	if counts["FORWARD"] != wantForward || counts["GUARDED"] != wantGuarded || counts["PROPAGATED"] != wantPropagated {
 		t.Fatalf("consumer split moved: FORWARD=%d (want %d) GUARDED=%d (want %d) "+
 			"PROPAGATED=%d (want %d), total %d.\n"+

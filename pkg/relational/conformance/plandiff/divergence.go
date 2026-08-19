@@ -29,6 +29,26 @@ package plandiff
 //   - DivergenceJavaSucceedsGoRejects: Go is the more restrictive side.
 //     Pin Go's error substring via GoErrorContains.
 //
+//   - DivergenceUnorderedRowOrderDiffers: the ONE direction where NEITHER
+//     engine is wrong. Both succeed, both return the SAME MULTISET, and the
+//     query has no ORDER BY — so SQL guarantees nothing about sequence and
+//     each engine's order is a planner artefact. Pin Go's order via
+//     GoExpectedRows.
+//
+//     It carries a guard the others do not need, and the guard is the whole
+//     reason this category is safe to have: Java's rows must be a PERMUTATION
+//     of Go's. Without that, "the order differs" would absorb a genuine
+//     wrong-rows bug — a dropped row, a duplicated row, a wrong value — under
+//     an annotation that reads as benign. With it, the only thing this
+//     direction can ever excuse is sequence.
+//
+//     Use it ONLY for a divergence whose cause is understood and recorded.
+//     The one it was added for is a cost-model tie that Go resolves with an
+//     identifier-sensitive hash while Java prunes to one member and never
+//     reaches the tie (RFC-235 section 17); the same query with the tables
+//     renamed plans the opposite nesting, which is what makes it a coin flip
+//     rather than a rule about FROM order.
+//
 // Reason is free-text describing which side is correct and why; goes
 // into the test failure message if Go-side regresses.
 type Divergence struct {
@@ -66,4 +86,9 @@ const (
 	DivergenceBothErrorMessagesDrift DivergenceDirection = "BothErrorMessagesDrift"
 	// DivergenceJavaSucceedsGoRejects — Go is the more restrictive side.
 	DivergenceJavaSucceedsGoRejects DivergenceDirection = "JavaSucceedsGoRejects"
+	// DivergenceUnorderedRowOrderDiffers — both engines succeed and return the
+	// SAME MULTISET; only the sequence differs, on a query with no ORDER BY.
+	// The harness ASSERTS the permutation relation, so this direction cannot
+	// excuse a dropped, duplicated or altered row — only an ordering artefact.
+	DivergenceUnorderedRowOrderDiffers DivergenceDirection = "UnorderedRowOrderDiffers"
 )

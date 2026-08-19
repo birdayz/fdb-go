@@ -735,11 +735,6 @@ type legWindowRow struct {
 	parentType *values.RecordType
 	offset     int
 	width      int
-	// fromMergedBinder marks a window produced by bindMergedOuterLegs, so the
-	// merged-leg binding census can count LOOKUPS that resolve to one. Windows
-	// built by legWindowBinder (which serves an already-established span table)
-	// are a different producer and are not counted here.
-	fromMergedBinder bool
 	// siblingLegs marks a window whose merged row bound TWO OR MORE legs — the
 	// box-gather shape, as opposed to a merged row carrying a single leg.
 	//
@@ -1594,7 +1589,7 @@ type outputSourceOrigin struct {
 // pushed-down SARGs read by ordinal, then wraps the flowed leg row in a 1-slot
 // scalar row.
 func newOrdinalJoinBuild(rv values.Value, preds []predicates.QueryPredicate) (*ordinalJoinBuild, error) {
-	return newOrdinalJoinBuildWithOutputLayout(rv, preds, nil, nil)
+	return newOrdinalJoinBuildWithOutputLayout(rv, preds, nil, nil, nil)
 }
 
 // newOrdinalJoinBuildWithOutputLayout is the selected-plan counterpart of
@@ -1608,6 +1603,7 @@ func newOrdinalJoinBuildWithOutputLayout(
 	preds []predicates.QueryPredicate,
 	outputLayout values.OrdinalLayout,
 	sourceOrigins map[values.CorrelationIdentifier]outputSourceOrigin,
+	legAliases []values.CorrelationIdentifier,
 ) (*ordinalJoinBuild, error) {
 	// Two build triggers:
 	//   - a FrontierPinned baked reference anywhere in the RV (the flat
@@ -1640,7 +1636,62 @@ func newOrdinalJoinBuildWithOutputLayout(
 	planBackedRC := outputLayout != nil && isRC &&
 		(len(sourceOrigins) > 0 || recordConstructorReadsNestedLegPath(rc) ||
 			recordConstructorRetainsWholeRecordSlot(rc))
-	if !values.ContainsBakedOrdinal(rv) && !values.IsPositionalMergeRC(rv) && !planBackedRC {
+	// mergeRows realises exactly ONE program: the concatenation of the two legs'
+	// whole rows. A result value that is not that program cannot be realised by
+	// it, and the two shapes existential peeling produces are both not that:
+	//
+	//   - a bare QuantifiedObjectValue naming ONE leg. This is what
+	//     PartitionSelectRule mints directly (`quantifier.getFlowedObjectValue()`,
+	//     PartitionSelectRule.java:281); a positional-merge round only LATER
+	//     translates it into `ofOrdinal(QOV(merge), i)`, which the Bare arm below
+	//     already handled. The untranslated form used to decline here.
+	//
+	//   - an RC carrying any field that is NOT a bare leg QOV — a projected
+	//     `EXISTS(…)`, an arithmetic column, a literal. The peeled lower flows a
+	//     literal `1`, so the join's row is `[leg…, 1]` while its declared output
+	//     is the RC's own shape. THIS ONE IS NOT TRIGGERED HERE — see the computed-RC
+	//     note below the trigger for why the right intent takes the wrong mechanism.
+	//
+	// In both cases the plan's ProvidedOutputLayout is derived from the result
+	// value, so concatenation emits a row the declared carrier cannot address and
+	// the output boundary rejects it (`row type and layout carrier type
+	// disagree`). Concatenation was never a correct realisation of either
+	// program; neither shape arose until existential peeling produced them.
+	//
+	// Keyed on the join's own LEG ALIASES, not on "is a QOV" or "is an RC": a
+	// value standing for the MERGED row is the ordinary concatenation case and
+	// must keep taking mergeRows. Getting that distinction wrong reddened six
+	// executor tests with `record plan emitted no positional row`.
+	notAConcatenation := false
+	if qov, ok := values.AsQuantifiedObjectValue(rv); ok {
+		notAConcatenation = namesOneLeg(qov.Correlation(), legAliases)
+	}
+
+	// A COMPUTED RC — one carrying a field that is not a bare leg QOV, such as a
+	// projected EXISTS or the peeled lower's literal — is ALSO not a
+	// concatenation, and is deliberately NOT triggered here. Enabling the build
+	// for it is the right intent and the wrong mechanism: the ordinal build
+	// realises leg-addressed programs, not arbitrary computed ones, so it emits no
+	// positional row at all and the failure moves from "row type and layout
+	// carrier type disagree" to "the plan's top operator did not emit an ordinal
+	// output row" — a worse message for the same defect. Measured: enabling it
+	// changed that error and fixed nothing.
+	//
+	// What the shape actually needs is the join EVALUATING its result value the
+	// way Java's FlatMap does (RecordQueryFlatMapPlan evaluates
+	// selectExpression.getResultValue() against the bound legs), which is a third
+	// path this cursor does not have. Until it does, the shape declines here and
+	// fails LOUD at the output boundary rather than shipping a mis-addressed row.
+	// THE GAP IS REAL BUT CURRENTLY UNREACHABLE, and the thing that makes it
+	// unreachable is pinned rather than assumed: PartitionSelectRule keeps an
+	// existential LIVE unless it is alone in its lower
+	// (rule_partition_select.go, the alone-in-lower arm), so no partition flows a
+	// computed RC to this trigger. Removing that arm reddens exactly
+	// TestFDB_KeyBindingAndBuriedExists/P1_fold_order_by_dup — mutation-checked —
+	// which is what re-arms this decline. That subtest PASSES today; an earlier
+	// revision of this comment cited it as a live reproducer, which it has not
+	// been since the guard landed.
+	if !values.ContainsBakedOrdinal(rv) && !values.IsPositionalMergeRC(rv) && !planBackedRC && !notAConcatenation {
 		return nil, nil
 	}
 	if !isRC {
@@ -2822,4 +2873,19 @@ func (r *spanAwareRow) TypeNames() []string {
 		return tn.TypeNames()
 	}
 	return nil
+}
+
+// namesOneLeg reports whether corr is one of this join's own leg aliases.
+//
+// The distinction it draws is what keeps the build triggers above from firing on
+// the ordinary case: a correlation naming a LEG means the result value reads
+// that leg specifically, while a correlation standing for the MERGED row is
+// exactly what plain child concatenation produces.
+func namesOneLeg(corr values.CorrelationIdentifier, legAliases []values.CorrelationIdentifier) bool {
+	for _, leg := range legAliases {
+		if !leg.IsZero() && corr == leg {
+			return true
+		}
+	}
+	return false
 }

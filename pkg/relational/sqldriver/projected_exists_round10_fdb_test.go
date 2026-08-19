@@ -19,7 +19,7 @@ import (
 //	dropped EVERY outer row. Fix: route below the FirstOrDefault any predicate
 //	that references a correlation OTHER than the FlatMap's outer leg(s) — it
 //	touches the inner. Applies to BOTH existential-join rule methods
-//	(implementExistentialSelect and the JOIN-in-FROM implementJoinWithExistential).
+//	(implementExistentialSelect and the JOIN-in-FROM existential peel).
 //
 //	P2b — `SELECT col1 AS id, EXISTS(...) FROM t1 ORDER BY t1.id`. The qualified
 //	source sort key `t1.id` was stripped to bare `ID`, which collided with the
@@ -210,7 +210,7 @@ func TestFDB_ProjectedExistsRound10(t *testing.T) {
 	})
 
 	// PROJECTED multi-table inner with a JOIN in the OUTER FROM (the
-	// implementJoinWithExistential variant). `t1 JOIN t1 AS x ON x.id = t1.id`
+	// the existential peel variant). `t1 JOIN t1 AS x ON x.id = t1.id`
 	// keeps one row per t1; the projected EXISTS reads the multi-table inner.
 	t.Run("p2a_projected_join_from_multitable", func(t *testing.T) {
 		got := queryIDBool(t, "SELECT t1.id, EXISTS (SELECT 1 FROM t2, t3 WHERE t2.t1_id = t1.id) AS e FROM t1 JOIN t1 AS x ON x.id = t1.id")

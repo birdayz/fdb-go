@@ -4727,6 +4727,15 @@ suites are the correctness authority (the §5 dual-window is already retired —
     inversion); the FDB cells tripwire it per-shape today, but the class closes
     structurally only when the harness compares Datum keys too. Moot if S4 retires
     the coexistence Datum outright — decide at demolition time.
+  - [x] **F2-LEFT DONE, re-established by RFC-235 after briefly regressing.** Retiring the NLJ
+    rule's three-quantifier arm removed the only path that planned this shape; RFC-235 then
+    restored it the way Java has it, by BOXING the outer join into one quantifier so the
+    enclosing select is binary. `TestFDB_ProjectedExistsOverLeftJoin` passes all five dims,
+    `TestFDB_LeftJoinExistsResidual` and `TestFDB_KeyBindingAndBuriedExists` pass in full, and
+    `conformance/projected_exists_left_join_java_probe_test.go` keeps the Java-parity claim
+    MEASURED against the live 4.12.11.0 JVM instead of inherited. See RFC-235 §16.
+
+    ORIGINAL ENTRY, whose mechanism description is still accurate:
   - [x] **F2-LEFT DONE** (projected-EXISTS over LEFT JOIN, scan legs — Java-parity reach gap: Go
     rejected 0AF00, Java answers; live-verified 4.12.11.0). The translator INNER-guard lift builds a
     JoinLeftOuter select; the executor routes it through the commit-2 **ORDINAL** path
@@ -8722,6 +8731,34 @@ row it consumed and must NOT abort on one beyond it. Both directions asserted, a
 the over-conflicting direction mutation-checked by making `rangeConflictExtent`
 return the full requested range, which reddens only the `far_beyond` arm. That test
 runs on a loaded box, which is exactly why it is the right instrument for this axis.
+
+**2026-08-19 (RFC-235 — the existential peel and the three-quantifier NLJ arm's
+retirement):** baseline `e24f338e7896f1ea75c9bb016c2ca69b3ab6f93f`, which WAS the
+merge-base of `nlj-existential-peel` on this date, run in a worktree named for
+that SHA; branch side at `f2f367851`, whose tree is the one measured (it was the
+uncommitted phase-2 worktree at measurement time and was committed unchanged). Both
+SHAs are named because "vs master" expires: master moves and the sentence stops
+describing the comparison anyone made. Same filesystem (`df -T .` = **xfs**, 98%
+used); the box is XFS, so CLAUDE.md's ~95% ext4 threshold does not transfer and
+each side is judged against the other, not against that figure. Runs were
+SEQUENTIAL, never concurrent, n=2 per side, load average recorded per run
+(1.37/1.89 baseline, 1.70/3.46 branch).
+
+`TestFDB_Stress_1M` **PASS on all four runs.** Baseline 174.02s, 173.87s (mean
+173.945s); branch 173.78s, 173.67s (mean 173.725s) — **0.999x, the branch
+marginally faster and inside the noise.**
+
+Per-query, the only two rows outside ±1% move in OPPOSITE directions and are
+sub-second at n=2, which is what noise looks like rather than signal:
+`full_scan_filter` 0.615 -> 0.650 (1.057x) and `index_status_count` 0.405 ->
+0.370 (0.914x). Every other row is 1.000x +/- 0.007.
+
+WHAT THIS DOES AND DOES NOT MEASURE, stated because the ratio is otherwise
+over-read: this workload contains exactly ONE join row (`join_10_outer`, 0.040s
+both sides). So it bounds the REGRESSION RISK to the rest of the engine — the
+change deletes ~12k lines across the planner and executor and moves nothing —
+and it does NOT measure the changed path. The join shapes RFC-235 alters are
+covered by the correctness suite and the golden plan diff, not by this table.
 
 ---
 
@@ -18817,3 +18854,78 @@ lever after that is the correlatedTo/children cluster:
 `AbstractValue`, `AbstractQueryPredicate` and `AbstractRelationalExpression` and
 Go does not memoize at all. That is a straight Java-alignment gap and the largest
 remaining one.
+
+---
+
+## An identifier-sensitive cost tie decides join nesting (RFC-235 §17)
+
+**STATUS: open, root-caused, measured, and pinned. Blocking two cross-engine
+corpus entries.**
+
+Go's Cascades reaches a genuine cost TIE on the two nestings of an unconstrained
+cross product and resolves it with a hash that consumes identifiers. The same
+query, differing only in the names of the tables it reads, plans opposite
+nestings — and since neither has an `ORDER BY`, the row ORDER a user sees
+depends on what the tables are called. Java is stable: the first `FROM` item is
+outermost in every spelling measured.
+
+Java rarely reaches this tie at all. It prunes each `Reference` to one member
+mid-phase; Go does not. `pkg/recordlayer/query/plan/cascades/planning_cost_model.go:562`
+states this beside the tie-break it wraps.
+
+MEASURED, not inferred:
+
+- The divergence is PRE-EXISTING. At merge-base `e24f338e7`, with no existential
+  anywhere, `SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a` already returns
+  Java `[5 7 9 5 7 9]` vs Go `[5 5 7 7 9 9]`.
+- It is NOT the Go-only statistics rung. Inverting that comparison changes none
+  of these plans — mutation-checked, with the mutation's presence confirmed in
+  the same invocation.
+- It IS identifier-sensitive. `T_DUP_EIP/EIQ` agrees with Java on the shadowing
+  spelling; the identical query over `T_DUP_SHP/SHQ` diverges.
+
+PINNED BY `conformance/dup_alias_exists_order_probe_test.go`, which asserts both
+engines' orders over six shapes and carries the renamed-table pair as its
+demonstration. Java's column is the reference and must not move; Go's column
+pins today's behaviour so that closing the gap turns the probe RED rather than
+silently changing what conformance means.
+
+WHAT IT BLOCKS: `dup_from_alias_leg_independent_exists` and
+`dup_from_alias_shadowing_exists` report "row data diverges". Both return the
+correct multiset; only the order differs. They conformed before RFC-235 because
+the retired three-quantifier NLJ arm forced one nesting for `WHERE EXISTS` over
+a comma join, and that nesting happened to be Java's. The arm masked this tie
+rather than preventing it.
+
+THE FIX IS A COST-MODEL CHANGE AND NEEDS ITS OWN RFC + GRAEFE ACK: either give
+Go Java's prune-to-1, or replace the identifier-sensitive tie-break with a
+stable one. THOSE TWO ARE NOT PEERS. Java's own final tie-break is
+`Integer.compare(planHash(a), planHash(b))` (`PlanningCostModel.java:322-326`),
+which is identifier-sensitive too; what makes Java stable is PRUNE-TO-1, so it
+rarely reaches the tie. Porting prune-to-1 is therefore the Java-alignment
+option, while a declaration-order tie-break is a Go invention that happens to
+match Java's output here — an earlier revision of this entry recommended the
+second on the grounds that it "matches Java's observable behaviour", which
+confuses the output with the mechanism. Either carries a full golden re-audit and
+a stress re-baseline.
+
+THE ANNOTATION ROUTE WAS EXTENDED, and this paragraph records what it cost.
+`plandiff.DivergenceDirection` had five values and every one was "Java is wrong"
+or "Go rejects" (`JavaErrorsGoCorrect`, `JavaWrongRowsGoCorrect`,
+`JavaIntermittentGoCorrect`, `BothErrorMessagesDrift`, `JavaSucceedsGoRejects`),
+with no direction for "both engines are correct and the unordered row order
+differs". A sixth was added — `UnorderedRowOrderDiffers` — and the two entries
+are annotated with it.
+
+It is only defensible because it is GUARDED rather than asserted in prose. The
+harness requires Java's rows to be a PERMUTATION of Go's (so a dropped,
+duplicated or altered row cannot hide under it), requires the query to have NO
+`ORDER BY` (same-multiset-different-order is exactly what a dropped sort looks
+like), keys the comparison on each element's TYPE as well as its value, and fails
+when the engines start agreeing so a fixed tie-break cannot leave a stale pin.
+Twelve unit arms drive it; the permutation guard and the recursive key are both
+mutation-verified.
+
+What REMAINS an owner call is the cost model itself, not the annotation.
+
+Full write-up, including the plans and the mutation evidence: RFC-235 §17.

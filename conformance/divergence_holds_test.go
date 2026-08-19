@@ -43,13 +43,22 @@ func TestDivergenceHolds(t *testing.T) {
 	}
 	abc := [][]any{{int64(1)}, {int64(2)}}
 	other := [][]any{{int64(9)}}
+	// reordered is abc as a PERMUTATION — the only difference the unordered
+	// direction may excuse. dup shares abc's row COUNT and its distinct
+	// elements-as-a-set, differing only in multiplicity, which is what separates
+	// a multiset comparison from a set one.
+	reordered := [][]any{{int64(2)}, {int64(1)}}
+	dup := [][]any{{int64(1)}, {int64(1)}}
 
 	cases := []struct {
 		name string
 		div  *plandiff.Divergence
 		java plandiff.RunResult
 		go_  plandiff.RunResult
-		want bool
+		// query is the corpus SQL. Only the unordered-row-order direction reads
+		// it, to refuse the annotation on a query whose order IS defined.
+		query string
+		want  bool
 	}{
 		// --- JavaIntermittentGoCorrect: the intermittent-row-order axis. ---
 		{
@@ -184,13 +193,126 @@ func TestDivergenceHolds(t *testing.T) {
 			go_:  rows(abc),
 			want: false,
 		},
+		// --- UnorderedRowOrderDiffers: the multiset must match; only ORDER may differ. ---
+		// This direction is the only one where NEITHER engine is wrong, so it is
+		// also the only one that could quietly excuse a real row bug. Every arm
+		// below exists to show it cannot: the permutation guard, the
+		// stale-annotation guard, and both engines' error premises.
+		{
+			name: "unordered: same multiset, different order → holds",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			java: rows(reordered),
+			go_:  rows(abc),
+			want: true,
+		},
+		{
+			// THE GUARD. A DROPPED row is not an ordering difference, and an
+			// annotation that reads "only the order differs" must not absorb it.
+			name: "unordered: Java DROPPED a row → must NOT hold (multiset differs)",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			java: rows([][]any{{int64(1)}}),
+			go_:  rows(abc),
+			want: false,
+		},
+		{
+			// Same LENGTH, different CONTENT — the case a length check alone
+			// would pass and a set comparison would also pass if it ignored
+			// multiplicity.
+			name: "unordered: same row COUNT but a changed value → must NOT hold",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			java: rows([][]any{{int64(1)}, {int64(9)}}),
+			go_:  rows(abc),
+			want: false,
+		},
+		{
+			// MULTIPLICITY, not set membership: [1 1] and [1 2] share the same
+			// distinct elements as sets once duplicates collapse.
+			name: "unordered: duplicate vs distinct rows → must NOT hold (multiset, not set)",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: dup},
+			java: rows(abc),
+			go_:  rows(dup),
+			want: false,
+		},
+		{
+			// THE STALE-ANNOTATION GUARD: a fixed tie-break makes the engines
+			// agree exactly, and that must report rather than silently hold.
+			name: "unordered: engines now agree exactly → must NOT hold (divergence gone)",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			java: rows(abc),
+			go_:  rows(abc),
+			want: false,
+		},
+		{
+			name: "unordered: Go rows drifted from the pin → must NOT hold",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			java: rows(reordered),
+			go_:  rows(other),
+			want: false,
+		},
+		{
+			name: "unordered: Java errors → must NOT hold (premise is that BOTH succeed)",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			java: javaFail("RecordCoreException", "boom"),
+			go_:  rows(abc),
+			want: false,
+		},
+		{
+			name: "unordered: Go errors → must NOT hold",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			java: rows(reordered),
+			go_:  fail("go blew up"),
+			want: false,
+		},
+		{
+			// THE PREMISE. Where the query defines an order, "same multiset,
+			// different sequence" is not a benign planner artefact — it is what a
+			// dropped or ignored sort looks like, and this annotation would pin it
+			// green forever.
+			name:  "unordered: query HAS an ORDER BY → must NOT hold (order is part of the answer)",
+			div:   &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			query: "SELECT a FROM t ORDER BY a",
+			java:  rows(reordered),
+			go_:   rows(abc),
+			want:  false,
+		},
+		{
+			// Lowercase and extra whitespace must not slip past the premise check.
+			name:  "unordered: lowercase 'order  by' is still an ORDER BY → must NOT hold",
+			div:   &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: abc},
+			query: "select a from t order  by a",
+			java:  rows(reordered),
+			go_:   rows(abc),
+			want:  false,
+		},
+		{
+			// COMPOSITE cells: the key descends into them. A top-level-only render
+			// flattens the cell, so these two rows would collide — and that is the
+			// UNSAFE direction on the one guard whose job is to refuse a wrong-value
+			// divergence. Java emits nested JsonArray/JsonObject, so a STRUCT or
+			// ARRAY column produces exactly this shape.
+			name: "unordered: composite cells that FLATTEN alike are different rows",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: [][]any{{[]any{"a", "b c"}}}},
+			java: rows([][]any{{[]any{"a b", "c"}}}),
+			go_:  rows([][]any{{[]any{"a", "b c"}}}),
+			want: false,
+		},
+		{
+			// The multiset key carries TYPE, so a value that merely RENDERS the same
+			// is a different row. A key built from fmt.Sprint alone would call these
+			// equal and let a real wrong-type divergence through.
+			name: "unordered: same rendering, different TYPES → must NOT hold",
+			div:  &plandiff.Divergence{Direction: plandiff.DivergenceUnorderedRowOrderDiffers, GoExpectedRows: [][]any{{"5"}}},
+			java: rows([][]any{{float64(5)}}),
+			go_:  rows([][]any{{"5"}}),
+			want: false,
+		},
 	}
 
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, detail := divergenceHolds(tc.div, tc.java, tc.go_)
+			got, detail := divergenceHolds(tc.div, tc.query, tc.java, tc.go_)
 			if got != tc.want {
 				t.Fatalf("divergenceHolds = %v (detail %q), want %v", got, detail, tc.want)
 			}

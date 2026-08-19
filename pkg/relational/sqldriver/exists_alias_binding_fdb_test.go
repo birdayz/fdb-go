@@ -13,26 +13,31 @@ import (
 // WHERE EXISTS / NOT EXISTS whose OUTER is a JOIN of two distinct tables,
 // where the EXISTS subquery correlates to a column of a joined-outer leg.
 //
-// Plan shape (ImplementNestedLoopJoinRule.implementJoinWithExistential):
+// PLAN SHAPE, as RFC-235 leaves it: a CHAIN of FlatMaps. The existential peel
+// (Java's PartitionSelectRule Case-1) puts the existential alone in its own
+// partition, so the two outer legs and the EXISTS decompose into nested
+// correlated FlatMaps rather than into one merged multi-leg outer row:
 //
-//	FLATMAP mergedOuter -> {
-//	    NestedLoopJoin(emp ⋈ dept)            // the merged outer (2 legs)
-//	  | EXISTS subplan filtered by existPreds // correlated to emp/dept leg
-//	  | FirstOrDefault(NULL)
-//	  | residual QOV IS [NOT] NULL            // the semi-join residual
-//	}
+//	FlatMap(outer=Scan(emp), inner=
+//	  FlatMap(outer=Scan(dept,[=]), inner=
+//	    FirstOrDefault(EXISTS subplan correlated to emp)))
+//	+ residual QOV IS [NOT] NULL           // the semi-join residual
 //
-// The bug: existPreds reference the ORIGINAL leg aliases (e.g. EMP.ID),
-// but they run INSIDE the FlatMap inner where only the fresh
-// mergedOuterCorr is bound — so EMP.ID resolves to NULL, the
-// correlation never matches, and:
-//   - WHERE EXISTS drops ALL joined rows (false negatives), and
-//   - WHERE NOT EXISTS admits ALL joined rows (false positives).
+// A materialized NestedLoopJoin here is FORBIDDEN, and the body asserts that
+// directly: one merged outer row carrying both legs was the retired
+// three-quantifier arm's shape, and its absence is what this test now defends.
 //
-// To force the 3-quantifier join+EXISTS path (NOT the 2-quantifier
-// semi-join collapse), the join key (emp.dept_id = dept.id) and the
-// EXISTS correlation (proj.owner_id = emp.id) reference DIFFERENT columns
-// of DIFFERENT tables, so the cross-join is not subsumed by the EXISTS.
+// The bug this pins: the EXISTS predicates reference the ORIGINAL leg aliases
+// (e.g. EMP.ID) while running INSIDE an inner where only a fresh merged
+// correlation was bound — so EMP.ID resolved to NULL, the correlation never
+// matched, and WHERE EXISTS dropped ALL joined rows while WHERE NOT EXISTS
+// admitted ALL of them.
+//
+// The fixture keeps the join key (emp.dept_id = dept.id) and the EXISTS
+// correlation (proj.owner_id = emp.id) on DIFFERENT columns of DIFFERENT
+// tables, so the join is not subsumed by the EXISTS and the shape stays a
+// genuine three-quantifier select rather than collapsing to a two-quantifier
+// semi-join.
 func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -68,28 +73,47 @@ func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 	// can only ever match d.id, never the bare emp.id ∈ {1,3}.
 	mustExec(t, db, ctx, "INSERT INTO proj VALUES (100, 1, 10, 'P1'), (200, 1, 10, 'P2'), (300, 3, 10, 'P3')")
 
-	// requireJoinAboveExists asserts the join+EXISTS plan shape fired: an
-	// inner-join (NestedLoopJoin) feeding a FlatMap with a FirstOrDefault
-	// existential inner. This proves we exercise implementJoinWithExistential,
-	// not a degenerate single-table semi-join.
-	requireJoinAboveExists := func(t *testing.T, q string) {
+	// requireChainedFlatMapExists asserts the plan is Java's shape for a
+	// WHERE-EXISTS over a two-table join: a CHAIN of FlatMaps, each binding one
+	// correlation pair (RecordQueryFlatMapPlan.java:135-140), with the existential
+	// lowered to a FirstOrDefault under a filter.
+	//
+	// This used to assert the OPPOSITE — a NestedLoopJoin with a two-table
+	// MATERIALISED outer — which was Go's three-quantifier NLJ arm, an operator
+	// Java does not have at all (`find fdb-record-layer -name
+	// 'RecordQueryNestedLoopJoin*.java'` returns nothing; Java's plans package has
+	// only RecordQueryFlatMapPlan). The arm is retired with RFC-235.
+	//
+	// It is stated POSITIVELY rather than by dropping the old assertion. Both
+	// tables must still appear, so a degenerate single-table semi-join — the
+	// failure the original pin was written to catch — is still caught; and the
+	// retired shape is named as forbidden, so a revival is loud rather than
+	// silently re-accepted.
+	requireChainedFlatMapExists := func(t *testing.T, q string) {
 		t.Helper()
 		var plan string
 		if err := db.QueryRowContext(ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
 			t.Fatalf("EXPLAIN %q: %v", q, err)
 		}
-		if !strings.Contains(plan, "FlatMap") {
-			t.Fatalf("expected FlatMap in plan for %q, got:\n%s", q, plan)
+		if n := strings.Count(plan, "FlatMap"); n < 2 {
+			t.Fatalf("expected a CHAIN of >=2 FlatMaps (one correlation pair each) for %q, got %d:\n%s",
+				q, n, plan)
 		}
 		if !strings.Contains(plan, "FirstOrDefault") {
-			t.Fatalf("expected FirstOrDefault (existential inner) in plan for %q, got:\n%s", q, plan)
+			t.Fatalf("expected FirstOrDefault (the existential lowering) in plan for %q, got:\n%s", q, plan)
 		}
-		// The outer of the FlatMap must be the two-table inner join — this is
-		// what makes the EXISTS correlate to a JOINED-outer column (the P1a
-		// dimension). A degenerate single-table outer would not exercise the
-		// merged-row alias rebase.
-		if !strings.Contains(plan, "NestedLoopJoin") {
-			t.Fatalf("expected NestedLoopJoin (two-table outer) in plan for %q, got:\n%s", q, plan)
+		// Both joined tables must be reached. A plan that lost one of them would
+		// still satisfy the two assertions above while answering a different
+		// query.
+		for _, tbl := range []string{"EMP", "DEPT"} {
+			if !strings.Contains(plan, tbl) {
+				t.Fatalf("plan for %q does not reach %s — the join collapsed:\n%s", q, tbl, plan)
+			}
+		}
+		if strings.Contains(plan, "NestedLoopJoin") {
+			t.Fatalf("plan for %q carries a materialised NestedLoopJoin — the retired "+
+				"two-table-outer arm is back, and with it the merged row that has no "+
+				"ordinal layout:\n%s", q, plan)
 		}
 	}
 
@@ -122,7 +146,7 @@ func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 		      FROM emp AS e, dept AS d
 		      WHERE e.dept_id = d.id
 		        AND EXISTS (SELECT 1 FROM proj AS p WHERE p.owner_id = e.id)`
-		requireJoinAboveExists(t, q)
+		requireChainedFlatMapExists(t, q)
 		got := queryNames(t, q)
 		want := []string{"Alice", "Carol"}
 		if !equalStrings(got, want) {
@@ -137,7 +161,7 @@ func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 		      FROM emp AS e, dept AS d
 		      WHERE e.dept_id = d.id
 		        AND NOT EXISTS (SELECT 1 FROM proj AS p WHERE p.owner_id = e.id)`
-		requireJoinAboveExists(t, q)
+		requireChainedFlatMapExists(t, q)
 		got := queryNames(t, q)
 		want := []string{"Bob", "Dave"}
 		if !equalStrings(got, want) {
@@ -159,7 +183,7 @@ func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 		      FROM emp AS e, dept AS d
 		      WHERE e.dept_id = d.id
 		        AND EXISTS (SELECT 1 FROM proj AS p WHERE p.dept_ref = d.id)`
-		requireJoinAboveExists(t, q)
+		requireChainedFlatMapExists(t, q)
 		got := queryNames(t, q)
 		// Only dept 10 is referenced by a proj ⇒ its employees: Alice, Bob.
 		want := []string{"Alice", "Bob"}
@@ -179,7 +203,7 @@ func TestFDB_ExistsAboveJoin_AliasBinding(t *testing.T) {
 		      WHERE e.dept_id = d.id
 		        AND EXISTS (SELECT 1 FROM proj AS p
 		                    WHERE p.owner_id = e.id AND p.dept_ref = d.id)`
-		requireJoinAboveExists(t, q)
+		requireChainedFlatMapExists(t, q)
 		got := queryNames(t, q)
 		want := []string{"Alice"}
 		if !equalStrings(got, want) {

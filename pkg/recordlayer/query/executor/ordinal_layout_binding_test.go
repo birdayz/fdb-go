@@ -523,7 +523,7 @@ func TestOrdinalJoinBuildPreservesSelectedRetainedScalarPresence(t *testing.T) {
 			topLegAlias: innerAlias, childSource: retainedScalar,
 		},
 	}
-	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, origins)
+	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, origins, nil)
 	if err != nil {
 		t.Fatalf("newOrdinalJoinBuildWithOutputLayout: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestOrdinalJoinBuildPropagatesNestedSourcePresence(t *testing.T) {
 		preservedAlias: {topLegAlias: outerAlias, childSource: preservedSource},
 		optionalAlias:  {topLegAlias: outerAlias, childSource: optionalSource, childNullSupplying: true},
 	}
-	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, origins)
+	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, origins, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -815,7 +815,7 @@ func TestOrdinalJoinBuildSelectedLayoutFlattensNestedChildRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provided layout: %v", err)
 	}
-	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, nil)
+	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, nil, nil)
 	if err != nil {
 		t.Fatalf("selected-layout build: %v", err)
 	}
@@ -869,7 +869,7 @@ func TestOrdinalJoinBuildSelectedLayoutFlattensNestedChildRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrong, wrongErr := newOrdinalJoinBuildWithOutputLayout(result, nil, wrongLayout, nil)
+	wrong, wrongErr := newOrdinalJoinBuildWithOutputLayout(result, nil, wrongLayout, nil, nil)
 	var coded executorLayoutCode
 	if wrong != nil || !errors.As(wrongErr, &coded) ||
 		coded.Code() != values.LayoutCarrierMismatch {
@@ -908,7 +908,7 @@ func TestOrdinalJoinBuildSelectedLayoutDoesNotForceFlatOneLevelRC(t *testing.T) 
 	if err != nil {
 		t.Fatalf("provided layout: %v", err)
 	}
-	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, nil)
+	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, nil, nil)
 	if err != nil || build != nil {
 		t.Fatalf("flat one-level selected RC build = (%v, %v), want (nil, nil)", build, err)
 	}
@@ -972,7 +972,7 @@ func TestOrdinalJoinBuildSelectedLayoutRetainsWholeRecordSlot(t *testing.T) {
 		t.Fatalf("wrong-type whole-record source provided = (%t, %v), want rejected", supplied, supplyErr)
 	}
 
-	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, nil)
+	build, err := newOrdinalJoinBuildWithOutputLayout(result, nil, provided, nil, nil)
 	if err != nil {
 		t.Fatalf("selected-layout build: %v", err)
 	}
@@ -1009,7 +1009,7 @@ func TestOrdinalJoinBuildSelectedLayoutRetainsWholeRecordSlot(t *testing.T) {
 		values.Field{Name: "HID", FieldType: values.NullableLong},
 		values.Field{Name: "INNER", FieldType: wrongInner.FlowedType()},
 	), nil)
-	wrong, wrongErr := newOrdinalJoinBuildWithOutputLayout(result, nil, wrongCarrier, nil)
+	wrong, wrongErr := newOrdinalJoinBuildWithOutputLayout(result, nil, wrongCarrier, nil, nil)
 	var coded executorLayoutCode
 	if wrong != nil || !errors.As(wrongErr, &coded) || coded.Code() != values.LayoutCarrierMismatch {
 		t.Fatalf("wrong whole-record carrier = (%v, %v), want LayoutCarrierMismatch", wrong, wrongErr)
@@ -1024,7 +1024,7 @@ func TestOrdinalJoinBuildSelectedLayoutRetainsWholeRecordSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scalarBuild, scalarErr := newOrdinalJoinBuildWithOutputLayout(scalarResult, nil, scalarLayout, nil)
+	scalarBuild, scalarErr := newOrdinalJoinBuildWithOutputLayout(scalarResult, nil, scalarLayout, nil, nil)
 	if scalarErr != nil || scalarBuild != nil {
 		t.Fatalf("scalar bare-QOV selected build = (%v, %v), want (nil, nil)", scalarBuild, scalarErr)
 	}
@@ -1096,5 +1096,76 @@ func TestNestedLoopJoinPlanLayoutAgreesWithExecutorBuild(t *testing.T) {
 				t.Fatal("left-outer plan lost the executor build's null-supplying-inner configuration")
 			}
 		})
+	}
+}
+
+// TestOrdinalJoinBuildBareQOVTriggerKeysOnLegAliases drives BOTH polarities of
+// the bare-QOV build trigger, which no other unit test reaches: every other
+// call site in this file passes a nil legAliases slice, so `namesOneLeg` is
+// constant-false there and the arm is never exercised.
+//
+// The trigger exists because mergeRows realises exactly ONE program — the
+// concatenation of both legs' whole rows — so a result value that is not that
+// program cannot be realised by it. A bare QuantifiedObjectValue naming one of
+// the join's own legs means "the output is that leg's row", which concatenation
+// cannot produce; the plan's ProvidedOutputLayout is derived from the QOV, so
+// falling back to concatenation emits a row the declared carrier cannot address.
+//
+// Keyed on the LEG ALIASES, not on "is a QOV". That distinction is the whole
+// arm: a QOV standing for the MERGED row is the ordinary concatenation case and
+// must keep taking mergeRows. Getting it backwards reddened six executor tests
+// with `record plan emitted no positional row`, which is why both directions are
+// pinned here rather than just the one the fix was written for.
+func TestOrdinalJoinBuildBareQOVTriggerKeysOnLegAliases(t *testing.T) {
+	t.Parallel()
+
+	outerAlias := values.NamedCorrelationIdentifier("OUTER")
+	innerAlias := values.NamedCorrelationIdentifier("INNER")
+	legType := &values.RecordType{Fields: []values.Field{
+		{Name: "ID", FieldType: values.NullableLong, Ordinal: 0},
+	}}
+	legAliases := []values.CorrelationIdentifier{outerAlias, innerAlias}
+
+	// The output layout is deliberately nil in all three arms. The bare
+	// (non-RC) branch never consults it — `planBackedRC` requires an RC, and
+	// the branch below it reads only the result value — so supplying one would
+	// assert nothing about the trigger while implying the layout gates it.
+	buildFor := func(t *testing.T, rv values.Value, aliases []values.CorrelationIdentifier) *ordinalJoinBuild {
+		t.Helper()
+		build, err := newOrdinalJoinBuildWithOutputLayout(rv, nil, nil, nil, aliases)
+		if err != nil {
+			t.Fatalf("newOrdinalJoinBuildWithOutputLayout: %v", err)
+		}
+		return build
+	}
+
+	// A QOV naming one of the join's own legs → the build must ENGAGE.
+	legQOV := mustTestQOV(t, innerAlias, legType)
+	if !buildFor(t, legQOV, legAliases).enabled() {
+		t.Fatalf("a bare QOV naming leg %q did NOT enable the build. Declining routes the "+
+			"cursor down the non-build path, which binds the outer by NAME instead of "+
+			"adapting it to the merge layout the inner's pushed-down SARGs read by ordinal — "+
+			"measured on a 3-way comma join: zero rows where three are correct.", innerAlias.Name())
+	}
+
+	// A QOV naming something that is NOT a leg — the merged row's own carrier —
+	// must DECLINE, leaving the ordinary mergeRows concatenation in place.
+	mergedAlias := values.NamedCorrelationIdentifier("MERGED")
+	mergedQOV := mustTestQOV(t, mergedAlias, legType)
+	if buildFor(t, mergedQOV, legAliases).enabled() {
+		t.Fatalf("a bare QOV naming %q — which is NOT one of this join's legs (%q, %q) — "+
+			"enabled the build. A value standing for the merged row is the ordinary "+
+			"concatenation case; forcing evaluation there is what emitted no positional row "+
+			"at all across six executor tests.", mergedAlias.Name(), outerAlias.Name(), innerAlias.Name())
+	}
+
+	// No leg aliases supplied at all — the legacy no-layout constructor's
+	// contract (`newOrdinalJoinBuild` passes nil). A leg-named QOV is
+	// indistinguishable from a merged-row QOV without the aliases to compare
+	// against, so the trigger must stay closed rather than guess from the shape.
+	if buildFor(t, legQOV, nil).enabled() {
+		t.Fatal("a bare QOV enabled the build with NO leg aliases supplied. The trigger keys " +
+			"on the correlation matching a known leg; with nothing to match it must decline, " +
+			"or every semantic-RC caller of the legacy constructor starts building ordinally.")
 	}
 }

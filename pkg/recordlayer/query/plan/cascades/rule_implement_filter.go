@@ -3,6 +3,7 @@ package cascades
 import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
@@ -67,6 +68,16 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
+	// Residualise once, up front, where Java maps QueryPredicate::toResidualPredicate
+	// as it builds the RecordQueryPredicatesFilterPlan (ImplementFilterRule.java:90).
+	// Both yield sites below share the converted list so the rule cannot grow a
+	// second spelling of the same conversion.
+	residualPreds, residualErr := predicates.ToResidualPredicates(f.GetPredicates())
+	if residualErr != nil {
+		call.Fail(residualErr)
+		return
+	}
+
 	innerRef := f.GetInner().GetRangesOver()
 	if innerRef == nil {
 		return
@@ -111,7 +122,7 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		innerQ := expressions.NamedForEachQuantifier(innerAlias, call.MemoizeMemberPlansFromOther(
 			innerRef, []expressions.RelationalExpression{m}))
 		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(
-			innerQ, f.GetPredicates(), innerAlias)
+			innerQ, residualPreds, innerAlias)
 		if err != nil {
 			call.Fail(err)
 			return
@@ -145,7 +156,7 @@ func (r *ImplementFilterRule) OnMatch(call *ExpressionRuleCall) {
 		// parent that captures this leg. A frozen snapshot strands the pre-push
 		// filter once the merged group canonicalizes to the pushed one.
 		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(winner))
-		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ, f.GetPredicates(), innerAlias)
+		filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(innerQ, residualPreds, innerAlias)
 		if err != nil {
 			call.Fail(err)
 			return

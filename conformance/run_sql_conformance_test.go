@@ -33,6 +33,8 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -394,7 +396,7 @@ func entryConforms(javaResult, goResult plandiff.RunResult) (bool, string) {
 // isolated server, so Java's behaviour is deterministic — the gate asserts BOTH
 // the annotation's Java premise AND Go's pinned behaviour. A drift on either side
 // returns false so the lock reports it rather than letting a stale annotation rot.
-func divergenceHolds(div *plandiff.Divergence, javaResult, goResult plandiff.RunResult) (bool, string) {
+func divergenceHolds(div *plandiff.Divergence, query string, javaResult, goResult plandiff.RunResult) (bool, string) {
 	// Same gate as entryConforms, for the same reason. An annotation's premise
 	// ("Java errors here", "Java succeeds with wrong rows") can only be
 	// confirmed or refuted by a side that actually ran; a Java server that timed
@@ -461,6 +463,49 @@ func divergenceHolds(div *plandiff.Divergence, javaResult, goResult plandiff.Run
 		}
 		if !reflect.DeepEqual(goResult.Rows.Rows, div.GoExpectedRows) {
 			return false, fmt.Sprintf("Go rows changed from the annotation: %v", goResult.Rows.Rows)
+		}
+		return true, ""
+	case plandiff.DivergenceUnorderedRowOrderDiffers:
+		// NEITHER engine is wrong here: both succeed, the query has no ORDER BY,
+		// and the multisets agree. What is asserted is (a) Go still produces the
+		// pinned order, (b) Java is still a PERMUTATION of it, and (c) the two are
+		// still different. (b) is the guard that stops this direction absorbing a
+		// real wrong-rows bug; (c) is the stale-annotation guard, so a fixed
+		// tie-break reports here instead of leaving a pin nobody revisits.
+		// THE PREMISE, CHECKED RATHER THAN ASSERTED IN PROSE. This direction is
+		// only defensible because SQL guarantees nothing about the sequence of a
+		// query with no ORDER BY. On a query that HAS one, order is part of the
+		// answer, and "the rows are the same multiset in a different order" is the
+		// exact signature of a dropped or ignored sort — which this annotation
+		// would then pin green forever.
+		//
+		// Matching on the corpus's own literal SQL is a lint over test data we
+		// author, not feature detection inside the engine; it never reaches a
+		// planning decision. It errs toward REJECTING (a stray "order by" inside a
+		// string literal refuses the annotation), which is the safe direction: it
+		// costs an author an explanation, where the opposite silently licenses a
+		// real bug.
+		if orderByPattern.MatchString(query) {
+			return false, "this direction excuses ROW ORDER, and it is only sound where SQL leaves order undefined — " +
+				"but the query has an ORDER BY, where order IS the answer. Same-multiset-different-order is what a " +
+				"dropped sort looks like. Fix the ordering or classify it as a real divergence."
+		}
+		if javaResult.Err != nil {
+			return false, "annotation says both engines succeed with the same multiset, but Java errored: " + javaResult.Err.Error()
+		}
+		if goResult.Err != nil {
+			return false, "requires Go to succeed but Go errored: " + goResult.Err.Error()
+		}
+		if !reflect.DeepEqual(goResult.Rows.Rows, div.GoExpectedRows) {
+			return false, fmt.Sprintf("Go rows changed from the annotation: %v", goResult.Rows.Rows)
+		}
+		if !sameRowMultiset(javaResult.Rows.Rows, goResult.Rows.Rows) {
+			return false, fmt.Sprintf("annotation says ONLY the order differs, but the engines return different MULTISETS — java=%v go=%v. "+
+				"That is a row-level divergence wearing an ordering annotation; reclassify it.",
+				javaResult.Rows.Rows, goResult.Rows.Rows)
+		}
+		if reflect.DeepEqual(javaResult.Rows.Rows, goResult.Rows.Rows) {
+			return false, "annotation says the row ORDER differs, but the engines now agree exactly — the divergence is gone, delete the annotation"
 		}
 		return true, ""
 	case plandiff.DivergenceBothErrorMessagesDrift:
@@ -772,7 +817,7 @@ var _ = Describe("RunSql Harness", func() {
 			rq := corpus[idx]
 			javaResult, goResult := results[idx].java, results[idx].golang
 			if rq.Divergence != nil {
-				if ok, detail := divergenceHolds(rq.Divergence, javaResult, goResult); !ok {
+				if ok, detail := divergenceHolds(rq.Divergence, rq.Query, javaResult, goResult); !ok {
 					staleAnnotations = append(staleAnnotations, fmt.Sprintf("%s: %s", rq.Name, detail))
 				}
 				continue
@@ -811,3 +856,93 @@ var _ = Describe("RunSql Harness", func() {
 		Expect(got.Rows.Rows).To(BeEmpty())
 	})
 })
+
+// sameRowMultiset reports whether two result sets contain the same rows
+// disregarding SEQUENCE — the guard under DivergenceUnorderedRowOrderDiffers.
+//
+// The key carries each element's TYPE as well as its value and separates elements
+// unambiguously, so a dropped row, a duplicated row or a changed value all break
+// the comparison and only ROW ORDER does not — which is exactly the scope the
+// annotation may excuse.
+//
+// It renders RECURSIVELY, and that is not decoration. `%v` flattens a composite
+// cell, so a top-level-only key collides `[["a","b c"]]` with `[["a b","c"]]` —
+// the UNSAFE direction, on the one helper whose whole justification is that it
+// cannot absorb a wrong-value bug. Not reachable from the two entries annotated
+// today (both scalar BIGINT), but the Java side emits nested JsonObject and
+// JsonArray, so a STRUCT or ARRAY column decodes to exactly such a cell.
+//
+// It is NOT claimed to be equivalent to reflect.DeepEqual, and the difference
+// runs the safe way: `%v` renders -0.0 and 0.0 differently, so the key separates
+// two values DeepEqual calls equal. Over-strict refuses an annotation; the
+// converse would license one.
+//
+// Counting is by MULTISET, not by set: `[1 1 2]` and `[1 2 2]` are different
+// answers and a set comparison would call them equal.
+func sameRowMultiset(a, b [][]any) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, row := range a {
+		counts[rowMultisetKey(row)]++
+	}
+	for _, row := range b {
+		key := rowMultisetKey(row)
+		counts[key]--
+		if counts[key] < 0 {
+			return false
+		}
+	}
+	// Every decrement matched an increment and the lengths agree, so no
+	// residue can remain; the loop above already returned on any shortfall.
+	return true
+}
+
+// rowMultisetKey renders one row so that two rows share a key only if
+// reflect.DeepEqual would call them equal: every element contributes its TYPE
+// and its value, and the separator cannot be produced by either, so no
+// regrouping of element boundaries can collide.
+func rowMultisetKey(row []any) string {
+	var b strings.Builder
+	for _, cell := range row {
+		writeMultisetCell(&b, cell)
+		b.WriteByte(0x1e)
+	}
+	return b.String()
+}
+
+// writeMultisetCell renders one cell, descending into the composite shapes the
+// two runners actually produce: Java decodes a JsonArray to []any and a
+// JsonObject to map[string]any, and Go's driver mirrors that. Map keys are sorted
+// so an equal map cannot key two ways.
+func writeMultisetCell(b *strings.Builder, cell any) {
+	switch v := cell.(type) {
+	case []any:
+		b.WriteString("[")
+		for _, elem := range v {
+			writeMultisetCell(b, elem)
+			b.WriteByte(0x1d)
+		}
+		b.WriteString("]")
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteString("{")
+		for _, k := range keys {
+			fmt.Fprintf(b, "%q\x1c", k)
+			writeMultisetCell(b, v[k])
+			b.WriteByte(0x1d)
+		}
+		b.WriteString("}")
+	default:
+		fmt.Fprintf(b, "%T\x1f%v", cell, cell)
+	}
+}
+
+// orderByPattern matches an ORDER BY in a corpus query. Used only to REFUSE the
+// unordered-row-order annotation on a query whose order is defined.
+var orderByPattern = regexp.MustCompile(`(?i)\border\s+by\b`)

@@ -152,7 +152,19 @@ func (r *ImplementSimpleSelectRule) OnMatch(call *ImplementationRuleCall) {
 			// push_filter_through_fetch's re-explored pushed member reachable from a
 			// parent that captures this leg; a frozen snapshot strands the pre-push
 			// filter once the merged group canonicalizes to the pushed one.
-			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(currentQuant, queryPredicates, innerQuantifier.GetAlias())
+			// Residualise before filtering, exactly where Java does
+			// (ImplementSimpleSelectRule.java:167-169 maps
+			// QueryPredicate::toResidualPredicate over the non-tautology
+			// predicates when it builds the RecordQueryPredicatesFilterPlan).
+			// The existential arm above has just replaced the subplan with a
+			// FirstOrDefault, so an EXISTS predicate still in its structural
+			// form names an alias no row downstream carries.
+			residualPredicates, residualErr := predicates.ToResidualPredicates(queryPredicates)
+			if residualErr != nil {
+				call.Fail(residualErr)
+				return
+			}
+			filterPlan, err := plans.NewRecordQueryPredicatesFilterPlanWithAliasFromQuantifier(currentQuant, residualPredicates, innerQuantifier.GetAlias())
 			if err != nil {
 				call.Fail(err)
 				return

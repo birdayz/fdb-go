@@ -127,8 +127,16 @@ func OrdinalSeedLegWindows(rc *RecordConstructorValue) (map[CorrelationIdentifie
 // this list is modelled on rather than invented against.
 //
 // Callers that only need the addressable map keep the two-value entries; this
-// exists for the ONE consumer that has to ask "how many legs tile this row, and
-// what shape is each" (materializedNLJOrdinalLayoutMatches' orientation check).
+// answers the different question "how many legs TILE this row, and what shape is
+// each".
+//
+// ITS ONE PRODUCTION CONSUMER IS GONE. It served an orientation check inside the
+// three-quantifier NLJ arm, and both retired with RFC-235. The run list is kept
+// because the question it answers is not derivable from the map — finalization
+// replaces a box run's entry with a narrower sub-window, after which the map no
+// longer states which windows tile the row — so a future consumer would have to
+// rebuild exactly this. A caller returning here should say why the map cannot
+// serve it.
 func OrdinalSeedLegLayout(rc *RecordConstructorValue) (map[CorrelationIdentifier]OrdinalSeedLegWindow, *RecordType, []OrdinalSeedLegWindow) {
 	return ordinalSeedLegWindows(rc, true)
 }

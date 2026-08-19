@@ -53,25 +53,73 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 
 	// Both halves are rebuilt via NewSelectExpressionWithAliases, which has no
 	// joinType parameter and so always defaults to JoinInner — this rule NEVER
-	// carries the original select's JoinType forward, unlike
-	// PushFilterBelowJoinRule / PartitionBinarySelectRule (which relocate
-	// predicates AROUND a preserved JoinInner select via
-	// NewSelectExpressionWithJoinType) or SelectMergeRule / pushIntoSelect
-	// (which also rebuild fresh but gate on ChildrenAsSet()). A LEFT/RIGHT/FULL
-	// OUTER select's null-extension is directional and belongs to exactly the
-	// binary {preserved, null-supplying} shape RewriteOuterJoinRule builds
-	// (rule_select_merge.go's "binary box" doc) — bipartitioning it into two
-	// arbitrary, cost-driven, always-JoinInner halves would erase that
+	// carries the original select's JoinType forward. A LEFT/RIGHT/FULL OUTER
+	// select's null-extension is directional and belongs to exactly the binary
+	// {preserved, null-supplying} shape RewriteOuterJoinRule builds, so
+	// bipartitioning it into two always-JoinInner halves would erase that
 	// null-extension outright (not merely mis-time a predicate), silently
 	// dropping unmatched rows. ChildrenAsSet() (JoinInner || JoinCross) is the
-	// correct gate here, not a strict JoinInner check: a CROSS select carries no
-	// predicates and no directional semantics by construction, so splitting it
-	// into two default-JoinInner halves reproduces identical rows — the same
-	// axis SelectMergeRule/pushIntoSelect already key on for this exact
-	// "rebuild fresh, discard JoinType" shape.
+	// gate: a CROSS select carries no predicates and no directional semantics, so
+	// splitting it into two default-JoinInner halves reproduces identical rows.
+	//
+	// THIS BLUNTNESS WAS TESTED AND IS KEPT. The obvious refinement — refuse only
+	// the bipartitions that SPLIT the join's two sides, rebuild the lower with
+	// the original JoinType, and let the semi-join filters peel off — was built
+	// (SealedGraphExpansion.BuildSelectWithJoinType) and measured. It fixed the
+	// uncorrelated arm of projected-EXISTS-over-LEFT-JOIN and produced WRONG ROWS
+	// on the other two: the winning plan came out as
+	// `FlatMap(outer=FlatMap(outer=Scan(EMP), inner=Scan(DEPT,[=])), …)` — driving
+	// from the NULL-SUPPLYING side with no DefaultOnEmpty anywhere — and returned
+	// 0 rows where 2 are correct.
+	//
+	// WHERE THE ROWS WENT IS STILL UNKNOWN, and one plausible answer is already
+	// ruled out. RewriteOuterJoinRule yields a TWO-quantifier select carrying
+	// JoinInner plus a NullOnEmpty quantifier (rule_rewrite_outer_join.go:172-205),
+	// so this rule never sees that shape at all — it needs >= 3 quantifiers. The
+	// select the refinement partitioned was the ORIGINAL JoinLeftOuter one, and
+	// its lower rebuilt as JoinLeftOuter with the ON-predicate intact, which is
+	// precisely what RewriteOuterJoinRule accepts. So the wrong plan came from a
+	// member the refinement admitted, and WHICH member has not been identified.
+	//
+	// Until it is, a blunt refusal that declines a plannable query is strictly
+	// better than a precise one that answers it wrongly.
+	//
+	// THE WRONG ROWS WERE NOT SILENT, and the distinction is worth keeping
+	// straight because it changes what the safety net is owed.
+	// TestFDB_ProjectedExistsOverLeftJoin and TestFDB_LeftJoinExistsResidual both
+	// assert ROWS and both caught it. What they could not do is CHANGE STATE: they
+	// were already red on the 0AF00 decline, so the refinement moved them from one
+	// red to another and the failure COUNT never moved. A red test cannot go
+	// redder — so in an area with known-failing tests, a count is not a regression
+	// detector and the per-test messages have to be read.
+	//
+	// What this costs is real and measured, not theoretical: projected EXISTS
+	// over a LEFT JOIN is unplannable in Go and Java answers it — see
+	// conformance/projected_exists_left_join_java_probe_test.go, where Java
+	// returns [[10 false] [20 false]] and Go returns 0AF00. That was covered by
+	// the NLJ rule's three-quantifier arm until RFC-235 retired it, and it is the
+	// one capability that retirement removed.
 	if !sel.ChildrenAsSet() {
 		return
 	}
+
+	// NOTE — A NULL-ON-EMPTY QUANTIFIER MAY BE SEPARATED FROM ITS PARTNER, and
+	// that is not the same question the join-type gate above answers.
+	//
+	// A guard was added here requiring both sides of an outer join to land in the
+	// same half whenever any quantifier was marked NullOnEmpty, on the reasoning
+	// that splitting the pair erases the extension. It does not, and the reason is
+	// WHERE each spelling keeps the property:
+	//
+	//   - a non-set JoinType puts it on the PAIR. Rebuilding either half as
+	//     JoinInner loses it, which is what the gate above refuses.
+	//   - NullOnEmpty puts it on the QUANTIFIER, and the quantifier travels. A
+	//     null-on-empty leg still null-extends in whichever half it lands.
+	//
+	// Measured: the guard took `SELECT * FROM la a LEFT JOIN lb b ON a.gid = b.gid
+	// WHERE EXISTS (…)` from a correct plan to 0AF00
+	// (TestFDB_LeftBoxWhereExistsOrdinal), because that query is planned through a
+	// bipartition that separates them.
 
 	// StrictSingle is a semantic edge contract owned by the binary
 	// correlated-scalar lowering. This N-way partitioner rebuilds the lower edge
@@ -83,45 +131,54 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
-	// Existential quantifiers partition when there are ≥2 of them — the
-	// sibling multi-EXISTS case (`WHERE EXISTS(A) AND EXISTS(B)`) that otherwise
-	// STRANDS: the NLJ rule is 2-quantifier and can't match [outer, EXISTS, EXISTS],
-	// and the old ForEach-only bail left it unplannable (0AF00). Peeling lower
-	// {outer, EXISTS(A)} + upper {newq(outer), EXISTS(B)} produces 2-quantifier
-	// existential selects the NLJ rule implements, recursing to 1-existential leaves.
-	// A select with EXACTLY 1 existential is partitioned only when it also has
-	// >2 ForEach legs (the genuine N-WAY cluster, RFC-190 190.1's direct-emit
-	// shape — see the bail below): with ≤2 ForEach legs it is left to the
-	// existing direct-NLJ / implementJoinWithExistential path, which already
-	// handles that exact shape directly — partitioning it too would race that
-	// working arm with an alternate decomposition instead of merely
-	// duplicating it.
+	// Existential quantifiers partition like any other. Java's
+	// PartitionSelectRule enumerates EVERY subset of the quantifiers
+	// (`combinations(combinationQuantifierMatcher, c -> 0, Collection::size)`,
+	// PartitionSelectRule.java:65-66) and has no notion of an existential being
+	// ineligible; the shape that reaches ImplementNestedLoopJoinRule is always
+	// binary, because that rule matches `exactlyInAnyOrder(outer, inner)`
+	// (ImplementNestedLoopJoinRule.java:98).
+	//
+	// A bail here for `1 existential + <=2 ForEach` used to hand that exact shape
+	// to the NLJ rule's three-quantifier arm instead. It was not a preference
+	// between two working decompositions: the peel it suppressed produced a plan
+	// that returned zero rows, because the peeled lower's EXISTS predicate reached
+	// a PredicatesFilter in its structural form. That is fixed at its cause —
+	// predicates are residualised before they become filters, as Java does, and a
+	// filter carrying a structural predicate is now rejected at construction —
+	// so the bail has nothing left to protect against (RFC-235).
 	existentialCount := 0
-	foreachCount := 0
 	for _, q := range quantifiers {
 		if q.Kind() == expressions.QuantifierExistential {
 			existentialCount++
-		} else {
-			foreachCount++
 		}
 	}
-	if existentialCount == 1 && foreachCount <= 2 {
-		// Exactly the shape implementJoinWithExistential's working 2-leg fold
-		// already handles directly (2 ForEach + 1 Existential — a plain
-		// 2-table join with a projected/WHERE EXISTS, e.g. `t1 JOIN t2 ON …
-		// WHERE EXISTS (…)`). Partitioning it too would RACE that
-		// byte-identical arm with an alternate decomposition — and for this
-		// narrower shape the race is not merely redundant, it can WIN with a
-		// malformed plan: the positional-merge Case (below) decomposing a
-		// plain 2-alias existential correlation produced "ordinal
-		// resolution: field … not resolvable" execution errors on
-		// previously-passing 2-way EXISTS tests once the bail was dropped.
-		// Only a GENUINE N-way cluster (>2 ForEach legs) needs partitioning
-		// to reach a plan at all — that shape has no working direct-NLJ
-		// alternative to race, so only it is exempted from this bail; the
-		// live-existential guard further below is scoped to that case.
-		return
-	}
+
+	// A PROJECTED existential — one the result value REFERENCES, as in
+	// `SELECT id, EXISTS(…) AS flag` — is the harder case: peeling it into a
+	// sibling FlatMap strands the reference to the buried one.
+	//
+	// The decline has TWO layers and the count is what selects between them. Both
+	// are written down, because the comment that stood here described only the
+	// first and read as if it covered every projected existential:
+	//
+	//   - ≥2 existentials with any of them projected: decline the WHOLE rule.
+	//     Sibling multi-EXISTS is the shape peeling would strand, and no
+	//     bipartition of it is worth exploring.
+	//   - exactly 1 projected existential: fall through and partition. The
+	//     live-existential guard below then refuses every individual split that
+	//     would put the existential in the LIVE set — the same protection, applied
+	//     one bipartition at a time instead of once for the rule.
+	//
+	// The second layer is load-bearing, not a leftover. A GENUINE N-way cluster
+	// (>2 ForEach legs) carrying one projected existential needs partitioning to
+	// reach a plan AT ALL, so declining it per-rule makes it unplannable. Making
+	// this condition count-independent looks like the tidier reading of the first
+	// bullet alone and takes `TestFDB_NWayCommaJoinProjectedExists`,
+	// `TestFDB_CommaJoin3ProjectedExistsWithEquijoins`,
+	// `TestFDB_FourLegJoinDiscriminating` and
+	// `TestFDB_BuriedInnerJoinProjectedExists` straight to 0AF00 — measured, not
+	// predicted.
 	if existentialCount >= 2 {
 		// PROJECTED multi-EXISTS (`SELECT id, EXISTS(…) AS a, EXISTS(…) AS b`) is a
 		// SEPARATE, harder case: the result value references the existential
@@ -276,32 +333,10 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 			continue
 		}
 
-		// An EXISTENTIAL quantifier is a SEMI-JOIN FILTER, not a standalone relation —
-		// it must be grouped WITH a ForEach outer it filters. A lower partition holding
-		// an existential but NO ForEach is invalid: the existential has nothing to
-		// attach to, and ImplementNestedLoopJoinRule builds a residual `QOV(inner) IS
-		// NOT NULL` over a FirstOrDefault that binds to nothing → the filter drops every
-		// row → silent empty result. (The UPPER always gets the new ForEach over the
-		// lower, so only the lower needs this check.) Reject such a bipartition; the
-		// valid peel keeps each existential with a ForEach (lower {outer, EXISTS(A)}).
-		lowerHasExistential, lowerHasForEach := false, false
-		for a := range lowerAliases {
-			switch aliasToQ[a].Kind() {
-			case expressions.QuantifierExistential:
-				lowerHasExistential = true
-			case expressions.QuantifierForEach:
-				lowerHasForEach = true
-			}
-		}
-		if lowerHasExistential && !lowerHasForEach {
-			continue
-		}
-
 		// If right-deep only, require upper has exactly 1 quantifier.
 		if plannerCfg.ShouldJoinRightDeep && len(lowerAliases) != len(quantifiers)-1 {
 			continue
 		}
-
 		upperAliases := make(map[values.CorrelationIdentifier]struct{})
 		for _, q := range quantifiers {
 			a := q.GetAlias()
@@ -421,6 +456,11 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// result): exactly the lowers it references (GetCorrelatedToOfValue) —
 		// an ordinal seed's referenced set is trustworthy (no RV hides its
 		// real projection).
+		// liveViaPredicate records the lowers made live by a SPANNING PREDICATE, as
+		// against those made live only by the result value. The two are the same
+		// thing for a ForEach and different things for an existential.
+		liveViaPredicate := map[values.CorrelationIdentifier]struct{}{}
+
 		resultCorrelatedToLowers := intersectAliases(lowerAliases, values.GetCorrelatedToOfValue(resultValue))
 		for a := range resultCorrelatedToLowers {
 			lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
@@ -462,6 +502,11 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 					upperPredicates = append(upperPredicates, pred)
 					for a := range correlatedToLower {
 						lowersCorrelatedToByUppers = append(lowersCorrelatedToByUppers, a)
+						// WHY this lower is live matters for an existential — see the
+						// live-existential guard below. Live via a SPANNING PREDICATE
+						// means the upper still applies that predicate; live only via the
+						// RESULT VALUE means the upper merely reads it.
+						liveViaPredicate[a] = struct{}{}
 					}
 				} else {
 					upperPredicates = append(upperPredicates, pred)
@@ -481,12 +526,72 @@ func (r *PartitionSelectRule) OnMatch(call *ExpressionRuleCall) {
 		// aliases.
 		lowersCorrelatedToByUppers = dedupAliases(lowersCorrelatedToByUppers)
 
-		// Live-existential guard (RFC-190 190.1): reject a bipartition whose live
-		// set contains an existential (Go's merge/Case-2 can't represent a
-		// projected existential as a positional ordinal).
+		// Live-existential guard. A live lower is one the upper needs, so the lower
+		// must flow it up — and an existential is not always something that CAN be
+		// flowed up. Two cases reject, and the distinction between them is WHY the
+		// existential is live:
+		//
+		//   - live via a SPANNING PREDICATE (`WHERE EXISTS (…)` beside a reference
+		//     to another leg). The existential is a semi-join FILTER that the upper
+		//     still applies. Flowing it up as an ordinary ForEach row turns the
+		//     filter into a row-producing leg: Go's lowering puts a FirstOrDefault
+		//     under the quantifier, so an empty subquery yields one present-but-NULL
+		//     row instead of none, and rows that should have been filtered out
+		//     survive. Measured, not reasoned — admitting this case took the sweep
+		//     from 21 failures to 48, five of them ROW failures in yamsql
+		//     (comma_join_exists, correlated_exists_advanced,
+		//     correlated_subquery_probes, nested_correlation_over_a_join,
+		//     projected_exists_over_a_derived_source).
+		//
+		//   - ≥2 live lowers, i.e. the positional merge. The lower flows
+		//     `RC(_0: QOV(l0), _1: QOV(l1), …)` and the upper addresses it by
+		//     ORDINAL; an existential has no ordinal to be.
+		//
+		// What is LEFT is an existential live ONLY through the result value and
+		// alone in the live set — a PROJECTED `SELECT id, EXISTS(…) AS flag`. There
+		// the upper does not filter on it, it reads it, and reading a
+		// present-but-NULL row is exactly what ExistsValue wants. That is Java's
+		// Case 2, which flows the single live lower's row unchanged
+		// (PartitionSelectRule.java:281) with Quantifier.Existential inheriting
+		// getFlowedObjectValue verbatim (Quantifier.java:801-803).
 		liveExistential := false
 		for _, a := range lowersCorrelatedToByUppers {
-			if aliasToQ[a].Kind() == expressions.QuantifierExistential {
+			if aliasToQ[a].Kind() != expressions.QuantifierExistential {
+				continue
+			}
+			if _, viaPredicate := liveViaPredicate[a]; viaPredicate {
+				liveExistential = true
+				break
+			}
+			if len(lowersCorrelatedToByUppers) >= 2 {
+				liveExistential = true
+				break
+			}
+			// …and the existential must be ALONE in the lower.
+			//
+			// The REASON is addressing, and the arity test is the sufficient condition
+			// rather than the reason itself: Case 2 flows ONE quantifier's row up
+			// (`quantifier.getFlowedObjectValue()`, PartitionSelectRule.java:281), and
+			// an ExistsValue addresses its subject by ALIAS, not by ordinal. So it
+			// survives the peel only when the quantifier being flowed IS the
+			// existential. Group it with anything else and the flowed row belongs to a
+			// sibling, while the upper's ExistsValue still names a quantifier that no
+			// longer appears anywhere.
+			//
+			// Measured: without this, `SELECT a.qid, EXISTS (…) FROM p AS a, q AS a`
+			// admits lower={P, Ex} beside the correct lower={P, Q}, and the wrong one
+			// wins — `NestedLoopJoin(Scan(Q), FlatMap(Scan(P), exists))`, whose row is
+			// `[Q.qid, 1]`: the raw subquery literal where the projection wants a
+			// boolean, because nothing above ever evaluates the ExistsValue.
+			// (TestFDB_KeyBindingAndBuriedExists/P1_fold_order_by_dup, which reddens
+			// if this arm is removed.)
+			//
+			// This arm is ALSO what keeps an executor gap unreachable: the ordinal
+			// join build has no path that evaluates a COMPUTED result value the way
+			// Java's FlatMap does, so a partition flowing one would fail loud at the
+			// output boundary. See executor/ordinal_join.go's computed-RC note, which
+			// names this arm as its precondition. Relaxing the guard re-arms it.
+			if len(lowerAliases) > 1 {
 				liveExistential = true
 				break
 			}

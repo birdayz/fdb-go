@@ -1941,11 +1941,11 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 			// install a SubqueryPlanner so WalkPredicate builds the ON predicate's
 			// ExistentialValuePredicate, then carry the collected EXISTS subqueries
 			// on the join so translateJoin attaches the existential quantifier and
-			// the NLJ rule's implementJoinWithExistential path builds the semi-join.
+			// the existential peel builds the semi-join.
 			//
 			// OUTER joins are deferred (RFC-154 §5.2b): the ON-EXISTS is correlated
 			// to the PRESERVED side and gates null-extension, which the semi-join
-			// shape cannot express (implementJoinWithExistential would drop preserved
+			// shape cannot express (the existential peel would drop preserved
 			// rows whose EXISTS is false instead of null-extending). Reject
 			// fail-closed so OUTER EXISTS-in-ON never returns wrong rows.
 			if expr.ContainsExistsAtom(sq.joins[sqIdx].onExpr) {
@@ -1970,7 +1970,7 @@ func upgradeJoinOnPredicates(op logical.LogicalOperator, sq *selectQuery, md *re
 					return api.NewErrorf(api.ErrCodeUnsupportedQuery,
 						"unsupported EXISTS in JOIN ON clause: %v", walkErr)
 				}
-				// The NLJ rule's implementJoinWithExistential handles exactly ONE
+				// The existential peel handles exactly ONE
 				// existential quantifier on a binary join (a 2-ForEach + 1-Existential
 				// select); a join with two+ existentials falls through unplanned. That
 				// is a pre-existing limitation shared with WHERE EXISTS over a join —

@@ -301,7 +301,7 @@ func TestDivergenceHolds_LifecycleIsInfra(t *testing.T) {
 			t.Run(string(dir)+"/"+tc.name, func(t *testing.T) {
 				t.Parallel()
 				div := &plandiff.Divergence{Direction: dir}
-				held, detail := divergenceHolds(div,
+				held, detail := divergenceHolds(div, "SELECT 1",
 					plandiff.RunResult{Engine: "java", Err: tc.err},
 					plandiff.RunResult{Engine: "go"})
 				if held {

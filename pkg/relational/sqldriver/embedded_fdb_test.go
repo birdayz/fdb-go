@@ -109,9 +109,8 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	values.ResetDottedRowTypeProducerCensus()
 	values.ResetDottedWitnessAttribution()
 	values.ResetQualifierRecoveryCensus()
-	cascades.ResetFoldStep1SeedCensus()
 	corequery.ResetUnnestLegMintCensus()
-	cascades.ResetOrientationGateCensus()
+	cascades.ResetMergeSlotTypingCensus()
 	cascades.ResetProjectionMergeCensus()
 	values.SetLegIdentityCensusEnabled(true)
 	code := m.Run()
@@ -139,16 +138,12 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		code = 1
 	}
 	values.DumpOrderingBridgeDottedCensus(os.Stderr, "sqldriver real-FDB corpus")
-	// The leg-local bakeability census rides the same gate: it measures whether
-	// the one surviving qualified-name mint is carrying anything a leg-local bake
-	// could not carry. Reported beside the identity census because the two answer
-	// halves of the same question about this channel.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatLegLocalBakeCensus())
-	// The merged-leg binder's cost/benefit, reported beside the two censuses
-	// because it answers the question they raise about the same channel: the
-	// binder is what a leg-correlated read resolves THROUGH at runtime, and its
-	// read count is how much of that channel is load-bearing.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", executor.FormatMergedLegBindingCensus())
+	// The MERGE-SLOT TYPING census: what each slot of a positional merge ends up
+	// STATING. It is the surviving half of the retired leg-local bakeability
+	// census — the positional merge outlived the three-quantifier NLJ arm that
+	// census existed to measure, and a live path with no instrument is how the
+	// silent zero-rows defect it watches for gets back in (RFC-235).
+	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatMergeSlotTypingCensus())
 	// The leg-column PROVENANCE census: the executor's last live reader of a
 	// dotted leg-qualified column name, cut by whether the leg it matched by TEXT
 	// also states an IDENTITY. That is the fact the reader's retirement rests on,
@@ -168,22 +163,6 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 	// than in a test for the reason every census on this path is: the population
 	// is only complete after m.Run().
 	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", values.FormatSeedWindowReaderCensus())
-	// The foldStep1Seed OUTCOME census: whether step 1 got an ordinal seed, and
-	// why not when it did not. It replaces a call-site probe that was added for
-	// one question and removed after, leaving RFC-200's population numbers as a
-	// dated point measurement with nothing keeping them true.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatFoldStep1SeedCensus())
-	// The ORIENTATION-GATE census: whether RFC-200 step 3d's fail-open fix is
-	// LIVE (box-leg seeds reaching the check and passing) or LATENT (no shape
-	// reaching it at all). A printed zero cannot tell those apart; MapCountDiffers
-	// can.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatOrientationGateCensus())
-	// The FLATMAP PRODUCER census: which construction site emits a declined leg's
-	// result value, and what that value IS when it is handed over. The outcome
-	// census above classifies the node it REFUSED, which names a shape and never
-	// an author — so every attribution of this population written down so far was
-	// an inference. This measures it.
-	fmt.Fprintf(os.Stderr, "\n[sqldriver real-FDB corpus] %s\n", cascades.FormatFlatMapProducerCensus())
 	// The SELECT RESULT-VALUE MINT census: the site that BUILDS a select's result
 	// value, as against the three that flow it verbatim. The producer census
 	// above can only name the FlatMap construction that handed a value over, and
@@ -245,22 +224,14 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		{"qualifierRecovery", assertQualifierRecoveryCensus},
 		{"legIdentity", assertLegIdentityCensus},
 		{"legColumnProvenance", assertLegColumnProvenanceCensus},
-		// The bakeability census is ASSERTED, not merely printed. It was printed
-		// only, which made its numbers — including CQ-63's acceptance number — a
-		// report nothing checked: the partition could stop holding and the
-		// population could collapse to zero with the gate still green.
-		{"legLocalBake", assertLegLocalBakeCensus},
-		// The merged-leg binding census is ASSERTED too, and for a sharper reason
-		// than its siblings: the number the whole "the binder has no reader"
-		// finding rests on is a count of ZERO, and a zero produced by a dead
-		// counter is indistinguishable in a printed report from a zero produced by
-		// an absent reader. Measured, not assumed — no-opping recordMergedLegRead
-		// left the entire suite green while the census went on reporting the exact
-		// "0 READ" the finding quotes.
-		{"mergedLegBinding", assertMergedLegBindingCensus},
-		{"foldStep1Seed", assertFoldStep1SeedCensus},
-		{"orientationGate", assertOrientationGateCensus},
-		{"flatMapProducer", assertFlatMapProducerCensus},
+		// The MERGE-SLOT TYPING census is ASSERTED, not merely printed. Its whole
+		// claim is that Untyped stays at ZERO, and a zero from a dead counter reads
+		// identically to a zero from a clean population — the floor is what tells
+		// them apart. It is the surviving half of the retired leg-local bakeability
+		// census (RFC-235): the positional merge outlived the NLJ arm that census
+		// measured, and a live path with no instrument is how the silent zero-rows
+		// defect it watches for gets back in.
+		{"mergeSlotTyping", assertMergeSlotTypingCensus},
 		{"selectResultMint", assertSelectResultMintCensus},
 		{"projectionMerge", assertProjectionMergeCensus},
 		// RFC-213: the consumers must stay REACHED. There is no zero to defend —
@@ -273,622 +244,6 @@ func runUnderLegIdentityCensus(m *testing.M) int {
 		code = 1
 	}
 	return code
-}
-
-// foldStep1SeedGates is RFC-200's acceptance gate (c): EXACT equalities, not
-// floors.
-//
-// They are PREDICTIONS. A measured deviation is a reportable finding and must be
-// reported rather than absorbed by relaxing the assertion — which is why these
-// are equalities while every other census on this path is floored an order of
-// magnitude below its measurement. The two disciplines are answering different
-// questions: a floor detects a site going DARK over a corpus that churns, while
-// these numbers are the arithmetic a design decision was made on and any
-// movement in them invalidates that arithmetic.
-//
-// The values below are the state AFTER RFC-200 activated the nested window, and
-// the transition is recorded here rather than re-blessed, because the whole
-// point of an equality is that its movement is legible.
-//
-//	                          before   after   RFC-200's prediction
-//	ACCEPT                        78     138   138 (78 + 60)   HIT
-//	DECLINE correlatedStep1      108     108   108 unchanged   HIT
-//	DECLINE rv-no-exist-ref      202     202   200 unchanged   HIT (see below)
-//	DECLINE reconstruct-nil      154      94    94 (154 - 60)  HIT
-//	  of which bare-QOV           94      94    94 all of it   HIT
-//	  of which positional-merge   60       0     0             HIT
-//	denominator                  542     542   540             HIT (see below)
-//
-// Every one of the six load-bearing numbers landed exactly. The 60 declined
-// positional-merge legs became 60 ACCEPTs; the fenced bare-QOV residue did not
-// move; the permanent correlatedStep1 wall did not move.
-//
-// RFC-200 states rv-no-exist-ref at 200 over a denominator of 540, measured on
-// branch feat/cq53-parent-chained-binder at HEAD 4dccc50f0. On this tree both
-// are +2, and the +2 is identified rather than assumed: the merged-leg
-// reader-shape fixture became shared between the redundancy pin and the
-// wrong-window mutation pin, so its WHERE-EXISTS query is planned twice where it
-// was planned once, and that test alone contributes exactly 2 firings, both in
-// that class — the class the RFC calls a correct pass-through rather than a
-// residue, because the projection sits ABOVE the existential level.
-//
-// THE DEVIATION IS EXPLAINED, not absorbed. It is corpus growth, and the growth
-// is identified rather than assumed: the merged-leg reader-shape fixture became
-// shared between TestFDB_MergedLegBinding_NothingReadsTheBinder and the
-// wrong-window mutation pin, so its `SELECT OT."K" FROM ST, OT WHERE EXISTS (…)`
-// is now planned twice where it was planned once. Isolated, that one test
-// contributes exactly 2 firings, both rv-no-exist-ref — the class the RFC calls
-// a correct pass-through rather than a residue, because the projection sits
-// ABOVE the existential level and there is nothing to fold.
-//
-// AND THEN THIS SUITE GREW BY ONE FILE, WHICH IS THE GATE WORKING.
-//
-// The RFC-200 gate (a) fixtures — TestFDB_NestedMergeLegProjectedExistsFold with
-// its two-source control, its three-source probe and three companion-address
-// queries, plus TestFDB_PredicateFreeCommaJoinProjectedExistsFailsLoud — add 30
-// firings between them. So the totals below are the post-3d numbers plus that
-// file: denominator 542+30 = 572, ACCEPT 138+22 = 160, reconstruct-nil 94+8 =
-// 102, all of the added declines bare-QOV.
-//
-// The added ACCEPTs are the point rather than noise: each equijoin variant is a
-// projected-EXISTS fold over ordinal-safe legs, which is exactly the population
-// this gate measures, and they land in ACCEPT because the layout authority now
-// admits the merged leg.
-//
-// The equality is stated at the new totals rather than relaxed into a range,
-// because a range would absorb the next four firings silently — and it was this
-// gate going red on a test the author had just written that produced the
-// attribution above, from a run rather than from memory.
-//
-// WHY THESE SIX ARE EQUALITIES WHILE THEIR SIBLINGS A FEW HUNDRED LINES DOWN ARE
-// FLOORED "because the totals move run to run". That asymmetry is real, it is
-// measured, and it is NOT the one it looks like.
-//
-// Measured over FOUR consecutive full-suite runs, the split is by BUCKET and not
-// by census or by site:
-//
-//	STABLE 4/4   foldStep1 denominator 572 (and all five class/shape equalities);
-//	             implementJoinWithExistential calls 431 / untyped 249 / other 182;
-//	             yieldExistsFlatMap 449 / 130 / 269 / 50;
-//	             buildCorrelatedFlatMapPlan typedQOV 476, mergeRC 6732;
-//	             implementExistentialSelect other 145
-//	VARIES       buildCorrelatedFlatMapPlan other  18198 / 17840 / 18219 / 18391
-//	             implementExistentialSelect untyped 1609 / 1413 / 1613 / 1698
-//	             translator mint                    1086 / 1004 / 1092 / 1123
-//
-// The reading that does NOT survive the code is "these count accepted rule
-// applications while those count explored alternatives". Both recorders sit at
-// once-per-OnMatch positions in the same rule — recordFoldStep1Denominator at
-// the seed-decision call site and recordFlatMapResultValue at the FlatMap
-// construction — with no plan-partition or requested-ordering loop between the
-// dispatch and either one. They are the same KIND of number.
-//
-// What the split actually tracks is that buildCorrelatedFlatMapPlan's typed and
-// merge buckets are pinned while its `other` bucket moves, IN THE SAME CALL.
-// A site being invoked a variable number of times would move all of its buckets
-// together; these move one. So the variance is SHAPE-LOCALISED — a fixed set of
-// query shapes produces the pinned buckets and a variable set produces the rest
-// — and it is driven from upstream of the planner: `EmbeddedConnection` caches
-// physical plans keyed by normalized SQL and invalidates on DDL, so how many
-// times a given query is translated and planned across a suite run depends on
-// cache hits, on invalidation order, and on the retry tests. Every bucket these
-// six equalities count is in the pinned family; the untyped mint that drives the
-// varying family reaches none of them.
-//
-// THE HONEST STATUS: that is an OBSERVATION about which tests exercise the
-// three-quantifier EXISTS shape, not a theorem that they must. Nothing
-// structural forbids a future cached-or-retried test from planning that shape a
-// variable number of times, and on the day one does, these equalities become
-// flakes. They are kept as equalities anyway, deliberately: a floor cannot
-// detect silent absorption of new firings, which is the one thing this gate has
-// actually caught, so trading a proven instrument for an unproven risk is the
-// wrong side of the bet. What the discovery DOES change is the diagnosis, and
-// that is why it is written here — on a deviation, RE-RUN FIRST. Run-to-run
-// movement is now a known failure mode for the sibling counters and has never
-// once been observed for these. If a re-run reproduces the same new number, it
-// is corpus growth: identify the fixture and restate the total, as every entry
-// above does. If it does not reproduce, the shape has entered the cache-
-// sensitive family, and THEN these convert to floors with their siblings'
-// collapse-detection calibration — as a measured change, not a precaution.
-var foldStep1SeedGates = func() cascades.FoldStep1SeedGates {
-	n := func(v int) *int { return &v }
-	return cascades.FoldStep1SeedGates{
-		// RFC-222 GROWTH, ATTRIBUTED PER THE PARAGRAPH ABOVE rather than absorbed,
-		// in the TWO steps it actually happened in.
-		//
-		// Step 1 — the leg-window re-anchor made a nested key over a JOIN plan, and
-		// two sqldriver fixtures grew with it: the fold test gained its two
-		// converted join sort arms (n.sk, n.co) plus the projected-struct-root
-		// tripwire, and TestFDB_NestedCorrelationThroughAJoinsMergedRow was new
-		// (two single-table controls, two join forms).
-		//   denominator 572+10 = 582, ACCEPT 160+6 = 166, no-exist-ref 202+4 = 206
-		// The added ACCEPTs were the point rather than noise: each is a
-		// projected-EXISTS fold over ordinal-safe legs threading a MULTI-ACCESSOR
-		// reference, which is the shape that used to decline.
-		//
-		// Step 2 — review found that the correlation pins carried no `n.co` query,
-		// so a co-only substitution of the fused suffix had nothing to land on.
-		// Closing that added a `co` polarity pair (single-table control + join form
-		// each). Those are WHERE-EXISTS, not projected-EXISTS, so they decline as
-		// no-exist-ref and add NO ACCEPTs.
-		//   denominator 582+4 = 586, no-exist-ref 206+4 = 210, ACCEPT unchanged 166
-		// ACCEPT holding still across step 2 is the check that those four firings
-		// are the shape they claim to be rather than four more folds.
-		//
-		// Step 3 — TestFDB_ProjectedStructColumnThroughAJoin adds two
-		// projected-EXISTS queries, one over a join and one without, and both
-		// seed decisions ACCEPT. Attributed by CONTROL, not arithmetic: this
-		// rebase landed on top of step 2, so the increment was RE-MEASURED
-		// against 586/166/210 rather than carried over from the pre-rebase base
-		// it was first taken against.
-		//   denominator 586+2 = 588, ACCEPT 166+2 = 168, no-exist-ref unchanged
-		//
-		// Step 4 — TestFDB_UnqualifiedRefBesideAProjectedExistsOverAJoin's
-		// differential. Unlike every step above, this one splits across TWO arms:
-		// most of its queries project a reference to the exists alias and ACCEPT,
-		// while its EXISTS-in-WHERE and no-join controls project none and decline
-		// as no-exist-ref. Its AMBIGUITY arms are refused with 42702 by the SQL
-		// layer and never reach a seed decision, so they add to NEITHER count —
-		// which is itself the check that they are refused where this comment
-		// claims they are.
-		//   denominator 588+14 = 602, ACCEPT 168+12 = 180, no-exist-ref 210+2 = 212
-		//
-		// Step 5 — ORDINARY CORPUS GROWTH, from the one `ORDER BY n.sk` query
-		// RFC-223 adds to nested_sort_key_fold_fdb_test.go's converted arm. It
-		// is a projected-EXISTS fold and it ACCEPTs.
-		//   denominator 602+2 = 604, ACCEPT 180+2 = 182, no-exist-ref unchanged
-		//
-		// RFC-223's FIX MOVES THIS CENSUS BY ZERO, and the wording above is
-		// deliberate because an earlier revision of this comment claimed the
-		// opposite — that the fix "reaches the seed decision on a shape that
-		// previously never got there". THAT IS FALSE. `foldStep1Seed` fires
-		// identically either side of the fix; what the fix changes is what the
-		// projection CARRIES, not whether the seed decision happens.
-		//
-		// Both controls, each unfiltered with --nocache_test_results and 5879
-		// === RUN lines, differing only in plan_visitor.go:
-		//   fix applied   -> 604/182/212, and the log carries the three
-		//                    converted-arm PASS lines, so the binary is the
-		//                    current source and not a cached pre-edit one
-		//   fix reverted  -> 604/182/212, with SIX distinct leaf failures, so
-		//                    the revert demonstrably took effect. Counted, not
-		//                    estimated — an earlier note said four and a review
-		//                    said five; `grep -E "^\s+--- FAIL"` returns seven
-		//                    lines, one of which is a PARENT of two others:
-		//                      projected_struct_root_over_a_join/ordered_by_the_nested_key
-		//                      projected_struct_root_over_a_join/unordered
-		//                      struct_root_beside_a_projected_exists_over_a_join
-		//                      unqualified_scalar_join_projectedExists
-		//                      unqualified_structRoot_join_projectedExists
-		//                      unqualified_structRoot_join_projectedExists_structLast
-		//
-		// A === RUN count is a POPULATION check, not a staleness check: two runs
-		// can both report 5879 and one still be stale. Each leg therefore carries
-		// a marker only its own build can emit. Reading a number out of a log
-		// without one is how the false claim above survived twice.
-		// and the complementary one, fix applied, deleting only that ORDER BY
-		// query, 5878 === RUN:
-		//   -> 602/180/212
-		//
-		// The false claim mattered more than the number: the gate VALUE was
-		// right either way, so CI could never have caught a comment asserting a
-		// property of the engine that the engine does not have. It survived one
-		// reading that was correct and a "correction" that was not — the
-		// correction reached for the stronger claim and cited as settled the
-		// very control that refutes it.
-		//
-		// Steps 3 and 4 were both RE-MEASURED after this branch rebased onto the
-		// step-2 head; the pre-rebase increments were taken against 572/160/202 and
-		// carrying them over would have restated a number nobody measured. Control:
-		// both files out of the package reports 586/166/210, both back in reports
-		// 602/180/212.
-		// Step 6 — RFC-226's projected-EXISTS-over-a-derived-source probe
-		// (projection_result_type_probe_fdb_test.go) adds seven queries, and the
-		// increment is ATTRIBUTED BY CONTROL rather than by arithmetic, per the
-		// paragraph above: with that one file out of the package the census is
-		// unchanged and the target PASSES at 604/182/212 (`exit=0`, unfiltered,
-		// --nocache_test_results); with it back in, 614/188/216 — so every unit of
-		// the movement is this file's.
-		//   denominator 604+10 = 614, ACCEPT 182+6 = 188, no-exist-ref 212+4 = 216
-		//
-		// The split is the check that the queries are the shapes they claim to be.
-		// Three of them project the EXISTS (the CTE arm, the derived-table arm and
-		// the base-table control) and each fires the rule under BOTH orientations,
-		// so 3x2 = 6 ACCEPTs. Two put the EXISTS in the WHERE, projecting no
-		// reference to the exists alias, so 2x2 = 4 decline as no-exist-ref. The
-		// two remaining queries are the no-EXISTS controls and reach this decision
-		// never — which is itself the check that they are the plain two-quantifier
-		// joins they are meant to be.
-		//
-		// RECONSTRUCT-NIL HOLDING AT 102, ALL BARE-QOV, IS THE LOAD-BEARING ONE.
-		// Before RFC-226's leg fix, a projection leg refused the seed and landed in
-		// the `rv=RecordConstructorValue (NOT a positional merge)` bucket; the three
-		// projected arms above would have declined there instead of accepting. That
-		// bucket is 0 and ACCEPT absorbed all six, which is the census stating the
-		// fix from the other side.
-		// RESTATED FOR THE ORDINAL MODEL, and the restatement is a measurement
-		// rather than a re-bless. Three unfiltered runs, --nocache_test_results:
-		//
-		//	                        base   HEAD   this tree
-		//	ACCEPT                   188    175    188
-		//	DECLINE correlatedStep1  108     82    138
-		//	DECLINE rv-no-exist-ref  216    184    212
-		//	DECLINE reconstruct-nil  102    114    102
-		//	  of which no-unsafe-leg   0     12      0
-		//	  of which bare-QOV      102    102    102
-		//	denominator              614    555    640
-		//
-		// "base" is 2e4c5ebec, the commit these values were written against,
-		// measured by running this same suite in a worktree at that commit: it
-		// reads 614/188/108/216/102 EXACTLY. That control is what makes every
-		// column beside it attributable.
-		//
-		// THE CORPUS DID NOT MOVE THIS. Every sqldriver test this branch adds or
-		// grows was measured in isolation and contributes ZERO firings —
-		// TestFDB_InlineValuesExactExecution (the one new file),
-		// TestStarMetadataFourWayInterleavedLegsKeepFromOrder and
-		// TestFDB_LateralUnnestChain each report a TOTAL of 0. The deviation is
-		// entirely code.
-		//
-		// THE "HEAD" COLUMN IS A DEFECT THIS TREE FIXES, recorded because
-		// restating the gate at 555 would have blessed it. At that commit
-		// planBuriedLegConcat handed each leaf leg's OWN field numbering through
-		// unchanged, so a two-leg concat's ordinals read 0,1,0,1 — not an exact
-		// type at all — and NewQuantifiedObjectValue over it failed with "record
-		// field ordinal does not equal its position". Twelve firings went to the
-		// no-unsafe-leg bucket carrying that error as their witness and THIRTEEN
-		// ACCEPTs were lost. Rebasing the leaf arms onto the `base` offset the
-		// walk already threads restores ACCEPT to 188 and reconstruct-nil to
-		// 102-all-bare-QOV, both EXACTLY the base values.
-		//
-		// WHAT REMAINS IS +26 FIRINGS AND 4 RECLASSIFICATIONS, ALL ON THE DECLINE
-		// SIDE. ACCEPT and the whole reconstruct-nil shape sub-partition are
-		// exactly the base values, so no fold was lost and no leg shape changed.
-		// The movement is correlatedStep1 108 -> 138 with rv-no-exist-ref
-		// 216 -> 212: four firings that used to reach the no-exist-ref test now
-		// short-circuit at the correlated wall, and twenty-six are new.
-		//
-		// correlatedStep1 is decided BEFORE any seed work, purely from leg
-		// dependency topology (legReferencesAny over the other leg's provided
-		// aliases, plus null-on-empty). Exact-type identity dropping record NAMES
-		// changes which members the memo ADMITS, so more (plan, orientation) pairs
-		// reach this rule and more of them read as correlated. That is the same
-		// mechanism the order_by_elimination entry in TODO.md records for its own
-		// movement, and it is why the wall grows while the accepted population
-		// does not.
-		Denominator:     n(640),
-		Accept:          n(188),
-		CorrelatedStep1: n(138),
-		NoExistRef:      n(212),
-		ReconstructNil:  n(102),
-		// The residue is now ENTIRELY bare-QOV, and the two entries below say so
-		// separately on purpose. A single "reconstruct-nil == 94" would be
-		// satisfied by any 94, including a mix that had let merge legs back in.
-		ReconstructNilBareQOV: n(102),
-		ReconstructNilMerge:   n(0),
-		// A FLOOR, not an equality, and the only one in this set. It floors the
-		// DENOMINATOR of the `correlatedStep1 && ordinalWindows != nil`
-		// reachability measurement — the wall any conversion of the reconstruct-nil
-		// residue contacts.
-		//
-		// MEASURED, verbatim, at the three points the equality table above
-		// records — base 2e4c5ebec, this branch's HEAD commit, this tree:
-		//   correlatedStep1 firings WITH a merged layout     108 of 108
-		//   correlatedStep1 firings WITH a merged layout      82 of  82
-		//   correlatedStep1 firings WITH a merged layout     138 of 138
-		// The conjunction is UNIVERSAL on that arm at every one of them, not
-		// occasional, and it stayed universal across a change that moved the
-		// denominator by a third in both directions — which is a stronger reading
-		// of "universal" than any single run gives. An earlier version of this
-		// comment called the numerator "a measured zero"; that number was drafted
-		// before the counter had ever run and was wrong.
-		//
-		// The NUMERATOR stays ungated: at 100% the only movement available is a
-		// DROP, and a drop is a finding to read (the corpus moved, or the layout
-		// stopped being derived) rather than a regression to block. The denominator
-		// going to zero is the thing that must not happen silently, because then
-		// the numerator measures an absence of traffic while reading as an absence
-		// of the shape. Floored ~7x below the measurement, in family with the other
-		// per-site floors here (2000 vs 25406, 150 vs 1754). The floor is NOT
-		// re-tightened as the denominator moves: it detects the arm going dark,
-		// and a floor that tracks the measurement fails on churn instead.
-		CorrelatedStep1FiringsFloor: n(20),
-	}
-}()
-
-// assertFoldStep1SeedCensus checks the outcome census, dropping the population
-// EQUALITIES when -test.run narrows the corpus — the same split its siblings
-// make for their floors, and for the same reason: a filtered run measures a
-// subset, and a subset cannot satisfy an equality stated over the whole.
-//
-// The structural checks — the independent-denominator partition, the
-// shape-sub-partition, and the both-legs-unsafe zero — still run, because those
-// hold over ANY population.
-func assertFoldStep1SeedCensus(w io.Writer) bool {
-	gates := &foldStep1SeedGates
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "foldStep1Seed outcome census: population EQUALITIES not checked "+
-			"(-test.run=%q narrowed the corpus). The independent-denominator partition, the "+
-			"refused-leg sub-partition and the both-legs-unsafe zero still run over whatever "+
-			"population this filter reached.\n", f.Value.String())
-		gates = nil
-	}
-	return cascades.AssertFoldStep1SeedCensus(w, gates)
-}
-
-// The merged-leg binding census's READ population is RETIRED, and its guard has
-// inverted with it.
-//
-// It used to carry a FLOOR of one, as the positive control for a census whose
-// headline number is a zero: the corpus produced three reads over a full run,
-// all on the alias the correlated-EXISTS inner-shadow shape correlates to, so a
-// run reporting NONE was reporting a broken read counter rather than a quiet
-// corpus — and every zero asserted against a dead counter is vacuous.
-//
-// Those reads are gone. The ordinal model resolves a leg reference by baked
-// slot, so nothing consults a binder-produced window at all: the census now
-// reports fifteen thousand windows bound and zero read. A floor of one is
-// unsatisfiable against that, and lowering it to zero would leave the retirement
-// unwatched — so the direction flips and a READ is the alarm.
-//
-// The binder still runs, and the windows it builds are still correct as far as
-// anything can tell; what changed is that no consumer is left. That is why the
-// alarm is worth having: a read reappearing means the binder has acquired a
-// load-bearing consumer, and its shadowing and first-claim-wins semantics —
-// justified today only by being unobservable — would need justifying against a
-// real one.
-
-// assertMergedLegBindingCensus checks the merged-leg binding census: the read
-// floor, and the coupled criterion that decides whether a merged-shape read is
-// an alarm or CQ-53 phase 2 working.
-//
-// It runs HERE, beside the bakeability gate, because the criterion needs BOTH
-// censuses in view: the merged-leg reads (executor side) and the leg-local bake
-// count (planner side). Only after m.Run() is either population complete.
-func assertMergedLegBindingCensus(w io.Writer) bool {
-	_, reads := executor.MergedLegBindingCensus()
-	failed := false
-
-	var totalReads int
-	for _, n := range reads {
-		totalReads += n
-	}
-
-	// The floor describes the WHOLE suite, so it drops under a -test.run filter
-	// exactly as the bakeability floors do — a filter selecting tests that never
-	// unnest a leg reaches zero reads honestly.
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "merged-leg binding census: read floor NOT checked "+
-			"(-test.run=%q narrowed the corpus; the floor describes the whole suite). "+
-			"Reads reached under this filter: %d. The activation criterion below still "+
-			"runs, over that population — and a filter that reaches zero reads makes "+
-			"it hold VACUOUSLY, as does one that drops the redundancy pin while "+
-			"keeping its reader.\n",
-			f.Value.String(), totalReads)
-	} else if totalReads != 0 {
-		failed = true
-		fmt.Fprintf(w, "MERGED-LEG BINDING CENSUS FAIL: %d binder-produced window(s) were READ "+
-			"over the whole suite, want 0 — the read channel was RETIRED and this is its\n"+
-			"  revival alarm.\n"+
-			"  This population used to be FLOORED at one, as a positive control: the\n"+
-			"  corpus produced three reads a run, so a zero meant a dead counter rather\n"+
-			"  than a quiet corpus. The ordinal model resolves a leg reference by baked\n"+
-			"  SLOT, so nothing consults a binder window any more and the floor became\n"+
-			"  unsatisfiable.\n"+
-			"  WHAT A NON-ZERO MEANS: the binder has acquired a consumer again. That is\n"+
-			"  not automatically a bug, but it is a CHANGE OF FINDING — see the\n"+
-			"  activation criterion below, which says what each way of getting here\n"+
-			"  needs. Establish which reader it is before touching this check.\n"+
-			"  census: %s\n",
-			totalReads, executor.FormatMergedLegBindingCensus())
-	}
-
-	// THE ACTIVATION CRITERION.
-	//
-	//   a read on a MULTI-LEG merged row, outside a reader shape PROVEN redundant
-	//   in this run, implies LegLocalBakeCensus.Baked > 0.
-	//
-	// A merged-row read is not by itself a defect: it is what CQ-53 phase 2
-	// produces once the leg-local bake returns with CQ-63 and starts emitting reads
-	// that keep their own leg alias. What is a defect is such a read with NO
-	// producer — the binder acquiring a load-bearing consumer while its shadowing
-	// and first-claim-wins semantics are still justified only by consistency with
-	// the leg table's other readers.
-	//
-	// "Merged row" means the row bound SIBLING legs, and it is stamped by the
-	// binder (executor.MergedRowLegReads), not reconstructed here from the bind
-	// tallies. Reconstruction was tried and is unsound: leg and outer ALIASES
-	// collide across queries — the corpus binds twenty unrelated legs under the
-	// outer name `X` — so an alias-keyed reconstruction attributes one query's
-	// merged shape to another query's read. Measured: it did.
-	//
-	// THE EXCLUSION IS A REGISTRATION, NOT A LIST — and TODAY IT IS EMPTY.
-	//
-	// The corpus used to have one such reader (the correlated-EXISTS inner-shadow
-	// shape), excused because a pin ran the same query down BOTH resolution routes
-	// in this process and got the same rows. The ordinal model removed the READS,
-	// so nothing registers and nothing needs excusing: the read alarm above is now
-	// an outright zero. TestFDB_MergedLegBinding_NothingReadsTheBinder asserts
-	// that shape still binds and is still not read, so the zero is over a shape
-	// that ran rather than one the suite stopped planning.
-	//
-	// The registration path stays because it is the RESPONSE to a revival, not
-	// because anything uses it: a returning reader has to be proven redundant per
-	// (alias, merged-row layout) before it may be excused, and a proof that stops
-	// holding leaves the registry empty and turns its reads red. There is no
-	// wording here that can keep an exclusion once its proof stops holding.
-	mergedReads, mergedNames, excusedReads, excusedNames := partitionMergedRowReads(executor.MergedRowLegReads(), executor.RedundantMergedLegReaders())
-	if excusedReads > 0 {
-		fmt.Fprintf(w, "merged-leg binding census: %d merged-row read(s) excused as "+
-			"PROVEN REDUNDANT this run: %s\n",
-			excusedReads, strings.Join(excusedNames, ", "))
-	}
-	if mergedReads > 0 {
-		c, _ := cascades.LegLocalBakeCensus()
-		if c.Baked > 0 {
-			fmt.Fprintf(w, "merged-leg binding census: %d unexcused read(s) on merged rows "+
-				"(%s) with LegLocalBakeCensus.Baked=%d — a producer exists, so this is "+
-				"CQ-53 phase 2 working, not a change of finding.\n",
-				mergedReads, strings.Join(mergedNames, ", "), c.Baked)
-		} else {
-			failed = true
-			fmt.Fprintf(w, "MERGED-LEG BINDING CENSUS FAIL: %d read(s) resolved to a "+
-				"binder-produced window on a MULTI-LEG merged row (%s) while the "+
-				"leg-local bake produced NOTHING (Baked=0), and no proof in this run "+
-				"showed them redundant.\n\n"+
-				"  This is a CHANGE OF FINDING, not necessarily a bug. The binder's\n"+
-				"  planner-side producer is rebaseOuterLegValue's PASS-THROUGH — the arm\n"+
-				"  that hands a leg-correlated read back on its own leg correlation —\n"+
-				"  and it is measured at 162 of 162 firings on this corpus. Baked = 0\n"+
-				"  therefore means that arm stopped producing, so a read appearing\n"+
-				"  anyway arrived by some OTHER route.\n\n"+
-				"  THREE WAYS TO GET HERE, and they need different responses:\n"+
-				"    - a NEW reader shape. Establish whether its two resolution routes\n"+
-				"      agree — run the query with the window serving the read and again\n"+
-				"      with EvaluationContext.WithMergedLegReadBypass declining it, and\n"+
-				"      compare rows — then register the proof. If they do not agree, the\n"+
-				"      binder has become load-bearing — see below.\n"+
-				"    - an ALREADY-EXCUSED alias read out of a DIFFERENT merged row.\n"+
-				"      The listed shape will share its alias with an excused one and\n"+
-				"      differ in the layout. This is a new reader wearing a familiar\n"+
-				"      name; treat it as the first case. Do NOT widen the exclusion to\n"+
-				"      the bare alias — that is the unsound key this gate moved off.\n"+
-				"    - the KNOWN reader losing its proof, because that test failed or\n"+
-				"      stopped running. Fix the proof; do not re-add the exclusion here.\n\n"+
-				"  A LOAD-BEARING reader changes three things at once:\n"+
-				"    - the SHADOWING semantics in DIVERGENCES.md (a leg shadows an\n"+
-				"      enclosing binding for the duration of the inner) stop being\n"+
-				"      unobservable and need justifying against this actual consumer;\n"+
-				"    - the FIRST-CLAIM-WINS precedence likewise; and\n"+
-				"    - the binder's correctness becomes load-bearing, so the wrong-window\n"+
-				"      mutation that is green today must be made to fail.\n\n"+
-				"  census: %s\n",
-				mergedReads, strings.Join(mergedNames, ", "), executor.FormatMergedLegBindingCensus())
-		}
-	}
-	return failed
-}
-
-// partitionMergedRowReads splits the multi-leg read population into the reads a
-// proof in this run excused and the reads it did not, and renders each side for
-// the gate's report.
-//
-// It is a PURE function over the two populations, separate from the gate that
-// consults the process-global census, so the one thing that decides whether the
-// alarm fires can be tested against a synthetic population — including the
-// population no corpus produces on demand: a SECOND reader of an already-excused
-// alias, out of a merged row the proof never ran.
-//
-// The excusal is keyed on the read's full identity, alias AND merged-row shape.
-// Keying it on the alias alone was the original form and it is unsound in the
-// direction that matters: it hands one query's proof the power to excuse every
-// future read of a name as common as `ST`. That is the same alias-collision
-// argument this census already accepted for CLASSIFYING reads — the corpus binds
-// twenty unrelated legs under the outer name `X` — applied to excusing them.
-func partitionMergedRowReads(
-	reads map[executor.MergedRowRead]int,
-	redundant map[executor.MergedRowRead]string,
-) (unexcusedReads int, unexcusedNames []string, excusedReads int, excusedNames []string) {
-	for read, n := range reads {
-		if n <= 0 {
-			continue
-		}
-		if why, proven := redundant[read]; proven {
-			excusedReads += n
-			excusedNames = append(excusedNames,
-				fmt.Sprintf("%s x%d out of %s (proven by %s)", read.Alias, n, read.Shape, why))
-			continue
-		}
-		unexcusedReads += n
-		unexcusedNames = append(unexcusedNames,
-			fmt.Sprintf("%s x%d out of %s", read.Alias, n, read.Shape))
-	}
-	sort.Strings(unexcusedNames)
-	sort.Strings(excusedNames)
-	return unexcusedReads, unexcusedNames, excusedReads, excusedNames
-}
-
-// mergedLegReadIsAlarm is the per-shape form of the coupled criterion above, for
-// a test that knows its own leg aliases.
-//
-// A bare `reads == 0` assertion was the previous form, and it is wrong in one
-// direction that matters: the day the leg-local bake returns with CQ-63, reads on
-// these shapes become the EXPECTED result and a bare zero turns a working phase 2
-// into a red suite. The alarm is a read with no producer, so the producer is what
-// it is coupled to.
-func mergedLegReadIsAlarm(reads int) bool {
-	if reads == 0 {
-		return false
-	}
-	c, _ := cascades.LegLocalBakeCensus()
-	return c.Baked == 0
-}
-
-// legLocalBakeFloors is the bakeability census's whole-suite population floor.
-//
-// Set an order of magnitude below the measured populations for the reason the
-// leg-identity floors state at length: these are RULE FIRINGS, they vary run to
-// run with memo exploration order, and the corpus churns with unrelated work.
-// The floor detects a site going DARK, not drift.
-//
-// Both totals are floored because both are denominators. UnderivableLegs,
-// UntypedLeg and DisagreeingLegs are asserted at ZERO by the census itself, and a
-// zero is only a proof over a population — a floor on one denominator and not the
-// other leaves half the arithmetic able to go vacuous, which is the state in
-// which all three zeros read as an achievement while measuring nothing.
-//
-// Measured on this tree: Total 126 (minted 126 = untypedLeg 0 + columnAbsent 0 +
-// layoutAvailable 126), LegDerivations 848 (flowed 848 + underivable 0 +
-// disagreement 0). Before the flowed value carried its type the same corpus
-// measured untypedLeg 92 / layoutAvailable 34 and underivable 82 out of ~846 —
-// the 92 reads that had no honest alternative to the qualified name — and a
-// SUBORDINATE physical-plan walk answered for ~108 legs the quantifier could not.
-// It answered for none once the flowed value was typed, and has since been
-// deleted; the walkOnly bucket went with it rather than staying as a zero no site
-// can increment. The exact historical split is not reproducible run to run —
-// these are rule FIRINGS and the memo's exploration order varies — so the figures
-// above are the shape of the residue, not a checksum.
-//
-// With one authority left, a leg the quantifier stops stating has no second
-// opinion to absorb it: it lands in UnderivableLegs, which is asserted at zero.
-// That is what re-arms suspicion now.
-var legLocalBakeFloors = cascades.LegLocalBakeFloors{
-	Total: 12,
-	// SiteExists floors the EXISTS lowering specifically. Total alone would let
-	// the whole population migrate to another entry point with the gate green,
-	// and the SiteBuried zero beside it would then be passing vacuously — the
-	// buried site reaching nothing looks identical to the buried site not being
-	// reached at all. Measured 174; floored an order of magnitude below, because
-	// what a floor detects here is COLLAPSE, not drift.
-	SiteExists:     12,
-	LegDerivations: 80,
-	MergeSlots:     1800,
-	// RFC-200 gate (d), ON — and REPORTED AS VACUOUS, which is a finding rather
-	// than a formality.
-	//
-	// The gate asserts that no leg-local pass-through read survives under a firing
-	// whose seed reconstruction refused a POSITIONAL-MERGE leg. RFC-200 §Gates
-	// says "that subset size is unknown today; 3a produces it, and this gate
-	// asserts its post-change value is 0", which reads as a number expected to
-	// FALL to zero.
-	//
-	// MEASURED, 3a: it was ALREADY zero. All 174 leg-local reads sit under firings
-	// whose refused leg is a BARE QOV — the larger residue RFC-200 explicitly
-	// fences (§Residues) — and NONE under a positional-merge firing. Post-3d the
-	// count is still 174 and still all bare-QOV.
-	//
-	// So the honest statement of what the nested window buys on THIS axis is:
-	// nothing. It converts 60 firings from decline to accept (gate (c), measured
-	// exactly), and it removes zero pass-through reads, so the DIVERGENCES
-	// retirement condition for executor.bindMergedOuterLegs does not advance. The
-	// RFC already says the retirement is not completed here; the correction is
-	// that it is not ADVANCED here either, on the read axis.
-	//
-	// The gate stays wired for the reason this whole census family exists: a zero
-	// that is true because a population is empty prints identically to a zero that
-	// is true because a mechanism works. If a later change routes a merge firing's
-	// reads back onto the pass-through, this is what says so.
-	Step1ReconstructNilMustBeZero: true,
 }
 
 // legColumnProvenanceFloors is the minimum population the leg-column provenance
@@ -1021,19 +376,18 @@ var dottedLegQualifierFloors = values.DottedLegQualifierFloors{}
 // on the thing it is watching for.
 var seedWindowReaderFloors = func() values.SeedWindowReaderFloors {
 	var f values.SeedWindowReaderFloors
-	// THIS ONE IS NOT AN ORDER OF MAGNITUDE BELOW, and the exception is
-	// deliberate. RFC-200 §6 predicts explicitly that existentialRebase GROWS
-	// once the nested acceptance lands, because the newly-accepted firings'
-	// existPreds rebase through it. Measured: 962 before activation, 1086 after —
-	// the prediction holds, and it is the only evidence that the 60 converted
-	// firings reach a reader at all.
+	// THIS ONE USED TO BE A GROWTH PIN, and it is now an ordinary collapse
+	// guard. RFC-200 §6 predicted existentialRebase would GROW once nested
+	// acceptance landed (measured 962 → 1086), and the floor sat at 1000 — ABOVE
+	// the pre-activation reading — so it pinned the growth rather than merely
+	// detecting collapse.
 	//
-	// Floored at 1000, ABOVE the pre-activation 962, so the floor pins that
-	// growth rather than merely detecting collapse. If the converted firings stop
-	// reaching this reader the count falls back toward 962 and this reds — where
-	// an order-of-magnitude floor would have sat green through the entire
-	// regression.
-	f.Reads[values.SeedWindowSiteExistentialRebase] = 1000   // measured 1086 (962 pre-activation)
+	// Those firings were the three-quantifier NLJ arm's, and the arm is deleted
+	// (RFC-235). The reader is still live on the surviving buried-leg path and
+	// reports 288. A growth pin over a population that no longer exists is
+	// unsatisfiable, so it is RECONCILED with the new expected value rather than
+	// relaxed toward a run: back to the order-of-magnitude rule its siblings use.
+	f.Reads[values.SeedWindowSiteExistentialRebase] = 28     // measured 288 (was 1086 with the retired arm)
 	f.Reads[values.SeedWindowSiteBoxLegRef] = 9              // measured 92
 	f.Reads[values.SeedWindowSiteBoxSurvivorQOV] = 18        // measured 184
 	f.Reads[values.SeedWindowSiteBoxSurvivorCorrelation] = 1 // measured 2 — no magnitude to drop to
@@ -1249,35 +603,6 @@ func assertQualifierRecoveryCensus(w io.Writer) bool {
 // population.
 func assertDottedLegQualifierCensus(w io.Writer) bool {
 	return values.AssertDottedLegQualifierCensus(w, &dottedLegQualifierFloors)
-}
-
-// assertLegLocalBakeCensus checks the bakeability census, dropping the
-// population floors when -test.run narrows the corpus.
-//
-// The partition checks still RUN under a filter, but the honest statement is
-// that they are only as strong as the population reached: this census is driven
-// from inside a Cascades rule, and a filter selecting tests that never plan a
-// multi-leg join leaves every counter at zero, where all three partitions hold
-// as 0 == 0. That was measured, not assumed — filtering to the merged-leg
-// binding test alone reports `total 0 … legDerivations 0`.
-//
-// So a narrowed run announces the population it actually checked rather than
-// claiming the partitions "hold over any population". A gate that reports itself
-// green while describing an empty corpus is the exact vacuity this census and
-// its sibling were rebuilt to stop.
-func assertLegLocalBakeCensus(w io.Writer) bool {
-	floors := &legLocalBakeFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		c, _ := cascades.LegLocalBakeCensus()
-		fmt.Fprintf(w, "leg-local bake census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus; the floors describe the whole suite). "+
-			"The three PARTITION checks still run, over the population this filter "+
-			"actually reached: total %d, legDerivations %d. At zero they hold "+
-			"VACUOUSLY — only the unfiltered suite makes them a proof.\n",
-			f.Value.String(), c.Total, c.LegDerivations)
-		floors = nil
-	}
-	return cascades.AssertLegLocalBakeCensus(w, floors)
 }
 
 // legIdentityFloors is the minimum population each site must report over the
@@ -10699,60 +10024,20 @@ func TestFDB_RFC145_InfoSchemaParitySweep(t *testing.T) {
 //
 // ON THE CEILING, stated precisely because the loose phrasing gives away the
 // stronger claim: DeclinedCeiling is not "200, unchanged". Master aba271454 has
-// NO DeclinedCeiling and NO MatchedFloor — the OrientationGateFloors struct
-// there carries only Calls, MapCountDiffers and UnverifiableCeiling, and the
-// floors var sets only the last. Both bounds are INTRODUCED here, at 200 against
-// a measured 68, and not moved by any later fold. A population that had no bound
-// at all now has one, which is a stronger safety statement than a bound that
-// stayed put — and a bound moved to accommodate the movement it was installed to
-// detect would be neither.
-var orientationGateFloors = cascades.OrientationGateFloors{
-	Calls:           40, // measured 506
-	MapCountDiffers: 7,  // measured 92
-	// A CEILING, calibrated with headroom for corpus growth. Unverifiable is the
-	// SECOND fail-open and its dangerous direction is GROWTH, so unlike the
-	// floors here it is capped.
-	UnverifiableCeiling: 200, // measured 104
-	// The two DECIDING arms, which had no bound in either direction until
-	// RFC-226 — so the gate could have gone from proving 232 layouts to proving
-	// none, or from 68 refusals to refusing everything, and every number above
-	// would still have been satisfied.
-	MatchedFloor:    40,  // measured 232 — collapse means the gate proves nothing
-	DeclinedCeiling: 200, // measured 68 — growth means queries lose their plans
-}
-
-// assertOrientationGateCensus checks the gate census, dropping the population
-// floors when -test.run narrows the corpus — the same split its siblings make.
-// The partitions still run: they hold over any population.
-func assertOrientationGateCensus(w io.Writer) bool {
-	floors := &orientationGateFloors
-	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "orientation gate census: population floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The partitions still run over whatever "+
-			"population this filter reached.\n", f.Value.String())
-		floors = nil
-	}
-	return cascades.AssertOrientationGateCensus(w, floors)
-}
-
 // flatMapProducerFloors gates the FlatMap result-value producer census.
 //
 // The floors are ORDER-OF-MAGNITUDE below the measurement, like every other
 // per-site floor on this path: they exist to catch a site going dark, not to
 // re-bless a corpus count that moves whenever a test file is added.
 //
-// The census's load-bearing assertion is NOT floored and is not listed here —
-// the untyped-QOV count at buildCorrelatedFlatMapPlan, the site that produces
-// the reconstruct-nil residue, is checked at zero unconditionally inside
-// cascades.AssertFlatMapProducerCensus. That zero is the measured refutation of
-// the "the residue is an untyped-QOV typing gap" reading: the declined legs
-// carry real RecordTypes (arity 1-3 on the FlatMap legs and 1-4 counting the
-// NestedLoopJoin leg — both witnessed in the outcome census beside this one),
-// and the refusal is on SHAPE. A configurable refutation is not one.
+// The FlatMap PRODUCER census that used to sit beside this one is retired with
+// the three-quantifier NLJ arm it measured (RFC-235): its whole subject was the
+// declined-leg residue that arm produced, and there is no residue without the
+// arm. What it established still holds and is recorded in RFC-235 rather than
+// here — the refusal was on SHAPE, not on missing types.
 //
-// The OTHER three sites do emit untyped QOVs, in bulk, and that is a separate
-// live Java divergence rather than an assertion failure — floored below so it
-// stays counted. See AssertFlatMapProducerCensus for why a floor and not a zero.
+// The untyped-QOV mints those sites emit are a SEPARATE live Java divergence
+// (CQ-96) and are floored below so they stay counted.
 //
 // TWO OF THOSE THREE ARE COURIERS, NOT AUTHORS, and the mint census beside this
 // one is what says so: implementExistentialSelect and yieldExistsFlatMap flow
@@ -10760,29 +10045,6 @@ func assertOrientationGateCensus(w io.Writer) bool {
 // ImplementNestedLoopJoinRule.java:187,201,214), and 1086 of their untyped
 // traffic is minted by the SQL translator. These floors keep the traffic
 // counted; selectResultMintFloors is where the divergence itself is booked.
-var flatMapProducerFloors = func() cascades.FlatMapProducerFloors {
-	var f cascades.FlatMapProducerFloors
-	// Measured over the whole real-FDB corpus, one run:
-	//   buildCorrelatedFlatMapPlan          calls 46223 | typedQOV  466 | UNTYPED 0
-	//   implementExistentialSelect          calls  1589 | typedQOV 1417 | UNTYPED 0
-	//   implementJoinWithExistential(MINT)  calls   568 | typedQOV  278 | UNTYPED 0
-	//   yieldExistsFlatMap                  calls   398 | typedQOV  347 | UNTYPED 0
-	// Floored an order of magnitude below, like every other per-site floor here:
-	// these catch a site going dark, not corpus churn — and "churn" here includes
-	// RUN-TO-RUN variance, not only added tests: consecutive full-suite runs have
-	// measured buildCorrelatedFlatMapPlan at 25406, 25048 and 46223. These are
-	// rule FIRINGS and the memo explores a rule a different number of times per
-	// query. The outcome census's equalities did not move across those runs; only
-	// the firing totals did.
-	//
-	// THE UNTYPED FLOORS ARE GONE. They floored a divergence — an untyped QOV,
-	// which Java cannot build — at 150/20/20 to keep it counted while it stood.
-	// The exact-QOV constructor closed it: untyped is now 0 at every site, which
-	// makes those floors unsatisfiable, and the census asserts the zero
-	// unconditionally with the alarm pointing at revival.
-	f.Calls = [4]int{2000, 150, 40, 40}
-	return f
-}()
 
 // selectResultMintFloors gates the select result-value MINT census.
 //
@@ -10834,13 +10096,23 @@ func assertSelectResultMintCensus(w io.Writer) bool {
 	return values.AssertSelectResultMintCensus(w, floors)
 }
 
-func assertFlatMapProducerCensus(w io.Writer) bool {
-	floors := &flatMapProducerFloors
+// mergeSlotTypingFloor is the measured population of positional-merge slots the
+// real-FDB corpus builds (22,354 on the run this was derived from; the total
+// moves with rule firings, ~22.4k), floored well below it so an ordinary corpus
+// edit does not trip the guard while a collapse still does.
+const mergeSlotTypingFloor = 2000
+
+// assertMergeSlotTypingCensus checks the merge-slot typing census against its
+// partition identity, its floor, and its hard zero.
+//
+// It is dropped under -test.run for the same reason its siblings are: a narrowed
+// corpus measures a subset, and a subset cannot satisfy a whole-suite floor.
+func assertMergeSlotTypingCensus(w io.Writer) bool {
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
-		fmt.Fprintf(w, "FlatMap producer census: per-site floors NOT checked "+
-			"(-test.run=%q narrowed the corpus). The UNTYPED-QOV zero still runs — it "+
-			"holds over ANY population.\n", f.Value.String())
-		floors = nil
+		fmt.Fprintf(w, "merge-slot typing census: floor NOT checked (-test.run=%q narrowed the "+
+			"corpus). The partition identity and the Untyped zero still run — both hold over any "+
+			"population.\n", f.Value.String())
+		return cascades.AssertMergeSlotTypingCensus(w, cascades.MergeSlotTypingCensus(), 0)
 	}
-	return cascades.AssertFlatMapProducerCensus(w, floors)
+	return cascades.AssertMergeSlotTypingCensus(w, cascades.MergeSlotTypingCensus(), mergeSlotTypingFloor)
 }

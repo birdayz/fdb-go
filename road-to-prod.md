@@ -317,16 +317,18 @@ measurement. In summary:
 |---|---|
 | CQ-52 | **STOP — owner behaviour decision.** Parsed channels are done; residual is the star-body leg-addressability question at `cascades_translator.go:6218-6237`, plus structural mints that correctly carry no segments. Its two "migratable" producers are not: their names come from `buildPostAggregateProjection`, where a dot is deliberately not a qualifier |
 | CQ-51 | **STOP — Graefe-gated RFC**, but the diagnosis is corrected and the RFC is now a PORT, not a design. Java DOES separate "constraint widened" from "re-push required" (`CascadesRule.java:66-77`, `CascadesPlanner.java:891-908`, `ConstraintsMap.java:246-261`), and Go already contains half of it: `expressions/constraints_map.go:114` `IsExploredForAttributes` is a faithful port whose only callers are its own tests. `ConstraintDependencies` appears nowhere in `pkg/` |
-| CQ-79 | **BLOCKED, and the `S/M` sizing is refuted.** The ordinal twin already exists (`cascades_translator.go:3849`) and is already taken wherever the seed is windowed; every surviving call of the name mint sits in the `!seedWindowed` arm, whose merged row is name-keyed BY CONSTRUCTION. Converting the mint alone strands the read (`:3736-3738`). The work is lifting `unnestExistsSeedSafe`'s scope gate, which `:3841-3843` couples to the executor's below-FOD hoist — the SAME `bindMergedOuterLegs` widening CQ-68 owns. CQ-79 and CQ-68 are two axes of one piece of work |
-| CQ-68 | **STOP — Graefe-gated RFC.** Premise strengthens: the count is **102**, not 94 (`sqldriver/embedded_fdb_test.go:253-266`; denominator 572, ACCEPT 160, merge still hard 0). But "type it at the FlatMap" is the wrong port — Java's `RecordQueryFlatMapPlan` also flows `selectExpression.getResultValue()` verbatim (`ImplementNestedLoopJoinRule.java:187,201,214`); the typing happens upstream at `GraphExpansion.java:401`, and is structural (`QuantifiedObjectValue.of` has no untyped overload) |
+| CQ-79 | **BLOCKED, and the `S/M` sizing is refuted.** The ordinal twin already exists (`cascades_translator.go:3849`) and is already taken wherever the seed is windowed; every surviving call of the name mint sits in the `!seedWindowed` arm, whose merged row is name-keyed BY CONSTRUCTION. Converting the mint alone strands the read (`:3736-3738`). The work is lifting `unnestExistsSeedSafe`'s scope gate, which `:3841-3843` couples to the executor's below-FOD hoist — the SAME `bindMergedOuterLegs` widening CQ-68 owned. **`bindMergedOuterLegs` is deleted (RFC-235)**, so that coupling is gone and CQ-79 must be re-scoped against the ordinal path before it can be sized |
+| CQ-68 | **STOP — Graefe-gated RFC.** Premise strengthens: the count was **102**, not 94 (denominator 572, ACCEPT 160, merge hard 0) — measured on an instrument RFC-235 has since retired along with the arm it counted, so these figures are history, not a current reading. But "type it at the FlatMap" is the wrong port — Java's `RecordQueryFlatMapPlan` also flows `selectExpression.getResultValue()` verbatim (`ImplementNestedLoopJoinRule.java:187,201,214`); the typing happens upstream at `GraphExpansion.java:401`, and is structural (`QuantifiedObjectValue.of` has no untyped overload) |
 
 **One defect from this pass IS fixed**, because it would have made CQ-68 unfalsifiable: the census
 witness that separates typed from untyped result values printed `typed=%t` from `Typ != nil`, which
 no constructible QOV can make false (`NewQuantifiedObjectValue` stamps `UnknownType`;
 `NewQuantifiedObjectValueOfType` degrades nil to it; `UnknownType` is a non-nil `*PrimitiveType`).
 It reported `typed=true` for all 102, so a typing sweep would have read as complete on the day it
-started with the whole population untouched. Now `quantifiedObjectValueIsTyped`, pinned in both
-directions by `TestFoldStep1Census_BareQOVWitnessReportsAdmittedExactTypes`.
+started with the whole population untouched. It was fixed to `quantifiedObjectValueIsTyped` and
+pinned in both directions. **That census, its witness and its pin are now RETIRED** (RFC-235): the
+three-quantifier NLJ arm they measured no longer exists, so the 102 below has no live instrument
+behind it and CQ-68 is moot as stated rather than open.
 
 ## Watch-list — pinned divergences a prod user must be told about
 
