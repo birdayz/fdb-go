@@ -286,6 +286,7 @@ go_test(
         "online_indexer_throttle_defaults_test.go",
         "order_predicate_integration_test.go",
         "orelse_continuation_test.go",
+        "per_type_size_estimate_probe_test.go",
         "permuted_min_max_index_test.go",
         "pk_dedup_test.go",
         "primary_key_translation_test.go",
