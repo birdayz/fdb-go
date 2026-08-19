@@ -2965,10 +2965,11 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryCoveringIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#7
 sql:   UPDATE rp SET tier = 99 WHERE region = 'eu'
-plan:  Update(RP, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, *])))
+plan:  Update(RP, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, *] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#8
 sql:   SELECT id, tier FROM rp WHERE region = 'eu' ORDER BY id
 plan:  Project([_current.ID#0, _current.TIER#3], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, *])))
@@ -10663,10 +10664,11 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === multi_feature_integer.yaml#7
 sql:   UPDATE products SET price = price * 2 WHERE category = 1
-plan:  Update(PRODUCTS, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_CAT, [=])))
+plan:  Update(PRODUCTS, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_CAT, [=] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === multi_feature_integer.yaml#8
 sql:   SELECT name, price FROM products WHERE category = 1 ORDER BY name
 plan:  Project([_current.NAME#3, _current.PRICE#2], InMemorySort([_current.NAME#3 ASC], IndexScan(IDX_CAT, [=])))
@@ -14725,10 +14727,11 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#9
 sql:   UPDATE t SET v = 99 WHERE status = 'deleted'
-plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_STATUS, [=])))
+plan:  Update(T, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_STATUS, [=] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#10
 sql:   SELECT id, v FROM t WHERE status = 'deleted'
 plan:  Project([_current.ID#0, _current.V#2], IndexScan(IDX_STATUS, [=]))
@@ -14784,10 +14787,11 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#20
 sql:   UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan = 'pro'
-plan:  Update(T2, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, =])))
+plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, =] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#21
 sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
 plan:  Project([_current.ID#0, _current.AMOUNT#3], IndexScan(IDX_REGION_PLAN, [=, =]))
@@ -14886,10 +14890,11 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#37
 sql:   UPDATE t SET status = 'bulk' WHERE v >= 30
-plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_V, [<>])))
+plan:  Update(T, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_V, [<>] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#38
 sql:   SELECT id, status FROM t WHERE v >= 30 ORDER BY id
 plan:  Project([_current.ID#0, _current.STATUS#1], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_V, [<>])))
@@ -14961,10 +14966,11 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === secondary_index_pushdown.yaml#51
 sql:   UPDATE t2 SET amount = 777 WHERE region = 'us' AND plan >= 'b'
-plan:  Update(T2, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, <>])))
+plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#52
 sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan >= 'b' ORDER BY id
 plan:  Project([_current.ID#0, _current.AMOUNT#3], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
@@ -15022,10 +15028,11 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#62
 sql:   UPDATE t2 SET amount = 555 WHERE region < 'eu'
-plan:  Update(T2, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [<>, *])))
+plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [<>, *] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#63
 sql:   SELECT id, amount FROM t2 WHERE region < 'eu'
 plan:  Project([_current.ID#0, _current.AMOUNT#3], IndexScan(IDX_REGION_PLAN, [<>, *]))

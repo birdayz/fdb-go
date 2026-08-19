@@ -13,29 +13,37 @@ import (
 //
 // Pattern:
 //
-//	Distinct(Fetch(inner))  →  Fetch(Distinct(inner))
+//	PrimaryKeyDistinct(Fetch(inner))  →  Fetch(PrimaryKeyDistinct(inner))
 //
-// The distinct can operate on partial records (index entries carry the
-// PK needed for deduplication), so pushing it below the fetch avoids
-// fetching duplicates.
+// The dedup key must be the PRIMARY KEY for this to be sound, and that is why
+// the rule matches the primary-key node and not the full-row one. Below the
+// fetch the rows are PARTIAL records. A fetch is 1:1 from record to row but not
+// injective over partial rows: two partial rows that differ can map to the SAME
+// record, which is exactly what happens when the inner is a union of covering
+// scans over DIFFERENT indexes — one contributes (a, pk), the other (b, a, pk).
+// A full-row dedup then collapses nothing and the record is fetched once per
+// index that produced it, while the same dedup ABOVE the fetch (over whole
+// records) would have collapsed them. The primary key is carried identically by
+// every partial row for a record, so the primary-key dedup is unaffected by
+// where it sits.
 //
-// Mirrors Java's `PushDistinctThroughFetchRule`.
+// Mirrors Java's `PushDistinctThroughFetchRule`, whose root matcher is
+// `unorderedPrimaryKeyDistinctPlan(fetchFromPartialRecordPlan(anyPlan()))`.
 type PushDistinctThroughFetchRule struct {
 	matcher matching.BindingMatcher
 }
 
 func NewPushDistinctThroughFetchRule() *PushDistinctThroughFetchRule {
 	return &PushDistinctThroughFetchRule{
-		// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan
-		// (no physicalDistinctWrapper).
-		matcher: NewExpressionMatcher[*plans.RecordQueryDistinctPlan]("phys_distinct_over_fetch"),
+		matcher: NewExpressionMatcher[*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan](
+			"phys_pk_distinct_over_fetch"),
 	}
 }
 
 func (r *PushDistinctThroughFetchRule) Matcher() matching.BindingMatcher { return r.matcher }
 
 func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
-	distinctW := matching.Get[*plans.RecordQueryDistinctPlan](call.Bindings, r.matcher)
+	distinctW := matching.Get[*plans.RecordQueryUnorderedPrimaryKeyDistinctPlan](call.Bindings, r.matcher)
 
 	innerRef := distinctW.GetInnerQuantifier().GetRangesOver()
 	if innerRef == nil {
@@ -68,14 +76,12 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 		return
 	}
 
-	// Build: Distinct(fetchInner) as its own cascades expression (RFC-184 W2, no
-	// physicalDistinctWrapper). Recompute the streaming mode against the NEW inner
-	// (the fetch's inner): a fetch preserves ordering, so the distinct below it is
-	// still streaming-eligible when that inner is ordered by the dedup key — a
-	// constructor reset would otherwise drop a resume-clean streaming distinct to
-	// the memory-heavy hash-set as a competing alternative (TODO C5: cross-page
-	// correctness fixed 2026-07-20; streaming preferred for O(1) memory).
-	streaming := distinctStreamingEligible(fetchInnerExpr, fetchInnerPlan)
+	// Build: PrimaryKeyDistinct(fetchInner) as its own cascades expression
+	// (RFC-184 W2, no physicalDistinctWrapper). There is no streaming mode to
+	// re-derive here: the primary-key distinct has a single hash executor, and
+	// the ordering-critical flag that the full-row distinct carries — and that a
+	// push has to recompute against the new inner — does not exist on this node.
+	//
 	// The distinct's edge ranges over the BAKED concrete inner frozen in a
 	// detached single-member final reference — the memo-canonical structure
 	// push_filter_through_fetch case-2 uses, NOT the live fetchInnerExpr memo edge
@@ -86,7 +92,7 @@ func (r *PushDistinctThroughFetchRule) OnMatch(call *ImplementationRuleCall) {
 	)
 	newDistinctInnerQ := expressions.NamedForEachQuantifier(baseQ.GetAlias(),
 		call.MemoizeFinalExpression(fetchInnerPlan))
-	newDistinctPlan, err := plans.NewRecordQueryDistinctPlanFromQuantifier(newDistinctInnerQ, streaming)
+	newDistinctPlan, err := plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(newDistinctInnerQ)
 	if err != nil {
 		call.Fail(err)
 		return

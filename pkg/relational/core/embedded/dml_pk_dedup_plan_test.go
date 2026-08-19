@@ -57,6 +57,29 @@ import (
 // rowcount edits — so the planned corpus is unchanged and a re-run re-derives
 // the same split. Re-running is the dump-and-pair procedure above; nothing
 // automated checks it.
+//
+// A SECOND, LATER GOLDEN MOVE — 7 stanzas, measured on a full dump rather than
+// argued. When PushDistinctThroughFetchRule was retargeted from the full-row
+// distinct to the primary-key one (its Java matcher had always been
+// unorderedPrimaryKeyDistinctPlan(fetchFromPartialRecordPlan(anyPlan()))), the
+// DML dedup became pushable for the first time, and 7 UPDATE stanzas moved:
+//
+//	-  Update(X, …, UnorderedPrimaryKeyDistinct(IndexScan(I, […])))
+//	+  Update(X, …, Fetch(UnorderedPrimaryKeyDistinct(IndexScan(I, […] COVERING))))
+//
+// All 7 are that one class and nothing else moved: diffing the dumps by line
+// kind gives 7 `plan:` lines each way and 21-vs-14 `shape:` lines — the +7 is
+// one Fetch node per stanza — with no `sql:` line and no stanza added or
+// removed, so no SELECT plan and no query population changed. The rewrite
+// cannot change rows either: a primary-key dedup is indifferent to whether it
+// sits above or below a fetch, because every partial row for a record carries
+// the same primary key. It is a straight improvement — dedup the covering
+// entries, fetch only the survivors — which is the reason Java's rule exists.
+//
+// To re-derive: dump the golden before and after and diff it.
+//
+//	go run ./cmd/explain-differ dump -out /tmp/plan_shape.new
+//	diff testdata/plan_shape.golden /tmp/plan_shape.new
 
 func planDMLShape(t *testing.T, sql, ddl string) string {
 	t.Helper()
@@ -85,10 +108,25 @@ func TestDMLPlan_UpdateAlwaysCarriesPrimaryKeyDedup(t *testing.T) {
 		"UPDATE t SET v = v + 1 WHERE a IN (10, 20)",
 	} {
 		shape := planDMLShape(t, sql, dedupDDL)
-		if !strings.HasPrefix(shape, "Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(") {
-			t.Errorf("%s\n  plan = %s\n  want the mutation to sit directly on a "+
-				"primary-key dedup; Java's ImplementUpdateRule inserts one for "+
-				"EVERY update regardless of the access path's distinctness "+
+		// Two positions are legal for the dedup, and both put it BEFORE the
+		// mutation consumes rows, which is the property this test is about:
+		//
+		//	Update(T, …, UnorderedPrimaryKeyDistinct(accessPath))
+		//	Update(T, …, Fetch(UnorderedPrimaryKeyDistinct(coveringAccessPath)))
+		//
+		// The second is the first with PushDistinctThroughFetchRule applied —
+		// dedup the cheap covering entries, then fetch only the survivors,
+		// instead of fetching every record and discarding duplicates after.
+		// Java's rule pushes it the same way (its matcher is
+		// unorderedPrimaryKeyDistinctPlan(fetchFromPartialRecordPlan(anyPlan()))),
+		// so accepting only the unpushed spelling would pin a shape Java does
+		// not commit to. What must NOT change is that a primary-key dedup is
+		// there at all.
+		if !strings.HasPrefix(shape, "Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(") &&
+			!strings.HasPrefix(shape, "Update(T, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(") {
+			t.Errorf("%s\n  plan = %s\n  want the mutation to be fed by a primary-key dedup, either "+
+				"directly or through the fetch it was pushed below; Java's ImplementUpdateRule "+
+				"inserts one for EVERY update regardless of the access path's distinctness "+
 				"(ImplementUpdateRule.java:79-80)", sql, shape)
 		}
 	}
