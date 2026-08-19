@@ -2,7 +2,13 @@ package recordlayer
 
 // Subspace keys used by the Record Layer to organize data within FDB.
 // These MUST match the Java implementation for compatibility.
-// Verified against Java: FDBRecordStoreKeyspace.java (enum values 0-9)
+// Verified against Java: FDBRecordStoreKeyspace.java (enum values 0-10).
+//
+// The enum is Java's to EXTEND — it is @API(UNSTABLE) and has grown before —
+// so every value it defines is reserved here even when Go writes nothing to it.
+// An unreserved prefix is one nothing is guarding: the next feature that wants
+// a place to put bytes inside a record store would take it and collide with a
+// Java release. TestRecordStoreKeyspaceMatchesJava pins the whole set.
 const (
 	// StoreInfoKey is the subspace key for store metadata
 	StoreInfoKey = 0
@@ -33,6 +39,23 @@ const (
 
 	// IndexBuildSpaceKey is the subspace key for index building
 	IndexBuildSpaceKey = 9
+
+	// IndexSlidingWindowSpaceKey is the subspace key for sliding-window index
+	// bookkeeping (window, overflow and count partitions).
+	//
+	// RESERVED, NOT USED BY GO. Java keeps it separate from the SECONDARY space
+	// deliberately — its own comment says "to avoid collisions with delegate index
+	// types that also use the secondary subspace (e.g. rank, permuted min/max,
+	// text)" — and writes here from SlidingWindowIndexMaintainer, which serves a
+	// VECTOR index carrying a row-number window predicate. Go has no such index
+	// type (its Index.Predicate is a row filter, not a windowing spec), so Go
+	// writes nothing here and there is no stored-byte divergence for any shape Go
+	// supports. The constant exists so the prefix stays SPOKEN FOR.
+	//
+	// Note the time-window LEADERBOARD index is a different type and does NOT use
+	// this space in either engine: Java's TimeWindowLeaderboardIndexMaintainer
+	// uses getSecondarySubspace() at every call site, which is what Go does too.
+	IndexSlidingWindowSpaceKey = 10
 )
 
 // Record key suffix constants matching Java's SplitHelper

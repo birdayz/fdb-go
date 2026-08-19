@@ -1,0 +1,420 @@
+package recordlayer
+
+// Collected planner statistics (RFC-236).
+//
+// Statistics are gathered by an OFFLINE job — the same shape as
+// RebalanceSPFreshIndex and OnlineIndexer, which this library already ships —
+// and read at plan time behind a per-connection opt-in. The collector is allowed
+// to SCAN, which is the whole reason this design works where two earlier ones
+// failed: FDB's sampled range-size estimator is accurate above ~100KB and
+// returns 0 for a non-empty range below it, so a small table is invisible to it
+// exactly when its smallness is the most valuable thing a join-order decision
+// could know (measured in estimated_range_size_probe_test.go and
+// per_type_size_estimate_probe_test.go).
+//
+// WHAT IS STORED, AND WHERE IT IS NOT. Statistics live OUTSIDE the record
+// store's subspace. That namespace belongs to Java: FDBRecordStoreKeyspace
+// defines 0-10 and is @API(UNSTABLE) — it has already grown once past this
+// port's original transcription (see constants.go). Taking a prefix inside a
+// store is not a question of whether Java reads it; it is a collision waiting
+// for an upstream release to claim the number.
+//
+// A store IS its subspace prefix, whatever produced it — a relational schema, a
+// hand-built store, a Java-authored layout — so that prefix is the key. Nothing
+// here knows about the SQL layer, and nothing needs to.
+//
+// FDB TENANTS are separate keyspaces, so a store's prefix is only meaningful
+// within its tenant: two tenants may hold byte-identical prefixes for entirely
+// different stores. The caller supplies the root, and a tenant-scoped caller
+// must supply a root inside that tenant. Getting this backwards makes tenant A's
+// statistics describe tenant B's tables, and the symptom is a bad plan rather
+// than an error.
+
+import (
+	"context"
+	"fmt"
+
+	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+)
+
+// StatisticsFormatVersion is written with every entry so a reader can refuse a
+// layout it does not understand rather than misparse one. Bump it when the
+// tuple below changes shape; readers reject anything they do not recognise.
+const StatisticsFormatVersion = 1
+
+// statisticsHeaderKey names the per-store header entry. It is a distinct tuple
+// element rather than a reserved record-type name so it can never collide with
+// a real type, whatever a schema calls its tables.
+var statisticsHeaderKey = tuple.Tuple{"__header__"}
+
+// RecordTypeStatistic is one collected per-record-type statistic.
+//
+// Count is EXACT — obtained by scanning, not sampled. That is the point of
+// collecting offline: exactness removes the floor, the quantization and the
+// bytes-to-rows conversion that make plan-time sampling unusable for small
+// tables.
+type RecordTypeStatistic struct {
+	// Count is the exact number of records of this type at collection time.
+	Count int64
+	// CollectedAtVersion is the read version the count was taken at.
+	CollectedAtVersion int64
+	// CollectedAtUnixNanos is the collector's wall clock at collection.
+	// Used for expiry; see StatisticsReader.
+	CollectedAtUnixNanos int64
+}
+
+// StoreStatistics is everything collected for one record store.
+type StoreStatistics struct {
+	// PerType maps record type name to its statistic. A type ABSENT here has
+	// no statistic — which is a normal outcome, never an implied zero.
+	PerType map[string]RecordTypeStatistic
+	// CollectedAtVersion / CollectedAtUnixNanos are the run's own stamps, from
+	// the header entry.
+	CollectedAtVersion   int64
+	CollectedAtUnixNanos int64
+}
+
+// StatisticsSubspace addresses collected statistics for record stores under one
+// root. The root MUST be outside every record store's subspace, and for a
+// tenant-scoped deployment must be inside the tenant.
+type StatisticsSubspace struct {
+	root subspace.Subspace
+}
+
+// NewStatisticsSubspace returns statistics addressing rooted at root.
+func NewStatisticsSubspace(root subspace.Subspace) StatisticsSubspace {
+	return StatisticsSubspace{root: root}
+}
+
+// forStore returns the subspace holding one store's statistics, keyed by that
+// store's subspace prefix bytes. Layout-agnostic by construction: a store is
+// its prefix, however the prefix was derived.
+func (s StatisticsSubspace) forStore(storeSubspace subspace.Subspace) subspace.Subspace {
+	return s.root.Sub(storeSubspace.Bytes())
+}
+
+// packStatistic encodes one statistic. The format version leads so a reader can
+// reject an unknown layout before interpreting anything after it.
+func packStatistic(st RecordTypeStatistic) []byte {
+	return tuple.Tuple{
+		int64(StatisticsFormatVersion),
+		st.Count,
+		st.CollectedAtVersion,
+		st.CollectedAtUnixNanos,
+	}.Pack()
+}
+
+// unpackStatistic decodes one statistic. ok=false means the bytes are absent,
+// malformed, or a format this build does not understand — all of which are
+// "no statistic", never a guessed one.
+func unpackStatistic(b []byte) (RecordTypeStatistic, bool) {
+	if len(b) == 0 {
+		return RecordTypeStatistic{}, false
+	}
+	t, err := tuple.Unpack(b)
+	if err != nil || len(t) != 4 {
+		return RecordTypeStatistic{}, false
+	}
+	version, ok := t[0].(int64)
+	if !ok || version != StatisticsFormatVersion {
+		return RecordTypeStatistic{}, false
+	}
+	count, ok1 := t[1].(int64)
+	ver, ok2 := t[2].(int64)
+	nanos, ok3 := t[3].(int64)
+	if !ok1 || !ok2 || !ok3 {
+		return RecordTypeStatistic{}, false
+	}
+	// A negative count is not a small table; it is corruption. Refuse rather
+	// than hand the cost model a number that would invert its comparisons.
+	if count < 0 {
+		return RecordTypeStatistic{}, false
+	}
+	return RecordTypeStatistic{
+		Count:                count,
+		CollectedAtVersion:   ver,
+		CollectedAtUnixNanos: nanos,
+	}, true
+}
+
+// CollectOptions tunes a collection run.
+type CollectOptions struct {
+	// BatchSize is the number of records scanned per transaction. Collection is
+	// continuation-driven, so a large store costs many small transactions
+	// rather than one that cannot commit inside FDB's 5s limit.
+	BatchSize int
+	// MaxRecordsPerType caps the work spent on one type. A type that EXCEEDS
+	// the cap is recorded as ABSENT — never as a partial count, which would be
+	// a wrong number wearing the shape of a right one. Zero means no cap.
+	MaxRecordsPerType int64
+}
+
+func (o CollectOptions) batchSize() int {
+	if o.BatchSize <= 0 {
+		return 1000
+	}
+	return o.BatchSize
+}
+
+// CollectionReport describes one run.
+type CollectionReport struct {
+	// Collected is the per-type statistics written.
+	Collected map[string]RecordTypeStatistic
+	// Skipped maps a record type to why it has NO statistic. Present so a
+	// caller can tell "not collected" from "collected as zero" — the two are
+	// different facts and only one of them is a table with no rows.
+	Skipped map[string]string
+	// RecordsScanned is the total records read across all types.
+	RecordsScanned int64
+}
+
+// CollectStatistics scans a record store and writes exact per-record-type
+// counts into stats.
+//
+// It is an OFFLINE maintenance job, not a query path: it reads every record. The
+// signature mirrors RebalanceSPFreshIndex so it composes with the maintainers
+// already in this library.
+//
+// Counting is a SINGLE PASS over all records, tallying by type, rather than one
+// scan per type. That is deliberate: a per-type scan is only cheaper when the
+// primary key carries a record-type prefix, and this must work for every store
+// layout, including the ones that do not. One pass is uniform and correct
+// everywhere.
+func CollectStatistics(
+	ctx context.Context,
+	db *FDBDatabase,
+	storeBuilder func(*FDBRecordContext) (*FDBRecordStore, error),
+	stats StatisticsSubspace,
+	opts CollectOptions,
+) (*CollectionReport, error) {
+	if db == nil || storeBuilder == nil {
+		return nil, fmt.Errorf("CollectStatistics: db and storeBuilder are required")
+	}
+
+	counts := make(map[string]int64)
+	var scanned int64
+	var continuation []byte
+	var storeSubspace subspace.Subspace
+	var collectedAtVersion int64
+	capped := make(map[string]string)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		batchDone := false
+		res, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, sErr := storeBuilder(rtx)
+			if sErr != nil {
+				return nil, sErr
+			}
+			if storeSubspace == nil {
+				storeSubspace = store.Subspace()
+			}
+			// The read version of the LAST batch stamps the run. Collection
+			// spans transactions, so no single version describes all of it;
+			// this one bounds how recent the newest reading is.
+			if v, vErr := rtx.ReadTransaction(true).GetReadVersion().Get(); vErr == nil {
+				collectedAtVersion = v
+			}
+
+			props := ScanProperties{
+				ExecuteProperties: ExecuteProperties{}.WithReturnedRowLimit(opts.batchSize()),
+			}
+			cur := store.ScanRecords(continuation, props)
+			defer func() { _ = cur.Close() }()
+
+			batch := 0
+			for {
+				r, cErr := cur.OnNext(ctx)
+				if cErr != nil {
+					return nil, cErr
+				}
+				if !r.HasNext() {
+					// No next: either the scan is exhausted or the batch limit
+					// stopped it. HasStoppedBeforeEnd distinguishes them, and
+					// conflating the two would silently truncate the count.
+					if !r.HasStoppedBeforeEnd() {
+						batchDone = true
+						return nil, nil
+					}
+					c, bErr := r.GetContinuation().ToBytes()
+					if bErr != nil {
+						return nil, bErr
+					}
+					if c == nil {
+						batchDone = true
+					}
+					continuation = c
+					return nil, nil
+				}
+				rec := r.GetValue()
+				if rec != nil && rec.RecordType != nil {
+					counts[rec.RecordType.Name]++
+				}
+				scanned++
+				batch++
+			}
+		})
+		_ = res
+		if err != nil {
+			return nil, err
+		}
+		if batchDone {
+			break
+		}
+	}
+
+	// Apply the cap AFTER counting: a type over its cap is recorded absent, and
+	// the reason is kept so a caller is told rather than left to infer it from
+	// a missing key.
+	report := &CollectionReport{
+		Collected:      make(map[string]RecordTypeStatistic),
+		Skipped:        capped,
+		RecordsScanned: scanned,
+	}
+	for name, c := range counts {
+		if opts.MaxRecordsPerType > 0 && c > opts.MaxRecordsPerType {
+			report.Skipped[name] = fmt.Sprintf("exceeds MaxRecordsPerType (%d > %d)", c, opts.MaxRecordsPerType)
+			continue
+		}
+		report.Collected[name] = RecordTypeStatistic{
+			Count:              c,
+			CollectedAtVersion: collectedAtVersion,
+		}
+	}
+
+	if storeSubspace == nil {
+		return report, nil
+	}
+	nowNanos, wErr := writeStatistics(ctx, db, stats, storeSubspace, report, collectedAtVersion)
+	if wErr != nil {
+		return nil, wErr
+	}
+	// Stamp the returned report from what was actually PERSISTED, so a caller
+	// reading report.Collected sees the same instant a reader will.
+	for name, st := range report.Collected {
+		st.CollectedAtUnixNanos = nowNanos
+		report.Collected[name] = st
+	}
+	return report, nil
+}
+
+// writeStatistics replaces a store's statistics atomically: the previous set is
+// cleared and the new one written in ONE transaction, so a reader never sees a
+// half-updated mixture of two runs. A mixture would be worse than either, since
+// counts from different versions are not comparable.
+//
+// THE TIMESTAMP IS DRAWN HERE, from the DST env rather than time.Now, and that
+// is a requirement rather than a style: these bytes are PERSISTED, so a raw
+// wall-clock read makes a seeded simulation run unreplayable (RFC-199 Tier 0;
+// the seam gate in pkg/docscheck enforces it). Env() is nil-safe and falls back
+// to real time in production.
+//
+// Stamping here rather than in the caller also makes the stamp describe the
+// WRITE, which is the instant a reader's freshness check is really about.
+func writeStatistics(
+	ctx context.Context,
+	db *FDBDatabase,
+	stats StatisticsSubspace,
+	storeSubspace subspace.Subspace,
+	report *CollectionReport,
+	version int64,
+) (int64, error) {
+	target := stats.forStore(storeSubspace)
+	var nanos int64
+	_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		tx := rtx.Transaction()
+		// The DST seam, not time.Now: these bytes are persisted.
+		nanos = rtx.Env().Now().UnixNano()
+		begin, end := target.FDBRangeKeys()
+		tx.ClearRange(fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())})
+		tx.Set(target.Pack(statisticsHeaderKey), packStatistic(RecordTypeStatistic{
+			Count:                int64(len(report.Collected)),
+			CollectedAtVersion:   version,
+			CollectedAtUnixNanos: nanos,
+		}))
+		for name, st := range report.Collected {
+			st.CollectedAtUnixNanos = nanos
+			tx.Set(target.Pack(tuple.Tuple{name}), packStatistic(st))
+		}
+		return nil, nil
+	})
+	return nanos, err
+}
+
+// ReadStatistics returns the statistics collected for one store, or ok=false if
+// there are none. It is a SNAPSHOT read: a planner read must never add a
+// conflict range, or planning could make a transaction retry.
+//
+// Absent, malformed and unknown-format all return ok=false. There is no partial
+// success: a caller gets a usable set or nothing.
+func ReadStatistics(
+	ctx context.Context,
+	db *FDBDatabase,
+	stats StatisticsSubspace,
+	storeSubspace subspace.Subspace,
+) (StoreStatistics, bool, error) {
+	target := stats.forStore(storeSubspace)
+	out := StoreStatistics{PerType: make(map[string]RecordTypeStatistic)}
+	found := false
+	_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		begin, end := target.FDBRangeKeys()
+		kvs, rErr := rtx.ReadTransaction(true).GetRange(
+			fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())},
+			fdb.RangeOptions{}).GetSliceWithError()
+		if rErr != nil {
+			return nil, rErr
+		}
+		for _, kv := range kvs {
+			key, uErr := target.Unpack(kv.Key)
+			if uErr != nil || len(key) != 1 {
+				continue
+			}
+			name, isStr := key[0].(string)
+			if !isStr {
+				continue
+			}
+			st, ok := unpackStatistic(kv.Value)
+			if !ok {
+				continue
+			}
+			if name == statisticsHeaderKey[0].(string) {
+				out.CollectedAtVersion = st.CollectedAtVersion
+				out.CollectedAtUnixNanos = st.CollectedAtUnixNanos
+				found = true
+				continue
+			}
+			out.PerType[name] = st
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return StoreStatistics{}, false, err
+	}
+	// The HEADER is what makes a set usable. Per-type entries without it are a
+	// torn or hand-written state, and the run's own stamps are what expiry is
+	// judged on.
+	if !found {
+		return StoreStatistics{}, false, nil
+	}
+	return out, true, nil
+}
+
+// ClearStatistics removes a store's statistics.
+func ClearStatistics(
+	ctx context.Context,
+	db *FDBDatabase,
+	stats StatisticsSubspace,
+	storeSubspace subspace.Subspace,
+) error {
+	target := stats.forStore(storeSubspace)
+	_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		begin, end := target.FDBRangeKeys()
+		rtx.Transaction().ClearRange(fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())})
+		return nil, nil
+	})
+	return err
+}
