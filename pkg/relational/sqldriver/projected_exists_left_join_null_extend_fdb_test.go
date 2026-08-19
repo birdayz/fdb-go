@@ -2,11 +2,12 @@ package sqldriver_test
 
 // A PROJECTED EXISTS over a LEFT JOIN. Live-Java (4.12.11.0) ANSWERS this (folds
 // the projected EXISTS, null-extends the null-supplying leg, evaluates the
-// EXISTS against the null-padded row). Go closes this Java-parity gap the same
-// way: the undissolved LEFT box has correlatedStep1 false, so foldStep1Seed
-// reconstructs the positional seed and a JoinLeftOuter NLJ null-extends the
-// null-supplying leg positionally over the DefaultOnEmpty row. Scan-leg scope
-// only.
+// EXISTS against the null-padded row). Go closes this Java-parity gap by
+// emitting Java's own shape: RewriteOuterJoinRule BOXES the outer pair into one
+// quantifier carrying the positional merge, with the null-on-empty edge inside
+// the box, and the existential is appended beside it (RFC-235 section 16). The
+// executor null-extends the null-supplying leg positionally over the
+// DefaultOnEmpty row. Scan-leg scope only.
 //
 // The three shapes are the exact live-Java-verified probe outcomes (NO ORDER BY),
 // so they double as the parity oracle. Dimension 1 is the null-on-empty ×

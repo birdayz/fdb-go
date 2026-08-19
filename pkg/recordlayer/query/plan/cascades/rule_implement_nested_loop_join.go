@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
@@ -81,17 +80,21 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 		}
 	}
 
-	// Two ForEach quantifiers plus one trailing Existential use the retained
-	// projected/WHERE-EXISTS fold. Flat selects with more than two ForEach legs
-	// are decomposed by PartitionSelectRule; RFC-190 retired this rule's N-way
-	// implementation arm.
-	if len(quants) == 3 &&
-		quants[len(quants)-1].Kind() == expressions.QuantifierExistential &&
-		allForEach(quants[:len(quants)-1]) {
-		r.implementJoinWithExistential(call, sel, quants)
-		return
-	}
-
+	// Every select this rule implements is BINARY, matching Java, whose matcher is
+	// `exactlyInAnyOrder(outerQuantifierMatcher, innerQuantifierMatcher)`
+	// (ImplementNestedLoopJoinRule.java:98). An N-ary select — including
+	// [ForEach, ForEach, Existential] — is decomposed by PartitionSelectRule
+	// before it ever reaches here.
+	//
+	// A three-quantifier arm used to live at this spot, implementing that shape
+	// directly as a two-level NLJ→FlatMap over a merged outer row. It existed
+	// because PartitionSelectRule could not decompose the shape, and it could not
+	// because Java's Case-1 existential peel produced a plan that returned zero
+	// rows in Go — the peeled lower's EXISTS predicate reached a PredicatesFilter
+	// in its structural form. With the residual conversion in place the peel works
+	// and the arm is gone, and with it the merged outer row that had no ordinal
+	// layout and the runtime alias namespace the executor kept to address it
+	// (RFC-235).
 	if len(quants) != 2 {
 		return
 	}
@@ -337,21 +340,24 @@ func (r *ImplementNestedLoopJoinRule) OnMatch(call *ExpressionRuleCall) {
 			return
 		}
 		// NOTE: a ChildrenAsSet-swapped firing (fireExprRuleOnMember) reuses
-		// sel's resultValue verbatim under the swapped orientation, which is
-		// unsound for a pristine ordinal seed IF some downstream consumer
-		// later reads that seed's baked ordinals expecting the UNSWAPPED
-		// physical layout (see materializedNLJOrdinalLayoutMatches's doc
-		// comment for the full mechanism and its two false-positive
-		// histories). No such consumer exists at THIS construction site —
-		// this plan is embedded and yielded as-is, nothing here reads its
-		// resultValue's ordinals — so no orientation check belongs here;
-		// declining based on a mismatch that nothing will ever act on
-		// rejected working, tested plans (TestFDB_QuotedMachineShapedAliases/
-		// join_legs' swapped cross-join orientation, which never consumes its
-		// own seed's ordinals downstream). The check instead lives at the
-		// ACTUAL consumption site: implementJoinWithExistential's materialized
-		// branch below, which immediately uses this same resultValue's
-		// ordinal windows to rebase EXISTS predicates onto baked slots.
+		// sel's resultValue verbatim under the swapped orientation, which would
+		// be unsound for a pristine ordinal seed IF some downstream consumer
+		// later read that seed's baked ordinals expecting the UNSWAPPED physical
+		// layout. No such consumer exists at THIS construction site — this plan
+		// is embedded and yielded as-is, nothing here reads its resultValue's
+		// ordinals — so no orientation check belongs here; declining on a
+		// mismatch nothing will act on rejected working, tested plans
+		// (TestFDB_QuotedMachineShapedAliases/join_legs' swapped cross-join
+		// orientation, which never consumes its own seed's ordinals downstream).
+		//
+		// There is now no such consumer ANYWHERE, which is a change worth stating
+		// rather than leaving implied: the one site that did read this seed's
+		// ordinal windows — to rebase EXISTS predicates onto baked slots — was the
+		// three-quantifier arm, retired by RFC-235 along with the orientation
+		// check it carried. So this is not "the check lives elsewhere"; it is
+		// "nothing reads these ordinals". A future consumer must bring its own
+		// check, and the argument above is the reason one cannot simply be added
+		// here on suspicion.
 		leftQ := expressions.ForEachQuantifier(call.MemoizeExpression(leftExpr))
 		rightQ := expressions.ForEachQuantifier(call.MemoizeExpression(rightExpr))
 		joinPredicates, joinResultValue, err := normalizeMaterializedJoinPrograms(
@@ -440,50 +446,6 @@ func physicalProvidedAliases(expr expressions.RelationalExpression, ownAlias val
 		}
 	}
 	walk(expr)
-	return out
-}
-
-// legReferencesAny reports whether the leg subtree ref is correlated to ANY alias
-// in targetSet (the OTHER leg's provided aliases) via Reference.GetCorrelatedTo.
-// (An ordinal seed's correlations are reported directly by GetCorrelatedTo —
-// no re-exposure walk is needed.)
-// existentialLegCorrelations builds the fail-closed verification set for an
-// existential subtree: the two join quantifiers, every seed-window leg, and every
-// outer leg alias.
-//
-// It is a named function rather than three loops inline because the set IS the
-// decision — `legReferencesAny` against it is what selects between rebasing an
-// existential subtree and shipping it untouched — and a decision built inline has
-// no point at which it can be examined. It could not be tested before, and it was
-// wrong in a way no test could have caught.
-//
-// The seed windows are filed under leg IDENTITIES and join the set AS THEMSELVES.
-// They used to be re-minted here from the upper fold of those identities, a round
-// trip through text that is a no-op wherever a leg is already upper — which is
-// every leg the corpus produces at this site, and why reverting it leaves the
-// whole suite green. It is NOT a no-op for a machine mint: UniqueCorrelationIdentifier
-// mints lowercase, so folding `q$7` yields `Q$7`, the set does not contain the leg
-// the reference actually names, legReferencesAny answers FALSE, and the subtree
-// skips BOTH the rebase and the fail-closed check that exists to catch exactly
-// that. An unbound leg-correlated reference then ships — the failure this set is
-// the guard against, waved through by the guard itself.
-func existentialLegCorrelations(
-	q0Alias, q1Alias values.CorrelationIdentifier,
-	ordinalWindows map[values.CorrelationIdentifier]ordinalLegWindow,
-	outerLegAliases []string,
-) map[values.CorrelationIdentifier]struct{} {
-	out := map[values.CorrelationIdentifier]struct{}{
-		q0Alias: {},
-		q1Alias: {},
-	}
-	for legCorr := range ordinalWindows {
-		out[legCorr] = struct{}{}
-	}
-	for _, a := range outerLegAliases {
-		if a != "" {
-			out[values.NamedCorrelationIdentifier(a)] = struct{}{}
-		}
-	}
 	return out
 }
 
@@ -1377,7 +1339,7 @@ func (r *ImplementNestedLoopJoinRule) yieldVerifiedOrderedJoin(
 // buildCorrelatedFlatMapPlan constructs the correlated-FlatMap join plan —
 // the per-quantifier-property lowering shared by the 2-quantifier
 // leftDepsRight/rightDepsLeft branches (yieldGeneralFlatMap) and the
-// 3-quantifier existential arm's step-1 (implementJoinWithExistential): the
+// 3-quantifier existential arm's step-1 (the existential peel): the
 // inner leg re-executes per outer row with the outer bound under outerCorr;
 // a null-on-empty inner wraps in DefaultOnEmpty (Java's
 // planPartitionToPhysical); a strict-single inner wraps in the strict
@@ -2196,12 +2158,12 @@ func buildCorrelatedFlatMapPlan(
 		outerCarrierType := values.PhysicalCarrierType(outerLayout)
 		origInnerPlan := innerPlan
 		var rebaseErr error
-		innerPlan, rebaseErr = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr, outerCarrierType, legLayout, nil, legRebaseOrigin{Site: legRebaseSiteBuried})
+		innerPlan, rebaseErr = rebasePlanBuriedRefs(innerPlan, buriedLegAliases, outerCorr, outerCarrierType, legLayout, nil)
 		if rebaseErr != nil {
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, rebaseErr
 		}
 		for i, p := range joinPreds {
-			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr, outerCarrierType, legLayout, nil, legRebaseOrigin{Site: legRebaseSiteBuried})
+			joinPreds[i] = rebaseOuterLegRefsToMerged(p, buriedLegAliases, outerCorr, outerCarrierType, legLayout, nil)
 		}
 		if planReferencesAnyBuriedAlias(innerPlan, buriedLegAliases) || predsReferenceAlias(joinPreds, buriedAliasUpperSet(buriedLegAliases)) {
 			return nil, expressions.Quantifier{}, expressions.Quantifier{}, false, nil
@@ -2492,9 +2454,6 @@ func buildCorrelatedFlatMapPlan(
 	// diverge. The correlated inner leg is a frozen final singleton (the fod/filter
 	// disentangle), so extraction resolves it faithfully and the correlation the
 	// FlatMap binds is preserved.
-	if values.LegIdentityCensusEnabled() {
-		recordFlatMapResultValue(flatMapSiteCorrelated, resultValue)
-	}
 	newFlatMapPlan := plans.NewRecordQueryFlatMapPlanFromQuantifiers
 	if innerLayoutNullSupplying {
 		newFlatMapPlan = plans.NewRecordQueryFlatMapPlanFromQuantifiersWithNullSupplyingInner
@@ -3007,7 +2966,7 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// was already rebased, above this point (windowsHoisted), to a BAKED
 	// ofOrdinalNumber over the box's binding (outerCorr) at
 	// legOffset+columnOrdinal. This is the 2-quantifier (1 outer + 1 inner)
-	// counterpart of implementJoinWithExistential's 3-quantifier (2 ForEach +
+	// counterpart of the existential peel's 3-quantifier (2 ForEach +
 	// 1 Existential) ordinal rebase; the executor binds the box row
 	// positionally through the FlatMap's identity result value plus these
 	// baked inner references over outerCorr. Re-running the window rebase
@@ -3115,9 +3074,6 @@ func (r *ImplementNestedLoopJoinRule) implementExistentialSelect(
 	// lockstep with what executes, so the plan and its quantifiers no longer
 	// diverge. The correlated inner is a frozen final singleton, so extraction
 	// resolves it faithfully and the EXISTS correlation is preserved.
-	if values.LegIdentityCensusEnabled() {
-		recordFlatMapResultValue(flatMapSiteExistentialSelect, resultValue)
-	}
 	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		outerQ, innerQ,
 		outerCorr, innerCorr,
@@ -3389,76 +3345,6 @@ func remapExistentialResultValue(
 	return values.RebaseValueChecked(rv, am)
 }
 
-// resultValueReferencesAlias reports whether a SelectExpression result value's
-// correlation set includes `alias` — the structural signal (RFC-141)
-// that the result value is a PROJECTED EXISTS over a join (it reads the
-// existential quantifier), not the WHERE-EXISTS pass-through (a bare merged-row
-// identity, which is correlated only to the merged outer, never to the
-// existential quantifier). Returns false for a nil value.
-func resultValueReferencesAlias(rv values.Value, alias values.CorrelationIdentifier) bool {
-	if rv == nil {
-		return false
-	}
-	_, ok := values.GetCorrelatedToOfValue(rv)[alias]
-	return ok
-}
-
-// mergedOuterLegAliases returns the set of leg IDENTITIES the inner-join's
-// merged outer row anchors columns for. RFC-142.
-//
-// IT IS THE IDENTITIES AND NOTHING ELSE. It used to also emit the upper fold of
-// the select's parallel source-alias TEXT, because the same set once fed the
-// dotted "LEG.COL" key namespace. That mint is deleted, so the set has exactly
-// one consumer left — rebaseOuterLegValue, which compares each entry against a
-// reference's own QOV CORRELATION name — and a correlation is an identity. The
-// text spelling could only ever match one by coincidence.
-//
-// The text half was retained past that point on the grounds that its cost was
-// unmeasured. It was then measured: deleting it leaves the whole real-FDB
-// sqldriver corpus, the embedded suite and the rowdiff goldens green, and the
-// only red is the test that pinned the text half itself. That is the same
-// evidential standard the qualified mint was deleted on.
-//
-// Two axes made the text spelling wrong rather than merely redundant, and both
-// are pinned by the identity-only contract's tests:
-//
-//   - the two channels can name different things. Measured over the FDB corpus,
-//     the select's source-alias slice carries a RE-MINTED identifier while its
-//     quantifier keeps the user alias on 12 of ~81872 firings (leg-identity
-//     census witnesses "q$N vs E" at LegSiteNLJPlanAlias). On those the text set
-//     matched no reference at all, and only the identity half rescues them;
-//   - the fold is one-way. Every text entry was upper-folded while a reference's
-//     correlation is verbatim, so a LOWERCASE machine-minted alias could not
-//     match its own entry even when the two channels agreed.
-//
-// A MISS IS NOT LOUD HERE, and that is worth stating plainly because it is the
-// reason the set's contents matter at all. Arm 2 — the pass-through — returns a
-// matched read unchanged, and an unmatched read is also returned unchanged, so
-// on the no-layout path a match and a miss are INDISTINGUISHABLE at this
-// function's boundary. The consequence of a miss shows up later and elsewhere:
-// the reference stays pointing at a leg alias that is not bound inside the
-// FlatMap, evaluates to NULL, and an EXISTS correlation that never matches drops
-// rows. Nothing between here and there says anything.
-func mergedOuterLegAliases(legCorrs ...values.CorrelationIdentifier) []string {
-	seen := map[string]struct{}{}
-	var out []string
-	// VERBATIM, never folded. Folding is what would let a quoted "q$5" and a
-	// minted q$5 be treated as one leg, and it is also what kept a minted leg
-	// from matching itself.
-	for _, c := range legCorrs {
-		a := c.Name()
-		if a == "" {
-			continue
-		}
-		if _, ok := seen[a]; ok {
-			continue
-		}
-		seen[a] = struct{}{}
-		out = append(out, a)
-	}
-	return out
-}
-
 // planResultValue unwraps ROW-SHAPE-PRESERVING single-child wrappers
 // (predicate filters, first-or-default, default-on-empty) to the first plan
 // carrying a non-nil result value — the merged-row schema authority for the
@@ -3490,606 +3376,6 @@ func planResultValue(p plans.RecordQueryPlan) values.Value {
 	return nil
 }
 
-// legOrdinalSafety reports whether a projected-EXISTS fold leg
-// can seed the step-1 ordinal merged row: a
-// SINGLE-SOURCE leg whose rows are one namespace (a scan, through transparent
-// Filter/Fetch/FOD wrappers), OR an ORDINAL bare-INNER nested-loop join — the
-// ACCUMULATED INNER of the N-way left-deep chain (its own ordinal concat row read
-// positionally by the next level through its buried-leaf windows). A
-// MERGED-row leg an ordinal seed
-// cannot position is declined — the executor twin of the translator gate's
-// ordinalEligible (correct-or-conservative). A NON-INNER NLJ is declined (the
-// INNER-first scope carries no null-extension; the LEFT follow-on widens it).
-// It returns that decision plus the NODE it stopped at.
-//
-// The node exists for the foldStep1Seed outcome census, whose whole value is the
-// sub-classification of a refused leg by its result-value shape. It is handed
-// back from the walk rather than recovered by a second walk for the reason §5 of
-// RFC-200 states about the element predicate: two copies of a rule agree until
-// one of them is edited, and here the two copies would decide which leg a
-// population is attributed to.
-//
-// On a safe leg the node is nil. On a refused NESTED-LOOP JOIN the node is the
-// deepest refusing descendant, not the join — the join is a container and the
-// leg that cannot be positioned is the fact worth counting.
-func legOrdinalSafety(p plans.RecordQueryPlan) (bool, plans.RecordQueryPlan) {
-	for p != nil {
-		switch pl := p.(type) {
-		// A COVERING index scan is ordinal-safe for exactly the reason the bare
-		// scan is — one positional row per entry from one source — and it is
-		// what the fetch arm below peels onto for every index-backed access.
-		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan,
-			*plans.RecordQueryCoveringIndexPlan:
-			return true, nil
-		// A PROJECTION leg — what a derived table (`FROM (SELECT …) AS d`) and a
-		// CTE reference lower to — is ordinal-safe for the same reason the scan
-		// is, and for a reason the executor states outright: executeProjection
-		// ALWAYS emits a dense PositionalRow with one slot per projection, named
-		// by values.OutputColumnName. One namespace, one slot per column, which is
-		// exactly what the positional merge needs.
-		//
-		// The walk STOPS here rather than descending into the inner: what this leg
-		// flows is the PROJECTED row, not the scan's, and seeding off the scan's
-		// row would window the merged row against columns the leg does not emit.
-		//
-		// Without this arm the leg fell to the default refusal, the step-1 seed was
-		// never built, and the materialized NLJ kept the SELECT's own projected-fold
-		// result value as its merged row — a row the executor's leg concat does not
-		// produce. The projected-EXISTS over a derived source then died at execution
-		// with "multi-leg row cannot serve a source-relative ordinal", while the
-		// identical query over a base-table leg (two scan legs, seed built) worked.
-		//
-		// Gated on the row being STATABLE rather than assumed: a projection whose
-		// result value cannot be derived falls back to a bare QOV, and seeding
-		// ordinals off a row nothing can describe is precisely the forgery this
-		// walk exists to refuse.
-		case *plans.RecordQueryProjectionPlan:
-			if projectionLegRowType(pl) == nil {
-				return false, pl
-			}
-			return true, nil
-		case *plans.RecordQueryPredicatesFilterPlan:
-			p = pl.GetInner()
-		case *plans.RecordQueryFilterPlan:
-			p = pl.GetInner()
-		case *plans.RecordQueryFirstOrDefaultPlan:
-			p = pl.GetInner()
-		case *plans.RecordQueryDefaultOnEmptyPlan:
-			p = pl.GetInner()
-		case *plans.RecordQueryFetchFromPartialRecordPlan:
-			p = pl.GetInner()
-		case *plans.RecordQueryNestedLoopJoinPlan:
-			if pl.GetJoinType() != plans.JoinInner {
-				return false, pl
-			}
-			// Only an ORDINAL box (a positional concat row) can be read by
-			// ordinal — every RC box qualifies.
-			if _, ok := pl.GetResultValue().(*values.RecordConstructorValue); !ok {
-				return false, pl
-			}
-			if safe, node := legOrdinalSafety(pl.GetOuter()); !safe {
-				return false, node
-			}
-			return legOrdinalSafety(pl.GetInner())
-		case *plans.RecordQueryFlatMapPlan:
-			// A FlatMap whose result value is the POSITIONAL MERGE is Java's own
-			// merged row, and it is positionable — one slot per collapsed lower
-			// quantifier, each holding that quantifier's whole record.
-			//
-			// The recognizer is STRUCTURAL (values.IsPositionalMergeRC) and not a
-			// looser "the result value is an RC of bare typed QOVs". That looser
-			// test is what admitted a constructor once before and gave multi-column
-			// legs one-column windows; the pin that caught it is still standing, and
-			// it stays green precisely because a NAMED typed-leg RC is not a merge
-			// row.
-			//
-			// The PLAN WALK is the route rather than a preference:
-			// RecordQueryFlatMapPlan.GetResultType() returns values.UnknownType,
-			// exactly as RecordQueryNestedLoopJoinPlan's does, which is why the
-			// reconstruction's own comment says GetResultType cannot be used for a
-			// join leg.
-			//
-			// NOT ordinal-safe merely because a FlatMap is a FlatMap: an ordinary
-			// FlatMap flows a projection or a bare identity QOV, and neither states
-			// a positionable layout. That population — 102 firings over the
-			// real-FDB corpus — is the LARGER residue and is out of scope here.
-			//
-			// `bare` MEANS IDENTITY PASS-THROUGH, NOT UNTYPED, and this line used to
-			// be read the other way. That reading booked a conversion whose whole
-			// plan was to TYPE those result values; measured, the population is 100%
-			// typed — every declined leg carries a real RecordType, arity 1-3 on the
-			// FlatMap legs and 1-4 counting the two NestedLoopJoin-legged declines.
-			// There is nothing to type, and typing could not convert one of them
-			// anyway: the refusal below is values.IsPositionalMergeRC, which opens
-			// with a *RecordConstructorValue assertion that no QuantifiedObjectValue
-			// satisfies at ANY typing. The residue is a SHAPE residue — the leg
-			// states one opaque row where the layout authority needs a positional
-			// merge — and the only thing that converts it is giving the leg an
-			// RC(_i: QOV(leg_i)) result value.
-			if !values.IsPositionalMergeRC(pl.GetResultValue()) {
-				return false, pl
-			}
-			return true, nil
-		default:
-			return false, p
-		}
-	}
-	return false, nil
-}
-
-// projectionLegRowType is the row a PROJECTION leg flows, as the seed
-// derivation must see it: the plan's OWN stated RecordType, non-empty.
-//
-// It is shared by legOrdinalSafety and planBuriedLegConcat so the safety
-// decision and the concat that acts on it read one derivation. Two copies would
-// agree until one was edited, and here disagreeing means admitting a leg whose
-// fields the merged row cannot then enumerate.
-//
-// nil means the leg cannot state its row — RecordQueryProjectionPlan's result
-// value falls back to a bare QOV when its columns are underivable, and an
-// ordinal seed over a row nothing describes addresses slots by guess.
-func projectionLegRowType(p *plans.RecordQueryProjectionPlan) *values.RecordType {
-	rt := planRowRecordType(p)
-	if rt == nil || len(rt.Fields) == 0 {
-		return nil
-	}
-	return rt
-}
-
-// planBuriedLegConcat walks an ordinal-safe leg PLAN accumulating its buried
-// scan leaves' fields (the flat concat) and each buried source's [Start,Width)
-// window relative to `base` — the PLAN-LEVEL twin of the translator's
-// buriedLegBounds. A bare INNER nested-loop join recurses into its two legs
-// (keyed by the join's outer/inner aliases); a scan-family leaf (through
-// transparent wrappers) contributes one leaf window keyed by `alias`. This
-// windows the N-way chain's ACCUMULATED INNER so the next level reads its buried
-// leaves positionally. ok=false for any non-ordinal-safe node. A single scan leg
-// yields ONE leg (its own alias) — the caller uses .Legs only when len(legs) > 1.
-// fieldsRebasedTo returns a COPY of fields whose Ordinal is its position in the
-// CONCATENATED row rather than in the leg's own row.
-//
-// A leaf leg reports its plan's own result-type fields, numbered from 0. Two
-// such legs concatenated therefore read 0,1,0,1 — and a values.RecordType whose
-// Fields[i].Ordinal != i is not an exact type at all: snapshotExactType rejects
-// it with "record field ordinal does not equal its position", so
-// NewQuantifiedObjectValue over the concat FAILS and the whole ordinal seed
-// declines. The failure is silent in the way that matters: it presents as a
-// shape that "does not ordinalize" rather than as a malformed row.
-//
-// The `base` parameter this walk already threads is exactly the offset the leg
-// occupies, so rebasing here is the same arithmetic the leg WINDOW is built
-// from — the flat-run leg beside it is stamped [base, base+len). The
-// positional-merge arm has always stamped `base + i` on its own fields; these
-// two leaf arms were the ones handing their plan's numbering through unchanged,
-// which is correct only for the leg that happens to sit at offset zero.
-//
-// The copy is not optional: rt.Fields is the leg PLAN's own slice, so
-// renumbering in place would rewrite that plan's result type.
-func fieldsRebasedTo(fields []values.Field, base int) []values.Field {
-	out := make([]values.Field, len(fields))
-	for i, f := range fields {
-		f.Ordinal = base + i
-		out[i] = f
-	}
-	return out
-}
-
-func planBuriedLegConcat(p plans.RecordQueryPlan, alias values.CorrelationIdentifier, base int) ([]values.Field, []values.RecordTypeLeg, bool) {
-	inner := p
-	for {
-		switch pl := inner.(type) {
-		// The covering wrapper reports the inner scan's flowed row Type
-		// (GetResultType delegates), so its leg window is the inner's — and it
-		// is the shape the fetch arm below peels onto for every index-backed
-		// access, so leaving it out windows nothing.
-		case *plans.RecordQueryScanPlan, *plans.RecordQueryIndexPlan,
-			*plans.RecordQueryCoveringIndexPlan:
-			recordResultTypeRead("planBuriedLegConcat", inner.GetResultType())
-			rt, isRT := inner.GetResultType().(*values.RecordType)
-			if !isRT || len(rt.Fields) == 0 {
-				return nil, nil, false
-			}
-			// The leg's identity is the identifier its own QuantifiedObjectValue
-			// carries — threaded in, not manufactured here. This used to mint
-			// NamedCorrelationIdentifier(ToUpper(alias)) from a plan-level string, and
-			// that fold was a forgery generator rather than a normalization: the
-			// machine namespace is LOWERCASE (UniqueCorrelationIdentifier mints q$N),
-			// so upper-folding a minted q$5 produced Q$5 — precisely the spelling
-			// SameLeg exists to keep out of the minted leg's window. Threading the
-			// identifier removes the question. Name is its own spelling, so the text
-			// channel's readers see what they always saw.
-			return fieldsRebasedTo(rt.Fields, base), []values.RecordTypeLeg{
-				values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), base, len(rt.Fields)),
-			}, true
-		// A PROJECTION leg contributes its OWN stated row — see legOrdinalSafety's
-		// projection arm, which admits it on exactly this row being statable. The
-		// two read it through the SAME helper so the safety walk and the concat
-		// builder can never disagree about what a leg emits. The walk does not
-		// descend: the projected row is what this leg flows.
-		case *plans.RecordQueryProjectionPlan:
-			rt := projectionLegRowType(pl)
-			if rt == nil {
-				return nil, nil, false
-			}
-			return fieldsRebasedTo(rt.Fields, base), []values.RecordTypeLeg{
-				values.NewRecordTypeLeg(values.LegKindFlatRun, alias, alias.Name(), base, len(rt.Fields)),
-			}, true
-		case *plans.RecordQueryPredicatesFilterPlan:
-			inner = pl.GetInner()
-		case *plans.RecordQueryFilterPlan:
-			inner = pl.GetInner()
-		case *plans.RecordQueryFirstOrDefaultPlan:
-			inner = pl.GetInner()
-		case *plans.RecordQueryDefaultOnEmptyPlan:
-			inner = pl.GetInner()
-		case *plans.RecordQueryFetchFromPartialRecordPlan:
-			inner = pl.GetInner()
-		case *plans.RecordQueryNestedLoopJoinPlan:
-			if pl.GetJoinType() != plans.JoinInner {
-				return nil, nil, false
-			}
-			outerFields, outerLegs, ok := planBuriedLegConcat(pl.GetOuter(), pl.GetOuterAlias(), base)
-			if !ok {
-				return nil, nil, false
-			}
-			innerFields, innerLegs, ok := planBuriedLegConcat(pl.GetInner(), pl.GetInnerAlias(), base+len(outerFields))
-			if !ok {
-				return nil, nil, false
-			}
-			// FRESH slices, never append-onto-outer. The scan arm returns the
-			// plan's own rt.Fields, so outerFields can alias a plan's result
-			// type; `append(outerFields, ...)` then writes the inner's fields
-			// into that plan's backing array whenever it has spare capacity.
-			// Nothing re-slices a RecordType past its length, so the plan's own
-			// view survives — but two concats built over the SAME leg plan share
-			// that array, and the second append overwrites the first concat's
-			// tail. Allocating removes the sharing instead of reasoning about
-			// who appends when.
-			fields := make([]values.Field, 0, len(outerFields)+len(innerFields))
-			fields = append(fields, outerFields...)
-			fields = append(fields, innerFields...)
-			legs := make([]values.RecordTypeLeg, 0, len(outerLegs)+len(innerLegs))
-			legs = append(legs, outerLegs...)
-			legs = append(legs, innerLegs...)
-			return fields, legs, true
-		case *plans.RecordQueryFlatMapPlan:
-			// THE LOCKSTEP ARM. legOrdinalSafety and this walk have the same node
-			// census BY CONSTRUCTION — the first decides which legs may seed, the
-			// second describes the row those legs flow — so a node admitted there
-			// and unhandled here is a leg the reconstruction silently refuses,
-			// which reads as "this shape does not ordinalize" rather than as a gap.
-			//
-			// A positional merge's concat is its N MERGE SLOTS, not its legs'
-			// columns. Each field is typed with that sub-leg's own *RecordType (the
-			// whole row lives in the slot), and .Legs records each sub-leg AT ITS
-			// SLOT with Kind nested, Start i, Width 1 — Width being a SLOT count, so
-			// every Start+Width range computation downstream stays in bounds.
-			rc, isMerge := pl.GetResultValue().(*values.RecordConstructorValue)
-			if !isMerge || !values.IsPositionalMergeRC(rc) {
-				return nil, nil, false
-			}
-			fields := make([]values.Field, len(rc.Fields))
-			legs := make([]values.RecordTypeLeg, 0, len(rc.Fields))
-			for i, f := range rc.Fields {
-				qov, isQOV := values.AsQuantifiedObjectValue(f.Value)
-				if !isQOV {
-					return nil, nil, false
-				}
-				fields[i] = values.Field{Name: f.Name, FieldType: qov.FlowedType(), Ordinal: base + i}
-				// A slot whose quantifier states no ROW carries no leg boundary. It
-				// is the unnest ELEMENT case — a scalar the merge holds whole — and
-				// giving it a nested leg would claim a row it does not have.
-				if rt, isRT := qov.FlowedType().(*values.RecordType); isRT && rt != nil {
-					legs = append(legs, values.NewRecordTypeLeg(
-						values.LegKindNested, qov.Correlation(), qov.Correlation().Name(), base+i, 1))
-				}
-			}
-			if len(legs) == 0 {
-				return nil, nil, false // no positionable sub-leg at all
-			}
-			return fields, legs, true
-		default:
-			return nil, nil, false
-		}
-	}
-}
-
-// reconstructFoldStep1Seed rebuilds the full leg-concat ordinal seed for an
-// ordinalized projected-EXISTS fold. The step-1 NLJ produces a
-// positional merged row from this seed; the step-2 FlatMap then evaluates the
-// folded projection over that row through legWindowRowContext (spanAwareRow +
-// legWindowBinder), so the projection is NEVER rebased — its dotted and
-// QOV-based leg refs resolve positionally at the cursor. The seed is a run of
-// ofOrdinal references over each leg's typed QOV (leg type from GetResultType,
-// NOT planResultValue which is nil for these leg plans), in declaration order,
-// the QOV named by the leg's source alias — positionally equivalent to
-// buildOrdinalJoinResultValue for the ordinal-safe scan legs in scope (the
-// canonical builder types legs via ordinalLegType and asserts the seed shape;
-// for a single-source scan the flowed types coincide, which the cross-agreement
-// fixture covers). Returns nil when a leg is not ordinal-safe or its type is not
-// a record (the caller keeps the original RV unchanged).
-func reconstructFoldStep1Seed(leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier, joinType plans.JoinType) (values.Value, foldStep1LegDecline) {
-	// BOTH legs are walked, never short-circuited, because the census's
-	// both-legs-unsafe check is what keeps its per-firing sub-partition honest —
-	// a short circuit would make "at most one refused leg per firing" true by
-	// construction at the one instrument that is supposed to be testing it.
-	leftSafe, leftNode := legOrdinalSafety(leftPlan)
-	rightSafe, rightNode := legOrdinalSafety(rightPlan)
-	if !leftSafe || !rightSafe {
-		node := leftNode
-		if leftSafe {
-			node = rightNode
-		}
-		shape, witness := classifyDeclinedLeg(node)
-		return nil, foldStep1LegDecline{
-			Shape:          shape,
-			BothLegsUnsafe: !leftSafe && !rightSafe,
-			Witness:        witness,
-		}
-	}
-	// The NULL-SUPPLYING side is the join kind's, derived here from the SAME
-	// switch RecordQueryNestedLoopJoinPlan uses to decide which aliases it will
-	// declare null-supplying in its own output layout. The two must agree: the
-	// plan looks its null-supplying source up IN THIS SEED, and refuses to build
-	// ("null-supplying source Q must be nullable") if the record it finds is not
-	// null-extended. Seeding every leg preserved made a projected EXISTS over a
-	// LEFT JOIN unplannable outright — a query Java answers.
-	var fields []values.RecordConstructorField
-	for _, leg := range []struct {
-		plan          plans.RecordQueryPlan
-		alias         values.CorrelationIdentifier
-		nullSupplying bool
-	}{
-		{leftPlan, leftAlias, joinType == plans.JoinFullOuter},
-		{rightPlan, rightAlias, joinType == plans.JoinLeftOuter || joinType == plans.JoinFullOuter},
-	} {
-		// Walk the leg to its buried scan leaves: the flat concat + each buried
-		// source's window. A scan leg yields one leaf (its own alias); the N-way
-		// chain's accumulated INNER (a bare INNER NLJ) yields its buried leaves.
-		// GetResultType() cannot be used for a NLJ leg — it is a stub
-		// (UnknownType); the walk reconstructs the concat from the scan leaves.
-		concatFields, buriedLegs, ok := planBuriedLegConcat(leg.plan, leg.alias, 0)
-		if !ok || len(concatFields) == 0 {
-			// Both legs were ordinal-SAFE and the concat still failed: a residue
-			// below legOrdinalSafety, with its own fix. foldStep1LegShapeNone is
-			// what keeps it from being counted as a refused leg shape it is not.
-			return nil, foldStep1LegDecline{
-				Shape:   foldStep1LegShapeNone,
-				Witness: fmt.Sprintf("planBuriedLegConcat refused %T (ok=%t, fields=%d)", leg.plan, ok, len(concatFields)),
-			}
-		}
-		// A BURIED box (>1 leaf) carries its buried sources' [Start,Width) windows
-		// in .Legs so the layout authority (OrdinalSeedLegWindows →
-		// finalizeSeedWindows) emits a per-buried-leaf sub-window and a qualified
-		// buried read resolves positionally; a plain scan leg (one leaf) leaves
-		// .Legs nil — its window is the top QOV correlation's. Struct literal (not
-		// NewRecordType) so a cross-source duplicate column name cannot panic — the
-		// ordinal reads are by slot and buried disambiguation is by .Legs windows.
-		var legs []values.RecordTypeLeg
-		if len(buriedLegs) > 1 {
-			legs = buriedLegs
-		}
-		var rt *values.RecordType = &values.RecordType{Fields: concatFields, Legs: legs}
-		if leg.nullSupplying {
-			// WithNullability, never a fresh NewRecordType: a concat legitimately
-			// carries duplicate bare names across buried sources, and the
-			// constructor's duplicate check is for name-addressed rows. Same rule
-			// and same reason as the translator's own seed wrap.
-			rt = values.WithNullability(rt, true).(*values.RecordType)
-		}
-		// The QOV's correlation is the leg's identifier, carried. It must be the SAME
-		// identifier planBuriedLegConcat stamped on the leg boundaries just above —
-		// the seed's ordinal reads resolve by matching one against the other — and
-		// the way to guarantee that is for both to be the one identifier the caller
-		// threaded, rather than two independent folds of one string.
-		qov, qovErr := values.NewQuantifiedObjectValue(leg.alias, rt)
-		if qovErr != nil {
-			return nil, foldStep1LegDecline{
-				Shape:   foldStep1LegShapeNone,
-				Witness: fmt.Sprintf("QOV(%T) failed: %v", leg.plan, qovErr),
-			}
-		}
-		for i := range concatFields {
-			fv, err := values.ResolveOrdinalSeedField(qov, i)
-			if err != nil {
-				return nil, foldStep1LegDecline{
-					Shape:   foldStep1LegShapeNone,
-					Witness: fmt.Sprintf("ofOrdinal(%T#%d) failed: %v", leg.plan, i, err),
-				}
-			}
-			fields = append(fields, values.RecordConstructorField{Name: concatFields[i].Name, Value: fv})
-		}
-	}
-	return values.NewRawRecordConstructorValue(fields...), foldStep1LegDecline{}
-}
-
-// materializedNLJOrdinalLayoutMatches reports whether resultValue is SAFE to
-// use, verbatim, as a materialized RecordQueryNestedLoopJoinPlan's own result
-// value when that plan's outer leg is outerPlan and its inner leg is
-// innerPlan.
-//
-// The executor's merge for a materialized NLJ (executor.go's
-// concatLegPositionals, called from mergeRows) ALWAYS concatenates the
-// OUTER leg's fields first (offset 0) and the INNER leg's immediately after
-// (offset outerWidth) — a PHYSICAL, execution-order fact. When resultValue
-// is a pristine ORDINAL SEED (every field a BAKED FrontierPinned FieldValue —
-// see ordinalSeedLegWindowsOf), its ordinals were baked assuming ONE FIXED
-// physical field order at the time the seed was built. A join-commutativity
-// exploration (fireExprRuleOnMember's ChildrenAsSet permutation,
-// expressions.SelectExpression.WithSwappedQuantifiers) tries the SAME
-// logical select with its first two quantifiers swapped so both outer/inner
-// assignments get evaluated on cost — but WithSwappedQuantifiers reuses
-// resultValue UNCHANGED (correct for an ordinary correlation-addressed
-// result value, whose meaning does not depend on quantifier order at all).
-// For an ordinal seed this is unsound: if the outer/inner legs have been
-// swapped relative to the seed's OWN baked layout, the seed's ordinals no
-// longer address the row this SPECIFIC physical plan will actually produce —
-// a stale-cost-model victory for this orientation (see
-// NestedLoopJoinUniqueKeyConjuncts) can promote it to the memo's winner, and
-// every baked reference into it then reads the wrong slot (or, when out of
-// range or genuinely unbound downstream, fails loud with an
-// unbound-correlation error) — never a silent wrong VALUE reaching the user
-// undetected, since the ordinal read is either right or loud, but still a
-// plan the query cannot execute.
-//
-// Verification is STRUCTURAL, never by alias/correlation-identity STRING: an
-// earlier version of this check compared outer/innerAlias strings against
-// the windows map, tried first with sel.GetSourceAliases() and then with the
-// quantifier's own GetAlias() as a fallback when the other was a synthetic
-// unique ID. Both individually regressed real queries — sourceAliases can
-// fall back to a synthetic ID for one SelectExpression member while
-// GetAlias() carries the seed's real leg name (the original 3-quantifier
-// EXISTS bug this check exists for), and the reverse can ALSO happen (a
-// 2-quantifier RIGHT-OUTER-JOIN-normalized member). Worse, GetAlias()'s
-// synthetic IDs are literally "q$N" strings (values.UniqueCorrelationIdentifier's
-// format) which a user-supplied QUOTED alias can legitimately collide with
-// byte-for-byte (values.CorrelationIdentifier is a bare wrapped string, so
-// NamedCorrelationIdentifier("q$2") == a synthetic UniqueCorrelationIdentifier
-// that happens to reach counter 2) — exactly the adversarial shape
-// TestFDB_QuotedMachineShapedAliases pins, and exactly what a second
-// alias-guessing "fallback-of-a-fallback" would still be exposed to. There is
-// no string namespace that is safe to guess in. A leg's ROW SHAPE (RecordName
-// + fields), by contrast, is never ambiguous: comparing outerPlan's/
-// innerPlan's OWN GetResultType() against the seed's two top-level windows
-// SORTED BY OFFSET (the seed's own physical order, independent of any name)
-// identifies which physical leg occupies which slot with no naming
-// involved at all.
-//
-// Declining (returning false) here is always safe: the join-commutativity
-// exploration ADDS an alternative candidate, it never removes the
-// non-swapped one, so the correctly-laid-out orientation remains available
-// in the SAME memo group to compete on cost normally. A resultValue that is
-// NOT an ordinal seed (the common case: a lazy, correlation-addressed
-// RecordConstructorValue) is always safe regardless of orientation — its
-// field reads resolve by correlation, not by physical position — and a
-// self-join (both legs share the identical row shape) is also always safe:
-// the ordinals address a structurally valid slot of either physical leg
-// either way, so there is nothing for this check to distinguish.
-func materializedNLJOrdinalLayoutMatches(resultValue values.Value, outerPlan, innerPlan plans.RecordQueryPlan) bool {
-	windows, _, runs := ordinalSeedLegLayoutOf(resultValue)
-	census := values.LegIdentityCensusEnabled()
-	// Whether the OLD map-count gate would have skipped this firing. Computed
-	// once and carried, because it is the discriminator both recordings need and
-	// re-deriving it at the second one is a second copy of the rule.
-	newlyChecked := runs != nil && len(windows) != len(runs)
-	if census {
-		// The MAP-vs-TILE disagreement is recorded FIRST and unconditionally,
-		// because it is the population this step moves and it is the one number
-		// that separates "the fix is live and agreeing" from "the fix is latent".
-		recordOrientationGate(func(c *orientationGateCounters) { c.Calls++ })
-		recordOrientationGate(func(c *orientationGateCounters) {
-			switch {
-			case runs == nil:
-				c.NotASeed++
-			case len(runs) == 2:
-				c.TiledByTwo++
-			default:
-				c.TiledByOther++
-			}
-			if newlyChecked {
-				c.MapCountDiffers++
-			}
-		})
-	}
-	// THE GATE IS THE RUN LIST, NOT THE MAP, and the correction is a behaviour
-	// change rather than a refactor.
-	//
-	// This used to read `len(windows) != 2 → return true`, described as "the safe
-	// default". It is backwards: returning TRUE is the PERMISSIVE answer. The
-	// function's own doc says declining is always safe, because the
-	// commutativity exploration ADDS an alternative candidate and never removes
-	// the non-swapped one — so a decline costs at most a lost alternative, while
-	// an accept can promote a swapped orientation whose baked ordinals no longer
-	// address the row this physical plan produces.
-	//
-	// The map's count was never the right question. finalizeSeedWindows ADDS a
-	// sub-window per buried leaf of a clustered box leg, so a 2-quantifier join
-	// with a box leg has ALWAYS reported more than 2 entries and has ALWAYS
-	// skipped this check — a fail-open that predates the nested kind. The run
-	// list asks what the check actually means: how many legs TILE this row.
-	if len(runs) != 2 {
-		// Genuinely outside a 2-quantifier join's scope: not an ordinal seed at
-		// all, or a row tiled by some other number of legs. Nothing for this
-		// check to compare.
-		return true
-	}
-	outerType := planRowRecordType(outerPlan)
-	innerType := planRowRecordType(innerPlan)
-	if outerType == nil || innerType == nil {
-		// A SECOND fail-open, separate from the one 3d' closes and left standing
-		// deliberately: a leg whose plan cannot state its row shape gives the
-		// structural comparison nothing to compare, and guessing is what this
-		// check was rewritten to stop doing. Counted so it is visible rather than
-		// merely true.
-		if census {
-			recordOrientationGate(func(c *orientationGateCounters) { c.Unverifiable++ })
-		}
-		return true
-	}
-	// runs arrives in OFFSET order from the derivation, which is the seed's own
-	// physical order and the only thing that identifies which leg occupies which
-	// slot without naming anything. Sorting here as well would be a second copy
-	// of that ordering rule.
-	ok := recordFieldsMatch(runs[0].Typ, outerType) && recordFieldsMatch(runs[1].Typ, innerType)
-	if census {
-		recordOrientationGate(func(c *orientationGateCounters) {
-			if ok {
-				c.Matched++
-				return
-			}
-			c.Declined++
-			if newlyChecked {
-				c.DeclinedNewlyChecked++
-			}
-		})
-	}
-	return ok
-}
-
-// recordFieldsMatch compares two RecordTypes by FIELDS only (name + ordinal +
-// field type, via values.Field.Equals) — NOT the full values.RecordType.Equals,
-// which also requires Nullable to match. A window's own Typ (ordinalLegWindow,
-// built by OrdinalSeedLegWindows from a positional slice of the merged seed's
-// fields) is a synthesized sub-record whose record-level nullability is not the
-// leg's, and one side of this comparison is a null-extended outer-join leg
-// while the other is the child plan's own row — so requiring Nullable to agree
-// would mismatch exactly the legs this gate exists to orient. Field shape is
-// the information both sides actually carry and is exactly what distinguishes
-// one base table's leg from another's (different tables have different column
-// sets).
-//
-// AN UNSTATED FIELD TYPE ON EITHER SIDE IS NOT A DIFFERENCE. A seed window's
-// field types come from wherever the seed was built, and a leg lowered from a
-// derived table carries names with UnknownType there (the same names-only
-// derivation the executor's own positional row type uses) while the leg's plan
-// states LONG. UnknownType means "not inferred", so requiring equality against
-// it turns an ABSENCE into a MISMATCH and declines a correctly-oriented join —
-// which, since this gate is what admits the materialized NLJ at all, left the
-// query with NO physical plan rather than with a lost alternative. The name and
-// the ordinal are what identify a leg; the type is corroboration, and only
-// where both sides state one.
-func recordFieldsMatch(a, b *values.RecordType) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	if len(a.Fields) != len(b.Fields) {
-		return false
-	}
-	for i := range a.Fields {
-		af, bf := a.Fields[i], b.Fields[i]
-		if af.Name != bf.Name || af.Ordinal != bf.Ordinal {
-			return false
-		}
-		if typeUnstated(af.FieldType) || typeUnstated(bf.FieldType) {
-			continue
-		}
-		if !af.FieldType.Equals(bf.FieldType) {
-			return false
-		}
-	}
-	return true
-}
-
 // typeUnstated reports whether t carries no inferred type — nil, or the
 // UnknownType placeholder. Both mean the same thing to a comparison: this side
 // has nothing to say, so it can neither confirm nor contradict the other.
@@ -4099,88 +3385,6 @@ func typeUnstated(t values.Type) bool {
 	}
 	pt, ok := t.(*values.PrimitiveType)
 	return ok && pt.TypeCode == values.TypeCodeUnknown
-}
-
-// planRowRecordType unwraps p's own GetResultType() down to the *RecordType
-// describing its row shape — directly, or through a RelationType wrapper
-// (values.RelationType.InnerType) when the plan reports a stream-of-rows
-// type rather than the bare row type. nil when neither shape applies (an
-// opaque/erased result type) — the caller treats that as "can't verify".
-func planRowRecordType(p plans.RecordQueryPlan) *values.RecordType {
-	if p == nil {
-		return nil
-	}
-	recordResultTypeRead("planRowRecordType", p.GetResultType())
-	switch t := p.GetResultType().(type) {
-	case *values.RecordType:
-		return t
-	case *values.RelationType:
-		if rt, ok := t.InnerType.(*values.RecordType); ok {
-			return rt
-		}
-	}
-	return nil
-}
-
-// foldStep1Seed is the step-1 result-value decision for the 3-quantifier
-// join+EXISTS arm. It returns the FULL leg-concat
-// ordinal seed (with the second result true) for an INDEPENDENT-legs
-// PROJECTED-EXISTS fold over ordinal-safe legs — the step-1 NLJ then
-// produces a positional merged row the step-2 FlatMap resolves the
-// projection over (legWindowRowContext) — and otherwise returns the
-// original RV unchanged (second result false).
-// The conditions, in order: (1) NOT a correlated step 1 (a correlated
-// FlatMap binds legs by NAME, where a baked seed hits the loud
-// BakedNameContextError — an earlier, simpler version of this seed had to
-// be reverted twice over exactly this trap); (2) the RV is a projected fold
-// (references the existential quantifier — a WHERE-EXISTS pass-through
-// does not); (3) the legs are ordinal-safe single sources and reconstruct a
-// seed BOTH layout twins accept (full coverage). Extracted so the exact
-// decision is white-box pinned: a functional test is BLIND to a silent
-// revert of this decision.
-//
-// The third return is the firing's census CLASS. It is returned rather than
-// re-derived at the caller because it is also THREADED to the leg rebase sites
-// below: RFC-200 gate (d) is denominated in "how many leg-local bake reads occur
-// under a firing this function classified reconstruct-nil / positional-merge",
-// and that mapping cannot be recovered downstream — the rebase arm has no way to
-// ask which of its callers it has (the same argument legRebaseSite records about
-// itself).
-func foldStep1Seed(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier, joinType plans.JoinType) (values.Value, bool, legRebaseOrigin) {
-	seedRV, gated, class, decline := foldStep1SeedDecision(rv, existAlias, correlatedStep1, leftPlan, rightPlan, leftAlias, rightAlias, joinType)
-	if values.LegIdentityCensusEnabled() {
-		recordFoldStep1Outcome(class, decline)
-	}
-	return seedRV, gated, legRebaseOrigin{
-		Site:          legRebaseSiteExists,
-		Step1:         class,
-		Step1LegShape: decline.Shape,
-	}
-}
-
-// foldStep1SeedDecision is foldStep1Seed's decision, split from the recording so
-// the classification is exercisable without process-global census state — the
-// same split every census on this path makes for the same reason.
-func foldStep1SeedDecision(rv values.Value, existAlias values.CorrelationIdentifier, correlatedStep1 bool, leftPlan, rightPlan plans.RecordQueryPlan, leftAlias, rightAlias values.CorrelationIdentifier, joinType plans.JoinType) (values.Value, bool, foldStep1Class, foldStep1LegDecline) {
-	// Conditions (1) and (2) are separate CLASSES even though the code tests them
-	// in one expression: they are different populations with different
-	// dispositions — (1) is the permanent correlated-semijoin wall, (2) is a
-	// correct pass-through — and a census that merged them could not tell a wall
-	// that moved from a pass-through that did.
-	if correlatedStep1 {
-		return rv, false, foldStep1DeclineCorrelatedStep1, foldStep1LegDecline{}
-	}
-	if !resultValueReferencesAlias(rv, existAlias) {
-		return rv, false, foldStep1DeclineNoExistRef, foldStep1LegDecline{}
-	}
-	seed, decline := reconstructFoldStep1Seed(leftPlan, rightPlan, leftAlias, rightAlias, joinType)
-	if seed == nil {
-		return rv, false, foldStep1DeclineReconstructNil, decline
-	}
-	if w, _ := ordinalSeedLegWindowsAcceptingNestedOf(seed); w == nil {
-		return rv, false, foldStep1DeclineWindowsNil, foldStep1LegDecline{}
-	}
-	return seed, true, foldStep1Accept, foldStep1LegDecline{}
 }
 
 // rebaseOuterLegRefsToMerged walks a predicate's values so that references to the
@@ -4215,10 +3419,11 @@ func foldStep1SeedDecision(rv values.Value, existAlias values.CorrelationIdentif
 // ordinal the name-built key returned. The key is now the identity, so a slot
 // that cannot state one is simply not in the map.
 //
-// The ordinal-safe scan/NLJ chain shape (planBuriedLegConcat's leg windows) is
-// deliberately NOT derived any more: it has leg windows and column NAMES, no
+// The ordinal-safe scan/NLJ chain shape — a merged row described by leg windows
+// and column NAMES — is deliberately NOT derived any more: it carries no
 // per-slot value to take an identity from, so every key it could mint would be a
-// name.
+// name. (The physical walk that once built those windows retired with the
+// three-quantifier arm, RFC-235; the decline predates and outlives it.)
 //
 // What declining COSTS is now nothing at all, and the correction matters because
 // it used to be the reason to hesitate: it cost "the lazy qualified mint", the
@@ -4296,253 +3501,6 @@ type legRowTypeSource struct {
 	Alias      values.CorrelationIdentifier
 }
 
-// legRowTypesFromQuantifiers states each join leg's flowed ROW type — the layout a leg-relative
-// ordinal indexes.
-//
-// THE AUTHORITY IS THE QUANTIFIER, which is Java's. `translateCorrelations`
-// rebinds a correlated reference against the quantifier's own flowed object value
-// (Quantifier.java:801-803: `getFlowedObjectValue()` is
-// `QuantifiedObjectValue.of(getAlias(), getFlowedObjectType())`), and
-// `getFlowedObjectType()` (Quantifier.java:806-810) is the ranged-over Reference's
-// result type. Go's port of exactly that is
-// `expressions.Quantifier.GetFlowedObjectType`, which additionally VERIFIES that
-// every member of the reference agrees on the row type instead of taking members[0]
-// — Java gets the verification for free from Reference.java:504-513.
-//
-// It is the ONLY authority. There used to be a second one — a fallback that
-// reconstructed a concat from the chosen physical plan's scan leaves
-// (`planBuriedLegConcat`) whenever the quantifier declined — and it was a
-// DIVERGENCE from the start: what a plan's scan leaves concatenate to is a
-// different question from what the quantifier flows, and answering the second
-// with the first is right only by coincidence.
-//
-// It was kept under a stated retirement condition — a WALK-ONLY census counter,
-// retire at zero — and the condition is met and acted on. MEASURED over the
-// real-FDB corpus, 848 leg derivations:
-//
-//	flowed 848, underivable 0, memberDisagreement 0 (walkOnly 0 -- the
-//	counter that gated this deletion, before the bucket went with the walk)
-//
-// Before the flowed object value carried its row type the same corpus put on the
-// order of a hundred legs through the walk, and they were not exotic: plain
-// RecordQueryScanPlan and RecordQueryPredicatesFilterPlan legs whose LOGICAL
-// members carried an untyped result value while the physical scan was typed.
-// Typing the flowed value closed that residue at the source — those legs' logical
-// members now state the row — and the walk went from a fallback to dead weight
-// that still RAN in production, filing a documented divergence under the leg's
-// own alias if it ever answered.
-//
-// The historical split is given as an order of magnitude on purpose. These are
-// rule FIRINGS, and the memo may explore one rule once or many times for a query
-// depending on exploration order, so successive full-suite runs of the same tree
-// do not reproduce each other exactly — measuring the pre-typing state twice gave
-// 656/846 and 658/848. Writing either down as a figure invites the next reader to
-// treat a two-count difference as a regression. What is stable, and what the
-// retirement turned on, is the ZERO.
-//
-// So the branch is gone. `planBuriedLegConcat` and its exported wrapper
-// `PlanLegConcatLayout` stay, because they serve a different and live purpose:
-// the planner/executor cross-agreement pin, where the walk's answer is compared
-// against the runtime's `concatLegPositionals` so a planner-stated ordinal cannot
-// index a slot the cursor filled from another leg.
-//
-// What re-arms suspicion is UnderivableLegs, not a walk counter: a leg the
-// quantifier cannot state now contributes no layout at all, which is the honest
-// answer and the one the census gates on.
-func legRowTypesFromQuantifiers(legs ...legRowTypeSource) map[values.CorrelationIdentifier]*values.RecordType {
-	out := make(map[values.CorrelationIdentifier]*values.RecordType, len(legs))
-	for _, leg := range legs {
-		if leg.Alias.IsZero() {
-			continue
-		}
-		if values.LegIdentityCensusEnabled() {
-			// The DENOMINATOR, counted before any outcome is decided: the three
-			// per-leg outcomes below must partition exactly this.
-			recordLegDerivation()
-		}
-		flowed, err := leg.Quantifier.GetFlowedObjectType()
-		if err != nil {
-			// Two members of one equivalence class flowing different row shapes.
-			// Java Verify-fails; Go declines the leg, because picking either shape
-			// picks a row layout by memo insertion order.
-			if values.LegIdentityCensusEnabled() {
-				recordLegTypeDisagreement(leg.Alias, err)
-			}
-			continue
-		}
-		flowedRecord, isRecord := flowed.(*values.RecordType)
-		if isRecord && flowedRecord != nil && len(flowedRecord.Fields) > 0 {
-			if values.LegIdentityCensusEnabled() {
-				recordFlowedLegLayout(leg.Alias, flowedRecord)
-			}
-			out[leg.Alias] = flowedRecord
-			// A flowed row type that carries its own leg table gives its buried
-			// sources their windows too; one that does not simply has none to give.
-			addBuriedLegLayouts(out, flowedRecord.Fields, flowedRecord.Legs)
-			continue
-		}
-		// The quantifier states no row, so neither does this derivation. The shape
-		// that reaches here is a leg that is itself a FlatMap — the accumulated side
-		// of an N-way join — whose row is whatever its result value computes, and
-		// whose result value states nothing. That is the defect booked as CQ-63 and
-		// the reason the qualified-name channel cannot close for such a leg.
-		if values.LegIdentityCensusEnabled() {
-			// The residue's CAUSE, recorded where it is decided, because knowing
-			// WHICH shape declines is the difference between an actionable gap and a
-			// mystery. The QUANTIFIER is what declined, so it is what the witness
-			// describes; the plan supplies the shape and the verdict of the escape
-			// that was tried and removed — reading the layout off the leg's result
-			// value as an ordinal seed — so that decline stays a measured fact
-			// rather than a remembered one (pinned at unit scale by
-			// TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg).
-			shape, escape := "no physical plan in hand", "seed escape N/A (no plan)"
-			if leg.Plan != nil {
-				shape, escape = fmt.Sprintf("%T", leg.Plan), describeSeedEscape(leg.Plan)
-			}
-			recordUnderivableLegLayout(leg.Alias,
-				fmt.Sprintf("%s [chosen plan %s]", describeLegQuantifier(leg.Quantifier), shape),
-				escape)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// PlanLegConcatLayout is the PLANNER's answer to "what row does this leg's chosen
-// plan deliver" — the concat of its scan leaves plus each leaf's window.
-//
-// Exported for one reason: its RUNTIME twin is executor.concatLegPositionals, and
-// the two must agree or a planner-stated ordinal indexes a slot the cursor filled
-// with another leg's column. Nothing in the planner needs it exported; a
-// cross-package pin does, and an agreement invariant with no test is a hope. nil
-// where the walk cannot reduce the plan (see legRowTypesFromQuantifiers).
-// The returned layout is a DEFENSIVE COPY, because the walk's single-leaf case
-// returns the leg plan's own `rt.Fields` slice verbatim — so handing that out
-// would give a caller in another package a writable view of a plan's result
-// type, where one `layout.Fields[i].Name = …` silently rewrites the plan. The
-// walk is planner-cold (once per leg per derivation) and the layouts are a
-// handful of fields, so copying costs nothing worth reasoning about, and it is
-// the only version of this contract that does not depend on every present and
-// future caller treating the result as read-only.
-func PlanLegConcatLayout(p plans.RecordQueryPlan, alias values.CorrelationIdentifier) *values.RecordType {
-	fields, legs, ok := planBuriedLegConcat(p, alias, 0)
-	if !ok || len(fields) == 0 {
-		return nil
-	}
-	outFields := make([]values.Field, len(fields))
-	copy(outFields, fields)
-	var outLegs []values.RecordTypeLeg
-	if len(legs) > 0 {
-		outLegs = make([]values.RecordTypeLeg, len(legs))
-		copy(outLegs, legs)
-	}
-	return &values.RecordType{Fields: outFields, Legs: outLegs}
-}
-
-// describeLegQuantifier renders a leg quantifier that reached the derivation with
-// NO physical plan, in terms that tell two such legs apart.
-//
-// The census witness it feeds used to render `%T` of the quantifier.
-// expressions.Quantifier is a struct, not an interface, so that rendered the same
-// eleven characters for every leg in the population — the witness list then
-// distinguished legs only by the alias it already printed, and said nothing about
-// WHY the quantifier could state no type. The question the residue turns on is
-// what the quantifier's reference MEMBERS flow, because GetFlowedObjectType
-// derives the layout from exactly those (it takes the agreed row type across
-// members, skipping members whose result value is untyped). So that is what this
-// reports: the kind, the member count, and each member's expression type paired
-// with the result type it flows — which separates "no members at all" from "all
-// members untyped" from "members disagree", three different defects that the
-// single collapsed witness could not tell apart.
-func describeLegQuantifier(q expressions.Quantifier) string {
-	ref := q.GetRangesOver()
-	if ref == nil {
-		return fmt.Sprintf("Quantifier(kind=%v, alias=%s) ranges over NOTHING",
-			q.Kind(), q.GetAlias().Name())
-	}
-	members := ref.AllMembers()
-	if len(members) == 0 {
-		return fmt.Sprintf("Quantifier(kind=%v, alias=%s) reference has NO members",
-			q.Kind(), q.GetAlias().Name())
-	}
-	parts := make([]string, 0, len(members))
-	for _, m := range members {
-		if m == nil {
-			parts = append(parts, "<nil member>")
-			continue
-		}
-		rv := m.GetResultValue()
-		if rv == nil {
-			parts = append(parts, fmt.Sprintf("%T→<no result value>", m))
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%T→%v", m, rv.Type()))
-	}
-	sort.Strings(parts)
-	return fmt.Sprintf("Quantifier(kind=%v, alias=%s) over %d member(s) [%s]",
-		q.Kind(), q.GetAlias().Name(), len(members), strings.Join(parts, ", "))
-}
-
-// describeSeedEscape states, for one leg the layout derivation declined, what the
-// SEEDED-RESULT-VALUE escape would have made of it.
-//
-// That escape — read the leg's own result value as an ordinal seed
-// (values.OrdinalSeedLegWindows) and take the merged row type it emits — is the
-// obvious next arm to add, and it was implemented, measured and removed because it
-// declines on every leg in this residue. A removed arm leaves no trace, so the
-// measurement that justified removing it is recorded here instead of remembered:
-// the witness names the leg's result-value shape and the escape's verdict, and the
-// day a leg arrives whose seed IS acceptable, the witness says so.
-//
-// TestOrdinalSeedLegWindows_DeclinesANoLayoutFlatMapLeg pins the same fact at unit
-// scale, on the shape this reports.
-func describeSeedEscape(plan plans.RecordQueryPlan) string {
-	fm, isFM := plan.(*plans.RecordQueryFlatMapPlan)
-	if !isFM {
-		return "seed escape N/A (not a FlatMap)"
-	}
-	rv := fm.GetResultValue()
-	rc, isRC := rv.(*values.RecordConstructorValue)
-	if !isRC {
-		return fmt.Sprintf("seed escape DECLINES: result value is %T, not a record constructor", rv)
-	}
-	windows, merged := values.OrdinalSeedLegWindows(rc)
-	if windows == nil || merged == nil {
-		return fmt.Sprintf("seed escape DECLINES: %d-field record constructor is not an ordinal seed", len(rc.Fields))
-	}
-	return fmt.Sprintf("seed escape ACCEPTS: %d windows, %d merged fields", len(windows), len(merged.Fields))
-}
-
-// addBuriedLegLayouts gives each BURIED source of a leg its own layout, sliced
-// from the leg's concat at that source's window.
-//
-// A leg that is itself a join binds its buried sources under their own
-// correlations too — the merged row's leg table carries every buried sub-window,
-// so the runtime binder serves them — and a read correlated to a buried source
-// must state its ordinal in the row it will actually be bound to, not in the box
-// that carries it. A malformed or already-claimed window contributes nothing; a
-// first-claim wins, matching the leg table's own first-match rule.
-func addBuriedLegLayouts(out map[values.CorrelationIdentifier]*values.RecordType, concat []values.Field, legs []values.RecordTypeLeg) {
-	for _, bl := range legs {
-		end := bl.Start + bl.Width
-		if bl.Alias.IsZero() || bl.Start < 0 || end > len(concat) || bl.Start >= end {
-			continue
-		}
-		if _, taken := out[bl.Alias]; taken {
-			continue
-		}
-		sub := make([]values.Field, end-bl.Start)
-		for k := range sub {
-			f := concat[bl.Start+k]
-			f.Ordinal = k
-			sub[k] = f
-		}
-		out[bl.Alias] = &values.RecordType{Fields: sub}
-	}
-}
-
 func rebaseOuterLegRefsToMerged(
 	p predicates.QueryPredicate,
 	legAliases []string,
@@ -4550,15 +3508,14 @@ func rebaseOuterLegRefsToMerged(
 	mergedType values.Type,
 	legLayout map[values.ColumnIdentity]int,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
-	site legRebaseOrigin,
 ) predicates.QueryPredicate {
 	if p == nil {
 		return p
 	}
 	switch pred := p.(type) {
 	case *predicates.ComparisonPredicate:
-		newOperand := rebaseOuterLegValue(pred.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
-		newCompOperand := rebaseOuterLegValue(pred.Comparison.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		newOperand := rebaseOuterLegValue(pred.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
+		newCompOperand := rebaseOuterLegValue(pred.Comparison.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if newOperand == pred.Operand && newCompOperand == pred.Comparison.Operand {
 			return p
 		}
@@ -4574,7 +3531,7 @@ func rebaseOuterLegRefsToMerged(
 			Comparison: cmp,
 		}
 	case *predicates.ValuePredicate:
-		newVal := rebaseOuterLegValue(pred.Value, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		newVal := rebaseOuterLegValue(pred.Value, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if newVal == pred.Value {
 			return p
 		}
@@ -4583,7 +3540,7 @@ func rebaseOuterLegRefsToMerged(
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 			if subs[i] != s {
 				changed = true
 			}
@@ -4596,7 +3553,7 @@ func rebaseOuterLegRefsToMerged(
 		changed := false
 		subs := make([]predicates.QueryPredicate, len(pred.SubPredicates))
 		for i, s := range pred.SubPredicates {
-			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+			subs[i] = rebaseOuterLegRefsToMerged(s, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 			if subs[i] != s {
 				changed = true
 			}
@@ -4606,7 +3563,7 @@ func rebaseOuterLegRefsToMerged(
 		}
 		return predicates.NewOr(subs...)
 	case *predicates.NotPredicate:
-		newChild := rebaseOuterLegRefsToMerged(pred.Child, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		newChild := rebaseOuterLegRefsToMerged(pred.Child, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if newChild == pred.Child {
 			return p
 		}
@@ -4640,7 +3597,6 @@ func rebaseOuterLegValue(
 	mergedType values.Type,
 	legLayout map[values.ColumnIdentity]int,
 	legLocalTypes map[values.CorrelationIdentifier]*values.RecordType,
-	site legRebaseOrigin,
 ) values.Value {
 	if v == nil {
 		return v
@@ -4728,14 +3684,20 @@ func rebaseOuterLegValue(
 					//     Go's two-level NLJ→FlatMap lowering reaches this site
 					//     without a stated merged layout on the EXISTS-over-join and
 					//     RFC-153 buried-leg paths, and there the reference's own
-					//     leg-local ordinal is the honest answer: the runtime binder
-					//     (executor.bindMergedOuterLegs) binds each leg of the merged
-					//     row under its OWN correlation, so `QOV(leg)#ord` resolves
-					//     against that leg's window exactly as it would have against
-					//     an unmerged source. Keeping N sibling aliases live is the
-					//     Go-only widening booked in DIVERGENCES.md; this arm is what
-					//     uses it, and it retires with the widening when (1) covers
-					//     every shape reaching this cursor.
+					//     leg-local ordinal is the honest answer: `QOV(leg)#ord`
+					//     resolves against that leg's WINDOW in the merged row's Legs
+					//     metadata (executor.legWindowBinder), exactly as it would have
+					//     against an unmerged source. That window is ORDINAL — a span
+					//     table the row itself carries — not a name-keyed namespace. A
+					//     second, name-keyed binder used to bind every leg under its own
+					//     correlation to serve this site; it was retired (RFC-235) after
+					//     measuring 15,032 windows bound and ZERO read, the span table
+					//     having already been answering all of them. DIVERGENCES.md's
+					//     entry covers THAT binder and is marked retired; what survives
+					//     is the PLANNER-side half — keeping N sibling aliases live so
+					//     this arm has something to pass through — and this arm is its
+					//     only user. It retires when (1) covers every shape reaching
+					//     this cursor.
 					//  3. The DECLINE, for a read that states no identity at all.
 					//     There USED to be a lazy qualified mint here — it re-anchored
 					//     such a read onto the merge correlation as
@@ -4812,8 +3774,6 @@ func rebaseOuterLegValue(
 					// and the positional merge already use.
 					if legLayout != nil && identity == legReadIdentityInLegDomain {
 						if ord, ok := legLayout[id]; ok {
-							recordRebaseOuterLegArm(legLocalBakeMergedReAnchor, fv, qov,
-								legLocalTypes, identity, site)
 							target, targetErr := values.NewQuantifiedObjectValue(mergedCorr, mergedType)
 							if targetErr == nil {
 								reanchored, resolveErr := values.ResolveFieldOrdinals(target, []int{ord})
@@ -4831,19 +3791,16 @@ func rebaseOuterLegValue(
 					// with a name, which is a strict loss of information at a site
 					// whose entire purpose is to stop losing it.
 					if identity == legReadIdentityInLegDomain {
-						recordRebaseOuterLegArm(legLocalBakeBaked, fv, qov,
-							legLocalTypes, identity, site)
 						return v
 					}
 
 					// ARM 3 — the decline. Nothing is minted and nothing is moved:
 					// the reference keeps its own leg correlation, which
-					// bindMergedOuterLegs binds, and whatever it could not state
+					// legWindowBinder resolves through the merged row's leg spans,
+					// and whatever it could not state
 					// about its own column it still cannot state — which is the
 					// truthful outcome, and the one that leaves the defect visible
 					// at the producer instead of papered over with a string here.
-					recordRebaseOuterLegArm(legLocalBakeDeclined, fv, qov,
-						legLocalTypes, identity, site)
 					return v
 				}
 			}
@@ -4856,7 +3813,7 @@ func rebaseOuterLegValue(
 	changed := false
 	newChildren := make([]values.Value, len(children))
 	for i, c := range children {
-		newChildren[i] = rebaseOuterLegValue(c, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		newChildren[i] = rebaseOuterLegValue(c, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if newChildren[i] != c {
 			changed = true
 		}
@@ -4876,20 +3833,20 @@ func rebaseOuterLegValue(
 // IS known, so we rebase `QOV(A).col` → `FieldValue(QOV($m), "A.col")` — the
 // authoritative qualified key the merged outer row carries (review condition 4) —
 // using the exact rebaseOuterLegValue/rebaseOuterLegRefsToMerged machinery the
-// EXISTS-over-join path uses. The ordinal twin is
-// rebasePlanOuterRefsOrdinal (left_outer_existential.go) — the two walks
-// and planReferencesAnyBuriedAlias enumerate the same node kinds and must
-// move together. Pass-through nodes are rebuilt around their rebased
+// EXISTS-over-join path uses. It once had an ORDINAL twin that had to
+// enumerate the same node kinds in lockstep; that twin retired with the
+// three-quantifier arm (RFC-235), so this walk and planReferencesAnyBuriedAlias
+// are now the only pair that must agree. Pass-through nodes are rebuilt around their rebased
 // inner; an unhandled node is returned as-is and caught by the post-rebase
 // verification (planReferencesAnyBuriedAlias) which declines the probe so the
 // correct materialized NLJ fallback wins.
-func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) (plans.RecordQueryPlan, error) {
+func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType) (plans.RecordQueryPlan, error) {
 	if p == nil || len(legAliases) == 0 {
 		return p, nil
 	}
 	switch pl := p.(type) {
 	case *plans.RecordQueryIndexPlan:
-		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if !changed {
 			return p, nil
 		}
@@ -4898,13 +3855,13 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		// The SARGs are on the scan this wrapper holds as a FIELD; the
 		// pass-through arms below cannot reach them, and Fetch(Covering(...)) is
 		// the shape every index-backed access arrives in. Rebase the inner and
-		// rebuild the wrapper — mirroring rebasePlanOuterRefsOrdinal, which the
-		// comment above requires this walk to move in step with.
+		// rebuild the wrapper, which planReferencesAnyBuriedAlias must keep
+		// enumerating in step with (see the walk's doc comment).
 		inner, ok := plans.IndexPlanOf(pl)
 		if !ok {
 			return p, nil
 		}
-		rebased, err := rebasePlanBuriedRefs(inner, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		rebased, err := rebasePlanBuriedRefs(inner, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -4914,13 +3871,13 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return pl.WithIndexPlan(rebasedIdx), nil
 	case *plans.RecordQueryScanPlan:
-		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		newComps, changed := rebaseComparisonRanges(pl.GetScanComparisons(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if !changed {
 			return p, nil
 		}
 		return pl.WithScanComparisons(newComps), nil
 	case *plans.RecordQueryPredicatesFilterPlan:
-		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -4928,7 +3885,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		newPreds := make([]predicates.QueryPredicate, len(preds))
 		changed := inner != pl.GetInner()
 		for i, pr := range preds {
-			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 			if newPreds[i] != pr {
 				changed = true
 			}
@@ -4938,7 +3895,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryPredicatesFilterPlanWithAlias(inner, newPreds, pl.GetInnerAlias())
 	case *plans.RecordQueryFilterPlan:
-		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -4946,7 +3903,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		newPreds := make([]predicates.QueryPredicate, len(preds))
 		changed := inner != pl.GetInner()
 		for i, pr := range preds {
-			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+			newPreds[i] = rebaseOuterLegRefsToMerged(pr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 			if newPreds[i] != pr {
 				changed = true
 			}
@@ -4956,7 +3913,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryFilterPlan(newPreds, inner)
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
-		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -4965,7 +3922,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryFetchFromPartialRecordPlan(inner, pl.GetTranslateValueFunction(), pl.GetResultType(), pl.GetFetchIndexRecords())
 	case *plans.RecordQueryDefaultOnEmptyPlan:
-		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -4974,7 +3931,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryDefaultOnEmptyPlan(inner, pl.GetDefaultValue())
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -4986,7 +3943,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryFirstOrDefaultPlan(inner, pl.GetDefaultValue())
 	case *plans.RecordQueryTypeFilterPlan:
-		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -4995,17 +3952,17 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		}
 		return plans.NewRecordQueryTypeFilterPlan(pl.GetRecordTypes(), inner)
 	case *plans.RecordQueryMapPlan:
-		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
-		newResult := rebaseOuterLegValue(pl.GetResultValue(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		newResult := rebaseOuterLegValue(pl.GetResultValue(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if inner == pl.GetInner() && newResult == pl.GetResultValue() {
 			return p, nil
 		}
 		return plans.NewRecordQueryMapPlan(inner, newResult)
 	case *plans.RecordQueryProjectionPlan:
-		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		inner, err := rebasePlanBuriedRefs(pl.GetInner(), legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if err != nil {
 			return nil, err
 		}
@@ -5013,7 +3970,7 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 		newProjs := make([]values.Value, len(projs))
 		changed := inner != pl.GetInner()
 		for i, v := range projs {
-			newProjs[i] = rebaseOuterLegValue(v, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+			newProjs[i] = rebaseOuterLegValue(v, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 			if newProjs[i] != v {
 				changed = true
 			}
@@ -5042,11 +3999,11 @@ func rebasePlanBuriedRefs(p plans.RecordQueryPlan, legAliases []string, mergedCo
 
 // rebaseComparisonRanges rebases the buried-leg references in a SARG's per-column
 // comparison ranges onto mergedCorr. Returns the new ranges and whether any changed.
-func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) ([]*predicates.ComparisonRange, bool) {
+func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType) ([]*predicates.ComparisonRange, bool) {
 	out := make([]*predicates.ComparisonRange, len(comps))
 	changed := false
 	for i, cr := range comps {
-		nc, ch := rebaseComparisonRange(cr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		nc, ch := rebaseComparisonRange(cr, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		out[i] = nc
 		if ch {
 			changed = true
@@ -5059,7 +4016,7 @@ func rebaseComparisonRanges(comps []*predicates.ComparisonRange, legAliases []st
 // equality/inequality comparison operands. Returns the (possibly rebuilt) range and
 // whether it changed. A range whose rebuilt comparison cannot be re-merged is
 // returned unchanged (the verification then declines the probe).
-func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) (*predicates.ComparisonRange, bool) {
+func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType) (*predicates.ComparisonRange, bool) {
 	if cr == nil || cr.IsEmpty() {
 		return cr, false
 	}
@@ -5072,7 +4029,7 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 	rebuilt := predicates.EmptyComparisonRange()
 	changed := false
 	for _, c := range comparisons {
-		nc := rebaseComparison(c, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+		nc := rebaseComparison(c, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 		if nc != c {
 			changed = true
 		}
@@ -5091,11 +4048,11 @@ func rebaseComparisonRange(cr *predicates.ComparisonRange, legAliases []string, 
 // rebaseComparison rebases a single comparison's RHS operand value onto mergedCorr,
 // copying the comparison so every non-operand field (Type, Escape, ParameterName,
 // the Text*/vector fields) is preserved verbatim.
-func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType, site legRebaseOrigin) *predicates.Comparison {
+func rebaseComparison(c *predicates.Comparison, legAliases []string, mergedCorr values.CorrelationIdentifier, mergedType values.Type, legLayout map[values.ColumnIdentity]int, legLocalTypes map[values.CorrelationIdentifier]*values.RecordType) *predicates.Comparison {
 	if c == nil || c.Operand == nil {
 		return c
 	}
-	newOperand := rebaseOuterLegValue(c.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes, site)
+	newOperand := rebaseOuterLegValue(c.Operand, legAliases, mergedCorr, mergedType, legLayout, legLocalTypes)
 	if newOperand == c.Operand {
 		return c
 	}
@@ -5391,641 +4348,6 @@ func flattenAndPredicates(preds []predicates.QueryPredicate) []predicates.QueryP
 	return preds
 }
 
-// implementJoinWithExistential handles a flat SelectExpression with
-// ForEach(left), ForEach(right), Existential(exists_scan). This shape
-// comes from a cross-join + WHERE EXISTS filter. The method builds a
-// two-level NLJ: an inner join for left × right, then an outer EXISTS
-// semi-join wrapping the join result with the existential inner.
-func (r *ImplementNestedLoopJoinRule) implementJoinWithExistential(
-	call *ExpressionRuleCall,
-	sel *expressions.SelectExpression,
-	quants []expressions.Quantifier,
-) {
-	// The helper owns exactly the retained two-ForEach fold. Flat N-way
-	// existential selects are partitioned before implementation.
-	if len(quants) != 3 {
-		return
-	}
-
-	// FULL OUTER cannot be implemented through the join+EXISTS semi-join
-	// shape (it cannot carry the FULL drain). FULL+EXISTS is rejected
-	// upstream with a clear error, but guard here too so this rule never
-	// silently yields an INNER plan (the join-type switch below defaults
-	// JoinFullOuter → JoinInner).
-	if sel.GetJoinType() == expressions.JoinFullOuter {
-		return
-	}
-
-	leftRef := quants[0].GetRangesOver()
-	rightRef := quants[1].GetRangesOver()
-	existRef := quants[2].GetRangesOver()
-	if leftRef == nil || rightRef == nil || existRef == nil {
-		return
-	}
-
-	// An EXPLODE leg (a lateral array unnest merged into the existential
-	// select during rewriting) is not this arm's shape: the unnest+EXISTS
-	// composition has its own dedicated nested lowering
-	// (translateUnnestExistsFilter — the unnest FlatMap as the existential's
-	// outer), which binds the element under its own alias with the BARE row
-	// key. The two-level plan built here addresses outer legs through the
-	// merged row's QUALIFIED keys, which an exploded element's row never
-	// carries — the existential correlation would read NULL and drop every
-	// row. Decline; the dedicated nested member carries the query (it always
-	// has: this arm's previous materialized NLJ over a correlated Explode
-	// materialized the element against an unbound context, yielded zero
-	// rows, and never won).
-	if getExplodeExpression(leftRef) != nil || getExplodeExpression(rightRef) != nil {
-		return
-	}
-
-	leftExpr, _ := getWinnerForOrdering(leftRef, properties.PreserveOrdering(), call.CostModel())
-	rightExpr, _ := getWinnerForOrdering(rightRef, properties.PreserveOrdering(), call.CostModel())
-	existExpr, _ := getWinnerForOrdering(existRef, properties.PreserveOrdering(), call.CostModel())
-	if leftExpr == nil || rightExpr == nil || existExpr == nil {
-		return
-	}
-	leftPh, ok1 := leftExpr.(physicalPlanExpression)
-	rightPh, ok2 := rightExpr.(physicalPlanExpression)
-	existPh, ok3 := existExpr.(physicalPlanExpression)
-	if !ok1 || !ok2 || !ok3 {
-		return
-	}
-	leftPlan := leftPh.GetRecordQueryPlan()
-	rightPlan := rightPh.GetRecordQueryPlan()
-	existPlan := existPh.GetRecordQueryPlan()
-
-	aliases := sel.GetSourceAliases()
-	var leftAlias, rightAlias, existAlias string
-	if len(aliases) >= 1 {
-		leftAlias = aliases[0]
-	}
-	if len(aliases) >= 2 {
-		rightAlias = aliases[1]
-	}
-	if len(aliases) >= 3 {
-		existAlias = aliases[2]
-	}
-	if existAlias == "" {
-		// The positional source-alias triple is USER-FACING naming and a
-		// coexisting select form (the memo-identity refinement lets the
-		// LEFT-box and dissolved forms coexist as members) may not carry a
-		// third entry. The correlation authority for the FirstOrDefault
-		// column and the EXISTS residual is the existential QUANTIFIER'S
-		// OWN alias — fall back to it rather than minting a zero-value
-		// correlation (a construction panic) or declining a shape with no
-		// other implementer (a no-plan failure; the null-supplied-conjunct
-		// LEFT+EXISTS pin is exactly that query).
-		existAlias = quants[2].GetAlias().Name()
-	}
-	if existAlias == "" {
-		return // no correlation authority at all — fail closed
-	}
-
-	// The materialized step-1 NLJ executes each leg INDEPENDENTLY, so it
-	// cannot implement (a) a NULL-ON-EMPTY leg (a dissolved LEFT box pulled
-	// up by SelectMergeRule carries its outer-join semantics entirely on
-	// that quantifier flag — a materialized INNER execution drops the
-	// per-outer-row null-extension, and the EXISTS/NOT EXISTS twins over
-	// `dept LEFT JOIN emp` returned identical rows), nor (b) a leg whose
-	// subtree references its sibling (the dissolved box's ON predicate lives
-	// INSIDE the null-supplying leg's subselect; embedded standalone, the
-	// sibling reference resolves against the leg's own row through the
-	// correlation-unchecked frontier fallback — E.DEPT_ID = D.ID degenerated
-	// to emp.dept_id = emp.id → cross product). A decline is NOT enough:
-	// REWRITING promotes one winner per group, and when the merged select
-	// wins, the unmerged alternative is gone at PLANNING — a `SELECT *`
-	// root then fails to plan at all. Implement the shape the way Java's
-	// per-quantifier-property lowering does (ImplementNestedLoopJoinRule.
-	// planPartitionToPhysical: null-on-empty → DefaultOnEmpty wrap, join
-	// executes the inner correlated): orient the dependent/null-extended
-	// leg INNER and build step 1 as the correlated FlatMap — the identical
-	// construction (and identical provided-alias authority) as the
-	// 2-quantifier dependency/strict-single FlatMap branches. Orientation keys on the
-	// correlation topology, so the ChildrenAsSet swapped firing converges
-	// to the same plan.
-	leftProvided := physicalProvidedAliases(leftExpr, quants[0].GetAlias())
-	rightProvided := physicalProvidedAliases(rightExpr, quants[1].GetAlias())
-	leftDeps := legReferencesAny(leftRef, rightProvided)
-	rightDeps := legReferencesAny(rightRef, leftProvided)
-	if leftDeps && rightDeps {
-		// Mutually correlated legs: neither orientation binds both. No
-		// translation produces this today; decline rather than mis-execute.
-		return
-	}
-	q0, q1 := quants[0], quants[1]
-	correlatedStep1 := leftDeps || rightDeps || q0.IsNullOnEmpty() || q1.IsNullOnEmpty()
-	if correlatedStep1 && (leftDeps || (q0.IsNullOnEmpty() && !rightDeps)) {
-		leftPlan, rightPlan = rightPlan, leftPlan
-		leftExpr, rightExpr = rightExpr, leftExpr
-		leftAlias, rightAlias = rightAlias, leftAlias
-		q0, q1 = q1, q0
-	}
-	if correlatedStep1 && q0.IsNullOnEmpty() {
-		// A null-extended OUTER leg after orientation (both legs
-		// null-on-empty, or a null-on-empty leg the other leg depends on):
-		// no translation produces this; decline rather than drop the
-		// extension.
-		return
-	}
-	if correlatedStep1 && sel.GetJoinType() != expressions.JoinInner {
-		// A select-level OUTER join type in the correlated arm is not
-		// constructible today (the flatten and EXISTS-in-ON are INNER-only;
-		// an undissolved outer box never gains an existential quantifier),
-		// and the orientation swap above would wrap the WRONG side's inner in
-		// the DefaultOnEmpty null-extension boundary. Decline defensively
-		// rather than null-extend the preserved leg.
-		return
-	}
-	if correlatedStep1 && resultValueReferencesAlias(sel.GetResultValue(), quants[2].GetAlias()) {
-		// A PROJECTED-EXISTS fold (the result value reads the existential
-		// quantifier) over a correlated/null-extended step 1: the step-1
-		// FlatMap would evaluate the folded ExistsValue with a DEAD
-		// existential binding, and the step-2 rebase would read qualified
-		// keys off the fold's bare-keyed row. Not constructible today (the
-		// projected fold is INNER-only upstream; the outer-join variant is
-		// rejected before planning); decline defensively rather than yield
-		// either wrongness.
-		return
-	}
-	if correlatedStep1 {
-		// The correlated step-1 binds the outer row under leftAlias and the
-		// inner under rightAlias — an empty alias would bind under the zero
-		// correlation identifier and every leg reference would miss.
-		// Backfill from the quantifier aliases (the 2-quantifier path's
-		// convention); decline if genuinely unnamed.
-		if leftAlias == "" {
-			leftAlias = q0.GetAlias().Name()
-		}
-		if rightAlias == "" {
-			rightAlias = q1.GetAlias().Name()
-		}
-		if leftAlias == "" || rightAlias == "" {
-			return
-		}
-	}
-	// One identifier per leg, threaded from the leg's own quantifier — q0/q1 follow
-	// the same orientation swap leftAlias/rightAlias did, so they are the typed
-	// counterparts of exactly those two names. Everything below that used to mint
-	// its own identifier from that text now reads these: the plan's leg identities,
-	// the seed's QOV correlations, the correlated FlatMap's leg correlations. The
-	// substitution is recorded rather than assumed, because the source-alias slice
-	// and the quantifiers are independently populated.
-	leftCorr, rightCorr := q0.GetAlias(), q1.GetAlias()
-	if values.LegIdentityCensusEnabled() {
-		values.RecordLegIdentityComparison(values.LegSiteNLJPlanAlias, leftAlias, leftCorr.Name())
-		values.RecordLegIdentityComparison(values.LegSiteNLJPlanAlias, rightAlias, rightCorr.Name())
-	}
-
-	// Split predicates into join predicates (for the inner join) and
-	// EXISTS-related predicates (for the outer existential level). EXISTS
-	// predicates reference the existential alias and belong on the outer
-	// level.
-	allPreds := flattenAndPredicates(sel.GetPredicates())
-	var joinPreds, existPreds []predicates.QueryPredicate
-	hasExistsFilter := false
-	negated := false
-	existCorr := correlationForSourceAlias(quants[2].GetAlias(), existAlias)
-	// The inner-leg set of the EXISTS subquery (existCorr ∪ all FROM-source
-	// aliases the existential subplan declares). A predicate that references a
-	// member belongs on the existential level, BELOW the FOD; a predicate that
-	// references ONLY the outer JOIN legs is the inner-join condition; an external
-	// binding (uncorrelated scalar subquery alias / parameter) stays on the
-	// left×right join, never pushed below the FOD (RFC-141 R4).
-	existLegs := collectInnerLegAliases(existRef, existCorr)
-	for _, p := range allPreds {
-		if _, ok := predicates.IsExistentialPredicate(p); ok {
-			// Pure EXISTS predicate — belongs on the outer level.
-			hasExistsFilter = true
-			continue
-		}
-		if _, ok := predicates.IsNotExistentialPredicate(p); ok {
-			hasExistsFilter = true
-			negated = true
-			continue
-		}
-		// A predicate referencing a member of the EXISTS inner-leg set belongs on
-		// the existential level, below the FOD. The earlier "any non-outer-leg
-		// correlation" test misclassified a correlation predicate referencing a
-		// NON-rightmost leg of a MULTI-TABLE EXISTS inner as an exist predicate but
-		// also over-routed an uncorrelated scalar-subquery predicate below the FOD;
-		// membership in existLegs is the precise discriminator (RFC-141 R4 P2a,
-		// JOIN-in-FROM variant).
-		if predicateReferencesInnerLeg(p, existLegs) {
-			existPreds = append(existPreds, p)
-		} else {
-			joinPreds = append(joinPreds, p)
-		}
-	}
-
-	// Map join type.
-	var joinType plans.JoinType
-	switch sel.GetJoinType() {
-	case expressions.JoinLeftOuter:
-		joinType = plans.JoinLeftOuter
-	default:
-		joinType = plans.JoinInner
-	}
-
-	// A projected-EXISTS fold over SCAN legs produces the FULL leg-concat
-	// ordinal seed at step 1; the step-2 FlatMap then evaluates the folded
-	// projection over that positional merged row through
-	// legWindowRowContext (spanAwareRow resolves dotted "T1.ID" reads
-	// positionally, legWindowBinder resolves QOV refs), so the projection is
-	// NEVER rebased — no planner rebase, no dotted-name split. SCOPED to the
-	// independent-legs materialized NLJ: a correlated step-1 binds legs by
-	// NAME, where a baked seed hits the loud BakedNameContextError (an
-	// earlier, simpler version of this seed had to be reverted twice over
-	// exactly this trap). Only reached when both legs are ordinal-safe
-	// single sources (scan-family).
-	//
-	// The DENOMINATOR of the foldStep1Seed outcome census is counted HERE, not by
-	// summing the classes foldStep1Seed records. Summing four counters
-	// incremented inside the function they partition is true by construction and
-	// gates nothing; an independent counter catches a class arm added without a
-	// counter, and an early return that skips recording.
-	if values.LegIdentityCensusEnabled() {
-		recordFoldStep1Denominator()
-	}
-	step1RV, gatedSeedStep1, step1Origin := foldStep1Seed(
-		sel.GetResultValue(), quants[2].GetAlias(), correlatedStep1,
-		leftPlan, rightPlan, leftCorr, rightCorr, joinType)
-	// Step 1: build the inner join (left × right). Its merged row is the
-	// outer of the existential FlatMap. Independent legs take the
-	// materialized NLJ; a null-on-empty or sibling-correlated leg takes the
-	// correlated FlatMap (oriented above), whose DefaultOnEmpty wrap and
-	// per-outer-row re-execution carry the semantics the NLJ cannot.
-	// step1Expr is what the step-2 FlatMap's outer quantifier ranges over.
-	step1Expr := leftExpr
-	if correlatedStep1 {
-		fmPlan, _, _, ok, err := buildCorrelatedFlatMapPlan(
-			call,
-			joinPreds, sel.GetResultValue(),
-			leftPlan, rightPlan, leftCorr, rightCorr, leftExpr, rightExpr,
-			joinType, q1.IsNullOnEmpty(), false, false,
-		)
-		if err != nil {
-			call.Fail(err)
-			return
-		}
-		if !ok {
-			return
-		}
-		// The FlatMap plan already carries its two leg memo quantifiers (RFC-184 W2,
-		// no physicalFlatMapWrapper) — it IS the step-1 expression the step-2 outer
-		// quantifier ranges over.
-		step1Expr = fmPlan
-	} else {
-		// step1Expr was `leftExpr` — the LEFT LEG ALONE — while the plan held the
-		// whole join, so the step-2 FlatMap's outer child was not reachable from
-		// its quantifier's group (RFC-183 §14). The materialized NLJ is its own
-		// cascades expression carrying BOTH legs' memoized quantifiers directly
-		// (RFC-184 W2, no physicalNestedLoopJoinWrapper), so the join IS reachable
-		// and the plan and its quantifiers can no longer diverge; the
-		// correlatedStep1 branch above does the same with its FlatMap. Both legs
-		// keep their own interned groups, so this only ADDS reachability — no group
-		// is narrowed.
-		//
-		// step1RV can be an ordinal seed even when gatedSeedStep1 above declined
-		// to (re)construct one — foldStep1Seed only decides whether to BUILD a
-		// fresh seed for a projected-EXISTS fold; a WHERE-EXISTS pass-through
-		// keeps sel's OWN resultValue verbatim, which an earlier pass (the box
-		// dissolution that produced this 3-quantifier select) may already have
-		// baked as a pristine ordinal seed. A ChildrenAsSet-swapped firing of
-		// THIS rule reuses that seed under a SWAPPED (leftAlias, rightAlias)
-		// without rebuilding it (expressions.SelectExpression.
-		// WithSwappedQuantifiers's doc comment) — decline rather than yield a
-		// plan whose baked existential rebase (below) would address the wrong
-		// slot of the executor's actual outer-then-inner merged row; see
-		// materializedNLJOrdinalLayoutMatches's doc comment (structural
-		// verification against leftPlan/rightPlan's own row shape — never by
-		// alias string).
-		if !materializedNLJOrdinalLayoutMatches(step1RV, leftPlan, rightPlan) {
-			return
-		}
-		// The plan's leg identities and its own memo quantifiers' aliases are the
-		// SAME identifiers, which is the invariant Java holds by construction
-		// (RecordQueryFlatMapPlan carries the Quantifier, so there is nothing to keep
-		// in step). Two independent mints from one string could drift apart here the
-		// moment either side gained a normalization.
-		nljPlan, err := plans.NewRecordQueryNestedLoopJoinPlanFromQuantifiers(
-			expressions.NamedForEachQuantifier(leftCorr, call.MemoizeExpression(leftExpr)),
-			expressions.NamedForEachQuantifier(rightCorr, call.MemoizeExpression(rightExpr)),
-			joinPreds,
-			joinType,
-			leftCorr, rightCorr,
-			step1RV,
-		)
-		if err != nil {
-			call.Fail(err)
-			return
-		}
-		step1Expr = nljPlan
-	}
-
-	// The inner-join's merged row is bound under a FRESH outer correlation in
-	// the existential FlatMap (Go's 3-quantifier join+EXISTS is a two-level
-	// plan: NLJ → FlatMap, unlike Java's single FlatMap that keeps both source
-	// aliases bound). Allocate that correlation up front so the existential
-	// predicates can be rebased onto it before they are pushed into the inner.
-	mergedOuterCorr := values.UniqueCorrelationIdentifier()
-
-	// The outer-leg IDENTITY set the merged row anchors columns for — the two
-	// top-level quantifiers' correlations. (An alias buried inside a leg that is
-	// itself a JOIN/UNNEST subtree resolves through the ordinal seed windows
-	// below — the spliced buried-leg windows.) A residual/projected reference to
-	// one of these is matched by its own correlation, never by a spelling.
-	// RFC-142.
-	//
-	// The source-alias TEXT (leftAlias/rightAlias) is deliberately not passed:
-	// it is a parallel channel that can be stale, and its only former consumer —
-	// the dotted "LEG.COL" key namespace — is deleted. The census at
-	// LegSiteNLJPlanAlias above is what measures the two channels' disagreement.
-	outerLegAliases := mergedOuterLegAliases(leftCorr, rightCorr)
-
-	// Step 2: build the existential level as a PURE-MAP FlatMap (RFC-141 —
-	// no EXISTS join mode). The inner is the existential subplan filtered by
-	// any correlated EXISTS predicates, wrapped in FirstOrDefault(NULL), then
-	// (for WHERE-EXISTS) a residual existential filter (QOV IS NOT NULL /
-	// IS NULL). The FlatMap returns the inner-join's merged row unchanged.
-	// (existCorr is computed above for the inner-leg-set classification.)
-
-	// RFC-141 Phase 2 (P1a): the existential-filter predicates (e.g.
-	// `proj.owner_id = e.id`) reference the ORIGINAL outer leg aliases (E / D),
-	// but they run INSIDE the FlatMap inner where those leg aliases are no
-	// longer bound — only `mergedOuterCorr` is (bound to the inner-join's
-	// merged row). Rebase every outer-leg reference onto `mergedOuterCorr`,
-	// resolving through the merged row's QUALIFIED "LEG.COL" key (the bare key
-	// is last-leg-wins and would silently pick the wrong leg). The existential
-	// alias references (P) are left untouched — they resolve against the inner
-	// scan's own binding below the FOD. Without this rebase E.ID evaluates to
-	// NULL ⇒ the correlation never matches ⇒ WHERE EXISTS drops every joined
-	// row and NOT EXISTS admits all.
-	// When step 1 produced an ordinal seed, existential predicates take the
-	// ORDINAL rebase — leg references become baked ofOrdinalNumber over the
-	// merged POSITIONAL row (offsets from the seed's own runs); the lazy
-	// qualified-key rewrite remains for non-windowed step-1 RVs and is DEAD
-	// when an ordinal seed was used (its FrontierPinned panic polices
-	// exactly that). An un-mappable reference DECLINES the yield
-	// (CORRECT-or-LOUD, never a half-rebased tree).
-	// THIS SITE READS step1RV ON EVERY CLASS, including the correlated wall,
-	// because a DECLINED foldStep1Seed hands back sel.GetResultValue() unchanged
-	// and this line does not ask which class it was.
-	//
-	// RFC-200 §8's guard chain — correlatedStep1 short-circuits foldStep1Seed
-	// before reconstructFoldStep1Seed runs — covers the seed RECONSTRUCTION, not
-	// this read. So the one shape that would matter is a declined firing whose
-	// RAW result value is itself a positional merge: the nested entry would then
-	// flip ordinalWindows from nil to NON-nil on an arm nothing analysed, and on
-	// the correlated arm a baked ordinal against a name-keyed row context raises
-	// values.BakedNameContextError.
-	//
-	// It is HARD-ZEROED rather than gated. Gating the call on gatedSeedStep1
-	// would be wrong: step1RV is legitimately a PRISTINE ordinal seed on firings
-	// where gatedSeedStep1 is false — an earlier box dissolution baked it, as the
-	// materializedNLJOrdinalLayoutMatches call above depends on — and those must
-	// keep their windows.
-	if values.LegIdentityCensusEnabled() && step1Origin.Step1 != foldStep1Accept &&
-		values.IsPositionalMergeRC(step1RV) {
-		recordFoldStep1DeclinedMergeRV()
-	}
-	ordinalWindows, mergedRowType := ordinalSeedLegWindowsAcceptingNestedOf(step1RV)
-	// The `correlatedStep1 && ordinalWindows != nil` reachability measurement.
-	//
-	// This conjunction is the wall any conversion of the reconstruct-nil residue
-	// contacts, and it could not be established by reading: the mint above and the
-	// FlatMap construction below run on BOTH arms, so a positionable leg result
-	// value produces a baked ordinal on the correlated arm, where a name-keyed row
-	// context raises values.BakedNameContextError. Structurally it is reachable —
-	// on the correlated arm ordinalWindows is non-nil exactly when
-	// sel.GetResultValue() is already a pristine ordinal seed — and "reachable in
-	// principle" is not "reached by the corpus". Only the second tells the
-	// conversion whether it meets the wall on day one.
-	//
-	// Recorded here rather than derived from the outcome census's
-	// correlatedStep1 class: that class is counted inside foldStep1Seed, before
-	// this read exists, so a firing that reaches one and not the other has to be
-	// VISIBLE rather than arithmetic.
-	if values.LegIdentityCensusEnabled() && correlatedStep1 {
-		recordCorrelatedStep1Windows(ordinalWindows != nil)
-	}
-	var mergedQOV values.QuantifiedObjectValue
-	if ordinalWindows != nil {
-		var mergedErr error
-		mergedQOV, mergedErr = values.NewQuantifiedObjectValue(mergedOuterCorr, mergedRowType)
-		if mergedErr != nil {
-			call.Fail(mergedErr)
-			return
-		}
-	}
-	existLegCorrs := existentialLegCorrelations(q0.GetAlias(), q1.GetAlias(), ordinalWindows, outerLegAliases)
-	// The per-leg layouts, stated by the legs' own QUANTIFIERS (Java's
-	// Quantifier.getFlowedObjectType, the thing translateCorrelations rebases
-	// against). Nothing in the rebase below consumes them to build a plan: the
-	// leg-local bake that did was deleted for minting an ordinal out of a display
-	// name, and the ordinal authority is the identity-keyed layout lookup. They are
-	// derived here because this frame is where the answer exists, and they feed the
-	// census that measures how much of the qualified-name channel a leg-local
-	// ordinal could take over once CQ-63 types the leg quantifiers — the gate on
-	// that arm coming back.
-	existLegRowTypes := legRowTypesFromQuantifiers(
-		legRowTypeSource{q0, leftPlan, leftCorr},
-		legRowTypeSource{q1, rightPlan, rightCorr},
-	)
-	if len(existPreds) > 0 {
-		rebased := make([]predicates.QueryPredicate, len(existPreds))
-		for i, p := range existPreds {
-			if ordinalWindows != nil {
-				np, ok := rebaseOuterLegRefsOrdinal(p, ordinalWindows, mergedQOV, existLegCorrs)
-				if !ok {
-					return
-				}
-				rebased[i] = np
-				continue
-			}
-			// No merged-row layout: the step-1 result value is not an ordinal
-			// seed, so there is no merged slot to bake against. That is not a
-			// reason to pack the leg into a column name — a leg-correlated read
-			// can stay on its OWN alias and carry its OWN leg's ordinal, which
-			// is what Java does and what the leg bindings now make resolvable.
-			// The layouts come from the legs' physical plans; a read the layouts
-			// cannot place still falls through to the qualified-name mint, and
-			// the census records which.
-			rebased[i] = rebaseOuterLegRefsToMerged(p, outerLegAliases, mergedOuterCorr, step1RV.Type(), nil, existLegRowTypes, step1Origin)
-		}
-		existPreds = rebased
-	}
-
-	// Outer-leg references BURIED INSIDE the existential subplan get the
-	// SAME rebase as the lifted existPreds above. An EXISTS whose inner
-	// WHERE references only outer legs (`EXISTS (SELECT 1 FROM q WHERE
-	// a.v = 10)`) keeps that predicate in its own plan tree —
-	// existsInnerCorrelation lifts only inner↔outer correlation predicates —
-	// and the step-2 FlatMap binds ONLY mergedOuterCorr, so the buried
-	// QOV(leg) is unbound at runtime: the frontier fallback then evaluates
-	// the field against the inner scan's own row (loud OrdinalResolutionError
-	// on the ordinal frontier; silent wrong rows pre-ordinal). Check the
-	// EXPRESSION-level correlation set (the same authority the step-1
-	// orientation reads): an existential subtree that references NO outer leg
-	// skips both the rebase and the fail-closed verification, keeping every
-	// leg-independent EXISTS — including plan shapes the rebase walk does not
-	// enumerate — byte-identical. A leg-referencing subtree is rebased, then
-	// verified: a surviving leg reference declines the yield
-	// (CORRECT-or-LOUD; those shapes evaluated an unbound correlation
-	// before, so a decline is strictly no worse). Window keys usually repeat
-	// the leg aliases — duplicates and map order are irrelevant (every
-	// consumer builds a set).
-	// planReferencesAnyBuriedAlias below is a NAME-channel checker, and the
-	// previous description of it here was wrong in a way worth correcting rather
-	// than quietly deleting: it said the checker "matches dotted merged-row keys".
-	// It does not, anywhere. All three of its arms — comparisonRangesReferenceAlias,
-	// predsReferenceAlias, valueReferencesAlias — enumerate the node's own
-	// GetCorrelatedTo set and test `strings.ToUpper(correlation.Name())` against an
-	// upper-folded alias set. There is no dot, no split, and no merged-row key
-	// involved; the only channel is a correlation's name, folded on both sides.
-	//
-	// That is why passing the window legs as their own NAMES is safe. Folding both
-	// sides of a comparison that is textual to begin with cannot manufacture an
-	// identity — identity to text loses information harmlessly. The direction this
-	// conversion removed was the other one, text to identity, where the fold MINTS
-	// an identifier the leg it names may disagree with.
-	verifyAliases := append([]string{}, outerLegAliases...)
-	for legCorr := range ordinalWindows {
-		verifyAliases = append(verifyAliases, legCorr.Name())
-	}
-	if legReferencesAny(existRef, existLegCorrs) {
-		if ordinalWindows != nil {
-			np, ok := rebasePlanOuterRefsOrdinal(existPlan, ordinalWindows, mergedQOV, existLegCorrs)
-			if !ok {
-				return
-			}
-			existPlan = np
-		} else {
-			var rebaseErr error
-			existPlan, rebaseErr = rebasePlanBuriedRefs(existPlan, outerLegAliases, mergedOuterCorr, step1RV.Type(), nil, existLegRowTypes, step1Origin)
-			if rebaseErr != nil {
-				call.Fail(rebaseErr)
-				return
-			}
-		}
-		if planReferencesAnyBuriedAlias(existPlan, verifyAliases) {
-			return
-		}
-	}
-
-	// Preserve existCorr at every compensating step: the completed FlatMap
-	// binds that correlation and must not leak it as an external dependency.
-	innerQ := expressions.NamedPhysicalQuantifier(existCorr, call.MemoizeExpression(existExpr))
-	innerQ, err := buildExistsCompensationChain(
-		call, innerQ, existPlan, existCorr, existPreds,
-		hasExistsFilter, negated, true,
-	)
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-
-	// The FlatMap's result value.
-	//
-	//   - WHERE-EXISTS over a join (the original 3-quantifier shape): the
-	//     existential level only FILTERS — a separate projection sits above. The
-	//     result value is the identity over the merged outer row (QOV) so the
-	//     inner-join's merged "ALIAS.COL" keys pass through unchanged.
-	//
-	//   - PROJECTED EXISTS over a JOIN in FROM (RFC-141): the projection
-	//     (a RecordConstructor referencing the existential quantifier) was folded
-	//     into sel.GetResultValue(). It MUST be computed HERE, at the FlatMap,
-	//     with the existential FOD inner binding live — a projection above the
-	//     FlatMap would read the ExistsValue with a dead binding (constant false +
-	//     leaked columns). Rebase it onto the FlatMap's two bindings: leg columns
-	//     (T1.ID, T2.ID) resolve against the merged outer row's QUALIFIED keys
-	//     under mergedOuterCorr; the existential QOV (the projected ExistsValue's
-	//     child, keyed by the existential QUANTIFIER alias) resolves against the
-	//     inner FOD row under existCorr.
-	flatMapIdentity, err := values.NewQuantifiedObjectValue(mergedOuterCorr, step1RV.Type())
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	var flatMapResult values.Value = flatMapIdentity
-	if resultValueReferencesAlias(sel.GetResultValue(), quants[2].GetAlias()) {
-		// Leg references → merged outer row's qualified keys. Use the COMPLETE
-		// outer-leg alias set (not just {leftAlias,rightAlias}) so a projected
-		// reference to a BURIED leg (a source under a non-rightmost lateral unnest)
-		// resolves against the merged row's verbatim "LEG.COL" key, symmetrically with
-		// the existential-residual rebase above. For a folded projection (the common
-		// projected-EXISTS result value) the set degenerates to
-		// {leftAlias,rightAlias}, so this is a no-op for that path. RFC-142.
-		var projected values.Value
-		if gatedSeedStep1 {
-			// The folded projection's leg references —
-			// dotted frontier reads ("T1.ID") AND QOV refs, heterogeneous as the
-			// resolver emits them — are NOT rebased here. The step-2 FlatMap
-			// cursor evaluates the projection over the step-1 ordinal merged row
-			// through legWindowRowContext (spanAwareRow resolves the dotted reads
-			// positionally against the leg windows, legWindowBinder the QOV refs),
-			// so no planner rebase and no dotted-name split is needed. Only the
-			// existential quantifier alias is re-aliased below.
-			projected = sel.GetResultValue()
-		} else if ordinalWindows != nil {
-			// Ordinal seed: the projected-EXISTS fold's leg references
-			// rebase to baked merged ordinals (the lazy rewrite would
-			// panic on the baked refs — same policing as the predicate side).
-			var ok bool
-			projected, ok = rebaseOuterLegValueOrdinal(sel.GetResultValue(), ordinalWindows, mergedQOV, existLegCorrs)
-			if !ok {
-				return
-			}
-		} else {
-			projected = rebaseOuterLegValue(sel.GetResultValue(), outerLegAliases, mergedOuterCorr, step1RV.Type(), nil, existLegRowTypes, step1Origin)
-		}
-		// Existential quantifier alias → the FlatMap inner binding (existCorr).
-		if quants[2].GetAlias() != existCorr {
-			aliases, err := values.NewAliasMap([]values.AliasPair{{
-				Source: quants[2].GetAlias(),
-				Target: existCorr,
-			}})
-			if err != nil {
-				call.Fail(err)
-				return
-			}
-			projected, err = values.RebaseValueChecked(projected, aliases)
-			if err != nil {
-				call.Fail(err)
-				return
-			}
-		}
-		flatMapResult = projected
-	}
-
-	// ALIAS CONTRACT — PRESERVE the FlatMap plan's REAL outer/inner aliases
-	// (mergedOuterCorr/existCorr), never fresh ones: same EXISTS correlation-leak
-	// class as yieldExistsFlatMap — a fresh outer alias fails to subtract the FOD
-	// inner's correlation to mergedOuterCorr, leaking it upward.
-	//
-	// The outer quantifier ranges over step1Expr (the step-1 inner join, its own
-	// cascades expression since RFC-184 W2). In the correlatedStep1 branch that IS
-	// the FlatMap; in the materialized-NLJ branch it is the NLJ built over both
-	// legs' memoized quantifiers — so the join is reachable and resolves. The
-	// FlatMap is its own cascades expression carrying its outer edge (over
-	// step1Expr) and its inner edge (innerQ) directly (no physicalFlatMapWrapper).
-	leftMemoRef := call.MemoizeExpression(step1Expr)
-	if values.LegIdentityCensusEnabled() {
-		recordFlatMapResultValue(flatMapSiteJoinWithExistential, flatMapResult)
-	}
-	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
-		expressions.NamedForEachQuantifier(mergedOuterCorr, leftMemoRef),
-		innerQ,
-		mergedOuterCorr, existCorr,
-		flatMapResult, true,
-	)
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	call.Yield(flatMapPlan)
-}
-
 func correlatedExistsComparisonRange(
 	outerValue values.FieldValue,
 	outerCorrelation values.CorrelationIdentifier,
@@ -6315,9 +4637,6 @@ func (r *ImplementNestedLoopJoinRule) yieldExistsFlatMap(
 
 	// The EXISTS FlatMap is its own cascades expression carrying its outer (leftQ)
 	// and inner (rightQ) memo edges directly (RFC-184 W2, no physicalFlatMapWrapper).
-	if values.LegIdentityCensusEnabled() {
-		recordFlatMapResultValue(flatMapSiteYieldExistsFlatMap, resultValue)
-	}
 	flatMapPlan, err := plans.NewRecordQueryFlatMapPlanFromQuantifiers(
 		leftQ, rightQ,
 		outerCorrelation, innerCorrelation,
@@ -6530,3 +4849,46 @@ func correlatedFastPathOperand(
 }
 
 var _ ExpressionRule = (*ImplementNestedLoopJoinRule)(nil)
+
+// legReadIdentity is what a leg-correlated read states about its OWN column
+// identity, and it is what the buried-leg rebase arm below dispatches on.
+//
+// It is a CLASS rather than a bool because the distinction it draws is
+// three-way: an ordinal this leg's layout can read, an ordinal it cannot, and
+// no resolved path at all. Collapsing the last two loses the only signal that
+// separates "addressed the wrong domain" from "was never addressed".
+type legReadIdentity int
+
+const (
+	// legReadIdentityInLegDomain: legSlotIdentity answered — a resolved,
+	// non-negative ordinal in a domain that IS the leg's row layout.
+	legReadIdentityInLegDomain legReadIdentity = iota
+	// legReadIdentityOtherDomain: a resolved path this leg's layout cannot read.
+	legReadIdentityOtherDomain
+	// legReadIdentityLazyNameOnly: no resolved path; the display name is all
+	// there is.
+	legReadIdentityLazyNameOnly
+)
+
+func (c legReadIdentity) String() string {
+	switch c {
+	case legReadIdentityInLegDomain:
+		return "InLegDomain"
+	case legReadIdentityOtherDomain:
+		return "OtherDomain"
+	case legReadIdentityLazyNameOnly:
+		return "LazyNameOnly"
+	default:
+		return fmt.Sprintf("legReadIdentity(%d)", int(c))
+	}
+}
+
+func classifyLegReadIdentity(hasResolved, identityInLegDomain bool) legReadIdentity {
+	if identityInLegDomain {
+		return legReadIdentityInLegDomain
+	}
+	if hasResolved {
+		return legReadIdentityOtherDomain
+	}
+	return legReadIdentityLazyNameOnly
+}

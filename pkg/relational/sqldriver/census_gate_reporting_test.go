@@ -63,7 +63,7 @@ type censusGate struct {
 // matching what `go test` prints for a table test:
 //
 //	--- FAIL: TestWholeCorpusCensusGates (0.00s)
-//	    --- FAIL: TestWholeCorpusCensusGates/foldStep1Seed (0.00s)
+//	    --- FAIL: TestWholeCorpusCensusGates/exampleGate (0.00s)
 //	        <the gate's own reasoning, indented>
 //
 // The parent line sits at column 0 so `grep -c '^--- FAIL'` finds it, which is
@@ -174,7 +174,7 @@ func TestCensusGateReportingArms(t *testing.T) {
 		var buf bytes.Buffer
 		if !runCensusGates(&buf, false, []censusGate{
 			pass("fine\n"),
-			fail("foldStep1Seed", "denominator 586, want 582.\n"),
+			fail("exampleGate", "denominator 586, want 582.\n"),
 		}) {
 			t.Fatalf("did not report a failure for a failing gate")
 		}
@@ -191,7 +191,7 @@ func TestCensusGateReportingArms(t *testing.T) {
 				"  the entire defect: a package that genuinely failed reports no marker that\n"+
 				"  any tool or habit keys on. Got:\n%s", got)
 		}
-		if !strings.Contains(got, censusGateSuiteName+"/foldStep1Seed") {
+		if !strings.Contains(got, censusGateSuiteName+"/exampleGate") {
 			t.Fatalf("the failure does not NAME the gate; got:\n%s\n"+
 				"  A marker that does not say which gate failed sends the reader back to\n"+
 				"  scanning the whole census dump, which is what they were doing before.", got)

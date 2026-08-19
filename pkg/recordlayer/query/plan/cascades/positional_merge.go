@@ -216,19 +216,25 @@ func (r *PartitionSelectRule) positionalMergeCase(
 //
 // How much traffic it carries is now MEASURED rather than argued, because an
 // argument about which shapes can reach a fallback is what a change to the
-// fallback invalidates silently (see recordMergeSlotTyping). Over the real-FDB
-// corpus, of 18246 merge slots: 17492 typed by the quantifier, 4 recovered here,
-// 0 stating a non-row scalar, 750 stating nothing at all.
+// fallback invalidates silently (see recordMergeSlotTyping). Measured over the
+// whole real-FDB corpus at 22394 merge slots: 21736 typed by the quantifier, 0
+// recovered here, 658 stating a non-row scalar, 0 stating nothing at all.
 //
-// The 750 are not 750 lost leg rows. Every distinct witness is an unnest ELEMENT
-// alias, and an unnest element over an array is UNKNOWN because Go does not infer
-// array element types that far — the same gap values.IsMixedSeedElementType
-// documents, and the reason its predicate must NOT demand a stated type. But an
-// element and a leg that lost its row are not separable from the type alone, so
-// the counter is an upper bound on the residual and is reported rather than
-// asserted at zero. Typing the unnest element quantifier is what would collapse
-// it, and that changes what 750 merge slots state — a planner-wide change, not a
-// rider here.
+// THE RESIDUAL COLLAPSED, AND THAT IS WHY THE COUNTER IS NOW ASSERTED AT ZERO
+// RATHER THAN REPORTED. An earlier reading of this same site recorded 750 slots
+// stating NOTHING, every distinct witness an unnest ELEMENT alias — UNKNOWN
+// because Go did not infer array element types that far — and concluded the
+// counter could only be an upper bound, since an element and a leg that lost its
+// row are not separable from the type alone. It also named the thing that would
+// end it: typing the unnest element quantifier. That happened. Those slots now
+// state a real scalar type and land in the SCALAR class, which is separable, and
+// the UNTYPED class is empty.
+//
+// So the hard zero in AssertMergeSlotTypingCensus is not a tightened guess; it is
+// the new expected value, and a non-zero now means a leg genuinely lost its row.
+// The SCALAR count is deliberately NOT floored at zero — an unnest element over
+// an array is a correct scalar slot, and demanding a record there would report
+// every unnest as a defect.
 func legRowTypes(resultValue values.Value, preds []predicates.QueryPredicate) map[values.CorrelationIdentifier]*values.RecordType {
 	types := make(map[values.CorrelationIdentifier]*values.RecordType)
 	collect := func(v values.Value) bool {

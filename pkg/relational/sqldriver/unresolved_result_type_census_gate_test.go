@@ -73,21 +73,33 @@ func assertUnresolvedResultTypeCensus(w io.Writer) bool {
 	// re-derived the same way it was originally: an order of magnitude below what
 	// the four remaining consumers actually report.
 	//
-	// The four remaining sites, whole corpus, floors NOT withheld:
+	// A SECOND RETIREMENT (RFC-235), and it RESOLVES rather than complicates the
+	// shape of this floor. `planRowRecordType` and `planBuriedLegConcat` also
+	// called the recorder, and the three-quantifier NLJ arm was their only live
+	// caller. They were briefly orphaned — reachable from tests alone, reporting
+	// nothing over the corpus — which WOULD have made a downward-watching floor
+	// the wrong instrument, because an orphan's steady state is zero and its
+	// revival moves the count UP. That ambiguity is gone: both functions are
+	// DELETED, so the census has exactly the two consumers below and no dormant
+	// third to confuse with a new one.
+	//
+	// MinSites 2 is therefore a COMPLETE collapse guard here rather than a partial
+	// one, and it needs no asserted site set to disambiguate a revival: a count of
+	// 3 can only be a genuinely new consumer, which is a change to this census's
+	// population and belongs in this comment before it belongs in the number.
+	//
+	// The two remaining sites, whole corpus, floors NOT withheld:
 	//
 	//	bakedIntersectionKeys                 resolved 412    UNRESOLVED 0
 	//	distinctKeyColumns                    resolved 70     UNRESOLVED 0
-	//	planBuriedLegConcat                   resolved 298    UNRESOLVED 0
-	//	planRowRecordType                     resolved 784    UNRESOLVED 0
 	//
-	// EVERY ONE OF THEM NOW READS RESOLVED, where the same four previously
-	// reported 135 unresolved reads between them (distinctKeyColumns 31,
-	// planRowRecordType 104). That zero is the RFC's payoff arriving, and it is
+	// BOTH READ RESOLVED, and so did the two that have now retired. That zero is
+	// the RFC-213 payoff arriving. That zero is the RFC's payoff arriving, and it is
 	// deliberately NOT asserted here: this census has no hard zero, because the
 	// unresolved reads ARE the defect and their count is a measurement rather
 	// than a contract. What is asserted is that the consumers are still reached,
 	// so a future zero cannot be confused with the instrument going dark.
-	floors := &cascades.UnresolvedResultTypeFloors{MinReads: 150, MinSites: 4}
+	floors := &cascades.UnresolvedResultTypeFloors{MinReads: 48, MinSites: 2}
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "unresolved-result-type census: reached-consumers floors NOT checked "+
 			"(-test.run=%q narrowed the corpus; they describe the whole suite). "+

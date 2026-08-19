@@ -1282,7 +1282,8 @@ func newNLJCursor(
 		}
 	}
 	build, err := newOrdinalJoinBuildWithOutputLayout(
-		resultValue, preds, outputLayout, outputSourceOrigins)
+		resultValue, preds, outputLayout, outputSourceOrigins,
+		[]values.CorrelationIdentifier{outerAlias, innerAlias})
 	if err != nil {
 		return nil, err
 	}

@@ -164,8 +164,15 @@ func TestFDB_LeftJoinExistsResidual(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "EXPLAIN "+qE).Scan(&planE); err != nil {
 		t.Fatalf("explain INNER: %v", err)
 	}
-	if !containsAll(planE, "FlatMap", "NestedLoopJoin", "FirstOrDefault") {
-		t.Errorf("INNER+EXISTS plan lost the flattened NLJ→FlatMap shape (decline over-fired?): %s", planE)
+	// The INNER+EXISTS plan must still be the flattened join-with-semi-join: a
+	// FlatMap chain reaching both joined tables, with the existential lowered to a
+	// FirstOrDefault. It is stated by the legs reached rather than by the physical
+	// join operator — the two-table join now lowers to a chained FlatMap (Java's
+	// only join plan) where it used to be Go's retired three-quantifier
+	// NestedLoopJoin arm (RFC-235).
+	if !containsAll(planE, "FlatMap", "FirstOrDefault", "Scan(EMP", "Scan(DEPT") {
+		t.Errorf("INNER+EXISTS plan lost the flattened join-with-semi-join shape "+
+			"(decline over-fired?): %s", planE)
 	}
 
 	// (F) Derived-table leg through the flatten with the EXISTS correlated to

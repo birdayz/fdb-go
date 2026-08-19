@@ -70,8 +70,12 @@ type SeedWindowSite int
 const (
 	// SeedWindowSiteExistentialRebase is cascades.rebaseOuterLegValueOrdinal's
 	// per-reference window lookup — the EXISTS-over-join ordinal rebase, keyed by
-	// the reference's own QuantifiedObjectValue correlation. The corpus's
-	// heaviest reader by an order of magnitude.
+	// the reference's own QuantifiedObjectValue correlation.
+	//
+	// It WAS the corpus's heaviest reader by an order of magnitude. RFC-235
+	// retired the NLJ arm whose firings supplied most of that traffic, and it now
+	// reads 288 against 438 for the other four combined — comparable, not
+	// dominant.
 	SeedWindowSiteExistentialRebase SeedWindowSite = iota
 
 	// SeedWindowSiteBoxLegRef is query.rebaseLegRefsToBox's QOV-shaped arm, keyed
@@ -265,11 +269,15 @@ func FormatSeedWindowReaderCensus() string {
 // whole suite run.
 //
 // Floored per SITE rather than in total, because the sites do not substitute for
-// one another: the existential rebase carries an order of magnitude more traffic
-// than the rest put together, so a total floor would stay satisfied with the
-// other four dark. That asymmetry is the whole reason this instrument exists —
-// the predecessor's deletion took away the only thing that could tell a silenced
-// reader from a quiet corpus.
+// one another: a total floor stays satisfied with individual readers dark. That
+// is the whole reason this instrument exists — the predecessor's deletion took
+// away the only thing that could tell a silenced reader from a quiet corpus.
+//
+// The asymmetry this used to cite is gone. The existential rebase carried an
+// order of magnitude more traffic than the rest put together until RFC-235
+// retired the NLJ arm supplying it; it now reads 288 against 438 for the other
+// four combined. Per-site flooring is if anything MORE necessary at comparable
+// magnitudes, since no single site can carry a total.
 type SeedWindowReaderFloors struct {
 	// Reads is the per-site minimum, indexed by site. A zero entry means the site
 	// is not floored, which is a statement about the corpus and not an omission.
@@ -296,8 +304,8 @@ type SeedWindowReaderFloors struct {
 	// been REFUTED by measurement: the population is 102 and it is 100% typed
 	// already — every declined leg carries a real RecordType (arity 1-3 on the
 	// FlatMap legs, 1-4 counting the NestedLoopJoin-legged ones) — and typing
-	// could not convert one of them in any case, because legOrdinalSafety refuses
-	// on values.IsPositionalMergeRC, which needs a *RecordConstructorValue that no
+	// could not convert one of them in any case, because the leg walk that
+	// consumed them refused on values.IsPositionalMergeRC, which needs a *RecordConstructorValue that no
 	// QuantifiedObjectValue is at any typing. `bare` there meant identity
 	// PASS-THROUGH, never untyped.
 	//

@@ -4,7 +4,7 @@ package sqldriver_test
 //
 // For an INNER join, `ON cond AND EXISTS(s)` is equivalent to `ON cond WHERE
 // EXISTS(s)` (no null-extension): it lowers to a 2-ForEach + Existential
-// SelectExpression that the NLJ rule's implementJoinWithExistential path turns
+// SelectExpression that the existential peel turns
 // into a semi-join. OUTER EXISTS-in-ON is deferred (RFC-154 §5.2b) and rejected
 // fail-closed so it never returns wrong rows.
 
@@ -121,7 +121,7 @@ func TestFDB_ExistsInOn(t *testing.T) {
 	// EXISTS buried under OR in the ON clause is NOT the directly-handled
 	// semi-join shape (the flatten only lifts a top-level AND). The
 	// CheckBuriedExistentialPredicate backstop must reject it cleanly rather than
-	// route it through implementJoinWithExistential's regular-predicate bucket
+	// route it through the existential peel's regular-predicate bucket
 	// (which would let the empty-FOD NULL pass every row → silent wrong result).
 	t.Run("inner_exists_under_or_in_on_rejected", func(t *testing.T) {
 		assertUnsupported(t, db, ctx,

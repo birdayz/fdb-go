@@ -2,7 +2,7 @@ package embedded
 
 // RFC-154 §5/§6 — typed-plan assertion that an INNER JOIN with an EXISTS in the
 // ON clause lowers to a SEMI-JOIN (FlatMap over a FirstOrDefault one-row inner +
-// residual IS-NOT-NULL), the implementJoinWithExistential shape — not a
+// residual IS-NOT-NULL), the peeled-existential shape — not a
 // materialized cross-product NLJ. Row correctness is pinned by the FDB tests in
 // the sqldriver package (exists_in_on_fdb_test.go); this pins the plan SHAPE so a
 // future regression to a fallback (or a dropped ON predicate) is caught.
@@ -45,7 +45,7 @@ func TestExistsInOn_INNER_LowersToSemiJoin(t *testing.T) {
 		t.Fatalf("plan: %v", err)
 	}
 	// The EXISTS semi-join is a FlatMap whose inner is a FirstOrDefault (the
-	// one-row existential inner) — implementJoinWithExistential / yieldExistsFlatMap.
+	// one-row existential inner) — the existential peel.
 	if !planHasType[*plans.RecordQueryFlatMapPlan](plan) {
 		t.Errorf("INNER EXISTS-in-ON must lower to a FlatMap semi-join, got: %s", plan.Explain())
 	}

@@ -208,9 +208,27 @@ func TestDerivedSourceCorrelatedExistsPlans(t *testing.T) {
 				t.Fatalf("no FlatMap in the plan — the correlated EXISTS did not lower to "+
 					"the existential fold, so this arm witnesses nothing:\n  %s", explain)
 			}
-			if c.wantNLJ && !strings.Contains(explain, "NestedLoopJoin") {
-				t.Fatalf("no NestedLoopJoin in the plan — the two-leg join whose merged row "+
-					"the correlated read addresses is what these arms exist to cover:\n  %s", explain)
+			// The two-leg join whose merged row the correlated read addresses must
+			// still be there. Stated by the LEGS REACHED rather than by the
+			// physical operator: which operator implements the join is not the
+			// property under test, and it changed — a two-table join now lowers to
+			// a chained FlatMap (Java's only join plan) where it used to be Go's
+			// retired three-quantifier NestedLoopJoin arm (RFC-235).
+			//
+			// Counted as JOIN OPERATORS, not as scans. A scan count cannot see this:
+			// every one of these queries carries an EXISTS whose subquery contributes
+			// its own Scan, so `>= 2 scans` holds for a plan that collapsed the join
+			// to one leg — it was vacuous.
+			//
+			// Two join operators is the property: one for the two-leg join the
+			// correlated read addresses, one for the EXISTS semi-join. A collapsed
+			// join leaves only the semi-join and fails here.
+			if c.wantNLJ {
+				if n := strings.Count(explain, "FlatMap") + strings.Count(explain, "NestedLoopJoin"); n < 2 {
+					t.Fatalf("plan carries %d join operator(s), want >= 2 (the two-leg join plus "+
+						"the EXISTS semi-join) — the join the correlated read addresses collapsed, "+
+						"so this arm witnesses nothing:\n  %s", n, explain)
+				}
 			}
 		})
 	}

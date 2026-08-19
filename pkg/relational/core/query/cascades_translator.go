@@ -3131,7 +3131,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 		//
 		// EXCEPTION — a lateral array UNNEST right child (`FROM t, t.arr AS v
 		// WHERE EXISTS (…)`): the flatten path would feed the CORRELATED Explode
-		// into implementJoinWithExistential's binary NLJ, which materializes its
+		// into the existential peel's binary NLJ, which materializes its
 		// inner ONCE against an unbound context — the correlated Explode yields no
 		// rows and the query returns empty. The unnest MUST stay its own
 		// FlatMap-over-Explode (translateUnnestJoin) as the existential's OUTER.
@@ -3489,7 +3489,7 @@ func (t *cascadesTranslator) translateFilter(f *logical.LogicalFilter) expressio
 // translateUnnestExistsFilter composes a lateral array UNNEST in the FROM list
 // with a WHERE EXISTS (`SELECT v FROM t, t.arr AS v WHERE [v > 100 AND] EXISTS
 // (…)`). The unnest stays its OWN FlatMap-over-Explode (it CANNOT be flattened
-// into implementJoinWithExistential's binary NLJ — a correlated Explode in a
+// into the existential peel's binary NLJ — a correlated Explode in a
 // plain NLJ materializes its inner once against an unbound context and yields no
 // rows). The composition is therefore NESTED:
 //
@@ -4756,9 +4756,11 @@ func (t *cascadesTranslator) buildExistentialSelect(
 }
 
 // isScanFamilyLeg reports whether a logical leg is a single scan source
-// (optionally under filters) — the logical proxy for the executor's
-// legOrdinalSafety, which unwraps Filter/Fetch/FetchOnDemand to a Scan/Index
-// base. The F2-LEFT projected-EXISTS fold ordinalizes ONLY when both
+// (optionally under filters), unwrapping Filter/Fetch/FetchOnDemand to a
+// Scan/Index base. It is the SOLE gate on this decision: it began as the logical
+// proxy for a physical leg walk that made the same call, and that walk retired
+// with the three-quantifier NLJ arm (RFC-235), leaving no second opinion to
+// diverge from. The F2-LEFT projected-EXISTS fold ordinalizes ONLY when both
 // legs are scan-family; a join/unnest/union/aggregate leg (a buried box) is not
 // and must decline rather than fall to the name-model producer path. Conservative:
 // anything not recognised as scan-under-filters returns false (decline).
@@ -4781,7 +4783,7 @@ func isScanFamilyLeg(op logical.LogicalOperator) bool {
 // SelectMergeRule can then expose the flat `[ForEach×N, Existential]` form.
 // RFC-190 routes that form through PartitionSelectRule's alias-aware
 // decomposition and ordinary binary NLJ implementation; the former generalized
-// implementJoinWithExistential arm is retired. A scan leg is already positional
+// the three-quantifier arm is retired. A scan leg is already positional
 // regardless of enclosure (returns false — no box to un-enclose); an OUTER box
 // or a wrapped join returns false (non-mergeable / out of INNER-first scope).
 func existsLegBuildsPositional(op logical.LogicalOperator) bool {
@@ -4843,8 +4845,8 @@ func (t *cascadesTranslator) buildExistentialJoinSelect(
 	if j.Kind == logical.JoinLeft && (!isScanFamilyLeg(j.Left) || !isScanFamilyLeg(j.Right)) {
 		// F2-LEFT is SCAN-leg scope only. A buried box
 		// `(a JOIN b) LEFT JOIN c` — any non-scan preserved/null-supplying leg —
-		// does not ordinalize (the executor's legOrdinalSafety rejects the join
-		// leg → gatedSeedStep1 false), so folding it would fall through to a
+		// does not ordinalize — no ordinal path admits a non-scan leg here — so
+		// folding it would fall through to a
 		// name-model path with a null-extended name-keyed row: correct today
 		// via the row's name-keyed Datum, but that path is slated for removal.
 		// Decline (→ §8 → clean 0AF00) as a reach gap (Java answers it; Go rejects)
@@ -8611,7 +8613,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 			// When the ON clause carries EXISTS subqueries (RFC-154 §5), flatten a
 			// top-level AND so the ExistentialValuePredicate becomes its OWN
 			// top-level conjunct — the directly-handled semi-join shape
-			// CheckBuriedExistentialPredicate requires and implementJoinWithExistential
+			// CheckBuriedExistentialPredicate requires and the existential peel
 			// routes (a single And(equi, EXISTS) predicate reads as a BURIED
 			// existential and is rejected). Mirrors translateJoinWithExists's flatten
 			// of the WHERE predicate. Non-EXISTS joins keep the single predicate
@@ -8686,7 +8688,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 	// EXISTS in the ON clause (RFC-154 §5): attach each lifted EXISTS subquery as
 	// an existential quantifier + its correlation predicate, producing a
 	// 2-ForEach-+-Existential SelectExpression that the NLJ rule's
-	// implementJoinWithExistential path lowers to a semi-join. Only populated for
+	// the existential peel path lowers to a semi-join. Only populated for
 	// INNER joins (upgradeJoinOnPredicates rejects OUTER EXISTS-in-ON), so the
 	// joinType passed below is JoinInner and the existential semantics match
 	// EXISTS-in-WHERE-over-a-join (translateJoinWithExists).
@@ -8730,7 +8732,7 @@ func (t *cascadesTranslator) translateJoin(j *logical.LogicalJoin) expressions.R
 // method produces a single SelectExpression with ForEach(left),
 // ForEach(right), and Existential quantifiers. The combined predicate
 // covers both the join ON and the filter WHERE. The NLJ rule's
-// implementJoinWithExistential path handles this 2+1 pattern.
+// the existential peel path handles this 2+1 pattern.
 func (t *cascadesTranslator) translateJoinWithExists(
 	j *logical.LogicalJoin,
 	f *logical.LogicalFilter,

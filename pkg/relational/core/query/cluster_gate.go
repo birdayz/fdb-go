@@ -308,7 +308,7 @@ func (t *cascadesTranslator) ordinalWedgeGateDecide(j *logical.LogicalJoin) wedg
 		// merged row the 2-leg seed is unverified over), an N-way join leg (not
 		// a scan), a CTE-backed join AND a CTE-backed opaque box (the scan
 		// resolves to a non-scan body). A scan-scan 2-way seeds
-		// [ForEach, ForEach, Existential], which implementJoinWithExistential's
+		// [ForEach, ForEach, Existential], which the existential peel's
 		// 2-leg arm plans ordinal AND index-neutral (the existential already
 		// drops even a 2-way join to a plain NLJ on the name model, so no index
 		// is lost — EXPLAIN-verified); the translateJoin binary arm builds the

@@ -155,12 +155,28 @@ CREATE TABLE t3 (id BIGINT, t2_id BIGINT, PRIMARY KEY (id))`
 		`WHERE EXISTS (SELECT 1 FROM t2, t3 WHERE t2.t1_id = t1.id)`
 
 	got := explainWithOptions(t, sql, ddl, nil)
-	// Both joins must survive: the outer one the projection reads through, and
-	// the inner one inside the EXISTS leg. Collapsing either would "plan" while
+	// Both joins must survive: the outer self-join the projection reads through,
+	// and the one inside the EXISTS leg. Collapsing either would "plan" while
 	// answering a different query.
-	if strings.Count(got, "NestedLoopJoin") != 2 {
-		t.Errorf("plan has %d NestedLoopJoin, want 2 (the outer self-join and the EXISTS leg's):\n%s",
-			strings.Count(got, "NestedLoopJoin"), got)
+	//
+	// Stated by the LEGS REACHED rather than by the physical operator, because
+	// which operator implements a join is not the property under test and it
+	// changed: the outer self-join now lowers to a chained FlatMap (Java's shape
+	// — RecordQueryFlatMapPlan is the only join plan Java has) while the EXISTS
+	// leg's cross product stays a materialised NestedLoopJoin. Counting
+	// `NestedLoopJoin` pinned Go's retired three-quantifier arm (RFC-235), not
+	// the invariant.
+	if n := strings.Count(got, "Scan(T1"); n != 2 {
+		t.Errorf("plan reaches T1 %d times, want 2 (the self-join's two legs — collapsing one "+
+			"answers a different query):\n%s", n, got)
+	}
+	for _, tbl := range []string{"Scan(T2", "Scan(T3"} {
+		if !strings.Contains(got, tbl) {
+			t.Errorf("plan does not reach %s — the EXISTS leg's join collapsed:\n%s", tbl, got)
+		}
+	}
+	if !strings.Contains(got, "FirstOrDefault") {
+		t.Errorf("plan has no FirstOrDefault — the EXISTS did not lower to a semi-join:\n%s", got)
 	}
 	// #0 is t1.id in the outer merged row — the read whose lineage crossing is
 	// the subject here.
@@ -375,7 +391,14 @@ CREATE TABLE badge (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))`
 	for _, tc := range []struct {
 		name string
 		sql  string
+		// want is the rendering the residual above the null extension must have.
+		// Only meaningful when keepsOuter is true.
 		want string
+		// keepsOuter says whether the plan must still carry a LEFT OUTER join.
+		// It is a property of the CONJUNCT, not of the planner: a conjunct that
+		// rejects NULL on the null-supplying side makes the join semantically
+		// inner, and one satisfied only BY null-extended rows cannot.
+		keepsOuter bool
 	}{
 		{
 			// The anti-join conjunct. Merged row is
@@ -383,16 +406,32 @@ CREATE TABLE badge (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))`
 			name: "IS NULL anti-join conjunct beside NOT EXISTS",
 			sql: `SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id ` +
 				`WHERE e.id IS NULL AND NOT EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)`,
-			want: "_current.ID#2 IS NULL",
+			want:       "_current.ID#2 IS NULL",
+			keepsOuter: true,
 		},
 		{
-			// The same shape with an equality conjunct: E.FNAME is #4. This arm
-			// kept working throughout, and it is why the defect read as an
-			// IS-NULL problem rather than an ordinal one.
+			// The same shape with an EQUALITY conjunct, and the difference is
+			// semantic rather than incidental: `e.fname = 'alice'` REJECTS NULL,
+			// so a row with no `emp` match cannot survive it and the LEFT JOIN is
+			// semantically INNER. The planner is then free to drive from `emp`,
+			// probe `dept`, and push the conjunct onto the `emp` scan — which it
+			// now does, leaving no outer join for a residual to sit above.
+			//
+			// MEASURED AGAINST THE LIVE 4.12.11.0 JVM rather than argued:
+			// conformance/projected_exists_left_join_java_probe_test.go runs this
+			// conversion and its anti-join twin against both engines and they
+			// agree row for row (null-rejecting → [], IS NULL → [[7]]). The twin
+			// is what makes the agreement mean anything — it must KEEP the
+			// extension, and it does — so this is a conversion, not an outer join
+			// going missing.
+			//
+			// This arm used to assert the opposite, because the shape it asserted
+			// was Go's three-quantifier NLJ arm (RFC-235). The ORDINAL check it
+			// was written for still runs, on the arm that still has an outer join.
 			name: "equality conjunct beside EXISTS",
 			sql: `SELECT d.dname FROM dept d LEFT JOIN emp e ON e.dept_id = d.id ` +
 				`WHERE e.fname = 'alice' AND EXISTS (SELECT 1 FROM badge b WHERE b.emp_id = e.id)`,
-			want: "_current.FNAME#4 = 'alice'",
+			keepsOuter: false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -401,8 +440,20 @@ CREATE TABLE badge (id BIGINT, emp_id BIGINT, PRIMARY KEY (id))`
 			if err != nil {
 				t.Fatalf("planning: %v", err)
 			}
-			if !strings.Contains(plan.Explain(), "NestedLoopJoin(LEFT OUTER") {
-				t.Errorf("plan lost the LEFT OUTER join:\n%s", plan.Explain())
+			hasOuter := strings.Contains(plan.Explain(), "NestedLoopJoin(LEFT OUTER")
+			switch {
+			case tc.keepsOuter && !hasOuter:
+				t.Fatalf("plan lost the LEFT OUTER join. This conjunct is satisfied ONLY by "+
+					"null-extended rows, so dropping the extension drops the answer:\n%s",
+					plan.Explain())
+			case !tc.keepsOuter && hasOuter:
+				t.Fatalf("plan kept a LEFT OUTER join under a null-REJECTING conjunct. That is not "+
+					"wrong, but the conversion stopped firing and the probe's measured agreement "+
+					"with Java no longer describes this plan — re-measure before re-pinning:\n%s",
+					plan.Explain())
+			}
+			if !tc.keepsOuter {
+				return
 			}
 			if got := residualPredicateOverOuterJoin(t, plan); got != tc.want {
 				t.Errorf("residual above the LEFT OUTER join = %q, want %q\nplan: %s",

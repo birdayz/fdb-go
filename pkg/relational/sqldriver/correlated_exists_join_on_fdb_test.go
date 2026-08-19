@@ -90,7 +90,7 @@ func TestFDB_CorrelatedExistsJoinOnEnforced(t *testing.T) {
 		return out
 	}
 
-	// q0: PROJECTED EXISTS over a JOIN-in-outer-FROM (implementJoinWithExistential,
+	// q0: PROJECTED EXISTS over a JOIN-in-outer-FROM (the existential peel,
 	// the 2-leg fold arm). p×q keeps one row per p (q.qid=p.id). Java = the
 	// polarities below; EXISTS true for BOTH rows means the ON f.fid=e.fid was
 	// dropped.

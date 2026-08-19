@@ -427,3 +427,252 @@ Phase 2 owns: the Go-only NLJ's layout-carrier contract, the shape pins rewritte
 to assert Java's chained-FlatMap shape POSITIVELY, the census floors re-aimed at
 their new expected direction, the goldens re-blessed with the diff reviewed
 rather than regenerated, and the stress comparison §9 makes a gate.
+
+## 12. Phase 2 — the retirement, implemented
+
+`rule_implement_nested_loop_join.go`: **6,532 → 4,894 lines**. Whole change on top
+of phase 1, measured at review time rather than when the section was drafted:
+**73 tracked files changed, 1,933 insertions, 12,369 deletions, 26 files removed,
+plus 6 new files.** An earlier revision of this line said 5,208 lines and
+"45 files, 651 insertions, 10,990 deletions" — true when written, and stale by
+the end of the same phase, because the dead-code cascade the retirement exposed
+kept growing the deletion. A number with no stated measurement point decays
+without ever looking wrong.
+
+| deleted | lines |
+|---|---|
+| `implementJoinWithExistential` + dispatch | 629 |
+| transitively-dead helpers (iterated to convergence) | ~695 |
+| `fold_step1_seed_census.go` | 1,240 |
+| `leg_local_bake_census.go` | 1,349 |
+| `executor.bindMergedOuterLegs` + its census + context hooks | ~690 |
+| tests of deleted machinery (11 files, 19 functions) | ~4,900 |
+
+Both `PartitionSelectRule` guards are gone, so `[ForEach, ForEach, Existential]`
+decomposes through Java's Case-1 peel.
+
+**Two things were deliberately NOT deleted**, because deleting them would have
+been silently wrong:
+
+- **The merge-slot typing census.** It rode inside `leg_local_bake_census.go` but
+  measures the POSITIONAL MERGE, which outlives the arm. Its counters, partition
+  identity and floor were carried over and rewired into the corpus gate; it reads
+  22,394 slots / 0 untyped. A live path with no instrument is how the silent
+  zero-rows defect it watches for gets back in.
+
+  **NOT "extracted whole", and the difference matters twice.** An earlier
+  revision of this line said so. First, the unit tests that drove the classifier
+  and every gate arm did NOT come across — they lived in the deleted
+  `leg_local_bake_census_gate_test.go`, so the instrument shipped with only a
+  corpus reading behind it, which is exactly the substitute this repo says is not
+  one. They are restored in `merge_slot_typing_census_test.go`. Second, the
+  `Untyped == 0` assertion is NEW: the original counter was an upper bound,
+  explicitly reported rather than asserted, because it could not separate an
+  unnest ELEMENT from a leg that lost its row. That residual has since collapsed
+  (those slots now state a real scalar type and land in the SCALAR class), which
+  is what makes the hard zero correct — see the reconciled measurement at
+  `positional_merge.go`.
+- **`legReadIdentity` / `classifyLegReadIdentity`.** They lived in a census file
+  and are load-bearing control flow for the surviving buried-leg rebase.
+
+**One guard was inverted, then DELETED, and this section said otherwise.**
+`mergedLegReadIsAlarm` and the merged-read activation criterion were both
+CONDITIONAL on the leg-local bake returning as a producer, and were rewritten so
+the alarm pointed at GROWTH instead. Both then went with the binder in §13 —
+`mergedLegReadIsAlarm` has zero references repo-wide. The inversion was real work
+and it is not in the tree; what IS in the tree is the deletion. Claiming a guard
+"says so at the site" when the site is gone is the same defect this RFC keeps
+naming, committed inside the RFC.
+
+## 13. The binder, retired on a measurement
+
+`bindMergedOuterLegs` bound **15,032 windows across 155 distinct shapes and was
+READ ZERO TIMES** over the real-FDB corpus — down from 3 reads across 303 shapes
+while the arm existed. It ran once per OUTER ROW, so it was work on the row-rate
+path with no consumer. Gone, along with its 556-line census and the three
+test-only `EvaluationContext` hooks.
+
+## 14. The plan-shape audit
+
+**17 queries changed plan. All 17 are EXISTS-over-join shapes.** Nothing else in
+the corpus moved, and `diff` reports **zero error-line changes**, so the set of
+queries that plan is identical — nothing started or stopped planning.
+
+| | before | after |
+|---|---|---|
+| keyed probes `[=]` | 1 | **11** |
+| materialised `NestedLoopJoin` | 15 | **7** |
+
+Materialised cross products becoming correlated key probes, which is the
+improvement §5 predicted. Every one of the 17 lives in the yamsql corpus, which
+asserts ROWS, and every one of those scenarios passes — so the "shape changed but
+no row test covers it" hole is empty, measured rather than assumed.
+
+**The figure this section replaces was stale.** Earlier drafts quoted an
+11,223-line golden drift throughout. That was measured before the residual and
+layout fixes landed and was carried forward across several updates as though it
+still described the branch. It described a tree that had stopped existing. The
+number is 137 golden lines.
+
+## 15. Three experiments that were built, measured, and reverted
+
+Each is recorded because the reasoning behind it is sound and will occur to the
+next reader, who should not have to re-derive the refutation.
+
+**(a) Narrowing the live-existential guard to the ≥2 merge case.** The argument —
+a single live lower needs no ordinal, and Java's Case 2 flows one lower's row
+unchanged with `Quantifier.Existential` inheriting `getFlowedObjectValue`
+verbatim — is correct about Java and false about this tree. Go's existential
+lowering puts a FirstOrDefault under the quantifier, so the upper reads a row
+that is present-but-NULL rather than absent. Sweep went 21 → 48 failures, five of
+them ROW failures in yamsql. What survived is the CORRECT distinction: an
+existential live via a spanning predicate is a FILTER and cannot be flowed up;
+one live only via the result value is READ and can.
+
+**(b) Scoping the outer-join refusal to bipartitions that split the pair.** Built
+`SealedGraphExpansion.BuildSelectWithJoinType` so the lower could be rebuilt as
+the same join. Fixed the uncorrelated arm and produced WRONG ROWS on the other
+two — `FlatMap(outer=FlatMap(outer=Scan(EMP), inner=Scan(DEPT,[=])), …)`, driving
+from the null-supplying side with no DefaultOnEmpty, 0 rows where 2 are correct.
+Not silent: both row-asserting tests caught it. But they were ALREADY red on the
+0AF00 decline, so the failure COUNT never moved — a red test cannot go redder,
+and in an area with known-failing tests a count is not a regression detector.
+
+**(c) Requiring both join sides in one half when any quantifier is NullOnEmpty.**
+This one taught the useful thing. A null-extension lives in two places and only
+one of them can be split: a non-set `JoinType` puts it on the PAIR, so rebuilding
+either half as JoinInner loses it; `NullOnEmpty` puts it on the QUANTIFIER, and
+the quantifier travels. Measured: the guard took `SELECT * FROM la a LEFT JOIN lb
+b ON a.gid = b.gid WHERE EXISTS (…)` from a correct plan to 0AF00.
+
+## 16. The gap is CLOSED — by emitting Java's box
+
+`RewriteOuterJoinRule` now does two things it did not:
+
+1. It accepts EXISTENTIAL quantifiers beside the outer pair. They are semi-join
+   filters riding ABOVE the null-extension, not sides of the join, so predicates
+   are split by side: ON-predicates below (before the extension), `WHERE EXISTS`
+   above (after it).
+2. When existentials are present it **BOXES** the join into a single quantifier:
+   a select over `[preserved, nullOnEmpty]` whose row is their positional merge,
+   exposed through one ForEach, with every reference the enclosing select made to
+   either side re-anchored onto it by ordinal — the same `TranslationMap` shape
+   `PartitionSelectRule.java:296-303` builds and that `positionalMergeCase`
+   builds for the flat case.
+
+The enclosing select is then `[box, existential…]` — BINARY, which is exactly
+what `ImplementNestedLoopJoinRule` matches
+(`exactlyInAnyOrder`, `ImplementNestedLoopJoinRule.java:98`).
+
+**This is a port, not an invention.** Java's outer join IS one quantifier: an
+`OuterJoinExpression` holding both sides internally, so an enclosing select never
+sees two. Go's flat encoding — a select carrying a join-type flag — is why Go had
+to reach the same shape by construction.
+
+**Every bipartition route was measured first, and all three are closed.** This is
+recorded because each looks viable and the next reader will try them in this
+order:
+
+- a single-quantifier lower dies on the usefulness check. A PROJECTED existential
+  contributes no predicate to push down, so partitioning it removes one
+  quantifier and adds one.
+- `lower = {preserved, nullSupplying}` dies on Java's own
+  `lowersCorrelatedToByUppers[0] != lowerAliasCorrelatedToByUpperAliases`: the
+  result value needs the preserved leg, the existential depends on the
+  null-supplying one, and Case 2 flows only ONE lower's row.
+- the ≥2 positional-merge arm DECLINES a null-on-empty leg outright, by design
+  (`positional_merge.go:36-53`) — the null-extension is per-outer-row and
+  collapsing it into a positional lower would erase it. That is a correctness
+  guard, not a defect, and an earlier draft of this section wrongly called it the
+  blocker.
+
+Java meets none of this because Java never partitions an outer join at all.
+
+**Result: the suite is green.** `//pkg/relational/... + //pkg/recordlayer/query/...`
+at **29,615 run / 29,615 pass / 0 fail / 0 skip**, md5-verified against the tree
+that produced it. `TestFDB_ProjectedExistsOverLeftJoin` passes all five dims,
+including the two correlated ones Java answers and Go used to decline;
+`TestFDB_LeftJoinExistsResidual` and `TestFDB_KeyBindingAndBuriedExists` pass in
+full.
+
+The box path has **no corpus coverage** — re-running the plan-shape dump after
+the change reports zero drift, because no yamsql or factory query is a projected
+EXISTS over a LEFT JOIN. Its coverage is therefore the seven FDB subtests that
+assert ROWS end to end, and that is stated here so the absence is a known
+property rather than something a future reader infers from a green golden.
+
+`conformance/projected_exists_left_join_java_probe_test.go` keeps the parity
+claim measured rather than inherited: it runs the shape against the live
+4.12.11.0 JVM, alongside the two controls that localise it (the INNER-join
+spelling and the WHERE-EXISTS spelling, which always worked).
+
+## 17. What retiring the arm EXPOSED: an identifier-sensitive cost tie
+
+Two cross-engine corpus entries went red at the end of this work —
+`dup_from_alias_leg_independent_exists` and `dup_from_alias_shadowing_exists`,
+both reported as "row data diverges". Neither is a wrong answer: Go returns the
+correct six-row multiset. What differs is ROW ORDER, and the conformance harness
+compares with `reflect.DeepEqual`, so order is observable.
+
+**The cause is not the peel, and it is not new.** Measured at the merge-base
+`e24f338e7`, the plain comma join with no existential anywhere already diverges:
+
+```
+SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a
+  JAVA [[5] [7] [9] [5] [7] [9]]     first FROM item outermost
+  GO   [[5] [5] [7] [7] [9] [9]]     second FROM item outermost
+```
+
+Go's cost model reaches a genuine TIE on the two nestings of an unconstrained
+cross product and resolves it by a hash; Java rarely reaches that tie at all,
+because it prunes each `Reference` to one member mid-phase and Go does not —
+`planning_cost_model.go:562` states exactly this, beside the tie-break it wraps.
+
+**The tie is identifier-sensitive, which is what makes it arbitrary rather than
+a rule about FROM order.** The same query, differing only in the names of the
+tables it reads, falls opposite ways:
+
+```
+... FROM T_DUP_EIP AS a, T_DUP_EIQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_EIP AS a WHERE a.id = 1)
+  GO  [[5] [7] [9] [5] [7] [9]]      agrees with Java
+... FROM T_DUP_SHP AS a, T_DUP_SHQ AS a WHERE EXISTS (SELECT 1 FROM T_DUP_SHP AS a WHERE a.id = 1)
+  GO  [[5] [5] [7] [7] [9] [9]]      diverges
+```
+
+Java is stable across both. That pair is the finding, and it is why the two red
+entries are the corpus meeting a pre-existing engine property rather than a
+regression in the shapes this RFC changed.
+
+RFC-235's role is narrow and worth stating precisely: the retired
+three-quantifier arm forced ONE nesting for `WHERE EXISTS` over a comma join,
+which happened to be Java's. Removing it let those two queries fall to the same
+arbitrary tie the plain cross product has always fallen to. The arm was masking
+this, not preventing it.
+
+**Ruled out by mutation, not by argument.** Inverting the Go-only
+statistics-driven scalar rung that sits above the hash tie-break
+(`planning_cost_model.go`, `EstimateCostWith`) changes NONE of these plans, so
+that rung is not the decider. The decision is the hash.
+
+**Measured and pinned:** `conformance/dup_alias_exists_order_probe_test.go` runs
+all six shapes against the live 4.12.11.0 JVM and asserts BOTH columns — Java's
+order as the reference that must not move, and Go's current order, divergence
+included, so that closing the gap turns the probe red rather than silently
+redefining what conformance means. It carries the renamed-table pair above as
+its demonstration that identifiers decide the tie.
+
+**This is not fixed here, and that is a scope judgement rather than a
+deferral.** Closing it means either giving Go Java's prune-to-1 or replacing the
+identifier-sensitive tie-break with a stable one. Those two are NOT peers, and
+the difference decides which one the follow-on RFC should build: Java's own final
+tie-break is `Integer.compare(planHash(a), planHash(b))`
+(`PlanningCostModel.java:322-326`, and `StableSelectorCostModel` likewise) — also
+identifier-sensitive. What makes Java stable is not a better tie-break, it is
+PRUNE-TO-1: Java rarely reaches the tie at all. So porting prune-to-1 is the
+Java-alignment option, and a declaration-order tie-break is a Go INVENTION that
+would diverge from Java's cost model even while matching its output on this
+query. Both are Cascades cost-model changes: they need their own Graefe-ACKed RFC, a full
+golden re-audit, and a stress re-baseline — none of which can ride inside a
+change whose subject is deleting a predicate-conversion gap. The open question
+is booked in `TODO.md` (search `identifier-sensitive cost tie`), which points
+back here and at the probe.
