@@ -506,6 +506,7 @@ go_test(
         "quoted_machine_alias_fdb_test.go",
         "rawnan_pk_suffix_fdb_test.go",
         "rcte_crossjoin_probe_test.go",
+        "read_your_writes_index_fdb_test.go",
         "readable_index_view_latency_fdb_test.go",
         "record_constructor_expression_fdb_test.go",
         "recursive_cte_alias_frontier_test.go",
