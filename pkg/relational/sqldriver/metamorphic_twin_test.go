@@ -193,6 +193,88 @@ func (w *mmTwin) WantKnownDivergence(name, q string, wantIndexed, wantOracle []s
 	}
 }
 
+// ExplainInTx is Explain taken inside an EXPLICIT TRANSACTION, and the two are
+// not interchangeable: the secondary-UNIQUE distinct proof is licensed only
+// where the whole result comes from ONE read version, which an explicit
+// transaction provides and auto-commit does not — in auto-commit each page
+// takes a fresh read version, a value can move between pages and be emitted
+// twice, so the proof is deliberately withheld.
+//
+// A test that reads a plan in auto-commit and expects an elision therefore sees
+// the UN-elided plan and is asserting the wrong thing about a correct engine.
+func (w *mmTwin) ExplainInTx(q string) string {
+	w.t.Helper()
+	tx, err := w.idx.BeginTx(w.ctx, nil)
+	if err != nil {
+		w.t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var plan string
+	if err := tx.QueryRowContext(w.ctx, "EXPLAIN "+q).Scan(&plan); err != nil {
+		w.t.Fatalf("EXPLAIN %q in a transaction: %v", q, err)
+	}
+	return plan
+}
+
+// WantInTx is Want with both sides read inside their own explicit transaction,
+// so the single-read-version proofs are licensed. Use it for any case whose
+// point is an optimization gated on one read version; use Want otherwise.
+func (w *mmTwin) WantInTx(name, q string, want []string) {
+	w.t.Helper()
+	read := func(db *sql.DB) ([]string, error) {
+		tx, err := db.BeginTx(w.ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		rows, err := tx.QueryContext(w.ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		cols, err := rows.Columns()
+		if err != nil {
+			return nil, err
+		}
+		var out []string
+		for rows.Next() {
+			cells := make([]any, len(cols))
+			for i := range cells {
+				cells[i] = new(sql.NullString)
+			}
+			if err := rows.Scan(cells...); err != nil {
+				return nil, err
+			}
+			parts := make([]string, len(cells))
+			for i, c := range cells {
+				v := c.(*sql.NullString)
+				if v.Valid {
+					parts[i] = v.String
+				} else {
+					parts[i] = "NULL"
+				}
+			}
+			out = append(out, strings.Join(parts, "|"))
+		}
+		return out, rows.Err()
+	}
+	gi, ei := read(w.idx)
+	gn, en := read(w.plain)
+	if ei != nil || en != nil {
+		w.t.Errorf("%s: query failed in a transaction\n  q: %s\n  indexed: %v\n  unindexed: %v",
+			name, q, ei, en)
+		return
+	}
+	if !mmEqRows(gn, want) {
+		w.t.Errorf("%s: UNINDEXED (oracle) answer is wrong\n  q: %s\n  got  %v\n  want %v",
+			name, q, gn, want)
+	}
+	if !mmEqRows(gi, want) {
+		w.t.Errorf("%s: INDEXED answer is wrong\n  q: %s\n  got  %v\n  want %v\n  plan: %s",
+			name, q, gi, want, w.ExplainInTx(q))
+	}
+}
+
 // WantPlanContains fails unless the indexed plan contains marker. A row
 // assertion that silently stopped exercising the operator under test is a green
 // that proves nothing, so every case whose point is an index-backed operator
