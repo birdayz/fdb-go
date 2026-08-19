@@ -430,21 +430,21 @@ rather than regenerated, and the stress comparison §9 makes a gate.
 
 ## 12. Phase 2 — the retirement, implemented
 
-`rule_implement_nested_loop_join.go`: **6,532 → 4,894 lines** (`wc -l`, phase-2
-head). Whole change on top of phase 1, at that same head — `git diff --stat
-4510d453d..HEAD`:
+`rule_implement_nested_loop_join.go`: **6,532 → 4,894 lines** — `wc -l`, against
+`git show 4510d453d:` for the before.
 
-    82 files changed, 3278 insertions(+), 12389 deletions(-)
-    7 added, 22 deleted, 53 modified
+THE DIFFSTAT THAT USED TO SIT HERE IS DELETED, and the reason is worth more than
+the number was. It was wrong four times running: "45 files, 651 insertions,
+10,990 deletions", then "73 files, 1,933, 12,369", then "82 files, 3,278,
+12,389" — each true when written and stale before the section was next read.
+That is not carelessness, it is structural: **this RFC is inside the diff it was
+quoting**, so writing the figure changed the figure, and the paragraph explaining
+why the line had been wrong twice was itself part of the delta that made it wrong
+a third time. A self-referential measurement has no fixed point.
 
-THE COMMAND AND THE ANCHOR ARE PART OF THE CLAIM, because this line has now been
-wrong twice. It first said 5,208 lines and "45 files, 651 insertions, 10,990
-deletions"; the correction said 4,894 and "73 files, 1,933 insertions, 12,369
-deletions". Both were true when written and stale within the same phase — the
-dead-code cascade the retirement exposed kept growing, and then the review round
-grew it again. A number with no stated measurement point decays without ever
-looking wrong, so this one names the baseline commit and the command that
-produces it rather than asking a reader to trust the figure.
+The line count survives because it does not self-reference: it is a fact about
+one source file that this document is not part of. It is also the number that
+carried the argument — the diffstat never did.
 
 | deleted | lines |
 |---|---|
