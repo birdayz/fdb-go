@@ -360,10 +360,13 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 
 	// GATE 4 — NAME AMBIGUITY ACROSS THE TWO NAMESPACES.
 	//
-	// perType is keyed by STORAGE names. A relational scan asks with the SQL name
-	// it was written with, so the provider tries the name as given and then, on a
-	// miss, its escaped form -- which is right whenever only one of the two can
-	// match.
+	// The per-type map the provider will be handed is keyed by STORAGE names, and
+	// a relational scan asks with the SQL name it was written with, so the
+	// provider tries the name as given and then, on a miss, its escaped form --
+	// which is right whenever only one of the two can match.
+	//
+	// The check below runs over the DECLARED names, not that map: ambiguity is a
+	// property of what a schema declares, not of what a run happened to collect.
 	//
 	// Both can. The escaping is not injective ACROSS the namespaces: MY is
 	// stored as MY__1TABLE, and a table whose SQL name IS MY__1TABLE is stored as
@@ -386,6 +389,14 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 	// than what it refuses. Refusing falls back to the cost model's constant and
 	// changes no plan that was already right, so it is the safe half to ship now;
 	// canonicalisation needs its own RFC covering BOTH sites.
+	//
+	// The twin's surface is LARGER in the code -- four arms there against two here
+	// -- but it was MEASURED before being written up, and it does not reach wrong
+	// data from SQL: DDL accepts two columns whose names collide under the
+	// escaping, and both still round-trip their own values
+	// (TestFDB_FieldNameCollisionAcrossEscaping). The SQL path resolves columns
+	// through the descriptor rather than through that fallback chain. So the RFC
+	// should scope the twin by what it was shown to do, not by how the code looks.
 	if ambiguous, ok := ambiguousStorageName(declared); ok {
 		st.Refusal = StatisticsAmbiguousNames
 		st.AmbiguousTypes = ambiguous

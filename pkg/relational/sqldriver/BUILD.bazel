@@ -275,6 +275,7 @@ go_test(
         "exists_semantics_probe_test.go",
         "explain_unplannable_fdb_test.go",
         "fanout_exists_index_fdb_test.go",
+        "field_name_collision_probe_test.go",
         "filtered_box_unnest_fdb_test.go",
         "flatmap_continuation_drop_fdb_test.go",
         "fleet_fanout_fdb_test.go",

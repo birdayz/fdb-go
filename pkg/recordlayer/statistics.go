@@ -609,6 +609,14 @@ func writeStatistics(
 			// surfacing to an operator as "not collected" immediately after a
 			// successful collection. Stamping here makes the writer, not its
 			// callers, responsible for the invariant the reader enforces.
+			//
+			// Overriding the caller cannot lose information while the reader demands
+			// set-wide stamp equality: an entry version differing from the header's
+			// is BY DEFINITION a torn set there, so this can only turn a set the
+			// reader would reject into one it accepts. Per-entry versions become
+			// meaningful only under incremental recollection (RFC-236 §7, out of
+			// scope), which would have to relax that equality check first -- the two
+			// move together, and this line is where the coupling lives.
 			st.CollectedAtVersion = version
 			st.CollectedAtUnixNanos = nanos
 			tx.Set(target.Pack(tuple.Tuple{name}), packStatistic(st))

@@ -210,6 +210,18 @@ see it. Picking a lookup order does not fix it; it only moves which of the two
 tables is priced wrong. So the collision is refused, and the refusal NAMES both
 names, since renaming or re-quoting either one breaks it.
 
+The refusal is not the settled fix. Canonicalising names so the two namespaces
+never meet at a lookup is, and it is NOT statistics-local: the same
+try-then-escape shape exists for FIELD names in `values.go`, with four arms
+rather than two. That twin was MEASURED rather than assumed before being written
+here, because the obvious reading — a wider surface resolving a field descriptor,
+so wrong data rather than a wrong cost — turns out not to hold from SQL. DDL
+accepts two columns whose names collide under the escaping, and both still
+round-trip their own values (`TestFDB_FieldNameCollisionAcrossEscaping`); the SQL
+path resolves columns through the descriptor, not through that fallback chain.
+So a canonicalisation RFC should cover both sites, and should scope the twin by
+what it was shown to do rather than by how the code looks.
+
 The verdict is a `StatisticsStatus`, not a bool, because it has a second
 consumer: `frl stats show` prints it. One decision function, two callers. Had
 the CLI re-derived "is this usable", it would eventually have reported usable
