@@ -1144,3 +1144,66 @@ func (failedInt64) MustGet() int64      { panic(errInjectedGRV) }
 func (failedInt64) BlockUntilReady()    {}
 func (failedInt64) IsReady() bool       { return true }
 func (failedInt64) Cancel()             {}
+
+var _ = Describe("CollectStatisticsIntegerKeys", func() {
+	// AN INTEGER KEY THAT IS NOT THE HEADER IS CORRUPTION.
+	//
+	// Record type names are strings, so an integer tuple key can only be the
+	// header — or something this build does not understand: corruption, or a
+	// newer writer's layout. Skipping it and returning the rest is the same
+	// partial answer a malformed value gives, against the same all-or-nothing
+	// contract, and it was the one remaining spelling of that bug after the
+	// malformed-value and malformed-key cases were closed.
+	It("refuses a set containing an unknown integer key", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		// Sibling of the store subspace, never a child — the store keyspace is
+		// Java's (constants.go).
+		stats := NewStatisticsSubspace(subspace.FromBytes(
+			tuple.Tuple{"__stats__", CurrentSpecReport().FullText()}.Pack()))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+		build := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).
+				SetMetaDataProvider(md).SetSubspace(sub).CreateOrOpen()
+		}
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, sErr := build(rtx)
+			if sErr != nil {
+				return nil, sErr
+			}
+			_, sErr = store.SaveRecord(&gen.Order{OrderId: proto.Int64(1)})
+			return nil, sErr
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = CollectStatistics(ctx, sharedDB, build, stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Control: readable before the injection, or the refusal proves nothing.
+		_, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+
+		// A second integer key — what a newer writer's header revision, or
+		// corruption, would look like.
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Set(target.Pack(tuple.Tuple{int64(1)}),
+				packStatistic(RecordTypeStatistic{Count: 5, CollectedAtVersion: 1}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		got, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse(),
+			"an integer key that is not the header must poison the SET. It cannot be a "+
+				"record type — names are strings — so it is a layout this build does not "+
+				"understand, and returning the rest is a partial answer wearing a whole one")
+		Expect(got.PerType).To(BeEmpty())
+	})
+})

@@ -72,6 +72,13 @@ func CollectStatistics(
 		if len(md.RecordTypes()) == 0 {
 			return Event{Outcome: OutcomeNoWork}, nil
 		}
+		// Same refusal as the single-schema path: the reader rejects metadata
+		// declaring synthetic types outright, so scanning this tenant's store
+		// would bill a full pass for a set that can never be planned with. In a
+		// fan-out that is per-tenant waste multiplied by the fleet.
+		if md.DeclaresSyntheticRecordTypes() {
+			return Event{Outcome: OutcomeNoWork}, nil
+		}
 		report, err := recordlayer.CollectStatistics(ctx, db,
 			func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
 				return recordlayer.NewStoreBuilder().

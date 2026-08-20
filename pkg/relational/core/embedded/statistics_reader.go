@@ -216,6 +216,14 @@ func evaluateCollectedStatistics(
 		in.DeclaredTypes = append(in.DeclaredTypes, name)
 	}
 
+	// Decide BEFORE any I/O when the answer cannot depend on it. Synthetic
+	// declarations fix the verdict outright, and reading anyway costs an FDB
+	// transaction on every opt-in plan-cache miss — one that may retry or wait on
+	// a cluster whose answer is then thrown away.
+	if in.HasSyntheticTypes {
+		return decideStatistics(in)
+	}
+
 	statsSubspace, storeSubspace, err := c.statisticsLocation()
 	if err != nil {
 		in.ReadErr = err

@@ -133,21 +133,28 @@ func TestIntegration_Stats_ShowJSONIsTyped(t *testing.T) {
 }
 
 func TestIntegration_Stats_CappedTypeIsAbsentAndRefuses(t *testing.T) {
-	// The cap is what bounds work on a huge table, and its contract is that an
-	// EXCEEDED type is recorded as ABSENT rather than as a partial count. This
-	// pins both halves: the collector says it skipped, and the planner's own
-	// verdict then refuses the whole schema for incompleteness — the stated
-	// cost of schema-wide completeness, exercised rather than asserted.
+	// Crossing the cap ABORTS and stores nothing, and the command must EXIT
+	// NON-ZERO for it. Exiting 0 tells scheduled automation the refresh
+	// succeeded while the previous statistics sit there going stale — and the
+	// fleet path already treats the same report as a per-target failure, so a
+	// zero exit here would make one outcome mean two things depending on which
+	// flag was used.
 	db := setupStatsDB(t, "capped", statsOneTableDDL,
 		"INSERT INTO items VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e');")
 
 	out, err := runCmd(t, "stats", "collect", "--database", db, "--schema", "main",
 		"--max-records-per-type", "2")
-	if err != nil {
-		t.Fatalf("stats collect: %v\noutput: %s", err, out)
+	if err == nil {
+		t.Fatalf("a capped collection exited 0 while storing nothing; automation would "+
+			"read that as a successful refresh\noutput: %s", out)
 	}
-	if !strings.Contains(out, "not collected") || !strings.Contains(out, "ITEMS") {
-		t.Errorf("expected the capped type to be reported as not collected:\n%s", out)
+	if !strings.Contains(err.Error(), "aborted") || !strings.Contains(err.Error(), "ITEMS") {
+		t.Errorf("the error must say it aborted and name the table that blew the budget: %v", err)
+	}
+	// The report still prints, so an operator sees what happened rather than
+	// only that something did.
+	if !strings.Contains(out, "ITEMS") {
+		t.Errorf("expected the report to name the capped table:\n%s", out)
 	}
 
 	out, err = runCmd(t, "stats", "show", "--database", db, "--schema", "main")

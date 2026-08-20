@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -1113,6 +1114,19 @@ func (c *EmbeddedConnection) CollectStatistics(
 	if md == nil {
 		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema,
 			"no metadata for schema %q", c.sess.Schema)
+	}
+	// Refuse BEFORE scanning. The reader refuses this metadata unconditionally
+	// (statistics_reader.go's GATE 0: RecordTypes() omits synthetic types, so
+	// completeness is undecidable), which means a collection here would read every
+	// record in the store to produce a set that can never be used. Failing up
+	// front costs nothing and says why; succeeding would bill a full scan for an
+	// outcome the planner has already decided to reject.
+	if md.DeclaresSyntheticRecordTypes() {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"schema %q declares synthetic record types (%s) that this port does not model, "+
+				"so collected statistics could never be complete enough to plan with; "+
+				"collection refused rather than scanning the store for an unusable result",
+			c.sess.Schema, strings.Join(md.SyntheticRecordTypeNames(), ", "))
 	}
 	statsSubspace, storeSubspace, err := c.statisticsLocation()
 	if err != nil {

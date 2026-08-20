@@ -212,6 +212,19 @@ func newStatsCollectCmd() *cobra.Command {
 					if err != nil {
 						return fmt.Errorf("collect statistics for %s: %w", addr.describe(), err)
 					}
+					// An ABORTED run stored nothing. Rendering the report and
+					// exiting 0 tells scheduled automation the refresh
+					// succeeded while the previous statistics sit there going
+					// stale — and the fleet path already treats the same report
+					// as a per-target failure, so exiting 0 here made one
+					// outcome mean two things depending on which flag was used.
+					if len(report.Collected) == 0 && len(report.Skipped) > 0 {
+						if rErr := renderCollectReport(cmd, outputFmt, addr.describe(), report, time.Since(started)); rErr != nil {
+							return rErr
+						}
+						return fmt.Errorf("collection aborted for %s and stored nothing: %s",
+							addr.describe(), describeSkippedTypes(report.Skipped))
+					}
 					return renderCollectReport(cmd, outputFmt, addr.describe(), report, time.Since(started))
 				})
 		},
@@ -377,6 +390,7 @@ type statsShowResult struct {
 	CurrentVersion       int64            `json:"current_version,omitempty"`
 	AgeVersions          int64            `json:"age_versions,omitempty"`
 	MaxAgeVersions       int64            `json:"max_age_versions"`
+	SyntheticTypes       []string         `json:"synthetic_types,omitempty"`
 	MissingTypes         []string         `json:"missing_types,omitempty"`
 	ExtraTypes           []string         `json:"extra_types,omitempty"`
 }
@@ -404,6 +418,7 @@ func renderStatsStatus(
 			CurrentVersion:       st.CurrentVersion,
 			AgeVersions:          st.AgeVersions,
 			MaxAgeVersions:       st.MaxAgeVersions,
+			SyntheticTypes:       st.SyntheticTypes,
 			MissingTypes:         st.MissingTypes,
 			ExtraTypes:           st.ExtraTypes,
 		})
@@ -490,4 +505,14 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// describeSkippedTypes renders why a collection abandoned its run, sorted so
+// repeated invocations are diffable.
+func describeSkippedTypes(skipped map[string]string) string {
+	parts := make([]string, 0, len(skipped))
+	for _, name := range sortedKeys(skipped) {
+		parts = append(parts, name+": "+skipped[name])
+	}
+	return strings.Join(parts, "; ")
 }

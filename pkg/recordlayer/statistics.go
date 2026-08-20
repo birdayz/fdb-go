@@ -595,7 +595,12 @@ func ReadStatisticsAt(
 			isHeader := false
 			if n, isInt := key[0].(int64); isInt {
 				if hdr, ok := statisticsHeaderKey[0].(int64); !ok || n != hdr {
-					continue
+					// An integer key that is not THE header cannot be a record
+					// type — names are strings — so it is corruption or a newer
+					// writer's layout. Skipping it and returning the rest is the
+					// same partial answer a malformed value would give.
+					malformed = true
+					return nil, nil
 				}
 				isHeader = true
 			}
