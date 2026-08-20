@@ -96,6 +96,33 @@ var _ = Describe("StoreTimer", func() {
 			Expect(t.GetTimeNanos(CountBytesWritten)).To(Equal(int64(0)))
 		})
 
+		It("records a size distribution the way Java's recordSize does", func() {
+			// Java's StoreTimer.SizeEvent is NOT its size Count, and the two
+			// differ in exactly the way the assertions below separate: recordSize
+			// (StoreTimer.java:569-571) is Counter.record, so the MAGNITUDE
+			// accumulates in the cumulative value and the OBSERVATION in the
+			// count. Reusing IncrementBy here would report the magnitudes summed
+			// into the count — "the window was size 2, then 2, then 1" rendered
+			// as the number 5, with the three observations lost.
+			t := NewStoreTimer()
+			t.RecordSize(SizeSWWindowCount, 2)
+			t.RecordSize(SizeSWWindowCount, 2)
+			t.RecordSize(SizeSWWindowCount, 1)
+			Expect(t.GetCount(SizeSWWindowCount)).To(Equal(int64(3)))
+			Expect(t.GetCounter(SizeSWWindowCount).CumulativeValue()).To(Equal(int64(5)))
+
+			// Java emits `_size` for a SizeEvent and `_micros` for nothing else
+			// (StoreTimer.java:755-759). The negative half matters: a `_micros`
+			// key here would render a window size of 5 as 5 nanoseconds.
+			kv := t.KeysAndValues()
+			Expect(kv).To(HaveKeyWithValue("sw_window_count_count", int64(3)))
+			Expect(kv).To(HaveKeyWithValue("sw_window_count_size", int64(5)))
+			Expect(kv).NotTo(HaveKey("sw_window_count_micros"))
+
+			var nilTimer *StoreTimer
+			Expect(func() { nilTimer.RecordSize(SizeSWWindowCount, 1) }).NotTo(Panic())
+		})
+
 		It("returns nil counter for unrecorded event", func() {
 			t := NewStoreTimer()
 			Expect(t.GetCounter(EventDeleteRecord)).To(BeNil())

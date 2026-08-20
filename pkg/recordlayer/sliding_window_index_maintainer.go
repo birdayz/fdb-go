@@ -53,7 +53,7 @@ var (
 	EventSWDelegateInsert            = Event{"sw_delegate_insert", "insert into the delegate index", KindTimed}
 	EventSWDelegateDelete            = Event{"sw_delegate_delete", "delete from the delegate index", KindTimed}
 
-	SizeSWWindowCount = Event{"sw_window_count", "window count after update", KindSize}
+	SizeSWWindowCount = Event{"sw_window_count", "window count after update", KindSizeDistribution}
 )
 
 // slidingWindowExtremum selects which end of the ordering the window keeps.
@@ -317,8 +317,8 @@ func (m *slidingWindowIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecord
 // Composition is scope-by-partition-then-region, matching Java (:441-444):
 //
 //	swSubspace.subspace(partitionTuple).subspace(ENTRIES | META)
-func (m *slidingWindowIndexMaintainer) partitionSubspaces(partitionTuple tuple.Tuple) (partitionSub, entriesSub, metaSub subspace.Subspace) {
-	partitionSub = m.swSubspace
+func (m *slidingWindowIndexMaintainer) partitionSubspaces(partitionTuple tuple.Tuple) (entriesSub, metaSub subspace.Subspace) {
+	partitionSub := m.swSubspace
 	if len(partitionTuple) > 0 {
 		args := make([]tuple.TupleElement, len(partitionTuple))
 		for i, v := range partitionTuple {
@@ -326,8 +326,7 @@ func (m *slidingWindowIndexMaintainer) partitionSubspaces(partitionTuple tuple.T
 		}
 		partitionSub = m.swSubspace.Sub(args...)
 	}
-	return partitionSub,
-		partitionSub.Sub(slidingWindowEntriesSubspaceKey),
+	return partitionSub.Sub(slidingWindowEntriesSubspaceKey),
 		partitionSub.Sub(slidingWindowMetaSubspaceKey)
 }
 
@@ -379,15 +378,15 @@ func evaluateSingletonKey(
 // HNSW graph. The suffix is what makes two records with equal window values
 // distinct entries in one sorted list; trimming it could collapse them onto one
 // key and lose an entry.
-func (m *slidingWindowIndexMaintainer) entryKeyFor(record *FDBStoredRecord[proto.Message]) (windowValue, entryKey tuple.Tuple, err error) {
-	windowValue, err = m.evaluateWindowValue(record)
+func (m *slidingWindowIndexMaintainer) entryKeyFor(record *FDBStoredRecord[proto.Message]) (tuple.Tuple, error) {
+	windowValue, err := m.evaluateWindowValue(record)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	entryKey = make(tuple.Tuple, 0, len(windowValue)+len(record.PrimaryKey))
+	entryKey := make(tuple.Tuple, 0, len(windowValue)+len(record.PrimaryKey))
 	entryKey = append(entryKey, windowValue...)
 	entryKey = append(entryKey, record.PrimaryKey...)
-	return windowValue, entryKey, nil
+	return entryKey, nil
 }
 
 // handleInsert is Java's handleInsert (:435-499).
@@ -396,9 +395,9 @@ func (m *slidingWindowIndexMaintainer) handleInsert(record *FDBStoredRecord[prot
 	if err != nil {
 		return err
 	}
-	_, entriesSub, metaSub := m.partitionSubspaces(partitionTuple)
+	entriesSub, metaSub := m.partitionSubspaces(partitionTuple)
 
-	_, entryKey, err := m.entryKeyFor(record)
+	entryKey, err := m.entryKeyFor(record)
 	if err != nil {
 		return err
 	}
@@ -430,7 +429,7 @@ func (m *slidingWindowIndexMaintainer) handleInsert(record *FDBStoredRecord[prot
 			return fmt.Errorf("sliding window index %q: read boundary: %w", m.index.Name, err)
 		}
 		m.tx.Set(counterKey, encodeSlidingWindowLong(count+1))
-		m.timer.IncrementBy(SizeSWWindowCount, count+1)
+		m.timer.RecordSize(SizeSWWindowCount, count+1)
 		if boundaryBytes == nil {
 			m.tx.Set(boundaryMetaKey, entryKey.Pack())
 			return nil
@@ -476,9 +475,9 @@ func (m *slidingWindowIndexMaintainer) handleDelete(record *FDBStoredRecord[prot
 	if err != nil {
 		return err
 	}
-	_, entriesSub, metaSub := m.partitionSubspaces(partitionTuple)
+	entriesSub, metaSub := m.partitionSubspaces(partitionTuple)
 
-	_, entryKey, err := m.entryKeyFor(record)
+	entryKey, err := m.entryKeyFor(record)
 	if err != nil {
 		return err
 	}
@@ -533,7 +532,7 @@ func (m *slidingWindowIndexMaintainer) handleDelete(record *FDBStoredRecord[prot
 		newCount = 0
 	}
 	m.tx.Set(counterKey, encodeSlidingWindowLong(newCount))
-	m.timer.IncrementBy(SizeSWWindowCount, newCount)
+	m.timer.RecordSize(SizeSWWindowCount, newCount)
 
 	if err := m.delegateDelete(record); err != nil {
 		return err
@@ -675,9 +674,19 @@ func (m *slidingWindowIndexMaintainer) reElectFromOverflow(
 	if err != nil {
 		return fmt.Errorf("sliding window index %q: unpack overflow primary key: %w", m.index.Name, err)
 	}
+	// The boundary and the count move BEFORE the record is loaded, and they are
+	// not rolled back if the load comes up empty. That ordering is Java's
+	// (:665-668 sets both, then :669 loads), and it is kept rather than
+	// "improved": an entry naming a record the store no longer holds means the
+	// entry list and the records disagree, and the count is then wrong either
+	// way — one too high if it stays, one too low relative to a boundary that
+	// now points at an entry outside the window if it does not. Java counts the
+	// anomaly (SW_PROMOTED_RECORD_MISSING) and keeps the window's bookkeeping
+	// internally consistent; diverging here would make the two engines' stored
+	// bytes differ after the same sequence of operations.
 	m.tx.Set(boundaryMetaKey, bestEntryKey.Pack())
 	m.tx.Set(counterKey, encodeSlidingWindowLong(newCount+1))
-	m.timer.IncrementBy(SizeSWWindowCount, newCount+1)
+	m.timer.RecordSize(SizeSWWindowCount, newCount+1)
 
 	promoted, err := m.store.loadRecordForIndexMaintenance(bestPrimaryKey)
 	if err != nil {
