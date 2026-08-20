@@ -497,6 +497,15 @@ func renderStatsStatus(
 		switch st.Refusal {
 		case embedded.StatisticsNotCollected:
 			fmt.Fprintln(out, "run `frl stats collect` to gather them")
+		case embedded.StatisticsTorn:
+			// Stored, and unusable — the opposite of absent, and the opposite of
+			// permanent. The default arm below says "nothing is stored, and
+			// collection will not help", which is wrong TWICE for this refusal:
+			// something is stored, and a collect is exactly the repair, because it
+			// ClearRanges the range and rewrites header and entries in one
+			// transaction.
+			fmt.Fprintf(out, "statistics ARE stored but cannot be vouched for: %s\n", st.ReadRefusal)
+			fmt.Fprintln(out, "run `frl stats collect` to replace them")
 		case embedded.StatisticsReadFailed:
 			// Found is false here because existence is UNKNOWN, not because the
 			// store is empty: the read itself failed. Saying "nothing is stored"

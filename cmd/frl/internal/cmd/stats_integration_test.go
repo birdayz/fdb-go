@@ -626,3 +626,111 @@ func TestStats_FailedReadIsReportedAsUnknownNotAbsent(t *testing.T) {
 		t.Errorf("the underlying error is what an operator needs and it is missing:\n%s", out)
 	}
 }
+
+// A TORN SET IS STORED AND REPAIRABLE — THE DEFAULT ARM SAYS THE OPPOSITE OF BOTH.
+//
+// StatisticsTorn was added to stop the gate reporting torn sets as absent. It
+// then landed in this renderer's default arm, which says "nothing is stored, and
+// collection will not help" — wrong twice over: something IS stored, and a
+// collect is exactly the repair, since it ClearRanges the range and rewrites
+// header and entries in one transaction.
+//
+// Adding a refusal to a gate and forgetting the layer that renders it is the
+// same gap this feature has now hit three times, in three different layers.
+func TestStats_TornSetIsRenderedAsStoredAndRepairable(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	render := &cobra.Command{}
+	render.SetOut(&buf)
+	if err := renderStatsStatus(render, "text", "/x/MAIN", embedded.StatisticsStatus{
+		Refusal:     embedded.StatisticsTorn,
+		ReadRefusal: recordlayer.StatisticsReadCountMismatch,
+	}); err != nil {
+		t.Fatalf("renderStatsStatus: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "nothing is stored") {
+		t.Errorf("a TORN set was reported as absent:\n%s", out)
+	}
+	if strings.Contains(out, "collection will not help") {
+		t.Errorf("a torn set is repaired by collecting; the output says it is not:\n%s", out)
+	}
+	if !strings.Contains(out, "ARE stored") {
+		t.Errorf("a torn set must say something is stored:\n%s", out)
+	}
+	// The specific way it is broken is what an operator acts on.
+	if !strings.Contains(out, string(recordlayer.StatisticsReadCountMismatch)) {
+		t.Errorf("the read's own reason is missing, so the operator cannot tell WHICH "+
+			"way the set is torn:\n%s", out)
+	}
+}
+
+// EVERY REFUSAL THAT LEAVES Found FALSE MUST BE CLASSIFIED HERE.
+//
+// renderStatsStatus's hint block runs only when Found is false, and its default
+// arm says "nothing is stored, and collection will not help". That is right for
+// exactly one refusal today and wrong for anything else that lands there — which
+// is not hypothetical: StatisticsTorn was added to the gate and fell straight
+// into it, producing "nothing is stored, and collection will not help: stored
+// statistics are torn or unreadable", a line that contradicts itself twice.
+//
+// So the classification is enforced rather than remembered. Adding a refusal
+// that leaves Found false means adding it here, and a wrong classification fails
+// rather than shipping a self-contradicting sentence to an operator.
+//
+// The list is hand-maintained and carries the same acknowledged hole as its
+// siblings: a constant absent from both this list and the switch cannot be
+// caught, because Go cannot enumerate constants at runtime. What it does catch
+// is the case that actually happened — a refusal added to the gate and rendered
+// by a default arm that describes something else.
+func TestStats_EveryNotFoundRefusalIsClassified(t *testing.T) {
+	t.Parallel()
+
+	// stored: does the refusal mean statistics EXIST in the store?
+	// repairable: would `frl stats collect` fix it?
+	cases := []struct {
+		refusal    embedded.StatisticsRefusal
+		stored     bool
+		repairable bool
+	}{
+		{embedded.StatisticsNotCollected, false, true},
+		{embedded.StatisticsTorn, true, true},
+		{embedded.StatisticsReadFailed, false, false}, // existence UNKNOWN
+		{embedded.StatisticsSyntheticTypes, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.refusal), func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			render := &cobra.Command{}
+			render.SetOut(&buf)
+			if err := renderStatsStatus(render, "text", "/x/MAIN", embedded.StatisticsStatus{
+				Refusal: tc.refusal,
+			}); err != nil {
+				t.Fatalf("renderStatsStatus: %v", err)
+			}
+			out := buf.String()
+
+			// A refusal meaning statistics EXIST must never be rendered as absence.
+			if tc.stored && strings.Contains(out, "nothing is stored") {
+				t.Errorf("%q means statistics ARE stored, rendered as absent:\n%s",
+					tc.refusal, out)
+			}
+			// A refusal a collect would repair must never say collection is futile.
+			if tc.repairable && strings.Contains(out, "collection will not help") {
+				t.Errorf("%q is repaired by collecting, rendered as permanent:\n%s",
+					tc.refusal, out)
+			}
+			// And the converse, or the assertions above are satisfiable by an
+			// arm that says nothing at all.
+			if !tc.repairable && strings.Contains(out, "run `frl stats collect`") {
+				t.Errorf("%q cannot be fixed by collecting, yet the output recommends it:\n%s",
+					tc.refusal, out)
+			}
+			if strings.TrimSpace(out) == "" {
+				t.Errorf("%q rendered nothing at all", tc.refusal)
+			}
+		})
+	}
+}
