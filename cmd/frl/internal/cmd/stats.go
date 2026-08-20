@@ -464,7 +464,16 @@ func renderStatsStatus(
 
 	if !st.Found {
 		fmt.Fprintln(out)
-		fmt.Fprintln(out, "run `frl stats collect` to gather them")
+		// The hint is gated on the REFUSAL, not on Found. A synthetic-type
+		// refusal also leaves Found false — it returns before any read — but
+		// collection rejects those schemas too, so recommending it would send an
+		// operator to run a command that cannot succeed, from the one verdict
+		// that is permanent.
+		if st.Refusal == embedded.StatisticsNotCollected {
+			fmt.Fprintln(out, "run `frl stats collect` to gather them")
+		} else {
+			fmt.Fprintf(out, "nothing is stored, and collection will not help: %s\n", st.Refusal)
+		}
 		return nil
 	}
 	fmt.Fprintln(out)

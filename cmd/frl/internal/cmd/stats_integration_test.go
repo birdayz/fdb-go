@@ -7,6 +7,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+
+	"fdb.dev/pkg/relational/core/embedded"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/recordlayer"
@@ -501,20 +506,24 @@ func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
 		t.Errorf("this schema declares no synthetic types, so the field must be absent: %v",
 			got.SyntheticTypes)
 	}
-	// Assert the WIRE, not the struct tag. Reflecting over the tag is a
-	// tautology — it re-reads the line just written — whereas marshalling a
-	// populated value proves the key an operator's `jq` will actually see.
-	populated, mErr := json.Marshal(statsShowResult{
-		Schema:         "/x/MAIN",
-		Refusal:        "metadata declares unmodeled synthetic record types",
+	// Through the RENDERER, not by marshalling statsShowResult directly.
+	// Marshalling the struct proves the json tag exists; it does not prove
+	// renderStatsStatus ever copies st.SyntheticTypes into it. Drop that one
+	// assignment and the production path loses the names while a direct-marshal
+	// test stays green — which is the whole failure mode being pinned.
+	var buf bytes.Buffer
+	render := &cobra.Command{}
+	render.SetOut(&buf)
+	if rErr := renderStatsStatus(render, "json", "/x/MAIN", embedded.StatisticsStatus{
+		Refusal:        embedded.StatisticsSyntheticTypes,
 		SyntheticTypes: []string{"JoinedAB"},
-	})
-	if mErr != nil {
-		t.Fatalf("marshal: %v", mErr)
+	}); rErr != nil {
+		t.Fatalf("renderStatsStatus: %v", rErr)
 	}
-	if !strings.Contains(string(populated), `"synthetic_types":["JoinedAB"]`) {
-		t.Errorf("a synthetic-type refusal does not reach -o json: %s\n"+
-			"  It renders in text and disappears here, losing exactly the detail added "+
-			"to make the verdict actionable.", populated)
+	if !strings.Contains(buf.String(), `"synthetic_types"`) ||
+		!strings.Contains(buf.String(), "JoinedAB") {
+		t.Errorf("the renderer drops the synthetic type names on the JSON path: %s\n"+
+			"  They render in text and disappear from -o json, losing exactly the "+
+			"detail added to make the verdict actionable.", buf.String())
 	}
 }

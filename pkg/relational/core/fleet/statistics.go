@@ -108,12 +108,6 @@ func CollectStatistics(
 		// empty and names the offending type in Skipped, which is what
 		// distinguishes it from a schema that genuinely had nothing to count.
 		if len(report.Collected) == 0 && len(report.Skipped) > 0 {
-			// The scan volume goes in the ERROR, not in Event.Records: fanOut
-			// overwrites Outcome on the error path, Result.record accumulates no
-			// Records, and the failure printer renders only Err — so a Records set
-			// here would be written and never read, which is the fourth instance of
-			// that shape in this branch. It is also the number the operator most
-			// wants: what the abandoned pass cost before it gave up.
 			// Neither Records nor Skipped is read on a non-collected outcome: the
 			// Failed and Refused printers render only Err, and Result.record
 			// accumulates neither. Both facts go in the error text, which is the
@@ -127,7 +121,6 @@ func CollectStatistics(
 			Records: report.RecordsScanned,
 			Types:   len(report.Collected),
 			Skipped: report.Skipped,
-			Counts:  countsOf(report),
 		}, nil
 	})
 }
@@ -161,18 +154,6 @@ func describeSkipped(skipped map[string]string) string {
 		parts = append(parts, name+": "+skipped[name])
 	}
 	return strings.Join(parts, "; ")
-}
-
-// countsOf flattens a collection report to name -> count for the Event.
-func countsOf(report *recordlayer.CollectionReport) map[string]int64 {
-	if report == nil || len(report.Collected) == 0 {
-		return nil
-	}
-	out := make(map[string]int64, len(report.Collected))
-	for name, st := range report.Collected {
-		out[name] = st.Count
-	}
-	return out
 }
 
 // syntheticRefusal returns the refusal Event for metadata this port does not

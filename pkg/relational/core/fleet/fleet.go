@@ -92,9 +92,6 @@ type Event struct {
 	// only). Distinct from a zero count: "no rows" and "not counted" are
 	// different facts and only one of them describes an empty table.
 	Skipped map[string]string
-	// Counts is the per-type row count collected (statistics mode only), so a
-	// progress printer can show the numbers without a second read.
-	Counts map[string]int64
 }
 
 // Options are the knobs shared by every fan-out mode.

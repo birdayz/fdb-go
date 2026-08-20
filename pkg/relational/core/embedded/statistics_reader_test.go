@@ -1,11 +1,14 @@
 package embedded
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
 
+	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/session"
 )
 
 // decideStatistics is the whole read-side gate (RFC-236). It is exercised here
@@ -379,4 +382,74 @@ func TestSyntheticVerdictIgnoresEverythingElse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// THE SYNTHETIC VERDICT MUST COST NO I/O, AND THIS DRIVES THE GATHERER TO PROVE IT.
+//
+// The sibling test above drives decideStatistics, which performs no I/O of its
+// own — so it stays green whether or not evaluateCollectedStatistics returns
+// early, and cannot observe the regression it names. Pinning the predicate is
+// not pinning the path.
+//
+// This drives evaluateCollectedStatistics with a connection whose session
+// database is nil. If the early return is removed, the function reaches
+// statisticsLocation and ReadStatisticsAt and panics or errors on that nil —
+// either way it stops returning StatisticsSyntheticTypes, which is the
+// observable. A nil is a crude seam, but it is the one this function cannot
+// touch without saying so.
+func TestSyntheticVerdictTouchesNoIO(t *testing.T) {
+	t.Parallel()
+
+	md := syntheticTestMetaData(t)
+	if !md.DeclaresSyntheticRecordTypes() {
+		t.Fatal("fixture declares no synthetic types; this cannot reach the gate")
+	}
+
+	// DB and Keyspace deliberately nil: the read path cannot run without them,
+	// so reaching the read at all is observable rather than merely slower.
+	c := &EmbeddedConnection{sess: &session.Session{Schema: "S", DBPath: "/db"}}
+
+	var st StatisticsStatus
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("evaluateCollectedStatistics reached the read path for synthetic "+
+					"metadata and panicked on the nil database (%v). The verdict is fixed "+
+					"before any I/O, so the early return must precede statisticsLocation.", r)
+			}
+		}()
+		st = evaluateCollectedStatistics(context.Background(), c, md)
+	}()
+
+	if st.Refusal != StatisticsSyntheticTypes {
+		t.Fatalf("Refusal = %q, want %q", st.Refusal, StatisticsSyntheticTypes)
+	}
+	if len(st.SyntheticTypes) == 0 {
+		t.Error("the refusal must name the declarations that caused it")
+	}
+}
+
+// syntheticTestMetaData builds metadata carrying a joined-type declaration —
+// the shape this port preserves opaquely and does not model.
+func syntheticTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	p, err := md.ToProto()
+	if err != nil {
+		t.Fatalf("to proto: %v", err)
+	}
+	name := "JoinedAB"
+	p.JoinedRecordTypes = append(p.JoinedRecordTypes, &gen.JoinedRecordType{Name: &name})
+	got, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatalf("from proto: %v", err)
+	}
+	return got
 }

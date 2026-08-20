@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -91,4 +92,48 @@ func syntheticMetaData(t *testing.T) *recordlayer.RecordMetaData {
 		t.Fatalf("from proto: %v", err)
 	}
 	return got
+}
+
+// AND THROUGH fanOut, WHICH IS WHERE THE OUTCOME CAN STILL BE LOST.
+//
+// The test above checks syntheticRefusal's return value. That is the predicate,
+// not the path: fanOut stamps `ev.Outcome = OutcomeFailed` whenever the step
+// returns a non-nil error, so a caller that returns `ev, ev.Err` instead of
+// `ev, nil` turns REFUSED into FAILED — the exact defect this pins — while the
+// predicate test stays green.
+//
+// So this drives a step through fanOut and asserts the TALLY: Refused == 1 and
+// Failed == 0. That is the number an operator reads in the summary, and it is
+// the only place the distinction becomes observable.
+func TestSyntheticRefusalSurvivesFanOut(t *testing.T) {
+	t.Parallel()
+
+	md := syntheticMetaData(t)
+	targets := []Target{{DatabaseID: "/db", SchemaName: "S"}}
+
+	// The production step's shape: set the outcome, return a NIL error.
+	res, err := fanOut(context.Background(), nil, targets, Options{}, func(context.Context, Target) (Event, error) {
+		ev, refused := syntheticRefusal(md)
+		if !refused {
+			return Event{Outcome: OutcomeCollected}, nil
+		}
+		return ev, nil
+	})
+
+	// fanOut joins per-target errors, and a refusal carries one — so a non-nil
+	// error here is expected and is what makes the CLI exit non-zero.
+	if err == nil {
+		t.Error("a refused target must still surface an error, or the fan-out exits 0")
+	}
+	if res.Refused != 1 {
+		t.Errorf("Refused = %d, want 1. The summary is what an operator reads; a refusal "+
+			"that does not land there is invisible.", res.Refused)
+	}
+	if res.Failed != 0 {
+		t.Errorf("Failed = %d, want 0. FAILED tells an operator to retry, and no retry "+
+			"changes a property of the metadata — that is the whole distinction.", res.Failed)
+	}
+	if res.Collected != 0 {
+		t.Errorf("Collected = %d, want 0 — nothing was stored", res.Collected)
+	}
 }
