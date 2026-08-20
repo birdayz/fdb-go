@@ -400,6 +400,7 @@ go_test(
         "metamorphic_sweep_paging_fdb_test.go",
         "metamorphic_sweep_predicates_fdb_test.go",
         "metamorphic_sweep_rewrites_fdb_test.go",
+        "metamorphic_sweep_shapeequiv_fdb_test.go",
         "metamorphic_twin_test.go",
         "modulo_division_probe_test.go",
         "mt_catalog_scope_fdb_test.go",
