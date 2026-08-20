@@ -1964,6 +1964,12 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			if ilc.QueryExpressionBody() != nil {
 				return nil, &UnsupportedExpressionShapeError{Shape: "IN with subquery"}
 			}
+			// A bare COLUMN REFERENCE as the whole list — `b IN xs`, with NO
+			// brackets. This is a distinct grammar alternative from
+			// `b IN (xs)`, which is the expressions branch carrying one item.
+			if fcn := ilc.FullColumnName(); fcn != nil {
+				return r.resolveInAgainstColumnList(p, atom, fcn)
+			}
 			return nil, &InColumnRefError{}
 		}
 		ec, ok := exprs.(*antlrgen.ExpressionsContext)
@@ -2342,8 +2348,70 @@ func (*InListNullError) Error() string {
 	return "NULL values are not allowed in the IN list"
 }
 
-// InColumnRefError signals `x IN y` where y is a column reference,
-// not an explicit value list. Java rejects this as unsupported syntax.
+// resolveInAgainstColumnList handles Java's fullColumnName branch of inList:
+// the whole list is one column reference, and it must be ARRAY-typed.
+//
+// Java's rule is a TYPE test, not a blanket refusal
+// (ExpressionVisitor.java:641-643): an ARRAY column is the list, and anything
+// else is UNSUPPORTED_QUERY "IN list with column reference must be of array
+// type, but got: %s". Measured on both engines in
+// conformance/in_list_shapes_java_probe_test.go — Java answers `b IN xs` and
+// refuses `b IN a` naming the offending type.
+//
+// Nothing downstream needed adding, and for the same two reasons a
+// non-constant value list needed nothing:
+//
+//   - ComparisonIn's evaluator consumes right.([]any), and an ARRAY value IS
+//     []any at runtime (see comparisons.go's composite handling, which names
+//     the forms as "an ARRAY ([]any) or a record (map[string]any)").
+//   - InComparisonToExplodeRule declines a comparand that is not
+//     IsConstantValue, so a column never folds to a plan-time NULL and the
+//     predicate stays a residual filter. ComparisonIn is not scan-range
+//     compatible either, so no index probe is lost by that.
+func (r *Resolver) resolveInAgainstColumnList(
+	p *antlrgen.InPredicateContext,
+	atom antlrgen.IExpressionAtomContext,
+	fcn antlrgen.IFullColumnNameContext,
+) (predicates.QueryPredicate, error) {
+	lhsVal, err := r.walkOperand(atom)
+	if err != nil {
+		return nil, err
+	}
+	listVal, err := r.walkColumnRef(fcn.FullId())
+	if err != nil {
+		return nil, err
+	}
+	lt := listVal.Type()
+	if lt == nil || lt.Code() != values.TypeCodeArray {
+		typeName := "UNKNOWN"
+		if lt != nil {
+			typeName = lt.Code().String()
+		}
+		// Java's wording, verbatim, because the two engines are answering the
+		// same question about the same input and a reader comparing them
+		// should not have to translate.
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"IN list with column reference must be of array type, but got: %s", typeName)
+	}
+	inPred := predicates.NewComparisonPredicate(lhsVal, predicates.Comparison{
+		Type:    predicates.ComparisonIn,
+		Operand: listVal,
+	})
+	if p.NOT() != nil {
+		return r.ResolveNot(inPred), nil
+	}
+	return inPred, nil
+}
+
+// InColumnRefError signals `x IN y` where y is a column reference that is
+// neither an ARRAY column nor an explicit value list — a prepared-parameter
+// list, or a shape the grammar admits and neither engine wires.
+//
+// It used to say "Java rejects this as unsupported syntax", and that was a
+// scope claim exceeding what the code does: Java's rule is a TYPE test, so it
+// ACCEPTS an ARRAY-typed column reference as the list and rejects only the
+// others. Go now accepts the same one — see resolveInAgainstColumnList — and
+// the non-array rejection carries Java's wording.
 type InColumnRefError struct{}
 
 func (*InColumnRefError) Error() string {

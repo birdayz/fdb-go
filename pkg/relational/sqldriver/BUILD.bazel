@@ -325,6 +325,7 @@ go_test(
         "having_subquery_probe_test.go",
         "identifier_case_probe_test.go",
         "ilike_regexp_boundary_probe_test.go",
+        "in_list_array_column_fdb_test.go",
         "in_list_duplicate_values_fdb_test.go",
         "in_list_limit_nil_probe_test.go",
         "in_list_non_constant_fdb_test.go",

@@ -7696,9 +7696,9 @@ plan:  Project([_current.ID#0], InUnion(IndexScan(IDX_PAYLOAD, [=]), bindings=1,
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInUnionPlan
 shape:     RecordQueryIndexPlan
-=== in_list_pushdown.yaml#43 expect-error=0A000
+=== in_list_pushdown.yaml#43 expect-error=0AF00
 sql:   SELECT id FROM t WHERE v IN v
-plan:  <PLAN-ERROR: 0A000: IN with a column reference is not supported>
+plan:  <PLAN-ERROR: 0AF00: IN list with column reference must be of array type, but got: LONG>
 === in_list_pushdown.yaml#44
 sql:   SELECT id, status FROM t2 WHERE status IN ('active', 'archived') ORDER BY id
 plan:  Project([_current.ID#0, _current.STATUS#1], InUnion(IndexScan(IDX_T2_STATUS, [=]), bindings=1, ASC))
