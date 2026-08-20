@@ -35,7 +35,8 @@ func TestPhysicalLeavesAlwaysNameTheirRecordTypes(t *testing.T) {
 CREATE TABLE customers (id BIGINT, region BIGINT, PRIMARY KEY (id))
 CREATE INDEX orders_by_cust ON orders (cust)
 CREATE INDEX orders_by_total ON orders (total)
-CREATE INDEX customers_by_region ON customers (region)`
+CREATE INDEX customers_by_region ON customers (region)
+CREATE INDEX orders_total_by_cust AS SELECT SUM(total) FROM orders GROUP BY cust`
 
 	// Shapes chosen to reach different leaf constructors: bare scan, primary-key
 	// probe, index equality, index range, covering index, join (two leaves at
@@ -54,6 +55,11 @@ CREATE INDEX customers_by_region ON customers (region)`
 		"SELECT id FROM orders WHERE id IN (1, 2, 3)",
 		"SELECT id FROM customers WHERE region = 2",
 		"SELECT o.id FROM orders o WHERE EXISTS (SELECT 1 FROM customers c WHERE c.id = o.cust)",
+		// Aggregate-index shapes. Without one of these the aggregate class never
+		// appears and the census cannot fail on it however wrong it is -- which
+		// is how the class stayed uncovered while the walker was blind to it.
+		"SELECT cust, SUM(total) FROM orders GROUP BY cust",
+		"SELECT SUM(total) FROM orders GROUP BY cust",
 	}
 
 	// A provider that answers a DIFFERENT number for the whole store than for
@@ -65,19 +71,20 @@ CREATE INDEX customers_by_region ON customers (region)`
 		Fallback: properties.LeafScanCardinality,
 	}
 
-	var leaves, untyped int
-	var offenders []string
+	var leaves, untyped, planned, aggregates int
+	var offenders, unplanned []string
 	for _, sql := range corpus {
 		plan, err := PlanPhysicalForTest(sql, ddl, stats)
 		if err != nil {
-			// A shape this planner cannot express is not this test's subject;
-			// it simply contributes no leaves. The vacuity guard below is what
-			// stops the whole corpus quietly becoming unplannable.
-			t.Logf("not planned (contributes no leaves): %s: %v", sql, err)
+			unplanned = append(unplanned, fmt.Sprintf("%s: %v", sql, err))
 			continue
 		}
+		planned++
 		walkPlanLeaves(plan, func(p plans.RecordQueryPlan, types []string) {
 			leaves++
+			if _, isAgg := p.(*plans.RecordQueryAggregateIndexPlan); isAgg {
+				aggregates++
+			}
 			if len(types) == 0 {
 				untyped++
 				offenders = append(offenders, fmt.Sprintf("%T in %q", p, sql))
@@ -85,12 +92,28 @@ CREATE INDEX customers_by_region ON customers (region)`
 		})
 	}
 
-	// THE VACUITY GUARD. Zero leaves means the corpus stopped planning and the
-	// zero below is a statement about an empty set, not about the planner.
-	if leaves < len(corpus) {
-		t.Fatalf("walked %d scan/index leaves across %d queries — fewer than one per "+
-			"query means the corpus is not planning and the count below is vacuous",
-			leaves, len(corpus))
+	// THE VACUITY GUARDS. A shape that does not plan contributes no leaves, so
+	// it is silently exempt from the census -- and the earlier form of this guard
+	// (leaves < len(corpus)) tolerated a QUARTER of the corpus going unplannable
+	// while still reporting a clean bill. The population is asserted directly
+	// instead: every curated shape must plan, and the classes the census exists
+	// to cover must actually appear in it.
+	if planned != len(corpus) {
+		t.Fatalf("%d of %d corpus shapes did not plan, so they are exempt from this "+
+			"census without saying so:\n  %s",
+			len(corpus)-planned, len(corpus), strings.Join(unplanned, "\n  "))
+	}
+	if leaves < planned {
+		t.Fatalf("walked %d scan/index leaves across %d planned queries — fewer than "+
+			"one per query means the walk is not reaching leaves and the count below "+
+			"is vacuous", leaves, planned)
+	}
+	// The aggregate class is the one this walk was blind to: GetChildren() returns
+	// nil and the index scan is a field. If the corpus stops producing one, the
+	// class silently leaves the census exactly as it was absent before.
+	if aggregates == 0 {
+		t.Fatalf("no RecordQueryAggregateIndexPlan appeared, so the class whose costing " +
+			"this census was extended to cover is not being exercised at all")
 	}
 	if untyped != 0 {
 		t.Fatalf("%d of %d physical leaves carry NO record types, so they price "+
@@ -125,8 +148,80 @@ func walkPlanLeaves(p plans.RecordQueryPlan, visit func(plans.RecordQueryPlan, [
 	case *plans.RecordQueryFetchFromPartialRecordPlan:
 		// Same shape: the fetched plan is a field.
 		walkPlanLeaves(leaf.GetInner(), visit)
+	case *plans.RecordQueryAggregateIndexPlan:
+		// THE SAME FIELD-NOT-CHILD SHAPE A THIRD TIME. GetChildren() returns
+		// nil and the index scan is a field, so this class was invisible to
+		// this walk -- the identical blind spot the covering case had already
+		// exposed, left uncorrected one type over.
+		//
+		// It is visited in its OWN right as well as descended into, because it
+		// prices itself: RecordQueryAggregateIndexPlan.HintCost derives a
+		// cardinality rather than inheriting its child's.
+		if ip := leaf.GetIndexPlan(); ip != nil {
+			visit(p, ip.GetRecordTypes())
+			walkPlanLeaves(ip, visit)
+		} else {
+			visit(p, nil)
+		}
 	}
 	for _, c := range p.GetChildren() {
 		walkPlanLeaves(c, visit)
+	}
+}
+
+// AN AGGREGATE LEAF MUST PRICE ITSELF FROM ITS INDEX'S RECORD TYPES.
+//
+// RecordQueryAggregateIndexPlan.HintCost used to price from GetRecordTypeName(),
+// an IDENTITY field its three construction sites fill as
+// `if len(rts) > 0 { name = rts[0] }`. With no declared types that name is
+// EMPTY, and an empty name asks a provider for the WHOLE STORE — so the leaf
+// priced itself from the sum of every table in the schema while a typed sibling
+// in the same plan priced one. With several declared types it priced exactly
+// one and ignored the rest.
+//
+// The census above cannot catch either: it asserts a leaf NAMES its types, not
+// that the cost consumes them. So this asserts the number, against a provider
+// whose whole-store answer and whose ORDERS answer are orders of magnitude
+// apart — with the two compared explicitly rather than to each other, since a
+// pair drawn through one route cannot check itself.
+func TestAggregateLeafPricesFromItsIndexRecordTypes(t *testing.T) {
+	t.Parallel()
+
+	const ddl = `CREATE TABLE orders (id BIGINT, cust BIGINT, total BIGINT, PRIMARY KEY (id))
+CREATE INDEX orders_total_by_cust AS SELECT SUM(total) FROM orders GROUP BY cust`
+
+	const ordersCount = 150.0
+	stats := properties.MapStatistics{
+		PerType: map[string]float64{"ORDERS": ordersCount},
+		// An unknown name — including "" — answers this. Far from ordersCount so
+		// the two outcomes cannot be confused for one another.
+		Fallback: properties.LeafScanCardinality,
+	}
+	if stats.RecordTypeCardinality("") == stats.RecordTypeCardinality("ORDERS") {
+		t.Fatalf("the provider answers the same for the whole store and for ORDERS, so "+
+			"this test cannot tell the two pricings apart (%v)", stats.RecordTypeCardinality(""))
+	}
+
+	plan, err := PlanPhysicalForTest("SELECT cust, SUM(total) FROM orders GROUP BY cust", ddl, stats)
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	var agg *plans.RecordQueryAggregateIndexPlan
+	walkPlanLeaves(plan, func(p plans.RecordQueryPlan, _ []string) {
+		if a, ok := p.(*plans.RecordQueryAggregateIndexPlan); ok {
+			agg = a
+		}
+	})
+	if agg == nil {
+		t.Fatalf("no aggregate-index plan in:\n%s", plan.Explain())
+	}
+
+	got := agg.HintCost(nil, stats).Cardinality
+	want := ordersCount * properties.DistinctSelectivity
+	if got != want {
+		t.Fatalf("aggregate leaf priced at %v rows, want %v (|ORDERS| * DistinctSelectivity). "+
+			"Pricing from the whole-store fallback would give %v — a leaf disagreeing with "+
+			"its typed siblings about the same data inside one plan",
+			got, want, stats.RecordTypeCardinality("")*properties.DistinctSelectivity)
 	}
 }

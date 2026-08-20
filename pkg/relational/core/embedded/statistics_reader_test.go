@@ -281,7 +281,7 @@ func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 	t.Parallel()
 	// The const block carries a pointer back to this list, because the guard
 	// cannot catch a constant absent from BOTH here and the cases below.
-	all := []StatisticsRefusal{
+	allStatisticsRefusals := []StatisticsRefusal{
 		StatisticsOK,
 		StatisticsNotCollected,
 		StatisticsReadFailed,
@@ -296,7 +296,7 @@ func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 	for _, tc := range decideStatisticsCases() {
 		covered[decideStatistics(tc.in).Refusal]++
 	}
-	for _, r := range all {
+	for _, r := range allStatisticsRefusals {
 		if covered[r] == 0 {
 			t.Errorf("no case in decideStatisticsCases produces refusal %q — add one", r)
 		}
@@ -305,7 +305,7 @@ func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 	// added without being registered here, which would silently shrink the
 	// guard above to whatever it still happens to cover.
 	named := map[StatisticsRefusal]bool{}
-	for _, r := range all {
+	for _, r := range allStatisticsRefusals {
 		named[r] = true
 	}
 	for r := range covered {
@@ -313,8 +313,8 @@ func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 			t.Errorf("cases produce refusal %q, which this guard's list does not name", r)
 		}
 	}
-	if len(covered) != len(all) {
-		t.Errorf("covered %d distinct refusals, want %d", len(covered), len(all))
+	if len(covered) != len(allStatisticsRefusals) {
+		t.Errorf("covered %d distinct refusals, want %d", len(covered), len(allStatisticsRefusals))
 	}
 }
 

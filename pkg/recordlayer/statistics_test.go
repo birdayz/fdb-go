@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/dst"
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -1021,6 +1022,64 @@ var _ = Describe("CollectStatistics", func() {
 		Expect(stored.PerType).To(HaveKey("__header__"))
 		Expect(stored.PerType["__header__"].Count).To(Equal(int64(99)))
 		Expect(stored.PerType).To(HaveKey("Order"))
+	})
+
+	// THE TIME LIMIT IS THE OTHER BOUND, AND IT RUNS ON THE SIMULATION CLOCK.
+	//
+	// Every elapsed-time decision goes through ScanLimiterState.Elapsed, which is
+	// env.Since — so a seeded environment makes the TimeLimit arm as drivable as
+	// the byte arm, and there is no excuse for leaving it untested. (There WAS
+	// one written down: a comment on ScannedBytesLimit claimed it was
+	// "deterministic where TimeLimit is not". That was false, and it is exactly
+	// the shape where a wrong sentence keeps an arm untested indefinitely.)
+	//
+	// The clock steps on every read, so the limit trips a few checks into each
+	// batch. What must survive is the total: a time-stopped cursor has to resume
+	// exactly where it stopped, or the count silently undercounts.
+	It("counts exactly when the time limit stops batches mid-scan", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		const orders, customers = 500, 20
+		seed(ctx, sub, orders, customers)
+
+		counter := &countingTransactor{inner: sharedDB.transactor}
+		steppingDB := NewFDBDatabaseWithTransactor(counter, sharedDB.db).
+			SetEnv(&dst.Env{Clock: &steppingClock{now: dst.Epoch, step: time.Second}})
+
+		report, err := CollectStatistics(ctx, steppingDB,
+			func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+				return NewStoreBuilder().SetContext(rtx).
+					SetMetaDataProvider(metaData).SetSubspace(sub).CreateOrOpen()
+			}, stats, CollectOptions{
+				// Row and byte budgets far beyond this store, so ONLY the clock
+				// can end a batch. Without this the test would re-prove the byte
+				// arm under a new name.
+				BatchSize:         1_000_000,
+				ScannedBytesLimit: 1 << 40,
+				TimeLimit:         3 * time.Second,
+			})
+		Expect(err).NotTo(HaveOccurred())
+
+		// THE VACUITY GUARD. One scan plus one write means the clock never
+		// stopped a batch and this is the plain exactness test again.
+		Expect(counter.count()).To(BeNumerically(">", 2),
+			"collection took %d transactions, so the time limit never stopped a batch "+
+				"— nothing here exercises resuming from a time-stopped cursor",
+			counter.count())
+		// A batch that stopped before returning ANY record would make no progress
+		// and loop forever; the free-initial-pass gate is what prevents it. Bound
+		// the count so a regression there fails loudly instead of hanging.
+		Expect(counter.count()).To(BeNumerically("<", orders+customers+50),
+			"collection took %d transactions for %d records — a batch is stopping "+
+				"before it returns anything, so the scan is barely progressing",
+			counter.count(), orders+customers)
+
+		Expect(report.Collected["Order"].Count).To(Equal(int64(orders)),
+			"a time-limited batch lost or repeated rows — the cursor stopped on the "+
+				"clock and the continuation did not resume exactly where it stopped")
+		Expect(report.Collected["Customer"].Count).To(Equal(int64(customers)))
+		Expect(report.RecordsScanned).To(Equal(int64(orders + customers)))
 	})
 
 	// AN ENTRY COUNT THAT DISAGREES WITH THE HEADER IS A TORN SET.

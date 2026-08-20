@@ -1154,10 +1154,13 @@ func (c *EmbeddedConnection) CollectStatistics(
 		// a READ may be, not how old a PLAN may be, and without this a
 		// connection keeps serving plans built on counts it just replaced.
 		//
-		// This clears THIS connection's cache. Other live connections keep
-		// theirs until they are closed or their metadata moves; bounding plan
-		// staleness across a pool needs the collected version in the cache key,
-		// which is RFC-236 §7 scope, not this.
+		// This clears THIS connection's cache. Two residuals remain, and the
+		// second is easy to omit because the first is the one that comes to mind:
+		// other live connections keep their entries until closed or until their
+		// metadata moves, AND a plan on any connection that simply AGES PAST the
+		// freshness window is never re-planned, because nothing calls either verb
+		// in that case. Both need the collected version in the cache key, which is
+		// RFC-236 §7 scope, not this.
 		c.invalidatePlanCache()
 	}
 	return report, err

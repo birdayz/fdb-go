@@ -170,16 +170,21 @@ type CollectOptions struct {
 	// skipping one type's rows.
 	MaxRecordsPerType int64
 	// TimeLimit bounds how long ONE scan transaction spends reading before it
-	// stops and hands back a continuation. Zero means defaultCollectTimeLimit.
+	// stops and hands back a continuation. Zero means DefaultCollectTimeLimit.
 	//
 	// This, not BatchSize, is what keeps a transaction inside FDB's 5s limit.
 	// BatchSize bounds ROWS, and a row is not a fixed number of bytes.
 	TimeLimit time.Duration
 	// ScannedBytesLimit bounds how many bytes ONE scan transaction reads before
 	// it stops and hands back a continuation. Zero means
-	// defaultCollectScannedBytesLimit.
+	// DefaultCollectScannedBytesLimit.
 	//
-	// Deterministic where TimeLimit is not, so it is the bound a test can drive.
+	// Both bounds are drivable from a test, and neither is a wall-clock bound:
+	// every elapsed-time decision goes through ScanLimiterState.Elapsed, which is
+	// env.Since, so TimeLimit runs on the simulation clock when one is installed.
+	// An earlier version of this comment claimed TimeLimit was nondeterministic
+	// and used that to justify leaving its arm undriven -- the claim was false and
+	// the gap it excused was real; both arms now have a test.
 	ScannedBytesLimit int64
 	// Tags are FDB transaction tags applied to EVERY transaction this collection
 	// opens — each scan batch and the replacing write.
@@ -198,14 +203,21 @@ type CollectOptions struct {
 	Tags []string
 }
 
-// defaultCollectTimeLimit leaves room under FDB's 5s transaction limit for the
-// read-version fetch and the commit around the scan itself.
-const defaultCollectTimeLimit = 3 * time.Second
+// DefaultCollectTimeLimit is the per-batch time bound when CollectOptions.TimeLimit
+// is zero. It leaves room under FDB's 5s transaction limit for the read-version
+// fetch and the commit around the scan itself.
+//
+// Exported so an operator-facing description of collection can RENDER the bound
+// rather than restate it: a help text carrying a hand-typed "3s" goes stale the
+// first time this changes, and says so to the one reader who cannot check it.
+const DefaultCollectTimeLimit = 3 * time.Second
 
-// defaultCollectScannedBytesLimit bounds one batch's reads. Generous enough that
+// DefaultCollectScannedBytesLimit is the per-batch read bound when
+// CollectOptions.ScannedBytesLimit is zero. Exported for the same reason as
+// DefaultCollectTimeLimit. Generous enough that
 // an ordinary batch never reaches it, small enough that a batch of split
 // multi-hundred-KB records stops long before the time limit would have to.
-const defaultCollectScannedBytesLimit int64 = 16 << 20
+const DefaultCollectScannedBytesLimit int64 = 16 << 20
 
 func (o CollectOptions) batchSize() int {
 	if o.BatchSize <= 0 {
@@ -216,14 +228,14 @@ func (o CollectOptions) batchSize() int {
 
 func (o CollectOptions) timeLimit() time.Duration {
 	if o.TimeLimit <= 0 {
-		return defaultCollectTimeLimit
+		return DefaultCollectTimeLimit
 	}
 	return o.TimeLimit
 }
 
 func (o CollectOptions) scannedBytesLimit() int64 {
 	if o.ScannedBytesLimit <= 0 {
-		return defaultCollectScannedBytesLimit
+		return DefaultCollectScannedBytesLimit
 	}
 	return o.ScannedBytesLimit
 }
@@ -750,6 +762,14 @@ func ReadStatisticsAt(
 	// noticing. Disagreement is treated exactly like a malformed entry, because
 	// it means the same thing: a PARTIAL set, which the completeness gate above
 	// this is built to never receive.
+	//
+	// Like a malformed entry, this surfaces to an operator as "not collected"
+	// rather than as its own refusal, because ok=false is the only channel this
+	// signature has. That is imprecise and NOT misleading in the way that
+	// matters: the action "not collected" implies is `frl stats collect`, and a
+	// collect is exactly the remedy -- it ClearRanges the range and rewrites
+	// header and entries in one transaction. A diagnosis that points at the right
+	// fix is worth more than a finer one that does not.
 	if int64(len(out.PerType)) != headerTypeCount {
 		return StoreStatistics{}, false, readVersion, nil
 	}

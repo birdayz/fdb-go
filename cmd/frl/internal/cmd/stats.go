@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -164,8 +165,10 @@ func newStatsCollectCmd() *cobra.Command {
 			"type, and replaces the stored statistics in one transaction.\n\n" +
 			"Cost is proportional to the store: this is an offline job. It " +
 			"scans in continuation-driven batches, each ending at whichever " +
-			"comes first of --batch-size records, a 3s time limit or a 16MB " +
-			"read limit. The last two are what hold whatever the records " +
+			"comes first of --batch-size records, a " +
+			recordlayer.DefaultCollectTimeLimit.String() + " time limit or a " +
+			strconv.FormatInt(recordlayer.DefaultCollectScannedBytesLimit/(1<<20), 10) +
+			"MB read limit. The last two are what hold whatever the records " +
 			"weigh, so no single transaction approaches FDB's 5s limit even " +
 			"when rows are large.\n\n" +
 			"--max-records-per-type ABORTS the collection as soon as any one " +

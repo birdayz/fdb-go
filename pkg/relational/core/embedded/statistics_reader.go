@@ -386,11 +386,16 @@ func (g *cascadesGenerator) fetchCollectedStatistics(
 // noClusterVersionError marks a statistics read whose transaction produced no
 // cluster version. Age is then unknown, and unknown age is not fresh.
 //
-// A struct rather than an errors.New sentinel: this package matches errors by
-// TYPE (errors.As), the Go equivalent of catching a specific Java exception, and
-// a sentinel carries no structured context if this ever needs to say WHICH read
-// or WHY. VersionErr stays an error rather than a bool for the same reason -- a
-// real cluster error belongs in it too, and the gate treats both the same way.
+// A struct rather than an errors.New sentinel, because this package's convention
+// is typed errors and a sentinel can carry no structured context if this ever
+// needs to say WHICH read or WHY.
+//
+// No caller matches on it today: decideStatistics only asks whether VersionErr is
+// nil. Saying otherwise would be a claim about code that does not exist. The
+// field stays an error rather than a bool because it ALSO carries real cluster
+// errors from the read, and the day something needs to tell those apart from
+// this marker, errors.As is what it will reach for -- which a sentinel would
+// make no easier and a bool would foreclose.
 type noClusterVersionError struct{}
 
 func (e *noClusterVersionError) Error() string {
