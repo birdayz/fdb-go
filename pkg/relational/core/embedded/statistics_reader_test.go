@@ -201,6 +201,60 @@ func decideStatisticsCases() []decideCase {
 			},
 		},
 		{
+			// TWO TABLES WHOSE NAMES COLLIDE ACROSS THE NAMESPACES.
+			//
+			// MY$TABLE is STORED as MY__1TABLE, and a table whose SQL name IS
+			// MY__1TABLE is stored as MY__01TABLE. With both declared, the SQL
+			// name MY__1TABLE matches a storage key directly — the first table's
+			// — so the provider answers with the WRONG table's count and never
+			// consults the escaped form. Everything else about the set is
+			// healthy, which is why this has to be refused here rather than
+			// noticed downstream.
+			name: "declared names collide across the SQL and storage namespaces",
+			in: statisticsGateInput{
+				Found: true,
+				Stats: statsAt(testVersion, map[string]int64{
+					"MY__1TABLE":  9,
+					"MY__01TABLE": 4000,
+				}),
+				CurrentVersion: testVersion + 1,
+				DeclaredTypes:  []string{"MY__1TABLE", "MY__01TABLE"},
+			},
+			want: StatisticsAmbiguousNames,
+			check: func(t *testing.T, got StatisticsStatus) {
+				if got.Usable {
+					t.Errorf("Usable = true — an ambiguous name prices one of the two " +
+						"tables with the other's count, silently")
+				}
+				want := []string{"MY__1TABLE", "MY__01TABLE"}
+				if len(got.AmbiguousTypes) != 2 ||
+					got.AmbiguousTypes[0] != want[0] || got.AmbiguousTypes[1] != want[1] {
+					t.Errorf("AmbiguousTypes = %v, want %v — the refusal has to name the "+
+						"pair, or an operator cannot act on it", got.AmbiguousTypes, want)
+				}
+			},
+		},
+		{
+			name: "escaped name that does NOT collide is fine",
+			in: statisticsGateInput{
+				Found: true,
+				Stats: statsAt(testVersion, map[string]int64{
+					"MY__1TABLE": 9,
+					"PLAIN":      4000,
+				}),
+				CurrentVersion: testVersion + 1,
+				DeclaredTypes:  []string{"MY__1TABLE", "PLAIN"},
+			},
+			want: StatisticsOK,
+			check: func(t *testing.T, got StatisticsStatus) {
+				if !got.Usable {
+					t.Errorf("Usable = false — MY__1TABLE escapes to MY__01TABLE, which is " +
+						"NOT declared here, so nothing is ambiguous and refusing would " +
+						"disable statistics for any schema holding a quotable name")
+				}
+			},
+		},
+		{
 			name: "empty schema",
 			in: statisticsGateInput{
 				Found:          true,
@@ -291,6 +345,7 @@ func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 		StatisticsIncomplete,
 		StatisticsEmptySchema,
 		StatisticsSyntheticTypes,
+		StatisticsAmbiguousNames,
 	}
 	covered := map[StatisticsRefusal]int{}
 	for _, tc := range decideStatisticsCases() {

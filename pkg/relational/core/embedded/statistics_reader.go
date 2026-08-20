@@ -7,6 +7,7 @@ import (
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"
 )
@@ -101,6 +102,10 @@ const (
 	// synthetic types, which this port carries opaquely and does not model. See
 	// decideStatistics for why that makes completeness undecidable here.
 	StatisticsSyntheticTypes StatisticsRefusal = "metadata declares unmodeled synthetic record types"
+	// StatisticsAmbiguousNames — two declared types collide across the SQL and
+	// storage namespaces, so a lookup by name cannot say which one is meant. See
+	// GATE 4 in decideStatistics.
+	StatisticsAmbiguousNames StatisticsRefusal = "declared type names are ambiguous across the SQL and storage namespaces"
 )
 
 // StatisticsStatus is the full verdict for one schema, including the evidence
@@ -134,6 +139,10 @@ type StatisticsStatus struct {
 	// These do NOT refuse — a dropped table leaves an orphan entry and the
 	// planner simply never asks for it — but an operator wants to see them.
 	ExtraTypes []string
+	// AmbiguousTypes is the colliding pair when Refusal is
+	// StatisticsAmbiguousNames: two declared names where one is the other's
+	// escaped form, so a lookup by either cannot say which table is meant.
+	AmbiguousTypes []string
 	// perType is the provider input, populated only when Usable.
 	perType map[string]float64
 }
@@ -349,10 +358,60 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 		return st
 	}
 
+	// GATE 4 — NAME AMBIGUITY ACROSS THE TWO NAMESPACES.
+	//
+	// perType is keyed by STORAGE names. A relational scan asks with the SQL name
+	// it was written with, so the provider tries the name as given and then, on a
+	// miss, its escaped form -- which is right whenever only one of the two can
+	// match.
+	//
+	// Both can. The escaping is not injective ACROSS the namespaces: MY is
+	// stored as MY__1TABLE, and a table whose SQL name IS MY__1TABLE is stored as
+	// MY__01TABLE. With both present, a scan of MY__1TABLE hits the first entry
+	// directly and is priced with the OTHER table's count -- the escaped form is
+	// never consulted, because the unescaped lookup already succeeded.
+	//
+	// Nothing downstream can notice: the set is fresh, complete, and internally
+	// consistent, and the number returned is a real count of a real table. So the
+	// ambiguity is resolved HERE, once, by refusing the set -- rather than by
+	// picking a lookup order, which only moves which of the two tables is priced
+	// wrong.
+	if ambiguous, ok := ambiguousStorageName(perType); ok {
+		st.Refusal = StatisticsAmbiguousNames
+		st.AmbiguousTypes = ambiguous
+		return st
+	}
+
 	st.Usable = true
 	st.Refusal = StatisticsOK
 	st.perType = perType
 	return st
+}
+
+// ambiguousStorageName reports a declared type name that means one table read as
+// a STORAGE name and a different one read as a SQL name, which happens exactly
+// when some name's escaped form is ALSO a declared name.
+//
+// Returns the colliding pair, lower name first, so the refusal can say which two
+// tables an operator has to rename or quote differently.
+func ambiguousStorageName(perType map[string]float64) ([]string, bool) {
+	var worst []string
+	for name := range perType {
+		escaped, err := protoname.ToProtoBufCompliantName(name)
+		if err != nil || escaped == name {
+			continue
+		}
+		if _, collides := perType[escaped]; !collides {
+			continue
+		}
+		pair := []string{name, escaped}
+		// Deterministic across map iteration order: an operator comparing two
+		// runs must not see the pair change.
+		if worst == nil || pair[0] < worst[0] {
+			worst = pair
+		}
+	}
+	return worst, worst != nil
 }
 
 // fetchCollectedStatistics returns per-record-type row counts collected by the

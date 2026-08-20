@@ -1006,8 +1006,19 @@ var _ = Describe("CollectStatistics", func() {
 			}
 			hdr.Count++
 			tx.Set(fdb.Key(hdrKey), packStatistic(hdr))
+			// Stamped with the HEADER's own version and time, because that is what
+			// a real collection of such a schema writes -- writeStatistics puts the
+			// header and every entry down in one transaction with identical stamps.
+			// An entry stamped otherwise is a set mixed across runs, which the
+			// reader now rejects, and the collision this test is about would never
+			// be reached. Same lesson as the header COUNT above: a fixture no
+			// writer produces tests the rejection, not the thing it was written for.
 			tx.Set(target.Pack(tuple.Tuple{"__header__"}),
-				packStatistic(RecordTypeStatistic{Count: 99, CollectedAtVersion: 1}))
+				packStatistic(RecordTypeStatistic{
+					Count:                99,
+					CollectedAtVersion:   hdr.CollectedAtVersion,
+					CollectedAtUnixNanos: hdr.CollectedAtUnixNanos,
+				}))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -1131,6 +1142,55 @@ var _ = Describe("CollectStatistics", func() {
 			"a set carrying one more entry than its header recorded was returned as "+
 				"usable — the reader vouched for a set it did not assemble from a "+
 				"single consistent write")
+	})
+
+	// AN ENTRY FROM A DIFFERENT COLLECTION RUN POISONS THE SET.
+	//
+	// The header carries the run's version and time, and the freshness gate
+	// reads ONLY the header — so an entry replaced in place by a foreign or
+	// manual writer is judged by a stamp that does not belong to it. The count
+	// check above cannot see it either: replacing an entry leaves the number of
+	// keys unchanged.
+	//
+	// That is the all-or-nothing contract broken in the one direction every gate
+	// above is blind to, because every one of them is looking at the header. So
+	// the entries are checked against it: writeStatistics stamps the header and
+	// every entry identically in ONE transaction, so any disagreement means at
+	// least one entry came from a different run.
+	It("refuses a set whose entry stamps disagree with the header", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 6, 2)
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Control: readable before the stamp is altered, or the refusal below is
+		// not about mixed runs.
+		before, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue(),
+			"the set was already unusable, so the refusal below proves nothing")
+		Expect(before.PerType).To(HaveKey("Order"))
+
+		// Replace ONE entry in place, keeping the key count identical, with a
+		// count from an older run. This is exactly what a foreign writer does.
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			stale := before.PerType["Order"]
+			stale.Count = 999
+			stale.CollectedAtVersion = before.CollectedAtVersion - 1
+			rtx.Transaction().Set(target.Pack(tuple.Tuple{"Order"}), packStatistic(stale))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		after, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse(),
+			"an entry stamped from a different run was returned as usable — the "+
+				"freshness gate reads only the header, so it would judge that stale "+
+				"count fresh (read back Count=%d)", after.PerType["Order"].Count)
 	})
 
 	// A MALFORMED ENTRY POISONS THE WHOLE SET.

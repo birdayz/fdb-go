@@ -397,6 +397,7 @@ type statsShowResult struct {
 	AgeVersions          int64            `json:"age_versions,omitempty"`
 	MaxAgeVersions       int64            `json:"max_age_versions"`
 	SyntheticTypes       []string         `json:"synthetic_types,omitempty"`
+	AmbiguousTypes       []string         `json:"ambiguous_types,omitempty"`
 	MissingTypes         []string         `json:"missing_types,omitempty"`
 	ExtraTypes           []string         `json:"extra_types,omitempty"`
 }
@@ -425,6 +426,7 @@ func renderStatsStatus(
 			AgeVersions:          st.AgeVersions,
 			MaxAgeVersions:       st.MaxAgeVersions,
 			SyntheticTypes:       st.SyntheticTypes,
+			AmbiguousTypes:       st.AmbiguousTypes,
 			MissingTypes:         st.MissingTypes,
 			ExtraTypes:           st.ExtraTypes,
 		})
@@ -453,6 +455,14 @@ func renderStatsStatus(
 		// Naming them is the difference between a verdict and an instruction.
 		fmt.Fprintf(tw, "Synthetic types:\t%s (unmodeled by this port; statistics are refused for the schema)\n",
 			strings.Join(st.SyntheticTypes, ", "))
+	}
+	if len(st.AmbiguousTypes) > 0 {
+		// Same reason as synthetic types: a verdict an operator cannot act on is
+		// half a diagnosis. Both names are shown because either one of the two
+		// tables can be renamed or quoted differently to break the collision.
+		fmt.Fprintf(tw, "Ambiguous types:\t%s (one name is the other's escaped form, so a "+
+			"lookup cannot say which table is meant; statistics are refused for the schema)\n",
+			strings.Join(st.AmbiguousTypes, ", "))
 	}
 	if len(st.MissingTypes) > 0 {
 		fmt.Fprintf(tw, "Missing types:\t%s\n", strings.Join(st.MissingTypes, ", "))

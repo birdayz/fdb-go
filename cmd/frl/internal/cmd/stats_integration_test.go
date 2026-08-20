@@ -526,4 +526,21 @@ func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
 			"  They render in text and disappear from -o json, losing exactly the "+
 			"detail added to make the verdict actionable.", buf.String())
 	}
+
+	// Same shape for the ambiguous-name pair, and for the same reason: it is a
+	// SECOND field the renderer has to copy, so it fails the same way
+	// independently. Both names must survive -- either table can be renamed to
+	// break the collision, so naming only one is half an instruction.
+	buf.Reset()
+	if rErr := renderStatsStatus(render, "json", "/x/MAIN", embedded.StatisticsStatus{
+		Refusal:        embedded.StatisticsAmbiguousNames,
+		AmbiguousTypes: []string{"MY__1TABLE", "MY__01TABLE"},
+	}); rErr != nil {
+		t.Fatalf("renderStatsStatus (ambiguous): %v", rErr)
+	}
+	for _, want := range []string{`"ambiguous_types"`, "MY__1TABLE", "MY__01TABLE"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the renderer drops %s on the JSON path: %s", want, buf.String())
+		}
+	}
 }

@@ -195,8 +195,20 @@ Two of them require a cluster MISBEHAVING — a version read that fails, an entr
 stamped ahead of the cluster after a restore from backup — and an arm no test
 drives fires for the first time in front of an operator, where it reads as a
 finding rather than as an untested branch. `TestDecideStatistics` drives all
-eight; `TestDecideStatisticsCoversEveryRefusal` fails the build if a ninth is
-added without a case.
+NINE (at nine refusals); `TestDecideStatisticsCoversEveryRefusal` fails the build
+if a tenth is added without a case.
+
+The ninth is worth naming, because it is the one that cannot be reasoned to from
+the list above. The per-type map is keyed by STORAGE names while a relational
+scan asks with the SQL name it was written with, and the escaping between them is
+NOT injective across the two namespaces: `MY` is stored as `MY__1TABLE`,
+and a table whose SQL name IS `MY__1TABLE` is stored as `MY__01TABLE`. With both
+declared, a scan of the second matches the first's storage key directly, is
+priced with the wrong table's count, and never reaches the escaped form — while
+the set stays fresh, complete and internally consistent, so no other gate can
+see it. Picking a lookup order does not fix it; it only moves which of the two
+tables is priced wrong. So the collision is refused, and the refusal NAMES both
+names, since renaming or re-quoting either one breaks it.
 
 The verdict is a `StatisticsStatus`, not a bool, because it has a second
 consumer: `frl stats show` prints it. One decision function, two callers. Had

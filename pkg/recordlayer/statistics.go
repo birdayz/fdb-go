@@ -773,6 +773,25 @@ func ReadStatisticsAt(
 	if int64(len(out.PerType)) != headerTypeCount {
 		return StoreStatistics{}, false, readVersion, nil
 	}
+	// EVERY ENTRY MUST CARRY THE HEADER'S OWN STAMPS.
+	//
+	// writeStatistics puts the header and every entry down in ONE transaction and
+	// stamps them all with the same version and nanos, so on any set this library
+	// wrote they agree. A disagreement means at least one entry came from a
+	// DIFFERENT collection run.
+	//
+	// The count check above does not catch that: replacing one entry in place
+	// leaves the number of keys unchanged, so the set passes as whole while
+	// mixing an old count with the header's fresh version -- and the freshness
+	// gate, which reads only the header, then judges the stale count fresh. That
+	// is the all-or-nothing contract broken in the one direction the gates above
+	// cannot see, because every one of them is looking at the header.
+	for _, st := range out.PerType {
+		if st.CollectedAtVersion != out.CollectedAtVersion ||
+			st.CollectedAtUnixNanos != out.CollectedAtUnixNanos {
+			return StoreStatistics{}, false, readVersion, nil
+		}
+	}
 	return out, true, readVersion, nil
 }
 
