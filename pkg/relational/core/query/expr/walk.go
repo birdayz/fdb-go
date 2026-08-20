@@ -534,8 +534,50 @@ func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContex
 // posOperand rather than posProjection: the consequent is a value position, but
 // it is not the SELECT item whose EXISTS folding rules depend on the FlatMap
 // binding, so EXISTS stays exactly where it was.
+//
+// The FLATTEN is what makes `THEN (5)` mean 5. Java's visitCaseFunctionCall
+// ends at resolveFunction("__pick_value", …) (ExpressionVisitor.java:425), and
+// resolveFunction defaults flattenSingleItemRecords to true
+// (BaseVisitor.java:254-256), so every CASE ARM is a function argument and a
+// one-field record built by `( expr )` collapses back to its element. Without
+// it Go carried the record into the pick: measured against the live JVM,
+// `CASE WHEN a = 1 THEN (5) ELSE 6 END` answered 5 in Java and in Go failed
+// planning with 0AF00 "placeholder type is not exact", while
+// `THEN (5) ELSE (6)` typed cleanly and returned a STRUCT column where a
+// BIGINT belonged.
+//
+// posOperand alone does not do this. It selects how the ATOM is read; the
+// flatten lives in walkFunctionOperand, which this path does not go through —
+// walkExpressionInner is the expression entry, not the argument entry. That is
+// exactly why the gap existed in a position that already looked like an
+// operand.
+//
+// A MULTI-element record is untouched, here and in Java: FlattenRecordWithOneField
+// collapses only a one-field record, so `THEN (5, 6)` stays the struct both
+// engines return.
 func (r *Resolver) walkCaseConsequent(ctx antlrgen.IExpressionContext) (values.Value, error) {
-	return r.walkExpressionInner(ctx, posOperand)
+	v, err := r.walkExpressionInner(ctx, posOperand)
+	if err != nil {
+		return nil, err
+	}
+	return functions.FlattenRecordWithOneField(v), nil
+}
+
+// flattenedExpression walks an EXPRESSION that is about to become a function
+// argument and flattens a one-field record out of the result — the expression
+// counterpart of walkFunctionOperand, which does the same thing for an ATOM.
+//
+// Both exist because the grammar hands the two positions different context
+// types, not because they mean different things: `( expr )` is a one-field
+// record wherever it is written, and consumption AS AN ARGUMENT is what turns
+// it back into a scalar (see walkFunctionOperand's note, and Java's
+// SemanticAnalyzer.resolveScalarFunction flattenSingleItemRecords).
+func (r *Resolver) flattenedExpression(ctx antlrgen.IExpressionContext) (values.Value, error) {
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return functions.FlattenRecordWithOneField(v), nil
 }
 
 // walkCaseFunctionCall handles searched CASE expressions:
@@ -624,11 +666,20 @@ func caseResultType(alternatives []values.Value) values.Type {
 //
 // Desugars to: PickValue(ConditionSelectorValue([expr=val1, expr=val2, TRUE]), [res1, res2, def])
 // where each implication is a comparison predicate (expr = valN).
+//
+// This form is a Go EXTENSION. Java's BaseVisitor.visitCaseExpressionFunctionCall
+// (BaseVisitor.java:1450) is `return visitChildren(ctx)` — the visitor does not
+// implement it — so there is no Java behaviour to match here, only Go's own
+// consistency to keep. Every operand therefore flattens a one-field record the
+// way the searched form's arms do and the way every other argument position in
+// this resolver does: leaving `CASE x WHEN (1) THEN …` broken while
+// `CASE WHEN x = (1) THEN …` works would be an inconsistency with no reason
+// behind it. flattenOperandValue is the shared spelling.
 func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFunctionCallContext) (values.Value, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.walkSimpleCaseFunctionCall: nil")
 	}
-	discriminator, err := r.WalkExpression(ctx.Expression())
+	discriminator, err := r.flattenedExpression(ctx.Expression())
 	if err != nil {
 		return nil, err
 	}
@@ -650,7 +701,7 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE condition arg ctx %T", condArg)}
 		}
-		whenVal, err := r.WalkExpression(condArgCtx.Expression())
+		whenVal, err := r.flattenedExpression(condArgCtx.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -668,7 +719,7 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE consequent arg ctx %T", consArg)}
 		}
-		consVal, err := r.WalkExpression(consArgCtx.Expression())
+		consVal, err := r.flattenedExpression(consArgCtx.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -685,7 +736,7 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE ELSE arg ctx %T", elseArg)}
 		}
-		elseVal, err := r.WalkExpression(elseArgCtx.Expression())
+		elseVal, err := r.flattenedExpression(elseArgCtx.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -1899,6 +1950,15 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			if err != nil {
 				return nil, err
 			}
+			// Each ITEM is a function argument on Java's side: the list becomes
+			// resolveFunction("__internal_array", items…)
+			// (ExpressionVisitor.java:656), which flattens single-item records
+			// like every other resolveFunction call. The left operand above
+			// already flattens via walkOperand; the items did not, so
+			// `b IN ((10), 20)` built a one-field record for the first item and
+			// died with 0AF00 "a comparison operand of complex type (record) is
+			// not supported" where Java answers the same rows as `IN (10, 20)`.
+			v = functions.FlattenRecordWithOneField(v)
 			if _, isNull := v.(*values.NullValue); isNull {
 				return nil, &InListNullError{}
 			}

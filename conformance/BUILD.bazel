@@ -115,6 +115,7 @@ go_test(
         "nesting_index_conformance_test.go",
         "online_indexer_conformance_test.go",
         "orphan_jvm_regression_test.go",
+        "paren_flatten_java_probe_test.go",
         "paren_star_java_probe_test.go",
         "permuted_min_max_index_conformance_test.go",
         "permuted_min_null_group_java_probe_test.go",

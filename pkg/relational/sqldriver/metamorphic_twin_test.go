@@ -59,6 +59,24 @@ func mmNewTwin(t *testing.T, ctx context.Context, dbPath, templatePrefix, tableD
 	return &mmTwin{idx: open("si"), plain: open("sn"), t: t, ctx: ctx}
 }
 
+// Sub rebinds the twin to a SUBTEST's *testing.T, sharing the same two
+// connections.
+//
+// Without it a twin built in the parent keeps reporting against the parent, so
+// a `t.Run` subtest whose every query failed still prints `--- PASS` and only
+// the parent turns red. That is the reporting failure this repo names as its
+// dominant false positive, wearing its most convincing face: the failures ARE
+// printed and the parent IS red, so nothing is lost from a full log — but the
+// per-subtest verdict, which is what a reader scans and what a CI summary
+// surfaces, says the opposite of what happened. Observed live: with the IN-list
+// flatten mutated out, `in_list_items` reported PASS while all nine of its
+// queries returned 0AF00.
+//
+//	t.Run("name", func(t *testing.T) { w := w.Sub(t); w.Want(…) })
+func (w *mmTwin) Sub(t *testing.T) *mmTwin {
+	return &mmTwin{idx: w.idx, plain: w.plain, t: t, ctx: w.ctx}
+}
+
 // Exec runs stmt against BOTH schemas. A statement that succeeds on one side and
 // fails on the other is itself a finding, so the asymmetry is checked before the
 // error is reported.
