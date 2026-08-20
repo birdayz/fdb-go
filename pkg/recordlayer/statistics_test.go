@@ -1120,7 +1120,7 @@ var _ = Describe("CollectStatistics", func() {
 
 		// Control: readable before the set is torn, or the refusal below is not
 		// about tearing.
-		_, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		before, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeTrue(),
 			"the set was already unreadable, so the refusal below proves nothing")
@@ -1128,10 +1128,28 @@ var _ = Describe("CollectStatistics", func() {
 		// Add ONE entry without telling the header. This is exactly the state a
 		// foreign writer produces, and the one the old header-collision test
 		// built by accident.
+		// STAMPED WITH THE HEADER'S OWN VERSION AND NANOS, so the stamp check
+		// cannot refuse it and only the COUNT check can. Without this the entry
+		// carried version 1 and nanos 0 against a header holding the run's real
+		// stamps, so the stamp check -- added AFTER this spec -- refused it first.
+		// The spec kept passing for a reason it was not written for, and the count
+		// check it exists to pin was dead from that commit onward: neutering the
+		// count check left the whole suite green.
+		//
+		// A later gate can silently supersede an earlier gate's test. The original
+		// mutation for the count check was honest when it was run; nothing re-ran
+		// it after the stamp check landed. Three specs now assert ok == false on
+		// this fixture and ok == false has three causes, so the only thing that
+		// settles which spec pins which check is the mutation MATRIX: one deletion
+		// per check, each reddening exactly its own spec.
 		target := stats.forStore(sub)
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			rtx.Transaction().Set(target.Pack(tuple.Tuple{"SmuggledType"}),
-				packStatistic(RecordTypeStatistic{Count: 7, CollectedAtVersion: 1}))
+				packStatistic(RecordTypeStatistic{
+					Count:                7,
+					CollectedAtVersion:   before.CollectedAtVersion,
+					CollectedAtUnixNanos: before.CollectedAtUnixNanos,
+				}))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
