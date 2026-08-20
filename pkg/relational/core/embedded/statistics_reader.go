@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -65,6 +66,14 @@ const statisticsMaxAgeVersions int64 = 24 * 60 * 60 * 1_000_000
 
 // StatisticsRefusal names why collected statistics were not used. The values
 // are stable strings because `frl stats show` prints them.
+//
+// ADDING ONE? Add it to allStatisticsRefusals in statistics_reader_test.go and
+// give it a case in decideStatisticsCases. The coverage guard cannot catch a
+// constant that is in neither — Go cannot enumerate constants at runtime, so
+// the guard's list is hand-maintained — and that gap is not theoretical:
+// StatisticsSyntheticTypes was added without either and the guard stayed green.
+// This note is here rather than only in the test because this is the line an
+// author is looking at when the omission happens.
 type StatisticsRefusal string
 
 const (
@@ -90,6 +99,10 @@ const (
 	// StatisticsEmptySchema — the schema declares no record types, so there is
 	// nothing to be complete about and nothing to plan on.
 	StatisticsEmptySchema StatisticsRefusal = "schema has no record types"
+	// StatisticsSyntheticTypes — the metadata declares joined or unnested
+	// synthetic types, which this port carries opaquely and does not model. See
+	// decideStatistics for why that makes completeness undecidable here.
+	StatisticsSyntheticTypes StatisticsRefusal = "metadata declares unmodeled synthetic record types"
 )
 
 // StatisticsStatus is the full verdict for one schema, including the evidence
@@ -141,6 +154,9 @@ type statisticsGateInput struct {
 	CurrentVersion int64
 	// DeclaredTypes is the schema's record type names.
 	DeclaredTypes []string
+	// HasSyntheticTypes reports that the metadata declares joined or unnested
+	// types that RecordTypes() omits, so DeclaredTypes is a PARTIAL set.
+	HasSyntheticTypes bool
 }
 
 // StatisticsStatus reports what the planner would decide about this
@@ -183,7 +199,10 @@ func evaluateCollectedStatistics(
 	md *recordlayer.RecordMetaData,
 ) StatisticsStatus {
 	declared := md.RecordTypes()
-	in := statisticsGateInput{DeclaredTypes: make([]string, 0, len(declared))}
+	in := statisticsGateInput{
+		DeclaredTypes:     make([]string, 0, len(declared)),
+		HasSyntheticTypes: md.DeclaresSyntheticRecordTypes(),
+	}
 	for name := range declared {
 		in.DeclaredTypes = append(in.DeclaredTypes, name)
 	}
@@ -199,7 +218,7 @@ func evaluateCollectedStatistics(
 	// The cluster version comes from the SAME transaction as the entry, so the
 	// freshness gate compares two numbers drawn at one instant rather than
 	// paying a second round-trip for a pair that is only meaningful together.
-	stats, ok, readVersion, rErr := recordlayer.ReadStatisticsAt(ctx, c.sess.DB, statsSubspace, storeSubspace)
+	stats, ok, readVersion, rErr := recordlayer.ReadStatisticsAt(ctx, c.statisticsDB(), statsSubspace, storeSubspace)
 	in.ReadErr, in.Found, in.Stats = rErr, ok, stats
 	if rErr == nil && ok {
 		// A zero version is not "the epoch", it is a read that did not happen.
@@ -232,6 +251,25 @@ func evaluateCollectedStatistics(
 // disables statistics for every query in that schema.
 func decideStatistics(in statisticsGateInput) StatisticsStatus {
 	st := StatisticsStatus{MaxAgeVersions: statisticsMaxAgeVersions}
+
+	// GATE 0 — UNMODELED SYNTHETIC TYPES, refused before anything is read,
+	// because no read can repair it.
+	//
+	// RecordTypes() deliberately omits joined and unnested types: this port
+	// carries their declarations opaquely and does not model them. So when they
+	// are present, DeclaredTypes is a PARTIAL set, and the completeness gate
+	// below would certify a schema as complete after checking a subset of its
+	// types — exactly the inversion the gate exists to prevent, arrived at
+	// through the gate itself.
+	//
+	// DeclaresSyntheticRecordTypes' own doc states the rule this obeys: a caller
+	// computing over "all record types" for a coverage decision or a count is
+	// computing over a set that omits them, and must refuse rather than answer
+	// from the partial set. A statistics completeness check is both of those.
+	if in.HasSyntheticTypes {
+		st.Refusal = StatisticsSyntheticTypes
+		return st
+	}
 
 	// GATE 1 — the read.
 	if in.ReadErr != nil {
@@ -330,3 +368,62 @@ func (g *cascadesGenerator) fetchCollectedStatistics(
 // errNoReadVersion marks a statistics read whose transaction produced no
 // cluster version. Age is then unknown, and unknown age is not fresh.
 var errNoReadVersion = errors.New("statistics read produced no cluster version")
+
+// taggedTransactor applies the connection's OptTransactionTags to every
+// transaction opened through it.
+//
+// Statistics work does not go through beginTransaction — collection is a
+// library call that opens its own transactions via FDBDatabase.Run, one per
+// batch, plus the write. That seam's comment calls itself "the single
+// transaction-creation seam in the SQL layer", and this feature made that
+// false: the heaviest job in the system, a full-store scan, was the one
+// escaping the cluster's ratekeeper.
+//
+// Wrapping the database rather than threading tags through CollectStatistics'
+// signature keeps the record layer unaware of a relational option, and covers
+// every transaction the job opens — scan batches, the replacing write, the
+// planner's read and clear — instead of the ones someone remembered.
+type taggedTransactor struct {
+	inner fdb.Transactor
+	tags  []string
+}
+
+func (t taggedTransactor) apply(o fdb.TransactionOptions) error {
+	for _, tag := range t.tags {
+		if err := o.SetTag(tag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t taggedTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return t.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		if err := t.apply(tx.Options()); err != nil {
+			return nil, err
+		}
+		return fn(tx)
+	})
+}
+
+func (t taggedTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return t.inner.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		if err := t.apply(rtx.Options()); err != nil {
+			return nil, err
+		}
+		return fn(rtx)
+	})
+}
+
+// statisticsDB returns the database statistics work should run through: the
+// session's, wrapped so the connection's transaction tags are applied. With no
+// tags configured it is the session's database unchanged, so the untagged path
+// pays nothing.
+func (c *EmbeddedConnection) statisticsDB() *recordlayer.FDBDatabase {
+	tags, ok := c.Options().Get(api.OptTransactionTags).([]string)
+	if !ok || len(tags) == 0 {
+		return c.sess.DB
+	}
+	return recordlayer.NewFDBDatabaseWithTransactor(
+		taggedTransactor{inner: c.sess.DB.Transactor(), tags: tags}, c.sess.DB.Database())
+}

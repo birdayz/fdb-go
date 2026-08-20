@@ -47,7 +47,7 @@ const StatisticsFormatVersion = 1
 // statisticsHeaderKey names the per-store header entry. It is a distinct tuple
 // element rather than a reserved record-type name so it can never collide with
 // a real type, whatever a schema calls its tables.
-var statisticsHeaderKey = tuple.Tuple{"__header__"}
+var statisticsHeaderKey = tuple.Tuple{int64(0)}
 
 // RecordTypeStatistic is one collected per-record-type statistic.
 //
@@ -145,9 +145,21 @@ type CollectOptions struct {
 	// continuation-driven, so a large store costs many small transactions
 	// rather than one that cannot commit inside FDB's 5s limit.
 	BatchSize int
-	// MaxRecordsPerType caps the work spent on one type. A type that EXCEEDS
-	// the cap is recorded as ABSENT — never as a partial count, which would be
-	// a wrong number wearing the shape of a right one. Zero means no cap.
+	// MaxRecordsPerType ABORTS the collection as soon as any one record type
+	// exceeds this many rows. Nothing is stored, and the report names the type
+	// that blew the budget. Zero means no cap.
+	//
+	// Abort rather than skip-and-continue, because skipping cannot produce a
+	// usable outcome. A type with no entry fails the reader's schema-wide
+	// completeness gate, so the OTHER types' counts are refused along with it —
+	// the old behaviour bought a full scan and an unusable result, which is
+	// strictly worse than not collecting. Aborting reaches the same end state
+	// having read a bounded prefix, and says which type to look at.
+	//
+	// It also cannot bound work any other way: collection is a SINGLE PASS over
+	// all records (a per-type scan needs a record-type-prefixed primary key,
+	// which not every layout has), so there is no way to keep scanning while
+	// skipping one type's rows.
 	MaxRecordsPerType int64
 }
 
@@ -200,6 +212,10 @@ func CollectStatistics(
 	var collectedAtVersion int64
 	var declaredTypes map[string]*RecordType
 	capped := make(map[string]string)
+	// cappedTypes is the set abandoned mid-scan. It is durable across batches
+	// (a type over its cap stays over) and safe under retry: a re-run of the same
+	// rows re-derives the same membership.
+	cappedTypes := make(map[string]struct{})
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -315,7 +331,26 @@ func CollectStatistics(
 				}
 				rec := r.GetValue()
 				if rec != nil && rec.RecordType != nil {
-					batchCounts[rec.RecordType.Name]++
+					name := rec.RecordType.Name
+					// The cap has to fire DURING the scan or it bounds nothing.
+					// Applying it only to the finished tally — which is what this
+					// did — reads and decodes every row of a million-row type and
+					// then throws the number away, so the knob documented as
+					// limiting work limited only the output.
+					//
+					// Once a type is over, it is ABANDONED: no further counting,
+					// and it lands in Skipped. The count is then meaningless and
+					// is not reported, which is the same contract as before —
+					// absent, never partial — reached without the work.
+					batchCounts[name]++
+					if opts.MaxRecordsPerType > 0 &&
+						counts[name]+batchCounts[name] > opts.MaxRecordsPerType {
+						// Stop here: nothing collected after this point can be
+						// used, so reading it is pure cost.
+						cappedTypes[name] = struct{}{}
+						batchScanned++
+						return nil, nil
+					}
 				}
 				batchScanned++
 			}
@@ -330,9 +365,29 @@ func CollectStatistics(
 		}
 		scanned += batchScanned
 		continuation = batchContinuation
+		if len(cappedTypes) > 0 {
+			// Aborted. Store nothing: a partial pass has partial counts for every
+			// type it had not finished, and writing those would be worse than the
+			// capped type's absence — a wrong number for a table nobody capped.
+			break
+		}
 		if batchDone {
 			break
 		}
+	}
+
+	if len(cappedTypes) > 0 {
+		report := &CollectionReport{
+			Collected:      map[string]RecordTypeStatistic{},
+			Skipped:        capped,
+			RecordsScanned: scanned,
+		}
+		for name := range cappedTypes {
+			report.Skipped[name] = fmt.Sprintf(
+				"exceeds MaxRecordsPerType (%d); collection aborted and stored nothing",
+				opts.MaxRecordsPerType)
+		}
+		return report, nil
 	}
 
 	// SEED EVERY DECLARED TYPE AT ZERO.
@@ -364,10 +419,6 @@ func CollectStatistics(
 		RecordsScanned: scanned,
 	}
 	for name, c := range counts {
-		if opts.MaxRecordsPerType > 0 && c > opts.MaxRecordsPerType {
-			report.Skipped[name] = fmt.Sprintf("exceeds MaxRecordsPerType (%d > %d)", c, opts.MaxRecordsPerType)
-			continue
-		}
 		report.Collected[name] = RecordTypeStatistic{
 			Count:              c,
 			CollectedAtVersion: collectedAtVersion,
@@ -467,6 +518,7 @@ func ReadStatisticsAt(
 	var out StoreStatistics
 	var found bool
 	var readVersion int64
+	var malformed bool
 	// RunRead, not Run: this is on the PLAN path, and Run opens a read-write
 	// transaction and pays a commit round-trip for a read that writes nothing.
 	//
@@ -480,6 +532,7 @@ func ReadStatisticsAt(
 		out = StoreStatistics{PerType: make(map[string]RecordTypeStatistic)}
 		found = false
 		readVersion = 0
+		malformed = false
 		// Propagate rather than swallow: the freshness gate turns a missing
 		// version into a refusal either way, but an operator asking WHY wants
 		// the cluster's own error, not a generic "no version" sentinel.
@@ -500,15 +553,35 @@ func ReadStatisticsAt(
 			if uErr != nil || len(key) != 1 {
 				continue
 			}
+			// The header is discriminated by tuple ELEMENT TYPE, not by a
+			// reserved name. A string element is a record type; the integer
+			// element is the header, and no record-type name can produce one.
+			// A reserved string like "__header__" is reachable: Java-authored
+			// metadata may legally declare a type with that exact name, whose
+			// per-type write would then overwrite the header — after which the
+			// type is missing and completeness can never pass.
+			isHeader := false
+			if n, isInt := key[0].(int64); isInt {
+				if hdr, ok := statisticsHeaderKey[0].(int64); !ok || n != hdr {
+					continue
+				}
+				isHeader = true
+			}
 			name, isStr := key[0].(string)
-			if !isStr {
+			if !isHeader && !isStr {
 				continue
 			}
 			st, ok := unpackStatistic(kv.Value)
 			if !ok {
-				continue
+				// NOT a skip. This function promises all-or-nothing, and skipping
+				// one malformed entry while the header stays valid returns a
+				// PARTIAL map with ok=true — the shape the completeness gate is
+				// built to make impossible, handed to it pre-broken. A caller
+				// below the relational layer has no gate at all.
+				malformed = true
+				return nil, nil
 			}
-			if name == statisticsHeaderKey[0].(string) {
+			if isHeader {
 				out.CollectedAtVersion = st.CollectedAtVersion
 				out.CollectedAtUnixNanos = st.CollectedAtUnixNanos
 				found = true
@@ -524,6 +597,12 @@ func ReadStatisticsAt(
 	// The HEADER is what makes a set usable. Per-type entries without it are a
 	// torn or hand-written state, and the run's own stamps are what expiry is
 	// judged on.
+	if malformed {
+		// All-or-nothing: a set with an entry this build cannot read is not a
+		// usable set, and reporting the rest of it would be a partial answer
+		// wearing a complete one's shape.
+		return StoreStatistics{}, false, readVersion, nil
+	}
 	if !found {
 		return StoreStatistics{}, false, readVersion, nil
 	}

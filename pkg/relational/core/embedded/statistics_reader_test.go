@@ -67,6 +67,32 @@ func decideStatisticsCases() []decideCase {
 			},
 		},
 		{
+			// Refused BEFORE the read, because no read can repair it. When the
+			// metadata declares joined or unnested types, RecordTypes() omits
+			// them, so DeclaredTypes is a PARTIAL set and the completeness gate
+			// would certify a schema after checking a subset of its types —
+			// arriving at the exact inversion the gate exists to prevent, by way
+			// of the gate.
+			name: "unmodeled synthetic types",
+			in: statisticsGateInput{
+				HasSyntheticTypes: true,
+				// Everything else is healthy on purpose: a complete, fresh set is
+				// present, so this arm can only pass by refusing on the synthetic
+				// declaration itself rather than tripping a later gate.
+				Found:          true,
+				Stats:          statsAt(testVersion, map[string]int64{"A": 7}),
+				CurrentVersion: testVersion + 1,
+				DeclaredTypes:  []string{"A"},
+			},
+			want: StatisticsSyntheticTypes,
+			check: func(t *testing.T, got StatisticsStatus) {
+				if got.Found {
+					t.Errorf("Found = true — the refusal must precede the read, since a " +
+						"read cannot supply types the metadata model does not carry")
+				}
+			},
+		},
+		{
 			name: "read failed",
 			in: statisticsGateInput{
 				ReadErr:       errors.New("transaction too old"),
@@ -250,6 +276,8 @@ func TestDecideStatistics(t *testing.T) {
 // otherwise would be the exact failure this file exists to prevent.
 func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 	t.Parallel()
+	// The const block carries a pointer back to this list, because the guard
+	// cannot catch a constant absent from BOTH here and the cases below.
 	all := []StatisticsRefusal{
 		StatisticsOK,
 		StatisticsNotCollected,
@@ -259,6 +287,7 @@ func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 		StatisticsExpired,
 		StatisticsIncomplete,
 		StatisticsEmptySchema,
+		StatisticsSyntheticTypes,
 	}
 	covered := map[StatisticsRefusal]int{}
 	for _, tc := range decideStatisticsCases() {

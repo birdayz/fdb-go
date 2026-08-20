@@ -1115,7 +1115,7 @@ func (c *EmbeddedConnection) CollectStatistics(
 	if err != nil {
 		return nil, err
 	}
-	return recordlayer.CollectStatistics(ctx, c.sess.DB,
+	return recordlayer.CollectStatistics(ctx, c.statisticsDB(),
 		func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
 			// SetSkipPossiblyRebuild + Open, never CreateOrOpen: counting rows is a
 			// READ. Opening a store runs checkPossiblyRebuild, which WRITES — a
@@ -1141,5 +1141,5 @@ func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return recordlayer.ClearStatistics(ctx, c.sess.DB, statsSubspace, storeSubspace)
+	return recordlayer.ClearStatistics(ctx, c.statisticsDB(), statsSubspace, storeSubspace)
 }

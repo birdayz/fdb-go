@@ -250,6 +250,18 @@ func (d *FDBDatabase) SetStoreStateCache(cache FDBRecordStoreStateCache) {
 
 // GetStoreStateCache returns the current store state cache.
 // Matches Java's FDBDatabase.getStoreStateCache().
+// Transactor returns the transactor this database runs through, and Database
+// the raw handle beneath it. They are the read side of
+// NewFDBDatabaseWithTransactor, which already takes both publicly: a caller that
+// may CONSTRUCT a wrapped database can also wrap an existing one, and without
+// these it cannot. Used to layer per-transaction behaviour — FDB transaction
+// tags, fault injection — onto every transaction a library call opens, rather
+// than threading an option through each signature that opens one.
+func (d *FDBDatabase) Transactor() fdb.Transactor { return d.transactor }
+
+// Database returns the raw FDB handle. See Transactor.
+func (d *FDBDatabase) Database() fdb.Database { return d.db }
+
 func (d *FDBDatabase) GetStoreStateCache() FDBRecordStoreStateCache {
 	return d.storeStateCache
 }

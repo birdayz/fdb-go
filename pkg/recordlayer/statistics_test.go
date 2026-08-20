@@ -151,14 +151,20 @@ var _ = Describe("CollectStatistics", func() {
 			CollectOptions{BatchSize: 100, MaxRecordsPerType: 100})
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(report.Collected).NotTo(HaveKey("Order"),
-			"a type over its cap must be ABSENT. A partial count is a wrong number wearing "+
-				"the shape of a right one — the cost model cannot tell it from a small table")
+		// Crossing the cap ABORTS and stores nothing, rather than skipping the
+		// type and collecting the rest. Skipping cannot produce a usable outcome:
+		// an absent type fails the reader's schema-wide completeness gate, so the
+		// other counts are refused with it — a full scan bought for nothing.
+		Expect(report.Collected).To(BeEmpty(),
+			"a capped run must store nothing. Collecting the other types produces "+
+				"counts the completeness gate will refuse anyway, at full scan cost")
 		Expect(report.Skipped).To(HaveKey("Order"))
 		Expect(report.Skipped["Order"]).To(ContainSubstring("exceeds MaxRecordsPerType"))
-		// The under-cap type is unaffected: capping is per type, not per run.
-		Expect(report.Collected).To(HaveKey("Customer"))
-		Expect(report.Collected["Customer"].Count).To(Equal(int64(20)))
+
+		// And nothing reached the store.
+		_, ok, rErr := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(rErr).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse())
 	})
 
 	// A DECLARED TYPE WITH NO ROWS IS AN EXACT ZERO, NOT AN ABSENCE.
@@ -668,22 +674,17 @@ var _ = Describe("CollectStatistics", func() {
 			CollectOptions{BatchSize: 100, MaxRecordsPerType: 50})
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(report.Collected).NotTo(HaveKey("Order"),
-			"a capped type must stay ABSENT even though seeding gave every declared type "+
-				"an entry — its true count is unknown, which is a different fact from zero")
+		// The cap aborts, so NOTHING is stored — including the empty types that
+		// would otherwise have read as exact zeros. Seeding and capping do not
+		// meet in a stored set any more; the cap wins by ending the run.
+		Expect(report.Collected).To(BeEmpty())
 		Expect(report.Skipped).To(HaveKey("Order"))
-		Expect(report.Collected).To(HaveKey("Customer"))
-		Expect(report.Collected["Customer"].Count).To(BeZero(),
-			"an empty type's count IS known, so it reads as an exact 0")
 
-		// And the schema must then be INCOMPLETE, so the planner refuses it. The
-		// cap is the only remaining way to produce that state now that empty
-		// tables no longer do.
-		stored, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		_, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(ok).To(BeTrue())
-		Expect(stored.PerType).NotTo(HaveKey("Order"))
-		Expect(stored.PerType).To(HaveKey("Customer"))
+		Expect(ok).To(BeFalse(),
+			"an aborted run must leave the store untouched, so a reader sees "+
+				"'not collected' rather than a partial set from a run that gave up")
 	})
 
 	// EVERY TRANSACTION IN THIS FILE SURVIVES A RETRY, not just the scan loop.
@@ -871,6 +872,118 @@ var _ = Describe("CollectStatistics", func() {
 		_, _, _, rErr := ReadStatisticsAt(ctx, NewFDBDatabaseWithTransactor(failing2, sharedDB.db), stats, sub)
 		Expect(rErr).To(MatchError(errInjectedGRV))
 		Expect(failing2.hits()).To(BeNumerically(">", 0))
+	})
+
+	// THE CAP MUST BOUND THE SCAN, NOT JUST THE OUTPUT.
+	//
+	// MaxRecordsPerType is documented as capping the WORK spent on one type, and
+	// for a while it did not: it compared the finished tally, so a million-row
+	// type was read and decoded in full and then had its count discarded. The
+	// knob limited the report and nothing else, which is the opposite of a
+	// safety valve — an operator setting it to bound load got the load anyway.
+	//
+	// This asserts the observable that distinguishes the two: RecordsScanned.
+	// With the cap suppressing only output it equals the whole store; with the
+	// cap abandoning the type mid-scan it is far below.
+	It("stops scanning a type once it crosses its cap", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		const orders, customers = 400, 5
+		seed(ctx, sub, orders, customers)
+
+		report, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats,
+			CollectOptions{BatchSize: 25, MaxRecordsPerType: 50})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(report.Skipped).To(HaveKey("Order"))
+		Expect(report.Collected).To(BeEmpty())
+
+		// The measurement. A full scan reads orders+customers records; abandoning
+		// Order at its cap must read far fewer. The bound is generous because
+		// abandonment is checked per record within a batch, so the overshoot is
+		// at most one batch — the point is the ORDER of magnitude, not a fence.
+		Expect(report.RecordsScanned).To(BeNumerically("<", int64(orders+customers)/2),
+			"scanned %d of %d records with a cap of 50 — the cap is suppressing the "+
+				"count without bounding the work, which is what it exists to do",
+			report.RecordsScanned, orders+customers)
+	})
+
+	// A RECORD TYPE MAY LEGALLY BE NAMED LIKE THE HEADER.
+	//
+	// The header entry used to be keyed by the string "__header__". Java-authored
+	// metadata can declare a record type with exactly that name, whose per-type
+	// write then lands on the header's key: the header is overwritten, the type
+	// vanishes from the map, and completeness can never pass for that schema —
+	// silently, and only for stores that happen to contain the name.
+	//
+	// The header is now discriminated by tuple ELEMENT TYPE, which no record-type
+	// name can produce. This drives the collision directly by writing a per-type
+	// entry under that name and requiring both it and the header to survive.
+	It("keeps the header distinct from a record type named like it", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 6, 2)
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Write a per-type entry under the old reserved name, as a store whose
+		// metadata declares that type would.
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Set(target.Pack(tuple.Tuple{"__header__"}),
+				packStatistic(RecordTypeStatistic{Count: 99, CollectedAtVersion: 1}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		stored, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue(),
+			"a record type named __header__ destroyed the header — the two must not "+
+				"share a key, or completeness can never pass for such a schema")
+		Expect(stored.CollectedAtVersion).To(BeNumerically(">", 1),
+			"the header carries the run's own version, not the type entry's")
+		Expect(stored.PerType).To(HaveKey("__header__"))
+		Expect(stored.PerType["__header__"].Count).To(Equal(int64(99)))
+		Expect(stored.PerType).To(HaveKey("Order"))
+	})
+
+	// A MALFORMED ENTRY POISONS THE WHOLE SET.
+	//
+	// ReadStatistics documents all-or-nothing: "a caller gets a usable set or
+	// nothing". Skipping one unreadable entry while the header stays valid broke
+	// that — it returned ok=true with a map missing a type, which is precisely
+	// the partial set the completeness gate exists to reject, handed to it
+	// pre-broken. A caller below the relational layer has no gate at all.
+	It("refuses the whole set when one entry cannot be decoded", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 8, 3)
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Control: readable before corruption, or the refusal below proves nothing.
+		_, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Set(target.Pack(tuple.Tuple{"Order"}), []byte("not a packed tuple"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		got, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse(),
+			"one undecodable entry must reject the SET. Returning the rest with ok=true "+
+				"is a partial answer wearing a complete one's shape, and a record-layer "+
+				"caller has no completeness gate to catch it")
+		Expect(got.PerType).To(BeEmpty())
 	})
 })
 

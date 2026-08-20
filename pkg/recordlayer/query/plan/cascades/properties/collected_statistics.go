@@ -1,5 +1,7 @@
 package properties
 
+import "fdb.dev/pkg/recordlayer/protoname"
+
 // CollectedStatistics is RFC-236's statistics provider: per-record-type row
 // counts gathered by the offline collector.
 //
@@ -77,6 +79,22 @@ func (s CollectedStatistics) RecordTypeCardinality(name string) float64 {
 	}
 	if c, ok := s.perType[name]; ok {
 		return c
+	}
+	// TWO NAMESPACES MEET HERE. The map is keyed by STORAGE names, which is what
+	// metadata carries; a relational scan asks with the SQL name it was written
+	// with (cascades_translator.go passes the parsed table name straight into
+	// FullUnorderedScanExpression). Those are the same string for almost every
+	// table and differ for a quoted identifier carrying ', '.' or "__", where
+	// the storage name is ToProtoBufCompliantName of the user name.
+	//
+	// Without this, such a table misses and falls back to the whole store — so a
+	// SMALL escaped table is priced as the entire schema, and the join drives
+	// from the wrong side. The failure is invisible: statistics are present,
+	// fresh and complete, and the gate passes.
+	if storage, err := protoname.ToProtoBufCompliantName(name); err == nil {
+		if c, ok := s.perType[storage]; ok {
+			return c
+		}
 	}
 	return s.storeTotal()
 }
