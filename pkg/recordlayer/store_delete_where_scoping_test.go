@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -85,7 +86,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		// logged the error and committed lost the record while the index kept
 		// describing it.
 		//
-		// Java asks canDeleteWhere of every maintainer in the deleter's
+		// Java asks CanDeleteWhere of every maintainer in the deleter's
 		// constructor, before a single range is touched.
 		textIdx := NewTextIndex("customer$name_text", Field("name"))
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -148,7 +149,7 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		// queryable.
 		//
 		// Java bounds it at the split point — KeyWithValueExpression.getColumnSize()
-		// — in canDeleteWhere, and again with a Verify inside deleteWhere.
+		// — in CanDeleteWhere, and again with a Verify inside deleteWhere.
 		vecIdx := NewVectorIndex("vec_split_bound",
 			KeyWithValue(Concat(Field("quantity"), Field("price"), Field("vector_data")), 1), 3)
 		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -381,6 +382,266 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 			entries, lerr := AsList(ctx, store.ScanIndex(idx, TupleRangeAll, nil, ForwardScan()))
 			Expect(lerr).NotTo(HaveOccurred())
 			Expect(entries).To(BeEmpty())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// A RANK index keeps a skip-list ranked set per GROUP in the secondary
+	// subspace, while its primary entries carry the grouped score too. When the
+	// primary key and the index root both begin (group, score) — which is the
+	// natural shape for "rank orders within a customer" — a two-column prefix
+	// aligns positionally and used to be accepted: the primary B-tree was
+	// cleared for that score, and the ranked set, rooted at the group alone,
+	// kept every deleted record's rank.
+	It("refuses a prefix that reaches past a RANK index's grouping columns", func() {
+		ks := specSubspace()
+
+		rankIdx := NewRankIndex("order$rank_by_qty", GroupBy(Field("price"), Field("quantity")))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(
+			Concat(Field("quantity"), Field("price"), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", rankIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 7, 20}} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Quantity: proto.Int32(int32(o.qty)),
+					Price:    proto.Int32(int32(o.price)),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			secondary := ks.Sub(IndexSecondarySpaceKey, rankIdx.SubspaceTupleKey())
+			rankedSetSize := func() int {
+				begin, end := secondary.FDBRangeKeys()
+				kvs, kerr := rtx.Transaction().GetRange(
+					fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(kerr).NotTo(HaveOccurred())
+				return len(kvs)
+			}
+			Expect(rankedSetSize()).To(BeNumerically(">", 0),
+				"the ranked set must be populated, or the assertion below is vacuous")
+
+			// Two columns align positionally with the root's whole key
+			// (quantity, price) — so only the grouping bound can refuse this.
+			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7), int64(10)})
+			Expect(derr).To(HaveOccurred())
+			Expect(derr.Error()).To(ContainSubstring("order$rank_by_qty"))
+
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(10), int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil(), "a refused delete must not have removed the records")
+
+			// The grouping-width prefix is accepted, and it clears BOTH the
+			// B-tree and the ranked set — the property the bound protects.
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{int64(7)})).To(Succeed())
+			entries, lerr := AsList(ctx, store.ScanIndex(rankIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(entries).To(BeEmpty())
+			Expect(rankedSetSize()).To(Equal(0),
+				"a ranked set that outlives its records still answers rank queries for them")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// A grouped TEXT index is keyed (group..., token, primaryKey) and its
+	// postings live in a BunchedMap whose bunches are rooted at the group. A
+	// prefix reaching into the token column would clear part of a bunch's range
+	// and leave the rest. Java routes this through canDeleteGroup, whose
+	// matcher unwraps the grouping expression to its grouping subkey.
+	It("refuses a prefix that reaches past a grouped TEXT index's grouping columns", func() {
+		ks := specSubspace()
+
+		textIdx := NewTextIndex("customer$name_by_price", GroupBy(Field("name"), Field("price")))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		// The primary key repeats the index root's columns so that a
+		// two-column prefix ALIGNS; otherwise the store's positional check
+		// would refuse first and the grouping bound would never be reached.
+		builder.GetRecordType("Customer").SetPrimaryKey(
+			Concat(Field("price"), Field("name"), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Customer", textIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for _, c := range []struct {
+				id, price int64
+				name      string
+			}{
+				{1, 10, "hello world"}, {2, 10, "goodbye world"}, {3, 20, "hello again"},
+			} {
+				_, e := store.SaveRecord(&gen.Customer{
+					CustomerId: proto.Int64(c.id),
+					Price:      proto.Int32(int32(c.price)),
+					Name:       proto.String(c.name),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(10), "hello world"})
+			Expect(derr).To(HaveOccurred())
+			Expect(derr.Error()).To(ContainSubstring("customer$name_by_price"))
+
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(10), "hello world", int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil())
+
+			// The grouping-width prefix clears exactly the one group.
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{int64(10)})).To(Succeed())
+			entries, lerr := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2), "price=20's `hello` and `again` survive")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// A TEXT index records, per record, the tokenizer version its postings were
+	// written at — keyed by PRIMARY KEY under the secondary subspace, not by the
+	// index's grouping columns. A scoped delete therefore has no range naming
+	// exactly the departing records' version entries, and Go used to clear the
+	// WHOLE subspace: every surviving record's version went with it, and each
+	// then read back as GLOBAL_MIN_VERSION and got needlessly re-tokenized on
+	// its next update. Java never touches this subspace in deleteWhere at all.
+	It("preserves surviving records' tokenizer versions on a scoped TEXT delete", func() {
+		ks := specSubspace()
+
+		textIdx := NewTextIndex("customer$name_versions", GroupBy(Field("name"), Field("price")))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(
+			Concat(Field("price"), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Customer", textIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		// tokenizerVersionKeys reads the secondary subspace from the OUTSIDE,
+		// rebuilt from the store subspace and the index's subspace tuple key,
+		// so this is about stored bytes rather than the maintainer agreeing
+		// with itself.
+		versionKeys := func(rtx *FDBRecordContext) []tuple.Tuple {
+			sec := ks.Sub(IndexSecondarySpaceKey, textIdx.SubspaceTupleKey())
+			begin, end := sec.FDBRangeKeys()
+			kvs, kerr := rtx.Transaction().GetRange(
+				fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(kerr).NotTo(HaveOccurred())
+			out := make([]tuple.Tuple, 0, len(kvs))
+			for _, kv := range kvs {
+				k, uerr := sec.Unpack(kv.Key)
+				Expect(uerr).NotTo(HaveOccurred())
+				out = append(out, k)
+			}
+			return out
+		}
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for _, c := range []struct {
+				id, price int64
+				name      string
+			}{{1, 10, "hello world"}, {2, 20, "goodbye world"}} {
+				_, e := store.SaveRecord(&gen.Customer{
+					CustomerId: proto.Int64(c.id),
+					Price:      proto.Int32(int32(c.price)),
+					Name:       proto.String(c.name),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+			Expect(versionKeys(rtx)).To(HaveLen(2),
+				"one tokenizer-version entry per record, or the assertion below is vacuous")
+
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{int64(10)})).To(Succeed())
+
+			// price=20's entry must survive. Java leaves price=10's behind too
+			// — the entries are keyed by primary key, so no range names exactly
+			// the departing set — and that leak is inert: the insert path
+			// writes the version unconditionally, so a returning primary key
+			// gets a fresh one.
+			after := versionKeys(rtx)
+			survivor := false
+			for _, k := range after {
+				// secSubspace / TOKENIZER_VERSION_TUPLE(0) / primaryKey...
+				Expect(len(k)).To(BeNumerically(">=", 3))
+				if k[1] == int64(20) {
+					survivor = true
+				}
+			}
+			Expect(survivor).To(BeTrue(),
+				"clearing the whole subspace takes the SURVIVING records' versions, and each "+
+					"then reads back as GLOBAL_MIN_VERSION and gets re-tokenized")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	// And the other half of the same rule: a WHOLE-index clear may take the
+	// subspace, because no surviving record has an entry in it. Go reclaims
+	// there what Java leaks. Without this arm, scoping the clear to `len(prefix)
+	// == 0` could be replaced by "never clear it" and nothing would notice.
+	It("clears the tokenizer-version subspace on a whole-record-type TEXT delete", func() {
+		ks := specSubspace()
+
+		textIdx := NewTextIndex("customer$name_whole", Field("name"))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(
+			Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Customer", textIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		secKeyCount := func(rtx *FDBRecordContext) int {
+			sec := ks.Sub(IndexSecondarySpaceKey, textIdx.SubspaceTupleKey())
+			begin, end := sec.FDBRangeKeys()
+			kvs, kerr := rtx.Transaction().GetRange(
+				fdb.KeyRange{Begin: begin, End: end}, fdb.RangeOptions{}).GetSliceWithError()
+			Expect(kerr).NotTo(HaveOccurred())
+			return len(kvs)
+		}
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			rt := md.GetRecordType("Customer")
+			Expect(rt).NotTo(BeNil())
+			for _, id := range []int64{1, 2} {
+				_, e := store.SaveRecord(&gen.Customer{
+					CustomerId: proto.Int64(id), Name: proto.String("hello world"),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+			Expect(secKeyCount(rtx)).To(Equal(2))
+
+			// The record-type key alone selects the whole type, which is the
+			// arm that derives an EMPTY index prefix.
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{rt.GetRecordTypeKey()})).To(Succeed())
+			Expect(secKeyCount(rtx)).To(Equal(0),
+				"no surviving record has an entry here, so leaving them is pure leak")
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

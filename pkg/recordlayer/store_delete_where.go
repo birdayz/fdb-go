@@ -196,10 +196,16 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		if mErr != nil {
 			return mErr
 		}
-		if checker, ok := maintainerAs[deleteWhereCapable](maintainer); ok {
-			if err := checker.canDeleteWhere(idxPrefix); err != nil {
-				return fmt.Errorf("deleteRecordsWhere: %w", err)
-			}
+		// Every maintainer answers. CanDeleteWhere is part of IndexMaintainer,
+		// so there is no "did not implement it" case to fall through — which is
+		// what Java's abstract canDeleteWhere buys, and what keeps a new index
+		// type from reaching this path without having decided what its physical
+		// keys are prefixed by. That is not hypothetical: while the check was
+		// merely optional here, the bound was found missing on RANK, PERMUTED,
+		// the aggregates and TEXT in turn, because "does not implement it" and
+		// "can clear any prefix" are the same answer to a type assertion.
+		if err := maintainer.CanDeleteWhere(idxPrefix); err != nil {
+			return fmt.Errorf("deleteRecordsWhere: %w", err)
 		}
 
 		actions = append(actions, indexAction{index: idx, prefix: idxPrefix})

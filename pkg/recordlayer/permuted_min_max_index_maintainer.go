@@ -269,7 +269,7 @@ func (m *permutedMinMaxIndexMaintainer) ScanByGroup(scanRange TupleRange, contin
 	return newIndexCursor(m.index, m.secondarySubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
-// canDeleteWhere bounds the prefix at the grouping columns that are NOT
+// CanDeleteWhere bounds the prefix at the grouping columns that are NOT
 // permuted — Java's PermutedMinMaxIndexMaintainer.canDeleteWhere, which limits
 // it to `groupingCount - permutedSize`.
 //
@@ -282,12 +282,8 @@ func (m *permutedMinMaxIndexMaintainer) ScanByGroup(scanRange TupleRange, contin
 //
 // Only the columns before the permute point are a shared prefix of both
 // layouts, which is exactly where the bound sits.
-func (m *permutedMinMaxIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
-	groupingCount := m.index.RootExpression.ColumnSize()
-	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
-		groupingCount = g.GetGroupingCount()
-	}
-	limit := groupingCount - m.permutedSize
+func (m *permutedMinMaxIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	limit := deleteWhereMatchableBound(m.index.RootExpression) - m.permutedSize
 	if limit < 0 {
 		limit = 0
 	}
@@ -305,9 +301,9 @@ func (m *permutedMinMaxIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error
 // DeleteWhere clears both primary and secondary subspaces.
 // Matches Java's PermutedMinMaxIndexMaintainer.deleteWhere().
 func (m *permutedMinMaxIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	// Backstop for direct callers; DeleteRecordsWhere asks canDeleteWhere
+	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere
 	// BEFORE it clears anything.
-	if err := m.canDeleteWhere(prefix); err != nil {
+	if err := m.CanDeleteWhere(prefix); err != nil {
 		return err
 	}
 	if err := m.standardIndexMaintainer.DeleteWhere(prefix); err != nil {

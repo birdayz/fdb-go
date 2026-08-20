@@ -231,6 +231,7 @@ go_test(
         "index_candidacy_classification_test.go",
         "index_creates_duplicates_test.go",
         "index_edge_cases_test.go",
+        "index_maintainer_delete_where_bound_test.go",
         "index_maintainer_dispatch_test.go",
         "index_maintainer_test.go",
         "index_predicate_test.go",

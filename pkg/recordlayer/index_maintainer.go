@@ -46,29 +46,105 @@ type IndexMaintainer interface {
 	// Uses FDB range clears — no scanning. Called by DeleteRecordsWhere.
 	// Matches Java's IndexMaintainer.deleteWhere().
 	DeleteWhere(prefix tuple.Tuple) error
+
+	// CanDeleteWhere reports whether this maintainer can clear exactly the
+	// entries the given prefix names, returning the reason it cannot.
+	// Matches Java's IndexMaintainer.canDeleteWhere.
+	//
+	// It is part of the interface — not an optional capability a maintainer may
+	// leave out — for the same reason Java declares it ABSTRACT: a new index
+	// type must not be able to reach the DeleteRecordsWhere path without having
+	// decided what its physical keys are prefixed by. That is not hypothetical.
+	// The check began as an optional interface here, and successive review
+	// rounds then found the bound missing on one type after another — RANK's
+	// ranked sets, PERMUTED's permuted secondary, the aggregates' grouping keys,
+	// TEXT's bunched tokens — because an optional check reads "does not
+	// implement it" and "can clear any prefix" as the same answer, and the first
+	// is by far the more common. Whack-a-mole per index type converges only as
+	// fast as someone thinks to look; a compile error converges immediately.
+	//
+	// standardIndexMaintainer supplies the default, so a type embedding it gets
+	// the bound its root expression implies and overrides only to NARROW it.
+	//
+	// WHERE the question is asked is the other half, and it cannot be left to
+	// DeleteWhere. DeleteRecordsWhere queues the record, version and count
+	// clears BEFORE calling any maintainer, so a refusal raised inside
+	// DeleteWhere arrives after the records are already gone from the
+	// transaction: a caller that logs the error and commits anyway loses the
+	// records while the index keeps describing them. Every refusal therefore
+	// belongs in the store's preflight, and the matching check inside
+	// DeleteWhere stays only as a backstop for direct callers — which is exactly
+	// the split Java has between canDeleteWhere and the Verify.verify inside
+	// deleteWhere.
+	CanDeleteWhere(prefix tuple.Tuple) error
 }
 
-// deleteWhereCapable is implemented by maintainers that can REFUSE a
-// deleteRecordsWhere prefix — the Go form of Java's
-// IndexMaintainer.canDeleteWhere (IndexMaintainer.java), which
-// deleteRecordsWhereCheckIndexes asks of EVERY maintainer in the deleter's
-// constructor, before a single range is cleared (FDBRecordStore.java:1997-2008).
+// deleteWhereMatchableBound is how many leading index columns a
+// DeleteRecordsWhere prefix may cover. It is a property of the ROOT EXPRESSION,
+// not of the maintainer, which is why it lives here and every per-maintainer
+// bound narrows it rather than restating it.
 //
-// WHERE the question is asked is the whole point, and it is not a detail that
-// can be left to DeleteWhere. DeleteRecordsWhere queues the record, version and
-// count clears BEFORE calling any maintainer, so a refusal raised inside
-// DeleteWhere arrives after the records are already gone from the transaction:
-// a caller that logs the error and commits anyway loses the records while the
-// index keeps describing them. Every refusal therefore belongs here, and the
-// matching check inside DeleteWhere stays only as a backstop for direct callers
-// — which is exactly the split Java has between canDeleteWhere and the
-// Verify.verify inside deleteWhere.
+// Java never asks a maintainer "is this prefix short enough". It asks
+// QueryToKeyMatcher to match the delete predicate against the index's root
+// expression, and QueryToKeyMatcher.matches() UNWRAPS the root before matching
+// anything:
 //
-// The interface is OPTIONAL: a maintainer that can clear any prefix simply does
-// not implement it. It is reached through maintainerAs so a decorator cannot
-// hide its delegate's answer.
-type deleteWhereCapable interface {
-	canDeleteWhere(prefix tuple.Tuple) error
+//	GroupingKeyExpression   -> getGroupingSubKey()  (grouping columns only)
+//	DimensionsKeyExpression -> getPrefixSubKey()    (prefix columns only)
+//	KeyWithValueExpression  -> getKeyExpression()   (key columns only)
+//
+// so a predicate naming more columns than the unwrapped expression holds can
+// never produce an EQUALITY match, and CanDeleteWhere returns false. The bound
+// below is that same width, reached directly.
+//
+// It is not an arbitrary limit: the columns each wrapper hides are exactly the
+// ones an index's SECONDARY structures are not keyed by. A ranked set, a
+// permuted entry, an aggregate value, a bunched token map and a tokenizer
+// version are all keyed by the GROUP and nothing finer. A prefix reaching past
+// the group clears the primary entries and misses every one of those, leaving
+// index data that still answers for records that are gone.
+//
+// (KeyWithValueExpression needs no arm: its ColumnSize already reports the split
+// point, since the value columns are not in the key at all.)
+func deleteWhereMatchableBound(root KeyExpression) int {
+	switch e := root.(type) {
+	case *GroupingKeyExpression:
+		return e.GetGroupingCount()
+	case *DimensionsKeyExpression:
+		return e.PrefixSize
+	default:
+		return root.ColumnSize()
+	}
+}
+
+// deleteWhereBoundError is the shared refusal for a prefix that reaches past the
+// columns an index's structures are keyed by.
+func deleteWhereBoundError(index *Index, prefix tuple.Tuple, bound int) error {
+	return fmt.Errorf(
+		"%s index %q: deleteWhere prefix has %d columns but the index is keyed by %d; "+
+			"a longer prefix would clear some of its structures and miss others, leaving "+
+			"index data that answers for records that are gone",
+		index.Type, index.Name, len(prefix), bound)
+}
+
+// checkDeleteWhereBound is the shared CanDeleteWhere body: everything except the
+// maintainers that need a NARROWER bound than the root expression implies.
+func checkDeleteWhereBound(index *Index, prefix tuple.Tuple) error {
+	bound := deleteWhereMatchableBound(index.RootExpression)
+	if len(prefix) > bound {
+		return deleteWhereBoundError(index, prefix, bound)
+	}
+	return nil
+}
+
+// CanDeleteWhere bounds a prefix by the index's matchable width. Every
+// maintainer embedding standardIndexMaintainer inherits this — which is how
+// RANK's ranked sets, MULTIDIMENSIONAL's R-trees and TIME_WINDOW_LEADERBOARD's
+// directory get a bound without each restating it, exactly as they inherit
+// StandardIndexMaintainer.canDeleteWhere in Java. The types whose secondary
+// layout is narrower still (permuted min/max, vector, sliding window) override.
+func (m *standardIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	return checkDeleteWhereBound(m.index, prefix)
 }
 
 // indexStoreContext provides the store methods needed by index maintainers.
@@ -400,6 +476,13 @@ func deleteWhereRange(tx fdb.WritableTransaction, indexSubspace subspace.Subspac
 // DeleteWhere clears all index entries whose key starts with the given prefix.
 // Matches Java's standardIndexMaintainer.deleteWhere().
 func (m *standardIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere BEFORE
+	// it clears anything. Method dispatch here is static, so a maintainer that
+	// embeds this and overrides CanDeleteWhere with a NARROWER bound must — and
+	// does — call its own before delegating.
+	if err := m.CanDeleteWhere(prefix); err != nil {
+		return err
+	}
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 

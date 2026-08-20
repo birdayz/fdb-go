@@ -1242,7 +1242,7 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 // VectorIndexMaintainer.deleteWhere and clears
 // Range.startsWith(indexSubspace.pack(prefix)) — everything under the packed
 // prefix, descendants included.
-// canDeleteWhere is Java's VectorIndexMaintainer.canDeleteWhere (:358-363):
+// CanDeleteWhere is Java's VectorIndexMaintainer.canDeleteWhere (:358-363):
 // beyond the delegate's own alignment check it requires
 // `evaluated.size() <= getKeyWithValueExpression(root).getColumnSize()`, and
 // KeyWithValueExpression.getColumnSize() is the SPLIT POINT — the number of
@@ -1261,7 +1261,7 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 // outright (getKeyWithValueExpression throws); Go accepts it for other
 // operations — a documented divergence — so the bound of zero is what expresses
 // the same refusal here.
-func (m *vectorIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
+func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	keyColumns := 0
 	if kwv, ok := m.index.RootExpression.(*KeyWithValueExpression); ok {
 		keyColumns = kwv.ColumnSize()
@@ -1278,8 +1278,8 @@ func (m *vectorIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
 
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	// Backstop for direct callers — Java's Verify.verify inside deleteWhere
-	// (:366-369). DeleteRecordsWhere asks canDeleteWhere before it clears.
-	if err := m.canDeleteWhere(prefix); err != nil {
+	// (:366-369). DeleteRecordsWhere asks CanDeleteWhere before it clears.
+	if err := m.CanDeleteWhere(prefix); err != nil {
 		return err
 	}
 	sub := m.getSubspaceForPrefix(prefix)

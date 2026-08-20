@@ -385,7 +385,7 @@ func (m *atomicMutationIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecor
 	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, m.index.Type, m.Update)
 }
 
-// canDeleteWhere bounds the prefix at the GROUPING columns.
+// CanDeleteWhere bounds the prefix at the GROUPING columns.
 //
 // An aggregate index is physically keyed by its grouping columns alone — the
 // grouped column is the thing being aggregated, not part of the key — while the
@@ -399,26 +399,15 @@ func (m *atomicMutationIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecor
 // Java reaches the same bound from the other side: StandardIndexMaintainer's
 // canDeleteWhere matches the query against the root expression, and the matcher
 // unwraps a grouping expression to its grouping subkey.
-func (m *atomicMutationIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
-	groupingCount := m.index.RootExpression.ColumnSize()
-	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
-		groupingCount = g.GetGroupingCount()
-	}
-	if len(prefix) > groupingCount {
-		return fmt.Errorf(
-			"%s index %q: deleteWhere prefix has %d columns but the index is grouped by %d; "+
-				"a longer prefix names no aggregate entry, so the clear would leave the "+
-				"aggregate behind after its records are gone",
-			m.index.Type, m.index.Name, len(prefix), groupingCount)
-	}
-	return nil
+func (m *atomicMutationIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	return checkDeleteWhereBound(m.index, prefix)
 }
 
 // DeleteWhere clears all index entries whose key starts with the given prefix.
 func (m *atomicMutationIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	// Backstop for direct callers; DeleteRecordsWhere asks canDeleteWhere
+	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere
 	// BEFORE it clears anything.
-	if err := m.canDeleteWhere(prefix); err != nil {
+	if err := m.CanDeleteWhere(prefix); err != nil {
 		return err
 	}
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)

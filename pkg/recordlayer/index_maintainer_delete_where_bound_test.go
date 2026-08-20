@@ -1,0 +1,245 @@
+package recordlayer
+
+import (
+	"strings"
+	"testing"
+
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
+)
+
+// CanDeleteWhere is what stands between DeleteRecordsWhere and an index whose
+// primary entries get cleared while its secondary structures do not. It is
+// asked once per index per delete, from a single call site, so a full-suite run
+// exercises only the arms the corpus's index shapes happen to reach — and the
+// arms that matter most are the rare ones. Every maintainer's bound is
+// therefore driven here directly, from an explicit root expression, with no FDB
+// and no store.
+//
+// The shape of the table is deliberate: for each maintainer a prefix AT the
+// bound must be ACCEPTED and a prefix ONE COLUMN PAST it must be REFUSED. A
+// test asserting only the refusal passes against a bound of zero, which refuses
+// everything and breaks every real delete — the vacuous direction.
+
+// deleteWhereBoundCase is one maintainer's bound, driven at and past its limit.
+type deleteWhereBoundCase struct {
+	name string
+	// maintainer is built from an index alone: none of these bodies read the
+	// transaction, the subspace or the store.
+	maintainer IndexMaintainer
+	// bound is the widest prefix the maintainer must accept.
+	bound int
+}
+
+func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
+	t.Parallel()
+
+	// (quantity, price) grouped by quantity: whole key 2 columns, grouping
+	// count 1. This is the shape that left RANK, the aggregates and TEXT
+	// clearable past their secondary structures, because the store's alignment
+	// check normalises a grouping expression to its WHOLE key.
+	grouped := func(name, typ string) *Index {
+		return &Index{
+			Name:           name,
+			Type:           typ,
+			RootExpression: GroupBy(Field("price"), Field("quantity")),
+		}
+	}
+	plain := func(name, typ string) *Index {
+		return &Index{
+			Name:           name,
+			Type:           typ,
+			RootExpression: Concat(Field("quantity"), Field("price")),
+		}
+	}
+	stdOf := func(idx *Index) standardIndexMaintainer {
+		return standardIndexMaintainer{index: idx}
+	}
+
+	cases := []deleteWhereBoundCase{
+		{
+			name:       "VALUE takes the root's own width",
+			maintainer: &standardIndexMaintainer{index: plain("v", IndexTypeValue)},
+			bound:      2,
+		},
+		{
+			name: "KeyWithValue stops at the split point, not the inner width",
+			maintainer: &standardIndexMaintainer{index: &Index{
+				Name: "kwv", Type: IndexTypeValue,
+				RootExpression: KeyWithValue(
+					Concat(Field("quantity"), Field("price"), Field("order_id")), 2),
+			}},
+			bound: 2,
+		},
+		{
+			name:       "RANK stops at the grouping columns its ranked sets are keyed by",
+			maintainer: &rankIndexMaintainer{standardIndexMaintainer: stdOf(grouped("rank", IndexTypeRank))},
+			bound:      1,
+		},
+		{
+			name: "TIME_WINDOW_LEADERBOARD stops at the grouping columns",
+			maintainer: &timeWindowLeaderboardIndexMaintainer{
+				standardIndexMaintainer: stdOf(grouped("lb", IndexTypeTimeWindowLeaderboard)),
+			},
+			bound: 1,
+		},
+		{
+			name: "MULTIDIMENSIONAL stops at the R-tree prefix, not the whole key",
+			maintainer: &multidimensionalIndexMaintainer{
+				standardIndexMaintainer: stdOf(&Index{
+					Name: "md", Type: IndexTypeMultidimensional,
+					RootExpression: Dimensions(
+						Concat(Field("quantity"), Field("coord_x"), Field("coord_y")), 1, 2),
+				}),
+			},
+			bound: 1,
+		},
+		{
+			name: "PERMUTED subtracts the permuted columns from the grouping count",
+			maintainer: &permutedMinMaxIndexMaintainer{
+				standardIndexMaintainer: &standardIndexMaintainer{index: &Index{
+					Name: "perm", Type: IndexTypePermutedMax,
+					// Grouping count 2, permutedSize 1 -> one clearable column.
+					RootExpression: GroupBy(Field("order_id"),
+						Concat(Field("quantity"), Field("price"))),
+				}},
+				permutedSize: 1,
+			},
+			bound: 1,
+		},
+		{
+			name:       "COUNT stops at the grouping columns its aggregate is keyed by",
+			maintainer: &atomicMutationIndexMaintainer{index: grouped("cnt", IndexTypeCount)},
+			bound:      1,
+		},
+		{
+			name:       "BITMAP_VALUE stops at the grouping columns",
+			maintainer: &bitmapValueIndexMaintainer{index: grouped("bmp", IndexTypeBitmapValue)},
+			bound:      1,
+		},
+		{
+			name:       "MAX_EVER_VERSION stops at the grouping columns",
+			maintainer: &maxEverVersionIndexMaintainer{index: grouped("mev", IndexTypeMaxEverVersion)},
+			bound:      1,
+		},
+		{
+			name:       "VERSION takes the root's own width",
+			maintainer: &versionIndexMaintainer{index: plain("ver", IndexTypeVersion)},
+			bound:      2,
+		},
+		{
+			name:       "TEXT stops at the grouping columns its bunched map is keyed by",
+			maintainer: &textIndexMaintainer{index: grouped("txt", IndexTypeText)},
+			bound:      1,
+		},
+		{
+			// A NON-KeyWithValue root deliberately: splitPrefixAndVector then
+			// reads the whole key as the vector and indexes every record under
+			// the EMPTY prefix, so no non-empty prefix names a graph. The
+			// inherited bound would be the root's width (2) — so this row is
+			// the one that fails if vector's override is ever lost, which a
+			// KeyWithValue row cannot detect (there the two bounds coincide,
+			// because KeyWithValueExpression.ColumnSize IS the split point).
+			name: "VECTOR on a non-KeyWithValue root has no clearable prefix at all",
+			maintainer: &vectorIndexMaintainer{standardIndexMaintainer: stdOf(&Index{
+				Name: "vec_plain", Type: IndexTypeVector,
+				RootExpression: Concat(Field("quantity"), Field("vector_data")),
+			})},
+			bound: 0,
+		},
+		{
+			name: "VECTOR stops at the KeyWithValue split point",
+			maintainer: &vectorIndexMaintainer{standardIndexMaintainer: stdOf(&Index{
+				Name: "vec", Type: IndexTypeVector,
+				RootExpression: KeyWithValue(
+					Concat(Field("quantity"), Field("vector_data")), 1),
+			})},
+			bound: 1,
+		},
+		{
+			name: "SPFRESH accepts only the whole-index clear",
+			maintainer: &spfreshIndexMaintainer{
+				standardIndexMaintainer: stdOf(plain("spf", IndexTypeVectorSPFresh)),
+			},
+			bound: 0,
+		},
+	}
+
+	prefixOf := func(n int) tuple.Tuple {
+		p := make(tuple.Tuple, n)
+		for i := range p {
+			p[i] = int64(i)
+		}
+		return p
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// AT the bound: must be accepted. Without this half, a bound of
+			// zero satisfies the refusal below while breaking every real
+			// DeleteRecordsWhere on this index type.
+			if err := tc.maintainer.CanDeleteWhere(prefixOf(tc.bound)); err != nil {
+				t.Fatalf("a prefix of %d column(s) must be clearable, got: %v", tc.bound, err)
+			}
+			// ONE PAST it: must be refused, because past this width the
+			// maintainer's structures are no longer all named by the prefix.
+			if err := tc.maintainer.CanDeleteWhere(prefixOf(tc.bound + 1)); err == nil {
+				t.Fatalf("a prefix of %d column(s) must be refused: past the bound the clear "+
+					"takes some of the index's structures and misses others", tc.bound+1)
+			}
+		})
+	}
+
+	// The population guard. This table is the only place several of these arms
+	// run, so a case silently dropped from it reads as "still covered", and a
+	// maintainer added without a bound would sit here unnoticed. Both are the
+	// same failure: a green over a set that changed.
+	//
+	// 14 = one row for each of the 13 non-decorator IndexMaintainer
+	// implementations in this package
+	// (`grep -c 'func (.*) DeleteWhere(' pkg/recordlayer/*.go` over non-test
+	// sources gives 13 plus slidingWindowIndexMaintainer, the decorator, whose
+	// answer is its delegate's and is driven in its own test below), plus a
+	// second VECTOR row for its non-KeyWithValue root.
+	const wantCases = 14
+	if len(cases) != wantCases {
+		t.Fatalf("expected %d maintainer bounds, got %d — a maintainer was added or removed "+
+			"without its bound being driven here", wantCases, len(cases))
+	}
+}
+
+// The sliding window is a DECORATOR, so its answer is not its own: Java's
+// canDeleteWhere begins by asking the delegate and only then applies the
+// partition bound. A decorator that skipped the delegate would be MORE
+// permissive than what it wraps, which is exactly the direction that clears a
+// graph's records and leaves the graph.
+func TestSlidingWindowCanDeleteWhereNeverExceedsItsDelegate(t *testing.T) {
+	t.Parallel()
+
+	// The delegate accepts one column (split point 1); the window partitions on
+	// two. Without forwarding, the window would accept two.
+	delegate := &vectorIndexMaintainer{standardIndexMaintainer: standardIndexMaintainer{index: &Index{
+		Name: "vec", Type: IndexTypeVector,
+		RootExpression: KeyWithValue(Concat(Field("quantity"), Field("vector_data")), 1),
+	}}}
+	m := &slidingWindowIndexMaintainer{
+		index:                  &Index{Name: "win", Type: IndexTypeVector},
+		delegate:               delegate,
+		partitionKeyColumnSize: 2,
+	}
+
+	if err := m.CanDeleteWhere(tuple.Tuple{int64(1)}); err != nil {
+		t.Fatalf("one column is within both bounds, got: %v", err)
+	}
+	err := m.CanDeleteWhere(tuple.Tuple{int64(1), int64(2)})
+	if err == nil {
+		t.Fatal("two columns satisfy the window's partition bound but NOT the delegate's " +
+			"split point; the decorator must refuse")
+	}
+	// It must be the DELEGATE's refusal that surfaces. Asserting only that
+	// SOME error came back would pass with the forwarding removed, since the
+	// window's own partition bound also refuses at some width.
+	if !strings.Contains(err.Error(), "vector index") {
+		t.Fatalf("expected the delegate's refusal to surface, got: %s", err)
+	}
+}

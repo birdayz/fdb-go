@@ -425,9 +425,22 @@ func min64(a, b int64) int64 {
 	return b
 }
 
+// CanDeleteWhere bounds the prefix by the grouping columns. A BITMAP_VALUE entry
+// is one bitmap covering a RANGE of positions — key (group..., rangeStart) — so
+// a prefix reaching into the position column would land mid-bitmap, where no key
+// boundary exists to clear at.
+func (m *bitmapValueIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	return checkDeleteWhereBound(m.index, prefix)
+}
+
 // DeleteWhere clears all bitmap index entries whose key starts with the given prefix.
 // Matches Java's BitmapValueIndexMaintainer.deleteWhere().
 func (m *bitmapValueIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere BEFORE
+	// it clears anything.
+	if err := m.CanDeleteWhere(prefix); err != nil {
+		return err
+	}
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 
