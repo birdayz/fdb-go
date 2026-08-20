@@ -66,6 +66,7 @@ go_test(
         "benchmark_comparison_test.go",
         "bitmap_value_index_conformance_test.go",
         "boolean_expression_position_java_probe_test.go",
+        "case_condition_typing_java_probe_test.go",
         "case_parenthesized_condition_java_probe_test.go",
         "clear_when_zero_conformance_test.go",
         "composite_index_conformance_test.go",
@@ -94,6 +95,7 @@ go_test(
         "existence_check_conformance_test.go",
         "fanout_index_conformance_test.go",
         "fault_inject_retry_conformance_test.go",
+        "in_list_shapes_java_probe_test.go",
         "index_build_state_conformance_test.go",
         "index_conformance_test.go",
         "index_continuation_conformance_test.go",
@@ -151,6 +153,7 @@ go_test(
         "version_conformance_test.go",
         "version_index_conformance_test.go",
         "whole_struct_comparison_java_probe_test.go",
+        "window_in_where_java_probe_test.go",
         "yamsql_cross_engine_conformance_test.go",
     ],
     data = [

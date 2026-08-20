@@ -3,6 +3,7 @@ package expr
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -774,10 +775,39 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 // mean, and it lifts a bare value used as a condition the way Java does. So
 // asking it first is both the correct reading of a searched CASE and the one
 // that makes the two spellings agree.
+// A DATATYPE_MISMATCH from the predicate walk is an ANSWER, not a decline, and
+// must not fall through to the value walk. The two failure kinds mean opposite
+// things:
+//
+//	UnsupportedExpressionShapeError  "I have no predicate reading of this shape"
+//	                                 -> the value walk may well have one
+//	DATATYPE_MISMATCH                "this IS a condition and its type is wrong"
+//	                                 -> the value walk has the same wrong value
+//
+// walkPredicatedExpression's bare-value lift raises the second for a
+// definitively-typed non-boolean, mirroring Java's
+// Expression.Utils.toUnderlyingPredicate. Swallowing it turned a rejected query
+// into a silently wrong one: `CASE WHEN 1 THEN 'p' ELSE 'q' END` walked as a
+// value, compared the integer with TRUE, and every row took the ELSE branch.
+// Measured against the live JVM — Java answers "argument of case when must be
+// of boolean type" for an integer literal, an integer column, a string literal,
+// a string column and an arithmetic expression, and Go answered 'q' for every
+// row of all five (conformance/case_condition_typing_java_probe_test.go).
+//
+// NULL is deliberately unaffected and is NOT reached by this: the lift folds a
+// NULL value to an unknown ConstantPredicate at step 2, BEFORE the type switch
+// that raises the mismatch, so `CASE WHEN NULL` still resolves and still takes
+// the ELSE branch — which is what SQL says a non-TRUE condition does. Java
+// rejects that one too, and that permissive divergence is the same open owner
+// decision as the parenthesized condition, not something this change settles.
 func (r *Resolver) walkCaseCondition(ctx antlrgen.IExpressionContext) (values.Value, error) {
 	pred, predErr := r.WalkPredicate(ctx)
 	if predErr == nil {
 		return &predicateValue{pred: pred}, nil
+	}
+	var apiErr *api.Error
+	if errors.As(predErr, &apiErr) && apiErr.Code == api.ErrCodeDatatypeMismatch {
+		return nil, predErr
 	}
 	v, err := r.WalkExpression(ctx)
 	if err != nil {

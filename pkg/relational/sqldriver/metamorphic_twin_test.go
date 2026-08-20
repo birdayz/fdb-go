@@ -18,9 +18,12 @@ package sqldriver_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+
+	"fdb.dev/pkg/relational/api"
 )
 
 // mmTwin is a pair of connections to two schemas over the same table shapes:
@@ -174,6 +177,48 @@ func (w *mmTwin) Want(name, q string, want []string) {
 	if !mmEqRows(gi, gn) {
 		w.t.Errorf("%s: indexed and unindexed DISAGREE\n  q: %s\n  indexed  : %v\n  unindexed: %v\n  plan: %s",
 			name, q, gi, gn, w.Explain(q))
+	}
+}
+
+// WantRejected asserts that BOTH schemas refuse q with the same SQLSTATE.
+//
+// Rejection is part of the answer, so it belongs to the twin invariant like any
+// other: an index may change the PLAN, it may never change whether a query is
+// ACCEPTED. A shape that errors unindexed and plans indexed (or the reverse)
+// is a defect in index matching even though no row was ever compared, and
+// nothing else here would catch it — Want() reports a query that failed on both
+// sides as a single "query failed" line and moves on.
+//
+// The code is compared, not the message: wording is free to differ between the
+// two paths, a SQLSTATE is not.
+func (w *mmTwin) WantRejected(name, q, wantCode string) {
+	w.t.Helper()
+	code := func(db *sql.DB) (string, error) {
+		_, err := db.QueryContext(w.ctx, q)
+		if err == nil {
+			return "", nil
+		}
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) {
+			return string(apiErr.Code), err
+		}
+		return "<not-an-api.Error:" + err.Error() + ">", err
+	}
+	ci, ei := code(w.idx)
+	cn, en := code(w.plain)
+	if ei == nil || en == nil {
+		w.t.Errorf("%s: expected BOTH schemas to reject\n  q: %s\n  indexed err  : %v\n  unindexed err: %v",
+			name, q, ei, en)
+		return
+	}
+	if ci != cn {
+		w.t.Errorf("%s: the two schemas reject with DIFFERENT sqlstates, so an index changed "+
+			"whether/how the query is accepted\n  q: %s\n  indexed  : %s (%v)\n  unindexed: %s (%v)",
+			name, q, ci, ei, cn, en)
+	}
+	if ci != wantCode {
+		w.t.Errorf("%s: wrong sqlstate\n  q: %s\n  got  %s (%v)\n  want %s",
+			name, q, ci, ei, wantCode)
 	}
 }
 

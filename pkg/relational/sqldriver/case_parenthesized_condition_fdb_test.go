@@ -124,22 +124,38 @@ func TestFDB_CaseWithParenthesizedCondition(t *testing.T) {
 	}
 }
 
-// TestFDB_CaseWithNonBooleanCondition pins the shapes the repair must NOT have
-// moved, which is how the repair's scope is stated as a measurement rather than
-// as a claim.
+// TestFDB_CaseWithNonBooleanCondition pins the shapes around the
+// predicate-first repair, which is how that repair's scope is stated as a
+// measurement rather than as a claim. Of eleven condition shapes probed across
+// it, exactly ONE moved: `(f)`, a parenthesized boolean column, which was
+// broken and is now correct.
 //
-// A searched CASE whose condition is not boolean at all — an integer, a string,
-// a bare non-boolean column — silently takes the ELSE branch here. That is the
-// behaviour both before and after resolving conditions as predicates first, and
-// it is pinned so the next change to walkCaseCondition cannot alter it
-// unnoticed. Of eleven condition shapes probed across the change, exactly ONE
-// moved: `(f)`, a parenthesized boolean column, which was broken and is now
-// correct.
+// THE OPEN QUESTION THIS FILE RECORDED HAS BEEN ANSWERED, and by the mechanism
+// the pin existed for. The earlier version asserted that a non-boolean
+// condition — an integer, a string, a bare non-boolean column — silently takes
+// the ELSE branch, and said in as many words that whether that is the right
+// treatment was a separate question, that standard SQL would make it a type
+// error, and that pinning today's answer was what would make a future change
+// deliberate rather than accidental.
 //
-// Whether silently answering ELSE is the right treatment for a non-boolean
-// condition is a separate question from this repair — standard SQL would make it
-// a type error — and pinning today's answer is what makes a future decision to
-// change it deliberate rather than accidental.
+// It did exactly that. Java was then measured
+// (conformance/case_condition_typing_java_probe_test.go): it rejects all six
+// shapes with "argument of case when must be of boolean type", and Go answered
+// the ELSE branch for every row of all six. Go HAD the check —
+// WalkPredicate's bare-value lift raises DATATYPE_MISMATCH for a
+// definitively-typed non-boolean — and walkCaseCondition's fallback swallowed
+// it, turning a rejected query into a silently wrong one. The fallback now
+// distinguishes "no predicate reading of this shape exists" from "this IS a
+// condition and its type is wrong", and only the first falls through.
+//
+// So these arms flipped from ELSE-for-every-row to 42804, and this test failing
+// is what made that flip visible rather than silent.
+//
+// NULL is NOT among them and stays permissive: the lift folds a NULL to an
+// unknown ConstantPredicate before the type switch, so `WHEN NULL` still takes
+// the ELSE branch, which is what SQL says a non-TRUE condition does. Java
+// rejects that one too — the same open owner decision as the parenthesized
+// condition, still open.
 func TestFDB_CaseWithNonBooleanCondition(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -151,12 +167,20 @@ func TestFDB_CaseWithNonBooleanCondition(t *testing.T) {
 		"CREATE INDEX t_a ON t (a) ")
 	w.Exec("INSERT INTO t (id, a, f) VALUES (1, 1, true), (2, 0, false), (3, NULL, NULL)")
 
-	// Non-boolean conditions: every row takes ELSE, on both schemas.
-	for _, cond := range []string{"1", "0", "a", "'x'"} {
-		w.Want("non-boolean condition "+cond,
+	// A definitively-typed non-boolean condition is a type error, on BOTH
+	// schemas and with the same sqlstate — an index may not change whether a
+	// query is accepted any more than it may change its rows.
+	for _, cond := range []string{"1", "0", "a", "'x'", "(1)", "(a)", "a + 1"} {
+		w.WantRejected("non-boolean condition "+cond,
 			fmt.Sprintf("SELECT id, CASE WHEN %s THEN 1 ELSE 0 END FROM t ORDER BY id", cond),
-			[]string{"1|0", "2|0", "3|0"})
+			"42804")
 	}
+
+	// NULL is the deliberate exception, and it is asserted as ROWS rather than
+	// as a rejection so that narrowing it later cannot pass unnoticed.
+	w.Want("NULL condition still resolves",
+		"SELECT id, CASE WHEN NULL THEN 1 ELSE 0 END FROM t ORDER BY id",
+		[]string{"1|0", "2|0", "3|0"})
 
 	// Boolean conditions, parenthesized and not, including the bare column that
 	// the repair also fixed.
