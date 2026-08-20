@@ -1067,12 +1067,16 @@ var _ = Describe("CollectStatistics", func() {
 			"collection took %d transactions, so the time limit never stopped a batch "+
 				"— nothing here exercises resuming from a time-stopped cursor",
 			counter.count())
-		// A batch that stopped before returning ANY record would make no progress
-		// and loop forever; the free-initial-pass gate is what prevents it. Bound
-		// the count so a regression there fails loudly instead of hanging.
+		// An upper bound on transactions, catching a batch that returns only a
+		// HANDFUL of records before stopping. It does NOT catch zero progress:
+		// a batch that stopped before returning any record would loop forever and
+		// never reach this line, so nothing here would fail -- the test would
+		// hang. What actually prevents that is the free-initial-pass gate in the
+		// leaf cursor (a limit cannot trip before the first record), and it is out
+		// of this spec's reach to assert.
 		Expect(counter.count()).To(BeNumerically("<", orders+customers+50),
-			"collection took %d transactions for %d records — a batch is stopping "+
-				"before it returns anything, so the scan is barely progressing",
+			"collection took %d transactions for %d records — batches are stopping "+
+				"after only a few records, so the scan is barely progressing",
 			counter.count(), orders+customers)
 
 		Expect(report.Collected["Order"].Count).To(Equal(int64(orders)),
