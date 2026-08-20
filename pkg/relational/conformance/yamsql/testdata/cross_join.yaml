@@ -77,3 +77,17 @@ tests:
     rows:
       - [1, 1]
       - [2, 2]
+  # ERROR PRECEDENCE, and the reason the rejection above is deferred
+  # rather than raised at parse time. This query is wrong in TWO ways —
+  # unknown table AND missing condition — and Java visits
+  # `tableSourceItem` before dereferencing the absent expression, so it
+  # answers `Unknown table MISSING_TABLE`. A gate that fired first
+  # turned that into a generic 0A000, and because BOTH engines still
+  # refused the query, every accept/reject check stayed green.
+  - query: SELECT COUNT(*) FROM a JOIN missing_table
+    error_code: "42F01"
+  # The same precedence with the condition PRESENT, so the unknown table
+  # is the only fault: it must give the identical code, or the arm above
+  # is passing for the wrong reason.
+  - query: SELECT COUNT(*) FROM a JOIN missing_table ON 1 = 1
+    error_code: "42F01"

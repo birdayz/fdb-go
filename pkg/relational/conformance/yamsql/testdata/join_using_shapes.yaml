@@ -36,12 +36,25 @@ tests:
     rows:
       - [1]
       - [3]
-  # THE CHAIN. `a JOIN b USING (id, k) JOIN c USING (id, k)`: the second
-  # USING must be qualified against b, not a. b and c agree on (id,k)
-  # only at id=1 — b.k=99 at id=2 and c.k=77 at id=3 — so the answer is
-  # a single row whichever way the first join went, and the row count is
-  # what separates a chained qualification from a stuck one.
-  - query: SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
+  # THE CHAIN, and the FIRST join deliberately uses only (id).
+  #
+  # An earlier draft made both joins `USING (id, k)` and claimed the row
+  # count separated a chained qualification from a stuck one. It does
+  # not, and the reason is worth keeping: if the first join equates
+  # a.k = b.k, then `a.k = c.k` and `b.k = c.k` are the same predicate
+  # for every surviving row, so qualifying the second USING against `a`
+  # returns the identical answer. The fixture could not fail.
+  #
+  # Joining on (id) alone leaves a.k and b.k free to differ, and they do
+  # at id=2 (20 vs 99). The second join then asks a genuinely different
+  # question depending on which side supplies k:
+  #
+  #   qualified by b (correct): b.k = c.k -> id=1 only (99!=20, 30!=77)
+  #   qualified by a (stuck)  : a.k = c.k -> id=1 and id=2 (20=20)
+  #
+  # One row versus two. Verified by mutation: forcing parseJoinClauses to
+  # qualify every USING against leftAlias reddens this arm.
+  - query: SELECT a.id FROM a JOIN b USING (id) JOIN c USING (id, k) ORDER BY a.id
     rows:
       - [1]
   # USING on an OUTER join — the same synthesis through the other

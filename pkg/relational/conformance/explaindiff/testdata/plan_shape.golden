@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=354 queries=2548 dml=157 non_query=104 plan_errors=266 unexpected_errors=4
+# files=354 queries=2550 dml=157 non_query=104 plan_errors=268 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -3539,6 +3539,12 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
+=== cross_join.yaml#9 expect-error=42F01
+sql:   SELECT COUNT(*) FROM a JOIN missing_table
+plan:  <PLAN-ERROR: 42F01: table "MISSING_TABLE" does not exist>
+=== cross_join.yaml#10 expect-error=42F01
+sql:   SELECT COUNT(*) FROM a JOIN missing_table ON 1 = 1
+plan:  <PLAN-ERROR: 42F01: table "MISSING_TABLE" does not exist>
 === cross_join_filter.yaml#0
 sql:   SELECT s.label, c.name FROM sizes s, colors c ORDER BY s.label, c.name
 plan:  Project([_current.LABEL#1, _current.NAME#3], InMemorySort([_current.LABEL#1 ASC, _current.NAME#3 ASC], NestedLoopJoin(INNER, Scan(COLORS), Scan(SIZES))))
@@ -9726,8 +9732,8 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === join_using_shapes.yaml#2
-sql:   SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(B), inner=PredicatesFilter(Scan(C, [=]), [1 preds])), inner=PredicatesFilter(Scan(A, [=]), [1 preds]))))
+sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (id, k) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(B), inner=PredicatesFilter(Scan(C, [=]), [1 preds])), inner=Scan(A, [=]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -9735,8 +9741,7 @@ shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === join_using_shapes.yaml#3
 sql:   SELECT a.id, b.k FROM a LEFT JOIN b USING (id, k) ORDER BY a.id
 plan:  Project([_current.ID#0, _current.K#3], FlatMap(outer=Scan(A), inner=DefaultOnEmpty(PredicatesFilter(Scan(B, [=]), [1 preds]))))

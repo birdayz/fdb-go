@@ -1657,39 +1657,28 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 	// comma source), so `SELECT V FROM T1 INNER JOIN T1.ARR1 AS V` silently planned
 	// as FlatMap(Scan(T1), Explode(ARR1)) and RETURNED the unnested rows instead of
 	// surfacing the table/join error. RFC-142 R5. ------------------------------
-	t.Run("the no-ON INNER JOIN sentinel is now unreachable, and that is pinned", func(t *testing.T) {
-		// THE SHAPE THIS ARM GUARDED CAN NO LONGER BE WRITTEN, so what it
-		// asserts has changed and the reason is recorded here rather than
-		// silently relaxed.
+	t.Run("explicit INNER JOIN with a dotted array source is NOT a lateral unnest", func(t *testing.T) {
+		// The bug shape: `FROM T1 INNER JOIN T1.ARR1 AS V` (explicit JOIN, no ON).
+		// Pre-fix: planned as FlatMap over Explode → returned T1.ARR1's elements
+		// {101, 201, 202, 203}. Post-fix: the dotted `T1.ARR1` JOIN source resolves
+		// as a qualified table whose `T1` qualifier is not a known database →
+		// ErrCodeUndefinedDatabase (the existing table-not-found path, unchanged).
+		// NOT a silent FlatMap(Explode).
 		//
-		// It used to send `FROM T1 INNER JOIN T1.ARR1 AS V` — an explicit JOIN
-		// with NO ON — and expect ErrCodeUndefinedDatabase from table
-		// resolution. That was the revert-proof sentinel: a no-ON inner join is
-		// the one shape where an `onExpr != nil` guard cannot tell a JOIN source
-		// from a comma source, so it could only pass if the classifier keyed on
-		// the comma-vs-JOIN ORIGIN.
-		//
-		// An inner join with no ON and no USING is now REJECTED AT PARSE, because
-		// fdb-relational NPEs on it (`ExpressionContext.accept … because
-		// "expressionCtx" is null`) and Go was answering it with a cartesian
-		// product — measured in `conformance/join_without_on_java_probe_test.go`.
-		// The query therefore dies before the unnest classifier ever sees it.
-		//
-		// So this pins the UNREACHABILITY. If it ever fails because the query is
-		// accepted again, the sentinel above is re-armed and must be restored to
-		// its ErrCodeUndefinedDatabase form — an origin-keying regression would
-		// otherwise be invisible, since every remaining arm carries an ON and is
-		// caught by the onExpr guard alone.
-		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V"`,
-			api.ErrCodeUnsupportedOperation)
+		// THIS ARM SURVIVES ONLY BECAUSE THE CONDITIONLESS-JOIN REJECTION IS
+		// DEFERRED. That gate refuses `a JOIN b` outright, and raising it at
+		// parse time — as it briefly was — preempts source resolution here and
+		// answers 0A000, which would silently retire the sentinel. It runs after
+		// resolution precisely so a source that does not resolve reports its own
+		// fault first, which is the order Java reports them in. See
+		// rejectConditionlessJoins.
+		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V"`, api.ErrCodeUndefinedDatabase)
 	})
 
-	t.Run("explicit INNER JOIN with a dotted array source is NOT a lateral unnest", func(t *testing.T) {
-		// The same shape carrying an ON, which is what the bug shape has to be
-		// spelled as now. The dotted `T1.ARR1` JOIN source resolves as a
-		// qualified table whose `T1` qualifier is not a known database →
-		// ErrCodeUndefinedDatabase (the existing table-not-found path,
-		// unchanged). NOT a silent FlatMap(Explode).
+	t.Run("the same dotted source with an ON is also not a lateral unnest", func(t *testing.T) {
+		// Breadth over the ON-carrying spelling of the identical shape, so the
+		// arm above is not the only thing covering it if the conditionless gate
+		// ever moves back ahead of resolution.
 		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V" ON 1 = 1`,
 			api.ErrCodeUndefinedDatabase)
 	})
@@ -1713,10 +1702,8 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// (An OUTER JOIN always carries an ON clause per the grammar, so the unnest
 		// classifier already excluded it via the onExpr guard pre-fix — this is a
 		// breadth control over the OUTER arm, not the revert-proof sentinel. The INNER
-		// JOIN test above — a no-ON join the onExpr guard cannot catch — WAS the
-		// revert-proof one, until no-ON inner joins stopped parsing; the arm above it
-		// now pins that unreachability.) `T1` is an unknown database qualifier → clean
-		// rejection.
+		// JOIN test above — a no-ON join the onExpr guard cannot catch — is the
+		// revert-proof one.) `T1` is an unknown database qualifier → clean rejection.
 		assertRejected(t, md, `SELECT "V" FROM T1 LEFT JOIN T1."ARR1" AS "V" ON "V" = 1`, api.ErrCodeUndefinedDatabase)
 	})
 

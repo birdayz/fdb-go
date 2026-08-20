@@ -98,6 +98,10 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 			// ON expression — the population this file exists to measure. The
 			// vacuity floor counts them.
 			nullOn bool
+			// wantsTableName marks an arm where accept/reject agreement is too
+			// weak: both engines refuse, and WHICH refusal they give is the
+			// measurement. Both messages must name the offending table.
+			wantsTableName bool
 		}{
 			{
 				name: "comma join", control: true,
@@ -147,6 +151,23 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 				sql:  "SELECT COUNT(*) FROM a CROSS JOIN b ON 1 = 1",
 			},
 			{
+				// ERROR PRECEDENCE. Two things are wrong with
+				// `a JOIN missing_table` — an unknown table and a missing
+				// condition — and which one an engine reports is observable.
+				// Java visits `tableSourceItem` BEFORE dereferencing the absent
+				// expression, so the unknown table wins and the NPE never
+				// happens; a gate that rejects the missing condition first
+				// turns a precise "no such table" into a generic 0A000 and
+				// diverges on a query BOTH engines refuse.
+				//
+				// Accept/reject agreement is not enough here, so this arm is
+				// the one place rows are not the measurement: bothReject is set
+				// AND the messages are compared for the table name.
+				nullOn: true, name: "no ON *and* an unknown table",
+				sql:            "SELECT COUNT(*) FROM a JOIN missing_table",
+				wantsTableName: true,
+			},
+			{
 				// The grammar's MANDATORY-ON arm, as the boundary control on the
 				// other side: an outer join with no ON is not a null expression,
 				// it is not a parse at all. Both engines share this grammar, so
@@ -158,7 +179,7 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 		}
 
 		var divergent, disagreed []string
-		var nullOnArms, controls int
+		var nullOnArms, controls, named int
 		for _, c := range cases {
 			javaOut := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			goOut := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
@@ -205,6 +226,18 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 						"%s\n    java: %s\n    go  : %s\n    sql : %s",
 						c.name, javaOut, goOut, c.sql))
 				}
+				if c.wantsTableName {
+					named++
+					for engine, out := range map[string]string{"java": javaOut, "go": goOut} {
+						if !strings.Contains(strings.ToUpper(out), "MISSING_TABLE") {
+							disagreed = append(disagreed, fmt.Sprintf(
+								"%s: %s refused it WITHOUT naming the missing table, so the two "+
+									"faults are being reported in a different ORDER than the other "+
+									"engine\n    %s: %s\n    sql : %s",
+								c.name, engine, engine, out, c.sql))
+						}
+					}
+				}
 			}
 		}
 
@@ -224,8 +257,12 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 		// Two floors, because there are two ways to be green having measured
 		// nothing: no null-ON arm left in the slice, and no control left to make
 		// the null-ON rows interpretable.
-		Expect(nullOnArms).To(Equal(6),
-			"the null-ON population changed: %d arms were measured, not the 6 this file "+
+		Expect(named).To(Equal(1),
+			"%d error-precedence arms ran, not 1 — without one, nothing checks that a "+
+				"conditionless join over an UNKNOWN TABLE reports the same fault first in "+
+				"both engines", named)
+		Expect(nullOnArms).To(Equal(7),
+			"the null-ON population changed: %d arms were measured, not the 7 this file "+
 				"ran against the live JVM. A green from a shrunken set says nothing about "+
 				"the spellings that were dropped", nullOnArms)
 		Expect(controls).To(Equal(2),

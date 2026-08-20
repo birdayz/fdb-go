@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/parser"
@@ -183,6 +184,12 @@ type joinClause struct {
 	// synthesized in extractFromSimpleTable (after the left source alias is
 	// known) into onExpr; usingUids is cleared once synthesized.
 	usingUids antlrgen.IUidListContext
+	// conditionless marks an INNER join written with neither ON nor USING —
+	// `a JOIN b`, `a INNER JOIN b`, `a CROSS JOIN b`. It is a REJECTED shape
+	// (fdb-relational NPEs on it), but the rejection is deferred to
+	// rejectConditionlessJoins so that an unknown table in the same clause is
+	// reported first, which is the order Java reports them in.
+	conditionless bool
 	// usingHiddenCols retains the USING column names (UPPER-folded,
 	// quote-stripped) after the ON synthesis clears usingUids. This
 	// join's RIGHT side hides these columns: Java marks the right copy
@@ -2341,6 +2348,52 @@ func unnestCandidateShape(j joinClause, visible map[string]struct{}, resolvesToT
 	return true
 }
 
+// rejectConditionlessJoins rejects an INNER join written with neither ON nor
+// USING — `a JOIN b`, `a INNER JOIN b`, `a CROSS JOIN b`. fdb-relational NPEs
+// on the shape (its visitor dereferences `InnerJoinContext.expression()`
+// unconditionally), so per the conformance principle Go refuses it too, with a
+// clean error instead of a panic.
+//
+// IT RUNS AFTER SOURCE RESOLUTION, AND THAT ORDER IS THE POINT. `a JOIN
+// missing_table` is wrong in two independent ways, and Java visits
+// `tableSourceItem` BEFORE dereferencing the absent expression — so it reports
+// `Unknown table MISSING_TABLE` and never reaches the NPE. Rejecting at parse
+// time turned that precise message into a generic 0A000: both engines still
+// refused the query, so accept/reject agreement was preserved and the
+// divergence was invisible to any check that only asked WHETHER a query is
+// refused rather than WHICH fault is reported.
+//
+// The guard is therefore "does this source name a table that EXISTS?", and an
+// unknown one is left alone so the existing undefined-table path produces its
+// own error.
+//
+// It deliberately does NOT use tableResolver/newUnnestTableResolver, which
+// reads like the right helper and answers a different question: that predicate
+// is false for anything not SCHEMA-QUALIFIED, because it exists to classify
+// lateral-unnest candidates. Passing a plain `b` to it returns false, which
+// under this guard's reading means "unknown table" and would skip every
+// rejection — the whole gate silently off, with the conformance probe as the
+// only thing that noticed.
+func rejectConditionlessJoins(joins []joinClause, md *recordlayer.RecordMetaData, schemaName string) error {
+	for _, j := range joins {
+		if !j.conditionless {
+			continue
+		}
+		// A named source that does not exist has a more specific fault; let the
+		// undefined-table path report it, the way Java does. A derived table
+		// has no name to be unknown, so it falls straight through.
+		if j.tableName != "" && md != nil {
+			resolved, rErr := functions.ResolveQualifiedTableName(j.tableName, schemaName)
+			if rErr != nil || !recordTypeExistsFold(md, resolved) {
+				continue
+			}
+		}
+		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products")
+	}
+	return nil
+}
+
 // rejectDuplicateUnnestAliasesInFrom rejects a lateral unnest AS/AT binding
 // that collides with any other FROM source in the same query block, including
 // a source appearing later in the comma list. The logical-tree backstop cannot
@@ -2879,10 +2932,14 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		// The first two are the silent direction — a cartesian product
 		// where Java has no answer at all. USING supplies a condition and
 		// is accepted by both engines, so it must not be caught here.
-		if j.Expression() == nil && j.USING() == nil {
-			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products")
-		}
+		// MARKED HERE, REJECTED AFTER SOURCE RESOLUTION — see
+		// rejectConditionlessJoins. `a JOIN missing_table` is wrong in two
+		// ways, and Java visits `tableSourceItem` before dereferencing the
+		// absent expression, so it reports the unknown TABLE and never reaches
+		// the NPE. Rejecting here instead would turn a precise
+		// `Unknown table MISSING_TABLE` into a generic 0A000 — an
+		// error-precedence divergence on a query both engines refuse.
+		conditionless := j.Expression() == nil && j.USING() == nil
 		// A derived table (subquery) on the right of an explicit JOIN —
 		// `JOIN (SELECT ...) AS x ON ...`. Mirrors the comma-FROM derived path.
 		if subItem, isSub := j.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
@@ -2891,6 +2948,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 				return joinClause{}, sErr
 			}
 			jc.onExpr, jc.usingUids = joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
+			jc.conditionless = conditionless
 			return jc, nil
 		}
 		atomItem, ok := j.TableSourceItem().(*antlrgen.AtomTableItemContext)
@@ -2915,7 +2973,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 		}
 		onExpr, usingUids := joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
-		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr, usingUids: usingUids, segments: parts}, nil
+		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr, usingUids: usingUids, segments: parts, conditionless: conditionless}, nil
 
 	case *antlrgen.OuterJoinContext:
 		jt := joinTypeLeft
