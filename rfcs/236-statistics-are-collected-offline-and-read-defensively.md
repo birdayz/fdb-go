@@ -306,6 +306,35 @@ answers an unknown name with `LeafScanCardinality` — wrong in the inverting
 direction. `CollectedStatistics` answers the empty name with the whole-store
 SUM, which is on the same scale as the data.
 
+### 5a. Metadata this port does not fully model is refused outright
+
+When a schema declares JOINED or UNNESTED synthetic record types, `RecordTypes()`
+deliberately omits them — the port carries their declarations opaquely rather
+than modelling them. So the record-type set is a PARTIAL view, and completeness
+is undecidable against a partial view: certifying a schema complete after
+checking a subset is the gate producing the very inversion it exists to prevent.
+
+`DeclaresSyntheticRecordTypes`' own doc already fixed the convention this obeys —
+a caller computing over "all record types" for a coverage decision or a count
+must refuse rather than answer from the partial set. A completeness check is both.
+
+The refusal is enforced at every boundary, not only at the gate, and that
+distinction cost two review rounds to get right:
+
+- **Before any I/O.** The verdict is fixed by a property of the metadata, so
+  reading statistics cannot change it. Reading anyway spends an FDB transaction
+  per opt-in plan-cache miss and discards the answer.
+- **Before collection.** Both the single-schema and fleet paths refuse up front.
+  Collecting would read every record in the store to produce a set the planner
+  has already decided to reject — per tenant, across a fleet.
+- **Symmetrically.** The fleet reports REFUSED, not no-work. Collapsing them made
+  a million-row tenant print "nothing to build" and exit 0 while `--schema` on
+  that same tenant exited non-zero — one outcome meaning two things depending on
+  which flag was used.
+- **Naming the types.** "Metadata declares unmodeled synthetic types" costs a
+  schema all its statistics without saying which declaration did it, in text and
+  in JSON.
+
 ## 6. The one line that must not be crossed
 
 Collected statistics are **estimates**, and must never become **bounds**.

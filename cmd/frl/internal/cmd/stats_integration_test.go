@@ -465,3 +465,52 @@ func TestStats_AllSchemasRejectsAnUnrenderableOutputFormat(t *testing.T) {
 			"the output gate; got: %v", textErr)
 	}
 }
+
+// COLLECTION MUST REFUSE METADATA WHOSE STATISTICS COULD NEVER BE USED.
+//
+// The reader rejects metadata declaring synthetic (joined/unnested) record types
+// outright, because RecordTypes() omits them and completeness is undecidable
+// against a partial list. Collecting anyway reads every record in the store to
+// produce a set the planner has already decided to reject — and then `stats
+// show` recommends collection as the remedy, which is the one action guaranteed
+// not to help.
+//
+// The relational SQL layer used here does not build synthetic types, so this
+// asserts the SHAPE of the refusal on the JSON surface instead: `synthetic_types`
+// must exist in the output contract, because it is what makes the verdict
+// actionable and it reached the text renderer without reaching JSON.
+func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
+	db := setupStatsDB(t, "synjson", statsOneTableDDL, "INSERT INTO items VALUES (1, 'a');")
+	if out, err := runCmd(t, "stats", "collect", "--database", db, "--schema", "main"); err != nil {
+		t.Fatalf("stats collect: %v\noutput: %s", err, out)
+	}
+	out, err := runCmd(t, "stats", "show", "--database", db, "--schema", "main", "-o", "json")
+	if err != nil {
+		t.Fatalf("stats show -o json: %v\noutput: %s", err, out)
+	}
+
+	// The field is omitempty, so a healthy schema does not carry it — what is
+	// asserted is that the DECODER knows about it, i.e. the JSON shape and the
+	// text renderer agree on what a refusal can report. Without this, a
+	// synthetic-type refusal renders in text and vanishes from `-o json`.
+	var got statsShowResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("decode JSON: %v\noutput: %s", err, out)
+	}
+	if got.SyntheticTypes != nil {
+		t.Errorf("this schema declares no synthetic types, so the field must be absent: %v",
+			got.SyntheticTypes)
+	}
+	var hasField bool
+	rt := reflect.TypeOf(statsShowResult{})
+	for i := 0; i < rt.NumField(); i++ {
+		if rt.Field(i).Tag.Get("json") == "synthetic_types,omitempty" {
+			hasField = true
+		}
+	}
+	if !hasField {
+		t.Error("statsShowResult has no synthetic_types field — a synthetic-type refusal " +
+			"renders in text and disappears from -o json, losing exactly the detail that " +
+			"makes the verdict actionable")
+	}
+}

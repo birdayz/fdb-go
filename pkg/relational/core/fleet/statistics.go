@@ -43,11 +43,12 @@ type StatisticsOptions struct {
 // CollectStatistics gathers per-record-type row counts for every target,
 // one transaction-bounded scan per schema.
 //
-// A target whose collection SKIPS a type still counts as collected here. The
-// distinction between "collected everything" and "collected some types" belongs
-// to the reader, which refuses a schema that is not complete — reporting it as a
-// fan-out failure would make an operator chase a per-schema outcome the fan-out
-// cannot act on. The per-schema detail is in the Event's Skipped map.
+// A target that ABORTS — because a type crossed MaxRecordsPerType — is a
+// per-target FAILURE, not a collection. It stored nothing, so reporting it as
+// collected would put it in the summary's collected tally and tell an operator a
+// fan-out that wrote nothing had succeeded. An earlier revision of this comment
+// argued the opposite, from a time when crossing the cap skipped one type and
+// kept the rest; that behaviour is gone, and the reasoning went with it.
 func CollectStatistics(
 	ctx context.Context,
 	db *recordlayer.FDBDatabase,
@@ -72,12 +73,20 @@ func CollectStatistics(
 		if len(md.RecordTypes()) == 0 {
 			return Event{Outcome: OutcomeNoWork}, nil
 		}
-		// Same refusal as the single-schema path: the reader rejects metadata
-		// declaring synthetic types outright, so scanning this tenant's store
-		// would bill a full pass for a set that can never be planned with. In a
-		// fan-out that is per-tenant waste multiplied by the fleet.
+		// REFUSED, not no-work. The reader rejects metadata declaring synthetic
+		// types outright, so scanning this tenant would bill a full pass for a set
+		// that can never be planned with — but "no work" is what the line above
+		// reports for a schema with zero record types, and collapsing the two
+		// makes a million-row tenant print "nothing to build" and exit 0, while
+		// `--schema` on that same tenant exits non-zero naming the types. One
+		// outcome meaning two things depending on which flag was used is the exact
+		// defect the capped-run fix closed; OutcomeRefused already exists, counts
+		// separately in the summary, and prints its Err.
 		if md.DeclaresSyntheticRecordTypes() {
-			return Event{Outcome: OutcomeNoWork}, nil
+			return Event{}, fmt.Errorf(
+				"declares synthetic record types (%s) that this port does not model, so "+
+					"collected statistics could never be complete enough to plan with",
+				strings.Join(md.SyntheticRecordTypeNames(), ", "))
 		}
 		report, err := recordlayer.CollectStatistics(ctx, db,
 			func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
@@ -102,8 +111,15 @@ func CollectStatistics(
 		// empty and names the offending type in Skipped, which is what
 		// distinguishes it from a schema that genuinely had nothing to count.
 		if len(report.Collected) == 0 && len(report.Skipped) > 0 {
-			return Event{Records: report.RecordsScanned, Skipped: report.Skipped},
-				fmt.Errorf("collection aborted: %s", describeSkipped(report.Skipped))
+			// The scan volume goes in the ERROR, not in Event.Records: fanOut
+			// overwrites Outcome on the error path, Result.record accumulates no
+			// Records, and the failure printer renders only Err — so a Records set
+			// here would be written and never read, which is the fourth instance of
+			// that shape in this branch. It is also the number the operator most
+			// wants: what the abandoned pass cost before it gave up.
+			return Event{Skipped: report.Skipped},
+				fmt.Errorf("collection aborted after %d records: %s",
+					report.RecordsScanned, describeSkipped(report.Skipped))
 		}
 		return Event{
 			Outcome: OutcomeCollected,

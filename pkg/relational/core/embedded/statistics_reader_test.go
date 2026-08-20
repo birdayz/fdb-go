@@ -314,3 +314,69 @@ func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 		t.Errorf("covered %d distinct refusals, want %d", len(covered), len(all))
 	}
 }
+
+// THE SYNTHETIC-TYPE VERDICT MUST COST NO I/O.
+//
+// The refusal is fixed by a property of the metadata, so reading statistics
+// cannot change it — and reading anyway costs an FDB transaction on every opt-in
+// plan-cache miss for such a schema, one that may retry or wait on a cluster
+// whose answer is then discarded.
+//
+// "It does not read" is the kind of claim that passes by inspection and rots
+// silently, so this drives decideStatistics with gate inputs that would produce
+// a DIFFERENT verdict if the read had happened. If the short-circuit is ever
+// removed, the reader's result reaches the gate and the refusal changes.
+func TestSyntheticVerdictIgnoresEverythingElse(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		in   statisticsGateInput
+	}{
+		{
+			// A read that FAILED. Without the short-circuit this is
+			// StatisticsReadFailed — a transient verdict that invites a retry,
+			// for a condition no retry can fix.
+			name: "a failed read does not mask it",
+			in: statisticsGateInput{
+				HasSyntheticTypes:  true,
+				SyntheticTypeNames: []string{"JoinedAB"},
+				ReadErr:            errNoReadVersion,
+				DeclaredTypes:      []string{"A"},
+			},
+		},
+		{
+			// A complete, fresh, perfectly usable set. Without the
+			// short-circuit this is StatisticsOK — the schema is certified from
+			// a type list that omits the synthetic ones, which is the inversion
+			// the gate exists to prevent.
+			name: "a healthy set does not override it",
+			in: statisticsGateInput{
+				HasSyntheticTypes:  true,
+				SyntheticTypeNames: []string{"JoinedAB"},
+				Found:              true,
+				Stats:              statsAt(testVersion, map[string]int64{"A": 7}),
+				CurrentVersion:     testVersion + 1,
+				DeclaredTypes:      []string{"A"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := decideStatistics(tc.in)
+			if got.Refusal != StatisticsSyntheticTypes {
+				t.Fatalf("Refusal = %q, want %q — the synthetic gate must outrank every "+
+					"other input, or a transient verdict sends an operator to re-collect "+
+					"into the same refusal, and a healthy set certifies a partial type list",
+					got.Refusal, StatisticsSyntheticTypes)
+			}
+			if got.Usable {
+				t.Error("Usable = true for metadata whose type list is incomplete by construction")
+			}
+			// The names are what make the verdict actionable.
+			if len(got.SyntheticTypes) == 0 {
+				t.Error("SyntheticTypes is empty — the refusal costs a schema all its " +
+					"statistics without saying which declaration did it")
+			}
+		})
+	}
+}
