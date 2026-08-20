@@ -91,6 +91,19 @@ func (s CollectedStatistics) RecordTypeCardinality(name string) float64 {
 	// SMALL escaped table is priced as the entire schema, and the join drives
 	// from the wrong side. The failure is invisible: statistics are present,
 	// fresh and complete, and the gate passes.
+	//
+	// CALLER-GUARANTEED INVARIANT: no name in the map may be another name's
+	// escaped form. The escaping is not injective ACROSS the namespaces —
+	// MY$TABLE is stored as MY__1TABLE, and a table whose SQL name IS MY__1TABLE
+	// is stored as MY__01TABLE — so with both present the direct lookup above
+	// succeeds on the WRONG entry and this fallback is never reached. The order
+	// cannot be fixed by swapping it; either order prices one of the two tables
+	// with the other's count.
+	//
+	// The relational reader enforces this by refusing such a schema outright
+	// (statistics_reader.go, StatisticsAmbiguousNames), which is why the check is
+	// not duplicated here. A caller constructing this provider DIRECTLY bypasses
+	// that gate and owns the invariant itself.
 	if storage, err := protoname.ToProtoBufCompliantName(name); err == nil {
 		if c, ok := s.perType[storage]; ok {
 			return c

@@ -601,6 +601,15 @@ func writeStatistics(
 			CollectedAtUnixNanos: nanos,
 		}))
 		for name, st := range report.Collected {
+			// BOTH stamps are set here, not one. The version used to be taken on
+			// trust from the report, which held only because the single caller
+			// pre-stamped every entry with the same value. Since the reader now
+			// requires entry stamps to MATCH the header, a future caller that built
+			// a report without pre-stamping would write a set rejected as torn --
+			// surfacing to an operator as "not collected" immediately after a
+			// successful collection. Stamping here makes the writer, not its
+			// callers, responsible for the invariant the reader enforces.
+			st.CollectedAtVersion = version
 			st.CollectedAtUnixNanos = nanos
 			tx.Set(target.Pack(tuple.Tuple{name}), packStatistic(st))
 		}

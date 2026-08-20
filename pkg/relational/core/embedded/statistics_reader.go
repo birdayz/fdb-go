@@ -376,7 +376,17 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 	// ambiguity is resolved HERE, once, by refusing the set -- rather than by
 	// picking a lookup order, which only moves which of the two tables is priced
 	// wrong.
-	if ambiguous, ok := ambiguousStorageName(perType); ok {
+	//
+	// This is a REFUSAL, not the settled fix. The settled fix is to canonicalise
+	// names so the two namespaces never meet at a lookup -- and that is not a
+	// statistics-local change, because the identical try-then-escape shape exists
+	// for FIELD names in values.go with the same non-injectivity. Escaping table
+	// names in the translator would close this instance and leave its twin, while
+	// changing what the planner DOES (record-type filters, explain text) rather
+	// than what it refuses. Refusing falls back to the cost model's constant and
+	// changes no plan that was already right, so it is the safe half to ship now;
+	// canonicalisation needs its own RFC covering BOTH sites.
+	if ambiguous, ok := ambiguousStorageName(declared); ok {
 		st.Refusal = StatisticsAmbiguousNames
 		st.AmbiguousTypes = ambiguous
 		return st
@@ -394,14 +404,21 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 //
 // Returns the colliding pair, lower name first, so the refusal can say which two
 // tables an operator has to rename or quote differently.
-func ambiguousStorageName(perType map[string]float64) ([]string, bool) {
+//
+// Takes the DECLARED set, not the per-type map the completeness loop built.
+// Ambiguity is a property of the names a schema declares, not of which of them
+// happened to be collected -- and the two coincide only because completeness
+// refuses first. Reading the collected map would make this gate's correctness
+// depend on the gate above it, which is one reordering away from vacuous, and
+// §5 of RFC-236 explicitly floats relaxing completeness to per-query.
+func ambiguousStorageName(declared map[string]struct{}) ([]string, bool) {
 	var worst []string
-	for name := range perType {
+	for name := range declared {
 		escaped, err := protoname.ToProtoBufCompliantName(name)
 		if err != nil || escaped == name {
 			continue
 		}
-		if _, collides := perType[escaped]; !collides {
+		if _, collides := declared[escaped]; !collides {
 			continue
 		}
 		pair := []string{name, escaped}

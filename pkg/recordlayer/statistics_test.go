@@ -1144,6 +1144,55 @@ var _ = Describe("CollectStatistics", func() {
 				"single consistent write")
 	})
 
+	// THE WRITER OWNS BOTH STAMPS, NOT ITS CALLERS.
+	//
+	// The reader requires every entry's version and nanos to equal the header's.
+	// writeStatistics used to set only nanos and take the VERSION on trust from
+	// the report — which held solely because its single caller pre-stamped every
+	// entry with the same value.
+	//
+	// That is a trap for the next caller, and an invisible one: a report built
+	// without pre-stamping produces a set the reader rejects, surfacing to an
+	// operator as "not collected" IMMEDIATELY AFTER a collection that reported
+	// success. CollectStatistics cannot expose it, because it pre-stamps — so
+	// this drives writeStatistics directly with entries whose version is ZERO,
+	// which is exactly the report shape a caller who did not know about the
+	// invariant would build.
+	It("stamps entries itself rather than trusting the report's version", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		const version = int64(4242)
+
+		// Entries deliberately UNSTAMPED. Reaching in at this level is the point:
+		// it is the only way to build the report a future caller would.
+		report := &CollectionReport{
+			Collected: map[string]RecordTypeStatistic{
+				"Order":    {Count: 7},
+				"Customer": {Count: 3},
+			},
+			Skipped: map[string]string{},
+		}
+		_, err := writeStatistics(ctx, sharedDB, stats, sub, report, version, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		stored, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue(),
+			"the reader refused a set this library had just written — the writer left "+
+				"entry stamps to its caller, so a caller that does not pre-stamp writes "+
+				"a set rejected as torn, and an operator sees NOT COLLECTED right after "+
+				"a successful collection")
+		Expect(stored.CollectedAtVersion).To(Equal(version))
+		for name, st := range stored.PerType {
+			Expect(st.CollectedAtVersion).To(Equal(stored.CollectedAtVersion),
+				"entry %q carries a different version than the header", name)
+			Expect(st.CollectedAtUnixNanos).To(Equal(stored.CollectedAtUnixNanos),
+				"entry %q carries a different timestamp than the header", name)
+		}
+		Expect(stored.PerType["Order"].Count).To(Equal(int64(7)))
+	})
+
 	// AN ENTRY FROM A DIFFERENT COLLECTION RUN POISONS THE SET.
 	//
 	// The header carries the run's version and time, and the freshness gate
