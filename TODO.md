@@ -19547,3 +19547,48 @@ collected statistic reaches only queries planned after it.
 
 Full design, including the measurements that killed the two rejected designs:
 RFC-236.
+
+---
+
+## [ ] Only `frl stats` prints SQL record-type names; the rest of the CLI prints storage names
+
+`frl stats` decodes every record-type name it prints to the SQL identifier the
+operator wrote — a table quoted `"MY$TABLE"` is stored as `MY__1TABLE` and
+reported as `MY$TABLE`. No other `frl` command does, so the same table is
+`MY$TABLE` under one command and `MY__1TABLE` under another.
+
+**Measured surface.** Of the 9 `RecordTypes()`/`RecordTypesForIndex()` sites
+under `cmd/frl/internal/cmd` (non-test), `status.go:99` is a `len()` and renders
+no name. The other 8 render or complete names raw:
+`meta_types_describe.go:123` (`sortedRecordTypeNames`, which also backs the
+`not found — available: …` message in `lookupRecordType`), `index.go:233`
+(`recordTypeNames`), `completion.go:72,155`, `meta.go:212,282`, and
+`meta_diff.go:178,179`.
+
+**The input side already accepts BOTH namespaces, so this is render-only.**
+`RecordMetaData.GetRecordType` (`metadata.go:1297`) tries the direct key and then
+retries through `ToProtoBufCompliantName`, deliberately and with a comment
+explaining why the translation lives at that one boundary. So `--type MY$TABLE`
+resolves TODAY, and decoding the renderers does not strand the operator with a
+name the commands reject. That fallback had no test that ever passed a
+`$`-bearing identifier (1453 `GetRecordType("…")` calls in the package, 0 with an
+escape) and is now pinned by `TestGetRecordTypeResolvesAUserIdentifier`
+(`pkg/recordlayer/metadata_user_identifier_lookup_test.go`) — check it still
+holds before relying on it.
+
+`GetIndex` (`metadata.go:1484`) has NO such fallback — a raw map lookup. It is
+not a blocker here (what `index describe` leaks is record-type names, the
+forgiving kind), but decide index-NAME policy explicitly rather than assuming it
+matches.
+
+**Two traps, both worked in `cmd/frl/internal/cmd/stats.go`.**
+`ToUserIdentifier` is NOT idempotent (`MY__01TABLE` → `MY__1TABLE` → `MY$TABLE`,
+pinned by `TestToUserIdentifierIsNotIdempotent`), so a second decode silently
+RENAMES a table rather than erroring — decode exactly once, at the boundary. And
+sort AFTER decoding: storage order and user order differ (`[A__0B, A__1B]`
+renders as `[A__B, A$B]`, pinned by `TestStats_ListsAreSortedByTheDecodedName`).
+See `userName`/`userNames`.
+
+**Not folded into the statistics PR** because it changes operator-visible output
+for ~5 unrelated commands and wants its own review; the statistics doc is bounded
+to `frl stats` so this does not read as already done.

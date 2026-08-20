@@ -343,10 +343,15 @@ frl stats show --database /myapp --schema MAIN -o json | jq '.per_type'
 
 Keys are the SQL identifiers you wrote, not the escaped storage names the record
 layer uses internally: a table quoted `"MY$TABLE"` is stored as `MY__1TABLE` and
-reported here as `MY$TABLE`. Every operator-facing name follows that rule --
+reported here as `MY$TABLE`. Every name `frl stats` prints follows that rule --
 `per_type`, `missing_types`, `extra_types`, `synthetic_types`, the skipped list,
-and the abort banner -- so a script may key by the name it created the table
-with.
+the abort banner and the fan-out's refusal text -- so a script may key by the
+name it created the table with.
+
+That is a statement about `frl stats` and not yet about the whole CLI: `frl meta
+types` and `frl index describe` still print the storage form. Tracked in
+`TODO.md`; until it is closed, do not assume a record-type name is in the same
+namespace across two commands.
 
 ```sh
 

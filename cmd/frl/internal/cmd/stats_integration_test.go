@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1132,38 +1133,37 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 	})
 }
 
-// THE COLLECT-SIDE SYNTHETIC REFUSAL NAMES THE SAME THING THE SHOW SIDE DOES.
+// LISTS ARE ORDERED BY THE NAME ACTUALLY PRINTED.
 //
-// Both surfaces render md.SyntheticRecordTypeNames(), one through
-// renderStatsStatus and one through SyntheticRecordTypesNotModeledError.Error().
-// The first decoded and the second joined raw, so one schema printed MY$JOINED
-// under `frl stats show` and MY__1JOINED under `frl stats collect` — two
-// spellings of one declaration, from one source, disagreeing by construction.
+// The gate sorts these lists in STORAGE space, correctly, since that is the
+// namespace it holds them in. The renderer decodes them — and the two orders
+// differ: storage-sorted [A__0B, A__1B] prints as [A__B, A$B], while a reader
+// scanning the output expects [A$B, A__B].
 //
-// The field stays storage-keyed for programmatic consumers; Error() is the
-// rendering boundary and is where it is decoded, which is the same rule the CLI
-// follows.
-func TestSyntheticRefusalErrorNamesUserIdentifiers(t *testing.T) {
+// The collect path already re-sorted after decoding, so leaving the show path
+// alone made ONE command emit both orderings. A previous commit promoted
+// "ordering is by the printed name" to a spec for the fan-out's skipped list;
+// this is that spec applied where it was already being contradicted.
+func TestStats_ListsAreSortedByTheDecodedName(t *testing.T) {
 	t.Parallel()
 
-	const storage, sql = "MY__1JOINED", "MY$JOINED"
-	if recordlayer.ToUserIdentifier(storage) != sql {
-		t.Fatalf("fixture is wrong: %q does not decode to %q", storage, sql)
+	// Storage order and user order DISAGREE for this pair, which is what makes
+	// the assertion meaningful: A__0B < A__1B as stored, A$B < A__B as printed.
+	storage := []string{"A__0B", "A__1B"}
+	if !sort.StringsAreSorted(storage) {
+		t.Fatalf("fixture is not storage-sorted: %v", storage)
 	}
-
-	err := &recordlayer.SyntheticRecordTypesNotModeledError{TypeNames: []string{storage}}
-	msg := err.Error()
-	if !strings.Contains(msg, sql) {
-		t.Errorf("the refusal does not name the declaration by its SQL identifier: %s", msg)
+	wantUser := []string{"A$B", "A__B"}
+	got := userNames(storage)
+	if len(got) != 2 || got[0] != wantUser[0] || got[1] != wantUser[1] {
+		t.Fatalf("userNames(%v) = %v, want %v — decoded names must be re-sorted, or a "+
+			"storage-space order is printed in user space", storage, got, wantUser)
 	}
-	if strings.Contains(msg, storage) {
-		t.Errorf("the refusal leaks the storage name: %s", msg)
-	}
-	// The FIELD must stay storage-keyed: a programmatic consumer matches it
-	// against metadata, which is storage-keyed too. Decoding at construction
-	// would break that and is why the decode lives in Error().
-	if err.TypeNames[0] != storage {
-		t.Errorf("TypeNames = %q, want the STORAGE name %q — decoding the field breaks "+
-			"consumers matching against metadata", err.TypeNames[0], storage)
+	// Guard the fixture: if these ever decode to the same relative order, the
+	// test passes without exercising the re-sort.
+	decodedInPlace := []string{userName(storage[0]), userName(storage[1])}
+	if sort.StringsAreSorted(decodedInPlace) {
+		t.Fatalf("decoding %v preserves order (%v), so this test cannot observe the "+
+			"re-sort it exists to pin", storage, decodedInPlace)
 	}
 }

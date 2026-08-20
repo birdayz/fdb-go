@@ -694,7 +694,16 @@ func userName(storage string) string {
 	return recordlayer.ToUserIdentifier(storage)
 }
 
-// userNames is userName over a slice, preserving order.
+// userNames is userName over a slice, re-sorted BY THE DECODED NAME.
+//
+// The sort has to happen after decoding, not before, because the two orders
+// differ: storage-sorted [A__0B, A__1B] prints as [A__B, A$B], while a reader
+// scanning the output expects [A$B, A__B]. The gate sorts these lists in storage
+// space -- correctly, since that is the namespace it holds them in -- so the
+// renderer is where the order has to be restated in the namespace it prints.
+//
+// The collect path already re-sorted after decoding, so leaving these alone made
+// ONE command emit both orderings.
 func userNames(storage []string) []string {
 	if storage == nil {
 		return nil
@@ -703,6 +712,7 @@ func userNames(storage []string) []string {
 	for i, s := range storage {
 		out[i] = userName(s)
 	}
+	sort.Strings(out)
 	return out
 }
 

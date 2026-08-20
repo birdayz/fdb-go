@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"fdb.dev/gen"
@@ -2077,3 +2078,44 @@ func (f fixedInt64) MustGet() int64      { return int64(f) }
 func (fixedInt64) BlockUntilReady()      {}
 func (fixedInt64) IsReady() bool         { return true }
 func (fixedInt64) Cancel()               {}
+
+// THE SYNTHETIC REFUSAL NAMES THE SAME THING EVERY OTHER SURFACE DOES.
+//
+// LIVES HERE, not in the CLI package that first rendered it. The invariant is
+// this package's: a maintainer editing statistics.go runs pkg/recordlayer, and
+// with the test one package over that run was GREEN with the bug fully present.
+// A test that cannot fail where the code lives is a green about the wrong tree.
+//
+// Both surfaces render md.SyntheticRecordTypeNames(), one through
+// renderStatsStatus and one through SyntheticRecordTypesNotModeledError.Error().
+// The first decoded and the second joined raw, so one schema printed MY$JOINED
+// under `frl stats show` and MY__1JOINED under `frl stats collect` — two
+// spellings of one declaration, from one source, disagreeing by construction.
+//
+// The field stays storage-keyed for programmatic consumers; Error() is the
+// rendering boundary and is where it is decoded, which is the same rule the CLI
+// follows.
+func TestSyntheticRefusalErrorNamesUserIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	const storage, sql = "MY__1JOINED", "MY$JOINED"
+	if ToUserIdentifier(storage) != sql {
+		t.Fatalf("fixture is wrong: %q does not decode to %q", storage, sql)
+	}
+
+	err := &SyntheticRecordTypesNotModeledError{TypeNames: []string{storage}}
+	msg := err.Error()
+	if !strings.Contains(msg, sql) {
+		t.Errorf("the refusal does not name the declaration by its SQL identifier: %s", msg)
+	}
+	if strings.Contains(msg, storage) {
+		t.Errorf("the refusal leaks the storage name: %s", msg)
+	}
+	// The FIELD must stay storage-keyed: a programmatic consumer matches it
+	// against metadata, which is storage-keyed too. Decoding at construction
+	// would break that and is why the decode lives in Error().
+	if err.TypeNames[0] != storage {
+		t.Errorf("TypeNames = %q, want the STORAGE name %q — decoding the field breaks "+
+			"consumers matching against metadata", err.TypeNames[0], storage)
+	}
+}
