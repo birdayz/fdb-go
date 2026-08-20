@@ -1383,6 +1383,92 @@ var _ = Describe("SlidingWindowIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("moves a record between partitions, emptying the old one and filling the new", func() {
+		ks := specSubspace()
+		// An update can change the PARTITION value, not just the ordering one —
+		// a dimension every other spec here holds fixed. The record has to leave
+		// its old partition COMPLETELY (entry, count, boundary, graph) and
+		// arrive in the new one, and the two halves are done by different code:
+		// handleDelete evaluates the partition from the OLD record and
+		// handleInsert from the NEW one, so a maintainer that evaluated either
+		// once would strand the record in one partition while claiming it in the
+		// other.
+		idx := newPartitionedWindowedVectorIndex("sw_move", 2, gen.RowNumberWindowPredicate_ASC, "quantity")
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			// Partition 1 holds two records in-window plus one in overflow, so
+			// the move also has to trigger a re-election on the way out.
+			for _, o := range []struct{ id, price int64 }{{1, 10}, {2, 20}, {3, 30}} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(o.id), Quantity: proto.Int32(1),
+					Price:  proto.Int32(int32(o.price)),
+					CoordX: proto.Int64(o.id), CoordY: proto.Int64(o.id),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			maintainer, merr := store.getIndexMaintainer(idx)
+			Expect(merr).NotTo(HaveOccurred())
+			vm, ok := unwrapVectorMaintainer(maintainer)
+			Expect(ok).To(BeTrue())
+			graphPKs := func(partition int64) []int64 {
+				res, e := vm.SearchKNN(tuple.Tuple{partition}, []float64{0, 0}, 50, 200)
+				Expect(e).NotTo(HaveOccurred())
+				out := make([]int64, 0, len(res))
+				for _, r := range res {
+					out = append(out, r.PrimaryKey[0].(int64))
+				}
+				sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+				return out
+			}
+			Expect(graphPKs(1)).To(Equal([]int64{1, 2}))
+
+			// Move order 1 to partition 2, keeping its price.
+			_, err = store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Quantity: proto.Int32(2),
+				Price:  proto.Int32(10),
+				CoordX: proto.Int64(1), CoordY: proto.Int64(1),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			tx := rtx.Transaction()
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+
+			// OLD partition: the entry is gone and order 3 was promoted into the
+			// slot the departure freed.
+			k1, _ := readSlidingWindowEntries(tx, sw, tuple.Tuple{int64(1)})
+			Expect(k1).To(Equal([]tuple.Tuple{
+				{int64(20), int64(2)},
+				{int64(30), int64(3)},
+			}))
+			c1, b1 := readSlidingWindowMeta(tx, sw, tuple.Tuple{int64(1)})
+			Expect(c1).To(Equal(int64(2)))
+			Expect(b1).To(Equal(tuple.Tuple{int64(30), int64(3)}))
+			Expect(graphPKs(1)).To(Equal([]int64{2, 3}),
+				"the moved record must leave the old partition's graph, and the "+
+					"overflow entry must take its place")
+
+			// NEW partition: a window of its own, holding only the arrival.
+			k2, _ := readSlidingWindowEntries(tx, sw, tuple.Tuple{int64(2)})
+			Expect(k2).To(Equal([]tuple.Tuple{{int64(10), int64(1)}}))
+			c2, b2 := readSlidingWindowMeta(tx, sw, tuple.Tuple{int64(2)})
+			Expect(c2).To(Equal(int64(1)))
+			Expect(b2).To(Equal(tuple.Tuple{int64(10), int64(1)}))
+			Expect(graphPKs(2)).To(Equal([]int64{1}))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	// =====================================================================
 	// UPDATE of an in-window record's ordering value.
 	// =====================================================================
