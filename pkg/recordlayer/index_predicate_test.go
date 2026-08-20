@@ -1683,3 +1683,67 @@ func TestRowNumberWindowLookupsFollowTheEvaluatorsArmOrder(t *testing.T) {
 		t.Errorf("the maintainer lookup lost a bare window arm: %v", got)
 	}
 }
+
+// TestRowNumberWindowArmPrecedenceInsideAndChildren extends the precedence pin
+// to the CHILDREN of a root AND, which is where it was missing.
+//
+// Java's getQualifyPredicate inspects the immediate children of an AND with a
+// bare instanceof — but those children are already PARSED, so a child Java read
+// as an OR is simply not a RowNumberWindowPredicate. Reading the raw proto, the
+// same child can carry both arms, and taking its row-window arm directly picks a
+// declaration Java never sees. The engines then build different windows from the
+// same bytes.
+func TestRowNumberWindowArmPrecedenceInsideAndChildren(t *testing.T) {
+	t.Parallel()
+
+	window := func(field string) *gen.RowNumberWindowPredicate {
+		return &gen.RowNumberWindowPredicate{
+			OrderingField: []string{field},
+			Size:          proto.Int32(5),
+			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+		}
+	}
+	trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_TRUE.Enum(),
+	}}
+
+	// Child 0 carries an OR arm (which wins) AND a row-window arm (shadowed);
+	// child 1 carries the real one. Distinct ordering fields make the choice
+	// observable — a presence-only assertion would pass either way.
+	pred := &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+		{
+			OrPredicate:              &gen.OrPredicate{Children: []*gen.Predicate{trueArm}},
+			RowNumberWindowPredicate: window("shadowed"),
+		},
+		{RowNumberWindowPredicate: window("live")},
+	}}}
+
+	for name, got := range map[string]*gen.RowNumberWindowPredicate{
+		"factory":    findRowNumberWindowPredicateProto(pred),
+		"maintainer": qualifyRowNumberWindowPredicateProto(pred),
+	} {
+		if got == nil {
+			t.Errorf("%s lookup found no window at all", name)
+			continue
+		}
+		if got.GetOrderingField()[0] != "live" {
+			t.Errorf("%s lookup answered from an AND child's shadowed arm (%v)",
+				name, got.GetOrderingField())
+		}
+	}
+
+	// And a child whose only arm is shadowed contributes nothing rather than
+	// being read through.
+	onlyShadowed := &gen.Predicate{AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+		{
+			ValuePredicate:           &gen.ValuePredicate{Value: []string{"price"}},
+			RowNumberWindowPredicate: window("shadowed"),
+		},
+	}}}
+	if got := findRowNumberWindowPredicateProto(onlyShadowed); got != nil {
+		t.Errorf("factory lookup read through a shadowed AND child: %v", got.GetOrderingField())
+	}
+	if got := qualifyRowNumberWindowPredicateProto(onlyShadowed); got != nil {
+		t.Errorf("maintainer lookup read through a shadowed AND child: %v", got.GetOrderingField())
+	}
+}

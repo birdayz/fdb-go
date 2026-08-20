@@ -424,6 +424,21 @@ func checkSlidingWindowDeleteWhere(
 	md *RecordMetaData,
 	coveredTypes []string,
 ) error {
+	// An empty index prefix is the WHOLE-TYPE delete — Java's
+	// indexMatcher == null arm — where the entire index, and so the entire
+	// keyspace-10 region, is cleared.
+	//
+	// This comes FIRST, before the window is even inspected, because Java
+	// reaches that arm by RETURNING TRUE without asking the maintainer anything
+	// (FDBRecordStore.java:2050-2051). An unpartitioned window is refused for
+	// every other prefix precisely because no range of its single entry list
+	// corresponds to one — but "all of it" always does, so refusing here would
+	// reject a delete Java performs, on the shape (a type-prefixed primary key,
+	// an index root that omits the type column) most likely to carry one.
+	if len(idxPrefix) == 0 {
+		return nil
+	}
+
 	spec, err := idx.RowNumberWindowSpec()
 	if err != nil {
 		return fmt.Errorf("deleteRecordsWhere: sliding window index %q: %w", idx.Name, err)
@@ -438,14 +453,6 @@ func checkSlidingWindowDeleteWhere(
 			Message: "the window is unpartitioned, so it keeps one entry list for the whole " +
 				"index and no range of it corresponds to the requested prefix",
 		}
-	}
-
-	// An empty index prefix is the WHOLE-TYPE delete — Java's
-	// indexMatcher == null arm — where the entire index, and so the entire
-	// keyspace-10 region, is cleared. There are no partition columns to agree
-	// about, and clearing everything is exactly right.
-	if len(idxPrefix) == 0 {
-		return nil
 	}
 
 	pks := deleteWherePrimaryKeys(md, coveredTypes)

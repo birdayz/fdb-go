@@ -836,6 +836,66 @@ var _ = Describe("SlidingWindowIndex", func() {
 		})
 	}
 
+	It("deleteRecordsWhere clears an UNPARTITIONED window when the whole type goes", func() {
+		ks := specSubspace()
+		// The one prefix an unpartitioned window CAN serve. Java reaches its
+		// whole-type arm by returning true without asking the maintainer
+		// anything (FDBRecordStore.java:2050-2051), so the partition check never
+		// runs — and it must not run here either, or Go refuses a delete Java
+		// performs.
+		//
+		// The shape that reaches it is a type-prefixed primary key with an index
+		// root that omits the type column, which is the ordinary way to write
+		// one; the derived index prefix is then empty by construction.
+		idx := NewVectorIndex("sw_dw_whole_type",
+			KeyWithValue(Field("vector_data"), 0), 3)
+		Expect(idx.SetPredicateProto(&gen.Predicate{
+			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+				OrderingField: []string{"price"},
+				Size:          proto.Int32(2),
+				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			},
+		})).To(Succeed())
+		builder := baseMetaData()
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for i, price := range []int32{10, 20, 30} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId:    proto.Int64(int64(i + 1)),
+					Price:      proto.Int32(price),
+					VectorData: SerializeVector([]float64{float64(i), 0, 0}),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			tx := rtx.Transaction()
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+			keys, _ := readSlidingWindowEntries(tx, sw, nil)
+			Expect(keys).To(HaveLen(3))
+
+			typeKey := md.GetRecordType("Order").GetRecordTypeKey()
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{typeKey})).To(Succeed())
+
+			keys, _ = readSlidingWindowEntries(tx, sw, nil)
+			Expect(keys).To(BeEmpty())
+			count, boundary := readSlidingWindowMeta(tx, sw, nil)
+			Expect(count).To(Equal(int64(0)))
+			Expect(boundary).To(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("deleteRecordsWhere is refused when the index root repeats the record-type key", func() {
 		ks := specSubspace()
 		// The shape that shows the preflight must judge the prefix the
@@ -909,6 +969,185 @@ var _ = Describe("SlidingWindowIndex", func() {
 			sw := slidingWindowSubspaceFor(store.subspace, idx)
 			keys, _ := readSlidingWindowEntries(rtx.Transaction(), sw, tuple.Tuple{int64(7), int64(10)})
 			Expect(keys).To(HaveLen(1))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("re-elects from overflow when the deleted boundary was the only window entry", func() {
+		ks := specSubspace()
+		// A DELIBERATE DIVERGENCE from Java, pinned here because it is one.
+		//
+		// The inward rescan after deleting the boundary only looks at the WINDOW
+		// side. At size 1 the boundary is the extreme-most entry in the whole
+		// partition, so the rescan finds nothing while overflow sits just past
+		// it — and Java reads that as "partition emptied", clears the boundary,
+		// and returns null, which makes re-election exit immediately. The window
+		// ends up empty with its overflow stranded: never promoted, never
+		// searchable, and the next delete of a stranded entry hits Java's own
+		// "boundary is missing but entry exists, possible corruption" throw.
+		//
+		// Go promotes instead. Size 1 is a legal and likely configuration, so
+		// this is not an exotic corner.
+		idx := newWindowedVectorIndex("sw_size_one", 1, gen.RowNumberWindowPredicate_ASC)
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for i, price := range []int32{10, 20, 30} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
+					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{1}))
+
+			tx := rtx.Transaction()
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+			count, boundary := readSlidingWindowMeta(tx, sw, nil)
+			Expect(count).To(Equal(int64(1)))
+			Expect(boundary).To(Equal(tuple.Tuple{int64(10), int64(1)}))
+
+			// Delete the sole window member. Order 2 (price 20) must take its
+			// place — the window has room and an entry is waiting for it.
+			deleted, derr := store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(derr).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			count, boundary = readSlidingWindowMeta(tx, sw, nil)
+			Expect(count).To(Equal(int64(1)),
+				"the window still holds one record; a count of 0 is the upstream defect")
+			Expect(boundary).To(Equal(tuple.Tuple{int64(20), int64(2)}))
+			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{2}),
+				"order 2 must be searchable, not stranded in overflow")
+
+			keys, _ := readSlidingWindowEntries(tx, sw, nil)
+			Expect(keys).To(HaveLen(2))
+
+			// And the promotion is repeatable rather than a one-off: deleting
+			// the new boundary promotes the next one.
+			deleted, derr = store.DeleteRecord(tuple.Tuple{int64(2)})
+			Expect(derr).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+			count, boundary = readSlidingWindowMeta(tx, sw, nil)
+			Expect(count).To(Equal(int64(1)))
+			Expect(boundary).To(Equal(tuple.Tuple{int64(30), int64(3)}))
+			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{3}))
+
+			// Emptying it for real still reports empty — the genuine
+			// partition-emptied case must not be swallowed by the promotion.
+			deleted, derr = store.DeleteRecord(tuple.Tuple{int64(3)})
+			Expect(derr).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+			count, boundary = readSlidingWindowMeta(tx, sw, nil)
+			Expect(count).To(Equal(int64(0)))
+			Expect(boundary).To(BeNil())
+			keys, _ = readSlidingWindowEntries(tx, sw, nil)
+			Expect(keys).To(BeEmpty())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("re-elects from overflow at size one under DESC too", func() {
+		ks := specSubspace()
+		// MAX is the mirror image: the inward rescan runs the other way and the
+		// overflow lies below the boundary rather than above it. ASC passing
+		// proves nothing about it.
+		idx := newWindowedVectorIndex("sw_size_one_desc", 1, gen.RowNumberWindowPredicate_DESC)
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for i, price := range []int32{30, 20, 10} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
+					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{1}))
+
+			deleted, derr := store.DeleteRecord(tuple.Tuple{int64(1)})
+			Expect(derr).NotTo(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			tx := rtx.Transaction()
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+			count, boundary := readSlidingWindowMeta(tx, sw, nil)
+			Expect(count).To(Equal(int64(1)))
+			Expect(boundary).To(Equal(tuple.Tuple{int64(20), int64(2)}))
+			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{2}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("clears keyspace 10 when every record is deleted", func() {
+		ks := specSubspace()
+		// DeleteAllRecords enumerates the subspaces it clears, so a new prefix
+		// has to be added by hand — Java's second range clear runs to the end of
+		// the store and picks one up for free. Left behind, the window's count
+		// and boundary describe a graph that no longer exists: the next save
+		// reads a full window, takes the eviction branch, and evicts against a
+		// boundary naming a record that is gone.
+		idx := newWindowedVectorIndex("sw_delete_all", 2, gen.RowNumberWindowPredicate_ASC)
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for i, price := range []int32{10, 20, 30} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i + 1)), Price: proto.Int32(price),
+					CoordX: proto.Int64(int64(i)), CoordY: proto.Int64(int64(i)),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			tx := rtx.Transaction()
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+			keys, _ := readSlidingWindowEntries(tx, sw, nil)
+			Expect(keys).To(HaveLen(3))
+
+			Expect(store.DeleteAllRecords()).To(Succeed())
+
+			keys, _ = readSlidingWindowEntries(tx, sw, nil)
+			Expect(keys).To(BeEmpty(), "stale entries survive a delete-all")
+			count, boundary := readSlidingWindowMeta(tx, sw, nil)
+			Expect(count).To(Equal(int64(0)))
+			Expect(boundary).To(BeNil())
+
+			// The store is usable afterwards: a fresh save fills the window
+			// again rather than evicting against a boundary that named a
+			// record delete-all removed.
+			_, e := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(9), Price: proto.Int32(5),
+				CoordX: proto.Int64(9), CoordY: proto.Int64(9),
+			})
+			Expect(e).NotTo(HaveOccurred())
+			count, boundary = readSlidingWindowMeta(tx, sw, nil)
+			Expect(count).To(Equal(int64(1)))
+			Expect(boundary).To(Equal(tuple.Tuple{int64(5), int64(9)}))
+			Expect(searchPKs(store, idx, nil)).To(Equal([]int64{9}))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -1304,14 +1543,20 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("refuses a row-number window the maintainer's narrower lookup cannot reach", func() {
+	It("loads a window the maintainer's narrower lookup cannot reach, and fails at first use", func() {
 		// AND(AND(rowWindow)). The FACTORY's recursive search finds it and
 		// decorates the index; the MAINTAINER's lookup, which only inspects the
-		// root and the immediate children of a root AND, does not. Java has the
-		// same asymmetry and the same outcome — the maintainer constructor
-		// throws — so Go refuses rather than widening its lookup and accepting
-		// metadata Java rejects.
-		idx := NewVectorIndex("sw_nested_and", Concat(Field("coord_x"), Field("coord_y")), 2)
+		// root and the immediate children of a root AND, does not. Java has that
+		// same asymmetry.
+		//
+		// WHERE it fails is the point of this spec. Java runs the validator at
+		// metadata-build time but resolves the window in the MAINTAINER's
+		// constructor, reached only when that index is used — so the metadata
+		// BUILDS, and the failure arrives at the first save. Refusing at build
+		// would make a Java-authored store unopenable, taking every unrelated
+		// record in it down with the one broken index.
+		idx := NewVectorIndex("sw_nested_and",
+			KeyWithValue(Field("vector_data"), 0), 3)
 		rn := &gen.Predicate{RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
 			OrderingField: []string{"price"},
 			Size:          proto.Int32(2),
@@ -1328,9 +1573,25 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 
 		builder := baseMetaData()
 		builder.AddIndex("Order", idx)
-		_, err := builder.Build()
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("requires a RowNumberWindowPredicate"))
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred(), "Java builds this metadata; Go must too")
+		Expect(md).NotTo(BeNil())
+
+		// And the failure does arrive, loudly, when the index is used.
+		ks := specSubspace()
+		_, err = sharedDB.Run(context.Background(), func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+			_, saveErr := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(10),
+				VectorData: SerializeVector([]float64{1, 2, 3}),
+			})
+			Expect(saveErr).To(HaveOccurred())
+			Expect(saveErr.Error()).To(ContainSubstring("requires a RowNumberWindowPredicate"))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("accepts a row-number window conjoined with an ordinary filtering arm", func() {

@@ -653,9 +653,56 @@ func (m *slidingWindowIndexMaintainer) updateBoundaryAfterDelete(
 		return nil, err
 	}
 	if kv == nil {
-		m.timer.Increment(CountSWPartitionEmptied)
-		m.tx.Clear(boundaryMetaKey)
-		return nil, nil
+		// No entry INWARD of the deleted boundary. That is not the same as "the
+		// partition is empty", and Java conflates the two — a DELIBERATE
+		// DIVERGENCE, argued below.
+		//
+		// The inward scan only looks at the window side. When the deleted
+		// boundary was the extreme-most entry in the whole partition — which is
+		// exactly the steady state of a size-1 window — there is nothing inward
+		// while overflow may be sitting just past it. Java clears the boundary,
+		// counts SW_PARTITION_EMPTIED and returns null, and reElectFromOverflow
+		// then exits on that null, leaving count 0 and an empty graph with
+		// overflow entries stranded: never promoted, never searchable.
+		//
+		// Java's own code calls the resulting state corrupt. Deleting one of
+		// those stranded entries later reads a nil boundary with an entry
+		// present and throws "sliding window boundary is missing but entry
+		// exists, possible corruption" — so this is a defect, not a design, and
+		// the counter's own name ("partition emptied (no entries remain)")
+		// states the intent it fails to implement.
+		//
+		// Go promotes from overflow instead. The divergence is in CONTENTS, not
+		// in format: the bytes written are the same kinds in the same layout,
+		// and the state Go produces — a real boundary, a matching count, the
+		// record in the graph — is one Java reads and continues from correctly,
+		// whereas the state Java produces is the one Java itself later refuses.
+		// Reported upstream; revisit if Java fixes it differently.
+		best, berr := m.bestInOverflow(entriesSub, packedEntryKey)
+		if berr != nil {
+			return nil, berr
+		}
+		if best == nil {
+			// Genuinely empty — no entry on either side. This is the case Java's
+			// counter names, and here it is true.
+			m.timer.Increment(CountSWPartitionEmptied)
+			m.tx.Clear(boundaryMetaKey)
+			return nil, nil
+		}
+		// Overflow exists, so hand back the DELETED entry's key as the scan
+		// PIVOT rather than promoting here. reElectFromOverflow scans strictly
+		// past the pivot, and the deleted key is no longer in the entry list, so
+		// that scan lands on this same overflow entry and performs the single
+		// promotion — setting the boundary, the count and the delegate insert in
+		// one place. Promoting here as well would put two records into a window
+		// that lost one.
+		//
+		// The overflow read happens twice (once to decide, once in the
+		// promotion). Both are the same range read in the same transaction, so
+		// the second is served from the read cache; the alternative is threading
+		// a pre-read result through a signature whose other callers do not have
+		// one.
+		return packedEntryKey, nil
 	}
 	newBoundaryKey, err := entriesSub.Unpack(kv.Key)
 	if err != nil {

@@ -84,25 +84,24 @@ func validateSlidingWindowIndex(md *RecordMetaData, idx *Index) error {
 	if idx.IsUnique() {
 		return &MetaDataError{Message: "sliding window index does not support unique indexes"}
 	}
-	if err := validateRowNumberWindowPlacement(idx.predicateProto); err != nil {
-		return err
-	}
-	// Java's maintainer constructor throws when the window declaration cannot be
-	// read back with its narrower lookup, and when the ordering/partition key
-	// expressions cannot be built. Validating here turns "the metadata loads and
-	// then every save fails" into "the metadata does not load", which is the
-	// same trade the TEXT-index tokenizer validation above makes.
-	spec, err := idx.RowNumberWindowSpec()
-	if err != nil {
-		return err
-	}
-	if _, err := spec.OrderingKey(); err != nil {
-		return &MetaDataError{Message: fmt.Sprintf(
-			"sliding window index %q: ordering key: %v", idx.Name, err)}
-	}
-	if _, err := spec.PartitionKey(); err != nil {
-		return &MetaDataError{Message: fmt.Sprintf(
-			"sliding window index %q: partition key: %v", idx.Name, err)}
-	}
-	return nil
+	return validateRowNumberWindowPlacement(idx.predicateProto)
+
+	// NOTHING ELSE BELONGS HERE, and the temptation is real: the maintainer
+	// constructor rejects declarations this validator lets through — a window
+	// only reachable through the narrower lookup (AND(AND(rowWindow))), an
+	// empty ordering path — and catching them at Build would turn "loads, then
+	// every save fails" into "does not load", which reads like the better trade.
+	//
+	// It is the wrong trade for a PORT. Java draws the line exactly where this
+	// function stops: MetaDataValidator runs this validator at build time, and
+	// getQualifyPredicate / getOrderingKey run in the maintainer's constructor,
+	// which is reached only when that index is actually used. So metadata Java
+	// builds must build here too — otherwise a Java-authored store cannot be
+	// OPENED AT ALL, and a reader that never touches this index loses access to
+	// every other record in the store because of it.
+	//
+	// The same argument already removed the window-size check from the load
+	// path. Both are the wire-compat rule, not a preference: Go refusing what
+	// Java accepts is the failure mode, and a loud failure at first use is the
+	// behaviour being matched.
 }

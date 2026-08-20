@@ -215,11 +215,30 @@ func findRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPre
 		}
 		return nil
 	}
-	// Only the arms predicateFromProto would reach BEFORE the row-window one
-	// can shadow it; those are handled above (AND) and by falling through here
-	// for OR / constant / NOT / value, none of which carries a window.
-	if p.GetOrPredicate() != nil || p.GetConstantPredicate() != nil ||
-		p.GetNotPredicate() != nil || p.GetValuePredicate() != nil {
+	return activeRowNumberWindowArm(p)
+}
+
+// activeRowNumberWindowArm returns the row-window arm of a predicate message
+// only when it is the arm predicateFromProto would actually EVALUATE.
+//
+// The message declares "exactly one of the following" and a malformed one can
+// set several; predicateFromProto dispatches AND, OR, constant, NOT, value and
+// only then row-window, so any of those set alongside a row-window arm shadows
+// it. Java is never exposed to the question because it searches the PARSED
+// predicate, where the shadowing already happened in fromProto — the precedence
+// has to be restated wherever Go reads the raw proto, or the two engines read
+// different declarations out of identical bytes.
+//
+// AND is deliberately NOT handled here: its children have to be searched, which
+// is the caller's business and differs between the factory's recursive search
+// and the maintainer's one-level lookup. Every caller tests AND first.
+func activeRowNumberWindowArm(p *gen.Predicate) *gen.RowNumberWindowPredicate {
+	if p == nil {
+		return nil
+	}
+	if p.GetAndPredicate() != nil || p.GetOrPredicate() != nil ||
+		p.GetConstantPredicate() != nil || p.GetNotPredicate() != nil ||
+		p.GetValuePredicate() != nil {
 		return nil
 	}
 	return p.GetRowNumberWindowPredicate()
@@ -245,23 +264,18 @@ func qualifyRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindow
 	if and := p.GetAndPredicate(); and != nil {
 		for _, child := range and.GetChildren() {
 			// Java's getQualifyPredicate inspects the immediate children with a
-			// bare instanceof and does not recurse; the child's own arm order is
-			// still resolved the same way, so a child that is itself an AND is
-			// not a row-window child.
-			if child.GetAndPredicate() != nil {
-				continue
-			}
-			if rn := child.GetRowNumberWindowPredicate(); rn != nil {
+			// bare instanceof and does not recurse — but each child is a PARSED
+			// predicate there, so a child that Java parsed as an OR is simply
+			// not a RowNumberWindowPredicate. Reading the raw proto, the same
+			// child can carry both arms, so the child's own precedence has to be
+			// resolved rather than its row-window arm read directly.
+			if rn := activeRowNumberWindowArm(child); rn != nil {
 				return rn
 			}
 		}
 		return nil
 	}
-	if p.GetOrPredicate() != nil || p.GetConstantPredicate() != nil ||
-		p.GetNotPredicate() != nil || p.GetValuePredicate() != nil {
-		return nil
-	}
-	return p.GetRowNumberWindowPredicate()
+	return activeRowNumberWindowArm(p)
 }
 
 // HasRowNumberWindowPredicate reports whether this index declares a row-number

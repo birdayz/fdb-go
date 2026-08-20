@@ -1228,12 +1228,32 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	return vResults, nil
 }
 
-// DeleteWhere clears all HNSW graph data for the given prefix.
-// If the prefix is non-empty, only clears the HNSW graph for that prefix.
-// If the prefix is empty, clears all HNSW graph data.
+// DeleteWhere clears all HNSW graph data at or BELOW the given prefix.
+// An empty prefix clears every graph in the index.
+//
+// The range clear is the whole point, and clearing the prefix's own graph is
+// not enough. A grouped vector index keyed by (zone, category) stores each
+// group at hnswSubspace.Sub(zone, category), so a delete-where on (zone) has to
+// take every category under it. Clearing only the graph AT (zone) left those
+// descendants behind: their records were deleted while their HNSW nodes stayed
+// queryable, so a search returned primary keys that no longer resolve.
+//
+// Matches Java, which reaches StandardIndexMaintainer.deleteWhere through
+// VectorIndexMaintainer.deleteWhere and clears
+// Range.startsWith(indexSubspace.pack(prefix)) — everything under the packed
+// prefix, descendants included.
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	storage := m.getStorageForPrefix(prefix)
-	storage.clearAll(m.tx)
+	sub := m.getSubspaceForPrefix(prefix)
+	pr, err := fdb.PrefixRange(sub.Bytes())
+	if err != nil {
+		return fmt.Errorf("vector index %q: DeleteWhere PrefixRange(%x): %w", m.index.Name, sub.Bytes(), err)
+	}
+	m.tx.ClearRange(pr)
+	// Every cached graph under the cleared range is now stale. The cache is
+	// per-maintainer (so per-transaction), and dropping all of it is both
+	// correct and cheap; keeping an entry whose bytes were just cleared would
+	// let a post-clear read resurrect deleted nodes from memory.
+	m.storageCache = make(map[string]*hnswStorage)
 	return nil
 }
 

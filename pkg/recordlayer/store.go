@@ -920,6 +920,14 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 	// Clear all subspaces except StoreInfoKey (0) and IndexStateSpaceKey (5).
 	// Java does two range clears: [records, indexState) and (indexState, storeEnd).
 	// We clear individual subspaces for clarity.
+	//
+	// The enumeration is the risk that trade buys: Java's second range runs to
+	// the END of the store, so a keyspace added to FDBRecordStoreKeyspace is
+	// cleared there automatically and has to be added HERE by hand. Every new
+	// prefix must appear below, or its data survives a delete-all — which for
+	// the sliding window meant the next save reading a full window over an
+	// emptied graph, and evicting against a boundary naming a record that is
+	// gone.
 	// Use PrefixRange to include the exact prefix key — ungrouped aggregate
 	// data (e.g. record counts) is stored at the subspace prefix itself,
 	// which subspace.FDBRangeKeys() excludes.
@@ -932,6 +940,7 @@ func (store *FDBRecordStore) DeleteAllRecords() error {
 		IndexUniquenessViolationsKey, // 7 - uniqueness violations
 		RecordVersionKey,             // 8 - record versions
 		IndexBuildSpaceKey,           // 9 - index build state
+		IndexSlidingWindowSpaceKey,   // 10 - sliding-window bookkeeping
 	} {
 		sub := store.subspace.Sub(key)
 		pr, err := fdb.PrefixRange(sub.Bytes())
