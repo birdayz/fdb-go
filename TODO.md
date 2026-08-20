@@ -19171,3 +19171,44 @@ this arm — if upstream ever fixes the NPE into its intended assert, that arm
 becomes comparable by MESSAGE too and the probe should be tightened.
 
 TO REPORT UPSTREAM with the reproducer above.
+
+## Chained `USING` resolves against the wrong operator (measured vs live JVM)
+
+Go synthesizes a chained `USING`'s ON predicate by qualifying the column
+with the PRIOR JOIN'S RIGHT alias (`parseJoinClauses`, select_parser.go).
+Java's `resolveJoinUsingClause` instead resolves the column against every
+visible left operator, having hidden the RIGHT copy of each earlier
+USING column. The two rules disagree wherever the choice is observable,
+and they disagree in BOTH directions — measured against fdb-relational
+4.12.11.0 by `conformance/join_using_chain_java_probe_test.go`:
+
+| query | Java | Go |
+|---|---|---|
+| `a JOIN b USING (id) JOIN c USING (id, k)` | `Ambiguous reference K` | `[[1]]` — silently picks `b.k` |
+| `a JOIN b USING (id) JOIN c USING (j)`, `j` only on `a` | `[[1]]` | `42703 column "J" does not exist` |
+
+The first is the silent direction: a query Java refuses as ambiguous
+returns rows in Go, and which rows depends on an alias rule the user
+never wrote.
+
+WHY THIS IS NOT PINNED IN THE yamsql CORPUS. The only chained shape the
+two engines agree on is the one where the first USING hides the column
+(`USING (id, k) … USING (id, k)`), and there Go's rule is unobservable —
+both qualifications give the same predicate. So every Java-agreeing
+query is vacuous for this rule and every discriminating query is a
+divergence. `join_using_shapes.yaml` therefore keeps the agreeing arm
+and says so; the divergent pair lives in the JVM probe, asserted as a
+2-of-3 pin that fails if the divergence is repaired OR grows.
+
+THE REPAIR is a semantic USING resolution replacing the syntactic
+prior-alias rule: for each USING column, compute the visible left
+sources minus the columns earlier USING clauses hid, then require
+exactly one owner — 42702 on two or more, 42703 on none — and qualify by
+that owner rather than by position. `usingHiddenCols` already records
+the hiding, so the missing half is the ownership lookup, which needs the
+record metadata and therefore a metadata-aware site rather than the
+parse-time synthesis.
+
+Gated on a Graefe ACK of an RFC before implementation: this changes
+query-engine column-resolution semantics for every USING query, which
+the mandatory query-engine gate covers.

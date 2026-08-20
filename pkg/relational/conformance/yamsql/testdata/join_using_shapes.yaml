@@ -36,25 +36,31 @@ tests:
     rows:
       - [1]
       - [3]
-  # THE CHAIN, and the FIRST join deliberately uses only (id).
+  # THE CHAIN — and this arm is DELIBERATELY the non-discriminating one,
+  # which is the opposite of what two earlier drafts of it claimed.
   #
-  # An earlier draft made both joins `USING (id, k)` and claimed the row
-  # count separated a chained qualification from a stuck one. It does
-  # not, and the reason is worth keeping: if the first join equates
-  # a.k = b.k, then `a.k = c.k` and `b.k = c.k` are the same predicate
-  # for every surviving row, so qualifying the second USING against `a`
-  # returns the identical answer. The fixture could not fail.
+  # Draft one made both joins `USING (id, k)` and said the row count
+  # separated a chained qualification from a stuck one. It does not: if
+  # the first join equates a.k = b.k, then `a.k = c.k` and `b.k = c.k`
+  # are the same predicate for every surviving row.
   #
-  # Joining on (id) alone leaves a.k and b.k free to differ, and they do
-  # at id=2 (20 vs 99). The second join then asks a genuinely different
-  # question depending on which side supplies k:
+  # Draft two "fixed" that by joining on (id) alone, which does make the
+  # two readings differ — and Java REJECTS that query with
+  # `Ambiguous reference K`, because after `USING (id)` both a.k and b.k
+  # are still visible on the left. So the discriminating fixture pinned a
+  # divergence as though it were the specification.
   #
-  #   qualified by b (correct): b.k = c.k -> id=1 only (99!=20, 30!=77)
-  #   qualified by a (stuck)  : a.k = c.k -> id=1 and id=2 (20=20)
+  # Those two facts together are the finding: Go's rule is observable
+  # only where Java disagrees with it, so NO Java-agreeing query can
+  # exercise it, and this scenario cannot be the place it is pinned.
+  # `conformance/join_using_chain_java_probe_test.go` measures both
+  # divergent shapes against the live JVM; the repair is booked in
+  # TODO.md because it changes query-engine semantics.
   #
-  # One row versus two. Verified by mutation: forcing parseJoinClauses to
-  # qualify every USING against leftAlias reddens this arm.
-  - query: SELECT a.id FROM a JOIN b USING (id) JOIN c USING (id, k) ORDER BY a.id
+  # What this arm still earns: the chain PLANS and answers correctly for
+  # the shape both engines agree on, where the first USING hides b.k and
+  # leaves exactly one candidate.
+  - query: SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
     rows:
       - [1]
   # USING on an OUTER join — the same synthesis through the other

@@ -23,12 +23,12 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**354 scenarios · 2811 query/assertion cases** across 18 feature areas — 2470 supported, 113 unsupported-feature pins, 228 error-path pins.
+**354 scenarios · 2817 query/assertion cases** across 18 feature areas — 2479 supported, 110 unsupported-feature pins, 228 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 51 | 326 | 293 | 19 | 14 |
-| Joins | 64 | 287 | 274 | 5 | 8 |
+| Joins | 64 | 293 | 283 | 2 | 8 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 32 | 249 | 216 | 10 | 23 |
-| **Total** | **354** | **2811** | **2470** | **113** | **228** |
+| **Total** | **354** | **2817** | **2479** | **110** | **228** |
 
 ## Aggregates & GROUP BY
 
@@ -111,7 +111,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `comma_join_exists` | 4 | 4 | 0 | 0 | Regression for the removed Go-only `eliminateRedundantCrossJoin` rewrite. |
 | `composite_pk_join` | 3 | 3 | 0 | 0 | Joins on composite primary key tables |
 | `count_distinct_join` | 3 | 1 | 2 | 0 | COUNT(DISTINCT col) against rows materialised from a JOIN or |
-| `cross_join` | 11 | 6 | 3 | 2 | Which JOIN spellings produce a cartesian product, and which are |
+| `cross_join` | 17 | 15 | 0 | 2 | Every spelling of a JOIN that means "cartesian product" — `CROSS JOIN`, |
 | `cross_join_filter` | 3 | 3 | 0 | 0 | Cross join with various filter patterns |
 | `cross_join_no_predicate` | 2 | 2 | 0 | 0 | CROSS JOIN without predicates |
 | `cte_join` | 3 | 3 | 0 | 0 | CTE used in JOIN |

@@ -11,31 +11,35 @@ package conformance_test
 //	(LEFT | RIGHT | FULL) OUTER? JOIN tableSourceItem (ON … | USING …)         #outerJoin
 //
 // so `FROM a JOIN b` parses with a NULL ON, and `FROM a LEFT JOIN b` does not
-// parse at all. Go's `extractJoinClause` rejects `CROSS JOIN` explicitly,
-// citing Java: fdb-relational's visitor dereferences `InnerJoinContext
-// .expression()` unconditionally and NPEs when it is null. But that gate keys
-// on the CROSS TOKEN, while the null it exists to avoid comes from the ABSENT
-// ON — and `FROM a JOIN b` produces the identical null without the token.
+// parse at all. fdb-relational's visitor dereferences `InnerJoinContext
+// .expression()` unconditionally and NPEs on that null, so it cannot answer any
+// conditionless join — `CROSS JOIN` included.
 //
-// So the gate covers one spelling of the shape and the other three — bare
-// `JOIN`, `INNER JOIN`, and `USING` — go unmeasured. This file measures all of
-// them rather than reasoning about which ones inherit the rejection.
+// GO ANSWERS THEM, DELIBERATELY, and that is what this file records. The rows
+// are the correct cartesian product, the syntax is ordinary SQL, and nothing
+// here touches the wire, so it is a read-side capability Java lacks rather than
+// a divergence to repair. Go previously refused these to match Java's crash;
+// that bought nothing and cost every user who writes CROSS JOIN.
 //
-// NATURAL JOIN rides along because it is the fourth member of the joinPart
-// production and Go reaches it only through `extractJoinClause`'s default arm,
-// i.e. by having no case for it. Whether that lands on the same answer Java
-// gives is exactly the kind of thing "it falls through to the default" does not
-// establish.
+// The distinction the file exists to hold is therefore NOT "do the engines
+// agree" — three arms deliberately disagree — but WHICH WAY they disagree:
 //
-// THE DIRECTION IS THE POINT. Go rejecting what Java accepts is a reach gap and
-// the user sees it. Go ACCEPTING what Java rejects is silent: the query runs,
-// returns a cartesian product, and the two engines disagree about what a
-// four-row answer means. This file's whole reason for existing is that the
-// CROSS-JOIN gate was written to prevent the second kind for one spelling.
+//	goExtends   Java cannot answer, Go can          intended, and floored at 3
+//	javaOnly    Java answers, Go refuses            always a defect; no arm wants it
 //
-// The comma-join and explicit-`ON 1 = 1` arms are the controls: both engines
-// must accept them and agree, or the fixture is measuring something broken
-// about joins in general and the null-ON rows below cannot be read.
+// That second class is why the measurement stays valuable after the policy
+// change. `CROSS JOIN b ON p` was in it: the grammar puts CROSS and the
+// optional condition in the same alternative, so it parses with a NON-null
+// expression, Java's NPE cannot fire, and Java answers — while Go's gate,
+// keyed on the CROSS token rather than on the absent condition, refused it.
+//
+// NATURAL JOIN and the unparseable `LEFT JOIN` with no ON are the both-refuse
+// arms, and they carry weight: without them, a probe showing Go answering more
+// than Java could equally be describing a parser that accepts anything.
+//
+// The comma-join and `ON 1 = 1` arms are the both-answer baseline — and their
+// ROWS are compared, not just their success, since agreeing that there is no
+// error is not agreeing on the result.
 //
 // EVERY ARM IS `SELECT COUNT(*)` WITH NO ORDER BY, and that is a measurement
 // rather than a style choice. The first draft ordered by `a.id, b.id` and Java
@@ -56,6 +60,38 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+// outcome is what a query DID in the two engines, as a single value, so each
+// arm states its expectation instead of the file asserting one blanket rule.
+// That matters here because the arms deliberately land in three different
+// classes and "the engines agree" is the wrong assertion for one of them.
+type outcome string
+
+const (
+	bothAnswer outcome = "both-answer"
+	bothRefuse outcome = "both-refuse"
+	// goExtends is the class this file exists to record: Java cannot answer the
+	// query and Go can. It is not a divergence to repair — the rows are
+	// correct, the syntax is ordinary SQL and nothing touches the wire, so it
+	// is a read-side capability Java lacks.
+	goExtends outcome = "go-extends"
+	// javaOnly is the direction that IS a defect: Go refusing what Java
+	// answers. No arm is expected to be in this class.
+	javaOnly outcome = "java-only"
+)
+
+func classify(javaRejects, goRejects bool) outcome {
+	switch {
+	case !javaRejects && !goRejects:
+		return bothAnswer
+	case javaRejects && goRejects:
+		return bothRefuse
+	case javaRejects && !goRejects:
+		return goExtends
+	default:
+		return javaOnly
+	}
+}
 
 var _ = Describe("JoinWithoutOnJavaProbe", func() {
 	It("measures both engines on every spelling of a JOIN with no ON clause", func() {
@@ -91,37 +127,33 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 		cases := []struct {
 			name string
 			sql  string
-			// control marks the arms both engines must ACCEPT and agree on,
-			// without which nothing else here is interpretable.
-			control bool
-			// nullOn marks the arms that reach the joinPart production with no
-			// ON expression — the population this file exists to measure. The
-			// vacuity floor counts them.
-			nullOn bool
+			// want is the outcome measured against the live JVM. Stating it per
+			// arm is what lets three different classes coexist in one table.
+			want outcome
 			// wantsTableName marks an arm where accept/reject agreement is too
 			// weak: both engines refuse, and WHICH refusal they give is the
 			// measurement. Both messages must name the offending table.
 			wantsTableName bool
 		}{
 			{
-				name: "comma join", control: true,
+				name: "comma join", want: bothAnswer,
 				sql: "SELECT COUNT(*) FROM a, b",
 			},
 			{
-				name: "JOIN with ON 1 = 1", control: true,
+				name: "JOIN with ON 1 = 1", want: bothAnswer,
 				sql: "SELECT COUNT(*) FROM a JOIN b ON 1 = 1",
 			},
-			// --- the null-ON population.
+			// --- the conditionless population: Java NPEs, Go answers.
 			{
-				nullOn: true, name: "CROSS JOIN",
+				want: goExtends, name: "CROSS JOIN",
 				sql: "SELECT COUNT(*) FROM a CROSS JOIN b",
 			},
 			{
-				nullOn: true, name: "bare JOIN, no ON",
+				want: goExtends, name: "bare JOIN, no ON",
 				sql: "SELECT COUNT(*) FROM a JOIN b",
 			},
 			{
-				nullOn: true, name: "INNER JOIN, no ON",
+				want: goExtends, name: "INNER JOIN, no ON",
 				sql: "SELECT COUNT(*) FROM a INNER JOIN b",
 			},
 			{
@@ -129,11 +161,11 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 				// supplies a join condition without an `expression`, so a
 				// visitor that reads `expression()` unconditionally sees the
 				// same null here as it does with no clause at all.
-				nullOn: true, name: "JOIN USING",
+				want: bothAnswer, name: "JOIN USING",
 				sql: "SELECT COUNT(*) FROM a JOIN b USING (id)",
 			},
 			{
-				nullOn: true, name: "NATURAL JOIN",
+				want: bothRefuse, name: "NATURAL JOIN",
 				sql: "SELECT COUNT(*) FROM a NATURAL JOIN b",
 			},
 			{
@@ -141,14 +173,11 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 				// candidate readings of Go's gate. The grammar puts CROSS and
 				// the optional join condition in the same alternative, so
 				// `CROSS JOIN b ON p` parses with a NON-null expression and
-				// Java's NPE cannot fire. If Go's rejection is really about the
-				// null, it must let this through; if it is about the CROSS
-				// token, it refuses a query Java answers.
-				//
-				// Not part of the null-ON census — it is the opposite of one —
-				// but it must still AGREE, which is what mustAgree marks.
-				name: "CROSS JOIN with ON",
-				sql:  "SELECT COUNT(*) FROM a CROSS JOIN b ON 1 = 1",
+				// Java's NPE cannot fire, so Java answers it. Go refused it
+				// while its gate keyed on the CROSS token — the javaOnly class,
+				// and the one direction that is always a defect.
+				want: bothAnswer, name: "CROSS JOIN with ON",
+				sql: "SELECT COUNT(*) FROM a CROSS JOIN b ON 1 = 1",
 			},
 			{
 				// ERROR PRECEDENCE. Two things are wrong with
@@ -163,7 +192,7 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 				// Accept/reject agreement is not enough here, so this arm is
 				// the one place rows are not the measurement: bothReject is set
 				// AND the messages are compared for the table name.
-				nullOn: true, name: "no ON *and* an unknown table",
+				want: bothRefuse, name: "no ON *and* an unknown table",
 				sql:            "SELECT COUNT(*) FROM a JOIN missing_table",
 				wantsTableName: true,
 			},
@@ -173,100 +202,68 @@ var _ = Describe("JoinWithoutOnJavaProbe", func() {
 				// it is not a parse at all. Both engines share this grammar, so
 				// both must refuse it — and if one does not, the two are running
 				// different grammars, which would make every row above suspect.
-				nullOn: true, name: "LEFT JOIN, no ON (unparseable)",
+				want: bothRefuse, name: "LEFT JOIN, no ON (unparseable)",
 				sql: "SELECT COUNT(*) FROM a LEFT JOIN b",
 			},
 		}
 
-		var divergent, disagreed []string
-		var nullOnArms, controls, named int
+		var mismatched []string
+		byKind := map[outcome]int{}
 		for _, c := range cases {
 			javaOut := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			goOut := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
-			mark := "  "
-			if rejects(javaOut) != rejects(goOut) {
-				mark = "!!"
-				divergent = append(divergent, fmt.Sprintf(
-					"%s (javaRejects=%v goRejects=%v)\n    java: %s\n    go  : %s\n    sql : %s",
-					c.name, rejects(javaOut), rejects(goOut), javaOut, goOut, c.sql))
-			}
-			fmt.Fprintf(GinkgoWriter, "%s %-32s java=%-64s go=%s\n", mark, c.name, javaOut, goOut)
 
-			if c.control {
-				controls++
-				Expect(rejects(goOut)).To(BeFalse(),
-					"%s is a CONTROL and Go rejected it, so this fixture is not measuring "+
-						"the null-ON population — it is measuring something broken about joins\n"+
-						"  go: %s\n  sql: %s", c.name, goOut, c.sql)
-				Expect(rejects(javaOut)).To(BeFalse(),
-					"%s is a CONTROL and Java rejected it\n  java: %s\n  sql: %s",
-					c.name, javaOut, c.sql)
-				Expect(goOut).To(Equal(javaOut),
-					"%s is a CONTROL and the engines disagree on it, so no null-ON row below "+
-						"can be read as a finding about null ON\n  java: %s\n  go: %s",
-					c.name, javaOut, goOut)
+			got := classify(rejects(javaOut), rejects(goOut))
+			mark := "  "
+			if got != c.want {
+				mark = "!!"
+				mismatched = append(mismatched, fmt.Sprintf(
+					"%s\n    want %s, got %s\n    java: %s\n    go  : %s\n    sql : %s",
+					c.name, c.want, got, javaOut, goOut, c.sql))
 			}
-			if c.nullOn {
-				nullOnArms++
+			byKind[c.want]++
+			fmt.Fprintf(GinkgoWriter, "%s %-34s %-12s java=%-58s go=%s\n",
+				mark, c.name, got, javaOut, goOut)
+
+			// Where both engines ANSWER, the ROWS must match too — agreeing that
+			// there is no error is not agreeing on the result.
+			if c.want == bothAnswer && got == bothAnswer && javaOut != goOut {
+				mismatched = append(mismatched, fmt.Sprintf(
+					"%s: both engines answered but with DIFFERENT rows\n"+
+						"    java: %s\n    go  : %s\n    sql : %s", c.name, javaOut, goOut, c.sql))
 			}
-			if !c.control {
-				// The ACCEPT/REJECT decision is the whole measurement. Rows are
-				// not compared here: where both engines accept, the comma-join
-				// control already pins the cartesian answer, and where both
-				// reject, the messages cannot be shared (Java's is an NPE naming
-				// a parser-internal class, Go's is a clean 0A000).
-				//
-				// Collected rather than asserted in the loop: a Gomega failure
-				// aborts the spec, so asserting here would report the FIRST
-				// disagreeing spelling and leave the rest unmeasured — and the
-				// question this file asks is which spellings diverge, not
-				// whether any does.
-				if rejects(goOut) != rejects(javaOut) {
-					disagreed = append(disagreed, fmt.Sprintf(
-						"%s\n    java: %s\n    go  : %s\n    sql : %s",
-						c.name, javaOut, goOut, c.sql))
-				}
-				if c.wantsTableName {
-					named++
-					for engine, out := range map[string]string{"java": javaOut, "go": goOut} {
-						if !strings.Contains(strings.ToUpper(out), "MISSING_TABLE") {
-							disagreed = append(disagreed, fmt.Sprintf(
-								"%s: %s refused it WITHOUT naming the missing table, so the two "+
-									"faults are being reported in a different ORDER than the other "+
-									"engine\n    %s: %s\n    sql : %s",
-								c.name, engine, engine, out, c.sql))
-						}
+			// Where both REFUSE an unknown table, both must NAME it — otherwise
+			// the two faults are being reported in a different order.
+			if c.wantsTableName {
+				for _, e := range []struct{ name, out string }{{"java", javaOut}, {"go", goOut}} {
+					if !strings.Contains(strings.ToUpper(e.out), "MISSING_TABLE") {
+						mismatched = append(mismatched, fmt.Sprintf(
+							"%s: %s refused it WITHOUT naming the missing table, so source "+
+								"resolution is not running first\n    %s: %s\n    sql : %s",
+							c.name, e.name, e.name, e.out, c.sql))
 					}
 				}
 			}
 		}
 
-		fmt.Fprintf(GinkgoWriter, "\nDIVERGENT: %d of %d\n", len(divergent), len(cases))
-		for _, d := range divergent {
-			fmt.Fprintf(GinkgoWriter, "%s\n", d)
-		}
-		Expect(disagreed).To(BeEmpty(),
-			"the engines DISAGREE on whether a join with no ON clause is a legal query, "+
-				"for %d of the %d null-ON spellings measured. Go accepting what Java refuses is the "+
-				"silent direction — the query runs, returns a cartesian product, and nothing "+
-				"says the two engines read it differently. Go's gate in extractJoinClause "+
-				"keys on the CROSS TOKEN; the null it guards against comes from the ABSENT "+
-				"ON, so it must key on that instead.\n\n%s",
-			len(disagreed), nullOnArms, strings.Join(disagreed, "\n"))
+		Expect(mismatched).To(BeEmpty(),
+			"%d of %d arms did not land on their expected outcome:\n\n%s",
+			len(mismatched), len(cases), strings.Join(mismatched, "\n"))
 
-		// Two floors, because there are two ways to be green having measured
-		// nothing: no null-ON arm left in the slice, and no control left to make
-		// the null-ON rows interpretable.
-		Expect(named).To(Equal(1),
-			"%d error-precedence arms ran, not 1 — without one, nothing checks that a "+
-				"conditionless join over an UNKNOWN TABLE reports the same fault first in "+
-				"both engines", named)
-		Expect(nullOnArms).To(Equal(7),
-			"the null-ON population changed: %d arms were measured, not the 7 this file "+
-				"ran against the live JVM. A green from a shrunken set says nothing about "+
-				"the spellings that were dropped", nullOnArms)
-		Expect(controls).To(Equal(2),
-			"%d controls ran, not 2 — without a join shape both engines accept and agree on, "+
-				"a null-ON arm rejected by both proves nothing about null ON", controls)
+		// One floor per outcome class, because a green from a shrunken set says
+		// nothing. goExtends is the one that matters most: it is the class this
+		// file exists to record, and it is also the class that silently empties
+		// if someone "restores conformance" by refusing these queries again.
+		Expect(byKind[bothAnswer]).To(Equal(4),
+			"%d both-answer arms, not 4 — without them a goExtends arm cannot be told "+
+				"apart from an engine that is simply broken", byKind[bothAnswer])
+		Expect(byKind[goExtends]).To(Equal(3),
+			"%d goExtends arms, not 3 — these are the deliberate extensions (CROSS JOIN, "+
+				"bare JOIN, INNER JOIN, each with no condition). If this reaches zero, Go has "+
+				"gone back to refusing queries it answers correctly", byKind[goExtends])
+		Expect(byKind[bothRefuse]).To(Equal(3),
+			"%d both-refuse arms, not 3 — NATURAL JOIN, the unparseable LEFT JOIN and the "+
+				"unknown table are what show the extension is deliberate rather than a parser "+
+				"that accepts anything", byKind[bothRefuse])
 	})
 })

@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=354 queries=2550 dml=157 non_query=104 plan_errors=268 unexpected_errors=4
+# files=354 queries=2556 dml=157 non_query=104 plan_errors=265 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -3481,9 +3481,14 @@ plan:  Project([_current.ID#0, _current.V#3], PredicatesFilter(IndexScan(IDX_V, 
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryCoveringIndexPlan
-=== cross_join.yaml#0 expect-error=0A000
+=== cross_join.yaml#0
 sql:   SELECT a.id, b.id FROM a CROSS JOIN b ORDER BY a.id, b.id
-plan:  <PLAN-ERROR: 0A000: a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products>
+plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), Scan(A))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === cross_join.yaml#1
 sql:   SELECT a.id, b.id FROM a, b ORDER BY a.id, b.id
 plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), Scan(A))))
@@ -3493,6 +3498,22 @@ shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cross_join.yaml#2
+sql:   SELECT a.id, b.id FROM a JOIN b ORDER BY a.id, b.id
+plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), Scan(A))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#3
+sql:   SELECT COUNT(*) FROM a INNER JOIN b
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#4
 sql:   SELECT a.id, b.id FROM a INNER JOIN b ON 1 = 1 ORDER BY a.id, b.id
 plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), PredicatesFilter(Scan(A), [1 preds]))))
 shape: RecordQueryProjectionPlan
@@ -3501,28 +3522,7 @@ shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
-=== cross_join.yaml#3
-sql:   SELECT COUNT(*) FROM a, b
-plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryStreamingAggregationPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryScanPlan
-shape:       RecordQueryScanPlan
-=== cross_join.yaml#4
-sql:   SELECT a.v, b.w FROM a, b WHERE a.id = b.id ORDER BY a.id
-plan:  Project([_current.V#1, _current.W#3], FlatMap(outer=Scan(A), inner=Scan(B, [=])))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryFlatMapPlan
-shape:     RecordQueryScanPlan
-shape:     RecordQueryScanPlan
-=== cross_join.yaml#5 expect-error=0A000
-sql:   SELECT a.id, b.id FROM a JOIN b ORDER BY a.id, b.id
-plan:  <PLAN-ERROR: 0A000: a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products>
-=== cross_join.yaml#6 expect-error=0A000
-sql:   SELECT COUNT(*) FROM a INNER JOIN b
-plan:  <PLAN-ERROR: 0A000: a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products>
-=== cross_join.yaml#7
+=== cross_join.yaml#5
 sql:   SELECT a.id, b.id FROM a CROSS JOIN b ON 1 = 1 ORDER BY a.id, b.id
 plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), PredicatesFilter(Scan(A), [1 preds]))))
 shape: RecordQueryProjectionPlan
@@ -3531,7 +3531,7 @@ shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
-=== cross_join.yaml#8
+=== cross_join.yaml#6
 sql:   SELECT a.id, b.id FROM a JOIN b USING (id) ORDER BY a.id, b.id
 plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], FlatMap(outer=Scan(A), inner=Scan(B, [=]))))
 shape: RecordQueryProjectionPlan
@@ -3539,10 +3539,82 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
-=== cross_join.yaml#9 expect-error=42F01
+=== cross_join.yaml#7
+sql:   SELECT COUNT(*) FROM a, b
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#8
+sql:   SELECT a.v, b.w FROM a, b WHERE a.id = b.id ORDER BY a.id
+plan:  Project([_current.V#1, _current.W#3], FlatMap(outer=Scan(A), inner=Scan(B, [=])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
+=== cross_join.yaml#9
+sql:   SELECT COUNT(*) FROM a WHERE EXISTS (SELECT 1 FROM a JOIN b)
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(Project([1], NestedLoopJoin(INNER, Scan(A), Scan(B)))), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryNestedLoopJoinPlan
+shape:               RecordQueryScanPlan
+shape:               RecordQueryScanPlan
+=== cross_join.yaml#10
+sql:   SELECT COUNT(*) FROM a JOIN b UNION ALL SELECT COUNT(*) FROM a
+plan:  UnorderedUnion(Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B)))), Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(A))))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#11
+sql:   SELECT (SELECT COUNT(*) FROM a JOIN b) FROM a
+plan:  Project([(SCALAR_SUBQUERY)], Scan(A))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cross_join.yaml#12
+sql:   SELECT COUNT(*) FROM a JOIN (SELECT id FROM b) x
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], Scan(B)), Scan(A))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#13
+sql:   WITH x AS (SELECT id FROM b) SELECT COUNT(*) FROM a JOIN x
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], Scan(B)), Scan(A))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#14
+sql:   WITH x AS (SELECT id FROM b) SELECT COUNT(*) FROM a JOIN x ON a.id = x.id
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Project([_current.ID#0], Scan(B)), inner=Scan(A, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#15 expect-error=42F01
 sql:   SELECT COUNT(*) FROM a JOIN missing_table
 plan:  <PLAN-ERROR: 42F01: table "MISSING_TABLE" does not exist>
-=== cross_join.yaml#10 expect-error=42F01
+=== cross_join.yaml#16 expect-error=42F01
 sql:   SELECT COUNT(*) FROM a JOIN missing_table ON 1 = 1
 plan:  <PLAN-ERROR: 42F01: table "MISSING_TABLE" does not exist>
 === cross_join_filter.yaml#0
@@ -9732,8 +9804,8 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === join_using_shapes.yaml#2
-sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (id, k) ORDER BY a.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(B), inner=PredicatesFilter(Scan(C, [=]), [1 preds])), inner=Scan(A, [=]))))
+sql:   SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(B), inner=PredicatesFilter(Scan(C, [=]), [1 preds])), inner=PredicatesFilter(Scan(A, [=]), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -9741,7 +9813,8 @@ shape:       RecordQueryFlatMapPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 === join_using_shapes.yaml#3
 sql:   SELECT a.id, b.k FROM a LEFT JOIN b USING (id, k) ORDER BY a.id
 plan:  Project([_current.ID#0, _current.K#3], FlatMap(outer=Scan(A), inner=DefaultOnEmpty(PredicatesFilter(Scan(B, [=]), [1 preds]))))

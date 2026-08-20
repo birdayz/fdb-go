@@ -1665,13 +1665,12 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// ErrCodeUndefinedDatabase (the existing table-not-found path, unchanged).
 		// NOT a silent FlatMap(Explode).
 		//
-		// THIS ARM SURVIVES ONLY BECAUSE THE CONDITIONLESS-JOIN REJECTION IS
-		// DEFERRED. That gate refuses `a JOIN b` outright, and raising it at
-		// parse time — as it briefly was — preempts source resolution here and
-		// answers 0A000, which would silently retire the sentinel. It runs after
-		// resolution precisely so a source that does not resolve reports its own
-		// fault first, which is the order Java reports them in. See
-		// rejectConditionlessJoins.
+		// THE SHAPE IS REACHABLE BECAUSE A CONDITIONLESS JOIN IS SUPPORTED.
+		// `a JOIN b` with no ON plans the cartesian product rather than being
+		// refused, so this query reaches source resolution and fails there on
+		// the unknown `T1` qualifier — which is what makes it a sentinel at all.
+		// A gate that refused conditionless joins up front would answer 0A000
+		// here and silently retire it.
 		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V"`, api.ErrCodeUndefinedDatabase)
 	})
 

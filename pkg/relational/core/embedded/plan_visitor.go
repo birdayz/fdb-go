@@ -507,9 +507,6 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	if err := rejectDuplicateUnnestAliasesInFrom(fs.tableName, fs.tableAlias, fs.joins, resolvesToTable); err != nil {
 		return nil, err
 	}
-	if err := rejectConditionlessJoins(fs.joins, v.md, v.schemaName); err != nil {
-		return nil, err
-	}
 
 	op, err := v.visitFrom(simpleTable, fs)
 	if err != nil {
