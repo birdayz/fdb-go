@@ -1,0 +1,53 @@
+# join_using_shapes.yaml
+#
+# `JOIN … USING (cols)` has no ON expression of its own — the parser
+# SYNTHESIZES one, qualifying the left column by "the preceding source's
+# alias: leftAlias for the first join, the PRIOR JOIN'S RIGHT alias
+# otherwise" (select_parser.go#parseJoinClauses). That alias CHAIN is the
+# part worth measuring: it is a different rule for the first join than
+# for every later one, and nothing was exercising the later ones.
+#
+# A three-way chain and a multi-column USING are the two shapes that can
+# tell a correct chain from one that always reuses the first alias:
+# with `a JOIN b USING (id) JOIN c USING (id)` a synthesis that qualified
+# the second join's left column by `a` instead of `b` still gives the
+# same rows here (a.id = b.id already holds), so the fixture makes the
+# THIRD table disagree with the first on a second column to separate them.
+name: join_using_shapes
+schema_template: |
+  CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT, k BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
+  - INSERT INTO b VALUES (1, 10), (2, 99), (3, 30)
+  - INSERT INTO c VALUES (1, 10), (2, 20), (3, 77)
+tests:
+  # Single-column USING, first join — the simple case.
+  - query: SELECT a.id FROM a JOIN b USING (id) ORDER BY a.id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # Multi-column USING. Both columns must be equated: only id=1 and id=3
+  # have a.k = b.k, so id=2 (k 20 vs 99) must drop. A synthesis that
+  # equated only the FIRST column returns all three.
+  - query: SELECT a.id FROM a JOIN b USING (id, k) ORDER BY a.id
+    rows:
+      - [1]
+      - [3]
+  # THE CHAIN. `a JOIN b USING (id, k) JOIN c USING (id, k)`: the second
+  # USING must be qualified against b, not a. b and c agree on (id,k)
+  # only at id=1 — b.k=99 at id=2 and c.k=77 at id=3 — so the answer is
+  # a single row whichever way the first join went, and the row count is
+  # what separates a chained qualification from a stuck one.
+  - query: SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
+    rows:
+      - [1]
+  # USING on an OUTER join — the same synthesis through the other
+  # grammar arm, where the clause is mandatory rather than optional.
+  - query: SELECT a.id, b.k FROM a LEFT JOIN b USING (id, k) ORDER BY a.id
+    rows:
+      - [1, 10]
+      - [2, null]
+      - [3, 30]

@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=353 queries=2544 dml=157 non_query=104 plan_errors=266 unexpected_errors=4
+# files=354 queries=2548 dml=157 non_query=104 plan_errors=266 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -9710,6 +9710,42 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryFlatMapPlan
 shape:             RecordQueryScanPlan
 shape:             RecordQueryScanPlan
+=== join_using_shapes.yaml#0
+sql:   SELECT a.id FROM a JOIN b USING (id) ORDER BY a.id
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(A), inner=Scan(B, [=])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
+=== join_using_shapes.yaml#1
+sql:   SELECT a.id FROM a JOIN b USING (id, k) ORDER BY a.id
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(A), inner=PredicatesFilter(Scan(B, [=]), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#2
+sql:   SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(B), inner=PredicatesFilter(Scan(C, [=]), [1 preds])), inner=PredicatesFilter(Scan(A, [=]), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== join_using_shapes.yaml#3
+sql:   SELECT a.id, b.k FROM a LEFT JOIN b USING (id, k) ORDER BY a.id
+plan:  Project([_current.ID#0, _current.K#3], FlatMap(outer=Scan(A), inner=DefaultOnEmpty(PredicatesFilter(Scan(B, [=]), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
 === join_with_or_predicate.yaml#0
 sql:   SELECT e.name, d.name FROM emp e, dept d WHERE e.dept_id = d.id AND (d.name = 'Eng' OR e.salary > 85) ORDER BY e.name
 plan:  Project([_current.NAME#2, _current.NAME#5], InMemorySort([_current.NAME#2 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(Scan(DEPT, [=]), [1 preds]))))
