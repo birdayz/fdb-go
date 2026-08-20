@@ -344,7 +344,7 @@ func renderCollectReport(
 ) error {
 	collected := make(map[string]int64, len(report.Collected))
 	for name, st := range report.Collected {
-		collected[name] = st.Count
+		collected[userName(name)] = st.Count
 	}
 	if outputFmt == "json" {
 		enc := json.NewEncoder(cmd.OutOrStdout())
@@ -358,7 +358,7 @@ func renderCollectReport(
 			RecordsScanned: report.RecordsScanned,
 			DurationMS:     elapsed.Milliseconds(),
 			Collected:      collected,
-			Skipped:        skipped,
+			Skipped:        userKeyed(skipped),
 		})
 	}
 	out := cmd.OutOrStdout()
@@ -385,8 +385,9 @@ func renderCollectReport(
 	if len(report.Skipped) > 0 {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "not collected (the planner refuses statistics until every type has one):")
-		for _, name := range sortedKeys(report.Skipped) {
-			fmt.Fprintf(out, "  %s: %s\n", name, report.Skipped[name])
+		skippedByUser := userKeyed(report.Skipped)
+		for _, name := range sortedKeys(skippedByUser) {
+			fmt.Fprintf(out, "  %s: %s\n", name, skippedByUser[name])
 		}
 	}
 	return nil
@@ -439,9 +440,13 @@ func renderStatsStatus(
 	outputFmt, schema string,
 	st embedded.StatisticsStatus,
 ) error {
+	// Keyed by the SQL identifier from here down, so BOTH renderings get it from
+	// one decode. Decoding per consumer is what left the text path leaking the
+	// storage name while JSON was correct -- the same one-of-two-consumers shape
+	// that put ReadRefusal on the text path only.
 	perType := make(map[string]int64, len(st.Stats.PerType))
 	for name, s := range st.Stats.PerType {
-		perType[name] = s.Count
+		perType[userName(name)] = s.Count
 	}
 	if outputFmt == "json" {
 		enc := json.NewEncoder(cmd.OutOrStdout())
@@ -457,12 +462,12 @@ func renderStatsStatus(
 			CurrentVersion:       st.CurrentVersion,
 			AgeVersions:          st.AgeVersions,
 			MaxAgeVersions:       st.MaxAgeVersions,
-			SyntheticTypes:       st.SyntheticTypes,
+			SyntheticTypes:       userNames(st.SyntheticTypes),
 			AmbiguousTypes:       st.AmbiguousTypes,
 			ReadRefusal:          string(st.ReadRefusal),
 			ReadError:            errString(st.ReadErr),
-			MissingTypes:         st.MissingTypes,
-			ExtraTypes:           st.ExtraTypes,
+			MissingTypes:         userNames(st.MissingTypes),
+			ExtraTypes:           userNames(st.ExtraTypes),
 		})
 	}
 
@@ -488,7 +493,7 @@ func renderStatsStatus(
 	if len(st.SyntheticTypes) > 0 {
 		// Naming them is the difference between a verdict and an instruction.
 		fmt.Fprintf(tw, "Synthetic types:\t%s (unmodeled by this port; statistics are refused for the schema)\n",
-			strings.Join(st.SyntheticTypes, ", "))
+			strings.Join(userNames(st.SyntheticTypes), ", "))
 	}
 	if len(st.AmbiguousTypes) > 0 {
 		// Same reason as synthetic types: a verdict an operator cannot act on is
@@ -499,14 +504,14 @@ func renderStatsStatus(
 			strings.Join(st.AmbiguousTypes, ", "))
 	}
 	if len(st.MissingTypes) > 0 {
-		fmt.Fprintf(tw, "Missing types:\t%s\n", strings.Join(st.MissingTypes, ", "))
+		fmt.Fprintf(tw, "Missing types:\t%s\n", strings.Join(userNames(st.MissingTypes), ", "))
 	}
 	if len(st.ExtraTypes) > 0 {
 		// Orphans never refuse: the planner asks by declared type name and
 		// simply never names a dropped table. Reported so an operator can tell
 		// a stale entry from a schema they misremembered.
 		fmt.Fprintf(tw, "Orphan types:\t%s (dropped from the schema; harmless)\n",
-			strings.Join(st.ExtraTypes, ", "))
+			strings.Join(userNames(st.ExtraTypes), ", "))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -522,6 +527,15 @@ func renderStatsStatus(
 		switch st.Refusal {
 		case embedded.StatisticsNotCollected:
 			fmt.Fprintln(out, "run `frl stats collect` to gather them")
+		case embedded.StatisticsAmbiguousNames:
+			// Same shape as the synthetic arm: decided from metadata WITHOUT a read,
+			// so claiming absence would assert a fact this path went out of its way
+			// not to look up. What is certain is that collection cannot help.
+			fmt.Fprintf(out, "this schema declares record types whose names collide across "+
+				"the SQL and storage namespaces (%s), so a lookup cannot say which "+
+				"table is meant; statistics can never be used for it and collection "+
+				"is refused too\n", strings.Join(st.AmbiguousTypes, " and "))
+			fmt.Fprintln(out, "whether any are still stored was not read")
 		case embedded.StatisticsSyntheticTypes:
 			// This verdict is reached WITHOUT READING -- the synthetic gate decides
 			// before any I/O, deliberately, since the answer cannot depend on it. So
@@ -630,11 +644,62 @@ func foundTriState(st embedded.StatisticsStatus) *bool {
 	switch st.Refusal {
 	case embedded.StatisticsTorn:
 		return &yes // entries were read; only the header is unusable
-	case embedded.StatisticsReadFailed, embedded.StatisticsSyntheticTypes:
-		return nil // existence not established
+	case embedded.StatisticsReadFailed,
+		embedded.StatisticsSyntheticTypes,
+		embedded.StatisticsAmbiguousNames:
+		// Existence NOT established. The first could not read; the other two are
+		// metadata-only verdicts that short-circuit before the read on purpose,
+		// so Found is false because nobody looked -- and entries from an earlier
+		// metadata version may well still be there.
+		//
+		// Ambiguity joined this list the moment the read was skipped for it. That
+		// is the coupling worth naming: making a verdict cheaper by not reading
+		// turns its Found into an unknown, and any refusal that gains a
+		// short-circuit has to be added here in the same change.
+		return nil
 	}
 	if st.Found {
 		return &yes
 	}
 	return &no
+}
+
+// userName converts a STORAGE record-type name to the SQL identifier an
+// operator wrote, at the rendering boundary and nowhere earlier.
+//
+// Metadata and the collector both key by storage names — a table quoted as
+// "MY$TABLE" is stored as MY__1TABLE — and every operator-facing surface here
+// was copying those keys verbatim. That names a table the operator does not
+// have, and `per_type` is a documented interface, so a script keying by table
+// name silently misses rather than failing.
+//
+// Decoding HERE, not upstream, is deliberate: the collision the reader detects
+// lives in storage space, and the map the planner is handed must stay keyed the
+// way the planner asks. Only what a human or a script reads gets translated.
+func userName(storage string) string {
+	return recordlayer.ToUserIdentifier(storage)
+}
+
+// userNames is userName over a slice, preserving order.
+func userNames(storage []string) []string {
+	if storage == nil {
+		return nil
+	}
+	out := make([]string, len(storage))
+	for i, s := range storage {
+		out[i] = userName(s)
+	}
+	return out
+}
+
+// userKeyed is userName over a map's keys.
+func userKeyed[V any](m map[string]V) map[string]V {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]V, len(m))
+	for k, v := range m {
+		out[userName(k)] = v
+	}
+	return out
 }

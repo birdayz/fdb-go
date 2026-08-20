@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/session"
+	"google.golang.org/protobuf/proto"
 )
 
 // decideStatistics is the whole read-side gate (RFC-236). It is exercised here
@@ -676,4 +678,97 @@ func TestConnectionSyntheticRefusalCarriesTheTypedError(t *testing.T) {
 	if !errors.As(wrapped, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
 		t.Errorf("the relational error code was lost while wrapping: %v", wrapped)
 	}
+}
+
+// AN AMBIGUOUS SCHEMA MUST ALSO COST NO READ.
+//
+// The ambiguity gate's own comment claimed it was decided "before any read",
+// and that was true of decideStatistics and FALSE of evaluateCollectedStatistics,
+// which short-circuited only on synthetic types. So an ambiguous schema paid an
+// FDB transaction on every opt-in plan-cache miss and threw the answer away.
+//
+// A comment describing the GATE reads as a claim about the PATH through it, and
+// this is the second time in this feature that gap has been real. The nil
+// database is what makes the difference observable rather than merely slower.
+func TestAmbiguousVerdictTouchesNoIO(t *testing.T) {
+	t.Parallel()
+
+	md := ambiguousTestMetaData(t)
+	pair, ambiguous := md.AmbiguousDeclaredNames()
+	if !ambiguous {
+		t.Fatalf("fixture declares no colliding pair; this cannot reach the gate (%v)",
+			md.RecordTypes())
+	}
+
+	c := &EmbeddedConnection{sess: &session.Session{Schema: "S", DBPath: "/db"}}
+
+	var st StatisticsStatus
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("evaluateCollectedStatistics reached the read path for ambiguous "+
+					"metadata and panicked on the nil database (%v). The verdict is fixed "+
+					"before any I/O, so the early return must precede statisticsLocation.", r)
+			}
+		}()
+		st = evaluateCollectedStatistics(context.Background(), c, md)
+	}()
+
+	if st.Refusal != StatisticsAmbiguousNames {
+		t.Fatalf("Refusal = %q, want %q", st.Refusal, StatisticsAmbiguousNames)
+	}
+	if len(st.AmbiguousTypes) != 2 {
+		t.Errorf("AmbiguousTypes = %v, want the pair %v", st.AmbiguousTypes, pair)
+	}
+}
+
+// ambiguousTestMetaData builds metadata declaring two record types whose names
+// collide across the SQL and storage namespaces.
+//
+// MY$TABLE is stored as MY__1TABLE, and a table whose SQL name IS MY__1TABLE is
+// stored as MY__01TABLE — so declaring both storage names is the collision. The
+// demo proto has no such pair, and SKIPPING when a fixture cannot express the
+// condition would leave the arm undriven while reporting green, so it is built.
+//
+// Renaming a record type means renaming three things, not one: the message, the
+// RecordTypes entry, and the UNION's field — both its name and its FULLY
+// QUALIFIED type reference. Missing the qualification silently matches nothing
+// and leaves the references dangling, and the types then stop resolving at all.
+func ambiguousTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	p, err := syntheticTestMetaData(t).ToProto()
+	if err != nil {
+		t.Fatalf("to proto: %v", err)
+	}
+	// No joined types: the synthetic gate runs first and would mask this one.
+	p.JoinedRecordTypes = nil
+	rename := map[string]string{"Order": "MY__1TABLE", "Customer": "MY__01TABLE"}
+	for _, msg := range p.GetRecords().GetMessageType() {
+		if to, ok := rename[msg.GetName()]; ok {
+			msg.Name = proto.String(to)
+		}
+		for _, f := range msg.GetField() {
+			full := strings.TrimPrefix(f.GetTypeName(), ".")
+			short, pkgPrefix := full, ""
+			if i := strings.LastIndex(full, "."); i >= 0 {
+				short, pkgPrefix = full[i+1:], full[:i+1]
+			}
+			if to, ok := rename[short]; ok {
+				f.TypeName = proto.String("." + pkgPrefix + to)
+				if strings.HasPrefix(f.GetName(), "_") {
+					f.Name = proto.String("_" + to)
+				}
+			}
+		}
+	}
+	for _, rt := range p.GetRecordTypes() {
+		if to, ok := rename[rt.GetName()]; ok {
+			rt.Name = proto.String(to)
+		}
+	}
+	md, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatalf("from proto: %v", err)
+	}
+	return md
 }

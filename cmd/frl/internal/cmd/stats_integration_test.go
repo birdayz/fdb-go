@@ -965,3 +965,74 @@ func TestStats_ShowJSONFoundIsTriState(t *testing.T) {
 		})
 	}
 }
+
+// OPERATOR-FACING NAMES ARE SQL IDENTIFIERS, NOT STORAGE NAMES.
+//
+// Metadata and the collector key by ESCAPED names — a table quoted as
+// "MY$TABLE" is stored as MY__1TABLE — and every rendering surface copied those
+// keys verbatim. That names a table the operator does not have. `per_type` is a
+// documented interface, so a script keying by table name silently misses rather
+// than failing, which is the worse direction.
+//
+// Only the AMBIGUOUS pair was decoded when that gate was added: the copy in
+// front of me, not the class. This covers the class.
+func TestStats_OperatorFacingNamesAreDecoded(t *testing.T) {
+	t.Parallel()
+
+	const storage, sql = "MY__1TABLE", "MY$TABLE"
+	if got := recordlayer.ToUserIdentifier(storage); got != sql {
+		t.Fatalf("fixture is wrong: %q decodes to %q, not %q — this test would then "+
+			"assert nothing about decoding", storage, got, sql)
+	}
+
+	render := func(t *testing.T, format string, st embedded.StatisticsStatus) string {
+		t.Helper()
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, format, "/x/MAIN", st); err != nil {
+			t.Fatalf("renderStatsStatus(%s): %v", format, err)
+		}
+		return buf.String()
+	}
+
+	cases := []struct {
+		name string
+		st   embedded.StatisticsStatus
+	}{
+		{"per_type", embedded.StatisticsStatus{
+			Usable: true, Found: true,
+			Stats: recordlayer.StoreStatistics{
+				PerType: map[string]recordlayer.RecordTypeStatistic{storage: {Count: 7}},
+			},
+		}},
+		{"missing_types", embedded.StatisticsStatus{
+			Refusal: embedded.StatisticsIncomplete, Found: true, MissingTypes: []string{storage},
+		}},
+		{"extra_types", embedded.StatisticsStatus{
+			Usable: true, Found: true, ExtraTypes: []string{storage},
+		}},
+		{"synthetic_types", embedded.StatisticsStatus{
+			Refusal: embedded.StatisticsSyntheticTypes, SyntheticTypes: []string{storage},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			st := tc.st
+			for _, format := range []string{"text", "json"} {
+				out := render(t, format, st)
+				if !strings.Contains(out, sql) {
+					t.Errorf("%s/%s does not name the table by its SQL identifier %q:\n%s",
+						tc.name, format, sql, out)
+				}
+				// And the raw storage name must NOT leak alongside it, or the
+				// assertion above is satisfied by printing both.
+				if strings.Contains(out, storage) {
+					t.Errorf("%s/%s leaks the storage name %q:\n%s",
+						tc.name, format, storage, out)
+				}
+			}
+		})
+	}
+}
