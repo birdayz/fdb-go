@@ -116,26 +116,71 @@ func TestFDB_ClauseKeywordsAreNotSwallowedAsAliases(t *testing.T) {
 		})
 	}
 
-	// The one that was actually broken, kept here beside its siblings so the
-	// class and its instance live together. Both spellings must agree, since
-	// SQL makes OUTER optional.
-	t.Run("FULL with and without OUTER agree", func(t *testing.T) {
-		withOuter, err := mmRows(t, ctx, db,
-			"SELECT COUNT(*) FROM t FULL OUTER JOIN t AS u ON u.g = 1")
-		if err != nil {
-			t.Fatalf("FULL OUTER JOIN: %v", err)
+	// OUTER IS OPTIONAL FOR ALL THREE, and all three are checked rather than
+	// only the one that broke.
+	//
+	// The grammar spells them together — `(LEFT | RIGHT | FULL) OUTER? JOIN` —
+	// so the optionality is one production and the property is one property.
+	// FULL was the member that failed it, because FULL alone was still in
+	// keywordsCanBeId; LEFT and RIGHT were already excluded. Checking only FULL
+	// would pin the instance and leave the property resting on the fact that
+	// nobody has since added LEFT or RIGHT back to that list.
+	//
+	// The predicate is chosen so the three joins give DIFFERENT answers from
+	// each other over this fixture. Two rows on the left, five on the right, and
+	// `u.g = 1` matches three of them: LEFT preserves the unmatched left rows,
+	// RIGHT the unmatched right ones, FULL both. A test whose three joins all
+	// returned the same count would pass against an engine that had collapsed
+	// them into one.
+	t.Run("OUTER is optional for every join type", func(t *testing.T) {
+		type result struct {
+			outer, short []string
 		}
-		short, err := mmRows(t, ctx, db,
-			"SELECT COUNT(*) FROM t FULL JOIN t AS u ON u.g = 1")
-		if err != nil {
-			t.Fatalf("FULL JOIN (no OUTER) is no longer accepted: %v\n"+
-				"  SQL makes OUTER optional, so the short spelling must parse as the same join",
-				err)
+		got := map[string]result{}
+
+		for _, kind := range []string{"LEFT", "RIGHT", "FULL"} {
+			outerQ := fmt.Sprintf(
+				"SELECT COUNT(*) FROM t %s OUTER JOIN t AS u ON u.g = 1 AND t.g = 2", kind)
+			shortQ := fmt.Sprintf(
+				"SELECT COUNT(*) FROM t %s JOIN t AS u ON u.g = 1 AND t.g = 2", kind)
+
+			withOuter, err := mmRows(t, ctx, db, outerQ)
+			if err != nil {
+				t.Errorf("%s OUTER JOIN failed: %v", kind, err)
+				continue
+			}
+			short, err := mmRows(t, ctx, db, shortQ)
+			if err != nil {
+				t.Errorf("`%s JOIN` (no OUTER) is not accepted: %v\n"+
+					"  SQL makes OUTER optional and the grammar agrees — "+
+					"`(LEFT | RIGHT | FULL) OUTER? JOIN` — so the short spelling must parse as "+
+					"the same join", kind, err)
+				continue
+			}
+			if !mmEqRows(short, withOuter) {
+				t.Errorf("`%s JOIN` and `%s OUTER JOIN` disagree\n  OUTER -> %v\n  short -> %v\n"+
+					"  (%s is being consumed as a table ALIAS — check whether it has returned to "+
+					"keywordsCanBeId, which is what made FULL do exactly this)",
+					kind, kind, withOuter, short, kind)
+			}
+			got[kind] = result{outer: withOuter, short: short}
 		}
-		if !mmEqRows(short, withOuter) {
-			t.Errorf("FULL JOIN and FULL OUTER JOIN disagree again\n  OUTER -> %v\n"+
-				"  short -> %v\n  (FULL has returned to keywordsCanBeId, so `FROM t FULL JOIN`"+
-				" is being read as `FROM t AS FULL JOIN` — an inner join)", withOuter, short)
+
+		// The vacuity guard, and it is the one that matters here: three joins
+		// answering identically would satisfy every assertion above while
+		// proving nothing about which join ran. Over this fixture they must
+		// differ — LEFT and RIGHT preserve different sides, and FULL preserves
+		// both, so FULL is strictly the largest.
+		if len(got) != 3 {
+			t.Fatalf("only %d join kinds were measured, not 3 — the comparisons above are "+
+				"about a shrunken set", len(got))
+		}
+		left, right, full := got["LEFT"].outer, got["RIGHT"].outer, got["FULL"].outer
+		if mmEqRows(left, right) && mmEqRows(right, full) {
+			t.Errorf("LEFT (%v), RIGHT (%v) and FULL (%v) all answered the SAME over a fixture "+
+				"built to separate them. Each assertion above then compares a join with itself, "+
+				"and an engine that collapsed all three into one shape would pass",
+				left, right, full)
 		}
 	})
 }
