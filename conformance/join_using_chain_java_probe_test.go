@@ -172,7 +172,8 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				// builder (buildExactScopeSourceOrBodyError, which today only
 				// serves join/derived-legged bodies), which is a change to
 				// shared CTE derivation rather than to this resolver. Booked in
-				// TODO.md.
+				// TODO.md under "A derived source's schema is advertised before
+				// its body is validated".
 				//
 				// Pinned by naming BOTH sides so it fails when it changes in
 				// either direction — repaired, or moved to a third answer.
@@ -372,7 +373,7 @@ var _ = Describe("JoinUsingRowVersionJavaProbe", func() {
 				// "both engines refused" is weaker than that — both drifting
 				// to 42703 would keep an agreement check green while making
 				// the claim false.
-				javaSays: "Ambiguous reference",
+				javaSays: "Ambiguous reference __ROW_VERSION",
 				goSays:   "42702",
 			},
 		}

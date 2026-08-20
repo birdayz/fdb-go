@@ -3328,12 +3328,6 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `__ROW_VERSION` when the store keeps row versions and a
 				// descriptor never carries it, so a left owner found on one
 				// surface could be declared absent on the other.
-				if rightCols == nil {
-					// Undescribable right side: decline the join rather than
-					// call the column missing.
-					owners = nil
-					break
-				}
 				if _, ok := rightCols.LookupColumn(semantic.FromNormalized(col)); !ok {
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)
