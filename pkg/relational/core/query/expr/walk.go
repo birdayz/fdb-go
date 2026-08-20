@@ -700,16 +700,39 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 // condition can be either a plain value (boolean column) or a
 // predicate (comparison like `score = 0`). Returns a Value that
 // evaluates to boolean for use in ConditionSelectorValue.
+// walkCaseCondition resolves the WHEN condition of a SEARCHED case, which is a
+// boolean condition by definition — so it is walked as a PREDICATE first, and
+// only as a value if no predicate reading exists.
+//
+// The order is load-bearing. This grammar parses `( expr )` as a one-field
+// RECORD constructor (the same production that builds `(x, y)`), and a value
+// walk of a parenthesized COMPOUND boolean succeeds by building that record
+// around the predicate. Walking values first therefore accepted `{_0: predicate}`
+// as the condition and compared the RECORD with TRUE — never equal, so every row
+// took the ELSE branch, silently:
+//
+//	CASE WHEN  a = 1 AND b = 1  THEN 1 ELSE 0 END -> WHEN(predicate, TRUE)
+//	CASE WHEN (a = 1 AND b = 1) THEN 1 ELSE 0 END -> WHEN({_0: predicate}, TRUE)
+//
+// A parenthesized simple comparison was unaffected — the value walk fails on it
+// and the old fallback rescued it — which is why the defect hid: `(a = 1)`
+// worked and `(a = 1 AND b = 1)` did not.
+//
+// The predicate path already treats a parenthesized condition as a GROUPING
+// (walkPredicatedExpression → unwrapParenPredicate), which is what parentheses
+// mean, and it lifts a bare value used as a condition the way Java does. So
+// asking it first is both the correct reading of a searched CASE and the one
+// that makes the two spellings agree.
 func (r *Resolver) walkCaseCondition(ctx antlrgen.IExpressionContext) (values.Value, error) {
-	v, err := r.WalkExpression(ctx)
-	if err == nil {
-		return v, nil
-	}
 	pred, predErr := r.WalkPredicate(ctx)
-	if predErr != nil {
-		return nil, err
+	if predErr == nil {
+		return &predicateValue{pred: pred}, nil
 	}
-	return &predicateValue{pred: pred}, nil
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		return nil, predErr
+	}
+	return v, nil
 }
 
 // PredicateValueHolder is implemented by values that wrap a
