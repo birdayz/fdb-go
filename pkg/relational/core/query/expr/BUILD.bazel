@@ -34,6 +34,8 @@ go_test(
         "fullstack_test.go",
         "fused_nested_childlessness_is_not_arity_test.go",
         "fused_nested_field_names_the_leaf_test.go",
+        "in_list_parameter_walk_test.go",
+        "java_type_name_test.go",
         "paren_record_position_test.go",
         "predicatevalue_equals_test.go",
         "predrow_test.go",

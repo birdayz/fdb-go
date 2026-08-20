@@ -15,7 +15,7 @@ const DefaultMaxNumConjuncts = 9
 
 // PredicateToLogicalUnionRule transforms a SelectExpression whose predicates
 // (in CNF after NormalizePredicatesRule) contain OR terms into a
-// DISTINCT(UNION(SELECT leg1, SELECT leg2, ...)) structure. Each union
+// UNIQUE(UNION(SELECT leg1, SELECT leg2, ...)) structure. Each union
 // leg corresponds to one DNF term, enabling each leg to use a different
 // index for evaluation.
 //
@@ -25,15 +25,21 @@ const DefaultMaxNumConjuncts = 9
 //
 // becomes:
 //
-//	DISTINCT(UNION(
+//	UNIQUE-REQUIRED(UNION(
 //	  UNIQUE(SELECT WHERE A AND B AND C1 AND D1),
 //	  UNIQUE(SELECT WHERE A AND B AND C1 AND D2),
 //	  UNIQUE(SELECT WHERE A AND B AND C2 AND D1),
 //	  UNIQUE(SELECT WHERE A AND B AND C2 AND D2),
 //	))
 //
-// Each UNIQUE deduplicates per-leg by primary key; DISTINCT deduplicates
-// across legs. The fixed predicates (A, B) are repeated in every leg.
+// Both dedup levels are BY PRIMARY KEY: per-leg, and again across legs, where a
+// record satisfying several DNF terms arrives once per leg that produced it.
+// The fixed predicates (A, B) are repeated in every leg.
+//
+// The outer dedup corresponds to Java's LogicalDistinctExpression, which is a
+// primary-key dedup; Go's node of that name is a full-row dedup and would be
+// the wrong one. See the construction site below for why the distinction
+// decides whether this rewrite returns duplicate records.
 //
 // Guards:
 //   - Only fires on SelectExpressions with exactly 1 ForEach quantifier.
@@ -41,7 +47,7 @@ const DefaultMaxNumConjuncts = 9
 //   - Requires at least one non-leaf, non-atomic OR predicate.
 //   - Respects DefaultMaxNumConjuncts to avoid combinatorial explosion.
 //
-// Convergence: the output is Distinct(Union(...)), not a SelectExpression,
+// Convergence: the output is Unique(Union(...)), not a SelectExpression,
 // so the rule cannot re-fire on its own output.
 //
 // Ports Java's PredicateToLogicalUnionRule (a match-partition rule) as a
@@ -207,8 +213,30 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 	}
 	unionRef := call.MemoizeExpression(unionExpr)
 
-	// Wrap in LogicalDistinctExpression (dedup across legs).
-	distinctExpr, err := expressions.NewLogicalDistinctExpression(
+	// Dedup across legs, keyed on the PRIMARY KEY.
+	//
+	// Java writes this as `new LogicalDistinctExpression(...)`, and a port that
+	// carried the name across would land on Go's LogicalDistinctExpression —
+	// which is the wrong node. The two node sets do not line up:
+	//
+	//	Java LogicalDistinct = primary-key dedup (ImplementDistinctRule builds
+	//	                       RecordQueryUnorderedPrimaryKeyDistinctPlan)
+	//	Go   LogicalDistinct = full-ROW dedup, carrying SELECT DISTINCT, which
+	//	                       Java's Cascades has no node for at all
+	//	Go   LogicalUnique   = primary-key dedup
+	//
+	// The key has to be the primary key because the legs are separate access
+	// paths over one table: a record satisfying two DNF terms is produced by two
+	// legs, and when those legs are covering scans of DIFFERENT indexes the two
+	// rows for that one record DIFFER — (a, pk) from one, (b, a, pk) from the
+	// other. A full-row dedup collapses neither, and the record is returned once
+	// per matching leg.
+	//
+	// REQUIRED mode, because a union of legs is never already distinct and the
+	// absorbable mode only elides: ImplementUniqueRule yields no plan at all for
+	// an input it cannot prove distinct, which would silently withdraw the
+	// access path rather than dedup it.
+	distinctExpr, err := expressions.NewRequiredLogicalUniqueExpression(
 		expressions.ForEachQuantifier(unionRef),
 	)
 	if err != nil {

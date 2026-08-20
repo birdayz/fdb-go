@@ -116,13 +116,23 @@ func TestPushDistinctBelowFilter_PreservesStreaming(t *testing.T) {
 	}
 }
 
-// TestPushDistinctThroughFetch_PreservesStreaming is the symmetric pin for the
-// second rebuild site: pushing a distinct through a fetch (Distinct(Fetch(inner))
-// → Fetch(Distinct(inner))) must likewise re-derive the streaming mode against
-// the fetch's inner. A fetch preserves ordering, so a distinct over an ordered
-// inner stays streaming-eligible; the constructor rebuild would otherwise drop
-// it to the memory-heavy hash-set (TODO C5).
-func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
+// TestPushDistinctThroughFetch_DeclinesStreamingRowDistinct is what became of
+// this file's second rebuild site.
+//
+// It used to assert that pushing a full-row distinct through a fetch re-derived
+// the streaming mode against the fetch's inner. That push is unsound and the
+// rule no longer performs it: below the fetch the rows are PARTIAL records, and
+// a full-row dedup cannot collapse the two partial rows one record produces
+// when the inner is a union of covering scans over different indexes. So the
+// streaming mode is no longer a question this rule can be asked — the node that
+// carries the flag is not the node it matches.
+//
+// The fixture is kept, and the assertion inverted, because the shape it builds
+// (a distinct over a fetch over an ORDERED inner) is the one that made the old
+// push look attractive: it is exactly where a reader would expect the rule to
+// fire. The streaming re-derivation itself remains covered by the filter push
+// above, which does still handle the full-row node.
+func TestPushDistinctThroughFetch_DeclinesStreamingRowDistinct(t *testing.T) {
 	t.Parallel()
 
 	scanPlan, gField := pushDistinctScanAndField()
@@ -156,21 +166,11 @@ func TestPushDistinctThroughFetch_PreservesStreaming(t *testing.T) {
 
 	rule := NewPushDistinctThroughFetchRule()
 	yielded := firePushDistinctRule(t, rule, ref)
-	if len(yielded) != 1 {
-		t.Fatalf("expected 1 yielded (Fetch(Distinct(inner))), got %d", len(yielded))
-	}
-	fw, ok := yielded[0].(*plans.RecordQueryFetchFromPartialRecordPlan)
-	if !ok {
-		t.Fatalf("expected *plans.RecordQueryFetchFromPartialRecordPlan, got %T", yielded[0])
-	}
-	inner := fw.GetInner()
-	dp, ok := inner.(*plans.RecordQueryDistinctPlan)
-	if !ok {
-		t.Fatalf("fetch's inner = %T, want *RecordQueryDistinctPlan", inner)
-	}
-	if !dp.IsStreaming() {
-		t.Fatal("pushed distinct must be Streaming=true — the fetch's inner is ordered by the " +
-			"dedup key G, so a constructor rebuild that dropped Streaming would revert to the " +
-			"memory-heavy hash-set")
+	if len(yielded) != 0 {
+		t.Fatalf("a full-row distinct was pushed below a fetch (%d plan(s) yielded). Ordered inner or "+
+			"not, the dedup key is the whole ROW, and below the fetch the rows are partial records: "+
+			"two partial rows for one record differ whenever they come from different covering "+
+			"indexes, so the dedup collapses nothing and the record is fetched once per index.",
+			len(yielded))
 	}
 }

@@ -35,6 +35,7 @@ go_test(
         "scope_nested_test.go",
         "scope_path_test.go",
         "scope_test.go",
+        "table_lookup_contract_test.go",
     ],
     embed = [":semantic"],
     deps = [

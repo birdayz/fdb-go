@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=353 queries=2540 dml=157 non_query=104 plan_errors=264 unexpected_errors=4
+# files=354 queries=2566 dml=157 non_query=104 plan_errors=270 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -2965,10 +2965,11 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryCoveringIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#7
 sql:   UPDATE rp SET tier = 99 WHERE region = 'eu'
-plan:  Update(RP, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, *])))
+plan:  Update(RP, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, *] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === composite_secondary_index_prefix_pushdown.yaml#8
 sql:   SELECT id, tier FROM rp WHERE region = 'eu' ORDER BY id
 plan:  Project([_current.ID#0, _current.TIER#3], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, *])))
@@ -3480,9 +3481,14 @@ plan:  Project([_current.ID#0, _current.V#3], PredicatesFilter(IndexScan(IDX_V, 
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryCoveringIndexPlan
-=== cross_join.yaml#0 expect-error=0A000
+=== cross_join.yaml#0
 sql:   SELECT a.id, b.id FROM a CROSS JOIN b ORDER BY a.id, b.id
-plan:  <PLAN-ERROR: 0A000: explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products>
+plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), Scan(A))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === cross_join.yaml#1
 sql:   SELECT a.id, b.id FROM a, b ORDER BY a.id, b.id
 plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), Scan(A))))
@@ -3492,6 +3498,22 @@ shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
 === cross_join.yaml#2
+sql:   SELECT a.id, b.id FROM a JOIN b ORDER BY a.id, b.id
+plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), Scan(A))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#3
+sql:   SELECT COUNT(*) FROM a INNER JOIN b
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#4
 sql:   SELECT a.id, b.id FROM a INNER JOIN b ON 1 = 1 ORDER BY a.id, b.id
 plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), PredicatesFilter(Scan(A), [1 preds]))))
 shape: RecordQueryProjectionPlan
@@ -3500,7 +3522,24 @@ shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
-=== cross_join.yaml#3
+=== cross_join.yaml#5
+sql:   SELECT a.id, b.id FROM a CROSS JOIN b ON 1 = 1 ORDER BY a.id, b.id
+plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), PredicatesFilter(Scan(A), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== cross_join.yaml#6
+sql:   SELECT a.id, b.id FROM a JOIN b USING (id) ORDER BY a.id, b.id
+plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], FlatMap(outer=Scan(A), inner=Scan(B, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#7
 sql:   SELECT COUNT(*) FROM a, b
 plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B))))
 shape: RecordQueryProjectionPlan
@@ -3508,13 +3547,76 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryNestedLoopJoinPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
-=== cross_join.yaml#4
+=== cross_join.yaml#8
 sql:   SELECT a.v, b.w FROM a, b WHERE a.id = b.id ORDER BY a.id
 plan:  Project([_current.V#1, _current.W#3], FlatMap(outer=Scan(A), inner=Scan(B, [=])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
+=== cross_join.yaml#9
+sql:   SELECT COUNT(*) FROM a WHERE EXISTS (SELECT 1 FROM a JOIN b)
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Scan(A), inner=PredicatesFilter(FirstOrDefault(Project([1], NestedLoopJoin(INNER, Scan(A), Scan(B)))), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryFirstOrDefaultPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryNestedLoopJoinPlan
+shape:               RecordQueryScanPlan
+shape:               RecordQueryScanPlan
+=== cross_join.yaml#10
+sql:   SELECT COUNT(*) FROM a JOIN b UNION ALL SELECT COUNT(*) FROM a
+plan:  UnorderedUnion(Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Scan(A), Scan(B)))), Project([_current.COUNT(*)#0], StreamingAgg(keys=[], Scan(A))))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#11
+sql:   SELECT (SELECT COUNT(*) FROM a JOIN b) FROM a
+plan:  Project([(SCALAR_SUBQUERY)], Scan(A))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cross_join.yaml#12
+sql:   SELECT COUNT(*) FROM a JOIN (SELECT id FROM b) x
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], Scan(B)), Scan(A))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#13
+sql:   WITH x AS (SELECT id FROM b) SELECT COUNT(*) FROM a JOIN x
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], NestedLoopJoin(INNER, Project([_current.ID#0], Scan(B)), Scan(A))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#14
+sql:   WITH x AS (SELECT id FROM b) SELECT COUNT(*) FROM a JOIN x ON a.id = x.id
+plan:  Project([_current.COUNT(*)#0], StreamingAgg(keys=[], FlatMap(outer=Project([_current.ID#0], Scan(B)), inner=Scan(A, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== cross_join.yaml#15 expect-error=42F01
+sql:   SELECT COUNT(*) FROM a JOIN missing_table
+plan:  <PLAN-ERROR: 42F01: table "MISSING_TABLE" does not exist>
+=== cross_join.yaml#16 expect-error=42F01
+sql:   SELECT COUNT(*) FROM a JOIN missing_table ON 1 = 1
+plan:  <PLAN-ERROR: 42F01: table "MISSING_TABLE" does not exist>
 === cross_join_filter.yaml#0
 sql:   SELECT s.label, c.name FROM sizes s, colors c ORDER BY s.label, c.name
 plan:  Project([_current.LABEL#1, _current.NAME#3], InMemorySort([_current.LABEL#1 ASC, _current.NAME#3 ASC], NestedLoopJoin(INNER, Scan(COLORS), Scan(SIZES))))
@@ -7695,9 +7797,9 @@ plan:  Project([_current.ID#0], InUnion(IndexScan(IDX_PAYLOAD, [=]), bindings=1,
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInUnionPlan
 shape:     RecordQueryIndexPlan
-=== in_list_pushdown.yaml#43 expect-error=0A000
+=== in_list_pushdown.yaml#43 expect-error=0AF00
 sql:   SELECT id FROM t WHERE v IN v
-plan:  <PLAN-ERROR: 0A000: IN with a column reference is not supported>
+plan:  <PLAN-ERROR: 0AF00: IN list with column reference must be of array type, but got: LONG>
 === in_list_pushdown.yaml#44
 sql:   SELECT id, status FROM t2 WHERE status IN ('active', 'archived') ORDER BY id
 plan:  Project([_current.ID#0, _current.STATUS#1], InUnion(IndexScan(IDX_T2_STATUS, [=]), bindings=1, ASC))
@@ -9686,6 +9788,105 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryFlatMapPlan
 shape:             RecordQueryScanPlan
 shape:             RecordQueryScanPlan
+=== join_using_shapes.yaml#0
+sql:   SELECT a.id FROM a JOIN b USING (id) ORDER BY a.id
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(A), inner=Scan(B, [=])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
+=== join_using_shapes.yaml#1
+sql:   SELECT a.id FROM a JOIN b USING (id, k) ORDER BY a.id
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(A), inner=PredicatesFilter(Scan(B, [=]), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#2
+sql:   SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(A), inner=PredicatesFilter(Scan(B, [=]), [1 preds])), inner=PredicatesFilter(Scan(C, [=]), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== join_using_shapes.yaml#3 expect-error=42702
+sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (id, k) ORDER BY a.id
+plan:  <PLAN-ERROR: 42702: Ambiguous reference K>
+=== join_using_shapes.yaml#4
+sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (j) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(C), FlatMap(outer=Scan(B), inner=Scan(A, [=])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== join_using_shapes.yaml#5 expect-error=42703
+sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (nosuchcol)
+plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
+=== join_using_shapes.yaml#6
+sql:   SELECT a.id, b.k FROM a LEFT JOIN b USING (id, k) ORDER BY a.id
+plan:  Project([_current.ID#0, _current.K#4], FlatMap(outer=Scan(A), inner=DefaultOnEmpty(PredicatesFilter(Scan(B, [=]), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== join_using_shapes.yaml#7
+sql:   SELECT x.id FROM a JOIN (SELECT id, k FROM c) x USING (id) ORDER BY x.id
+plan:  Project([_current.ID#3], InMemorySort([_current.ID#3 ASC], FlatMap(outer=Project([_current.ID#0, _current.K#1], Scan(C)), inner=Scan(A, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#8
+sql:   SELECT b.id FROM a JOIN (SELECT id FROM c WHERE id > 1) b USING (id) ORDER BY b.id
+plan:  Project([_current.ID#3], InMemorySort([_current.ID#3 ASC], FlatMap(outer=Project([_current.ID#0], Scan(C, [<>])), inner=Scan(A, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#9
+sql:   WITH cte AS (SELECT id, k FROM c) SELECT a.id FROM a JOIN cte USING (id) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Project([_current.ID#0, _current.K#1], Scan(C)), inner=Scan(A, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#10 expect-error=42702
+sql:   SELECT a.id FROM a JOIN (SELECT id, k FROM c) b USING (id) JOIN c USING (k) ORDER BY a.id
+plan:  <PLAN-ERROR: 42702: Ambiguous reference K>
+=== join_using_shapes.yaml#11 expect-error=42703
+sql:   SELECT a.id FROM a JOIN b USING (j) JOIN c USING (id)
+plan:  <PLAN-ERROR: 42703: column "J" does not exist>
+=== join_using_shapes.yaml#12 expect-error=42703
+sql:   SELECT a.id FROM a JOIN b USING (j)
+plan:  <PLAN-ERROR: 42703: column "J" does not exist>
+=== join_using_shapes.yaml#13
+sql:   SELECT b.id FROM (SELECT id FROM a) b JOIN c USING (id) JOIN a USING (k) ORDER BY b.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(A), FlatMap(outer=Project([_current.ID#0], Scan(A)), inner=Scan(C, [=])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
 === join_with_or_predicate.yaml#0
 sql:   SELECT e.name, d.name FROM emp e, dept d WHERE e.dept_id = d.id AND (d.name = 'Eng' OR e.salary > 85) ORDER BY e.name
 plan:  Project([_current.NAME#2, _current.NAME#5], InMemorySort([_current.NAME#2 ASC], FlatMap(outer=Scan(EMP), inner=PredicatesFilter(Scan(DEPT, [=]), [1 preds]))))
@@ -10663,10 +10864,11 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === multi_feature_integer.yaml#7
 sql:   UPDATE products SET price = price * 2 WHERE category = 1
-plan:  Update(PRODUCTS, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_CAT, [=])))
+plan:  Update(PRODUCTS, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_CAT, [=] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === multi_feature_integer.yaml#8
 sql:   SELECT name, price FROM products WHERE category = 1 ORDER BY name
 plan:  Project([_current.NAME#3, _current.PRICE#2], InMemorySort([_current.NAME#3 ASC], IndexScan(IDX_CAT, [=])))
@@ -14725,10 +14927,11 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#9
 sql:   UPDATE t SET v = 99 WHERE status = 'deleted'
-plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_STATUS, [=])))
+plan:  Update(T, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_STATUS, [=] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#10
 sql:   SELECT id, v FROM t WHERE status = 'deleted'
 plan:  Project([_current.ID#0, _current.V#2], IndexScan(IDX_STATUS, [=]))
@@ -14784,10 +14987,11 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#20
 sql:   UPDATE t2 SET amount = 999 WHERE region = 'us' AND plan = 'pro'
-plan:  Update(T2, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, =])))
+plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, =] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#21
 sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan = 'pro' ORDER BY id
 plan:  Project([_current.ID#0, _current.AMOUNT#3], IndexScan(IDX_REGION_PLAN, [=, =]))
@@ -14886,10 +15090,11 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryIndexPlan
 === secondary_index_pushdown.yaml#37
 sql:   UPDATE t SET status = 'bulk' WHERE v >= 30
-plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_V, [<>])))
+plan:  Update(T, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_V, [<>] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#38
 sql:   SELECT id, status FROM t WHERE v >= 30 ORDER BY id
 plan:  Project([_current.ID#0, _current.STATUS#1], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_V, [<>])))
@@ -14961,10 +15166,11 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === secondary_index_pushdown.yaml#51
 sql:   UPDATE t2 SET amount = 777 WHERE region = 'us' AND plan >= 'b'
-plan:  Update(T2, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, <>])))
+plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [=, <>] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#52
 sql:   SELECT id, amount FROM t2 WHERE region = 'us' AND plan >= 'b' ORDER BY id
 plan:  Project([_current.ID#0, _current.AMOUNT#3], InMemorySort([_current.ID#0 ASC], IndexScan(IDX_REGION_PLAN, [=, <>])))
@@ -15022,10 +15228,11 @@ shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#62
 sql:   UPDATE t2 SET amount = 555 WHERE region < 'eu'
-plan:  Update(T2, [1 transforms], UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [<>, *])))
+plan:  Update(T2, [1 transforms], Fetch(UnorderedPrimaryKeyDistinct(IndexScan(IDX_REGION_PLAN, [<>, *] COVERING))))
 shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryIndexPlan
+shape:   RecordQueryFetchFromPartialRecordPlan
+shape:     RecordQueryUnorderedPrimaryKeyDistinctPlan
+shape:       RecordQueryCoveringIndexPlan
 === secondary_index_pushdown.yaml#63
 sql:   SELECT id, amount FROM t2 WHERE region < 'eu'
 plan:  Project([_current.ID#0, _current.AMOUNT#3], IndexScan(IDX_REGION_PLAN, [<>, *]))

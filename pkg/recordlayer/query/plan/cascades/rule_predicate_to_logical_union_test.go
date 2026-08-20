@@ -149,10 +149,12 @@ func TestPredicateToLogicalUnionRule_SingleOR(t *testing.T) {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
 
-	// The output should be a LogicalDistinctExpression (simple result value case).
-	distinct, ok := yielded[0].(*expressions.LogicalDistinctExpression)
+	// The output should be a primary-key dedup (LogicalUniqueExpression) — see
+	// distinct_dedup_key_semantics_test.go for why the full-row node is the wrong
+	// one here, despite Java spelling this position LogicalDistinctExpression.
+	distinct, ok := yielded[0].(*expressions.LogicalUniqueExpression)
 	if !ok {
-		t.Fatalf("yielded type=%T, want *LogicalDistinctExpression", yielded[0])
+		t.Fatalf("yielded type=%T, want *LogicalUniqueExpression (primary-key dedup)", yielded[0])
 	}
 	if got := distinct.GetResultValue().Type(); !got.Equals(predicateUnionRowType()) {
 		t.Fatalf("simple rewrite result type = %v, want exact source row %v",
@@ -237,9 +239,9 @@ func TestPredicateToLogicalUnionRule_ORWithFixedPredicates(t *testing.T) {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
 
-	distinct, ok := yielded[0].(*expressions.LogicalDistinctExpression)
+	distinct, ok := yielded[0].(*expressions.LogicalUniqueExpression)
 	if !ok {
-		t.Fatalf("yielded type=%T, want *LogicalDistinctExpression", yielded[0])
+		t.Fatalf("yielded type=%T, want *LogicalUniqueExpression (primary-key dedup)", yielded[0])
 	}
 
 	union, ok := distinct.GetInner().GetRangesOver().Get().(*expressions.LogicalUnionExpression)
@@ -288,7 +290,7 @@ func TestPredicateToLogicalUnionRule_MultipleORs(t *testing.T) {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
 
-	distinct := yielded[0].(*expressions.LogicalDistinctExpression)
+	distinct := yielded[0].(*expressions.LogicalUniqueExpression)
 	union := distinct.GetInner().GetRangesOver().Get().(*expressions.LogicalUnionExpression)
 
 	// 2 * 2 = 4 cross-product terms.
@@ -434,9 +436,9 @@ func TestPredicateToLogicalUnionRule_NonSimpleResultValue(t *testing.T) {
 
 	// Inner should be Distinct.
 	innerRef := outerSel.GetQuantifiers()[0].GetRangesOver()
-	_, ok = innerRef.Get().(*expressions.LogicalDistinctExpression)
+	_, ok = innerRef.Get().(*expressions.LogicalUniqueExpression)
 	if !ok {
-		t.Fatalf("outer select's inner type=%T, want *LogicalDistinctExpression", innerRef.Get())
+		t.Fatalf("outer select's inner type=%T, want *LogicalUniqueExpression (primary-key dedup)", innerRef.Get())
 	}
 }
 
@@ -478,7 +480,7 @@ func TestPredicateToLogicalUnionRule_ThreeWayOR(t *testing.T) {
 		t.Fatalf("yielded=%d, want 1", len(yielded))
 	}
 
-	distinct := yielded[0].(*expressions.LogicalDistinctExpression)
+	distinct := yielded[0].(*expressions.LogicalUniqueExpression)
 	union := distinct.GetInner().GetRangesOver().Get().(*expressions.LogicalUnionExpression)
 
 	if len(union.GetQuantifiers()) != 3 {

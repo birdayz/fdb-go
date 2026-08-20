@@ -157,10 +157,13 @@ func TestPushDistinctThroughFetch_Fires(t *testing.T) {
 	fetchWrapper := mustWithQuantifiers(t, fetchPlan, []expressions.Quantifier{fetchQ})
 	fetchRef := expressions.InitialOf(fetchWrapper)
 
-	distinctPlan := mustPushFetchConstruct(plans.NewRecordQueryDistinctPlan(indexPlan))
+	// The rule matches the PRIMARY-KEY distinct only; a full-row distinct below a
+	// fetch would dedup partial rows, which does not collapse two covering-index
+	// rows for one record. distinct_dedup_key_semantics_test.go pins both arms.
+	distinctPlan := mustPushFetchConstruct(
+		plans.NewRecordQueryUnorderedPrimaryKeyDistinctPlanFromQuantifier(
+			expressions.ForEachQuantifier(fetchRef)))
 	distinctQ := expressions.ForEachQuantifier(fetchRef)
-	// Since RFC-184 W2 the memo holds the bare *plans.RecordQueryDistinctPlan (no
-	// physicalDistinctWrapper); the push rule matches it directly.
 	distinctWrapper := mustWithQuantifiers(t, distinctPlan, []expressions.Quantifier{distinctQ})
 
 	ref := expressions.InitialOf(distinctWrapper)
