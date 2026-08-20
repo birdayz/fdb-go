@@ -652,13 +652,16 @@ func TestWhereMergeBakesLegRelative(t *testing.T) {
 	if customerType == nil || orderType == nil || typedType == nil {
 		t.Fatal("leg types must derive from metadata")
 	}
-	customerOrdinal, found := customerType.FieldIndexUnique("CUSTOMER_ID")
+	// A leg type names its slots from the DESCRIPTOR and FieldIndexUnique is
+	// exact, so every column below is spelled the way the demo .proto declares
+	// it. A folded spelling reports "missing" rather than resolving.
+	customerOrdinal, found := customerType.FieldIndexUnique("customer_id")
 	if !found {
-		t.Fatal("CUSTOMER_ID missing from Customer's own type")
+		t.Fatal("customer_id missing from Customer's own type")
 	}
-	typedOrdinal, found := typedType.FieldIndexUnique("ID")
+	typedOrdinal, found := typedType.FieldIndexUnique("id")
 	if !found {
-		t.Fatal("ID missing from TypedRecord's own type")
+		t.Fatal("id missing from TypedRecord's own type")
 	}
 
 	nested := inner(scan("Order", "o"), scan("Customer", "c"))
@@ -682,9 +685,9 @@ func TestWhereMergeBakesLegRelative(t *testing.T) {
 	}
 
 	// The expected leg types: each table's OWN type, the seed's pairing.
-	wantOrd, found := customerType.FieldIndexUnique("CUSTOMER_ID")
+	wantOrd, found := customerType.FieldIndexUnique("customer_id")
 	if !found {
-		t.Fatal("CUSTOMER_ID missing from Customer's own type")
+		t.Fatal("customer_id missing from Customer's own type")
 	}
 
 	var bakedC values.FieldValue
@@ -740,13 +743,14 @@ func TestBoxLegBakeResolvesLeafLocal(t *testing.T) {
 	if orderType == nil || customerType == nil || typedType == nil {
 		t.Fatal("leg types must derive from metadata")
 	}
-	priceOrdinal, found := customerType.FieldIndexUnique("PRICE")
+	// Descriptor spelling, exact lookup — see TestWhereMergeBakesLegRelative.
+	priceOrdinal, found := customerType.FieldIndexUnique("price")
 	if !found {
-		t.Fatal("PRICE missing from Customer's own type")
+		t.Fatal("price missing from Customer's own type")
 	}
-	typedOrdinal, found := typedType.FieldIndexUnique("ID")
+	typedOrdinal, found := typedType.FieldIndexUnique("id")
 	if !found {
-		t.Fatal("ID missing from TypedRecord's own type")
+		t.Fatal("id missing from TypedRecord's own type")
 	}
 
 	box := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinFull, "")
@@ -768,13 +772,13 @@ func TestBoxLegBakeResolvesLeafLocal(t *testing.T) {
 		t.Fatalf("expected the seed SelectExpression, got %T", ref.Members()[0])
 	}
 
-	leafIdx, found := customerType.FieldIndexUnique("PRICE")
+	leafIdx, found := customerType.FieldIndexUnique("price")
 	if !found {
-		t.Fatal("PRICE missing from Customer's own type")
+		t.Fatal("price missing from Customer's own type")
 	}
-	firstMatch, found := orderType.FieldIndexUnique("PRICE")
+	firstMatch, found := orderType.FieldIndexUnique("price")
 	if !found {
-		t.Fatal("the collision premise needs PRICE on Order too")
+		t.Fatal("the collision premise needs price on Order too")
 	}
 	wantOrd := len(orderType.Fields) + leafIdx
 

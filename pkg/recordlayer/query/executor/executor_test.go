@@ -476,8 +476,8 @@ func TestExecuteProjection_FieldExtraction(t *testing.T) {
 	}
 
 	row, _ := rowMapOK(results[0])
-	if row["'PROJECTED'"] != "projected" {
-		t.Errorf("projection result = %v, want 'projected'", row["'PROJECTED'"])
+	if row["'projected'"] != "projected" {
+		t.Errorf("projection result = %v, want 'projected'", row["'projected'"])
 	}
 }
 
@@ -846,8 +846,8 @@ func TestExecute_CompositeFilterSortLimitProject(t *testing.T) {
 	}
 
 	row, _ := rowMapOK(results[0])
-	if row["'RESULT'"] != "result" {
-		t.Errorf("composite pipeline result = %v, want 'result'", row["'RESULT'"])
+	if row["'result'"] != "result" {
+		t.Errorf("composite pipeline result = %v, want 'result'", row["'result'"])
 	}
 }
 
@@ -2036,14 +2036,14 @@ func TestProtoToMap_AllSetFields(t *testing.T) {
 	}
 	m := protoToMap(order)
 
-	if m["ORDER_ID"] != int64(42) {
-		t.Errorf("ORDER_ID = %v, want 42", m["ORDER_ID"])
+	if m["order_id"] != int64(42) {
+		t.Errorf("order_id = %v, want 42", m["order_id"])
 	}
-	if m["PRICE"] != int64(199) {
-		t.Errorf("PRICE = %v, want 199", m["PRICE"])
+	if m["price"] != int64(199) {
+		t.Errorf("price = %v, want 199", m["price"])
 	}
-	if m["QUANTITY"] != int64(5) {
-		t.Errorf("QUANTITY = %v, want 5", m["QUANTITY"])
+	if m["quantity"] != int64(5) {
+		t.Errorf("quantity = %v, want 5", m["quantity"])
 	}
 }
 
@@ -2054,14 +2054,14 @@ func TestProtoToMap_UnsetFieldsOmitted(t *testing.T) {
 	}
 	m := protoToMap(order)
 
-	if m["ORDER_ID"] != int64(1) {
-		t.Errorf("ORDER_ID = %v, want 1", m["ORDER_ID"])
+	if m["order_id"] != int64(1) {
+		t.Errorf("order_id = %v, want 1", m["order_id"])
 	}
-	if _, exists := m["PRICE"]; exists {
-		t.Errorf("PRICE should not be present for unset field, got %v", m["PRICE"])
+	if _, exists := m["price"]; exists {
+		t.Errorf("price should not be present for unset field, got %v", m["price"])
 	}
-	if _, exists := m["QUANTITY"]; exists {
-		t.Errorf("QUANTITY should not be present for unset field, got %v", m["QUANTITY"])
+	if _, exists := m["quantity"]; exists {
+		t.Errorf("quantity should not be present for unset field, got %v", m["quantity"])
 	}
 }
 
@@ -2873,8 +2873,8 @@ func TestToFloat64_Nil(t *testing.T) {
 func TestAggKeyName_FieldValue(t *testing.T) {
 	t.Parallel()
 	fv := mustNamedTestField(t, "status", values.TypeString)
-	if got := aggKeyName(fv); got != "STATUS" {
-		t.Fatalf("expected STATUS, got %s", got)
+	if got := aggKeyName(fv); got != "status" {
+		t.Fatalf("expected status, got %s", got)
 	}
 }
 
@@ -3998,15 +3998,15 @@ func TestProtoToMap_TypedRecord_AllKinds(t *testing.T) {
 	m := protoToMap(rec)
 
 	checks := map[string]any{
-		"ID":           int64(1),
-		"VAL_INT32":    int64(32),
-		"VAL_INT64":    int64(64),
-		"VAL_SINT32":   int64(-32),
-		"VAL_SINT64":   int64(-64),
-		"VAL_SFIXED32": int64(320),
-		"VAL_SFIXED64": int64(640),
-		"VAL_BOOL":     true,
-		"VAL_STRING":   "test",
+		"id":           int64(1),
+		"val_int32":    int64(32),
+		"val_int64":    int64(64),
+		"val_sint32":   int64(-32),
+		"val_sint64":   int64(-64),
+		"val_sfixed32": int64(320),
+		"val_sfixed64": int64(640),
+		"val_bool":     true,
+		"val_string":   "test",
 	}
 	for key, want := range checks {
 		got, ok := m[key]
@@ -4019,21 +4019,21 @@ func TestProtoToMap_TypedRecord_AllKinds(t *testing.T) {
 		}
 	}
 
-	if b, ok := m["VAL_BYTES"].([]byte); !ok || len(b) != 1 || b[0] != 0x01 {
-		t.Errorf("VAL_BYTES: got %v, want [01]", m["VAL_BYTES"])
+	if b, ok := m["val_bytes"].([]byte); !ok || len(b) != 1 || b[0] != 0x01 {
+		t.Errorf("val_bytes: got %v, want [01]", m["val_bytes"])
 	}
 
 	// Float fields widen to float64.
-	fv, ok := m["VAL_FLOAT"].(float64)
+	fv, ok := m["val_float"].(float64)
 	if !ok {
-		t.Fatalf("VAL_FLOAT type %T, want float64", m["VAL_FLOAT"])
+		t.Fatalf("val_float type %T, want float64", m["val_float"])
 	}
 	if fv < 1.4 || fv > 1.6 {
-		t.Errorf("VAL_FLOAT: got %f, want ~1.5", fv)
+		t.Errorf("val_float: got %f, want ~1.5", fv)
 	}
-	dv := m["VAL_DOUBLE"].(float64)
+	dv := m["val_double"].(float64)
 	if dv != 2.5 {
-		t.Errorf("VAL_DOUBLE: got %f, want 2.5", dv)
+		t.Errorf("val_double: got %f, want 2.5", dv)
 	}
 }
 
@@ -4044,12 +4044,12 @@ func TestProtoToMap_RepeatedField(t *testing.T) {
 		Tags:    []string{"x", "y"},
 	}
 	m := protoToMap(order)
-	tags, ok := m["TAGS"].([]any)
+	tags, ok := m["tags"].([]any)
 	if !ok {
-		t.Fatalf("TAGS type %T, want []any", m["TAGS"])
+		t.Fatalf("tags type %T, want []any", m["tags"])
 	}
 	if len(tags) != 2 || tags[0] != "x" || tags[1] != "y" {
-		t.Errorf("TAGS = %v, want [x y]", tags)
+		t.Errorf("tags = %v, want [x y]", tags)
 	}
 }
 
@@ -4060,9 +4060,9 @@ func TestProtoToMap_MessageField(t *testing.T) {
 		Flower:  &gen.Flower{Type: proto.String("tulip")},
 	}
 	m := protoToMap(order)
-	flower, ok := m["FLOWER"].(*gen.Flower)
+	flower, ok := m["flower"].(*gen.Flower)
 	if !ok {
-		t.Fatalf("FLOWER type %T, want *gen.Flower", m["FLOWER"])
+		t.Fatalf("flower type %T, want *gen.Flower", m["flower"])
 	}
 	if flower.GetType() != "tulip" {
 		t.Errorf("got %q, want tulip", flower.GetType())
@@ -4077,12 +4077,12 @@ func TestProtoToMap_EnumField(t *testing.T) {
 		ValEnum: &blue,
 	}
 	m := protoToMap(rec)
-	got, ok := m["VAL_ENUM"]
+	got, ok := m["val_enum"]
 	if !ok {
-		t.Fatal("missing VAL_ENUM")
+		t.Fatal("missing val_enum")
 	}
 	if got != int64(gen.Color_BLUE) {
-		t.Errorf("VAL_ENUM = %v, want %d", got, gen.Color_BLUE)
+		t.Errorf("val_enum = %v, want %d", got, gen.Color_BLUE)
 	}
 }
 
@@ -4093,22 +4093,37 @@ func TestProtoToMap_BytesField(t *testing.T) {
 		VectorData: []byte{0xCA, 0xFE},
 	}
 	m := protoToMap(order)
-	b, ok := m["VECTOR_DATA"].([]byte)
+	b, ok := m["vector_data"].([]byte)
 	if !ok {
-		t.Fatalf("VECTOR_DATA type %T, want []byte", m["VECTOR_DATA"])
+		t.Fatalf("vector_data type %T, want []byte", m["vector_data"])
 	}
 	if len(b) != 2 || b[0] != 0xCA || b[1] != 0xFE {
-		t.Errorf("VECTOR_DATA = %x, want CAFE", b)
+		t.Errorf("vector_data = %x, want CAFE", b)
 	}
 }
 
-func TestProtoToMap_UpperCaseKeys(t *testing.T) {
+// TestProtoToMap_KeysAreTheDescriptorSpelling pins the oracle's keying to the
+// descriptor's own field names — the same spelling
+// values.FieldNameForProtoField gives the corresponding positional slot.
+//
+// It used to assert the keys were UPPER, which was true only because every
+// name-minting authority folded. Asserting the fold here made the oracle a
+// second naming rule instead of an independent check of the first, so a fold
+// that disappeared on one side would still have to be re-typed on the other
+// before the shadow comparison could notice anything.
+func TestProtoToMap_KeysAreTheDescriptorSpelling(t *testing.T) {
 	t.Parallel()
 	order := &gen.Order{OrderId: proto.Int64(1), Price: proto.Int32(99)}
 	m := protoToMap(order)
+	want := map[string]struct{}{"order_id": {}, "price": {}, "tags": {}}
 	for key := range m {
-		if key != strings.ToUpper(key) {
-			t.Errorf("key %q is not upper-case", key)
+		if _, ok := want[key]; !ok {
+			t.Errorf("key %q is not a descriptor field name of Order", key)
+		}
+	}
+	for key := range want {
+		if _, ok := m[key]; !ok {
+			t.Errorf("missing key %q", key)
 		}
 	}
 }
@@ -4197,18 +4212,18 @@ func TestProtoRoundTrip_AllScalarKinds(t *testing.T) {
 	desc := refl.Descriptor()
 
 	fieldMap := map[string]any{
-		"id":           m["ID"],
-		"val_int32":    m["VAL_INT32"],
-		"val_int64":    m["VAL_INT64"],
-		"val_sint32":   m["VAL_SINT32"],
-		"val_sint64":   m["VAL_SINT64"],
-		"val_sfixed32": m["VAL_SFIXED32"],
-		"val_sfixed64": m["VAL_SFIXED64"],
-		"val_float":    m["VAL_FLOAT"],
-		"val_double":   m["VAL_DOUBLE"],
-		"val_bool":     m["VAL_BOOL"],
-		"val_string":   m["VAL_STRING"],
-		"val_bytes":    m["VAL_BYTES"],
+		"id":           m["id"],
+		"val_int32":    m["val_int32"],
+		"val_int64":    m["val_int64"],
+		"val_sint32":   m["val_sint32"],
+		"val_sint64":   m["val_sint64"],
+		"val_sfixed32": m["val_sfixed32"],
+		"val_sfixed64": m["val_sfixed64"],
+		"val_float":    m["val_float"],
+		"val_double":   m["val_double"],
+		"val_bool":     m["val_bool"],
+		"val_string":   m["val_string"],
+		"val_bytes":    m["val_bytes"],
 	}
 
 	for name, val := range fieldMap {
@@ -4270,11 +4285,11 @@ func TestFromStoredRecord(t *testing.T) {
 	if !ok {
 		t.Fatalf("Datum type %T, want map[string]any", qr.Positional)
 	}
-	if m["ORDER_ID"] != int64(42) {
-		t.Errorf("ORDER_ID = %v, want 42", m["ORDER_ID"])
+	if m["order_id"] != int64(42) {
+		t.Errorf("order_id = %v, want 42", m["order_id"])
 	}
-	if m["PRICE"] != int64(199) {
-		t.Errorf("PRICE = %v, want 199", m["PRICE"])
+	if m["price"] != int64(199) {
+		t.Errorf("price = %v, want 199", m["price"])
 	}
 	if qr.PrimaryKey[0] != int64(42) {
 		t.Errorf("PrimaryKey = %v, want [42]", qr.PrimaryKey)
@@ -6025,16 +6040,16 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 	}
 
 	m0, _ := rowMapOK(results[0])
-	if m0["DEPT"] != "A" {
-		t.Errorf("group 0 key = %v, want A", m0["DEPT"])
+	if m0["dept"] != "A" {
+		t.Errorf("group 0 key = %v, want A", m0["dept"])
 	}
 	if m0["SUM(AMOUNT)"] != int64(30) {
 		t.Errorf("group 0 SUM = %v, want 30", m0["SUM(AMOUNT)"])
 	}
 
 	m1, _ := rowMapOK(results[1])
-	if m1["DEPT"] != "B" {
-		t.Errorf("group 1 key = %v, want B", m1["DEPT"])
+	if m1["dept"] != "B" {
+		t.Errorf("group 1 key = %v, want B", m1["dept"])
 	}
 	if m1["SUM(AMOUNT)"] != int64(30) {
 		t.Errorf("group 1 SUM = %v, want 30", m1["SUM(AMOUNT)"])

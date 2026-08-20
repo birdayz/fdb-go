@@ -272,14 +272,20 @@ func scanAll(rows *sql.Rows) ([][]any, error) {
 }
 
 // diffColumns compares expected column names to the result's, in order and
-// case-insensitively (the engines agree on column identity, not on display
-// case). Returns "" when they match.
+// CASE-SENSITIVELY. Returns "" when they match.
+//
+// It used to fold, on the stated ground that "the engines agree on column
+// identity, not on display case". That ground is gone: display case is now
+// part of what the engines agree on — a quoted DDL column reports its authored
+// spelling on both, measured against a live fdb-relational — so a folding
+// comparison here cannot see the one property a `columns:` assertion is
+// written to pin, and a scenario asserting it would report green either way.
 func diffColumns(want, got []string) string {
 	if len(want) != len(got) {
 		return fmt.Sprintf("column count mismatch: expected %d %v, got %d %v", len(want), want, len(got), got)
 	}
 	for i := range want {
-		if !strings.EqualFold(want[i], got[i]) {
+		if want[i] != got[i] {
 			return fmt.Sprintf("column %d mismatch: expected %q, got %q (all: expected %v, got %v)",
 				i, want[i], got[i], want, got)
 		}

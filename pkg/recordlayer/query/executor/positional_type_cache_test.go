@@ -67,11 +67,11 @@ func TestPositionalTypeCacheBounded(t *testing.T) {
 		}
 		// Correctness through wipes: the derived type keeps declaration
 		// order regardless of cache state.
-		if got := row.Type.Fields[0].Name; got != "ID" {
-			t.Fatalf("iteration %d: field 0 = %q, want ID", i, got)
+		if got := row.Type.Fields[0].Name; got != "id" {
+			t.Fatalf("iteration %d: field 0 = %q, want id", i, got)
 		}
-		if got := row.Type.Fields[1].Name; got != "NAME" {
-			t.Fatalf("iteration %d: field 1 = %q, want NAME", i, got)
+		if got := row.Type.Fields[1].Name; got != "name" {
+			t.Fatalf("iteration %d: field 1 = %q, want name", i, got)
 		}
 	}
 

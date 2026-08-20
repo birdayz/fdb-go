@@ -19,6 +19,13 @@ import (
 
 // exactDemoRef resolves a demo-schema field against its real flowed type. The
 // fallback is reserved for deliberate foreign-scope/missing-column controls.
+//
+// `col` is the column as the DESCRIPTOR spells it — lower/snake for the demo
+// .proto — because a leg's flowed type now carries the descriptor's own names
+// and the lookup is exact. Spelling a real column upper here does not fail
+// loudly; it silently takes the foreign-column fallback and hands the test a
+// synthetic NotNullLong field, which is why every genuine column below is
+// spelled the descriptor's way and only the deliberate misses are not.
 func exactDemoRef(t *testing.T, alias, col string) values.Value {
 	t.Helper()
 	table := "Order"
@@ -65,12 +72,16 @@ func exactScalarProjection(t *testing.T, input logical.LogicalOperator, alias, c
 // `SELECT order_id FROM Order SQ WHERE SQ.order_id = <leg>.<col>`.
 func clusteredCSQ(t *testing.T, legAlias, legCol string) logical.CorrelatedScalarSubquery {
 	filtered := logical.NewFilterWithPredicate(
-		scan("Order", "SQ"), corrEq(t, "SQ", "ORDER_ID", legAlias, legCol), "")
+		scan("Order", "SQ"), corrEq(t, "SQ", "order_id", legAlias, legCol), "")
 	return logical.CorrelatedScalarSubquery{
-		Alias:        values.UniqueCorrelationIdentifier(),
-		InnerPlan:    exactScalarProjection(t, filtered, "SQ", "ORDER_ID"),
-		InnerAlias:   "SQ",
-		ScalarCol:    "ORDER_ID",
+		Alias:      values.UniqueCorrelationIdentifier(),
+		InnerPlan:  exactScalarProjection(t, filtered, "SQ", "order_id"),
+		InnerAlias: "SQ",
+		// The SQL builder mints ScalarCol from values.ProjectionColumnName over
+		// the materialized output value, so for a stored column it is the
+		// descriptor's own spelling. Upper here would model a name production
+		// no longer emits.
+		ScalarCol:    "order_id",
 		StrictSingle: true,
 	}
 }
@@ -82,7 +93,7 @@ func clusteredProject(t *testing.T, outer logical.LogicalOperator, csq logical.C
 		Input:                      outer,
 		Projections:                []string{"o.order_id", "(subq)"},
 		Aliases:                    []string{"", ""},
-		ProjectedValues:            []values.Value{exactDemoRef(t, "o", "ORDER_ID"), values.NewScalarSubqueryValue(csq.Alias, values.NullableLong)},
+		ProjectedValues:            []values.Value{exactDemoRef(t, "o", "order_id"), values.NewScalarSubqueryValue(csq.Alias, values.NullableLong)},
 		IsComputed:                 []bool{false, true},
 		CorrelatedScalarSubqueries: []logical.CorrelatedScalarSubquery{csq},
 	}
@@ -135,8 +146,8 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 	// One ref per leg (C = non-rightmost... FROM-order first leg is O; the
 	// RIGHTMOST leg is C) + one enclosing-scope ref that must survive lazy.
 	pred := predicates.NewAnd(
-		corrEq(t, "SQ", "ORDER_ID", "c", "CUSTOMER_ID"),
-		corrEq(t, "SQ", "PRICE", "o", "ORDER_ID"),
+		corrEq(t, "SQ", "order_id", "c", "customer_id"),
+		corrEq(t, "SQ", "price", "o", "order_id"),
 		corrEq(t, "SQ", "OTHER", "z", "ZCOL"),
 	)
 	orig := logical.NewFilterWithPredicate(scan("Order", "SQ"), pred, "")
@@ -179,7 +190,14 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 	}
 
 	// The baked ordinals land at legStart+idx of the CONCAT, not leg-relative.
-	cIdx, _ := pu.legByBinding["C"].typ.FieldIndexUnique("CUSTOMER_ID")
+	// The lookup is EXACT against the leg's flowed type, which carries the
+	// descriptor's own spelling — and a missed lookup must fail here rather
+	// than silently yield 0, which for a first-column reference is
+	// indistinguishable from the right answer.
+	cIdx, foundC := pu.legByBinding["C"].typ.FieldIndexUnique("customer_id")
+	if !foundC {
+		t.Fatalf("fixture drift: Customer's leg type has no customer_id (%v)", pu.legByBinding["C"].typ)
+	}
 	wantC := pu.legByBinding["C"].start + cIdx
 	found := false
 	predicates.ReplaceValues(rebuilt.(*logical.LogicalFilter).Predicate, func(v values.Value) values.Value {
@@ -197,7 +215,7 @@ func TestClusteredPullUp_BakesAllLegs(t *testing.T) {
 	// A leg ref to a column ABSENT from the leg's type flips missed → decline.
 	pu2 := tr.buildClusterPullUp(j)
 	_, ok = rebuildInnerWithValues(
-		logical.NewFilterWithPredicate(scan("Order", "SQ"), corrEq(t, "SQ", "PRICE", "c", "NO_SUCH_COL"), ""),
+		logical.NewFilterWithPredicate(scan("Order", "SQ"), corrEq(t, "SQ", "price", "c", "NO_SUCH_COL"), ""),
 		pu2.bake)
 	if !ok || !pu2.missed {
 		t.Errorf("unmappable leg column: ok=%v missed=%v, want ok=true missed=true (caller declines)", ok, pu2.missed)
@@ -217,7 +235,7 @@ func TestClusteredCarrierEnumeration(t *testing.T) {
 	t.Parallel()
 
 	legRef := func() values.Value {
-		return exactDemoRef(t, "c", "CUSTOMER_ID")
+		return exactDemoRef(t, "c", "customer_id")
 	}
 	legPred := func() predicates.QueryPredicate {
 		return &predicates.ComparisonPredicate{
@@ -313,6 +331,53 @@ func TestClusteredCarrierEnumeration(t *testing.T) {
 	}
 }
 
+// TestClusterFieldResolvableSpansBothNamingAuthorities drives
+// clusterFieldResolvable's two arms directly, because nothing else in this
+// package reaches it: it is the arm for a projection that carries no resolved
+// Value, and every fixture here supplies one.
+//
+// Its two operands are minted by DIFFERENT authorities. A flat projection NAME
+// arrives normalized at the parse boundary — unquoted folded UPPER — while the
+// seed's own names carry the leg row's descriptor spelling and the subquery's
+// output title. So an exact comparison answers "unresolvable" for a column that
+// is plainly in the row, and the whole clustered-outer ordinal path declines a
+// query it can serve.
+//
+// The negative arms are what keep the positives honest: a predicate that
+// answered true unconditionally would satisfy every positive arm below on its
+// own, so at 4 positive and 3 negative arms the pin fails in both directions.
+func TestClusterFieldResolvableSpansBothNamingAuthorities(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+	pu := tr.buildClusterPullUp(inner(scan("Order", "o"), scan("Customer", "c")))
+	if pu == nil {
+		t.Fatal("pull-up spine")
+	}
+	// The inner scalar key: a folded source alias joined to the SUBQUERY's own
+	// output title. The title is whatever the inner select produced, so it can
+	// arrive in either case, and the descriptor spelling is the one an exact
+	// comparison against a parse-folded projection name cannot reach.
+	const innerKey = "SQ.order_id"
+
+	for _, tc := range []struct {
+		field string
+		want  bool
+		why   string
+	}{
+		{"O.ORDER_ID", true, "a parse-folded reference to a descriptor-spelled leg column"},
+		{"O.order_id", true, "the seed's own spelling of that same column"},
+		{"C.customer_id", true, "the second leg, so the walk is not stopping at leg one"},
+		{"SQ.ORDER_ID", true, "a parse-folded reference to the inner scalar key"},
+		{"O.NO_SUCH_COLUMN", false, "a leg that exists cannot resolve a column it does not declare"},
+		{"Z.ORDER_ID", false, "a qualifier naming no leg at all"},
+		{"ORDER_ID", false, "a bare name: the level-2 row publishes dotted keys only"},
+	} {
+		if got := clusterFieldResolvable(tc.field, pu, innerKey); got != tc.want {
+			t.Errorf("clusterFieldResolvable(%q) = %v, want %v — %s", tc.field, got, tc.want, tc.why)
+		}
+	}
+}
+
 // TestClusteredSeed_Shape pins the dotted seed: one FULL ordinal run over the
 // fresh concat QOV with fields named LEG.COL in FROM order, then the single
 // nullable inner leg named INNER.SCALARCOL at ordinal 0.
@@ -399,10 +464,10 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 
 	// Direction 1: gated comma cluster, correlation to the FIRST leg.
 	tr := newGateTranslator(t)
-	gated := clusteredProject(t, inner(scan("Order", "o"), scan("Customer", "c")), clusteredCSQ(t, "c", "CUSTOMER_ID"))
+	gated := clusteredProject(t, inner(scan("Order", "o"), scan("Customer", "c")), clusteredCSQ(t, "c", "customer_id"))
 	// Rightmost is O; projections reference o.order_id (dotted) + the csq.
 	gated.Projections = []string{"c.customer_id", "(subq)"}
-	gated.ProjectedValues[0] = exactDemoRef(t, "c", "CUSTOMER_ID")
+	gated.ProjectedValues[0] = exactDemoRef(t, "c", "customer_id")
 	expr := tr.translateProjectWithCorrelatedScalar(gated)
 	if expr == nil {
 		t.Fatalf("gated cluster + first-leg correlation must translate (it was 0AF00 on the name model): %v", tr.translateErr)
@@ -417,7 +482,7 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 	left := logical.NewJoin(
 		inner(scan("Order", "o2"), scan("Order", "o")),
 		scan("Customer", "c"), logical.JoinLeft, "")
-	flipped := clusteredProject(t, left, clusteredCSQ(t, "c", "CUSTOMER_ID"))
+	flipped := clusteredProject(t, left, clusteredCSQ(t, "c", "customer_id"))
 	expr2 := tr2.translateProjectWithCorrelatedScalar(flipped)
 	if expr2 == nil {
 		t.Fatalf("gated joined-preserved outer + rightmost correlation must translate ordinal, err=%v", tr2.translateErr)
@@ -432,7 +497,7 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 	// does the correlation mean?), so it declines LOUDLY (correct-or-loud)
 	// instead of seeding an anchored record over indistinguishable legs.
 	tr2b := newGateTranslator(t)
-	dupUngated := clusteredProject(t, inner(scan("Order", "x"), scan("Customer", "x")), clusteredCSQ(t, "x", "CUSTOMER_ID"))
+	dupUngated := clusteredProject(t, inner(scan("Order", "x"), scan("Customer", "x")), clusteredCSQ(t, "x", "customer_id"))
 	if expr2b := tr2b.translateProjectWithCorrelatedScalar(dupUngated); expr2b != nil {
 		t.Fatal("dup-poisoned outer + correlated scalar must decline LOUDLY (there is no anchored fallback), got a translation")
 	}
@@ -443,7 +508,7 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 	// Direction 3: the gated joined-preserved outer + NON-rightmost (buried)
 	// correlation translates ordinal too — the buried-leg spans name it.
 	tr3 := newGateTranslator(t)
-	buried := clusteredProject(t, left, clusteredCSQ(t, "o2", "ORDER_ID"))
+	buried := clusteredProject(t, left, clusteredCSQ(t, "o2", "order_id"))
 	if expr3 := tr3.translateProjectWithCorrelatedScalar(buried); expr3 == nil {
 		t.Fatalf("gated outer + buried (non-rightmost) correlation must translate ordinal, err=%v", tr3.translateErr)
 	} else {
@@ -456,7 +521,7 @@ func TestClusteredDispatch_BothDirections(t *testing.T) {
 	// end-to-end in the FDB LEFT matrix).
 	tr4 := newGateTranslator(t)
 	singleLeft := logical.NewJoin(scan("Order", "o"), scan("Customer", "c"), logical.JoinLeft, "")
-	gatedLeft := clusteredProject(t, singleLeft, clusteredCSQ(t, "c", "CUSTOMER_ID"))
+	gatedLeft := clusteredProject(t, singleLeft, clusteredCSQ(t, "c", "customer_id"))
 	expr4 := tr4.translateProjectWithCorrelatedScalar(gatedLeft)
 	if expr4 == nil {
 		t.Fatal("gated single-source LEFT outer + correlated scalar must translate ordinal")
@@ -482,19 +547,19 @@ func TestInnerOwnAliasNotOuterRef(t *testing.T) {
 	// outer's first leg; the only OUTER ref is to C (the rightmost leg).
 	innerJoin := logical.NewJoinWithPredicate(
 		scan("TypedRecord", "SQ"), scan("Order", "o"), logical.JoinInner,
-		corrEq(t, "o", "ORDER_ID", "SQ", "ID"))
+		corrEq(t, "o", "order_id", "SQ", "id"))
 	csq := logical.CorrelatedScalarSubquery{
 		Alias: values.UniqueCorrelationIdentifier(),
 		InnerPlan: exactScalarProjection(t,
-			logical.NewFilterWithPredicate(innerJoin, corrEq(t, "SQ", "ID", "c", "CUSTOMER_ID"), ""),
-			"SQ", "ID"),
+			logical.NewFilterWithPredicate(innerJoin, corrEq(t, "SQ", "id", "c", "customer_id"), ""),
+			"SQ", "id"),
 		InnerAlias:   "SQ",
-		ScalarCol:    "ID",
+		ScalarCol:    "id",
 		StrictSingle: true,
 	}
 	p := clusteredProject(t, inner(scan("Order", "o"), scan("Customer", "c")), csq)
 	p.Projections = []string{"c.customer_id", "(subq)"}
-	p.ProjectedValues[0] = exactDemoRef(t, "c", "CUSTOMER_ID")
+	p.ProjectedValues[0] = exactDemoRef(t, "c", "customer_id")
 
 	expr := tr.translateProjectWithCorrelatedScalar(p)
 	if expr != nil {
@@ -517,20 +582,20 @@ func TestJoinInnerDispatch_Ordinal(t *testing.T) {
 
 	joinInner := logical.NewFilterWithPredicate(
 		logical.NewJoinWithPredicate(scan("Order", "SQ"), scan("TypedRecord", "i"), logical.JoinInner,
-			corrEq(t, "I", "ID", "SQ", "ORDER_ID")),
-		corrEq(t, "SQ", "ORDER_ID", "c", "CUSTOMER_ID"), "")
+			corrEq(t, "I", "id", "SQ", "order_id")),
+		corrEq(t, "SQ", "order_id", "c", "customer_id"), "")
 	csq := logical.CorrelatedScalarSubquery{
 		Alias:        values.UniqueCorrelationIdentifier(),
-		InnerPlan:    exactScalarProjection(t, joinInner, "SQ", "ORDER_ID"),
+		InnerPlan:    exactScalarProjection(t, joinInner, "SQ", "order_id"),
 		InnerAlias:   "SQ",
-		ScalarCol:    "ORDER_ID",
+		ScalarCol:    "order_id",
 		StrictSingle: true,
 	}
 	p := &logical.LogicalProject{
 		Input:                      scan("Customer", "c"),
 		Projections:                []string{"c.name", "(subq)"},
 		Aliases:                    []string{"", ""},
-		ProjectedValues:            []values.Value{exactDemoRef(t, "c", "NAME"), values.NewScalarSubqueryValue(csq.Alias, values.NullableLong)},
+		ProjectedValues:            []values.Value{exactDemoRef(t, "c", "name"), values.NewScalarSubqueryValue(csq.Alias, values.NullableLong)},
 		IsComputed:                 []bool{false, true},
 		CorrelatedScalarSubqueries: []logical.CorrelatedScalarSubquery{csq},
 	}

@@ -48,11 +48,15 @@ func TestProjectionColumnNameCopyRebuildAndRebase(t *testing.T) {
 			wantRebased: "Q1.N.CO",
 		},
 		{
+			// The alias is carried VERBATIM. It reaches the projection already
+			// normalized by the parse capture — unquoted folded UPPER, quoted
+			// kept as authored — so this layer has nothing left to normalize
+			// and a fold here would only be able to destroy `AS "first"`.
 			name:        "explicit alias",
 			value:       nested("SK"),
 			alias:       "first",
-			want:        "FIRST",
-			wantRebased: "FIRST",
+			want:        "first",
+			wantRebased: "first",
 		},
 		{
 			// ORDINAL-FREE, like the nested cases above it. This case used to

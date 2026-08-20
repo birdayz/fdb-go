@@ -298,6 +298,24 @@ var engineGaps = []EngineGap{
 	// Pin the exact statement because this file has thirty PartiQL AT shapes.
 	{"array-join-at.yamsql", SkipGapMultipleLateralUnnests, `"SELECT T2.\"id\", \"at1\", \"val1\", \"at2\", \"val2\" FROM T2, T2.\"arr1\" AS \"val1\" AT \"at1\", T2.\"arr2\" AS \"val2\" AT \"at2\"": 0AF00: multiple lateral array unnests in one FROM clause are not yet supported`, "RFC-142"},
 
+	// GO IS CORRECT AND JAVA IS NOT, and the corpus file says so in place:
+	// `# TODO Issue #4170: This should return [].` On a NULLABLE indexed
+	// column Java maps `«indexed» = NULL` to an IS-NULL index range instead of
+	// constant-folding the comparison to UNKNOWN, so it returns the row whose
+	// value is NULL. Its three NON-indexed twins in the same block assert `[]`,
+	// and Go answers `[]` for all four.
+	//
+	// Go's `[]` comes from the executor's scan-range binder, which makes an
+	// equality against a NULL comparand an EMPTY range — SQL three-valued
+	// logic, and the property the null-rejecting ordering proof rests on.
+	// Matching Java here would mean breaking 3VL on the index path.
+	//
+	// This file was invisible until the identifier change (RFC-236) made its
+	// nested quoted index DDL — `CARDINALITY("struct"."int_arr")` — build: the
+	// whole file was skipped as unsupported-DDL:struct-index with queries=0, so
+	// its other 29 queries had never executed either.
+	{"arrays-cardinality.yamsql", SkipConformanceJavaPlannerBug, `line 187: "SELECT \"id\" FROM \"tab1_indexed\" WHERE CARDINALITY(\"int_arr\") = NULL": result does not contain all expected rows, expected 1 row(s), got 0 row(s)`, "Issue #4170"},
+
 	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan
 	// time (the type-nullability gate, ExpressionVisitor:1067 semantics
 	// applied to the literal), where Java lets the NULL reach message

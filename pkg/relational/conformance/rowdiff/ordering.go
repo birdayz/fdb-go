@@ -396,10 +396,16 @@ func sortKeysMatchOrderBy(keys []plans.SortKey, orderBy []OrderKey) bool {
 		if !ok || recordType == nil {
 			return false
 		}
-		// The flat generator stores canonical SQL identifiers in upper case;
-		// preserve the guard's prior case-insensitive SQL-name behavior while
-		// resolving against the exact root type rather than display text.
-		ordinal, ok := recordType.FieldIndexUnique(strings.ToUpper(orderBy[i].Col))
+		// The root type's slots carry the descriptor's own spelling, so the
+		// EXACT name has to be tried first — folding first would miss every
+		// non-upper descriptor and quietly report "ordering not proven",
+		// weakening the harness rather than failing it. The folded retry keeps
+		// the guard working for the flat generator, which writes canonical SQL
+		// identifiers in upper case.
+		ordinal, ok := recordType.FieldIndexUnique(orderBy[i].Col)
+		if !ok {
+			ordinal, ok = recordType.FieldIndexUnique(strings.ToUpper(orderBy[i].Col))
+		}
 		if !ok || accessor.Ordinal() != ordinal {
 			return false
 		}

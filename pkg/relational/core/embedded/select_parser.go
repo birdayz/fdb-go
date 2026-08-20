@@ -3140,19 +3140,16 @@ func (s usingSource) owns(colText string) int {
 	}
 	// RESOLVED THROUGH THE SOURCE'S OWN NAMESPACE, then counted in it.
 	//
-	// The two table implementations do not agree on how they present a column
-	// name, and neither is wrong. `recordTypeTable` folds — it documents that
-	// "the COLUMN itself presents the FOLDED identifier everywhere", keeping
-	// plan-time and runtime in one namespace — while a derived source's
-	// `StaticTable` presents the projection's names as built. So there is no
-	// single spelling this resolver can fold or preserve its way to: folding
-	// lost derived sources, preserving lost base ones, and each attempt fixed
-	// one table kind by breaking the other.
+	// Both table implementations now present a column under the spelling it
+	// was declared with, so the two agree — but this still must not spell the
+	// key itself. `counts` is keyed by whatever identifier the SOURCE hands
+	// back, and hiding decrements that same key; deriving the key here a
+	// second way is how the two halves come to disagree.
 	//
-	// Asking the source to resolve the name, and then counting under the
-	// identifier IT returns, works for both — and keeps hiding coherent,
-	// because the decrement lands on that same key.
-	col, ok := s.cols.LookupColumn(semantic.NewUnquoted(colText))
+	// The lookup is the RELAXED one because a bare USING column is an
+	// ordinary unquoted reference, and an unquoted reference reaches a
+	// lower-case raw-proto column through the case-insensitive pass.
+	col, ok := semantic.LookupColumnRelaxed(s.cols, semantic.NewUnquoted(colText))
 	if !ok {
 		return 0
 	}
@@ -3166,7 +3163,7 @@ func (s usingSource) usingHideKey(colText string) string {
 	if s.cols == nil {
 		return ""
 	}
-	col, ok := s.cols.LookupColumn(semantic.NewUnquoted(colText))
+	col, ok := semantic.LookupColumnRelaxed(s.cols, semantic.NewUnquoted(colText))
 	if !ok {
 		return ""
 	}

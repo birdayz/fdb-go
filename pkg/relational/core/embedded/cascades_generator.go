@@ -4551,12 +4551,14 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// the schema there would publish the machinery's suffix as a
 					// column name.
 					//
-					// Bare leaf and upper-cased, to stay in the derivation's own
-					// spelling: an output name over a gated ordinal join is
-					// qualified (`C.NAME`) while the label is bare, and a quoted
-					// inner alias reaches the schema in its written case (`did`)
-					// where the column list reports `DID`.
-					cd.Label = strings.ToUpper(parseColRef(outputNames[i]).bare())
+					// Bare leaf, VERBATIM: an output name over a gated ordinal
+					// join is qualified (`C.NAME`) while the label is bare, so
+					// the qualifier comes off — but the leaf's own case is the
+					// authored one and stays. This is the site that made
+					// `SELECT "KeepCase"` report KEEPCASE while `SELECT *` over
+					// the same table reported KeepCase; Java reports KeepCase
+					// for both, measured.
+					cd.Label = parseColRef(outputNames[i]).bare()
 				}
 			} else if !aliasMinted {
 				cd.Label = outputNames[i]
@@ -4843,7 +4845,9 @@ func deriveProjectionColumnDef(
 	}
 	var label string
 	if alias != "" {
-		label = strings.ToUpper(alias)
+		// Verbatim: the alias arrives already normalized by the parse capture,
+		// so the only thing a second fold can do is rename `AS "x"` to X.
+		label = alias
 	} else if _, isField := values.AsFieldValue(v); !isField {
 		label = fmt.Sprintf("_%d", idx)
 	}
@@ -4888,7 +4892,10 @@ func deriveProjectionColumnDef(
 	// executeProjection stores values under both the original name
 	// and the alias, so the alias is a valid lookup key and gives
 	// CTE consumers the column name they reference.
-	colName := strings.ToUpper(name)
+	// VERBATIM: this is the DATUM KEY, and the row it indexes names its slots
+	// through values.OutputColumnName, which folds nothing. Folding here asked
+	// a verbatim-named row for a name it does not carry.
+	colName := name
 	if label != "" {
 		colName = label
 	}
@@ -4913,7 +4920,13 @@ func deriveProjectionColumnDef(
 			// included. Java takes the leaf of the resolved identifier
 			// (Identifier.withoutQualifier, Identifier.java:101-106) applied by
 			// the top-level clearQualifier, which is SK and CO.
-			displayLabel = strings.ToUpper(parseColRef(name).bare())
+			//
+			// The leaf is taken VERBATIM. A quoted DDL column keeps its case
+			// through the whole engine now, and the result-set label is where
+			// the user sees that: `SELECT "KeepCase"` reports KeepCase, which
+			// is what Java reports, where a fold here reported KEEPCASE for a
+			// column no engine calls that.
+			displayLabel = parseColRef(name).bare()
 		}
 	} else if aliasMinted {
 		// A MACHINERY-pinned alias — the duplicated-bare-leaf dedup pins the
@@ -5001,15 +5014,18 @@ func deriveProjectionColumnDef(
 // (explicit-alias==bare-leaf reading NULL, JOIN composite leaking a qualified
 // label) are impossible by construction.
 func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
-	name := strings.ToUpper(f.Name)
-	label := strings.ToUpper(parseColRef(f.Name).bare())
+	// VERBATIM on both: the RC field's name is the slot key the executor wrote,
+	// and the label is its bare leaf. A fold here renamed the column the user
+	// sees and asked a verbatim-named row for a key it does not carry.
+	name := f.Name
+	label := parseColRef(f.Name).bare()
 
 	// Resolve the column TYPE against the leg that defines it. Use the VALUE's
 	// reference name (qualified for a JOIN composite) so descriptorForColumn keys
 	// the right leg; fall back to the field Name for a non-FieldValue value.
 	typeRef := name
 	if _, ok := values.AsFieldValue(f.Value); ok {
-		typeRef = strings.ToUpper(values.ColumnNameValue(f.Value))
+		typeRef = values.ColumnNameValue(f.Value)
 	}
 	return columnDefFromRef(name, label, typeRef, f.Value, descs)
 }

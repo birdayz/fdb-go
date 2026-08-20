@@ -1168,26 +1168,50 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 				t.Fatalf("expected 0AF00, got: %v", err)
 			}
 		}
-		// (a) quoted-lowercase alias `AS "x"`. This obstruction is RETIRED, and
-		//     the two arms below are what replaced it. The name-derived schema
-		//     could not describe the row here — execution keys output columns
-		//     UPPERCASE, so `AS "x"` emits "X" and no truthful advertisement of
-		//     a column called "x" was possible — and declining both spellings
-		//     was the correct-or-loud answer to that. The published row is now
-		//     the body's own result type, whose field names are folded by the
-		//     SAME rule execution uses, so the two spellings separate cleanly:
-		//     "X" is the column and resolves; "x" is not and 42703s by name.
-		//     (That the engine folds a QUOTED alias at all is a standing
-		//     divergence from Java's case-sensitive quoted identifiers — a
-		//     property of the projection's own naming, not of this scope, and
-		//     pinned here so closing it shows up as a change in BOTH arms.)
+		// (a) quoted-lowercase alias `AS "x"`. The engine no longer folds an
+		//     output name, so `AS "x"` publishes a column called x and the
+		//     AUTHORED spelling is the one that resolves exactly. THE
+		//     DIRECTION OF THIS ARM INVERTED: it used to require `C."x"` to
+		//     42703 (because execution keyed the slot "X" and no reference
+		//     could name it) and `C."X"` to answer. Now `C."x"` answers by
+		//     exact match, and `C."X"` answers too — through the scope's
+		//     case-insensitive second pass, which is a documented read-side
+		//     extension over Java rather than a fold in the naming.
+		//
+		//     What is still forbidden is a spelling that matches NEITHER, and
+		//     that is what the third arm holds.
+		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err != nil ||
+			strings.Join(rows, ",") != "900" {
+			t.Fatalf("the AUTHORED quoted spelling must resolve exactly: rows=%v err=%v", rows, err)
+		}
 		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`); err != nil ||
 			strings.Join(rows, ",") != "900" {
-			t.Fatalf("folded-name read must join on the body's AID column: rows=%v err=%v", rows, err)
+			t.Fatalf("the folded spelling must reach it through the relaxed pass: rows=%v err=%v", rows, err)
 		}
-		if _, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err == nil ||
+		if _, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."xx" = "C2"."CID"`); err == nil ||
 			!strings.Contains(err.Error(), "42703") {
-			t.Fatalf("a spelling the published row does not carry must 42703, got %v", err)
+			t.Fatalf("a spelling that matches neither exactly nor case-insensitively must 42703, got %v", err)
+		}
+		// (a2) TWO ALIASES THAT DIFFER ONLY BY CASE ARE TWO COLUMNS, and the
+		//      duplicate-name obstruction below no longer catches them — so
+		//      each authored spelling must resolve to ITS OWN column, and a
+		//      reference matching neither exactly must report the COLLISION
+		//      rather than first-matching one of them. AID=1 joins CC to 900;
+		//      K=100 does not join at all, so picking the wrong column shows
+		//      up as an empty result rather than as a different error.
+		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x", LA."K" AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err != nil ||
+			strings.Join(rows, ",") != "900" {
+			t.Fatalf(`AS "x" and AS "X" are distinct columns; "x" must join on AID: rows=%v err=%v`, rows, err)
+		}
+		//      The reference that matches BOTH only case-insensitively must not
+		//      answer at all. It is pinned as "must be LOUD" rather than on a
+		//      specific SQLSTATE because this ON runs through the CTE's
+		//      ON-resolution schema, which declines a source it cannot describe
+		//      before the scope ever counts candidates; the 42702 form of the
+		//      same rule is pinned on the scope itself in
+		//      `quoted_identifier_columns.yaml`, over a derived table.
+		if rows, err := run(t, `WITH "C" AS (SELECT LA."AID" AS "x", LA."K" AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."xX" = "C2"."CID"`); err == nil {
+			t.Fatalf("a folded reference matching BOTH case-variants must be loud, got rows=%v", rows)
 		}
 		// (b) DUPLICATE output name X — a `C."X"` ref declines, never a silent
 		//     pick of the first of the two X columns.
@@ -1229,17 +1253,22 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 			}
 		}
 		// The quoted-lowercase alias obstruction is retired here for the same
-		// reason as its projection twin (Q55 (a)): the published row's names are
-		// folded by execution's own rule, so the folded spelling IS the column
-		// and the unfolded one is honestly absent. MIN over AID ∈ {1,2} is 1,
-		// which is the CID that matches — so the value, not merely the absence
-		// of an error, is what this pins.
+		// reason as its projection twin (Q55 (a)), and the arms invert the same
+		// way: nothing folds an output name, so the AUTHORED spelling is the
+		// column and resolves exactly, while the folded spelling reaches it
+		// through the scope's case-insensitive second pass. MIN over
+		// AID ∈ {1,2} is 1, which is the CID that matches — so the value, not
+		// merely the absence of an error, is what this pins.
+		if rows, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err != nil ||
+			strings.Join(rows, ",") != "900" {
+			t.Fatalf("authored aggregate alias must join on MIN(AID)=1: rows=%v err=%v", rows, err)
+		}
 		if rows, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`); err != nil ||
 			strings.Join(rows, ",") != "900" {
-			t.Fatalf("folded aggregate alias must join on MIN(AID)=1: rows=%v err=%v", rows, err)
+			t.Fatalf("folded aggregate alias must reach it through the relaxed pass: rows=%v err=%v", rows, err)
 		}
-		if _, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."x" = "C2"."CID"`); err == nil {
-			t.Fatal("a spelling the published aggregate row does not carry must not resolve")
+		if _, err := run(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "x" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."xx" = "C2"."CID"`); err == nil {
+			t.Fatal("a spelling that matches the published aggregate row neither exactly nor case-insensitively must not resolve")
 		}
 		// duplicate aggregate output name → decline.
 		mustLoud(t, `WITH "C" AS (SELECT MIN(LA."AID") AS "X", MAX(LB."BID") AS "X" FROM LA LEFT JOIN LB ON LA."AID" = LB."BID") SELECT "C2"."CV" FROM "C" JOIN CC AS "C2" ON "C"."X" = "C2"."CID"`)

@@ -1933,14 +1933,16 @@ func TestPredicatePushDownRule_DoNotPushThroughGroupBy(t *testing.T) {
 	))
 	groupByQun := forEachOf(groupBy)
 
-	// HAVING SUM < @1 — GroupBy's exact native output uses its canonical
-	// upper-case grouping/aggregate names.
+	// HAVING SUM < @1 — GroupBy's exact native output names a GROUPING key by
+	// the key value's own spelling (AggregateKeyColumnName takes it verbatim,
+	// because that column exists in the row it reads and in the projection
+	// above it), and an AGGREGATE by its upper-folded alias.
 	pred := ppdFieldPred(groupByQun, "SUM", predicates.Comparison{
 		Type:    predicates.ComparisonLessThan,
 		Operand: values.NewConstantObjectValue(values.UniqueCorrelationIdentifier(), "1", values.NotNullLong),
 	})
 
-	sel := ppdSelectWithColumns(groupByQun, []string{"B", "C", "SUM"}, pred)
+	sel := ppdSelectWithColumns(groupByQun, []string{"b", "c", "SUM"}, pred)
 	selRef := expressions.InitialOf(sel)
 
 	yielded := mustFireExpressionRule(t, NewPredicatePushDownRule(), selRef)

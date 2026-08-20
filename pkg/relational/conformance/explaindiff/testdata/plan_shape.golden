@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=355 queries=2569 dml=157 non_query=104 plan_errors=270 unexpected_errors=4
+# files=357 queries=2580 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -950,7 +950,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === aggregate_sum_large.yaml#1
 sql:   SELECT CASE WHEN id <= 2 THEN 'first' ELSE 'second' END, SUM(val) FROM t GROUP BY CASE WHEN id <= 2 THEN 'first' ELSE 'second' END ORDER BY CASE WHEN id <= 2 THEN 'first' ELSE 'second' END
-plan:  Project([_current.CASE(WHEN(PREDICATE, TRUE), ['FIRST', 'SECOND'])#0, _current.SUM(VAL)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['first', 'second'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['first', 'second']) ASC], Scan(T))))
+plan:  Project([_current.CASE(WHEN(predicate, TRUE), ['first', 'second'])#0, _current.SUM(VAL)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['first', 'second'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['first', 'second']) ASC], Scan(T))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -2199,7 +2199,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 === case_when_in_java.yaml#3
 sql:   SELECT CASE WHEN category <= 20 THEN 'low' ELSE 'high' END AS tier, COUNT(*) FROM products GROUP BY tier ORDER BY tier
-plan:  Project([_current.CASE(WHEN(PREDICATE, TRUE), ['LOW', 'HIGH'])#0, _current.COUNT(*)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], Scan(PRODUCTS))))
+plan:  Project([_current.CASE(WHEN(predicate, TRUE), ['low', 'high'])#0, _current.COUNT(*)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], Scan(PRODUCTS))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -3289,7 +3289,7 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === count_star_vs_col.yaml#4
 sql:   SELECT CASE WHEN val IS NULL THEN 'null' ELSE 'non-null' END, COUNT(*), COUNT(val), COUNT(name) FROM t GROUP BY CASE WHEN val IS NULL THEN 'null' ELSE 'non-null' END ORDER BY CASE WHEN val IS NULL THEN 'null' ELSE 'non-null' END
-plan:  Project([_current.CASE(WHEN(PREDICATE, TRUE), ['NULL', 'NON-NULL'])#0, _current.COUNT(*)#1, _current.COUNT(VAL)#2, _current.COUNT(NAME)#3], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['null', 'non-null'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['null', 'non-null']) ASC], Scan(T))))
+plan:  Project([_current.CASE(WHEN(predicate, TRUE), ['null', 'non-null'])#0, _current.COUNT(*)#1, _current.COUNT(VAL)#2, _current.COUNT(NAME)#3], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['null', 'non-null'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['null', 'non-null']) ASC], Scan(T))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -6629,7 +6629,7 @@ sql:   SELECT GREATEST(1, 'a') FROM t
 plan:  <PLAN-ERROR: 22000: function GREATEST has incompatible argument types>
 === group_by_case.yaml#0
 sql:   SELECT CASE WHEN price < 50 THEN 'cheap' ELSE 'expensive' END, COUNT(*) FROM items GROUP BY CASE WHEN price < 50 THEN 'cheap' ELSE 'expensive' END ORDER BY CASE WHEN price < 50 THEN 'cheap' ELSE 'expensive' END
-plan:  Project([_current.CASE(WHEN(PREDICATE, TRUE), ['CHEAP', 'EXPENSIVE'])#0, _current.COUNT(*)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['cheap', 'expensive'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['cheap', 'expensive']) ASC], Scan(ITEMS))))
+plan:  Project([_current.CASE(WHEN(predicate, TRUE), ['cheap', 'expensive'])#0, _current.COUNT(*)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['cheap', 'expensive'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['cheap', 'expensive']) ASC], Scan(ITEMS))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -6699,7 +6699,7 @@ shape:         RecordQueryProjectionPlan
 shape:           RecordQueryScanPlan
 === group_by_expression_key.yaml#0
 sql:   SELECT CASE WHEN ts < 2000 THEN 'early' ELSE 'late' END, SUM(value) FROM events GROUP BY CASE WHEN ts < 2000 THEN 'early' ELSE 'late' END ORDER BY CASE WHEN ts < 2000 THEN 'early' ELSE 'late' END
-plan:  Project([_current.CASE(WHEN(PREDICATE, TRUE), ['EARLY', 'LATE'])#0, _current.SUM(VALUE)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['early', 'late'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['early', 'late']) ASC], Scan(EVENTS))))
+plan:  Project([_current.CASE(WHEN(predicate, TRUE), ['early', 'late'])#0, _current.SUM(VALUE)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['early', 'late'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['early', 'late']) ASC], Scan(EVENTS))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -6842,7 +6842,7 @@ shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 === group_by_multi.yaml#5
 sql:   SELECT CASE WHEN amt < 200 THEN 'low' ELSE 'high' END, COUNT(*) FROM sales GROUP BY CASE WHEN amt < 200 THEN 'low' ELSE 'high' END ORDER BY 1
-plan:  Project([_current.CASE(WHEN(PREDICATE, TRUE), ['LOW', 'HIGH'])#0, _current.COUNT(*)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], Scan(SALES))))
+plan:  Project([_current.CASE(WHEN(predicate, TRUE), ['low', 'high'])#0, _current.COUNT(*)#1], StreamingAgg(keys=[CASE(WHEN(predicate, TRUE), ['low', 'high'])], InMemorySort([CASE(WHEN(predicate, TRUE), ['low', 'high']) ASC], Scan(SALES))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
@@ -13255,7 +13255,7 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 === parse_channel_pins.yaml#4
 sql:   SELECT "a.b" FROM (SELECT v AS "a.b" FROM u) AS s ORDER BY "a.b" DESC
-plan:  Project([_current.A.B#0], InMemorySort([_current.A.B#0 DESC], Project([_current.V#1], Scan(U))))
+plan:  Project([_current.a.b#0], InMemorySort([_current.a.b#0 DESC], Project([_current.V#1], Scan(U))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryProjectionPlan
@@ -14056,33 +14056,94 @@ sql:   SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 GROUP BY a1
 plan:  <PLAN-ERROR: 42803: SELECT qualifier.* expands to columns not in GROUP BY>
 === quoted_identifier_columns.yaml#0
 sql:   SELECT q1."id", q1."k" FROM q1 ORDER BY q1."id"
-plan:  Project([_current.ID#0, _current.K#1], Scan(Q1))
+plan:  Project([_current.id#0, _current.k#1], Scan(Q1))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === quoted_identifier_columns.yaml#1
 sql:   SELECT d."k" FROM (SELECT "id", "k" FROM q2) d ORDER BY d."k"
-plan:  Project([_current.K#1], InMemorySort([_current.K#1 ASC], Project([_current.ID#0, _current.K#1], Scan(Q2))))
+plan:  Project([_current.k#1], InMemorySort([_current.k#1 ASC], Project([_current.id#0, _current.k#1], Scan(Q2))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryProjectionPlan
 shape:       RecordQueryScanPlan
 === quoted_identifier_columns.yaml#2
 sql:   SELECT q1."id" FROM q1 JOIN q2 USING ("k") ORDER BY q1."id"
-plan:  Project([_current.ID#0], FlatMap(outer=Scan(Q1), inner=PredicatesFilter(Scan(Q2), [1 preds])))
+plan:  Project([_current.id#0], FlatMap(outer=Scan(Q1), inner=PredicatesFilter(Scan(Q2), [1 preds])))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
+=== quoted_identifier_columns.yaml#3
+sql:   SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d ON q1."k" = d."k" ORDER BY q1."id"
+plan:  Project([_current.id#0], FlatMap(outer=Scan(Q1), inner=PredicatesFilter(Project([_current.id#0, _current.k#1], Scan(Q2)), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+=== quoted_identifier_columns.yaml#4 expect-error=42702
+sql:   SELECT d."ka" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d
+plan:  <PLAN-ERROR: 42702: Ambiguous reference D.ka>
+=== quoted_identifier_columns.yaml#5
+sql:   SELECT d."kA" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d ORDER BY d."kA"
+plan:  Project([_current.kA#0], InMemorySort([_current.kA#0 ASC], Project([_current.k#1, _current.id#0], Scan(Q2))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== quoted_identifier_index_bridge.yaml#0
+sql:   SELECT "id" FROM qidx WHERE "cat" = 10 ORDER BY "id"
+plan:  Project([_current.id#0], IndexScan(QIDX_CAT, [=] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryCoveringIndexPlan
+=== quoted_identifier_index_bridge.yaml#1
+sql:   SELECT "id" FROM qidx WHERE cat = 10 ORDER BY "id"
+plan:  Project([_current.id#0], IndexScan(QIDX_CAT, [=] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryCoveringIndexPlan
+=== quoted_identifier_index_bridge.yaml#2
+sql:   SELECT "id", "cat" FROM qidx WHERE "cat" > 10 ORDER BY "cat"
+plan:  Project([_current.id#0, _current.cat#1], IndexScan(QIDX_CAT, [<>] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryCoveringIndexPlan
+=== quoted_identifier_labels.yaml#0
+sql:   SELECT "KeepCase" FROM QCASE WHERE id = 1
+plan:  Project([_current.KeepCase#1], Scan(QCASE, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#1
+sql:   SELECT * FROM QCASE WHERE id = 1
+plan:  Scan(QCASE, [=])
+shape: RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#2
+sql:   SELECT "KeepCase" AS "kept" FROM QCASE WHERE id = 1
+plan:  Project([_current.KeepCase#1], Scan(QCASE, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#3
+sql:   SELECT "KeepCase" AS kept FROM QCASE WHERE id = 1
+plan:  Project([_current.KeepCase#1], Scan(QCASE, [=]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#4
+sql:   SELECT "v" FROM QARR, QARR.arr AS "v" ORDER BY "v"
+plan:  Project([_current.V#2], InMemorySort([_current.V#2 ASC], FlatMap(outer=Scan(QARR), inner=Explode(field))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryExplodePlan
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
-plan:  Project([_current.ID#0], InMemorySort([_current.X#1 DESC], Scan(T)))
+plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryScanPlan
 === quoted_identifier_pins.yaml#1
 sql:   SELECT "x" FROM t WHERE "x" = 10
-plan:  Project([_current.X#1], PredicatesFilter(Scan(T), [1 preds]))
+plan:  Project([_current.x#1], PredicatesFilter(Scan(T), [1 preds]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
@@ -14093,7 +14154,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === quoted_identifier_pins.yaml#3
 sql:   SELECT "Q$1"."x" FROM t AS "Q$1" ORDER BY "Q$1".id
-plan:  Project([_current.X#1], Scan(T))
+plan:  Project([_current.x#1], Scan(T))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === recursive_cte.yaml#0

@@ -1,8 +1,6 @@
 package values
 
 import (
-	"strings"
-
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer/protoname"
@@ -235,7 +233,7 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 }
 
 // FieldNameForProtoField is THE single authority for the NAME a stored
-// column's slot carries in a values.Type: the user identifier, upper-folded.
+// column's slot carries in a values.Type: the user identifier, VERBATIM.
 //
 // A protobuf field name is the STORAGE spelling — `$`, `.` and `__` are escaped
 // (`a$b` is stored as `A__1B`). Java keeps the two apart on the type itself:
@@ -251,13 +249,20 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 // types, so the disagreement is not cosmetic: it is a hard
 // "type disagrees with declared binding" at evaluation, and every query over a
 // table with an escaped identifier fails.
+//
+// It does not FOLD, for the same reason Java does not: the only normalization
+// in the language is at the parse boundary (SemanticAnalyzer.normalizeString —
+// quoted keeps its case, unquoted folds UPPER), and every catalog comparison
+// after it is exact. A fold here was invisible for a DDL-created schema, whose
+// descriptor names are already the normalized spelling, and wrong for
+// everything else — it named a column something no reference could spell, and
+// it made the index-matching bridge miss SILENTLY (RFC-236 §2.1).
 func FieldNameForProtoField(field protoreflect.FieldDescriptor) string {
-	return strings.ToUpper(protoname.ToUserIdentifier(string(field.Name())))
+	return protoname.ToUserIdentifier(string(field.Name()))
 }
 
 // RecordNameForDescriptor is FieldNameForProtoField's twin for the record's own
-// name, un-escaped for the same reason. It is NOT upper-folded: a record name is
-// compared against catalog-cased type names, not against SQL identifiers.
+// name, un-escaped by the same rule.
 func RecordNameForDescriptor(descriptor protoreflect.MessageDescriptor) string {
 	return protoname.ToUserIdentifier(string(descriptor.Name()))
 }

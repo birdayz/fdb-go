@@ -1,0 +1,47 @@
+# quoted_identifier_index_bridge.yaml
+#
+# THE INDEX MUST STILL MATCH WHEN THE COLUMN NAME IS NOT UPPER.
+#
+# An index candidate names its key columns PHYSICALLY — from the index
+# definition, which names descriptor fields — and its expansion resolves each
+# one by EXACT name against a base type whose slots are named from that same
+# descriptor. Two authorities, one name, and they agree only while nothing
+# folds on either side.
+#
+# This is worth its own scenario because the failure is SILENT. A folded
+# request misses, the value-index expansion returns nil, the candidate
+# declines, and the planner falls back to a full scan that returns exactly the
+# right rows. Every row assertion in the corpus stays green; the index simply
+# stops being used. So the assertion here has to be on the PLAN, not the rows.
+#
+# The columns are quoted lower-case on purpose: an unquoted DDL column is
+# folded UPPER at creation and is stored upper, which is the one case where a
+# fold anywhere in the chain is invisible.
+name: quoted_identifier_index_bridge
+schema_template: |
+  CREATE TABLE qidx ("id" BIGINT, "cat" BIGINT, "amount" BIGINT, PRIMARY KEY ("id"))
+  CREATE INDEX qidx_cat ON qidx ("cat")
+setup:
+  - INSERT INTO qidx VALUES (1, 10, 100), (2, 20, 200), (3, 10, 300), (4, 30, 400)
+tests:
+  # Equality on the indexed quoted column: the candidate must bind it as a
+  # search argument, so the plan is an IndexScan and not a filtered full scan.
+  - query: SELECT "id" FROM qidx WHERE "cat" = 10 ORDER BY "id"
+    plan_contains: "IndexScan(QIDX_CAT"
+    rows:
+      - [1]
+      - [3]
+  # The unquoted spelling of the same reference reaches the same column
+  # through the scope's case-insensitive pass, and must reach the same index.
+  - query: SELECT "id" FROM qidx WHERE cat = 10 ORDER BY "id"
+    plan_contains: "IndexScan(QIDX_CAT"
+    rows:
+      - [1]
+      - [3]
+  # A range on the indexed column, so the ORDER the candidate reports is
+  # load-bearing too: a declining candidate would show up as an added sort.
+  - query: SELECT "id", "cat" FROM qidx WHERE "cat" > 10 ORDER BY "cat"
+    plan_not_contains: "InMemorySort"
+    rows:
+      - [2, 20]
+      - [4, 30]

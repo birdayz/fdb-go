@@ -29,3 +29,25 @@ tests:
   - query: SELECT q1."id" FROM q1 JOIN q2 USING ("k") ORDER BY q1."id"
     rows:
       - [1]
+  - query: SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d ON q1."k" = d."k" ORDER BY q1."id"
+    rows:
+      - [1]
+  # THE FOLDED COLLISION THE RELAXED PASS MUST NOT RESOLVE. `"kA"` and `"Ka"`
+  # are distinct quoted columns of one derived source that fold to the same
+  # name, and the reference `"ka"` matches NEITHER exactly. The scope's second
+  # pass therefore finds TWO candidates at that level, and a reference with two
+  # answers is AMBIGUOUS — it must say so rather than first-match one of them.
+  #
+  # A draft of this arm used `d."k"` against columns `"k"` and `"K"`, which
+  # proves nothing: `"k"` matches one of them EXACTLY, so the strict pass
+  # answers and the relaxed pass is never consulted. A collision test has to
+  # make the exact match fail first.
+  - query: SELECT d."ka" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d
+    error_code: "42702"
+  # And each authored spelling still reaches its OWN column exactly, so the
+  # arm above is about the collision and not about the columns being
+  # unreachable.
+  - query: SELECT d."kA" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d ORDER BY d."kA"
+    rows:
+      - [10]
+      - [99]

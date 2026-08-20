@@ -5,7 +5,6 @@
 package rlcatalog
 
 import (
-	"strings"
 	"sync"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -117,7 +116,7 @@ func (w *wrappedCatalog) AllTableNames() []semantic.QualifiedName {
 // recordTypeTable adapts a RecordType to semantic.Table. Columns are
 // the proto fields; index names come from RecordType.GetIndexes().
 //
-// LookupColumn builds a folded-name → field index on first access
+// LookupColumn builds an exact-name → field index on first access
 // (via sync.Once) so repeated column lookups on the same table are
 // O(1). The per-table cost is one map allocation; amortised across
 // every column reference in a query, worth it.
@@ -130,15 +129,18 @@ type recordTypeTable struct {
 
 	// Column cache: built once per table on first access. colIndex is
 	// keyed by the EXACT proto field name (the DDL-normalized spelling:
-	// unquoted columns are stored upper-cased, quoted ones verbatim);
-	// foldedIndex maps the case-folded name to every column that folds
-	// to it, serving the case-insensitive fallback for raw-proto
-	// metadata whose field names never went through DDL normalization.
+	// unquoted columns are stored upper-cased, quoted ones verbatim).
 	// Values are fully-materialised semantic.Columns so repeated
 	// lookups don't re-allocate Identifier / Column values per call.
+	//
+	// There is deliberately NO folded index here. Case-insensitive matching
+	// is a SCOPE-level decision (semantic's relaxedPass), because it has to
+	// be adjudicated across every source at a level at once: a table that
+	// relaxes on its own turns one source's loose match into a competitor of
+	// another source's exact match, and a reference with exactly one right
+	// answer comes back ambiguous.
 	colIndexOnce sync.Once
 	colIndex     map[string]semantic.Column
-	foldedIndex  map[string][]semantic.Column
 	colOrdered   []semantic.Column
 }
 
@@ -150,19 +152,10 @@ func (t *recordTypeTable) ensureColumnIndex() {
 		}
 		fields := t.rt.Descriptor.Fields()
 		t.colIndex = make(map[string]semantic.Column, fields.Len())
-		t.foldedIndex = make(map[string][]semantic.Column, fields.Len())
 		t.colOrdered = make([]semantic.Column, 0, fields.Len())
 		for i := 0; i < fields.Len(); i++ {
 			f := fields.Get(i)
 			col := columnForField(f, nil)
-			id := col.Id
-			// The EXACT proto field name is a lookup key (a quoted-DDL
-			// column's field preserves case — "x" — and a quoted lookup
-			// must hit it; folding it away 42703'd SELECT "x", the WS-N
-			// quoting-blindness). The COLUMN itself presents the FOLDED
-			// identifier everywhere: the runtime positional layout folds
-			// names too, so folded presentation keeps plan-time and
-			// runtime in one namespace.
 			// Both spellings are lookup keys: the STORAGE name (what the
 			// descriptor carries, and what an internally-minted reference
 			// addressing the proto field uses) and the USER name (what SQL
@@ -171,7 +164,6 @@ func (t *recordTypeTable) ensureColumnIndex() {
 			if userName := recordlayer.ToUserIdentifier(string(f.Name())); userName != string(f.Name()) {
 				t.colIndex[userName] = col
 			}
-			t.foldedIndex[id.Name()] = append(t.foldedIndex[id.Name()], col)
 			t.colOrdered = append(t.colOrdered, col)
 		}
 		// The __ROW_VERSION pseudo-column: appended as one trailing EPHEMERAL
@@ -193,7 +185,6 @@ func (t *recordTypeTable) ensureColumnIndex() {
 					Ephemeral: true,
 				}
 				t.colIndex[values.PseudoFieldRowVersion] = col
-				t.foldedIndex[id.Name()] = append(t.foldedIndex[id.Name()], col)
 				t.colOrdered = append(t.colOrdered, col)
 			}
 		}
@@ -215,22 +206,21 @@ func (t *recordTypeTable) Columns() []semantic.Column {
 	return out
 }
 
+// LookupColumn matches the EXACT field spelling — Java's rule, where the only
+// normalization happens at the parse boundary and every catalog comparison
+// downstream is `.equals` (SemanticAnalyzer.java:146-153, and
+// RecordLayerSchemaTemplate.findTableByName). A quoted reference hits its
+// case-significant column verbatim; an unquoted one arrives already folded
+// upper and hits a DDL-normalized field.
+//
+// A reference that matches no field EXACTLY is not answered here. The scope
+// re-runs its whole level case-insensitively (semantic's relaxedPass) and
+// adjudicates across sources, which is the only place a loose match can be
+// weighed against the exact matches it competes with.
 func (t *recordTypeTable) LookupColumn(id semantic.Identifier) (semantic.Column, bool) {
 	t.ensureColumnIndex()
-	// Exact field spelling first (a quoted lookup hits its
-	// case-significant column verbatim; unquoted lookups arrive
-	// pre-folded and hit DDL-normalized fields). The case-insensitive
-	// fallback serves raw-proto metadata (lowercase field names that
-	// never saw DDL normalization) — only when the folded name is
-	// UNAMBIGUOUS; a folded collision must not silently pick a column.
-	if col, ok := t.colIndex[id.Name()]; ok {
-		return col, true
-	}
-	cands := t.foldedIndex[strings.ToUpper(id.Name())]
-	if len(cands) == 1 {
-		return cands[0], true
-	}
-	return semantic.Column{}, false
+	col, ok := t.colIndex[id.Name()]
+	return col, ok
 }
 
 func (t *recordTypeTable) Indexes() []string {
@@ -326,14 +316,21 @@ func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.Ful
 		isArr = true
 		nullable = true
 	}
-	// The COLUMN identifier is the USER name: Java's Field carries
+	// The COLUMN identifier is the USER name, VERBATIM: Java's Field carries
 	// `ProtoUtils.toUserIdentifier(fieldDescriptor.getName())` as its name
 	// and the raw descriptor name separately as the storage name
 	// (Type.java:2874-2877). Identical for every column whose DDL name had
 	// no '$', '.' or "__"; for the rest this is what makes `SELECT "a$b"`
 	// resolve against the field stored as A__1B.
+	//
+	// FromNormalized rather than NewUnquoted because there is nothing left to
+	// normalize: the DDL already applied SQL identifier semantics on the way
+	// IN, so the descriptor's spelling IS the SQL name. Folding it here
+	// published a second spelling of the same column and put the catalog into
+	// disagreement with the row layout, which reads its slot names from the
+	// same descriptor (values.FieldNameForProtoField). RFC-236.
 	col := semantic.Column{
-		Id:       semantic.NewUnquoted(recordlayer.ToUserIdentifier(string(f.Name()))),
+		Id:       semantic.FromNormalized(recordlayer.ToUserIdentifier(string(f.Name()))),
 		Type:     protoFieldToSQL(elemF),
 		Nullable: nullable,
 		IsArray:  isArr,

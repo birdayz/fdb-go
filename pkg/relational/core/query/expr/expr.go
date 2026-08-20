@@ -362,7 +362,12 @@ func (r *Resolver) resolveScopedColumn(col semantic.Column, src semantic.ScopeSo
 			if localSrc.CorrelationName != src.CorrelationName {
 				continue
 			}
-			if _, ok := localSrc.Table.LookupColumn(id); ok {
+			// Relaxed: this asks whether the LOCAL source could have answered
+			// the same reference, and the reference itself was resolved by a
+			// scope pass that admits a case-insensitive match. A strict probe
+			// here would call a local column absent that the resolver would
+			// have found, and report a correlated shadow that is not one.
+			if _, ok := semantic.LookupColumnRelaxed(localSrc.Table, id); ok {
 				// The local source itself resolves this column — src IS
 				// local (resolution never fell through).
 				continue

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
@@ -164,8 +165,7 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 		}
 		arrIdx = explicitRootIdx
 	} else {
-		rootField := strings.ToUpper(u.Segments[rootSegmentIndex])
-		idx, found := outerType.FieldIndexUnique(rootField)
+		idx, found := seedFieldIndex(outerType, u.Segments[rootSegmentIndex])
 		if !found {
 			return nil
 		}
@@ -175,15 +175,7 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 	if err != nil {
 		return nil
 	}
-	suffix := make([]values.FieldRequest, 0, len(u.Segments)-rootSegmentIndex-1)
-	for _, seg := range u.Segments[rootSegmentIndex+1:] {
-		request, requestErr := values.FieldByName(strings.ToUpper(seg))
-		if requestErr != nil {
-			return nil
-		}
-		suffix = append(suffix, request)
-	}
-	collection, err := values.ResolveOrdinalSeedAccess(outerQOV, arrIdx, suffix)
+	collection, err := resolveSeedCollection(outerQOV, arrIdx, u.Segments[rootSegmentIndex+1:])
 	if err != nil {
 		return nil
 	}
@@ -192,6 +184,98 @@ func (t *cascadesTranslator) unnestBakedRootCollection(
 		return nil
 	}
 	return collection
+}
+
+// seedFieldIndex resolves ONE path segment against a seed row layout: the
+// segment's EXACT spelling first, then a case-insensitive match against the
+// layout's OWN spellings.
+//
+// A FROM-source path segment arrives already normalized by the parse capture —
+// unquoted folded UPPER, quoted kept verbatim — while the layout it indexes
+// carries whatever spelling its authority minted: a base table's row is named
+// from the DESCRIPTOR, so a hand-written .proto contributes lower/snake names,
+// and a derived source's row is named by its projection. Neither authority
+// folds, so the reference and the layout can differ by case in EITHER
+// direction, and only a case-insensitive pass spans both. Re-folding the
+// SEGMENT spans one direction: it reaches `TAGS` from `tags` and never `tags`
+// from `TAGS`, which is the direction every unquoted reference to a descriptor
+// column takes.
+//
+// Exact first is what keeps a quoted identifier addressable — `"sk"` must reach
+// the field literally named `sk` even when a sibling `SK` exists — and it is
+// the same strict-then-relaxed order the semantic scope resolves references
+// with. Both passes decline a name matching more than one field, so neither can
+// first-match its way past an ambiguity.
+func seedFieldIndex(rt *values.RecordType, segment string) (int, bool) {
+	if rt == nil || segment == "" {
+		return 0, false
+	}
+	if idx, ok := rt.FieldIndexUnique(segment); ok {
+		return idx, true
+	}
+	idx, hits := 0, 0
+	for i, f := range rt.Fields {
+		if strings.EqualFold(f.Name, segment) {
+			idx, hits = i, hits+1
+		}
+	}
+	if hits != 1 {
+		return 0, false
+	}
+	return idx, true
+}
+
+// resolveSeedCollection resolves an ordinal root plus a NAME-addressed suffix
+// against a seed row.
+func resolveSeedCollection(root values.Value, ordinal int, segments []string) (values.Value, error) {
+	requests, err := seedFieldRequests(root, ordinal, segments)
+	if err != nil {
+		return nil, err
+	}
+	return values.ResolveOrdinalSeedAccess(root, ordinal, requests)
+}
+
+// seedFieldRequests spells the NAME-addressed suffix the way the ROW spells it.
+//
+// The descent resolves each request by EXACT name, so a request has to carry
+// the layout's own spelling and not the reference's. Each segment is therefore
+// resolved through seedFieldIndex against the type reached so far, and the
+// request is built from the FIELD's name — the same relaxation the root segment
+// gets, applied at the one place the descent cannot apply it itself.
+//
+// Walking segment by segment is required rather than convenient: the descent
+// re-types on every step, so which field segment n+1 may name is only settled
+// once segment n has chosen its own.
+func seedFieldRequests(root values.Value, ordinal int, segments []string) ([]values.FieldRequest, error) {
+	if len(segments) == 0 {
+		return nil, nil
+	}
+	rowType, isRecord := root.Type().(*values.RecordType)
+	if !isRecord || ordinal < 0 || ordinal >= len(rowType.Fields) {
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"unnest seed root ordinal %d does not address a field of the flowed row", ordinal)
+	}
+	current := rowType.Fields[ordinal].FieldType
+	out := make([]values.FieldRequest, 0, len(segments))
+	for _, seg := range segments {
+		record, stillRecord := current.(*values.RecordType)
+		if !stillRecord {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"unnest path segment %q does not descend a record", seg)
+		}
+		idx, found := seedFieldIndex(record, seg)
+		if !found {
+			return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+				"unnest path segment %q does not name exactly one field of the row it descends", seg)
+		}
+		request, err := values.FieldByName(record.Fields[idx].Name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, request)
+		current = record.Fields[idx].FieldType
+	}
+	return out, nil
 }
 
 // unnestSeedInnerFields builds the unnest INNER leg's seed fields — the

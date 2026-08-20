@@ -810,7 +810,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 					ft = vt
 				}
 			}
-			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: i}
+			fields[i] = values.Field{Name: name, FieldType: ft, Ordinal: i}
 		}
 		return fields
 	case *logical.LogicalUnnest:
@@ -858,7 +858,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			// decline the whole join.
 			fields := make([]values.Field, len(o.ColumnAliases))
 			for i, name := range o.ColumnAliases {
-				fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
+				fields[i] = values.Field{Name: name, FieldType: values.UnknownType, Ordinal: i}
 			}
 			bodyFields := t.derivedOutputColumns(o.Body)
 			if len(bodyFields) == 0 {
@@ -941,7 +941,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				// ingress rather than guessed.
 				fieldType = o.ProjectedValues[i].Type()
 			}
-			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: fieldType, Ordinal: i}
+			fields[i] = values.Field{Name: name, FieldType: fieldType, Ordinal: i}
 		}
 		return fields
 	case *logical.LogicalAggregate:
@@ -982,7 +982,11 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 			renamed := make([]values.Field, len(cols))
 			copy(renamed, cols)
 			for i := range renamed {
-				renamed[i].Name = strings.ToUpper(o.ColumnAliases[i])
+				// Verbatim, and this is the SAME rule cteBoundRowType applies
+				// to the same alias list. Two sites doing one job must not
+				// spell it two ways: a fold here republished the CTE's columns
+				// under names the row it wraps does not carry.
+				renamed[i].Name = o.ColumnAliases[i]
 			}
 			return renamed
 		}
@@ -1798,10 +1802,18 @@ func (t *cascadesTranslator) unnestArrayElementType(outerTable string, fieldSegm
 	return arrayFieldFromDescriptor(rt.Descriptor.Fields(), fieldSegments)
 }
 
-// protoFieldLookup resolves a field by SQL identifier (case-insensitive —
-// proto names are lower/snake, SQL upper).
+// protoFieldLookup resolves a field by SQL identifier: EXACT spelling first,
+// then an unqualified case-insensitive scan.
+//
+// The exact pass has to come first, and it is not an optimization. A quoted
+// identifier keeps its case, so `"aB"` must reach the field literally named
+// `aB` even when a sibling `Ab` exists; a fold-first lookup answers whichever
+// of the two the descriptor happens to list first. The case-insensitive scan
+// behind it is the same read-side extension rlcatalog documents: a hand-written
+// .proto never went through DDL normalization, so its names are lower/snake
+// while an unquoted SQL reference arrives folded upper.
 func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
-	if fd := fs.ByName(protoreflect.Name(strings.ToLower(name))); fd != nil {
+	if fd := fs.ByName(protoreflect.Name(name)); fd != nil {
 		return fd
 	}
 	for i := 0; i < fs.Len(); i++ {
@@ -1849,7 +1861,10 @@ func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegment
 	if !ok {
 		return values.UnknownType, "", false, true
 	}
-	return arrayFieldElementType(inner), strings.ToUpper(string(fd.Name())), true, true
+	// The column name is the SLOT name the row layout carries for this field,
+	// so it must be minted by the same authority the layout uses. Folding it
+	// here made it miss for any descriptor whose names are not already upper.
+	return arrayFieldElementType(inner), values.FieldNameForProtoField(fd), true, true
 }
 
 // containsLateralUnnest reports whether a logical sub-plan contains a
@@ -7463,8 +7478,7 @@ func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
 	// Source-anchored correlated-scalar-subquery join seed (RFC-077 7.6).
 	//
 	// The inner is a scalar SUBQUERY exposing exactly ONE value. The projection
-	// reads it as the QUALIFIED name <innerAlias>.<scalarCol> — replaceScalarSubqueryRef
-	// builds that field name (upper(innerAlias)+"."+upper(scalarCol)) — and the inner
+	// reads it as the QUALIFIED name <innerAlias>.<scalarCol> — and the inner
 	// quantifier's row carries the scalar under the key scalarCol (the runtime
 	// mergeRows PREFIXES every inner key with innerAlias, dots and all, so
 	// <innerAlias>.<scalarCol> resolves iff the inner key == scalarCol; it does).

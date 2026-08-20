@@ -500,7 +500,13 @@ func clusteredOuterOrdinalSeed(pu *clusterPullUp, innerCorr values.CorrelationId
 				return nil // decline
 			}
 			fields = append(fields, values.RecordConstructorField{
-				Name:  leg.binding + "." + strings.ToUpper(leg.typ.Fields[i].Name),
+				// Only the BINDING half is folded, and only because a source
+				// alias never comes from a descriptor. The COLUMN half is the
+				// leg row's OWN slot name, carried verbatim: folding it made
+				// this row and the leg it re-publishes disagree by case for any
+				// table whose columns are not already upper, so the dotted name
+				// could no longer be mapped back to the leg field it names.
+				Name:  leg.binding + "." + leg.typ.Fields[i].Name,
 				Value: fv,
 			})
 		}
@@ -672,22 +678,29 @@ func bakeClusterLegRefs(v values.Value, pu *clusterPullUp, seedQOV values.Value)
 // alias. The two agree on every reference that is genuinely qualified and
 // disagree on the one that is not: a column literally named `A.B` is one name
 // here, and a manufactured qualifier cannot conjure a leg out of it.
+//
+// Both arms compare case-INSENSITIVELY and neither folds either operand. The
+// two sides are minted by different authorities — the projection name arrives
+// normalized at the parse boundary, the seed's name carries the leg row's own
+// descriptor spelling — so an exact compare answers "unresolvable" for a column
+// that is plainly there, while folding one side can only ever reach the other
+// in one direction.
 func clusterFieldResolvable(field string, pu *clusterPullUp, innerKey string) bool {
-	f := strings.ToUpper(field)
-	if f == innerKey {
+	if strings.EqualFold(field, innerKey) {
 		return true
 	}
-	_, found := clusterSeedSlotByName(pu, f)
+	_, found := clusterSeedSlotByName(pu, field)
 	return found
 }
 
 // clusterSeedSlotByName finds the seed output slot whose constructed NAME is f,
-// walking the legs exactly as clusteredOuterOrdinalSeed does.
+// walking the legs exactly as clusteredOuterOrdinalSeed does — which means
+// spelling the column half exactly as that builder does, verbatim.
 func clusterSeedSlotByName(pu *clusterPullUp, f string) (int, bool) {
 	pos := 0
 	for _, leg := range pu.legs {
 		for i := range leg.typ.Fields {
-			if strings.EqualFold(leg.binding+"."+strings.ToUpper(leg.typ.Fields[i].Name), f) {
+			if strings.EqualFold(leg.binding+"."+leg.typ.Fields[i].Name, f) {
 				return pos + i, true
 			}
 		}

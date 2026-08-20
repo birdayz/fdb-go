@@ -248,36 +248,50 @@ func TestFDB_GroupByNestedPathKeyShapes(t *testing.T) {
 		}
 	})
 
-	t.Run("a quoted-lowercase nested path is refused, and consistently", func(t *testing.T) {
+	t.Run("a quoted-lowercase nested path resolves, and consistently", func(t *testing.T) {
 		t.Parallel()
-		// A NEGATIVE RESULT, kept because it is what says the descent arm needs
-		// no case-folding retry of its own rather than that one was forgotten.
+		// THE DIRECTION OF THIS CONTROL INVERTED, exactly as its earlier
+		// version said it would.
 		//
-		// resolveColumnRefStructural retries a failed verbatim lookup in the
-		// FOLDED spelling. `n."sk"` does not resolve through that retry either:
-		// it resolves NOWHERE, so SELECT, ORDER BY and GROUP BY all refuse it
-		// with the same 42703. That is the fact, measured rather than assumed.
+		// It used to assert that `n."sk"` resolves NOWHERE — SELECT, ORDER BY
+		// and GROUP BY all 42703 — and said in place that the property being
+		// guarded was the three clauses AGREEING, not the refusal: "if this
+		// goes red because quoted-lowercase references start resolving, the
+		// GROUP BY arm must answer the same rows as the SELECT arm". They do
+		// now. The struct column is declared unquoted, so the descriptor
+		// stores SK; `"sk"` misses it exactly and reaches it through the
+		// scope's case-insensitive second pass, at the nested level as at the
+		// top level.
 		//
-		// IF THIS GOES RED because quoted-lowercase references start resolving,
-		// the GROUP BY arm must answer the same rows as the SELECT arm — the
-		// three clauses agreeing is the property, not the refusal.
+		// So the alarm is no longer "it resolves" — it is the three clauses
+		// DISAGREEING, which is what a descent arm with its own private
+		// matching rule would produce.
 		for _, q := range []string{
 			`SELECT n."sk" FROM t2`,
 			`SELECT id FROM t2 ORDER BY n."sk"`,
-			`SELECT COUNT(*) FROM t2 GROUP BY n."sk"`,
 		} {
-			_, err := db.QueryContext(ctx, q)
-			if err == nil {
-				t.Errorf("%s now RESOLVES.\n"+
-					"  Check that GROUP BY answers the same member SELECT does; the "+
-					"property is that the three clauses agree.", q)
+			rows, err := db.QueryContext(ctx, q)
+			if err != nil {
+				t.Errorf("%s: got %v, want it to resolve through the relaxed pass.\n"+
+					"  A nested field must match by the same rule a top-level column does.", q, err)
 				continue
 			}
-			if !strings.Contains(err.Error(), "42703") {
-				t.Errorf("%s: got %v, want 42703.\n"+
-					"  The point of this control is that GROUP BY refuses this spelling "+
-					"for the SAME reason SELECT does, so it is not a grouping gap.", q, err)
-			}
+			rows.Close()
+		}
+		// The grouping arm has to agree on the ANSWER, not merely on resolving:
+		// the same distinct member count the unquoted spelling produces.
+		quoted, err := countGroups(t, `SELECT COUNT(*) FROM t2 GROUP BY n."sk"`)
+		if err != nil {
+			t.Fatalf(`GROUP BY n."sk": %v, want it to resolve like SELECT does`, err)
+		}
+		unquoted, err := countGroups(t, `SELECT COUNT(*) FROM t2 GROUP BY n.sk`)
+		if err != nil {
+			t.Fatalf("GROUP BY n.sk: %v", err)
+		}
+		if quoted != unquoted {
+			t.Errorf(`GROUP BY n."sk" returned %d groups but GROUP BY n.sk returned %d — `+
+				"the two spellings reach the same column and must group the same rows",
+				quoted, unquoted)
 		}
 	})
 

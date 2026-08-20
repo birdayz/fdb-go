@@ -19330,121 +19330,46 @@ engines' current wording, so it fails if Go is repaired or if either side
 moves to a third answer.
 
 
-## Three identifier models coexist, and quoted names fall between them
+## Three identifier models coexist, and quoted names fall between them — CLOSED
 
-This supersedes two earlier entries ("A derived table's quoted column names
-do not survive to the executor layout" and "Quoted identifiers are folded
-by the catalog's column lookup"). They were two symptoms; this is the
-cause, traced.
+**CLOSED by RFC-236** (`rfcs/236-a-name-is-normalized-once-at-the-parse-boundary.md`).
+There is ONE model now: a name is normalized once, at the parse boundary
+(quoted keeps its case, unquoted folds UPPER), and carried VERBATIM everywhere
+after it; lookup is EXACT at a scope level, with an unambiguous case-insensitive
+second pass at that same level before falling to the parent.
 
-Go carries THREE rules for what a column name IS, and they disagree only
-for QUOTED identifiers — which is why everything looks fine until one
-appears:
+What that turned into, against the two measurements this entry was written
+around:
 
-| authority                     | presents      | lookup matches            |
-|-------------------------------|---------------|---------------------------|
-| `rlcatalog.recordTypeTable`   | FOLDED        | exact spelling OR folded  |
-| `semantic.StaticTable`        | as built      | EXACT only, case-sensitive|
-| reference resolution          | —             | quoted preserved, unquoted folded |
+- `SELECT q1."id" FROM q1 JOIN (SELECT "id","k" FROM q2) d ON q1."k" = d."k"`
+  answers `[[1]]`, matching Java. Pinned in
+  `quoted_identifier_columns.yaml` and as plain AGREEMENT (not as a pinned
+  divergence) in `JoinUsingQuotedIdentifierJavaProbe`.
+- `SELECT *` over a mixed-case quoted DDL column reports `[ID KeepCase PLAIN]`
+  — byte-identical to Java, where Go reported `[ID KEEPCASE PLAIN]`. So does
+  the explicit projection of that column. Pinned in
+  `QuotedIdentifierCaseJavaProbe` and, for a fast harness, in
+  `quoted_identifier_labels.yaml`.
 
-Each is internally defensible. `rlcatalog` folds deliberately — it says so
-at the construction site, because the runtime positional layout folds too
-and one namespace keeps plan-time and runtime together. `StaticTable`'s
-doc is the Java-correct rule: "a case-preserved quoted name matches only
-its exact spelling". Reference resolution follows the SQL standard. They
-simply cannot all hold at once.
+The four ruled-out attempts recorded here were all correct as refutations and
+all incomplete for the same reason: each moved ONE authority. The change that
+worked moved every authority at once, which is why it needed the RFC.
 
-TWO MEASURED CONSEQUENCES, opposite directions, both pinned against a live
-JVM in `conformance/join_using_chain_java_probe_test.go`:
+TWO THINGS THIS DID **NOT** CLOSE, both real and both deliberately out of
+scope, with their evidence:
 
-GO REFUSES A VALID QUERY. A derived source presents its columns through
-`StaticTable`, so the scope says `RECORD(id,k)` while the row flowing from
-the folded base table says `RECORD(ID,K)`:
+1. **`values.AccessorNamePath` folds both sides of a plan-rule identity
+   comparison** (`accessor_name_path.go:67,84,302`). It is self-consistent, so
+   it is not a disagreement — but it equates two genuinely distinct quoted
+   columns `"a"` and `"A"` inside rules like `PushFilterThroughGroupBy`, which
+   can push a predicate onto the wrong column. Different mechanism (identity
+   comparison, not naming), its own census and ratchet. Needs its own RFC.
 
-    SELECT q1."id" FROM q1 JOIN (SELECT "id","k" FROM q2) d ON q1."k" = d."k"
-    java: [[1]]
-    go  : resolution error 11 at executor.layout: edge lookup D:
-          read as RECORD(id,k), declared RECORD(ID,K)
-
-USING is NOT involved — the plain ON form above fails identically, which
-is the measurement that localised this. An earlier reading blamed the
-USING resolver; it is not that.
-
-GO ANSWERS AN INVALID QUERY. The other direction, from `rlcatalog`'s
-folded fallback: `USING ("K")` against a column declared `"k"` returns
-rows where Java reports `Unknown reference K`, and an ambiguity on a
-quoted column is reported as `K` where Java says `k`.
-
-WHY THE OBVIOUS LOCAL FIXES DO NOT WORK, both tried and reverted:
-
-- Stopping `DisplayColumnName` from re-folding the resolved leaf changes
-  nothing — the folded names do not originate there.
-- Naming a derived scope's columns from the resolved column instead of the
-  authored text moves the failure rather than removing it: the scope then
-  says K, and `StaticTable`'s exact-match lookup refuses the quoted
-  reference `"k"`, so 42703 replaces the layout error.
-
-Both confirm the same thing: no single site owns this. It is a choice
-about which model wins.
-
-THE WORK: pick one model and make all three obey it. Java's is the
-reference and is the obvious candidate — quoted preserves, unquoted folds,
-equality exact on the normalized form — but adopting it means
-`rlcatalog` stops folding what it presents, and its comment says the
-runtime positional layout depends on that. So the decision is not
-"fix the lookup"; it is whether plan-time identifiers and the runtime row
-layout can stop sharing one folded namespace, and what that costs.
-
-THE LEVER IS THE PROJECTION'S OUTPUT NAMING, and an existing test already
-says so. `cte_box_unnest_on_resolution_probe_fdb_test.go` pins both
-spellings of a quoted CTE alias and states the reason in place:
-
-    (That the engine folds a QUOTED alias at all is a standing divergence
-     from Java's case-sensitive quoted identifiers — a property of the
-     projection's own naming, not of this scope, and pinned here so
-     closing it shows up as a change in BOTH arms.)
-
-`AS "x"` emits a column named X. Java emits x. Every symptom above follows
-from that one fact, and that pin is the blast-radius marker: a real fix
-flips BOTH of its arms, and anything that flips only one is not the fix.
-
-FOUR ATTEMPTS, ALL REVERTED, each ruling something out:
-
-1. Stop `DisplayColumnName` re-folding the resolved leaf. No effect on the
-   layout error — that message is dominated by the scope side, so this
-   ruled out the reading half rather than the naming half.
-
-2. Name a derived scope's columns from the RESOLVED column instead of the
-   authored text (five builders share this shape; `derivedOutputName`
-   collapsed them into one). Makes the scope agree with the plan and turns
-   the internal layout error into a coherent `42703: column "k" does not
-   exist` — but REGRESSES a query that works today,
-   `SELECT d."k" FROM (SELECT "id","k" FROM q2) d`, to 0AF00. Not
-   shippable alone.
-
-3. Give `StaticTable` the record catalog's unambiguous folded fallback, so
-   both table implementations resolve a name the same way. With (2) this
-   makes every arm of the new scenario pass — and it breaks the pinned
-   assertion above by flipping ONE arm, because it moves Go FURTHER from
-   Java: `"x"` starts resolving against a column named X, which names
-   nothing in either engine's model. Wrong direction.
-
-4. (2)+(3) together: green locally, red on the pin. See above.
-
-WHAT THAT LEAVES. The fix is to make a derived projection PRESERVE a
-quoted output name — `AS "x"` emits x — so the scope, the plan and the
-reference all carry the authored spelling and no folding is needed
-anywhere. That is the Java rule, and it is a change to how projections
-name their outputs, which the runtime positional layout also reads. It
-cannot be done in the scope builders, and it cannot be done in the lookup:
-both were tried and both are recorded above.
-
-The reproducer to work from is the ON form, not USING:
-
-    SELECT q1."id" FROM q1 JOIN (SELECT "id","k" FROM q2) d ON q1."k" = d."k"
-
-and `quoted_identifier_columns.yaml` holds the three shapes that must keep
-working while it changes.
-
-Changes identifier equality for EVERY column reference in the engine.
-Needs an RFC and the review gate before implementation, and its own PR.
+2. **Go still over-resolves relative to Java**, by design: `SELECT KeepCase`,
+   `SELECT "KEEPCASE"` and `SELECT "keepcase"` all answer against a column
+   declared `"KeepCase"`, where Java raises 42703. That is the documented
+   read-side extension (RFC-236 §3.4) and exists because Go does not plumb
+   Java's `CASE_SENSITIVE_IDENTIFIERS` option while `rlcatalog.Wrap(md)` over a
+   user's own `.proto` is a first-class entry point here. Measured, and pinned
+   as `goOnly` arms in `QuotedIdentifierCaseJavaProbe`. Closing it means
+   plumbing the option, not deleting the pass.

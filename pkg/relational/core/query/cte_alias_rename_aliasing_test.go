@@ -44,9 +44,15 @@ func TestCTEAliasRenameDoesNotRewriteTheDefinitionSchema(t *testing.T) {
 		t.Fatalf("derivedOutputColumns returned %d columns, want 2 — the test is not "+
 			"exercising the rename arm", len(got))
 	}
-	if got[0].Name != "A" || got[1].Name != "B" {
-		t.Fatalf("reference columns are %q/%q, want A/B — the rename did not happen, "+
-			"so the aliasing assertion below is vacuous", got[0].Name, got[1].Name)
+	// The alias list is applied VERBATIM — it arrives already normalized by the
+	// parse capture, and cteBoundRowType applies the SAME list the same way, so
+	// a fold at one of the two sites would republish the columns under names
+	// the other does not use. `a`/`b` are deliberately lower here: with an
+	// upper alias list this assertion could not tell the two rules apart.
+	if got[0].Name != "a" || got[1].Name != "b" {
+		t.Fatalf("reference columns are %q/%q, want a/b — the rename did not happen "+
+			"(or refolded the alias), so the aliasing assertion below is vacuous",
+			got[0].Name, got[1].Name)
 	}
 
 	// The definition's schema must be untouched. This is the assertion; the two

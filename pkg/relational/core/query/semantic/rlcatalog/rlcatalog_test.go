@@ -75,13 +75,13 @@ func TestWrap_Columns(t *testing.T) {
 	if len(cols) == 0 {
 		t.Fatal("Order should have columns")
 	}
-	// order_id is a known field on the Order message. Columns present
-	// the FOLDED identifier (the runtime positional layout folds names
-	// too); the verbatim field spelling survives as a LookupColumn key
-	// so quoted-DDL columns stay reachable.
+	// A column presents the DESCRIPTOR's own spelling — Java's
+	// `ProtoUtils.toUserIdentifier(fieldDescriptor.getName())` with no fold
+	// (Type.java:2875). `order_id` is declared lower-case in the demo proto,
+	// so that is the name the catalog states.
 	found := false
 	for _, c := range cols {
-		if c.Id.EqualsIgnoreQuoting(semantic.NewUnquoted("order_id")) {
+		if c.Id.Name() == "order_id" {
 			found = true
 			if c.Type != "BIGINT" {
 				t.Fatalf("order_id Type: got %q, want BIGINT", c.Type)
@@ -90,26 +90,105 @@ func TestWrap_Columns(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("order_id not found in Order columns")
+		t.Fatalf("order_id not found in Order columns: %v", columnNames(cols))
+	}
+	// And it is NOT also presented folded. Two spellings of one column is the
+	// state this catalog used to be in, and it is what let a resolver agree
+	// with itself while disagreeing with the row layout.
+	for _, c := range cols {
+		if c.Id.Name() == "ORDER_ID" {
+			t.Fatalf("Order presents a FOLDED ORDER_ID beside order_id: %v", columnNames(cols))
+		}
 	}
 }
 
-func TestWrap_LookupColumn(t *testing.T) {
+func columnNames(cols []semantic.Column) []string {
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		out = append(out, c.Id.Name())
+	}
+	return out
+}
+
+// TestWrap_LookupColumnIsExact pins the table's own lookup as EXACT — Java's
+// rule, where the only normalization is at the parse boundary and every
+// catalog comparison downstream is `.equals`.
+//
+// The case-insensitive step is deliberately NOT here. It belongs to the scope,
+// which runs it across every source at a level at once; a table that relaxed on
+// its own would let one source's loose match compete with another source's
+// exact match and turn a reference with one right answer into 42702.
+func TestWrap_LookupColumnIsExact(t *testing.T) {
 	t.Parallel()
 	md := buildMetaData(t)
 	cat := rlcatalog.Wrap(md)
 	tbl, _ := cat.LookupTable(semantic.ParseQualifiedName("order", false))
 
-	col, ok := tbl.LookupColumn(semantic.NewUnquoted("ORDER_ID"))
+	col, ok := tbl.LookupColumn(semantic.FromNormalized("order_id"))
 	if !ok {
-		t.Fatal("case-insensitive ORDER_ID lookup should succeed")
+		t.Fatal("exact order_id lookup should succeed")
 	}
 	if col.Type != "BIGINT" {
 		t.Fatalf("Type: got %q, want BIGINT", col.Type)
 	}
 
+	// NewUnquoted folds to ORDER_ID, which no field declares.
+	if _, ok := tbl.LookupColumn(semantic.NewUnquoted("ORDER_ID")); ok {
+		t.Fatal("folded ORDER_ID must NOT match the exact table lookup")
+	}
 	if _, ok := tbl.LookupColumn(semantic.NewUnquoted("nonexistent")); ok {
 		t.Fatal("nonexistent column should miss")
+	}
+}
+
+// TestWrap_LookupColumnRelaxedReachesRawProtoNames pins the read-side
+// extension: an unquoted SQL reference arrives folded UPPER, and a hand-written
+// .proto's field names never went through DDL normalization, so
+// `SELECT order_id` has to reach the field literally named `order_id`.
+//
+// This exists because Go does not plumb Java's CASE_SENSITIVE_IDENTIFIERS
+// option (Options.java:211) and wrapping a user's own descriptor as a SQL
+// catalog is a first-class entry point here, where in Java it is a corner.
+func TestWrap_LookupColumnRelaxedReachesRawProtoNames(t *testing.T) {
+	t.Parallel()
+	md := buildMetaData(t)
+	cat := rlcatalog.Wrap(md)
+	tbl, _ := cat.LookupTable(semantic.ParseQualifiedName("order", false))
+
+	col, ok := semantic.LookupColumnRelaxed(tbl, semantic.NewUnquoted("ORDER_ID"))
+	if !ok {
+		t.Fatal("relaxed ORDER_ID lookup should reach order_id")
+	}
+	if col.Id.Name() != "order_id" {
+		t.Fatalf("relaxed lookup returned %q, want the declared order_id", col.Id.Name())
+	}
+	if _, ok := semantic.LookupColumnRelaxed(tbl, semantic.NewUnquoted("nonexistent")); ok {
+		t.Fatal("nonexistent column should miss even relaxed")
+	}
+}
+
+// TestWrap_NestedStructFieldKeepsItsDescriptorSpelling is the nested half of
+// the same rule, and it is a separate test because nothing in the corpus
+// resolves a nested field over raw-proto metadata: DDL descriptors are already
+// upper, so every existing nested test passes either way.
+func TestWrap_NestedStructFieldKeepsItsDescriptorSpelling(t *testing.T) {
+	t.Parallel()
+	md := buildMetaData(t)
+	cat := rlcatalog.Wrap(md)
+	tbl, _ := cat.LookupTable(semantic.ParseQualifiedName("order", false))
+
+	flower, ok := semantic.LookupColumnRelaxed(tbl, semantic.NewUnquoted("flower"))
+	if !ok {
+		t.Fatal("flower column not found")
+	}
+	if len(flower.StructFields) == 0 {
+		t.Fatal("flower must carry its nested fields")
+	}
+	if _, _, ok := flower.LookupStructField(semantic.FromNormalized("type")); !ok {
+		t.Fatalf("exact flower.type must resolve; fields = %v", columnNames(flower.StructFields))
+	}
+	if _, _, ok := flower.LookupStructField(semantic.NewUnquoted("TYPE")); ok {
+		t.Fatal("folded flower.TYPE must NOT match the exact struct lookup")
 	}
 }
 
@@ -231,7 +310,7 @@ func TestWrap_ProtoKindToSQL_FullMapping(t *testing.T) {
 		"val_enum":     "ENUM",
 	}
 	for colName, wantType := range want {
-		col, ok := typed.LookupColumn(semantic.NewUnquoted(colName))
+		col, ok := typed.LookupColumn(semantic.FromNormalized(colName))
 		if !ok {
 			t.Errorf("column %q not found on TypedRecord", colName)
 			continue
@@ -246,7 +325,7 @@ func TestWrap_ProtoKindToSQL_FullMapping(t *testing.T) {
 	//   tags   → STRING   (repeated scalars still map by Kind; the
 	//                       list-ness surfaces via Nullable=false)
 	order, _ := cat.LookupTable(semantic.ParseQualifiedName("Order", false))
-	flower, _ := order.LookupColumn(semantic.NewUnquoted("flower"))
+	flower, _ := order.LookupColumn(semantic.FromNormalized("flower"))
 	if flower.Type != "RECORD" {
 		t.Errorf("flower.Type: got %q, want RECORD", flower.Type)
 	}
@@ -258,7 +337,7 @@ func TestWrap_ProtoKindToSQL_FullMapping(t *testing.T) {
 	if flower.StructTypeName == flower.Type {
 		t.Error("flower lost its nominal descriptor identity and retained only the coarse RECORD kind")
 	}
-	tags, _ := order.LookupColumn(semantic.NewUnquoted("tags"))
+	tags, _ := order.LookupColumn(semantic.FromNormalized("tags"))
 	if tags.Type != "STRING" {
 		t.Errorf("tags.Type: got %q, want STRING", tags.Type)
 	}

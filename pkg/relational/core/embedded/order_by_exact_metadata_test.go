@@ -533,8 +533,15 @@ func TestOrderByExactMetadata_DerivedDelimitedLowercaseNameUsesPhysicalOrdinal(t
 	if got := key.Path().Ordinals(); !reflect.DeepEqual(got, []int{0}) {
 		t.Fatalf("sort key path = %v, want [0]", got)
 	}
-	if key.DisplayName() != "A.B" || keys[0].Field != "S.A.B#0" {
-		t.Fatalf("physical sort key = %q/%q, want A.B/S.A.B#0",
+	// THE QUOTED ALIAS KEEPS ITS CASE. `AS "a.b"` names the derived column
+	// a.b, and both the sort key's display name and the slot key it renders
+	// carry that spelling — the correlation prefix S is the source ALIAS,
+	// which is a different domain and stays folded.
+	//
+	// This asserted A.B / S.A.B#0 while the output-name authority folded, and
+	// that fold is what made a quoted alias unreachable by its own name.
+	if key.DisplayName() != "a.b" || keys[0].Field != "S.a.b#0" {
+		t.Fatalf("physical sort key = %q/%q, want a.b/S.a.b#0",
 			key.DisplayName(), keys[0].Field)
 	}
 	if !key.ResultType().Equals(values.NullableLong) {

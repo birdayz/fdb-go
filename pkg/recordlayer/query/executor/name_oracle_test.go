@@ -9,12 +9,14 @@ package executor
 
 import (
 	"reflect"
-	"strings"
 
 	"google.golang.org/protobuf/proto"
 )
 
-// protoToMap converts a proto.Message to map[string]any with UPPER-case keys.
+// protoToMap converts a proto.Message to map[string]any keyed by the
+// DESCRIPTOR's own field spelling — the same name values.FieldNameForProtoField
+// gives the corresponding slot, which is what makes this an independent oracle
+// for shadowMismatch rather than a second naming rule to keep in sync.
 // Only set fields are included; unset fields are omitted (NULL semantics). A
 // REPEATED field is always included, EMPTY ONE INCLUDED, because an empty
 // repeated field is the empty array and not NULL — protoreflect's Has()
@@ -34,7 +36,7 @@ func protoToMap(msg proto.Message) map[string]any {
 		if !fd.IsList() && !fd.IsMap() && !refl.Has(fd) {
 			continue
 		}
-		key := strings.ToUpper(string(fd.Name()))
+		key := string(fd.Name())
 		m[key] = protoFieldToGo(fd, refl.Get(fd))
 	}
 	return m

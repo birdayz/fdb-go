@@ -228,14 +228,20 @@ func numericAggregateType(typ values.Type) bool {
 // each declaring an `n`, a bare `N.SK` would re-create one level up exactly the
 // collapse this function exists to prevent. `Child == nil` is the common case,
 // not the rule.
+// The name is taken VERBATIM, and the nested arm above already was. A grouping
+// key names a column that exists elsewhere — in the source row it reads and in
+// the projection that references the group — and a fold here made this the one
+// authority that spelled it differently. That was invisible while every
+// descriptor name was upper-folded on the way in, and it is a
+// reference-misses-its-own-column bug the moment one is not.
 func AggregateKeyColumnName(k values.Value) string {
 	if path, nested := values.NestedResolvedPath(k); nested {
 		return path
 	}
 	if fv, ok := values.AsFieldValue(k); ok {
-		return strings.ToUpper(fv.DisplayName())
+		return fv.DisplayName()
 	}
-	return strings.ToUpper(values.ColumnNameValue(k))
+	return values.ColumnNameValue(k)
 }
 
 // AggregateResultColumnName is the canonical output-column name for one aggregate

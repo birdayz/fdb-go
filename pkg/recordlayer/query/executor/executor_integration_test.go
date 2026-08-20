@@ -250,7 +250,7 @@ func TestIntegration_ScanPlan_AllRecords(t *testing.T) {
 			if !ok {
 				t.Fatalf("datum type = %T, want map[string]any", r.Positional)
 			}
-			if datum["ORDER_ID"] == nil {
+			if datum["order_id"] == nil {
 				t.Error("ORDER_ID is nil in datum")
 			}
 		}
@@ -357,7 +357,7 @@ func TestIntegration_FilterPlan(t *testing.T) {
 		if len(results) != 1 {
 			t.Fatalf("filter returned %d results, want 1 (price > 100)", len(results))
 		}
-		price, _ := rowMap(results[0])["PRICE"]
+		price, _ := rowMap(results[0])["price"]
 		if price != int64(500) {
 			t.Errorf("price = %v, want 500", price)
 		}
@@ -391,7 +391,7 @@ func TestIntegration_SortLimitPlan(t *testing.T) {
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			scan,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false}},
+			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
 		limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 2, 0))
 
@@ -409,8 +409,8 @@ func TestIntegration_SortLimitPlan(t *testing.T) {
 			t.Fatalf("got %d results, want 2", len(results))
 		}
 
-		p1, _ := rowMap(results[0])["PRICE"].(int64)
-		p2, _ := rowMap(results[1])["PRICE"].(int64)
+		p1, _ := rowMap(results[0])["price"].(int64)
+		p2, _ := rowMap(results[1])["price"].(int64)
 		if p1 > p2 {
 			t.Errorf("results not sorted ASC: price[0]=%d > price[1]=%d", p1, p2)
 		}
@@ -474,7 +474,7 @@ func TestIntegration_SortContinuation_BytesKeyStraddle_F33(t *testing.T) {
 			sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 				scan,
 				[]plans.SortKey{{
-					Field:     "VECTOR_DATA",
+					Field:     "vector_data",
 					ValueExpr: integrationField(t, scan, vectorDataOrdinal),
 					Desc:      false,
 				}},
@@ -604,7 +604,7 @@ func TestIntegration_SortContinuation_ArrayStructStraddle_F53(t *testing.T) {
 			sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 				scan,
 				[]plans.SortKey{{
-					Field:     "PRICE",
+					Field:     "price",
 					ValueExpr: integrationField(t, scan, priceOrdinal),
 					Desc:      false,
 				}},
@@ -826,7 +826,7 @@ func TestIntegration_IndexScan(t *testing.T) {
 			t.Fatalf("index scan returned %d results, want 2 (price >= 100)", len(results))
 		}
 		for _, r := range results {
-			price, _ := rowMap(r)["PRICE"].(int64)
+			price, _ := rowMap(r)["price"].(int64)
 			if price < 100 {
 				t.Errorf("index scan returned price=%d, should be >= 100", price)
 			}
@@ -871,7 +871,7 @@ func TestIntegration_UpdatePlan(t *testing.T) {
 			scan,
 		))
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
-			{FieldPath: "PRICE", NewValue: values.LiteralValue(int64(999))},
+			{FieldPath: "price", NewValue: values.LiteralValue(int64(999))},
 		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -949,7 +949,7 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerBinding(t *testing.T) {
 		target := mustTestQOV(t, values.NamedCorrelationIdentifier("Order"), rowType)
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
 			{
-				FieldPath: "PRICE",
+				FieldPath: "price",
 				NewValue: &values.ArithmeticValue{
 					Op:    values.OpAdd,
 					Left:  mustTestFieldOrdinal(t, target, 2),
@@ -957,7 +957,7 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerBinding(t *testing.T) {
 				},
 			},
 			{
-				FieldPath: "FLOWER",
+				FieldPath: "flower",
 				NewValue:  mustTestFieldOrdinal(t, target, 1),
 			},
 		}))
@@ -1008,7 +1008,7 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerRejectsForeignViews(t *testing.T
 		{
 			name: "same spelling wrong exact type",
 			value: func(t testing.TB, _ *values.RecordType) values.Value {
-				wrongType := exactTestRowType(values.Field{Name: "PRICE", FieldType: values.NullableLong})
+				wrongType := exactTestRowType(values.Field{Name: "price", FieldType: values.NullableLong})
 				wrongOwner := mustTestQOV(t, values.NamedCorrelationIdentifier("Order"), wrongType)
 				return mustTestFieldOrdinal(t, wrongOwner, 0)
 			},
@@ -1042,7 +1042,7 @@ func TestIntegration_UpdatePlan_ExactTargetOwnerRejectsForeignViews(t *testing.T
 				rowType := integrationOrderType()
 				scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, rowType, false))
 				update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
-					{FieldPath: "PRICE", NewValue: test.value(t, rowType)},
+					{FieldPath: "price", NewValue: test.value(t, rowType)},
 				}))
 
 				cursor, execErr := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -1109,16 +1109,16 @@ func TestIntegration_ScanDatum_Shape(t *testing.T) {
 		}
 
 		datum, _ := rowMapOK(results[0])
-		if datum["ORDER_ID"] != int64(701) {
-			t.Errorf("ORDER_ID = %v, want 701", datum["ORDER_ID"])
+		if datum["order_id"] != int64(701) {
+			t.Errorf("ORDER_ID = %v, want 701", datum["order_id"])
 		}
-		if datum["PRICE"] != int64(42) {
-			t.Errorf("PRICE = %v, want 42", datum["PRICE"])
+		if datum["price"] != int64(42) {
+			t.Errorf("PRICE = %v, want 42", datum["price"])
 		}
 		// The ordinal row carries every descriptor field as a slot; an
 		// unset field reads as nil (SQL NULL) — present-nil, not key-absent.
-		if datum["FLOWER"] != nil {
-			t.Errorf("FLOWER (unset) = %v, want nil (SQL NULL)", datum["FLOWER"])
+		if datum["flower"] != nil {
+			t.Errorf("FLOWER (unset) = %v, want nil (SQL NULL)", datum["flower"])
 		}
 		return nil, nil
 	})
@@ -1179,7 +1179,7 @@ func TestIntegration_IndexScan_Equality(t *testing.T) {
 			t.Fatalf("index equality scan returned %d results, want 2 (price == 77)", len(results))
 		}
 		for _, r := range results {
-			price, _ := rowMap(r)["PRICE"].(int64)
+			price, _ := rowMap(r)["price"].(int64)
 			if price != 77 {
 				t.Errorf("index scan returned price=%d, want 77", price)
 			}
@@ -1250,7 +1250,7 @@ func TestIntegration_IndexScan_BoundedRange(t *testing.T) {
 			t.Fatalf("bounded range scan returned %d results, want 2 (50 <= price < 150)", len(results))
 		}
 		for _, r := range results {
-			price, _ := rowMap(r)["PRICE"].(int64)
+			price, _ := rowMap(r)["price"].(int64)
 			if price < 50 || price >= 150 {
 				t.Errorf("price=%d outside [50, 150)", price)
 			}
@@ -1300,7 +1300,7 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 		))
 		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			filter,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: true}},
+			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: true}},
 		))
 		limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 2, 0))
 
@@ -1318,8 +1318,8 @@ func TestIntegration_FilterSortLimit_Pipeline(t *testing.T) {
 			t.Fatalf("pipeline returned %d results, want 2 (top-2 by price DESC where price > 150)", len(results))
 		}
 
-		p1, _ := rowMap(results[0])["PRICE"].(int64)
-		p2, _ := rowMap(results[1])["PRICE"].(int64)
+		p1, _ := rowMap(results[0])["price"].(int64)
+		p2, _ := rowMap(results[1])["price"].(int64)
 		if p1 != 500 || p2 != 400 {
 			t.Errorf("prices = [%d, %d], want [500, 400]", p1, p2)
 		}
@@ -1365,8 +1365,8 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 		}
 
 		cols := []ColumnDef{
-			{Name: "ORDER_ID", TypeName: "BIGINT", Nullable: api.ColumnNoNulls},
-			{Name: "PRICE", TypeName: "BIGINT", Nullable: api.ColumnNullable},
+			{Name: "order_id", TypeName: "BIGINT", Nullable: api.ColumnNoNulls},
+			{Name: "price", TypeName: "BIGINT", Nullable: api.ColumnNullable},
 		}
 		rs := NewRecordLayerResultSet(ctx, cursor, cols)
 		defer rs.Close()
@@ -1376,7 +1376,7 @@ func TestIntegration_ResultSet_TypedAccess(t *testing.T) {
 			t.Fatalf("ColumnCount = %d, want 2", md.ColumnCount())
 		}
 		name, _ := md.ColumnName(1)
-		if name != "ORDER_ID" {
+		if name != "order_id" {
 			t.Errorf("ColumnName(1) = %q, want ORDER_ID", name)
 		}
 
@@ -1443,7 +1443,7 @@ func TestIntegration_ResultSet_StringCoercion(t *testing.T) {
 		}
 
 		cols := []ColumnDef{
-			{Name: "PRICE", TypeName: "BIGINT"},
+			{Name: "price", TypeName: "BIGINT"},
 		}
 		rs := NewRecordLayerResultSet(ctx, cursor, cols)
 		defer rs.Close()
@@ -1511,7 +1511,7 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 		))
 		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			filter,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false}},
+			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
 		// Project PRICE, ORDER_ID so the output row is ordinal-aligned to the columns.
 		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
@@ -1525,8 +1525,8 @@ func TestIntegration_ResultSet_FilterPipeline(t *testing.T) {
 		}
 
 		cols := []ColumnDef{
-			{Name: "PRICE", TypeName: "BIGINT"},
-			{Name: "ORDER_ID", TypeName: "BIGINT"},
+			{Name: "price", TypeName: "BIGINT"},
+			{Name: "order_id", TypeName: "BIGINT"},
 		}
 		rs := NewRecordLayerResultSet(ctx, cursor, cols)
 		defer rs.Close()
@@ -1588,8 +1588,8 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 		}
 
 		cols := []ColumnDef{
-			{Name: "ORDER_ID", TypeName: "BIGINT"},
-			{Name: "PRICE", TypeName: "BIGINT"},
+			{Name: "order_id", TypeName: "BIGINT"},
+			{Name: "price", TypeName: "BIGINT"},
 		}
 		rs := NewRecordLayerResultSet(ctx, cursor, cols)
 		defer rs.Close()
@@ -1598,7 +1598,7 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 			t.Fatal("expected a row")
 		}
 
-		id, err := rs.LongByName("ORDER_ID")
+		id, err := rs.LongByName("order_id")
 		if err != nil {
 			t.Fatalf("LongByName ORDER_ID: %v", err)
 		}
@@ -1606,7 +1606,7 @@ func TestIntegration_ResultSet_ByName(t *testing.T) {
 			t.Errorf("ORDER_ID = %d, want 5001", id)
 		}
 
-		price, err := rs.LongByName("PRICE")
+		price, err := rs.LongByName("price")
 		if err != nil {
 			t.Fatalf("LongByName PRICE: %v", err)
 		}
@@ -1690,10 +1690,10 @@ func TestIntegration_ProjectionPlan(t *testing.T) {
 
 		for _, r := range results {
 			datum, _ := rowMapOK(r)
-			if _, exists := datum["PRICE"]; !exists {
+			if _, exists := datum["price"]; !exists {
 				t.Error("projected datum should contain PRICE")
 			}
-			if _, exists := datum["ORDER_ID"]; exists {
+			if _, exists := datum["order_id"]; exists {
 				t.Error("projected datum should NOT contain ORDER_ID")
 			}
 		}
@@ -1746,11 +1746,11 @@ func TestIntegration_ProjectionPlan_MultiColumn(t *testing.T) {
 		}
 
 		datum, _ := rowMapOK(results[0])
-		if datum["ORDER_ID"] != int64(6101) {
-			t.Errorf("ORDER_ID = %v, want 6101", datum["ORDER_ID"])
+		if datum["order_id"] != int64(6101) {
+			t.Errorf("ORDER_ID = %v, want 6101", datum["order_id"])
 		}
-		if datum["PRICE"] != int64(50) {
-			t.Errorf("PRICE = %v, want 50", datum["PRICE"])
+		if datum["price"] != int64(50) {
+			t.Errorf("PRICE = %v, want 50", datum["price"])
 		}
 		if len(datum) != 2 {
 			t.Errorf("datum has %d keys, want exactly 2 (ORDER_ID, PRICE)", len(datum))
@@ -1864,7 +1864,7 @@ func TestIntegration_ParameterBinding_Filter(t *testing.T) {
 			t.Fatalf("parameter filter returned %d results, want 2 (price > 40)", len(results))
 		}
 		for _, r := range results {
-			price, _ := rowMap(r)["PRICE"].(int64)
+			price, _ := rowMap(r)["price"].(int64)
 			if price <= 40 {
 				t.Errorf("price=%d should be > 40", price)
 			}
@@ -1929,7 +1929,7 @@ func TestIntegration_ParameterBinding_IndexScan(t *testing.T) {
 			t.Fatalf("param index scan returned %d results, want 2 (price >= 50)", len(results))
 		}
 		for _, r := range results {
-			price, _ := rowMap(r)["PRICE"].(int64)
+			price, _ := rowMap(r)["price"].(int64)
 			if price < 50 {
 				t.Errorf("price=%d, should be >= 50", price)
 			}
@@ -1994,10 +1994,10 @@ func TestIntegration_NestedLoopJoin_CrossJoin(t *testing.T) {
 
 		for _, r := range results {
 			datum, _ := rowMapOK(r)
-			if datum["ORDER_ID"] == nil {
+			if datum["order_id"] == nil {
 				t.Error("ORDER_ID missing from joined row")
 			}
-			if datum["CUSTOMER_ID"] == nil {
+			if datum["customer_id"] == nil {
 				t.Error("CUSTOMER_ID missing from joined row")
 			}
 		}
@@ -2068,10 +2068,10 @@ func TestIntegration_NestedLoopJoin_WithPredicate(t *testing.T) {
 		}
 		for _, r := range results {
 			datum, _ := rowMapOK(r)
-			if datum["ORDER_ID"] != int64(9101) {
-				t.Errorf("ORDER_ID = %v, want 9101 (quantity=5)", datum["ORDER_ID"])
+			if datum["order_id"] != int64(9101) {
+				t.Errorf("ORDER_ID = %v, want 9101 (quantity=5)", datum["order_id"])
 			}
-			if datum["CUSTOMER_ID"] == nil {
+			if datum["customer_id"] == nil {
 				t.Error("CUSTOMER_ID missing from joined row")
 			}
 		}
@@ -2144,9 +2144,9 @@ func TestIntegration_NestedLoopJoin_LeftOuter(t *testing.T) {
 		unmatchedFound := false
 		for _, r := range results {
 			datum, _ := rowMapOK(r)
-			orderID := datum["ORDER_ID"].(int64)
+			orderID := datum["order_id"].(int64)
 			if orderID == 9201 {
-				if datum["CUSTOMER_ID"] == nil {
+				if datum["customer_id"] == nil {
 					t.Error("matched row should have CUSTOMER_ID from inner")
 				}
 				matchedFound = true
@@ -2200,7 +2200,7 @@ func TestIntegration_UpdatePlan_WithParameter(t *testing.T) {
 			scan,
 		))
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
-			{FieldPath: "PRICE", NewValue: values.NewParameterValue(1)},
+			{FieldPath: "price", NewValue: values.NewParameterValue(1)},
 		}))
 
 		evalCtx := EmptyEvaluationContext().WithParams([]any{int64(777)})
@@ -2354,8 +2354,8 @@ func TestIntegration_StreamingAggregation_CountAndSum(t *testing.T) {
 			scan,
 			[]values.Value{integrationField(t, scan, 2)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
-				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "order_id"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "quantity"},
 			},
 		))
 
@@ -2375,7 +2375,7 @@ func TestIntegration_StreamingAggregation_CountAndSum(t *testing.T) {
 
 		for _, r := range results {
 			datum, _ := rowMapOK(r)
-			price := datum["PRICE"].(int64)
+			price := datum["price"].(int64)
 			count := datum["COUNT(ORDER_ID)"].(int64)
 			sumQty := datum["SUM(QUANTITY)"].(int64)
 
@@ -2431,9 +2431,9 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
-				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
-				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "order_id"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "price"},
 			},
 		))
 
@@ -2514,7 +2514,7 @@ func TestIntegration_IndexScan_Reverse(t *testing.T) {
 
 		prices := make([]int64, len(results))
 		for i, r := range results {
-			prices[i] = rowMap(r)["PRICE"].(int64)
+			prices[i] = rowMap(r)["price"].(int64)
 		}
 		if prices[0] != 300 || prices[1] != 200 || prices[2] != 100 {
 			t.Errorf("reverse scan prices = %v, want [300 200 100]", prices)
@@ -2551,7 +2551,7 @@ func TestIntegration_LimitWithOffset(t *testing.T) {
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			scan,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false}},
+			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
 		// OFFSET 2, LIMIT 2 — skip first 2 (price=10,20), take next 2 (price=30,40)
 		limited := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sorted, 2, 2))
@@ -2572,11 +2572,11 @@ func TestIntegration_LimitWithOffset(t *testing.T) {
 
 		d0, _ := rowMapOK(results[0])
 		d1, _ := rowMapOK(results[1])
-		if d0["PRICE"] != int64(30) {
-			t.Errorf("first result price = %v, want 30", d0["PRICE"])
+		if d0["price"] != int64(30) {
+			t.Errorf("first result price = %v, want 30", d0["price"])
 		}
-		if d1["PRICE"] != int64(40) {
-			t.Errorf("second result price = %v, want 40", d1["PRICE"])
+		if d1["price"] != int64(40) {
+			t.Errorf("second result price = %v, want 40", d1["price"])
 		}
 		return nil, nil
 	})
@@ -2611,9 +2611,9 @@ func TestIntegration_Aggregation_MinMaxAvg(t *testing.T) {
 			scan,
 			nil, // no grouping keys — aggregate over all
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
-				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
-				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "price"},
 			},
 		))
 
@@ -2712,7 +2712,7 @@ func TestIntegration_DeletePlan_WithFilter(t *testing.T) {
 		if len(remaining) != 1 {
 			t.Fatalf("remaining = %d, want 1", len(remaining))
 		}
-		price, _ := rowMap(remaining[0])["PRICE"].(int64)
+		price, _ := rowMap(remaining[0])["price"].(int64)
 		if price != 50 {
 			t.Errorf("remaining order price = %d, want 50", price)
 		}
@@ -2820,10 +2820,10 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 			scan,
 			[]values.Value{integrationField(t, scan, 2)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
-				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
-				{Function: expressions.AggMin, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
-				{Function: expressions.AggMax, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "order_id"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "quantity"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 4), OperandName: "quantity"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 4), OperandName: "quantity"},
 			},
 		))
 
@@ -2844,7 +2844,7 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 		byPrice := make(map[int64]map[string]any)
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			p := d["PRICE"].(int64)
+			p := d["price"].(int64)
 			byPrice[p] = d
 		}
 
@@ -2923,7 +2923,7 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 		))
 		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			filter,
-			[]plans.SortKey{{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false}},
+			[]plans.SortKey{{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false}},
 		))
 		proj := mustExecutorConstruct(plans.NewRecordQueryProjectionPlan(
 			[]values.Value{
@@ -2950,13 +2950,13 @@ func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 
 		d0, _ := rowMapOK(results[0])
 		d1, _ := rowMapOK(results[1])
-		if d0["PRICE"] != int64(300) || d0["QUANTITY"] != int64(3) {
+		if d0["price"] != int64(300) || d0["quantity"] != int64(3) {
 			t.Errorf("first row = %v, want PRICE=300/QUANTITY=3", d0)
 		}
-		if d1["PRICE"] != int64(400) || d1["QUANTITY"] != int64(4) {
+		if d1["price"] != int64(400) || d1["quantity"] != int64(4) {
 			t.Errorf("second row = %v, want PRICE=400/QUANTITY=4", d1)
 		}
-		if _, exists := d0["ORDER_ID"]; exists {
+		if _, exists := d0["order_id"]; exists {
 			t.Error("ORDER_ID should be excluded by projection")
 		}
 		return nil, nil
@@ -3126,10 +3126,10 @@ func TestIntegration_Aggregation_EmptyInput(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
-				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
-				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
-				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "order_id"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "price"},
 			},
 		))
 
@@ -3199,8 +3199,8 @@ func TestIntegration_UpdatePlan_MultipleFields(t *testing.T) {
 			scan,
 		))
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(filter, "Order", []expressions.UpdateTransform{
-			{FieldPath: "PRICE", NewValue: values.LiteralValue(int64(999))},
-			{FieldPath: "QUANTITY", NewValue: values.LiteralValue(int64(42))},
+			{FieldPath: "price", NewValue: values.LiteralValue(int64(999))},
+			{FieldPath: "quantity", NewValue: values.LiteralValue(int64(42))},
 		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -3293,8 +3293,8 @@ func TestIntegration_IndexScan_EqualityRange(t *testing.T) {
 		}
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			if d["PRICE"] != int64(100) {
-				t.Errorf("PRICE = %v, want 100", d["PRICE"])
+			if d["price"] != int64(100) {
+				t.Errorf("PRICE = %v, want 100", d["price"])
 			}
 		}
 		return nil, nil
@@ -3330,8 +3330,8 @@ func TestIntegration_SortPlan_MultiKey(t *testing.T) {
 		sorted := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(
 			scan,
 			[]plans.SortKey{
-				{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: false},
-				{Field: "QUANTITY", ValueExpr: integrationField(t, scan, 4), Desc: true},
+				{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: false},
+				{Field: "quantity", ValueExpr: integrationField(t, scan, 4), Desc: true},
 			},
 		))
 
@@ -3353,17 +3353,17 @@ func TestIntegration_SortPlan_MultiKey(t *testing.T) {
 		d1, _ := rowMapOK(results[1])
 		d2, _ := rowMapOK(results[2])
 		d3, _ := rowMapOK(results[3])
-		if d0["PRICE"] != int64(100) || d0["QUANTITY"] != int64(7) {
-			t.Errorf("row 0: PRICE=%v QUANTITY=%v, want 100/7", d0["PRICE"], d0["QUANTITY"])
+		if d0["price"] != int64(100) || d0["quantity"] != int64(7) {
+			t.Errorf("row 0: PRICE=%v QUANTITY=%v, want 100/7", d0["price"], d0["quantity"])
 		}
-		if d1["PRICE"] != int64(100) || d1["QUANTITY"] != int64(3) {
-			t.Errorf("row 1: PRICE=%v QUANTITY=%v, want 100/3", d1["PRICE"], d1["QUANTITY"])
+		if d1["price"] != int64(100) || d1["quantity"] != int64(3) {
+			t.Errorf("row 1: PRICE=%v QUANTITY=%v, want 100/3", d1["price"], d1["quantity"])
 		}
-		if d2["PRICE"] != int64(200) || d2["QUANTITY"] != int64(9) {
-			t.Errorf("row 2: PRICE=%v QUANTITY=%v, want 200/9", d2["PRICE"], d2["QUANTITY"])
+		if d2["price"] != int64(200) || d2["quantity"] != int64(9) {
+			t.Errorf("row 2: PRICE=%v QUANTITY=%v, want 200/9", d2["price"], d2["quantity"])
 		}
-		if d3["PRICE"] != int64(200) || d3["QUANTITY"] != int64(1) {
-			t.Errorf("row 3: PRICE=%v QUANTITY=%v, want 200/1", d3["PRICE"], d3["QUANTITY"])
+		if d3["price"] != int64(200) || d3["quantity"] != int64(1) {
+			t.Errorf("row 3: PRICE=%v QUANTITY=%v, want 200/1", d3["price"], d3["quantity"])
 		}
 		return nil, nil
 	})
@@ -3440,7 +3440,7 @@ func TestIntegration_UnionPlan_DisjointLegs(t *testing.T) {
 		prices := map[int64]bool{}
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			prices[d["PRICE"].(int64)] = true
+			prices[d["price"].(int64)] = true
 		}
 		if !prices[50] {
 			t.Error("expected PRICE=50 in union output")
@@ -3630,7 +3630,7 @@ func TestIntegration_TypeFilter_MixedRecordTypes(t *testing.T) {
 		}
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			if _, ok := d["ORDER_ID"]; !ok {
+			if _, ok := d["order_id"]; !ok {
 				t.Errorf("expected ORDER_ID in type-filtered result, got %v", d)
 			}
 		}
@@ -3678,18 +3678,18 @@ func TestIntegration_ScanPlan_UnsetFieldsOmitted(t *testing.T) {
 		}
 
 		d, _ := rowMapOK(results[0])
-		if d["ORDER_ID"] != int64(18101) {
-			t.Errorf("ORDER_ID = %v, want 18101", d["ORDER_ID"])
+		if d["order_id"] != int64(18101) {
+			t.Errorf("ORDER_ID = %v, want 18101", d["order_id"])
 		}
-		if d["PRICE"] != int64(50) {
-			t.Errorf("PRICE = %v, want 50", d["PRICE"])
+		if d["price"] != int64(50) {
+			t.Errorf("PRICE = %v, want 50", d["price"])
 		}
 		// An unset field is a present-nil slot (SQL NULL), not key-absent.
-		if d["QUANTITY"] != nil {
-			t.Errorf("QUANTITY (unset) = %v, want nil (SQL NULL)", d["QUANTITY"])
+		if d["quantity"] != nil {
+			t.Errorf("QUANTITY (unset) = %v, want nil (SQL NULL)", d["quantity"])
 		}
-		if d["CUSTOMER_ID"] != nil {
-			t.Errorf("CUSTOMER_ID (unset) = %v, want nil (SQL NULL)", d["CUSTOMER_ID"])
+		if d["customer_id"] != nil {
+			t.Errorf("CUSTOMER_ID (unset) = %v, want nil (SQL NULL)", d["customer_id"])
 		}
 		return nil, nil
 	})
@@ -3744,8 +3744,8 @@ func TestIntegration_FilterPlan_IsNull(t *testing.T) {
 			t.Fatalf("IS NULL filter returned %d results, want 1", len(results))
 		}
 		d, _ := rowMapOK(results[0])
-		if d["ORDER_ID"] != int64(18202) {
-			t.Errorf("ORDER_ID = %v, want 18202", d["ORDER_ID"])
+		if d["order_id"] != int64(18202) {
+			t.Errorf("ORDER_ID = %v, want 18202", d["order_id"])
 		}
 		return nil, nil
 	})
@@ -3780,7 +3780,7 @@ func TestIntegration_Aggregation_AVG(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "price"},
 			},
 		))
 
@@ -3834,14 +3834,14 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		sort := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
-			{Field: "QUANTITY", ValueExpr: integrationField(t, scan, 4), Desc: false},
+			{Field: "quantity", ValueExpr: integrationField(t, scan, 4), Desc: false},
 		}))
 		agg := mustExecutorConstruct(plans.NewRecordQueryStreamingAggregationPlan(
 			sort,
 			[]values.Value{integrationField(t, scan, 4)},
 			[]expressions.AggregateSpec{
 				{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}, OperandName: "CONSTANT"},
-				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "price"},
 			},
 		))
 
@@ -3863,9 +3863,9 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 		qtySums := map[int64]int64{}
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			qty, ok := d["QUANTITY"].(int64)
+			qty, ok := d["quantity"].(int64)
 			if !ok {
-				t.Fatalf("QUANTITY type = %T (value = %v), datum keys = %v", d["QUANTITY"], d["QUANTITY"], d)
+				t.Fatalf("QUANTITY type = %T (value = %v), datum keys = %v", d["quantity"], d["quantity"], d)
 			}
 			cnt := d["COUNT(CONSTANT)"].(int64)
 			sum := d["SUM(PRICE)"].(int64)
@@ -3935,13 +3935,13 @@ func TestIntegration_ProjectionOverJoin(t *testing.T) {
 		}
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			if _, ok := d["ORDER_ID"]; !ok {
+			if _, ok := d["order_id"]; !ok {
 				t.Fatalf("missing ORDER_ID in projected datum: %v", d)
 			}
-			if _, ok := d["PRICE"]; !ok {
+			if _, ok := d["price"]; !ok {
 				t.Fatalf("missing PRICE in projected datum: %v", d)
 			}
-			if _, ok := d["QUANTITY"]; ok {
+			if _, ok := d["quantity"]; ok {
 				t.Fatalf("QUANTITY should be projected out: %v", d)
 			}
 		}
@@ -3973,7 +3973,7 @@ func TestIntegration_SortPlan_Reverse(t *testing.T) {
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		sort := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
-			{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: true},
+			{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: true},
 		}))
 
 		cursor, err := ExecutePlan(ctx, sort, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -3992,7 +3992,7 @@ func TestIntegration_SortPlan_Reverse(t *testing.T) {
 		prices := make([]int64, len(results))
 		for i, r := range results {
 			d, _ := rowMapOK(r)
-			prices[i] = d["PRICE"].(int64)
+			prices[i] = d["price"].(int64)
 		}
 		if prices[0] != int64(30) || prices[1] != int64(20) || prices[2] != int64(10) {
 			t.Errorf("expected [30 20 10], got %v", prices)
@@ -4050,8 +4050,8 @@ func TestIntegration_FilterPlan_CompoundPredicate(t *testing.T) {
 			t.Fatalf("compound filter returned %d rows, want 1 (PRICE>100 AND QUANTITY=1)", len(results))
 		}
 		d, _ := rowMapOK(results[0])
-		if d["ORDER_ID"] != int64(19302) {
-			t.Errorf("ORDER_ID = %v, want 19302", d["ORDER_ID"])
+		if d["order_id"] != int64(19302) {
+			t.Errorf("ORDER_ID = %v, want 19302", d["order_id"])
 		}
 		return nil, nil
 	})
@@ -4083,7 +4083,7 @@ func TestIntegration_LimitOverSort(t *testing.T) {
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		sort := mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(scan, []plans.SortKey{
-			{Field: "PRICE", ValueExpr: integrationField(t, scan, 2), Desc: true},
+			{Field: "price", ValueExpr: integrationField(t, scan, 2), Desc: true},
 		}))
 		limit := mustExecutorConstruct(plans.NewRecordQueryLimitPlan(sort, int64(3), int64(0)))
 
@@ -4103,7 +4103,7 @@ func TestIntegration_LimitOverSort(t *testing.T) {
 		prices := []int64{}
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			prices = append(prices, d["PRICE"].(int64))
+			prices = append(prices, d["price"].(int64))
 		}
 		if prices[0] != 500 || prices[1] != 400 || prices[2] != 300 {
 			t.Errorf("expected top-3 DESC [500 400 300], got %v", prices)
@@ -4134,7 +4134,7 @@ func TestIntegration_UpdatePlan_ClearField(t *testing.T) {
 
 		scan := mustExecutorConstruct(plans.NewRecordQueryScanPlan([]string{"Order"}, integrationOrderType(), false))
 		update := mustExecutorConstruct(plans.NewRecordQueryUpdatePlan(scan, "Order", []expressions.UpdateTransform{
-			{FieldPath: "QUANTITY", NewValue: values.LiteralValue(nil)},
+			{FieldPath: "quantity", NewValue: values.LiteralValue(nil)},
 		}))
 
 		cursor, err := ExecutePlan(ctx, update, s, EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
@@ -4216,7 +4216,7 @@ func TestIntegration_FilterPlan_OrPredicate(t *testing.T) {
 		ids := map[int64]bool{}
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			ids[d["ORDER_ID"].(int64)] = true
+			ids[d["order_id"].(int64)] = true
 		}
 		if !ids[19601] || !ids[19603] {
 			t.Errorf("expected orders 19601 and 19603, got %v", ids)
@@ -4271,7 +4271,7 @@ func TestIntegration_IndexScan_FullRange(t *testing.T) {
 		prices := []int64{}
 		for _, r := range results {
 			d, _ := rowMapOK(r)
-			prices = append(prices, d["PRICE"].(int64))
+			prices = append(prices, d["price"].(int64))
 		}
 		if prices[0] != 10 || prices[1] != 20 || prices[2] != 30 {
 			t.Errorf("expected ASC order [10 20 30], got %v", prices)

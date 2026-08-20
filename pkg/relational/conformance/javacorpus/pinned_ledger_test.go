@@ -152,7 +152,31 @@ package javacorpus_test
 // star-expression-metadata.yamsql under the identical `0AF00: projection slot
 // 0 has no resolved Value`, which that file already produced at the previous
 // revision — a pre-existing gap gaining a second carrier, not a new one.
-const pinnedLedger = "pass=70 fail=0 skip=168 queries=1976 file_skips{conformance:go-accepts-what-java-rejects=4," +
+//
+// RFC-236 THEN UNBLOCKS A FILE THAT HAD NEVER EXECUTED A SINGLE QUERY.
+// `arrays-cardinality.yamsql` declares `CREATE INDEX … AS SELECT
+// CARDINALITY("struct"."int_arr")` — a NESTED QUOTED path — which the index
+// generator rejected, so `unsupported-DDL:struct-index` claimed the whole file
+// at queries=0. With identifiers no longer folded that DDL builds, the file
+// runs, and its other 29 queries assert for the first time: `queries` grows
+// 1976 → 2005, inner `plan-assertion` 843 → 867 and `unsupported:prepared`
+// 219 → 221 as the newly-reached configs book themselves, and
+// `unsupported-DDL:struct-index` drops 4 → 3.
+//
+// It lands on `conformance:java-planner-bug`, a NEW class, and the class is
+// new because neither existing one is true: Java does not reject this query
+// (so it is not go-accepts-what-java-rejects) and Go is not missing anything
+// (so it is not an engine-gap). Java answers `CARDINALITY(«nullable indexed»)
+// = NULL` with the NULL row, which the corpus file itself flags
+// `# TODO Issue #4170: This should return [].`; Go returns `[]`, as do both
+// engines for the three NON-indexed twins in the same block.
+//
+// The file therefore counts as a skip rather than a pass, and `pass` does NOT
+// move: one query in it disagrees with the corpus on purpose. Reading this as
+// "a file regressed" is the wrong reading — the run got 29 queries FURTHER
+// than it had ever been.
+const pinnedLedger = "pass=70 fail=0 skip=168 queries=2005 file_skips{conformance:go-accepts-what-java-rejects=4," +
+	"conformance:java-planner-bug=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
@@ -164,10 +188,11 @@ const pinnedLedger = "pass=70 fail=0 skip=168 queries=1976 file_skips{conformanc
 	"no-checks=1,plan-assertion=8,polarity:fixed-version-meta=9," +
 	"polarity:negative-execution=26,polarity:negative-parse=25," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
-	"unsupported-DDL:struct-index=4,unsupported:continuation=3," +
+	"unsupported-DDL:struct-index=3,unsupported:continuation=3," +
 	"unsupported:multi-cluster=2,unsupported:result-metadata-nested=6," +
 	"unsupported:schema-command=8,unsupported:temporary-function=17," +
 	"vacuous:all-assertions-skipped=5} inner_skips{conformance:go-accepts-what-java-rejects=4," +
+	"conformance:java-planner-bug=1," +
 	"engine-gap:catalog-system-tables=2,engine-gap:comma-join-mixed-from=1," +
 	"engine-gap:correlated-exists-setop=1," +
 	"engine-gap:dml-returning-result-set=2,engine-gap:error-class=2," +
@@ -176,11 +201,11 @@ const pinnedLedger = "pass=70 fail=0 skip=168 queries=1976 file_skips{conformanc
 	"engine-gap:planner-declines=5,engine-gap:result-metadata=3," +
 	"engine-gap:returning-dry-run=1,engine-gap:serialization-options=1," +
 	"engine-gap:star-group-by-expansion=1,engine-gap:struct-query=2,engine-gap:table-valued-function=1," +
-	"no-checks=8,plan-assertion=843,polarity:negative-execution=26," +
+	"no-checks=8,plan-assertion=867,polarity:negative-execution=26," +
 	"unsupported-DDL:function=11,unsupported-DDL:other=11," +
-	"unsupported-DDL:struct-index=4,unsupported:check-cache=145," +
+	"unsupported-DDL:struct-index=3,unsupported:check-cache=145," +
 	"unsupported:continuation=36,unsupported:debugger=3," +
-	"unsupported:multi-cluster=2,unsupported:prepared=219," +
+	"unsupported:multi-cluster=2,unsupported:prepared=221," +
 	"unsupported:random-injection=25,unsupported:result-metadata-nested=85," +
 	"unsupported:schema-command=16,unsupported:temporary-function=197}"
 
@@ -213,4 +238,15 @@ const pinnedFileTotal = 238
 //
 // The previous revision's two lines are still described below it in this file's
 // history; they were the inline-VALUES pair.
-const pinnedAssignmentDigest = "804af2dceb53c12f538acccbc66ceff7c54a5baa8f2be0ba868cf3ac557947d7"
+//
+// RFC-236 ALSO MOVED EXACTLY ONE LINE, and it was diffed against the dumped
+// assignment rather than re-blessed on the hash:
+//
+//	-arrays-cardinality.yamsql  skip unsupported-DDL:struct-index
+//	+arrays-cardinality.yamsql  skip conformance:java-planner-bug
+//
+// The file stays a SKIP and the 168-file skip set keeps its membership, so
+// `pass` does not move — but its `queries` goes 0 → 29, which is the whole
+// event and is invisible in this digest by construction. Read it beside the
+// ledger line's 1976 → 2005.
+const pinnedAssignmentDigest = "d7fbfa446c3ac3065f5b5aa29869cc64ac5e4d444546ce27f820dfa9d5d3d8ee"

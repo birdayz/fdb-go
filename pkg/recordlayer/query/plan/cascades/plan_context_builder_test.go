@@ -48,13 +48,16 @@ func TestNewPlanContextFromIndexDefs_Basic(t *testing.T) {
 	if cands[1].CandidateName() != "Order$status_date" {
 		t.Fatalf("cand[1] name=%q", cands[1].CandidateName())
 	}
+	// The def's own spelling, verbatim: an index column name is PHYSICAL, and
+	// the candidate resolves it by exact name against a base type named from
+	// the same descriptor.
 	cols := cands[0].GetColumnNames()
-	if len(cols) != 1 || cols[0] != "STATUS" {
-		t.Fatalf("cand[0] columns=%v, want [STATUS]", cols)
+	if len(cols) != 1 || cols[0] != "status" {
+		t.Fatalf("cand[0] columns=%v, want [status]", cols)
 	}
 	cols = cands[1].GetColumnNames()
-	if len(cols) != 2 || cols[0] != "STATUS" || cols[1] != "DATE" {
-		t.Fatalf("cand[1] columns=%v, want [STATUS DATE]", cols)
+	if len(cols) != 2 || cols[0] != "status" || cols[1] != "date" {
+		t.Fatalf("cand[1] columns=%v, want [status date]", cols)
 	}
 	if !cands[1].IsUnique() {
 		t.Fatal("cand[1] should be unique")
@@ -84,7 +87,18 @@ func TestNewPlanContextFromIndexDefs_SkipsEmptyColumns(t *testing.T) {
 	}
 }
 
-func TestNewPlanContextFromIndexDefs_UpperCasesSargable(t *testing.T) {
+// TestNewPlanContextFromIndexDefs_KeepsSargableColumnCase pins that an index
+// column name reaches the candidate with its case INTACT.
+//
+// The builder used to upper-fold it. That was invisible for a DDL-created
+// metadata, whose descriptor names are already upper, and silently fatal for
+// any other: the candidate's expansion resolves each column by EXACT name
+// against a base type whose slots come from values.FieldNameForProtoField, so a
+// folded name misses, expandValueIndex returns nil, the candidate declines and
+// the planner full-scans. Rows stay correct, nothing goes red, and the index is
+// simply never used — which is why this is pinned on the NAME rather than left
+// to an end-to-end plan assertion.
+func TestNewPlanContextFromIndexDefs_KeepsSargableColumnCase(t *testing.T) {
 	t.Parallel()
 	defs := []IndexDef{
 		testIndexDef{
@@ -95,10 +109,41 @@ func TestNewPlanContextFromIndexDefs_UpperCasesSargable(t *testing.T) {
 	}
 	ctx := NewPlanContextFromIndexDefs(defs)
 	cols := ctx.GetMatchCandidates()[0].GetColumnNames()
-	if cols[0] != "MYCOL" || cols[1] != "ANOTHER_COL" {
-		t.Fatalf("columns not uppercased: %v", cols)
+	if len(cols) != 2 || cols[0] != "myCol" || cols[1] != "Another_Col" {
+		t.Fatalf("columns=%v, want [myCol Another_Col] verbatim", cols)
 	}
 }
+
+// TestNewPlanContextFromIndexDefs_KeepsPrimaryKeyColumnCase is the same pin on
+// the appended primary-key suffix, which was folded by the same loop.
+func TestNewPlanContextFromIndexDefs_KeepsPrimaryKeyColumnCase(t *testing.T) {
+	t.Parallel()
+	ctx := NewPlanContextFromIndexDefs([]IndexDef{
+		pkTestIndexDef{
+			testIndexDef: testIndexDef{
+				name:        "idx",
+				columns:     []string{"myCol"},
+				recordTypes: []string{"T"},
+			},
+			pk: []string{"rec_id"},
+		},
+	})
+	candidate, ok := ctx.GetMatchCandidates()[0].(*ValueIndexScanMatchCandidate)
+	if !ok {
+		t.Fatalf("candidate type = %T, want *ValueIndexScanMatchCandidate", ctx.GetMatchCandidates()[0])
+	}
+	pk := candidate.GetPKColumnNames()
+	if len(pk) != 1 || pk[0] != "rec_id" {
+		t.Fatalf("primary key columns=%v, want [rec_id] verbatim", pk)
+	}
+}
+
+type pkTestIndexDef struct {
+	testIndexDef
+	pk []string
+}
+
+func (d pkTestIndexDef) IndexPrimaryKeyColumns() []string { return d.pk }
 
 type rootTestIndexDef struct {
 	testIndexDef

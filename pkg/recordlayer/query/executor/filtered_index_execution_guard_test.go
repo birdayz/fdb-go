@@ -44,12 +44,12 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 		t.Fatalf("build metadata: %v", err)
 	}
 	orderType := PositionalTypeForRecordLayout((&gen.Order{}).ProtoReflect().Descriptor(), false)
-	priceOrdinal, ok := orderType.FieldIndexUnique("PRICE")
+	priceOrdinal, ok := orderType.FieldIndexUnique("price")
 	if !ok {
-		t.Fatal("Order exact row type has no unique PRICE field")
+		t.Fatal("Order exact row type has no unique price field")
 	}
 	aggregateType := exactTestRowType(
-		values.Field{Name: "PRICE", FieldType: orderType.Fields[priceOrdinal].FieldType},
+		values.Field{Name: "price", FieldType: orderType.Fields[priceOrdinal].FieldType},
 		values.Field{Name: "COUNT", FieldType: values.NotNullLong},
 	)
 
@@ -86,7 +86,7 @@ func TestExecutePlanRejectsFilteredIndexesAtEveryIndexLeaf(t *testing.T) {
 		))
 		aggregatePlan := mustExecutorConstruct(plans.NewRecordQueryAggregateIndexPlan(
 			indexPlan, "Order", aggregateType, "COUNT",
-		)).WithGroupColumns([]string{"PRICE"}, "COUNT")
+		)).WithGroupColumns([]string{"price"}, "COUNT")
 
 		for _, test := range []struct {
 			name string

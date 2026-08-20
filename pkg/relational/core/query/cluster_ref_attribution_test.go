@@ -20,9 +20,11 @@ func TestClusterBakeAttributesOnlyTheExactOwner(t *testing.T) {
 	if !ok {
 		t.Fatal("fixture has no O leg")
 	}
-	orderID, ok := orderLeg.typ.FieldIndexUnique("ORDER_ID")
+	// The leg's flowed type names its slots from the DESCRIPTOR, so the lookup
+	// is spelled the descriptor's way; FieldIndexUnique is exact.
+	orderID, ok := orderLeg.typ.FieldIndexUnique("order_id")
 	if !ok {
-		t.Fatal("fixture O leg has no ORDER_ID")
+		t.Fatal("fixture O leg has no order_id")
 	}
 	direct := exactTestField(t, exactTestQOV(t, "o", orderLeg.typ), orderID)
 

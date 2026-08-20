@@ -1,0 +1,64 @@
+# quoted_identifier_labels.yaml
+#
+# THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one
+# authority whose agreement with Java is directly observable without reading a
+# plan. Measured against a live fdb-relational by
+# QuotedIdentifierCaseJavaProbe (conformance/quoted_identifier_case_java_probe_test.go):
+# Java reports `KeepCase` for both the star expansion and the explicit
+# projection of a quoted mixed-case DDL column.
+#
+# Go used to report KEEPCASE for both, and star expansion was fixed first,
+# which is exactly why this scenario asserts BOTH: two label authorities
+# agreeing with each other is not the same as either agreeing with Java, and
+# for one round they did not.
+name: quoted_identifier_labels
+# The DDL is the JVM probe's, VERBATIM — unquoted table and `id`, one quoted
+# mixed-case column, one unquoted control — so a disagreement between this
+# scenario and the probe is a disagreement about the ENGINE and not about the
+# schema. An earlier draft quoted `"id"` and the primary key, which changed the
+# plan shape and made this pass while the probe still reported KEEPCASE.
+schema_template: |
+  CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))
+  CREATE TABLE QARR (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
+setup:
+  - INSERT INTO QCASE VALUES (1, 42, 7)
+  - INSERT INTO QARR VALUES (1, [10, 20])
+tests:
+  # The explicit projection of the quoted column.
+  - query: SELECT "KeepCase" FROM QCASE WHERE id = 1
+    columns: ["KeepCase"]
+    rows:
+      - [42]
+  # Star expansion over the same row. `plain` was declared UNQUOTED, so the DDL
+  # folded it at creation and it is stored PLAIN — that column is the control
+  # that says the agreement above is not just everything being lower-case.
+  - query: SELECT * FROM QCASE WHERE id = 1
+    columns: ["ID", "KeepCase", "PLAIN"]
+    rows:
+      - [1, 42, 7]
+  # An explicit quoted ALIAS keeps its case too — the alias is normalized once,
+  # by the parse capture, and no later authority may fold it.
+  - query: SELECT "KeepCase" AS "kept" FROM QCASE WHERE id = 1
+    columns: ["kept"]
+    rows:
+      - [42]
+  # An UNQUOTED alias folds UPPER at the parse boundary, and that fold is the
+  # only one in the language.
+  - query: SELECT "KeepCase" AS kept FROM QCASE WHERE id = 1
+    columns: ["KEPT"]
+    rows:
+      - [42]
+  # A LATERAL UNNEST binding, which is worth its own arm because two dozen
+  # sites still upper-fold `u.Alias` / `u.AtAlias`.
+  #
+  # This was written expecting V and MEASURED as v. Those folds key the
+  # binding's internal SLOT and QUALIFIER role — the leg maps, the ordinal
+  # seed's field names, the cluster gates — and they are consistent with each
+  # other; the user-visible LABEL comes from the projection's naming authority,
+  # which no longer folds. So the alias's two roles are already separated, and
+  # the arm pins the separation rather than a divergence.
+  - query: SELECT "v" FROM QARR, QARR.arr AS "v" ORDER BY "v"
+    columns: ["v"]
+    rows:
+      - [10]
+      - [20]

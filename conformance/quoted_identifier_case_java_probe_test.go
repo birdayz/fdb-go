@@ -146,8 +146,8 @@ var _ = Describe("QuotedIdentifierCaseJavaProbe", func() {
 				name: "exact_quoted_projection", mode: agreeAccept,
 				sql:      `SELECT "KeepCase" FROM QCASE WHERE id = 1`,
 				wantJava: `[KeepCase][[42]]`,
-				wantGo:   `[KEEPCASE][[42]]`,
-				why:      "REFUTES the old claim: the quoted mixed-case column IS referenceable and returns the SAME value on both engines — only the reported column NAME is folded on Go",
+				wantGo:   `[KeepCase][[42]]`,
+				why:      "the quoted mixed-case column is referenceable on both engines, and the reported column NAME now agrees too — Go stopped folding an output name",
 			},
 			{
 				name: "exact_quoted_predicate", mode: agreeAccept,
@@ -160,26 +160,26 @@ var _ = Describe("QuotedIdentifierCaseJavaProbe", func() {
 				name: "star_sees_the_column", mode: agreeAccept,
 				sql:      `SELECT * FROM QCASE WHERE id = 1`,
 				wantJava: `[ID KeepCase PLAIN][[1 42 7]]`,
-				wantGo:   `[ID KEEPCASE PLAIN][[1 42 7]]`,
-				why:      "every column is present with the same VALUE on both engines; the unquoted `plain` folds to upper on both, isolating the fold to the QUOTED name on Go",
+				wantGo:   `[ID KeepCase PLAIN][[1 42 7]]`,
+				why:      "STAR EXPANSION IS NOW BYTE-IDENTICAL TO JAVA. Go reported [ID KEEPCASE PLAIN] here while its projection output-name authority folded; it no longer does, so the quoted DDL column keeps its case in the result-set metadata exactly as Java keeps it. The unquoted `plain` folds to upper on both — that fold is the DDL's, at creation time, and is the control that says the agreement is not an accident of everything being upper.",
 			},
 			{
 				name: "unquoted_same_spelling", mode: goOnly,
 				sql:    `SELECT KeepCase FROM QCASE WHERE id = 1`,
-				wantGo: `[KEEPCASE][[42]]`,
-				why:    "an unquoted reference folds to KEEPCASE; Java's quoted column is case-preserving so it does not match",
+				wantGo: `[KeepCase][[42]]`,
+				why:    "an unquoted reference normalizes to KEEPCASE at the parse boundary, which Java then matches exactly and misses. Go reaches the column through its case-insensitive second pass and labels the result with the column's OWN spelling, KeepCase — the extension is in the LOOKUP, not in the naming",
 			},
 			{
 				name: "quoted_upper", mode: goOnly,
 				sql:    `SELECT "KEEPCASE" FROM QCASE WHERE id = 1`,
-				wantGo: `[KEEPCASE][[42]]`,
-				why:    "a quoted reference is exact on Java; Go folds it",
+				wantGo: `[KeepCase][[42]]`,
+				why:    "a quoted reference is exact on Java, which has no column KEEPCASE. Go misses exactly too and then matches case-insensitively",
 			},
 			{
 				name: "quoted_lower", mode: goOnly,
 				sql:    `SELECT "keepcase" FROM QCASE WHERE id = 1`,
-				wantGo: `[KEEPCASE][[42]]`,
-				why:    "the same in the lower direction — this is the spelling the retired half of the claim was about",
+				wantGo: `[KeepCase][[42]]`,
+				why:    "the same in the lower direction. Go answers, and the label it reports is KeepCase — the column, not the reference",
 			},
 			{
 				name: "quoted_upper_of_unquoted_ddl_control", mode: agreeAccept,
@@ -192,7 +192,7 @@ var _ = Describe("QuotedIdentifierCaseJavaProbe", func() {
 				name: "quoted_lower_of_unquoted_ddl_control", mode: goOnly,
 				sql:    `SELECT "plain" FROM QCASE WHERE id = 1`,
 				wantGo: `[PLAIN][[7]]`,
-				why:    "control in the other direction: Go's folding is a property of its resolver, not of the quoted-DDL path — it over-resolves an unquoted-DDL column too",
+				why:    "control in the other direction: the relaxed pass is a property of the RESOLVER, not of the quoted-DDL path — it reaches an unquoted-DDL column from a lower-case quoted reference too",
 			},
 		}
 
@@ -247,9 +247,12 @@ var _ = Describe("QuotedIdentifierCaseJavaProbe", func() {
 
 		Expect(problems).To(BeEmpty(),
 			"mixed-case quoted-identifier resolution is no longer what the watch-list records.\n"+
-				"The entry states that the quoted column IS referenceable on both engines and that Go\n"+
-				"additionally over-resolves folded spellings Java rejects with 42703. Re-read the entry\n"+
-				"against this measurement before touching an assertion.\n"+
+				"The entry states that the quoted column is referenceable on both engines, that the\n"+
+				"reported column NAME now AGREES on both — Go stopped folding output names — and that\n"+
+				"the remaining divergence is in LOOKUP only: Go additionally reaches the column from\n"+
+				"folded spellings Java rejects with 42703, and labels those answers with the COLUMN's\n"+
+				"own spelling rather than the reference's. Re-read the entry against this measurement\n"+
+				"before touching an assertion.\n"+
 				strings.Join(problems, "\n"))
 	})
 })

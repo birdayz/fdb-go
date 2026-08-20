@@ -953,7 +953,7 @@ func buildDerivedTableSourceFromTerm(
 		if bareName == "" {
 			bareName = col.name
 		}
-		innerCol, found := innerTbl.LookupColumn(semantic.FromNormalized(bareName))
+		innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 		if !found {
 			return semantic.ScopeSource{}, false
 		}
@@ -2257,7 +2257,7 @@ func buildCTEColumnSource(
 			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 				outName = innerSQ.projAliases[i]
 			}
-			innerCol, found := innerTbl.LookupColumn(semantic.FromNormalized(bareName))
+			innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 			if !found {
 				return semantic.ScopeSource{}, false, nil
 			}
@@ -2645,58 +2645,6 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 	return true
 }
 
-// cteBodyAliasQuoted returns, per SELECT element of a plain (non-star,
-// non-aggregate) CTE body, whether its AS-alias was written QUOTED — aligned
-// 1:1 with projCols for the bodies the projection path handles (star bodies
-// return nil projCols, aggregate bodies branch to buildDerivedTableSourceFromAgg
-// earlier — each guarded on its own path). Typed parse-tree read of the leading
-// quote char on the raw Uid text, never a GetText string-match.
-func cteBodyAliasQuoted(body *antlrgen.QueryTermDefaultContext) []bool {
-	st, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
-	if !ok || st.SelectElements() == nil {
-		return nil
-	}
-	elems := st.SelectElements().AllSelectElement()
-	out := make([]bool, len(elems))
-	for i, elem := range elems {
-		if e, isExpr := elem.(*antlrgen.SelectExpressionElementContext); isExpr && e.Uid() != nil {
-			out[i] = strings.HasPrefix(e.Uid().GetText(), `"`)
-		}
-	}
-	return out
-}
-
-// cteBodyAllAliasesCaseSafe reports whether every QUOTED alias in a plain SELECT
-// body is case-safe — equals its uppercase fold. It is the case-sensitivity half
-// of the ON-only schema's complete-or-decline gate for the AGGREGATE path, whose
-// extracted output names (aggCols[].outName / countStarAlias) are already
-// StripIdentifierQuotes'd — quote-stripped, so the quoted flag is lost and a
-// case-sensitive `AS "x"` can no longer be told from an unquoted `AS x` (both
-// yield "x"; only the quoted one mis-resolves, since execution folds unquoted
-// keys anyway). Reads the leading-quote off each Uid terminal (typed, not a
-// GetText feature-match). An unquoted alias folds consistently → safe.
-func cteBodyAllAliasesCaseSafe(body *antlrgen.QueryTermDefaultContext) bool {
-	st, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
-	if !ok || st.SelectElements() == nil {
-		return true
-	}
-	for _, elem := range st.SelectElements().AllSelectElement() {
-		e, isExpr := elem.(*antlrgen.SelectExpressionElementContext)
-		if !isExpr || e.Uid() == nil {
-			continue
-		}
-		raw := e.Uid().GetText()
-		if !strings.HasPrefix(raw, `"`) {
-			continue // unquoted → folds consistently through execution, case-safe
-		}
-		name := functions.StripIdentifierQuotes(raw)
-		if name != strings.ToUpper(name) {
-			return false // quoted case-sensitive: runtime key uppercased, unnamable
-		}
-	}
-	return true
-}
-
 func buildCTEOnOnlySource(
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
@@ -2779,22 +2727,22 @@ func buildCTEOnOnlySource(
 		return semantic.ScopeSource{}, false
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
-		// COMPLETE-SCHEMA-OR-DECLINE applies here too: buildDerivedTableSourceFromAgg
-		// folds every output via NewUnquoted with NO validation, so a quoted
-		// case-sensitive alias or a duplicate output name would silently
-		// mis-resolve an enclosing ON ref (wrong-case resolves; dup first-matches)
-		// — review-caught. Decline the whole source on either obstruction, keyed
-		// by the RUNTIME-emitted (uppercased) name, exactly like the projection
-		// path below. The dup check consumes aggOutputCols — the SAME visible-only
-		// authority buildDerivedTableSourceFromAgg builds from — so it counts
-		// exactly the names installed (a hidden HAVING aggregate is neither
-		// advertised nor counted).
-		if !cteBodyAllAliasesCaseSafe(body) {
-			return semantic.ScopeSource{}, false
-		}
+		// COMPLETE-SCHEMA-OR-DECLINE applies here too: a DUPLICATE output name
+		// would silently mis-resolve an enclosing ON ref by first-matching one
+		// of the two. Decline the whole source on that obstruction, exactly
+		// like the projection path below. The dup check consumes aggOutputCols
+		// — the SAME visible-only authority buildDerivedTableSourceFromAgg
+		// builds from — so it counts exactly the names installed (a hidden
+		// HAVING aggregate is neither advertised nor counted).
+		//
+		// The CASE-SENSITIVITY obstruction that used to sit beside it is
+		// RETIRED with the fold it was built on: an output name is now emitted
+		// verbatim, so a quoted `AS "x"` is nameable and only a genuine
+		// repetition is ambiguous. The count is keyed verbatim for the same
+		// reason — `AS "x"` and `AS "X"` are two columns, not one collision.
 		aggSeen := make(map[string]int)
 		for _, c := range aggOutputCols(innerSQ, md) {
-			aggSeen[strings.ToUpper(c.name)]++
+			aggSeen[c.name]++
 		}
 		for _, n := range aggSeen {
 			if n > 1 {
@@ -2829,7 +2777,6 @@ func buildCTEOnOnlySource(
 	// keep unique columns AND make the bad name resolve ambiguous via a
 	// per-source poison marker in the resolver — is a booked conformance slice;
 	// until then a body with ANY obstruction declines wholesale, correct-or-loud.)
-	aliasQuoted := cteBodyAliasQuoted(body)
 	names := make([]string, 0, len(innerSQ.projCols))
 	seen := make(map[string]int, len(innerSQ.projCols))
 	for i, col := range innerSQ.projCols {
@@ -2845,10 +2792,8 @@ func buildCTEOnOnlySource(
 		// computed item by its explain rendering — both decline (no bare key
 		// on the runtime row).
 		outName := ""
-		quoted := false
 		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 			outName = innerSQ.projAliases[i]
-			quoted = i < len(aliasQuoted) && aliasQuoted[i]
 		} else {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
 			if !isComputed && !col.qualified && col.bare != "" {
@@ -2858,12 +2803,18 @@ func buildCTEOnOnlySource(
 		if outName == "" {
 			return semantic.ScopeSource{}, false
 		}
-		runtimeName := strings.ToUpper(outName)
-		if quoted && outName != runtimeName { // obstruction (1): case-sensitive
-			return semantic.ScopeSource{}, false
-		}
-		seen[runtimeName]++
-		names = append(names, runtimeName)
+		// The runtime name is the output name VERBATIM. Obstruction (1) — a
+		// quoted alias whose fold differs from itself — is RETIRED: it existed
+		// because execution keyed its output slots upper-cased, so `AS "x"`
+		// emitted X and no reference could name it. Nothing folds an output
+		// name any more, so `AS "x"` emits x and `C."x"` resolves; the gate
+		// would now decline a source that works.
+		//
+		// Obstruction (2) survives, and its counting changes with it: two
+		// aliases that differ only by case are two DISTINCT columns now, not
+		// one ambiguous name, so the count is keyed verbatim.
+		seen[outName]++
+		names = append(names, outName)
 	}
 	for _, n := range seen {
 		if n > 1 { // obstruction (2): duplicate runtime name
@@ -10052,7 +10003,7 @@ func (p *existsSubqueryPlanner) tryBuildCorrelatedPrimaryUnnest(
 		if src.Table == nil {
 			continue
 		}
-		candidateColumn, found := src.Table.LookupColumn(fieldID)
+		candidateColumn, found := semantic.LookupColumnRelaxed(src.Table, fieldID)
 		if !found {
 			continue
 		}
