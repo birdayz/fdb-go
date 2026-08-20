@@ -94,6 +94,26 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 			bound: 1,
 		},
 		{
+			// The dimensions expression may be WRAPPED — extractDimensionsExpression
+			// unwraps KeyWithValue and Concat, and the R-trees are still rooted at
+			// PrefixSize. The generic bound sees only the KeyWithValue here and
+			// would answer with its split point (3), so this row is the one that
+			// fails if the maintainer's own override is lost; the unwrapped row
+			// above cannot detect that, because there the two bounds coincide.
+			name: "MULTIDIMENSIONAL wrapped in KeyWithValue still stops at the R-tree prefix",
+			maintainer: &multidimensionalIndexMaintainer{
+				standardIndexMaintainer: stdOf(&Index{
+					Name: "md_wrapped", Type: IndexTypeMultidimensional,
+					RootExpression: KeyWithValue(
+						Concat(
+							Dimensions(Concat(Field("quantity"), Field("coord_x"), Field("coord_y")), 1, 2),
+							Field("price")),
+						3),
+				}),
+			},
+			bound: 1,
+		},
+		{
 			name: "PERMUTED subtracts the permuted columns from the grouping count",
 			maintainer: &permutedMinMaxIndexMaintainer{
 				standardIndexMaintainer: &standardIndexMaintainer{index: &Index{
@@ -190,22 +210,15 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 		})
 	}
 
-	// The population guard. This table is the only place several of these arms
-	// run, so a case silently dropped from it reads as "still covered", and a
-	// maintainer added without a bound would sit here unnoticed. Both are the
-	// same failure: a green over a set that changed.
+	// Whether this table COVERS every maintainer is not decided here. It cannot
+	// be: any count taken from `cases` is derived from the table, so it goes on
+	// agreeing with itself when a maintainer is added and no row is. An earlier
+	// `len(cases) != 14` guard here claimed to catch exactly that and could not.
 	//
-	// 14 = one row for each of the 13 non-decorator IndexMaintainer
-	// implementations in this package
-	// (`grep -c 'func (.*) DeleteWhere(' pkg/recordlayer/*.go` over non-test
-	// sources gives 13 plus slidingWindowIndexMaintainer, the decorator, whose
-	// answer is its delegate's and is driven in its own test below), plus a
-	// second VECTOR row for its non-KeyWithValue root.
-	const wantCases = 14
-	if len(cases) != wantCases {
-		t.Fatalf("expected %d maintainer bounds, got %d — a maintainer was added or removed "+
-			"without its bound being driven here", wantCases, len(cases))
-	}
+	// The population is derived independently, from the source tree, by
+	// TestEveryIndexMaintainerHasADeleteWhereBoundRow in pkg/docscheck: it
+	// collects the types declaring a DeleteWhere method and requires each to be
+	// constructed here. Adding a maintainer without a row fails THERE.
 }
 
 // The sliding window is a DECORATOR, so its answer is not its own: Java's

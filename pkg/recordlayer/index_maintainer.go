@@ -54,14 +54,14 @@ type IndexMaintainer interface {
 	// It is part of the interface — not an optional capability a maintainer may
 	// leave out — for the same reason Java declares it ABSTRACT: a new index
 	// type must not be able to reach the DeleteRecordsWhere path without having
-	// decided what its physical keys are prefixed by. That is not hypothetical.
-	// The check began as an optional interface here, and successive review
-	// rounds then found the bound missing on one type after another — RANK's
-	// ranked sets, PERMUTED's permuted secondary, the aggregates' grouping keys,
-	// TEXT's bunched tokens — because an optional check reads "does not
-	// implement it" and "can clear any prefix" as the same answer, and the first
-	// is by far the more common. Whack-a-mole per index type converges only as
-	// fast as someone thinks to look; a compile error converges immediately.
+	// decided what its physical keys are prefixed by. That is not hypothetical:
+	// while the check was an optional interface here, the bound was absent on
+	// one type after another — RANK's ranked sets, PERMUTED's permuted
+	// secondary, the aggregates' grouping keys, TEXT's bunched tokens — because
+	// an optional check reads "does not implement it" and "can clear any prefix"
+	// as the same answer, and the first is by far the more common. Closing that
+	// one index type at a time converges only as fast as someone thinks to look;
+	// a compile error converges immediately.
 	//
 	// standardIndexMaintainer supplies the default, so a type embedding it gets
 	// the bound its root expression implies and overrides only to NARROW it.

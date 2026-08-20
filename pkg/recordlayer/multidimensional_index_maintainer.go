@@ -516,8 +516,48 @@ func (m *multidimensionalIndexMaintainer) buildPointFilter(dimExpr *DimensionsKe
 	}
 }
 
+// CanDeleteWhere bounds the prefix at the DIMENSIONS PREFIX — the columns the
+// R-trees are actually rooted under (insertEntry splits the entry at
+// PrefixSize and keys the tree by exactly that much).
+//
+// The inherited bound is not enough, and Java has this same override for the
+// same reason (MultidimensionalIndexMaintainer.canDeleteWhere:298-303, whose
+// second line is `evaluated.size() <= getDimensionsKeyExpression(root)
+// .getPrefixSize()`). The root may WRAP the dimensions expression —
+// `KeyWithValue(Concat(Dimensions(...), value), split)` is a supported shape,
+// unwrapped by extractDimensionsExpression here and by
+// getDimensionsKeyExpression in Java — and the generic bound then sees only
+// the KeyWithValue and answers with its SPLIT POINT. A prefix between the
+// dimensions prefix and the split point would pass, name a subspace no R-tree
+// is rooted at, clear nothing, and leave the deleted records' entries
+// queryable.
+func (m *multidimensionalIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	if err := m.standardIndexMaintainer.CanDeleteWhere(prefix); err != nil {
+		return err
+	}
+	dimExpr := m.getDimensionsExpression()
+	if dimExpr == nil {
+		// No dimensions expression means no R-tree can be located at all, so
+		// there is no prefix under which its data can be found. Update refuses
+		// this root shape too; refusing here keeps the delete from reporting
+		// success against a structure it never addressed.
+		return fmt.Errorf(
+			"MULTIDIMENSIONAL index %q: root expression contains no DimensionsKeyExpression, "+
+				"so the columns its R-trees are rooted under are unknown", m.index.Name)
+	}
+	if len(prefix) > dimExpr.PrefixSize {
+		return deleteWhereBoundError(m.index, prefix, dimExpr.PrefixSize)
+	}
+	return nil
+}
+
 // DeleteWhere clears all R-tree data for the given prefix.
 func (m *multidimensionalIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers — Java's Verify.verify inside deleteWhere
+	// (:308). DeleteRecordsWhere asks CanDeleteWhere before it clears.
+	if err := m.CanDeleteWhere(prefix); err != nil {
+		return err
+	}
 	rtSubspace := m.indexSubspace
 	if len(prefix) > 0 {
 		rtSubspace = m.indexSubspace.Sub(prefix...)
