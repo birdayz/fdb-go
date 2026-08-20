@@ -910,3 +910,58 @@ func TestStats_EveryDiagnosisFieldReachesBothRenderPaths(t *testing.T) {
 		}
 	}
 }
+
+// EXISTENCE IS TRI-STATE AND THE JSON MUST SAY SO.
+//
+// `found` was a plain bool, so three distinct facts serialised identically as
+// false: the store is empty, the store holds a TORN set whose entries were
+// read, and existence was never established (a failed read, or the synthetic
+// preflight which deliberately does not look). The second is known-wrong and the
+// third is unknown — telling a machine consumer "false" for either is the same
+// absent-versus-unknown conflation this feature removed from the reader, at the
+// last layer that still had it.
+func TestStats_ShowJSONFoundIsTriState(t *testing.T) {
+	t.Parallel()
+
+	decode := func(t *testing.T, st embedded.StatisticsStatus) map[string]any {
+		t.Helper()
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, "json", "/x/MAIN", st); err != nil {
+			t.Fatalf("renderStatsStatus: %v", err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("decode %s: %v", buf.String(), err)
+		}
+		return got
+	}
+
+	cases := []struct {
+		name string
+		st   embedded.StatisticsStatus
+		want any // true, false, or nil for unknown
+	}{
+		{"usable", embedded.StatisticsStatus{Usable: true, Found: true}, true},
+		{"absent", embedded.StatisticsStatus{Refusal: embedded.StatisticsNotCollected}, false},
+		{"torn: entries WERE read", embedded.StatisticsStatus{Refusal: embedded.StatisticsTorn}, true},
+		{"read failed: unknown", embedded.StatisticsStatus{Refusal: embedded.StatisticsReadFailed}, nil},
+		{"synthetic preflight: never looked", embedded.StatisticsStatus{Refusal: embedded.StatisticsSyntheticTypes}, nil},
+		// Expired/incomplete DID read a set, so existence is known true.
+		{"expired", embedded.StatisticsStatus{Refusal: embedded.StatisticsExpired, Found: true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := decode(t, tc.st)
+			v, present := got["found"]
+			if !present {
+				t.Fatalf("`found` is absent entirely; it must be present and nullable: %v", got)
+			}
+			if v != tc.want {
+				t.Errorf("found = %v (%T), want %v — %q", v, v, tc.want, tc.name)
+			}
+		})
+	}
+}

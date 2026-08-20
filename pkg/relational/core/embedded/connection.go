@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -1136,6 +1137,21 @@ func (c *EmbeddedConnection) CollectStatistics(
 				TypeNames: md.SyntheticRecordTypeNames(),
 			},
 			api.ErrCodeUnsupportedOperation, "schema %q", c.sess.Schema)
+	}
+	if pair, ambiguous := AmbiguousDeclaredNames(md); ambiguous {
+		// Refuse BEFORE scanning, for the same reason as the synthetic check
+		// above: the reader refuses an ambiguous schema unconditionally, so a
+		// collection here reads every record to produce a set that can never be
+		// used. The reader reaches its own ambiguity gate only after absence,
+		// freshness and completeness -- so without this an operator with no
+		// statistics is told to collect, collects, is told it succeeded, and is
+		// still refused.
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"schema %q declares record types whose names collide across the SQL and "+
+				"storage namespaces (%s), so a lookup cannot say which table is meant; "+
+				"collection refused rather than scanning the store for a set the "+
+				"planner would always reject",
+			c.sess.Schema, strings.Join(pair, " and "))
 	}
 	statsSubspace, storeSubspace, err := c.statisticsLocation()
 	if err != nil {

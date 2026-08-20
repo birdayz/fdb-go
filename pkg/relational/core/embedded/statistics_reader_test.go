@@ -227,11 +227,16 @@ func decideStatisticsCases() []decideCase {
 					t.Errorf("Usable = true — an ambiguous name prices one of the two " +
 						"tables with the other's count, silently")
 				}
-				want := []string{"MY__1TABLE", "MY__01TABLE"}
+				// USER identifiers, not the storage names the map is keyed by.
+				// MY__1TABLE decodes to MY$TABLE and MY__01TABLE to MY__1TABLE, and
+				// those are the names an operator can actually rename. Reporting the
+				// raw keys names a table that does not exist.
+				want := []string{"MY$TABLE", "MY__1TABLE"}
 				if len(got.AmbiguousTypes) != 2 ||
 					got.AmbiguousTypes[0] != want[0] || got.AmbiguousTypes[1] != want[1] {
 					t.Errorf("AmbiguousTypes = %v, want %v — the refusal has to name the "+
-						"pair, or an operator cannot act on it", got.AmbiguousTypes, want)
+						"pair in USER identifiers, or an operator is told to rename a "+
+						"table that does not exist", got.AmbiguousTypes, want)
 				}
 			},
 		},
@@ -253,7 +258,8 @@ func decideStatisticsCases() []decideCase {
 			},
 			want: StatisticsAmbiguousNames,
 			check: func(t *testing.T, got StatisticsStatus) {
-				want := []string{"AA__1T", "AA__01T"}
+				// Decoded: AA__1T is the storage name of AA$T, and AA__01T of AA__1T.
+				want := []string{"AA$T", "AA__1T"}
 				if len(got.AmbiguousTypes) != 2 ||
 					got.AmbiguousTypes[0] != want[0] || got.AmbiguousTypes[1] != want[1] {
 					t.Errorf("AmbiguousTypes = %v, want %v — with two collisions the pair "+

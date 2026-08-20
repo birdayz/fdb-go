@@ -473,7 +473,18 @@ func ambiguousStorageName(declared map[string]struct{}) ([]string, bool) {
 		if _, collides := declared[escaped]; !collides {
 			continue
 		}
-		pair := []string{name, escaped}
+		// DECODED back to user identifiers before they leave this function. Both
+		// names here are STORAGE names, and the operator has to act on the SQL
+		// ones: for tables MY$TABLE and MY__1TABLE the storage names are
+		// MY__1TABLE and MY__01TABLE, so reporting them raw tells someone to
+		// rename MY__01TABLE -- a table that does not exist under that name.
+		//
+		// The DECISION above stays in storage space, where the collision actually
+		// lives; only the diagnostic is translated.
+		pair := []string{
+			protoname.ToUserIdentifier(name),
+			protoname.ToUserIdentifier(escaped),
+		}
 		// Deterministic across map iteration order: an operator comparing two
 		// runs must not see the pair change.
 		if worst == nil || pair[0] < worst[0] {
@@ -492,23 +503,38 @@ func (g *cascadesGenerator) fetchCollectedStatistics(
 	ctx context.Context,
 	md *recordlayer.RecordMetaData,
 	popts plannerOptions,
-) properties.StatisticsProvider {
+) (properties.StatisticsProvider, bool) {
 	// GATE 0 — opt-in. Also in the plan-cache key, BOTH halves
 	// (planner_options.go): with only a render arm, a flag-ON connection whose
 	// other options are default renders "", byte-identical to flag-off, and
 	// shares its cache entry.
 	if !popts.useCollectedStatistics {
-		return nil
+		return nil, false
 	}
 	c := g.c
 	if c == nil || c.sess == nil || c.sess.DB == nil || md == nil {
-		return nil
+		return nil, false
 	}
 	st := evaluateCollectedStatistics(ctx, c, md)
 	if !st.Usable {
-		return nil
+		// The second return distinguishes ABSENCE from a STRUCTURAL REFUSAL, and
+		// the caller needs it: a nil provider used to fall through to the legacy
+		// record-count-key source, so a schema refused for synthetic types or
+		// ambiguous names got statistics anyway, from a path the refusal never
+		// reached. The legacy source is inert for SQL-created schemas, which made
+		// it look harmless -- but it is live for exactly the hand-built and
+		// Java-authored metadata that CAN declare synthetic types.
+		//
+		// Structural refusals are about the SCHEMA, not about the statistics: no
+		// other source of counts can be safe for a schema whose declared-type set
+		// is partial or whose names are ambiguous.
+		switch st.Refusal {
+		case StatisticsSyntheticTypes, StatisticsAmbiguousNames:
+			return nil, true
+		}
+		return nil, false
 	}
-	return properties.NewCollectedStatistics(st.perType)
+	return properties.NewCollectedStatistics(st.perType), false
 }
 
 // noClusterVersionError marks a statistics read whose transaction produced no
@@ -547,4 +573,31 @@ func (e *noClusterVersionError) Error() string {
 func (c *EmbeddedConnection) statisticsTags() []string {
 	tags, _ := c.Options().Get(api.OptTransactionTags).([]string)
 	return tags
+}
+
+// AmbiguousDeclaredNames reports a colliding pair among md's declared record
+// types, in USER identifiers, or ok=false when none collide.
+//
+// Exported so COLLECTION can refuse the same schemas the reader refuses, before
+// scanning rather than after. The gate reaches its own ambiguity check only
+// after absence, freshness and completeness, so a schema with no statistics yet
+// was told to collect — and the collector then read every record to produce a
+// set the reader would always refuse. Same shape as the synthetic preflight:
+// a full scan billed for an outcome already decided.
+//
+// Metadata-only, so it needs no I/O and can run before a store is opened.
+func AmbiguousDeclaredNames(md *recordlayer.RecordMetaData) ([]string, bool) {
+	if md == nil {
+		return nil, false
+	}
+	// RecordTypes() is keyed BY NAME, so the keys are the declared names -- the
+	// same source the gate builds its DeclaredTypes from, which is what makes
+	// this preflight and the gate agree by construction rather than by two
+	// derivations that could drift.
+	types := md.RecordTypes()
+	declared := make(map[string]struct{}, len(types))
+	for name := range types {
+		declared[name] = struct{}{}
+	}
+	return ambiguousStorageName(declared)
 }

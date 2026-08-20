@@ -47,10 +47,12 @@ func newStatsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "stats",
 		Short: "Collect and inspect planner statistics for a schema",
-		Long: "Planner statistics are exact per-record-type row counts, " +
-			"collected OFFLINE by scanning the store, and read by the query " +
-			"planner to order joins by real table sizes instead of a " +
-			"constant.\n\n" +
+		Long: "Planner statistics are per-record-type row counts, collected " +
+			"OFFLINE by scanning the store and read by the query planner to " +
+			"order joins by real table sizes instead of a constant. They are " +
+			"exact for a store at rest; a record whose primary key moves during " +
+			"a scan can be counted twice or missed, since the scan spans " +
+			"transactions.\n\n" +
 			"Collection is a maintenance job, not a query path: it reads " +
 			"every record. Run it on a schedule sized to how fast the data " +
 			"changes shape — statistics expire after ~24h and the planner " +
@@ -396,7 +398,17 @@ type statsShowResult struct {
 	// Usable is the planner's own verdict, from the planner's own code.
 	Usable  bool   `json:"usable"`
 	Refusal string `json:"refusal,omitempty"`
-	Found   bool   `json:"found"`
+	// Found is TRI-STATE, so it is a pointer: true when statistics are known to
+	// be stored, false when the store is known to hold none, and NULL when
+	// existence was not established.
+	//
+	// A plain bool collapsed the third case into the second and contradicted the
+	// field's own contract: a TORN set is known to hold entries, while a failed
+	// read and the synthetic preflight establish nothing -- the first could not
+	// read, the second deliberately did not look. Serialising all three as
+	// `found: false` tells a machine consumer the store is empty in two cases
+	// where that is not known and one where it is known to be wrong.
+	Found *bool `json:"found"`
 	// PerType is present whenever statistics were found, usable or not — a
 	// stale count is still the number an operator wants to look at.
 	PerType              map[string]int64 `json:"per_type,omitempty"`
@@ -438,7 +450,7 @@ func renderStatsStatus(
 			Schema:               schema,
 			Usable:               st.Usable,
 			Refusal:              string(st.Refusal),
-			Found:                st.Found,
+			Found:                foundTriState(st),
 			PerType:              perType,
 			CollectedAtVersion:   st.Stats.CollectedAtVersion,
 			CollectedAtUnixNanos: st.Stats.CollectedAtUnixNanos,
@@ -604,4 +616,25 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// foundTriState renders existence as known-true, known-false or unknown.
+//
+// The gate's Found is a plain bool and cannot carry the third state, so the
+// mapping is made here from the REFUSAL, which is what actually distinguishes
+// them: a torn set is known to hold entries; a failed read and the synthetic
+// preflight establish nothing, the first because it could not read and the
+// second because it deliberately did not look.
+func foundTriState(st embedded.StatisticsStatus) *bool {
+	yes, no := true, false
+	switch st.Refusal {
+	case embedded.StatisticsTorn:
+		return &yes // entries were read; only the header is unusable
+	case embedded.StatisticsReadFailed, embedded.StatisticsSyntheticTypes:
+		return nil // existence not established
+	}
+	if st.Found {
+		return &yes
+	}
+	return &no
 }

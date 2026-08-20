@@ -1494,6 +1494,64 @@ var _ = Describe("CollectStatistics", func() {
 				"torn set sends an operator looking for damage that is not there")
 	})
 
+	// THE RUN IS DATED BY ITS OLDEST BATCH, NOT ITS NEWEST.
+	//
+	// Collection spans transactions, so no single read version describes all of
+	// it. Stamping the LAST one dates the set by its freshest reading — so a long
+	// collection can hold counts already past the freshness bound while the
+	// reader treats the whole set as good for another full window. The oldest is
+	// the conservative direction: age is judged from the stalest observation.
+	//
+	// Discriminating between the two requires the run to span enough version
+	// drift to tell them apart, so this forces many batches and GATES on the
+	// drift being real — without that, a fast collection makes both stamps
+	// nearly equal and the assertion passes for either implementation.
+	It("stamps the run with the oldest batch's read version", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		const orders, customers = 200, 20
+		seed(ctx, sub, orders, customers)
+
+		// step non-zero: synthetic monotone versions, because a live cluster gives
+		// every batch of a fast collection the SAME one.
+		rec := &grvRecordingTransactor{inner: sharedDB.transactor, step: 1_000_000}
+		recDB := NewFDBDatabaseWithTransactor(rec, sharedDB.db)
+
+		// One record per transaction, so the run takes many read versions.
+		_, err := CollectStatistics(ctx, recDB, builderFor(sub), stats, CollectOptions{BatchSize: 1})
+		Expect(err).NotTo(HaveOccurred())
+
+		stored, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		expectReadRefusal(refusal, StatisticsReadOK, "the set is unusable")
+
+		seen := rec.versions()
+		var oldest, newest int64
+		for i, v := range seen {
+			if i == 0 || v < oldest {
+				oldest = v
+			}
+			if v > newest {
+				newest = v
+			}
+		}
+		// THE VACUITY GUARD, on the thing that actually has to differ. If every
+		// batch drew the same version, or only one batch ran, oldest == newest and
+		// no assertion below can tell the two implementations apart.
+		Expect(len(seen)).To(BeNumerically(">", 2),
+			"only %d read versions were taken, so the run did not span batches", len(seen))
+		Expect(newest).To(BeNumerically(">", oldest),
+			"every batch drew the same read version (%d), so this spec cannot "+
+				"distinguish stamping the oldest from stamping the newest", oldest)
+
+		Expect(stored.CollectedAtVersion).To(Equal(oldest),
+			"the run is stamped %d, and the OLDEST version any batch actually took is "+
+				"%d (newest %d). Stamping a later batch dates the set by its freshest "+
+				"reading, so counts already past the bound stay usable for another window",
+			stored.CollectedAtVersion, oldest, newest)
+	})
+
 	// A MALFORMED ENTRY POISONS THE WHOLE SET.
 	//
 	// ReadStatistics documents all-or-nothing: "a caller gets a usable set or
@@ -1876,3 +1934,117 @@ var _ = ReportAfterSuite("every statistics-read refusal is produced by a spec", 
 			len(missing), strings.Join(missing, ", ")))
 	}
 })
+
+// grvRecordingTransactor records every read version the code under test
+// actually obtains, so a spec can assert which one was persisted instead of
+// inferring it from wall-clock drift.
+//
+// The inference version of that assertion was vacuous: it bracketed the run
+// with two readVersion() calls and compared the stamp against the midpoint, but
+// those calls dominated the span, so the stamp landed in the first half under
+// BOTH the oldest-batch and newest-batch implementations. It passed the
+// mutation. Recording the versions removes the timing entirely.
+type grvRecordingTransactor struct {
+	inner fdb.Transactor
+	mu    sync.Mutex
+	seen  []int64
+	// step, when non-zero, REPLACES each read version with a synthetic value
+	// advancing by step per call.
+	//
+	// Necessary, not convenient: against a live cluster every batch of a fast
+	// collection draws the SAME read version, so oldest == newest and no
+	// assertion can tell the two stamping rules apart. The vacuity guard in the
+	// spec catches that rather than passing on it. Synthesising the versions is
+	// what makes the property testable at all, and the value only has to be
+	// monotone -- the spec asserts WHICH of them was persisted, not that any is
+	// a real cluster version.
+	step int64
+	next int64
+}
+
+func (g *grvRecordingTransactor) versions() []int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]int64, len(g.seen))
+	copy(out, g.seen)
+	return out
+}
+
+func (g *grvRecordingTransactor) record(v int64) {
+	g.mu.Lock()
+	g.seen = append(g.seen, v)
+	g.mu.Unlock()
+}
+
+// versionFor returns the value to report, recording it either way.
+func (g *grvRecordingTransactor) versionFor(real int64) int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	v := real
+	if g.step != 0 {
+		g.next += g.step
+		v = g.next
+	}
+	g.seen = append(g.seen, v)
+	return v
+}
+
+func (g *grvRecordingTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return g.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		return fn(&grvRecordingWritable{WritableTransaction: tx, owner: g})
+	})
+}
+
+func (g *grvRecordingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return g.inner.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		return fn(&grvRecordingRead{ReadTransaction: rtx, owner: g})
+	})
+}
+
+// Embeds the real transaction, so these wrappers stay statements about read
+// versions and cannot drift as the interfaces grow.
+type grvRecordingWritable struct {
+	fdb.WritableTransaction
+	owner *grvRecordingTransactor
+}
+
+// Snapshot MUST be overridden too. The collector reads its version through
+// rtx.ReadTransaction(true), which is tx.Snapshot() -- and an embedded wrapper
+// promotes that straight to the INNER transaction, so a recorder that overrides
+// only GetReadVersion observes nothing at all. Overriding one method does not
+// cover the objects another method hands back.
+func (w *grvRecordingWritable) Snapshot() fdb.ReadTransaction {
+	return &grvRecordingRead{ReadTransaction: w.WritableTransaction.Snapshot(), owner: w.owner}
+}
+
+func (w *grvRecordingWritable) GetReadVersion() fdb.FutureInt64 {
+	f := w.WritableTransaction.GetReadVersion()
+	v, err := f.Get()
+	if err != nil {
+		return f
+	}
+	return fixedInt64(w.owner.versionFor(v))
+}
+
+type grvRecordingRead struct {
+	fdb.ReadTransaction
+	owner *grvRecordingTransactor
+}
+
+func (r *grvRecordingRead) GetReadVersion() fdb.FutureInt64 {
+	f := r.ReadTransaction.GetReadVersion()
+	v, err := f.Get()
+	if err != nil {
+		return f
+	}
+	return fixedInt64(r.owner.versionFor(v))
+}
+
+// fixedInt64 is an already-ready future over a chosen value.
+type fixedInt64 int64
+
+func (f fixedInt64) Get() (int64, error) { return int64(f), nil }
+func (f fixedInt64) MustGet() int64      { return int64(f) }
+func (fixedInt64) BlockUntilReady()      {}
+func (fixedInt64) IsReady() bool         { return true }
+func (fixedInt64) Cancel()               {}

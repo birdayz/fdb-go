@@ -106,9 +106,33 @@ func CollectStatistics(
 ) (*StatisticsReport, error)
 ```
 
-Per record type it records an EXACT count, obtained by scanning. Exactness is
-affordable here and removes every problem §2 found: no floor, no quantization,
-no bytes-to-rows conversion, no unit mixing.
+Per record type it records a COUNTED value, obtained by scanning rather than
+sampling. Counting is affordable here and removes every problem §2 found: no
+floor, no quantization, no bytes-to-rows conversion, no unit mixing.
+
+It is EXACT for a store at rest, and that qualifier is load-bearing rather than
+pedantic. Collection spans transactions -- it must, since a full scan cannot fit
+in one -- and each batch is a consistent snapshot of ITSELF, not of the run. A
+record whose PRIMARY KEY MOVES concurrently, from an already-scanned key to a
+later one, is seen by both batches and counted twice; the reverse move is seen by
+neither. Ordinary inserts and deletes are not a problem in the same way: they are
+simply seen or not, which is what "as of collection time" already means. A key
+move is different because it can make the total differ from any count the store
+ever actually held.
+
+This is not fixable by scanning harder. A run-wide snapshot needs one read
+version for the whole store, and FDB expires a read version in 5s -- the same
+limit that forces the batching in the first place. Options considered: a
+run-scoped snapshot (impossible, above); conflict ranges over the whole store to
+DETECT mutation (a full-store conflict range makes any concurrent write fail,
+which turns an offline maintenance job into an outage); and re-scanning to
+convergence (unbounded on a busy store, and still not a proof).
+
+So the claim is narrowed rather than defended, and the narrower one is enough for
+the purpose. A count that is exact at rest and near-exact under churn still
+separates a 150-row table from a 1,000,000-row one -- which is the decision this
+feature exists to inform, and the estimator it replaces could not make that
+separation at all (§2: a 0 for a non-empty small table).
 
 Scanning is **continuation-driven and batched** — the store's own cursor
 machinery, the same way `OnlineIndexer` walks a store — so a large table costs

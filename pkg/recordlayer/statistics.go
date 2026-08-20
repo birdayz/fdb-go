@@ -53,12 +53,30 @@ var statisticsHeaderKey = tuple.Tuple{int64(0)}
 
 // RecordTypeStatistic is one collected per-record-type statistic.
 //
-// Count is EXACT — obtained by scanning, not sampled. That is the point of
-// collecting offline: exactness removes the floor, the quantization and the
-// bytes-to-rows conversion that make plan-time sampling unusable for small
-// tables.
+// Count is COUNTED, not sampled. That is the point of collecting offline: it
+// removes the floor, the quantization and the bytes-to-rows conversion that make
+// plan-time sampling unusable for small tables.
+//
+// It is EXACT for a store that is not being mutated under the scan, and only
+// then. Collection spans transactions -- it must, since a full scan cannot fit
+// in one -- and each batch is a consistent snapshot of its own, not of the run.
+// So a record whose PRIMARY KEY MOVES concurrently, from an already-scanned key
+// to a later one, is observed by both batches and counted twice; the reverse
+// move is observed by neither and counted zero times. Ordinary inserts and
+// deletes are not a problem in the same way -- they are simply seen or not,
+// which is the usual meaning of "as of collection time" -- but a key move can
+// make the total differ from any count the store ever actually had.
+//
+// This is not fixable by scanning harder. A run-wide snapshot needs one read
+// version across the whole store, and FDB expires a read version in 5s -- the
+// same limit that forces the batching. The honest statement is therefore the
+// narrower one, and it is enough for the purpose: a count that is exact at rest
+// and near-exact under churn still separates a 150-row table from a 1,000,000-row
+// one, which is the decision this feature exists to inform, and it is a class
+// better than the estimator it replaced.
 type RecordTypeStatistic struct {
-	// Count is the exact number of records of this type at collection time.
+	// Count is the number of records of this type observed by the scan. Exact
+	// for a store at rest; see the type comment for what concurrent key moves do.
 	Count int64
 	// CollectedAtVersion is the read version the count was taken at.
 	CollectedAtVersion int64
@@ -253,8 +271,9 @@ type CollectionReport struct {
 	RecordsScanned int64
 }
 
-// CollectStatistics scans a record store and writes exact per-record-type
-// counts into stats.
+// CollectStatistics scans a record store and writes per-record-type counts into
+// stats -- exact for a store at rest; see RecordTypeStatistic for what concurrent
+// primary-key moves do to the total.
 //
 // It is an OFFLINE maintenance job, not a query path: it reads every record. The
 // signature mirrors RebalanceSPFreshIndex so it composes with the maintainers
@@ -311,6 +330,11 @@ func CollectStatistics(
 		batchDone := false
 		var batchCounts map[string]int64
 		var batchScanned int64
+		// batchVersion is per-attempt for the same reason the counters are: a
+		// retried attempt's reads are DISCARDED, so its read version describes no
+		// observation in the finished set. Merging only after Run returns keeps the
+		// minimum over versions that actually contributed data.
+		var batchVersion int64
 		var batchContinuation []byte
 		var batchCapped map[string]struct{}
 		res, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
@@ -319,6 +343,7 @@ func CollectStatistics(
 			}
 			batchCounts = make(map[string]int64)
 			batchScanned = 0
+			batchVersion = 0
 			batchContinuation = continuation
 			batchCapped = make(map[string]struct{})
 			batchDone = false
@@ -340,15 +365,21 @@ func CollectStatistics(
 			// is deleted now, which is the actual lesson. The arithmetic was never
 			// the thing worth pinning; the grouping is.
 			//
-			// FOUR are the per-attempt accumulators (batchCounts, batchScanned,
-			// batchContinuation, batchDone). They are assigned here BECAUSE they
-			// are reset here; that reset is the fix.
+			// FIVE are the per-attempt accumulators (batchCounts, batchScanned,
+			// batchContinuation, batchDone, batchVersion). They are assigned here
+			// BECAUSE they are reset here; that reset is the fix.
 			//
-			// THREE are not accumulators — storeSubspace above, declaredTypes on
-			// the next line, collectedAtVersion below — and they are safe under
-			// retry by IDEMPOTENCE: each is an overwrite with a value the same
-			// attempt would produce again. That is a weaker property than the
-			// accumulators get, so it is stated rather than glossed.
+			// batchVersion joined them when the run stopped being stamped by its
+			// LAST batch and started being stamped by its OLDEST. As an overwrite it
+			// was idempotent; as a minimum it is an accumulator, and a retried
+			// attempt's version describes reads that were discarded. Merging after
+			// Run returns keeps the minimum over versions that contributed data.
+			//
+			// TWO are not accumulators — storeSubspace above and declaredTypes on
+			// the next line — and they are safe under retry by IDEMPOTENCE: each is
+			// an overwrite with a value the same attempt would produce again. That is
+			// a weaker property than the accumulators get, so it is stated rather
+			// than glossed.
 			//
 			// What is checkable by reading is the narrower claim that matters:
 			// no DURABLE counter is touched in here. Counters ARE incremented —
@@ -392,7 +423,18 @@ func CollectStatistics(
 			if vErr != nil {
 				return nil, vErr
 			}
-			collectedAtVersion = v
+			// THE OLDEST batch stamps the run, not the newest.
+			//
+			// Collection spans transactions, so no single version describes all of
+			// it. Recording the LAST one dates the set by its most recent reading,
+			// which makes the whole set look as fresh as its freshest part -- so a
+			// long collection can hold counts already past the freshness bound while
+			// the reader treats the set as good for another full window.
+			//
+			// The oldest is the conservative direction: age is then judged from the
+			// stalest observation in the set, so the gate expires it no later than
+			// the truth and never later than it should.
+			batchVersion = v
 
 			// BOUND THE BATCH BY TIME AND BYTES, NOT ONLY BY ROWS.
 			//
@@ -490,6 +532,9 @@ func CollectStatistics(
 			counts[name] += c
 		}
 		scanned += batchScanned
+		if batchVersion != 0 && (collectedAtVersion == 0 || batchVersion < collectedAtVersion) {
+			collectedAtVersion = batchVersion
+		}
 		for name := range batchCapped {
 			cappedTypes[name] = struct{}{}
 		}
