@@ -316,28 +316,34 @@ func TestFDB_ParenthesizedOperandDoesNotOverFlatten(t *testing.T) {
 		}))
 	})
 
-	// A COLUMN as an IN-list item does not plan in Go — `b IN (a, 20)` comes
-	// back 0AF00 "Cascades planner could not plan query". That is a limitation
-	// of the IN path and NOT of this repair: the bare spelling fails exactly the
-	// same way, which is the whole content of the assertion below.
+	// A COLUMN as an IN-list item, in both spellings.
 	//
-	// It is pinned rather than deleted because it was found by writing the
-	// parenthesized case and expecting it to work. Without the pin the next
-	// person writes the same case, sees the same 0AF00, and has to re-derive
-	// that the parentheses are innocent. If the IN path later learns column
-	// items, this test fails and says which arm to move back.
-	t.Run("a COLUMN item is unsupported in BOTH spellings, identically", func(t *testing.T) {
+	// This arm was written as a REJECTION pin: `b IN (a, 20)` came back 0AF00
+	// in both spellings, and the assertion was that they fail identically —
+	// enough to say the parentheses were innocent of a limitation that lived
+	// elsewhere. It said, in as many words, that if the IN path later learned
+	// column items the test would fail and name the arm to move.
+	//
+	// It did. expr.ResolveIn now sends a non-constant list to an
+	// ArrayConstructorValue compared per row, so both spellings ANSWER. The
+	// assertion is inverted rather than deleted, because what it is really
+	// pinning is unchanged: the two spellings must behave the SAME, and now
+	// that they succeed, sameness means the same rows.
+	t.Run("a COLUMN item behaves the same in BOTH spellings", func(t *testing.T) {
 		g := gomega.NewWithT(t)
-		_, bareErr := db.QueryContext(ctx, "SELECT id FROM t WHERE b IN (a, 20) ORDER BY id")
-		_, parErr := db.QueryContext(ctx, "SELECT id FROM t WHERE b IN ((a), 20) ORDER BY id")
-		g.Expect(bareErr).To(gomega.HaveOccurred(),
-			"a column IN-list item now PLANS. This arm exists only to say the parentheses are "+
-				"innocent of the rejection; move both spellings up to the positive cases above")
-		g.Expect(parErr).To(gomega.HaveOccurred())
-		g.Expect(parenFlattenErrCode(parErr)).To(gomega.Equal(parenFlattenErrCode(bareErr)),
-			"the two spellings of an unsupported IN-list item must fail the SAME way. A different "+
-				"code for the parenthesized form would mean the flatten changed the shape the "+
-				"planner sees rather than restoring it\n  bare: %v\n  paren: %v", bareErr, parErr)
+		bare, bareErr := mmRows(t, ctx, db, "SELECT id FROM t WHERE b IN (a, 20) ORDER BY id")
+		par, parErr := mmRows(t, ctx, db, "SELECT id FROM t WHERE b IN ((a), 20) ORDER BY id")
+		g.Expect(bareErr).NotTo(gomega.HaveOccurred(), "the bare spelling must plan")
+		g.Expect(parErr).NotTo(gomega.HaveOccurred(),
+			"the parenthesized spelling must plan too — if only this one fails, the flatten "+
+				"changed the shape the planner sees rather than restoring it")
+		g.Expect(par).To(gomega.Equal(bare),
+			"the two spellings of a column IN-list item disagree\n  bare : %v\n  paren: %v",
+			bare, par)
+		// Pinned absolutely as well: id=2 has b=20 (the constant) and neither
+		// row has b == a, so a broader answer means the column item is being
+		// read as something other than the current row's a.
+		g.Expect(bare).To(gomega.Equal([]string{"2"}))
 	})
 
 	t.Run("a parenthesized NULL is still rejected in an IN list", func(t *testing.T) {

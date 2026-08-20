@@ -40,8 +40,13 @@ import (
 //
 // Guards:
 //   - At least one ComparisonIn predicate.
-//   - The IN-list Operand must evaluate (without row context) to a
-//     non-empty []any.
+//   - The IN-list Operand must be PLAN-TIME CONSTANT. Not merely
+//     "evaluates without a row context": a list holding a column
+//     reference evaluates to a []any with a NULL in it, because
+//     fieldValue.Evaluate(nil) answers (nil, nil) rather than an error.
+//     See the comment at the check itself for why that distinction is
+//     load-bearing.
+//   - Being constant, it must then evaluate to a non-empty []any.
 //   - The filter must have an inner Quantifier (no bare filter).
 type InComparisonToExplodeRule struct {
 	matcher matching.BindingMatcher
@@ -93,6 +98,26 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 
+	// The comparand must be PLAN-TIME CONSTANT, and that is a stronger
+	// question than "does it evaluate without a row".
+	//
+	// An IN list may hold a column — `b IN (a, 999)` — and then its values are
+	// not known until the row is read. Such a list resolves to an
+	// ArrayConstructorValue over the item Values, and folding it here would ask
+	// each item to evaluate with a nil context: fieldValue.Evaluate(nil)
+	// answers (nil, nil), NOT an error, so the fold below would succeed and
+	// yield [NULL, 999]. This rule would then explode over that NULL and the
+	// query would plan, run, and silently return the rows of
+	// `b IN (NULL, 999)` — a wrong answer with no error anywhere.
+	//
+	// IsConstantValue recurses through children, so it cannot be fooled by a
+	// composite holding a column reference, and it is the only check here that
+	// separates "no value yet" from "the value is NULL". A non-constant IN
+	// stays a residual filter, which is where it belongs: ComparisonIn is not
+	// scan-range compatible either, so there was never an index probe to lose.
+	if !values.IsConstantValue(inPred.Comparison.Operand) {
+		return
+	}
 	// Plan-time IN-list extraction: an erroring or non-list comparand
 	// declines to transform (returns) rather than failing planning.
 	rhs, err := inPred.Comparison.Operand.Evaluate(nil)

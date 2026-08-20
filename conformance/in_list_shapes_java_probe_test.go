@@ -15,28 +15,38 @@ package conformance_test
 //	all-constant expressions    -> an array literal through the literal pipeline
 //	expressions                 -> resolveFunction("__internal_array", items…)
 //
-// So the reading is that Java accepts more here. Two of those are worth
-// measuring rather than reading off, and one of them is not visible in the
-// branch structure at all:
+// The last branch is the one that mattered. A NON-CONSTANT item among
+// constants (`b IN (a, 999)`) is an ordinary __internal_array to Java, compared
+// per row; Go folded every IN list at PLAN time and had no other path, so
+// ResolveIn answered "element N is not constant" and the query surfaced as
+// 0AF00 "Cascades planner could not plan query". MEASURED here before the
+// repair: Java [[1] [3]], Go 0AF00, on four separate shapes.
 //
-//   - a NON-CONSTANT item among constants (`b IN (a, 20)`) takes Java's LAST
-//     branch and is a perfectly ordinary __internal_array. Go RESOLVES it and
-//     then fails in the PLANNER with 0AF00 "Cascades planner could not plan
-//     query" — a different layer from the declines above, which is why it does
-//     not appear in the resolver's branch list.
-//   - an ARRAY-typed column as the whole list (`b IN (arr)`) is Java's second
-//     branch and Go's InColumnRefError.
+// Go now takes the same fork — a non-constant list resolves to an
+// ArrayConstructorValue, and the four arms agree with Java exactly. Those arms
+// are ASSERTED, not merely printed: each is compared against Java AND pinned to
+// its absolute answer, so neither a regression nor the two engines drifting
+// together can satisfy it.
 //
-// The subquery form is expected to agree: Java asserts
-// "IN predicate does not support nested SELECT" and Go declines it too, which
-// is the conformance principle working as intended (doesn't work in Java ->
-// doesn't work in Go). It is probed as the CONTROL — the arm that says a
-// disagreement elsewhere is a real gap and not this harness rejecting
-// everything.
+// THE PLANNER HALF IS WHY THIS IS NOT JUST A RESOLVER CHANGE, and it is
+// recorded here because the probe alone would not have caught it.
+// InComparisonToExplodeRule folds an IN list with Operand.Evaluate(nil) and
+// explodes over the result; fieldValue.Evaluate(nil) answers (nil, nil) rather
+// than an error, so accepting the shape in the resolver WITHOUT hardening that
+// guard would have exploded over [NULL, 999] — planning cleanly, running, and
+// silently answering a different query. The guard now tests IsConstantValue.
+// The plan-shape half of that is pinned in
+// pkg/relational/sqldriver/in_list_non_constant_fdb_test.go, which asserts both
+// that a non-constant list stays a residual filter and that a CONSTANT one
+// still reaches the InJoin path.
 //
-// This file MEASURES. It asserts only the control and prints the rest, because
-// what to do about a gap depends on which layer refuses and that is the next
-// question, not this one.
+// STILL OPEN, measured and not closed: an ARRAY-typed column as the whole list
+// (`b IN (arr)`) is Java's second branch and Go's InColumnRefError.
+//
+// The subquery form agrees in OUTCOME — both refuse — but Java arrives there by
+// NullPointerException rather than by its own "IN predicate does not support
+// nested SELECT" assert, so only the outcome is comparable and that arm is
+// asserted separately.
 
 import (
 	"context"
@@ -75,26 +85,53 @@ var _ = Describe("InListShapesJavaProbe", func() {
 			return fmt.Sprint(r.Rows.Rows)
 		}
 
-		cases := []struct{ name, sql string }{
+		cases := []struct {
+			name, sql string
+			// want is the answer BOTH engines must give. Empty means the arm is
+			// measured rather than asserted (the subquery arm, where the two
+			// refusals have different wording).
+			want string
+		}{
 			// The branch both engines wire. Its agreement is what makes the rest
 			// interpretable.
-			{"all_constant_items", "SELECT id FROM t WHERE b IN (10, 20) ORDER BY id"},
+			{
+				name: "all_constant_items", want: "[[1] [2]]",
+				sql: "SELECT id FROM t WHERE b IN (10, 20) ORDER BY id",
+			},
 
 			// A COLUMN among the items. id=1 and id=3 have a = b, so a correct
 			// answer is [[1] [3]] — and note it is NOT the same answer as any
 			// constant list, so an engine that silently ignored the column item
 			// would be visible here rather than accidentally right.
-			{"column_item_among_constants", "SELECT id FROM t WHERE b IN (a, 999) ORDER BY id"},
-			{"column_item_only", "SELECT id FROM t WHERE b IN (a) ORDER BY id"},
-			{"column_item_arithmetic", "SELECT id FROM t WHERE b IN (a + 0, 999) ORDER BY id"},
-			{"column_item_negated", "SELECT id FROM t WHERE b NOT IN (a, 999) ORDER BY id"},
+			{
+				name: "column_item_among_constants", want: "[[1] [3]]",
+				sql: "SELECT id FROM t WHERE b IN (a, 999) ORDER BY id",
+			},
+			{
+				name: "column_item_only", want: "[[1] [3]]",
+				sql: "SELECT id FROM t WHERE b IN (a) ORDER BY id",
+			},
+			{
+				name: "column_item_arithmetic", want: "[[1] [3]]",
+				sql: "SELECT id FROM t WHERE b IN (a + 0, 999) ORDER BY id",
+			},
+			{
+				name: "column_item_negated", want: "[[2]]",
+				sql: "SELECT id FROM t WHERE b NOT IN (a, 999) ORDER BY id",
+			},
 
-			// The CONTROL: expected to be refused by BOTH, Java by an explicit
-			// assert and Go by an explicit decline.
-			{"subquery", "SELECT id FROM t WHERE b IN (SELECT b FROM t WHERE id = 1) ORDER BY id"},
+			// Refused by BOTH, and measured rather than compared: Java reaches
+			// its refusal by NullPointerException rather than by its own
+			// "IN predicate does not support nested SELECT" assert, so the two
+			// messages cannot be equal and only the OUTCOME is comparable.
+			{
+				name: "subquery",
+				sql:  "SELECT id FROM t WHERE b IN (SELECT b FROM t WHERE id = 1) ORDER BY id",
+			},
 		}
 
 		var disagree []string
+		var asserted int
 		for _, c := range cases {
 			javaOut := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			goOut := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
@@ -105,29 +142,42 @@ var _ = Describe("InListShapesJavaProbe", func() {
 					c.name, javaOut, goOut, c.sql))
 			}
 			fmt.Fprintf(GinkgoWriter, "%s %-28s java=%-46s go=%s\n", mark, c.name, javaOut, goOut)
+
+			if c.want == "" {
+				continue
+			}
+			asserted++
+			// Compared AND pinned absolutely. The comparison is what makes this
+			// a conformance statement; the absolute pin is what stops two
+			// engines drifting together from satisfying it.
+			Expect(goOut).To(Equal(javaOut),
+				"%s: the engines disagree.\n  java: %s\n  go  : %s\n  sql : %s",
+				c.name, javaOut, goOut, c.sql)
+			Expect(goOut).To(Equal(c.want),
+				"%s: both engines agree on the WRONG answer, or the fixture moved.\n"+
+					"  got  %s\n  want %s\n  sql : %s", c.name, goOut, c.want, c.sql)
 		}
 		fmt.Fprintf(GinkgoWriter, "\nDISAGREEMENTS: %d of %d\n", len(disagree), len(cases))
 		for _, d := range disagree {
 			fmt.Fprintf(GinkgoWriter, "%s\n", d)
 		}
 
-		// The two arms that are asserted. The constant list must agree — if it
-		// does not, this fixture is not measuring IN-list BRANCHES, it is
-		// measuring something broken about IN itself and nothing else here can
-		// be read. The subquery must be refused by both, which is the
-		// conformance principle holding.
-		javaConst := render(javaRunner.RunWithSetup(ctx, schema, setup, cases[0].sql))
-		goConst := render(goRunner.RunWithSetup(ctx, schema, setup, cases[0].sql))
-		Expect(goConst).To(Equal(javaConst),
-			"the engines disagree on a plain constant IN list, so nothing else in this file is "+
-				"interpretable\n  java: %s\n  go  : %s", javaConst, goConst)
-		Expect(goConst).To(Equal("[[1] [2]]"), "the constant-list control answered wrongly")
+		// The vacuity floor: every assertion above is inside the loop and
+		// guarded by a non-empty want, so clearing the wants would leave this
+		// spec green having compared nothing.
+		Expect(asserted).To(Equal(5),
+			"%d arms were asserted, not the 5 this file measured against the live JVM — one "+
+				"constant list and four non-constant ones. A green from a shrunken set says "+
+				"nothing", asserted)
 
+		// The subquery arm, measured rather than compared: both engines must
+		// REFUSE it, and only the outcome is comparable because Java arrives at
+		// its refusal by NullPointerException.
 		javaSub := render(javaRunner.RunWithSetup(ctx, schema, setup, cases[len(cases)-1].sql))
 		goSub := render(goRunner.RunWithSetup(ctx, schema, setup, cases[len(cases)-1].sql))
 		Expect(javaSub).To(ContainSubstring("ERR"),
-			"Java now accepts IN (SELECT …). Its explicit assert is what Go's decline is aligned "+
-				"with, so that alignment is now a gap rather than parity: re-measure and open it.")
+			"Java now accepts IN (SELECT …). Its refusal is what Go's decline is aligned with, "+
+				"so that alignment is now a gap rather than parity: re-measure and open it.")
 		Expect(goSub).To(ContainSubstring("ERR"),
 			"Go now accepts IN (SELECT …) while Java refuses it — the conformance principle runs "+
 				"the other way here (doesn't work in Java -> doesn't work in Go)")

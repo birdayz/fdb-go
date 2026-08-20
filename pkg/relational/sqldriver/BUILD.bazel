@@ -327,6 +327,7 @@ go_test(
         "ilike_regexp_boundary_probe_test.go",
         "in_list_duplicate_values_fdb_test.go",
         "in_list_limit_nil_probe_test.go",
+        "in_list_non_constant_fdb_test.go",
         "in_list_signed_zero_order_fdb_test.go",
         "in_or_compound_sarg_probe_test.go",
         "in_over_intersection_fdb_test.go",

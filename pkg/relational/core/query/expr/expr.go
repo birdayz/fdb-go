@@ -1667,6 +1667,37 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 			}
 		}
 	}
+	// A NON-CONSTANT element — a column, or arithmetic over one — makes this a
+	// RUNTIME list rather than a plan-time one, and Java takes exactly that
+	// fork: visitInList sends an all-constant list through its literal pipeline
+	// and everything else through resolveFunction("__internal_array", items…)
+	// (ExpressionVisitor.java:646-656). Go folded unconditionally and had no
+	// other path, so the loop below answered "element N is not constant" and
+	// `b IN (a, 999)` surfaced as 0AF00 "Cascades planner could not plan query"
+	// while Java answered the rows.
+	//
+	// The runtime form needs no new machinery. ArrayConstructorValue.Evaluate
+	// returns the []any the IN comparison already expects, and
+	// ComparisonPredicate.Eval evaluates the RHS against the SAME row context
+	// as the LHS, so a column-referencing element reads the current row.
+	//
+	// The SARG coercions below are deliberately NOT applied here. They exist so
+	// an index sub-probe packs the right tuple type, and a non-constant list
+	// never drives one: ComparisonIn is not scan-range compatible
+	// (isScanRangeCompatible), and InComparisonToExplodeRule declines a
+	// non-constant comparand, so no InJoin is built either. It stays a residual
+	// filter, where cmpAny promotes across numeric widths anyway.
+	//
+	// Everything ABOVE this point still applies to both forks — the record
+	// operand gate and the LHS-vs-element compatibility gate are type-based, so
+	// `b IN (a, 'x')` is still 42804 and a NULL item is still rejected by the
+	// caller before it reaches here.
+	if !allInListItemsConstant(rhs) {
+		return predicates.NewComparisonPredicate(left, predicates.Comparison{
+			Type:    predicates.ComparisonIn,
+			Operand: values.NewArrayConstructorValue(inListItemType(rhs), rhs),
+		}), nil
+	}
 	seenClass := ""
 	list := make([]any, 0, len(rhs))
 	for i, v := range rhs {
@@ -1715,6 +1746,51 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 		Type:    predicates.ComparisonIn,
 		Operand: &values.ConstantValue{Value: list, Typ: values.TypeUnknown},
 	}), nil
+}
+
+// allInListItemsConstant reports whether every IN-list item can be folded at
+// PLAN time. IsConstantValue recurses through children, so a composite holding
+// a column reference — `a + 1`, or a one-field record around a column — is
+// correctly not constant.
+//
+// A nil item is treated as constant: the caller rejects a NULL item before
+// reaching here, so a nil that survives is a resolver bug rather than a runtime
+// list, and routing it to the constant fork keeps it failing where it already
+// fails instead of silently changing shape.
+func allInListItemsConstant(rhs []values.Value) bool {
+	for _, v := range rhs {
+		if v == nil {
+			continue
+		}
+		if !values.IsConstantValue(v) {
+			return false
+		}
+	}
+	return true
+}
+
+// inListItemType is the element type for the runtime array: the maximum type
+// over the items, which is what unifies a mixed but compatible list (an INT
+// literal beside a LONG column). UNKNOWN when nothing types — the comparison
+// falls back to cmpAny's runtime promotion, which is what a non-constant list
+// relies on anyway.
+func inListItemType(rhs []values.Value) values.Type {
+	types := make([]values.Type, 0, len(rhs))
+	for _, v := range rhs {
+		if v == nil {
+			continue
+		}
+		if t := v.Type(); t != nil {
+			types = append(types, t)
+		}
+	}
+	if len(types) == 0 {
+		return values.UnknownType
+	}
+	if t := values.MaximumTypeOfMany(types...); t != nil {
+		return t
+	}
+	return values.UnknownType
 }
 
 // ResolveAnd combines N predicates via Kleene AND. A single
