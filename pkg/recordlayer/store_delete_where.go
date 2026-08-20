@@ -572,7 +572,17 @@ func computeSingleTypeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *Reco
 	// Arm 1: the delete-where names the record type and nothing else. The
 	// offset is 1 because the one column the caller gave is consumed here; the
 	// empty prefix that comes back covers no primary-key column at all.
-	if pkHasTypeKey && len(prefix) == 1 {
+	//
+	// It applies only when the INDEX ROOT omits the record-type key. Java's
+	// canDeleteWhereForIndexOnStoredTypes tests
+	// `hasRecordTypePrefix(index.getRootExpression())` FIRST
+	// (FDBRecordStore.java:2044) and, when the root does carry it, asks the
+	// maintainer with the full evaluated prefix — never reaching the
+	// whole-index arm at all. Collapsing to an empty prefix here instead would
+	// hand the maintainer a tuple that skips its capability check entirely: an
+	// unpartitioned sliding window, which cannot serve any prefix, would have
+	// its whole keyspace-10 region cleared without ever being asked.
+	if pkHasTypeKey && len(prefix) == 1 && !hasRecordTypeKeyPrefix(idx.RootExpression) {
 		return tuple.Tuple{}, 1, true
 	}
 

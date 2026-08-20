@@ -385,8 +385,42 @@ func (m *atomicMutationIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecor
 	return updateWhileWriteOnlyNonIdempotent(oldRecord, newRecord, m.index, m.store, m.index.Type, m.Update)
 }
 
+// canDeleteWhere bounds the prefix at the GROUPING columns.
+//
+// An aggregate index is physically keyed by its grouping columns alone — the
+// grouped column is the thing being aggregated, not part of the key — while the
+// store's alignment check normalises a GroupingKeyExpression to its WHOLE key.
+// So a prefix reaching into the grouped column aligns positionally and is
+// accepted, and the clear then addresses a subspace no entry lives in: the
+// records go, the aggregate at the shorter key survives, and the call reports
+// success. A COUNT that still counts deleted records is worse than one that
+// refuses to be cleared.
+//
+// Java reaches the same bound from the other side: StandardIndexMaintainer's
+// canDeleteWhere matches the query against the root expression, and the matcher
+// unwraps a grouping expression to its grouping subkey.
+func (m *atomicMutationIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
+	groupingCount := m.index.RootExpression.ColumnSize()
+	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
+		groupingCount = g.GetGroupingCount()
+	}
+	if len(prefix) > groupingCount {
+		return fmt.Errorf(
+			"%s index %q: deleteWhere prefix has %d columns but the index is grouped by %d; "+
+				"a longer prefix names no aggregate entry, so the clear would leave the "+
+				"aggregate behind after its records are gone",
+			m.index.Type, m.index.Name, len(prefix), groupingCount)
+	}
+	return nil
+}
+
 // DeleteWhere clears all index entries whose key starts with the given prefix.
 func (m *atomicMutationIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks canDeleteWhere
+	// BEFORE it clears anything.
+	if err := m.canDeleteWhere(prefix); err != nil {
+		return err
+	}
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 

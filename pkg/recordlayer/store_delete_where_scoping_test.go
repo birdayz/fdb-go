@@ -192,6 +192,114 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("refuses a prefix that reaches past an aggregate index's grouping columns", func() {
+		ks := specSubspace()
+
+		// A COUNT is physically keyed by its GROUPING columns alone — the
+		// grouped column is what is being aggregated, not part of the key —
+		// while the store's alignment check normalises a GroupingKeyExpression
+		// to its WHOLE key. So a prefix reaching into the grouped column aligns
+		// positionally, the clear addresses a subspace no entry lives in, the
+		// records go, and the count keeps counting them.
+		countIdx := NewCountIndex("order$count_by_qty", GroupBy(Field("price"), Field("quantity")))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(
+			Concat(Field("quantity"), Field("price"), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 7, 20}} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Quantity: proto.Int32(int32(o.qty)),
+					Price:    proto.Int32(int32(o.price)),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			// One column is the grouping width and is fine.
+			// Two reaches into the grouped column.
+			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7), int64(10)})
+			Expect(derr).To(HaveOccurred())
+			Expect(derr.Error()).To(ContainSubstring("order$count_by_qty"))
+
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(10), int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil(), "a refused delete must not have removed the records")
+
+			// The grouping-width prefix still works, and it really clears.
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{int64(7)})).To(Succeed())
+			entries, lerr := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(entries).To(BeEmpty(), "the aggregate must be gone with its records")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("refuses a prefix that enters a permuted index's permuted columns", func() {
+		ks := specSubspace()
+
+		// The secondary subspace stores the group key PERMUTED: with grouping
+		// (quantity, price) and permutedSize 1 its keys read
+		// (quantity, aggregate, price). A prefix reaching into the permuted
+		// column matches the PRIMARY entries and nothing in the secondary, so
+		// the primary clear succeeds, the secondary clear hits nothing, and a
+		// BY_GROUP scan keeps answering with the extremum of deleted records.
+		permIdx := NewPermutedMaxIndex("order$permuted_max",
+			GroupBy(Field("order_id"), Concat(Field("quantity"), Field("price"))), 1)
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(
+			Concat(Field("quantity"), Field("price"), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", permIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 7, 20}} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Quantity: proto.Int32(int32(o.qty)),
+					Price:    proto.Int32(int32(o.price)),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			// groupingCount 2 minus permutedSize 1 leaves one clearable column.
+			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7), int64(10)})
+			Expect(derr).To(HaveOccurred())
+			Expect(derr.Error()).To(ContainSubstring("order$permuted_max"))
+
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(10), int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil())
+
+			// And the one-column prefix clears BOTH subspaces, which is the
+			// property the bound exists to protect.
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{int64(7)})).To(Succeed())
+			byGroup, gerr := AsList(ctx, store.ScanIndexByType(
+				permIdx, IndexScanByGroup, TupleRangeAll, nil, ForwardScan()))
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(byGroup).To(BeEmpty(), "stale BY_GROUP entries would answer for deleted records")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("scopes the clear when the prefix DOES align with the index's leading columns", func() {
 		ks := specSubspace()
 

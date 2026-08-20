@@ -269,9 +269,47 @@ func (m *permutedMinMaxIndexMaintainer) ScanByGroup(scanRange TupleRange, contin
 	return newIndexCursor(m.index, m.secondarySubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
+// canDeleteWhere bounds the prefix at the grouping columns that are NOT
+// permuted — Java's PermutedMinMaxIndexMaintainer.canDeleteWhere, which limits
+// it to `groupingCount - permutedSize`.
+//
+// The secondary subspace stores the group key PERMUTED: with grouping
+// (quantity, price) and permutedSize 1, its keys read (quantity, aggregate,
+// price). A prefix that reaches into a permuted column therefore matches the
+// PRIMARY entries and nothing in the secondary, so the primary clear succeeds,
+// the secondary clear silently hits nothing, and a BY_GROUP scan keeps
+// answering with the extremum of records that no longer exist.
+//
+// Only the columns before the permute point are a shared prefix of both
+// layouts, which is exactly where the bound sits.
+func (m *permutedMinMaxIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
+	groupingCount := m.index.RootExpression.ColumnSize()
+	if g, ok := m.index.RootExpression.(*GroupingKeyExpression); ok {
+		groupingCount = g.GetGroupingCount()
+	}
+	limit := groupingCount - m.permutedSize
+	if limit < 0 {
+		limit = 0
+	}
+	if len(prefix) > limit {
+		return fmt.Errorf(
+			"%s index %q: deleteWhere prefix has %d columns but only the first %d grouping "+
+				"column(s) precede the permute point; a longer prefix matches the primary "+
+				"entries and none of the permuted secondary ones, leaving stale BY_GROUP "+
+				"entries after the records are gone",
+			m.index.Type, m.index.Name, len(prefix), limit)
+	}
+	return nil
+}
+
 // DeleteWhere clears both primary and secondary subspaces.
 // Matches Java's PermutedMinMaxIndexMaintainer.deleteWhere().
 func (m *permutedMinMaxIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks canDeleteWhere
+	// BEFORE it clears anything.
+	if err := m.canDeleteWhere(prefix); err != nil {
+		return err
+	}
 	if err := m.standardIndexMaintainer.DeleteWhere(prefix); err != nil {
 		return err
 	}

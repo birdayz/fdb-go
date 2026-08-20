@@ -352,9 +352,11 @@ func rowNumberWindowValidInConjunctivePath(p *gen.Predicate) bool {
 			}
 		}
 		return true
+	case p.GetConstantPredicate() != nil:
+		return true
 	case p.GetNotPredicate() != nil:
 		return rowNumberWindowAbsent(p.GetNotPredicate().GetChild())
-	case p.GetConstantPredicate() != nil, p.GetValuePredicate() != nil:
+	case p.GetValuePredicate() != nil:
 		return true
 	case p.GetRowNumberWindowPredicate() != nil:
 		return true
@@ -386,9 +388,11 @@ func rowNumberWindowAbsent(p *gen.Predicate) bool {
 			}
 		}
 		return true
+	case p.GetConstantPredicate() != nil:
+		return true
 	case p.GetNotPredicate() != nil:
 		return rowNumberWindowAbsent(p.GetNotPredicate().GetChild())
-	case p.GetConstantPredicate() != nil, p.GetValuePredicate() != nil:
+	case p.GetValuePredicate() != nil:
 		return true
 	case p.GetRowNumberWindowPredicate() != nil:
 		return false
