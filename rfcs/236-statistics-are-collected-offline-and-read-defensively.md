@@ -201,7 +201,7 @@ if a tenth is added without a case.
 The ninth is worth naming, because it is the one that cannot be reasoned to from
 the list above. The per-type map is keyed by STORAGE names while a relational
 scan asks with the SQL name it was written with, and the escaping between them is
-NOT injective across the two namespaces: `MY` is stored as `MY__1TABLE`,
+NOT injective across the two namespaces: `MY$TABLE` is stored as `MY__1TABLE`,
 and a table whose SQL name IS `MY__1TABLE` is stored as `MY__01TABLE`. With both
 declared, a scan of the second matches the first's storage key directly, is
 priced with the wrong table's count, and never reaches the escaped form — while

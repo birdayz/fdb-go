@@ -368,7 +368,7 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 	// The check below runs over the DECLARED names, not that map: ambiguity is a
 	// property of what a schema declares, not of what a run happened to collect.
 	//
-	// Both can. The escaping is not injective ACROSS the namespaces: MY is
+	// Both can. The escaping is not injective ACROSS the namespaces: MY$TABLE is
 	// stored as MY__1TABLE, and a table whose SQL name IS MY__1TABLE is stored as
 	// MY__01TABLE. With both present, a scan of MY__1TABLE hits the first entry
 	// directly and is priced with the OTHER table's count -- the escaped form is

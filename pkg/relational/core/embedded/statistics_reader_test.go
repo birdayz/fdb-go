@@ -235,6 +235,33 @@ func decideStatisticsCases() []decideCase {
 			},
 		},
 		{
+			// TWO collisions at once. ambiguousStorageName reports the lower
+			// pair so an operator comparing two runs sees the same answer, and
+			// map iteration order is randomised in Go — so without the tie-break
+			// this reports either pair at random. One collision cannot exercise
+			// that; the claim was unpinned until there were two.
+			name: "two collisions report the lower pair deterministically",
+			in: statisticsGateInput{
+				Found: true,
+				Stats: statsAt(testVersion, map[string]int64{
+					"AA__1T": 1, "AA__01T": 2,
+					"ZZ__1T": 3, "ZZ__01T": 4,
+				}),
+				CurrentVersion: testVersion + 1,
+				DeclaredTypes:  []string{"AA__1T", "AA__01T", "ZZ__1T", "ZZ__01T"},
+			},
+			want: StatisticsAmbiguousNames,
+			check: func(t *testing.T, got StatisticsStatus) {
+				want := []string{"AA__1T", "AA__01T"}
+				if len(got.AmbiguousTypes) != 2 ||
+					got.AmbiguousTypes[0] != want[0] || got.AmbiguousTypes[1] != want[1] {
+					t.Errorf("AmbiguousTypes = %v, want %v — with two collisions the pair "+
+						"reported must not depend on map iteration order",
+						got.AmbiguousTypes, want)
+				}
+			},
+		},
+		{
 			name: "escaped name that does NOT collide is fine",
 			in: statisticsGateInput{
 				Found: true,

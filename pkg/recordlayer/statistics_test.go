@@ -1242,6 +1242,47 @@ var _ = Describe("CollectStatistics", func() {
 				"count fresh (read back Count=%d)", after.PerType["Order"].Count)
 	})
 
+	// THE OTHER HALF OF THE STAMP CHECK.
+	//
+	// The check has two arms — version and timestamp — and the spec above moves
+	// only the VERSION. Deleting the timestamp arm therefore left the whole
+	// suite green, which is a brand-new two-arm gate shipping with one arm never
+	// driven. It is also the arm that matters for the likeliest hand-edit: a
+	// writer that preserves the version it read and stamps its own time.
+	//
+	// A single spec cannot cover both, because either arm alone satisfies an OR.
+	// So they are separate, and each moves exactly one field.
+	It("refuses a set whose entry TIMESTAMP disagrees with the header", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 6, 2)
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		before, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue(),
+			"the set was already unusable, so the refusal below proves nothing")
+
+		// VERSION PRESERVED, timestamp moved — the mirror of the spec above.
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			edited := before.PerType["Order"]
+			edited.CollectedAtUnixNanos = before.CollectedAtUnixNanos + 1
+			rtx.Transaction().Set(target.Pack(tuple.Tuple{"Order"}), packStatistic(edited))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		after, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse(),
+			"an entry whose TIMESTAMP differs from the header was accepted — the "+
+				"version arm alone was carrying this check, so half of it was never "+
+				"exercised (read back version=%d)", after.PerType["Order"].CollectedAtVersion)
+	})
+
 	// A MALFORMED ENTRY POISONS THE WHOLE SET.
 	//
 	// ReadStatistics documents all-or-nothing: "a caller gets a usable set or

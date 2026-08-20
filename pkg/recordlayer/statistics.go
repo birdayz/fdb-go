@@ -617,6 +617,12 @@ func writeStatistics(
 			// meaningful only under incremental recollection (RFC-236 §7, out of
 			// scope), which would have to relax that equality check first -- the two
 			// move together, and this line is where the coupling lives.
+			//
+			// The range copies, so this never reaches report.Collected: a caller that
+			// did not pre-stamp gets back a report saying version 0 while the store
+			// holds `version`. Unreachable today -- writeStatistics is unexported and
+			// has one caller, which pre-stamps -- and worth stating so the next
+			// caller knows the report is not what was written.
 			st.CollectedAtVersion = version
 			st.CollectedAtUnixNanos = nanos
 			tx.Set(target.Pack(tuple.Tuple{name}), packStatistic(st))
