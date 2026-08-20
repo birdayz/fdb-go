@@ -51,6 +51,26 @@ func openArrayInDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// openArrayUUIDDB pairs a UUID column with a STRING ARRAY, the shape where the
+// probe's type and the element type differ by a CONVERSION rather than by a
+// promotion cmpAny can do at runtime.
+func openArrayUUIDDB(t *testing.T) *sql.DB {
+	t.Helper()
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_in_arruuid")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_in_arruuid")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE inarruuid_t "+
+		"CREATE TABLE u (id BIGINT, uu UUID, s STRING, us STRING ARRAY, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_arruuid/s WITH TEMPLATE inarruuid_t")
+	db, err := sql.Open("fdbsql",
+		fmt.Sprintf("fdbsql:///testdb_in_arruuid?cluster_file=%s&schema=s", clusterFilePath))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
 func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -176,6 +196,53 @@ func TestFDB_InListIsAnArrayColumn(t *testing.T) {
 					"untestable here, so a different refusal needs re-reading)", err)
 			}
 		})
+
+	// A probe whose type needs CONVERTING to reach the elements is refused,
+	// loudly, rather than answered wrongly.
+	//
+	// An explicit value list can convert per item — each one is a Value that
+	// PromoteValue can wrap, which is how `u IN ('<uuid text>')` works. A bare
+	// ARRAY COLUMN is ONE value and PromoteValue is scalar, so there is nothing
+	// to wrap and no element-wise mode to reach for. Left unchecked, a UUID
+	// probe against a STRING ARRAY compares [16]byte with string, cmpAny
+	// declines the pair rather than erroring, and the matching row is silently
+	// dropped while NOT IN admits it.
+	//
+	// The refusal is the honest answer: the missing capability is element-wise
+	// promotion of a runtime array, and saying so beats answering as though it
+	// were there. This arm is what stops the answer from being silent.
+	t.Run("a probe needing element conversion is refused, not silently wrong", func(t *testing.T) {
+		udb := openArrayUUIDDB(t)
+		mwjoMustExec(t, udb, ctx, "INSERT INTO u (id, uu, s, us) VALUES "+
+			"(1, '11111111-1111-1111-1111-111111111111', 'hit', ['hit', 'other'])")
+
+		for _, pred := range []string{"uu IN us", "uu NOT IN us"} {
+			_, err := udb.QueryContext(ctx,
+				fmt.Sprintf("SELECT id FROM u WHERE %s ORDER BY id", pred))
+			if err == nil {
+				t.Errorf("`%s` was ACCEPTED. A UUID probe cannot be compared against STRING "+
+					"array elements without per-element promotion, which this path does not "+
+					"have — so accepting it means cmpAny is declining the pair and the answer "+
+					"is silently wrong in whichever direction the query asked", pred)
+				continue
+			}
+			if !strings.Contains(err.Error(), "42804") {
+				t.Errorf("`%s` was refused for an unexpected reason: %v\n"+
+					"  (expected the 42804 type-incompatibility gate)", pred, err)
+			}
+		}
+
+		// The SAME element type is fine and must stay fine — the gate refuses a
+		// conversion it cannot perform, not every array whose elements are not
+		// the probe's exact type.
+		got, err := mmRows(t, ctx, udb, "SELECT id FROM u WHERE s IN us ORDER BY id")
+		if err != nil {
+			t.Fatalf("a STRING probe against a STRING ARRAY must work: %v", err)
+		}
+		if !mmEqRows(got, []string{"1"}) {
+			t.Errorf("STRING in STRING ARRAY: got %v, want [1]", got)
+		}
+	})
 
 	// The rejections, which are the other half of Java's type test.
 	t.Run("a NON-array column is refused, naming the type", func(t *testing.T) {

@@ -2383,15 +2383,39 @@ func (r *Resolver) resolveInAgainstColumnList(
 	}
 	lt := listVal.Type()
 	if lt == nil || lt.Code() != values.TypeCodeArray {
-		typeName := "UNKNOWN"
-		if lt != nil {
-			typeName = lt.Code().String()
-		}
-		// Java's wording, verbatim, because the two engines are answering the
-		// same question about the same input and a reader comparing them
-		// should not have to translate.
+		// Java's wording, verbatim — the two engines answer the same question
+		// about the same input and a reader comparing them should not have to
+		// translate. The TYPE NAME has to be translated for that to be true:
+		// Go's TypeCode spells INT and RECORD where Java's DataType.Code spells
+		// INTEGER and STRUCT, so emitting Go's name makes the message verbatim
+		// only for the codes that happen to coincide (LONG, STRING, DOUBLE).
 		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
-			"IN list with column reference must be of array type, but got: %s", typeName)
+			"IN list with column reference must be of array type, but got: %s",
+			javaTypeCodeName(lt))
+	}
+	// THE ELEMENT TYPE has to be comparable with the probe, and "comparable"
+	// here is narrower than it is for an explicit value list.
+	//
+	// An explicit list is a list of VALUES, so each item can be wrapped in
+	// PromoteValue and converted per element — which is how `u IN ('<uuid>')`
+	// works for a UUID probe. A bare ARRAY COLUMN is one value, and PromoteValue
+	// is scalar: it has no element-wise mode, so there is nothing to wrap. If
+	// the element type needs converting, this path cannot convert it.
+	//
+	// Left unchecked that is a SILENT wrong answer, not a loud one. A UUID probe
+	// against a STRING ARRAY evaluates [16]byte against string, cmpAny declines
+	// the pair rather than erroring, the matching row is quietly dropped, and
+	// NOT IN admits exactly the rows it should exclude.
+	//
+	// So the shapes that would need element conversion are refused. Refusing is
+	// the correct-or-loud direction and it is the honest one: the capability
+	// this path lacks is element-wise promotion of a runtime array, and saying
+	// so is better than answering as though it had it.
+	if elem := arrayElementType(lt); elem != nil {
+		if incompatibleInListElement(lhsVal.Type(), elem) {
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
+		}
 	}
 	inPred := predicates.NewComparisonPredicate(lhsVal, predicates.Comparison{
 		Type:    predicates.ComparisonIn,
@@ -2401,6 +2425,65 @@ func (r *Resolver) resolveInAgainstColumnList(
 		return r.ResolveNot(inPred), nil
 	}
 	return inPred, nil
+}
+
+// javaTypeCodeName renders a Go TypeCode using JAVA's DataType.Code spelling,
+// for the one message this engine reproduces verbatim from Java.
+//
+// Most codes coincide, which is exactly what makes the two that do not
+// dangerous: a message asserted to be verbatim is checked against the case
+// somebody happened to test, and LONG, STRING and DOUBLE all agree. INT and
+// RECORD do not — Java says INTEGER and STRUCT — so a verbatim claim tested
+// only on a BIGINT column is true of the test and false of the claim.
+func javaTypeCodeName(t values.Type) string {
+	if t == nil {
+		return "UNKNOWN"
+	}
+	switch t.Code() {
+	case values.TypeCodeInt:
+		return "INTEGER"
+	case values.TypeCodeRecord:
+		return "STRUCT"
+	}
+	return t.Code().String()
+}
+
+// arrayElementType returns an ARRAY type's element type, or nil when t is not
+// an array or its element is unstated.
+func arrayElementType(t values.Type) values.Type {
+	at, ok := t.(*values.ArrayType)
+	if !ok {
+		return nil
+	}
+	return at.ElementType
+}
+
+// incompatibleInListElement reports whether a probe of type probeT cannot be
+// compared against array elements of type elemT on the runtime path.
+//
+// Two separate reasons, and they are not the same check:
+//
+//   - the types do not unify at all (MaximumType is nil) — the ordinary
+//     type-compatibility gate, the same one the explicit-list path applies;
+//   - the pair needs a CONVERSION this path cannot perform. UUID is the whole
+//     of that set today: cmpAny has no [16]byte-versus-string arm, and the
+//     conversion the explicit-list path uses is per-element PromoteValue, which
+//     a single array value has no way to apply.
+//
+// UNKNOWN on either side is permitted, matching every other gate here: an
+// untyped side may legitimately turn out to be compatible, and refusing it
+// would reject working queries to catch a hypothetical one.
+func incompatibleInListElement(probeT, elemT values.Type) bool {
+	if probeT == nil || elemT == nil {
+		return false
+	}
+	if probeT.Code() == values.TypeCodeUnknown || elemT.Code() == values.TypeCodeUnknown {
+		return false
+	}
+	if values.MaximumType(probeT, elemT) == nil {
+		return true
+	}
+	return values.IsUuid(probeT) != values.IsUuid(elemT)
 }
 
 // InColumnRefError signals `x IN y` where y is a column reference that is

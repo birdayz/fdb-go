@@ -155,6 +155,51 @@ func TestFDB_MetamorphicOperandCommutation(t *testing.T) {
 		})
 	}
 
+	// FIXED CASES WITH HAND-COMPUTED ANSWERS.
+	//
+	// Everything above compares the two spellings against `want`, and `want`
+	// came from running the as-written query — so it is the ENGINE'S answer, not
+	// an independent one. That is enough to catch a commutation that breaks one
+	// spelling, which is the whole point of the axis, but it is NOT the absolute
+	// oracle it looks like: a defect affecting BOTH spellings identically —
+	// both ordered operators accidentally admitting equality, say — makes
+	// `want` already wrong, and every comparison then agrees with it.
+	//
+	// These close that. The rows are computed by hand from a fixture written
+	// here rather than generated, so no engine result enters the expectation,
+	// and the boundary VALUE is present in the data in every case — which is
+	// what makes an inclusive/exclusive confusion visible rather than a matter
+	// of which rows happened to exist.
+	t.Run("fixed boundaries with hand-computed answers", func(t *testing.T) {
+		w := mmNewTwin(t, ctx, "/testdb_mhcommute_fixed", "mhcomf",
+			"CREATE TABLE t (id BIGINT, a BIGINT, PRIMARY KEY (id)) ",
+			"CREATE INDEX t_a ON t (a) ")
+		// a = 10, 20, 30, and a NULL. 20 is the boundary every case below
+		// compares against, so `< 20` and `<= 20` differ by exactly id=2 and an
+		// operator that lost its strictness in the flip is one row wrong rather
+		// than coincidentally right.
+		w.Exec("INSERT INTO t (id, a) VALUES (1, 10), (2, 20), (3, 30), (4, NULL)")
+
+		for _, c := range []struct {
+			asWritten, commuted string
+			want                []string
+		}{
+			// The NULL row is in none of these: every comparison against NULL is
+			// UNKNOWN, so id=4 must never appear — in either spelling.
+			{"a < 20", "20 > a", []string{"1"}},
+			{"a <= 20", "20 >= a", []string{"1", "2"}},
+			{"a > 20", "20 < a", []string{"3"}},
+			{"a >= 20", "20 <= a", []string{"2", "3"}},
+			{"a = 20", "20 = a", []string{"2"}},
+			{"a <> 20", "20 <> a", []string{"1", "3"}},
+		} {
+			w.Want("as written: "+c.asWritten,
+				fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", c.asWritten), c.want)
+			w.Want("commuted: "+c.commuted,
+				fmt.Sprintf("SELECT id FROM t WHERE %s ORDER BY id", c.commuted), c.want)
+		}
+	})
+
 	// Measured on this fixture at 90 iterations x 3 operand types the compared
 	// count sits near 270; the floor is well below that so ordinary generator
 	// drift does not trip it while a collapse does.

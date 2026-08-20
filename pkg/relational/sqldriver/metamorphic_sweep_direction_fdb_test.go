@@ -175,6 +175,46 @@ func TestFDB_MetamorphicOrderDirection(t *testing.T) {
 		}
 	})
 
+	// THE AXIS MUST ACTUALLY REACH A REVERSE INDEX SCAN, and nothing above
+	// proves it does.
+	//
+	// The file's whole claim is that a DESC order over an indexed column takes a
+	// different code path — reverse range endpoints, reverse continuation
+	// encoding, a limit over a reversed stream. But the planner is free to
+	// answer a DESC order with an in-memory SORT instead, and for the random
+	// predicates above it sometimes will; for `ORDER BY b`, where no index leads
+	// with b, it always will. Every assertion in this file passes just as
+	// happily against a sorted forward scan, so the targeted path could
+	// disappear entirely and the gate would stay green — a coverage claim with
+	// nothing under it.
+	//
+	// So the plan is read. A DESC order over an indexed column with a matching
+	// predicate must produce an IndexScan and no in-memory sort, which is the
+	// shape that can only be served by scanning the index backwards.
+	t.Run("a descending indexed order really is a reverse index scan", func(t *testing.T) {
+		const q = "SELECT id FROM t WHERE a > 0 ORDER BY a DESC, id DESC"
+		plan := w.Explain(q)
+		if strings.Contains(plan, "InMemorySort") {
+			t.Errorf("the descending order was answered by an in-memory SORT, so this file's "+
+				"reversal and LIMIT assertions never opened a reverse index cursor — the path "+
+				"they claim to cover is not being reached\n  q: %s\n  plan: %s", q, plan)
+		}
+		if !strings.Contains(plan, "IndexScan") {
+			t.Errorf("the descending order did not reach an index at all\n  q: %s\n  plan: %s\n"+
+				"  (without an IndexScan there is no reverse scan to exercise, whatever the "+
+				"rows say)", q, plan)
+		}
+		// And the same shape under a LIMIT, which is the arm this file calls its
+		// point: a reverse scan whose limit is applied to the reversed stream.
+		const limited = "SELECT id FROM t WHERE a > 0 ORDER BY a DESC, id DESC LIMIT 3"
+		limitPlan := w.Explain(limited)
+		if strings.Contains(limitPlan, "InMemorySort") {
+			t.Errorf("the LIMIT arm's descending order was answered by an in-memory SORT, so "+
+				"the reverse-scan-plus-limit interaction is not being exercised\n  q: %s\n"+
+				"  plan: %s", limited, limitPlan)
+		}
+	})
+
 	// Floors. `limited` is counted separately from `compared` because the two
 	// arms can fail to exercise independently — a corpus whose predicates all
 	// select fewer than one row would still produce limit comparisons, and one
