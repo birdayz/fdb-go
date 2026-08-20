@@ -734,3 +734,62 @@ func TestStats_EveryNotFoundRefusalIsClassified(t *testing.T) {
 		})
 	}
 }
+
+// A DIAGNOSIS FIELD MUST REACH BOTH RENDER PATHS.
+//
+// ReadRefusal and ReadError were added so an operator could act: WHICH way a
+// stored set is torn, and WHAT failed when a read failed. Both were populated
+// on the text path only, so `stats show -o json` reported that statistics were
+// unusable and never why — the exact asymmetry the synthetic and ambiguous
+// names are on both paths to avoid.
+//
+// Driven through renderStatsStatus, not by marshalling statsShowResult: the
+// struct having a json tag proves nothing about the renderer copying the field
+// into it, which is the half that broke.
+func TestStats_ShowJSONCarriesTheReadDiagnosis(t *testing.T) {
+	t.Parallel()
+
+	decode := func(t *testing.T, st embedded.StatisticsStatus) map[string]any {
+		t.Helper()
+		var buf bytes.Buffer
+		render := &cobra.Command{}
+		render.SetOut(&buf)
+		if err := renderStatsStatus(render, "json", "/x/MAIN", st); err != nil {
+			t.Fatalf("renderStatsStatus: %v", err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("decode %s: %v", buf.String(), err)
+		}
+		return got
+	}
+
+	torn := decode(t, embedded.StatisticsStatus{
+		Refusal:     embedded.StatisticsTorn,
+		ReadRefusal: recordlayer.StatisticsReadCountMismatch,
+	})
+	if got, _ := torn["read_refusal"].(string); got != string(recordlayer.StatisticsReadCountMismatch) {
+		t.Errorf("read_refusal = %q, want %q — JSON says the set is unusable and not "+
+			"which way, while the text path names it",
+			got, recordlayer.StatisticsReadCountMismatch)
+	}
+
+	failed := decode(t, embedded.StatisticsStatus{
+		Refusal: embedded.StatisticsReadFailed,
+		ReadErr: errors.New("operation_failed on GetRange"),
+	})
+	if got, _ := failed["read_error"].(string); !strings.Contains(got, "operation_failed on GetRange") {
+		t.Errorf("read_error = %q, want the underlying failure — an automated caller "+
+			"cannot distinguish a transient fault from a permanent one without it", got)
+	}
+
+	// And absent when there is nothing to report, or omitempty is decoration:
+	// a field that is always present carries no signal.
+	clean := decode(t, embedded.StatisticsStatus{Usable: true, Found: true})
+	if _, present := clean["read_refusal"]; present {
+		t.Errorf("read_refusal present on a usable set: %v", clean)
+	}
+	if _, present := clean["read_error"]; present {
+		t.Errorf("read_error present on a usable set: %v", clean)
+	}
+}

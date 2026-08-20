@@ -407,8 +407,19 @@ type statsShowResult struct {
 	MaxAgeVersions       int64            `json:"max_age_versions"`
 	SyntheticTypes       []string         `json:"synthetic_types,omitempty"`
 	AmbiguousTypes       []string         `json:"ambiguous_types,omitempty"`
-	MissingTypes         []string         `json:"missing_types,omitempty"`
-	ExtraTypes           []string         `json:"extra_types,omitempty"`
+	// ReadRefusal names WHICH way a stored set is torn, when Refusal is
+	// StatisticsTorn. Present on BOTH render paths deliberately: the text path
+	// named it and JSON did not, so an automated caller could see THAT the set
+	// was unusable and never WHY -- and a diagnosis on one render path is half a
+	// diagnosis, which is the same reason the synthetic and ambiguous names are
+	// on both.
+	ReadRefusal string `json:"read_refusal,omitempty"`
+	// ReadError is the underlying failure when Refusal is StatisticsReadFailed,
+	// where existence is UNKNOWN rather than absent. Same reasoning as above:
+	// it was reaching only the text path.
+	ReadError    string   `json:"read_error,omitempty"`
+	MissingTypes []string `json:"missing_types,omitempty"`
+	ExtraTypes   []string `json:"extra_types,omitempty"`
 }
 
 func renderStatsStatus(
@@ -436,6 +447,8 @@ func renderStatsStatus(
 			MaxAgeVersions:       st.MaxAgeVersions,
 			SyntheticTypes:       st.SyntheticTypes,
 			AmbiguousTypes:       st.AmbiguousTypes,
+			ReadRefusal:          string(st.ReadRefusal),
+			ReadError:            errString(st.ReadErr),
 			MissingTypes:         st.MissingTypes,
 			ExtraTypes:           st.ExtraTypes,
 		})
@@ -570,4 +583,14 @@ func describeSkippedTypes(skipped map[string]string) string {
 		parts = append(parts, name+": "+skipped[name])
 	}
 	return strings.Join(parts, "; ")
+}
+
+// errString renders an error for a JSON field, empty when there is none. Kept
+// separate so the omitempty tag means "no error" rather than "an error whose
+// text happened to be empty".
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
