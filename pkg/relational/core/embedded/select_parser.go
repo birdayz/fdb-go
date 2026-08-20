@@ -2662,8 +2662,8 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		// A derived-table primary source can still be followed by explicit JOIN
 		// clauses (`FROM (SELECT ...) x LEFT JOIN t ON ...`). Parse them here so
 		// they are not silently dropped (no LEFT/RIGHT alias-promotion applies to
-		// a derived primary, hence promotedJoinType = -1).
-		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins, -1)
+		// a derived primary).
+		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins)
 		if jErr != nil {
 			return nil, jErr
 		}
@@ -2681,7 +2681,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 
 	if inlineItem, isInline := srcBase.TableSourceItem().(*antlrgen.InlineTableItemContext); isInline {
 		alias := inlineValuesCarrierAlias(inlineItem, 0)
-		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins, -1)
+		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins)
 		if jErr != nil {
 			return nil, jErr
 		}
@@ -2711,53 +2711,37 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	// Build table name from uid segments, stripping identifier quotes.
 	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
 	parts := uidSegments(atomItem.TableName())
-	// Only use Uid() as alias when AS is explicit. Without AS, the parser may
-	// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
-	// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
-	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
-	// InnerJoinContext to a LEFT/RIGHT join.
+	// Grammar is `tableName (AS? alias=uid)?` — AS optional, so an implicit
+	// alias (`FROM Order o`) is read from GetAlias() rather than gated on AS.
+	//
+	// There used to be a repair here for a grammar ambiguity: LEFT and RIGHT
+	// were alias-eligible, so `FROM a LEFT JOIN b` parsed as `FROM a AS LEFT
+	// JOIN b` and the first InnerJoin had to be PROMOTED back to an outer join.
+	// It was removed once the ambiguity was fixed at the source — the census
+	//
+	//	awk '/^keywordsCanBeId/,/^    ;/' RelationalParser.g4 |
+	//	  grep -cowE 'LEFT|RIGHT|FULL'
+	//
+	// reports 0, so the parser cannot hand this code an alias spelling any of
+	// them and the promotion could never fire. Repairing a misparse downstream
+	// is the wrong layer anyway: it can only recover the FIRST join, and it
+	// cannot tell `FROM a LEFT JOIN b` from a table genuinely aliased LEFT.
+	//
+	// If a clause keyword is ever readmitted to keywordsCanBeId, the fix is
+	// there and not here. TestFDB_ClauseKeywordsAreNotSwallowedAsAliases holds
+	// that line by ASSERTING each join type still parses as its CLAUSE, with
+	// and without OUTER, so a readmission reddens rather than silently changing
+	// answers. (It does not execute the census above — that is prose in the
+	// test's header, and re-running it is a reader's job, not the test's.)
 	leftAlias := ""
-	var promotedJoinType joinType = -1
-	// Grammar is `tableName (AS? alias=uid)?` — AS optional.
-	// Pick up implicit aliases via GetAlias() (was previously
-	// gated on AS being present, which lost `FROM Order o` etc).
-	// Special case: a NO-AS, UNQUOTED bare-uid alias equal to
-	// LEFT or RIGHT is the keywordsCanBeId grammar misparse for
-	// `FROM a LEFT JOIN ...` — promote the first InnerJoin to
-	// LEFT/RIGHT join instead of treating LEFT/RIGHT as the
-	// alias. The AS form (`FROM a AS LEFT JOIN ...`) and the
-	// quoted form (`FROM a "LEFT"`) both keep "LEFT" as the
-	// literal alias.
 	if atomItem.GetAlias() != nil {
-		aliasRaw := atomItem.GetAlias().GetText()
-		aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
-		// Structural quote-detection: post-case-fold,
-		// `aliasRaw != aliasTxt` is also true whenever the
-		// raw alias has any lowercase character (the helper
-		// upper-cases unquoted text). Use a structural check
-		// so a lowercased alias `from a hello` doesn't get
-		// classified as quoted.
-		isQuoted := len(aliasRaw) >= 2 &&
-			((aliasRaw[0] == '"' && aliasRaw[len(aliasRaw)-1] == '"') ||
-				(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
-		if atomItem.AS() == nil && !isQuoted {
-			up := strings.ToUpper(aliasTxt)
-			if up == "LEFT" {
-				promotedJoinType = joinTypeLeft
-			} else if up == "RIGHT" {
-				promotedJoinType = joinTypeRight
-			} else {
-				leftAlias = aliasTxt
-			}
-		} else {
-			leftAlias = aliasTxt
-		}
+		leftAlias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 	}
 	if leftAlias == "" {
 		leftAlias = strings.Join(parts, ".")
 	}
 
-	joins, jErr := parseJoinClauses(srcBase, leftAlias, extraCrossJoins, promotedJoinType)
+	joins, jErr := parseJoinClauses(srcBase, leftAlias, extraCrossJoins)
 	if jErr != nil {
 		return nil, jErr
 	}
@@ -2774,13 +2758,13 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 }
 
 // parseJoinClauses parses every explicit JOIN part of a FROM clause into a
-// joinClause slice, promotes a mis-parsed first LEFT/RIGHT join, synthesizes ON
-// predicates for USING-syntax joins (the left USING column qualified by its
-// preceding source alias — leftAlias for the first join, the prior join's right
-// alias otherwise), and appends the implicit comma-FROM cross joins last. It is
+// joinClause slice, synthesizes ON predicates for USING-syntax joins (the
+// left USING column qualified by its preceding source alias — leftAlias for
+// the first join, the prior join's right alias otherwise), and appends the
+// implicit comma-FROM cross joins last. It is
 // shared by the atom-table primary path AND the derived-table primary path so a
 // `FROM (SELECT ...) x JOIN t ON ...` does not silently drop its JOINs.
-func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string, extraCrossJoins []joinClause, promotedJoinType joinType) ([]joinClause, error) {
+func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string, extraCrossJoins []joinClause) ([]joinClause, error) {
 	var joins []joinClause
 	for _, jp := range srcBase.AllJoinPart() {
 		jc, jErr := extractJoinClause(jp)
@@ -2788,10 +2772,6 @@ func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string
 			return nil, jErr
 		}
 		joins = append(joins, jc)
-	}
-	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
-	if promotedJoinType >= 0 && len(joins) > 0 && joins[0].joinType == joinTypeInner {
-		joins[0].joinType = promotedJoinType
 	}
 	// Synthesize ON predicates for any `USING (col, ...)` joins now that the
 	// left source alias chain is known.
