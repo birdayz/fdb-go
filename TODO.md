@@ -3378,15 +3378,33 @@ so there is no ref child-selection left in the SARG walk.)
 + worse-plan risk for `a=1 OR b=2` with no indexes.
 
 ### [ ] Finding 12 (LOW-MED, latent) — value-layer / compensation gaps
-- `values/value_in.go:52` value-layer IN promotes both int64→float64 → loses precision >2^53 (disagrees
-  with exact predicate-layer IN); `:55`/`value_array_distinct.go:101` `==` panics on non-comparable
-  slice/map elements.
-- `values/values.go:3365,3394,3519` `CAST(string AS INT/LONG/DOUBLE)` `TrimSpace` where Java rejects.
+
+FOUR OF THE FIVE BULLETS BELOW ARE STALE — the defects were fixed and the entry
+was not updated, so a reader picking this up re-derives work already done. Each
+is struck through with the evidence that closed it; the compensation bullet is
+the only one still standing. Verified by reading the code at the named sites, not
+by assuming a later commit covered them.
+
+- ~~`values/value_in.go:52` value-layer IN promotes both int64→float64 → loses precision >2^53~~
+  FIXED. The site now routes same-family integers through `CompareExactInts` and
+  says so: "never round-trip two int64 through float64, whose promotion ties
+  adjacent values above 2^53". Pinned at both levels — `values/value_in_exact_test.go`
+  (unit) and `sqldriver/numeric_precision_boundary_test.go` (SQL).
+- ~~`:55`/`value_array_distinct.go:101` `==` panics on non-comparable slice/map elements~~
+  FIXED. Both sites call `comparableEqual`, which falls back to `reflect.DeepEqual`
+  for non-comparable dynamic types; the array site carries the reason inline.
+- ~~`values/values.go:3365,3394,3519` `CAST(string AS INT/LONG/DOUBLE)` `TrimSpace` where Java rejects.~~
+  FIXED. `trimJavaWhitespace` strips only code points <= U+0020, matching Java's
+  `String.trim()`, so `CAST(NBSP+'5' AS INT)` throws rather than yielding 5.
 - `compensation.go:1035` `ForMatchCompensation.Union` picks c's rcf even when only other's is needed
   (Java `Verify.verify` both) → wrong output shape; `:151` `ComputeResultCompensation` hardcodes
   `EmptyGroupByMappings` vs Java's `pullUpAggregateCandidateMappings`. Both latent (single-child gated).
-- `predicates/predicates.go:117` `PredicateEquals` has no `ExistentialValuePredicate` case →
-  EXISTS AND EXISTS never deduped (optimization only; memo interning DOES handle it — inconsistent).
+- ~~`predicates/predicates.go:117` `PredicateEquals` has no `ExistentialValuePredicate` case~~
+  FIXED. The case is present at `predicates.go:136`.
+
+The compensation bullet above is the one that STANDS: `EmptyGroupByMappings()` is
+still hardcoded (`compensation.go:122,154`). The `Union` rcf half of that bullet
+was not re-checked, so it is neither confirmed nor closed here.
 
 ### [ ] Finding 13 (LOW) — dead code / missed matches / maintainability
 - Dead rules: `rule_implement_intersection.go:46`, `rule_intersection_merge.go:37`,
@@ -18929,3 +18947,66 @@ mutation-verified.
 What REMAINS an owner call is the cost model itself, not the annotation.
 
 Full write-up, including the plans and the mutation evidence: RFC-235 §17.
+
+---
+
+### [ ] A single-table `a = ? OR b = ?` full-scans with both columns indexed
+
+MEASURED, on a two-schema twin fixture (`or_union_pk_dedup_edges_fdb_test.go`),
+with an index on every probed column and 1209 rows in the probed table:
+
+```
+SELECT uid FROM u WHERE ua = 1500                     -> IndexScan(U_UA, [=] COVERING)
+SELECT uid FROM u WHERE ua = 1500 OR ub = 1600        -> PredicatesFilter(Scan(U), [1 preds])
+SELECT uid FROM u WHERE ua = 1500 OR ub = 1600 OR uc = 1700
+                                                      -> PredicatesFilter(Scan(U), [1 preds])
+(ua = 1500 OR ub = 1600) AND (uc = 1700 OR ud = 1800) -> PredicatesFilter(Scan(U), [2 preds])
+```
+
+A single equality takes the index. Add a disjunct and the whole query becomes a
+full scan with a residual filter — roughly 1200 record reads where the union of
+two point probes would read two index entries and two records. The corpus agrees
+this is the standing shape rather than a fixture artefact:
+`plan_shape.golden` records `PredicatesFilter(Scan(ITEMS))` for
+`WHERE cat = 'A' OR cat = 'C'` and for `WHERE price = 10 OR price = 20 OR price
+= 30`.
+
+The union access path is NOT dead — it is chosen for the same disjunction as the
+correlated inner of a LEFT JOIN, where a per-outer-row full scan is priced out:
+
+```
+SELECT d.did, u.uid FROM d LEFT JOIN u ON u.ua = d.da OR u.ub = d.db2
+  -> FlatMap(outer=Scan(D), inner=DefaultOnEmpty(Fetch(UnorderedPrimaryKeyDistinct(
+       UnorderedUnion(IndexScan(U_UA, [=] COVERING), IndexScan(U_UB, [=] COVERING))))))
+```
+
+So the machinery works and the enumeration reaches it; what declines is the
+choice. Padding the table from 9 to 1209 rows did not move the single-table or
+the conjunction-of-disjunctions cases, so it is not simply a small-table effect
+at these sizes.
+
+NOT the same as Finding 11 above, and the two point OPPOSITE ways. Finding 11 is
+that `PredicateToLogicalUnionRule` expands every top-level OR where Java expands
+only index-exploitable ones (memo bloat, worse-plan risk). This is that the
+expansion, having happened, then LOSES on cost to a full scan in the case where
+it should win by orders of magnitude. A fix for one should not be assumed to
+address the other.
+
+WHY IT IS FILED RATHER THAN FIXED: it is a cost-model question, which needs the
+RFC + Graefe gate, and it is plan QUALITY rather than a wrong answer — the rows
+are correct either way, which is why no test caught it and why the twin oracle
+could not either. What the twin did catch, and what is now fixed, is the
+correctness defect on the union path itself (the cross-leg dedup was keyed on
+the row rather than the primary key).
+
+WHAT TO CHECK FIRST, in order: whether the union alternative is COSTED at all
+for a non-correlated select (it is enumerated — the rule's unit tests fire on
+multi-OR shapes — but a plan absent from the memo and a plan present-and-outbid
+look identical from EXPLAIN); then whether the per-leg cost carries the
+cross-leg dedup's cost twice; then whether Java picks the union for the same
+shape, which `plandiff` can answer directly and which decides whether this is a
+divergence or a shared trait.
+
+To reproduce: the plans above come from `EXPLAIN` on the fixture in
+`TestFDB_OrUnionPrimaryKeyDedup_LegShapes`; the file header records which shapes
+reach the union and which do not, measured rather than assumed.
