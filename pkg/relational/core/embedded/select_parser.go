@@ -3105,6 +3105,12 @@ type usingSource struct {
 	// which are answered from the descriptor, and nil when a non-base source's
 	// schema could not be derived, which is what makes the scope decline.
 	cols semantic.Table
+	// counts is the source's column multiset, built ONCE per source: normalized
+	// name to how many times it is exported. Built once because `Columns()`
+	// defensively copies the whole slice in both production implementations, so
+	// asking per USING column made a wide join copy the right leg's columns
+	// once per name before planning even began.
+	counts map[string]int
 }
 
 // owns reports whether this source exports `col`, from whichever authority
@@ -3117,17 +3123,22 @@ type usingSource struct {
 // it is not described at all. That is what makes a derived table unable to
 // resolve against a same-named record type even if the caller-side gate is ever
 // loosened — there is no descriptor path left for it to reach.
-func (s usingSource) owns(id semantic.Identifier) bool {
+// It returns a COUNT, not a boolean, because a source can export the same name
+// more than once — `(SELECT "k", "k" FROM q1)` — and that makes the column
+// ambiguous WITHIN that one source. A boolean collapses two exports into one
+// owner, so the caller walks past the ambiguity and reports whatever the NEXT
+// USING column turns up: the wrong fault, on the wrong column. This is the
+// same defect the right-hand check was repaired for, on the left.
+func (s usingSource) owns(id semantic.Identifier) int {
 	if s.cols == nil {
 		// Nothing describes this source — a name that did not resolve, or a
 		// derived schema that could not be derived. The caller's resolvable
 		// gate has already declined the whole join on that basis, so reaching
 		// here at all means the gate was loosened; owning nothing is the safe
 		// answer either way.
-		return false
+		return 0
 	}
-	_, ok := s.cols.LookupColumn(id)
-	return ok
+	return usingColumnCount(s.cols, s.counts, id)
 }
 
 // usingOwnerOf returns the single left source that owns `col`, applying Java's
@@ -3158,8 +3169,17 @@ func usingOwnerOf(colText string, sources []usingSource, hidden map[string]map[s
 		if hidden[s.alias][id.Name()] {
 			continue
 		}
-		if !s.owns(id) {
+		// COUNTED per source, not tested. One source exporting the name twice
+		// is ambiguous by itself, and collapsing that to a single owner walks
+		// past the ambiguity to report whatever the NEXT USING column turns up
+		// — the wrong fault on the wrong column. Java stops on the first
+		// attribute.
+		switch n := s.owns(id); {
+		case n == 0:
 			continue
+		case n > 1:
+			return "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"Ambiguous reference %s", id.Name())
 		}
 		owners = append(owners, s.alias)
 	}
@@ -3235,12 +3255,14 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		s := usingSource{alias: alias, table: table, base: base}
 		if base {
 			s.cols = baseTableColumns(table, md, schemaName)
+			s.counts = columnCounts(s.cols)
 			return s
 		}
 		if derived != nil {
 			if src, ok, err := buildCTEColumnSource(md, alias, derived, cteScopes); err == nil && ok {
 				s.cols = src.Table
 			}
+			s.counts = columnCounts(s.cols)
 			return s
 		}
 		if cteScopes != nil {
@@ -3248,6 +3270,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				s.cols = src.Table
 			}
 		}
+		s.counts = columnCounts(s.cols)
 		return s
 	}
 	// hidden[alias][COL] — the right copy an earlier USING consumed.
@@ -3281,6 +3304,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		// nested shapes compound it.
 		rightLeg := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j))
 		rightCols := rightLeg.cols
+		rightCounts := rightLeg.counts
 		resolvable := rightCols != nil
 		for _, s := range sources {
 			// A source is describable either as a base table (descriptor) or as
@@ -3305,7 +3329,8 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// The name as the catalog knows it: unquoted folds, quoted keeps
 				// its case. Used for the messages too, so a quoted "k" is not
 				// reported as K.
-				col := semantic.NewUnquoted(colText).Name()
+				id := semantic.NewUnquoted(colText)
+				col := id.Name()
 				owner, err := usingOwnerOf(colText, sources, hidden)
 				if err != nil {
 					return err
@@ -3344,7 +3369,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `Ambiguous reference ID`; a first-match check passed `id` and
 				// went on to report a LATER column's absence instead, which is
 				// both the wrong fault and the wrong column.
-				switch n := rightColumnCount(rightCols, colText); {
+				switch n := usingColumnCount(rightCols, rightCounts, id); {
 				case n == 0:
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)
@@ -3443,31 +3468,44 @@ func baseTableColumns(table string, md *recordlayer.RecordMetaData, schemaName s
 	return tbl
 }
 
-// rightColumnCount reports how many columns a source exports under `colText`,
-// quote-aware.
+// columnCounts builds a source's column multiset once: normalized name to how
+// many times the source exports it.
 //
-// It counts rather than looking up because a lookup returns its FIRST match,
-// which cannot distinguish "exports it once" from "exports it twice" — and a
-// USING column the right side exports twice is AMBIGUOUS there, which Java
-// reports in preference to any later column's absence.
-func rightColumnCount(cols semantic.Table, colText string) int {
+// A MULTISET rather than a set, because a source exporting the same name twice
+// makes that column ambiguous within itself, and a set cannot express that.
+//
+// Built ONCE per source rather than queried per USING column: `Columns()`
+// defensively copies its whole slice in both production implementations, so
+// asking it once per name made a wide join copy the column list m times before
+// planning began.
+//
+// The lookup fallback matters and is not belt-and-braces. A catalog
+// pseudo-column such as `__ROW_VERSION` is registered in the name index rather
+// than in the ordered `Columns()` view on some paths, so counting the slice
+// alone would report it absent — and reporting it absent is exactly the
+// regression that broke the Java corpus once already.
+func columnCounts(cols semantic.Table) map[string]int {
 	if cols == nil {
-		return 0
+		return nil
 	}
-	want := semantic.NewUnquoted(colText)
-	n := 0
+	counts := map[string]int{}
 	for _, c := range cols.Columns() {
-		if c.Id.EqualsIgnoreQuoting(want) {
-			n++
-		}
+		counts[c.Id.Name()]++
 	}
-	// A source whose Columns() view is empty but which resolves the name — a
-	// catalog pseudo-column is registered in the index rather than the ordered
-	// list on some paths — still owns it once.
-	if n == 0 {
-		if _, ok := cols.LookupColumn(want); ok {
+	return counts
+}
+
+// usingColumnCount reports how many columns a source exports under `id`,
+// consulting the prebuilt multiset first and falling back to the name index for
+// a column the ordered view does not carry.
+func usingColumnCount(cols semantic.Table, counts map[string]int, id semantic.Identifier) int {
+	if n := counts[id.Name()]; n > 0 {
+		return n
+	}
+	if cols != nil {
+		if _, ok := cols.LookupColumn(id); ok {
 			return 1
 		}
 	}
-	return n
+	return 0
 }

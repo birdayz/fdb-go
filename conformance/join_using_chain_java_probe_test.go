@@ -197,6 +197,22 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				javaSays: "Ambiguous reference ID",
 				goSays:   "42702",
 			},
+			{
+				// THE LEFT-HAND MIRROR, which needed its own fix. Ownership
+				// answered a BOOLEAN, so a left source exporting the name twice
+				// counted as one owner: the walk advanced past the ambiguity and
+				// reported the NEXT column's absence instead. Java stops on the
+				// first attribute.
+				//
+				// It gets its own arm because the right-hand fix did not carry
+				// over — two structures, two lookups, and only one of them was
+				// looked at the first time. That has now happened twice on this
+				// branch with the hidden map, so the mirror is assumed to be
+				// broken until measured, not assumed to be fixed.
+				chained: true, name: "left source exports the USING name twice",
+				sql: "SELECT a.id FROM a JOIN (SELECT id, id FROM c) d USING (id) " +
+					"JOIN b USING (id, j)",
+			},
 		}
 
 		var disagreed []string
@@ -293,8 +309,8 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				"silently answering an ambiguous chain, and refusing a column that lives on an "+
 				"earlier source.\n\n%s",
 			len(disagreed), chainedArms, strings.Join(disagreed, "\n"))
-		Expect(chainedArms).To(Equal(8),
-			"%d chained arms ran, not 8 — a green from a shrunken set says nothing about "+
+		Expect(chainedArms).To(Equal(9),
+			"%d chained arms ran, not 9 — a green from a shrunken set says nothing about "+
 				"the shape this file is named for", chainedArms)
 		Expect(controls).To(Equal(2),
 			"%d controls ran, not 2 — without an agreed USING baseline, a chained "+
