@@ -707,7 +707,7 @@ func TestAmbiguousVerdictTouchesNoIO(t *testing.T) {
 		defer func() {
 			if r := recover(); r != nil {
 				t.Fatalf("evaluateCollectedStatistics reached the read path for ambiguous "+
-					"metadata and panicked on the nil database (%v). The verdict is fixed "+
+					"metadata and panicked on the nil session Keyspace (%v). The verdict is fixed "+
 					"before any I/O, so the early return must precede statisticsLocation.", r)
 			}
 		}()

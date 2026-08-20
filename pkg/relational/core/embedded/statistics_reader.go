@@ -158,6 +158,12 @@ type StatisticsStatus struct {
 	// AmbiguousTypes is the colliding pair when Refusal is
 	// StatisticsAmbiguousNames: two declared names where one is the other's
 	// escaped form, so a lookup by either cannot say which table is meant.
+	//
+	// USER IDENTIFIERS, unlike every other name field on this struct. It is
+	// decoded at its source because the operator has to act on the SQL names, and
+	// it must NOT be decoded again: ToUserIdentifier is not idempotent, so a
+	// second pass renames the table rather than failing. The namespace is stated
+	// per field precisely because it cannot be inferred from the value.
 	AmbiguousTypes []string
 	// perType is the provider input, populated only when Usable.
 	perType map[string]float64

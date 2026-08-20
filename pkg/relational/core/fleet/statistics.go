@@ -190,14 +190,21 @@ func CollectAllStatistics(
 // describeSkipped renders why a run was abandoned, for the per-target error.
 // Sorted so a fan-out over many schemas produces diffable output.
 func describeSkipped(skipped map[string]string) string {
+	// Record-type keys are STORAGE names, and this text is what the fan-out
+	// prints for a refused or failed target -- the caller's own comment calls it
+	// "the one field an operator actually sees", which is exactly why it must not
+	// name a table the operator does not have.
+	byUser := make(map[string]string, len(skipped))
 	names := make([]string, 0, len(skipped))
-	for name := range skipped {
-		names = append(names, name)
+	for name, reason := range skipped {
+		user := recordlayer.ToUserIdentifier(name)
+		byUser[user] = reason
+		names = append(names, user)
 	}
 	sort.Strings(names)
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+": "+skipped[name])
+		parts = append(parts, name+": "+byUser[name])
 	}
 	return strings.Join(parts, "; ")
 }

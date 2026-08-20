@@ -339,6 +339,16 @@ frl stats collect --database /myapp --all-schemas
 # What is stored, and whether the planner will actually use it.
 frl stats show --database /myapp --schema MAIN
 frl stats show --database /myapp --schema MAIN -o json | jq '.per_type'
+```
+
+Keys are the SQL identifiers you wrote, not the escaped storage names the record
+layer uses internally: a table quoted `"MY$TABLE"` is stored as `MY__1TABLE` and
+reported here as `MY$TABLE`. Every operator-facing name follows that rule --
+`per_type`, `missing_types`, `extra_types`, `synthetic_types`, the skipped list,
+and the abort banner -- so a script may key by the name it created the table
+with.
+
+```sh
 
 frl stats clear --database /myapp --schema MAIN --yes
 ```

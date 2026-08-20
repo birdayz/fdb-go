@@ -615,9 +615,15 @@ func sortedKeys[V any](m map[string]V) []string {
 // describeSkippedTypes renders why a collection abandoned its run, sorted so
 // repeated invocations are diffable.
 func describeSkippedTypes(skipped map[string]string) string {
-	parts := make([]string, 0, len(skipped))
-	for _, name := range sortedKeys(skipped) {
-		parts = append(parts, name+": "+skipped[name])
+	// DECODED, like every other operator-facing surface. This one is the error
+	// banner of the abort path, printed directly beneath a report body that was
+	// already decoded -- so leaving it raw made ONE run of `frl stats collect`
+	// print MY$TABLE in the not-collected block and MY__1TABLE in the error line
+	// under it. Two spellings of one table, three lines apart.
+	byUser := userKeyed(skipped)
+	parts := make([]string, 0, len(byUser))
+	for _, name := range sortedKeys(byUser) {
+		parts = append(parts, name+": "+byUser[name])
 	}
 	return strings.Join(parts, "; ")
 }
@@ -668,8 +674,16 @@ func foundTriState(st embedded.StatisticsStatus) *bool {
 // operator wrote, at the rendering boundary and nowhere earlier.
 //
 // Metadata and the collector both key by storage names — a table quoted as
-// "MY$TABLE" is stored as MY__1TABLE — and every operator-facing surface here
-// was copying those keys verbatim. That names a table the operator does not
+// "MY$TABLE" is stored as MY__1TABLE — and the operator-facing surfaces in this
+// file were copying those keys verbatim.
+//
+// NOT every name reaching this file is storage-keyed, and the difference is not
+// visible by looking. StatisticsStatus.AmbiguousTypes is ALREADY decoded, at its
+// source in RecordMetaData.AmbiguousDeclaredNames, so passing it through here
+// would decode twice -- and ToUserIdentifier is NOT idempotent:
+// MY__01TABLE -> MY__1TABLE -> MY$TABLE, pinned by
+// TestToUserIdentifierIsNotIdempotent. A second decode does not fail, it renames
+// the table. Check the field's documented namespace before wrapping it. That names a table the operator does not
 // have, and `per_type` is a documented interface, so a script keying by table
 // name silently misses rather than failing.
 //
@@ -693,6 +707,12 @@ func userNames(storage []string) []string {
 }
 
 // userKeyed is userName over a map's keys.
+// Two distinct storage keys CAN decode to the same user identifier -- that is
+// exactly the collision StatisticsAmbiguousNames refuses -- and this map would
+// silently keep one of them. It is unreachable rather than handled: the
+// ambiguity gate refuses such a schema before any of these renderers run, so a
+// colliding pair never reaches a report. If that gate is ever relaxed, this
+// collapses two tables into one row and says nothing.
 func userKeyed[V any](m map[string]V) map[string]V {
 	if m == nil {
 		return nil

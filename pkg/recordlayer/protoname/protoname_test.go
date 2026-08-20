@@ -100,3 +100,41 @@ func TestToProtoBufCompliantName_CollisionWitnesses(t *testing.T) {
 		}
 	}
 }
+
+// ToUserIdentifier IS NOT IDEMPOTENT, and that is a hazard rather than a quirk.
+//
+// Decoding twice CORRUPTS any name whose decoded form is itself a valid escape:
+//
+//	MY__01TABLE -> MY__1TABLE -> MY$TABLE
+//
+// So a value's namespace has to be tracked, not inferred. A struct carrying some
+// fields in storage names and others already decoded is a trap for the next
+// caller, who cannot tell them apart by looking and gets no error when wrong —
+// just a different table name.
+//
+// Pinned because a decision rests on it: statistics diagnostics document the
+// namespace per field instead of decoding defensively at every consumer.
+func TestToUserIdentifierIsNotIdempotent(t *testing.T) {
+	t.Parallel()
+
+	// The load-bearing case: two decodes give a DIFFERENT answer than one.
+	const doubleEscaped = "MY__01TABLE"
+	once := ToUserIdentifier(doubleEscaped)
+	twice := ToUserIdentifier(once)
+	if once == twice {
+		t.Fatalf("ToUserIdentifier is idempotent for %q (%q), so the per-field namespace "+
+			"documentation it justifies is unnecessary — check whether the escaping "+
+			"changed", doubleEscaped, once)
+	}
+	if once != "MY__1TABLE" || twice != "MY$TABLE" {
+		t.Errorf("decode chain = %q -> %q, want MY__1TABLE -> MY$TABLE", once, twice)
+	}
+
+	// And the cases where it IS stable, so the hazard is known to be narrow
+	// rather than assumed to be everywhere.
+	for _, stable := range []string{"MY$TABLE", "PLAIN", "MY__1TABLE"} {
+		if got := ToUserIdentifier(ToUserIdentifier(stable)); got != ToUserIdentifier(stable) {
+			t.Errorf("%q is not stable under a second decode: %q", stable, got)
+		}
+	}
+}

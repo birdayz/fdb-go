@@ -704,6 +704,9 @@ func TestStats_EveryNotFoundRefusalIsClassified(t *testing.T) {
 		{embedded.StatisticsTorn, false, true},
 		{embedded.StatisticsReadFailed, false, false},
 		{embedded.StatisticsSyntheticTypes, false, false},
+		// Same as synthetic: decided from metadata without a read, so it may not
+		// claim absence, and collection cannot repair it either.
+		{embedded.StatisticsAmbiguousNames, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.refusal), func(t *testing.T) {
@@ -947,6 +950,10 @@ func TestStats_ShowJSONFoundIsTriState(t *testing.T) {
 		{"absent", embedded.StatisticsStatus{Refusal: embedded.StatisticsNotCollected}, false},
 		{"torn: entries WERE read", embedded.StatisticsStatus{Refusal: embedded.StatisticsTorn}, true},
 		{"read failed: unknown", embedded.StatisticsStatus{Refusal: embedded.StatisticsReadFailed}, nil},
+		// Ambiguity joined the unknown set when its verdict stopped paying a read.
+		// Without this case, dropping it from the nil arm restores `found: false` --
+		// the known-absence lie -- with the whole package still green.
+		{"ambiguous: never looked", embedded.StatisticsStatus{Refusal: embedded.StatisticsAmbiguousNames}, nil},
 		{"synthetic preflight: never looked", embedded.StatisticsStatus{Refusal: embedded.StatisticsSyntheticTypes}, nil},
 		// Expired/incomplete DID read a set, so existence is known true.
 		{"expired", embedded.StatisticsStatus{Refusal: embedded.StatisticsExpired, Found: true}, true},
@@ -975,7 +982,9 @@ func TestStats_ShowJSONFoundIsTriState(t *testing.T) {
 // than failing, which is the worse direction.
 //
 // Only the AMBIGUOUS pair was decoded when that gate was added: the copy in
-// front of me, not the class. This covers the class.
+// front of me, not the class. This covers the SHOW path; the collect path has
+// its own test, because when this one claimed to "cover the class" the collect
+// decode could be reverted entirely with the suite still green.
 func TestStats_OperatorFacingNamesAreDecoded(t *testing.T) {
 	t.Parallel()
 
@@ -1035,4 +1044,84 @@ func TestStats_OperatorFacingNamesAreDecoded(t *testing.T) {
 			}
 		})
 	}
+}
+
+// THE COLLECT PATH DECODES TOO — REPORT BODY AND ERROR BANNER ALIKE.
+//
+// Reverting every decode in renderCollectReport left the suite green, because
+// the name test drove only renderStatsStatus while its comment claimed to cover
+// the class. Two surfaces, one of them tested, is the shape this whole PR exists
+// to fix.
+//
+// The banner matters as much as the body: on an aborted run they print three
+// lines apart, so leaving one raw showed MY$TABLE in the not-collected block and
+// MY__1TABLE in the error beneath it — one table, two spellings, same output.
+func TestStats_CollectPathDecodesNames(t *testing.T) {
+	t.Parallel()
+
+	const storage, sql = "MY__1TABLE", "MY$TABLE"
+	if recordlayer.ToUserIdentifier(storage) != sql {
+		t.Fatalf("fixture is wrong: %q does not decode to %q", storage, sql)
+	}
+
+	render := func(t *testing.T, format string, r *recordlayer.CollectionReport) string {
+		t.Helper()
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderCollectReport(c, format, "/x/MAIN", r, time.Second); err != nil {
+			t.Fatalf("renderCollectReport(%s): %v", format, err)
+		}
+		return buf.String()
+	}
+
+	t.Run("collected body", func(t *testing.T) {
+		t.Parallel()
+		r := &recordlayer.CollectionReport{
+			Collected:      map[string]recordlayer.RecordTypeStatistic{storage: {Count: 7}},
+			Skipped:        map[string]string{},
+			RecordsScanned: 7,
+		}
+		for _, format := range []string{"text", "json"} {
+			out := render(t, format, r)
+			if !strings.Contains(out, sql) {
+				t.Errorf("collect/%s does not name the table by its SQL identifier:\n%s", format, out)
+			}
+			if strings.Contains(out, storage) {
+				t.Errorf("collect/%s leaks the storage name:\n%s", format, out)
+			}
+		}
+	})
+
+	t.Run("skipped body", func(t *testing.T) {
+		t.Parallel()
+		r := &recordlayer.CollectionReport{
+			Collected:      map[string]recordlayer.RecordTypeStatistic{},
+			Skipped:        map[string]string{storage: "exceeds MaxRecordsPerType"},
+			RecordsScanned: 51,
+		}
+		for _, format := range []string{"text", "json"} {
+			out := render(t, format, r)
+			if !strings.Contains(out, sql) {
+				t.Errorf("collect-skipped/%s does not name the table by its SQL "+
+					"identifier:\n%s", format, out)
+			}
+			if strings.Contains(out, storage) {
+				t.Errorf("collect-skipped/%s leaks the storage name:\n%s", format, out)
+			}
+		}
+	})
+
+	t.Run("abort error banner", func(t *testing.T) {
+		t.Parallel()
+		// The banner is built by describeSkippedTypes and printed BELOW an
+		// already-decoded body, so a raw name here contradicts the lines above it.
+		got := describeSkippedTypes(map[string]string{storage: "exceeds MaxRecordsPerType"})
+		if !strings.Contains(got, sql) {
+			t.Errorf("the abort banner does not name the table by its SQL identifier: %s", got)
+		}
+		if strings.Contains(got, storage) {
+			t.Errorf("the abort banner leaks the storage name: %s", got)
+		}
+	})
 }
