@@ -861,6 +861,35 @@ func (m *slidingWindowIndexMaintainer) instrument(event Event, fn func() error) 
 // The unpartitioned case is left to the preflight for exactly that reason —
 // duplicating it here would put a second, useless refusal at the point where
 // refusing no longer helps.
+// canDeleteWhere is the maintainer-local half of Java's canDeleteWhere
+// (:319-326), whose FIRST line is `if (!delegate.canDeleteWhere(...)) return
+// false` — the delegate's own bound has to hold too, and for a vector index
+// that bound is its split point.
+//
+// Forwarding matters here specifically: a window may partition on more columns
+// than the wrapped index has key columns, and then a prefix satisfies the
+// window while naming an HNSW graph that does not exist. Asking the delegate
+// through maintainerAs keeps the decorator's answer equal to its delegate's.
+//
+// The partition-key half of Java's check needs the metadata (which primary-key
+// columns the prefix covers) and lives in checkSlidingWindowDeleteWhere, called
+// from the same preflight.
+func (m *slidingWindowIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
+	if d, ok := maintainerAs[deleteWhereCapable](m.delegate); ok {
+		if err := d.canDeleteWhere(prefix); err != nil {
+			return err
+		}
+	}
+	if len(prefix) > m.partitionKeyColumnSize {
+		return &SlidingWindowDeleteWhereError{
+			IndexName: m.index.Name,
+			Message: fmt.Sprintf("deleteRecordsWhere prefix size %d exceeds partition key column size %d",
+				len(prefix), m.partitionKeyColumnSize),
+		}
+	}
+	return nil
+}
+
 func (m *slidingWindowIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 	if len(prefix) > m.partitionKeyColumnSize {
 		return &SlidingWindowDeleteWhereError{

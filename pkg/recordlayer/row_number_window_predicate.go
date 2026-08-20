@@ -327,13 +327,15 @@ func validateRowNumberWindowPlacement(p *gen.Predicate) error {
 
 // rowNumberWindowValidInConjunctivePath is Java's isValidInConjunctivePath
 // (IndexPredicate.java:247-268).
+// The arms are tested in predicateFromProto's ORDER — composites first — not in
+// Java's source order. Java's version switches on the PARSED predicate, where
+// only one arm can exist; reading the raw proto, a malformed-but-decodable
+// message can set several, and answering from a shadowed one accepts a
+// placement Java rejects (or rejects one it accepts). Same precedence rule as
+// activeRowNumberWindowArm, applied to the whole tree rather than one node.
 func rowNumberWindowValidInConjunctivePath(p *gen.Predicate) bool {
 	switch {
 	case p == nil:
-		return true
-	case p.GetRowNumberWindowPredicate() != nil:
-		return true
-	case p.GetConstantPredicate() != nil, p.GetValuePredicate() != nil:
 		return true
 	case p.GetAndPredicate() != nil:
 		for _, c := range p.GetAndPredicate().GetChildren() {
@@ -352,6 +354,10 @@ func rowNumberWindowValidInConjunctivePath(p *gen.Predicate) bool {
 		return true
 	case p.GetNotPredicate() != nil:
 		return rowNumberWindowAbsent(p.GetNotPredicate().GetChild())
+	case p.GetConstantPredicate() != nil, p.GetValuePredicate() != nil:
+		return true
+	case p.GetRowNumberWindowPredicate() != nil:
+		return true
 	default:
 		return true
 	}
@@ -360,13 +366,11 @@ func rowNumberWindowValidInConjunctivePath(p *gen.Predicate) bool {
 // rowNumberWindowAbsent is Java's hasNoRowNumberWindow
 // (IndexPredicate.java:270-289) — note the Java name states the opposite of
 // what it returns; this one is named for its return value.
+// Arms are tested in predicateFromProto's order, for the reason given on
+// rowNumberWindowValidInConjunctivePath.
 func rowNumberWindowAbsent(p *gen.Predicate) bool {
 	switch {
 	case p == nil:
-		return true
-	case p.GetRowNumberWindowPredicate() != nil:
-		return false
-	case p.GetConstantPredicate() != nil, p.GetValuePredicate() != nil:
 		return true
 	case p.GetAndPredicate() != nil:
 		for _, c := range p.GetAndPredicate().GetChildren() {
@@ -384,6 +388,10 @@ func rowNumberWindowAbsent(p *gen.Predicate) bool {
 		return true
 	case p.GetNotPredicate() != nil:
 		return rowNumberWindowAbsent(p.GetNotPredicate().GetChild())
+	case p.GetConstantPredicate() != nil, p.GetValuePredicate() != nil:
+		return true
+	case p.GetRowNumberWindowPredicate() != nil:
+		return false
 	default:
 		return true
 	}

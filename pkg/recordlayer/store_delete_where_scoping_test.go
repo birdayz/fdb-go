@@ -75,6 +75,123 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("refuses BEFORE clearing when a maintainer cannot serve the prefix", func() {
+		ks := specSubspace()
+
+		// An ungrouped TEXT index refuses any non-empty prefix — once text is
+		// tokenized there is no range that corresponds to one. It used to raise
+		// that refusal from inside DeleteWhere, which DeleteRecordsWhere calls
+		// AFTER queueing the record, version and count clears: a caller that
+		// logged the error and committed lost the record while the index kept
+		// describing it.
+		//
+		// Java asks canDeleteWhere of every maintainer in the deleter's
+		// constructor, before a single range is touched.
+		textIdx := NewTextIndex("customer$name_text", Field("name"))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("name"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Customer", textIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			_, e := store.SaveRecord(&gen.Customer{
+				CustomerId: proto.Int64(1), Name: proto.String("hello world"),
+			})
+			Expect(e).NotTo(HaveOccurred())
+
+			derr := store.DeleteRecordsWhere(tuple.Tuple{"hello world"})
+			Expect(derr).To(HaveOccurred())
+			Expect(derr.Error()).To(ContainSubstring("customer$name_text"))
+
+			// THE RECORD IS STILL THERE. Returning nil commits, which is what a
+			// caller that swallows the error would do.
+			rec, rerr := store.LoadRecord(tuple.Tuple{"hello world"})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil(),
+				"a refused deleteRecordsWhere must not have already deleted the records")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Read it back from FDB after the commit, not from the same transaction.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(serr).NotTo(HaveOccurred())
+			rec, rerr := store.LoadRecord(tuple.Tuple{"hello world"})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil())
+			entries, lerr := AsList(ctx, store.ScanIndexByType(
+				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(2), "hello + world")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("refuses a vector prefix that reaches past the index's key columns", func() {
+		ks := specSubspace()
+
+		// The store-level alignment check normalises a KeyWithValue to its FULL
+		// inner key, so a prefix reaching into the VECTOR columns aligns
+		// positionally and is accepted. getSubspaceForPrefix then addresses a
+		// subspace one level deeper than any graph that exists: the clear hits
+		// nothing, reports success, and the deleted records' HNSW nodes stay
+		// queryable.
+		//
+		// Java bounds it at the split point — KeyWithValueExpression.getColumnSize()
+		// — in canDeleteWhere, and again with a Verify inside deleteWhere.
+		vecIdx := NewVectorIndex("vec_split_bound",
+			KeyWithValue(Concat(Field("quantity"), Field("price"), Field("vector_data")), 1), 3)
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(
+			Concat(Field("quantity"), Field("price"), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			_, e := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Quantity: proto.Int32(7), Price: proto.Int32(10),
+				VectorData: SerializeVector([]float64{1, 2, 3}),
+			})
+			Expect(e).NotTo(HaveOccurred())
+
+			// One column is fine — it is the split point.
+			Expect(vecIdx.RootExpression.ColumnSize()).To(Equal(1))
+
+			// Two reaches past it, into the vector columns.
+			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7), int64(10)})
+			Expect(derr).To(HaveOccurred())
+			Expect(derr.Error()).To(ContainSubstring("vec_split_bound"))
+
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(10), int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil())
+			res, serr2 := store.SearchVectorIndexWithPrefix(vecIdx,
+				tuple.Tuple{int64(7)}, []float64{0, 0, 0}, 10, 100)
+			Expect(serr2).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(1),
+				"nothing may have been cleared, and the node must still be findable")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("scopes the clear when the prefix DOES align with the index's leading columns", func() {
 		ks := specSubspace()
 

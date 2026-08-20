@@ -1242,7 +1242,46 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 // VectorIndexMaintainer.deleteWhere and clears
 // Range.startsWith(indexSubspace.pack(prefix)) — everything under the packed
 // prefix, descendants included.
+// canDeleteWhere is Java's VectorIndexMaintainer.canDeleteWhere (:358-363):
+// beyond the delegate's own alignment check it requires
+// `evaluated.size() <= getKeyWithValueExpression(root).getColumnSize()`, and
+// KeyWithValueExpression.getColumnSize() is the SPLIT POINT — the number of
+// key columns, not the whole expression's width.
+//
+// That bound is the one the store-level alignment check cannot supply. It
+// normalises a KeyWithValue to its FULL inner key (prefix columns AND vector
+// columns), so a prefix reaching into the vector columns aligns positionally
+// and is accepted — while getSubspaceForPrefix then addresses a subspace one
+// level deeper than any graph that exists. The clear hits nothing, returns
+// success, and the deleted records' HNSW nodes stay queryable.
+//
+// A non-KeyWithValue root has no key columns at all: splitPrefixAndVector
+// reads the whole key as the vector and indexes every record under the empty
+// prefix, so any non-empty prefix is unclearable. Java refuses that root shape
+// outright (getKeyWithValueExpression throws); Go accepts it for other
+// operations — a documented divergence — so the bound of zero is what expresses
+// the same refusal here.
+func (m *vectorIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
+	keyColumns := 0
+	if kwv, ok := m.index.RootExpression.(*KeyWithValueExpression); ok {
+		keyColumns = kwv.ColumnSize()
+	}
+	if len(prefix) > keyColumns {
+		return fmt.Errorf(
+			"vector index %q: deleteWhere prefix has %d columns but the index has %d key column(s); "+
+				"a longer prefix names a graph that does not exist, so the clear would silently "+
+				"leave the deleted records' HNSW nodes in place",
+			m.index.Name, len(prefix), keyColumns)
+	}
+	return nil
+}
+
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers — Java's Verify.verify inside deleteWhere
+	// (:366-369). DeleteRecordsWhere asks canDeleteWhere before it clears.
+	if err := m.canDeleteWhere(prefix); err != nil {
+		return err
+	}
 	sub := m.getSubspaceForPrefix(prefix)
 	pr, err := fdb.PrefixRange(sub.Bytes())
 	if err != nil {

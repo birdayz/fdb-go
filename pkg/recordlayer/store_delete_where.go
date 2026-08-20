@@ -179,6 +179,29 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			}
 		}
 
+		// And the general form of the same question, for EVERY maintainer:
+		// Java's deleteRecordsWhereCheckIndexes asks canDeleteWhere of each one
+		// in the deleter's constructor (FDBRecordStore.java:1997-2008), before
+		// any range is touched. Go asked nothing, so three maintainers that
+		// refuse a prefix — TEXT (ungrouped), SPFresh (grouped), and a vector
+		// index whose prefix reaches past its split point — all raised that
+		// refusal from inside DeleteWhere, by which time the records were
+		// already cleared on this transaction.
+		//
+		// Constructing the maintainer here is deliberate and matches Java,
+		// which builds every maintainer in that same constructor: an index whose
+		// maintainer cannot be built is one whose entries cannot be cleared, and
+		// discovering that before the clear is the whole point.
+		maintainer, mErr := store.getIndexMaintainer(idx)
+		if mErr != nil {
+			return mErr
+		}
+		if checker, ok := maintainerAs[deleteWhereCapable](maintainer); ok {
+			if err := checker.canDeleteWhere(idxPrefix); err != nil {
+				return fmt.Errorf("deleteRecordsWhere: %w", err)
+			}
+		}
+
 		actions = append(actions, indexAction{index: idx, prefix: idxPrefix})
 	}
 

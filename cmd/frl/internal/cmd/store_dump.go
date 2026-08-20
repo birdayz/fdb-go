@@ -29,6 +29,7 @@ var subspaceLabel = map[int64]string{
 	recordlayer.IndexUniquenessViolationsKey: "uniq-violations",
 	recordlayer.RecordVersionKey:             "record-version",
 	recordlayer.IndexBuildSpaceKey:           "index-build",
+	recordlayer.IndexSlidingWindowSpaceKey:   "sliding-window",
 }
 
 func newStoreDumpCmd() *cobra.Command {

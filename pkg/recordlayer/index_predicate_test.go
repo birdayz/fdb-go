@@ -1747,3 +1747,65 @@ func TestRowNumberWindowArmPrecedenceInsideAndChildren(t *testing.T) {
 		t.Errorf("maintainer lookup read through a shadowed AND child: %v", got.GetOrderingField())
 	}
 }
+
+// TestRowNumberWindowPlacementFollowsArmOrder extends the precedence rule to
+// the PLACEMENT validator, which walks the whole tree rather than one node.
+//
+// Java's isValidInConjunctivePath switches on the PARSED predicate, where only
+// one arm exists. Reading the raw proto, a malformed-but-decodable message can
+// set several — and testing the row-window arm before the composite ones
+// answers about an arm the evaluator never runs, so Go can accept a placement
+// Java rejects and persist metadata Java cannot open.
+func TestRowNumberWindowPlacementFollowsArmOrder(t *testing.T) {
+	t.Parallel()
+
+	window := &gen.RowNumberWindowPredicate{
+		OrderingField: []string{"score"},
+		Size:          proto.Int32(5),
+		Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+	}
+	windowArm := func() *gen.Predicate {
+		return &gen.Predicate{RowNumberWindowPredicate: window}
+	}
+
+	// An OR carrying a window below it, on a node that ALSO sets a row-window
+	// arm of its own. Dispatch order decides everything: OR first means "look
+	// below and refuse"; row-window first means "this is a window, accept".
+	shadowingOr := &gen.Predicate{
+		OrPredicate:              &gen.OrPredicate{Children: []*gen.Predicate{windowArm()}},
+		RowNumberWindowPredicate: window,
+	}
+	if err := validateRowNumberWindowPlacement(shadowingOr); err == nil {
+		t.Error("a window under an OR was accepted because a shadowed row-window arm " +
+			"was tested first; Java parses this node as an OR and refuses")
+	}
+
+	// Same shape under a NOT, which is the other arm that must look below.
+	shadowingNot := &gen.Predicate{
+		NotPredicate:             &gen.NotPredicate{Child: windowArm()},
+		RowNumberWindowPredicate: window,
+	}
+	if err := validateRowNumberWindowPlacement(shadowingNot); err == nil {
+		t.Error("a window under a NOT was accepted because a shadowed row-window arm was tested first")
+	}
+
+	// The well-formed cases are unchanged: a bare window is fine, and one
+	// genuinely under an OR is refused.
+	if err := validateRowNumberWindowPlacement(windowArm()); err != nil {
+		t.Errorf("a bare row-window arm must be a valid placement: %v", err)
+	}
+	trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_TRUE.Enum(),
+	}}
+	underOr := &gen.Predicate{OrPredicate: &gen.OrPredicate{
+		Children: []*gen.Predicate{trueArm, windowArm()},
+	}}
+	if err := validateRowNumberWindowPlacement(underOr); err == nil {
+		t.Error("a window genuinely under an OR must be refused")
+	}
+	if err := validateRowNumberWindowPlacement(&gen.Predicate{
+		AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{windowArm(), trueArm}},
+	}); err != nil {
+		t.Errorf("a window on a pure conjunctive path must be accepted: %v", err)
+	}
+}

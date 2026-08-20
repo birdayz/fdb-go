@@ -440,12 +440,23 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 //
 // For non-grouped TEXT indexes, only an empty prefix (clear everything) is
 // allowed. For grouped TEXT indexes, the prefix must match the grouping columns.
-func (m *textIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	// Validate prefix alignment with grouping key.
-	// Java's canDeleteWhere → canDeleteGroup requires GroupingKeyExpression
-	// and validates that the prefix aligns with the grouping columns.
+
+// canDeleteWhere is Java's TextIndexMaintainer.canDeleteWhere, which delegates
+// to canDeleteGroup: once text is tokenized there is no efficient way to remove
+// documents from within a grouped part, so only a grouping-aligned prefix (or
+// none at all) can be range-cleared.
+func (m *textIndexMaintainer) canDeleteWhere(prefix tuple.Tuple) error {
 	if _, ok := m.index.RootExpression.(*GroupingKeyExpression); !ok && len(prefix) > 0 {
 		return fmt.Errorf("TEXT index %q is not grouped; deleteWhere requires empty prefix", m.index.Name)
+	}
+	return nil
+}
+
+func (m *textIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks canDeleteWhere
+	// BEFORE it clears anything, which is where this refusal actually helps.
+	if err := m.canDeleteWhere(prefix); err != nil {
+		return err
 	}
 	// Clear index entries using PrefixRange to include the exact prefix key
 	// (matching Java's Range.startsWith pattern).

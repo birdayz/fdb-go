@@ -48,6 +48,29 @@ type IndexMaintainer interface {
 	DeleteWhere(prefix tuple.Tuple) error
 }
 
+// deleteWhereCapable is implemented by maintainers that can REFUSE a
+// deleteRecordsWhere prefix — the Go form of Java's
+// IndexMaintainer.canDeleteWhere (IndexMaintainer.java), which
+// deleteRecordsWhereCheckIndexes asks of EVERY maintainer in the deleter's
+// constructor, before a single range is cleared (FDBRecordStore.java:1997-2008).
+//
+// WHERE the question is asked is the whole point, and it is not a detail that
+// can be left to DeleteWhere. DeleteRecordsWhere queues the record, version and
+// count clears BEFORE calling any maintainer, so a refusal raised inside
+// DeleteWhere arrives after the records are already gone from the transaction:
+// a caller that logs the error and commits anyway loses the records while the
+// index keeps describing them. Every refusal therefore belongs here, and the
+// matching check inside DeleteWhere stays only as a backstop for direct callers
+// — which is exactly the split Java has between canDeleteWhere and the
+// Verify.verify inside deleteWhere.
+//
+// The interface is OPTIONAL: a maintainer that can clear any prefix simply does
+// not implement it. It is reached through maintainerAs so a decorator cannot
+// hide its delegate's answer.
+type deleteWhereCapable interface {
+	canDeleteWhere(prefix tuple.Tuple) error
+}
+
 // indexStoreContext provides the store methods needed by index maintainers.
 // Avoids circular dependency by using an interface instead of *FDBRecordStore directly.
 type indexStoreContext interface {
