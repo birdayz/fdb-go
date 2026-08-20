@@ -108,6 +108,26 @@ CREATE INDEX orders_total_by_cust AS SELECT SUM(total) FROM orders GROUP BY cust
 			"one per query means the walk is not reaching leaves and the count below "+
 			"is vacuous", leaves, planned)
 	}
+	// AND THE EXACT COUNT, because the floor above is not a guard against plan
+	// RESHAPING. It tolerates 15 of these 23, so a master merge that changes which
+	// physical leaves the corpus produces -- a new distinct-over-union dedup, a
+	// push-distinct-through-fetch, an in-to-explode rewrite -- would be absorbed
+	// silently, and the census would keep reporting a clean bill over a population
+	// it no longer describes. That is the shape where a number stops being true
+	// without ever looking wrong.
+	//
+	// A change here is not a failure, it is a NOTIFICATION: the corpus plans
+	// differently than when this was written. Re-read the plans, satisfy yourself
+	// the new shapes are still typed, and update the number in the same commit
+	// that reshaped them.
+	const wantLeaves = 23
+	if leaves != wantLeaves {
+		t.Errorf("the corpus now produces %d scan/index leaves, not %d. The plans have "+
+			"RESHAPED -- which may be correct, and is not asserted against here. What "+
+			"is asserted is that it does not happen silently: confirm the new shapes "+
+			"are still typed and update wantLeaves in the same change",
+			leaves, wantLeaves)
+	}
 	// The aggregate class is the one this walk was blind to: GetChildren() returns
 	// nil and the index scan is a field. If the corpus stops producing one, the
 	// class silently leaves the census exactly as it was absent before.
