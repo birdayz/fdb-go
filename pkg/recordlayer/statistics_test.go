@@ -1154,12 +1154,17 @@ var _ = Describe("CollectStatistics", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		_, ok, err = ReadStatistics(ctx, sharedDB, stats, sub)
+		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(ok).To(BeFalse(),
-			"a set carrying one more entry than its header recorded was returned as "+
-				"usable — the reader vouched for a set it did not assemble from a "+
-				"single consistent write")
+		// Asserting the REASON, not ok==false. Seven arms render as ok==false, so
+		// that assertion cannot say WHICH one fired -- and this very check was
+		// found dead because a later arm refused this fixture first while the
+		// spec kept passing.
+		Expect(refusal).To(Equal(StatisticsReadCountMismatch),
+			"a set carrying one more entry than its header recorded must be refused "+
+				"for THAT reason — the reader vouched for a set it did not assemble "+
+				"from a single consistent write, or refused it for another reason, "+
+				"which leaves the count check unpinned")
 	})
 
 	// THE WRITER OWNS BOTH STAMPS, NOT ITS CALLERS.
@@ -1252,12 +1257,12 @@ var _ = Describe("CollectStatistics", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		after, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(ok).To(BeFalse(),
-			"an entry stamped from a different run was returned as usable — the "+
-				"freshness gate reads only the header, so it would judge that stale "+
-				"count fresh (read back Count=%d)", after.PerType["Order"].Count)
+		Expect(refusal).To(Equal(StatisticsReadVersionMismatch),
+			"an entry stamped from a different run must be refused for the VERSION "+
+				"reason specifically — the freshness gate reads only the header, so it "+
+				"would otherwise judge that stale count fresh")
 	})
 
 	// THE OTHER HALF OF THE STAMP CHECK.
@@ -1293,12 +1298,79 @@ var _ = Describe("CollectStatistics", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		after, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(ok).To(BeFalse(),
-			"an entry whose TIMESTAMP differs from the header was accepted — the "+
-				"version arm alone was carrying this check, so half of it was never "+
-				"exercised (read back version=%d)", after.PerType["Order"].CollectedAtVersion)
+		Expect(refusal).To(Equal(StatisticsReadTimestampMismatch),
+			"an entry whose TIMESTAMP differs from the header must be refused for "+
+				"THAT reason — the version arm alone was carrying this check once "+
+				"already, so half of it went unexercised")
+	})
+
+	// THE TWO KEY ARMS THAT NOTHING DROVE.
+	//
+	// ReadStatisticsAtWithRefusal declines eight ways. Extending the mutation
+	// matrix over all of them — one arm neutered at a time, each required to
+	// redden exactly its own spec — found these two reddening NOTHING: an entry
+	// key that does not unpack to a single element, and a single element that is
+	// neither the header integer nor a record-type string.
+	//
+	// Both are corruption or a newer writer's layout, and both used to fail OPEN
+	// in an earlier revision of this reader, which is the direction that hands a
+	// partial set to a caller with no completeness gate. An arm nothing drives
+	// fires for the first time in front of an operator.
+	It("refuses an entry key that does not unpack to one element", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 4, 2)
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(refusal).To(Equal(StatisticsReadOK),
+			"the set was already refused, so the arm below is not what this pins")
+
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			// TWO elements: unpacks cleanly, but no entry has this shape.
+			rtx.Transaction().Set(target.Pack(tuple.Tuple{"Order", int64(2)}),
+				packStatistic(RecordTypeStatistic{Count: 1}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, refusal, _, err = ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(refusal).To(Equal(StatisticsReadUndecodableKey),
+			"a key this build cannot parse must refuse the SET, and for that reason — "+
+				"skipping it returns the rest as complete, which is the partial answer "+
+				"the all-or-nothing contract exists to forbid")
+	})
+
+	It("refuses an entry key that is neither the header nor a record type", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 4, 2)
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			// A FLOAT element: one element, unpacks fine, and neither the header
+			// integer nor a record-type name.
+			rtx.Transaction().Set(target.Pack(tuple.Tuple{1.5}),
+				packStatistic(RecordTypeStatistic{Count: 1}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(refusal).To(Equal(StatisticsReadNonStringKey),
+			"a key element that is neither the header integer nor a record-type "+
+				"string must refuse the SET, and for that reason")
 	})
 
 	// A MALFORMED ENTRY POISONS THE WHOLE SET.
@@ -1328,12 +1400,19 @@ var _ = Describe("CollectStatistics", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		got, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		got, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(ok).To(BeFalse(),
-			"one undecodable entry must reject the SET. Returning the rest with ok=true "+
-				"is a partial answer wearing a complete one's shape, and a record-layer "+
-				"caller has no completeness gate to catch it")
+		// THE DECODE ARM SPECIFICALLY. Asserting ok==false left this check dead:
+		// a garbage value decodes to a ZERO-VALUED statistic, whose version and
+		// nanos are 0, so the stamp check refused it first and this spec passed
+		// for that reason instead. No fixture can fix that -- an undecodable entry
+		// has no stamps BY CONSTRUCTION, so the decode arm can never be the only
+		// arm able to refuse. Naming the reason is the only thing that can.
+		Expect(refusal).To(Equal(StatisticsReadUndecodableValue),
+			"one undecodable entry must reject the SET for the DECODE reason. "+
+				"Returning the rest with ok=true is a partial answer wearing a "+
+				"complete one's shape; refusing for a different reason leaves the "+
+				"decode arm unpinned, which is how it was found dead")
 		Expect(got.PerType).To(BeEmpty())
 	})
 })

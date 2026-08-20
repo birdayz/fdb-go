@@ -648,6 +648,52 @@ func ReadStatistics(
 	return out, ok, err
 }
 
+// StatisticsReadRefusal names WHY a statistics read produced no usable set.
+//
+// It exists because a bool cannot: ReadStatisticsAt has seven distinct ways to
+// decline, and collapsing them into ok=false made the refusals
+// INDISTINGUISHABLE TO TESTS. Two separate checks were found dead that way --
+// each pinned by a spec asserting ok==false, each silently superseded by a
+// later check that refused the same fixture first, and nothing went red at the
+// moment either was superseded. Fixtures cannot fix that: an undecodable entry
+// has no stamps BY CONSTRUCTION, so no fixture can make the decode arm the only
+// thing able to refuse it.
+//
+// Asserting the REASON makes the mutation matrix diagonal by construction, and
+// means the next arm added cannot inherit an older arm's test.
+type StatisticsReadRefusal string
+
+const (
+	// StatisticsReadOK — a usable set.
+	StatisticsReadOK StatisticsReadRefusal = ""
+	// StatisticsReadNoHeader — no header entry, so there is nothing to vouch
+	// for. Also the ordinary "never collected" case.
+	StatisticsReadNoHeader StatisticsReadRefusal = "no header entry"
+	// StatisticsReadUndecodableKey — an entry key this build cannot parse.
+	StatisticsReadUndecodableKey StatisticsReadRefusal = "entry key could not be decoded"
+	// StatisticsReadUnknownIntegerKey — an integer key that is not THE header;
+	// record-type names are strings, so this is corruption or a newer layout.
+	StatisticsReadUnknownIntegerKey StatisticsReadRefusal = "unknown integer entry key"
+	// StatisticsReadNonStringKey — a key element that is neither the header
+	// integer nor a record-type string.
+	StatisticsReadNonStringKey StatisticsReadRefusal = "entry key is neither header nor record type"
+	// StatisticsReadUndecodableValue — an entry value this build cannot decode.
+	StatisticsReadUndecodableValue StatisticsReadRefusal = "entry value could not be decoded"
+	// StatisticsReadCountMismatch — more or fewer entries than the header says
+	// the write put down.
+	StatisticsReadCountMismatch StatisticsReadRefusal = "entry count disagrees with the header"
+	// StatisticsReadVersionMismatch — an entry carrying a version that is not
+	// the header's, so it came from a different collection run.
+	StatisticsReadVersionMismatch StatisticsReadRefusal = "entry version disagrees with the header"
+	// StatisticsReadTimestampMismatch — same, for the timestamp. SPLIT from the
+	// version case deliberately: they are two arms of one condition, and a
+	// single shared reason would leave their specs unable to tell each other
+	// apart -- which is the exact confound this type exists to remove. The
+	// timestamp arm shipped undriven once already because the only spec covering
+	// the pair moved the version.
+	StatisticsReadTimestampMismatch StatisticsReadRefusal = "entry timestamp disagrees with the header"
+)
+
 // ReadStatisticsAt is ReadStatistics plus the cluster version the read was
 // taken at, from the SAME transaction.
 //
@@ -656,18 +702,18 @@ func ReadStatistics(
 // relative to each other. Reading them together also removes a real (if narrow)
 // window in which the entry could be replaced between the two reads, which
 // would compare one run's stamp against a version drawn after another run.
-func ReadStatisticsAt(
+func ReadStatisticsAtWithRefusal(
 	ctx context.Context,
 	db *FDBDatabase,
 	stats StatisticsSubspace,
 	storeSubspace subspace.Subspace,
 	tags ...string,
-) (StoreStatistics, bool, int64, error) {
+) (StoreStatistics, StatisticsReadRefusal, int64, error) {
 	target := stats.forStore(storeSubspace)
 	var out StoreStatistics
 	var found bool
 	var readVersion int64
-	var malformed bool
+	var refusal StatisticsReadRefusal
 	// headerTypeCount is the entry count the WRITE recorded; it is compared with
 	// what this read actually assembled. Reset per attempt with everything else.
 	var headerTypeCount int64
@@ -687,7 +733,7 @@ func ReadStatisticsAt(
 		out = StoreStatistics{PerType: make(map[string]RecordTypeStatistic)}
 		found = false
 		readVersion = 0
-		malformed = false
+		refusal = StatisticsReadOK
 		headerTypeCount = 0
 		// Propagate rather than swallow: the freshness gate turns a missing
 		// version into a refusal either way, but an operator asking WHY wants
@@ -711,7 +757,7 @@ func ReadStatisticsAt(
 				// cannot parse is a set it cannot vouch for, and skipping it
 				// returns the rest with ok=true — the partial answer the
 				// all-or-nothing contract exists to forbid.
-				malformed = true
+				refusal = StatisticsReadUndecodableKey
 				return nil, nil
 			}
 			// The header is discriminated by tuple ELEMENT TYPE, not by a
@@ -728,14 +774,14 @@ func ReadStatisticsAt(
 					// type — names are strings — so it is corruption or a newer
 					// writer's layout. Skipping it and returning the rest is the
 					// same partial answer a malformed value would give.
-					malformed = true
+					refusal = StatisticsReadUnknownIntegerKey
 					return nil, nil
 				}
 				isHeader = true
 			}
 			name, isStr := key[0].(string)
 			if !isHeader && !isStr {
-				malformed = true
+				refusal = StatisticsReadNonStringKey
 				return nil, nil
 			}
 			st, ok := unpackStatistic(kv.Value)
@@ -745,7 +791,7 @@ func ReadStatisticsAt(
 				// PARTIAL map with ok=true — the shape the completeness gate is
 				// built to make impossible, handed to it pre-broken. A caller
 				// below the relational layer has no gate at all.
-				malformed = true
+				refusal = StatisticsReadUndecodableValue
 				return nil, nil
 			}
 			if isHeader {
@@ -760,19 +806,19 @@ func ReadStatisticsAt(
 		return nil, nil
 	})
 	if err != nil {
-		return StoreStatistics{}, false, 0, err
+		return StoreStatistics{}, StatisticsReadOK, 0, err
 	}
 	// The HEADER is what makes a set usable. Per-type entries without it are a
 	// torn or hand-written state, and the run's own stamps are what expiry is
 	// judged on.
-	if malformed {
+	if refusal != StatisticsReadOK {
 		// All-or-nothing: a set with an entry this build cannot read is not a
 		// usable set, and reporting the rest of it would be a partial answer
 		// wearing a complete one's shape.
-		return StoreStatistics{}, false, readVersion, nil
+		return StoreStatistics{}, refusal, readVersion, nil
 	}
 	if !found {
-		return StoreStatistics{}, false, readVersion, nil
+		return StoreStatistics{}, StatisticsReadNoHeader, readVersion, nil
 	}
 	// THE HEADER SAYS HOW MANY PER-TYPE ENTRIES THE WRITE PUT DOWN, so a read
 	// that returns a different number returned a DIFFERENT SET than was written.
@@ -794,7 +840,7 @@ func ReadStatisticsAt(
 	// header and entries in one transaction. A diagnosis that points at the right
 	// fix is worth more than a finer one that does not.
 	if int64(len(out.PerType)) != headerTypeCount {
-		return StoreStatistics{}, false, readVersion, nil
+		return StoreStatistics{}, StatisticsReadCountMismatch, readVersion, nil
 	}
 	// EVERY ENTRY MUST CARRY THE HEADER'S OWN STAMPS.
 	//
@@ -810,12 +856,14 @@ func ReadStatisticsAt(
 	// is the all-or-nothing contract broken in the one direction the gates above
 	// cannot see, because every one of them is looking at the header.
 	for _, st := range out.PerType {
-		if st.CollectedAtVersion != out.CollectedAtVersion ||
-			st.CollectedAtUnixNanos != out.CollectedAtUnixNanos {
-			return StoreStatistics{}, false, readVersion, nil
+		if st.CollectedAtVersion != out.CollectedAtVersion {
+			return StoreStatistics{}, StatisticsReadVersionMismatch, readVersion, nil
+		}
+		if st.CollectedAtUnixNanos != out.CollectedAtUnixNanos {
+			return StoreStatistics{}, StatisticsReadTimestampMismatch, readVersion, nil
 		}
 	}
-	return out, true, readVersion, nil
+	return out, StatisticsReadOK, readVersion, nil
 }
 
 // ClearStatistics removes a store's statistics.
@@ -836,4 +884,23 @@ func ClearStatistics(
 		return nil, nil
 	})
 	return err
+}
+
+// ReadStatisticsAt is ReadStatisticsAtWithRefusal reduced to a boolean, for
+// callers that only need to know whether the set is usable.
+//
+// Every caller that ASSERTS on a refusal must use the WithRefusal form. A bool
+// cannot distinguish the seven ways this read declines, and two checks were
+// found dead precisely because their specs asserted ok==false: a later check
+// refused the same fixture first, and the earlier one stopped being exercised
+// with nothing going red at the moment it happened.
+func ReadStatisticsAt(
+	ctx context.Context,
+	db *FDBDatabase,
+	stats StatisticsSubspace,
+	storeSubspace subspace.Subspace,
+	tags ...string,
+) (StoreStatistics, bool, int64, error) {
+	out, refusal, version, err := ReadStatisticsAtWithRefusal(ctx, db, stats, storeSubspace, tags...)
+	return out, err == nil && refusal == StatisticsReadOK, version, err
 }
