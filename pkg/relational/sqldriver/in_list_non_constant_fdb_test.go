@@ -45,17 +45,25 @@ import (
 // from the twin above because the join shape has nothing to do with indexes —
 // what it measures is whether the ON predicate is APPLIED, and a second schema
 // would only double the setup.
-func openParenDB(t *testing.T) *sql.DB {
+func openParenDB(t *testing.T) *sql.DB { return openInJoinDB(t, "/testdb_in_join", "injoin_t") }
+
+// openParenDB2 is the same fixture under a distinct database path. Each arm
+// gets its own so the two can run in parallel without one's INSERTs being
+// visible to the other's assertions — a shared path would make the row counts
+// depend on scheduling.
+func openParenDB2(t *testing.T) *sql.DB { return openInJoinDB(t, "/testdb_in_param", "inparam_t") }
+
+func openInJoinDB(t *testing.T, dbPath, template string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
-	setup := openTestDB(t, "/testdb_in_join")
-	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_in_join")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE injoin_t "+
+	setup := openTestDB(t, dbPath)
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE "+dbPath)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE "+template+" "+
 		"CREATE TABLE l (id BIGINT, x BIGINT, PRIMARY KEY (id)) "+
 		"CREATE TABLE r (id BIGINT, y BIGINT, lo BIGINT, PRIMARY KEY (id))")
-	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_join/s WITH TEMPLATE injoin_t")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA "+dbPath+"/s WITH TEMPLATE "+template)
 	db, err := sql.Open("fdbsql",
-		fmt.Sprintf("fdbsql:///testdb_in_join?cluster_file=%s&schema=s", clusterFilePath))
+		fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=s", dbPath, clusterFilePath))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -183,6 +191,62 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 		if !mmEqRows(gotWhere, want) {
 			t.Fatalf("the ON and WHERE spellings of the same cross-table IN disagree\n"+
 				"  ON   : %v\n  WHERE: %v", got, gotWhere)
+		}
+	})
+
+	// A PREPARED PARAMETER among the IN items.
+	//
+	// This arm exists because the non-constant fork CHANGED the behaviour here
+	// and nothing in the tree covered it — there was no parameterized IN test
+	// at all. IsConstantValue returns false for a ParameterValue, so
+	// `x IN (?, 999)` no longer takes the plan-time fold; it becomes the same
+	// runtime array a column item does. Before the fork it was a clean
+	// resolution error.
+	//
+	// Whether that is a capability gained or a silent wrong answer turns on one
+	// thing: does a parameter RESOLVE at row-evaluation time?
+	// ParameterValue.Evaluate binds from its eval context only when that
+	// context implements ParameterBinder and returns (nil, nil) otherwise — the
+	// same shape as fieldValue, and therefore the same hazard, since an unbound
+	// parameter would read as a NULL item and the query would answer as though
+	// nothing had been supplied.
+	//
+	// So the assertion is the DISCRIMINATING one rather than the obvious one:
+	// the same query is run twice with DIFFERENT bindings and must give
+	// DIFFERENT answers. An unbound parameter gives the same empty answer both
+	// times, which a single-binding test would have happily accepted.
+	t.Run("a prepared parameter among the items", func(t *testing.T) {
+		pdb := openParenDB2(t)
+		mwjoMustExec(t, pdb, ctx, "INSERT INTO l (id, x) VALUES (1, 5), (2, 10), (3, 7)")
+
+		scanIDs := func(q string, args ...any) ([]string, error) {
+			rows, err := pdb.QueryContext(ctx, q, args...)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+			var out []string
+			for rows.Next() {
+				var id int64
+				if err := rows.Scan(&id); err != nil {
+					return nil, err
+				}
+				out = append(out, fmt.Sprint(id))
+			}
+			return out, rows.Err()
+		}
+
+		const q = "SELECT id FROM l WHERE x IN (?, 999) ORDER BY id"
+		got5, err5 := scanIDs(q, int64(5))
+		got10, err10 := scanIDs(q, int64(10))
+		if err5 != nil || err10 != nil {
+			t.Fatalf("a parameterized IN list failed to run\n  ?=5 : %v\n  ?=10: %v", err5, err10)
+		}
+		if !mmEqRows(got5, []string{"1"}) || !mmEqRows(got10, []string{"2"}) {
+			t.Fatalf("a parameterized IN item does not track its binding\n"+
+				"  ?=5  got %v want [1]\n  ?=10 got %v want [2]\n"+
+				"  (the SAME answer for both bindings means the parameter is not resolving at "+
+				"row-evaluation time and is being read as NULL)", got5, got10)
 		}
 	})
 
