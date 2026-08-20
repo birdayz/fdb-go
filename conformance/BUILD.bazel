@@ -116,6 +116,7 @@ go_test(
         "nested_groupby_key_java_probe_test.go",
         "nesting_index_conformance_test.go",
         "online_indexer_conformance_test.go",
+        "or_union_dedup_java_probe_test.go",
         "orphan_jvm_regression_test.go",
         "paren_flatten_java_probe_test.go",
         "paren_star_java_probe_test.go",
