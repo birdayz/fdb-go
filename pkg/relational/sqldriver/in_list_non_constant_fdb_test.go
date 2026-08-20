@@ -53,6 +53,26 @@ func openParenDB(t *testing.T) *sql.DB { return openInJoinDB(t, "/testdb_in_join
 // depend on scheduling.
 func openParenDB2(t *testing.T) *sql.DB { return openInJoinDB(t, "/testdb_in_param", "inparam_t") }
 
+// openUUIDInDB builds a single-table fixture pairing a UUID column with a
+// STRING column, which is the only way to get a NON-CONSTANT item whose type
+// needs converting before it can be compared with the left operand.
+func openUUIDInDB(t *testing.T) *sql.DB {
+	t.Helper()
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_in_uuid")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_in_uuid")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA TEMPLATE inuuid_t "+
+		"CREATE TABLE u (id BIGINT, uu UUID, us STRING, PRIMARY KEY (id))")
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_in_uuid/s WITH TEMPLATE inuuid_t")
+	db, err := sql.Open("fdbsql",
+		fmt.Sprintf("fdbsql:///testdb_in_uuid?cluster_file=%s&schema=s", clusterFilePath))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
 func openInJoinDB(t *testing.T, dbPath, template string) *sql.DB {
 	t.Helper()
 	ctx := context.Background()
@@ -194,28 +214,29 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 		}
 	})
 
-	// A PREPARED PARAMETER among the IN items.
+	// A `?` PLACEHOLDER among the IN items, through the DRIVER — which is not
+	// the same thing as a ParameterValue, and this arm was originally written
+	// as though it were.
 	//
-	// This arm exists because the non-constant fork CHANGED the behaviour here
-	// and nothing in the tree covered it — there was no parameterized IN test
-	// at all. IsConstantValue returns false for a ParameterValue, so
-	// `x IN (?, 999)` no longer takes the plan-time fold; it becomes the same
-	// runtime array a column item does. Before the fork it was a clean
-	// resolution error.
+	// The driver never plans a parameter at all. substituteParams "replaces
+	// positional '?' placeholders in a query with SQL literal representations
+	// of the supplied driver values" (embedded/utilities.go) BEFORE the parser
+	// runs, so `x IN (?, 999)` reaches the engine as the constant list
+	// `x IN (5, 999)`. It took the plan-time fold before the non-constant fork
+	// existed and it still does; nothing about this path changed.
 	//
-	// Whether that is a capability gained or a silent wrong answer turns on one
-	// thing: does a parameter RESOLVE at row-evaluation time?
-	// ParameterValue.Evaluate binds from its eval context only when that
-	// context implements ParameterBinder and returns (nil, nil) otherwise — the
-	// same shape as fieldValue, and therefore the same hazard, since an unbound
-	// parameter would read as a NULL item and the query would answer as though
-	// nothing had been supplied.
+	// So what this arm actually pins is the interpolated round trip: a
+	// placeholder inside an IN list is substituted per EXECUTION, and two
+	// executions with different bindings give different answers rather than one
+	// cached plan's answer twice. That is worth having and it is what the
+	// assertion below discriminates — it just is not the claim the arm first
+	// carried.
 	//
-	// So the assertion is the DISCRIMINATING one rather than the obvious one:
-	// the same query is run twice with DIFFERENT bindings and must give
-	// DIFFERENT answers. An unbound parameter gives the same empty answer both
-	// times, which a single-binding test would have happily accepted.
-	t.Run("a prepared parameter among the items", func(t *testing.T) {
+	// The ParameterValue claim is pinned where a ParameterValue exists:
+	// pkg/relational/core/query/expr/in_list_parameter_walk_test.go drives the
+	// walker directly, so the `?` survives to become one, and asserts both that
+	// the list takes the runtime fork and that it evaluates against a binding.
+	t.Run("a placeholder among the items, through the driver", func(t *testing.T) {
 		pdb := openParenDB2(t)
 		mwjoMustExec(t, pdb, ctx, "INSERT INTO l (id, x) VALUES (1, 5), (2, 10), (3, 7)")
 
@@ -243,10 +264,62 @@ func TestFDB_InListWithNonConstantItems(t *testing.T) {
 			t.Fatalf("a parameterized IN list failed to run\n  ?=5 : %v\n  ?=10: %v", err5, err10)
 		}
 		if !mmEqRows(got5, []string{"1"}) || !mmEqRows(got10, []string{"2"}) {
-			t.Fatalf("a parameterized IN item does not track its binding\n"+
+			t.Fatalf("a placeholder inside an IN list does not track its binding\n"+
 				"  ?=5  got %v want [1]\n  ?=10 got %v want [2]\n"+
-				"  (the SAME answer for both bindings means the parameter is not resolving at "+
-				"row-evaluation time and is being read as NULL)", got5, got10)
+				"  (the SAME answer for both bindings means the substitution is not happening "+
+				"per execution — a plan or a rendered statement is being reused across bindings)",
+				got5, got10)
+		}
+	})
+
+	// A UUID left operand with a NON-CONSTANT STRING item.
+	//
+	// This is the one coercion that does not survive the crossing to a runtime
+	// list on its own. The constant fork converts each STRING element to the
+	// [16]byte a UUID field evaluates as (parseStringToUUID); the runtime fork
+	// returns before that loop. cmpAny has no [16]byte-versus-string arm, so
+	// without a promotion the two sides are simply not comparable: equal values
+	// are SILENTLY not matched, and NOT IN admits the rows it should exclude.
+	//
+	// Nothing about the shape looks wrong — the query plans, runs, and returns
+	// a plausible answer — which is why both directions are asserted here. The
+	// NOT IN arm is the one that would go unnoticed longest, because "more rows
+	// than expected" from a negation reads as ordinary.
+	//
+	// The two numeric coercions the constant fork also applies are deliberately
+	// NOT mirrored, and their absence is not a gap: they exist to make an index
+	// sub-probe pack the right tuple type, a runtime list never drives one, and
+	// cmpAny promotes across numeric widths at evaluation anyway.
+	t.Run("a UUID operand with a non-constant STRING item", func(t *testing.T) {
+		udb := openUUIDInDB(t)
+		mwjoMustExec(t, udb, ctx, "INSERT INTO u (id, uu, us) VALUES "+
+			// row 1: us holds uu's own text  -> `uu IN (us)` matches
+			"(1, '11111111-1111-1111-1111-111111111111', '11111111-1111-1111-1111-111111111111'), "+
+			// row 2: us holds a DIFFERENT uuid's text -> no match
+			"(2, '22222222-2222-2222-2222-222222222222', '33333333-3333-3333-3333-333333333333')")
+
+		got, err := mmRows(t, ctx, udb, "SELECT id FROM u WHERE uu IN (us) ORDER BY id")
+		if err != nil {
+			t.Fatalf("a UUID IN with a column item failed to plan: %v", err)
+		}
+		if !mmEqRows(got, []string{"1"}) {
+			t.Fatalf("a UUID compared against a runtime STRING item did not match\n"+
+				"  got  %v\n  want [1]\n"+
+				"  (an empty answer means the [16]byte field was compared against a raw string "+
+				"and cmpAny declined the pair — equal values silently treated as non-matches)", got)
+		}
+
+		// The negation, where the same failure reads as ordinary rather than as
+		// an obviously empty result.
+		gotNot, err := mmRows(t, ctx, udb, "SELECT id FROM u WHERE uu NOT IN (us) ORDER BY id")
+		if err != nil {
+			t.Fatalf("a UUID NOT IN with a column item failed to plan: %v", err)
+		}
+		if !mmEqRows(gotNot, []string{"2"}) {
+			t.Fatalf("a UUID NOT IN over a runtime STRING item is wrong\n"+
+				"  got  %v\n  want [2]\n"+
+				"  (returning row 1 as well is the un-promoted comparison admitting a row whose "+
+				"value DOES appear in the list — the silent direction)", gotNot)
 		}
 	})
 

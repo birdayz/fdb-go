@@ -67,7 +67,7 @@ func PermutedMinIgnoringNulls(
 	indexName string,
 	groupKey tuple.Tuple,
 	valueStart, valueEnd int,
-	isolationLevel IsolationLevel,
+	callerProps ExecuteProperties,
 ) (tuple.Tuple, error) {
 	if scan == nil {
 		return nil, fmt.Errorf("permuted MIN null repair on index %q: no scan function", indexName)
@@ -91,12 +91,29 @@ func PermutedMinIgnoringNulls(
 		HighEndpoint: EndpointTypeRangeInclusive,
 	}
 
-	props := ScanProperties{ExecuteProperties: ExecuteProperties{
-		IsolationLevel: isolationLevel,
-		// One entry is the answer: the ordinary subspace is ordered by value
-		// within the group, so the first non-NULL entry carries the minimum.
-		ReturnedRowLimit: 1,
-	}}
+	// The caller's properties are threaded through rather than rebuilt, so the
+	// repair's read is CHARGED to the same budget the query is running under.
+	//
+	// A freshly-built ExecuteProperties carries no ScanState, and no ScanState
+	// means no limit: the repair's extra read per NULL-extremum group would be
+	// invisible to the statement's record, byte and time budgets. Thirty mixed
+	// groups would then complete sixty index reads under a forty-record fail
+	// limit — a resource ceiling silently exceeded, and exceeded by an amount
+	// that scales with the DATA rather than with anything the caller wrote.
+	//
+	// Two fields are overridden rather than inherited, and each for its own
+	// reason:
+	//
+	//	ReturnedRowLimit  the answer is ONE entry — the ordinary subspace is
+	//	                  ordered by value within the group, so the first
+	//	                  non-NULL entry carries the minimum. Inheriting the
+	//	                  caller's limit would read more than needed.
+	//	Skip              an inherited OFFSET would skip that one entry and the
+	//	                  repair would report "no non-NULL value in the group",
+	//	                  turning a paging offset into a wrong ANSWER.
+	props := ScanProperties{ExecuteProperties: callerProps}
+	props.ExecuteProperties.ReturnedRowLimit = 1
+	props.ExecuteProperties.Skip = 0
 	cursor := scan(scanRange, props)
 	defer func() { _ = cursor.Close() }()
 

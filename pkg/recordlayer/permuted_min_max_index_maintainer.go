@@ -408,7 +408,7 @@ func evaluatePermutedMinMaxAggregate(
 				func(r TupleRange, p ScanProperties) RecordCursor[*IndexEntry] {
 					return m.standardIndexMaintainer.Scan(r, nil, p)
 				},
-				m.index.Name, group, groupPrefixSize, totalSize, isolationLevel)
+				m.index.Name, group, groupPrefixSize, totalSize, props.ExecuteProperties)
 			if rerr != nil {
 				return nil, rerr
 			}

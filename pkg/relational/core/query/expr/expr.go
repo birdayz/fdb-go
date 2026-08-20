@@ -1693,9 +1693,10 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 	// `b IN (a, 'x')` is still 42804 and a NULL item is still rejected by the
 	// caller before it reaches here.
 	if !allInListItemsConstant(rhs) {
+		items := promoteInListItemsToUuid(left, rhs)
 		return predicates.NewComparisonPredicate(left, predicates.Comparison{
 			Type:    predicates.ComparisonIn,
-			Operand: values.NewArrayConstructorValue(inListItemType(rhs), rhs),
+			Operand: values.NewArrayConstructorValue(inListItemType(items), items),
 		}), nil
 	}
 	seenClass := ""
@@ -1746,6 +1747,50 @@ func (r *Resolver) ResolveIn(left values.Value, rhs []values.Value) (predicates.
 		Type:    predicates.ComparisonIn,
 		Operand: &values.ConstantValue{Value: list, Typ: values.TypeUnknown},
 	}), nil
+}
+
+// promoteInListItemsToUuid wraps each item of a RUNTIME IN list in
+// PromoteValue(UUID) when the left operand is a UUID, mirroring what
+// promoteStringComparandToUuid does for the equality form.
+//
+// It exists because the constant fork below applies THREE coercions and only
+// one of them survives the crossing to a runtime list:
+//
+//	widenIntToDouble / narrowToFloat32   index-probe TUPLE TYPING. A runtime
+//	                                     list never drives a probe — ComparisonIn
+//	                                     is not scan-range compatible and the
+//	                                     explode rule declines a non-constant
+//	                                     comparand — and cmpAny promotes across
+//	                                     numeric widths anyway. No gap.
+//	parseStringToUUID                    a real TYPE conversion, and cmpAny has
+//	                                     no [16]byte-versus-string arm. Without
+//	                                     it `u IN (s)` compares a [16]byte field
+//	                                     against a string element, cmpAny
+//	                                     declines the pair, and equal values are
+//	                                     SILENTLY not matched — with NOT IN
+//	                                     admitting the rows it should exclude.
+//
+// Every item is wrapped, not just the non-constant ones: a mixed list like
+// `u IN (s, '…uuid literal…')` goes down this fork as a whole, so the literal
+// needs the same conversion the constant fork would have given it.
+// PromoteValue.Evaluate parses a bound string to [16]byte and passes an
+// already-[16]byte value through untouched, so wrapping is safe for both.
+func promoteInListItemsToUuid(left values.Value, rhs []values.Value) []values.Value {
+	lt := left.Type()
+	if lt == nil || !values.IsUuid(lt) {
+		return rhs
+	}
+	out := make([]values.Value, len(rhs))
+	for i, v := range rhs {
+		out[i] = v
+		if v == nil {
+			continue
+		}
+		if vt := v.Type(); vt != nil && promotableToUuid(vt) {
+			out[i] = values.NewPromoteValue(v, lt)
+		}
+	}
+	return out
 }
 
 // allInListItemsConstant reports whether every IN-list item can be folded at

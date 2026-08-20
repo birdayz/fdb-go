@@ -288,6 +288,7 @@ go_test(
         "orelse_continuation_test.go",
         "permuted_min_max_index_test.go",
         "permuted_min_null_semantics_test.go",
+        "permuted_min_repair_budget_test.go",
         "pk_dedup_test.go",
         "primary_key_translation_test.go",
         "query_leaf_isolation_gate_test.go",

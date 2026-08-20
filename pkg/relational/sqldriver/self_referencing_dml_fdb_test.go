@@ -126,8 +126,19 @@ func TestFDB_InsertFromSelectOverTheSameTable(t *testing.T) {
 	w.Exec("INSERT INTO t (id, a) VALUES (1, 1), (2, 2), (3, 3)")
 
 	// Copy between tables first — the well-behaved control.
+	//
+	// A FAILURE here is a failure, not a reason to skip. The self-referencing
+	// assertions below are the point of this file and they all run through
+	// INSERT ... SELECT, so a skip on this line would take the entire file
+	// offline while reporting green — the shape a reader scans as "covered".
+	// If the statement ever stops being supported that is a regression worth a
+	// red build, and if it is ever supported only on one schema the next line
+	// catches that separately.
 	if _, err := w.idx.ExecContext(ctx, "INSERT INTO u SELECT id, a FROM t"); err != nil {
-		t.Skipf("INSERT ... SELECT is not supported: %v", err)
+		t.Fatalf("INSERT ... SELECT failed on the indexed schema: %v\n"+
+			"  Every assertion in this file runs through this statement, so it cannot be "+
+			"skipped past — if the support was deliberately withdrawn, pin the exact rejection "+
+			"here instead of stepping around it", err)
 	}
 	if _, err := w.plain.ExecContext(ctx, "INSERT INTO u SELECT id, a FROM t"); err != nil {
 		t.Fatalf("the indexed schema accepted INSERT ... SELECT and the unindexed one did not: %v", err)

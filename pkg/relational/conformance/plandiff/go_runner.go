@@ -317,12 +317,40 @@ func coerceForComparison(v any) any {
 	case []byte:
 		// Match Java's base64 encoding for BYTES.
 		return base64Encode(x)
+	case []any:
+		// THE SHAPE THE DRIVER ACTUALLY RETURNS for an ARRAY column.
+		// materializeDriverValue (cascades_generator.go) converts a row value
+		// element-wise and hands arrays back as []any — NOT as api.Array — so
+		// this is the arm real query results take, and without it a []any fell
+		// to the pass-through default below with its elements unnormalized: an
+		// array of BIGINTs stayed []any{int64…} and could never equal Java's
+		// []any{float64…}, which is a permanent false divergence on every
+		// array-valued column.
+		return coerceSlice(x)
 	case api.Struct:
 		return coerceStruct(x)
 	case api.Array:
+		// The public interface, kept as a SECOND arm rather than as the only
+		// one. The Go SQL runner does not produce it today — materializeDriverValue
+		// flattens to []any first — but api.Array is what the driver's public
+		// contract names, a Struct's attribute may carry one, and a runner that
+		// scanned into api.Array would otherwise fall through to a pointer.
+		// Defensive, and marked as such so nobody reads its presence as evidence
+		// that arrays arrive this way.
 		return coerceArray(x)
 	}
 	return v
+}
+
+// coerceSlice renders a driver []any the way Java's JSON decode renders a list,
+// recursing so nested arrays, structs and scalars all normalise. Distinct from
+// coerceArray only in the type it accepts; both produce the same shape.
+func coerceSlice(s []any) any {
+	out := make([]any, 0, len(s))
+	for _, e := range s {
+		out = append(out, coerceForComparison(e))
+	}
+	return out
 }
 
 // coerceStruct renders a STRUCT cell the way Java's JSON decode renders one:

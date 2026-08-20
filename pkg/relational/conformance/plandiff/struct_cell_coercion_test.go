@@ -145,7 +145,31 @@ func TestCoerceForComparison_StructAndArrayCells(t *testing.T) {
 			want: map[string]any{"OUT": map[string]any{"IN": float64(3)}},
 		},
 		{
-			name: "an array of scalars matches Java's JSON list",
+			// THE SHAPE THE DRIVER ACTUALLY RETURNS. materializeDriverValue
+			// hands an ARRAY column back as []any, not as api.Array, so this
+			// arm — not the api.Array one below — is what real query results
+			// take. Getting it wrong is a permanent false divergence on every
+			// array-valued column, because []any{int64…} can never equal
+			// Java's []any{float64…}.
+			name: "a raw []any is the driver's array shape and normalises element-wise",
+			in:   []any{int64(1), int64(2)},
+			want: []any{float64(1), float64(2)},
+		},
+		{
+			name: "a raw []any nests",
+			in:   []any{[]any{int64(1)}, namedStruct([]string{"A"}, int64(2))},
+			want: []any{[]any{float64(1)}, map[string]any{"A": float64(2)}},
+		},
+		{
+			name: "an empty []any is an empty list, not nil",
+			in:   []any{},
+			want: []any{},
+		},
+		{
+			// The api.Array arm is DEFENSIVE — the Go SQL runner does not
+			// produce it — and is driven here so it cannot rot into an
+			// untested branch whose first firing is inside a divergence report.
+			name: "an api.Array is coerced the same way, for the runners that produce one",
 			in:   &fakeArray{elems: []any{int64(1), int64(2)}},
 			want: []any{float64(1), float64(2)},
 		},

@@ -320,7 +320,7 @@ func newPermutedAggregateIndexCursor(
 		repairNullMin:     recordlayer.IsPermutedMinIndex(idx),
 		ordinaryValueFrom: gke.GetGroupingCount(),
 		ordinaryValueTo:   totalSize,
-		isolationLevel:    scanProps.ExecuteProperties.IsolationLevel,
+		scanProps:         scanProps.ExecuteProperties,
 	}, nil
 }
 
@@ -335,17 +335,23 @@ type permutedAggregateIndexCursor struct {
 	posType    *values.RecordType
 	closed     bool
 
-	// The MIN null repair. store/index/isolationLevel are what the repair reads
+	// The MIN null repair. store/index/scanProps are what the repair reads
 	// with; ordinaryValueFrom/To bound the aggregated columns in the ORDINARY
 	// subspace's key order, which is not the permuted order valueStart/valueEnd
 	// describe. repairNullMin is false for PERMUTED_MAX, where a stored NULL
 	// extremum is already the right answer.
+	//
+	// scanProps is the CALLER'S whole ExecuteProperties, not just its isolation
+	// level, because it carries the shared ScanState. The repair performs one
+	// extra index read per NULL-extremum group, and a read that does not carry
+	// that state is charged to nothing — the statement's record, byte and time
+	// budgets would silently not see reads whose count scales with the data.
 	store             *recordlayer.FDBRecordStore
 	index             *recordlayer.Index
 	repairNullMin     bool
 	ordinaryValueFrom int
 	ordinaryValueTo   int
-	isolationLevel    recordlayer.IsolationLevel
+	scanProps         recordlayer.ExecuteProperties
 }
 
 func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.RecordCursorResult[QueryResult], error) {
@@ -393,7 +399,7 @@ func (c *permutedAggregateIndexCursor) OnNext(ctx context.Context) (recordlayer.
 		if extremum == nil && c.repairNullMin && len(groupKey) == c.groupCount {
 			repaired, err := recordlayer.PermutedMinIgnoringNulls(
 				ctx, recordlayer.OrdinaryIndexScanner(c.store, c.index), c.index.Name,
-				groupKey, c.ordinaryValueFrom, c.ordinaryValueTo, c.isolationLevel)
+				groupKey, c.ordinaryValueFrom, c.ordinaryValueTo, c.scanProps)
 			if err != nil {
 				return recordlayer.NewResultNoNext[QueryResult](
 					recordlayer.SourceExhausted, &recordlayer.EndContinuation{}), err
