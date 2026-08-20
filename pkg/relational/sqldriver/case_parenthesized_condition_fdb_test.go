@@ -26,6 +26,20 @@ package sqldriver_test
 // low, a SUM that is zero — so these cases assert the CASE's per-row output and
 // the aggregate over it, and cross-check both against the same predicate in a
 // WHERE clause, which is the spelling that was always right.
+//
+// WHERE JAVA STANDS ON THIS, measured rather than assumed:
+// conformance/case_parenthesized_condition_java_probe_test.go runs both engines
+// on these shapes and finds that Java REJECTS every parenthesized condition with
+// SQLSTATE 42804 — the simple `(a = 1)` as much as the compound one, because to
+// Java both are records and visitCaseFunctionCall asserts the condition is
+// BOOLEAN. Go accepts them all and, after this repair, answers them all
+// correctly.
+//
+// That is the DivergenceJavaErrorsGoCorrect direction, and it is booked in
+// TODO.md as an open owner decision: keep Go permissive-and-correct, or narrow
+// it to Java's rejection for strict parity. It is not a widening of Go's
+// accepted surface — Go accepted these before the repair too; what changed is
+// that the answers stopped being wrong.
 
 import (
 	"context"

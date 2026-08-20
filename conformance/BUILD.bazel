@@ -66,6 +66,7 @@ go_test(
         "benchmark_comparison_test.go",
         "bitmap_value_index_conformance_test.go",
         "boolean_expression_position_java_probe_test.go",
+        "case_parenthesized_condition_java_probe_test.go",
         "clear_when_zero_conformance_test.go",
         "composite_index_conformance_test.go",
         "conflict_conformance_test.go",

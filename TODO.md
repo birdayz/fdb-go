@@ -19040,3 +19040,51 @@ predicates that LOOK implied by `keep > 0` and are not — `keep >= 0` (zero is
 excluded) and `keep IS NOT NULL` (negatives are). Those are what will catch an
 implication check that is too generous on the day sparse matching starts being
 chosen.
+
+---
+
+### [ ] OWNER DECISION — Go accepts a parenthesized CASE condition; Java rejects it 42804
+
+MEASURED on both engines (`conformance/case_parenthesized_condition_java_probe_test.go`,
+which asserts this state and fails if either engine moves):
+
+```
+CASE WHEN  a = 1 AND b = 1  THEN 1 ELSE 0 END   java ACCEPT      go ACCEPT (same rows)
+CASE WHEN (a = 1 AND b = 1) THEN 1 ELSE 0 END   java REJECT 42804  go ACCEPT (correct rows)
+CASE WHEN (a = 1)           THEN 1 ELSE 0 END   java REJECT 42804  go ACCEPT (correct rows)
+```
+
+Java rejects EVERY parenthesized condition, simple or compound: the grammar has
+no parenthesized-expression alternative in `expressionAtom`, so `( expr )` is a
+one-element `recordConstructor`, and Java's `visitCaseFunctionCall` asserts the
+condition is BOOLEAN. A record is not, so it errors with a datatype mismatch.
+
+Go has always ACCEPTED these. What changed is that it used to answer some of
+them WRONGLY: resolving the condition as a value first meant a parenthesized
+COMPOUND boolean became `WHEN({_0: predicate}, TRUE)`, which is never true, so
+every row took the ELSE branch. That is fixed — the condition now resolves as a
+predicate, which is what a searched CASE's WHEN is — and the repair is pinned by
+`pkg/relational/sqldriver/case_parenthesized_condition_fdb_test.go`.
+
+So this is NOT a widening of the accepted surface. It is the same surface with
+the wrong answers removed, and it leaves Go in the direction the harness already
+names `DivergenceJavaErrorsGoCorrect`.
+
+THE DECISION, which is why this is booked rather than settled:
+
+  (a) KEEP Go permissive and correct. `CASE WHEN (a = 1 AND b = 1)` is ordinary
+      SQL that most engines accept; Java's rejection is an artifact of its
+      grammar treating grouping parentheses as a record constructor. Read-side
+      query reach beyond Java is allowed when wire compat holds — it does here,
+      nothing about storage changes — and the shape now has deep coverage.
+
+  (b) NARROW Go to Java's 42804. Strict parity on the shared surface, and there
+      is precedent in this repo: when Go accepted ordering comparisons over
+      BOOLEAN that Java rejected, Go was changed to reject
+      (boolean_expression_position_java_probe_test.go records that). Cost: a
+      query that works today starts failing, including the simple `(a = 1)`
+      form that Go has always answered correctly.
+
+Whoever rules should also note that (b) narrows MORE than the defect: the simple
+parenthesized condition was never wrong, so rejecting it is a behaviour change
+unrelated to the bug that prompted the measurement.
