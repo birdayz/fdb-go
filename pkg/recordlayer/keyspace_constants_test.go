@@ -1,8 +1,11 @@
 package recordlayer
 
 import (
+	"bytes"
 	"sort"
 	"testing"
+
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 )
 
 // TestRecordStoreKeyspaceMatchesJava pins every record-store keyspace prefix by
@@ -134,6 +137,36 @@ func TestSlidingWindowSubspaceLayout(t *testing.T) {
 	for _, taken := range []int{slidingWindowCountKey, slidingWindowBoundaryKey} {
 		if taken == 2 || taken == 5 {
 			t.Errorf("meta key %d occupies one of Java's deliberate holes (2, 5)", taken)
+		}
+	}
+
+	// The constants are untyped, so Go widens them to `int` at the call site
+	// while Java's Tuple.from(0) boxes an Integer. Both must pack to the FDB
+	// tuple layer's INTEGER encoding, and these are its bytes from the spec —
+	// 0x14 is the zero code point, 0x14+n prefixes an n-byte big-endian
+	// positive integer. Asserting the BYTES rather than the Go values is what
+	// makes this a Java claim: a Go tuple encoder that treated `int` as
+	// anything else would still round-trip against itself.
+	for _, tc := range []struct {
+		name string
+		key  int
+		want []byte
+	}{
+		{"ENTRIES", slidingWindowEntriesSubspaceKey, []byte{0x14}},
+		{"META", slidingWindowMetaSubspaceKey, []byte{0x15, 0x01}},
+		{"COUNT", slidingWindowCountKey, []byte{0x15, 0x03}},
+		{"BOUNDARY", slidingWindowBoundaryKey, []byte{0x15, 0x04}},
+	} {
+		got := tuple.Tuple{tc.key}.Pack()
+		if !bytes.Equal(got, tc.want) {
+			t.Errorf("%s subspace key packs to %#v, FDB's tuple encoding of %d is %#v",
+				tc.name, got, tc.key, tc.want)
+		}
+		// The same value as an int64 must pack identically, or a maintainer
+		// that happened to hold one width would address a different key than a
+		// test holding the other.
+		if wide := (tuple.Tuple{int64(tc.key)}).Pack(); !bytes.Equal(got, wide) {
+			t.Errorf("%s packs differently as int (%#v) and int64 (%#v)", tc.name, got, wide)
 		}
 	}
 }
