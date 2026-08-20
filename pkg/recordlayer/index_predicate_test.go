@@ -1478,31 +1478,147 @@ func TestHasFilteringPredicateTreatsOpaqueGoPredicateAsFiltering(t *testing.T) {
 	}
 }
 
-// TestSetPredicateProtoRejectsRowNumberWindow pins what makes the row-window
-// hazard LATENT rather than live, and names what re-arms it.
+// TestSetPredicateProtoAcceptsRowNumberWindow is the INVERTED form of the
+// tripwire that used to stand here.
 //
-// NormalizeIndexPredicateProto deliberately refuses to fold a row-window arm
-// (it keeps only the top-N records, so the index is the opposite of complete),
-// but that guard is currently unreachable from Go: predicateFromProto has no
-// row-window arm, so an Index cannot carry the predicate in the first place.
+// That tripwire said: predicateFromProto has no row-window arm, so Go cannot
+// carry the predicate at all, so the hazard is latent — and "the moment Go
+// implements row-window index maintenance, this test fails, and that failure is
+// the signal to check that every sparseness gate still treats the resulting
+// index as filtering". Go now implements it (slidingWindowIndexMaintainer), so
+// this is that check, kept at the site the tripwire named.
 //
-// The moment Go implements row-window index maintenance, this test fails — and
-// that failure is the signal to check that every sparseness gate still treats
-// the resulting index as filtering, because from then on it is reachable.
-func TestSetPredicateProtoRejectsRowNumberWindow(t *testing.T) {
+// Two claims, and both matter:
+//   - a WELL-FORMED window declaration is now accepted and carried, so a
+//     Java-authored windowed vector index no longer makes the whole metadata
+//     unloadable;
+//   - accepting it does NOT make the index look complete. The per-record
+//     evaluator answers `true` for every record (Java's shouldIndexThisRecord),
+//     which is exactly the reading that would be catastrophic if it leaked into
+//     the completeness question — the index holds only the top N. So
+//     HasFilteringPredicate must still say "filtering".
+func TestSetPredicateProtoAcceptsRowNumberWindow(t *testing.T) {
 	t.Parallel()
 
 	idx := NewIndex("topn", Field("score"))
-	err := idx.SetPredicateProto(&gen.Predicate{
-		RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{Size: proto.Int32(100)},
-	})
-	if err == nil {
-		t.Fatal("SetPredicateProto ACCEPTED a row-number window predicate — Go now has " +
-			"a reachable partial-index shape whose stored predicate the maintainer " +
-			"must honour, and every `sparse` classification has to be re-checked " +
-			"against it (see NormalizeIndexPredicateProto's row-window note)")
+	if err := idx.SetPredicateProto(&gen.Predicate{
+		RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+			OrderingField: []string{"score"},
+			Size:          proto.Int32(100),
+			Direction:     gen.RowNumberWindowPredicate_DESC.Enum(),
+		},
+	}); err != nil {
+		t.Fatalf("SetPredicateProto refused a well-formed row-number window: %v", err)
 	}
-	if idx.HasPredicate() {
-		t.Fatal("a rejected predicate must leave the index unpredicated")
+	if !idx.HasPredicate() {
+		t.Fatal("an accepted predicate must leave the index predicated")
+	}
+	if idx.GetPredicateProto().GetRowNumberWindowPredicate() == nil {
+		t.Fatal("the stored proto lost the row-window arm")
+	}
+	if !idx.HasRowNumberWindowPredicate() {
+		t.Fatal("HasRowNumberWindowPredicate did not see the arm it decorates on")
+	}
+
+	// The evaluator accepts everything — that is Java's shouldIndexThisRecord,
+	// and it is why the completeness question must NOT be answered from it.
+	if !idx.Predicate(&gen.Order{}) {
+		t.Fatal("the compiled row-window evaluator rejected a record; Java's " +
+			"RowNumberWindowPredicate.shouldIndexThisRecord is `return true`")
+	}
+
+	// ...and this is the gate that keeps that `true` from meaning "complete".
+	if !idx.HasFilteringPredicate() {
+		t.Fatal("a top-N index was classified as NON-filtering — a scan of it would " +
+			"serve the qualifying slice as the whole table (see " +
+			"NormalizeIndexPredicateProto's row-window note)")
+	}
+}
+
+// TestSetPredicateProtoRejectsMalformedRowNumberWindow pins the arms of
+// validateRowNumberWindowSpec, each of which describes a window that cannot
+// exist. They are checked when the metadata is LOADED rather than at the first
+// record save, because a store whose window declaration is unusable should fail
+// to open, not fail one write at a time.
+//
+// The non-positive size is the load-bearing one: with N <= 0 the window is empty
+// forever, so the wrapped vector index would be maintained as permanently empty
+// while the entry list grew without bound — an index that answers every search
+// with nothing and never says why.
+func TestSetPredicateProtoRejectsMalformedRowNumberWindow(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		pred *gen.RowNumberWindowPredicate
+	}{
+		{
+			name: "no ordering field",
+			pred: &gen.RowNumberWindowPredicate{
+				Size:      proto.Int32(100),
+				Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
+			},
+		},
+		{
+			name: "empty ordering field name",
+			pred: &gen.RowNumberWindowPredicate{
+				OrderingField: []string{""},
+				Size:          proto.Int32(100),
+				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			},
+		},
+		{
+			name: "zero size",
+			pred: &gen.RowNumberWindowPredicate{
+				OrderingField: []string{"score"},
+				Size:          proto.Int32(0),
+				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			},
+		},
+		{
+			name: "negative size",
+			pred: &gen.RowNumberWindowPredicate{
+				OrderingField: []string{"score"},
+				Size:          proto.Int32(-1),
+				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			},
+		},
+		{
+			name: "absent direction",
+			pred: &gen.RowNumberWindowPredicate{
+				OrderingField: []string{"score"},
+				Size:          proto.Int32(100),
+			},
+		},
+		{
+			name: "empty partition path",
+			pred: &gen.RowNumberWindowPredicate{
+				OrderingField:   []string{"score"},
+				Size:            proto.Int32(100),
+				Direction:       gen.RowNumberWindowPredicate_ASC.Enum(),
+				PartitionFields: []*gen.FieldPath{{}},
+			},
+		},
+		{
+			name: "empty partition field name",
+			pred: &gen.RowNumberWindowPredicate{
+				OrderingField:   []string{"score"},
+				Size:            proto.Int32(100),
+				Direction:       gen.RowNumberWindowPredicate_ASC.Enum(),
+				PartitionFields: []*gen.FieldPath{{Field: []string{""}}},
+			},
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			idx := NewIndex("topn", Field("score"))
+			if err := idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: tc.pred}); err == nil {
+				t.Fatal("SetPredicateProto accepted a window declaration that cannot describe a window")
+			}
+			if idx.HasPredicate() {
+				t.Fatal("a rejected predicate must leave the index unpredicated")
+			}
+		})
 	}
 }

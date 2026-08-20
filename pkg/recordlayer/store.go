@@ -1146,6 +1146,28 @@ func (store *FDBRecordStore) indexSecondarySubspace(index *Index) subspace.Subsp
 	return store.subspace.Sub(IndexSecondarySpaceKey, index.SubspaceTupleKey())
 }
 
+// indexSlidingWindowSubspace returns the FDB subspace holding a sliding-window
+// index's bookkeeping (the per-partition entry list and its count/boundary
+// metadata).
+// Layout: [storeSubspace][IndexSlidingWindowSpaceKey=10][indexSubspaceTupleKey]
+// Matches Java's FDBRecordStore.indexSlidingWindowSubspace(Index).
+func (store *FDBRecordStore) indexSlidingWindowSubspace(index *Index) subspace.Subspace {
+	return store.subspace.Sub(IndexSlidingWindowSpaceKey, index.SubspaceTupleKey())
+}
+
+// loadRecordForIndexMaintenance loads a record by primary key on behalf of an
+// index maintainer. Matches the use Java's SlidingWindowIndexMaintainer makes of
+// state.store.loadRecordAsync: a window that evicts or promotes an entry must
+// hand the RECORD to the wrapped maintainer, and the entry list stores only a
+// primary key.
+//
+// A missing record returns (nil, nil) — the caller decides what that means. For
+// the sliding window it is a counted anomaly rather than an error, matching
+// Java's SW_EVICTED_RECORD_MISSING / SW_PROMOTED_RECORD_MISSING arms.
+func (store *FDBRecordStore) loadRecordForIndexMaintenance(primaryKey tuple.Tuple) (*FDBStoredRecord[proto.Message], error) {
+	return store.LoadRecord(primaryKey)
+}
+
 // getIndexMaintainer returns the appropriate IndexMaintainer for the given index.
 // Maintainers are cached for the lifetime of the store (= one transaction),
 // avoiding repeated allocation of maintainer + mutation objects.
@@ -1219,7 +1241,31 @@ func (store *FDBRecordStore) createIndexMaintainer(index *Index) (IndexMaintaine
 	case IndexTypeVector:
 		// Java's VectorIndexMaintainer stores HNSW graph data under the primary index subspace
 		// (getIndexSubspace()), not the secondary subspace. Match Java's layout.
-		return newVectorIndexMaintainer(index, idxSubspace, idxSubspace, tx, store)
+		vm, err := newVectorIndexMaintainer(index, idxSubspace, idxSubspace, tx, store)
+		if err != nil {
+			return nil, err
+		}
+		// Sliding-window DECORATION. Java's IndexMaintainerFactoryRegistryImpl
+		// detects the row-number window predicate and wraps the vector factory
+		// with SlidingWindowIndexMaintainerFactory; the wrapping is transparent
+		// to everything downstream. Same here: the decorator implements
+		// IndexMaintainer and forwards the read path, so only the WRITE path
+		// changes — which records reach the HNSW graph.
+		//
+		// Only IndexTypeVector is eligible, matching Java's
+		// SlidingWindowIndexMaintainerFactory.isSlidingWindowIndex. Go's
+		// IndexTypeVectorSPFresh is a Go-only extension (RFC-094) and is
+		// deliberately NOT decorated: keyspace 10's layout is the wire contract
+		// for Java's HNSW vector index, so a Go-only pairing would write bytes
+		// under prefix 10 that no Java engine can interpret — the one thing
+		// wire compatibility forbids. SPFresh also runs its own background
+		// rebalancer over the postings it owns, which an external evictor would
+		// be racing rather than cooperating with.
+		if !index.HasRowNumberWindowPredicate() {
+			return vm, nil
+		}
+		return newSlidingWindowIndexMaintainer(
+			index, vm, store.indexSlidingWindowSubspace(index), tx, store, store.context.Timer())
 	case IndexTypeVectorSPFresh:
 		// Go-only FDB-native vector index (RFC-094); all data under the
 		// primary index subspace, generation-prefixed.

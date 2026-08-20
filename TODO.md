@@ -6039,9 +6039,11 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      encodes integer record-type keys (`int/int32/int64`) and silently falls back to the message type
      NAME for string/bytes explicit `SetRecordTypeKey` — a wire divergence from Java (which encodes every
      key type); the R2c preset already guards against it but the encoding itself should be fixed.
-     **N/A:** `SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics
-     instrumentation for an HNSW window-decorator index type Go does not have; index-scrub rangeSet fix
-     (#4226) — Go has no scrubber. Gate: Torvalds + codex + @claude.
+     **N/A:** index-scrub rangeSet fix (#4226) — Go has no scrubber. Gate: Torvalds + codex + @claude.
+     ~~`SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics instrumentation for an
+     HNSW window-decorator index type Go does not have~~ **SUPERSEDED** — that "N/A" rested on Go not
+     having the index type, which is no longer true: the whole decorator is ported (keyspace 10,
+     `slidingWindowIndexMaintainer`), and its instrumentation came with it.
    - **[x] R3 — DONE (RFC-140)** — parser grammar: `(AT atAlias=uid)?` on `atomTableItem` (#4112) +
      `functionNameKeyword: LEFT|RIGHT` moved out of `functionNameBase` into `scalarFunctionName` (#4272).
      Parser regenerated. LEFT/RIGHT remain function names but are rejected as identifiers/aliases; AT

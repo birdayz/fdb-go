@@ -52,8 +52,15 @@ import (
 // indexPredicateToQueryPredicate was mapped to TRUE and dropped, and the
 // candidate matched as full whether the arm arrived bare or wrapped in an AND.
 // The conversion therefore REFUSES the arm outright, which excludes the
-// candidate. Go cannot construct one today in any case — predicateFromProto has
-// no row-window arm, so SetPredicateProto rejects it.
+// candidate.
+//
+// That refusal is LOAD-BEARING rather than belt-and-braces: a store can carry
+// such an index, because the record layer maintains one — a vector index whose
+// stored predicate declares the window is decorated by
+// slidingWindowIndexMaintainer, which keeps only the qualifying records in the
+// wrapped HNSW graph. The arm's compiled per-record evaluator answers `true`
+// for every record (Java's shouldIndexThisRecord), and it is exactly that
+// answer which must never reach the completeness question here.
 //
 // The result is always a deep clone; the input is never mutated and the two
 // trees share no nodes.

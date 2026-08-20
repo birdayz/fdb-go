@@ -73,9 +73,14 @@ func indexPredicateToQueryPredicate(p *gen.Predicate, base values.Value) (predic
 		// predicate, so returning TRUE here produces a candidate that matches as
 		// if the index held every record, and a scan serves a top-100 index as
 		// the whole table. Refusing the conversion instead excludes the
-		// candidate outright, which is the only safe answer while Go has no
-		// machinery to honour the constraint — predicateFromProto cannot even
-		// compile this arm, so no store can maintain such an index today.
+		// candidate outright.
+		//
+		// Such an index is REACHABLE: the record layer maintains one — a vector
+		// index whose stored predicate declares the window is decorated by
+		// slidingWindowIndexMaintainer, which keeps only the qualifying records
+		// in the wrapped HNSW graph and tracks the rest under keyspace 10. So
+		// this arm is the gate that stops a top-N index being served as the
+		// whole table, not a defensive branch about a shape nothing can build.
 		return nil, fmt.Errorf(
 			"row-number window index predicate cannot be expressed as a candidate predicate; " +
 				"the index holds only the qualifying rows, so it must never match as a full index")

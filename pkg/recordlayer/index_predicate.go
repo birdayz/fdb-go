@@ -28,9 +28,83 @@ func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
 		return notPredicateFromProto(p.NotPredicate)
 	case p.ValuePredicate != nil:
 		return valuePredicateFromProto(p.ValuePredicate)
+	case p.RowNumberWindowPredicate != nil:
+		return rowNumberWindowPredicateFromProto(p.RowNumberWindowPredicate)
 	default:
 		return nil, fmt.Errorf("empty predicate message")
 	}
+}
+
+// rowNumberWindowPredicateFromProto compiles a row-number window arm into the
+// per-record evaluator, which ACCEPTS EVERY RECORD.
+// Matches Java's RowNumberWindowPredicate.shouldIndexThisRecord, which is
+// `return true` (IndexPredicate.java:739-742).
+//
+// That is not a tautology dressed up as a filter, and the distinction is what
+// the whole index type rests on: a top-N window cannot be evaluated against one
+// record in isolation, because whether a record qualifies depends on every
+// other record in its partition. The per-record gate therefore admits
+// everything and slidingWindowIndexMaintainer does the qualifying — it writes
+// each record into the keyspace-10 entry list and only forwards the ones inside
+// the window to the wrapped vector index.
+//
+// The consequence for anything reasoning about index COMPLETENESS is the
+// opposite of what this `true` suggests, so it must not leak upward: the index
+// holds only the qualifying rows. NormalizeIndexPredicateProto deliberately
+// refuses to fold this arm to a constant, and indexPredicateToQueryPredicate
+// refuses to convert it at all, so a candidate over such an index is excluded
+// rather than matched as a full index. Both of those are reachable from here
+// on, which they were not before this arm existed.
+//
+// The proto is validated rather than merely accepted: an unusable window
+// declaration (unknown direction, non-positive size, empty ordering path) must
+// fail when the metadata is loaded, not at the first record save.
+func rowNumberWindowPredicateFromProto(p *gen.RowNumberWindowPredicate) (IndexPredicate, error) {
+	spec, err := rowNumberWindowSpecFromProto(p)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRowNumberWindowSpec(spec); err != nil {
+		return nil, err
+	}
+	return func(proto.Message) bool { return true }, nil
+}
+
+// validateRowNumberWindowSpec rejects window declarations that cannot describe
+// a window. Java validates the size in the sliding-window factory's validator;
+// checking it here as well means a malformed declaration is refused wherever it
+// arrives, including on an index type that never reaches that validator.
+//
+// A non-positive N is the one that matters most: with N <= 0 the window is
+// empty forever, so the wrapped vector index would be maintained as
+// permanently empty while the entry list grows without bound — an index that
+// answers every search with nothing and never says why.
+func validateRowNumberWindowSpec(spec *RowNumberWindowSpec) error {
+	if len(spec.OrderingField) == 0 {
+		return &MetaDataError{Message: "row-number window predicate has an empty ordering field path"}
+	}
+	for _, name := range spec.OrderingField {
+		if name == "" {
+			return &MetaDataError{Message: "row-number window predicate has an empty ordering field name"}
+		}
+	}
+	if spec.Size <= 0 {
+		return &MetaDataError{Message: fmt.Sprintf(
+			"row-number window predicate has size %d; the window size must be positive", spec.Size)}
+	}
+	for i, path := range spec.PartitionFieldPaths {
+		if len(path) == 0 {
+			return &MetaDataError{Message: fmt.Sprintf(
+				"row-number window predicate partition field path %d is empty", i)}
+		}
+		for _, name := range path {
+			if name == "" {
+				return &MetaDataError{Message: fmt.Sprintf(
+					"row-number window predicate partition field path %d has an empty field name", i)}
+			}
+		}
+	}
+	return nil
 }
 
 // predicateProtoIsTautology reports whether a stored index predicate provably

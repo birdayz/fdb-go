@@ -58,18 +58,28 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 		indexTypeNames := store.recordTypesForIndex(idx)
 		isUniversal := len(indexTypeNames) == 0
 
+		// The record types whose data is being deleted AND which this index
+		// covers. Alignment has to be checked against THESE primary keys, not
+		// against an arbitrary one of the matching types: the question is how
+		// this index's entries relate to the prefix, and only the types the
+		// index is defined on have entries in it. Sampling one type out of the
+		// full matching set read a primary key from an unrelated type — and
+		// since the metadata's record types live in a map, WHICH unrelated type
+		// varied from run to run.
+		coveredTypeNames := matchingTypeNames
 		if !isUniversal {
-			// Type-specific index: check if it covers any matching types.
-			coversMatching := false
+			coveredTypeNames = nil
 			for _, itn := range indexTypeNames {
 				if slices.Contains(matchingTypeNames, itn) {
-					coversMatching = true
-					break
+					coveredTypeNames = append(coveredTypeNames, itn)
 				}
 			}
-			if !coversMatching {
+			if len(coveredTypeNames) == 0 {
 				continue // Index doesn't cover any types being deleted, skip.
 			}
+		}
+
+		if !isUniversal {
 
 			if len(indexTypeNames) > 1 && !hasRecordTypeKeyPrefix(idx.RootExpression) {
 				// Multi-type index without RecordTypeKey prefix: can't scope
@@ -85,19 +95,39 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 				// to entries for the matching type(s) using the PK prefix.
 				// Matches Java's hasRecordTypePrefix branch in
 				// canDeleteWhereForIndexOnStoredTypes.
-				idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, matchingTypeNames)
+				idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
 				if !ok {
 					return fmt.Errorf("deleteRecordsWhere: multi-type index %q cannot be cleared with prefix %v", idx.Name, prefix)
 				}
 				actions = append(actions, indexAction{index: idx, prefix: idxPrefix})
 			} else {
-				// Single-type index: clear ALL entries for this index.
-				actions = append(actions, indexAction{index: idx, prefix: tuple.Tuple{}})
+				// Single-type index. Clearing ALL of it is correct ONLY when the
+				// delete-where selects the whole record type — Java's
+				// `indexMatcher == null` arm of canDeleteWhereForIndexOnStoredTypes
+				// (FDBRecordStore.java:2050-2051), reached when the delete-where
+				// component is exactly a RecordTypeKeyComparison and the derived
+				// index prefix is empty by construction.
+				//
+				// For any narrower prefix Java instead requires the query to
+				// match a PREFIX of the index's own key expression and THROWS
+				// when it does not. Clearing the whole index there destroys
+				// entries for records that still exist: with PK
+				// (customer_id, order_id) and an index on `total`,
+				// DeleteRecordsWhere((cust1)) would empty `total` for cust2 as
+				// well, leaving their records unindexed and silently missing
+				// from every query served by that index.
+				idxPrefix, ok := computeSingleTypeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
+				if !ok {
+					return fmt.Errorf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
+						"the prefix does not match the index's leading key expression columns, so the "+
+						"clear cannot be scoped to the deleted records", idx.Name, prefix)
+				}
+				actions = append(actions, indexAction{index: idx, prefix: idxPrefix})
 			}
 		} else {
 			// Universal index: the PK prefix must match leading index
 			// expression columns so we can do a range clear.
-			idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, matchingTypeNames)
+			idxPrefix, ok := computeIndexDeletePrefix(idx, prefix, store.metaData, coveredTypeNames)
 			if !ok {
 				return fmt.Errorf("deleteRecordsWhere: index %q cannot be cleared with prefix %v — "+
 					"leading index expression does not match PK prefix", idx.Name, prefix)
@@ -288,44 +318,117 @@ func (store *FDBRecordStore) recordTypesForIndex(idx *Index) []string {
 //   - Index delete prefix = (typeKey) (first prefix value maps to first index column)
 //
 // Returns (prefix, true) if the mapping works, or (nil, false) if not.
-func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData, matchingTypes []string) (tuple.Tuple, bool) {
-	// Use the first matching record type's PK for comparison.
-	// matchingTypes is the set of types whose data is being deleted —
-	// their PK structure determines how the prefix maps to index columns.
-	var samplePK KeyExpression
-	for _, name := range matchingTypes {
-		rt := md.GetRecordType(name)
-		if rt != nil && rt.PrimaryKey != nil {
-			samplePK = rt.PrimaryKey
-			break
-		}
-	}
-	if samplePK == nil {
-		// Fallback: use any type (backwards compat for edge cases).
-		for _, rt := range md.RecordTypes() {
-			samplePK = rt.PrimaryKey
-			break
-		}
-	}
-	if samplePK == nil {
+// Every covered type must align, not just one of them. Java reaches the same
+// place from the other direction: deleteRecordsWhereCheckRecordTypes requires
+// the query to equality-match EVERY record type's primary key and to produce
+// the SAME evaluated prefix for each ("Primary key prefixes don't align"), so
+// by the time canDeleteWhere runs there is only one prefix left to check. Go
+// takes a positional tuple prefix rather than a query, so the per-type check
+// lands here instead — and it must fail closed, since one misaligned type is
+// enough to make the range clear delete the wrong entries.
+func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData, coveredTypes []string) (tuple.Tuple, bool) {
+	pks := deleteWherePrimaryKeys(md, coveredTypes)
+	if len(pks) == 0 {
 		return nil, false
+	}
+
+	idxComponents := normalizeKeyForPositions(idx.RootExpression)
+
+	// Check that for each PK component covered by the prefix,
+	// the same component appears at the same position in the index expression.
+	for _, pk := range pks {
+		pkComponents := normalizeKeyForPositions(pk)
+		for i := range len(prefix) {
+			if i >= len(pkComponents) || i >= len(idxComponents) {
+				return nil, false
+			}
+			if !keyExpressionEquals(pkComponents[i], idxComponents[i]) {
+				return nil, false
+			}
+		}
+	}
+
+	return prefix, true
+}
+
+// computeSingleTypeIndexDeletePrefix decides how much of a SINGLE-TYPE index a
+// deleteRecordsWhere may clear, and refuses when the answer is "none of it
+// safely".
+//
+// It is the Go shape of the three arms Java's canDeleteWhereForIndexOnStoredTypes
+// (FDBRecordStore.java:2041-2056) takes for an index on stored types:
+//
+//   - WHOLE TYPE — the delete-where selects every record of the type. Java
+//     spells this `indexMatcher == null`, i.e. the component was exactly a
+//     RecordTypeKeyComparison; here that is a PK with a record-type-key prefix
+//     and a prefix consisting of just that key. Clear the whole index.
+//
+//   - INDEX ROOT CARRIES THE TYPE KEY — Java's
+//     `Key.Expressions.hasRecordTypePrefix(index.getRootExpression())` branch,
+//     which matches the FULL prefix against the index root. Positions line up
+//     one-for-one with the primary key's.
+//
+//   - OTHERWISE — Java trims the record-type key off both the matcher and the
+//     evaluated prefix (`indexEvaluated = evaluated.subList(1, …)`) and matches
+//     the remainder against the index root. So the PK is compared from column 1
+//     while the index is compared from column 0.
+//
+// Any prefix column that does not line up makes the clear unscopeable, and the
+// caller turns that into an error — which is what Java's `canDelete == false`
+// does.
+func computeSingleTypeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData, coveredTypes []string) (tuple.Tuple, bool) {
+	pks := deleteWherePrimaryKeys(md, coveredTypes)
+	if len(pks) != 1 {
+		// A single-type index has exactly one covered type. Anything else means
+		// the caller's classification and the metadata disagree; refusing is the
+		// only safe answer.
+		return nil, false
+	}
+	samplePK := pks[0]
+	pkHasTypeKey := hasRecordTypeKeyPrefix(samplePK)
+
+	// Arm 1: the delete-where names the record type and nothing else.
+	if pkHasTypeKey && len(prefix) == 1 {
+		return tuple.Tuple{}, true
+	}
+
+	pkOffset := 0
+	if pkHasTypeKey && !hasRecordTypeKeyPrefix(idx.RootExpression) {
+		// Arm 3: the index does not repeat the record-type key, so the prefix's
+		// leading type-key column has no counterpart in the index and is
+		// dropped from both the comparison and the resulting prefix.
+		pkOffset = 1
 	}
 
 	pkComponents := normalizeKeyForPositions(samplePK)
 	idxComponents := normalizeKeyForPositions(idx.RootExpression)
 
-	// Check that for each PK component covered by the prefix,
-	// the same component appears at the same position in the index expression.
-	for i := range len(prefix) {
-		if i >= len(pkComponents) || i >= len(idxComponents) {
+	remaining := prefix[pkOffset:]
+	for i := range remaining {
+		if i+pkOffset >= len(pkComponents) || i >= len(idxComponents) {
 			return nil, false
 		}
-		if !keyExpressionEquals(pkComponents[i], idxComponents[i]) {
+		if !keyExpressionEquals(pkComponents[i+pkOffset], idxComponents[i]) {
 			return nil, false
 		}
 	}
+	return remaining, true
+}
 
-	return prefix, true
+// deleteWherePrimaryKeys returns the primary keys whose structure decides how a
+// delete-where prefix maps onto an index's columns — one per covered record
+// type, in the caller's order. A named type with no primary key is dropped
+// rather than substituted for, so a caller that gets fewer keys than names can
+// refuse instead of validating against a stand-in.
+func deleteWherePrimaryKeys(md *RecordMetaData, coveredTypes []string) []KeyExpression {
+	pks := make([]KeyExpression, 0, len(coveredTypes))
+	for _, name := range coveredTypes {
+		rt := md.GetRecordType(name)
+		if rt != nil && rt.PrimaryKey != nil {
+			pks = append(pks, rt.PrimaryKey)
+		}
+	}
+	return pks
 }
 
 // clearPrefixRange clears all keys under sub.Pack(prefix) using PrefixRange

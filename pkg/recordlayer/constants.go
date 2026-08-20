@@ -2,7 +2,7 @@ package recordlayer
 
 // Subspace keys used by the Record Layer to organize data within FDB.
 // These MUST match the Java implementation for compatibility.
-// Verified against Java: FDBRecordStoreKeyspace.java (enum values 0-9)
+// Verified against Java: FDBRecordStoreKeyspace.java (enum values 0-10).
 const (
 	// StoreInfoKey is the subspace key for store metadata
 	StoreInfoKey = 0
@@ -33,6 +33,13 @@ const (
 
 	// IndexBuildSpaceKey is the subspace key for index building
 	IndexBuildSpaceKey = 9
+
+	// IndexSlidingWindowSpaceKey is the subspace key for a sliding-window
+	// (top-N) index's bookkeeping: the per-partition entry list and the
+	// count/boundary metadata that decide which records are inside the window
+	// and therefore present in the wrapped vector index.
+	// Matches Java's FDBRecordStoreKeyspace.INDEX_SLIDING_WINDOW_SPACE.
+	IndexSlidingWindowSpaceKey = 10
 )
 
 // Record key suffix constants matching Java's SplitHelper
