@@ -258,16 +258,6 @@ func (DefaultStatistics) RecordTypeCardinality(_ string) float64 {
 	return LeafScanCardinality
 }
 
-// HasRealStats reports whether the statistics provider has real
-// per-type cardinalities (not just the default LeafScanCardinality).
-func HasRealStats(stats StatisticsProvider) bool {
-	if stats == nil {
-		return false
-	}
-	_, isDefault := stats.(DefaultStatistics)
-	return !isDefault
-}
-
 // FixedStatistics returns a fixed cardinality for every record type.
 // Useful in tests that want a non-default scan cost.
 type FixedStatistics struct {

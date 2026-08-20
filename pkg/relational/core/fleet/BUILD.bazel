@@ -6,6 +6,7 @@ go_library(
         "build.go",
         "fleet.go",
         "migrate.go",
+        "statistics.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/fleet",
     visibility = ["//visibility:public"],

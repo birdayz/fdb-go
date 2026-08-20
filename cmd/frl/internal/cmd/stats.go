@@ -1,0 +1,473 @@
+package cmd
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/core/embedded"
+	"fdb.dev/pkg/relational/core/functions"
+	_ "fdb.dev/pkg/relational/sqldriver"
+)
+
+// `frl stats` — the offline planner-statistics maintainer (RFC-236).
+//
+// EVERY SUBCOMMAND GOES THROUGH THE SQL DRIVER, not through withStore, and
+// that is the whole design. Statistics live at a location derived from the
+// relational keyspace root and the schema's store subspace; the planner
+// derives it one way, inside EmbeddedConnection. If this CLI derived it a
+// second way it would be two pieces of code hoping they agree, and the failure
+// mode is silent: the collector writes somewhere the planner never looks, every
+// command reports success, and the only symptom is that plans never change.
+// Routing through Conn.Raw means the CLI and the planner cannot disagree,
+// because there is only one derivation.
+//
+// It also means `frl stats collect` exercises the exact path a library user
+// gets from conn.Raw — the CLI is a thin wrapper over the library call, not a
+// parallel implementation of it.
+func newStatsCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "stats",
+		Short: "Collect and inspect planner statistics for a schema",
+		Long: "Planner statistics are exact per-record-type row counts, " +
+			"collected OFFLINE by scanning the store, and read by the query " +
+			"planner to order joins by real table sizes instead of a " +
+			"constant.\n\n" +
+			"Collection is a maintenance job, not a query path: it reads " +
+			"every record. Run it on a schedule sized to how fast the data " +
+			"changes shape — statistics expire after ~24h and the planner " +
+			"silently falls back to its constant when they do.\n\n" +
+			"The planner only reads them when the connection opts in:\n" +
+			"  fdbsql:///myapp?schema=MAIN&planner_statistics=true\n\n" +
+			"Statistics are stored OUTSIDE every record store's subspace, so " +
+			"a Java client sharing this cluster neither sees nor is disturbed " +
+			"by them.",
+		Example: `  frl stats collect --database /myapp --schema MAIN
+  frl stats show --database /myapp --schema MAIN
+  frl stats show --database /myapp --schema MAIN -o json | jq '.per_type'
+  frl stats clear --database /myapp --schema MAIN --yes`,
+	}
+	c.AddCommand(newStatsCollectCmd())
+	c.AddCommand(newStatsShowCmd())
+	c.AddCommand(newStatsClearCmd())
+	return c
+}
+
+// statsAddressFlags is the addressing every `frl stats` subcommand shares.
+//
+// Relational addressing is REQUIRED — no --keyspace-path, no --meta-file. The
+// consumer of these statistics is the SQL planner, and the planner locates them
+// through the relational keyspace. Writing them for a store addressed any other
+// way would produce bytes nothing reads, which is worse than an error because
+// it looks like it worked.
+type statsAddressFlags struct {
+	contextName string
+	database    string
+	schema      string
+	clusterFile string
+}
+
+func (f *statsAddressFlags) register(c *cobra.Command) {
+	c.Flags().StringVar(&f.contextName, "context", "", "context name to use")
+	c.Flags().StringVar(&f.database, "database", "", "relational database URI (required, e.g. /myapp)")
+	c.Flags().StringVar(&f.schema, "schema", "", "relational schema name (required)")
+	c.Flags().StringVar(&f.clusterFile, "cluster-file", "", "FDB cluster file; overrides the context's cluster_file — chains with `frl fdb up`")
+}
+
+// describe renders the target for messages and confirmation prompts.
+func (f *statsAddressFlags) describe() string {
+	return f.database + "/" + functions.StripIdentifierQuotes(f.schema)
+}
+
+// withStatsConn resolves the address, opens one pinned SQL connection, and
+// hands the caller the embedded connection underneath it.
+//
+// The *sql.Conn is pinned rather than taken per statement because the raw
+// escape hatch is only meaningful against a specific connection: db.Conn gives
+// us one, Raw exposes its driver value, and the callback owns it for exactly
+// the duration of the call (database/sql invalidates the value afterwards, so
+// nothing may escape it).
+func (f *statsAddressFlags) withStatsConn(
+	ctx context.Context,
+	fn func(context.Context, *embedded.EmbeddedConnection) error,
+) error {
+	if f.database == "" {
+		// Leading sentence word: fang capitalizes the first rune of an error
+		// banner, which would garble a leading flag name into "--Database".
+		return fmt.Errorf("missing required flag --database (e.g. --database /myapp)")
+	}
+	if f.schema == "" {
+		return fmt.Errorf("missing required flag --schema (statistics are per-schema)")
+	}
+	target, err := (&storeAddressFlags{
+		contextName: f.contextName,
+		clusterFile: f.clusterFile,
+	}).resolve()
+	if err != nil {
+		return err
+	}
+	// The schema is an SQL identifier: unquoted folds to upper case (the same
+	// rule CREATE SCHEMA applies), so `--schema main` addresses the schema that
+	// `create schema /db/main` created.
+	schema := functions.StripIdentifierQuotes(f.schema)
+	dsn := buildFDBSQLDSN(target.clusterFile(), f.database, schema)
+	db, err := sql.Open("fdbsql", dsn)
+	if err != nil {
+		return fmt.Errorf("open fdbsql %q: %w", dsn, err)
+	}
+	defer db.Close()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("connect to %s: %w", f.describe(), err)
+	}
+	defer conn.Close()
+
+	var inner error
+	rawErr := conn.Raw(func(dc any) error {
+		ec, ok := dc.(*embedded.EmbeddedConnection)
+		if !ok {
+			return fmt.Errorf("driver connection is %T, not *embedded.EmbeddedConnection", dc)
+		}
+		inner = fn(ctx, ec)
+		// Returning inner would let database/sql interpret a domain error as a
+		// bad connection and retry the whole thing. Carry it out by hand.
+		return nil
+	})
+	if rawErr != nil {
+		return rawErr
+	}
+	return inner
+}
+
+func newStatsCollectCmd() *cobra.Command {
+	var (
+		addr              statsAddressFlags
+		batchSize         int
+		maxRecordsPerType int64
+		allSchemas        bool
+		concurrency       int
+		outputFmt         string
+	)
+	c := &cobra.Command{
+		Use:   "collect",
+		Short: "Scan the schema and write exact per-type row counts",
+		Long: "Reads EVERY record in the schema's store, tallies by record " +
+			"type, and replaces the stored statistics in one transaction.\n\n" +
+			"Cost is proportional to the store: this is an offline job. It " +
+			"scans in continuation-driven batches so no single transaction " +
+			"approaches FDB's 5s limit, whatever the store's size.\n\n" +
+			"--max-records-per-type bounds the work spent on one type. A type " +
+			"that EXCEEDS the cap is recorded as ABSENT, never as a partial " +
+			"count — and because the planner requires every type to be " +
+			"present, one capped type disables statistics for the whole " +
+			"schema. That is the intended trade: no statistic beats a wrong " +
+			"one.\n\n" +
+			"Collection does not invalidate already-cached plans; connections " +
+			"pick the new counts up as their cached plans age out.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
+			}
+			collect := recordlayer.CollectOptions{
+				BatchSize:         batchSize,
+				MaxRecordsPerType: maxRecordsPerType,
+			}
+			if allSchemas {
+				if addr.schema != "" {
+					return fmt.Errorf("conflicting targets: --all-schemas covers every schema in the database, so it cannot be combined with --schema")
+				}
+				if addr.database == "" {
+					return fmt.Errorf("missing required flag --database (--all-schemas fans out within ONE database)")
+				}
+				return runFleetStatsCollect(cmd, &addr, collect, concurrency)
+			}
+			return addr.withStatsConn(cmd.Context(),
+				func(ctx context.Context, ec *embedded.EmbeddedConnection) error {
+					started := time.Now()
+					report, err := ec.CollectStatistics(ctx, collect)
+					if err != nil {
+						return fmt.Errorf("collect statistics for %s: %w", addr.describe(), err)
+					}
+					return renderCollectReport(cmd, outputFmt, addr.describe(), report, time.Since(started))
+				})
+		},
+	}
+	addr.register(c)
+	c.Flags().IntVar(&batchSize, "batch-size", 0, "records scanned per transaction (0 = library default, 1000)")
+	c.Flags().Int64Var(&maxRecordsPerType, "max-records-per-type", 0, "record a type as ABSENT once it exceeds this many rows (0 = no cap)")
+	c.Flags().BoolVar(&allSchemas, "all-schemas", false, "collect for EVERY schema in --database, one scan per schema, with per-schema failure isolation")
+	c.Flags().IntVar(&concurrency, "concurrency", 0, "schemas collected in parallel with --all-schemas (0 = fleet default)")
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
+	return c
+}
+
+func newStatsShowCmd() *cobra.Command {
+	var (
+		addr      statsAddressFlags
+		outputFmt string
+	)
+	c := &cobra.Command{
+		Use:   "show",
+		Short: "Report the stored statistics and whether the planner would use them",
+		Long: "Prints what was collected AND the planner's verdict on it, from " +
+			"the same code the planner runs — so 'usable' here means the " +
+			"planner accepts them, not that this command found some bytes.\n\n" +
+			"A verdict of 'not usable' names which gate refused:\n" +
+			"  not collected   nothing has been written for this schema\n" +
+			"  expired         older than the freshness bound (~24h)\n" +
+			"  stamped ahead   the entry's version is ahead of the cluster's " +
+			"(a restore from backup moves versions backwards)\n" +
+			"  incomplete      at least one record type has no entry\n\n" +
+			"The verdict is independent of the connection's " +
+			"planner_statistics flag: it reports whether the DATA is good, " +
+			"which is what you want to know before turning the flag on.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateOutputFormat(outputFmt, "text", "json"); err != nil {
+				return err
+			}
+			return addr.withStatsConn(cmd.Context(),
+				func(ctx context.Context, ec *embedded.EmbeddedConnection) error {
+					st, err := ec.StatisticsStatus(ctx)
+					if err != nil {
+						return fmt.Errorf("read statistics for %s: %w", addr.describe(), err)
+					}
+					return renderStatsStatus(cmd, outputFmt, addr.describe(), st)
+				})
+		},
+	}
+	addr.register(c)
+	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
+	return c
+}
+
+func newStatsClearCmd() *cobra.Command {
+	var (
+		addr statsAddressFlags
+		yes  bool
+	)
+	c := &cobra.Command{
+		Use:   "clear",
+		Short: "Remove the schema's collected statistics",
+		Long: "Deletes the stored statistics. The record store is untouched — " +
+			"statistics live outside every store's subspace, so this can " +
+			"never reach record or index data.\n\n" +
+			"Queries keep working: the planner falls back to its constant, " +
+			"which is exactly what it does when statistics are absent, " +
+			"expired, or incomplete. Use this to undo a collection taken " +
+			"against data you have since reshaped, rather than waiting out " +
+			"the freshness bound.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := confirmWrite(cmd, yes,
+				fmt.Sprintf("clear planner statistics for %s", addr.describe())); err != nil {
+				return err
+			}
+			return addr.withStatsConn(cmd.Context(),
+				func(ctx context.Context, ec *embedded.EmbeddedConnection) error {
+					if err := ec.ClearStatistics(ctx); err != nil {
+						return fmt.Errorf("clear statistics for %s: %w", addr.describe(), err)
+					}
+					_, err := fmt.Fprintf(cmd.OutOrStdout(),
+						"cleared planner statistics for %s\n", addr.describe())
+					return err
+				})
+		},
+	}
+	addr.register(c)
+	c.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return c
+}
+
+// statsCollectResult is the typed JSON shape of `stats collect -o json`.
+type statsCollectResult struct {
+	Schema         string           `json:"schema"`
+	RecordsScanned int64            `json:"records_scanned"`
+	DurationMS     int64            `json:"duration_ms"`
+	Collected      map[string]int64 `json:"collected"`
+	// Skipped maps a record type to WHY it has no statistic. Distinct from a
+	// zero count: "no rows" and "not counted" are different facts and only one
+	// of them describes an empty table.
+	Skipped map[string]string `json:"skipped"`
+}
+
+func renderCollectReport(
+	cmd *cobra.Command,
+	outputFmt, schema string,
+	report *recordlayer.CollectionReport,
+	elapsed time.Duration,
+) error {
+	collected := make(map[string]int64, len(report.Collected))
+	for name, st := range report.Collected {
+		collected[name] = st.Count
+	}
+	if outputFmt == "json" {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		skipped := report.Skipped
+		if skipped == nil {
+			skipped = map[string]string{}
+		}
+		return enc.Encode(statsCollectResult{
+			Schema:         schema,
+			RecordsScanned: report.RecordsScanned,
+			DurationMS:     elapsed.Milliseconds(),
+			Collected:      collected,
+			Skipped:        skipped,
+		})
+	}
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "collected statistics for %s\n", schema)
+	fmt.Fprintf(out, "  records scanned: %d in %s\n", report.RecordsScanned, elapsed.Round(time.Millisecond))
+	fmt.Fprintln(out)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "TYPE\tROWS")
+	for _, name := range sortedKeys(collected) {
+		fmt.Fprintf(tw, "%s\t%d\n", name, collected[name])
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if len(report.Skipped) > 0 {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "not collected (the planner refuses statistics until every type has one):")
+		for _, name := range sortedKeys(report.Skipped) {
+			fmt.Fprintf(out, "  %s: %s\n", name, report.Skipped[name])
+		}
+	}
+	return nil
+}
+
+// statsShowResult is the typed JSON shape of `stats show -o json`.
+type statsShowResult struct {
+	Schema string `json:"schema"`
+	// Usable is the planner's own verdict, from the planner's own code.
+	Usable  bool   `json:"usable"`
+	Refusal string `json:"refusal,omitempty"`
+	Found   bool   `json:"found"`
+	// PerType is present whenever statistics were found, usable or not — a
+	// stale count is still the number an operator wants to look at.
+	PerType              map[string]int64 `json:"per_type,omitempty"`
+	CollectedAtVersion   int64            `json:"collected_at_version,omitempty"`
+	CollectedAtUnixNanos int64            `json:"collected_at_unix_nanos,omitempty"`
+	CurrentVersion       int64            `json:"current_version,omitempty"`
+	AgeVersions          int64            `json:"age_versions,omitempty"`
+	MaxAgeVersions       int64            `json:"max_age_versions"`
+	MissingTypes         []string         `json:"missing_types,omitempty"`
+	ExtraTypes           []string         `json:"extra_types,omitempty"`
+}
+
+func renderStatsStatus(
+	cmd *cobra.Command,
+	outputFmt, schema string,
+	st embedded.StatisticsStatus,
+) error {
+	perType := make(map[string]int64, len(st.Stats.PerType))
+	for name, s := range st.Stats.PerType {
+		perType[name] = s.Count
+	}
+	if outputFmt == "json" {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(statsShowResult{
+			Schema:               schema,
+			Usable:               st.Usable,
+			Refusal:              string(st.Refusal),
+			Found:                st.Found,
+			PerType:              perType,
+			CollectedAtVersion:   st.Stats.CollectedAtVersion,
+			CollectedAtUnixNanos: st.Stats.CollectedAtUnixNanos,
+			CurrentVersion:       st.CurrentVersion,
+			AgeVersions:          st.AgeVersions,
+			MaxAgeVersions:       st.MaxAgeVersions,
+			MissingTypes:         st.MissingTypes,
+			ExtraTypes:           st.ExtraTypes,
+		})
+	}
+
+	out := cmd.OutOrStdout()
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "Schema:\t%s\n", schema)
+	if st.Usable {
+		fmt.Fprintf(tw, "Planner verdict:\tUSABLE\n")
+	} else {
+		fmt.Fprintf(tw, "Planner verdict:\tNOT USABLE — %s\n", st.Refusal)
+	}
+	if st.Found {
+		fmt.Fprintf(tw, "Collected at:\tversion %d", st.Stats.CollectedAtVersion)
+		if st.Stats.CollectedAtUnixNanos > 0 {
+			fmt.Fprintf(tw, " (%s)", time.Unix(0, st.Stats.CollectedAtUnixNanos).UTC().Format(time.RFC3339))
+		}
+		fmt.Fprintln(tw)
+		if st.CurrentVersion > 0 {
+			fmt.Fprintf(tw, "Age:\t%s of %s allowed\n",
+				renderVersionAge(st.AgeVersions), renderVersionAge(st.MaxAgeVersions))
+		}
+	}
+	if len(st.MissingTypes) > 0 {
+		fmt.Fprintf(tw, "Missing types:\t%s\n", strings.Join(st.MissingTypes, ", "))
+	}
+	if len(st.ExtraTypes) > 0 {
+		// Orphans never refuse: the planner asks by declared type name and
+		// simply never names a dropped table. Reported so an operator can tell
+		// a stale entry from a schema they misremembered.
+		fmt.Fprintf(tw, "Orphan types:\t%s (dropped from the schema; harmless)\n",
+			strings.Join(st.ExtraTypes, ", "))
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	if !st.Found {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "run `frl stats collect` to gather them")
+		return nil
+	}
+	fmt.Fprintln(out)
+	rows := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(rows, "TYPE\tROWS")
+	for _, name := range sortedKeys(perType) {
+		fmt.Fprintf(rows, "%s\t%d\n", name, perType[name])
+	}
+	if err := rows.Flush(); err != nil {
+		return err
+	}
+	if st.Usable {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "the planner uses these only when the connection opts in:")
+		fmt.Fprintln(out, "  ?planner_statistics=true")
+	}
+	return nil
+}
+
+// renderVersionAge turns an FDB version delta into something an operator reads
+// without doing arithmetic. FDB advances ~1,000,000 versions per second, so the
+// conversion is exact enough to be useful and approximate enough to be marked
+// as such.
+func renderVersionAge(versions int64) string {
+	if versions < 0 {
+		return fmt.Sprintf("%d versions (ahead of the cluster)", versions)
+	}
+	d := time.Duration(versions) * time.Microsecond
+	return fmt.Sprintf("%d versions (~%s)", versions, d.Round(time.Second))
+}
+
+// sortedKeys returns a map's keys in sorted order, so text and JSON output are
+// byte-stable across runs — a CLI whose output reorders cannot be diffed.
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

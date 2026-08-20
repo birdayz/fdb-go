@@ -1117,8 +1117,15 @@ func (c *EmbeddedConnection) CollectStatistics(
 	}
 	return recordlayer.CollectStatistics(ctx, c.sess.DB,
 		func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+			// SetSkipPossiblyRebuild + Open, never CreateOrOpen: counting rows is a
+			// READ. Opening a store runs checkPossiblyRebuild, which WRITES — a
+			// header version bump, index clears, rebuild marks — whenever the
+			// metadata handed to it is newer than the store header. A job that
+			// exists to measure a store must not migrate it, and the tenant it
+			// would fire on is the one already mid-migration.
 			return c.newStoreBuilder().SetContext(rtx).
-				SetMetaDataProvider(md).SetSubspace(storeSubspace).CreateOrOpen()
+				SetMetaDataProvider(md).SetSubspace(storeSubspace).
+				SetSkipPossiblyRebuild(true).Open()
 		},
 		recordlayer.NewStatisticsSubspace(c.sess.Keyspace.StatisticsSubspace()),
 		opts)

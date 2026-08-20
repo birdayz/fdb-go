@@ -1,31 +1,42 @@
 package recordlayer
 
-// CQ-88 gating experiment: can a per-RECORD-TYPE size estimate discriminate
-// tables, and at what size does it stop?
+// THE MEASUREMENT THAT KILLED RFC-236's SECOND DESIGN.
 //
-// The design this probe gates reads per-type cardinality from the RECORDS
-// subspace rather than from any index: a relational table's primary key is
-// prefixed with its record-type key (metadata/builder.go), so each table
-// occupies a contiguous range and `EstimateRecordsSizeInRange` addresses it
-// directly. That sidesteps the per-index/per-type mismatch entirely — an index
-// may span types, a FanOut index emits many entries per record, a type may have
-// no index at all, and none of that matters if you ask the records.
+// That design read per-type cardinality from the RECORDS subspace rather than
+// from any index. The idea was sound and sidestepped a real problem: a
+// relational table's primary key is prefixed with its record-type key
+// (metadata/builder.go), so each table occupies a contiguous range that
+// `EstimateRecordsSizeInRange` addresses directly — no per-index/per-type
+// mismatch, no trouble with an index that spans types, a FanOut index emitting
+// many entries per record, or a type with no index at all.
 //
-// THE QUESTION THAT DECIDES IT is not accuracy at the top end — the sibling
-// probe already measured ~1.3% there. It is the FLOOR. A sampled estimator
-// returns 0 below its granularity, and the design turns a 0 into a refusal.
-// Refusal is safe only if it is rare; if every table under some size refuses,
-// then statistics are unavailable for exactly the small tables whose smallness
-// is the most valuable thing a join-order decision could know.
+// THE QUESTION THAT DECIDED IT was not accuracy at the top end. It is the
+// FLOOR. A sampled estimator returns 0 below its granularity, and the design
+// turned a 0 into a refusal. Refusal is safe only if it is rare — and this
+// probe found that every table under roughly 100KB refuses, which is exactly
+// the small tables whose smallness is the most valuable thing a join-order
+// decision could know. An estimator blind precisely where the decision lives
+// cannot inform the decision.
 //
-// So: two types, deliberately lopsided, and the small one is sized near where
-// the sibling probe found the estimator giving up.
+// So statistics are COLLECTED by scanning instead (RFC-236 §2). The probe stays
+// because the conclusion outlives the design: it is the standing evidence, and
+// it is what would notice if FDB's estimator ever gained a usable floor.
+//
+// WHAT THE COLUMNS MEAN, because two of them are not comparable to each other.
+// `est_bytes` is what FDB's sampled estimator reports for the range: KEY plus
+// VALUE bytes, including the record-type prefix, split-record suffixes and the
+// version entry. `kv_bytes` is the same quantity counted exactly, by reading
+// the range. Those two are the comparison. `proto_bytes` is the serialized
+// record payload only, and is reported because it is what an application
+// thinks its data weighs — it is strictly smaller and comparing IT to the
+// estimate would understate the estimator.
 
 import (
 	"context"
 	"fmt"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -84,12 +95,13 @@ var _ = Describe("PerTypeSizeEstimateProbe", func() {
 		}, customers)
 
 		type row struct {
-			typeName  string
-			wantRows  int
-			typeKey   any
-			est       int64
-			trueBytes int64
-			trueCount int
+			typeName   string
+			wantRows   int
+			typeKey    any
+			est        int64
+			kvBytes    int64
+			protoBytes int64
+			trueCount  int
 		}
 		rows := []row{
 			{typeName: "Order", wantRows: orders},
@@ -108,9 +120,23 @@ var _ = Describe("PerTypeSizeEstimateProbe", func() {
 				key := rt.GetRecordTypeKey()
 				rows[i].typeKey = key
 
-				est, eErr := store.EstimateRecordsSizeInRange(TupleRangeAllOf(tuple.Tuple{key}))
+				typeRange := TupleRangeAllOf(tuple.Tuple{key})
+				est, eErr := store.EstimateRecordsSizeInRange(typeRange)
 				Expect(eErr).NotTo(HaveOccurred())
 				rows[i].est = est
+
+				// EXACT ground truth for what the estimator is estimating: the KEY
+				// plus VALUE bytes actually stored in this type's range, read from
+				// the same subspace EstimateRecordsSizeInRange addresses. The two
+				// numbers then answer the same question. A payload-only figure is
+				// strictly smaller and would understate the estimator rather than
+				// measure it.
+				kvRange := typeRange.ToFDBRange(store.subspace.Sub(RecordKey))
+				kvs, kErr := rtx.Transaction().GetRange(kvRange, fdb.RangeOptions{}).GetSliceWithError()
+				Expect(kErr).NotTo(HaveOccurred())
+				for _, kv := range kvs {
+					rows[i].kvBytes += int64(len(kv.Key) + len(kv.Value))
+				}
 
 				// Ground truth by scanning the same range.
 				cur := store.ScanRecordsByType(rows[i].typeName, nil, ScanProperties{})
@@ -127,17 +153,17 @@ var _ = Describe("PerTypeSizeEstimateProbe", func() {
 					}
 				}
 				_ = cur.Close()
-				rows[i].trueCount, rows[i].trueBytes = n, bytes
+				rows[i].trueCount, rows[i].protoBytes = n, bytes
 			}
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		fmt.Fprintf(GinkgoWriter, "\nPERTYPE  %-10s %8s %8s %12s %12s\n",
-			"type", "want", "scanned", "est_bytes", "true_proto")
+		fmt.Fprintf(GinkgoWriter, "\nPERTYPE  %-10s %8s %8s %12s %12s %12s\n",
+			"type", "want", "scanned", "est_bytes", "kv_bytes", "proto_bytes")
 		for _, r := range rows {
-			fmt.Fprintf(GinkgoWriter, "PERTYPE  %-10s %8d %8d %12d %12d\n",
-				r.typeName, r.wantRows, r.trueCount, r.est, r.trueBytes)
+			fmt.Fprintf(GinkgoWriter, "PERTYPE  %-10s %8d %8d %12d %12d %12d\n",
+				r.typeName, r.wantRows, r.trueCount, r.est, r.kvBytes, r.protoBytes)
 		}
 		big, small := rows[0], rows[1]
 		fmt.Fprintf(GinkgoWriter, "PERTYPE  VERDICT discriminates=%t  big/small=%s\n",

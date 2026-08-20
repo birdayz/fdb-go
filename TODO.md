@@ -18929,3 +18929,95 @@ mutation-verified.
 What REMAINS an owner call is the cost model itself, not the annotation.
 
 Full write-up, including the plans and the mutation evidence: RFC-235 §17.
+
+---
+
+## CQ-88 / RFC-236 — planner statistics: COLLECTED offline, read DEFENSIVELY
+
+**Status: implemented.** The planner can now order joins by real per-table row
+counts. Off by default; a connection opts in with `?planner_statistics=true`.
+
+**Why the two obvious designs did not work**, both measured rather than argued:
+
+- **`GetEstimatedRangeSizeBytes`** is a sampled estimator with a ~100KB floor.
+  It reports 0 for a non-empty small table and quantizes everything above. A
+  join-order decision turns on exactly the small-vs-large distinction it cannot
+  see (`per_type_size_estimate_probe_test.go`).
+- **Reading counts from index metadata** requires a COUNT index the schema may
+  not have, and only answers for the types it covers — leaving the reader to
+  mix real counts with defaults, which is the inverting case below.
+
+So counts are collected by SCANNING, offline, by an operator-scheduled job.
+Exactness is the point: it removes the floor, the quantization, and the
+bytes-to-rows conversion in one move.
+
+**Storage is outside every record store's subspace**, keyed by the store's own
+subspace prefix bytes. Java owns record-store keyspaces 0-10 and marks the enum
+`@API(UNSTABLE)`, so writing inside one would be a wire-compat hazard for a
+feature Java does not have. Keying by prefix bytes makes it layout-agnostic: a
+store is its prefix, however the prefix was derived.
+
+**The failure mode that shaped the whole read side.** A refusal returns
+`LeafScanCardinality` = 1e6, larger than almost any real count. So a PARTIAL
+statistic is not merely less useful than none — it is INVERTING: one missing
+type standing beside a real 150-row count makes the missing table the largest
+in the schema and drives the join from the wrong side. Every gate is therefore
+all-or-nothing, and completeness is schema-wide rather than query-wide (it is
+undecidable query-wide at read time, and insufficient anyway, because
+`FullUnorderedScanExpression` SUMS per-type cardinalities).
+
+**Freshness is judged on FDB VERSIONS, not wall clock.** Versions are the
+cluster's own clock — immune to skew between the host that collected and the
+host planning. A wall-clock comparison across two machines can make an entry
+effectively immortal, defeating the gate silently. A NEGATIVE age refuses
+rather than reading as infinitely fresh (a restore from backup moves versions
+backwards).
+
+**Staleness cannot produce wrong rows, structurally.** The estimate side
+(`Cost`) takes a `StatisticsProvider`; the proof side (`Cardinalities`,
+`provenCardinalities`, `CardinalityProver`) does not, so a rule dropping a
+DISTINCT because "max is 1" reasons from plan shape and cannot be misled by a
+number. That was a fact about signatures, which erodes without anyone deciding
+to erode it — it is now pinned by `TestCardinalityProofTakesNoStatistics` and
+`TestProofInformsEstimateNotTheReverse`. `fkChainCardinalityCap` is the one
+site where a statistic becomes something the code calls a bound; its binding
+argument is structural, only its magnitude is statistical, and it reaches
+`properties.Cost` and stops.
+
+**What proves it works**, since a plan change is not by itself an improvement:
+
+- Directional (`TestFDB_CollectedStatisticsDriveJoinOrder`): the same schema and
+  SQL over MIRRORED arrangements. Flag off, the plans must be IDENTICAL; flag
+  on, they must DIFFER and each drive from whichever table is smaller in ITS
+  arrangement. A fixed tie-break cannot follow row counts across a mirrored
+  pair. This caught the feature being completely inert — `ConnectionOptions`
+  mapped two DSN parameters and silently ignored every other, so
+  `PLANNER_STATISTICS` had no route from the connection string at all. Option
+  resolved, cache key rendered, reader wired, feature dead. A
+  single-arrangement test would have passed on the tie-break landing well.
+- Measured (`TestFDB_Stress_StatisticsJoinOrder`): OFF vs ON *within* one
+  arrangement, never across the pair — the two arrangements return different
+  row counts, so a max taken across them compares different queries. The
+  arrangements split into WIN (plan changed) and CONTROL (plan unchanged) BY
+  THEIR PLANS, not by their timings, and both classes must be non-empty.
+
+**The tenant question was answered by reading the codebase, not by adding
+flags.** The RFC first proposed `--tenant` / `--all-tenants` over
+`ListTenants()`. `grep -rnE 'ListTenants|OpenTenant|TenantName|fdb\.Tenant'
+--include='*.go' pkg/relational/` returns 0 (the same sweep over `pkg/fdbgo/`
+returns 90, so the command works). A case-insensitive grep for "tenant" there
+returns 80 non-test hits, and that is the point: the multi-tenancy that exists
+is SaaS tenancy expressed as SCHEMAS, and `pkg/relational/core/fleet` already fans out over them with
+per-target transactions, failure isolation, bounded concurrency and a resumable
+pass. `fleet.CollectStatistics` is one more `step` beside the index build, and
+shares `ListTargets` with the other modes so a statistics pass cannot cover a
+different set of schemas than a migration pass.
+
+**Still open, deliberately:** histograms / NDV / MCV and any distribution (the
+collector scans, so it COULD compute them, but selectivity consumes them and
+that is a separate change); automatic or triggered collection; incremental
+recollection; per-index statistics; plan-cache invalidation on data drift — a
+freshly collected statistic reaches only queries planned after it.
+
+Full design, including the measurements that killed the two rejected designs:
+RFC-236.

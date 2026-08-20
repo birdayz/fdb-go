@@ -38,6 +38,7 @@ go_library(
 go_test(
     name = "properties_test",
     srcs = [
+        "cardinality_proof_statistics_free_test.go",
         "cardinality_test.go",
         "cost_formulas_test.go",
         "cost_test.go",

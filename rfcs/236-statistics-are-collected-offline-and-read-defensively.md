@@ -160,107 +160,197 @@ construction. Only the collector chooses (§4d).
 
 ### 4c. The reader
 
-`fetchTableStatistics` (`cascades_generator.go:2482`) already does the right
-thing structurally — snapshot read, best-effort, nil on any error, returns
-`MapStatistics`, called after the plan-cache lookup and before
-`newCascadesPlanner`. It gains a second source and a gate; it does not move.
+`statistics_reader.go` in `core/embedded`. Two layers, deliberately split:
+
+- `evaluateCollectedStatistics` does the I/O — the snapshot read, the current
+  version — and gathers it into a `statisticsGateInput`.
+- `decideStatistics` is PURE: facts in, verdict out.
+
+The split exists so every refusal arm can be driven by a table-driven test.
+Two of them require a cluster MISBEHAVING — a version read that fails, an entry
+stamped ahead of the cluster after a restore from backup — and an arm no test
+drives fires for the first time in front of an operator, where it reads as a
+finding rather than as an untested branch. `TestDecideStatistics` drives all
+eight; `TestDecideStatisticsCoversEveryRefusal` fails the build if a ninth is
+added without a case.
+
+The verdict is a `StatisticsStatus`, not a bool, because it has a second
+consumer: `frl stats show` prints it. One decision function, two callers. Had
+the CLI re-derived "is this usable", it would eventually have reported usable
+for statistics the planner had already refused — the most expensive kind of
+wrong, because it reads as a confirmation.
+
+The reader opens no record store: the schema subspace IS the store subspace, so
+it is independent of `fetchIndexStateSnapshot`, including its early return when
+a schema has no indexes. That case matters — a join between two index-less
+tables is exactly where cardinality alone decides the order.
 
 ### 4d. The CLI
 
-    frl stats collect [--tenant NAME | --all-tenants] [--store SUBSPACE] ...
-    frl stats show    [--tenant NAME | --all-tenants]
-    frl stats clear   [--tenant NAME | --all-tenants]
+    frl stats collect --database /db --schema NAME [--batch-size N] [--max-records-per-type N]
+    frl stats collect --database /db --all-schemas [--concurrency N]
+    frl stats show    --database /db --schema NAME [-o text|json]
+    frl stats clear   --database /db --schema NAME [--yes]
 
-- `--tenant NAME` — one tenant, stats root inside that tenant's keyspace.
-- `--all-tenants` — enumerate via `fdb.Database.ListTenants()` and iterate; each
-  tenant is self-contained, so a failure in one does not abort the rest.
-- neither — the default keyspace, for non-tenant deployments.
+**No tenant flags.** The earlier draft had `--tenant` / `--all-tenants` over
+`fdb.Database.ListTenants()`. That was written without checking what "tenant"
+means in this codebase.
 
-Collection is per store and independently restartable. There is no global lock
-and no cross-store transaction: a store is the unit of work, and a partially
-collected run leaves earlier stores valid and later ones absent — which §5 reads
-as "absent", not as "stale".
+`grep -rnE 'ListTenants|OpenTenant|TenantName|fdb\.Tenant' --include='*.go'
+pkg/relational/` returns 0; the same command over `pkg/fdbgo/` returns 90, which
+is the control that says the sweep is well formed. Meanwhile a case-insensitive
+grep for "tenant" under `pkg/relational/` returns 80 non-test hits — and that is
+exactly the finding, not a contradiction of it: the multi-tenancy that exists
+there is SaaS tenancy expressed as SCHEMAS, and it already has a fan-out mechanism — `pkg/relational/core/fleet`
+— with per-target transactions, per-target failure isolation, bounded
+concurrency and a resumable pass, driving `index build --all-schemas` and the
+migration fan-out today.
 
+So `--all-schemas` is not a new mechanism. `fleet.CollectStatistics` is a
+`step`, exactly like an index build, and it shares `fleet.ListTargets` with the
+other two modes rather than enumerating schemas its own way: a statistics pass
+covering a different set of schemas than the migration pass would leave exactly
+the tenants nobody thought about uncollected, and one uncollected type disables
+statistics for that whole schema.
+
+**Single-schema commands route through the SQL driver connection.** Not through
+`withStore`. The statistics location is derived from the keyspace root and the
+schema's store subspace, and the planner derives it one way, inside
+`EmbeddedConnection`. A CLI deriving it a second way is two pieces of code
+hoping they agree, and the failure is silent: the collector writes where the
+planner never looks, every command reports success, and plans just never change.
+
+The fan-out is the one path that CANNOT use a connection — it has no single
+schema to bind one to — so it is a genuine second derivation, and it is pinned
+by `TestIntegration_Stats_FleetCollectIsReadableByTheConnection`: the fan-out
+writes, the connection reads, and a disagreement about the database-path
+convention or schema case folding shows up there and nowhere else.
 
 ## 5. Reading defensively
 
 A statistic is used only if ALL of these hold. Any failure means the whole query
-plans on constants:
+plans on constants — absent, expired, incomplete and failed are ONE outcome:
 
-1. **The flag is on.** `PLANNER_STATISTICS`, default false, and part of the
-   plan-cache key — `planner_options.go`'s `cacheKeyPart` documents that omitting
-   an option from the key is "a wrong-plan bug, not merely a stale-cost one".
-2. **Every participating record type has an entry.** Partial statistics are the
-   inversion bug: a refusal returns `LeafScanCardinality` = 1e6, the largest
-   value in the space, so an estimated table beside a refused one is ranked
-   backwards. All-or-nothing is what makes "degrades to today's plan" true.
-3. **The entry is fresh enough.** `collectedAtUnixNanos` within a configured
-   `maxAge` (default: 24h). Freshness is BOUNDED, not proven — no cheap
-   primitive answers "has this table changed since version V" — and §6 is why
-   bounding is sufficient.
-4. **The read succeeds.** Any error → nil → constants. Planning acquires no new
+0. **The flag is on.** `PLANNER_STATISTICS`, default false, reachable as
+   `?planner_statistics=true` in the DSN, and part of the plan-cache key in
+   BOTH halves. The all-defaults early return is the half that is easy to miss:
+   with only a render arm, a flag-ON connection whose other options are default
+   renders `""`, byte-identical to flag-off, and shares its cache entry.
+1. **The read succeeds.** Any error → constants. Planning acquires no new
    failure mode.
+2. **An entry exists.** Absent is not zero.
+3. **It is fresh, judged on FDB VERSIONS.** `age = readVersion -
+   collectedAtVersion`, bound `24 * 60 * 60 * 1e6` (~24h at FDB's ~1e6
+   versions/second). Versions rather than wall clock because they are the
+   CLUSTER's own clock: monotone within it, and immune to skew between the host
+   that ran the collector and the host planning the query. A wall-clock
+   comparison across two machines can make an entry effectively immortal, which
+   would quietly defeat this gate — and with it the argument that an orphaned
+   entry is harmless because it is old. A NEGATIVE age refuses rather than
+   reading as infinitely fresh: a restore from backup moves versions backwards.
+4. **Complete over the WHOLE SCHEMA.** Not the query.
 
-Absent, expired, partial, and failed are one outcome: today's behaviour.
+Completeness is schema-wide on two counts. It is undecidable query-wide where
+the read happens — before the planner exists, so which types a query touches is
+unknown. And it would be insufficient anyway: `FullUnorderedScanExpression` SUMS
+per-type cardinalities, so one absent type inside one scan node yields
+`1e6 + realCount`, an inversion BELOW the granularity a per-query gate is even
+defined at. The cost, stated rather than discovered: one uncollected type
+disables statistics for every query in that schema.
+
+Why refusal must be all-or-nothing: a refusal returns
+`LeafScanCardinality = 1e6`, larger than almost any real count, so one missing
+type standing beside a real 150-row count makes the missing table the largest in
+the schema and drives the join from the wrong side. Half a statistic is worse
+than none, which at least ties.
+
+The provider is therefore NOT `MapStatistics`. Four production sites ask for the
+EMPTY record type name when a leaf's types are unknown, and `MapStatistics`
+answers an unknown name with `LeafScanCardinality` — wrong in the inverting
+direction. `CollectedStatistics` answers the empty name with the whole-store
+SUM, which is on the same scale as the data.
 
 ## 6. The one line that must not be crossed
 
 Collected statistics are **estimates**, and must never become **bounds**.
 
-Go has a `Cardinalities` / `CostWithinBounds` clamp
-(`planning_cost_model.go:1594-1614`) where a PROVEN cardinality constrains
-everything above it. A count read at version V is proven at V and nowhere else,
-so routing collected counts into the clamp converts staleness from "suboptimal
-plan" into "wrong plan". They go to `StatisticsProvider` and stop there.
+This is what makes a possibly-hours-old number safe to plan with: a stale count
+can cost a plan badly, and can never return a wrong row. The reason is
+structural, not careful — the ESTIMATE side (`Cost`) consumes a
+`StatisticsProvider`; the PROOF side (`Cardinalities`, `provenCardinalities`,
+`CardinalityProver`) does not. A rule that drops a DISTINCT because "max is 1"
+is reasoning from plan shape and cannot be misled by a number.
 
-This is the property that makes a best-effort, operator-scheduled, possibly-hours-old
-statistic a safe thing to plan with.
+Two things follow, and both are now pinned rather than asserted:
+
+- `TestCardinalityProofTakesNoStatistics` reflects over every proof producer and
+  fails if one gains a route to a statistics provider. Adding such a parameter
+  compiles and passes every other test, which is exactly why a signature test is
+  the right instrument.
+- `TestProofInformsEstimateNotTheReverse` guards the one place the two sides
+  MEET. `BoundedCostHinter.HintCostWithin` and `CostWithinBounds` take the
+  proven bounds AND the statistics provider — legitimately, because they return
+  a `Cost`. A proof may inform an estimate; the reverse must not exist. The
+  check is not "does it take stats" but "what does it hand back".
+
+`fkChainCardinalityCap` is the one place a statistic becomes something the code
+calls a bound, and it is worth naming precisely because it looks like a
+counter-example. Its BINDING argument is structural and absolute; only the
+MAGNITUDE comes from `RecordTypeCardinality`. A table that has grown makes that
+number an under-estimate — the unsound direction — and it is safe only because
+the value reaches `properties.Cost` and stops. Its doc comment says so, and
+points at the tests above.
 
 ## 7. Scope
 
-**In:** the collector and its CLI; the keyspace; the tuple format; the reader
-with all four gates; the connection flag and its cache-key component; the tests
-in §8.
+**In:** the collector and its CLI, single-schema and fleet; the keyspace; the
+tuple format; the reader with all its gates; the connection flag and its
+cache-key component; the tests in §8.
 
 **Out, and named so they are not assumed:** histograms, NDV, MCV and any
 distribution (the collector could compute them — it scans — but selectivity
 consumes them and that is a second change); automatic/triggered collection;
 incremental recollection; per-index statistics; the `Cardinalities` clamp (§6);
-plan-cache invalidation on data drift.
+plan-cache invalidation on data drift. Collection does NOT invalidate cached
+plans, so a freshly collected statistic reaches only queries planned afterwards.
 
 ## 8. Tests
 
 - **Collector correctness.** Counts equal a ground-truth scan, across several
   types, empty types, and after deletes.
-- **Batching.** A table larger than one batch collects the same count as one
-  smaller than a batch — the continuation path is exercised, not assumed.
+- **Batch invariance.** Batch 7 and batch 100000 must agree — the continuation
+  path is exercised, not assumed.
 - **Cap.** A type over its row cap is recorded ABSENT, never partial.
-- **Reader gates, each driven independently:** flag off; a type missing; an
-  entry expired; a read error; and the all-pass case. Four refusals and one
-  acceptance, so no gate is vacuous.
-- **All-or-nothing.** A two-table query with statistics for ONE plans exactly as
-  with statistics for NEITHER — asserted on the plan, not on rows.
-- **Plan change (the CQ-88 criterion).** Restore
-  `multiway_join_order_probe_test.go`'s exact-driver assertion, which sits
-  relaxed at `:101` with a re-arm comment naming this work. The relaxation is
-  the regression; un-relaxing it is the acceptance.
-- **Flag off is inert.** The full suite plans identically with the flag absent,
-  including `conformance/cross_join_order_mechanism_probe_test.go` and
-  `dup_alias_exists_order_probe_test.go`, which are cross-engine order pins that
-  a plan change would redden.
+- **Replace, not merge.** Deleting a whole type and re-collecting removes its
+  entry rather than leaving the old count behind.
+- **Reader gates, every arm driven** (`TestDecideStatistics`), plus a vacuity
+  guard that fails when a refusal constant has no case.
+- **The estimate/proof line** (§6), two signature tests.
+- **Directional acceptance** (`TestFDB_CollectedStatisticsDriveJoinOrder`): the
+  same schema and SQL over MIRRORED arrangements. Flag off, the two plans must
+  be IDENTICAL — the data cannot reach the decision. Flag on, they must DIFFER,
+  each driving from whichever table is smaller in ITS arrangement. A fixed
+  tie-break cannot produce a driver that follows row counts across a mirrored
+  pair, which is what makes this unsatisfiable by writing a test to satisfy it.
+- **Measured improvement at scale** (`TestFDB_Stress_StatisticsJoinOrder`), §11.
+- **Cross-derivation agreement.** The fleet fan-out writes; the connection
+  reads. §4d.
+- **CLI end-to-end.** Collect / show / clear, the JSON shapes, the confirmation
+  gate, and that a refused `clear` clears nothing.
+- **Flag off is inert.** The full suite plans identically with the flag absent.
 - **No corpus entry sets the flag.** The cross-engine corpus is the parity net
   and must not become row-count sensitive.
-- **Cache key.** Two connections differing only in the flag do not share a plan.
 
 ## 9. Acceptance
 
-1. The exact-driver assertion in `multiway_join_order_probe_test.go` is restored
-   and passes with the flag on.
-2. With the flag off, the full suite is unchanged.
-3. Every §8 reader gate is driven by a test, including the ones a healthy corpus
+1. The plan follows the DATA across a mirrored pair, and does not without the
+   flag.
+2. The plan statistics choose is measurably faster at scale, with a control.
+3. Every reader gate is driven by a test, including the ones a healthy corpus
    never reaches.
 4. A store with no collected statistics plans exactly as today.
-5. `frl stats` collects a real schema and the counts match a scan.
+5. `frl stats` collects a real schema and the counts match a scan, and what the
+   fan-out writes is what the planner reads.
 
 ## 10. Alternatives rejected
 
@@ -281,3 +371,64 @@ not required, because an offline collector needs no schema change at all.
 compat: a Go-maintained count a Java writer does not update goes silently stale.
 That is the failure this design avoids by being explicitly stale-aware instead of
 falsely current.
+
+## 11. Measured
+
+`TestFDB_Stress_StatisticsJoinOrder`, on a single-node FDB testcontainer, at
+`b66cdec` of the test file. Two MIRRORED arrangements of the same schema and the
+same SQL — `SELECT a.v, b.id FROM a, b WHERE b.a_id = a.id`, with `a.id` a
+primary key and an index on `b.a_id`, so either table can drive and only its row
+count says which should. Statistics are collected once per arrangement; the two
+settings then read the same stored bytes, so the OFF numbers are also the
+evidence that the opt-in gate holds.
+
+| arrangement | rows | OFF | ON | ratio | plan |
+|---|---|---|---|---|---|
+| `a_small` (a=50, b=1,000,000) | 1,000,000 out | 1m38.5s | 1m19.9s | 1.23x | unchanged — **control** |
+| `a_big` (a=1,000,000, b=50) | 50 out | **2m34.4s** | **22ms** | **6928x** | changed — **win** |
+
+The comparison is OFF-vs-ON WITHIN an arrangement, never across the pair: the
+two return different row counts, so a max taken across them compares different
+queries. (The first version of this test did exactly that and reported a 12.7x
+"control regression" that was two different result sets being differenced.)
+
+**The win.** With no statistics the planner drove from `A` in both
+arrangements — the tie-break is fixed, so it cannot be right twice. In `a_big`
+that means scanning a million rows and probing a 50-row table a million times.
+With statistics it drives from the 50-row `B` and probes `A`'s primary key
+fifty times: 2m34s becomes 22ms.
+
+**The control, and its honest caveat.** In `a_small` the tie-break already chose
+well, both settings plan the same join, and the times should match. They differ
+by 1.23x. ON ran second, so a warmer cache is the likely cause, and the
+measurement is not clean enough to call that zero. It is worth stating plainly
+rather than rounding away — and it is also five thousand times smaller than the
+win it sits beside, so it does not put the result in question. The test's
+control window is 0.5x-2.0x for exactly this reason.
+
+**What this does NOT show.** A workload whose joins the tie-break already
+happens to order correctly gains nothing — that is the `a_small` row. The value
+is not a uniform speedup; it is the removal of a failure mode whose cost is
+unbounded and whose occurrence is arbitrary.
+
+## 12. Prior art in this codebase, and why it does not answer
+
+Java has `SizeStatisticsCollectorCursor` / `SizeStatisticsGroupingCursor` /
+`SizeStatisticsResults`, and reaching for them is the obvious first move.
+
+They count KEYS. `SizeStatisticsResults.getKeyCount()` is documented as "the
+total number of keys in the requested key range"
+(`SizeStatisticsResults.java:182-185`), and a key is not a record: the record
+layer splits a record over 100KB into chunks at suffixes 1, 2, 3…, and stores
+the record version inline. One logical record can occupy several keys, and the
+ratio varies per row with the row's size — so a key count is not even a
+consistent over-estimate.
+
+For "how big is this table" in bytes, that is the right instrument. For "how
+many rows", it silently answers a different question, and the error is
+proportional to how many large records a table holds — which correlates with
+exactly the tables an operator cares about. The collector iterates the record
+cursor instead, and `counts split records once, not once per chunk`
+(`statistics_test.go`) is the pin: it stores three records across more than
+three keys and requires the answer to be three, with a guard that fails the test
+if splitting ever stops happening and the two counts coincide.

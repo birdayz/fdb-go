@@ -1,18 +1,24 @@
 package recordlayer
 
-// RFC-236 §9: the experiment the RFC is gated on.
+// THE MEASUREMENT THAT KILLED RFC-236's FIRST DESIGN.
 //
-// `GetEstimatedRangeSizeBytes` is served from storage-server SAMPLING, not from
-// a count. Before an index maintainer is allowed to answer selectivity
-// questions with it, we need to know where it stops discriminating — because a
-// sampled estimator that floors to 0 (or to a constant) below some range width
-// would hand the cost model a number it would believe and should not.
+// That design had each index maintainer answer selectivity questions from
+// `GetEstimatedRangeSizeBytes`, refusing (`ok=false`) below the range width
+// where the estimate stops tracking — a width this probe was written to
+// OUTPUT rather than have somebody pick.
 //
-// This measures the estimate over a VALUE index at descending selectivities and
-// prints it beside the true entry count from an actual scan. The output is the
-// deliverable: RFC-236 §5 says `standardIndexMaintainer` must return
-// `ok=false` below the width where the estimate stops tracking, and that width
-// is an OUTPUT of this probe rather than a constant somebody picks.
+// It printed a number that ended the design instead. `GetEstimatedRangeSizeBytes`
+// is served from storage-server SAMPLING, and below roughly 100KB it does not
+// degrade gracefully: it reports 0 for ranges that are demonstrably not empty,
+// and quantizes everything above. There is no width at which it starts
+// discriminating usefully for the question being asked, because a join-order
+// decision turns on exactly the small-versus-large distinction that lives
+// entirely below the floor.
+//
+// The probe stays because the conclusion outlives the design. It is the standing
+// evidence for why statistics are COLLECTED by scanning rather than estimated at
+// plan time (RFC-236 §2), and it is what would notice if FDB's estimator ever
+// gained a usable floor — which would reopen the cheaper design.
 
 import (
 	"context"

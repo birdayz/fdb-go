@@ -6,9 +6,11 @@ package recordlayer
 
 import (
 	"context"
+	"reflect"
 	"time"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	. "github.com/onsi/ginkgo/v2"
@@ -320,5 +322,209 @@ var _ = Describe("CollectStatistics", func() {
 			"a read version must be recorded alongside the wall clock: freshness is "+
 				"judged on the VERSION, because clocks can be skewed between the "+
 				"collector host and the reader host and versions cannot")
+	})
+
+	// RECORDS ARE NOT KV PAIRS, and this is the dimension where a plausible
+	// implementation of this collector is wrong.
+	//
+	// The record layer SPLITS a record over 100KB into chunks stored at
+	// suffixes 1, 2, 3… and stores the record version inline at suffix -1. So
+	// one logical record can occupy four or five keys, and the ratio depends on
+	// the record's size — which means a key count is not even a consistent
+	// OVER-estimate, it is a number whose relationship to the row count varies
+	// per row.
+	//
+	// This is not a hypothetical shape to be wary of. Java's own
+	// SizeStatisticsResults — the closest existing thing to a statistic in
+	// either codebase — reports `keyCount`, "the total number of keys in the
+	// requested key range" (SizeStatisticsResults.java:182-185). Anyone
+	// reaching for the existing machinery to answer "how many rows" gets keys.
+	//
+	// The collector counts RECORDS because it iterates the record cursor rather
+	// than a key range. A test with only small records cannot tell the two
+	// apart: every record is one key, so both implementations agree and the
+	// suite is green with the bug fully present.
+	It("counts split records once, not once per chunk", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := NewStatisticsSubspace(specSubspace())
+
+		// Splitting is opt-in per store, so this test builds its own metadata
+		// with it ON. That is itself worth noticing: a store WITHOUT it simply
+		// refuses an oversized record, so the split layout only exists where an
+		// operator asked for it — and a collector tested only against the
+		// default metadata never meets the layout at all.
+		splitBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		splitBuilder.SetSplitLongRecords(true)
+		splitBuilder.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+		splitBuilder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		splitBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+		splitMeta, mErr := splitBuilder.Build()
+		Expect(mErr).NotTo(HaveOccurred())
+		splitBuilderFor := func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).
+				SetMetaDataProvider(splitMeta).SetSubspace(sub).CreateOrOpen()
+		}
+
+		// 250KB each: over the 100KB split threshold, so each of these becomes
+		// several chunks. Two big records and one small one, so the KV count
+		// and the record count differ by a factor that is neither 1 nor
+		// constant.
+		big := make([]byte, 250*1024)
+		for i := range big {
+			big[i] = byte(i)
+		}
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, sErr := NewStoreBuilder().SetContext(rtx).
+				SetMetaDataProvider(splitMeta).SetSubspace(sub).CreateOrOpen()
+			if sErr != nil {
+				return nil, sErr
+			}
+			for i := 0; i < 2; i++ {
+				if _, e := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(int64(i)), VectorData: big,
+				}); e != nil {
+					return nil, e
+				}
+			}
+			_, e := store.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(1)})
+			return nil, e
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Count the KEYS in the records subspace, so the assertion below can
+		// say what a key-counting collector would have reported instead of
+		// merely asserting the right answer.
+		var keyCount int
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			recordsSub := sub.Sub(RecordKey)
+			begin, end := recordsSub.FDBRangeKeys()
+			kvs, kErr := rtx.Transaction().GetRange(
+				fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())},
+				fdb.RangeOptions{}).GetSliceWithError()
+			if kErr != nil {
+				return nil, kErr
+			}
+			keyCount = len(kvs)
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		report, err := CollectStatistics(ctx, sharedDB, splitBuilderFor, stats, CollectOptions{BatchSize: 10})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The guard that keeps this test from going vacuous: if splitting ever
+		// stops happening (a raised threshold, a different serializer), the
+		// counts coincide and the assertion below passes for the wrong reason.
+		Expect(keyCount).To(BeNumerically(">", 3),
+			"the three records occupy only %d keys, so nothing here is split and this "+
+				"test can no longer tell a record count from a key count", keyCount)
+
+		Expect(report.Collected["Order"].Count).To(BeEquivalentTo(3),
+			"collected %d for 3 records stored across %d keys — a collector counting KEYS "+
+				"would report about %d here, and would then tell the planner this table is "+
+				"several times larger than it is",
+			report.Collected["Order"].Count, keyCount, keyCount)
+
+		// And the stored bytes must agree with the report, since the reader
+		// reads the store and not the report.
+		stored, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(stored.PerType["Order"].Count).To(BeEquivalentTo(3))
+	})
+
+	// THE COLLECTOR MUST NOT MIGRATE THE STORE IT MEASURES.
+	//
+	// Opening a record store runs checkPossiblyRebuild, which WRITES — a header
+	// version bump, index clears, rebuild marks — whenever the metadata handed
+	// to it is NEWER than the store header. A job whose entire purpose is to
+	// count rows must not do that, and the store it would do it to is the one
+	// already mid-migration: metadata evolved, header not yet reconciled. That
+	// is a normal transient state for a fleet, not a corrupt one.
+	//
+	// Both callers therefore open with SetSkipPossiblyRebuild + Open, never
+	// CreateOrOpen (embedded/connection.go, core/fleet/statistics.go). This is
+	// the pin for that choice, and it needs the VERSION SKEW to exist — which is
+	// why it cannot live in the CLI suite, where a schema is created and
+	// collected at the same version and both open modes behave identically.
+	//
+	// The test asserts BOTH directions. Without the guard the store changes
+	// (proving the hazard is real and this fixture reaches it); with the guard
+	// it does not (proving the guard is what prevents it). Asserting only the
+	// second would pass just as happily against a fixture with no skew at all.
+	It("does not migrate a store whose metadata has moved ahead of its header", func() {
+		ctx := context.Background()
+
+		// v2 is the same schema at a higher metadata version: newer than what
+		// the store's header will record, which is the condition
+		// checkPossiblyRebuild acts on.
+		newerMeta := func() *RecordMetaData {
+			b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			b.GetRecordType("Order").SetPrimaryKey(Concat(RecordTypeKey(), Field("order_id")))
+			b.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+			b.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+			b.SetVersion(metaData.Version() + 1)
+			m, e := b.Build()
+			Expect(e).NotTo(HaveOccurred())
+			return m
+		}()
+
+		snapshot := func(sub subspace.Subspace) map[string]string {
+			out := map[string]string{}
+			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				begin, end := sub.FDBRangeKeys()
+				kvs, rErr := rtx.ReadTransaction(true).GetRange(
+					fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())},
+					fdb.RangeOptions{}).GetSliceWithError()
+				if rErr != nil {
+					return nil, rErr
+				}
+				for _, kv := range kvs {
+					out[string(kv.Key)] = string(kv.Value)
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return out
+		}
+
+		// run seeds a store at the ORIGINAL metadata version, then collects with
+		// the NEWER metadata, and reports whether the store's bytes moved.
+		// arm names the subspace, because specSubspace() is keyed on the SPEC and
+		// would hand both arms the same store — the second arm would then seed at
+		// the original version over a header the first arm had already bumped, and
+		// fail as stale metadata rather than measuring anything.
+		run := func(arm string, skipRebuild bool) bool {
+			sub := specSubspace().Sub(arm)
+			stats := NewStatisticsSubspace(specSubspace().Sub(arm + "-stats"))
+			seed(ctx, sub, 4, 2)
+			before := snapshot(sub)
+			Expect(before).NotTo(BeEmpty())
+
+			_, err := CollectStatistics(ctx, sharedDB,
+				func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+					b := NewStoreBuilder().SetContext(rtx).
+						SetMetaDataProvider(newerMeta).SetSubspace(sub)
+					if skipRebuild {
+						return b.SetSkipPossiblyRebuild(true).Open()
+					}
+					return b.CreateOrOpen()
+				}, stats, CollectOptions{BatchSize: 100})
+			Expect(err).NotTo(HaveOccurred())
+			return !reflect.DeepEqual(before, snapshot(sub))
+		}
+
+		// The fixture must actually reach the hazard, or the guarded arm below
+		// is asserting over a condition that never arises.
+		Expect(run("unguarded", false)).To(BeTrue(),
+			"opening WITHOUT SetSkipPossiblyRebuild left the store byte-identical, so this "+
+				"fixture does not reproduce the metadata-ahead-of-header condition and the "+
+				"guarded arm below proves nothing")
+
+		Expect(run("guarded", true)).To(BeFalse(),
+			"the collector migrated the store it was only supposed to measure — "+
+				"SetSkipPossiblyRebuild + Open is what prevents that, and both call sites "+
+				"(embedded/connection.go, core/fleet/statistics.go) depend on it")
 	})
 })
