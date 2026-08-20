@@ -19246,3 +19246,68 @@ THE WORK: build the predicate as a typed expression instead of as text.
 Also folds in the alias-quoting duplication: `quoteUsingAlias` is a verbatim
 copy of the `quoteAlias` closure inside `synthesizeUsingOnExpr`, and two
 copies of one identifier-normalisation rule must not be allowed to drift.
+
+## `retargetUsingJoins` is semantic analysis living in the parser
+
+`retargetUsingJoins` and its helpers (`usingSource`, `usingOwnerOf`,
+`legSource`, `baseTableColumns`, `cteNamePredicate`) resolve a USING
+column against the visible left scope, consult the semantic catalog and
+derive a CTE/subquery projection. That is name resolution — what Java does
+in semantic analysis — and it currently sits in `select_parser.go`.
+
+The LAYER is right and was reviewed as such: nothing here reaches the
+memo. It emits no expression, no quantifier and no cost decision; it reads
+a column surface and rewrites one predicate's qualifiers before the
+logical tree is built, which is the stage Cascades requires a
+name-resolved tree to arrive from. What is wrong is only the FILE.
+
+It is booked as its own entry rather than folded into the two existing
+USING items — those are about the SQL-text round-trip and the duplicated
+alias quoting, and neither would lead a reader to the placement question.
+A finding tucked inside an entry about something else is how findings rot.
+
+THE WORK: move the group next to the other semantic-analysis code, or
+into the semantic package outright if the dependency direction allows.
+No behaviour change; the yamsql arms, the JVM probes and the golden are
+the safety net for the move.
+
+## A derived source's schema is advertised before its body is validated
+
+`buildCTEColumnSource` derives a derived-table or CTE schema by walking the
+body's FROM legs BY NAME when the body is a simple star over one table. It
+does not check that the star's qualifier names a source in that body, so
+`(SELECT nope.* FROM c)` is advertised as exporting c's full row.
+
+Consequence, measured against a live JVM
+(`conformance/join_using_chain_java_probe_test.go`, arm "derived body
+invalid, outer USING ambiguous"):
+
+    SELECT a.id FROM a JOIN (SELECT nope.* FROM c) d USING (id)
+                       JOIN c USING (k)
+
+    java: Unknown reference NOPE     go: 42702 (the OUTER ambiguity)
+
+Both engines refuse the query — it is invalid twice over — so this is an
+error-ORDER divergence rather than a wrong answer. Java reports the fault
+INSIDE the subquery, which is both earlier and more specific.
+
+It became observable when USING ownership started consulting derived
+schemas: the outer ambiguity is now computable from the advertised
+(wrong) schema and is raised before the body is ever built. The advertising
+itself predates that.
+
+THE FIX belongs in the derivation, not in the USING resolver: route a
+derived source's schema through the validating builder. That path already
+exists — `buildExactScopeSourceOrBodyError`, which the same function uses
+for join/derived-legged bodies precisely because "a body that does not
+BUILD raises its OWN error instead". The simple-star branch takes the
+name-walk shortcut and skips it.
+
+It is not fixed here because it changes SHARED CTE schema derivation —
+every CTE and derived table in the engine — for an error-precedence gain
+on an already-invalid query. That deserves its own change and its own
+review lap rather than riding along on a USING fix.
+
+The divergence is PINNED, not merely described: the probe arm asserts BOTH
+engines' current wording, so it fails if Go is repaired or if either side
+moves to a third answer.

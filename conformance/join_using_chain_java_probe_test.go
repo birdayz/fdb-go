@@ -78,6 +78,10 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 			control bool
 			// chained marks the arms this file exists to measure.
 			chained bool
+			// javaSays and goSays, when set, require the arm to be REFUSED and the
+			// refusal to NAME the fault. Agreement on "rejected" is too weak
+			// wherever the point of the arm is WHICH fault is reported first.
+			javaSays, goSays string
 		}{
 			{
 				name: "single USING", control: true,
@@ -137,6 +141,47 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				sql: "WITH cte AS (SELECT id, k FROM c) SELECT a.id FROM a JOIN cte USING (id) " +
 					"JOIN c USING (k) ORDER BY a.id",
 			},
+			{
+				// ERROR ORDER WITH A DERIVED RIGHT LEG. The FIRST join names a
+				// column the subquery does not export (`k`); the SECOND is
+				// ambiguous. Java resolves left to right, so the missing column
+				// should win. If the derived leg's schema is admitted to later
+				// ownership WITHOUT being checked at its own join, the later
+				// ambiguity is reported first and the earlier fault is masked.
+				chained: true, name: "derived right leg missing the USING column",
+				sql: "SELECT a.id FROM a JOIN (SELECT id FROM c) d USING (k) " +
+					"JOIN b USING (id)",
+				javaSays: "Unknown reference K",
+				goSays:   "42703",
+			},
+			{
+				// A DERIVED BODY THAT IS ITSELF INVALID — A KNOWN DIVERGENCE,
+				// pinned as it stands rather than asserted away.
+				//
+				// `nope` is not a source inside the subquery, so the body is
+				// wrong before any USING question arises, and Java reports
+				// `Unknown reference NOPE`. Go reports the OUTER ambiguity
+				// instead, because the schema derivation advertises a simple
+				// star body's columns without validating it: a lone qualified
+				// star is read as the source's full schema whatever the
+				// qualifier says.
+				//
+				// Both engines refuse the query — it is invalid twice over — so
+				// this is an error-ORDER divergence, not a wrong answer. The fix
+				// is to route a derived source's schema through the validating
+				// builder (buildExactScopeSourceOrBodyError, which today only
+				// serves join/derived-legged bodies), which is a change to
+				// shared CTE derivation rather than to this resolver. Booked in
+				// TODO.md.
+				//
+				// Pinned by naming BOTH sides so it fails when it changes in
+				// either direction — repaired, or moved to a third answer.
+				chained: true, name: "derived body invalid, outer USING ambiguous",
+				sql: "SELECT a.id FROM a JOIN (SELECT nope.* FROM c) d USING (id) " +
+					"JOIN c USING (k)",
+				javaSays: "Unknown reference NOPE",
+				goSays:   "42702",
+			},
 		}
 
 		var disagreed []string
@@ -172,10 +217,15 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				// candidate columns give different row counts, so agreeing on
 				// "no error" would not be agreeing on which column was chosen.
 				//
-				// Messages are NOT compared: where both refuse, Java says
-				// "Ambiguous reference K" and Go raises 42702 with its own
-				// wording, and aligning the text would say nothing more than
-				// the shared decision already does.
+				// Wording is compared only where an arm SETS it. Where both
+				// merely refuse the same query, Java says "Ambiguous reference
+				// K" and Go raises 42702 in its own words, and aligning the text
+				// would say nothing the shared decision does not.
+				//
+				// But for an arm about which fault is reported FIRST, the shared
+				// decision is exactly what is NOT enough — both engines refusing
+				// is compatible with them refusing for different reasons, which
+				// is the divergence.
 				switch {
 				case rejects(javaOut) != rejects(goOut):
 					disagreed = append(disagreed, fmt.Sprintf(
@@ -187,6 +237,20 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 						"%s: both answered but chose DIFFERENT columns\n"+
 							"    java: %s\n    go  : %s\n    sql : %s",
 						c.name, javaOut, goOut, c.sql))
+				}
+				for _, e := range []struct{ engine, out, want string }{
+					{"java", javaOut, c.javaSays}, {"go", goOut, c.goSays},
+				} {
+					if e.want == "" {
+						continue
+					}
+					if !strings.Contains(e.out, e.want) {
+						disagreed = append(disagreed, fmt.Sprintf(
+							"%s: %s did not report %q — this arm is about WHICH fault is "+
+								"reported first, so agreement on refusing is not enough\n"+
+								"    %s: %s\n    sql : %s",
+							c.name, e.engine, e.want, e.engine, e.out, c.sql))
+					}
 				}
 			}
 		}
@@ -214,8 +278,8 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				"silently answering an ambiguous chain, and refusing a column that lives on an "+
 				"earlier source.\n\n%s",
 			len(disagreed), chainedArms, strings.Join(disagreed, "\n"))
-		Expect(chainedArms).To(Equal(5),
-			"%d chained arms ran, not 5 — a green from a shrunken set says nothing about "+
+		Expect(chainedArms).To(Equal(7),
+			"%d chained arms ran, not 7 — a green from a shrunken set says nothing about "+
 				"the shape this file is named for", chainedArms)
 		Expect(controls).To(Equal(2),
 			"%d controls ran, not 2 — without an agreed USING baseline, a chained "+
@@ -275,7 +339,13 @@ var _ = Describe("JoinUsingRowVersionJavaProbe", func() {
 		}
 		rejects := func(s string) bool { return strings.HasPrefix(s, "ERR(") }
 
-		cases := []struct{ name, sql string }{
+		cases := []struct {
+			name, sql string
+			// javaSays and goSays, when set, require the arm to be REFUSED and
+			// the refusal to name the fault. Agreement on "rejected" is too
+			// weak for an arm whose whole point is WHICH fault it is.
+			javaSays, goSays string
+		}{
 			{
 				// The corpus shape: one join, one left source, one owner.
 				name: "single join on the pseudo-column",
@@ -297,6 +367,13 @@ var _ = Describe("JoinUsingRowVersionJavaProbe", func() {
 				name: "ON join first, then USING on the pseudo-column",
 				sql: `select jua.c1 from jua join jub on jua.c1 = jub.c1 ` +
 					`join juc using("__ROW_VERSION")`,
+				// AMBIGUITY is asserted, not merely rejection. The file's
+				// claim is that two owners really is two owners here, and
+				// "both engines refused" is weaker than that — both drifting
+				// to 42703 would keep an agreement check green while making
+				// the claim false.
+				javaSays: "Ambiguous reference",
+				goSays:   "42702",
 			},
 		}
 
@@ -312,6 +389,24 @@ var _ = Describe("JoinUsingRowVersionJavaProbe", func() {
 					c.name, javaOut, goOut, c.sql))
 			}
 			fmt.Fprintf(GinkgoWriter, "%s %-44s java=%-34s go=%s\n", mark, c.name, javaOut, goOut)
+
+			// An arm that names its fault must SHOW that fault. Agreement on
+			// "refused" is a weaker statement than this file makes, and both
+			// engines drifting to a different refusal would keep the agreement
+			// check green while the header's word became false.
+			for _, e := range []struct{ engine, out, want string }{
+				{"java", javaOut, c.javaSays}, {"go", goOut, c.goSays},
+			} {
+				if e.want == "" {
+					continue
+				}
+				if !strings.Contains(e.out, e.want) {
+					disagreed = append(disagreed, fmt.Sprintf(
+						"%s: %s did not report %q — this arm asserts WHICH fault, not merely "+
+							"that there was one\n    %s: %s\n    sql : %s",
+						c.name, e.engine, e.want, e.engine, e.out, c.sql))
+				}
+			}
 		}
 
 		Expect(disagreed).To(BeEmpty(),

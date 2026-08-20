@@ -3266,11 +3266,16 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		// the parse-time predicate stands. Checked over the whole scope rather
 		// than per column: one unresolvable source can hide the second owner
 		// that would have made a column ambiguous.
-		// The RIGHT source must be base too, not just the left scope: the
-		// right-side column check below reads its descriptor, and a derived
-		// table carries its alias in tableName, so looking that up would report
-		// a perfectly good column as missing.
-		resolvable := isBase(j) && sourceResolves(j.tableName, md, schemaName)
+		// The RIGHT source must be DESCRIBABLE, by whichever authority applies —
+		// a base table's catalog entry or a derived/CTE projection. Requiring it
+		// to be BASE was an error order bug: a derived right leg then skipped
+		// its own missing-column check while still entering the scope for later
+		// joins, so `a JOIN (SELECT id FROM c) d USING (k) JOIN b USING (id)`
+		// reported the SECOND join's ambiguity when the real, earlier fault is
+		// that the subquery has no `k`. Measured against the live JVM, which
+		// reports the missing column.
+		rightCols := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)).cols
+		resolvable := rightCols != nil
 		for _, s := range sources {
 			// A source is describable either as a base table (descriptor) or as
 			// a derived/CTE projection (cols). Neither means the scope cannot be
@@ -3289,9 +3294,6 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			// Owners are resolved for ALL columns before anything is rewritten:
 			// one unownable column declines the whole join, so a half-retargeted
 			// predicate mixing the two rules can never be built.
-			// Derived ONCE per join: a subquery source would otherwise have its
-			// projection re-derived for every USING column.
-			rightCols := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)).cols
 			owners := make([]string, 0, len(j.usingColTexts))
 			for _, colText := range j.usingColTexts {
 				col := strings.ToUpper(functions.StripIdentifierQuotes(colText))
