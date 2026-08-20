@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=354 queries=2556 dml=157 non_query=104 plan_errors=265 unexpected_errors=4
+# files=354 queries=2559 dml=157 non_query=104 plan_errors=267 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -9805,7 +9805,7 @@ shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
 === join_using_shapes.yaml#2
 sql:   SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(B), inner=PredicatesFilter(Scan(C, [=]), [1 preds])), inner=PredicatesFilter(Scan(A, [=]), [1 preds]))))
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=FlatMap(outer=Scan(A), inner=PredicatesFilter(Scan(B, [=]), [1 preds])), inner=PredicatesFilter(Scan(C, [=]), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
@@ -9815,9 +9815,25 @@ shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryScanPlan
 shape:       RecordQueryPredicatesFilterPlan
 shape:         RecordQueryScanPlan
-=== join_using_shapes.yaml#3
+=== join_using_shapes.yaml#3 expect-error=42702
+sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (id, k) ORDER BY a.id
+plan:  <PLAN-ERROR: 42702: Ambiguous reference K>
+=== join_using_shapes.yaml#4
+sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (j) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(C), FlatMap(outer=Scan(B), inner=Scan(A, [=])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== join_using_shapes.yaml#5 expect-error=42703
+sql:   SELECT a.id FROM a JOIN b USING (id) JOIN c USING (nosuchcol)
+plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
+=== join_using_shapes.yaml#6
 sql:   SELECT a.id, b.k FROM a LEFT JOIN b USING (id, k) ORDER BY a.id
-plan:  Project([_current.ID#0, _current.K#3], FlatMap(outer=Scan(A), inner=DefaultOnEmpty(PredicatesFilter(Scan(B, [=]), [1 preds]))))
+plan:  Project([_current.ID#0, _current.K#4], FlatMap(outer=Scan(A), inner=DefaultOnEmpty(PredicatesFilter(Scan(B, [=]), [1 preds]))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan

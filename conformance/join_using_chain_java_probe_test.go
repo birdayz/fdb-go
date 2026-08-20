@@ -122,8 +122,13 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 		for _, c := range cases {
 			javaOut := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
 			goOut := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
+			// The marker uses the SAME rule the assertions do — same decision,
+			// and same rows when both answer. Comparing raw text here instead
+			// would flag every both-reject arm as a disagreement purely because
+			// the two engines word their errors differently, which reads as a
+			// failure in a passing run.
 			mark := "  "
-			if javaOut != goOut {
+			if rejects(javaOut) != rejects(goOut) || (!rejects(javaOut) && javaOut != goOut) {
 				mark = "!!"
 			}
 			fmt.Fprintf(GinkgoWriter, "%s %-52s java=%-40s go=%s\n", mark, c.name, javaOut, goOut)
@@ -140,54 +145,53 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 			}
 			if c.chained {
 				chainedArms++
-				// Full output, not just accept/reject: an engine that RESOLVES
-				// rather than rejects still has to be shown choosing the same
-				// column, and the fixture is built so the two choices differ.
-				if javaOut != goOut {
+				// Both engines must make the SAME decision, and where they both
+				// answer the ROWS must match — the fixture is built so the two
+				// candidate columns give different row counts, so agreeing on
+				// "no error" would not be agreeing on which column was chosen.
+				//
+				// Messages are NOT compared: where both refuse, Java says
+				// "Ambiguous reference K" and Go raises 42702 with its own
+				// wording, and aligning the text would say nothing more than
+				// the shared decision already does.
+				switch {
+				case rejects(javaOut) != rejects(goOut):
 					disagreed = append(disagreed, fmt.Sprintf(
-						"%s\n    java: %s\n    go  : %s\n    sql : %s",
+						"%s: one engine answered and the other refused\n"+
+							"    java: %s\n    go  : %s\n    sql : %s",
+						c.name, javaOut, goOut, c.sql))
+				case !rejects(javaOut) && javaOut != goOut:
+					disagreed = append(disagreed, fmt.Sprintf(
+						"%s: both answered but chose DIFFERENT columns\n"+
+							"    java: %s\n    go  : %s\n    sql : %s",
 						c.name, javaOut, goOut, c.sql))
 				}
 			}
 		}
 
-		// TWO MEASURED DIVERGENCES, PINNED AS THEY STAND rather than asserted
-		// away. Both come from ONE root cause: Go qualifies a chained USING by
-		// the PRIOR JOIN'S RIGHT alias, while Java resolves the column against
-		// every visible left operator with the earlier USING's right copy
-		// hidden. That makes Go wrong in both directions at once —
+		// THE ENGINES NOW AGREE ON ALL THREE CHAINS. They did not when this file
+		// was written: Go qualified a chained USING by the PRIOR JOIN'S RIGHT
+		// alias, while Java resolves the column against every visible left
+		// operator with the earlier USING's right copy hidden. One positional
+		// rule standing in for ownership was wrong in both directions at once —
 		//
-		//	USING (id) … USING (id, k)   java AMBIGUOUS_COLUMN   go picks b.k
-		//	USING (id) … USING (j)       java answers            go 42703
+		//	USING (id) … USING (id, k)   java AMBIGUOUS_COLUMN   go picked b.k
+		//	USING (id) … USING (j)       java answered           go 42703
 		//
-		// — and it means NO Java-agreeing query can exercise Go's rule: the
-		// only chain the engines agree on is the one where the first USING
-		// hides the column, and there the rule is unobservable. So the yamsql
-		// scenario cannot pin this, and this probe is where it lives.
+		// — the second being a legitimate query Go refused. `retargetUsingJoins`
+		// replaced the positional rule with ownership, and both closed.
 		//
-		// The repair is a semantic USING resolution (unique visible left owner;
-		// 42702 on two, 42703 on none), replacing the syntactic prior-alias
-		// rule. It changes column-resolution semantics for every USING query,
-		// so it is designed and reviewed before it is written rather than
-		// patched in from here. See TODO.md.
-		//
-		// The assertion is written so the pin FAILS WHEN THE DIVERGENCE
-		// CHANGES, in either direction — repaired, or grown to more shapes.
-		Expect(len(disagreed)).To(Equal(2),
-			"the chained-USING divergence changed: %d of %d arms disagree, not the 2 measured "+
-				"against the live JVM. If the count DROPPED, the semantic USING resolution has "+
-				"landed and this pin must become an equality assertion; if it GREW, a third "+
-				"shape has started diverging and needs measuring.\n\n%s",
+		// The middle arm is what makes the pair one bug rather than two: it
+		// agreed all along, because there the first USING hides the column and
+		// the two rules coincide. Any repair had to keep it agreeing while
+		// moving the other two, which a blanket change of alias would not.
+		Expect(disagreed).To(BeEmpty(),
+			"%d of %d chained arms disagree. Go resolves a USING column to its unique "+
+				"visible left OWNER (42702 on two candidates, 42703 on none); a regression to "+
+				"qualifying by the prior join's right alias reopens both directions at once — "+
+				"silently answering an ambiguous chain, and refusing a column that lives on an "+
+				"earlier source.\n\n%s",
 			len(disagreed), chainedArms, strings.Join(disagreed, "\n"))
-		// And the divergence must stay the SHAPE that was measured — a count of
-		// two says nothing about which two.
-		Expect(strings.Join(disagreed, "\n")).To(ContainSubstring("Ambiguous reference"),
-			"the ambiguous-chain arm no longer diverges by Java raising AMBIGUOUS_COLUMN, so "+
-				"the pinned pair is not the pair that was measured:\n\n%s",
-			strings.Join(disagreed, "\n"))
-		Expect(strings.Join(disagreed, "\n")).To(ContainSubstring("42703"),
-			"the far-left-column arm no longer diverges by Go raising 42703, so the pinned "+
-				"pair is not the pair that was measured:\n\n%s", strings.Join(disagreed, "\n"))
 		Expect(chainedArms).To(Equal(3),
 			"%d chained arms ran, not 3 — a green from a shrunken set says nothing about "+
 				"the shape this file is named for", chainedArms)

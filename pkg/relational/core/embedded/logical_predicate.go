@@ -3339,6 +3339,9 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		if err := rejectDuplicateUnnestAliasesInFrom(sq.tableName, sq.tableAlias, sq.joins, resolvesToTable); err != nil {
 			return nil, err
 		}
+		if err := retargetUsingJoins(sq.tableName, sq.tableAlias, sq.joins, md, schemaName); err != nil {
+			return nil, err
+		}
 		rememberSchemaAliasTableQualifiers(sq, resolvesToTable)
 	}
 	// For derived tables, build the inner plan through the catalog-aware

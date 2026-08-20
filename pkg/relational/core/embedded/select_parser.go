@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/parser"
@@ -190,6 +191,12 @@ type joinClause struct {
 	// so star expansion drops it and an unqualified reference resolves
 	// the left copy.
 	usingHiddenCols []string
+	// usingColTexts retains the USING columns as WRITTEN (quotes intact), in
+	// order, so retargetUsingJoins can re-synthesize the ON predicate against
+	// the correct owner. usingHiddenCols cannot serve: it is UPPER-folded and
+	// quote-stripped, and splicing that back into SQL text would re-normalize a
+	// quoted-DDL column.
+	usingColTexts []string
 	// segments preserves the un-flattened uid segments of the source's
 	// dotted name (`FullId().AllUid()`, quote-stripped). For a single-name
 	// table source it is `[name]`; for a correlated array source
@@ -2792,6 +2799,7 @@ func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string
 		for _, u := range joins[i].usingUids.AllUid() {
 			joins[i].usingHiddenCols = append(joins[i].usingHiddenCols,
 				strings.ToUpper(functions.StripIdentifierQuotes(u.GetText())))
+			joins[i].usingColTexts = append(joins[i].usingColTexts, u.GetText())
 		}
 		joins[i].onExpr = synth
 		joins[i].usingUids = nil
@@ -3057,4 +3065,209 @@ func containsNestedAggregate(tree antlr.Tree) bool {
 		}
 	}
 	return false
+}
+
+// usingSource is one candidate left source for a chained USING's column
+// lookup: the alias the predicate must qualify with, and the base table whose
+// columns decide whether it owns the column at all.
+type usingSource struct {
+	alias string
+	table string
+}
+
+// usingOwnerOf returns the single left source that owns `col`, applying Java's
+// hiding rule: a column consumed by an EARLIER USING is hidden on that join's
+// RIGHT side, so only the left copy remains visible.
+//
+// Two owners is AMBIGUOUS and is raised here, because nothing downstream can
+// detect it — a predicate built against either candidate plans and answers.
+//
+// NO owner returns ("", nil) — a DECLINE, not an error. Ownership is decided
+// from the record descriptor, and not every legal USING column is a descriptor
+// field: `USING("__ROW_VERSION")` names a pseudo-column that appears nowhere in
+// the field list, and raising 42703 on it turned a working corpus query into a
+// failure. Declining leaves the parse-time predicate in place, so a column that
+// genuinely does not exist is still reported downstream by ordinary column
+// resolution — the error arrives from the layer that can tell the two cases
+// apart, instead of from this one, which cannot.
+func usingOwnerOf(col string, sources []usingSource, hidden map[string]map[string]bool,
+	md *recordlayer.RecordMetaData, schemaName string,
+) (string, error) {
+	var owners []string
+	for _, s := range sources {
+		if hidden[s.alias][col] {
+			continue
+		}
+		if !sourceHasColumn(s.table, col, md, schemaName) {
+			continue
+		}
+		owners = append(owners, s.alias)
+	}
+	switch len(owners) {
+	case 1:
+		return owners[0], nil
+	case 0:
+		return "", nil
+	default:
+		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", col)
+	}
+}
+
+// sourceHasColumn reports whether a BASE TABLE has the named column. It is
+// deliberately false for anything it cannot resolve — a derived table, a CTE, a
+// schema-qualified name it cannot look up — and retargetUsingJoins uses that to
+// decline the whole correction rather than to conclude "no owner". Treating an
+// unresolvable source as column-less would turn a working query into a
+// spurious 42703, which is exactly the failure this change exists to remove.
+func sourceHasColumn(table, col string, md *recordlayer.RecordMetaData, schemaName string) bool {
+	if md == nil || table == "" {
+		return false
+	}
+	resolved, err := functions.ResolveQualifiedTableName(table, schemaName)
+	if err != nil {
+		return false
+	}
+	rt := recordTypeCI(md, resolved)
+	if rt == nil || rt.Descriptor == nil {
+		return false
+	}
+	fields := rt.Descriptor.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		if strings.EqualFold(string(fields.Get(i).Name()), col) {
+			return true
+		}
+	}
+	return false
+}
+
+// retargetUsingJoins re-qualifies each `USING (cols)` join's synthesized ON
+// predicate against the source that actually OWNS each column, and raises
+// Java's errors when no source owns it or more than one does.
+//
+// WHAT IT REPLACES. The parse-time synthesis qualifies a USING column by
+// POSITION — the prior join's right alias — which is right only by luck. Two
+// shapes, both measured against fdb-relational 4.12.11.0, show it failing in
+// opposite directions:
+//
+//	a JOIN b USING (id) JOIN c USING (id, k)   java: Ambiguous reference K
+//	                                           go  : silently picked b.k
+//	a JOIN b USING (id) JOIN c USING (j)       java: answers, j lives on a
+//	                                           go  : 42703 column "J" does not exist
+//
+// The second is the one that matters most: a legitimate query Go refused.
+//
+// WHY POSITION IS NOT A SUBSTITUTE FOR OWNERSHIP. `USING` names a column, not a
+// side. Java resolves it against every visible left operator, having hidden the
+// RIGHT copy of each column an earlier USING already consumed — which is what
+// makes `USING (id, k) … USING (id, k)` legal (b.k is hidden, so a.k is the
+// only candidate) while `USING (id) … USING (id, k)` is ambiguous (nothing hid
+// b.k). Position cannot express that: it picks the same operator either way.
+//
+// IT DECLINES RATHER THAN GUESSES. Column ownership is decided from the record
+// metadata, so a derived table, a CTE or any source it cannot resolve makes the
+// answer unknowable — and a wrong "no owner" would reject a working query. When
+// any in-scope source is unresolvable the correction is skipped and the
+// parse-time predicate stands, which is exactly today's behaviour for those
+// shapes and never worse.
+func retargetUsingJoins(primaryTable, primaryAlias string, joins []joinClause,
+	md *recordlayer.RecordMetaData, schemaName string,
+) error {
+	primary := primaryAlias
+	if primary == "" {
+		primary = primaryTable
+	}
+	// hidden[alias][COL] — the right copy an earlier USING consumed.
+	hidden := map[string]map[string]bool{}
+	sources := []usingSource{{alias: primary, table: primaryTable}}
+
+	for i := range joins {
+		j := &joins[i]
+		if len(j.usingColTexts) == 0 {
+			// Not a USING join; it still contributes a source to later ones.
+			sources = append(sources, usingSource{alias: j.alias, table: j.tableName})
+			continue
+		}
+		// Every left source must be resolvable, or ownership is unknowable and
+		// the parse-time predicate stands. Checked over the whole scope rather
+		// than per column: one unresolvable source can hide the second owner
+		// that would have made a column ambiguous.
+		resolvable := true
+		for _, s := range sources {
+			if s.table == "" || !sourceResolves(s.table, md, schemaName) {
+				resolvable = false
+				break
+			}
+		}
+		if resolvable {
+			// Owners are resolved for ALL columns before anything is rewritten:
+			// one unownable column declines the whole join, so a half-retargeted
+			// predicate mixing the two rules can never be built.
+			owners := make([]string, 0, len(j.usingColTexts))
+			for _, colText := range j.usingColTexts {
+				col := strings.ToUpper(functions.StripIdentifierQuotes(colText))
+				owner, err := usingOwnerOf(col, sources, hidden, md, schemaName)
+				if err != nil {
+					return err
+				}
+				if owner == "" {
+					// No descriptor field owns it — a pseudo-column such as
+					// `__ROW_VERSION`, or a name that does not exist. This layer
+					// cannot tell those apart, so it declines and lets the
+					// parse-time predicate stand; ordinary column resolution
+					// reports the second case downstream.
+					owners = nil
+					break
+				}
+				owners = append(owners, owner)
+			}
+			if len(owners) == len(j.usingColTexts) {
+				terms := make([]string, len(owners))
+				for n, colText := range j.usingColTexts {
+					terms[n] = fmt.Sprintf("%s.%s = %s.%s",
+						quoteUsingAlias(owners[n]), colText,
+						quoteUsingAlias(j.alias), colText)
+				}
+				onExpr, err := parser.ParseExpression(strings.Join(terms, " AND "))
+				if err != nil {
+					return err
+				}
+				j.onExpr = onExpr
+			}
+		}
+		// This join's RIGHT copy of each USING column is now hidden, whether or
+		// not the predicate was retargeted — the hiding is Java's rule about
+		// visibility, not about which predicate Go built.
+		for _, c := range j.usingHiddenCols {
+			if hidden[j.alias] == nil {
+				hidden[j.alias] = map[string]bool{}
+			}
+			hidden[j.alias][c] = true
+		}
+		sources = append(sources, usingSource{alias: j.alias, table: j.tableName})
+	}
+	return nil
+}
+
+// sourceResolves reports whether a name refers to a base record type.
+func sourceResolves(table string, md *recordlayer.RecordMetaData, schemaName string) bool {
+	if md == nil {
+		return false
+	}
+	resolved, err := functions.ResolveQualifiedTableName(table, schemaName)
+	if err != nil {
+		return false
+	}
+	return recordTypeCI(md, resolved) != nil
+}
+
+// quoteUsingAlias mirrors synthesizeUsingOnExpr's aliasing rule: a stored alias
+// spliced back into SQL text bare would RE-normalize, folding a quoted-DDL
+// alias `"e"` to `E` and resolving nothing. Double-quoting round-trips it.
+func quoteUsingAlias(alias string) string {
+	if strings.Contains(alias, ".") {
+		// A schema-qualified table name standing in for a missing alias is a
+		// dotted PATH, not one identifier; its segments are already normalized.
+		return alias
+	}
+	return `"` + strings.ReplaceAll(alias, `"`, `""`) + `"`
 }

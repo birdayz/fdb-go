@@ -7,21 +7,29 @@
 # part worth measuring: it is a different rule for the first join than
 # for every later one, and nothing was exercising the later ones.
 #
-# A three-way chain and a multi-column USING are the two shapes that can
-# tell a correct chain from one that always reuses the first alias:
-# with `a JOIN b USING (id) JOIN c USING (id)` a synthesis that qualified
-# the second join's left column by `a` instead of `b` still gives the
-# same rows here (a.id = b.id already holds), so the fixture makes the
-# THIRD table disagree with the first on a second column to separate them.
+# A USING column resolves to its unique visible left OWNER, with the RIGHT
+# copy of every column an earlier USING consumed hidden. One owner
+# qualifies, two is ambiguous (42702), none does not exist (42703).
+#
+# It used to be qualified by POSITION — the prior join's right alias — which
+# is right only by coincidence, and wrong in both directions where it is
+# observable at all: it answered an ambiguous chain by silently picking one
+# column, and refused a valid chain whose column lives on the first source.
+# Both were measured against a live JVM before the rule was replaced.
+#
+# The fixture is built so the outcomes are distinguishable rather than
+# coincidental: a.k and b.k DIFFER at id=2, so a chain that resolved `k` to
+# the wrong side would return a different row count instead of the same one,
+# and `j` exists only on `a` and `c`, never on the middle source.
 name: join_using_shapes
 schema_template: |
-  CREATE TABLE a (id BIGINT, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE a (id BIGINT, k BIGINT, j BIGINT, PRIMARY KEY (id))
   CREATE TABLE b (id BIGINT, k BIGINT, PRIMARY KEY (id))
-  CREATE TABLE c (id BIGINT, k BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT, k BIGINT, j BIGINT, PRIMARY KEY (id))
 setup:
-  - INSERT INTO a VALUES (1, 10), (2, 20), (3, 30)
+  - INSERT INTO a VALUES (1, 10, 5), (2, 20, 6), (3, 30, 7)
   - INSERT INTO b VALUES (1, 10), (2, 99), (3, 30)
-  - INSERT INTO c VALUES (1, 10), (2, 20), (3, 77)
+  - INSERT INTO c VALUES (1, 10, 5), (2, 20, 9), (3, 77, 9)
 tests:
   # Single-column USING, first join — the simple case.
   - query: SELECT a.id FROM a JOIN b USING (id) ORDER BY a.id
@@ -36,33 +44,40 @@ tests:
     rows:
       - [1]
       - [3]
-  # THE CHAIN — and this arm is DELIBERATELY the non-discriminating one,
-  # which is the opposite of what two earlier drafts of it claimed.
+  # THE CHAIN. A USING column resolves to its unique visible left OWNER,
+  # with the RIGHT copy of every column an earlier USING consumed hidden.
+  # The three arms below are the three outcomes of that rule, and they
+  # were each measured against a live JVM before being written here.
   #
-  # Draft one made both joins `USING (id, k)` and said the row count
-  # separated a chained qualification from a stuck one. It does not: if
-  # the first join equates a.k = b.k, then `a.k = c.k` and `b.k = c.k`
-  # are the same predicate for every surviving row.
-  #
-  # Draft two "fixed" that by joining on (id) alone, which does make the
-  # two readings differ — and Java REJECTS that query with
-  # `Ambiguous reference K`, because after `USING (id)` both a.k and b.k
-  # are still visible on the left. So the discriminating fixture pinned a
-  # divergence as though it were the specification.
-  #
-  # Those two facts together are the finding: Go's rule is observable
-  # only where Java disagrees with it, so NO Java-agreeing query can
-  # exercise it, and this scenario cannot be the place it is pinned.
-  # `conformance/join_using_chain_java_probe_test.go` measures both
-  # divergent shapes against the live JVM; the repair is booked in
-  # TODO.md because it changes query-engine semantics.
-  #
-  # What this arm still earns: the chain PLANS and answers correctly for
-  # the shape both engines agree on, where the first USING hides b.k and
-  # leaves exactly one candidate.
+  # ONE OWNER. The first `USING (id, k)` hides b.id and b.k, so the
+  # second sees exactly one candidate for each and the chain is legal.
   - query: SELECT a.id FROM a JOIN b USING (id, k) JOIN c USING (id, k) ORDER BY a.id
     rows:
       - [1]
+  # TWO OWNERS — ambiguous. Joining first on `(id)` alone leaves both a.k
+  # and b.k visible, so `k` in the second USING names two columns and the
+  # query is refused. Go used to answer it, silently choosing b.k.
+  - query: SELECT a.id FROM a JOIN b USING (id) JOIN c USING (id, k) ORDER BY a.id
+    error_code: "42702"
+  # ONE OWNER, AND IT IS NOT THE PRIOR JOIN'S RIGHT SIDE. `j` exists only
+  # on `a`, so the owner is the FIRST source. A rule that qualified by
+  # position looked for b.j and refused this valid query with 42703.
+  - query: SELECT a.id FROM a JOIN b USING (id) JOIN c USING (j) ORDER BY a.id
+    rows:
+      - [1]
+  # NO OWNER — the column exists nowhere on the left. Worth knowing HOW this
+  # one passes, because it is not this layer that reports it: the owner
+  # lookup DECLINES rather than raising, since it reads the record
+  # descriptor and not every legal USING column is a descriptor field.
+  # `USING("__ROW_VERSION")` names a pseudo-column, and raising here broke
+  # exactly that query in the Java corpus (join-tests-row-version.yamsql,
+  # which is where the pseudo-column case stays pinned — it needs a table
+  # with row versioning enabled, which this fixture has no reason to have).
+  # So the parse-time predicate stands and ordinary column resolution
+  # reports 42703 downstream, from the layer that can tell a pseudo-column
+  # from a typo.
+  - query: SELECT a.id FROM a JOIN b USING (id) JOIN c USING (nosuchcol)
+    error_code: "42703"
   # USING on an OUTER join — the same synthesis through the other
   # grammar arm, where the clause is mandatory rather than optional.
   - query: SELECT a.id, b.k FROM a LEFT JOIN b USING (id, k) ORDER BY a.id
