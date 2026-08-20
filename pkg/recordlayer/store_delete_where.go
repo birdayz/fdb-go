@@ -408,13 +408,6 @@ func checkSlidingWindowDeleteWhere(idx *Index, prefix tuple.Tuple, md *RecordMet
 				"index and no range of it corresponds to the requested prefix",
 		}
 	}
-	if len(prefix) > partitionKey.ColumnSize() {
-		return &SlidingWindowDeleteWhereError{
-			IndexName: idx.Name,
-			Message: fmt.Sprintf("prefix size %d exceeds partition key column size %d",
-				len(prefix), partitionKey.ColumnSize()),
-		}
-	}
 
 	pks := deleteWherePrimaryKeys(md, coveredTypes)
 	if len(pks) == 0 {
@@ -424,13 +417,49 @@ func checkSlidingWindowDeleteWhere(idx *Index, prefix tuple.Tuple, md *RecordMet
 		}
 	}
 	partitionComponents := normalizeKeyForPositions(partitionKey)
+
 	for _, pk := range pks {
+		// THE RECORD-TYPE KEY IS NOT A PARTITION COLUMN AND NEVER CAN BE. A
+		// window partitions by FIELD PATHS (RowNumberWindowPredicate's
+		// partition_fields), and a record-type key is not a field, so a
+		// type-prefixed primary key always carries one leading column the
+		// partition key cannot have.
+		//
+		// Comparing the raw prefix would therefore reject every type-prefixed
+		// schema on its first column — including shapes that work and that Java
+		// accepts, because Java strips the same column
+		// (indexEvaluated = evaluated.subList(1, …), FDBRecordStore.java:1951)
+		// before asking the index anything. computeSingleTypeIndexDeletePrefix
+		// strips it too, so checking the unstripped prefix here would also make
+		// the preflight disagree with the prefix the maintainer is then handed.
 		pkComponents := normalizeKeyForPositions(pk)
-		for i := range len(prefix) {
-			if i >= len(pkComponents) || i >= len(partitionComponents) {
+		effective := prefix
+		if hasRecordTypeKeyPrefix(pk) {
+			if len(effective) == 0 {
+				continue
+			}
+			effective = effective[1:]
+			pkComponents = pkComponents[1:]
+		}
+		// An empty effective prefix is the WHOLE-TYPE delete — Java's
+		// indexMatcher == null arm — where the whole index, and so the whole
+		// keyspace-10 region, is cleared. There are no partition columns left to
+		// agree about, and clearing everything is exactly right.
+		if len(effective) == 0 {
+			continue
+		}
+		if len(effective) > len(partitionComponents) {
+			return &SlidingWindowDeleteWhereError{
+				IndexName: idx.Name,
+				Message: fmt.Sprintf("prefix %v reaches past the partition key, so the window "+
+					"cannot be scoped to the deleted records", prefix),
+			}
+		}
+		for i := range effective {
+			if i >= len(pkComponents) {
 				return &SlidingWindowDeleteWhereError{
 					IndexName: idx.Name,
-					Message: fmt.Sprintf("prefix %v reaches past the partition key, so the window "+
+					Message: fmt.Sprintf("prefix %v reaches past the primary key, so the window "+
 						"cannot be scoped to the deleted records", prefix),
 				}
 			}

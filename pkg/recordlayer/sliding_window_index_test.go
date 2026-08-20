@@ -754,6 +754,88 @@ var _ = Describe("SlidingWindowIndex", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// The preflight's own regression: it must strip the record-type key before
+	// comparing, or it rejects every type-prefixed schema on the first column.
+	//
+	// A window partitions by FIELD PATHS, and a record-type key is not a field,
+	// so a type-prefixed primary key ALWAYS carries a leading column the
+	// partition key cannot have. Java strips it (indexEvaluated = evaluated[1:])
+	// before asking the index anything, and so does the code that computes the
+	// prefix the maintainer is handed — checking the unstripped prefix here made
+	// the preflight disagree with the very prefix it was gating.
+	//
+	// Both arms of the strip are driven, because they refuse differently: the
+	// whole-type prefix leaves NOTHING to compare, and the narrower one leaves a
+	// partition column that must match.
+	for _, dw := range []struct {
+		name      string
+		prefix    func(typeKey any) tuple.Tuple
+		wantSW    int // entries left in the surviving partition
+		surviving int64
+	}{
+		{
+			name:      "whole record type",
+			prefix:    func(k any) tuple.Tuple { return tuple.Tuple{k} },
+			wantSW:    0,
+			surviving: 0,
+		},
+		{
+			name:      "one partition of the type",
+			prefix:    func(k any) tuple.Tuple { return tuple.Tuple{k, int64(7)} },
+			wantSW:    1,
+			surviving: 8,
+		},
+	} {
+		dw := dw
+		It("deleteRecordsWhere works under a record-type-key prefix ("+dw.name+")", func() {
+			ks := specSubspace()
+			idx := newPartitionedWindowedVectorIndex("sw_dw_typekey", 2, gen.RowNumberWindowPredicate_ASC, "quantity")
+			builder := baseMetaData()
+			builder.GetRecordType("Order").SetPrimaryKey(
+				Concat(RecordTypeKey(), Field("quantity"), Field("order_id")))
+			builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+			builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+			builder.AddIndex("Order", idx)
+			md, err := builder.Build()
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+				store, serr := NewStoreBuilder().
+					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+				Expect(serr).NotTo(HaveOccurred())
+
+				for _, o := range []struct{ id, qty, price int64 }{
+					{1, 7, 10}, {2, 7, 20}, {3, 8, 15},
+				} {
+					_, e := store.SaveRecord(&gen.Order{
+						OrderId:  proto.Int64(o.id),
+						Quantity: proto.Int32(int32(o.qty)),
+						Price:    proto.Int32(int32(o.price)),
+						CoordX:   proto.Int64(o.id), CoordY: proto.Int64(o.id),
+					})
+					Expect(e).NotTo(HaveOccurred())
+				}
+
+				typeKey := md.GetRecordType("Order").GetRecordTypeKey()
+				Expect(store.DeleteRecordsWhere(dw.prefix(typeKey))).To(Succeed())
+
+				sw := slidingWindowSubspaceFor(store.subspace, idx)
+				k7, _ := readSlidingWindowEntries(rtx.Transaction(), sw, tuple.Tuple{int64(7)})
+				Expect(k7).To(BeEmpty(), "quantity 7's partition must be cleared either way")
+				k8, _ := readSlidingWindowEntries(rtx.Transaction(), sw, tuple.Tuple{int64(8)})
+				Expect(k8).To(HaveLen(dw.wantSW))
+
+				if dw.surviving != 0 {
+					rec, rerr := store.LoadRecord(tuple.Tuple{typeKey, int64(8), int64(3)})
+					Expect(rerr).NotTo(HaveOccurred())
+					Expect(rec).NotTo(BeNil(), "a narrower prefix must leave the other partition alone")
+				}
+				return nil, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	}
+
 	It("serves a generic BY_DISTANCE scan through the decorator", func() {
 		ks := specSubspace()
 		// ScanIndexByType is the path the SQL executor takes, and it reaches the
