@@ -43,8 +43,11 @@ func NewLogicalUniqueExpression(inner Quantifier) (*LogicalUniqueExpression, err
 
 // NewRequiredLogicalUniqueExpression builds a Unique whose physical
 // PK-distinct operator must be retained even when the input is already
-// distinct. This mode is dormant until a cardinality-safe E-to-ForEach
-// mapping explicitly requests it.
+// distinct.
+//
+// It has two callers: the compensation path, and the OR-to-union rewrite, which
+// needs the dedup RETAINED because a row matching several disjuncts arrives once
+// per matching leg and the union itself does not remove it.
 func NewRequiredLogicalUniqueExpression(inner Quantifier) (*LogicalUniqueExpression, error) {
 	resultValue, err := requireFlowedResult("LogicalUniqueExpression", inner)
 	if err != nil {

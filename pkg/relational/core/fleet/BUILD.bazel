@@ -6,6 +6,7 @@ go_library(
         "build.go",
         "fleet.go",
         "migrate.go",
+        "statistics.go",
     ],
     importpath = "fdb.dev/pkg/relational/core/fleet",
     visibility = ["//visibility:public"],
@@ -24,12 +25,16 @@ go_test(
     srcs = [
         "build_test.go",
         "guard_test.go",
+        "statistics_refusal_test.go",
+        "synthetic_error_identity_test.go",
     ],
     embed = [":fleet"],
     deps = [
+        "//gen",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/keyspace",
+        "@org_golang_google_protobuf//proto",
     ],
 )

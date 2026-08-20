@@ -1664,7 +1664,22 @@ func TestFDB_ArrayUnnestOrdinality(t *testing.T) {
 		// as a qualified table whose `T1` qualifier is not a known database →
 		// ErrCodeUndefinedDatabase (the existing table-not-found path, unchanged).
 		// NOT a silent FlatMap(Explode).
+		//
+		// THE SHAPE IS REACHABLE BECAUSE A CONDITIONLESS JOIN IS SUPPORTED.
+		// `a JOIN b` with no ON plans the cartesian product rather than being
+		// refused, so this query reaches source resolution and fails there on
+		// the unknown `T1` qualifier — which is what makes it a sentinel at all.
+		// A gate that refused conditionless joins up front would answer 0A000
+		// here and silently retire it.
 		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V"`, api.ErrCodeUndefinedDatabase)
+	})
+
+	t.Run("the same dotted source with an ON is also not a lateral unnest", func(t *testing.T) {
+		// Breadth over the ON-carrying spelling of the identical shape, so the
+		// arm above is not the only thing covering it if the conditionless gate
+		// ever moves back ahead of resolution.
+		assertRejected(t, md, `SELECT "V" FROM T1 INNER JOIN T1."ARR1" AS "V" ON 1 = 1`,
+			api.ErrCodeUndefinedDatabase)
 	})
 
 	t.Run("control: comma source with the SAME dotted array still unnests", func(t *testing.T) {

@@ -3,6 +3,7 @@ package expr
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -534,8 +535,50 @@ func (r *Resolver) walkSimpleFunctionCall(ctx *antlrgen.SimpleFunctionCallContex
 // posOperand rather than posProjection: the consequent is a value position, but
 // it is not the SELECT item whose EXISTS folding rules depend on the FlatMap
 // binding, so EXISTS stays exactly where it was.
+//
+// The FLATTEN is what makes `THEN (5)` mean 5. Java's visitCaseFunctionCall
+// ends at resolveFunction("__pick_value", …) (ExpressionVisitor.java:425), and
+// resolveFunction defaults flattenSingleItemRecords to true
+// (BaseVisitor.java:254-256), so every CASE ARM is a function argument and a
+// one-field record built by `( expr )` collapses back to its element. Without
+// it Go carried the record into the pick: measured against the live JVM,
+// `CASE WHEN a = 1 THEN (5) ELSE 6 END` answered 5 in Java and in Go failed
+// planning with 0AF00 "placeholder type is not exact", while
+// `THEN (5) ELSE (6)` typed cleanly and returned a STRUCT column where a
+// BIGINT belonged.
+//
+// posOperand alone does not do this. It selects how the ATOM is read; the
+// flatten lives in walkFunctionOperand, which this path does not go through —
+// walkExpressionInner is the expression entry, not the argument entry. That is
+// exactly why the gap existed in a position that already looked like an
+// operand.
+//
+// A MULTI-element record is untouched, here and in Java: FlattenRecordWithOneField
+// collapses only a one-field record, so `THEN (5, 6)` stays the struct both
+// engines return.
 func (r *Resolver) walkCaseConsequent(ctx antlrgen.IExpressionContext) (values.Value, error) {
-	return r.walkExpressionInner(ctx, posOperand)
+	v, err := r.walkExpressionInner(ctx, posOperand)
+	if err != nil {
+		return nil, err
+	}
+	return functions.FlattenRecordWithOneField(v), nil
+}
+
+// flattenedExpression walks an EXPRESSION that is about to become a function
+// argument and flattens a one-field record out of the result — the expression
+// counterpart of walkFunctionOperand, which does the same thing for an ATOM.
+//
+// Both exist because the grammar hands the two positions different context
+// types, not because they mean different things: `( expr )` is a one-field
+// record wherever it is written, and consumption AS AN ARGUMENT is what turns
+// it back into a scalar (see walkFunctionOperand's note, and Java's
+// SemanticAnalyzer.resolveScalarFunction flattenSingleItemRecords).
+func (r *Resolver) flattenedExpression(ctx antlrgen.IExpressionContext) (values.Value, error) {
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return functions.FlattenRecordWithOneField(v), nil
 }
 
 // walkCaseFunctionCall handles searched CASE expressions:
@@ -624,11 +667,20 @@ func caseResultType(alternatives []values.Value) values.Type {
 //
 // Desugars to: PickValue(ConditionSelectorValue([expr=val1, expr=val2, TRUE]), [res1, res2, def])
 // where each implication is a comparison predicate (expr = valN).
+//
+// This form is a Go EXTENSION. Java's BaseVisitor.visitCaseExpressionFunctionCall
+// (BaseVisitor.java:1450) is `return visitChildren(ctx)` — the visitor does not
+// implement it — so there is no Java behaviour to match here, only Go's own
+// consistency to keep. Every operand therefore flattens a one-field record the
+// way the searched form's arms do and the way every other argument position in
+// this resolver does: leaving `CASE x WHEN (1) THEN …` broken while
+// `CASE WHEN x = (1) THEN …` works would be an inconsistency with no reason
+// behind it. flattenOperandValue is the shared spelling.
 func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFunctionCallContext) (values.Value, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("expr.walkSimpleCaseFunctionCall: nil")
 	}
-	discriminator, err := r.WalkExpression(ctx.Expression())
+	discriminator, err := r.flattenedExpression(ctx.Expression())
 	if err != nil {
 		return nil, err
 	}
@@ -650,7 +702,7 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE condition arg ctx %T", condArg)}
 		}
-		whenVal, err := r.WalkExpression(condArgCtx.Expression())
+		whenVal, err := r.flattenedExpression(condArgCtx.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -668,7 +720,7 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE consequent arg ctx %T", consArg)}
 		}
-		consVal, err := r.WalkExpression(consArgCtx.Expression())
+		consVal, err := r.flattenedExpression(consArgCtx.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -685,7 +737,7 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 		if !ok {
 			return nil, &UnsupportedExpressionShapeError{Shape: fmt.Sprintf("simple CASE ELSE arg ctx %T", elseArg)}
 		}
-		elseVal, err := r.WalkExpression(elseArgCtx.Expression())
+		elseVal, err := r.flattenedExpression(elseArgCtx.Expression())
 		if err != nil {
 			return nil, err
 		}
@@ -700,16 +752,68 @@ func (r *Resolver) walkSimpleCaseFunctionCall(ctx *antlrgen.CaseExpressionFuncti
 // condition can be either a plain value (boolean column) or a
 // predicate (comparison like `score = 0`). Returns a Value that
 // evaluates to boolean for use in ConditionSelectorValue.
+// walkCaseCondition resolves the WHEN condition of a SEARCHED case, which is a
+// boolean condition by definition — so it is walked as a PREDICATE first, and
+// only as a value if no predicate reading exists.
+//
+// The order is load-bearing. This grammar parses `( expr )` as a one-field
+// RECORD constructor (the same production that builds `(x, y)`), and a value
+// walk of a parenthesized COMPOUND boolean succeeds by building that record
+// around the predicate. Walking values first therefore accepted `{_0: predicate}`
+// as the condition and compared the RECORD with TRUE — never equal, so every row
+// took the ELSE branch, silently:
+//
+//	CASE WHEN  a = 1 AND b = 1  THEN 1 ELSE 0 END -> WHEN(predicate, TRUE)
+//	CASE WHEN (a = 1 AND b = 1) THEN 1 ELSE 0 END -> WHEN({_0: predicate}, TRUE)
+//
+// A parenthesized simple comparison was unaffected — the value walk fails on it
+// and the old fallback rescued it — which is why the defect hid: `(a = 1)`
+// worked and `(a = 1 AND b = 1)` did not.
+//
+// The predicate path already treats a parenthesized condition as a GROUPING
+// (walkPredicatedExpression → unwrapParenPredicate), which is what parentheses
+// mean, and it lifts a bare value used as a condition the way Java does. So
+// asking it first is both the correct reading of a searched CASE and the one
+// that makes the two spellings agree.
+// A DATATYPE_MISMATCH from the predicate walk is an ANSWER, not a decline, and
+// must not fall through to the value walk. The two failure kinds mean opposite
+// things:
+//
+//	UnsupportedExpressionShapeError  "I have no predicate reading of this shape"
+//	                                 -> the value walk may well have one
+//	DATATYPE_MISMATCH                "this IS a condition and its type is wrong"
+//	                                 -> the value walk has the same wrong value
+//
+// walkPredicatedExpression's bare-value lift raises the second for a
+// definitively-typed non-boolean, mirroring Java's
+// Expression.Utils.toUnderlyingPredicate. Swallowing it turned a rejected query
+// into a silently wrong one: `CASE WHEN 1 THEN 'p' ELSE 'q' END` walked as a
+// value, compared the integer with TRUE, and every row took the ELSE branch.
+// Measured against the live JVM — Java answers "argument of case when must be
+// of boolean type" for an integer literal, an integer column, a string literal,
+// a string column and an arithmetic expression, and Go answered 'q' for every
+// row of all five (conformance/case_condition_typing_java_probe_test.go).
+//
+// NULL is deliberately unaffected and is NOT reached by this: the lift folds a
+// NULL value to an unknown ConstantPredicate at step 2, BEFORE the type switch
+// that raises the mismatch, so `CASE WHEN NULL` still resolves and still takes
+// the ELSE branch — which is what SQL says a non-TRUE condition does. Java
+// rejects that one too, and that permissive divergence is the same open owner
+// decision as the parenthesized condition, not something this change settles.
 func (r *Resolver) walkCaseCondition(ctx antlrgen.IExpressionContext) (values.Value, error) {
-	v, err := r.WalkExpression(ctx)
-	if err == nil {
-		return v, nil
-	}
 	pred, predErr := r.WalkPredicate(ctx)
-	if predErr != nil {
-		return nil, err
+	if predErr == nil {
+		return &predicateValue{pred: pred}, nil
 	}
-	return &predicateValue{pred: pred}, nil
+	var apiErr *api.Error
+	if errors.As(predErr, &apiErr) && apiErr.Code == api.ErrCodeDatatypeMismatch {
+		return nil, predErr
+	}
+	v, err := r.WalkExpression(ctx)
+	if err != nil {
+		return nil, predErr
+	}
+	return v, nil
 }
 
 // PredicateValueHolder is implemented by values that wrap a
@@ -1860,6 +1964,12 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			if ilc.QueryExpressionBody() != nil {
 				return nil, &UnsupportedExpressionShapeError{Shape: "IN with subquery"}
 			}
+			// A bare COLUMN REFERENCE as the whole list — `b IN xs`, with NO
+			// brackets. This is a distinct grammar alternative from
+			// `b IN (xs)`, which is the expressions branch carrying one item.
+			if fcn := ilc.FullColumnName(); fcn != nil {
+				return r.resolveInAgainstColumnList(p, atom, fcn)
+			}
 			return nil, &InColumnRefError{}
 		}
 		ec, ok := exprs.(*antlrgen.ExpressionsContext)
@@ -1876,6 +1986,15 @@ func (r *Resolver) walkGrammarPredicate(atom antlrgen.IExpressionAtomContext, pr
 			if err != nil {
 				return nil, err
 			}
+			// Each ITEM is a function argument on Java's side: the list becomes
+			// resolveFunction("__internal_array", items…)
+			// (ExpressionVisitor.java:656), which flattens single-item records
+			// like every other resolveFunction call. The left operand above
+			// already flattens via walkOperand; the items did not, so
+			// `b IN ((10), 20)` built a one-field record for the first item and
+			// died with 0AF00 "a comparison operand of complex type (record) is
+			// not supported" where Java answers the same rows as `IN (10, 20)`.
+			v = functions.FlattenRecordWithOneField(v)
 			if _, isNull := v.(*values.NullValue); isNull {
 				return nil, &InListNullError{}
 			}
@@ -2229,8 +2348,153 @@ func (*InListNullError) Error() string {
 	return "NULL values are not allowed in the IN list"
 }
 
-// InColumnRefError signals `x IN y` where y is a column reference,
-// not an explicit value list. Java rejects this as unsupported syntax.
+// resolveInAgainstColumnList handles Java's fullColumnName branch of inList:
+// the whole list is one column reference, and it must be ARRAY-typed.
+//
+// Java's rule is a TYPE test, not a blanket refusal
+// (ExpressionVisitor.java:641-643): an ARRAY column is the list, and anything
+// else is UNSUPPORTED_QUERY "IN list with column reference must be of array
+// type, but got: %s". Measured on both engines in
+// conformance/in_list_shapes_java_probe_test.go — Java answers `b IN xs` and
+// refuses `b IN a` naming the offending type.
+//
+// Nothing downstream needed adding, and for the same two reasons a
+// non-constant value list needed nothing:
+//
+//   - ComparisonIn's evaluator consumes right.([]any), and an ARRAY value IS
+//     []any at runtime (see comparisons.go's composite handling, which names
+//     the forms as "an ARRAY ([]any) or a record (map[string]any)").
+//   - InComparisonToExplodeRule declines a comparand that is not
+//     IsConstantValue, so a column never folds to a plan-time NULL and the
+//     predicate stays a residual filter. ComparisonIn is not scan-range
+//     compatible either, so no index probe is lost by that.
+func (r *Resolver) resolveInAgainstColumnList(
+	p *antlrgen.InPredicateContext,
+	atom antlrgen.IExpressionAtomContext,
+	fcn antlrgen.IFullColumnNameContext,
+) (predicates.QueryPredicate, error) {
+	lhsVal, err := r.walkOperand(atom)
+	if err != nil {
+		return nil, err
+	}
+	listVal, err := r.walkColumnRef(fcn.FullId())
+	if err != nil {
+		return nil, err
+	}
+	lt := listVal.Type()
+	if lt == nil || lt.Code() != values.TypeCodeArray {
+		// Java's wording, verbatim — the two engines answer the same question
+		// about the same input and a reader comparing them should not have to
+		// translate. The TYPE NAME has to be translated for that to be true:
+		// Go's TypeCode spells INT and RECORD where Java's DataType.Code spells
+		// INTEGER and STRUCT, so emitting Go's name makes the message verbatim
+		// only for the codes that happen to coincide (LONG, STRING, DOUBLE).
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedQuery,
+			"IN list with column reference must be of array type, but got: %s",
+			javaTypeCodeName(lt))
+	}
+	// THE ELEMENT TYPE has to be comparable with the probe, and "comparable"
+	// here is narrower than it is for an explicit value list.
+	//
+	// An explicit list is a list of VALUES, so each item can be wrapped in
+	// PromoteValue and converted per element — which is how `u IN ('<uuid>')`
+	// works for a UUID probe. A bare ARRAY COLUMN is one value, and PromoteValue
+	// is scalar: it has no element-wise mode, so there is nothing to wrap. If
+	// the element type needs converting, this path cannot convert it.
+	//
+	// Left unchecked that is a SILENT wrong answer, not a loud one. A UUID probe
+	// against a STRING ARRAY evaluates [16]byte against string, cmpAny declines
+	// the pair rather than erroring, the matching row is quietly dropped, and
+	// NOT IN admits exactly the rows it should exclude.
+	//
+	// So the shapes that would need element conversion are refused. Refusing is
+	// the correct-or-loud direction and it is the honest one: the capability
+	// this path lacks is element-wise promotion of a runtime array, and saying
+	// so is better than answering as though it had it.
+	if elem := arrayElementType(lt); elem != nil {
+		if incompatibleInListElement(lhsVal.Type(), elem) {
+			return nil, api.NewErrorf(api.ErrCodeDatatypeMismatch,
+				"The operands of a comparison operator are not compatible.")
+		}
+	}
+	inPred := predicates.NewComparisonPredicate(lhsVal, predicates.Comparison{
+		Type:    predicates.ComparisonIn,
+		Operand: listVal,
+	})
+	if p.NOT() != nil {
+		return r.ResolveNot(inPred), nil
+	}
+	return inPred, nil
+}
+
+// javaTypeCodeName renders a Go TypeCode using JAVA's DataType.Code spelling,
+// for the one message this engine reproduces verbatim from Java.
+//
+// Most codes coincide, which is exactly what makes the two that do not
+// dangerous: a message asserted to be verbatim is checked against the case
+// somebody happened to test, and LONG, STRING and DOUBLE all agree. INT and
+// RECORD do not — Java says INTEGER and STRUCT — so a verbatim claim tested
+// only on a BIGINT column is true of the test and false of the claim.
+func javaTypeCodeName(t values.Type) string {
+	if t == nil {
+		return "UNKNOWN"
+	}
+	switch t.Code() {
+	case values.TypeCodeInt:
+		return "INTEGER"
+	case values.TypeCodeRecord:
+		return "STRUCT"
+	}
+	return t.Code().String()
+}
+
+// arrayElementType returns an ARRAY type's element type, or nil when t is not
+// an array or its element is unstated.
+func arrayElementType(t values.Type) values.Type {
+	at, ok := t.(*values.ArrayType)
+	if !ok {
+		return nil
+	}
+	return at.ElementType
+}
+
+// incompatibleInListElement reports whether a probe of type probeT cannot be
+// compared against array elements of type elemT on the runtime path.
+//
+// Two separate reasons, and they are not the same check:
+//
+//   - the types do not unify at all (MaximumType is nil) — the ordinary
+//     type-compatibility gate, the same one the explicit-list path applies;
+//   - the pair needs a CONVERSION this path cannot perform. UUID is the whole
+//     of that set today: cmpAny has no [16]byte-versus-string arm, and the
+//     conversion the explicit-list path uses is per-element PromoteValue, which
+//     a single array value has no way to apply.
+//
+// UNKNOWN on either side is permitted, matching every other gate here: an
+// untyped side may legitimately turn out to be compatible, and refusing it
+// would reject working queries to catch a hypothetical one.
+func incompatibleInListElement(probeT, elemT values.Type) bool {
+	if probeT == nil || elemT == nil {
+		return false
+	}
+	if probeT.Code() == values.TypeCodeUnknown || elemT.Code() == values.TypeCodeUnknown {
+		return false
+	}
+	if values.MaximumType(probeT, elemT) == nil {
+		return true
+	}
+	return values.IsUuid(probeT) != values.IsUuid(elemT)
+}
+
+// InColumnRefError signals `x IN y` where y is a column reference that is
+// neither an ARRAY column nor an explicit value list — a prepared-parameter
+// list, or a shape the grammar admits and neither engine wires.
+//
+// It used to say "Java rejects this as unsupported syntax", and that was a
+// scope claim exceeding what the code does: Java's rule is a TYPE test, so it
+// ACCEPTS an ARRAY-typed column reference as the list and rejects only the
+// others. Go now accepts the same one — see resolveInAgainstColumnList — and
+// the non-array rejection carries Java's wording.
 type InColumnRefError struct{}
 
 func (*InColumnRefError) Error() string {

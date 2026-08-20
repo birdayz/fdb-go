@@ -771,6 +771,21 @@ func scanBindingOfSingleChild(children []plans.RecordQueryPlan) (leafScanBinding
 // results, summed over all outer rows, cannot exceed the probed table's own
 // row count" is sound (see the file doc comment for why the general form of
 // this cap is unsound and what recovers soundness here).
+//
+// THE STRUCTURE IS PROVEN; THE NUMBER IS ONLY AS GOOD AS stats. The binding
+// argument above is structural and holds absolutely. The magnitude it is
+// applied to comes from RecordTypeCardinality, which since RFC-236 may be a
+// count collected offline and since gone stale — a table that has grown makes
+// this "bound" an UNDER-estimate, which is the direction that would be unsound
+// if anything treated it as a proof.
+//
+// Nothing does, and nothing may. The result feeds fkChainCappedInnerCost and
+// reaches properties.Cost only. The proof side — Cardinalities,
+// provenCardinalities, CardinalityProver — takes no StatisticsProvider at all,
+// so a stale count can cost a plan and can never drop a row. That separation is
+// the whole reason collected statistics are safe to switch on, and it is pinned
+// by TestCardinalityProofTakesNoStatistics in the properties package. Routing
+// this value into a Cardinalities bound would break it.
 func fkChainCardinalityCap(fm *plans.RecordQueryFlatMapPlan, stats properties.StatisticsProvider) (float64, bool) {
 	outerThread := computePKThread(fm.GetOuter())
 	if !outerThread.ok {

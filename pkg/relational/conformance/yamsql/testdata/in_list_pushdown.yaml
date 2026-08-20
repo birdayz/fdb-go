@@ -413,11 +413,25 @@ tests:
   # IN with a bare column reference parses via the grammar's
   # `fullColumnName` alternative of inList — Expressions() is nil.
   # Both the pushdown extractor and the scan-path evaluator must
-  # bail cleanly rather than panic. Scope of this test: prove no
-  # panic and that a sensible error surfaces (unsupported syntax
-  # via the scan path).
+  # bail cleanly rather than panic.
+  #
+  # The code moved from 0A000 to 0AF00, and it moved TOWARDS Java.
+  # That branch is a TYPE test in Java, not a refusal: an ARRAY column
+  # IS a valid list, and anything else is UNSUPPORTED_QUERY "IN list
+  # with column reference must be of array type, but got: %s"
+  # (ExpressionVisitor.java:641-643). Go used to decline every column
+  # reference with UNSUPPORTED_OPERATION (0A000); it now applies the
+  # same type test and carries Java's sentence, so a NON-array column
+  # like `v` here is UNSUPPORTED_QUERY — which the javayamsql error
+  # table maps to 0AF00, exactly what Java raises.
+  #
+  # The accepting half of that type test (`v IN arr` over an ARRAY
+  # column) is covered in
+  # pkg/relational/sqldriver/in_list_array_column_fdb_test.go and
+  # measured against the live JVM in
+  # conformance/in_list_shapes_java_probe_test.go.
   - query: SELECT id FROM t WHERE v IN v
-    error_code: "0A000"
+    error_code: "0AF00"
 
   # -------------------------------------------------------------------
   # Covering-index + IN-list composition

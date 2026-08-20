@@ -631,9 +631,13 @@ SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a
 ```
 
 Go's cost model reaches a genuine TIE on the two nestings of an unconstrained
-cross product and resolves it by a hash; Java rarely reaches that tie at all,
-because it prunes each `Reference` to one member mid-phase and Go does not —
-`planning_cost_model.go:562` states exactly this, beside the tie-break it wraps.
+cross product and resolves it by a hash over plan structure — which consumes
+identifiers.
+
+**SO DOES JAVA.** An earlier revision of this section said Java rarely reaches
+the tie because it prunes each `Reference` to one member, citing
+`planning_cost_model.go:562`. That was an inference from three namings and it is
+refuted by a sweep of sixteen (see section 18).
 
 **The tie is identifier-sensitive, which is what makes it arbitrary rather than
 a rule about FROM order.** The same query, differing only in the names of the
@@ -669,17 +673,53 @@ redefining what conformance means. It carries the renamed-table pair above as
 its demonstration that identifiers decide the tie.
 
 **This is not fixed here, and that is a scope judgement rather than a
-deferral.** Closing it means either giving Go Java's prune-to-1 or replacing the
-identifier-sensitive tie-break with a stable one. Those two are NOT peers, and
-the difference decides which one the follow-on RFC should build: Java's own final
-tie-break is `Integer.compare(planHash(a), planHash(b))`
-(`PlanningCostModel.java:322-326`, and `StableSelectorCostModel` likewise) — also
-identifier-sensitive. What makes Java stable is not a better tie-break, it is
-PRUNE-TO-1: Java rarely reaches the tie at all. So porting prune-to-1 is the
-Java-alignment option, and a declaration-order tie-break is a Go INVENTION that
-would diverge from Java's cost model even while matching its output on this
-query. Both are Cascades cost-model changes: they need their own Graefe-ACKed RFC, a full
-golden re-audit, and a stress re-baseline — none of which can ride inside a
+deferral.** And section 18 shows it is not a PARITY question at all: Java is
+identifier-driven here too, so there is no Java behaviour to align with. Closing
+it would mean deciding that Go guarantees a rename-invariant nesting as a quality
+property of its own — a Go-beyond-Java choice, argued as one — and that is a
+Cascades cost-model change needing its own Graefe-ACKed RFC, a full golden
+re-audit, and a stress re-baseline — none of which can ride inside a
 change whose subject is deleting a predicate-conversion gap. The open question
 is booked in `TODO.md` (search `identifier-sensitive cost tie`), which points
 back here and at the probe.
+
+## 18. The follow-up measurement that refuted §17's mechanism
+
+§17 said Java is stable and Go is not, and attributed the difference to Java's
+prune-to-1. The stability claim was scoped honestly — "in every spelling
+measured" — and the mechanism drawn from it was still wrong, which is the more
+useful lesson: a correctly-scoped measurement can still carry an incorrect
+inference, and the inference is the part that gets built on.
+
+Swept over EIGHT table-name pairs, each also in its REVERSED spelling so lexical
+order varies independently of FROM order, at two cardinality arrangements —
+16 combinations, `conformance/cross_join_order_mechanism_probe_test.go`:
+
+    Java deviates from FROM order in    10 of 16
+    Java and Go disagree in             14 of 16
+    cardinality changes nothing in either engine
+
+The reversed spellings are what make this conclusive: if the winner tracked FROM
+order, a pair and its reverse would both answer FROM-major. They do not.
+
+The source agrees once you look at the right lines. Java's
+`ImplementNestedLoopJoinRule` matches its two quantifiers with
+`SetMatcher.exactlyInAnyOrder`, so Java GENERATES both nestings exactly as Go
+does; and `PlanningCostModel.compare` ends in
+`Integer.compare(planHash(a), planHash(b))` (`PlanningCostModel.java:320-326`),
+so Java BREAKS the tie on a hash over plan structure exactly as Go does. Two
+engines, two different hashes, the same arbitrariness.
+
+Prune-to-1 does not enter into it: pruning a `Reference` to one member uses that
+same planHash-terminated comparison, so porting it would change which
+alternatives survive, not which nesting wins a tie.
+
+**What this changes.** Three things, and the third is the one that matters:
+
+1. There is no Java-alignment fix for the tie, so the follow-on work is not
+   parity work. Rename-invariance would be a Go-beyond-Java quality property.
+2. The two annotated corpus entries are better justified than §17 claimed, not
+   worse: neither engine guarantees order on an `ORDER BY`-free query, so
+   `UnorderedRowOrderDiffers` describes the situation exactly.
+3. Cardinality drives nothing here in either engine. Any future work that
+   reaches for statistics to fix this is reaching for the wrong instrument.

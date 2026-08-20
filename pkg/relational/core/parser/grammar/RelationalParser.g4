@@ -1318,7 +1318,7 @@ keywordsCanBeId
     | ERROR | ERRORS | ESCAPE | EUR | EVEN | EVENT | EVENTS | EVERY | EXCEPT
     | EXCHANGE | EXCLUSIVE | EXIT | EXPIRE | EXPORT | EXTENDED | EXTENT_SIZE | FAST | FAULTS
     | FIELDS | FILE_BLOCK_SIZE | FILTER | FIREWALL_ADMIN | FIREWALL_USER | FIRST | FIXED | FLUSH
-    | FOLLOWS | FOUND | FULL | FUNCTION | GENERAL | GLOBAL | GRANTS | GROUP | GROUP_CONCAT
+    | FOLLOWS | FOUND | FUNCTION | GENERAL | GLOBAL | GRANTS | GROUP | GROUP_CONCAT
     |  HANDLER | HASH | HELP | HOST | HOSTS | IDENTIFIED
     | IGNORED | IGNORE_SERVER_IDS | IMPORT | INDEX | INDEXES | INITIAL_SIZE | INNODB_REDO_LOG_ARCHIVE
     | INPLACE | INSERT_METHOD | INSTALL | INSTANCE | INSTANT | INTERNAL | INVOKER | IO
@@ -1461,6 +1461,19 @@ functionNameBase
 // For example, LEFT and RIGHT are included here because they introduce {LEFT|RIGHT} [OUTER] JOIN clauses, and allowing
 // them as table aliases would create a grammar ambiguity in `tableSourceItem`. They are, however, available as
 // function names via `scalarFunctionName`. To use them as identifiers, they must be double-quoted (e.g., "left").
+//
+// FULL is excluded from `keywordsCanBeId` for exactly the reason stated above, and is NOT listed here because it is
+// not a function name. It introduces the same production — `(LEFT | RIGHT | FULL) OUTER? JOIN` — so leaving it usable
+// as a bare alias made `FROM a FULL JOIN b` ambiguous between a full outer join and `FROM a AS FULL JOIN b`, an INNER
+// join whose left table has been renamed. The alias reading won, and SQL makes OUTER optional, so the short spelling
+// silently answered a different query: measured over one fixture, `FULL OUTER JOIN` returned 13 rows where `FULL JOIN`
+// returned 10 — the inner-join count, with no error anywhere. The qualified form failed loudly with 42703 "column
+// reference with qualifier A cannot be resolved", which is the same defect wearing its lucky face.
+//
+// Upstream carries FULL in `keywordsCanBeId` and is not wrong to: its QueryVisitor rejects FULL joins outright
+// (`joinType != JoinType.FULL`), so the alias reading is the only reading there and two spellings cannot disagree.
+// Go implements the join, so Go has to resolve the ambiguity that implementing it creates. `full` remains usable as
+// an identifier when double-quoted, exactly as LEFT and RIGHT are.
 functionNameKeyword
     : LEFT
     | RIGHT

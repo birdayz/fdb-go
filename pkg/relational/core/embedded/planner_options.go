@@ -39,6 +39,8 @@ import (
 // package could still bypass newCascadesPlanner and get the defaults silently.
 // Route new planner construction through the funnel.
 type plannerOptions struct {
+	// useCollectedStatistics is OptPlannerStatistics (RFC-236).
+	useCollectedStatistics bool
 	// disabledRules is the union of the user's DISABLED_PLANNER_RULES and,
 	// when DISABLE_PLANNER_REWRITING is set, the optional rewriting rules.
 	// Java merges the two into the same disabledTransformationRules set
@@ -102,6 +104,7 @@ func plannerOptionsFrom(o *api.Options) plannerOptions {
 	}
 
 	po.config.ShouldJoinRightDeep = optBool(o, api.OptPlanRightDeep, false)
+	po.useCollectedStatistics = optBool(o, api.OptPlannerStatistics, false)
 	return po
 }
 
@@ -143,8 +146,15 @@ func (p plannerOptions) cacheKeyPart() string {
 	// statements differing only in it plan differently and must not share a
 	// cache entry. Leaving it out of the key is how an explicit transaction's
 	// elided plan gets served to an auto-commit statement that may not have it.
+	// PLANNER_STATISTICS belongs in BOTH halves of this function, and the early
+	// return is the half that is easy to miss: with only a render arm below, a
+	// flag-ON connection whose other options are default would render "" —
+	// byte-identical to flag-off — and share its cache entry, serving a
+	// statistics-planned plan to a connection that asked for none. That is this
+	// function's own "wrong-plan bug, not merely a stale-cost one".
 	if len(p.disabledRules) == 0 && !p.config.ShouldJoinRightDeep &&
-		!p.config.SingleReadVersion && !readable.IndexStatesEstablished() {
+		!p.config.SingleReadVersion && !p.useCollectedStatistics &&
+		!readable.IndexStatesEstablished() {
 		return ""
 	}
 	names := make([]string, 0, len(p.disabledRules))
@@ -155,6 +165,9 @@ func (p plannerOptions) cacheKeyPart() string {
 	var b strings.Builder
 	if p.config.ShouldJoinRightDeep {
 		b.WriteString("rd")
+	}
+	if p.useCollectedStatistics {
+		b.WriteString("stat")
 	}
 	if p.config.SingleReadVersion {
 		b.WriteString("srv")

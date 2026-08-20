@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"strings"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -190,6 +193,12 @@ type joinClause struct {
 	// so star expansion drops it and an unqualified reference resolves
 	// the left copy.
 	usingHiddenCols []string
+	// usingColTexts retains the USING columns as WRITTEN (quotes intact), in
+	// order, so retargetUsingJoins can re-synthesize the ON predicate against
+	// the correct owner. usingHiddenCols cannot serve: it is UPPER-folded and
+	// quote-stripped, and splicing that back into SQL text would re-normalize a
+	// quoted-DDL column.
+	usingColTexts []string
 	// segments preserves the un-flattened uid segments of the source's
 	// dotted name (`FullId().AllUid()`, quote-stripped). For a single-name
 	// table source it is `[name]`; for a correlated array source
@@ -2662,8 +2671,8 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		// A derived-table primary source can still be followed by explicit JOIN
 		// clauses (`FROM (SELECT ...) x LEFT JOIN t ON ...`). Parse them here so
 		// they are not silently dropped (no LEFT/RIGHT alias-promotion applies to
-		// a derived primary, hence promotedJoinType = -1).
-		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins, -1)
+		// a derived primary).
+		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins)
 		if jErr != nil {
 			return nil, jErr
 		}
@@ -2681,7 +2690,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 
 	if inlineItem, isInline := srcBase.TableSourceItem().(*antlrgen.InlineTableItemContext); isInline {
 		alias := inlineValuesCarrierAlias(inlineItem, 0)
-		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins, -1)
+		joins, jErr := parseJoinClauses(srcBase, alias, extraCrossJoins)
 		if jErr != nil {
 			return nil, jErr
 		}
@@ -2711,53 +2720,37 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	// Build table name from uid segments, stripping identifier quotes.
 	// "INFORMATION_SCHEMA"."TABLES" → INFORMATION_SCHEMA.TABLES
 	parts := uidSegments(atomItem.TableName())
-	// Only use Uid() as alias when AS is explicit. Without AS, the parser may
-	// greedily consume a join keyword (LEFT, RIGHT, CROSS) as the table alias
-	// due to grammar ambiguity — LEFT/RIGHT are in keywordsCanBeId.
-	// When the mis-parsed "alias" is LEFT or RIGHT, we promote the first
-	// InnerJoinContext to a LEFT/RIGHT join.
+	// Grammar is `tableName (AS? alias=uid)?` — AS optional, so an implicit
+	// alias (`FROM Order o`) is read from GetAlias() rather than gated on AS.
+	//
+	// There used to be a repair here for a grammar ambiguity: LEFT and RIGHT
+	// were alias-eligible, so `FROM a LEFT JOIN b` parsed as `FROM a AS LEFT
+	// JOIN b` and the first InnerJoin had to be PROMOTED back to an outer join.
+	// It was removed once the ambiguity was fixed at the source — the census
+	//
+	//	awk '/^keywordsCanBeId/,/^    ;/' RelationalParser.g4 |
+	//	  grep -cowE 'LEFT|RIGHT|FULL'
+	//
+	// reports 0, so the parser cannot hand this code an alias spelling any of
+	// them and the promotion could never fire. Repairing a misparse downstream
+	// is the wrong layer anyway: it can only recover the FIRST join, and it
+	// cannot tell `FROM a LEFT JOIN b` from a table genuinely aliased LEFT.
+	//
+	// If a clause keyword is ever readmitted to keywordsCanBeId, the fix is
+	// there and not here. TestFDB_ClauseKeywordsAreNotSwallowedAsAliases holds
+	// that line by ASSERTING each join type still parses as its CLAUSE, with
+	// and without OUTER, so a readmission reddens rather than silently changing
+	// answers. (It does not execute the census above — that is prose in the
+	// test's header, and re-running it is a reader's job, not the test's.)
 	leftAlias := ""
-	var promotedJoinType joinType = -1
-	// Grammar is `tableName (AS? alias=uid)?` — AS optional.
-	// Pick up implicit aliases via GetAlias() (was previously
-	// gated on AS being present, which lost `FROM Order o` etc).
-	// Special case: a NO-AS, UNQUOTED bare-uid alias equal to
-	// LEFT or RIGHT is the keywordsCanBeId grammar misparse for
-	// `FROM a LEFT JOIN ...` — promote the first InnerJoin to
-	// LEFT/RIGHT join instead of treating LEFT/RIGHT as the
-	// alias. The AS form (`FROM a AS LEFT JOIN ...`) and the
-	// quoted form (`FROM a "LEFT"`) both keep "LEFT" as the
-	// literal alias.
 	if atomItem.GetAlias() != nil {
-		aliasRaw := atomItem.GetAlias().GetText()
-		aliasTxt := functions.StripIdentifierQuotes(aliasRaw)
-		// Structural quote-detection: post-case-fold,
-		// `aliasRaw != aliasTxt` is also true whenever the
-		// raw alias has any lowercase character (the helper
-		// upper-cases unquoted text). Use a structural check
-		// so a lowercased alias `from a hello` doesn't get
-		// classified as quoted.
-		isQuoted := len(aliasRaw) >= 2 &&
-			((aliasRaw[0] == '"' && aliasRaw[len(aliasRaw)-1] == '"') ||
-				(aliasRaw[0] == '`' && aliasRaw[len(aliasRaw)-1] == '`'))
-		if atomItem.AS() == nil && !isQuoted {
-			up := strings.ToUpper(aliasTxt)
-			if up == "LEFT" {
-				promotedJoinType = joinTypeLeft
-			} else if up == "RIGHT" {
-				promotedJoinType = joinTypeRight
-			} else {
-				leftAlias = aliasTxt
-			}
-		} else {
-			leftAlias = aliasTxt
-		}
+		leftAlias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
 	}
 	if leftAlias == "" {
 		leftAlias = strings.Join(parts, ".")
 	}
 
-	joins, jErr := parseJoinClauses(srcBase, leftAlias, extraCrossJoins, promotedJoinType)
+	joins, jErr := parseJoinClauses(srcBase, leftAlias, extraCrossJoins)
 	if jErr != nil {
 		return nil, jErr
 	}
@@ -2774,13 +2767,13 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 }
 
 // parseJoinClauses parses every explicit JOIN part of a FROM clause into a
-// joinClause slice, promotes a mis-parsed first LEFT/RIGHT join, synthesizes ON
-// predicates for USING-syntax joins (the left USING column qualified by its
-// preceding source alias — leftAlias for the first join, the prior join's right
-// alias otherwise), and appends the implicit comma-FROM cross joins last. It is
+// joinClause slice, synthesizes ON predicates for USING-syntax joins (the
+// left USING column qualified by its preceding source alias — leftAlias for
+// the first join, the prior join's right alias otherwise), and appends the
+// implicit comma-FROM cross joins last. It is
 // shared by the atom-table primary path AND the derived-table primary path so a
 // `FROM (SELECT ...) x JOIN t ON ...` does not silently drop its JOINs.
-func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string, extraCrossJoins []joinClause, promotedJoinType joinType) ([]joinClause, error) {
+func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string, extraCrossJoins []joinClause) ([]joinClause, error) {
 	var joins []joinClause
 	for _, jp := range srcBase.AllJoinPart() {
 		jc, jErr := extractJoinClause(jp)
@@ -2788,10 +2781,6 @@ func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string
 			return nil, jErr
 		}
 		joins = append(joins, jc)
-	}
-	// If the first join was mis-parsed (LEFT/RIGHT consumed as alias), promote it.
-	if promotedJoinType >= 0 && len(joins) > 0 && joins[0].joinType == joinTypeInner {
-		joins[0].joinType = promotedJoinType
 	}
 	// Synthesize ON predicates for any `USING (col, ...)` joins now that the
 	// left source alias chain is known.
@@ -2812,6 +2801,7 @@ func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string
 		for _, u := range joins[i].usingUids.AllUid() {
 			joins[i].usingHiddenCols = append(joins[i].usingHiddenCols,
 				strings.ToUpper(functions.StripIdentifierQuotes(u.GetText())))
+			joins[i].usingColTexts = append(joins[i].usingColTexts, u.GetText())
 		}
 		joins[i].onExpr = synth
 		joins[i].usingUids = nil
@@ -2875,19 +2865,29 @@ func synthesizeUsingOnExpr(uidList antlrgen.IUidListContext, leftAlias, rightAli
 func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 	switch j := jp.(type) {
 	case *antlrgen.InnerJoinContext:
-		// Explicit `CROSS JOIN` syntax — reject. fdb-relational
-		// 4.11.1.0 NPEs on `a CROSS JOIN b` because its visitor
-		// unconditionally calls `accept(...)` on the ON-clause
-		// expression which is null for CROSS JOIN (CLAUDE.md gotcha).
-		// Go's embedded engine matches by rejecting at parse time —
-		// same architectural reason: the visitor's CROSS-JOIN code
-		// path doesn't exist. Workaround: comma-join `FROM a, b`.
-		// Per project conformance principle: doesn't work in Java →
-		// doesn't work in Go.
-		if j.CROSS() != nil {
-			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products")
-		}
+		// A CONDITIONLESS INNER JOIN IS SUPPORTED, and deliberately so.
+		//
+		// `a JOIN b`, `a INNER JOIN b` and `a CROSS JOIN b` all reach this arm
+		// with a null `(ON expression | USING '(' uidList ')')` group, and all
+		// three mean the cartesian product. fdb-relational 4.11.1.0 cannot
+		// answer any of them — its visitor calls `accept(...)` on the ON-clause
+		// expression unconditionally and NPEs on the null — so Go once refused
+		// them too, matching the failure.
+		//
+		// That alignment was the wrong call. The rows Go produces are correct,
+		// the syntax is ordinary SQL that every other engine accepts, and
+		// nothing here touches the wire: it is a read-side capability Java
+		// lacks, which this project allows Go to have. Refusing a query we can
+		// answer correctly, in order to reproduce someone else's crash, buys
+		// nothing and costs every user who writes CROSS JOIN.
+		//
+		// The conformance principle still binds where both engines RUN a query.
+		// It does not oblige Go to inherit a null-dereference.
+		//
+		// One consequence worth stating because it is easy to misread later:
+		// `a JOIN missing_table` reports the unknown TABLE, not a join error,
+		// which is also what Java reports — there is no gate here to preempt
+		// source resolution.
 		// A derived table (subquery) on the right of an explicit JOIN —
 		// `JOIN (SELECT ...) AS x ON ...`. Mirrors the comma-FROM derived path.
 		if subItem, isSub := j.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
@@ -3067,4 +3067,491 @@ func containsNestedAggregate(tree antlr.Tree) bool {
 		}
 	}
 	return false
+}
+
+// usingSource is one candidate left source for a chained USING's column
+// lookup: the alias the predicate must qualify with, and the base table whose
+// columns decide whether it owns the column at all.
+// cteNamePredicate answers "is this FROM source a CTE?" for a scope map, which
+// retargetUsingJoins needs because a CTE is referenced by a bare name that no
+// structural flag on the join distinguishes from a table. A nil or empty map
+// yields nil — correct, since no CTEs are then in scope.
+func cteNamePredicate(cteScopes map[string]semantic.ScopeSource) func(string) bool {
+	if len(cteScopes) == 0 {
+		return nil
+	}
+	return func(name string) bool {
+		_, ok := cteScopes[strings.ToUpper(functions.StripIdentifierQuotes(name))]
+		return ok
+	}
+}
+
+type usingSource struct {
+	alias string
+	table string
+	// base records whether `table` is a real table REFERENCE rather than a
+	// stand-in. It cannot be inferred from the name: a derived table and an
+	// inline VALUES source both carry their ALIAS in tableName
+	// (joinClauseForSubquerySource, inlineValuesCarrierAlias), and a CTE is
+	// referenced by a name that is not in the record metadata at all. So an
+	// alias that happens to collide with a record type would otherwise resolve
+	// ownership against a descriptor belonging to a completely different
+	// relation — the wrong owner, silently, with a plausible predicate built on
+	// it. Only a source flagged base may be looked up.
+	base bool
+	// cols answers "does this source export this column?" for a source that is
+	// NOT a base table — a derived table or a CTE, whose columns come from its
+	// projection rather than from a record descriptor. Nil for base sources,
+	// which are answered from the descriptor, and nil when a non-base source's
+	// schema could not be derived, which is what makes the scope decline.
+	cols semantic.Table
+	// counts is the source's column multiset, built ONCE per source: normalized
+	// name to how many times it is exported. Built once because `Columns()`
+	// defensively copies the whole slice in both production implementations, so
+	// asking per USING column made a wide join copy the right leg's columns
+	// once per name before planning even began.
+	counts map[string]int
+}
+
+// owns reports whether this source exports `col`, from whichever authority
+// describes it: a record descriptor for a base table, the derived schema for a
+// subquery or CTE. A source with neither — one whose schema could not be
+// derived — owns nothing, and the caller's resolvable gate has already declined
+// the whole join in that case rather than letting it read as "no owner".
+//
+// There is no name-based fallback: a source is described by its cols surface or
+// it is not described at all. That is what makes a derived table unable to
+// resolve against a same-named record type even if the caller-side gate is ever
+// loosened — there is no descriptor path left for it to reach.
+// It returns a COUNT, not a boolean, because a source can export the same name
+// more than once — `(SELECT "k", "k" FROM q1)` — and that makes the column
+// ambiguous WITHIN that one source. A boolean collapses two exports into one
+// owner, so the caller walks past the ambiguity and reports whatever the NEXT
+// USING column turns up: the wrong fault, on the wrong column. This is the
+// same defect the right-hand check was repaired for, on the left.
+func (s usingSource) owns(colText string) int {
+	if s.cols == nil {
+		// Nothing describes this source — a name that did not resolve, or a
+		// derived schema that could not be derived. The caller's resolvable
+		// gate has already declined the whole join on that basis, so reaching
+		// here at all means the gate was loosened; owning nothing is the safe
+		// answer either way.
+		return 0
+	}
+	// RESOLVED THROUGH THE SOURCE'S OWN NAMESPACE, then counted in it.
+	//
+	// The two table implementations do not agree on how they present a column
+	// name, and neither is wrong. `recordTypeTable` folds — it documents that
+	// "the COLUMN itself presents the FOLDED identifier everywhere", keeping
+	// plan-time and runtime in one namespace — while a derived source's
+	// `StaticTable` presents the projection's names as built. So there is no
+	// single spelling this resolver can fold or preserve its way to: folding
+	// lost derived sources, preserving lost base ones, and each attempt fixed
+	// one table kind by breaking the other.
+	//
+	// Asking the source to resolve the name, and then counting under the
+	// identifier IT returns, works for both — and keeps hiding coherent,
+	// because the decrement lands on that same key.
+	col, ok := s.cols.LookupColumn(semantic.NewUnquoted(colText))
+	if !ok {
+		return 0
+	}
+	return s.counts[col.Id.Name()]
+}
+
+// usingHideKey is the counts key a source uses for `colText`, or "" when the
+// source does not resolve the name at all. Hiding decrements THIS key, so it
+// must be derived exactly as ownership derives it.
+func (s usingSource) usingHideKey(colText string) string {
+	if s.cols == nil {
+		return ""
+	}
+	col, ok := s.cols.LookupColumn(semantic.NewUnquoted(colText))
+	if !ok {
+		return ""
+	}
+	return col.Id.Name()
+}
+
+// usingOwnerOf returns the single left source that owns `col`, applying Java's
+// hiding rule: a column consumed by an EARLIER USING is hidden on that join's
+// RIGHT side, so only the left copy remains visible.
+//
+// Two owners is AMBIGUOUS and is raised here, because nothing downstream can
+// detect it — a predicate built against either candidate plans and answers.
+//
+// NO owner returns ("", nil) — a DECLINE, not an error. A source that nothing
+// describes owns nothing, and this layer cannot tell "the column is absent"
+// from "the scope could not be read"; declining leaves the parse-time predicate
+// in place so ordinary column resolution reports a genuine typo downstream,
+// from the layer that can tell those apart.
+//
+// `__ROW_VERSION` used to reach this decline and no longer does, which is the
+// improvement rather than a regression: ownership now reads the CATALOG, which
+// appends the pseudo-column when the store keeps row versions, so it resolves
+// like any other column. Measured against the live JVM
+// (JoinUsingRowVersionJavaProbe): a single join and a chained USING both answer
+// in both engines, and the shape where nothing hides a copy — an ON join
+// putting two row-versioned sources in scope before a USING names it — is
+// AMBIGUOUS in both. Two owners really is two owners here.
+func usingOwnerOf(colText string, sources []usingSource) (string, error) {
+	var owners []string
+	for _, s := range sources {
+		// COUNTED per source, not tested. One source exporting the name twice
+		// is ambiguous by itself, and collapsing that to a single owner walks
+		// past the ambiguity to report whatever the NEXT USING column turns up
+		// — the wrong fault on the wrong column. Java stops on the first
+		// attribute.
+		switch n := s.owns(colText); {
+		case n == 0:
+			continue
+		case n > 1:
+			return "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
+				"Ambiguous reference %s", usingColumnKey(colText).Name())
+		}
+		owners = append(owners, s.alias)
+	}
+	switch len(owners) {
+	case 1:
+		return owners[0], nil
+	case 0:
+		return "", nil
+	default:
+		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", usingColumnKey(colText).Name())
+	}
+}
+
+// retargetUsingJoins re-qualifies each `USING (cols)` join's synthesized ON
+// predicate against the source that actually OWNS each column, and raises
+// Java's errors when no source owns it or more than one does.
+//
+// WHAT IT REPLACES. The parse-time synthesis qualifies a USING column by
+// POSITION — the prior join's right alias — which is right only by luck. Two
+// shapes, both measured against fdb-relational 4.12.11.0, show it failing in
+// opposite directions:
+//
+//	a JOIN b USING (id) JOIN c USING (id, k)   java: Ambiguous reference K
+//	                                           go  : silently picked b.k
+//	a JOIN b USING (id) JOIN c USING (j)       java: answers, j lives on a
+//	                                           go  : 42703 column "J" does not exist
+//
+// The second is the one that matters most: a legitimate query Go refused.
+//
+// WHY POSITION IS NOT A SUBSTITUTE FOR OWNERSHIP. `USING` names a column, not a
+// side. Java resolves it against every visible left operator, having hidden the
+// RIGHT copy of each column an earlier USING already consumed — which is what
+// makes `USING (id, k) … USING (id, k)` legal (b.k is hidden, so a.k is the
+// only candidate) while `USING (id) … USING (id, k)` is ambiguous (nothing hid
+// b.k). Position cannot express that: it picks the same operator either way.
+//
+// IT DECLINES RATHER THAN GUESSES. Column ownership is decided from the record
+// metadata, so a derived table, a CTE or any source it cannot resolve makes the
+// answer unknowable — and a wrong "no owner" would reject a working query. When
+// any in-scope source is unresolvable the correction is skipped and the
+// parse-time predicate stands, which is exactly today's behaviour for those
+// shapes and never worse.
+//
+// "UNRESOLVABLE" IS DECIDED STRUCTURALLY, NOT BY NAME LOOKUP. A derived table
+// and an inline VALUES source carry their ALIAS in tableName, and a CTE is
+// referenced by a name absent from the metadata — so asking "is this name a
+// record type?" answers YES for a derived table whose alias collides with a
+// real one, and ownership is then read off an unrelated descriptor. Each source
+// therefore carries a `base` flag set from what it structurally IS, and only a
+// base source is ever looked up.
+func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
+	primaryDerived antlrgen.IQueryContext, joins []joinClause,
+	md *recordlayer.RecordMetaData, schemaName string,
+	isCTE func(string) bool, cteScopes map[string]semantic.ScopeSource,
+) error {
+	// NOTHING TO DO WITHOUT A USING JOIN, and this is checked FIRST because
+	// both planner entry points call this for every SELECT. Building a source's
+	// column multiset means asking `Columns()`, which defensively copies, so
+	// without this a plain single-table or ON-join query paid an allocation and
+	// a copy per source for counts nothing would ever read.
+	using := false
+	for i := range joins {
+		if len(joins[i].usingColTexts) > 0 {
+			using = true
+			break
+		}
+	}
+	if !using {
+		return nil
+	}
+	primary := primaryAlias
+	if primary == "" {
+		primary = primaryTable
+	}
+	// isBase reports whether a join leg is a plain table reference: not a
+	// derived table, not an inline VALUES carrier, not a CTE.
+	isBase := func(j *joinClause) bool {
+		return j.derivedQuery == nil && j.inlineValues == nil &&
+			j.tableName != "" && !(isCTE != nil && isCTE(j.tableName))
+	}
+	// legSource describes one FROM leg for ownership purposes. A base table is
+	// answered from its descriptor; a derived table or CTE has its projection
+	// derived instead, so it participates in ambiguity rather than silently
+	// declining the join — measured against the live JVM, a derived source to
+	// the LEFT of a second USING makes the column AMBIGUOUS, so treating it as
+	// unknowable answered a query Java refuses.
+	legSource := func(alias, table string, derived antlrgen.IQueryContext, base bool) usingSource {
+		s := usingSource{alias: alias, table: table, base: base}
+		if base {
+			s.cols = baseTableColumns(table, md, schemaName)
+			s.counts = columnCounts(s.cols)
+			return s
+		}
+		if derived != nil {
+			if src, ok, err := buildCTEColumnSource(md, alias, derived, cteScopes); err == nil && ok {
+				s.cols = src.Table
+			}
+			s.counts = columnCounts(s.cols)
+			return s
+		}
+		if cteScopes != nil {
+			if src, ok := cteScopes[strings.ToUpper(functions.StripIdentifierQuotes(table))]; ok {
+				s.cols = src.Table
+			}
+		}
+		s.counts = columnCounts(s.cols)
+		return s
+	}
+	sources := []usingSource{
+		legSource(primary, primaryTable, primaryDerived, primaryIsBase),
+	}
+
+	for i := range joins {
+		j := &joins[i]
+		if len(j.usingColTexts) == 0 {
+			// Not a USING join; it still contributes a source to later ones.
+			sources = append(sources, legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)))
+			continue
+		}
+		// Every left source must be resolvable, or ownership is unknowable and
+		// the parse-time predicate stands. Checked over the whole scope rather
+		// than per column: one unresolvable source can hide the second owner
+		// that would have made a column ambiguous.
+		// The RIGHT source must be DESCRIBABLE, by whichever authority applies —
+		// a base table's catalog entry or a derived/CTE projection. Requiring it
+		// to be BASE was an error order bug: a derived right leg then skipped
+		// its own missing-column check while still entering the scope for later
+		// joins, so `a JOIN (SELECT id FROM c) d USING (k) JOIN b USING (id)`
+		// reported the SECOND join's ambiguity when the real, earlier fault is
+		// that the subquery has no `k`. Measured against the live JVM, which
+		// reports the missing column.
+		// Derived ONCE and reused as this join.s scope entry at the end of the
+		// loop: for a computed or join-bodied subquery legSource builds the
+		// inner logical plan, so calling it twice pays that cost twice and
+		// nested shapes compound it.
+		rightLeg := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j))
+		resolvable := rightLeg.cols != nil
+		for _, s := range sources {
+			// A source is describable either as a base table (descriptor) or as
+			// a derived/CTE projection (cols). Neither means the scope cannot be
+			// read at all, and one unreadable source can hide the second owner
+			// that would have made a column ambiguous — so the whole join
+			// declines rather than resolving against a partial view.
+			if s.cols != nil {
+				continue
+			}
+			if !s.base || s.table == "" || !sourceResolves(s.table, md, schemaName) {
+				resolvable = false
+				break
+			}
+		}
+		if resolvable {
+			// Owners are resolved for ALL columns before anything is rewritten:
+			// one unownable column declines the whole join, so a half-retargeted
+			// predicate mixing the two rules can never be built.
+			owners := make([]string, 0, len(j.usingColTexts))
+			for _, colText := range j.usingColTexts {
+				// The folded spelling, for MESSAGES only — resolution happens
+				// per source, below. A quoted `"k"` is reported as `K`, which
+				// is the spelling every other error in this layer uses.
+				id := usingColumnKey(colText)
+				col := id.Name()
+				owner, err := usingOwnerOf(colText, sources)
+				if err != nil {
+					return err
+				}
+				if owner == "" {
+					// No descriptor field owns it — a pseudo-column such as
+					// `__ROW_VERSION`, or a name that does not exist. This layer
+					// cannot tell those apart, so it declines and lets the
+					// parse-time predicate stand; ordinary column resolution
+					// reports the second case downstream.
+					owners = nil
+					break
+				}
+				// THE RIGHT SIDE IS CHECKED HERE, AT THIS JOIN, and that is
+				// about ERROR ORDER rather than about detection.
+				//
+				// A USING column missing from the right source is reported
+				// downstream either way. But this pre-pass walks every join
+				// before the FROM clause is visited, so a LATER join's
+				// ambiguity would otherwise be raised first and mask it:
+				// `a JOIN b USING (j) JOIN c USING (id)` reported 42702 for ID
+				// when the real, earlier fault is that b has no j. Java visits
+				// and resolves each right source left-to-right, so a fault in
+				// the first join must win.
+				//
+				// Resolved through the SAME column surface as the owner — the
+				// semantic catalog, not the raw descriptor. Mixing the two is
+				// how a pseudo-column becomes "missing": the catalog appends
+				// `__ROW_VERSION` when the store keeps row versions and a
+				// descriptor never carries it, so a left owner found on one
+				// surface could be declared absent on the other.
+				// COUNTED, not looked up. LookupColumn answers with its FIRST
+				// match, so it cannot see a right leg that exports the same
+				// name twice — `(SELECT id, id FROM c)` — and a USING naming
+				// that column is ambiguous ON THE RIGHT. Measured: Java reports
+				// `Ambiguous reference ID`; a first-match check passed `id` and
+				// went on to report a LATER column's absence instead, which is
+				// both the wrong fault and the wrong column.
+				switch n := rightLeg.owns(colText); {
+				case n == 0:
+					return api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"column %q does not exist", col)
+				case n > 1:
+					return api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"Ambiguous reference %s", col)
+				}
+				owners = append(owners, owner)
+			}
+			if len(owners) == len(j.usingColTexts) {
+				terms := make([]string, len(owners))
+				for n, colText := range j.usingColTexts {
+					terms[n] = fmt.Sprintf("%s.%s = %s.%s",
+						quoteUsingAlias(owners[n]), colText,
+						quoteUsingAlias(j.alias), colText)
+				}
+				onExpr, err := parser.ParseExpression(strings.Join(terms, " AND "))
+				if err != nil {
+					return err
+				}
+				j.onExpr = onExpr
+			}
+		}
+		// This join's RIGHT copy of each USING column is now hidden, whether or
+		// not the predicate was retargeted — the hiding is Java's rule about
+		// visibility, not about which predicate Go built.
+		//
+		// HIDING IS A DECREMENT OF THE SAME MULTISET OWNERSHIP READS, not a
+		// flag in a parallel map. That is the point: a sidecar
+		// `map[alias]map[name]bool` has to be maintained in step with the
+		// column data by convention, and this branch got that wrong three
+		// times in a row — ownership fixed while the hidden map kept folding
+		// case, then the right-hand count fixed while the left kept answering
+		// a boolean. Every one of those was two derivations of one fact.
+		// Decrementing leaves exactly one surface, so there is no mirror left
+		// to forget.
+		//
+		// A decrement rather than a delete because a source exporting the name
+		// twice has only ONE copy consumed — though such a source is ambiguous
+		// and has already been refused above, so the distinction is a statement
+		// of intent rather than a reachable case.
+		for _, colText := range j.usingColTexts {
+			if rightLeg.counts != nil {
+				if name := rightLeg.usingHideKey(colText); name != "" {
+					if n := rightLeg.counts[name]; n > 0 {
+						rightLeg.counts[name] = n - 1
+					}
+				}
+			}
+		}
+		sources = append(sources, rightLeg)
+	}
+	return nil
+}
+
+// sourceResolves reports whether a name refers to a base record type.
+func sourceResolves(table string, md *recordlayer.RecordMetaData, schemaName string) bool {
+	if md == nil {
+		return false
+	}
+	resolved, err := functions.ResolveQualifiedTableName(table, schemaName)
+	if err != nil {
+		return false
+	}
+	return recordTypeCI(md, resolved) != nil
+}
+
+// quoteUsingAlias mirrors synthesizeUsingOnExpr's aliasing rule: a stored alias
+// spliced back into SQL text bare would RE-normalize, folding a quoted-DDL
+// alias `"e"` to `E` and resolving nothing. Double-quoting round-trips it.
+func quoteUsingAlias(alias string) string {
+	if strings.Contains(alias, ".") {
+		// A schema-qualified table name standing in for a missing alias is a
+		// dotted PATH, not one identifier; its segments are already normalized.
+		return alias
+	}
+	return `"` + strings.ReplaceAll(alias, `"`, `""`) + `"`
+}
+
+// baseTableColumns resolves a base source's column surface through the SEMANTIC
+// CATALOG rather than straight off the record descriptor, so both sides of a
+// USING see the same set of columns.
+//
+// The difference is not cosmetic. The catalog appends `__ROW_VERSION` as an
+// ephemeral pseudo-column when the store keeps row versions (rlcatalog, mirroring
+// Java's Type.Record.addPseudoFields) and a descriptor never carries it. Reading
+// the owner from one surface and checking the right-hand side against the other
+// would let a column be found as an owner and then declared missing on the right
+// — 42703 on a query that is perfectly well-formed.
+//
+// Returns nil when the name does not resolve, which the caller reads as "this
+// scope cannot be described" and declines on, rather than as "owns nothing".
+func baseTableColumns(table string, md *recordlayer.RecordMetaData, schemaName string) semantic.Table {
+	if md == nil || table == "" {
+		return nil
+	}
+	resolved, err := functions.ResolveQualifiedTableName(table, schemaName)
+	if err != nil {
+		return nil
+	}
+	tbl, ok := rlcatalog.Wrap(md).LookupTable(
+		semantic.FromSegments(strings.Split(resolved, "."), false))
+	if !ok {
+		return nil
+	}
+	return tbl
+}
+
+// columnCounts builds a source's column multiset once: normalized name to how
+// many times the source exports it.
+//
+// A MULTISET rather than a set, because a source exporting the same name twice
+// makes that column ambiguous within itself, and a set cannot express that.
+//
+// Built ONCE per source rather than queried per USING column: `Columns()`
+// defensively copies its whole slice in both production implementations, so
+// asking it once per name made a wide join copy the column list m times before
+// planning began.
+//
+// The lookup fallback matters and is not belt-and-braces. A catalog
+// pseudo-column such as `__ROW_VERSION` is registered in the name index rather
+// than in the ordered `Columns()` view on some paths, so counting the slice
+// alone would report it absent — and reporting it absent is exactly the
+// regression that broke the Java corpus once already.
+func columnCounts(cols semantic.Table) map[string]int {
+	if cols == nil {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, c := range cols.Columns() {
+		counts[c.Id.Name()]++
+	}
+	return counts
+}
+
+// usingColumnKey folds a USING column as written, for ERROR MESSAGES ONLY.
+//
+// It is emphatically NOT how the column is resolved: ownership, hiding and the
+// right-hand check all go through each source's own `LookupColumn`, because the
+// two table implementations present names differently and no single spelling
+// works for both. This exists so a message reads `K` rather than repeating the
+// user's quoting back at them, matching the spelling every other error in this
+// layer uses.
+func usingColumnKey(colText string) semantic.Identifier {
+	return semantic.FromNormalized(strings.ToUpper(functions.StripIdentifierQuotes(colText)))
 }

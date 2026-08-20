@@ -65,15 +65,28 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 		sql  string
 	}{
 		{
-			// A NON-CONSTANT IN-list in an ON clause. Go's expr.ResolveIn takes
-			// constants only, in WHERE and ON alike, so the shape is attempted
-			// and declined — which is all this test needs of a specimen, and it
-			// needs one that will not be closed by unrelated work: the CTE
-			// spelling of the flattening-evasion shape used to sit here and now
-			// plans (its leg's row is the CTE body's own exact result type), so
-			// it moved to the agreement arm below.
-			name: "non_constant_in_list_in_on",
-			sql:  "SELECT a.id, c.id FROM a JOIN c ON a.av IN (c.id, c.cv)",
+			// A WINDOW FUNCTION IN A WHERE CLAUSE. Cascades attempts it and
+			// declines — the predicate is index-only and no index serves it —
+			// which is all this test needs of a specimen.
+			//
+			// It replaces the non-constant IN-list that sat here, and the
+			// replacement was forced by exactly the erosion this test's own
+			// header warns about: "if the CTE leg's derivation closes too, this
+			// arm needs a new specimen, not a deletion." The IN-list specimen
+			// closed the same way — a non-constant list is now an
+			// ArrayConstructorValue compared per row — so it moved to the
+			// agreement arm below, and this took its place.
+			//
+			// This one is chosen to be erosion-PROOF rather than merely
+			// unclosed today: a window function in WHERE is not a gap waiting
+			// to be filled, it is illegal SQL. A window is evaluated after
+			// WHERE, so a predicate cannot refer to one, and Java rejects it
+			// outright with "window functions are not allowed in WHERE"
+			// (ExpressionVisitor.java:662-667, measured in
+			// conformance/window_in_where_java_probe_test.go). Nothing will
+			// legitimately make it plannable.
+			name: "window_function_in_where",
+			sql:  "SELECT a.id FROM a WHERE ROW_NUMBER() OVER (PARTITION BY a.av ORDER BY a.id) > 1",
 		},
 	}
 
@@ -128,6 +141,31 @@ func TestFDB_ExplainUnplannableQueryFailsLoudly(t *testing.T) {
 					"t2 AS (SELECT c.id AS cid, d.dw AS dw FROM c JOIN d ON d.c_id = c.id) " +
 					"SELECT t1.aid, t1.bv, t2.cid, t2.dw FROM t1, t2 WHERE t1.aid = t2.cid",
 				want: []string{"1|111|1|41"},
+			},
+			{
+				// The NON-CONSTANT IN-list in an ON clause, this test's PREVIOUS
+				// unplannable specimen, making the same crossing the CTE one
+				// made. A non-constant list resolves to an ArrayConstructorValue
+				// compared per row, so the join plans and the predicate applies.
+				//
+				// This arm and the next are a PAIR, and neither is worth much
+				// alone. a=(1,100) and c=(1,51) is a 1x1 join, so "no rows" and
+				// "the cross product" differ by exactly one row — and an empty
+				// answer is equally what a predicate evaluated against the wrong
+				// row would give. The pair fixes that: the same shape over the
+				// same fixture must answer NOTHING when the list misses and the
+				// single row when it hits, which no constant-folded or dropped
+				// predicate can do.
+				//
+				// Here 100 IN (1, 51) is FALSE.
+				sql:  "SELECT a.id, c.id FROM a JOIN c ON a.av IN (c.id, c.cv)",
+				want: nil,
+			},
+			{
+				// ...and here 100 IN (1, 100) is TRUE. Same join, same columns,
+				// one literal changed.
+				sql:  "SELECT a.id, c.id FROM a JOIN c ON a.av IN (c.id, 100)",
+				want: []string{"1|1"},
 			},
 		} {
 			got := pinRows(t, db, ctx, tc.sql)

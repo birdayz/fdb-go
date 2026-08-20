@@ -78,6 +78,7 @@ go_test(
     name = "plans_test",
     srcs = [
         "aggregate_index_builder_copies_test.go",
+        "aggregate_index_cost_test.go",
         "conjunct_packaging_cost_test.go",
         "continuable_without_duplicates_property_test.go",
         "coverage_test.go",
@@ -257,6 +258,7 @@ go_test(
         "plan_structural_hash_memo.go",
         "plan_structural_hash_memo_test.go",
         "plan_structural_hash_memo_census_test.go",
+        "aggregate_index_cost_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",
