@@ -193,9 +193,11 @@ func scribbleOn(p *gen.Predicate) {
 // divergence from Java's conversion, and the reason it is deliberate.
 //
 // Java's RowNumberWindowPredicate.toPredicate returns ConstantPredicate.TRUE
-// (IndexPredicate.java:770-772), and Go's own candidate converter mirrors that
-// (index_predicate_to_query.go:59-60). Read literally, that makes a row-window
-// arm a tautological conjunct which AndPredicate.and would drop.
+// (IndexPredicate.java:770-772). Read literally, that makes a row-window arm a
+// tautological conjunct which AndPredicate.and would drop. Go's own candidate
+// converter deliberately does NOT mirror it — indexPredicateToQueryPredicate
+// refuses the arm rather than returning TRUE — and this test guards the other
+// half of that decision, in the normalizer.
 //
 // It is not one. The TRUE says the constraint is not expressible as a
 // QueryPredicate over a single record — NOT that it accepts every record. It

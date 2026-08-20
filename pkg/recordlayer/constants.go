@@ -40,17 +40,17 @@ const (
 	// IndexBuildSpaceKey is the subspace key for index building
 	IndexBuildSpaceKey = 9
 
-	// IndexSlidingWindowSpaceKey is the subspace key for sliding-window index
-	// bookkeeping (window, overflow and count partitions).
+	// IndexSlidingWindowSpaceKey is the subspace key for a sliding-window
+	// (top-N) index's bookkeeping: the per-partition entry list and the
+	// count/boundary metadata that decide which records are inside the window
+	// and therefore present in the wrapped vector index.
+	// Matches Java's FDBRecordStoreKeyspace.INDEX_SLIDING_WINDOW_SPACE.
 	//
-	// RESERVED, NOT USED BY GO. Java keeps it separate from the SECONDARY space
-	// deliberately — its own comment says "to avoid collisions with delegate index
-	// types that also use the secondary subspace (e.g. rank, permuted min/max,
-	// text)" — and writes here from SlidingWindowIndexMaintainer, which serves a
-	// VECTOR index carrying a row-number window predicate. Go has no such index
-	// type (its Index.Predicate is a row filter, not a windowing spec), so Go
-	// writes nothing here and there is no stored-byte divergence for any shape Go
-	// supports. The constant exists so the prefix stays SPOKEN FOR.
+	// Java keeps this separate from the SECONDARY space deliberately — its own
+	// comment says "to avoid collisions with delegate index types that also use
+	// the secondary subspace (e.g. rank, permuted min/max, text)" — and Go now
+	// writes here for the same reason, from slidingWindowIndexMaintainer, which
+	// decorates a VECTOR index carrying a row-number window predicate.
 	//
 	// Note the time-window LEADERBOARD index is a different type and does NOT use
 	// this space in either engine: Java's TimeWindowLeaderboardIndexMaintainer

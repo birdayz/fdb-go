@@ -19,8 +19,22 @@ go_library(
     ],
 )
 
+# timeout: this suite starts ~14 FDB containers, including a three-replica
+# cluster, and it was the ONE container-spinning target in the repo still on
+# Bazel's default (medium, 300s) — every sibling that spins containers declares
+# a longer one (//pkg/recordlayer is "long"). Measured 2026-08-20 on this tree:
+# 18s alone (3/3 runs), and killed at 300s under `bazelisk test //...` with
+# .bazelrc's --local_test_jobs=4, hung inside a Docker exec stream read while
+# the machine ran four other container-heavy targets.
+#
+# Under-declaring is a defect in the safety net, not a tuning detail: a target
+# killed by its own budget under legitimate load reads as a flake, and "unrelated
+# flake" is the story that hides real bugs. "long" (900s) is ~50x the unloaded
+# time and 3x the observed stall — proportionate, and far from the multi-hour
+# budgets where one wedge costs a runner fleet a day.
 go_test(
     name = "foundationdb_test",
+    timeout = "long",
     srcs = [
         "cluster_test.go",
         "database_test.go",

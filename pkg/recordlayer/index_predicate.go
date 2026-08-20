@@ -28,9 +28,55 @@ func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
 		return notPredicateFromProto(p.NotPredicate)
 	case p.ValuePredicate != nil:
 		return valuePredicateFromProto(p.ValuePredicate)
+	case p.RowNumberWindowPredicate != nil:
+		return rowNumberWindowPredicateFromProto(p.RowNumberWindowPredicate)
 	default:
 		return nil, fmt.Errorf("empty predicate message")
 	}
+}
+
+// rowNumberWindowPredicateFromProto compiles a row-number window arm into the
+// per-record evaluator, which ACCEPTS EVERY RECORD.
+// Matches Java's RowNumberWindowPredicate.shouldIndexThisRecord, which is
+// `return true` (IndexPredicate.java:739-742).
+//
+// That is not a tautology dressed up as a filter, and the distinction is what
+// the whole index type rests on: a top-N window cannot be evaluated against one
+// record in isolation, because whether a record qualifies depends on every
+// other record in its partition. The per-record gate therefore admits
+// everything and slidingWindowIndexMaintainer does the qualifying — it writes
+// each record into the keyspace-10 entry list and only forwards the ones inside
+// the window to the wrapped vector index.
+//
+// The consequence for anything reasoning about index COMPLETENESS is the
+// opposite of what this `true` suggests, so it must not leak upward: the index
+// holds only the qualifying rows. NormalizeIndexPredicateProto deliberately
+// refuses to fold this arm to a constant, and indexPredicateToQueryPredicate
+// refuses to convert it at all, so a candidate over such an index is excluded
+// rather than matched as a full index. Both of those are reachable from here
+// on, which they were not before this arm existed.
+//
+// The window DECLARATION is not validated here beyond what the proto itself
+// requires, and that restraint is deliberate. Java's
+// SlidingWindowIndexValidator checks six things (record types, index type,
+// predicate presence, uniqueness, placement) and the window's SIZE is not among
+// them; RowNumberWindowPredicate's constructor stores whatever the proto says.
+// So a size of 0 produces metadata Java LOADS — and then fails on the first
+// write, because `count < windowSize` is false for an empty window and the
+// window-full branch finds no boundary
+// (SlidingWindowIndexMaintainer.java:466-473).
+//
+// Refusing it at load time would therefore make a store Java can create
+// unopenable by Go, which is the exact failure wire compatibility exists to
+// prevent — the same argument that keeps a non-vector index carrying this
+// predicate loadable. Go reaches the identical write-time error by the
+// identical route, so the two engines agree on both halves: what loads, and
+// what fails.
+func rowNumberWindowPredicateFromProto(p *gen.RowNumberWindowPredicate) (IndexPredicate, error) {
+	if _, err := rowNumberWindowSpecFromProto(p); err != nil {
+		return nil, err
+	}
+	return func(proto.Message) bool { return true }, nil
 }
 
 // predicateProtoIsTautology reports whether a stored index predicate provably

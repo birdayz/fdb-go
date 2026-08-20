@@ -26,11 +26,35 @@ func TestSubspaceLabelCoverage(t *testing.T) {
 		recordlayer.IndexUniquenessViolationsKey: "uniq-violations",
 		recordlayer.RecordVersionKey:             "record-version",
 		recordlayer.IndexBuildSpaceKey:           "index-build",
+		recordlayer.IndexSlidingWindowSpaceKey:   "sliding-window",
 	}
 	for id, want := range wants {
 		if got := subspaceLabel[id]; got != want {
 			t.Errorf("subspaceLabel[%d] = %q, want %q", id, got, want)
 		}
+	}
+
+	// The list above is a hand-maintained MIRROR, and a mirror cannot notice
+	// what neither copy contains: prefix 10 landed in the record layer and both
+	// this table and subspaceLabel stayed at 9, so `frl store dump` labelled
+	// every sliding-window key "unknown" and --subspace could not select the
+	// range — with this test green throughout.
+	//
+	// So the shape of the keyspace is asserted directly. The record store's
+	// prefixes are contiguous from 0 (pinned by TestRecordStoreKeyspaceMatchesJava
+	// against Java's enum), which makes "no gaps, and nothing past the end" a
+	// checkable property rather than another list to keep in step. The next
+	// prefix added anywhere now fails HERE without being named.
+	for id := int64(0); id <= recordlayer.IndexSlidingWindowSpaceKey; id++ {
+		if subspaceLabel[id] == "" {
+			t.Errorf("subspaceLabel has no entry for prefix %d; `frl store dump` would "+
+				"render it as \"unknown\" and --subspace could not select it", id)
+		}
+	}
+	if n := len(subspaceLabel); n != recordlayer.IndexSlidingWindowSpaceKey+1 {
+		t.Errorf("subspaceLabel has %d entries for %d contiguous prefixes — a label for a "+
+			"prefix the record layer does not define, or a duplicate",
+			n, recordlayer.IndexSlidingWindowSpaceKey+1)
 	}
 }
 

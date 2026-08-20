@@ -376,7 +376,7 @@ func (store *FDBRecordStore) scanIndexByType(
 	case IndexScanByDistance:
 		// HNSW and SPFresh share the BY_DISTANCE TupleRange/IndexEntry
 		// contract (RFC-094 §10) — dispatch by interface, not concrete type.
-		vm, ok := maintainer.(byDistanceScanner)
+		vm, ok := maintainerAs[byDistanceScanner](maintainer)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),
@@ -388,10 +388,10 @@ func (store *FDBRecordStore) scanIndexByType(
 		// widening + budget-bounded honest truncation). Only SPFresh implements
 		// widening; an HNSW ordered scan has no posting cells to widen, so it falls
 		// back to the fixed-horizon ScanByDistance (Phase B, unchanged).
-		if sm, ok := maintainer.(orderedStreamScanner); ok {
+		if sm, ok := maintainerAs[orderedStreamScanner](maintainer); ok {
 			return sm.ScanByDistanceOrderedStream(scanRange, continuation, scanProperties)
 		}
-		vm, ok := maintainer.(byDistanceScanner)
+		vm, ok := maintainerAs[byDistanceScanner](maintainer)
 		if !ok {
 			return &errorCursor[*IndexEntry]{
 				err: fmt.Errorf("index %q (type %s) does not support BY_DISTANCE scan", index.Name, index.Type),

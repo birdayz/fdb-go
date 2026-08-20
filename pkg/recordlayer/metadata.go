@@ -1035,7 +1035,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
-	return &RecordMetaData{
+	md := &RecordMetaData{
 		recordTypes:             types,
 		fileDescriptor:          b.fileDescriptor,
 		recordsSourceProto:      b.recordsSourceProto,
@@ -1051,7 +1051,16 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		subspaceKeyCounter:      b.subspaceKeyCounter,
 		usesSubspaceKeyCounter:  b.counterBasedSubspaceKeys,
 		preserved:               b.preserved,
-	}, nil
+	}
+
+	// Sliding-window (top-N vector) index validation. Runs on the assembled
+	// metadata rather than on the builder because it asks which record types an
+	// index covers, and RecordTypesForIndex is the one authority on that.
+	if err := validateSlidingWindowIndexes(md); err != nil {
+		return nil, err
+	}
+
+	return md, nil
 }
 
 // FindRegisteredMessageType returns the message type registered for fullName

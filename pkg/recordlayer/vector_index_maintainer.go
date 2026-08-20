@@ -1228,12 +1228,71 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 	return vResults, nil
 }
 
-// DeleteWhere clears all HNSW graph data for the given prefix.
-// If the prefix is non-empty, only clears the HNSW graph for that prefix.
-// If the prefix is empty, clears all HNSW graph data.
+// DeleteWhere clears all HNSW graph data at or BELOW the given prefix.
+// An empty prefix clears every graph in the index.
+//
+// The range clear is the whole point, and clearing the prefix's own graph is
+// not enough. A grouped vector index keyed by (zone, category) stores each
+// group at hnswSubspace.Sub(zone, category), so a delete-where on (zone) has to
+// take every category under it. Clearing only the graph AT (zone) left those
+// descendants behind: their records were deleted while their HNSW nodes stayed
+// queryable, so a search returned primary keys that no longer resolve.
+//
+// Matches Java, which reaches StandardIndexMaintainer.deleteWhere through
+// VectorIndexMaintainer.deleteWhere and clears
+// Range.startsWith(indexSubspace.pack(prefix)) — everything under the packed
+// prefix, descendants included.
+// CanDeleteWhere is Java's VectorIndexMaintainer.canDeleteWhere (:358-363):
+// beyond the delegate's own alignment check it requires
+// `evaluated.size() <= getKeyWithValueExpression(root).getColumnSize()`, and
+// KeyWithValueExpression.getColumnSize() is the SPLIT POINT — the number of
+// key columns, not the whole expression's width.
+//
+// That bound is the one the store-level alignment check cannot supply. It
+// normalises a KeyWithValue to its FULL inner key (prefix columns AND vector
+// columns), so a prefix reaching into the vector columns aligns positionally
+// and is accepted — while getSubspaceForPrefix then addresses a subspace one
+// level deeper than any graph that exists. The clear hits nothing, returns
+// success, and the deleted records' HNSW nodes stay queryable.
+//
+// A non-KeyWithValue root has no key columns at all: splitPrefixAndVector
+// reads the whole key as the vector and indexes every record under the empty
+// prefix, so any non-empty prefix is unclearable. Java refuses that root shape
+// outright (getKeyWithValueExpression throws); Go accepts it for other
+// operations — see "VECTOR index metadata validation" in DIVERGENCES.md — so
+// the bound of zero is what expresses the same refusal here.
+func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	keyColumns := 0
+	if kwv, ok := m.index.RootExpression.(*KeyWithValueExpression); ok {
+		keyColumns = kwv.ColumnSize()
+	}
+	if len(prefix) > keyColumns {
+		return fmt.Errorf(
+			"vector index %q: deleteWhere prefix has %d columns but the index has %d key column(s); "+
+				"a longer prefix names a graph that does not exist, so the clear would silently "+
+				"leave the deleted records' HNSW nodes in place",
+			m.index.Name, len(prefix), keyColumns)
+	}
+	return nil
+}
+
 func (m *vectorIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	storage := m.getStorageForPrefix(prefix)
-	storage.clearAll(m.tx)
+	// Backstop for direct callers — Java's Verify.verify inside deleteWhere
+	// (:366-369). DeleteRecordsWhere asks CanDeleteWhere before it clears.
+	if err := m.CanDeleteWhere(prefix); err != nil {
+		return err
+	}
+	sub := m.getSubspaceForPrefix(prefix)
+	pr, err := fdb.PrefixRange(sub.Bytes())
+	if err != nil {
+		return fmt.Errorf("vector index %q: DeleteWhere PrefixRange(%x): %w", m.index.Name, sub.Bytes(), err)
+	}
+	m.tx.ClearRange(pr)
+	// Every cached graph under the cleared range is now stale. The cache is
+	// per-maintainer (so per-transaction), and dropping all of it is both
+	// correct and cheap; keeping an entry whose bytes were just cleared would
+	// let a post-clear read resurrect deleted nodes from memory.
+	m.storageCache = make(map[string]*hnswStorage)
 	return nil
 }
 
@@ -1285,7 +1344,10 @@ func (store *FDBRecordStore) ScanVectorIndexWithPrefix(
 	if err != nil {
 		return &errorCursor[*IndexEntry]{err: err}
 	}
-	vm, ok := maintainer.(*vectorIndexMaintainer)
+	// Peel any decorator (e.g. a sliding window) before asking for the concrete
+	// vector maintainer: a windowed vector index is still a vector index, and
+	// asserting on the outermost type would answer "not a VECTOR index".
+	vm, ok := unwrapVectorMaintainer(maintainer)
 	if !ok {
 		return &errorCursor[*IndexEntry]{
 			err: fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type),
@@ -1323,7 +1385,10 @@ func (store *FDBRecordStore) SearchVectorIndexWithPrefix(
 	if err != nil {
 		return nil, err
 	}
-	vm, ok := maintainer.(*vectorIndexMaintainer)
+	// Peel any decorator (e.g. a sliding window) before asking for the concrete
+	// vector maintainer: a windowed vector index is still a vector index, and
+	// asserting on the outermost type would answer "not a VECTOR index".
+	vm, ok := unwrapVectorMaintainer(maintainer)
 	if !ok {
 		return nil, fmt.Errorf("index %q (type %s) is not a VECTOR index", index.Name, index.Type)
 	}
