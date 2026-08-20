@@ -260,10 +260,14 @@ func CollectStatistics(
 			// What is checkable by reading is the narrower claim that matters:
 			// no DURABLE counter is touched in here. Counters ARE incremented —
 			// batchScanned and batchCounts, two lines of the scan loop — but they
-			// are the per-attempt locals reset at the top, and the seeding happens
-			// after the loop. So a retry cannot add anything twice, which is the
-			// failure this structure exists to prevent and the one idempotence
-			// would not have covered.
+			// are the per-attempt locals reset at the top, and the MERGE into the
+			// durable counts runs only after Run returns without error. So a retry
+			// cannot add anything twice, which is the failure this structure exists
+			// to prevent and the one idempotence would not have covered.
+			//
+			// The merge is what carries that, not the seeding further down: seeding
+			// assigns zero to declared types the scan never saw, so it cannot
+			// double anything and is not part of this argument.
 			declaredTypes = store.GetRecordMetaData().RecordTypes()
 			// The read version of the LAST batch stamps the run. Collection
 			// spans transactions, so no single version describes all of it;
