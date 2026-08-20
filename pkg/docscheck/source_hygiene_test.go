@@ -242,14 +242,54 @@ func isGeneratedFile(src []byte, f *ast.File) bool {
 // lets a banned phrase be recognised across a line wrap, which is how the
 // author of a comment actually reads it.
 func flowComment(cg *ast.CommentGroup) string {
-	var b strings.Builder
+	flowed, _ := flowCommentWithOrigin(cg)
+	return flowed
+}
+
+// normalisedGroupLines is every line of the group with its markers removed and
+// its whitespace runs collapsed — one entry per raw line, in order, so a caller
+// iterating raw lines can index straight into it.
+func normalisedGroupLines(cg *ast.CommentGroup) []string {
+	var out []string
 	for _, c := range cg.List {
 		for _, line := range commentLines(c) {
-			b.WriteString(line)
-			b.WriteByte(' ')
+			out = append(out, strings.Join(strings.Fields(line), " "))
 		}
 	}
-	return strings.Join(strings.Fields(b.String()), " ")
+	return out
+}
+
+// flowCommentWithOrigin returns the flowed group together with, for every byte
+// of it, the index of the group line that byte came from.
+//
+// The origin map is what lets a match be attributed to a single source line by
+// POSITION. Attributing by text instead — searching the lines for the matched
+// substring — collapses two occurrences of the same phrase into one, so an
+// exempt occurrence silently covers a later wrapped one.
+//
+// Joining separator bytes take the PRECEDING line's index. A separator can only
+// be interior to a match when the match also covers real characters on both
+// sides, in which case those characters already disagree and the match is
+// correctly seen as spanning.
+func flowCommentWithOrigin(cg *ast.CommentGroup) (string, []int) {
+	var b strings.Builder
+	var origin []int
+	last := -1
+	for i, line := range normalisedGroupLines(cg) {
+		if line == "" {
+			continue
+		}
+		if last >= 0 {
+			b.WriteByte(' ')
+			origin = append(origin, last)
+		}
+		b.WriteString(line)
+		for j := 0; j < len(line); j++ {
+			origin = append(origin, i)
+		}
+		last = i
+	}
+	return b.String(), origin
 }
 
 // commentLines splits one comment into its text lines with every marker
@@ -299,23 +339,27 @@ func commentGroupOffenses(rel string, cg *ast.CommentGroup, lineOf func(token.Po
 	// allowlist decision is about the text and not about which pattern found
 	// it.
 	//
-	// flowedLines is the same content the flowed pass sees, normalised the same
-	// way, and it is what lets a flowed match be attributed back to a single
-	// line below.
-	var flowedLines []string
+	// Matching runs on the NORMALISED line — markers stripped, whitespace runs
+	// collapsed — which is the identical text the flowed pass sees. That
+	// agreement is load-bearing rather than tidy: a banned form written with a
+	// doubled space inside it matches only after flowing, and a per-line pass
+	// reading the un-normalised line would miss it while the flowed pass
+	// attributed it back to that line as already handled. It escaped both.
+	//
+	// REPORTING still quotes the raw line, because that is what is in the file
+	// and what an allowlist entry is written against.
+	norm := normalisedGroupLines(cg)
+	i := 0
 	for _, c := range cg.List {
 		base := lineOf(c.Slash)
-		// Matching uses the marker-stripped line so both passes see the same
-		// text; REPORTING uses the raw line, because that is what is in the
-		// file and what an allowlist entry is written against. commentLines
-		// returns one entry per raw line, so the two stay index-aligned.
 		raw := strings.Split(c.Text, "\n")
-		for i, line := range commentLines(c) {
-			flowedLines = append(flowedLines, strings.Join(strings.Fields(line), " "))
+		for r := range raw {
+			line := norm[i]
+			i++
 			if !matchesBanned(line) {
 				continue
 			}
-			offense := rel + ":" + strconv.Itoa(base+i) + ": " + strings.TrimSpace(raw[i])
+			offense := rel + ":" + strconv.Itoa(base+r) + ": " + strings.TrimSpace(raw[r])
 			if allowlisted(offense) {
 				continue
 			}
@@ -340,16 +384,25 @@ func commentGroupOffenses(rel string, cg *ast.CommentGroup, lineOf func(token.Po
 	// the exemption granted to the first silently covered the second. This
 	// file's own prose is such a group, so the hole was live here.
 	//
-	// So each match is judged alone: attributed to the line scan if its text
-	// fits on one line (that pass owns it, reported or exempted), and otherwise
+	// So each match is judged alone, and located by POSITION rather than by its
+	// text. Searching the lines for a match's text was the same bug one level
+	// down: with the identical phrase on an exempt line and again in a wrap,
+	// both occurrences find the exempt line and the wrapped one disappears. The
+	// earlier version of this test dodged that by using the singular on one side
+	// and the plural on the other, so it passed for the wrong reason.
+	//
+	// Attribution is therefore: a match belongs to the per-line pass exactly
+	// when every character of it came from ONE source line. Since both passes
+	// now run the same regex over the same normalised text, such a match was
+	// necessarily found there too — reported or exempted — so skipping it here
+	// is sound rather than hopeful. Anything else spans a wrap and is reported,
 	// allowlisted against a WINDOW around the match rather than the whole
-	// flowed group — a group-wide check lets any exempt fragment anywhere
+	// flowed group, since a group-wide check lets any exempt fragment anywhere
 	// exempt everything else.
-	flowed := flowComment(cg)
+	flowed, lineAt := flowCommentWithOrigin(cg)
 	for _, re := range bannedCommentPatterns {
 		for _, loc := range re.FindAllStringIndex(flowed, -1) {
-			span := flowed[loc[0]:loc[1]]
-			if lineContaining(flowedLines, span) {
+			if lineAt[loc[0]] == lineAt[loc[1]-1] {
 				continue // the per-line pass owns this occurrence
 			}
 			offense := rel + ":" + strconv.Itoa(lineOf(cg.Pos())) + ": " +
@@ -361,17 +414,6 @@ func commentGroupOffenses(rel string, cg *ast.CommentGroup, lineOf func(token.Po
 		}
 	}
 	return offenses
-}
-
-// lineContaining reports whether any single normalised line holds span whole —
-// i.e. whether the per-line pass already saw this occurrence.
-func lineContaining(lines []string, span string) bool {
-	for _, line := range lines {
-		if strings.Contains(line, span) {
-			return true
-		}
-	}
-	return false
 }
 
 // flowedWindowContext is how much text either side of a wrapped match is
@@ -631,6 +673,35 @@ func TestBannedCommentPatterns_SurviveALineWrap(t *testing.T) {
 		if strings.Contains(o, "Review-cycle labels") {
 			t.Errorf("the allowlisted line was reported after all: %q", o)
 		}
+	}
+
+	// The same shape with IDENTICAL text on both sides. The case above uses the
+	// singular on the exempt line and the plural in the wrap, so a suppression
+	// keyed on the matched TEXT rather than on the OCCURRENCE still reported the
+	// second one — the test passed for the wrong reason. Here both occurrences
+	// carry the SAME spelling, so an occurrence must be located by position or
+	// the wrapped one is attributed to the exempt line and vanishes.
+	sameText := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: `// Review-cycle labels ("review rounds 2-4") are what this bans.`},
+		{Text: "// Separately, and further down: successive review"},
+		{Text: "// rounds found the bound absent on one type after another."},
+	}}
+	if got := commentGroupOffenses("x.go", sameText, lineOf); len(got) != 2 {
+		t.Errorf("expected the exempt line AND the wrapped occurrence to be judged separately "+
+			"(2 offenses: the quoting line is not on the allowlist in this synthetic group), "+
+			"got %d: %v", len(got), got)
+	}
+
+	// Flowing COLLAPSES whitespace, so a form the per-line regex misses can
+	// appear only after flowing. Attributing that match back to "the line it
+	// came from" then hides it: the line never matched, so no pass reports it.
+	// Two spaces is all it takes.
+	collapsed := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: "// see audit   #12 for the rationale."},
+	}}
+	if got := commentGroupOffenses("x.go", collapsed, lineOf); len(got) != 1 {
+		t.Errorf("a banned form that only appears once whitespace is collapsed must still be "+
+			"reported, got %d: %v", len(got), got)
 	}
 }
 

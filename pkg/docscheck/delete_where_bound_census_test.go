@@ -67,6 +67,24 @@ var boundShapeSentinels = map[string]string{
 		"whole-index-clear-only answer is expressible",
 }
 
+// missingShapeSentinels returns the sentinels absent from the audited file,
+// each with the reason it exists.
+//
+// Factored out so the MISSING branch can be driven by a test. Left inline it
+// was reachable only through the corpus, where every sentinel is present by
+// construction — so the branch that reports, and the message it reports, ran in
+// exactly one state: the passing one.
+func missingShapeSentinels(literals map[string]bool) []string {
+	var lost []string
+	for name, why := range boundShapeSentinels {
+		if !literals[name] {
+			lost = append(lost, name+" — "+why)
+		}
+	}
+	sort.Strings(lost)
+	return lost
+}
+
 // maintainerSource is one parsed non-test source file under maintainerDir.
 type maintainerSource struct {
 	rel string
@@ -76,13 +94,31 @@ type maintainerSource struct {
 // collectDeleteWhereMaintainers returns every type reachable by a DeleteWhere
 // method, mapped to the file it is declared in.
 //
-// Membership follows EMBEDDING as well as declaration, and that is not
-// defensive generality. DeleteWhere is promoted from standardIndexMaintainer,
-// so a new maintainer can satisfy IndexMaintainer — and reach the
-// DeleteRecordsWhere path — without declaring the method at all. It would then
-// carry an ACCIDENTALLY INHERITED bound, which is the exact regression this
-// census exists to catch, while a declaration-only scan omitted it from the
-// population and reported green.
+// Membership follows EMBEDDING (and type ALIASES) as well as declaration, and
+// that is not defensive generality. DeleteWhere is promoted from
+// standardIndexMaintainer, so a new maintainer can satisfy IndexMaintainer —
+// and reach the DeleteRecordsWhere path — without declaring the method at all.
+// It would then carry an ACCIDENTALLY INHERITED bound, which is the exact
+// regression this census exists to catch, while a declaration-only scan omitted
+// it from the population and reported green.
+//
+// What this is NOT is a Go method set, and the difference is worth stating
+// because the two agree on every shape in the tree today:
+//
+//   - A named field that SHADOWS the promoted method (a field literally called
+//     DeleteWhere) leaves the type in this population though its method set has
+//     no such method. That direction over-includes: the census demands a bound
+//     row for a type that needs none, which fails LOUDLY and is corrected by
+//     whoever reads the failure. The opposite direction is the dangerous one,
+//     and it is the one closed here.
+//   - Embedding across PACKAGES is not modelled. Every maintainer lives in
+//     pkg/recordlayer and the base is unexported, so a cross-package embedder
+//     cannot promote it; if that ever changes, this becomes a real gap.
+//
+// Resolving genuine method sets means type-checking the package, which needs an
+// importer able to resolve every dependency — not available to a sandboxed
+// source scan. The AST approximation is chosen deliberately, with the
+// over-inclusive direction preferred over the silent one.
 func collectDeleteWhereMaintainers(sources []maintainerSource) map[string]string {
 	population := map[string]string{}
 	embeds := map[string][]string{}
@@ -103,8 +139,22 @@ func collectDeleteWhereMaintainers(sources []maintainerSource) map[string]string
 					continue
 				}
 				for _, spec := range d.Specs {
-					if ts, ok := spec.(*ast.TypeSpec); ok {
-						declaredIn[ts.Name.Name] = src.rel
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok {
+						continue
+					}
+					declaredIn[ts.Name.Name] = src.rel
+					// A type ALIAS carries the target's whole method set, so
+					// embedding the alias promotes the target's DeleteWhere just
+					// as embedding the target does. Recorded as an edge because
+					// nothing else would connect the two: the alias declares no
+					// methods of its own, so a scan looking only for
+					// declarations sees an inert name and drops every type that
+					// reaches the method through it.
+					if ts.Assign.IsValid() {
+						if target := baseTypeName(ts.Type); target != "" {
+							embeds[ts.Name.Name] = append(embeds[ts.Name.Name], target)
+						}
 					}
 				}
 			}
@@ -222,14 +272,7 @@ func TestEveryIndexMaintainerHasADeleteWhereBoundRow(t *testing.T) {
 			len(missing), deleteWhereMethod, boundTableRel, strings.Join(missing, "\n  "))
 	}
 
-	var lostShapes []string
-	for name, why := range boundShapeSentinels {
-		if !literals[name] {
-			lostShapes = append(lostShapes, name+" — "+why)
-		}
-	}
-	sort.Strings(lostShapes)
-	if len(lostShapes) > 0 {
+	if lostShapes := missingShapeSentinels(literals); len(lostShapes) > 0 {
 		t.Errorf("%d load-bearing bound shape(s) no longer appear in %s:\n  %s\n"+
 			"Type coverage is not row coverage: a sibling row keeps the TYPE covered while the "+
 			"shape that actually discriminates the override from the inherited bound is gone. "+
@@ -268,6 +311,14 @@ type nestedIndexMaintainer struct {
 	*inheritingIndexMaintainer
 }
 
+// PROMOTED THROUGH AN ALIAS: the alias declares no methods of its own, so
+// nothing but an alias edge connects the embedder to the method.
+type aliasedBase = standardIndexMaintainer
+
+type aliasEmbeddingIndexMaintainer struct {
+	aliasedBase
+}
+
 // Not a maintainer: holds one in a NAMED field, which promotes nothing.
 type notAMaintainer struct {
 	delegate standardIndexMaintainer
@@ -285,6 +336,7 @@ type notAMaintainer struct {
 		"textIndexMaintainer",
 		"inheritingIndexMaintainer",
 		"nestedIndexMaintainer",
+		"aliasEmbeddingIndexMaintainer",
 	} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("%s reaches DeleteWhere but is missing from the population — a maintainer "+
@@ -295,8 +347,57 @@ type notAMaintainer struct {
 		t.Error("a NAMED field promotes nothing; including its holder would demand a bound row " +
 			"for a type that has no DeleteWhere")
 	}
-	if len(got) != 4 {
-		t.Errorf("expected exactly the 4 reaching types, got %d: %v", len(got), sortedMaintainerNames(got))
+	// The alias itself carries the method set, so it is in the population too;
+	// 6 = the 5 asserted above plus aliasedBase.
+	if len(got) != 6 {
+		t.Errorf("expected exactly the 6 reaching names, got %d: %v", len(got), sortedMaintainerNames(got))
+	}
+}
+
+// TestShapeSentinelDetectorArms drives the sentinel decision in both states.
+// The corpus can only ever supply the all-present one, so without this the
+// reporting branch — and the guidance in its message — never runs until the day
+// it fires for real, which is the most expensive moment to discover it is
+// wrong.
+func TestShapeSentinelDetectorArms(t *testing.T) {
+	t.Parallel()
+
+	if len(boundShapeSentinels) == 0 {
+		t.Fatal("no shape sentinels are declared, so both arms below are vacuous")
+	}
+
+	all := map[string]bool{}
+	for name := range boundShapeSentinels {
+		all[name] = true
+	}
+	if lost := missingShapeSentinels(all); len(lost) != 0 {
+		t.Errorf("every sentinel present must report none missing, got: %v", lost)
+	}
+
+	// One removed: reported, and reported WITH its reason, since the message is
+	// the only place a reader learns which override the row holds down.
+	for name, why := range boundShapeSentinels {
+		partial := map[string]bool{}
+		for n := range all {
+			if n != name {
+				partial[n] = true
+			}
+		}
+		lost := missingShapeSentinels(partial)
+		if len(lost) != 1 {
+			t.Errorf("removing sentinel %q must report exactly it, got %d: %v", name, len(lost), lost)
+			continue
+		}
+		if !strings.Contains(lost[0], name) || !strings.Contains(lost[0], why) {
+			t.Errorf("the report for %q must name the shape AND why it exists, got: %q", name, lost[0])
+		}
+	}
+
+	// And none present at all — the state a wholesale rewrite of the table
+	// produces, where every sentinel must be named rather than the first.
+	if lost := missingShapeSentinels(map[string]bool{}); len(lost) != len(boundShapeSentinels) {
+		t.Errorf("an empty table must report all %d sentinels, got %d: %v",
+			len(boundShapeSentinels), len(lost), lost)
 	}
 }
 

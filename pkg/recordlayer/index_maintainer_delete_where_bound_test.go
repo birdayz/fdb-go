@@ -28,6 +28,19 @@ type deleteWhereBoundCase struct {
 	maintainer IndexMaintainer
 	// bound is the widest prefix the maintainer must accept.
 	bound int
+	// index is the row's index, needed to ask what the GENERIC root-expression
+	// bound would have answered.
+	index *Index
+	// overridesGeneric marks a row whose whole purpose is that the maintainer's
+	// own bound is NARROWER than the one its root expression implies.
+	//
+	// Such a row is the only thing that can detect the loss of an override, and
+	// a sibling row on the same maintainer cannot stand in for it: on the
+	// sibling shape the two bounds COINCIDE, so deleting the override leaves it
+	// green. Reusing a discriminating row's name on a coinciding shape would
+	// therefore keep every gate green while the protection was gone — so the
+	// disagreement is asserted here rather than assumed.
+	overridesGeneric bool
 }
 
 func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
@@ -54,6 +67,29 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 	stdOf := func(idx *Index) standardIndexMaintainer {
 		return standardIndexMaintainer{index: idx}
 	}
+
+	// The four roots whose maintainer bound is NARROWER than the one their root
+	// expression implies. Named here because each is used twice — once to build
+	// the maintainer, once to ask what the generic bound would have said — and
+	// the two must be the same index or the disagreement is not the row's.
+	mdWrapped := &Index{
+		Name: "md_wrapped", Type: IndexTypeMultidimensional,
+		RootExpression: KeyWithValue(
+			Concat(
+				Dimensions(Concat(Field("quantity"), Field("coord_x"), Field("coord_y")), 1, 2),
+				Field("price")),
+			3),
+	}
+	permIdx := &Index{
+		Name: "perm", Type: IndexTypePermutedMax,
+		// Grouping count 2, permutedSize 1 -> one clearable column.
+		RootExpression: GroupBy(Field("order_id"), Concat(Field("quantity"), Field("price"))),
+	}
+	vecPlain := &Index{
+		Name: "vec_plain", Type: IndexTypeVector,
+		RootExpression: Concat(Field("quantity"), Field("vector_data")),
+	}
+	spfIdx := plain("spf", IndexTypeVectorSPFresh)
 
 	cases := []deleteWhereBoundCase{
 		{
@@ -102,29 +138,21 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 			// above cannot detect that, because there the two bounds coincide.
 			name: "MULTIDIMENSIONAL wrapped in KeyWithValue still stops at the R-tree prefix",
 			maintainer: &multidimensionalIndexMaintainer{
-				standardIndexMaintainer: stdOf(&Index{
-					Name: "md_wrapped", Type: IndexTypeMultidimensional,
-					RootExpression: KeyWithValue(
-						Concat(
-							Dimensions(Concat(Field("quantity"), Field("coord_x"), Field("coord_y")), 1, 2),
-							Field("price")),
-						3),
-				}),
+				standardIndexMaintainer: stdOf(mdWrapped),
 			},
-			bound: 1,
+			bound:            1,
+			index:            mdWrapped,
+			overridesGeneric: true,
 		},
 		{
 			name: "PERMUTED subtracts the permuted columns from the grouping count",
 			maintainer: &permutedMinMaxIndexMaintainer{
-				standardIndexMaintainer: &standardIndexMaintainer{index: &Index{
-					Name: "perm", Type: IndexTypePermutedMax,
-					// Grouping count 2, permutedSize 1 -> one clearable column.
-					RootExpression: GroupBy(Field("order_id"),
-						Concat(Field("quantity"), Field("price"))),
-				}},
-				permutedSize: 1,
+				standardIndexMaintainer: &standardIndexMaintainer{index: permIdx},
+				permutedSize:            1,
 			},
-			bound: 1,
+			bound:            1,
+			index:            permIdx,
+			overridesGeneric: true,
 		},
 		{
 			name:       "COUNT stops at the grouping columns its aggregate is keyed by",
@@ -159,12 +187,11 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 			// the one that fails if vector's override is ever lost, which a
 			// KeyWithValue row cannot detect (there the two bounds coincide,
 			// because KeyWithValueExpression.ColumnSize IS the split point).
-			name: "VECTOR on a non-KeyWithValue root has no clearable prefix at all",
-			maintainer: &vectorIndexMaintainer{standardIndexMaintainer: stdOf(&Index{
-				Name: "vec_plain", Type: IndexTypeVector,
-				RootExpression: Concat(Field("quantity"), Field("vector_data")),
-			})},
-			bound: 0,
+			name:             "VECTOR on a non-KeyWithValue root has no clearable prefix at all",
+			maintainer:       &vectorIndexMaintainer{standardIndexMaintainer: stdOf(vecPlain)},
+			bound:            0,
+			index:            vecPlain,
+			overridesGeneric: true,
 		},
 		{
 			name: "VECTOR stops at the KeyWithValue split point",
@@ -176,11 +203,11 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 			bound: 1,
 		},
 		{
-			name: "SPFRESH accepts only the whole-index clear",
-			maintainer: &spfreshIndexMaintainer{
-				standardIndexMaintainer: stdOf(plain("spf", IndexTypeVectorSPFresh)),
-			},
-			bound: 0,
+			name:             "SPFRESH accepts only the whole-index clear",
+			maintainer:       &spfreshIndexMaintainer{standardIndexMaintainer: stdOf(spfIdx)},
+			bound:            0,
+			index:            spfIdx,
+			overridesGeneric: true,
 		},
 	}
 
@@ -206,6 +233,19 @@ func TestCanDeleteWhereBoundPerMaintainer(t *testing.T) {
 			if err := tc.maintainer.CanDeleteWhere(prefixOf(tc.bound + 1)); err == nil {
 				t.Fatalf("a prefix of %d column(s) must be refused: past the bound the clear "+
 					"takes some of the index's structures and misses others", tc.bound+1)
+			}
+			if !tc.overridesGeneric {
+				return
+			}
+			// This row exists to prove an override is live, which it can only do
+			// while the GENERIC bound actually disagrees with it. Reshape the row
+			// onto a root where the two coincide and the row keeps passing with
+			// the override deleted — it would then be a sentinel guarding
+			// nothing, and every gate above it would still be green.
+			if err := checkDeleteWhereBound(tc.index, prefixOf(tc.bound+1)); err != nil {
+				t.Fatalf("this row is marked as discriminating, but the generic root-expression "+
+					"bound REFUSES a prefix of %d column(s) too (%v) — so it cannot detect the "+
+					"maintainer's override being removed", tc.bound+1, err)
 			}
 		})
 	}
