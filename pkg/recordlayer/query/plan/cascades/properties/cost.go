@@ -617,9 +617,6 @@ func localCostUnclamped(e expressions.RelationalExpression, child []Cost, stats 
 			// with the default fallback, both of which answer an unknown name
 			// with LeafScanCardinality. Only a provider that actually knows the
 			// store's size behaves differently, which is the point.
-			if stats == nil {
-				return Cost{Cardinality: LeafScanCardinality, CPU: LeafScanCardinality * ScanCPU}
-			}
 			all := stats.RecordTypeCardinality("")
 			return Cost{Cardinality: all, CPU: all * ScanCPU}
 		}

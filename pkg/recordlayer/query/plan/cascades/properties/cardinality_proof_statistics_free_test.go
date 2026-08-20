@@ -83,11 +83,19 @@ func TestCardinalityProofTakesNoStatistics(t *testing.T) {
 	// DERIVES a Cardinalities, so none may see a statistic: a bound is a claim
 	// about plan structure, and a number cannot participate in deriving one.
 	//
-	// NOT covered, deliberately, and each for a stated reason: the physical
-	// plans' own ProvenCardinalities methods (they satisfy CardinalityProver,
-	// whose signature IS covered, so a stats parameter cannot appear on them
-	// without changing the interface); and the two boundary functions below,
-	// which take statistics legitimately because they return a Cost.
+	// NOT covered, and each for a stated reason:
+	//
+	//   - the physical plans' own ProvenCardinalities methods. They satisfy
+	//     CardinalityProver, whose signature IS covered, so a stats parameter
+	//     cannot appear on them without changing the interface.
+	//   - boundsWalk's METHODS. The entry below checks boundsWalk's FIELDS —
+	//     which is the arm that matters, because that is how costWalk carries a
+	//     provider — but mentionsStatistics walks NumField, not methods, and an
+	//     unexported method is invisible to reflect anyway. Adding a
+	//     StatisticsProvider parameter to boundsWalk.exprBounds passes this
+	//     test; the field check is what would catch a provider being STORED.
+	//   - the two boundary functions below, which take statistics legitimately
+	//     because they return a Cost.
 	//
 	// BoundedCostHinter and CostWithinBounds are deliberately NOT here. They are
 	// where the two sides MEET — they take the proven bounds AND the statistics

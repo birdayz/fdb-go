@@ -370,6 +370,10 @@ When it says `NOT USABLE` it names the gate that refused:
 | `stamped ahead of the cluster` | the entry's version is ahead of the cluster's — a restore from backup moves versions backwards | run `collect` |
 | `cluster version unavailable` | the freshness check could not read a version | a cluster problem, not a statistics problem |
 
+An **empty table is fine** — it collects as an exact 0 and counts as complete.
+Only a table skipped by `--max-records-per-type` leaves a genuine hole, so
+`incomplete` recurring across runs means that cap, not empty tables.
+
 Completeness is **schema-wide**: one uncollected table disables statistics for
 every query in that schema. That is deliberate. A missing table is treated as
 the planner's default 1,000,000 rows, which standing beside a real 150-row

@@ -644,6 +644,46 @@ var _ = Describe("CollectStatistics", func() {
 		Expect(report.Collected["Customer"].Count).To(Equal(int64(customers)))
 		Expect(report.RecordsScanned).To(Equal(int64(orders + customers)))
 	})
+
+	// CAP AND EMPTY TOGETHER. Seeding every declared type at 0 and capping an
+	// oversized one are two rules that meet in the same loop, and each is
+	// exercised alone elsewhere in this file — which is precisely the shape that
+	// leaves their interaction untested.
+	//
+	// They must NOT collapse into each other. A capped type is ABSENT, because
+	// its true count is unknown; an empty type is an exact 0, because its true
+	// count is known and is zero. If seeding overwrote the cap, an over-cap table
+	// would read as empty — the most selective claim available, on the table
+	// whose size is least known — and the completeness gate would accept the
+	// schema instead of refusing it.
+	It("keeps a capped type ABSENT while an empty type reads as an exact zero", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		// Orders exceed the cap; Customers and TypedRecords stay empty.
+		seed(ctx, sub, 300, 0)
+
+		report, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats,
+			CollectOptions{BatchSize: 100, MaxRecordsPerType: 50})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(report.Collected).NotTo(HaveKey("Order"),
+			"a capped type must stay ABSENT even though seeding gave every declared type "+
+				"an entry — its true count is unknown, which is a different fact from zero")
+		Expect(report.Skipped).To(HaveKey("Order"))
+		Expect(report.Collected).To(HaveKey("Customer"))
+		Expect(report.Collected["Customer"].Count).To(BeZero(),
+			"an empty type's count IS known, so it reads as an exact 0")
+
+		// And the schema must then be INCOMPLETE, so the planner refuses it. The
+		// cap is the only remaining way to produce that state now that empty
+		// tables no longer do.
+		stored, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(stored.PerType).NotTo(HaveKey("Order"))
+		Expect(stored.PerType).To(HaveKey("Customer"))
+	})
 })
 
 // replayingTransactor invokes each transaction closure twice and returns the

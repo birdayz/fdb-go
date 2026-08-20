@@ -19013,6 +19013,26 @@ pass. `fleet.CollectStatistics` is one more `step` beside the index build, and
 shares `ListTargets` with the other modes so a statistics pass cannot cover a
 different set of schemas than a migration pass.
 
+**TWO CORRECTNESS BUGS SURVIVED A GREEN SUITE AND WERE CAUGHT BY REVIEW.** Both
+are worth recording because the suite was thorough in every dimension except the
+two that mattered.
+
+The collector DOUBLE-COUNTED a retried batch. `db.Run` retries its closure, and
+the tally went into counters declared outside it, so a batch tripping
+`transaction_too_old` re-read and re-added its rows. Exactness — the entire
+premise — was false the first time a batch exceeded 5s, and `--batch-size` is a
+shipped flag inviting exactly that. Worst possible direction: retries hit the
+LONGEST batches, so the inflation lands on the biggest tables, the ones a
+join-order decision is most sensitive to. Pinned by a transactor that invokes the
+closure twice; mutation reads 40 for a 20-row table, exactly 2x.
+
+An EMPTY TABLE disabled statistics for the whole schema, permanently. A declared
+type with no rows produced no entry and the completeness gate is schema-wide, so
+a fresh schema — mostly empty tables — could never use the feature. A test had
+codified this with a rationale the provider's own clamp refutes. The dimension
+that hid it: every other case in that file populates every type or none, and both
+pass with the bug fully present.
+
 **Still open, deliberately:** histograms / NDV / MCV and any distribution (the
 collector scans, so it COULD compute them, but selectivity consumes them and
 that is a separate change); automatic or triggered collection; incremental

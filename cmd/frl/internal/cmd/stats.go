@@ -183,6 +183,15 @@ func newStatsCollectCmd() *cobra.Command {
 				MaxRecordsPerType: maxRecordsPerType,
 			}
 			if allSchemas {
+				// The fan-out emits per-schema progress and a tally, not one
+				// report, so there is nothing for -o json to render. Accepting
+				// the flag and printing text anyway hands a script unparseable
+				// output while reporting success.
+				if outputFmt != "text" {
+					// Leads with a sentence word, not the flag: fang title-cases the
+					// first rune of an error banner and would render "--Output".
+					return fmt.Errorf("the --all-schemas fan-out emits per-schema progress and a tally, not a single report, so --output %s has nothing to render", outputFmt)
+				}
 				if addr.schema != "" {
 					return fmt.Errorf("conflicting targets: --all-schemas covers every schema in the database, so it cannot be combined with --schema")
 				}

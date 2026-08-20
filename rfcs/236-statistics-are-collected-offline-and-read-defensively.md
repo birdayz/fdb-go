@@ -226,6 +226,42 @@ by `TestIntegration_Stats_FleetCollectIsReadableByTheConnection`: the fan-out
 writes, the connection reads, and a disagreement about the database-path
 convention or schema case folding shows up there and nowhere else.
 
+### 4e. A declared type with no rows is an exact ZERO, not an absence
+
+The collector seeds every type the metadata declares at 0 before tallying, so a
+table that exists and is empty gets an entry saying so.
+
+This is not a detail. Counting only what the scan OBSERVES leaves an empty table
+absent, and §5's completeness gate then refuses the whole schema — permanently,
+until somebody inserts a row. A freshly created schema is mostly empty tables,
+so the feature would be off exactly where it had just been switched on. The
+first implementation did this, and a test codified it with a rationale that was
+itself wrong: "zero would tell the cost model the table is empty, the most
+selective claim available". It cannot. `NewCollectedStatistics` clamps a count
+below 1 up to 1, so a stored 0 reaches the cost model as a one-row table. The
+danger was already neutralised at the read side and the write side was paying
+schema-wide lockout for it.
+
+An exact 0 from a full scan is as trustworthy as an exact 5. ABSENT stays
+reserved for NOT COUNTED — a type over `--max-records-per-type` — which is a
+different fact and still refuses the schema, as intended.
+
+### 4f. The collector is retry-safe, and that is not free
+
+`db.Run` RETRIES its closure. A batch that trips `transaction_too_old` after
+tallying most of its rows re-runs from the same continuation and re-reads them,
+so tallying into durable counters double-counts.
+
+The direction is the worst available: retries are likeliest on the LONGEST
+batches, so the inflation lands preferentially on the biggest tables — the ones a
+join-order decision is most sensitive to — and it is silent, because an inflated
+count is a well-formed number every gate passes through.
+
+Each attempt therefore accumulates into its own map, reset at the top of the
+closure, merged only after `Run` returns. Nothing inside the retried closure
+mutates a durable accumulator, so the invariant is checkable by reading rather
+than by an argument about idempotence.
+
 ## 5. Reading defensively
 
 A statistic is used only if ALL of these hold. Any failure means the whole query
@@ -264,8 +300,8 @@ type standing beside a real 150-row count makes the missing table the largest in
 the schema and drives the join from the wrong side. Half a statistic is worse
 than none, which at least ties.
 
-The provider is therefore NOT `MapStatistics`. Four production sites ask for the
-EMPTY record type name when a leaf's types are unknown, and `MapStatistics`
+The provider is therefore NOT `MapStatistics`. Several production sites ask for
+the EMPTY record type name when a leaf's types are unknown, and `MapStatistics`
 answers an unknown name with `LeafScanCardinality` — wrong in the inverting
 direction. `CollectedStatistics` answers the empty name with the whole-store
 SUM, which is on the same scale as the data.

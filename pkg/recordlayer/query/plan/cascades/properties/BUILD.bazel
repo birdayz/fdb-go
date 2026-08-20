@@ -44,6 +44,7 @@ go_test(
         "cost_test.go",
         "derivations_property_test.go",
         "expression_count_property_test.go",
+        "full_scan_empty_types_cost_test.go",
         "ordering_fuzz_test.go",
         "ordering_key_resolution_test.go",
         "ordering_test.go",

@@ -236,11 +236,18 @@ func CollectStatistics(
 			if storeSubspace == nil {
 				storeSubspace = store.Subspace()
 			}
-			// Idempotent: the same store yields the same type set on every
-			// attempt, so re-assigning under retry changes nothing. Seeding is
-			// done AFTER the loop, so that nothing inside a retried closure
-			// mutates a durable accumulator — an invariant worth being checkable
-			// by reading rather than by reasoning about idempotence.
+			// Three outer variables ARE assigned in here — storeSubspace above,
+			// declaredTypes on the next line, collectedAtVersion below — and
+			// they are safe under retry by IDEMPOTENCE: each is an overwrite
+			// with a value the same attempt would produce again, not an
+			// accumulation. That is a weaker property than the one the
+			// accumulators get, so it is stated rather than glossed.
+			//
+			// What is checkable by reading is the narrower claim that matters:
+			// no COUNTER is touched in here. The tallies go to per-attempt
+			// locals and the seeding happens after the loop, so a retry cannot
+			// add anything twice — which is the failure this structure exists
+			// to prevent, and the one idempotence would not have covered.
 			declaredTypes = store.GetRecordMetaData().RecordTypes()
 			// The read version of the LAST batch stamps the run. Collection
 			// spans transactions, so no single version describes all of it;
@@ -431,15 +438,30 @@ func ReadStatisticsAt(
 	storeSubspace subspace.Subspace,
 ) (StoreStatistics, bool, int64, error) {
 	target := stats.forStore(storeSubspace)
-	out := StoreStatistics{PerType: make(map[string]RecordTypeStatistic)}
-	found := false
+	var out StoreStatistics
+	var found bool
 	var readVersion int64
 	// RunRead, not Run: this is on the PLAN path, and Run opens a read-write
 	// transaction and pays a commit round-trip for a read that writes nothing.
+	//
+	// RunRead RETRIES, exactly as Run does, so everything the closure produces is
+	// RESET at its top. This is the same hazard CollectStatistics guards against
+	// one function away, and it bites differently here: a retry after a
+	// concurrent ClearStatistics would otherwise keep attempt 1's entries and
+	// found=true while taking attempt 2's read version — stale statistics wearing
+	// a fresh stamp, which is precisely what the freshness gate exists to reject.
 	_, err := db.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
-		if v, vErr := rtx.GetReadVersion().Get(); vErr == nil {
-			readVersion = v
+		out = StoreStatistics{PerType: make(map[string]RecordTypeStatistic)}
+		found = false
+		readVersion = 0
+		// Propagate rather than swallow: the freshness gate turns a missing
+		// version into a refusal either way, but an operator asking WHY wants
+		// the cluster's own error, not a generic "no version" sentinel.
+		v, vErr := rtx.GetReadVersion().Get()
+		if vErr != nil {
+			return nil, vErr
 		}
+		readVersion = v
 		begin, end := target.FDBRangeKeys()
 		kvs, rErr := rtx.Snapshot().GetRange(
 			fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())},
