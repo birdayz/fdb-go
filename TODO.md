@@ -19395,5 +19395,56 @@ runtime positional layout depends on that. So the decision is not
 "fix the lookup"; it is whether plan-time identifiers and the runtime row
 layout can stop sharing one folded namespace, and what that costs.
 
+THE LEVER IS THE PROJECTION'S OUTPUT NAMING, and an existing test already
+says so. `cte_box_unnest_on_resolution_probe_fdb_test.go` pins both
+spellings of a quoted CTE alias and states the reason in place:
+
+    (That the engine folds a QUOTED alias at all is a standing divergence
+     from Java's case-sensitive quoted identifiers — a property of the
+     projection's own naming, not of this scope, and pinned here so
+     closing it shows up as a change in BOTH arms.)
+
+`AS "x"` emits a column named X. Java emits x. Every symptom above follows
+from that one fact, and that pin is the blast-radius marker: a real fix
+flips BOTH of its arms, and anything that flips only one is not the fix.
+
+FOUR ATTEMPTS, ALL REVERTED, each ruling something out:
+
+1. Stop `DisplayColumnName` re-folding the resolved leaf. No effect on the
+   layout error — that message is dominated by the scope side, so this
+   ruled out the reading half rather than the naming half.
+
+2. Name a derived scope's columns from the RESOLVED column instead of the
+   authored text (five builders share this shape; `derivedOutputName`
+   collapsed them into one). Makes the scope agree with the plan and turns
+   the internal layout error into a coherent `42703: column "k" does not
+   exist` — but REGRESSES a query that works today,
+   `SELECT d."k" FROM (SELECT "id","k" FROM q2) d`, to 0AF00. Not
+   shippable alone.
+
+3. Give `StaticTable` the record catalog's unambiguous folded fallback, so
+   both table implementations resolve a name the same way. With (2) this
+   makes every arm of the new scenario pass — and it breaks the pinned
+   assertion above by flipping ONE arm, because it moves Go FURTHER from
+   Java: `"x"` starts resolving against a column named X, which names
+   nothing in either engine's model. Wrong direction.
+
+4. (2)+(3) together: green locally, red on the pin. See above.
+
+WHAT THAT LEAVES. The fix is to make a derived projection PRESERVE a
+quoted output name — `AS "x"` emits x — so the scope, the plan and the
+reference all carry the authored spelling and no folding is needed
+anywhere. That is the Java rule, and it is a change to how projections
+name their outputs, which the runtime positional layout also reads. It
+cannot be done in the scope builders, and it cannot be done in the lookup:
+both were tried and both are recorded above.
+
+The reproducer to work from is the ON form, not USING:
+
+    SELECT q1."id" FROM q1 JOIN (SELECT "id","k" FROM q2) d ON q1."k" = d."k"
+
+and `quoted_identifier_columns.yaml` holds the three shapes that must keep
+working while it changes.
+
 Changes identifier equality for EVERY column reference in the engine.
 Needs an RFC and the review gate before implementation, and its own PR.
