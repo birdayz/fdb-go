@@ -793,3 +793,111 @@ func TestStats_ShowJSONCarriesTheReadDiagnosis(t *testing.T) {
 		t.Errorf("read_error present on a usable set: %v", clean)
 	}
 }
+
+// EVERY DIAGNOSIS FIELD REACHES BOTH RENDER PATHS — AS A PROPERTY, NOT A CHECK.
+//
+// This asymmetry has now been found twice, and the second time only because the
+// first was a spot-check. AmbiguousTypes was verified on both paths when it was
+// added; that verification was never turned into a property, so ReadRefusal and
+// ReadError were added later and reached only the text path — an operator using
+// -o json saw THAT statistics were unusable and never WHY.
+//
+// So the property is enforced over every field carrying a diagnosis. A field
+// listed here must appear in BOTH renderings when populated, and in neither when
+// not. Adding a diagnosis field means adding a row; the hand-maintained list
+// carries the same acknowledged hole as its siblings — a field absent from both
+// this list and the renderer cannot be caught — but the case that actually
+// happened, a field wired to one path, cannot pass.
+func TestStats_EveryDiagnosisFieldReachesBothRenderPaths(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		st       embedded.StatisticsStatus
+		jsonKey  string
+		wantText string
+	}{
+		{
+			name:     "synthetic types",
+			st:       embedded.StatisticsStatus{Refusal: embedded.StatisticsSyntheticTypes, SyntheticTypes: []string{"JoinedAB"}},
+			jsonKey:  "synthetic_types",
+			wantText: "JoinedAB",
+		},
+		{
+			name:     "ambiguous types",
+			st:       embedded.StatisticsStatus{Refusal: embedded.StatisticsAmbiguousNames, AmbiguousTypes: []string{"MY__1T", "MY__01T"}},
+			jsonKey:  "ambiguous_types",
+			wantText: "MY__01T",
+		},
+		{
+			name:     "read refusal",
+			st:       embedded.StatisticsStatus{Refusal: embedded.StatisticsTorn, ReadRefusal: recordlayer.StatisticsReadCountMismatch},
+			jsonKey:  "read_refusal",
+			wantText: string(recordlayer.StatisticsReadCountMismatch),
+		},
+		{
+			name:     "read error",
+			st:       embedded.StatisticsStatus{Refusal: embedded.StatisticsReadFailed, ReadErr: errors.New("boom on GetRange")},
+			jsonKey:  "read_error",
+			wantText: "boom on GetRange",
+		},
+		{
+			name:     "missing types",
+			st:       embedded.StatisticsStatus{Refusal: embedded.StatisticsIncomplete, Found: true, MissingTypes: []string{"Gone"}},
+			jsonKey:  "missing_types",
+			wantText: "Gone",
+		},
+		{
+			name:     "extra types",
+			st:       embedded.StatisticsStatus{Usable: true, Found: true, ExtraTypes: []string{"Orphan"}},
+			jsonKey:  "extra_types",
+			wantText: "Orphan",
+		},
+	}
+
+	render := func(t *testing.T, format string, st embedded.StatisticsStatus) string {
+		t.Helper()
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, format, "/x/MAIN", st); err != nil {
+			t.Fatalf("renderStatsStatus(%s): %v", format, err)
+		}
+		return buf.String()
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if text := render(t, "text", tc.st); !strings.Contains(text, tc.wantText) {
+				t.Errorf("the TEXT path drops %s (%q missing):\n%s", tc.name, tc.wantText, text)
+			}
+
+			var got map[string]any
+			raw := render(t, "json", tc.st)
+			if err := json.Unmarshal([]byte(raw), &got); err != nil {
+				t.Fatalf("decode %s: %v", raw, err)
+			}
+			if _, present := got[tc.jsonKey]; !present {
+				t.Errorf("the JSON path drops %s (key %q absent) — a diagnosis on one "+
+					"render path is half a diagnosis:\n%s", tc.name, tc.jsonKey, raw)
+			}
+		})
+	}
+
+	// The converse, over the SAME key set: a healthy verdict must carry none of
+	// them. Without this, a renderer emitting every key unconditionally would
+	// satisfy every assertion above while telling a reader nothing.
+	var healthy map[string]any
+	raw := render(t, "json", embedded.StatisticsStatus{Usable: true, Found: true})
+	if err := json.Unmarshal([]byte(raw), &healthy); err != nil {
+		t.Fatalf("decode healthy: %v", err)
+	}
+	for _, tc := range cases {
+		if _, present := healthy[tc.jsonKey]; present {
+			t.Errorf("%q is present on a healthy verdict, so its presence carries no "+
+				"signal:\n%s", tc.jsonKey, raw)
+		}
+	}
+}
