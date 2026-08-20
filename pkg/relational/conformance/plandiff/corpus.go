@@ -18072,8 +18072,10 @@ func SeedRunCorpus() []RunQuery {
 			Divergence: &Divergence{
 				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
 					"Go's cost model ties on the two nestings of the unconstrained comma join and breaks the tie " +
-					"with an identifier-sensitive hash; Java prunes each Reference to one member and never reaches " +
-					"the tie (planning_cost_model.go:562). PRE-EXISTING and not caused by the EXISTS: measured at " +
+					"with an identifier-sensitive hash. So does JAVA — its ImplementNestedLoopJoinRule matches both " +
+					"quantifier orders (SetMatcher.exactlyInAnyOrder) and PlanningCostModel.compare ends in a planHash " +
+					"comparison, so neither engine guarantees a nesting: over 16 name/cardinality combinations Java " +
+					"deviates from FROM order in 10 (RFC-235 section 18). PRE-EXISTING and not caused by the EXISTS: measured at " +
 					"merge-base e24f338e7, the plain comma join over these tables already diverges the same way. " +
 					"The retired three-quantifier NLJ arm forced Java's nesting for this shape and was masking it. " +
 					"Root cause, the renamed-table demonstration and the mutation evidence: RFC-235 section 17; " +
