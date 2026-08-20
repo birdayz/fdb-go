@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=354 queries=2566 dml=157 non_query=104 plan_errors=269 unexpected_errors=4
+# files=354 queries=2566 dml=157 non_query=104 plan_errors=270 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -9867,17 +9867,9 @@ shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 shape:       RecordQueryScanPlan
-=== join_using_shapes.yaml#10
+=== join_using_shapes.yaml#10 expect-error=42702
 sql:   SELECT a.id FROM a JOIN (SELECT id, k FROM c) b USING (id) JOIN c USING (k) ORDER BY a.id
-plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], FlatMap(outer=Project([_current.ID#0, _current.K#1], Scan(C)), inner=Scan(A, [=])), Scan(C))))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryInMemorySortPlan
-shape:     RecordQueryNestedLoopJoinPlan
-shape:       RecordQueryFlatMapPlan
-shape:         RecordQueryProjectionPlan
-shape:           RecordQueryScanPlan
-shape:         RecordQueryScanPlan
-shape:       RecordQueryScanPlan
+plan:  <PLAN-ERROR: 42702: Ambiguous reference K>
 === join_using_shapes.yaml#11 expect-error=42703
 sql:   SELECT a.id FROM a JOIN b USING (j) JOIN c USING (id)
 plan:  <PLAN-ERROR: 42703: column "J" does not exist>

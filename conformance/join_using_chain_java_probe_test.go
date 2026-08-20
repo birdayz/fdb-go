@@ -115,6 +115,28 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				chained: true, name: "chained USING whose column is only on the FIRST source",
 				sql: "SELECT a.id FROM a JOIN b USING (id) JOIN c USING (j) ORDER BY a.id",
 			},
+			{
+				// A DERIVED source to the LEFT of a second USING. Go cannot read
+				// a subquery's output columns from the record metadata, so it
+				// declines and leaves the positional predicate — which ANSWERS.
+				// If Java instead finds the derived table's `k` alongside `a.k`
+				// and calls the column ambiguous, declining is a divergence and
+				// the decline has to become a scope lookup.
+				//
+				// Measured rather than argued, because both readings are
+				// plausible and the answer decides whether a yamsql arm asserting
+				// rows is a pin or a mistake.
+				chained: true, name: "chained USING with a DERIVED left source",
+				sql: "SELECT a.id FROM a JOIN (SELECT id, k FROM c) d USING (id) " +
+					"JOIN c USING (k) ORDER BY a.id",
+			},
+			{
+				// The same shape with a CTE rather than a subquery, since they
+				// reach the resolver by different routes.
+				chained: true, name: "chained USING with a CTE left source",
+				sql: "WITH cte AS (SELECT id, k FROM c) SELECT a.id FROM a JOIN cte USING (id) " +
+					"JOIN c USING (k) ORDER BY a.id",
+			},
 		}
 
 		var disagreed []string
@@ -192,8 +214,8 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				"silently answering an ambiguous chain, and refusing a column that lives on an "+
 				"earlier source.\n\n%s",
 			len(disagreed), chainedArms, strings.Join(disagreed, "\n"))
-		Expect(chainedArms).To(Equal(3),
-			"%d chained arms ran, not 3 — a green from a shrunken set says nothing about "+
+		Expect(chainedArms).To(Equal(5),
+			"%d chained arms ran, not 5 — a green from a shrunken set says nothing about "+
 				"the shape this file is named for", chainedArms)
 		Expect(controls).To(Equal(2),
 			"%d controls ran, not 2 — without an agreed USING baseline, a chained "+

@@ -445,9 +445,22 @@ func TestMMRestartPredicateIsNarrowerThanTheSQLSTATE(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			if got := api.IsTransactionTimeLimit(c.err); got != c.restart {
-				t.Errorf("IsTransactionTimeLimit(%v) = %v, want %v\n  %s",
-					c.err, got, c.restart, c.why)
+			// DRIVEN THROUGH mmCheck, not through the predicate directly.
+			// Asserting api.IsTransactionTimeLimit here would only restate a
+			// test that already exists next to that function, and would stay
+			// green if mmCheck were changed back to comparing the SQLSTATE —
+			// which is the regression this test claims to pin. So the call
+			// site is what runs, and what it DOES is observed: a restart is a
+			// panic carrying mmTxPreempted, anything else is a t.Fatalf, which
+			// calls runtime.Goexit and so has to be run on its own goroutine
+			// to be observed at all.
+			got := mmCheckOutcome(c.err)
+			want := "fatal"
+			if c.restart {
+				want = "restart"
+			}
+			if got != want {
+				t.Errorf("mmCheck(%v) = %s, want %s\n  %s", c.err, got, want, c.why)
 			}
 		})
 	}
@@ -461,4 +474,40 @@ func TestMMRestartPredicateIsNarrowerThanTheSQLSTATE(t *testing.T) {
 			"errors must share SQLSTATE %v, or this test is not testing anything",
 			api.ErrCodeSerializationFailure)
 	}
+}
+
+// mmCheckOutcome runs mmCheck against err and reports what it did:
+// "restart" when it raised the pre-emption panic, "fatal" when it failed the
+// test, "none" when it returned normally.
+//
+// It runs on its own goroutine with its own *testing.T because the two
+// outcomes leave by different exits: a restart PANICS with mmTxPreempted,
+// while a failure calls t.Fatalf, which is runtime.Goexit — not a panic, not
+// recoverable, and fatal to whatever goroutine it runs on. Observing both from
+// one call site is only possible if that goroutine is expendable.
+//
+// The inner *testing.T is deliberately a throwaway: its failure is the RESULT
+// being measured, not a failure of the test doing the measuring.
+func mmCheckOutcome(err error) (outcome string) {
+	done := make(chan string, 1)
+	go func() {
+		result := "none"
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(mmTxPreempted); ok {
+					result = "restart"
+				} else {
+					result = "panic"
+				}
+			}
+			done <- result
+		}()
+		// Goexit runs deferred functions, so the defer above still reports —
+		// with result already set to "fatal" by the sentinel below.
+		p := &mmTxPair{t: &testing.T{}}
+		result = "fatal"
+		p.mmCheck(err, "measured: %v", err)
+		result = "none"
+	}()
+	return <-done
 }

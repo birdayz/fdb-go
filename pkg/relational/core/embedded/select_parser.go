@@ -12,6 +12,7 @@ import (
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
+	"fdb.dev/pkg/relational/core/query/semantic/rlcatalog"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -3098,6 +3099,36 @@ type usingSource struct {
 	// relation — the wrong owner, silently, with a plausible predicate built on
 	// it. Only a source flagged base may be looked up.
 	base bool
+	// cols answers "does this source export this column?" for a source that is
+	// NOT a base table — a derived table or a CTE, whose columns come from its
+	// projection rather than from a record descriptor. Nil for base sources,
+	// which are answered from the descriptor, and nil when a non-base source's
+	// schema could not be derived, which is what makes the scope decline.
+	cols semantic.Table
+}
+
+// owns reports whether this source exports `col`, from whichever authority
+// describes it: a record descriptor for a base table, the derived schema for a
+// subquery or CTE. A source with neither — one whose schema could not be
+// derived — owns nothing, and the caller's resolvable gate has already declined
+// the whole join in that case rather than letting it read as "no owner".
+//
+// Consulting s.base HERE as well as at the gate is deliberate belt-and-braces:
+// the descriptor lookup is only safe because a non-base source never reaches
+// it, and that safety currently rests on a check in a different function. If
+// the gate is ever loosened to per-column, this keeps a derived table from
+// silently resolving against a same-named record type.
+func (s usingSource) owns(col string, md *recordlayer.RecordMetaData, schemaName string) bool {
+	if s.cols == nil {
+		// Nothing describes this source — a name that did not resolve, or a
+		// derived schema that could not be derived. The caller's resolvable
+		// gate has already declined the whole join on that basis, so reaching
+		// here at all means the gate was loosened; owning nothing is the safe
+		// answer either way.
+		return false
+	}
+	_, ok := s.cols.LookupColumn(semantic.FromNormalized(col))
+	return ok
 }
 
 // usingOwnerOf returns the single left source that owns `col`, applying Java's
@@ -3123,7 +3154,7 @@ func usingOwnerOf(col string, sources []usingSource, hidden map[string]map[strin
 		if hidden[s.alias][col] {
 			continue
 		}
-		if !sourceHasColumn(s.table, col, md, schemaName) {
+		if !s.owns(col, md, schemaName) {
 			continue
 		}
 		owners = append(owners, s.alias)
@@ -3136,33 +3167,6 @@ func usingOwnerOf(col string, sources []usingSource, hidden map[string]map[strin
 	default:
 		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", col)
 	}
-}
-
-// sourceHasColumn reports whether a BASE TABLE has the named column. It is
-// deliberately false for anything it cannot resolve — a derived table, a CTE, a
-// schema-qualified name it cannot look up — and retargetUsingJoins uses that to
-// decline the whole correction rather than to conclude "no owner". Treating an
-// unresolvable source as column-less would turn a working query into a
-// spurious 42703, which is exactly the failure this change exists to remove.
-func sourceHasColumn(table, col string, md *recordlayer.RecordMetaData, schemaName string) bool {
-	if md == nil || table == "" {
-		return false
-	}
-	resolved, err := functions.ResolveQualifiedTableName(table, schemaName)
-	if err != nil {
-		return false
-	}
-	rt := recordTypeCI(md, resolved)
-	if rt == nil || rt.Descriptor == nil {
-		return false
-	}
-	fields := rt.Descriptor.Fields()
-	for i := 0; i < fields.Len(); i++ {
-		if strings.EqualFold(string(fields.Get(i).Name()), col) {
-			return true
-		}
-	}
-	return false
 }
 
 // retargetUsingJoins re-qualifies each `USING (cols)` join's synthesized ON
@@ -3202,8 +3206,10 @@ func sourceHasColumn(table, col string, md *recordlayer.RecordMetaData, schemaNa
 // real one, and ownership is then read off an unrelated descriptor. Each source
 // therefore carries a `base` flag set from what it structurally IS, and only a
 // base source is ever looked up.
-func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool, joins []joinClause,
-	md *recordlayer.RecordMetaData, schemaName string, isCTE func(string) bool,
+func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
+	primaryDerived antlrgen.IQueryContext, joins []joinClause,
+	md *recordlayer.RecordMetaData, schemaName string,
+	isCTE func(string) bool, cteScopes map[string]semantic.ScopeSource,
 ) error {
 	primary := primaryAlias
 	if primary == "" {
@@ -3215,17 +3221,42 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool, j
 		return j.derivedQuery == nil && j.inlineValues == nil &&
 			j.tableName != "" && !(isCTE != nil && isCTE(j.tableName))
 	}
+	// legSource describes one FROM leg for ownership purposes. A base table is
+	// answered from its descriptor; a derived table or CTE has its projection
+	// derived instead, so it participates in ambiguity rather than silently
+	// declining the join — measured against the live JVM, a derived source to
+	// the LEFT of a second USING makes the column AMBIGUOUS, so treating it as
+	// unknowable answered a query Java refuses.
+	legSource := func(alias, table string, derived antlrgen.IQueryContext, base bool) usingSource {
+		s := usingSource{alias: alias, table: table, base: base}
+		if base {
+			s.cols = baseTableColumns(table, md, schemaName)
+			return s
+		}
+		if derived != nil {
+			if src, ok, err := buildCTEColumnSource(md, alias, derived, cteScopes); err == nil && ok {
+				s.cols = src.Table
+			}
+			return s
+		}
+		if cteScopes != nil {
+			if src, ok := cteScopes[strings.ToUpper(functions.StripIdentifierQuotes(table))]; ok {
+				s.cols = src.Table
+			}
+		}
+		return s
+	}
 	// hidden[alias][COL] — the right copy an earlier USING consumed.
 	hidden := map[string]map[string]bool{}
-	sources := []usingSource{{alias: primary, table: primaryTable, base: primaryIsBase}}
+	sources := []usingSource{
+		legSource(primary, primaryTable, primaryDerived, primaryIsBase),
+	}
 
 	for i := range joins {
 		j := &joins[i]
 		if len(j.usingColTexts) == 0 {
 			// Not a USING join; it still contributes a source to later ones.
-			sources = append(sources, usingSource{
-				alias: j.alias, table: j.tableName, base: isBase(j),
-			})
+			sources = append(sources, legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)))
 			continue
 		}
 		// Every left source must be resolvable, or ownership is unknowable and
@@ -3238,6 +3269,14 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool, j
 		// a perfectly good column as missing.
 		resolvable := isBase(j) && sourceResolves(j.tableName, md, schemaName)
 		for _, s := range sources {
+			// A source is describable either as a base table (descriptor) or as
+			// a derived/CTE projection (cols). Neither means the scope cannot be
+			// read at all, and one unreadable source can hide the second owner
+			// that would have made a column ambiguous — so the whole join
+			// declines rather than resolving against a partial view.
+			if s.cols != nil {
+				continue
+			}
 			if !s.base || s.table == "" || !sourceResolves(s.table, md, schemaName) {
 				resolvable = false
 				break
@@ -3275,11 +3314,20 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool, j
 				// and resolves each right source left-to-right, so a fault in
 				// the first join must win.
 				//
-				// Only reached once a left owner was found, which keeps the
-				// pseudo-column decline above intact — `__ROW_VERSION` is
-				// absent from BOTH descriptors and declines before it gets
-				// here.
-				if !sourceHasColumn(j.tableName, col, md, schemaName) {
+				// Resolved through the SAME column surface as the owner — the
+				// semantic catalog, not the raw descriptor. Mixing the two is
+				// how a pseudo-column becomes "missing": the catalog appends
+				// `__ROW_VERSION` when the store keeps row versions and a
+				// descriptor never carries it, so a left owner found on one
+				// surface could be declared absent on the other.
+				rightCols := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)).cols
+				if rightCols == nil {
+					// Undescribable right side: decline the join rather than
+					// call the column missing.
+					owners = nil
+					break
+				}
+				if _, ok := rightCols.LookupColumn(semantic.FromNormalized(col)); !ok {
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)
 				}
@@ -3308,9 +3356,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool, j
 			}
 			hidden[j.alias][c] = true
 		}
-		sources = append(sources, usingSource{
-			alias: j.alias, table: j.tableName, base: isBase(j),
-		})
+		sources = append(sources, legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)))
 	}
 	return nil
 }
@@ -3337,4 +3383,33 @@ func quoteUsingAlias(alias string) string {
 		return alias
 	}
 	return `"` + strings.ReplaceAll(alias, `"`, `""`) + `"`
+}
+
+// baseTableColumns resolves a base source's column surface through the SEMANTIC
+// CATALOG rather than straight off the record descriptor, so both sides of a
+// USING see the same set of columns.
+//
+// The difference is not cosmetic. The catalog appends `__ROW_VERSION` as an
+// ephemeral pseudo-column when the store keeps row versions (rlcatalog, mirroring
+// Java's Type.Record.addPseudoFields) and a descriptor never carries it. Reading
+// the owner from one surface and checking the right-hand side against the other
+// would let a column be found as an owner and then declared missing on the right
+// — 42703 on a query that is perfectly well-formed.
+//
+// Returns nil when the name does not resolve, which the caller reads as "this
+// scope cannot be described" and declines on, rather than as "owns nothing".
+func baseTableColumns(table string, md *recordlayer.RecordMetaData, schemaName string) semantic.Table {
+	if md == nil || table == "" {
+		return nil
+	}
+	resolved, err := functions.ResolveQualifiedTableName(table, schemaName)
+	if err != nil {
+		return nil
+	}
+	tbl, ok := rlcatalog.Wrap(md).LookupTable(
+		semantic.FromSegments(strings.Split(resolved, "."), false))
+	if !ok {
+		return nil
+	}
+	return tbl
 }

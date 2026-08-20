@@ -509,7 +509,8 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	}
 	if err := retargetUsingJoins(fs.tableName, fs.tableAlias,
 		fs.derivedQuery == nil && fs.inlineValues == nil && fs.tableName != "",
-		fs.joins, v.md, v.schemaName, cteNamePredicate(v.cteScopes)); err != nil {
+		fs.derivedQuery, fs.joins, v.md, v.schemaName,
+		cteNamePredicate(v.cteScopes), v.cteScopes); err != nil {
 		return nil, err
 	}
 

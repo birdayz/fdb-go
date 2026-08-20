@@ -114,27 +114,24 @@ tests:
       - [1]
       - [2]
       - [3]
-  # THE ARM THAT ACTUALLY EXERCISES THE COLLISION, and it took a mutation
-  # to find out that the two above do not.
+  # A DERIVED SOURCE TO THE LEFT OF A SECOND USING, which is the only
+  # position where a non-base source's columns matter: as the right-hand
+  # side of its own join it contributes an alias and nothing else.
   #
-  # A derived source is only looked up when it is a LEFT source for a LATER
-  # join — as the right-hand side of its own join it contributes nothing but
-  # an alias. So a single derived join cannot detect a name-based decline at
-  # all: disabling the structural check leaves both arms above green.
+  # The subquery exports `k`, and `a.k` is still visible, so `k` in the
+  # second USING has TWO owners and the query is ambiguous — measured
+  # against the live JVM, which answers `Ambiguous reference K`.
   #
-  # Here `b` is a derived table deliberately aliased with the name of a REAL
-  # table that also has a `k` column, and it sits to the LEFT of a second
-  # USING. Decided structurally, `b` is not a base source, the scope is
-  # unresolvable, the retarget declines and the parse-time predicate stands.
-  # Decided by NAME, `b` resolves to the real table, `k` then has two owners
-  # (a.k and b.k) and the query is refused 42702 — a working query turned
-  # into an error by reading a descriptor that belongs to a different
-  # relation entirely.
+  # Getting here took two corrections worth keeping. Resolving the source
+  # by NAME read `b`'s columns off the real table `b` — right answer,
+  # unrelated descriptor. Treating a derived source as unknowable and
+  # declining then made Go ANSWER a query Java refuses, and an earlier
+  # draft of this very arm asserted those rows, pinning the divergence as
+  # the specification. Both are why the source's projection is derived
+  # properly (buildCTEColumnSource) rather than guessed from its name or
+  # given up on.
   - query: SELECT a.id FROM a JOIN (SELECT id, k FROM c) b USING (id) JOIN c USING (k) ORDER BY a.id
-    rows:
-      - [1]
-      - [2]
-      - [3]
+    error_code: "42702"
   # ERROR ORDER ACROSS JOINS. Two joins are each faulty in a different
   # way: the FIRST has a USING column the right source lacks (`b` has no
   # `j`), the SECOND is ambiguous (`id` is on both `a` and `b`). Java
