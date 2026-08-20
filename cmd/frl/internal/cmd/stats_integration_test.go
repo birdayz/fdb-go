@@ -689,14 +689,20 @@ func TestStats_EveryNotFoundRefusalIsClassified(t *testing.T) {
 
 	// stored: does the refusal mean statistics EXIST in the store?
 	// repairable: would `frl stats collect` fix it?
+	// claimsAbsence: may the output state that nothing is stored? ONLY a
+	// refusal that actually READ an empty range may. Torn read entries;
+	// ReadFailed could not read; SyntheticTypes deliberately did not read at
+	// all -- and a schema collected before its metadata was rebound to declare a
+	// joined type still has its old entries sitting there.
+	// repairable: would `frl stats collect` fix it?
 	cases := []struct {
-		refusal    embedded.StatisticsRefusal
-		stored     bool
-		repairable bool
+		refusal       embedded.StatisticsRefusal
+		claimsAbsence bool
+		repairable    bool
 	}{
-		{embedded.StatisticsNotCollected, false, true},
-		{embedded.StatisticsTorn, true, true},
-		{embedded.StatisticsReadFailed, false, false}, // existence UNKNOWN
+		{embedded.StatisticsNotCollected, true, true},
+		{embedded.StatisticsTorn, false, true},
+		{embedded.StatisticsReadFailed, false, false},
 		{embedded.StatisticsSyntheticTypes, false, false},
 	}
 	for _, tc := range cases {
@@ -712,9 +718,12 @@ func TestStats_EveryNotFoundRefusalIsClassified(t *testing.T) {
 			}
 			out := buf.String()
 
-			// A refusal meaning statistics EXIST must never be rendered as absence.
-			if tc.stored && strings.Contains(out, "nothing is stored") {
-				t.Errorf("%q means statistics ARE stored, rendered as absent:\n%s",
+			// Only a refusal that READ an empty range may claim absence. Every
+			// other one either saw entries or never looked, and asserting absence
+			// from a read that did not happen is the conflation this feature has
+			// now had to remove at four separate layers.
+			if !tc.claimsAbsence && strings.Contains(out, "nothing is stored") {
+				t.Errorf("%q does not establish absence, rendered as absent:\n%s",
 					tc.refusal, out)
 			}
 			// A refusal a collect would repair must never say collection is futile.

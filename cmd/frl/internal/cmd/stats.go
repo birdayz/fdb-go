@@ -510,6 +510,17 @@ func renderStatsStatus(
 		switch st.Refusal {
 		case embedded.StatisticsNotCollected:
 			fmt.Fprintln(out, "run `frl stats collect` to gather them")
+		case embedded.StatisticsSyntheticTypes:
+			// This verdict is reached WITHOUT READING -- the synthetic gate decides
+			// before any I/O, deliberately, since the answer cannot depend on it. So
+			// existence is unknown, and entries can genuinely still be there: a
+			// schema collected before its metadata was rebound to a version
+			// declaring a joined type leaves its old entries in place. Saying
+			// "nothing is stored" asserts a fact this path went out of its way not to
+			// look up. What IS certain is that collection cannot help.
+			fmt.Fprintln(out, "this schema declares record types this port does not model, so "+
+				"statistics can never be used for it; collection is refused too")
+			fmt.Fprintln(out, "whether any are still stored was not read")
 		case embedded.StatisticsTorn:
 			// Stored, and unusable — the opposite of absent, and the opposite of
 			// permanent. The default arm below says "nothing is stored, and

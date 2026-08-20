@@ -172,7 +172,7 @@ var _ = Describe("CollectStatistics", func() {
 		// no-header arm.
 		_, refusal, _, rErr := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(rErr).NotTo(HaveOccurred())
-		expectReadRefusal(refusal, StatisticsReadNoHeader,
+		expectReadRefusal(refusal, StatisticsReadAbsent,
 			"an aborted run must leave the store with NO header. Any other refusal "+
 				"means it wrote something and the abort was not clean")
 	})
@@ -1434,8 +1434,64 @@ var _ = Describe("CollectStatistics", func() {
 		// leave behind the partial set it exists to prevent.
 		_, refusal, _, rErr := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(rErr).NotTo(HaveOccurred())
-		expectReadRefusal(refusal, StatisticsReadNoHeader,
+		expectReadRefusal(refusal, StatisticsReadAbsent,
 			"a refused collection still wrote something")
+	})
+
+	// ENTRIES WITHOUT A HEADER ARE TORN, NOT ABSENT.
+	//
+	// The read loop populates PerType regardless of whether the header turned
+	// up, so a range whose header alone was deleted arrives with a non-empty map
+	// and found=false. That used to return the same refusal as an EMPTY range,
+	// which the relational gate maps to "not collected" — so `stats show` told an
+	// operator nothing was stored while the store held orphaned per-type entries.
+	//
+	// Same absent-versus-stored conflation this reader spent several commits
+	// removing, at the one arm that had not been split yet. The header is what
+	// makes a set vouchable; entries without one are torn.
+	It("refuses entries whose header is missing as torn, not as absent", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 6, 2)
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		before, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		expectReadRefusal(refusal, StatisticsReadOK,
+			"the set was already unusable, so the refusal below proves nothing")
+		Expect(before.PerType).NotTo(BeEmpty(),
+			"no per-type entries to orphan, so deleting the header would leave an "+
+				"EMPTY range and this spec would pin the absent case instead")
+
+		// Delete ONLY the header. The per-type entries survive.
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Clear(fdb.Key(target.Pack(statisticsHeaderKey)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, refusal, _, err = ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		expectReadRefusal(refusal, StatisticsReadHeaderMissing,
+			"orphaned entries with no header were reported as ABSENT — an operator is "+
+				"then told the store is empty while it holds entries a collect would clear")
+	})
+
+	// The other side, or the arm above is satisfiable by returning HeaderMissing
+	// for everything: a genuinely EMPTY range must still be absent.
+	It("refuses an empty range as absent", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+
+		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		expectReadRefusal(refusal, StatisticsReadAbsent,
+			"an empty range must be ABSENT, not torn — reporting nothing-stored as a "+
+				"torn set sends an operator looking for damage that is not there")
 	})
 
 	// A MALFORMED ENTRY POISONS THE WHOLE SET.
@@ -1747,7 +1803,7 @@ func (c *countingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, err
 // constants at runtime. Adding one to the const block means adding it here.
 var allStatisticsReadRefusals = []StatisticsReadRefusal{
 	StatisticsReadOK,
-	StatisticsReadNoHeader,
+	StatisticsReadAbsent,
 	StatisticsReadUndecodableKey,
 	StatisticsReadUnknownIntegerKey,
 	StatisticsReadNonStringKey,
@@ -1755,6 +1811,7 @@ var allStatisticsReadRefusals = []StatisticsReadRefusal{
 	StatisticsReadCountMismatch,
 	StatisticsReadVersionMismatch,
 	StatisticsReadTimestampMismatch,
+	StatisticsReadHeaderMissing,
 }
 
 var (

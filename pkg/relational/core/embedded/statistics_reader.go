@@ -174,7 +174,7 @@ type statisticsGateInput struct {
 	// Found alone cannot tell an ABSENT set from a TORN one -- both give
 	// Found=false -- and reporting a torn set as "not collected" is the same
 	// absent-versus-failed conflation the reader spent four commits removing.
-	// Only StatisticsReadNoHeader means absent.
+	// Only StatisticsReadAbsent means absent.
 	ReadRefusal recordlayer.StatisticsReadRefusal
 	// Found reports whether an entry exists.
 	Found bool
@@ -340,7 +340,7 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 		// stored and cannot be vouched for; calling that "not collected" tells an
 		// operator the store is empty when it is holding something broken.
 		if in.ReadRefusal != recordlayer.StatisticsReadOK &&
-			in.ReadRefusal != recordlayer.StatisticsReadNoHeader {
+			in.ReadRefusal != recordlayer.StatisticsReadAbsent {
 			st.Refusal = StatisticsTorn
 			st.ReadRefusal = in.ReadRefusal
 			return st

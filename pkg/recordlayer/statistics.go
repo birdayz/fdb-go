@@ -684,9 +684,16 @@ type StatisticsReadRefusal string
 const (
 	// StatisticsReadOK — a usable set.
 	StatisticsReadOK StatisticsReadRefusal = ""
-	// StatisticsReadNoHeader — no header entry, so there is nothing to vouch
-	// for. Also the ordinary "never collected" case.
-	StatisticsReadNoHeader StatisticsReadRefusal = "no header entry"
+	// StatisticsReadAbsent — nothing is stored here at all: no header AND no
+	// entries. The ordinary "never collected" case, and the ONLY refusal that
+	// means the store is empty.
+	StatisticsReadAbsent StatisticsReadRefusal = "no statistics stored"
+	// StatisticsReadHeaderMissing — per-type entries survive but the header does
+	// not. DISTINCT from Absent: something IS stored, and reporting it as
+	// absence tells an operator the store is empty while it holds orphaned
+	// entries that a collect would clear. The header is what makes a set
+	// vouchable, so entries without one are torn, not missing.
+	StatisticsReadHeaderMissing StatisticsReadRefusal = "entries present with no header"
 	// StatisticsReadUndecodableKey — an entry key this build cannot parse.
 	StatisticsReadUndecodableKey StatisticsReadRefusal = "entry key could not be decoded"
 	// StatisticsReadUnknownIntegerKey — an integer key that is not THE header;
@@ -836,7 +843,16 @@ func ReadStatisticsAtWithRefusal(
 		return StoreStatistics{}, refusal, readVersion, nil
 	}
 	if !found {
-		return StoreStatistics{}, StatisticsReadNoHeader, readVersion, nil
+		// ENTRIES WITHOUT A HEADER ARE TORN, NOT ABSENT. The loop above populates
+		// PerType regardless of whether the header turned up, so a range holding
+		// per-type keys whose header was deleted lands here with a non-empty map
+		// -- and calling that "nothing is stored" is the same absent-versus-stored
+		// conflation this reader exists to remove, at the one arm that had not
+		// been split yet.
+		if len(out.PerType) > 0 {
+			return StoreStatistics{}, StatisticsReadHeaderMissing, readVersion, nil
+		}
+		return StoreStatistics{}, StatisticsReadAbsent, readVersion, nil
 	}
 	// THE HEADER SAYS HOW MANY PER-TYPE ENTRIES THE WRITE PUT DOWN, so a read
 	// that returns a different number returned a DIFFERENT SET than was written.

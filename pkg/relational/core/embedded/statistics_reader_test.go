@@ -287,7 +287,7 @@ func decideStatisticsCases() []decideCase {
 			//
 			// Both give Found=false, and reporting the first as the second tells
 			// an operator the store is empty while it holds something broken.
-			// Only StatisticsReadNoHeader means absent; the other seven read
+			// Only StatisticsReadAbsent means absent; the other seven read
 			// refusals mean a set IS stored and cannot be vouched for.
 			name: "a torn set is refused as torn, not as not-collected",
 			in: statisticsGateInput{
@@ -312,7 +312,7 @@ func decideStatisticsCases() []decideCase {
 			name: "an absent set is still not-collected",
 			in: statisticsGateInput{
 				Found:         false,
-				ReadRefusal:   recordlayer.StatisticsReadNoHeader,
+				ReadRefusal:   recordlayer.StatisticsReadAbsent,
 				DeclaredTypes: []string{"A"},
 			},
 			want: StatisticsNotCollected,
