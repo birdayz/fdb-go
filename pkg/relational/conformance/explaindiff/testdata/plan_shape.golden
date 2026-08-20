@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=353 queries=2540 dml=157 non_query=104 plan_errors=264 unexpected_errors=4
+# files=353 queries=2544 dml=157 non_query=104 plan_errors=266 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -3483,7 +3483,7 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryCoveringIndexPlan
 === cross_join.yaml#0 expect-error=0A000
 sql:   SELECT a.id, b.id FROM a CROSS JOIN b ORDER BY a.id, b.id
-plan:  <PLAN-ERROR: 0A000: explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products>
+plan:  <PLAN-ERROR: 0A000: a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products>
 === cross_join.yaml#1
 sql:   SELECT a.id, b.id FROM a, b ORDER BY a.id, b.id
 plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), Scan(A))))
@@ -3516,6 +3516,29 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryScanPlan
+=== cross_join.yaml#5 expect-error=0A000
+sql:   SELECT a.id, b.id FROM a JOIN b ORDER BY a.id, b.id
+plan:  <PLAN-ERROR: 0A000: a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products>
+=== cross_join.yaml#6 expect-error=0A000
+sql:   SELECT COUNT(*) FROM a INNER JOIN b
+plan:  <PLAN-ERROR: 0A000: a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products>
+=== cross_join.yaml#7
+sql:   SELECT a.id, b.id FROM a CROSS JOIN b ON 1 = 1 ORDER BY a.id, b.id
+plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], NestedLoopJoin(INNER, Scan(B), PredicatesFilter(Scan(A), [1 preds]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== cross_join.yaml#8
+sql:   SELECT a.id, b.id FROM a JOIN b USING (id) ORDER BY a.id, b.id
+plan:  Project([_current.ID#0, _current.ID#2], InMemorySort([_current.ID#0 ASC, _current.ID#2 ASC], FlatMap(outer=Scan(A), inner=Scan(B, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === cross_join_filter.yaml#0
 sql:   SELECT s.label, c.name FROM sizes s, colors c ORDER BY s.label, c.name
 plan:  Project([_current.LABEL#1, _current.NAME#3], InMemorySort([_current.LABEL#1 ASC, _current.NAME#3 ASC], NestedLoopJoin(INNER, Scan(COLORS), Scan(SIZES))))

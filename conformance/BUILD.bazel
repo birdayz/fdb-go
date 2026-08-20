@@ -106,6 +106,7 @@ go_test(
         "java_invoker_test.go",
         "java_planner_warmth_proof_test.go",
         "join_using_star_java_probe_test.go",
+        "join_without_on_java_probe_test.go",
         "lifecycle_error_test.go",
         "max_ever_version_index_conformance_test.go",
         "metadata_proto_conformance_test.go",

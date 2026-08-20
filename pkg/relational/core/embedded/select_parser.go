@@ -2875,18 +2875,33 @@ func synthesizeUsingOnExpr(uidList antlrgen.IUidListContext, leftAlias, rightAli
 func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 	switch j := jp.(type) {
 	case *antlrgen.InnerJoinContext:
-		// Explicit `CROSS JOIN` syntax — reject. fdb-relational
-		// 4.11.1.0 NPEs on `a CROSS JOIN b` because its visitor
-		// unconditionally calls `accept(...)` on the ON-clause
-		// expression which is null for CROSS JOIN (CLAUDE.md gotcha).
-		// Go's embedded engine matches by rejecting at parse time —
-		// same architectural reason: the visitor's CROSS-JOIN code
-		// path doesn't exist. Workaround: comma-join `FROM a, b`.
+		// An inner join with NO join condition — reject. fdb-relational
+		// 4.11.1.0 NPEs on it because its visitor unconditionally calls
+		// `accept(...)` on the ON-clause expression, which is null when
+		// the optional `(ON expression | USING '(' uidList ')')` group is
+		// absent. Go's embedded engine matches by rejecting at parse
+		// time — same architectural reason: the visitor has no code path
+		// for a conditionless join. Workaround: comma-join `FROM a, b`.
 		// Per project conformance principle: doesn't work in Java →
 		// doesn't work in Go.
-		if j.CROSS() != nil {
+		//
+		// The test is the ABSENT CONDITION, not the CROSS keyword, and
+		// the difference is measured rather than argued. The grammar puts
+		// CROSS and the optional condition in the SAME alternative —
+		// `(INNER | CROSS)? JOIN tableSourceItem (ON … | USING …)?` — so
+		// the two are independent, and keying on the keyword got both
+		// directions wrong against a live JVM:
+		//
+		//	a JOIN b            Java NPE          Go returned 4 rows
+		//	a INNER JOIN b      Java NPE          Go returned 4 rows
+		//	a CROSS JOIN b ON p Java returns 4    Go refused
+		//
+		// The first two are the silent direction — a cartesian product
+		// where Java has no answer at all. USING supplies a condition and
+		// is accepted by both engines, so it must not be caught here.
+		if j.Expression() == nil && j.USING() == nil {
 			return joinClause{}, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-				"explicit CROSS JOIN syntax is not supported; use comma-join `FROM a, b` for cartesian products")
+				"a JOIN with no ON or USING clause is not supported; use comma-join `FROM a, b` for cartesian products")
 		}
 		// A derived table (subquery) on the right of an explicit JOIN —
 		// `JOIN (SELECT ...) AS x ON ...`. Mirrors the comma-FROM derived path.

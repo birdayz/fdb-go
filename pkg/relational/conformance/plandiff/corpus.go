@@ -1128,14 +1128,23 @@ func SeedRunCorpus() []RunQuery {
 		// `distinct_aggregates.yaml`, `aggregate_expr.yaml`, and
 		// `group_by_validation.yaml`'s `error_code: "0A000"` tests
 		// under the yamsql harness.
-		// NOTE: explicit CROSS JOIN syntax (`a CROSS JOIN b`) is rejected
-		// in BOTH engines — Java NPEs (InnerJoinContext.expression()
+		// NOTE: an inner join with NO join condition — `a JOIN b`,
+		// `a INNER JOIN b`, `a CROSS JOIN b` — is rejected in BOTH
+		// engines. Java NPEs (InnerJoinContext.expression()
 		// null-dereference in the visitor); Go's embedded engine
 		// rejects at parse time with `ErrCodeUnsupportedOperation`
-		// "explicit CROSS JOIN syntax is not supported"
+		// "a JOIN with no ON or USING clause is not supported"
 		// (`select_parser.go#extractJoinClause`). Same architectural
-		// reason in both engines: the visitor's CROSS-JOIN code path
-		// doesn't exist. Workaround: comma-join `FROM a, b`.
+		// reason in both engines: the visitor has no code path for a
+		// conditionless join. Workaround: comma-join `FROM a, b`.
+		//
+		// The CONDITION is what decides it, not the CROSS keyword, and
+		// that was measured against a live 4.11.1.0 rather than inferred:
+		// `a CROSS JOIN b ON 1 = 1` parses with a non-null expression, so
+		// the NPE cannot fire and Java answers it. Go's gate keyed on the
+		// keyword and got both directions wrong — refusing that query
+		// while returning a cartesian product for the two conditionless
+		// spellings Java refuses.
 		//
 		// NOT included as a cross-engine corpus entry because Java's
 		// NPE message (`Cannot invoke ... InnerJoinContext.expression()`)
@@ -1143,9 +1152,9 @@ func SeedRunCorpus() []RunQuery {
 		// substring without aligning Go to mimic Java's panic-style
 		// failure (which would be a regression in Go's UX). The
 		// rejection alignment is pinned on the Go side via
-		// `cross_join.yaml`'s `error_code: "0A000"` test under the
-		// yamsql harness; Java's NPE behaviour is documented in
-		// CLAUDE.md "Java↔Go conformance gotchas" §Parser bugs.
+		// `cross_join.yaml`'s `error_code: "0A000"` tests under the
+		// yamsql harness, and both directions are measured against the
+		// live JVM by `conformance/join_without_on_java_probe_test.go`.
 		{
 			// MIN over a non-numeric (STRING) column — fdb-relational
 			// 4.11.1.0's function registry only installs numeric

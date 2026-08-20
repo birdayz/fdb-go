@@ -23,12 +23,12 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**353 scenarios · 2801 query/assertion cases** across 18 feature areas — 2464 supported, 111 unsupported-feature pins, 226 error-path pins.
+**353 scenarios · 2805 query/assertion cases** across 18 feature areas — 2466 supported, 113 unsupported-feature pins, 226 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 51 | 326 | 293 | 19 | 14 |
-| Joins | 63 | 277 | 268 | 3 | 6 |
+| Joins | 63 | 281 | 270 | 5 | 6 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 32 | 249 | 216 | 10 | 23 |
-| **Total** | **353** | **2801** | **2464** | **111** | **226** |
+| **Total** | **353** | **2805** | **2466** | **113** | **226** |
 
 ## Aggregates & GROUP BY
 
@@ -111,7 +111,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `comma_join_exists` | 4 | 4 | 0 | 0 | Regression for the removed Go-only `eliminateRedundantCrossJoin` rewrite. |
 | `composite_pk_join` | 3 | 3 | 0 | 0 | Joins on composite primary key tables |
 | `count_distinct_join` | 3 | 1 | 2 | 0 | COUNT(DISTINCT col) against rows materialised from a JOIN or |
-| `cross_join` | 5 | 4 | 1 | 0 | CROSS JOIN / comma-join / no-ON INNER JOIN all produce the |
+| `cross_join` | 9 | 6 | 3 | 0 | Which JOIN spellings produce a cartesian product, and which are |
 | `cross_join_filter` | 3 | 3 | 0 | 0 | Cross join with various filter patterns |
 | `cross_join_no_predicate` | 2 | 2 | 0 | 0 | CROSS JOIN without predicates |
 | `cte_join` | 3 | 3 | 0 | 0 | CTE used in JOIN |
