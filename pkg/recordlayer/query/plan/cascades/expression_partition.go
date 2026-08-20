@@ -610,13 +610,16 @@ func partitionCost(p *PlanPartition) float64 {
 	//	  grep -v 'func SelectMinCostPartition' | grep -vc ':[0-9]*:[[:space:]]*//'
 	//
 	// That counts CALL sites: it drops the definition AND comment lines. The
-	// last filter is not decoration — without it the command matches the very
-	// line you are reading and returns 1, which is what the first version of
-	// this comment shipped while warning against exactly that. It is 0 as
-	// written; the same command for FilterPlanPartitions in this file returns 3,
-	// which is the control showing it can find production callers when they
-	// exist. Any non-zero reading here means the paragraph below has become
-	// live.
+	// comment filter is currently REDUNDANT — the command line above happens to
+	// contain "_test.go", so the earlier filter already eats this line — and it
+	// is kept because that is an accident of wording, not a property. The first
+	// version of this comment had neither filter and returned 1, matching the
+	// very line warning against exactly that.
+	//
+	// It is 0 as written; the same command for FilterPlanPartitions in this file
+	// returns 3, which is the control showing it can find production callers
+	// when they exist. Any non-zero reading here means the paragraph below has
+	// become live.
 	//
 	// If that changes, this becomes a real Cascades inconsistency rather than a
 	// latent one: the same expression would be ranked here against a constant

@@ -684,6 +684,125 @@ var _ = Describe("CollectStatistics", func() {
 		Expect(stored.PerType).NotTo(HaveKey("Order"))
 		Expect(stored.PerType).To(HaveKey("Customer"))
 	})
+
+	// EVERY TRANSACTION IN THIS FILE SURVIVES A RETRY, not just the scan loop.
+	//
+	// The per-attempt-reset bug was found twice: once in the collector's scan
+	// loop, and then again in ReadStatisticsAt, written in the same sitting as
+	// the fix for the first. Two instances of one mistake in one file is a
+	// statement about the shape being easy to get wrong, so this drives ALL
+	// FOUR transactions through a retrying transactor rather than the one that
+	// happened to be broken:
+	//
+	//	CollectStatistics' scan loop  — per-attempt tallies
+	//	writeStatistics               — nanos, an idempotent overwrite
+	//	ReadStatisticsAt              — out / found / readVersion
+	//	ClearStatistics               — captures nothing
+	//
+	// And it asserts the STORED bytes, not the returned report. The report is
+	// built before writeStatistics runs, so a report-only assertion cannot see a
+	// write or a read-back that a retry corrupted — which is exactly the half
+	// the earlier test could not reach.
+	It("keeps collect, write, read and clear correct when every transaction retries", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		const orders, customers = 240, 15
+		seed(ctx, sub, orders, customers)
+
+		replayer := &replayingTransactor{inner: sharedDB.transactor, replays: 1000}
+		replayDB := NewFDBDatabaseWithTransactor(replayer, sharedDB.db)
+
+		_, err := CollectStatistics(ctx, replayDB,
+			func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+				return NewStoreBuilder().SetContext(rtx).
+					SetMetaDataProvider(metaData).SetSubspace(sub).CreateOrOpen()
+			}, stats, CollectOptions{BatchSize: 40})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Read back THROUGH the retrying database too, so ReadStatisticsAt's own
+		// closure is exercised under replay rather than only the write path.
+		stored, ok, readVersion, err := ReadStatisticsAt(ctx, replayDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(replayer.used()).To(BeNumerically(">", 1),
+			"nothing replayed, so this asserts only what the non-retrying tests already do")
+
+		Expect(stored.PerType["Order"].Count).To(Equal(int64(orders)),
+			"the PERSISTED count is wrong under retry — a report-only assertion would "+
+				"not have seen this, since the report is built before the write")
+		Expect(stored.PerType["Customer"].Count).To(Equal(int64(customers)))
+		Expect(readVersion).To(BeNumerically(">", 0),
+			"a retried read must still yield a cluster version; zero would make the "+
+				"freshness gate refuse on every plan")
+		Expect(stored.CollectedAtVersion).To(BeNumerically(">", 0))
+
+		// Clear under replay, then confirm it took. A retried ClearRange is
+		// idempotent, so the only way this fails is a captured-state bug.
+		Expect(ClearStatistics(ctx, replayDB, stats, sub)).To(Succeed())
+		_, stillThere, err := ReadStatistics(ctx, replayDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stillThere).To(BeFalse())
+	})
+
+	// THE READ-PATH TWIN, PINNED BY ITS ACTUAL REPRODUCER.
+	//
+	// ReadStatisticsAt had the same unreset-state bug the scan loop had, and a
+	// plain replay does NOT catch it: two identical attempts produce identical
+	// results, so the merged-across-attempts state looks correct. The defect
+	// only shows when the store CHANGES between attempts, which is exactly what
+	// a real retry races.
+	//
+	// So this clears the statistics between the discarded attempt and the real
+	// one. With the reset in place the second attempt sees an empty range and
+	// reports found=false. Without it, attempt 1's entries and found=true
+	// survive into attempt 2 and get stamped with attempt 2's read version —
+	// stale statistics wearing a fresh stamp, which is the single state the
+	// freshness gate exists to reject and the one it cannot detect.
+	It("does not carry entries across a retry that races a clear", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 30, 5)
+
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 10})
+		Expect(err).NotTo(HaveOccurred())
+		// Precondition: the entries are really there, or "found=false" below
+		// would be true for a reason that has nothing to do with the retry.
+		_, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+
+		cleared := 0
+		replayer := &replayingTransactor{
+			inner:   sharedDB.transactor,
+			replays: 1,
+			beforeReplay: func() {
+				// Runs once, between the discarded attempt and the real one.
+				Expect(ClearStatistics(ctx, sharedDB, stats, sub)).To(Succeed())
+				cleared++
+			},
+		}
+		replayDB := NewFDBDatabaseWithTransactor(replayer, sharedDB.db)
+
+		got, found, _, err := ReadStatisticsAt(ctx, replayDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Vacuity guards on both halves: the replay happened, and the clear
+		// happened. Either at zero makes the assertion below meaningless.
+		Expect(replayer.used()).To(BeNumerically(">", 0),
+			"nothing replayed — ReadTransact is not exercising the retry path, so this "+
+				"asserts only what a plain read already does")
+		Expect(cleared).To(Equal(1),
+			"the store was not cleared between attempts, so the two attempts saw the same "+
+				"bytes and unreset state would be invisible")
+
+		Expect(found).To(BeFalse(),
+			"the retry carried the first attempt's entries forward — out/found/readVersion "+
+				"must be reset at the top of the RunRead closure, or a retry racing a clear "+
+				"yields stale statistics wearing a fresh version stamp")
+		Expect(got.PerType).To(BeEmpty())
+	})
 })
 
 // replayingTransactor invokes each transaction closure twice and returns the
@@ -693,10 +812,18 @@ type replayingTransactor struct {
 	inner   fdb.Transactor
 	replays int
 	spent   int
+	// beforeReplay runs between a discarded attempt and the real one, so a test
+	// can mutate the store mid-retry — the state a retry actually races.
+	beforeReplay func()
 }
 
 func (r *replayingTransactor) used() int { return r.spent }
 
+// Transact keeps the SAME-transaction replay, deliberately, and differently from
+// ReadTransact above. The write-side defect is about accumulator state surviving
+// a re-execution, which one transaction reproduces exactly; running two separate
+// inner transactions would additionally COMMIT the discarded attempt, which is
+// not what a retry does and would muddy what the test is measuring.
 func (r *replayingTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	return r.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		if r.replays > 0 {
@@ -712,6 +839,32 @@ func (r *replayingTransactor) Transact(fn func(fdb.WritableTransaction) (any, er
 	})
 }
 
+// ReadTransact replays too. A bare pass-through here would leave the READ path
+// unexercised while the test around it claims to cover every transaction — and
+// the read path is where the same per-attempt-reset bug was found the second
+// time, so it is the half most in need of the instrument.
+//
+// beforeReplay, when set, runs between the discarded attempt and the real one.
+// That is what turns a replay into the actual reproducer: a retry racing a
+// concurrent ClearStatistics is the case where unreset state yields the previous
+// attempt's entries stamped with the new attempt's version.
 func (r *replayingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	if r.replays > 0 {
+		r.replays--
+		r.spent++
+		// A SEPARATE inner transaction for the discarded attempt, not a second
+		// call on the same one. That distinction is the whole test: FDB pins a
+		// read version per transaction, so two invocations on one rtx observe
+		// the identical snapshot and a store mutated in between is invisible.
+		// A real retry gets a fresh transaction at a NEW read version, which is
+		// what lets beforeReplay's clear be seen — and what makes unreset state
+		// produce the stale-entries-with-fresh-stamp result this pins.
+		if _, err := r.inner.ReadTransact(fn); err != nil {
+			return nil, err
+		}
+		if r.beforeReplay != nil {
+			r.beforeReplay()
+		}
+	}
 	return r.inner.ReadTransact(fn)
 }

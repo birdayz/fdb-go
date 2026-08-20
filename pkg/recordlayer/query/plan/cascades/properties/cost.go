@@ -594,7 +594,8 @@ func localCostUnclamped(e expressions.RelationalExpression, child []Cost, stats 
 
 	case *expressions.FullUnorderedScanExpression:
 		// A scan over multiple record types emits the SUM of their
-		// per-type cardinalities. Empty list → LeafScanCardinality.
+		// per-type cardinalities. An EMPTY list means "every type", and asks
+		// the provider for the whole store — see the branch below.
 		// CPU = card·ScanCPU: reading N rows costs ~N (sequential I/O).
 		// This is load-bearing for join ordering (RFC-041): a scan that
 		// reported CPU=0 made the nested-loop join cost order-symmetric
@@ -609,9 +610,13 @@ func localCostUnclamped(e expressions.RelationalExpression, child []Cost, stats 
 			// store — and that is exactly what the EMPTY record type name asks
 			// a provider for. Answering with the LeafScanCardinality constant
 			// instead is not merely imprecise once real statistics exist, it
-			// INVERTS: a universal scan would cost 1e6 beside a typed sibling
-			// costing 1000, so the planner would drive from the small table's
-			// side of a join it should have driven from the universal scan.
+			// INVERTS — though not in the direction the first version of this
+			// comment claimed. One provider prices the whole plan, so a universal
+			// scan and a typed sibling always come from the same map and the
+			// store total is >= any member. The reachable failure is a store
+			// LARGER than LeafScanCardinality: the constant then makes a scan of
+			// EVERY type look cheaper than a scan of ONE of them, which is not
+			// imprecise but impossible, and the planner acts on it.
 			//
 			// Byte-identical under DefaultStatistics and under MapStatistics
 			// with the default fallback, both of which answer an unknown name

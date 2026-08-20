@@ -406,3 +406,51 @@ func snapshotStoreSubspace(t *testing.T, database, schema string) map[string]str
 	}
 	return out
 }
+
+// THE FAN-OUT REJECTS AN OUTPUT FORMAT IT CANNOT HONOUR.
+//
+// `--all-schemas` emits per-schema progress and a tally, not a single report, so
+// there is nothing for `-o json` to render. Accepting the flag and printing text
+// anyway hands a script unparseable output while exiting 0 — the worst of the
+// three possible behaviours, because it reports success.
+//
+// This test exists because the fix for it was once reported as landed and had
+// not been applied at all: the batch edit that was meant to add it died on an
+// earlier anchor, the failure was not read, and the whole batch was written up as
+// done. A claim that something is fixed is worth exactly as much as the test
+// that runs it. No FDB needed — the flag is rejected before any connection.
+func TestStats_AllSchemasRejectsAnUnrenderableOutputFormat(t *testing.T) {
+	// json is the interesting format: it PASSES validateOutputFormat, so only
+	// the fan-out's own gate can reject it. (yaml is rejected earlier, by the
+	// format validator, with a different message — testing it here would be
+	// asserting the wrong gate.)
+	_, err := runCmd(t, "stats", "collect", "--database", "/x", "--all-schemas", "-o", "json")
+	if err == nil {
+		t.Fatal("--all-schemas -o json was accepted; want a rejection")
+	}
+	if !strings.Contains(err.Error(), "--all-schemas") {
+		t.Errorf("error %q does not name the flag that makes the format unrenderable", err)
+	}
+	// The banner is title-cased by fang, so an error may not LEAD with a flag or
+	// the operator reads "--Output". The repo gates this globally (pkg/docscheck);
+	// asserted here too because this specific message was rewritten for that.
+	if strings.HasPrefix(err.Error(), "-") {
+		t.Errorf("error leads with a flag and will render title-cased: %q", err)
+	}
+
+	// CONTROL: -o text must get PAST the output gate. Proven without dialling
+	// FDB by omitting --database, so the next check in the same branch is the
+	// one that fires. An earlier version of this control passed --database and
+	// spent 60s in a connection timeout to learn nothing.
+	_, textErr := runCmd(t, "stats", "collect", "--all-schemas", "-o", "text")
+	if textErr == nil {
+		t.Fatal("expected --all-schemas without --database to be rejected")
+	}
+	if strings.Contains(textErr.Error(), "has nothing to render") {
+		t.Errorf("-o text was rejected by the OUTPUT gate; it must reach the next check: %v", textErr)
+	}
+	if !strings.Contains(textErr.Error(), "--database") {
+		t.Errorf("expected the missing-database error, which is what proves -o text passed "+
+			"the output gate; got: %v", textErr)
+	}
+}

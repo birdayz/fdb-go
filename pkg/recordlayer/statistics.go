@@ -252,9 +252,17 @@ func CollectStatistics(
 			// The read version of the LAST batch stamps the run. Collection
 			// spans transactions, so no single version describes all of it;
 			// this one bounds how recent the newest reading is.
-			if v, vErr := rtx.ReadTransaction(true).GetReadVersion().Get(); vErr == nil {
-				collectedAtVersion = v
+			//
+			// Propagated, not swallowed, and the argument is stronger here than
+			// on the read side: this version is PERSISTED. Swallowing it stamps
+			// the entry with 0 or with a previous batch's version, the freshness
+			// gate then refuses the schema on every plan, and the operator sees
+			// a silent refusal instead of the cluster's actual error.
+			v, vErr := rtx.ReadTransaction(true).GetReadVersion().Get()
+			if vErr != nil {
+				return nil, vErr
 			}
+			collectedAtVersion = v
 
 			props := ScanProperties{
 				ExecuteProperties: ExecuteProperties{}.WithReturnedRowLimit(opts.batchSize()),
