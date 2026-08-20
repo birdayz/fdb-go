@@ -110,6 +110,60 @@ func TestFDB_CaseWithParenthesizedCondition(t *testing.T) {
 	}
 }
 
+// TestFDB_CaseWithNonBooleanCondition pins the shapes the repair must NOT have
+// moved, which is how the repair's scope is stated as a measurement rather than
+// as a claim.
+//
+// A searched CASE whose condition is not boolean at all — an integer, a string,
+// a bare non-boolean column — silently takes the ELSE branch here. That is the
+// behaviour both before and after resolving conditions as predicates first, and
+// it is pinned so the next change to walkCaseCondition cannot alter it
+// unnoticed. Of eleven condition shapes probed across the change, exactly ONE
+// moved: `(f)`, a parenthesized boolean column, which was broken and is now
+// correct.
+//
+// Whether silently answering ELSE is the right treatment for a non-boolean
+// condition is a separate question from this repair — standard SQL would make it
+// a type error — and pinning today's answer is what makes a future decision to
+// change it deliberate rather than accidental.
+func TestFDB_CaseWithNonBooleanCondition(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	w := mmNewTwin(t, ctx, "/testdb_case_nonbool", "casenb",
+		"CREATE TABLE t (id BIGINT, a BIGINT, f BOOLEAN, PRIMARY KEY (id)) ",
+		"CREATE INDEX t_a ON t (a) ")
+	w.Exec("INSERT INTO t (id, a, f) VALUES (1, 1, true), (2, 0, false), (3, NULL, NULL)")
+
+	// Non-boolean conditions: every row takes ELSE, on both schemas.
+	for _, cond := range []string{"1", "0", "a", "'x'"} {
+		w.Want("non-boolean condition "+cond,
+			fmt.Sprintf("SELECT id, CASE WHEN %s THEN 1 ELSE 0 END FROM t ORDER BY id", cond),
+			[]string{"1|0", "2|0", "3|0"})
+	}
+
+	// Boolean conditions, parenthesized and not, including the bare column that
+	// the repair also fixed.
+	for _, c := range []struct {
+		cond string
+		want []string
+	}{
+		{"f", []string{"1|1", "2|0", "3|0"}},
+		{"(f)", []string{"1|1", "2|0", "3|0"}},
+		{"NOT f", []string{"1|0", "2|1", "3|0"}},
+		{"(NOT f)", []string{"1|0", "2|1", "3|0"}},
+		{"f AND a = 1", []string{"1|1", "2|0", "3|0"}},
+		{"(f AND a = 1)", []string{"1|1", "2|0", "3|0"}},
+		{"CASE WHEN f THEN true ELSE false END", []string{"1|1", "2|0", "3|0"}},
+	} {
+		w.Want("boolean condition "+c.cond,
+			fmt.Sprintf("SELECT id, CASE WHEN %s THEN 1 ELSE 0 END FROM t ORDER BY id", c.cond),
+			c.want)
+	}
+}
+
 // TestFDB_CaseParenthesizedConditionPlanShape pins the compiled form, because
 // the row assertions above pass for any condition that happens to evaluate
 // correctly and this is the fact that says WHY: a searched CASE's condition must

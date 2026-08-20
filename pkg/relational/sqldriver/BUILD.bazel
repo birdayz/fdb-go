@@ -393,6 +393,7 @@ go_test(
         "memory_budget_fdb_test.go",
         "mergesort_heap_bench_test.go",
         "metamorphic_sweep_aggregates_fdb_test.go",
+        "metamorphic_sweep_exprequiv_fdb_test.go",
         "metamorphic_sweep_joins_fdb_test.go",
         "metamorphic_sweep_minmax_nulls_fdb_test.go",
         "metamorphic_sweep_norec_fdb_test.go",
