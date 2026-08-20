@@ -183,6 +183,20 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				javaSays: "Unknown reference NOPE",
 				goSays:   "42702",
 			},
+			{
+				// A RIGHT LEG THAT EXPORTS THE SAME NAME TWICE. Within one
+				// USING, `id` is ambiguous ON THE RIGHT while `k` is missing
+				// from it — two faults, and which one is reported says whether
+				// resolution is per-attribute and left-to-right.
+				//
+				// A column lookup that returns its FIRST match cannot see the
+				// duplicate at all, so it passes `id` and reports `k`. Measured
+				// to find out whether that is what Java does.
+				chained: true, name: "right leg exports the USING name twice",
+				sql:      "SELECT a.id FROM a JOIN (SELECT id, id FROM c) d USING (id, k)",
+				javaSays: "Ambiguous reference ID",
+				goSays:   "42702",
+			},
 		}
 
 		var disagreed []string
@@ -279,8 +293,8 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				"silently answering an ambiguous chain, and refusing a column that lives on an "+
 				"earlier source.\n\n%s",
 			len(disagreed), chainedArms, strings.Join(disagreed, "\n"))
-		Expect(chainedArms).To(Equal(7),
-			"%d chained arms ran, not 7 — a green from a shrunken set says nothing about "+
+		Expect(chainedArms).To(Equal(8),
+			"%d chained arms ran, not 8 — a green from a shrunken set says nothing about "+
 				"the shape this file is named for", chainedArms)
 		Expect(controls).To(Equal(2),
 			"%d controls ran, not 2 — without an agreed USING baseline, a chained "+

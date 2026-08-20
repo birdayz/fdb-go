@@ -3334,9 +3334,20 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `__ROW_VERSION` when the store keeps row versions and a
 				// descriptor never carries it, so a left owner found on one
 				// surface could be declared absent on the other.
-				if _, ok := rightCols.LookupColumn(semantic.NewUnquoted(colText)); !ok {
+				// COUNTED, not looked up. LookupColumn answers with its FIRST
+				// match, so it cannot see a right leg that exports the same
+				// name twice — `(SELECT id, id FROM c)` — and a USING naming
+				// that column is ambiguous ON THE RIGHT. Measured: Java reports
+				// `Ambiguous reference ID`; a first-match check passed `id` and
+				// went on to report a LATER column's absence instead, which is
+				// both the wrong fault and the wrong column.
+				switch n := rightColumnCount(rightCols, colText); {
+				case n == 0:
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)
+				case n > 1:
+					return api.NewErrorf(api.ErrCodeAmbiguousColumn,
+						"Ambiguous reference %s", col)
 				}
 				owners = append(owners, owner)
 			}
@@ -3419,4 +3430,33 @@ func baseTableColumns(table string, md *recordlayer.RecordMetaData, schemaName s
 		return nil
 	}
 	return tbl
+}
+
+// rightColumnCount reports how many columns a source exports under `colText`,
+// quote-aware.
+//
+// It counts rather than looking up because a lookup returns its FIRST match,
+// which cannot distinguish "exports it once" from "exports it twice" — and a
+// USING column the right side exports twice is AMBIGUOUS there, which Java
+// reports in preference to any later column's absence.
+func rightColumnCount(cols semantic.Table, colText string) int {
+	if cols == nil {
+		return 0
+	}
+	want := semantic.NewUnquoted(colText)
+	n := 0
+	for _, c := range cols.Columns() {
+		if c.Id.EqualsIgnoreQuoting(want) {
+			n++
+		}
+	}
+	// A source whose Columns() view is empty but which resolves the name — a
+	// catalog pseudo-column is registered in the index rather than the ordered
+	// list on some paths — still owns it once.
+	if n == 0 {
+		if _, ok := cols.LookupColumn(want); ok {
+			return 1
+		}
+	}
+	return n
 }
