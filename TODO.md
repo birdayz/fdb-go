@@ -19010,3 +19010,33 @@ divergence or a shared trait.
 To reproduce: the plans above come from `EXPLAIN` on the fixture in
 `TestFDB_OrUnionPrimaryKeyDedup_LegShapes`; the file header records which shapes
 reach the union and which do not, measured rather than assumed.
+
+A SECOND DATA POINT FOR THE SAME COST BEHAVIOUR, measured while writing
+`sparse_index_query_safety_fdb_test.go`: a SPARSE index is not chosen either, on
+a 900-row table, for any query — including one whose predicate is the index's
+filter verbatim.
+
+```
+CREATE INDEX t_a_sparse AS SELECT a FROM t WHERE keep > 0
+
+SELECT id FROM t WHERE a = 5 AND keep > 0   -> PredicatesFilter(Scan(T), [1 preds])
+SELECT id FROM t WHERE a = 5 AND keep > 5   -> PredicatesFilter(Scan(T), [1 preds])
+SELECT a  FROM t WHERE keep > 0 ORDER BY a  -> InMemorySort(PredicatesFilter(Scan(T)))
+```
+
+The candidate machinery is present — `ValueIndexScanMatchCandidate` carries the
+sparse predicate proto and an opaque-filter flag, and such a candidate is
+documented as never COMPLETE — so again what declines is the CHOICE, not the
+capability. Taken with the OR observation above, the common shape is that a
+secondary access path loses to a full scan at table sizes where it should not,
+and it is worth checking whether both have one cause before treating them as two
+items.
+
+A sparse index that is never chosen is pure write cost: it is maintained on
+every insert, update and delete, and buys nothing on the read side.
+
+The row-level ANSWERS are pinned either way by that test file, including the two
+predicates that LOOK implied by `keep > 0` and are not — `keep >= 0` (zero is
+excluded) and `keep IS NOT NULL` (negatives are). Those are what will catch an
+implication check that is too generous on the day sparse matching starts being
+chosen.

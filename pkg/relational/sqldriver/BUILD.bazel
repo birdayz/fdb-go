@@ -564,6 +564,7 @@ go_test(
         "sim_tx_budget_midpage_test.go",
         "sort_key_label_collision_fdb_test.go",
         "sparse_index_asselect_wire_fdb_test.go",
+        "sparse_index_query_safety_fdb_test.go",
         "sparse_unique_distinct_fdb_test.go",
         "sql_integration_test.go",
         "sql_querycontext_fuzz_test.go",
