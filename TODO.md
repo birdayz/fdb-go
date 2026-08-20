@@ -19352,3 +19352,45 @@ projection's identifier casing — one normalisation, applied at both ends.
 The base-table arm in the same probe is the control: quoted USING against
 two base tables already works, so the folding is specific to the derived
 path.
+
+## Quoted identifiers are folded by the catalog's column lookup
+
+`semantic.Identifier` models SQL's rule correctly — an unquoted name folds
+to upper, a quoted one keeps its case, and `EqualsIgnoreQuoting` compares
+by normalized text. But the catalog's `LookupColumn` resolves
+case-insensitively, so a table exposing a quoted lower-case `"k"` answers
+a lookup for `"K"`, and the two become the same column.
+
+Java does not. Measured
+(`conformance/join_using_chain_java_probe_test.go`,
+`JoinUsingQuotedIdentifierJavaProbe`, arm "a quoted USING must not hide
+the unquoted column"):
+
+    CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+    CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+    CREATE TABLE q3 ("id" BIGINT,  K  BIGINT, PRIMARY KEY ("id"))
+
+    SELECT q1."id" FROM q1 JOIN q2 USING ("k")
+                           JOIN q3 USING ("K") ORDER BY q1."id"
+
+    java: Unknown reference K   — no left source exposes "K"
+    go  : 42702 Ambiguous reference K — both q1."k" and q2."k" matched
+
+Both engines refuse, so no wrong rows ship; they disagree about WHY, and
+the underlying disagreement is about identifier equality rather than about
+USING.
+
+IT IS NOT THE USING RESOLVER. `retargetUsingJoins` derives its ownership
+key and its hidden-copy key identically, both quote-aware
+(`semantic.NewUnquoted` on the column text as written), so the two cannot
+disagree with each other. The folding happens inside the catalog lookup
+they both call.
+
+THE WORK: decide whether the catalog's column lookup should honour the
+quoting flag. It is deliberately case-insensitive today and a great deal
+depends on that, so this is an identifier-equality change affecting every
+column reference in the engine — not something to fold into a USING fix.
+Java is the reference and Java distinguishes them.
+
+Pinned rather than described: the probe arm asserts BOTH engines' current
+wording, so a repair reddens it instead of passing silently.

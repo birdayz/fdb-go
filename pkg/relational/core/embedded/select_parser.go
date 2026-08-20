@@ -3151,11 +3151,11 @@ func (s usingSource) owns(id semantic.Identifier) bool {
 // in both engines, and the shape where nothing hides a copy — an ON join
 // putting two row-versioned sources in scope before a USING names it — is
 // AMBIGUOUS in both. Two owners really is two owners here.
-func usingOwnerOf(colText, folded string, sources []usingSource, hidden map[string]map[string]bool) (string, error) {
+func usingOwnerOf(colText string, sources []usingSource, hidden map[string]map[string]bool) (string, error) {
 	id := semantic.NewUnquoted(colText)
 	var owners []string
 	for _, s := range sources {
-		if hidden[s.alias][folded] {
+		if hidden[s.alias][id.Name()] {
 			continue
 		}
 		if !s.owns(id) {
@@ -3169,7 +3169,7 @@ func usingOwnerOf(colText, folded string, sources []usingSource, hidden map[stri
 	case 0:
 		return "", nil
 	default:
-		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", folded)
+		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", id.Name())
 	}
 }
 
@@ -3302,8 +3302,11 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			// predicate mixing the two rules can never be built.
 			owners := make([]string, 0, len(j.usingColTexts))
 			for _, colText := range j.usingColTexts {
-				col := strings.ToUpper(functions.StripIdentifierQuotes(colText))
-				owner, err := usingOwnerOf(colText, col, sources, hidden)
+				// The name as the catalog knows it: unquoted folds, quoted keeps
+				// its case. Used for the messages too, so a quoted "k" is not
+				// reported as K.
+				col := semantic.NewUnquoted(colText).Name()
+				owner, err := usingOwnerOf(colText, sources, hidden)
 				if err != nil {
 					return err
 				}
@@ -3368,11 +3371,19 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		// This join's RIGHT copy of each USING column is now hidden, whether or
 		// not the predicate was retargeted — the hiding is Java's rule about
 		// visibility, not about which predicate Go built.
-		for _, c := range j.usingHiddenCols {
+		//
+		// KEYED THE SAME WAY OWNERSHIP IS — by the quote-aware normalized
+		// identifier, from the column text as WRITTEN. `usingHiddenCols` is
+		// upper-folded for its own consumers (star expansion, unqualified
+		// resolution), and reusing it here would collapse a quoted `"k"` and an
+		// unquoted `K` into one key: a first `USING("k")` would then hide `K`
+		// from the second join. That is the same case-folding defect the
+		// ownership lookup was just repaired for, surviving in the sibling map.
+		for _, colText := range j.usingColTexts {
 			if hidden[j.alias] == nil {
 				hidden[j.alias] = map[string]bool{}
 			}
-			hidden[j.alias][c] = true
+			hidden[j.alias][semantic.NewUnquoted(colText).Name()] = true
 		}
 		sources = append(sources, rightLeg)
 	}

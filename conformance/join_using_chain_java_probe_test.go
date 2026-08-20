@@ -462,11 +462,16 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 		defer os.Remove(clusterFilePath)
 		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
 
+		// q3 exposes an UNQUOTED K, which folds to `K` — a different column
+		// from q1/q2's quoted `"k"`. That distinction is what the hidden-map
+		// arm below turns on.
 		const schema = `CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id")) ` +
-			`CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))`
+			`CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id")) ` +
+			`CREATE TABLE q3 ("id" BIGINT, K BIGINT, PRIMARY KEY ("id"))`
 		setup := []string{
 			`INSERT INTO q1 VALUES (1, 10), (2, 20)`,
 			`INSERT INTO q2 VALUES (1, 10), (2, 99)`,
+			`INSERT INTO q3 VALUES (1, 10), (2, 20)`,
 		}
 
 		render := func(r plandiff.RunResult) string {
@@ -485,6 +490,40 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 			{
 				name: "quoted USING against a base table",
 				sql:  `SELECT q1."id" FROM q1 JOIN q2 USING ("k") ORDER BY q1."id"`,
+			},
+			{
+				// THE HIDDEN MAP MUST BE AS QUOTE-AWARE AS OWNERSHIP IS.
+				// `q1` and `q2` expose a quoted lower-case `"k"`; `q3` exposes
+				// a plain `K`. The first USING hides the quoted `"k"` on its
+				// right, and the second names `K` — a DIFFERENT column. A
+				// hidden map keyed on an upper-folded name collapses the two
+				// and hides a column that was never hidden, changing which
+				// source owns it.
+				//
+				// This is the same case-folding defect the ownership lookup was
+				// repaired for, and it survived in the sibling map — which is
+				// why it gets its own arm rather than being assumed to travel
+				// with the first fix. The hidden map now derives its key
+				// EXACTLY as ownership does, so the two cannot disagree.
+				//
+				// WHAT THIS ARM THEN FOUND, one layer down and pre-existing:
+				// Java treats `"K"` and `"k"` as different columns and reports
+				// `Unknown reference K`, while Go's catalog lookup folds them
+				// together and finds TWO owners. That is `rlcatalog`'s
+				// case-insensitive `LookupColumn`, not this resolver — the key
+				// derivation above is quote-aware and identical on both sides
+				// of the comparison.
+				//
+				// Pinned with both engines' text, and booked in TODO.md under
+				// "Quoted identifiers are folded by the catalog's column
+				// lookup". Not fixed here: it changes identifier equality for
+				// every column reference in the engine, which is not something
+				// to slip into a USING change.
+				name: "a quoted USING must not hide the unquoted column",
+				sql: `SELECT q1."id" FROM q1 JOIN q2 USING ("k") ` +
+					`JOIN q3 USING ("K") ORDER BY q1."id"`,
+				javaSays: "Unknown reference K",
+				goSays:   "42702",
 			},
 			{
 				// A DERIVED right leg with quoted columns — A PRE-EXISTING
