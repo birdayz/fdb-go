@@ -836,6 +836,84 @@ var _ = Describe("SlidingWindowIndex", func() {
 		})
 	}
 
+	It("deleteRecordsWhere is refused when the index root repeats the record-type key", func() {
+		ks := specSubspace()
+		// The shape that shows the preflight must judge the prefix the
+		// MAINTAINER receives, not the caller's raw one.
+		//
+		// computeSingleTypeIndexDeletePrefix strips the record-type column only
+		// when the index root does NOT repeat it. Here the root does, so the
+		// action prefix keeps it — (typeKey, quantity) — while the window's
+		// subspace is keyed by (quantity). A preflight that stripped the column
+		// on its own would compare (quantity) against the partition, approve,
+		// and then hand the maintainer a two-element tuple that addresses a
+		// subspace nothing lives under: the records and the HNSW graph go, the
+		// window's entries and counts stay, and the call returns SUCCESS.
+		//
+		// A window partitions by field paths and can never have a record-type
+		// column, so refusing is the honest answer rather than stripping.
+		//
+		// The partition is TWO columns on purpose. With a one-column partition
+		// the width check refuses first and the per-column comparison is never
+		// reached — the spec would pass whatever that comparison did. At two
+		// columns the widths agree and the only thing that can refuse is the
+		// column-by-column check, which is the arm under test.
+		idx := NewVectorIndex("sw_dw_rtk_root",
+			KeyWithValue(Concat(RecordTypeKey(), Field("quantity"), Field("coord_x"), Field("coord_y")), 2), 2)
+		Expect(idx.SetPredicateProto(&gen.Predicate{
+			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+				OrderingField: []string{"order_id"},
+				Size:          proto.Int32(2),
+				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+				PartitionFields: []*gen.FieldPath{
+					{Field: []string{"quantity"}},
+					{Field: []string{"price"}},
+				},
+			},
+		})).To(Succeed())
+		builder := baseMetaData()
+		builder.GetRecordType("Order").SetPrimaryKey(
+			Concat(RecordTypeKey(), Field("quantity"), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Concat(RecordTypeKey(), Field("customer_id")))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Concat(RecordTypeKey(), Field("id")))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for _, o := range []struct{ id, qty, price int64 }{{1, 7, 10}, {2, 8, 20}} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Quantity: proto.Int32(int32(o.qty)),
+					Price:    proto.Int32(int32(o.price)),
+					CoordX:   proto.Int64(o.id), CoordY: proto.Int64(o.id),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			typeKey := md.GetRecordType("Order").GetRecordTypeKey()
+			derr := store.DeleteRecordsWhere(tuple.Tuple{typeKey, int64(7)})
+			Expect(derr).To(HaveOccurred())
+			var swErr *SlidingWindowDeleteWhereError
+			Expect(errors.As(derr, &swErr)).To(BeTrue(),
+				"approving this clears the wrong subspace and reports success; got %v", derr)
+
+			// Nothing went: not the records, not the window.
+			rec, rerr := store.LoadRecord(tuple.Tuple{typeKey, int64(7), int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil())
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+			keys, _ := readSlidingWindowEntries(rtx.Transaction(), sw, tuple.Tuple{int64(7), int64(10)})
+			Expect(keys).To(HaveLen(1))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("serves a generic BY_DISTANCE scan through the decorator", func() {
 		ks := specSubspace()
 		// ScanIndexByType is the path the SQL executor takes, and it reaches the
