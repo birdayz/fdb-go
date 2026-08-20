@@ -9,7 +9,6 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 	"testing"
 )
 
@@ -53,19 +52,29 @@ func TestFDB_CrossJoinProjectionProbe(t *testing.T) {
 			t.Errorf("comma join = %d rows, want 6 (2x3)", got)
 		}
 	})
-	t.Run("cross_join_keyword_rejected", func(t *testing.T) {
-		// Go rejects explicit CROSS JOIN (no ON) with a helpful 0A000 pointing at
-		// comma-join. Java does not functionally support no-ON CROSS JOIN either
-		// (its visitInnerJoin unconditionally reads the ON expression). comma-join
-		// is the working cartesian form (above).
-		_, err := db.QueryContext(ctx, "SELECT a.id, b.id FROM a CROSS JOIN b")
-		if err == nil {
-			t.Fatal("CROSS JOIN unexpectedly succeeded")
-		}
-		if !strings.Contains(err.Error(), "0A000") {
-			t.Errorf("CROSS JOIN error = %v, want 0A000", err)
-		}
-	})
+	// Every conditionless spelling means the cartesian product and must give
+	// the SAME cardinality as the comma form. Go once refused these with 0A000
+	// because fdb-relational NPEs on them (visitInnerJoin reads the ON
+	// expression unconditionally); that was reversed, since the rows are
+	// correct, the syntax is ordinary SQL and nothing here touches the wire.
+	//
+	// Checked as a family rather than one spelling: they reach the same grammar
+	// alternative by different tokens, so a parser change can easily move one
+	// without moving the others, and 2x3 is small enough that a wrong join
+	// shape shows up as a wrong count rather than as a slow test.
+	for _, q := range []string{
+		"SELECT a.id, b.id FROM a CROSS JOIN b",
+		"SELECT a.id, b.id FROM a JOIN b",
+		"SELECT a.id, b.id FROM a INNER JOIN b",
+		"SELECT a.id, b.id FROM a CROSS JOIN b ON 1 = 1",
+	} {
+		t.Run("conditionless_cartesian:"+q, func(t *testing.T) {
+			if got := count(q); got != 6 {
+				t.Errorf("%s = %d rows, want 6 (2x3) — every conditionless join "+
+					"spelling is the cartesian product, and must match the comma form", q, got)
+			}
+		})
+	}
 	t.Run("comma_join_with_filter", func(t *testing.T) {
 		if got := count("SELECT a.id, b.id FROM a, b WHERE a.id = 1"); got != 3 {
 			t.Errorf("comma join WHERE a.id=1 = %d rows, want 3", got)

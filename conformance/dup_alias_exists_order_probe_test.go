@@ -18,17 +18,21 @@ package conformance_test
 //	the existential's subquery is structurally identical to a leg's own scan.
 //
 // THE CAUSE IS NOT THE EXISTS, and it is not new. Go's cost model reaches a
-// genuine TIE on the two nestings of an unconstrained cross product and
-// resolves it by its own hash; Java rarely reaches that tie at all, because it
-// prunes each Reference to one member mid-phase and Go does not
-// (planning_cost_model.go:562 states this). So the plain-cross-product row on
+// genuine TIE on the two nestings of an unconstrained cross product and resolves
+// it by a hash over plan structure. SO DOES JAVA — see
+// cross_join_order_mechanism_probe_test.go, which sweeps 16 name/cardinality
+// combinations and finds Java deviating from FROM order in 10 of them. The
+// Java column below is therefore a RECORD of what Java does for THESE tables,
+// not evidence of a property Java has. So the plain-cross-product row on
 // the first line is a PRE-EXISTING divergence measured identically at the
 // merge-base, and the EXISTS rows are the same tie surfacing in one more shape
 // once the three-quantifier NLJ arm stopped forcing a particular nesting.
 // Mutation-checked: inverting the statistics rung that sits above the hash
 // tie-break changes none of these plans, so that rung is not the decider.
 //
-// DIRECTION OF THE ALARM. Java's column is the reference and must not move.
+// DIRECTION OF THE ALARM. Java's column is a MEASUREMENT that must not move
+// silently — not a specification. It is pinned so a JVM upgrade that changes
+// Java's nesting is seen rather than absorbed.
 // Go's column pins TODAY'S behaviour, divergence included, so that closing the
 // gap turns this test RED rather than silently changing what conformance
 // means. A red here after a cost-model or prune-to-1 change is the good case:
@@ -94,7 +98,7 @@ var _ = Describe("DupAliasExistsOrderProbe", func() {
 				sql:      "SELECT a.qid FROM T_DUP_EIP AS a, T_DUP_EIQ AS a",
 				wantJava: fromOrder,
 				wantGo:   reversed,
-				note:     "PRE-EXISTING tie divergence; Go lacks Java's prune-to-1",
+				note:     "PRE-EXISTING tie divergence; both engines hash, with different hashes",
 			},
 			{
 				// The subquery is structurally identical to the first leg's own

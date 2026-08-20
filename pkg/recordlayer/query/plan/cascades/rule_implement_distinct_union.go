@@ -28,6 +28,13 @@ type ImplementDistinctUnionRule struct {
 	matcher matching.BindingMatcher
 }
 
+// NOTE: this matches LogicalDistinctExpression, the FULL-ROW dedup node, while
+// the OR-to-union rewrite now emits LogicalUniqueExpression — PK dedup, Java's
+// meaning. The ordered union alternative is therefore unreachable from the OR
+// path. Measured as already dead before that change (0 MergeSortUnion in the
+// plan-shape golden on BOTH sides), so nothing regressed — which is exactly why
+// it would otherwise go unnoticed. Tracked in TODO.md, "The ordered OR-union
+// alternative is structurally unreachable".
 func NewImplementDistinctUnionRule() *ImplementDistinctUnionRule {
 	return &ImplementDistinctUnionRule{
 		matcher: NewExpressionMatcher[*expressions.LogicalDistinctExpression]("implement_distinct"),

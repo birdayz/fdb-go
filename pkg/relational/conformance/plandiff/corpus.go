@@ -1128,24 +1128,32 @@ func SeedRunCorpus() []RunQuery {
 		// `distinct_aggregates.yaml`, `aggregate_expr.yaml`, and
 		// `group_by_validation.yaml`'s `error_code: "0A000"` tests
 		// under the yamsql harness.
-		// NOTE: explicit CROSS JOIN syntax (`a CROSS JOIN b`) is rejected
-		// in BOTH engines — Java NPEs (InnerJoinContext.expression()
-		// null-dereference in the visitor); Go's embedded engine
-		// rejects at parse time with `ErrCodeUnsupportedOperation`
-		// "explicit CROSS JOIN syntax is not supported"
-		// (`select_parser.go#extractJoinClause`). Same architectural
-		// reason in both engines: the visitor's CROSS-JOIN code path
-		// doesn't exist. Workaround: comma-join `FROM a, b`.
+		// NOTE: an inner join with NO join condition — `a JOIN b`,
+		// `a INNER JOIN b`, `a CROSS JOIN b` — is a GO-ONLY CAPABILITY,
+		// not a shared shape. Java NPEs on all three
+		// (InnerJoinContext.expression() null-dereference in the
+		// visitor); Go plans the cartesian product they all mean.
 		//
-		// NOT included as a cross-engine corpus entry because Java's
-		// NPE message (`Cannot invoke ... InnerJoinContext.expression()`)
-		// and Go's clean error message can't share a meaningful
-		// substring without aligning Go to mimic Java's panic-style
-		// failure (which would be a regression in Go's UX). The
-		// rejection alignment is pinned on the Go side via
-		// `cross_join.yaml`'s `error_code: "0A000"` test under the
-		// yamsql harness; Java's NPE behaviour is documented in
-		// CLAUDE.md "Java↔Go conformance gotchas" §Parser bugs.
+		// Go once refused them to match the NPE. That was reversed: the
+		// rows are correct, the syntax is ordinary SQL, and nothing here
+		// touches the wire, so it is read-side reach Java lacks rather
+		// than a divergence to repair — and refusing a query we answer
+		// correctly, to reproduce someone else's crash, costs every user
+		// who writes CROSS JOIN.
+		//
+		// Measured against a live 4.11.1.0 rather than inferred, which
+		// also caught the reverse-direction defect: `a CROSS JOIN b ON
+		// 1 = 1` parses with a non-null expression, so the NPE cannot
+		// fire and Java answers it — while Go's gate, keyed on the CROSS
+		// keyword instead of the absent condition, refused it.
+		//
+		// NOT a cross-engine corpus entry because the engines
+		// deliberately differ here. `cross_join.yaml` pins Go's rows for
+		// every spelling, and
+		// `conformance/join_without_on_java_probe_test.go` classifies
+		// each arm against the live JVM with a floor on the
+		// intentionally-extending ones, so a silent return to refusing
+		// them reddens.
 		{
 			// MIN over a non-numeric (STRING) column — fdb-relational
 			// 4.11.1.0's function registry only installs numeric
@@ -18072,8 +18080,10 @@ func SeedRunCorpus() []RunQuery {
 			Divergence: &Divergence{
 				Reason: "ORDER ONLY — identical six-row multiset on both engines, and the query has no ORDER BY. " +
 					"Go's cost model ties on the two nestings of the unconstrained comma join and breaks the tie " +
-					"with an identifier-sensitive hash; Java prunes each Reference to one member and never reaches " +
-					"the tie (planning_cost_model.go:562). PRE-EXISTING and not caused by the EXISTS: measured at " +
+					"with an identifier-sensitive hash. So does JAVA — its ImplementNestedLoopJoinRule matches both " +
+					"quantifier orders (SetMatcher.exactlyInAnyOrder) and PlanningCostModel.compare ends in a planHash " +
+					"comparison, so neither engine guarantees a nesting: over 16 name/cardinality combinations Java " +
+					"deviates from FROM order in 10 (RFC-235 section 18). PRE-EXISTING and not caused by the EXISTS: measured at " +
 					"merge-base e24f338e7, the plain comma join over these tables already diverges the same way. " +
 					"The retired three-quantifier NLJ arm forced Java's nesting for this shape and was masking it. " +
 					"Root cause, the renamed-table demonstration and the mutation evidence: RFC-235 section 17; " +

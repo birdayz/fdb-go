@@ -3378,15 +3378,33 @@ so there is no ref child-selection left in the SARG walk.)
 + worse-plan risk for `a=1 OR b=2` with no indexes.
 
 ### [ ] Finding 12 (LOW-MED, latent) — value-layer / compensation gaps
-- `values/value_in.go:52` value-layer IN promotes both int64→float64 → loses precision >2^53 (disagrees
-  with exact predicate-layer IN); `:55`/`value_array_distinct.go:101` `==` panics on non-comparable
-  slice/map elements.
-- `values/values.go:3365,3394,3519` `CAST(string AS INT/LONG/DOUBLE)` `TrimSpace` where Java rejects.
+
+FOUR OF THE FIVE BULLETS BELOW ARE STALE — the defects were fixed and the entry
+was not updated, so a reader picking this up re-derives work already done. Each
+is struck through with the evidence that closed it; the compensation bullet is
+the only one still standing. Verified by reading the code at the named sites, not
+by assuming a later commit covered them.
+
+- ~~`values/value_in.go:52` value-layer IN promotes both int64→float64 → loses precision >2^53~~
+  FIXED. The site now routes same-family integers through `CompareExactInts` and
+  says so: "never round-trip two int64 through float64, whose promotion ties
+  adjacent values above 2^53". Pinned at both levels — `values/value_in_exact_test.go`
+  (unit) and `sqldriver/numeric_precision_boundary_test.go` (SQL).
+- ~~`:55`/`value_array_distinct.go:101` `==` panics on non-comparable slice/map elements~~
+  FIXED. Both sites call `comparableEqual`, which falls back to `reflect.DeepEqual`
+  for non-comparable dynamic types; the array site carries the reason inline.
+- ~~`values/values.go:3365,3394,3519` `CAST(string AS INT/LONG/DOUBLE)` `TrimSpace` where Java rejects.~~
+  FIXED. `trimJavaWhitespace` strips only code points <= U+0020, matching Java's
+  `String.trim()`, so `CAST(NBSP+'5' AS INT)` throws rather than yielding 5.
 - `compensation.go:1035` `ForMatchCompensation.Union` picks c's rcf even when only other's is needed
   (Java `Verify.verify` both) → wrong output shape; `:151` `ComputeResultCompensation` hardcodes
   `EmptyGroupByMappings` vs Java's `pullUpAggregateCandidateMappings`. Both latent (single-child gated).
-- `predicates/predicates.go:117` `PredicateEquals` has no `ExistentialValuePredicate` case →
-  EXISTS AND EXISTS never deduped (optimization only; memo interning DOES handle it — inconsistent).
+- ~~`predicates/predicates.go:117` `PredicateEquals` has no `ExistentialValuePredicate` case~~
+  FIXED. The case is present at `predicates.go:136`.
+
+The compensation bullet above is the one that STANDS: `EmptyGroupByMappings()` is
+still hardcoded (`compensation.go:122,154`). The `Union` rcf half of that bullet
+was not re-checked, so it is neither confirmed nor closed here.
 
 ### [ ] Finding 13 (LOW) — dead code / missed matches / maintainability
 - Dead rules: `rule_implement_intersection.go:46`, `rule_intersection_merge.go:37`,
@@ -18866,12 +18884,27 @@ Go's Cascades reaches a genuine cost TIE on the two nestings of an unconstrained
 cross product and resolves it with a hash that consumes identifiers. The same
 query, differing only in the names of the tables it reads, plans opposite
 nestings — and since neither has an `ORDER BY`, the row ORDER a user sees
-depends on what the tables are called. Java is stable: the first `FROM` item is
-outermost in every spelling measured.
+depends on what the tables are called.
 
-Java rarely reaches this tie at all. It prunes each `Reference` to one member
-mid-phase; Go does not. `pkg/recordlayer/query/plan/cascades/planning_cost_model.go:562`
-states this beside the tie-break it wraps.
+JAVA IS NOT THE FIXED POINT — THAT WAS AN INFERENCE FROM TOO FEW SPELLINGS, AND
+IT IS REFUTED. An earlier revision of this entry said "Java is stable: the first
+`FROM` item is outermost in every spelling measured", and concluded Java rarely
+reaches the tie because it prunes each `Reference` to one member. The scoping was
+honest and the inference was wrong. Swept over EIGHT table-name pairs (each also
+in its reversed spelling) at two cardinality arrangements — 16 combinations,
+`conformance/cross_join_order_mechanism_probe_test.go`:
+
+    Java deviates from FROM order in 10 of 16
+    Java and Go disagree in 14 of 16
+    cardinality changes NOTHING in either engine: both arrangements of a given
+      name pair always answer the same way
+
+Java's `PlanningCostModel.compare` ends in
+`Integer.compare(planHash(a), planHash(b))` (`PlanningCostModel.java:320-326`) and
+its `ImplementNestedLoopJoinRule` matches its two quantifiers with
+`SetMatcher.exactlyInAnyOrder`, so Java generates BOTH nestings and breaks the
+tie on a hash over plan structure — exactly as Go does, with a different hash.
+Both engines are identifier-driven; neither guarantees FROM order.
 
 MEASURED, not inferred:
 
@@ -18899,15 +18932,17 @@ rather than preventing it.
 
 THE FIX IS A COST-MODEL CHANGE AND NEEDS ITS OWN RFC + GRAEFE ACK: either give
 Go Java's prune-to-1, or replace the identifier-sensitive tie-break with a
-stable one. THOSE TWO ARE NOT PEERS. Java's own final tie-break is
-`Integer.compare(planHash(a), planHash(b))` (`PlanningCostModel.java:322-326`),
-which is identifier-sensitive too; what makes Java stable is PRUNE-TO-1, so it
-rarely reaches the tie. Porting prune-to-1 is therefore the Java-alignment
-option, while a declaration-order tie-break is a Go invention that happens to
-match Java's output here — an earlier revision of this entry recommended the
-second on the grounds that it "matches Java's observable behaviour", which
-confuses the output with the mechanism. Either carries a full golden re-audit and
-a stress re-baseline.
+stable one. NEITHER IS A JAVA-ALIGNMENT OPTION, because there is no Java
+behaviour to align WITH: Java is identifier-driven here too (10 of 16 spellings
+deviate from FROM order). Porting prune-to-1 would not produce a stable nesting —
+the comparison it prunes with is the same planHash-terminated compare — and
+matching Java exactly would mean reproducing Java's planHash bit-for-bit over
+plan structures, which is neither a stated goal nor wire-relevant.
+
+So the remaining question is NOT parity. It is whether Go should guarantee a
+rename-invariant nesting as a quality property of its own, which is a
+Go-beyond-Java choice and should be argued as one. Either way it carries a full
+golden re-audit and a stress re-baseline.
 
 THE ANNOTATION ROUTE WAS EXTENDED, and this paragraph records what it cost.
 `plandiff.DivergenceDirection` had five values and every one was "Java is wrong"
@@ -18932,6 +18967,453 @@ Full write-up, including the plans and the mutation evidence: RFC-235 §17.
 
 ---
 
+### [ ] A single-table `a = ? OR b = ?` full-scans with both columns indexed
+
+MEASURED, on a two-schema twin fixture (`or_union_pk_dedup_edges_fdb_test.go`),
+with an index on every probed column and 1209 rows in the probed table:
+
+```
+SELECT uid FROM u WHERE ua = 1500                     -> IndexScan(U_UA, [=] COVERING)
+SELECT uid FROM u WHERE ua = 1500 OR ub = 1600        -> PredicatesFilter(Scan(U), [1 preds])
+SELECT uid FROM u WHERE ua = 1500 OR ub = 1600 OR uc = 1700
+                                                      -> PredicatesFilter(Scan(U), [1 preds])
+(ua = 1500 OR ub = 1600) AND (uc = 1700 OR ud = 1800) -> PredicatesFilter(Scan(U), [2 preds])
+```
+
+A single equality takes the index. Add a disjunct and the whole query becomes a
+full scan with a residual filter — roughly 1200 record reads where the union of
+two point probes would read two index entries and two records. The corpus agrees
+this is the standing shape rather than a fixture artefact:
+`plan_shape.golden` records `PredicatesFilter(Scan(ITEMS))` for
+`WHERE cat = 'A' OR cat = 'C'` and for `WHERE price = 10 OR price = 20 OR price
+= 30`.
+
+The union access path is NOT dead — it is chosen for the same disjunction as the
+correlated inner of a LEFT JOIN, where a per-outer-row full scan is priced out:
+
+```
+SELECT d.did, u.uid FROM d LEFT JOIN u ON u.ua = d.da OR u.ub = d.db2
+  -> FlatMap(outer=Scan(D), inner=DefaultOnEmpty(Fetch(UnorderedPrimaryKeyDistinct(
+       UnorderedUnion(IndexScan(U_UA, [=] COVERING), IndexScan(U_UB, [=] COVERING))))))
+```
+
+So the machinery works and the enumeration reaches it; what declines is the
+choice. Padding the table from 9 to 1209 rows did not move the single-table or
+the conjunction-of-disjunctions cases, so it is not simply a small-table effect
+at these sizes.
+
+NOT the same as Finding 11 above, and the two point OPPOSITE ways. Finding 11 is
+that `PredicateToLogicalUnionRule` expands every top-level OR where Java expands
+only index-exploitable ones (memo bloat, worse-plan risk). This is that the
+expansion, having happened, then LOSES on cost to a full scan in the case where
+it should win by orders of magnitude. A fix for one should not be assumed to
+address the other.
+
+WHY IT IS FILED RATHER THAN FIXED: it is a cost-model question, which needs the
+RFC + Graefe gate, and it is plan QUALITY rather than a wrong answer — the rows
+are correct either way, which is why no test caught it and why the twin oracle
+could not either. What the twin did catch, and what is now fixed, is the
+correctness defect on the union path itself (the cross-leg dedup was keyed on
+the row rather than the primary key).
+
+WHAT TO CHECK FIRST, in order: whether the union alternative is COSTED at all
+for a non-correlated select (it is enumerated — the rule's unit tests fire on
+multi-OR shapes — but a plan absent from the memo and a plan present-and-outbid
+look identical from EXPLAIN); then whether the per-leg cost carries the
+cross-leg dedup's cost twice; then whether Java picks the union for the same
+shape, which `plandiff` can answer directly and which decides whether this is a
+divergence or a shared trait.
+
+To reproduce: the plans above come from `EXPLAIN` on the fixture in
+`TestFDB_OrUnionPrimaryKeyDedup_LegShapes`; the file header records which shapes
+reach the union and which do not, measured rather than assumed.
+
+A SECOND DATA POINT FOR THE SAME COST BEHAVIOUR, measured while writing
+`sparse_index_query_safety_fdb_test.go`: a SPARSE index is not chosen either, on
+a 900-row table, for any query — including one whose predicate is the index's
+filter verbatim.
+
+```
+CREATE INDEX t_a_sparse AS SELECT a FROM t WHERE keep > 0
+
+SELECT id FROM t WHERE a = 5 AND keep > 0   -> PredicatesFilter(Scan(T), [1 preds])
+SELECT id FROM t WHERE a = 5 AND keep > 5   -> PredicatesFilter(Scan(T), [1 preds])
+SELECT a  FROM t WHERE keep > 0 ORDER BY a  -> InMemorySort(PredicatesFilter(Scan(T)))
+```
+
+The candidate machinery is present — `ValueIndexScanMatchCandidate` carries the
+sparse predicate proto and an opaque-filter flag, and such a candidate is
+documented as never COMPLETE — so again what declines is the CHOICE, not the
+capability. Taken with the OR observation above, the common shape is that a
+secondary access path loses to a full scan at table sizes where it should not,
+and it is worth checking whether both have one cause before treating them as two
+items.
+
+A sparse index that is never chosen is pure write cost: it is maintained on
+every insert, update and delete, and buys nothing on the read side.
+
+The row-level ANSWERS are pinned either way by that test file, including the two
+predicates that LOOK implied by `keep > 0` and are not — `keep >= 0` (zero is
+excluded) and `keep IS NOT NULL` (negatives are). Those are what will catch an
+implication check that is too generous on the day sparse matching starts being
+chosen.
+
+---
+
+### [ ] OWNER DECISION — Go accepts a parenthesized CASE condition; Java rejects it 42804
+
+MEASURED on both engines (`conformance/case_parenthesized_condition_java_probe_test.go`,
+which asserts this state and fails if either engine moves):
+
+```
+CASE WHEN  a = 1 AND b = 1  THEN 1 ELSE 0 END   java ACCEPT      go ACCEPT (same rows)
+CASE WHEN (a = 1 AND b = 1) THEN 1 ELSE 0 END   java REJECT 42804  go ACCEPT (correct rows)
+CASE WHEN (a = 1)           THEN 1 ELSE 0 END   java REJECT 42804  go ACCEPT (correct rows)
+```
+
+Java rejects EVERY parenthesized condition, simple or compound: the grammar has
+no parenthesized-expression alternative in `expressionAtom`, so `( expr )` is a
+one-element `recordConstructor`, and Java's `visitCaseFunctionCall` asserts the
+condition is BOOLEAN. A record is not, so it errors with a datatype mismatch.
+
+Go has always ACCEPTED these. What changed is that it used to answer some of
+them WRONGLY: resolving the condition as a value first meant a parenthesized
+COMPOUND boolean became `WHEN({_0: predicate}, TRUE)`, which is never true, so
+every row took the ELSE branch. That is fixed — the condition now resolves as a
+predicate, which is what a searched CASE's WHEN is — and the repair is pinned by
+`pkg/relational/sqldriver/case_parenthesized_condition_fdb_test.go`.
+
+So this is NOT a widening of the accepted surface. It is the same surface with
+the wrong answers removed, and it leaves Go in the direction the harness already
+names `DivergenceJavaErrorsGoCorrect`.
+
+THE DECISION, which is why this is booked rather than settled:
+
+  (a) KEEP Go permissive and correct. `CASE WHEN (a = 1 AND b = 1)` is ordinary
+      SQL that most engines accept; Java's rejection is an artifact of its
+      grammar treating grouping parentheses as a record constructor. Read-side
+      query reach beyond Java is allowed when wire compat holds — it does here,
+      nothing about storage changes — and the shape now has deep coverage.
+
+  (b) NARROW Go to Java's 42804. Strict parity on the shared surface, and there
+      is precedent in this repo: when Go accepted ordering comparisons over
+      BOOLEAN that Java rejected, Go was changed to reject
+      (boolean_expression_position_java_probe_test.go records that). Cost: a
+      query that works today starts failing, including the simple `(a = 1)`
+      form that Go has always answered correctly.
+
+Whoever rules should also note that (b) narrows MORE than the defect: the simple
+parenthesized condition was never wrong, so rejecting it is a behaviour change
+unrelated to the bug that prompted the measurement.
+
+---
+
+### [ ] UPSTREAM — Java's grouped MIN returns NULL for a group holding a NULL
+
+MEASURED on both engines
+(`conformance/permuted_min_null_group_java_probe_test.go`, which asserts this
+and fails if Java starts agreeing):
+
+```
+rows (g, v): (1,5) (1,NULL) (1,9) | (2,NULL) (2,NULL) | (3,2) (3,8) | (4,0) (4,NULL) (4,-4)
+
+SELECT g, MIN(v) FROM t GROUP BY g
+  java: [[1 nil] [2 nil] [3 2] [4 nil]]     <- wrong for the MIXED groups 1 and 4
+  go  : [[1 5]   [2 nil] [3 2] [4 -4]]      <- SQL-correct
+
+SELECT g, MAX(v) FROM t GROUP BY g
+  java and go IDENTICAL                     <- the control: NULL never wins a MAX
+```
+
+A `PERMUTED_MIN` index stores one extremum per group, a NULL-valued record
+produces an entry like any other, and NULL sorts before every value — so it wins
+the comparison unconditionally and the stored extremum for a mixed group is NULL.
+Java's `PermutedMinMaxIndexMaintainer` has no NULL filter and its `getExtremum`
+takes the first entry of the group scan, so it both stores and ANSWERS the NULL.
+
+Go stores the same bytes on purpose — that is what keeps the two engines able to
+share a cluster — and repairs the answer at READ time by resolving a stored NULL
+extremum against the index's ordinary subspace. Direction:
+`DivergenceJavaWrongRowsGoCorrect`.
+
+TO REPORT UPSTREAM. The defect is in
+`fdb-record-layer-core/.../indexes/PermutedMinMaxIndexMaintainer.java`: SQL MIN
+ignores NULLs, and neither `updateIndexKeys` (which lets a NULL-valued entry
+compete for the extremum) nor `getExtremum` (which takes the first entry of the
+group scan) excludes them. MAX is unaffected because NULL sorts lowest. Upstream's
+own tests cannot see it: `PermutedMinMaxIndexTest` and `FDBPermutedMinMaxQueryTest`
+use proto2 int fields that are never null, so no fixture there has a group holding
+a NULL beside a value.
+
+Nothing in this repo is blocked on the upstream fix — the read-side repair is
+complete and pinned — but the report should go out, and if upstream fixes it the
+probe here fails and says so.
+
+---
+
+### [ ] UPSTREAM — Java NPEs on `IN (SELECT …)` instead of raising its own assert
+
+MEASURED on both engines
+(`conformance/in_list_shapes_java_probe_test.go`, which asserts that both
+engines REFUSE this and would fail if either started accepting it):
+
+```
+SELECT id FROM t WHERE b IN (SELECT b FROM t WHERE id = 1)
+
+  java: NullPointerException: Cannot invoke
+        "…RelationalParser$ExpressionsContext.expression()"
+        because "expressionsContext" is null
+  go  : 0AF00: Cascades planner could not plan query
+```
+
+Java HAS an assert for this shape and never reaches it.
+`ExpressionVisitor.visitInPredicate` opens with
+
+```java
+Assert.thatUnchecked(ctx.inList().queryExpressionBody() == null,
+        ErrorCode.UNSUPPORTED_QUERY, "IN predicate does not support nested SELECT");
+```
+
+so the intent is a clean UNSUPPORTED_QUERY. The NPE comes from elsewhere in
+the visit reaching `ExpressionsContext.expression()` on the subquery branch,
+where `expressions` is null because the parse took `queryExpressionBody`.
+Something evaluates the expressions branch before — or instead of — that
+guard.
+
+NOT A GO PROBLEM, and nothing here is blocked on it: both engines refuse the
+query, so the conformance principle holds in OUTCOME and Go's refusal is the
+tidier of the two. It is booked because an NPE is an upstream defect worth
+reporting whoever hits it, and because the probe compares only the outcome for
+this arm — if upstream ever fixes the NPE into its intended assert, that arm
+becomes comparable by MESSAGE too and the probe should be tightened.
+
+TO REPORT UPSTREAM with the reproducer above.
+
+## The ordered OR-union alternative is structurally unreachable
+
+`PredicateToLogicalUnionRule` now emits `LogicalUniqueExpression` — Java's
+PK dedup — where it used to emit `LogicalDistinctExpression`, the full-row
+node. That was the fix for the OR-union duplicate-row defect: Go had
+carried Java's *name* across instead of its *meaning*.
+
+The audit was not finished. Two rules still match the full-row node:
+
+- `rule_implement_distinct_union.go:33`
+- `rule_distinct_over_union_dedup.go:39`
+
+Their Java counterparts hang off Java's PK-dedup node, so with the OR path
+no longer producing `LogicalDistinctExpression` the merge-sorted union is
+unreachable from it, and `ImplementUniqueRule`'s required arm only ever
+yields `UnorderedPrimaryKeyDistinct(member)`. An OR with a leg-compatible
+`ORDER BY` therefore cannot produce Java's ordering-preserving union: it
+must go unordered union -> PKDistinct -> InMemorySort, which also gives up
+limit pushdown.
+
+NOTHING REGRESSED, and that is measured rather than assumed — the ordered
+alternative was already dead before the change:
+
+    G=pkg/relational/conformance/explaindiff/testdata/plan_shape.golden
+    grep -cE 'MergeSortUnion|RecordQueryUnionPlan' $G              -> 0
+    git show master:$G | grep -cE 'MergeSortUnion|RecordQueryUnionPlan' -> 0
+    grep -c IndexScan $G                                            -> 230   (control)
+
+0 on both sides over 2556 queries, with 70 `UnorderedUnion` (68 on master).
+So this is an architectural-coherence gap, not a live defect — which is
+exactly why it would never be noticed later.
+
+THE WORK: decide whether the two rules should match the PK-dedup node (and
+then whether Java's ordered union is reachable at all in Go), or whether
+the ordered alternative is genuinely out of scope and the rules are dead
+code to delete. Either answer needs the golden to move or to be shown it
+cannot. Query-engine change; needs the review gate before implementation.
+
+## `IsConstantValue` is narrower than the property the explode rule wants
+
+`InComparisonToExplodeRule` guards on `values.IsConstantValue` so a
+non-constant IN list cannot be folded at plan time (which would evaluate a
+field against a nil context, get `(nil, nil)` rather than an error, and
+silently plan `b IN (NULL, 999)`).
+
+The guard is SOUND — it never admits a row-dependent list. But the property
+that makes an IN list explodeable is ROW-INDEPENDENCE, which is what Java
+tests (correlation to the inner quantifier), not plan-time constancy.
+`IsConstantValue` returns false for `ParameterValue`, `ConstantObjectValue`
+and `ParameterObjectValue` — all row-independent, all explodeable, and Java
+has a dedicated parameter arm for them.
+
+Consequence: `x IN (?, 999)` is answered correctly but as a residual
+filter, and for a parameterised IN over an indexed column that IS a lost
+index probe. (For the column case the guard was added for, there was no
+probe to lose — ComparisonIn is not scan-range compatible.)
+
+THE WORK: widen the predicate from plan-time constancy to row-independence,
+porting Java's parameter arm. The note is at the guard in
+`rule_in_to_explode.go`. Query-engine change; needs the review gate.
+
+## `retargetUsingJoins` builds its ON predicate through SQL text
+
+`retargetUsingJoins` (select_parser.go) re-qualifies a chained USING's ON
+predicate by `fmt.Sprintf`-ing SQL text and re-parsing it with
+`parser.ParseExpression`. It inherited that from the parse-time synthesis
+it replaced, but it is the one place where the metadata needed for typed
+construction is already in hand — so it deepens the text-round-trip debt at
+precisely the site best placed to avoid it.
+
+THE WORK: build the predicate as a typed expression instead of as text.
+Also folds in the alias-quoting duplication: `quoteUsingAlias` is a verbatim
+copy of the `quoteAlias` closure inside `synthesizeUsingOnExpr`, and two
+copies of one identifier-normalisation rule must not be allowed to drift.
+
+## `retargetUsingJoins` is semantic analysis living in the parser
+
+`retargetUsingJoins` and its helpers (`usingSource`, `usingOwnerOf`,
+`legSource`, `baseTableColumns`, `cteNamePredicate`) resolve a USING
+column against the visible left scope, consult the semantic catalog and
+derive a CTE/subquery projection. That is name resolution — what Java does
+in semantic analysis — and it currently sits in `select_parser.go`.
+
+The LAYER is right and was reviewed as such: nothing here reaches the
+memo. It emits no expression, no quantifier and no cost decision; it reads
+a column surface and rewrites one predicate's qualifiers before the
+logical tree is built, which is the stage Cascades requires a
+name-resolved tree to arrive from. What is wrong is only the FILE.
+
+It is booked as its own entry rather than folded into the two existing
+USING items — those are about the SQL-text round-trip and the duplicated
+alias quoting, and neither would lead a reader to the placement question.
+A finding tucked inside an entry about something else is how findings rot.
+
+THE WORK: move the group next to the other semantic-analysis code, or
+into the semantic package outright if the dependency direction allows.
+No behaviour change; the yamsql arms, the JVM probes and the golden are
+the safety net for the move.
+
+## A derived source's schema is advertised before its body is validated
+
+`buildCTEColumnSource` derives a derived-table or CTE schema by walking the
+body's FROM legs BY NAME when the body is a simple star over one table. It
+does not check that the star's qualifier names a source in that body, so
+`(SELECT nope.* FROM c)` is advertised as exporting c's full row.
+
+Consequence, measured against a live JVM
+(`conformance/join_using_chain_java_probe_test.go`, arm "derived body
+invalid, outer USING ambiguous"):
+
+    SELECT a.id FROM a JOIN (SELECT nope.* FROM c) d USING (id)
+                       JOIN c USING (k)
+
+    java: Unknown reference NOPE     go: 42702 (the OUTER ambiguity)
+
+Both engines refuse the query — it is invalid twice over — so this is an
+error-ORDER divergence rather than a wrong answer. Java reports the fault
+INSIDE the subquery, which is both earlier and more specific.
+
+It became observable when USING ownership started consulting derived
+schemas: the outer ambiguity is now computable from the advertised
+(wrong) schema and is raised before the body is ever built. The advertising
+itself predates that.
+
+THE FIX belongs in the derivation, not in the USING resolver: route a
+derived source's schema through the validating builder. That path already
+exists — `buildExactScopeSourceOrBodyError`, which the same function uses
+for join/derived-legged bodies precisely because "a body that does not
+BUILD raises its OWN error instead". The simple-star branch takes the
+name-walk shortcut and skips it.
+
+It is not fixed here because it changes SHARED CTE schema derivation —
+every CTE and derived table in the engine — for an error-precedence gain
+on an already-invalid query. That deserves its own change and its own
+review lap rather than riding along on a USING fix.
+
+The divergence is PINNED, not merely described: the probe arm asserts BOTH
+engines' current wording, so it fails if Go is repaired or if either side
+moves to a third answer.
+
+## A derived table's quoted column names do not survive to the executor layout
+
+Quoted identifiers keep their case; unquoted ones fold to upper. A derived
+table whose projection names quoted lower-case columns keeps them
+lower-case, while the edge it feeds is declared with the folded upper-case
+form, and the executor rejects the mismatch:
+
+    CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+    CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+
+    SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d USING ("k")
+                                                        ORDER BY q1."id"
+
+    java: [[1]]
+    go  : resolution error 11 at executor.layout: edge lookup D:
+          read as RECORD(id:LONG?,k:LONG?),
+          declared RECORD(ID:LONG?,K:LONG?)
+
+GO REFUSES A QUERY JAVA ANSWERS, which is the direction that always
+matters.
+
+IT IS PRE-EXISTING, and that was established rather than assumed. A review
+reported it as caused by the USING retarget folding the column name to
+upper — which it did do, and which is fixed: the ownership lookup is now
+quote-aware (`semantic.NewUnquoted` on the raw column text rather than a
+blanket `strings.ToUpper`). But bypassing `retargetUsingJoins` entirely
+leaves this query failing in exactly the same way, so the retarget is not
+what refuses it. The fault is downstream of name resolution, in how a
+derived source's row type is declared versus how it is read.
+
+Pinned, both sides asserted verbatim, in
+`conformance/join_using_chain_java_probe_test.go`
+(`JoinUsingQuotedIdentifierJavaProbe`) so a repair reddens the pin rather
+than passing silently.
+
+THE WORK: make a derived source's declared row type agree with its
+projection's identifier casing — one normalisation, applied at both ends.
+The base-table arm in the same probe is the control: quoted USING against
+two base tables already works, so the folding is specific to the derived
+path.
+
+## Quoted identifiers are folded by the catalog's column lookup
+
+`semantic.Identifier` models SQL's rule correctly — an unquoted name folds
+to upper, a quoted one keeps its case, and `EqualsIgnoreQuoting` compares
+by normalized text. But the catalog's `LookupColumn` resolves
+case-insensitively, so a table exposing a quoted lower-case `"k"` answers
+a lookup for `"K"`, and the two become the same column.
+
+Java does not. Measured
+(`conformance/join_using_chain_java_probe_test.go`,
+`JoinUsingQuotedIdentifierJavaProbe`, arm "a quoted USING must not hide
+the unquoted column"):
+
+    CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+    CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+    CREATE TABLE q3 ("id" BIGINT,  K  BIGINT, PRIMARY KEY ("id"))
+
+    SELECT q1."id" FROM q1 JOIN q2 USING ("k")
+                           JOIN q3 USING ("K") ORDER BY q1."id"
+
+    java: Unknown reference K   — no left source exposes "K"
+    go  : 42702 Ambiguous reference K — both q1."k" and q2."k" matched
+
+Both engines refuse, so no wrong rows ship; they disagree about WHY, and
+the underlying disagreement is about identifier equality rather than about
+USING.
+
+IT IS NOT THE USING RESOLVER. `retargetUsingJoins` derives its ownership
+key and its hidden-copy key identically, both quote-aware
+(`semantic.NewUnquoted` on the column text as written), so the two cannot
+disagree with each other. The folding happens inside the catalog lookup
+they both call.
+
+THE WORK: decide whether the catalog's column lookup should honour the
+quoting flag. It is deliberately case-insensitive today and a great deal
+depends on that, so this is an identifier-equality change affecting every
+column reference in the engine — not something to fold into a USING fix.
+Java is the reference and Java distinguishes them.
+
+Pinned rather than described: the probe arm asserts BOTH engines' current
+wording, so a repair reddens it instead of passing silently.
+
+---
+
 ## CQ-88 / RFC-236 — planner statistics: COLLECTED offline, read DEFENSIVELY
 
 **Status: implemented.** The planner can now order joins by real per-table row
@@ -18948,8 +19430,17 @@ counts. Off by default; a connection opts in with `?planner_statistics=true`.
   mix real counts with defaults, which is the inverting case below.
 
 So counts are collected by SCANNING, offline, by an operator-scheduled job.
-Exactness is the point: it removes the floor, the quantization, and the
-bytes-to-rows conversion in one move.
+COUNTING rather than sampling is the point: it removes the floor, the
+quantization, and the bytes-to-rows conversion in one move.
+
+The counts are EXACT for a store at rest, and only then. Collection spans
+transactions -- a full scan does not fit in one -- so a record whose PRIMARY KEY
+moves concurrently can be counted twice or missed. That does not restore the
+estimator's problem, and the asymmetry is the reason: the estimator's error was
+SYSTEMATIC and SIZE-CORRELATED, deterministically 0 for a non-empty small table
+AT REST, in exactly the direction join order is most sensitive to. Key-move
+error is bounded by key-move traffic, uncorrelated with table size, and cannot
+manufacture a 0. See RFC-236 §4.
 
 **Storage is outside every record store's subspace**, keyed by the store's own
 subspace prefix bytes. Java owns record-store keyspaces 0-10 and marks the enum

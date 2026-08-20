@@ -1,8 +1,23 @@
 # cross_join.yaml
 #
-# CROSS JOIN / comma-join / no-ON INNER JOIN all produce the
-# cartesian product. Pins the three surface syntaxes so the parser
-# can't silently split them into different execution paths.
+# Every spelling of a JOIN that means "cartesian product" — `CROSS JOIN`,
+# a bare `JOIN` with no condition, `INNER JOIN` with no condition, and the
+# comma form — answers, and answers the same thing. Each surface syntax is
+# pinned separately so the parser cannot silently split them into
+# different execution paths.
+#
+# THESE USED TO BE REJECTIONS, and the reversal is the point of the file.
+# fdb-relational 4.11.1.0 cannot answer any conditionless join: its visitor
+# calls `accept(...)` on the ON-clause expression unconditionally and NPEs
+# on the null. Go once refused them to match that failure. But the rows Go
+# produces are correct, the syntax is ordinary SQL, and nothing here touches
+# the wire — so this is a read-side capability Java lacks rather than a
+# divergence to repair. Refusing a query we can answer correctly, in order
+# to reproduce someone else's crash, costs every user who writes CROSS JOIN
+# and buys nothing.
+#
+# `conformance/join_without_on_java_probe_test.go` measures the whole family
+# against a live JVM and records which arms are deliberate extensions.
 name: cross_join
 schema_template: |
   CREATE TABLE a (id BIGINT, v BIGINT, PRIMARY KEY (id))
@@ -11,14 +26,13 @@ setup:
   - INSERT INTO a VALUES (1, 10), (2, 20)
   - INSERT INTO b VALUES (1, 100), (2, 200)
 tests:
-  # Explicit CROSS JOIN syntax — rejected. fdb-relational 4.11.1.0
-  # NPEs on `a CROSS JOIN b` because the visitor unconditionally
-  # accepts the ON-clause expression which is null for CROSS JOIN
-  # (CLAUDE.md gotcha "Explicit `CROSS JOIN` syntax NPEs in
-  # fdb-relational"). Go's embedded engine matches by rejecting at
-  # parse time. Workaround: comma-join `FROM a, b`.
+  # Explicit CROSS JOIN — the standard spelling, and one Java NPEs on.
   - query: SELECT a.id, b.id FROM a CROSS JOIN b ORDER BY a.id, b.id
-    error_code: "0A000"
+    rows:
+      - [1, 1]
+      - [1, 2]
+      - [2, 1]
+      - [2, 2]
   # Comma-join — same result.
   - query: SELECT a.id, b.id FROM a, b ORDER BY a.id, b.id
     rows:
@@ -26,12 +40,40 @@ tests:
       - [1, 2]
       - [2, 1]
       - [2, 2]
+  # A bare `JOIN` with no ON. The grammar makes the condition optional for
+  # #innerJoin — `(INNER | CROSS)? JOIN tableSourceItem (ON expression |
+  # USING '(' uidList ')')?` — so this is a legal parse with a null ON, the
+  # same null the CROSS spelling produces, reached without the CROSS token.
+  - query: SELECT a.id, b.id FROM a JOIN b ORDER BY a.id, b.id
+    rows:
+      - [1, 1]
+      - [1, 2]
+      - [2, 1]
+      - [2, 2]
+  # INNER spelled out — same production, same null.
+  - query: SELECT COUNT(*) FROM a INNER JOIN b
+    rows:
+      - [4]
   # INNER JOIN with a trivially-true ON — also cartesian.
   - query: SELECT a.id, b.id FROM a INNER JOIN b ON 1 = 1 ORDER BY a.id, b.id
     rows:
       - [1, 1]
       - [1, 2]
       - [2, 1]
+      - [2, 2]
+  # CROSS *with* an ON. The grammar puts CROSS and the optional condition in
+  # the same alternative, so this parses with a NON-null expression and Java
+  # answers it too. Go refused it while its gate keyed on the CROSS token.
+  - query: SELECT a.id, b.id FROM a CROSS JOIN b ON 1 = 1 ORDER BY a.id, b.id
+    rows:
+      - [1, 1]
+      - [1, 2]
+      - [2, 1]
+      - [2, 2]
+  # USING supplies a condition without an `expression`; both engines answer.
+  - query: SELECT a.id, b.id FROM a JOIN b USING (id) ORDER BY a.id, b.id
+    rows:
+      - [1, 1]
       - [2, 2]
   # COUNT(*) over a cartesian product.
   - query: SELECT COUNT(*) FROM a, b
@@ -42,3 +84,39 @@ tests:
     rows:
       - [10, 100]
       - [20, 200]
+  # BUILDER COVERAGE. A conditionless join is not a property of the
+  # top-level SELECT — every query block that can hold a FROM plans it, or
+  # the identical join answers in one position and fails in another. These
+  # three sit in DIFFERENT builders: EXISTS, a UNION branch, and a scalar
+  # subquery. They were written when the gate existed, because it had been
+  # wired into one builder out of four; they are just as load-bearing now
+  # that the answer is rows, for the same reason.
+  - query: SELECT COUNT(*) FROM a WHERE EXISTS (SELECT 1 FROM a JOIN b)
+    rows:
+      - [2]
+  - query: SELECT COUNT(*) FROM a JOIN b UNION ALL SELECT COUNT(*) FROM a
+    rows:
+      - [4]
+      - [2]
+  - query: SELECT (SELECT COUNT(*) FROM a JOIN b) FROM a
+    rows:
+      - [4]
+      - [4]
+  # SOURCE KIND. A derived table and a CTE are resolvable sources absent
+  # from the record metadata, so anything keyed on "is this a known record
+  # type?" misclassifies them.
+  - query: SELECT COUNT(*) FROM a JOIN (SELECT id FROM b) x
+    rows:
+      - [4]
+  - query: WITH x AS (SELECT id FROM b) SELECT COUNT(*) FROM a JOIN x
+    rows:
+      - [4]
+  - query: WITH x AS (SELECT id FROM b) SELECT COUNT(*) FROM a JOIN x ON a.id = x.id
+    rows:
+      - [2]
+  # An unknown table in a conditionless join reports the TABLE — which is
+  # also what Java reports, since nothing preempts source resolution.
+  - query: SELECT COUNT(*) FROM a JOIN missing_table
+    error_code: "42F01"
+  - query: SELECT COUNT(*) FROM a JOIN missing_table ON 1 = 1
+    error_code: "42F01"

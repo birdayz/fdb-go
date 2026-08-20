@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,56 @@ func TestGoSQLRunner_HappyPath(t *testing.T) {
 	}
 	if got.Rows.Rows[1][1] != "bob" {
 		t.Fatalf("Rows[1][1]: got %v, want bob", got.Rows.Rows[1][1])
+	}
+}
+
+// TestGoSQLRunner_ArrayCellIsNormalised pins the coercion against the shape the
+// DRIVER actually produces, not the shape the coercion's unit tests assume.
+//
+// The unit tests in struct_cell_coercion_test.go drive every arm with fakes,
+// and a fake proves the arm works — not that the arm is the one real results
+// take. That distinction went wrong once already here: the coercion was first
+// written with an api.Array arm only, and materializeDriverValue hands an ARRAY
+// column back as []any, so the arm real queries needed did not exist and every
+// array cell fell to the pass-through default with its elements unnormalised.
+// An array of BIGINTs stayed []any{int64…}, which can never equal Java's
+// []any{float64…} — a permanent false divergence on every array-valued column,
+// reported as a semantic disagreement.
+//
+// So this asserts the END-TO-END shape: a real ARRAY column, through the real
+// runner, must arrive as a []any of float64 — the JSON-decoded form the Java
+// side produces — and not as int64s, a pointer, or anything else.
+func TestGoSQLRunner_ArrayCellIsNormalised(t *testing.T) {
+	t.Parallel()
+	if goSQLClusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+
+	r := NewGoSQLSetupRunner(goSQLClusterFilePath)
+	got := r.RunWithSetup(
+		context.Background(),
+		"CREATE TABLE T (id BIGINT, xs BIGINT ARRAY, PRIMARY KEY (id))",
+		[]string{"INSERT INTO T VALUES (1, [10, 20])"},
+		"SELECT xs FROM T WHERE id = 1",
+	)
+	if got.Err != nil {
+		t.Fatalf("RunWithSetup: %v", got.Err)
+	}
+	if len(got.Rows.Rows) != 1 || len(got.Rows.Rows[0]) != 1 {
+		t.Fatalf("row shape: got %+v, want one row of one cell", got.Rows.Rows)
+	}
+	cell := got.Rows.Rows[0][0]
+	arr, ok := cell.([]any)
+	if !ok {
+		t.Fatalf("an ARRAY cell arrived as %T, not []any. Whatever the driver now returns, the "+
+			"coercion needs an arm for it — the pass-through default compares it as a raw Go "+
+			"value, which no Java rendering can equal.\n  cell: %#v", cell, cell)
+	}
+	want := []any{float64(10), float64(20)}
+	if !reflect.DeepEqual(arr, want) {
+		t.Fatalf("an ARRAY cell was not normalised element-wise\n  got  %#v\n  want %#v\n"+
+			"  (int64 elements can never equal Java's JSON-decoded float64s, so every "+
+			"array-valued column would read as a permanent divergence)", arr, want)
 	}
 }
 

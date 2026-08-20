@@ -36,6 +36,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"fdb.dev/pkg/relational/api"
+
 	// Register the fdbsql driver for blank-import side-effects.
 	_ "fdb.dev/pkg/relational/sqldriver"
 )
@@ -275,6 +277,24 @@ func (r *goSQLRunner) runEphemeral(ctx context.Context, schemaTemplate string, s
 // encodes bytes as base64 in encodeValue). IEEE-754 specials
 // (±Infinity, NaN) are encoded as strings to match the Java conformance
 // server's JSON encoder (which can't emit those as bare JSON numbers).
+//
+// STRUCT and ARRAY columns are the two cell types that are NOT Go scalars:
+// the driver hands them over as api.Struct / api.Array (see
+// pkg/relational/sqldriver/record_constructor_expression_fdb_test.go, which
+// type-asserts exactly that). The Java side arrives through json.Unmarshal
+// into []any, so a struct is a map[string]any and an array is a []any there.
+// Without the two arms below those cells fell to the default `return v` and
+// were compared — and PRINTED — as Go POINTERS, which no Java rendering can
+// ever equal and which carry a per-run heap address, so every struct-valued
+// column read as a permanent, unreadable divergence. That is worse than a
+// missing comparison: the harness cannot see the column at all, and a genuine
+// struct divergence hides behind the same `0x…` that agreement produces.
+//
+// Both arms recurse through coerceForComparison, because the driver nests
+// (api.Array documents that nested STRUCTs become Struct and nested arrays
+// become Array), and because the element scalars need the same int64→float64
+// normalisation the top level gets — otherwise a struct holding a BIGINT would
+// compare int64(5) against Java's float64(5).
 func coerceForComparison(v any) any {
 	if v == nil {
 		return nil
@@ -297,8 +317,79 @@ func coerceForComparison(v any) any {
 	case []byte:
 		// Match Java's base64 encoding for BYTES.
 		return base64Encode(x)
+	case []any:
+		// THE SHAPE THE DRIVER ACTUALLY RETURNS for an ARRAY column.
+		// materializeDriverValue (cascades_generator.go) converts a row value
+		// element-wise and hands arrays back as []any — NOT as api.Array — so
+		// this is the arm real query results take, and without it a []any fell
+		// to the pass-through default below with its elements unnormalized: an
+		// array of BIGINTs stayed []any{int64…} and could never equal Java's
+		// []any{float64…}, which is a permanent false divergence on every
+		// array-valued column.
+		return coerceSlice(x)
+	case api.Struct:
+		return coerceStruct(x)
+	case api.Array:
+		// The public interface, kept as a SECOND arm rather than as the only
+		// one. The Go SQL runner does not produce it today — materializeDriverValue
+		// flattens to []any first — but api.Array is what the driver's public
+		// contract names, a Struct's attribute may carry one, and a runner that
+		// scanned into api.Array would otherwise fall through to a pointer.
+		// Defensive, and marked as such so nobody reads its presence as evidence
+		// that arrays arrive this way.
+		return coerceArray(x)
 	}
 	return v
+}
+
+// coerceSlice renders a driver []any the way Java's JSON decode renders a list,
+// recursing so nested arrays, structs and scalars all normalise. Distinct from
+// coerceArray only in the type it accepts; both produce the same shape.
+func coerceSlice(s []any) any {
+	out := make([]any, 0, len(s))
+	for _, e := range s {
+		out = append(out, coerceForComparison(e))
+	}
+	return out
+}
+
+// coerceStruct renders a STRUCT cell the way Java's JSON decode renders one:
+// a map from attribute NAME to coerced value. Java's encoder emits a JSON
+// object keyed by the struct's field names, so keying on MetaData's names is
+// what makes the two sides comparable; the positional fallback below only
+// applies when the metadata cannot name an attribute, which would otherwise
+// silently drop that attribute from the map and make a shorter struct compare
+// equal to a longer one.
+func coerceStruct(s api.Struct) any {
+	md := s.MetaData()
+	attrs := s.Attributes()
+	out := make(map[string]any, len(attrs))
+	for i, a := range attrs {
+		name := ""
+		if md != nil {
+			if n, err := md.AttributeName(i + 1); err == nil {
+				name = n
+			}
+		}
+		if name == "" {
+			name = fmt.Sprintf("_%d", i)
+		}
+		out[name] = coerceForComparison(a)
+	}
+	return out
+}
+
+// coerceArray renders an ARRAY cell as Java's JSON decode does — a []any of
+// coerced elements. A nil slice would render as `[]` either way, but an empty
+// array and a NULL array are different answers, and NULL is handled by the nil
+// check in coerceForComparison before this is reached.
+func coerceArray(a api.Array) any {
+	elems := a.Elements()
+	out := make([]any, 0, len(elems))
+	for _, e := range elems {
+		out = append(out, coerceForComparison(e))
+	}
+	return out
 }
 
 // floatSpecialOrFloat returns "Infinity"/"-Infinity"/"NaN" for IEEE-754

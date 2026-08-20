@@ -370,6 +370,7 @@ func evaluatePermutedMinMaxAggregate(
 	needsFilter := !tupleRangesEqual(unpermutedRange, scanRange)
 
 	var result tuple.Tuple
+	var sawAllNullGroup bool
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -383,19 +384,47 @@ func evaluatePermutedMinMaxAggregate(
 		}
 
 		entry := r.GetValue()
-		if needsFilter {
-			// Reconstruct unpermuted group key for range check.
-			groupPrefix := entry.Key[:valueStart]
-			groupSuffix := entry.Key[valueEnd:]
-			group := make(tuple.Tuple, 0, len(groupPrefix)+len(groupSuffix))
-			group = append(group, groupPrefix...)
-			group = append(group, groupSuffix...)
-			if !scanRange.Contains(group) {
-				continue
-			}
+		// The unpermuted group key, in original column order. Needed for the
+		// range check below and by the MIN null repair, so it is reconstructed
+		// unconditionally rather than only when a filter is due.
+		groupPrefix := entry.Key[:valueStart]
+		groupSuffix := entry.Key[valueEnd:]
+		group := make(tuple.Tuple, 0, len(groupPrefix)+len(groupSuffix))
+		group = append(group, groupPrefix...)
+		group = append(group, groupSuffix...)
+		if needsFilter && !scanRange.Contains(group) {
+			continue
 		}
 
 		value := tuple.Tuple(entry.Key[valueStart:valueEnd])
+		// A NULL extremum on a MIN index outranks the group's real values rather
+		// than reporting their absence, so it is resolved against the ordinary
+		// subspace before it can win the reduction below. Without this, one
+		// NULL-bearing group would make the aggregate NULL for the whole range.
+		// See PermutedMinIgnoringNulls; MAX needs no such repair.
+		if !m.isMax && len(value) > 0 && value[0] == nil {
+			repaired, rerr := PermutedMinIgnoringNulls(
+				ctx,
+				func(r TupleRange, p ScanProperties) RecordCursor[*IndexEntry] {
+					return m.standardIndexMaintainer.Scan(r, nil, p)
+				},
+				m.index.Name, group, groupPrefixSize, totalSize, props.ExecuteProperties)
+			if rerr != nil {
+				return nil, rerr
+			}
+			if repaired == nil {
+				// The group genuinely holds no non-NULL value. It contributes
+				// nothing to a MIN that ignores NULLs — but it is not the same
+				// as an ABSENT group, and the difference shows when the range
+				// covers nothing else: an empty range answers nil ("no groups"),
+				// while a range whose every group is all-NULL answers NULL ("a
+				// group, with no value"). The flag keeps the two apart without
+				// letting the NULL win over another group's real value.
+				sawAllNullGroup = true
+				continue
+			}
+			value = repaired
+		}
 		if result == nil {
 			result = value
 		} else if m.shouldUpdateExtremum(result, value) {
@@ -403,6 +432,11 @@ func evaluatePermutedMinMaxAggregate(
 		}
 	}
 
+	if result == nil && sawAllNullGroup {
+		// Groups were found, none with a non-NULL value: MIN is NULL, which is
+		// what the stored extrema already said.
+		return tuple.Tuple{nil}, nil
+	}
 	return result, nil
 }
 

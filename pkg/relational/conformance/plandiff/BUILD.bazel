@@ -16,6 +16,7 @@ go_library(
     importpath = "fdb.dev/pkg/relational/conformance/plandiff",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/relational/api",
         "//pkg/relational/core/embedded",
         "//pkg/relational/core/query",
         "//pkg/relational/sqldriver",
@@ -48,8 +49,12 @@ go_test(
         "ordinal_plan_stability_test.go",
         "plandiff_test.go",
         "runsql_test.go",
+        "struct_cell_coercion_test.go",
     ],
     embed = [":plandiff"],
     tags = ["resources:memory:400"],
-    deps = ["//pkg/testcontainers/foundationdb"],
+    deps = [
+        "//pkg/relational/api",
+        "//pkg/testcontainers/foundationdb",
+    ],
 )
