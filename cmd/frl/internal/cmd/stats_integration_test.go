@@ -424,7 +424,11 @@ func TestStats_AllSchemasRejectsAnUnrenderableOutputFormat(t *testing.T) {
 	// the fan-out's own gate can reject it. (yaml is rejected earlier, by the
 	// format validator, with a different message — testing it here would be
 	// asserting the wrong gate.)
-	_, err := runCmd(t, "stats", "collect", "--database", "/x", "--all-schemas", "-o", "json")
+	// No --database, for the same reason the control below omits it: if this gate
+	// ever breaks, the command must fail on the NEXT check rather than dial a
+	// cluster. With --database a broken gate costs 60 seconds of connection
+	// timeout per run before failing.
+	_, err := runCmd(t, "stats", "collect", "--all-schemas", "-o", "json")
 	if err == nil {
 		t.Fatal("--all-schemas -o json was accepted; want a rejection")
 	}

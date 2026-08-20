@@ -6,6 +6,7 @@ package recordlayer
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"time"
 
@@ -808,6 +809,56 @@ var _ = Describe("CollectStatistics", func() {
 				"yields stale statistics wearing a fresh version stamp")
 		Expect(got.PerType).To(BeEmpty())
 	})
+
+	// BOTH SWALLOWED READ VERSIONS, PINNED BY FAULT INJECTION.
+	//
+	// Two call sites took a cluster read version and discarded the error. Both
+	// now propagate, and neither propagation had a test — the fix is two lines,
+	// which is exactly the kind that reads as obviously right and is therefore
+	// never exercised.
+	//
+	// The write side matters more than the read side. Its version is PERSISTED:
+	// a swallow stamps the entry with 0 or with an earlier batch's version, the
+	// freshness gate then refuses that schema on every plan, and the operator
+	// sees a silent refusal rather than the cluster's error. That is a failure
+	// that looks like the feature working as designed.
+	It("surfaces a read-version failure instead of stamping a bad version", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 20, 3)
+
+		failing := &grvFailingTransactor{inner: sharedDB.transactor}
+		failDB := NewFDBDatabaseWithTransactor(failing, sharedDB.db)
+
+		// WRITE SIDE. A collection whose version read fails must ERROR, not
+		// return a report stamped with a version it never obtained.
+		report, err := CollectStatistics(ctx, failDB, func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+			return NewStoreBuilder().SetContext(rtx).
+				SetMetaDataProvider(metaData).SetSubspace(sub).CreateOrOpen()
+		}, stats, CollectOptions{BatchSize: 5})
+		Expect(err).To(MatchError(errInjectedGRV),
+			"a failed GetReadVersion must reach the caller. Swallowed, collection "+
+				"succeeds and persists a 0 or stale CollectedAtVersion, and the freshness "+
+				"gate then refuses this schema on every plan with no error anywhere")
+		Expect(report).To(BeNil())
+		Expect(failing.hits()).To(BeNumerically(">", 0),
+			"no read version was requested, so nothing was injected and this asserts nothing")
+
+		// And nothing may have been persisted from the failed run.
+		_, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse(),
+			"a collection that could not stamp a version must write nothing at all")
+
+		// READ SIDE. Same fault, through the reader.
+		Expect(CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})).
+			Error().NotTo(HaveOccurred())
+		failing2 := &grvFailingTransactor{inner: sharedDB.transactor}
+		_, _, _, rErr := ReadStatisticsAt(ctx, NewFDBDatabaseWithTransactor(failing2, sharedDB.db), stats, sub)
+		Expect(rErr).To(MatchError(errInjectedGRV))
+		Expect(failing2.hits()).To(BeNumerically(">", 0))
+	})
 })
 
 // replayingTransactor invokes each transaction closure twice and returns the
@@ -829,6 +880,15 @@ func (r *replayingTransactor) used() int { return r.spent }
 // a re-execution, which one transaction reproduces exactly; running two separate
 // inner transactions would additionally COMMIT the discarded attempt, which is
 // not what a retry does and would muddy what the test is measuring.
+//
+// ITS BLIND SPOT, stated because an instrument's limits are the part nobody
+// discovers until it matters: both attempts share one read version, so anything
+// the write path derives FROM the data — collectedAtVersion is the live example
+// — reads identically on each pass and a staleness bug in it would be invisible
+// here. That is the same gap ReadTransact's separate-transaction replay exists
+// to close. There is no such bug today (collectedAtVersion is an unconditional
+// overwrite), which is why this is a note about the instrument rather than a
+// second test.
 func (r *replayingTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
 	return r.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
 		if r.replays > 0 {
@@ -873,3 +933,74 @@ func (r *replayingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, er
 	}
 	return r.inner.ReadTransact(fn)
 }
+
+// errInjectedGRV is the fault a grvFailingTransactor surfaces from a read-version
+// request. A distinct sentinel so a test can assert the error it INJECTED came
+// back, rather than that some error did — the difference between pinning the
+// propagation and pinning that the operation can fail at all.
+var errInjectedGRV = errors.New("injected: GetReadVersion failed")
+
+// grvFailingTransactor fails every GetReadVersion and passes everything else
+// through. The chaos package has FaultReadError for key reads but nothing for a
+// read VERSION, and a version failure is its own case: it is the one read whose
+// result gets persisted.
+type grvFailingTransactor struct {
+	inner  fdb.Transactor
+	asked  int
+	failed int
+}
+
+func (g *grvFailingTransactor) hits() int { return g.failed }
+
+func (g *grvFailingTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return g.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		return fn(&grvFailingWritable{WritableTransaction: tx, owner: g})
+	})
+}
+
+func (g *grvFailingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return g.inner.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		return fn(&grvFailingRead{ReadTransaction: rtx, owner: g})
+	})
+}
+
+// grvFailingWritable embeds the real transaction so the wrapper stays a statement
+// about read versions and cannot drift as fdb.WritableTransaction grows.
+type grvFailingWritable struct {
+	fdb.WritableTransaction
+	owner *grvFailingTransactor
+}
+
+func (w *grvFailingWritable) GetReadVersion() fdb.FutureInt64 {
+	w.owner.asked++
+	w.owner.failed++
+	return failedInt64{}
+}
+
+// Snapshot is the route the collector actually takes: it reads the version
+// through rtx.ReadTransaction(true), which is the snapshot view.
+func (w *grvFailingWritable) Snapshot() fdb.ReadTransaction {
+	return &grvFailingRead{ReadTransaction: w.WritableTransaction.Snapshot(), owner: w.owner}
+}
+
+type grvFailingRead struct {
+	fdb.ReadTransaction
+	owner *grvFailingTransactor
+}
+
+func (r *grvFailingRead) GetReadVersion() fdb.FutureInt64 {
+	r.owner.asked++
+	r.owner.failed++
+	return failedInt64{}
+}
+
+func (r *grvFailingRead) Snapshot() fdb.ReadTransaction { return r }
+
+// failedInt64 is an already-ready FutureInt64 carrying the injected error.
+type failedInt64 struct{}
+
+func (failedInt64) Get() (int64, error) { return 0, errInjectedGRV }
+func (failedInt64) MustGet() int64      { panic(errInjectedGRV) }
+func (failedInt64) BlockUntilReady()    {}
+func (failedInt64) IsReady() bool       { return true }
+func (failedInt64) Cancel()             {}

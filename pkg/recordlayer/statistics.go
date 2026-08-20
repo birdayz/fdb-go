@@ -236,12 +236,17 @@ func CollectStatistics(
 			if storeSubspace == nil {
 				storeSubspace = store.Subspace()
 			}
-			// SEVEN distinct outer variables are assigned inside this closure —
-			// ten assignment statements, since batchDone takes three and
-			// batchContinuation two — and they split into two groups with
-			// different safety arguments. Worth counting precisely, because
-			// "three" was written here first and a reader counting would have
-			// found more and disbelieved the rest.
+			// The outer variables written inside this closure split into two
+			// groups with different safety arguments. No statement count is given,
+			// and that is deliberate: every attempt to write one here has been
+			// wrong. "Three" named three while seven variables are written; "ten"
+			// counted assignments and missed the two increments. The answer is
+			// twelve writes over seven variables, and a number that took four
+			// passes to get right is a number that will rot — so the PROPERTY is
+			// pinned here and the arithmetic is left to a command:
+			//
+			//	sed -n '/res, err := db.Run/,/^\t\t})$/p' statistics.go |
+			//	  grep -cE '^[[:space:]]+[a-zA-Z]+(\[[^]]*\])? *(=|\+\+)'
 			//
 			// FOUR are the per-attempt accumulators (batchCounts, batchScanned,
 			// batchContinuation, batchDone). They are assigned here BECAUSE they

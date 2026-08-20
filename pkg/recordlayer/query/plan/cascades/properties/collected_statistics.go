@@ -36,11 +36,10 @@ package properties
 //	grep -rn --include='*.go' 'RecordTypeCardinality("")' . |
 //	  grep -v _test.go | grep -v '^[^:]*:[0-9]*:\s*//'
 //
-// Semantically that leaf could read anything in the store, so the honest
-// answer is the whole store: the SUM of every type. That keeps the value on
-// the same scale as the data, so comparing
-// it against a real count still means something, whatever the store's size. A
-// magic constant does not.
+// Semantically that leaf could read anything in the store, so the honest answer
+// is the whole store: the SUM of every type. That keeps the value on the same
+// scale as the data, so comparing it against a real count still means
+// something, whatever the store's size. A magic constant does not.
 type CollectedStatistics struct {
 	perType map[string]float64
 	total   float64
