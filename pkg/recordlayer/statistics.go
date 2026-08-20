@@ -258,10 +258,12 @@ func CollectStatistics(
 			// accumulators get, so it is stated rather than glossed.
 			//
 			// What is checkable by reading is the narrower claim that matters:
-			// no COUNTER is touched in here. The tallies go to per-attempt
-			// locals and the seeding happens after the loop, so a retry cannot
-			// add anything twice — which is the failure this structure exists
-			// to prevent, and the one idempotence would not have covered.
+			// no DURABLE counter is touched in here. Counters ARE incremented —
+			// batchScanned and batchCounts, two lines of the scan loop — but they
+			// are the per-attempt locals reset at the top, and the seeding happens
+			// after the loop. So a retry cannot add anything twice, which is the
+			// failure this structure exists to prevent and the one idempotence
+			// would not have covered.
 			declaredTypes = store.GetRecordMetaData().RecordTypes()
 			// The read version of the LAST batch stamps the run. Collection
 			// spans transactions, so no single version describes all of it;

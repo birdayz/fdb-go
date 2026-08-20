@@ -97,7 +97,6 @@ var _ = Describe("PerTypeSizeEstimateProbe", func() {
 		type row struct {
 			typeName   string
 			wantRows   int
-			typeKey    any
 			est        int64
 			kvBytes    int64
 			protoBytes int64
@@ -118,7 +117,6 @@ var _ = Describe("PerTypeSizeEstimateProbe", func() {
 				rt := store.metaData.GetRecordType(rows[i].typeName)
 				Expect(rt).NotTo(BeNil())
 				key := rt.GetRecordTypeKey()
-				rows[i].typeKey = key
 
 				typeRange := TupleRangeAllOf(tuple.Tuple{key})
 				est, eErr := store.EstimateRecordsSizeInRange(typeRange)
