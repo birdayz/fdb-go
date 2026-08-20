@@ -1960,6 +1960,8 @@ type grvRecordingTransactor struct {
 	// a real cluster version.
 	step int64
 	next int64
+	// pending holds the current attempt's versions until it finishes.
+	pending []int64
 }
 
 func (g *grvRecordingTransactor) versions() []int64 {
@@ -1970,13 +1972,15 @@ func (g *grvRecordingTransactor) versions() []int64 {
 	return out
 }
 
-func (g *grvRecordingTransactor) record(v int64) {
-	g.mu.Lock()
-	g.seen = append(g.seen, v)
-	g.mu.Unlock()
-}
-
-// versionFor returns the value to report, recording it either way.
+// versionFor returns the value to report, holding it as PENDING for the current
+// attempt rather than recording it outright.
+//
+// A retried attempt's reads are discarded, so its version contributed to no
+// count -- and the collector's own minimum is over COMMITTED attempts only. A
+// recorder that kept every version would report an oldest BELOW the stamp after
+// a retry on the first batch, failing a correct implementation. It fails closed,
+// so it is not a shipping hazard, but the assertion would be lucky rather than
+// sound.
 func (g *grvRecordingTransactor) versionFor(real int64) int64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1985,20 +1989,45 @@ func (g *grvRecordingTransactor) versionFor(real int64) int64 {
 		g.next += g.step
 		v = g.next
 	}
-	g.seen = append(g.seen, v)
+	g.pending = append(g.pending, v)
 	return v
 }
 
+// beginAttempt drops any versions held for an attempt that did not finish.
+func (g *grvRecordingTransactor) beginAttempt() {
+	g.mu.Lock()
+	g.pending = nil
+	g.mu.Unlock()
+}
+
+// commitAttempt promotes the finished attempt's versions to the record.
+func (g *grvRecordingTransactor) commitAttempt() {
+	g.mu.Lock()
+	g.seen = append(g.seen, g.pending...)
+	g.pending = nil
+	g.mu.Unlock()
+}
+
 func (g *grvRecordingTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
-	return g.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
+	out, err := g.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		g.beginAttempt()
 		return fn(&grvRecordingWritable{WritableTransaction: tx, owner: g})
 	})
+	if err == nil {
+		g.commitAttempt()
+	}
+	return out, err
 }
 
 func (g *grvRecordingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
-	return g.inner.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+	out, err := g.inner.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
+		g.beginAttempt()
 		return fn(&grvRecordingRead{ReadTransaction: rtx, owner: g})
 	})
+	if err == nil {
+		g.commitAttempt()
+	}
+	return out, err
 }
 
 // Embeds the real transaction, so these wrappers stay statements about read

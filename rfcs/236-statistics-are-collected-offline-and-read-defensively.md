@@ -134,6 +134,16 @@ separates a 150-row table from a 1,000,000-row one -- which is the decision this
 feature exists to inform, and the estimator it replaces could not make that
 separation at all (§2: a 0 for a non-empty small table).
 
+A fair reader will ask why one inexactness disqualifies the estimator while
+another is accepted here, and the answer is the SHAPE of the error, not its size:
+the estimator's was SYSTEMATIC and SIZE-CORRELATED -- deterministically 0 for a
+non-empty small table, at rest, in precisely the direction join order is most
+sensitive to. Key-move error is neither. It is bounded by concurrent key-move
+traffic, uncorrelated with table size, and cannot manufacture a 0 for a small
+table. An error that never fires at rest and does not track the quantity being
+measured is a different class from one that is worst exactly where the decision
+is tightest.
+
 Scanning is **continuation-driven and batched** — the store's own cursor
 machinery, the same way `OnlineIndexer` walks a store — so a large table costs
 many small transactions rather than one that cannot commit.

@@ -23,9 +23,10 @@ import (
 // skips a schema already at the target version, so a re-run is nearly free. A
 // collection has no such marker: freshness is a continuum, not a version to
 // compare against, and re-collecting is the entire work. A second pass therefore
-// costs the same as the first. That is the honest trade for exact counts, and it
-// is why this is scheduled maintenance rather than something to run in a retry
-// loop.
+// costs the same as the first. That is the honest trade for COUNTING rather than
+// sampling, and it is why this is scheduled maintenance rather than something to
+// run in a retry loop. (Counted, not "exact" unqualified: see
+// recordlayer.RecordTypeStatistic for what a concurrent primary-key move does.)
 
 // OutcomeCollected means the schema's statistics were collected and stored.
 const OutcomeCollected Outcome = "collected"

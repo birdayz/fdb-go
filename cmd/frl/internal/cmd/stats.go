@@ -162,7 +162,7 @@ func newStatsCollectCmd() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "collect",
-		Short: "Scan the schema and write exact per-type row counts",
+		Short: "Scan the schema and write per-type row counts",
 		Long: "Reads EVERY record in the schema's store, tallies by record " +
 			"type, and replaces the stored statistics in one transaction.\n\n" +
 			"Cost is proportional to the store: this is an offline job. It " +
