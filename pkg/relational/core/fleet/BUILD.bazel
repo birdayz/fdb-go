@@ -25,9 +25,11 @@ go_test(
     srcs = [
         "build_test.go",
         "guard_test.go",
+        "statistics_refusal_test.go",
     ],
     embed = [":fleet"],
     deps = [
+        "//gen",
         "//pkg/fdbgo/fdb/subspace",
         "//pkg/recordlayer",
         "//pkg/relational/core/catalog",

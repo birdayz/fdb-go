@@ -82,11 +82,8 @@ func CollectStatistics(
 		// outcome meaning two things depending on which flag was used is the exact
 		// defect the capped-run fix closed; OutcomeRefused already exists, counts
 		// separately in the summary, and prints its Err.
-		if md.DeclaresSyntheticRecordTypes() {
-			return Event{}, fmt.Errorf(
-				"declares synthetic record types (%s) that this port does not model, so "+
-					"collected statistics could never be complete enough to plan with",
-				strings.Join(md.SyntheticRecordTypeNames(), ", "))
+		if ev, refused := syntheticRefusal(md); refused {
+			return ev, nil
 		}
 		report, err := recordlayer.CollectStatistics(ctx, db,
 			func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
@@ -117,7 +114,11 @@ func CollectStatistics(
 			// here would be written and never read, which is the fourth instance of
 			// that shape in this branch. It is also the number the operator most
 			// wants: what the abandoned pass cost before it gave up.
-			return Event{Skipped: report.Skipped},
+			// Neither Records nor Skipped is read on a non-collected outcome: the
+			// Failed and Refused printers render only Err, and Result.record
+			// accumulates neither. Both facts go in the error text, which is the
+			// one field an operator actually sees.
+			return Event{},
 				fmt.Errorf("collection aborted after %d records: %s",
 					report.RecordsScanned, describeSkipped(report.Skipped))
 		}
@@ -172,4 +173,30 @@ func countsOf(report *recordlayer.CollectionReport) map[string]int64 {
 		out[name] = st.Count
 	}
 	return out
+}
+
+// syntheticRefusal returns the refusal Event for metadata this port does not
+// fully model, and whether it applies.
+//
+// The OUTCOME is set here and the caller returns a NIL error. Returning a
+// non-nil error instead makes fanOut stamp OutcomeFailed unconditionally, and
+// that is a different instruction to an operator: `failed` says retry, and no
+// retry changes a property of the metadata. emit still joins on ev.Err, so the
+// non-zero exit survives — the same shape the catalog guard's refusal uses.
+//
+// Split out so a test can reach it without a cluster or a catalog: the
+// relational SQL layer cannot construct synthetic metadata, so a driver-level
+// test cannot get here at all, and an inline guard would be unreachable by
+// anything except production traffic that this port refuses by design.
+func syntheticRefusal(md *recordlayer.RecordMetaData) (Event, bool) {
+	if !md.DeclaresSyntheticRecordTypes() {
+		return Event{}, false
+	}
+	return Event{
+		Outcome: OutcomeRefused,
+		Err: fmt.Errorf(
+			"declares synthetic record types (%s) that this port does not model, so "+
+				"collected statistics could never be complete enough to plan with",
+			strings.Join(md.SyntheticRecordTypeNames(), ", ")),
+	}, true
 }

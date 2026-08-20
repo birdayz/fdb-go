@@ -501,16 +501,20 @@ func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
 		t.Errorf("this schema declares no synthetic types, so the field must be absent: %v",
 			got.SyntheticTypes)
 	}
-	var hasField bool
-	rt := reflect.TypeOf(statsShowResult{})
-	for i := 0; i < rt.NumField(); i++ {
-		if rt.Field(i).Tag.Get("json") == "synthetic_types,omitempty" {
-			hasField = true
-		}
+	// Assert the WIRE, not the struct tag. Reflecting over the tag is a
+	// tautology — it re-reads the line just written — whereas marshalling a
+	// populated value proves the key an operator's `jq` will actually see.
+	populated, mErr := json.Marshal(statsShowResult{
+		Schema:         "/x/MAIN",
+		Refusal:        "metadata declares unmodeled synthetic record types",
+		SyntheticTypes: []string{"JoinedAB"},
+	})
+	if mErr != nil {
+		t.Fatalf("marshal: %v", mErr)
 	}
-	if !hasField {
-		t.Error("statsShowResult has no synthetic_types field — a synthetic-type refusal " +
-			"renders in text and disappears from -o json, losing exactly the detail that " +
-			"makes the verdict actionable")
+	if !strings.Contains(string(populated), `"synthetic_types":["JoinedAB"]`) {
+		t.Errorf("a synthetic-type refusal does not reach -o json: %s\n"+
+			"  It renders in text and disappears here, losing exactly the detail added "+
+			"to make the verdict actionable.", populated)
 	}
 }
