@@ -27,8 +27,17 @@ import (
 // second way it would be two pieces of code hoping they agree, and the failure
 // mode is silent: the collector writes somewhere the planner never looks, every
 // command reports success, and the only symptom is that plans never change.
-// Routing through Conn.Raw means the CLI and the planner cannot disagree,
-// because there is only one derivation.
+// Routing through Conn.Raw means the CLI and the planner cannot disagree about
+// the SINGLE-SCHEMA path: collect, clear and the planner's read all call
+// EmbeddedConnection.statisticsLocation, which is the one derivation.
+//
+// There is a SECOND derivation, and it is named here rather than glossed:
+// `--all-schemas` goes through fleet.CollectStatistics, which cannot use a
+// connection because it has no single schema to bind one to. It calls the same
+// two keyspace methods, and the agreement between the two is asserted by
+// TestIntegration_Stats_FleetCollectIsReadableByTheConnection — the fan-out
+// writes, the connection reads — because that disagreement is invisible
+// everywhere else.
 //
 // It also means `frl stats collect` exercises the exact path a library user
 // gets from conn.Raw — the CLI is a thin wrapper over the library call, not a
@@ -130,21 +139,13 @@ func (f *statsAddressFlags) withStatsConn(
 	}
 	defer conn.Close()
 
-	var inner error
-	rawErr := conn.Raw(func(dc any) error {
+	return conn.Raw(func(dc any) error {
 		ec, ok := dc.(*embedded.EmbeddedConnection)
 		if !ok {
 			return fmt.Errorf("driver connection is %T, not *embedded.EmbeddedConnection", dc)
 		}
-		inner = fn(ctx, ec)
-		// Returning inner would let database/sql interpret a domain error as a
-		// bad connection and retry the whole thing. Carry it out by hand.
-		return nil
+		return fn(ctx, ec)
 	})
-	if rawErr != nil {
-		return rawErr
-	}
-	return inner
 }
 
 func newStatsCollectCmd() *cobra.Command {

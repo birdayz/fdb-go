@@ -10,13 +10,19 @@ package stress_test
 // the data. It cannot prove the decision is worth making: at 400 rows every
 // plan finishes instantly. This one measures.
 //
-// THE MEASUREMENT IS A MAX OVER MIRRORED ARRANGEMENTS, not a single timing,
-// and that is the point. Without statistics the planner still has to pick a
-// side, and it picks by a tie-break over plan structure (RFC-235 §18) — so on
-// any ONE arrangement it is right or wrong by luck, and a single-arrangement
-// timing measures the luck. Over a mirrored PAIR the luck cancels: a fixed
-// tie-break drives from the same table in both, so it is fast in one and slow
-// in the other, whatever it picked.
+// THE MEASUREMENT IS OFF-vs-ON WITHIN ONE ARRANGEMENT, over a MIRRORED PAIR.
+// Without statistics the planner still has to pick a side, and it picks by a
+// tie-break over plan structure (RFC-235 §18) — so on any ONE arrangement it is
+// right or wrong by luck, and a single-arrangement timing measures the luck.
+// Over a mirrored PAIR the luck cancels: a fixed tie-break drives from the same
+// table in both, so it is right in one and wrong in the other, whatever it
+// picked. The pair then splits into a WIN and a CONTROL by its PLANS.
+//
+// The ratio is never taken ACROSS the pair. The two arrangements return
+// different row counts, so their absolute times answer different questions; the
+// assertion block below says more about why, because an earlier revision of
+// this file did take a max across them and reported a control regression that
+// was two result sets being differenced.
 //
 //	statistics OFF: max over the pair is the SLOW plan — it cannot be right twice
 //	statistics ON:  max over the pair is the fast plan — right in both

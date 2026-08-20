@@ -198,14 +198,37 @@ func CollectStatistics(
 	var continuation []byte
 	var storeSubspace subspace.Subspace
 	var collectedAtVersion int64
+	var declaredTypes map[string]*RecordType
 	capped := make(map[string]string)
 
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		// PER-ATTEMPT accumulators. db.Run RETRIES its closure — that is the
+		// whole point of a transactor — and a batch that trips
+		// transaction_too_old after tallying most of its rows re-runs from the
+		// same continuation and re-reads them. Tallying straight into the
+		// durable counters would then add those rows twice.
+		//
+		// It fails in the worst possible direction: a retry is likeliest on the
+		// LONGEST batches, so the inflation lands preferentially on the biggest
+		// tables — the ones a join-order decision is most sensitive to — and it
+		// is silent, because an inflated count is a perfectly well-formed number
+		// that every gate downstream passes through.
+		//
+		// So each attempt accumulates into its own map, RESET at the top of the
+		// closure, and the merge below happens only after Run returns without
+		// error, i.e. exactly once per committed batch.
 		batchDone := false
+		var batchCounts map[string]int64
+		var batchScanned int64
+		var batchContinuation []byte
 		res, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			batchCounts = make(map[string]int64)
+			batchScanned = 0
+			batchContinuation = continuation
+			batchDone = false
 			store, sErr := storeBuilder(rtx)
 			if sErr != nil {
 				return nil, sErr
@@ -213,6 +236,12 @@ func CollectStatistics(
 			if storeSubspace == nil {
 				storeSubspace = store.Subspace()
 			}
+			// Idempotent: the same store yields the same type set on every
+			// attempt, so re-assigning under retry changes nothing. Seeding is
+			// done AFTER the loop, so that nothing inside a retried closure
+			// mutates a durable accumulator — an invariant worth being checkable
+			// by reading rather than by reasoning about idempotence.
+			declaredTypes = store.GetRecordMetaData().RecordTypes()
 			// The read version of the LAST batch stamps the run. Collection
 			// spans transactions, so no single version describes all of it;
 			// this one bounds how recent the newest reading is.
@@ -223,7 +252,7 @@ func CollectStatistics(
 			props := ScanProperties{
 				ExecuteProperties: ExecuteProperties{}.WithReturnedRowLimit(opts.batchSize()),
 			}
-			cur := store.ScanRecords(continuation, props)
+			cur := store.ScanRecords(batchContinuation, props)
 			defer func() { _ = cur.Close() }()
 
 			batch := 0
@@ -247,14 +276,14 @@ func CollectStatistics(
 					if c == nil {
 						batchDone = true
 					}
-					continuation = c
+					batchContinuation = c
 					return nil, nil
 				}
 				rec := r.GetValue()
 				if rec != nil && rec.RecordType != nil {
-					counts[rec.RecordType.Name]++
+					batchCounts[rec.RecordType.Name]++
 				}
-				scanned++
+				batchScanned++
 				batch++
 			}
 		})
@@ -262,8 +291,34 @@ func CollectStatistics(
 		if err != nil {
 			return nil, err
 		}
+		// The batch committed: fold its tally in exactly once.
+		for name, c := range batchCounts {
+			counts[name] += c
+		}
+		scanned += batchScanned
+		continuation = batchContinuation
 		if batchDone {
 			break
+		}
+	}
+
+	// SEED EVERY DECLARED TYPE AT ZERO.
+	//
+	// Counting only what the scan observed would leave a declared type with no
+	// rows ABSENT — and the reader requires every declared type to be present,
+	// so ONE empty table would refuse statistics for the whole schema,
+	// permanently, until somebody inserted a row. A freshly created schema is
+	// mostly empty tables, so the feature would be off exactly where it had just
+	// been switched on.
+	//
+	// An exact 0 from a full scan is as trustworthy as an exact 5, and it is not
+	// a hazard downstream: NewCollectedStatistics clamps a count below 1 up to 1,
+	// so an empty table costs as a one-row table rather than collapsing every
+	// cost above it to zero. ABSENT stays reserved for "not counted" — a capped
+	// type — which is a different fact from "counted, and there were none".
+	for name := range declaredTypes {
+		if _, seen := counts[name]; !seen {
+			counts[name] = 0
 		}
 	}
 
@@ -357,12 +412,36 @@ func ReadStatistics(
 	stats StatisticsSubspace,
 	storeSubspace subspace.Subspace,
 ) (StoreStatistics, bool, error) {
+	out, ok, _, err := ReadStatisticsAt(ctx, db, stats, storeSubspace)
+	return out, ok, err
+}
+
+// ReadStatisticsAt is ReadStatistics plus the cluster version the read was
+// taken at, from the SAME transaction.
+//
+// The freshness gate needs both, and taking them separately costs a second
+// round-trip on every uncached plan — for two numbers that are only meaningful
+// relative to each other. Reading them together also removes a real (if narrow)
+// window in which the entry could be replaced between the two reads, which
+// would compare one run's stamp against a version drawn after another run.
+func ReadStatisticsAt(
+	ctx context.Context,
+	db *FDBDatabase,
+	stats StatisticsSubspace,
+	storeSubspace subspace.Subspace,
+) (StoreStatistics, bool, int64, error) {
 	target := stats.forStore(storeSubspace)
 	out := StoreStatistics{PerType: make(map[string]RecordTypeStatistic)}
 	found := false
-	_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+	var readVersion int64
+	// RunRead, not Run: this is on the PLAN path, and Run opens a read-write
+	// transaction and pays a commit round-trip for a read that writes nothing.
+	_, err := db.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+		if v, vErr := rtx.GetReadVersion().Get(); vErr == nil {
+			readVersion = v
+		}
 		begin, end := target.FDBRangeKeys()
-		kvs, rErr := rtx.ReadTransaction(true).GetRange(
+		kvs, rErr := rtx.Snapshot().GetRange(
 			fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())},
 			fdb.RangeOptions{}).GetSliceWithError()
 		if rErr != nil {
@@ -392,15 +471,15 @@ func ReadStatistics(
 		return nil, nil
 	})
 	if err != nil {
-		return StoreStatistics{}, false, err
+		return StoreStatistics{}, false, 0, err
 	}
 	// The HEADER is what makes a set usable. Per-type entries without it are a
 	// torn or hand-written state, and the run's own stamps are what expiry is
 	// judged on.
 	if !found {
-		return StoreStatistics{}, false, nil
+		return StoreStatistics{}, false, readVersion, nil
 	}
-	return out, true, nil
+	return out, true, readVersion, nil
 }
 
 // ClearStatistics removes a store's statistics.

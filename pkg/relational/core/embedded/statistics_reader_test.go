@@ -15,9 +15,10 @@ import (
 // first time in front of an operator, where it reads as a finding rather than
 // as an untested branch.
 //
-// TestDecideStatisticsCoversEveryRefusal is the vacuity guard: adding a refusal
-// constant without a case here fails the build. A census whose rare arms are
-// only reached by whatever the corpus happens to hit is not a census.
+// TestDecideStatisticsCoversEveryRefusal is the vacuity guard. Its exact reach
+// is stated at the test itself, because the obvious claim — "a new refusal
+// without a case fails the build" — is FALSE, and this file exists to stop
+// exactly that kind of over-claim.
 
 const testVersion int64 = 1_000_000_000_000
 
@@ -234,10 +235,19 @@ func TestDecideStatistics(t *testing.T) {
 	}
 }
 
-// TestDecideStatisticsCoversEveryRefusal is the vacuity guard. Every refusal
-// constant must be produced by at least one case above, so a new gate cannot be
-// added with no test driving it — the failure mode this whole file exists to
-// prevent.
+// TestDecideStatisticsCoversEveryRefusal is the vacuity guard, and its reach is
+// worth writing down because the natural claim for it is wrong. Go cannot
+// enumerate a package's constants at runtime, so `all` below is hand-maintained,
+// and the guard catches two of the three ways coverage can rot:
+//
+//	a constant in `all` with no case producing it     -> caught
+//	a case producing a verdict `all` does not name     -> caught
+//	a constant with NEITHER a case nor an `all` entry  -> NOT caught
+//
+// The third is the residue of hand-maintenance. It is narrowed by the two that
+// ARE caught — adding a refusal means editing decideStatistics, and the arm
+// producing it has to come from somewhere — but it is not closed, and claiming
+// otherwise would be the exact failure this file exists to prevent.
 func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 	t.Parallel()
 	all := []StatisticsRefusal{

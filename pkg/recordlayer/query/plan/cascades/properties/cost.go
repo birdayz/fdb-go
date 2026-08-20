@@ -604,7 +604,24 @@ func localCostUnclamped(e expressions.RelationalExpression, child []Cost, stats 
 		// outer child's CPU) makes driving from the smaller side cheaper.
 		types := ex.GetRecordTypes()
 		if len(types) == 0 {
-			return Cost{Cardinality: LeafScanCardinality, CPU: LeafScanCardinality * ScanCPU}
+			// An EMPTY type list means "scan every type in the store"
+			// (full_unordered_scan.go), so the honest cardinality is the whole
+			// store — and that is exactly what the EMPTY record type name asks
+			// a provider for. Answering with the LeafScanCardinality constant
+			// instead is not merely imprecise once real statistics exist, it
+			// INVERTS: a universal scan would cost 1e6 beside a typed sibling
+			// costing 1000, so the planner would drive from the small table's
+			// side of a join it should have driven from the universal scan.
+			//
+			// Byte-identical under DefaultStatistics and under MapStatistics
+			// with the default fallback, both of which answer an unknown name
+			// with LeafScanCardinality. Only a provider that actually knows the
+			// store's size behaves differently, which is the point.
+			if stats == nil {
+				return Cost{Cardinality: LeafScanCardinality, CPU: LeafScanCardinality * ScanCPU}
+			}
+			all := stats.RecordTypeCardinality("")
+			return Cost{Cardinality: all, CPU: all * ScanCPU}
 		}
 		total := 0.0
 		for _, name := range types {

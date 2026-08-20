@@ -1111,7 +1111,7 @@ func (c *EmbeddedConnection) CollectStatistics(
 		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema,
 			"no metadata for schema %q", c.sess.Schema)
 	}
-	storeSubspace, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	statsSubspace, storeSubspace, err := c.statisticsLocation()
 	if err != nil {
 		return nil, err
 	}
@@ -1127,7 +1127,7 @@ func (c *EmbeddedConnection) CollectStatistics(
 				SetMetaDataProvider(md).SetSubspace(storeSubspace).
 				SetSkipPossiblyRebuild(true).Open()
 		},
-		recordlayer.NewStatisticsSubspace(c.sess.Keyspace.StatisticsSubspace()),
+		statsSubspace,
 		opts)
 }
 
@@ -1137,10 +1137,9 @@ func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
 		return api.NewError(api.ErrCodeInvalidParameter,
 			"ClearStatistics requires a connection bound to a schema")
 	}
-	storeSubspace, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	statsSubspace, storeSubspace, err := c.statisticsLocation()
 	if err != nil {
 		return err
 	}
-	return recordlayer.ClearStatistics(ctx, c.sess.DB,
-		recordlayer.NewStatisticsSubspace(c.sess.Keyspace.StatisticsSubspace()), storeSubspace)
+	return recordlayer.ClearStatistics(ctx, c.sess.DB, statsSubspace, storeSubspace)
 }

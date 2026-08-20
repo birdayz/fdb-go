@@ -3,10 +3,10 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"fmt"
+	"errors"
 	"sort"
 
-	"fdb.dev/pkg/fdbgo/fdb"
+	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
 	"fdb.dev/pkg/relational/api"
@@ -29,6 +29,29 @@ import (
 // entry stamped ahead of the cluster) and would otherwise ship untested,
 // firing for the first time in front of an operator and reading as a finding
 // rather than as an untested branch.
+
+// statisticsLocation returns the two subspaces every statistics operation on
+// this connection needs: where THIS schema's entries live, and the root they
+// live under.
+//
+// It exists so the pair is derived in ONE place. Three operations need it —
+// collect, clear, and the planner's read — and each deriving it itself is three
+// chances to disagree about the database-path convention or the schema's case
+// folding. That failure is silent in the worst way: the collector writes where
+// the planner never looks, every command reports success, and the only symptom
+// is that plans never change.
+//
+// The fleet fan-out is the one caller that cannot use this, because it has no
+// single schema to bind a connection to. It goes through the same two keyspace
+// methods, and TestIntegration_Stats_FleetCollectIsReadableByTheConnection is
+// what proves the two agree.
+func (c *EmbeddedConnection) statisticsLocation() (recordlayer.StatisticsSubspace, subspace.Subspace, error) {
+	storeSubspace, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	if err != nil {
+		return recordlayer.StatisticsSubspace{}, nil, err
+	}
+	return recordlayer.NewStatisticsSubspace(c.sess.Keyspace.StatisticsSubspace()), storeSubspace, nil
+}
 
 // statisticsMaxAgeVersions bounds how stale a collected statistic may be, in
 // FDB versions rather than wall-clock nanoseconds.
@@ -165,20 +188,27 @@ func evaluateCollectedStatistics(
 		in.DeclaredTypes = append(in.DeclaredTypes, name)
 	}
 
-	storeSubspace, err := c.sess.Keyspace.SchemaSubspace(c.sess.DBPath, c.sess.Schema)
+	statsSubspace, storeSubspace, err := c.statisticsLocation()
 	if err != nil {
 		in.ReadErr = err
 		return decideStatistics(in)
 	}
 
-	// Snapshot-only inside ReadStatistics: a planner read must never add a
-	// conflict range, or planning could make a transaction retry.
-	stats, ok, rErr := recordlayer.ReadStatistics(ctx, c.sess.DB,
-		recordlayer.NewStatisticsSubspace(c.sess.Keyspace.StatisticsSubspace()), storeSubspace)
+	// ONE read transaction for both halves. Snapshot-only: a planner read must
+	// never add a conflict range, or planning could make a transaction retry.
+	// The cluster version comes from the SAME transaction as the entry, so the
+	// freshness gate compares two numbers drawn at one instant rather than
+	// paying a second round-trip for a pair that is only meaningful together.
+	stats, ok, readVersion, rErr := recordlayer.ReadStatisticsAt(ctx, c.sess.DB, statsSubspace, storeSubspace)
 	in.ReadErr, in.Found, in.Stats = rErr, ok, stats
 	if rErr == nil && ok {
-		v, vErr := readCurrentVersion(ctx, c)
-		in.VersionErr, in.CurrentVersion = vErr, v
+		// A zero version is not "the epoch", it is a read that did not happen.
+		// Treating it as a real version would make every entry look infinitely
+		// stale, which is safe, but reporting WHY is what an operator needs.
+		if readVersion == 0 {
+			in.VersionErr = errNoReadVersion
+		}
+		in.CurrentVersion = readVersion
 	}
 	return decideStatistics(in)
 }
@@ -297,19 +327,6 @@ func (g *cascadesGenerator) fetchCollectedStatistics(
 	return properties.NewCollectedStatistics(st.perType)
 }
 
-// readCurrentVersion reads the cluster's current version for the freshness
-// gate. Snapshot semantics: it is a read version, not a write, and adds no
-// conflict range.
-func readCurrentVersion(ctx context.Context, c *EmbeddedConnection) (int64, error) {
-	v, err := c.sess.DB.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
-		return rtx.GetReadVersion().Get()
-	})
-	if err != nil {
-		return 0, err
-	}
-	n, ok := v.(int64)
-	if !ok {
-		return 0, fmt.Errorf("read version has type %T", v)
-	}
-	return n, nil
-}
+// errNoReadVersion marks a statistics read whose transaction produced no
+// cluster version. Age is then unknown, and unknown age is not fresh.
+var errNoReadVersion = errors.New("statistics read produced no cluster version")

@@ -71,7 +71,3 @@ func (s CollectedStatistics) storeTotal() float64 {
 	}
 	return s.total
 }
-
-// Types returns how many record types this provider carries. Used by callers
-// that must prove the set is non-empty before trusting it.
-func (s CollectedStatistics) Types() int { return len(s.perType) }

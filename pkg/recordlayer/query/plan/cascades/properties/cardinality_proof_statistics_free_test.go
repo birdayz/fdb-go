@@ -78,9 +78,16 @@ func mentionsStatistics(t reflect.Type, depth int) bool {
 func TestCardinalityProofTakesNoStatistics(t *testing.T) {
 	t.Parallel()
 
-	// THE PROOF PRODUCERS. Each of these DERIVES a Cardinalities, so none may
-	// see a statistic: a bound is a claim about plan structure, and a number
-	// cannot participate in deriving one.
+	// THE PROOF PRODUCERS, enumerated rather than characterised — a list can be
+	// checked against the package and a characterisation cannot. Each of these
+	// DERIVES a Cardinalities, so none may see a statistic: a bound is a claim
+	// about plan structure, and a number cannot participate in deriving one.
+	//
+	// NOT covered, deliberately, and each for a stated reason: the physical
+	// plans' own ProvenCardinalities methods (they satisfy CardinalityProver,
+	// whose signature IS covered, so a stats parameter cannot appear on them
+	// without changing the interface); and the two boundary functions below,
+	// which take statistics legitimately because they return a Cost.
 	//
 	// BoundedCostHinter and CostWithinBounds are deliberately NOT here. They are
 	// where the two sides MEET — they take the proven bounds AND the statistics
@@ -91,7 +98,18 @@ func TestCardinalityProofTakesNoStatistics(t *testing.T) {
 		name string
 		typ  reflect.Type
 	}{
+		// The EXPORTED entry points first. These are what a caller outside this
+		// package actually reaches for (expression_partition.go), and an earlier
+		// revision of this list omitted them while its comment claimed to cover
+		// "every proof producer" — so adding a StatisticsProvider parameter to
+		// ProvenCardinalitiesFrom compiled and passed this very test.
+		{"ProvenCardinalitiesOf", reflect.TypeOf(ProvenCardinalitiesOf)},
+		{"ProvenCardinalitiesFrom", reflect.TypeOf(ProvenCardinalitiesFrom)},
+		// …then the unexported machinery behind them.
 		{"provenCardinalities", reflect.TypeOf(provenCardinalities)},
+		{"provenLogicalCardinalities", reflect.TypeOf(provenLogicalCardinalities)},
+		{"limitBound", reflect.TypeOf(limitBound)},
+		{"boundsWalk", reflect.TypeOf(boundsWalk{})},
 		{"ClampCardinality", reflect.TypeOf(ClampCardinality)},
 		{"CardinalityProver", reflect.TypeOf((*CardinalityProver)(nil)).Elem()},
 		{"IntersectCardinalities", reflect.TypeOf(IntersectCardinalities)},

@@ -160,18 +160,70 @@ var _ = Describe("CollectStatistics", func() {
 		Expect(report.Collected["Customer"].Count).To(Equal(int64(20)))
 	})
 
-	It("counts an EMPTY store as no statistics rather than zeros", func() {
+	// A DECLARED TYPE WITH NO ROWS IS AN EXACT ZERO, NOT AN ABSENCE.
+	//
+	// An earlier revision recorded it as ABSENT, reasoning that "zero tells the
+	// cost model the table is empty, which is the most selective claim
+	// available". That reasoning was wrong twice over.
+	//
+	// It is wrong about the danger: NewCollectedStatistics clamps a count below
+	// 1 up to 1, so a stored 0 reaches the cost model as a one-row table and
+	// cannot collapse the costs above it. And it is wrong about the cost of
+	// being careful: the reader requires EVERY declared type to have an entry,
+	// so one empty table refused statistics for the entire schema — permanently,
+	// until somebody inserted a row. A freshly created schema is mostly empty
+	// tables, so the feature was off exactly where it had just been switched on.
+	//
+	// An exact 0 from a full scan is as trustworthy as an exact 5. ABSENT is
+	// reserved for "not counted", which is a capped type, and is a different
+	// fact.
+	It("records a declared type with no rows as an exact zero", func() {
 		ctx := context.Background()
 		sub := specSubspace()
 		stats := statsRoot()
 
 		report, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(report.Collected).To(BeEmpty(),
-			"a type with no rows must be ABSENT, not Count=0. Absent means 'unknown' and "+
-				"falls back to the default; zero would tell the cost model the table is empty, "+
-				"which is the most selective claim available and the worst one to get wrong")
 		Expect(report.RecordsScanned).To(Equal(int64(0)))
+
+		for _, name := range []string{"Order", "Customer", "TypedRecord"} {
+			Expect(report.Collected).To(HaveKey(name),
+				"every DECLARED type must get an entry even with no rows, or the reader's "+
+					"completeness gate refuses the whole schema forever")
+			Expect(report.Collected[name].Count).To(BeZero())
+		}
+		Expect(report.Skipped).To(BeEmpty(),
+			"no row is not the same fact as not counted; only a capped type is skipped")
+	})
+
+	// The shape that made the bug above matter, end to end: a schema where SOME
+	// tables have rows and one does not. This is the ordinary state of a real
+	// schema, and it is the dimension the rest of this file missed — every other
+	// case here either populates every type or populates none, and both of those
+	// pass with the type-with-no-rows bug fully present.
+	It("is usable for a schema where one table is populated and another is empty", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		// Orders only. Customer and TypedRecord are declared and stay empty.
+		seed(ctx, sub, 12, 0)
+
+		report, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(report.Collected["Order"].Count).To(Equal(int64(12)))
+		Expect(report.Collected["Customer"].Count).To(BeZero())
+
+		stored, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		// The reader's completeness gate is schema-wide, so this is the
+		// assertion that the mixed schema is actually PLANNABLE rather than
+		// merely collected.
+		for _, name := range []string{"Order", "Customer", "TypedRecord"} {
+			Expect(stored.PerType).To(HaveKey(name),
+				"a mixed schema must be COMPLETE, or the planner refuses it and the whole "+
+					"feature is unreachable for any schema containing an empty table")
+		}
 	})
 
 	It("REPLACES a previous run atomically rather than merging with it", func() {
@@ -204,11 +256,25 @@ var _ = Describe("CollectStatistics", func() {
 
 		report, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 100})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(report.Collected).NotTo(HaveKey("Customer"),
-			"every Customer was deleted, so the type must vanish from the statistics. A "+
-				"surviving entry means the write merged with the previous run, and stale "+
-				"counts from two different versions are not comparable")
+		// The type is still DECLARED, so it must read as an exact 0 — not vanish,
+		// and above all not keep the stale 40. Asserting the VALUE rather than
+		// mere absence is the stronger check: absence would also be produced by a
+		// bug that simply dropped the key, whereas only a genuine replacement
+		// turns 40 into 0.
+		Expect(report.Collected).To(HaveKey("Customer"))
+		Expect(report.Collected["Customer"].Count).To(BeZero(),
+			"every Customer was deleted, so the re-collected count must be 0. A surviving "+
+				"40 means the write merged with the previous run, and counts from two "+
+				"different versions are not comparable")
 		Expect(report.Collected["Order"].Count).To(Equal(int64(300)))
+
+		// And the STORED bytes must agree, since the reader reads those and not
+		// the report — a merge would show up here even if the report looked right.
+		stored, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(stored.PerType["Customer"].Count).To(BeZero())
+		Expect(stored.PerType["Order"].Count).To(Equal(int64(300)))
 	})
 
 	It("keys by STORE, so two stores under one root do not mix", func() {
@@ -527,4 +593,85 @@ var _ = Describe("CollectStatistics", func() {
 				"SetSkipPossiblyRebuild + Open is what prevents that, and both call sites "+
 				"(embedded/connection.go, core/fleet/statistics.go) depend on it")
 	})
+
+	// A RETRIED BATCH MUST NOT BE COUNTED TWICE.
+	//
+	// db.Run RETRIES its closure — that is what a transactor is for. A batch
+	// that trips transaction_too_old after tallying most of its rows re-runs
+	// from the same continuation and re-reads them, so a collector that tallies
+	// straight into its durable counters adds those rows twice.
+	//
+	// The failure direction is the worst available. A retry is likeliest on the
+	// LONGEST batches, so the inflation lands preferentially on the biggest
+	// tables — precisely the ones a join-order decision is most sensitive to.
+	// And it is silent: an inflated count is a well-formed number that every
+	// gate downstream passes through to the cost model, which then drives the
+	// join from the wrong side because the table it thinks is huge is not.
+	//
+	// The instrument is a transactor that invokes the closure TWICE and returns
+	// the second result, which is what a retry is, minus the timing. That makes
+	// the test deterministic rather than dependent on provoking a real 1007 —
+	// a fault-injection version would be flaky and would prove less.
+	It("does not double-count a batch whose transaction is retried", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		const orders, customers = 500, 20
+		seed(ctx, sub, orders, customers)
+
+		// Replay every transaction once. Batches are small, so this exercises
+		// the retry path many times over rather than at one convenient point.
+		replayer := &replayingTransactor{inner: sharedDB.transactor, replays: 1000}
+		replayDB := NewFDBDatabaseWithTransactor(replayer, sharedDB.db)
+
+		report, err := CollectStatistics(ctx, replayDB,
+			func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+				return NewStoreBuilder().SetContext(rtx).
+					SetMetaDataProvider(metaData).SetSubspace(sub).CreateOrOpen()
+			}, stats, CollectOptions{BatchSize: 50})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The guard that stops this from passing vacuously: the replays must
+		// actually have happened. Zero replays and the assertions below are a
+		// re-run of the ordinary exactness test.
+		Expect(replayer.used()).To(BeNumerically(">", 1),
+			"the transactor replayed nothing, so no retry was exercised and this test "+
+				"proves only what the plain exactness test already does")
+
+		Expect(report.Collected["Order"].Count).To(Equal(int64(orders)),
+			"a retried batch was counted more than once — the count is inflated, and it "+
+				"inflates the LARGEST tables first because they take the longest batches")
+		Expect(report.Collected["Customer"].Count).To(Equal(int64(customers)))
+		Expect(report.RecordsScanned).To(Equal(int64(orders + customers)))
+	})
 })
+
+// replayingTransactor invokes each transaction closure twice and returns the
+// second result — an FDB retry, minus the timing. Used to prove the collector's
+// per-batch accumulators are reset per attempt rather than merged per attempt.
+type replayingTransactor struct {
+	inner   fdb.Transactor
+	replays int
+	spent   int
+}
+
+func (r *replayingTransactor) used() int { return r.spent }
+
+func (r *replayingTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	return r.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
+		if r.replays > 0 {
+			r.replays--
+			r.spent++
+			// Discard the first run exactly as a retry discards an aborted
+			// attempt: its reads happened, and nothing durable may survive them.
+			if _, err := fn(tx); err != nil {
+				return nil, err
+			}
+		}
+		return fn(tx)
+	})
+}
+
+func (r *replayingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	return r.inner.ReadTransact(fn)
+}
