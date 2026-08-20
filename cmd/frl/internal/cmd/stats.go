@@ -360,7 +360,16 @@ func renderCollectReport(
 		})
 	}
 	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "collected statistics for %s\n", schema)
+	// An ABORTED run stored nothing, and this renderer is reached on that path
+	// too -- RunE prints the report before returning its non-zero error. An
+	// unconditional "collected" headline then announces success for a run whose
+	// own later line says the types were NOT collected, which is the reading an
+	// operator takes away from a scrollback.
+	if len(collected) == 0 && len(report.Skipped) > 0 {
+		fmt.Fprintf(out, "collection ABORTED for %s — nothing was stored\n", schema)
+	} else {
+		fmt.Fprintf(out, "collected statistics for %s\n", schema)
+	}
 	fmt.Fprintf(out, "  records scanned: %d in %s\n", report.RecordsScanned, elapsed.Round(time.Millisecond))
 	fmt.Fprintln(out)
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
@@ -485,9 +494,21 @@ func renderStatsStatus(
 		// collection rejects those schemas too, so recommending it would send an
 		// operator to run a command that cannot succeed, from the one verdict
 		// that is permanent.
-		if st.Refusal == embedded.StatisticsNotCollected {
+		switch st.Refusal {
+		case embedded.StatisticsNotCollected:
 			fmt.Fprintln(out, "run `frl stats collect` to gather them")
-		} else {
+		case embedded.StatisticsReadFailed:
+			// Found is false here because existence is UNKNOWN, not because the
+			// store is empty: the read itself failed. Saying "nothing is stored"
+			// turns a transient, permission or cluster fault into a confident
+			// statement of absence -- and an operator who believes it collects
+			// again, which does not diagnose the fault either.
+			fmt.Fprintf(out, "could not read them, so whether any are stored is UNKNOWN: %s\n",
+				st.Refusal)
+			if st.ReadErr != nil {
+				fmt.Fprintf(out, "  %v\n", st.ReadErr)
+			}
+		default:
 			fmt.Fprintf(out, "nothing is stored, and collection will not help: %s\n", st.Refusal)
 		}
 		return nil

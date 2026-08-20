@@ -1381,6 +1381,63 @@ var _ = Describe("CollectStatistics", func() {
 				"string must refuse the SET, and for that reason")
 	})
 
+	// THE COLLECTOR OWNS THE SYNTHETIC REFUSAL, NOT ITS CALLERS.
+	//
+	// RecordTypes() deliberately OMITS joined and unnested declarations — this
+	// port carries them opaquely — so for such metadata the declared-type set is
+	// a PARTIAL view of the schema. A run over it writes a header vouching for a
+	// set that can never be complete, and the record-layer reader has no
+	// completeness gate to catch that; only the relational one does.
+	//
+	// Both in-repo callers already refuse before opening a store. That is not
+	// the same as the invariant being enforced: a direct record-layer caller
+	// reaches this function with no gate in front of it at all, which is exactly
+	// the population this package is for. Same reasoning as the entry stamps —
+	// the writer owns what the reader requires.
+	It("refuses metadata declaring synthetic record types, before scanning", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 6, 2)
+
+		// Round-trip the suite's own metadata and add a JOINED declaration, so
+		// the only difference from a passing run is the synthetic type.
+		p, err := metaData.ToProto()
+		Expect(err).NotTo(HaveOccurred())
+		p.JoinedRecordTypes = append(p.JoinedRecordTypes, &gen.JoinedRecordType{
+			Name: proto.String("OrderWithCustomer"),
+			JoinConstituents: []*gen.JoinedRecordType_JoinConstituent{
+				{Name: proto.String("o"), RecordType: proto.String("Order")},
+				{Name: proto.String("c"), RecordType: proto.String("Customer")},
+			},
+		})
+		syntheticMD, err := RecordMetaDataFromProto(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(syntheticMD.DeclaresSyntheticRecordTypes()).To(BeTrue(),
+			"the fixture does not actually declare a synthetic type, so the refusal "+
+				"below would prove nothing")
+
+		_, err = CollectStatistics(ctx, sharedDB,
+			func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+				return NewStoreBuilder().SetContext(rtx).
+					SetMetaDataProvider(syntheticMD).SetSubspace(sub).CreateOrOpen()
+			}, stats, CollectOptions{BatchSize: 5})
+
+		var syntheticErr *SyntheticRecordTypesNotModeledError
+		Expect(errors.As(err, &syntheticErr)).To(BeTrue(),
+			"collection over metadata declaring synthetic types must be REFUSED by the "+
+				"collector itself: got %v", err)
+		Expect(syntheticErr.TypeNames).To(ContainElement("OrderWithCustomer"),
+			"the refusal must name what it refused for")
+
+		// And nothing was persisted — a refusal that still wrote a header would
+		// leave behind the partial set it exists to prevent.
+		_, refusal, _, rErr := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
+		Expect(rErr).NotTo(HaveOccurred())
+		expectReadRefusal(refusal, StatisticsReadNoHeader,
+			"a refused collection still wrote something")
+	})
+
 	// A MALFORMED ENTRY POISONS THE WHOLE SET.
 	//
 	// ReadStatistics documents all-or-nothing: "a caller gets a usable set or

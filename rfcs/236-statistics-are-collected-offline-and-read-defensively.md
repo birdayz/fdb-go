@@ -372,9 +372,18 @@ distinction cost two review rounds to get right:
 - **Before any I/O.** The verdict is fixed by a property of the metadata, so
   reading statistics cannot change it. Reading anyway spends an FDB transaction
   per opt-in plan-cache miss and discards the answer.
-- **Before collection.** Both the single-schema and fleet paths refuse up front.
-  Collecting would read every record in the store to produce a set the planner
-  has already decided to reject — per tenant, across a fleet.
+- **Before collection.** The single-schema and fleet paths refuse up front, and
+  so does the CORE COLLECTOR itself. Collecting would read every record in the
+  store to produce a set the planner has already decided to reject — per tenant,
+  across a fleet.
+
+  The collector's own check is the one that makes this an invariant rather than
+  a convention. The two relational callers refuse before opening a store, which
+  is cheaper and says so earlier; but a DIRECT record-layer caller reaches
+  `CollectStatistics` with no gate in front of it, and that population is
+  precisely what the package exists for. Below the relational layer there is no
+  completeness gate to catch the partial set afterwards. Same reasoning as the
+  entry stamps: the writer owns what the reader requires.
 - **Symmetrically.** The fleet reports REFUSED, not no-work. Collapsing them made
   a million-row tenant print "nothing to build" and exit 0 while `--schema` on
   that same tenant exited non-zero — one outcome meaning two things depending on

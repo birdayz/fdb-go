@@ -33,6 +33,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
@@ -360,6 +361,23 @@ func CollectStatistics(
 			// The merge is what carries that, not the seeding further down: seeding
 			// assigns zero to declared types the scan never saw, so it cannot
 			// double anything and is not part of this argument.
+			// REFUSE UNMODELED SYNTHETIC TYPES HERE, not only at the SQL and fleet
+			// boundaries. RecordTypes() deliberately OMITS joined and unnested
+			// declarations -- this port carries them opaquely -- so for such metadata
+			// the line below returns a PARTIAL view, and a run over it writes a header
+			// vouching for a set that can never be complete. The reader below the
+			// relational layer has no completeness gate to catch that.
+			//
+			// The two callers inside this repo already refuse it before opening a
+			// store, which is cheaper and says so earlier. This is the check that
+			// makes the invariant belong to the COLLECTOR rather than to whoever
+			// happens to call it -- the same reason the entry stamps are set by the
+			// writer instead of trusted from its caller.
+			if md := store.GetRecordMetaData(); md.DeclaresSyntheticRecordTypes() {
+				return nil, &SyntheticRecordTypesNotModeledError{
+					TypeNames: md.SyntheticRecordTypeNames(),
+				}
+			}
 			declaredTypes = store.GetRecordMetaData().RecordTypes()
 			// The read version of the LAST batch stamps the run. Collection
 			// spans transactions, so no single version describes all of it;
@@ -903,4 +921,23 @@ func ReadStatisticsAt(
 ) (StoreStatistics, bool, int64, error) {
 	out, refusal, version, err := ReadStatisticsAtWithRefusal(ctx, db, stats, storeSubspace, tags...)
 	return out, err == nil && refusal == StatisticsReadOK, version, err
+}
+
+// SyntheticRecordTypesNotModeledError reports metadata declaring JOINED or
+// UNNESTED record types, which this port carries opaquely rather than modelling.
+//
+// Collection refuses such a schema before scanning. RecordTypes() omits those
+// declarations, so a run would read every record in the store to produce a set
+// that is a PARTIAL view of the schema by construction — and would then write a
+// header vouching for it. Completeness is undecidable against a partial set, so
+// there is no reading of that outcome a planner could safely use.
+type SyntheticRecordTypesNotModeledError struct {
+	// TypeNames are the synthetic declarations found, so a caller can say which.
+	TypeNames []string
+}
+
+func (e *SyntheticRecordTypesNotModeledError) Error() string {
+	return fmt.Sprintf("metadata declares synthetic record types this port does not model (%s); "+
+		"statistics collection refused rather than scanning the store for a set that "+
+		"could never be complete", strings.Join(e.TypeNames, ", "))
 }

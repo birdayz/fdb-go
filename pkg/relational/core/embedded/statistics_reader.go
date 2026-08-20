@@ -139,6 +139,13 @@ type StatisticsStatus struct {
 	// These do NOT refuse — a dropped table leaves an orphan entry and the
 	// planner simply never asks for it — but an operator wants to see them.
 	ExtraTypes []string
+	// ReadErr is the underlying failure when Refusal is StatisticsReadFailed.
+	//
+	// Carried because Found is false in that case for a DIFFERENT reason than
+	// everywhere else: existence is UNKNOWN, not absent. An operator told
+	// "nothing is stored" after a permission or cluster fault collects again,
+	// which does not diagnose the fault either.
+	ReadErr error
 	// AmbiguousTypes is the colliding pair when Refusal is
 	// StatisticsAmbiguousNames: two declared names where one is the other's
 	// escaped form, so a lookup by either cannot say which table is meant.
@@ -301,6 +308,7 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 	// GATE 1 — the read.
 	if in.ReadErr != nil {
 		st.Refusal = StatisticsReadFailed
+		st.ReadErr = in.ReadErr
 		return st
 	}
 	if !in.Found {

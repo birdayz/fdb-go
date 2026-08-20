@@ -10,12 +10,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -542,5 +544,85 @@ func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("the renderer drops %s on the JSON path: %s", want, buf.String())
 		}
+	}
+}
+
+// AN ABORTED COLLECTION MUST NOT ANNOUNCE SUCCESS.
+//
+// RunE prints the report and THEN returns its non-zero error, so this renderer
+// is reached on the aborted path too. An unconditional "collected statistics
+// for X" headline announces success for a run that stored nothing — and the
+// same output then lists the types as NOT collected, so the two halves of one
+// message disagree. A reader takes the headline.
+func TestStats_AbortedCollectionIsNotRenderedAsSuccess(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	render := &cobra.Command{}
+	render.SetOut(&buf)
+
+	// The aborted shape: nothing collected, and a reason per type.
+	aborted := &recordlayer.CollectionReport{
+		Collected: map[string]recordlayer.RecordTypeStatistic{},
+		Skipped: map[string]string{
+			"Order": "exceeds MaxRecordsPerType (50); collection aborted and stored nothing",
+		},
+		RecordsScanned: 51,
+	}
+	if err := renderCollectReport(render, "text", "/x/MAIN", aborted, time.Second); err != nil {
+		t.Fatalf("renderCollectReport: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "collected statistics for") {
+		t.Errorf("an aborted collection was announced as a success:\n%s", out)
+	}
+	if !strings.Contains(out, "ABORTED") {
+		t.Errorf("an aborted collection must say so in its headline:\n%s", out)
+	}
+
+	// The success shape must still say so, or the fix above is just a rename.
+	buf.Reset()
+	ok := &recordlayer.CollectionReport{
+		Collected:      map[string]recordlayer.RecordTypeStatistic{"Order": {Count: 7}},
+		Skipped:        map[string]string{},
+		RecordsScanned: 7,
+	}
+	if err := renderCollectReport(render, "text", "/x/MAIN", ok, time.Second); err != nil {
+		t.Fatalf("renderCollectReport (success): %v", err)
+	}
+	if !strings.Contains(buf.String(), "collected statistics for") {
+		t.Errorf("a successful collection stopped saying so:\n%s", buf.String())
+	}
+}
+
+// A FAILED READ IS UNKNOWN, NOT EMPTY.
+//
+// decideStatistics returns StatisticsReadFailed with Found==false because
+// existence is UNKNOWN — the read itself failed. Reporting "nothing is stored"
+// turns a transient, permission or cluster fault into a confident statement of
+// absence, and an operator who believes it runs collect, which does not
+// diagnose the fault either. This is the same absent-versus-failed conflation
+// the read side spent this feature removing, surfacing in the UI instead.
+func TestStats_FailedReadIsReportedAsUnknownNotAbsent(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	render := &cobra.Command{}
+	render.SetOut(&buf)
+	if err := renderStatsStatus(render, "text", "/x/MAIN", embedded.StatisticsStatus{
+		Refusal: embedded.StatisticsReadFailed,
+		ReadErr: errors.New("operation_failed on GetRange"),
+	}); err != nil {
+		t.Fatalf("renderStatsStatus: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "nothing is stored") {
+		t.Errorf("a FAILED read was reported as absence:\n%s", out)
+	}
+	if !strings.Contains(out, "UNKNOWN") {
+		t.Errorf("a failed read must say existence is unknown:\n%s", out)
+	}
+	if !strings.Contains(out, "operation_failed on GetRange") {
+		t.Errorf("the underlying error is what an operator needs and it is missing:\n%s", out)
 	}
 }
