@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
+	"sync"
 	"time"
 
 	"fdb.dev/gen"
@@ -170,7 +172,7 @@ var _ = Describe("CollectStatistics", func() {
 		// no-header arm.
 		_, refusal, _, rErr := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(rErr).NotTo(HaveOccurred())
-		Expect(refusal).To(Equal(StatisticsReadNoHeader),
+		expectReadRefusal(refusal, StatisticsReadNoHeader,
 			"an aborted run must leave the store with NO header. Any other refusal "+
 				"means it wrote something and the abort was not clean")
 	})
@@ -1166,7 +1168,7 @@ var _ = Describe("CollectStatistics", func() {
 		// that assertion cannot say WHICH one fired -- and this very check was
 		// found dead because a later arm refused this fixture first while the
 		// spec kept passing.
-		Expect(refusal).To(Equal(StatisticsReadCountMismatch),
+		expectReadRefusal(refusal, StatisticsReadCountMismatch,
 			"a set carrying one more entry than its header recorded must be refused "+
 				"for THAT reason — the reader vouched for a set it did not assemble "+
 				"from a single consistent write, or refused it for another reason, "+
@@ -1265,7 +1267,7 @@ var _ = Describe("CollectStatistics", func() {
 
 		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(refusal).To(Equal(StatisticsReadVersionMismatch),
+		expectReadRefusal(refusal, StatisticsReadVersionMismatch,
 			"an entry stamped from a different run must be refused for the VERSION "+
 				"reason specifically — the freshness gate reads only the header, so it "+
 				"would otherwise judge that stale count fresh")
@@ -1306,7 +1308,7 @@ var _ = Describe("CollectStatistics", func() {
 
 		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(refusal).To(Equal(StatisticsReadTimestampMismatch),
+		expectReadRefusal(refusal, StatisticsReadTimestampMismatch,
 			"an entry whose TIMESTAMP differs from the header must be refused for "+
 				"THAT reason — the version arm alone was carrying this check once "+
 				"already, so half of it went unexercised")
@@ -1334,7 +1336,7 @@ var _ = Describe("CollectStatistics", func() {
 
 		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(refusal).To(Equal(StatisticsReadOK),
+		expectReadRefusal(refusal, StatisticsReadOK,
 			"the set was already refused, so the arm below is not what this pins")
 
 		target := stats.forStore(sub)
@@ -1348,7 +1350,7 @@ var _ = Describe("CollectStatistics", func() {
 
 		_, refusal, _, err = ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(refusal).To(Equal(StatisticsReadUndecodableKey),
+		expectReadRefusal(refusal, StatisticsReadUndecodableKey,
 			"a key this build cannot parse must refuse the SET, and for that reason — "+
 				"skipping it returns the rest as complete, which is the partial answer "+
 				"the all-or-nothing contract exists to forbid")
@@ -1374,7 +1376,7 @@ var _ = Describe("CollectStatistics", func() {
 
 		_, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(refusal).To(Equal(StatisticsReadNonStringKey),
+		expectReadRefusal(refusal, StatisticsReadNonStringKey,
 			"a key element that is neither the header integer nor a record-type "+
 				"string must refuse the SET, and for that reason")
 	})
@@ -1414,7 +1416,7 @@ var _ = Describe("CollectStatistics", func() {
 		// for that reason instead. No fixture can fix that -- an undecodable entry
 		// has no stamps BY CONSTRUCTION, so the decode arm can never be the only
 		// arm able to refuse. Naming the reason is the only thing that can.
-		Expect(refusal).To(Equal(StatisticsReadUndecodableValue),
+		expectReadRefusal(refusal, StatisticsReadUndecodableValue,
 			"one undecodable entry must reject the SET for the DECODE reason. "+
 				"Returning the rest with ok=true is a partial answer wearing a "+
 				"complete one's shape; refusing for a different reason leaves the "+
@@ -1643,7 +1645,7 @@ var _ = Describe("CollectStatisticsIntegerKeys", func() {
 		// nothing — the fourth check in this PR found dead the same way, and the
 		// reason it survived a mutation matrix is that a blunt mutation (breaking
 		// out of the loop) reddens it for a cause the assertion cannot express.
-		Expect(refusal).To(Equal(StatisticsReadUnknownIntegerKey),
+		expectReadRefusal(refusal, StatisticsReadUnknownIntegerKey,
 			"an integer key that is not the header must poison the SET, and for THAT "+
 				"reason. It cannot be a record type — names are strings — so it is a "+
 				"layout this build does not understand; refusing it as a non-string key "+
@@ -1672,3 +1674,91 @@ func (c *countingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, err
 	c.n++
 	return c.inner.ReadTransact(fn)
 }
+
+// EVERY DECLARED READ-REFUSAL MUST BE PRODUCED BY A SPEC.
+//
+// The mutation matrix over ReadStatisticsAtWithRefusal's arms was run by hand
+// and each arm reddened its own spec. Nothing keeps that true. A ninth arm can
+// land reusing an existing reason, or with no spec at all, and the suite stays
+// green — which is the same "a claim that cannot fail" shape the matrix exists
+// to remove, one level up.
+//
+// So the coverage is enforced rather than remembered. This is the record-layer
+// mirror of TestDecideStatisticsCoversEveryRefusal in core/embedded, and it has
+// the same acknowledged hole: the list below is hand-maintained, so a constant
+// absent from BOTH it and every spec cannot be caught — Go cannot enumerate
+// constants at runtime. Adding one to the const block means adding it here.
+var allStatisticsReadRefusals = []StatisticsReadRefusal{
+	StatisticsReadOK,
+	StatisticsReadNoHeader,
+	StatisticsReadUndecodableKey,
+	StatisticsReadUnknownIntegerKey,
+	StatisticsReadNonStringKey,
+	StatisticsReadUndecodableValue,
+	StatisticsReadCountMismatch,
+	StatisticsReadVersionMismatch,
+	StatisticsReadTimestampMismatch,
+}
+
+var (
+	observedReadRefusalsMu sync.Mutex
+	observedReadRefusals   = map[StatisticsReadRefusal]bool{}
+)
+
+// expectReadRefusal asserts the refusal AND records that it was produced, so the
+// suite-level guard below can tell a reason nothing exercises from one that is
+// merely rare. Recording what was OBSERVED rather than what was WANTED is
+// deliberate: a spec asserting the wrong reason fails anyway, and recording the
+// wanted value would let a never-produced reason count itself as covered.
+func expectReadRefusal(got, want StatisticsReadRefusal, description string, args ...any) {
+	observedReadRefusalsMu.Lock()
+	observedReadRefusals[got] = true
+	observedReadRefusalsMu.Unlock()
+	msg := description
+	if len(args) > 0 {
+		msg = fmt.Sprintf(description, args...)
+	}
+	ExpectWithOffset(1, got).To(Equal(want), msg)
+}
+
+var _ = ReportAfterSuite("every statistics-read refusal is produced by a spec", func(report Report) {
+	// A FILTERED run reaches only the specs the filter selected, so an
+	// unobserved reason says nothing about the suite. Reporting a pass there
+	// would be the vacuous-green this guard exists to prevent; reporting a
+	// failure would make every focused run red. It declines instead, loudly.
+	if len(report.SuiteConfig.FocusStrings) > 0 || report.SuiteConfig.LabelFilter != "" ||
+		len(report.SuiteConfig.SkipStrings) > 0 {
+		GinkgoWriter.Printf("statistics-read refusal coverage NOT checked: the run was " +
+			"filtered, so an unobserved reason would only describe the filter.\n")
+		return
+	}
+	observedReadRefusalsMu.Lock()
+	defer observedReadRefusalsMu.Unlock()
+	var missing []string
+	for _, r := range allStatisticsReadRefusals {
+		if !observedReadRefusals[r] {
+			missing = append(missing, string(r))
+		}
+	}
+	// Both directions. A reason produced but not listed means the list has gone
+	// stale against the const block, which is how the hole above widens.
+	for r := range observedReadRefusals {
+		found := false
+		for _, known := range allStatisticsReadRefusals {
+			if r == known {
+				found = true
+				break
+			}
+		}
+		if !found {
+			Fail(fmt.Sprintf("a spec produced refusal %q, which allStatisticsReadRefusals "+
+				"does not name — the list is stale against the const block", r))
+		}
+	}
+	if len(missing) > 0 {
+		Fail(fmt.Sprintf("%d statistics-read refusal(s) are produced by NO spec: %s.\n"+
+			"An arm nothing drives fires for the first time in front of an operator, and "+
+			"four checks in this feature were already found dead exactly that way.",
+			len(missing), strings.Join(missing, ", ")))
+	}
+})
