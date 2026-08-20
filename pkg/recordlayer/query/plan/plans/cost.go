@@ -226,9 +226,25 @@ func (p *RecordQueryAggregateIndexPlan) HintCost(_ []properties.Cost, stats prop
 			CPU:         properties.MaxFiniteHeuristic,
 		}
 	}
+	// Price from the EMBEDDED INDEX PLAN's record types, through the same
+	// indexBaseCardinality every other index leaf uses -- not from
+	// GetRecordTypeName(), which is an IDENTITY field and answers for at most one
+	// type. Two bugs met there once collected statistics made counts real:
+	//
+	// Its three construction sites (rule_aggregate_data_access.go) set it as
+	// `if len(rts) > 0 { name = rts[0] }`. With NO declared types the name is
+	// EMPTY, and an empty name asks a provider for the WHOLE STORE -- so an
+	// aggregate leaf priced itself from the sum of every table in the schema
+	// while a typed sibling in the same plan priced one. With SEVERAL declared
+	// types it priced exactly one of them and ignored the rest.
+	//
+	// Neither was findable by grepping for RecordTypeCardinality(""): the empty
+	// name arrived through a variable, not a literal. Both are gone here because
+	// indexBaseCardinality SUMS the index's types and reaches the whole-store
+	// fallback only when the plan genuinely declares none.
 	tableCard := properties.LeafScanCardinality
 	if stats != nil {
-		tableCard = stats.RecordTypeCardinality(p.GetRecordTypeName())
+		tableCard = indexBaseCardinality(p.GetIndexPlan(), stats)
 	}
 	cardinality := tableCard * properties.DistinctSelectivity
 	if cardinality < 1 {

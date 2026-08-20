@@ -86,6 +86,8 @@ type Event struct {
 	// FromVersion / ToVersion bracket a rebind (migration mode only).
 	FromVersion int
 	ToVersion   int
+	// Types is how many record types got a statistic (statistics mode only).
+	Types int
 }
 
 // Options are the knobs shared by every fan-out mode.
@@ -118,13 +120,14 @@ func (o Options) concurrency() int {
 // attempted, and the returned error carries the context error. Do not treat
 // Total as "targets handled".
 type Result struct {
-	Total    int
-	Migrated int
-	Skipped  int
-	Built    int
-	NoWork   int
-	Failed   int
-	Refused  int
+	Total     int
+	Migrated  int
+	Skipped   int
+	Built     int
+	Collected int
+	NoWork    int
+	Failed    int
+	Refused   int
 	// Failures carries one entry per failed or refused target.
 	Failures []*TargetError
 }
@@ -137,6 +140,7 @@ func (r *Result) merge(o Result) {
 	r.Migrated += o.Migrated
 	r.Skipped += o.Skipped
 	r.Built += o.Built
+	r.Collected += o.Collected
 	r.NoWork += o.NoWork
 	r.Failed += o.Failed
 	r.Refused += o.Refused
@@ -151,6 +155,8 @@ func (r *Result) record(ev Event) {
 		r.Skipped++
 	case OutcomeBuilt:
 		r.Built++
+	case OutcomeCollected:
+		r.Collected++
 	case OutcomeNoWork:
 		r.NoWork++
 	case OutcomeFailed:

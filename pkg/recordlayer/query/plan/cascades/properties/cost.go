@@ -258,16 +258,6 @@ func (DefaultStatistics) RecordTypeCardinality(_ string) float64 {
 	return LeafScanCardinality
 }
 
-// HasRealStats reports whether the statistics provider has real
-// per-type cardinalities (not just the default LeafScanCardinality).
-func HasRealStats(stats StatisticsProvider) bool {
-	if stats == nil {
-		return false
-	}
-	_, isDefault := stats.(DefaultStatistics)
-	return !isDefault
-}
-
 // FixedStatistics returns a fixed cardinality for every record type.
 // Useful in tests that want a non-default scan cost.
 type FixedStatistics struct {
@@ -604,7 +594,8 @@ func localCostUnclamped(e expressions.RelationalExpression, child []Cost, stats 
 
 	case *expressions.FullUnorderedScanExpression:
 		// A scan over multiple record types emits the SUM of their
-		// per-type cardinalities. Empty list → LeafScanCardinality.
+		// per-type cardinalities. An EMPTY list means "every type", and asks
+		// the provider for the whole store — see the branch below.
 		// CPU = card·ScanCPU: reading N rows costs ~N (sequential I/O).
 		// This is load-bearing for join ordering (RFC-041): a scan that
 		// reported CPU=0 made the nested-loop join cost order-symmetric
@@ -614,7 +605,25 @@ func localCostUnclamped(e expressions.RelationalExpression, child []Cost, stats 
 		// outer child's CPU) makes driving from the smaller side cheaper.
 		types := ex.GetRecordTypes()
 		if len(types) == 0 {
-			return Cost{Cardinality: LeafScanCardinality, CPU: LeafScanCardinality * ScanCPU}
+			// An EMPTY type list means "scan every type in the store"
+			// (full_unordered_scan.go), so the honest cardinality is the whole
+			// store — and that is exactly what the EMPTY record type name asks
+			// a provider for. Answering with the LeafScanCardinality constant
+			// instead is not merely imprecise once real statistics exist, it
+			// INVERTS — though not in the direction the first version of this
+			// comment claimed. One provider prices the whole plan, so a universal
+			// scan and a typed sibling always come from the same map and the
+			// store total is >= any member. The reachable failure is a store
+			// LARGER than LeafScanCardinality: the constant then makes a scan of
+			// EVERY type look cheaper than a scan of ONE of them, which is not
+			// imprecise but impossible, and the planner acts on it.
+			//
+			// Byte-identical under DefaultStatistics and under MapStatistics
+			// with the default fallback, both of which answer an unknown name
+			// with LeafScanCardinality. Only a provider that actually knows the
+			// store's size behaves differently, which is the point.
+			all := stats.RecordTypeCardinality("")
+			return Cost{Cardinality: all, CPU: all * ScanCPU}
 		}
 		total := 0.0
 		for _, name := range types {

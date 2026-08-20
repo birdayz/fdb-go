@@ -99,6 +99,18 @@ const (
 	// join that would otherwise exhaust the planner's task budget converges,
 	// at the cost of possibly missing the cheapest shape.
 	OptPlanRightDeep OptionName = "PLAN_RIGHT_DEEP"
+	// OptPlannerStatistics lets the cost model use per-record-type row counts
+	// gathered by the offline collector (RFC-236, `frl stats collect`). Boolean,
+	// default FALSE, and Go-only — Java has no planner statistics at all, so
+	// this is a read-side extension rather than a parity feature.
+	//
+	// Off, every leaf costs at the same constant, which is why two nestings of
+	// an unconstrained join tie and the winner falls to a tie-break. On, and
+	// only when EVERY record type in the schema has a fresh entry, the cost
+	// model sees real sizes and FlatMapCost's CPU term prefers the smaller
+	// outer. Anything missing, stale or unreadable degrades to the constant, so
+	// the worst case is today's plan.
+	OptPlannerStatistics OptionName = "PLANNER_STATISTICS"
 	// OptLogQuery gates the SLF4J log level in Java. Go has no ambient
 	// log-level concept: the planning-metrics hook (RFC-034) always emits a
 	// record and the handler owns level + sampling, so this option is

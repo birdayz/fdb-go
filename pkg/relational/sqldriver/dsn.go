@@ -80,6 +80,16 @@ func (d *DSN) Clone() *DSN {
 // stay obviously the same knob.
 const RestrictDDLToSessionDatabaseParam = "restrict_ddl_to_session_database"
 
+// PlannerStatisticsParam is the DSN query parameter that sets
+// api.OptPlannerStatistics (RFC-236) on every connection the DSN opens. Spelled
+// as the lower-cased option name, like its sibling above, so the DSN parameter
+// and the option stay obviously the same knob.
+//
+// It belongs here — decided before the first statement — because it is part of
+// the plan-cache key: a connection that changes its mind mid-session would
+// otherwise share cache entries with one that did not.
+const PlannerStatisticsParam = "planner_statistics"
+
 // ConnectionOptions converts the DSN's recognised query parameters into the
 // api.Options installed on each connection.
 //
@@ -94,6 +104,13 @@ func (d *DSN) ConnectionOptions() (*api.Options, error) {
 			return nil, err
 		}
 		opts = opts.With(api.OptRestrictDDLToSessionDatabase, v)
+	}
+	if raw, present := d.Options[PlannerStatisticsParam]; present {
+		v, err := parseDSNBool(PlannerStatisticsParam, raw)
+		if err != nil {
+			return nil, err
+		}
+		opts = opts.With(api.OptPlannerStatistics, v)
 	}
 	if raw, present := d.Options[TransactionTagsParam]; present {
 		tags, err := parseDSNTags(raw)

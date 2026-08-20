@@ -8,6 +8,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
+	"fdb.dev/pkg/recordlayer/protoname"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -1767,4 +1768,50 @@ func countVersionColumns(expr KeyExpression) int {
 	default:
 		return 0
 	}
+}
+
+// AmbiguousDeclaredNames reports a pair of declared record types whose names
+// collide across the SQL and storage namespaces, in USER identifiers, or
+// ok=false when none collide.
+//
+// Descriptor names are ESCAPED (protoname.ToProtoBufCompliantName) and the
+// escaping is NOT injective across the two namespaces: MY$TABLE is stored as
+// MY__1TABLE, while a table whose SQL name IS MY__1TABLE is stored as
+// MY__01TABLE. Any lookup that tries a name as given and then its escaped form
+// resolves the first of those to the wrong entry, and no ordering fixes it —
+// either order prices one of the two wrong.
+//
+// It lives here, beside DeclaresSyntheticRecordTypes, because it is the same
+// KIND of fact: a property of the declarations that decides whether a caller
+// computing over "all record types" can trust the answer. Both the statistics
+// reader and both collection entry points need it, and a shared property with
+// three consumers does not belong in any one of them.
+//
+// Returns USER identifiers because the operator has to act on the SQL names;
+// the collision itself is detected in storage space, where it lives.
+func (m *RecordMetaData) AmbiguousDeclaredNames() ([]string, bool) {
+	if m == nil {
+		return nil, false
+	}
+	declared := m.RecordTypes()
+	var worst []string
+	for name := range declared {
+		escaped, err := protoname.ToProtoBufCompliantName(name)
+		if err != nil || escaped == name {
+			continue
+		}
+		if _, collides := declared[escaped]; !collides {
+			continue
+		}
+		pair := []string{
+			protoname.ToUserIdentifier(name),
+			protoname.ToUserIdentifier(escaped),
+		}
+		// Deterministic across map iteration order: an operator comparing two
+		// runs must not see the pair change.
+		if worst == nil || pair[0] < worst[0] {
+			worst = pair
+		}
+	}
+	return worst, worst != nil
 }
