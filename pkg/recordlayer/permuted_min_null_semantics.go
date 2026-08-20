@@ -24,6 +24,15 @@ import (
 // leaves every byte identical and makes only the ANSWER differ, which is the
 // axis where being right matters more than matching.
 //
+// JAVA ANSWERS THIS WRONGLY TOO, and that is measured rather than inferred from
+// the maintainer's shape: over a group holding {5, NULL, 9}, Java's grouped MIN
+// returns NULL where Go now returns 5, while both engines agree exactly on MAX
+// over the same fixture. So this is an upstream defect that Go is deliberately
+// ahead of — DivergenceJavaWrongRowsGoCorrect — rather than a Go-side gap being
+// closed. The measurement lives in
+// conformance/permuted_min_null_group_java_probe_test.go and FAILS if Java ever
+// starts agreeing, at which point this paragraph is what needs rewriting.
+//
 // MAX is untouched and must stay so. NULL sorts LOWEST, so a real value always
 // beats it for MAX; a stored NULL extremum there means the group genuinely holds
 // no non-NULL value, and NULL is already the correct answer.

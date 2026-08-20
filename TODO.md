@@ -19088,3 +19088,46 @@ THE DECISION, which is why this is booked rather than settled:
 Whoever rules should also note that (b) narrows MORE than the defect: the simple
 parenthesized condition was never wrong, so rejecting it is a behaviour change
 unrelated to the bug that prompted the measurement.
+
+---
+
+### [ ] UPSTREAM — Java's grouped MIN returns NULL for a group holding a NULL
+
+MEASURED on both engines
+(`conformance/permuted_min_null_group_java_probe_test.go`, which asserts this
+and fails if Java starts agreeing):
+
+```
+rows (g, v): (1,5) (1,NULL) (1,9) | (2,NULL) (2,NULL) | (3,2) (3,8) | (4,0) (4,NULL) (4,-4)
+
+SELECT g, MIN(v) FROM t GROUP BY g
+  java: [[1 nil] [2 nil] [3 2] [4 nil]]     <- wrong for the MIXED groups 1 and 4
+  go  : [[1 5]   [2 nil] [3 2] [4 -4]]      <- SQL-correct
+
+SELECT g, MAX(v) FROM t GROUP BY g
+  java and go IDENTICAL                     <- the control: NULL never wins a MAX
+```
+
+A `PERMUTED_MIN` index stores one extremum per group, a NULL-valued record
+produces an entry like any other, and NULL sorts before every value — so it wins
+the comparison unconditionally and the stored extremum for a mixed group is NULL.
+Java's `PermutedMinMaxIndexMaintainer` has no NULL filter and its `getExtremum`
+takes the first entry of the group scan, so it both stores and ANSWERS the NULL.
+
+Go stores the same bytes on purpose — that is what keeps the two engines able to
+share a cluster — and repairs the answer at READ time by resolving a stored NULL
+extremum against the index's ordinary subspace. Direction:
+`DivergenceJavaWrongRowsGoCorrect`.
+
+TO REPORT UPSTREAM. The defect is in
+`fdb-record-layer-core/.../indexes/PermutedMinMaxIndexMaintainer.java`: SQL MIN
+ignores NULLs, and neither `updateIndexKeys` (which lets a NULL-valued entry
+compete for the extremum) nor `getExtremum` (which takes the first entry of the
+group scan) excludes them. MAX is unaffected because NULL sorts lowest. Upstream's
+own tests cannot see it: `PermutedMinMaxIndexTest` and `FDBPermutedMinMaxQueryTest`
+use proto2 int fields that are never null, so no fixture there has a group holding
+a NULL beside a value.
+
+Nothing in this repo is blocked on the upstream fix — the read-side repair is
+complete and pinned — but the report should go out, and if upstream fixes it the
+probe here fails and says so.

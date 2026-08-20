@@ -117,6 +117,7 @@ go_test(
         "orphan_jvm_regression_test.go",
         "paren_star_java_probe_test.go",
         "permuted_min_max_index_conformance_test.go",
+        "permuted_min_null_group_java_probe_test.go",
         "plan_diff_conformance_test.go",
         "probe_zerokey_allnull_java_test.go",
         "projected_exists_left_join_java_probe_test.go",
