@@ -163,10 +163,16 @@ var _ = Describe("CollectStatistics", func() {
 		Expect(report.Skipped).To(HaveKey("Order"))
 		Expect(report.Skipped["Order"]).To(ContainSubstring("exceeds MaxRecordsPerType"))
 
-		// And nothing reached the store.
-		_, ok, rErr := ReadStatistics(ctx, sharedDB, stats, sub)
+		// And nothing reached the store — asserted as NO HEADER specifically.
+		// ok==false would hold for any of the eight refusals, so it cannot say
+		// that the store is EMPTY rather than holding something unreadable; that
+		// is the whole claim here, and it is also the only spec covering the
+		// no-header arm.
+		_, refusal, _, rErr := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(rErr).NotTo(HaveOccurred())
-		Expect(ok).To(BeFalse())
+		Expect(refusal).To(Equal(StatisticsReadNoHeader),
+			"an aborted run must leave the store with NO header. Any other refusal "+
+				"means it wrote something and the abort was not clean")
 	})
 
 	// A DECLARED TYPE WITH NO ROWS IS AN EXACT ZERO, NOT AN ABSENCE.
@@ -1628,12 +1634,20 @@ var _ = Describe("CollectStatisticsIntegerKeys", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		got, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		got, refusal, _, err := ReadStatisticsAtWithRefusal(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(ok).To(BeFalse(),
-			"an integer key that is not the header must poison the SET. It cannot be a "+
-				"record type — names are strings — so it is a layout this build does not "+
-				"understand, and returning the rest is a partial answer wearing a whole one")
+		// THE REASON, not ok==false. Asserting the bool left this arm DEAD: an
+		// integer key is not a string either, so the adjacent
+		// neither-header-nor-record-type arm absorbs it and refuses the set anyway.
+		// The spec kept passing off its neighbour while the arm it names did
+		// nothing — the fourth check in this PR found dead the same way, and the
+		// reason it survived a mutation matrix is that a blunt mutation (breaking
+		// out of the loop) reddens it for a cause the assertion cannot express.
+		Expect(refusal).To(Equal(StatisticsReadUnknownIntegerKey),
+			"an integer key that is not the header must poison the SET, and for THAT "+
+				"reason. It cannot be a record type — names are strings — so it is a "+
+				"layout this build does not understand; refusing it as a non-string key "+
+				"instead means this arm is doing nothing")
 		Expect(got.PerType).To(BeEmpty())
 	})
 })
