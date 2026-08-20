@@ -110,7 +110,7 @@ const (
 	StatisticsTorn StatisticsRefusal = "stored statistics are torn or unreadable"
 	// StatisticsAmbiguousNames — two declared types collide across the SQL and
 	// storage namespaces, so a lookup by name cannot say which one is meant. See
-	// GATE 4 in decideStatistics.
+	// GATE 0b in decideStatistics.
 	StatisticsAmbiguousNames StatisticsRefusal = "declared type names are ambiguous across the SQL and storage namespaces"
 )
 
@@ -328,6 +328,62 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 		return st
 	}
 
+	// GATE 0b — NAME AMBIGUITY ACROSS THE TWO NAMESPACES. Metadata-only, like
+	// GATE 0, and therefore decided in the same place: before any read.
+	//
+	// It used to run LAST, after freshness and completeness, and that ordering
+	// was a bug rather than a preference. A colliding schema with no collected
+	// set — or an expired, incomplete or torn one — returned from an earlier gate
+	// and never produced this refusal at all. Three things then went wrong at
+	// once: `stats show` recommended a collection that CollectStatistics refuses;
+	// fetchCollectedStatistics reported no STRUCTURAL refusal, so SELECT and DML
+	// fell through to the legacy count-key provider that can price the wrong
+	// table; and the never-collected case is the common one, so the bypass was
+	// reachable by default rather than in a corner.
+	//
+	// The lesson is about ordering, not about this gate: a metadata-only verdict
+	// placed behind state-dependent gates is only delivered for schemas that are
+	// otherwise healthy — precisely the schemas that need it least.
+	//
+	// The per-type map the provider will be handed is keyed by STORAGE names, and
+	// a relational scan asks with the SQL name it was written with, so the
+	// provider tries the name as given and then, on a miss, its escaped form --
+	// which is right whenever only one of the two can match.
+	//
+	// Both can. The escaping is not injective ACROSS the namespaces: MY$TABLE is
+	// stored as MY__1TABLE, and a table whose SQL name IS MY__1TABLE is stored as
+	// MY__01TABLE. With both present, a scan of MY__1TABLE hits the first entry
+	// directly and is priced with the OTHER table's count -- the escaped form is
+	// never consulted, because the unescaped lookup already succeeded.
+	//
+	// Nothing downstream can notice: such a set is fresh, complete and internally
+	// consistent, and the number returned is a real count of a real table. So the
+	// ambiguity is resolved HERE, once, by refusing -- rather than by picking a
+	// lookup order, which only moves which of the two tables is priced wrong.
+	//
+	// This is a REFUSAL, not the settled fix. The settled fix is to canonicalise
+	// names so the two namespaces never meet at a lookup -- and that is not a
+	// statistics-local change, because the identical try-then-escape shape exists
+	// for FIELD names in values.go with the same non-injectivity. Escaping table
+	// names in the translator would close this instance and leave its twin, while
+	// changing what the planner DOES (record-type filters, explain text) rather
+	// than what it refuses. Refusing falls back to the cost model's constant and
+	// changes no plan that was already right, so it is the safe half to ship now;
+	// canonicalisation needs its own RFC covering BOTH sites.
+	//
+	// The twin's surface is LARGER in the code -- four arms there against two
+	// here -- but it was MEASURED before being written up, and it does not reach
+	// wrong data from SQL: DDL accepts two columns whose names collide under the
+	// escaping, and both still round-trip their own values
+	// (TestFDB_FieldNameCollisionAcrossEscaping). The SQL path resolves columns
+	// through the descriptor rather than through that fallback chain. So the RFC
+	// should scope the twin by what it was shown to do, not by how the code looks.
+	if ambiguous, ok := ambiguousDeclaredNamesIn(in.DeclaredTypes); ok {
+		st.Refusal = StatisticsAmbiguousNames
+		st.AmbiguousTypes = ambiguous
+		return st
+	}
+
 	// GATE 1 — the read.
 	if in.ReadErr != nil {
 		st.Refusal = StatisticsReadFailed
@@ -399,51 +455,6 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 		return st
 	}
 
-	// GATE 4 — NAME AMBIGUITY ACROSS THE TWO NAMESPACES.
-	//
-	// The per-type map the provider will be handed is keyed by STORAGE names, and
-	// a relational scan asks with the SQL name it was written with, so the
-	// provider tries the name as given and then, on a miss, its escaped form --
-	// which is right whenever only one of the two can match.
-	//
-	// The check below runs over the DECLARED names, not that map: ambiguity is a
-	// property of what a schema declares, not of what a run happened to collect.
-	//
-	// Both can. The escaping is not injective ACROSS the namespaces: MY$TABLE is
-	// stored as MY__1TABLE, and a table whose SQL name IS MY__1TABLE is stored as
-	// MY__01TABLE. With both present, a scan of MY__1TABLE hits the first entry
-	// directly and is priced with the OTHER table's count -- the escaped form is
-	// never consulted, because the unescaped lookup already succeeded.
-	//
-	// Nothing downstream can notice: the set is fresh, complete, and internally
-	// consistent, and the number returned is a real count of a real table. So the
-	// ambiguity is resolved HERE, once, by refusing the set -- rather than by
-	// picking a lookup order, which only moves which of the two tables is priced
-	// wrong.
-	//
-	// This is a REFUSAL, not the settled fix. The settled fix is to canonicalise
-	// names so the two namespaces never meet at a lookup -- and that is not a
-	// statistics-local change, because the identical try-then-escape shape exists
-	// for FIELD names in values.go with the same non-injectivity. Escaping table
-	// names in the translator would close this instance and leave its twin, while
-	// changing what the planner DOES (record-type filters, explain text) rather
-	// than what it refuses. Refusing falls back to the cost model's constant and
-	// changes no plan that was already right, so it is the safe half to ship now;
-	// canonicalisation needs its own RFC covering BOTH sites.
-	//
-	// The twin's surface is LARGER in the code -- four arms there against two here
-	// -- but it was MEASURED before being written up, and it does not reach wrong
-	// data from SQL: DDL accepts two columns whose names collide under the
-	// escaping, and both still round-trip their own values
-	// (TestFDB_FieldNameCollisionAcrossEscaping). The SQL path resolves columns
-	// through the descriptor rather than through that fallback chain. So the RFC
-	// should scope the twin by what it was shown to do, not by how the code looks.
-	if ambiguous, ok := ambiguousStorageName(declared); ok {
-		st.Refusal = StatisticsAmbiguousNames
-		st.AmbiguousTypes = ambiguous
-		return st
-	}
-
 	st.Usable = true
 	st.Refusal = StatisticsOK
 	st.perType = perType
@@ -463,6 +474,20 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 // refuses first. Reading the collected map would make this gate's correctness
 // depend on the gate above it, which is one reordering away from vacuous, and
 // §5 of RFC-236 explicitly floats relaxing completeness to per-query.
+// ambiguousDeclaredNamesIn is the gate-input form of
+// RecordMetaData.AmbiguousDeclaredNames, taking the names the gate already
+// carries so decideStatistics stays a PURE function of its input.
+//
+// Same rule, one implementation below; the metadata method is what the two
+// collection entry points use, since they hold metadata rather than gate input.
+func ambiguousDeclaredNamesIn(names []string) ([]string, bool) {
+	declared := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		declared[name] = struct{}{}
+	}
+	return ambiguousStorageName(declared)
+}
+
 func ambiguousStorageName(declared map[string]struct{}) ([]string, bool) {
 	var worst []string
 	for name := range declared {
@@ -573,31 +598,4 @@ func (e *noClusterVersionError) Error() string {
 func (c *EmbeddedConnection) statisticsTags() []string {
 	tags, _ := c.Options().Get(api.OptTransactionTags).([]string)
 	return tags
-}
-
-// AmbiguousDeclaredNames reports a colliding pair among md's declared record
-// types, in USER identifiers, or ok=false when none collide.
-//
-// Exported so COLLECTION can refuse the same schemas the reader refuses, before
-// scanning rather than after. The gate reaches its own ambiguity check only
-// after absence, freshness and completeness, so a schema with no statistics yet
-// was told to collect — and the collector then read every record to produce a
-// set the reader would always refuse. Same shape as the synthetic preflight:
-// a full scan billed for an outcome already decided.
-//
-// Metadata-only, so it needs no I/O and can run before a store is opened.
-func AmbiguousDeclaredNames(md *recordlayer.RecordMetaData) ([]string, bool) {
-	if md == nil {
-		return nil, false
-	}
-	// RecordTypes() is keyed BY NAME, so the keys are the declared names -- the
-	// same source the gate builds its DeclaredTypes from, which is what makes
-	// this preflight and the gate agree by construction rather than by two
-	// derivations that could drift.
-	types := md.RecordTypes()
-	declared := make(map[string]struct{}, len(types))
-	for name := range types {
-		declared[name] = struct{}{}
-	}
-	return ambiguousStorageName(declared)
 }

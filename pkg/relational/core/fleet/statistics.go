@@ -111,6 +111,16 @@ func collectStatisticsStep(
 		if ev, refused := syntheticRefusal(md); refused {
 			return ev, nil
 		}
+		// AND the ambiguity preflight, for the same reason and at the same place.
+		// The single-schema collector refuses a colliding schema before scanning;
+		// this path checked only synthetic types, so `--all-schemas` scanned the
+		// whole store and reported OutcomeCollected for a set the shared reader
+		// always refuses. One rule enforced at one entry point and not its
+		// sibling, which is the same gap the collector-level synthetic check was
+		// added to close.
+		if ev, refused := ambiguousRefusal(md); refused {
+			return ev, nil
+		}
 		ss, err := ks.SchemaSubspace(t.DatabaseID, t.SchemaName)
 		if err != nil {
 			return Event{}, err
@@ -217,5 +227,29 @@ func syntheticRefusal(md *recordlayer.RecordMetaData) (Event, bool) {
 		Err: fmt.Errorf("%w", &recordlayer.SyntheticRecordTypesNotModeledError{
 			TypeNames: md.SyntheticRecordTypeNames(),
 		}),
+	}, true
+}
+
+// ambiguousRefusal returns the refusal Event for metadata whose declared record
+// types collide across the SQL and storage namespaces, the same condition the
+// reader refuses in decideStatistics.
+//
+// Metadata-only, so it costs no I/O and runs before a store is opened — and it
+// must run here as well as in the single-schema collector, or `--all-schemas`
+// scans a store to produce a set that can never be used and calls it collected.
+// The names are already USER identifiers: AmbiguousDeclaredNames decodes them,
+// because the operator has to act on the SQL names and the map is keyed by
+// storage ones.
+func ambiguousRefusal(md *recordlayer.RecordMetaData) (Event, bool) {
+	pair, ambiguous := md.AmbiguousDeclaredNames()
+	if !ambiguous {
+		return Event{}, false
+	}
+	return Event{
+		Outcome: OutcomeRefused,
+		Err: fmt.Errorf(
+			"declares record types whose names collide across the SQL and storage "+
+				"namespaces (%s), so a lookup cannot say which table is meant and the "+
+				"planner would always refuse the result", strings.Join(pair, " and ")),
 	}, true
 }

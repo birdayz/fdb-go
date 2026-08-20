@@ -7,6 +7,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"google.golang.org/protobuf/proto"
 )
 
 // A TENANT WHOSE STATISTICS CAN NEVER BE USED IS REFUSED, NOT FAILED.
@@ -140,5 +141,124 @@ func TestSyntheticRefusalSurvivesFanOut(t *testing.T) {
 	}
 	if res.Collected != 0 {
 		t.Errorf("Collected = %d, want 0 — nothing was stored", res.Collected)
+	}
+}
+
+// ambiguousMetaData builds metadata declaring two record types whose names
+// collide across the SQL and storage namespaces.
+//
+// MY$TABLE is stored as MY__1TABLE; a table whose SQL name IS MY__1TABLE is
+// stored as MY__01TABLE. Declaring both makes the unescaped lookup for
+// MY__1TABLE hit the FIRST table's entry.
+func ambiguousMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	base := syntheticMetaData(t)
+	p, err := base.ToProto()
+	if err != nil {
+		t.Fatalf("to proto: %v", err)
+	}
+	// Drop the joined declaration, or the SYNTHETIC refusal fires first and this
+	// fixture would pin that instead — the arms are ordered, so the fixture has
+	// to isolate the one it names.
+	p.JoinedRecordTypes = nil
+
+	// RENAME two record types so their names actually collide. The demo proto has
+	// no colliding pair, and SKIPPING when the fixture cannot express the
+	// condition would leave the fleet arm undriven while reporting green -- the
+	// shape this PR has already found four times. Build the condition instead.
+	//
+	// MY$TABLE is stored as MY__1TABLE and a table whose SQL name IS MY__1TABLE
+	// is stored as MY__01TABLE, so declaring both storage names is exactly the
+	// collision: an unescaped lookup for MY__1TABLE hits the first entry.
+	rename := map[string]string{"Order": "MY__1TABLE", "Customer": "MY__01TABLE"}
+	for _, msg := range p.GetRecords().GetMessageType() {
+		if to, ok := rename[msg.GetName()]; ok {
+			msg.Name = proto.String(to)
+		}
+	}
+	for _, rt := range p.GetRecordTypes() {
+		if to, ok := rename[rt.GetName()]; ok {
+			rt.Name = proto.String(to)
+		}
+	}
+	// The UNION message references each record type by TYPE NAME, so renaming the
+	// messages alone unlinks them and they stop being record types at all --
+	// which the fixture guard below caught, reporting one surviving type instead
+	// of the collision. Rewrite the references too.
+	for _, msg := range p.GetRecords().GetMessageType() {
+		for _, f := range msg.GetField() {
+			// TypeName is FULLY QUALIFIED (.pkg.Order), so matching a short-name
+			// map against it silently matched nothing and left the references
+			// dangling -- the messages renamed, the union still pointed at the old
+			// names, and the types stopped resolving. Match the last segment and
+			// preserve the package.
+			full := strings.TrimPrefix(f.GetTypeName(), ".")
+			short := full
+			pkgPrefix := ""
+			if i := strings.LastIndex(full, "."); i >= 0 {
+				short, pkgPrefix = full[i+1:], full[:i+1]
+			}
+			if to, ok := rename[short]; ok {
+				f.TypeName = proto.String("." + pkgPrefix + to)
+				// The union FIELD NAME carries the record type by convention
+				// (_Order for Order), and resolution goes through it -- renaming
+				// only the message and the type reference left the types
+				// unresolvable, which the guard reported as one surviving type.
+				if strings.HasPrefix(f.GetName(), "_") {
+					f.Name = proto.String("_" + to)
+				}
+			}
+		}
+	}
+	md, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatalf("from proto: %v", err)
+	}
+	if md.DeclaresSyntheticRecordTypes() {
+		t.Fatal("the fixture still declares synthetic types, so the synthetic gate would " +
+			"fire before the ambiguity one and this test would pin the wrong arm")
+	}
+	return md
+}
+
+// AN AMBIGUOUS SCHEMA MUST BE REFUSED BY THE FLEET PATH TOO.
+//
+// The single-schema collector refuses a colliding schema before scanning. This
+// path checked only synthetic types, so `stats collect --all-schemas` scanned
+// the whole store and reported OutcomeCollected for a set the shared reader
+// always refuses — one rule enforced at one entry point and not its sibling.
+//
+// Driven through fanOut and asserted on the TALLY, for the same reason the
+// synthetic version is: the distinction between REFUSED and FAILED only becomes
+// observable in the summary an operator reads, and a hand-written closure cannot
+// exhibit a defect that lives in the production caller's return statement.
+func TestAmbiguousRefusalSurvivesFanOut(t *testing.T) {
+	t.Parallel()
+
+	md := ambiguousMetaData(t)
+	pair, ambiguous := md.AmbiguousDeclaredNames()
+	if !ambiguous {
+		t.Fatalf("the fixture does not declare a colliding pair, so this test cannot "+
+			"reach the refusal it exists to pin (declared: %v)", md.RecordTypes())
+	}
+	if len(pair) != 2 {
+		t.Fatalf("AmbiguousDeclaredNames returned %v, want a pair", pair)
+	}
+
+	step := collectStatisticsStep(nil, nil, recordlayer.StatisticsSubspace{}, StatisticsOptions{},
+		func(context.Context, Target) (*recordlayer.RecordMetaData, error) { return md, nil })
+	res, err := fanOut(context.Background(), nil,
+		[]Target{{DatabaseID: "/db", SchemaName: "S"}}, Options{}, step)
+
+	if err == nil {
+		t.Error("a refused target must still surface an error, or the fan-out exits 0")
+	}
+	if res.Refused != 1 {
+		t.Errorf("Refused = %d, want 1 — an ambiguous schema must be refused by the "+
+			"fleet path as it is by the single-schema one", res.Refused)
+	}
+	if res.Collected != 0 {
+		t.Errorf("Collected = %d, want 0 — nothing may be stored for a schema whose "+
+			"set the reader always refuses", res.Collected)
 	}
 }

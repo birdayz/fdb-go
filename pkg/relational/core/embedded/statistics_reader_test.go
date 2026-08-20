@@ -329,6 +329,56 @@ func decideStatisticsCases() []decideCase {
 			},
 		},
 		{
+			// AMBIGUITY IS DECIDED BEFORE THE STATISTICS STATE, not after.
+			//
+			// This case has NO collected set, which is the common state for a
+			// schema nobody has collected yet. With the ambiguity check placed
+			// after freshness and completeness it returned NotCollected here, and
+			// three things followed: `stats show` recommended a collection that
+			// CollectStatistics refuses, fetchCollectedStatistics reported no
+			// STRUCTURAL refusal so SELECT and DML fell through to the legacy
+			// count-key provider, and that provider can price the wrong table on
+			// exactly the hand-built metadata this collision needs.
+			//
+			// A metadata-only verdict behind state-dependent gates is delivered
+			// only for schemas that are otherwise healthy — the ones needing it
+			// least.
+			name: "ambiguous names refuse even with NO statistics collected",
+			in: statisticsGateInput{
+				Found:         false,
+				ReadRefusal:   recordlayer.StatisticsReadAbsent,
+				DeclaredTypes: []string{"MY__1TABLE", "MY__01TABLE"},
+			},
+			want: StatisticsAmbiguousNames,
+			check: func(t *testing.T, got StatisticsStatus) {
+				if got.Usable {
+					t.Errorf("Usable = true for an ambiguous schema")
+				}
+				if len(got.AmbiguousTypes) != 2 {
+					t.Errorf("AmbiguousTypes = %v, want the pair even when nothing is "+
+						"stored — the collision is a property of the SCHEMA",
+						got.AmbiguousTypes)
+				}
+			},
+		},
+		{
+			// Same, with a set that exists but is EXPIRED: the ambiguity still
+			// wins, because no amount of re-collecting repairs it.
+			name: "ambiguous names refuse ahead of expiry",
+			in: statisticsGateInput{
+				Found:          true,
+				Stats:          statsAt(testVersion, map[string]int64{"MY__1TABLE": 9, "MY__01TABLE": 4000}),
+				CurrentVersion: testVersion + statisticsMaxAgeVersions + 1,
+				DeclaredTypes:  []string{"MY__1TABLE", "MY__01TABLE"},
+			},
+			want: StatisticsAmbiguousNames,
+			check: func(t *testing.T, got StatisticsStatus) {
+				if got.Usable {
+					t.Errorf("Usable = true for an ambiguous schema")
+				}
+			},
+		},
+		{
 			name: "empty schema",
 			in: statisticsGateInput{
 				Found:          true,

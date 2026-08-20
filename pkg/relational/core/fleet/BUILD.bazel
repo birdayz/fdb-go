@@ -35,5 +35,6 @@ go_test(
         "//pkg/recordlayer",
         "//pkg/relational/core/catalog",
         "//pkg/relational/core/keyspace",
+        "@org_golang_google_protobuf//proto",
     ],
 )

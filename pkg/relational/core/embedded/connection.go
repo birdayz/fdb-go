@@ -1138,7 +1138,7 @@ func (c *EmbeddedConnection) CollectStatistics(
 			},
 			api.ErrCodeUnsupportedOperation, "schema %q", c.sess.Schema)
 	}
-	if pair, ambiguous := AmbiguousDeclaredNames(md); ambiguous {
+	if pair, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
 		// Refuse BEFORE scanning, for the same reason as the synthetic check
 		// above: the reader refuses an ambiguous schema unconditionally, so a
 		// collection here reads every record to produce a set that can never be
