@@ -102,6 +102,12 @@ const (
 	// synthetic types, which this port carries opaquely and does not model. See
 	// decideStatistics for why that makes completeness undecidable here.
 	StatisticsSyntheticTypes StatisticsRefusal = "metadata declares unmodeled synthetic record types"
+	// StatisticsTorn — statistics exist but were not assembled from a single
+	// consistent write: an entry count or stamp disagreeing with the header, or
+	// an entry this build cannot decode. DISTINCT from NotCollected because the
+	// two are opposite facts -- something IS stored, and it is unusable. See
+	// recordlayer.StatisticsReadRefusal for the eight ways a read declines.
+	StatisticsTorn StatisticsRefusal = "stored statistics are torn or unreadable"
 	// StatisticsAmbiguousNames — two declared types collide across the SQL and
 	// storage namespaces, so a lookup by name cannot say which one is meant. See
 	// GATE 4 in decideStatistics.
@@ -139,6 +145,9 @@ type StatisticsStatus struct {
 	// These do NOT refuse — a dropped table leaves an orphan entry and the
 	// planner simply never asks for it — but an operator wants to see them.
 	ExtraTypes []string
+	// ReadRefusal is the record-layer read's own reason when Refusal is
+	// StatisticsTorn, so an operator sees WHICH way the set is broken.
+	ReadRefusal recordlayer.StatisticsReadRefusal
 	// ReadErr is the underlying failure when Refusal is StatisticsReadFailed.
 	//
 	// Carried because Found is false in that case for a DIFFERENT reason than
@@ -160,6 +169,13 @@ type statisticsGateInput struct {
 	// ReadErr is non-nil when the statistics read failed. When set, nothing
 	// else in this struct is meaningful.
 	ReadErr error
+	// ReadRefusal is WHY the read declined, when it did.
+	//
+	// Found alone cannot tell an ABSENT set from a TORN one -- both give
+	// Found=false -- and reporting a torn set as "not collected" is the same
+	// absent-versus-failed conflation the reader spent four commits removing.
+	// Only StatisticsReadNoHeader means absent.
+	ReadRefusal recordlayer.StatisticsReadRefusal
 	// Found reports whether an entry exists.
 	Found bool
 	// Stats is what was read.
@@ -250,8 +266,15 @@ func evaluateCollectedStatistics(
 	// The cluster version comes from the SAME transaction as the entry, so the
 	// freshness gate compares two numbers drawn at one instant rather than
 	// paying a second round-trip for a pair that is only meaningful together.
-	stats, ok, readVersion, rErr := recordlayer.ReadStatisticsAt(ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...)
-	in.ReadErr, in.Found, in.Stats = rErr, ok, stats
+	// WithRefusal, not the boolean wrapper. A bool collapses eight read
+	// outcomes into one, and this is the site where that collapse reaches an
+	// OPERATOR: every torn set -- a count mismatch, a stamp mismatch, an
+	// undecodable key or value -- would be reported as "not collected", which is
+	// the one thing it is not. Only NoHeader means absent.
+	stats, readRefusal, readVersion, rErr := recordlayer.ReadStatisticsAtWithRefusal(
+		ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...)
+	ok := rErr == nil && readRefusal == recordlayer.StatisticsReadOK
+	in.ReadErr, in.Found, in.Stats, in.ReadRefusal = rErr, ok, stats, readRefusal
 	if rErr == nil && ok {
 		// A zero version is not "the epoch", it is a read that did not happen.
 		// Treating it as a real version would make every entry look infinitely
@@ -312,6 +335,16 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 		return st
 	}
 	if !in.Found {
+		// ABSENT and TORN are opposite facts and only one of them means "run
+		// collect to gather them". Everything except NoHeader means a set IS
+		// stored and cannot be vouched for; calling that "not collected" tells an
+		// operator the store is empty when it is holding something broken.
+		if in.ReadRefusal != recordlayer.StatisticsReadOK &&
+			in.ReadRefusal != recordlayer.StatisticsReadNoHeader {
+			st.Refusal = StatisticsTorn
+			st.ReadRefusal = in.ReadRefusal
+			return st
+		}
 		st.Refusal = StatisticsNotCollected
 		return st
 	}

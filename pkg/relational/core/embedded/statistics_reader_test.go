@@ -8,6 +8,7 @@ import (
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/session"
 )
 
@@ -282,6 +283,46 @@ func decideStatisticsCases() []decideCase {
 			},
 		},
 		{
+			// A TORN SET IS NOT AN ABSENT ONE.
+			//
+			// Both give Found=false, and reporting the first as the second tells
+			// an operator the store is empty while it holds something broken.
+			// Only StatisticsReadNoHeader means absent; the other seven read
+			// refusals mean a set IS stored and cannot be vouched for.
+			name: "a torn set is refused as torn, not as not-collected",
+			in: statisticsGateInput{
+				Found:         false,
+				ReadRefusal:   recordlayer.StatisticsReadCountMismatch,
+				DeclaredTypes: []string{"A"},
+			},
+			want: StatisticsTorn,
+			check: func(t *testing.T, got StatisticsStatus) {
+				if got.Usable {
+					t.Errorf("Usable = true for a torn set")
+				}
+				if got.ReadRefusal != recordlayer.StatisticsReadCountMismatch {
+					t.Errorf("ReadRefusal = %q, want the read's own reason — an operator "+
+						"needs to know WHICH way the set is broken", got.ReadRefusal)
+				}
+			},
+		},
+		{
+			// The other side: genuinely absent must still be not-collected, or
+			// the arm above has simply swallowed the ordinary case.
+			name: "an absent set is still not-collected",
+			in: statisticsGateInput{
+				Found:         false,
+				ReadRefusal:   recordlayer.StatisticsReadNoHeader,
+				DeclaredTypes: []string{"A"},
+			},
+			want: StatisticsNotCollected,
+			check: func(t *testing.T, got StatisticsStatus) {
+				if got.Usable {
+					t.Errorf("Usable = true for an absent set")
+				}
+			},
+		},
+		{
 			name: "empty schema",
 			in: statisticsGateInput{
 				Found:          true,
@@ -373,6 +414,7 @@ func TestDecideStatisticsCoversEveryRefusal(t *testing.T) {
 		StatisticsEmptySchema,
 		StatisticsSyntheticTypes,
 		StatisticsAmbiguousNames,
+		StatisticsTorn,
 	}
 	covered := map[StatisticsRefusal]int{}
 	for _, tc := range decideStatisticsCases() {
@@ -541,4 +583,41 @@ func syntheticTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
 		t.Fatalf("from proto: %v", err)
 	}
 	return got
+}
+
+// THE CONNECTION'S EARLY REFUSAL CARRIES THE COLLECTOR'S TYPED ERROR.
+//
+// This is the path that was unreachable. The connection refused synthetic
+// metadata with a freshly minted api.Error, so *SyntheticRecordTypesNotModeledError
+// could not be matched through it — one rule with two representations, and an
+// errors.As pin would have passed on the direct record-layer path while being
+// structurally unable to fire here.
+//
+// Formatting the typed error into the message with %v would look identical to a
+// reader and remain invisible to a matcher, so this asserts the CAUSE chain
+// rather than the text.
+func TestConnectionSyntheticRefusalCarriesTheTypedError(t *testing.T) {
+	t.Parallel()
+
+	// api.WrapErrorf is what the connection uses; this asserts the shape it
+	// produces is matchable, independently of reaching FDB.
+	wrapped := api.WrapErrorf(
+		&recordlayer.SyntheticRecordTypesNotModeledError{TypeNames: []string{"OrderWithCustomer"}},
+		api.ErrCodeUnsupportedOperation, "schema %q", "MAIN")
+
+	var typed *recordlayer.SyntheticRecordTypesNotModeledError
+	if !errors.As(wrapped, &typed) {
+		t.Fatalf("the connection's refusal does not carry the collector's typed error, "+
+			"so a matcher cannot reach it through the relational path: %v", wrapped)
+	}
+	if len(typed.TypeNames) == 0 || typed.TypeNames[0] != "OrderWithCustomer" {
+		t.Errorf("TypeNames = %v, want the refused declaration — an error that cannot "+
+			"say what it refused for is half a diagnosis", typed.TypeNames)
+	}
+	// The SQLSTATE must survive too: this is an API boundary, and a caller
+	// matching on the code is as legitimate as one matching on the type.
+	var apiErr *api.Error
+	if !errors.As(wrapped, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
+		t.Errorf("the relational error code was lost while wrapping: %v", wrapped)
+	}
 }

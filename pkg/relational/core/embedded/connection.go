@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -1122,11 +1121,21 @@ func (c *EmbeddedConnection) CollectStatistics(
 	// front costs nothing and says why; succeeding would bill a full scan for an
 	// outcome the planner has already decided to reject.
 	if md.DeclaresSyntheticRecordTypes() {
-		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
-			"schema %q declares synthetic record types (%s) that this port does not model, "+
-				"so collected statistics could never be complete enough to plan with; "+
-				"collection refused rather than scanning the store for an unusable result",
-			c.sess.Schema, strings.Join(md.SyntheticRecordTypeNames(), ", "))
+		// WRAPS the collector's typed error rather than minting a second
+		// representation of the same rule. This check and the collector's are one
+		// concept fired at two depths; giving them different error types made the
+		// typed one UNREACHABLE through the relational path, so a test pinning it
+		// with errors.As would pass on the direct path and be structurally unable
+		// to fire on this one -- a green from an empty set, wearing an error type.
+		// WrapErrorf, not NewErrorf with %v: the typed error must be the CAUSE so
+		// errors.As reaches it, not text pasted into a message. Formatting it in
+		// would look identical to a reader and be invisible to a matcher, which is
+		// the same fix-that-is-not-one this PR keeps producing.
+		return nil, api.WrapErrorf(
+			&recordlayer.SyntheticRecordTypesNotModeledError{
+				TypeNames: md.SyntheticRecordTypeNames(),
+			},
+			api.ErrCodeUnsupportedOperation, "schema %q", c.sess.Schema)
 	}
 	statsSubspace, storeSubspace, err := c.statisticsLocation()
 	if err != nil {

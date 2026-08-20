@@ -850,13 +850,13 @@ func ReadStatisticsAtWithRefusal(
 	// it means the same thing: a PARTIAL set, which the completeness gate above
 	// this is built to never receive.
 	//
-	// Like a malformed entry, this surfaces to an operator as "not collected"
-	// rather than as its own refusal, because ok=false is the only channel this
-	// signature has. That is imprecise and NOT misleading in the way that
-	// matters: the action "not collected" implies is `frl stats collect`, and a
-	// collect is exactly the remedy -- it ClearRanges the range and rewrites
-	// header and entries in one transaction. A diagnosis that points at the right
-	// fix is worth more than a finer one that does not.
+	// This reaches an operator as its OWN diagnosis, not as "not collected".
+	// An earlier version of this comment argued the collapse was acceptable
+	// because "ok=false is the only channel this signature has" -- which stopped
+	// being true the moment ReadStatisticsAtWithRefusal landed, and the sentence
+	// then held the gap open by justifying it. Absent and torn are opposite
+	// facts: one means the store is empty, the other means it is holding
+	// something that cannot be vouched for.
 	if int64(len(out.PerType)) != headerTypeCount {
 		return StoreStatistics{}, StatisticsReadCountMismatch, readVersion, nil
 	}
@@ -907,11 +907,17 @@ func ClearStatistics(
 // ReadStatisticsAt is ReadStatisticsAtWithRefusal reduced to a boolean, for
 // callers that only need to know whether the set is usable.
 //
-// Every caller that ASSERTS on a refusal must use the WithRefusal form. A bool
-// cannot distinguish the seven ways this read declines, and two checks were
+// Every caller that DISTINGUISHES refusals must use the WithRefusal form. A
+// bool cannot tell apart the eight ways this read declines, and FOUR checks were
 // found dead precisely because their specs asserted ok==false: a later check
 // refused the same fixture first, and the earlier one stopped being exercised
 // with nothing going red at the moment it happened.
+//
+// That applies to callers that REPORT a refusal too, not only to tests. The
+// relational gate used this wrapper and therefore told operators "not
+// collected" for every torn set -- an earlier draft of this very comment said
+// "every caller that ASSERTS on a refusal", and its only non-test caller was
+// doing exactly that while not asserting, so the wording excused it.
 func ReadStatisticsAt(
 	ctx context.Context,
 	db *FDBDatabase,

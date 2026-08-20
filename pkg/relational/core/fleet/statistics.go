@@ -208,11 +208,13 @@ func syntheticRefusal(md *recordlayer.RecordMetaData) (Event, bool) {
 	if !md.DeclaresSyntheticRecordTypes() {
 		return Event{}, false
 	}
+	// WRAPS the collector's typed error, for the same reason the connection
+	// does: one rule fired at three depths must be ONE error type, or a test
+	// pinning it can only fire on whichever path it happens to take.
 	return Event{
 		Outcome: OutcomeRefused,
-		Err: fmt.Errorf(
-			"declares synthetic record types (%s) that this port does not model, so "+
-				"collected statistics could never be complete enough to plan with",
-			strings.Join(md.SyntheticRecordTypeNames(), ", ")),
+		Err: fmt.Errorf("%w", &recordlayer.SyntheticRecordTypesNotModeledError{
+			TypeNames: md.SyntheticRecordTypeNames(),
+		}),
 	}, true
 }

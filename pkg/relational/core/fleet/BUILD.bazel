@@ -26,6 +26,7 @@ go_test(
         "build_test.go",
         "guard_test.go",
         "statistics_refusal_test.go",
+        "synthetic_error_identity_test.go",
     ],
     embed = [":fleet"],
     deps = [
