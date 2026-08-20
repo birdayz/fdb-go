@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=354 queries=2559 dml=157 non_query=104 plan_errors=267 unexpected_errors=4
+# files=354 queries=2566 dml=157 non_query=104 plan_errors=269 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -9839,6 +9839,61 @@ shape:   RecordQueryFlatMapPlan
 shape:     RecordQueryScanPlan
 shape:     RecordQueryDefaultOnEmptyPlan
 shape:       RecordQueryPredicatesFilterPlan
+shape:         RecordQueryScanPlan
+=== join_using_shapes.yaml#7
+sql:   SELECT x.id FROM a JOIN (SELECT id, k FROM c) x USING (id) ORDER BY x.id
+plan:  Project([_current.ID#3], InMemorySort([_current.ID#3 ASC], FlatMap(outer=Project([_current.ID#0, _current.K#1], Scan(C)), inner=Scan(A, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#8
+sql:   SELECT b.id FROM a JOIN (SELECT id FROM c WHERE id > 1) b USING (id) ORDER BY b.id
+plan:  Project([_current.ID#3], InMemorySort([_current.ID#3 ASC], FlatMap(outer=Project([_current.ID#0], Scan(C, [<>])), inner=Scan(A, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#9
+sql:   WITH cte AS (SELECT id, k FROM c) SELECT a.id FROM a JOIN cte USING (id) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], FlatMap(outer=Project([_current.ID#0, _current.K#1], Scan(C)), inner=Scan(A, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#10
+sql:   SELECT a.id FROM a JOIN (SELECT id, k FROM c) b USING (id) JOIN c USING (k) ORDER BY a.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], FlatMap(outer=Project([_current.ID#0, _current.K#1], Scan(C)), inner=Scan(A, [=])), Scan(C))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== join_using_shapes.yaml#11 expect-error=42703
+sql:   SELECT a.id FROM a JOIN b USING (j) JOIN c USING (id)
+plan:  <PLAN-ERROR: 42703: column "J" does not exist>
+=== join_using_shapes.yaml#12 expect-error=42703
+sql:   SELECT a.id FROM a JOIN b USING (j)
+plan:  <PLAN-ERROR: 42703: column "J" does not exist>
+=== join_using_shapes.yaml#13
+sql:   SELECT b.id FROM (SELECT id FROM a) b JOIN c USING (id) JOIN a USING (k) ORDER BY b.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], NestedLoopJoin(INNER, [1 preds], Scan(A), FlatMap(outer=Project([_current.ID#0], Scan(A)), inner=Scan(C, [=])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === join_with_or_predicate.yaml#0
 sql:   SELECT e.name, d.name FROM emp e, dept d WHERE e.dept_id = d.id AND (d.name = 'Eng' OR e.salary > 85) ORDER BY e.name

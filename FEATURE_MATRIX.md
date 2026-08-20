@@ -23,12 +23,12 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**354 scenarios · 2820 query/assertion cases** across 18 feature areas — 2480 supported, 110 unsupported-feature pins, 230 error-path pins.
+**354 scenarios · 2827 query/assertion cases** across 18 feature areas — 2485 supported, 110 unsupported-feature pins, 232 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 51 | 326 | 293 | 19 | 14 |
-| Joins | 64 | 296 | 284 | 2 | 10 |
+| Joins | 64 | 303 | 289 | 2 | 12 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 32 | 249 | 216 | 10 | 23 |
-| **Total** | **354** | **2820** | **2480** | **110** | **230** |
+| **Total** | **354** | **2827** | **2485** | **110** | **232** |
 
 ## Aggregates & GROUP BY
 
@@ -151,7 +151,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `join_patterns_java` | 7 | 7 | 0 | 0 | JOIN patterns from Java test coverage. |
 | `join_self_and_cross` | 2 | 2 | 0 | 0 | Self-join and cross-join combined |
 | `join_three_way_predicate` | 4 | 4 | 0 | 0 | Three-way join with predicates |
-| `join_using_shapes` | 7 | 5 | 0 | 2 | `JOIN … USING (cols)` has no ON expression of its own — the parser |
+| `join_using_shapes` | 14 | 10 | 0 | 4 | `JOIN … USING (cols)` has no ON expression of its own — one is |
 | `join_with_or_predicate` | 2 | 2 | 0 | 0 | JOIN with OR predicates |
 | `left_join_aggregate` | 1 | 1 | 0 | 0 | LEFT JOIN + GROUP BY on joined result |
 | `left_join_exists_combo` | 2 | 2 | 0 | 0 | LEFT JOIN combined with EXISTS filter |

@@ -19171,3 +19171,78 @@ this arm — if upstream ever fixes the NPE into its intended assert, that arm
 becomes comparable by MESSAGE too and the probe should be tightened.
 
 TO REPORT UPSTREAM with the reproducer above.
+
+## The ordered OR-union alternative is structurally unreachable
+
+`PredicateToLogicalUnionRule` now emits `LogicalUniqueExpression` — Java's
+PK dedup — where it used to emit `LogicalDistinctExpression`, the full-row
+node. That was the fix for the OR-union duplicate-row defect: Go had
+carried Java's *name* across instead of its *meaning*.
+
+The audit was not finished. Two rules still match the full-row node:
+
+- `rule_implement_distinct_union.go:33`
+- `rule_distinct_over_union_dedup.go:39`
+
+Their Java counterparts hang off Java's PK-dedup node, so with the OR path
+no longer producing `LogicalDistinctExpression` the merge-sorted union is
+unreachable from it, and `ImplementUniqueRule`'s required arm only ever
+yields `UnorderedPrimaryKeyDistinct(member)`. An OR with a leg-compatible
+`ORDER BY` therefore cannot produce Java's ordering-preserving union: it
+must go unordered union -> PKDistinct -> InMemorySort, which also gives up
+limit pushdown.
+
+NOTHING REGRESSED, and that is measured rather than assumed — the ordered
+alternative was already dead before the change:
+
+    G=pkg/relational/conformance/explaindiff/testdata/plan_shape.golden
+    grep -cE 'MergeSortUnion|RecordQueryUnionPlan' $G              -> 0
+    git show master:$G | grep -cE 'MergeSortUnion|RecordQueryUnionPlan' -> 0
+    grep -c IndexScan $G                                            -> 230   (control)
+
+0 on both sides over 2556 queries, with 70 `UnorderedUnion` (68 on master).
+So this is an architectural-coherence gap, not a live defect — which is
+exactly why it would never be noticed later.
+
+THE WORK: decide whether the two rules should match the PK-dedup node (and
+then whether Java's ordered union is reachable at all in Go), or whether
+the ordered alternative is genuinely out of scope and the rules are dead
+code to delete. Either answer needs the golden to move or to be shown it
+cannot. Query-engine change; needs the review gate before implementation.
+
+## `IsConstantValue` is narrower than the property the explode rule wants
+
+`InComparisonToExplodeRule` guards on `values.IsConstantValue` so a
+non-constant IN list cannot be folded at plan time (which would evaluate a
+field against a nil context, get `(nil, nil)` rather than an error, and
+silently plan `b IN (NULL, 999)`).
+
+The guard is SOUND — it never admits a row-dependent list. But the property
+that makes an IN list explodeable is ROW-INDEPENDENCE, which is what Java
+tests (correlation to the inner quantifier), not plan-time constancy.
+`IsConstantValue` returns false for `ParameterValue`, `ConstantObjectValue`
+and `ParameterObjectValue` — all row-independent, all explodeable, and Java
+has a dedicated parameter arm for them.
+
+Consequence: `x IN (?, 999)` is answered correctly but as a residual
+filter, and for a parameterised IN over an indexed column that IS a lost
+index probe. (For the column case the guard was added for, there was no
+probe to lose — ComparisonIn is not scan-range compatible.)
+
+THE WORK: widen the predicate from plan-time constancy to row-independence,
+porting Java's parameter arm. The note is at the guard in
+`rule_in_to_explode.go`. Query-engine change; needs the review gate.
+
+## `retargetUsingJoins` builds its ON predicate through SQL text
+
+`retargetUsingJoins` (select_parser.go) re-qualifies a chained USING's ON
+predicate by `fmt.Sprintf`-ing SQL text and re-parsing it with
+`parser.ParseExpression`. It inherited that from the parse-time synthesis
+it replaced, but it is the one place where the metadata needed for typed
+construction is already in hand — so it deepens the text-round-trip debt at
+precisely the site best placed to avoid it.
+
+THE WORK: build the predicate as a typed expression instead of as text.
+Also folds in the alias-quoting duplication: `quoteUsingAlias` is a verbatim
+copy of the `quoteAlias` closure inside `synthesizeUsingOnExpr`, and two
+copies of one identifier-normalisation rule must not be allowed to drift.

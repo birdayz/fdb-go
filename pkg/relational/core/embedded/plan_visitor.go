@@ -507,7 +507,9 @@ func (v *PlanVisitor) visitSimpleTableBody(simpleTable *antlrgen.SimpleTableCont
 	if err := rejectDuplicateUnnestAliasesInFrom(fs.tableName, fs.tableAlias, fs.joins, resolvesToTable); err != nil {
 		return nil, err
 	}
-	if err := retargetUsingJoins(fs.tableName, fs.tableAlias, fs.joins, v.md, v.schemaName); err != nil {
+	if err := retargetUsingJoins(fs.tableName, fs.tableAlias,
+		fs.derivedQuery == nil && fs.inlineValues == nil && fs.tableName != "",
+		fs.joins, v.md, v.schemaName, cteNamePredicate(v.cteScopes)); err != nil {
 		return nil, err
 	}
 

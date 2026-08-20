@@ -1,11 +1,8 @@
 # join_using_shapes.yaml
 #
-# `JOIN … USING (cols)` has no ON expression of its own — the parser
-# SYNTHESIZES one, qualifying the left column by "the preceding source's
-# alias: leftAlias for the first join, the PRIOR JOIN'S RIGHT alias
-# otherwise" (select_parser.go#parseJoinClauses). That alias CHAIN is the
-# part worth measuring: it is a different rule for the first join than
-# for every later one, and nothing was exercising the later ones.
+# `JOIN … USING (cols)` has no ON expression of its own — one is
+# SYNTHESIZED, and which source the left side of that predicate names is
+# the whole subject of this file.
 #
 # A USING column resolves to its unique visible left OWNER, with the RIGHT
 # copy of every column an earlier USING consumed hidden. One owner
@@ -85,3 +82,81 @@ tests:
       - [1, 10]
       - [2, null]
       - [3, 30]
+  # NON-BASE SOURCES IN A USING SCOPE. Ownership is read off the record
+  # descriptor, so a derived table, an inline VALUES carrier and a CTE
+  # cannot be looked up — the retarget declines for the whole join and the
+  # parse-time predicate stands.
+  #
+  # The reason this is pinned rather than assumed: a derived table and an
+  # inline source both carry their ALIAS in the field the lookup would use
+  # as a table name, so an alias colliding with a real table would resolve
+  # ownership against a COMPLETELY DIFFERENT relation's descriptor and
+  # build a plausible predicate on it. The alias below is deliberately `b`,
+  # which IS a real table here, so this arm fails if the decline is ever
+  # decided by name instead of by what the source structurally is.
+  - query: SELECT x.id FROM a JOIN (SELECT id, k FROM c) x USING (id) ORDER BY x.id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # The collision itself: a derived table aliased with the name of a real
+  # table that has DIFFERENT columns. Resolving `id` against table `b`'s
+  # descriptor instead of the subquery would still find a column named id
+  # and answer — wrongly and silently — so the row set is what catches it.
+  - query: SELECT b.id FROM a JOIN (SELECT id FROM c WHERE id > 1) b USING (id) ORDER BY b.id
+    rows:
+      - [2]
+      - [3]
+  # A CTE source, which is referenced by a bare name that no structural
+  # flag distinguishes from a table.
+  - query: WITH cte AS (SELECT id, k FROM c) SELECT a.id FROM a JOIN cte USING (id) ORDER BY a.id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # THE ARM THAT ACTUALLY EXERCISES THE COLLISION, and it took a mutation
+  # to find out that the two above do not.
+  #
+  # A derived source is only looked up when it is a LEFT source for a LATER
+  # join — as the right-hand side of its own join it contributes nothing but
+  # an alias. So a single derived join cannot detect a name-based decline at
+  # all: disabling the structural check leaves both arms above green.
+  #
+  # Here `b` is a derived table deliberately aliased with the name of a REAL
+  # table that also has a `k` column, and it sits to the LEFT of a second
+  # USING. Decided structurally, `b` is not a base source, the scope is
+  # unresolvable, the retarget declines and the parse-time predicate stands.
+  # Decided by NAME, `b` resolves to the real table, `k` then has two owners
+  # (a.k and b.k) and the query is refused 42702 — a working query turned
+  # into an error by reading a descriptor that belongs to a different
+  # relation entirely.
+  - query: SELECT a.id FROM a JOIN (SELECT id, k FROM c) b USING (id) JOIN c USING (k) ORDER BY a.id
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # ERROR ORDER ACROSS JOINS. Two joins are each faulty in a different
+  # way: the FIRST has a USING column the right source lacks (`b` has no
+  # `j`), the SECOND is ambiguous (`id` is on both `a` and `b`). Java
+  # visits and resolves each right source left-to-right, so the first
+  # join's fault wins.
+  #
+  # This is a pre-pass that walks every join before the FROM clause is
+  # visited, so without an explicit right-side check at each join the
+  # later ambiguity is raised first and the earlier, more specific fault
+  # is masked — 42702 for ID instead of 42703 for J.
+  - query: SELECT a.id FROM a JOIN b USING (j) JOIN c USING (id)
+    error_code: "42703"
+  # The same first join alone, to show the 42703 is the join's own fault
+  # and not an artefact of there being a second one.
+  - query: SELECT a.id FROM a JOIN b USING (j)
+    error_code: "42703"
+  # A DERIVED PRIMARY whose alias collides with a real table. The primary
+  # source carries its ALIAS where a table name would be, so resolving by
+  # name invents an owner from an unrelated relation: `b` exports only
+  # `id` here, and a phantom `b.k` would make the second USING ambiguous
+  # and refuse a valid query.
+  - query: SELECT b.id FROM (SELECT id FROM a) b JOIN c USING (id) JOIN a USING (k) ORDER BY b.id
+    rows:
+      - [1]
+      - [2]

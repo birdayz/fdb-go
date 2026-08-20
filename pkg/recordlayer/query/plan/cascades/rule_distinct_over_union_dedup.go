@@ -34,6 +34,10 @@ type DistinctOverUnionDedupRule struct {
 }
 
 // NewDistinctOverUnionDedupRule constructs the rule.
+//
+// Matches the FULL-ROW LogicalDistinctExpression; the OR path now emits the
+// PK-dedup LogicalUniqueExpression, so this no longer fires for it. See TODO.md,
+// "The ordered OR-union alternative is structurally unreachable".
 func NewDistinctOverUnionDedupRule() *DistinctOverUnionDedupRule {
 	return &DistinctOverUnionDedupRule{
 		matcher: NewExpressionMatcher[*expressions.LogicalDistinctExpression]("logical_distinct"),

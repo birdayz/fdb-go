@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/relational/api"
 )
@@ -37,28 +38,31 @@ type mmTxPair struct {
 // pre-empting an explicit transaction whose MVCC window aged out. It is
 // recovered by mmInTxPair, which restarts the whole body.
 //
-// WHY THIS IS NOT A SWALLOWED FAILURE. 40001 is retryable BY CONTRACT: it says
-// the transaction lost its read version, not that the answer was wrong. These
-// tests assert read-your-writes CORRECTNESS, and an explicit transaction that
-// spans several round-trips is bound to FDB's 5-second wall measured in WALL
-// CLOCK — so on a loaded machine the window can age out between statements with
-// nothing whatsoever wrong with the engine. Observed exactly once here, under a
-// full 90-target suite with four FDB containers and a JVM live: the transaction
-// had been open 5.305s against a 4s budget, and the same test passes in 0.10s
-// in isolation.
+// WHY THIS IS NOT A SWALLOWED FAILURE. An explicit transaction that spans
+// several round-trips is bound to FDB's 5-second MVCC wall measured in WALL
+// CLOCK, so on a loaded machine the window ages out between statements with
+// nothing wrong with the engine. Observed once here under a full 90-target
+// suite with four FDB containers and a JVM live: the transaction had been open
+// 5.305s against a 4s budget, and the same test passes in 0.10s in isolation.
 //
-// The distinction that keeps this honest is that ONLY 40001 restarts. Every
-// other error still fails the test, and a WRONG ROW is not an error at all — it
-// is an assertion failure recorded on t, which no retry can clear. So this can
-// convert a slow machine into a longer run, and cannot convert a wrong answer
-// into a pass.
+// THE PREDICATE IS THE WHOLE SAFETY ARGUMENT, and it is NOT "SQLSTATE is
+// 40001". Three distinct producers reach 40001 in this driver — an aged-out
+// MVCC window, a genuine `not_committed` (1020) conflict, and a stale-plan
+// replan — and only the first is weather. The other two are the very bug class
+// these read-your-writes tests exist to catch: a conflict range set wrongly by
+// an index maintainer, or index state moving mid-transaction. Retrying those
+// would turn a real defect green.
+//
+// So the restart is gated on api.IsTransactionTimeLimit, which is typed and
+// deliberately narrower than the SQLSTATE, and whose own documentation warns
+// that a test treating every 40001 as an exhausted window "reads a real
+// conflict bug as weather". That is exactly what an earlier version of this
+// code did.
+//
+// A WRONG ROW is not an error at all — `want` records it with t.Errorf, which
+// no restart clears. So the loop can turn a slow machine into a longer run and
+// cannot turn a wrong answer, or a conflict, into a pass.
 type mmTxPreempted struct{ err error }
-
-// mmIsPreempted reports whether err is the retryable 40001.
-func mmIsPreempted(err error) bool {
-	var apiErr *api.Error
-	return errors.As(err, &apiErr) && apiErr.Code == api.ErrCodeSerializationFailure
-}
 
 // mmCheck fails the test, or signals a restart when the transaction was
 // pre-empted.
@@ -67,7 +71,7 @@ func (p *mmTxPair) mmCheck(err error, format string, args ...any) {
 	if err == nil {
 		return
 	}
-	if mmIsPreempted(err) {
+	if api.IsTransactionTimeLimit(err) {
 		panic(mmTxPreempted{err})
 	}
 	p.t.Fatalf(format, args...)
@@ -154,7 +158,11 @@ func mmInTxPair(t *testing.T, ctx context.Context, w *mmTwin, body func(p *mmTxP
 				if r := recover(); r != nil {
 					pre, ok := r.(mmTxPreempted)
 					if !ok {
-						panic(r) // not ours — a real panic, or t.Fatalf's runtime.Goexit
+						// Not ours: a genuine panic. t.Fatalf does NOT arrive
+						// here — it calls runtime.Goexit, during which recover()
+						// returns nil, so the guard above is already false and the
+						// goroutine unwinds without this branch running.
+						panic(r)
 					}
 					preempted = pre.err
 				}
@@ -386,4 +394,71 @@ func TestFDB_ReadYourWritesCommitAndRollback(t *testing.T) {
 		"SELECT a, COUNT(*) FROM t GROUP BY a ORDER BY a", []string{"10|1", "30|1"})
 	w.Want("and the rolled-back one is still absent",
 		fmt.Sprintf("SELECT COUNT(*) FROM t WHERE a = %d", 20), []string{"0"})
+}
+
+// TestMMRestartPredicateIsNarrowerThanTheSQLSTATE pins the distinction the
+// restart loop rests on, because getting it wrong is silent and green.
+//
+// An earlier version of mmCheck restarted on `Code == ErrCodeSerializationFailure`.
+// Three distinct producers reach that SQLSTATE — an aged-out MVCC window, a
+// genuine `not_committed` conflict, and a stale-plan replan — and only the
+// first is weather. The other two are exactly what these read-your-writes
+// tests exist to catch, so retrying them would have turned a real defect green
+// four times over and then passed.
+//
+// Nothing about that failure is visible from a test run: the suite goes green
+// either way, and it only reddens the day an index maintainer sets a conflict
+// range wrongly. So the predicate is pinned directly rather than through the
+// FDB path, and both directions are asserted — a 40001 that IS a time limit
+// must restart, and a 40001 that is NOT must reach the test as a failure.
+func TestMMRestartPredicateIsNarrowerThanTheSQLSTATE(t *testing.T) {
+	t.Parallel()
+
+	timeLimit := api.NewTransactionTimeLimitError(5*time.Second, 4*time.Second)
+	conflict := api.NewError(api.ErrCodeSerializationFailure,
+		"not_committed: transaction conflicted with another transaction")
+
+	for _, c := range []struct {
+		name    string
+		err     error
+		restart bool
+		why     string
+	}{
+		{
+			name: "the driver's read-budget pre-emption", err: timeLimit, restart: true,
+			why: "an aged-out MVCC window is the one producer that is weather",
+		},
+		{
+			name: "wrapped, as it reaches a caller", restart: true,
+			err: fmt.Errorf("query %q: %w", "SELECT 1", timeLimit),
+			why: "the predicate is typed, so wrapping must not hide it",
+		},
+		{
+			name: "a genuine not_committed conflict", err: conflict, restart: false,
+			why: "a conflict is the BUG these tests hunt; retrying it reports a real " +
+				"defect as weather, which is the failure this test exists to prevent",
+		},
+		{
+			name: "an ordinary error", err: errors.New("boom"), restart: false,
+			why: "everything that is not a time limit fails the test",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := api.IsTransactionTimeLimit(c.err); got != c.restart {
+				t.Errorf("IsTransactionTimeLimit(%v) = %v, want %v\n  %s",
+					c.err, got, c.restart, c.why)
+			}
+		})
+	}
+
+	// The SQLSTATE alone does NOT separate them — which is the whole point, and
+	// is asserted rather than described so a future "simplification" back to a
+	// code comparison fails here instead of shipping.
+	var a, b *api.Error
+	if !errors.As(timeLimit, &a) || !errors.As(conflict, &b) || a.Code != b.Code {
+		t.Fatalf("the fixture no longer models the hazard: the time-limit and conflict "+
+			"errors must share SQLSTATE %v, or this test is not testing anything",
+			api.ErrCodeSerializationFailure)
+	}
 }

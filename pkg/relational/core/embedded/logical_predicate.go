@@ -3339,7 +3339,9 @@ func buildLogicalPlanForSelectWithCTECatalog(sq *selectQuery, md *recordlayer.Re
 		if err := rejectDuplicateUnnestAliasesInFrom(sq.tableName, sq.tableAlias, sq.joins, resolvesToTable); err != nil {
 			return nil, err
 		}
-		if err := retargetUsingJoins(sq.tableName, sq.tableAlias, sq.joins, md, schemaName); err != nil {
+		if err := retargetUsingJoins(sq.tableName, sq.tableAlias,
+			sq.derivedQuery == nil && sq.inlineValues == nil && sq.tableName != "",
+			sq.joins, md, schemaName, cteNamePredicate(cteScopes)); err != nil {
 			return nil, err
 		}
 		rememberSchemaAliasTableQualifiers(sq, resolvesToTable)

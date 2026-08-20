@@ -113,8 +113,19 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	// IsConstantValue recurses through children, so it cannot be fooled by a
 	// composite holding a column reference, and it is the only check here that
 	// separates "no value yet" from "the value is NULL". A non-constant IN
-	// stays a residual filter, which is where it belongs: ComparisonIn is not
-	// scan-range compatible either, so there was never an index probe to lose.
+	// stays a residual filter.
+	//
+	// THIS GUARD IS SOUND BUT NARROWER THAN THE PROPERTY IT STANDS FOR, and the
+	// difference is worth stating rather than discovering. What makes an IN list
+	// explodeable is ROW-INDEPENDENCE — Java's test is correlation to the inner
+	// quantifier — not plan-time constancy. IsConstantValue answers false for
+	// ParameterValue, ConstantObjectValue and ParameterObjectValue, all of which
+	// are row-independent and would explode safely; Java has a dedicated
+	// parameter arm for exactly them. So `x IN (?, 999)` is correct here but
+	// planned as a residual filter, and for THAT shape an index probe genuinely
+	// is lost. For the column case — the one this guard was added for — there
+	// was no probe to lose, since ComparisonIn is not scan-range compatible.
+	// Widening the predicate to row-independence is tracked in TODO.md.
 	if !values.IsConstantValue(inPred.Comparison.Operand) {
 		return
 	}

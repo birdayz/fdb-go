@@ -11,6 +11,7 @@ import (
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 	"fdb.dev/pkg/relational/core/query/logical"
+	"fdb.dev/pkg/relational/core/query/semantic"
 	"github.com/antlr4-go/antlr/v4"
 )
 
@@ -3070,9 +3071,33 @@ func containsNestedAggregate(tree antlr.Tree) bool {
 // usingSource is one candidate left source for a chained USING's column
 // lookup: the alias the predicate must qualify with, and the base table whose
 // columns decide whether it owns the column at all.
+// cteNamePredicate answers "is this FROM source a CTE?" for a scope map, which
+// retargetUsingJoins needs because a CTE is referenced by a bare name that no
+// structural flag on the join distinguishes from a table. A nil or empty map
+// yields nil — correct, since no CTEs are then in scope.
+func cteNamePredicate(cteScopes map[string]semantic.ScopeSource) func(string) bool {
+	if len(cteScopes) == 0 {
+		return nil
+	}
+	return func(name string) bool {
+		_, ok := cteScopes[strings.ToUpper(functions.StripIdentifierQuotes(name))]
+		return ok
+	}
+}
+
 type usingSource struct {
 	alias string
 	table string
+	// base records whether `table` is a real table REFERENCE rather than a
+	// stand-in. It cannot be inferred from the name: a derived table and an
+	// inline VALUES source both carry their ALIAS in tableName
+	// (joinClauseForSubquerySource, inlineValuesCarrierAlias), and a CTE is
+	// referenced by a name that is not in the record metadata at all. So an
+	// alias that happens to collide with a record type would otherwise resolve
+	// ownership against a descriptor belonging to a completely different
+	// relation — the wrong owner, silently, with a plausible predicate built on
+	// it. Only a source flagged base may be looked up.
+	base bool
 }
 
 // usingOwnerOf returns the single left source that owns `col`, applying Java's
@@ -3169,31 +3194,51 @@ func sourceHasColumn(table, col string, md *recordlayer.RecordMetaData, schemaNa
 // any in-scope source is unresolvable the correction is skipped and the
 // parse-time predicate stands, which is exactly today's behaviour for those
 // shapes and never worse.
-func retargetUsingJoins(primaryTable, primaryAlias string, joins []joinClause,
-	md *recordlayer.RecordMetaData, schemaName string,
+//
+// "UNRESOLVABLE" IS DECIDED STRUCTURALLY, NOT BY NAME LOOKUP. A derived table
+// and an inline VALUES source carry their ALIAS in tableName, and a CTE is
+// referenced by a name absent from the metadata — so asking "is this name a
+// record type?" answers YES for a derived table whose alias collides with a
+// real one, and ownership is then read off an unrelated descriptor. Each source
+// therefore carries a `base` flag set from what it structurally IS, and only a
+// base source is ever looked up.
+func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool, joins []joinClause,
+	md *recordlayer.RecordMetaData, schemaName string, isCTE func(string) bool,
 ) error {
 	primary := primaryAlias
 	if primary == "" {
 		primary = primaryTable
 	}
+	// isBase reports whether a join leg is a plain table reference: not a
+	// derived table, not an inline VALUES carrier, not a CTE.
+	isBase := func(j *joinClause) bool {
+		return j.derivedQuery == nil && j.inlineValues == nil &&
+			j.tableName != "" && !(isCTE != nil && isCTE(j.tableName))
+	}
 	// hidden[alias][COL] — the right copy an earlier USING consumed.
 	hidden := map[string]map[string]bool{}
-	sources := []usingSource{{alias: primary, table: primaryTable}}
+	sources := []usingSource{{alias: primary, table: primaryTable, base: primaryIsBase}}
 
 	for i := range joins {
 		j := &joins[i]
 		if len(j.usingColTexts) == 0 {
 			// Not a USING join; it still contributes a source to later ones.
-			sources = append(sources, usingSource{alias: j.alias, table: j.tableName})
+			sources = append(sources, usingSource{
+				alias: j.alias, table: j.tableName, base: isBase(j),
+			})
 			continue
 		}
 		// Every left source must be resolvable, or ownership is unknowable and
 		// the parse-time predicate stands. Checked over the whole scope rather
 		// than per column: one unresolvable source can hide the second owner
 		// that would have made a column ambiguous.
-		resolvable := true
+		// The RIGHT source must be base too, not just the left scope: the
+		// right-side column check below reads its descriptor, and a derived
+		// table carries its alias in tableName, so looking that up would report
+		// a perfectly good column as missing.
+		resolvable := isBase(j) && sourceResolves(j.tableName, md, schemaName)
 		for _, s := range sources {
-			if s.table == "" || !sourceResolves(s.table, md, schemaName) {
+			if !s.base || s.table == "" || !sourceResolves(s.table, md, schemaName) {
 				resolvable = false
 				break
 			}
@@ -3217,6 +3262,26 @@ func retargetUsingJoins(primaryTable, primaryAlias string, joins []joinClause,
 					// reports the second case downstream.
 					owners = nil
 					break
+				}
+				// THE RIGHT SIDE IS CHECKED HERE, AT THIS JOIN, and that is
+				// about ERROR ORDER rather than about detection.
+				//
+				// A USING column missing from the right source is reported
+				// downstream either way. But this pre-pass walks every join
+				// before the FROM clause is visited, so a LATER join's
+				// ambiguity would otherwise be raised first and mask it:
+				// `a JOIN b USING (j) JOIN c USING (id)` reported 42702 for ID
+				// when the real, earlier fault is that b has no j. Java visits
+				// and resolves each right source left-to-right, so a fault in
+				// the first join must win.
+				//
+				// Only reached once a left owner was found, which keeps the
+				// pseudo-column decline above intact — `__ROW_VERSION` is
+				// absent from BOTH descriptors and declines before it gets
+				// here.
+				if !sourceHasColumn(j.tableName, col, md, schemaName) {
+					return api.NewErrorf(api.ErrCodeUndefinedColumn,
+						"column %q does not exist", col)
 				}
 				owners = append(owners, owner)
 			}
@@ -3243,7 +3308,9 @@ func retargetUsingJoins(primaryTable, primaryAlias string, joins []joinClause,
 			}
 			hidden[j.alias][c] = true
 		}
-		sources = append(sources, usingSource{alias: j.alias, table: j.tableName})
+		sources = append(sources, usingSource{
+			alias: j.alias, table: j.tableName, base: isBase(j),
+		})
 	}
 	return nil
 }
