@@ -1131,6 +1131,30 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 			t.Errorf("the abort banner leaks the storage name: %s", got)
 		}
 	})
+
+	t.Run("abort banner orders by the decoded name", func(t *testing.T) {
+		t.Parallel()
+		// One entry cannot observe a sort, so the arm above passes whether the
+		// helper sorts in storage space or user space. A__0B decodes to A__B and
+		// A__1B decodes to A$B, so the two orders DISAGREE: storage-sorted prints
+		// A__B first, user-sorted prints A$B first.
+		got := describeSkippedTypes(map[string]string{
+			"A__0B": "storage-first",
+			"A__1B": "user-first",
+		})
+		if !strings.HasPrefix(got, "A$B") {
+			t.Errorf("the abort banner is not ordered by the name it prints: %s", got)
+		}
+		// Guard the fixture: if decoding ever stopped changing the order, the
+		// assertion above would hold for a helper that never sorts by user name.
+		// Storage order is A__0B < A__1B; decoded it is A$B < A__B, because $ is
+		// 0x24 and _ is 0x5F. The two orders must DISAGREE or the assertion above
+		// holds for a helper that never sorts by the user name at all.
+		if userName("A__0B") <= userName("A__1B") {
+			t.Fatalf("fixture is vacuous: decoding no longer reverses %s/%s",
+				userName("A__0B"), userName("A__1B"))
+		}
+	})
 }
 
 // LISTS ARE ORDERED BY THE NAME ACTUALLY PRINTED.
@@ -1140,10 +1164,10 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 // differ: storage-sorted [A__0B, A__1B] prints as [A__B, A$B], while a reader
 // scanning the output expects [A$B, A__B].
 //
-// The collect path already re-sorted after decoding, so leaving the show path
-// alone made ONE command emit both orderings. A previous commit promoted
-// "ordering is by the printed name" to a spec for the fan-out's skipped list;
-// this is that spec applied where it was already being contradicted.
+// Four sites decode such a list; all four now sort in the namespace they print
+// (userNames and describeSkippedTypes here, fleet's describeSkipped, and
+// SyntheticRecordTypesNotModeledError.Error(), pinned in its own package).
+// This test covers userNames; the other three carry their own ordering arms.
 func TestStats_ListsAreSortedByTheDecodedName(t *testing.T) {
 	t.Parallel()
 

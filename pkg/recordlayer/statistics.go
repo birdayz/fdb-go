@@ -33,6 +33,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -1024,6 +1025,11 @@ func (e *SyntheticRecordTypesNotModeledError) Error() string {
 	for i, n := range e.TypeNames {
 		names[i] = ToUserIdentifier(n)
 	}
+	// Re-sort in the namespace being PRINTED. TypeNames arrives sorted in
+	// STORAGE space (SyntheticRecordTypeNames sorts before returning), and the
+	// two orders disagree: storage-sorted [A__0B, A__1B] decodes to
+	// [A__B, A$B], so a reader scanning for A$B finds it second.
+	sort.Strings(names)
 	return fmt.Sprintf("metadata declares synthetic record types this port does not model (%s); "+
 		"statistics collection refused rather than scanning the store for a set that "+
 		"could never be complete", strings.Join(names, ", "))

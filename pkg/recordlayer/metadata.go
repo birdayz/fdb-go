@@ -1291,9 +1291,18 @@ func recordTypeKeyIdentity(key any) (string, bool) {
 // addresses RecordMetaData with a user identifier; Go's relational layer
 // uses RecordMetaData directly as its table catalog, so the translation
 // lives here — ONE boundary that every SQL path already funnels through —
-// rather than being sprinkled over the 25 call sites. Storage names stay
-// canonical: the fallback fires only when the direct key misses, so it can
-// never shadow a real type, and ToProtoBufCompliantName is deterministic.
+// rather than being sprinkled over the 25 call sites.
+//
+// The fallback fires only when the direct key misses, so it never SHADOWS a
+// stored type and ToProtoBufCompliantName is deterministic. It is not,
+// however, unambiguous: the escaping is not injective across the two
+// namespaces, so a schema declaring both MY__1TABLE (the storage form of SQL
+// MY$TABLE) and MY__01TABLE (the storage form of SQL MY__1TABLE) resolves a
+// lookup for the SQL name MY__1TABLE to the FIRST of those — the wrong entry.
+// No ordering fixes it; either order prices one of the pair wrong. See
+// AmbiguousDeclaredNames, which is how a caller computing over all record
+// types detects that case, and TestGetRecordTypeMisResolvesAnAmbiguousPair,
+// which pins the behaviour so a reordering "fix" fails loudly.
 func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 	if rt, ok := m.recordTypes[name]; ok {
 		return rt

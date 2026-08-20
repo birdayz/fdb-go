@@ -348,10 +348,12 @@ reported here as `MY$TABLE`. Every name `frl stats` prints follows that rule --
 the abort banner and the fan-out's refusal text -- so a script may key by the
 name it created the table with.
 
-That is a statement about `frl stats` and not yet about the whole CLI: `frl meta
-types` and `frl index describe` still print the storage form. Tracked in
-`TODO.md`; until it is closed, do not assume a record-type name is in the same
-namespace across two commands.
+That is a statement about `frl stats` and not yet about the whole CLI. The
+commands that still print the storage form are `frl meta types`, `frl meta
+diff`, `frl index describe`, and the `not found -- available: ...` list shared
+by `frl record scan` and `frl record count`. Tracked in `TODO.md`; until it is
+closed, do not assume a record-type name is in the same namespace across two
+commands.
 
 ```sh
 

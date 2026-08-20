@@ -19571,10 +19571,15 @@ retries through `ToProtoBufCompliantName`, deliberately and with a comment
 explaining why the translation lives at that one boundary. So `--type MY$TABLE`
 resolves TODAY, and decoding the renderers does not strand the operator with a
 name the commands reject. That fallback had no test that ever passed a
-`$`-bearing identifier (1453 `GetRecordType("…")` calls in the package, 0 with an
-escape) and is now pinned by `TestGetRecordTypeResolvesAUserIdentifier`
-(`pkg/recordlayer/metadata_user_identifier_lookup_test.go`) — check it still
-holds before relying on it.
+`$`-bearing identifier: measured over `pkg/recordlayer/*.go` EXCLUDING
+subpackages, 1453 literal `GetRecordType("…")` call sites, 0 of them escaped
+(1632 recursive). It is now pinned by two tests in
+`pkg/recordlayer/metadata_user_identifier_lookup_test.go` —
+`TestGetRecordTypeResolvesAUserIdentifier` for the fallback itself, and
+`TestGetRecordTypeMisResolvesAnAmbiguousPair` for its LIMIT: on a
+`MY__1TABLE`/`MY__01TABLE` collision the direct hit answers first and returns
+the wrong entry, which is why `AmbiguousDeclaredNames` exists. Check both still
+hold before relying on the fallback.
 
 `GetIndex` (`metadata.go:1484`) has NO such fallback — a raw map lookup. It is
 not a blocker here (what `index describe` leaks is record-type names, the

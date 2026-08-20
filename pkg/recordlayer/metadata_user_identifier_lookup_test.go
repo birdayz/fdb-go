@@ -7,11 +7,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// renameRecordTypeTo rebuilds md with the record type named `from` stored under
-// `to`. It exists because no checked-in proto has an ESCAPED record-type name,
-// and the arm under test only fires for one -- a fixture that cannot express
-// the condition would leave the arm undriven while reporting green.
-func renameRecordTypeTo(t *testing.T, from, to string) *RecordMetaData {
+// renameRecordTypesTo rebuilds md with each record type named by a key of
+// rename stored under its value. It exists because no checked-in proto has an
+// ESCAPED record-type name, and the arms under test only fire for one -- a
+// fixture that cannot express the condition leaves them undriven while green.
+func renameRecordTypesTo(t *testing.T, rename map[string]string) *RecordMetaData {
 	t.Helper()
 	p, err := testMetaData(t).ToProto()
 	if err != nil {
@@ -19,12 +19,12 @@ func renameRecordTypeTo(t *testing.T, from, to string) *RecordMetaData {
 	}
 	p.JoinedRecordTypes = nil
 	for _, msg := range p.GetRecords().GetMessageType() {
-		if msg.GetName() == from {
+		if to, ok := rename[msg.GetName()]; ok {
 			msg.Name = proto.String(to)
 		}
 	}
 	for _, rt := range p.GetRecordTypes() {
-		if rt.GetName() == from {
+		if to, ok := rename[rt.GetName()]; ok {
 			rt.Name = proto.String(to)
 		}
 	}
@@ -34,7 +34,7 @@ func renameRecordTypeTo(t *testing.T, from, to string) *RecordMetaData {
 	// the old name miss and the type is dropped entirely rather than renamed.
 	for _, msg := range p.GetRecords().GetMessageType() {
 		for _, f := range msg.GetField() {
-			if f.GetName() == "_"+from {
+			if to, ok := rename[strings.TrimPrefix(f.GetName(), "_")]; ok && strings.HasPrefix(f.GetName(), "_") {
 				f.Name = proto.String("_" + to)
 			}
 		}
@@ -50,7 +50,7 @@ func renameRecordTypeTo(t *testing.T, from, to string) *RecordMetaData {
 			if i := strings.LastIndex(full, "."); i >= 0 {
 				short, pkgPrefix = full[i+1:], full[:i+1]
 			}
-			if short == from {
+			if to, ok := rename[short]; ok {
 				f.TypeName = proto.String("." + pkgPrefix + to)
 			}
 		}
@@ -76,7 +76,7 @@ func TestGetRecordTypeResolvesAUserIdentifier(t *testing.T) {
 	t.Parallel()
 
 	const storage, sql = "MY__1TABLE", "MY$TABLE"
-	md := renameRecordTypeTo(t, "Order", storage)
+	md := renameRecordTypesTo(t, map[string]string{"Order": storage})
 
 	// Fixture guard: if the rename silently failed, every assertion below would
 	// be about a type that is not there, and a miss would read as a fallback bug.
@@ -111,5 +111,71 @@ func TestGetRecordTypeResolvesAUserIdentifier(t *testing.T) {
 	// not become a fuzzy match.
 	if rt := md.GetRecordType("NO$SUCH"); rt != nil {
 		t.Fatalf("GetRecordType(\"NO$SUCH\") resolved to %s; the fallback is matching too broadly", rt.Name)
+	}
+}
+
+// TestGetRecordTypeMisResolvesAnAmbiguousPair pins the LIMIT of the fallback
+// above, and it is deliberately a test of wrong-looking behaviour.
+//
+// GetRecordType's comment says the fallback "can never shadow a real type",
+// which is true and stops one step short of the hazard. The escaping is not
+// injective across the two namespaces: MY$TABLE is stored as MY__1TABLE, while
+// a table whose SQL name IS MY__1TABLE is stored as MY__01TABLE. Declare both
+// and the direct hit answers first, so a caller holding the SQL identifier
+// MY__1TABLE is handed the type whose SQL name is MY$TABLE. Nothing is
+// shadowed; the answer is simply the wrong entry, and — as
+// AmbiguousDeclaredNames' own doc says — no ordering fixes it, because either
+// order resolves one of the pair wrong.
+//
+// This is exactly why AmbiguousDeclaredNames exists and why the statistics
+// gate REFUSES on an ambiguous schema rather than reporting numbers keyed by a
+// name it cannot resolve. If someone later "fixes" GetRecordType by reordering
+// its two lookups, this test fails and says why that does not help.
+func TestGetRecordTypeMisResolvesAnAmbiguousPair(t *testing.T) {
+	t.Parallel()
+
+	// Order becomes the storage form of SQL `MY$TABLE`; Customer becomes the
+	// storage form of SQL `MY__1TABLE`. The two SQL names are distinct, and one
+	// of them equals the OTHER's storage name — that is the collision.
+	const aStorage, aSQL = "MY__1TABLE", "MY$TABLE"
+	const bStorage, bSQL = "MY__01TABLE", "MY__1TABLE"
+	if ToUserIdentifier(aStorage) != aSQL || ToUserIdentifier(bStorage) != bSQL {
+		t.Fatalf("fixture is wrong: %q->%q, %q->%q", aStorage, ToUserIdentifier(aStorage),
+			bStorage, ToUserIdentifier(bStorage))
+	}
+	if aStorage != bSQL {
+		t.Fatalf("fixture does not collide: %q must equal %q", aStorage, bSQL)
+	}
+
+	md := renameRecordTypesTo(t, map[string]string{"Order": aStorage, "Customer": bStorage})
+	for _, want := range []string{aStorage, bStorage} {
+		if _, ok := md.RecordTypes()[want]; !ok {
+			t.Fatalf("fixture did not land: no record type stored as %s", want)
+		}
+	}
+
+	// The metadata itself reports the collision — this is the signal callers are
+	// expected to consult INSTEAD of trusting a lookup.
+	names, ambiguous := md.AmbiguousDeclaredNames()
+	if !ambiguous {
+		t.Fatalf("AmbiguousDeclaredNames did not report the collision; it is the "+
+			"guard that makes the mis-resolution below detectable, and it reported %v", names)
+	}
+
+	// The mis-resolution itself: asking by the SQL identifier MY__1TABLE returns
+	// the type stored under it, whose SQL name is MY$TABLE — not the type the
+	// caller named, which is stored as MY__01TABLE.
+	got := md.GetRecordType(bSQL)
+	if got == nil {
+		t.Fatalf("GetRecordType(%q) missed entirely; expected the mis-resolution, not a miss", bSQL)
+	}
+	if got.Name != aStorage {
+		t.Fatalf("GetRecordType(%q) resolved to %q; the ambiguity hazard has changed shape "+
+			"and AmbiguousDeclaredNames' reasoning needs re-reading", bSQL, got.Name)
+	}
+	if got.Name == bStorage {
+		t.Fatalf("GetRecordType(%q) now resolves correctly — if the escaping became "+
+			"injective or the catalog became user-keyed, the ambiguity gates can be "+
+			"revisited; until then they are load-bearing", bSQL)
 	}
 }

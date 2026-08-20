@@ -2118,4 +2118,28 @@ func TestSyntheticRefusalErrorNamesUserIdentifiers(t *testing.T) {
 		t.Errorf("TypeNames = %q, want the STORAGE name %q — decoding the field breaks "+
 			"consumers matching against metadata", err.TypeNames[0], storage)
 	}
+
+	// ORDER IS BY THE NAME PRINTED. TypeNames arrives sorted in STORAGE space
+	// (SyntheticRecordTypeNames sorts before returning), and one element cannot
+	// observe a sort at all — so this arm drives the multi-element case the
+	// single-element assertions above are blind to.
+	//
+	// A__0B decodes to A__B and A__1B decodes to A$B, so storage order and user
+	// order DISAGREE ($ is 0x24, _ is 0x5F).
+	if ToUserIdentifier("A__0B") <= ToUserIdentifier("A__1B") {
+		t.Fatalf("fixture is vacuous: decoding no longer reverses %s/%s",
+			ToUserIdentifier("A__0B"), ToUserIdentifier("A__1B"))
+	}
+	two := (&SyntheticRecordTypesNotModeledError{
+		TypeNames: []string{"A__0B", "A__1B"}, // storage-sorted, as the caller supplies
+	}).Error()
+	first := strings.Index(two, ToUserIdentifier("A__1B"))  // A$B
+	second := strings.Index(two, ToUserIdentifier("A__0B")) // A__B
+	if first < 0 || second < 0 {
+		t.Fatalf("both declarations should be named: %s", two)
+	}
+	if first > second {
+		t.Errorf("the refusal lists declarations in storage order, not the order it "+
+			"prints them in: %s", two)
+	}
 }
