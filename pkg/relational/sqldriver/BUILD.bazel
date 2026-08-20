@@ -295,6 +295,7 @@ go_test(
         "float_range_row_loss_fdb_test.go",
         "float_special_param_probe_test.go",
         "fork_colliding_subfield_fdb_test.go",
+        "full_outer_join_decomposition_fdb_test.go",
         "full_outer_join_fdb_test.go",
         "fullbox_chained_spine_fdb_test.go",
         "fullouter_unnest_exists_fdb_test.go",
