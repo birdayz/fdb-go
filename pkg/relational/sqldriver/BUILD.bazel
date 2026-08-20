@@ -156,6 +156,7 @@ go_test(
         "chained_unnest_3link_filtered_ordinal_fdb_test.go",
         "chained_unnest_ordinal_fdb_test.go",
         "chained_unnest_predicate_pushdown_fdb_test.go",
+        "clause_keyword_alias_ambiguity_fdb_test.go",
         "clustered_box_join_padding_fdb_test.go",
         "coalesce_nullif_probe_test.go",
         "column_metadata_probe_test.go",
