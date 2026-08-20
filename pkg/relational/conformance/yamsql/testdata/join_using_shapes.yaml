@@ -62,17 +62,19 @@ tests:
   - query: SELECT a.id FROM a JOIN b USING (id) JOIN c USING (j) ORDER BY a.id
     rows:
       - [1]
-  # NO OWNER — the column exists nowhere on the left. Worth knowing HOW this
-  # one passes, because it is not this layer that reports it: the owner
-  # lookup DECLINES rather than raising, since it reads the record
-  # descriptor and not every legal USING column is a descriptor field.
-  # `USING("__ROW_VERSION")` names a pseudo-column, and raising here broke
-  # exactly that query in the Java corpus (join-tests-row-version.yamsql,
-  # which is where the pseudo-column case stays pinned — it needs a table
-  # with row versioning enabled, which this fixture has no reason to have).
-  # So the parse-time predicate stands and ordinary column resolution
-  # reports 42703 downstream, from the layer that can tell a pseudo-column
-  # from a typo.
+  # NO OWNER — the column exists nowhere on the left, so the owner lookup
+  # DECLINES rather than raising, and 42703 is reported downstream by
+  # ordinary column resolution.
+  #
+  # The decline is about an UNDESCRIBABLE scope, not about descriptor
+  # fields. An earlier version read ownership straight off the record
+  # descriptor, which made `USING("__ROW_VERSION")` — a catalog
+  # pseudo-column that no descriptor carries — look like a missing column
+  # and broke that query in the Java corpus. Ownership now reads the
+  # catalog, so the pseudo-column resolves like any other; the row-version
+  # shapes are measured against the JVM in JoinUsingRowVersionJavaProbe,
+  # including the one where nothing hides a copy and BOTH engines call it
+  # ambiguous.
   - query: SELECT a.id FROM a JOIN b USING (id) JOIN c USING (nosuchcol)
     error_code: "42703"
   # USING on an OUTER join — the same synthesis through the other

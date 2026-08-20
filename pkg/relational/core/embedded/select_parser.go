@@ -3113,12 +3113,11 @@ type usingSource struct {
 // derived — owns nothing, and the caller's resolvable gate has already declined
 // the whole join in that case rather than letting it read as "no owner".
 //
-// Consulting s.base HERE as well as at the gate is deliberate belt-and-braces:
-// the descriptor lookup is only safe because a non-base source never reaches
-// it, and that safety currently rests on a check in a different function. If
-// the gate is ever loosened to per-column, this keeps a derived table from
-// silently resolving against a same-named record type.
-func (s usingSource) owns(col string, md *recordlayer.RecordMetaData, schemaName string) bool {
+// There is no name-based fallback: a source is described by its cols surface or
+// it is not described at all. That is what makes a derived table unable to
+// resolve against a same-named record type even if the caller-side gate is ever
+// loosened — there is no descriptor path left for it to reach.
+func (s usingSource) owns(col string) bool {
 	if s.cols == nil {
 		// Nothing describes this source — a name that did not resolve, or a
 		// derived schema that could not be derived. The caller's resolvable
@@ -3138,23 +3137,27 @@ func (s usingSource) owns(col string, md *recordlayer.RecordMetaData, schemaName
 // Two owners is AMBIGUOUS and is raised here, because nothing downstream can
 // detect it — a predicate built against either candidate plans and answers.
 //
-// NO owner returns ("", nil) — a DECLINE, not an error. Ownership is decided
-// from the record descriptor, and not every legal USING column is a descriptor
-// field: `USING("__ROW_VERSION")` names a pseudo-column that appears nowhere in
-// the field list, and raising 42703 on it turned a working corpus query into a
-// failure. Declining leaves the parse-time predicate in place, so a column that
-// genuinely does not exist is still reported downstream by ordinary column
-// resolution — the error arrives from the layer that can tell the two cases
-// apart, instead of from this one, which cannot.
-func usingOwnerOf(col string, sources []usingSource, hidden map[string]map[string]bool,
-	md *recordlayer.RecordMetaData, schemaName string,
-) (string, error) {
+// NO owner returns ("", nil) — a DECLINE, not an error. A source that nothing
+// describes owns nothing, and this layer cannot tell "the column is absent"
+// from "the scope could not be read"; declining leaves the parse-time predicate
+// in place so ordinary column resolution reports a genuine typo downstream,
+// from the layer that can tell those apart.
+//
+// `__ROW_VERSION` used to reach this decline and no longer does, which is the
+// improvement rather than a regression: ownership now reads the CATALOG, which
+// appends the pseudo-column when the store keeps row versions, so it resolves
+// like any other column. Measured against the live JVM
+// (JoinUsingRowVersionJavaProbe): a single join and a chained USING both answer
+// in both engines, and the shape where nothing hides a copy — an ON join
+// putting two row-versioned sources in scope before a USING names it — is
+// AMBIGUOUS in both. Two owners really is two owners here.
+func usingOwnerOf(col string, sources []usingSource, hidden map[string]map[string]bool) (string, error) {
 	var owners []string
 	for _, s := range sources {
 		if hidden[s.alias][col] {
 			continue
 		}
-		if !s.owns(col, md, schemaName) {
+		if !s.owns(col) {
 			continue
 		}
 		owners = append(owners, s.alias)
@@ -3286,10 +3289,13 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			// Owners are resolved for ALL columns before anything is rewritten:
 			// one unownable column declines the whole join, so a half-retargeted
 			// predicate mixing the two rules can never be built.
+			// Derived ONCE per join: a subquery source would otherwise have its
+			// projection re-derived for every USING column.
+			rightCols := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)).cols
 			owners := make([]string, 0, len(j.usingColTexts))
 			for _, colText := range j.usingColTexts {
 				col := strings.ToUpper(functions.StripIdentifierQuotes(colText))
-				owner, err := usingOwnerOf(col, sources, hidden, md, schemaName)
+				owner, err := usingOwnerOf(col, sources, hidden)
 				if err != nil {
 					return err
 				}
@@ -3320,7 +3326,6 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `__ROW_VERSION` when the store keeps row versions and a
 				// descriptor never carries it, so a left owner found on one
 				// surface could be declared absent on the other.
-				rightCols := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)).cols
 				if rightCols == nil {
 					// Undescribable right side: decline the join rather than
 					// call the column missing.

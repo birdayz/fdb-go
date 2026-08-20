@@ -222,3 +222,105 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				"disagreement cannot be attributed to the chaining", controls)
 	})
 })
+
+// The `__ROW_VERSION` pseudo-column in a USING clause.
+//
+// It is not a descriptor field — the catalog appends it as an ephemeral column
+// when the store keeps row versions — so it is the one USING column whose
+// visibility depends on which surface the resolver reads. Once ownership moved
+// from the record descriptor to the catalog, the pseudo-column became visible
+// on BOTH sides of a join, and a review raised the concern that a chain would
+// then find two owners and raise 42702 on a query the Java corpus requires to
+// work.
+//
+// Reasoning says the hiding rule prevents that: the first USING hides the right
+// copy, leaving one candidate. But the hiding rule is exactly what was got
+// wrong twice on this branch, so it is measured instead — including the shape
+// where nothing hides anything, an ordinary ON join placing two row-versioned
+// sources in scope before a USING names the pseudo-column.
+var _ = Describe("JoinUsingRowVersionJavaProbe", func() {
+	It("measures both engines on __ROW_VERSION as a USING column", func() {
+		ctx := context.Background()
+		tenantName := fmt.Sprintf("usingrv_%s", uuid.New().String())
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner)
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
+
+		// Mirrors the corpus fixture (join-tests-row-version.yamsql): row
+		// versions are a SCHEMA option, so every table here carries the
+		// pseudo-column.
+		const schema = "create table jua(c1 bigint, c2 bigint, c5 bigint, primary key(c1)) " +
+			"create table jub(c1 bigint, c3 bigint, c5 bigint, primary key(c1)) " +
+			"create table juc(c1 bigint, c4 bigint, c5 bigint, primary key(c1)) " +
+			"with options (store_row_versions=true)"
+		setup := []string{
+			"INSERT INTO jua VALUES(1, 2, 5)",
+			"INSERT INTO jub VALUES(1, 3, 5)",
+			"INSERT INTO juc VALUES(1, 4, 5)",
+		}
+
+		render := func(r plandiff.RunResult) string {
+			if r.Err != nil {
+				return "ERR(" + r.Err.Error() + ")"
+			}
+			return fmt.Sprint(r.Rows.Rows)
+		}
+		rejects := func(s string) bool { return strings.HasPrefix(s, "ERR(") }
+
+		cases := []struct{ name, sql string }{
+			{
+				// The corpus shape: one join, one left source, one owner.
+				name: "single join on the pseudo-column",
+				sql:  `select jua.c1 from jua join jub using("__ROW_VERSION")`,
+			},
+			{
+				// A CHAIN. The first USING hides jub's copy, so the second
+				// should still see exactly one candidate.
+				name: "chained USING on the pseudo-column",
+				sql: `select jua.c1 from jua join jub using("__ROW_VERSION") ` +
+					`join juc using("__ROW_VERSION")`,
+			},
+			{
+				// NOTHING HIDES ANYTHING HERE. An ordinary ON join puts two
+				// row-versioned sources in scope, and only then does a USING
+				// name the pseudo-column — so both copies are visible. This is
+				// the shape the hiding rule does NOT rescue, and the one worth
+				// measuring rather than predicting.
+				name: "ON join first, then USING on the pseudo-column",
+				sql: `select jua.c1 from jua join jub on jua.c1 = jub.c1 ` +
+					`join juc using("__ROW_VERSION")`,
+			},
+		}
+
+		var disagreed []string
+		for _, c := range cases {
+			javaOut := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
+			goOut := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
+			mark := "  "
+			if rejects(javaOut) != rejects(goOut) || (!rejects(javaOut) && javaOut != goOut) {
+				mark = "!!"
+				disagreed = append(disagreed, fmt.Sprintf(
+					"%s\n    java: %s\n    go  : %s\n    sql : %s",
+					c.name, javaOut, goOut, c.sql))
+			}
+			fmt.Fprintf(GinkgoWriter, "%s %-44s java=%-34s go=%s\n", mark, c.name, javaOut, goOut)
+		}
+
+		Expect(disagreed).To(BeEmpty(),
+			"the engines disagree on __ROW_VERSION as a USING column, for %d of %d shapes. "+
+				"This column is not a descriptor field, so it is the one that exposes a "+
+				"resolver reading two different column surfaces — owner from one, right-side "+
+				"check from the other.\n\n%s",
+			len(disagreed), len(cases), strings.Join(disagreed, "\n"))
+		Expect(cases).To(HaveLen(3),
+			"the shape population changed; the no-hiding arm is the one that carries this file")
+	})
+})
