@@ -19311,3 +19311,44 @@ review lap rather than riding along on a USING fix.
 The divergence is PINNED, not merely described: the probe arm asserts BOTH
 engines' current wording, so it fails if Go is repaired or if either side
 moves to a third answer.
+
+## A derived table's quoted column names do not survive to the executor layout
+
+Quoted identifiers keep their case; unquoted ones fold to upper. A derived
+table whose projection names quoted lower-case columns keeps them
+lower-case, while the edge it feeds is declared with the folded upper-case
+form, and the executor rejects the mismatch:
+
+    CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+    CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+
+    SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d USING ("k")
+                                                        ORDER BY q1."id"
+
+    java: [[1]]
+    go  : resolution error 11 at executor.layout: edge lookup D:
+          read as RECORD(id:LONG?,k:LONG?),
+          declared RECORD(ID:LONG?,K:LONG?)
+
+GO REFUSES A QUERY JAVA ANSWERS, which is the direction that always
+matters.
+
+IT IS PRE-EXISTING, and that was established rather than assumed. A review
+reported it as caused by the USING retarget folding the column name to
+upper — which it did do, and which is fixed: the ownership lookup is now
+quote-aware (`semantic.NewUnquoted` on the raw column text rather than a
+blanket `strings.ToUpper`). But bypassing `retargetUsingJoins` entirely
+leaves this query failing in exactly the same way, so the retarget is not
+what refuses it. The fault is downstream of name resolution, in how a
+derived source's row type is declared versus how it is read.
+
+Pinned, both sides asserted verbatim, in
+`conformance/join_using_chain_java_probe_test.go`
+(`JoinUsingQuotedIdentifierJavaProbe`) so a repair reddens the pin rather
+than passing silently.
+
+THE WORK: make a derived source's declared row type agree with its
+projection's identifier casing — one normalisation, applied at both ends.
+The base-table arm in the same probe is the control: quoted USING against
+two base tables already works, so the folding is specific to the derived
+path.

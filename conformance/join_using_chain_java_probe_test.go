@@ -420,3 +420,116 @@ var _ = Describe("JoinUsingRowVersionJavaProbe", func() {
 			"the shape population changed; the no-hiding arm is the one that carries this file")
 	})
 })
+
+// A QUOTED, lower-case USING column.
+//
+// Quoted identifiers keep their case; unquoted ones fold to upper. A resolver
+// that normalises a USING column by upper-casing it unconditionally therefore
+// asks the catalog for `K` when the column is `k`, and refuses a valid query —
+// while the same query planned before ownership consulted a column surface at
+// all, because nothing looked the name up.
+//
+// This is the direction that matters most: Go refusing what Java answers. It is
+// measured rather than reasoned about, because "the normalisation is obviously
+// fine" is the shape of every other thing on this branch that was not.
+var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
+	It("measures both engines on a quoted lower-case USING column", func() {
+		ctx := context.Background()
+		tenantName := fmt.Sprintf("usingquoted_%s", uuid.New().String())
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner)
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
+
+		const schema = `CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id")) ` +
+			`CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))`
+		setup := []string{
+			`INSERT INTO q1 VALUES (1, 10), (2, 20)`,
+			`INSERT INTO q2 VALUES (1, 10), (2, 99)`,
+		}
+
+		render := func(r plandiff.RunResult) string {
+			if r.Err != nil {
+				return "ERR(" + r.Err.Error() + ")"
+			}
+			return fmt.Sprint(r.Rows.Rows)
+		}
+
+		cases := []struct {
+			name, sql string
+			// javaSays and goSays mark a PINNED divergence: both sides asserted
+			// verbatim, so the arm reddens on a repair as well as on a drift.
+			javaSays, goSays string
+		}{
+			{
+				name: "quoted USING against a base table",
+				sql:  `SELECT q1."id" FROM q1 JOIN q2 USING ("k") ORDER BY q1."id"`,
+			},
+			{
+				// A DERIVED right leg with quoted columns — A PRE-EXISTING
+				// DIVERGENCE, and the measurement is what established that.
+				//
+				// A review reported this as caused by the USING retarget
+				// upper-casing the column name. Half right: it DID, and that is
+				// fixed — the lookup is quote-aware now. But bypassing
+				// retargetUsingJoins entirely leaves this query failing exactly
+				// the same way, so the retarget is not what refuses it.
+				//
+				// What refuses it is downstream: the derived source's projection
+				// keeps the quoted lower-case names while the edge is declared
+				// with folded upper-case ones, and the executor layout rejects
+				// the mismatch. Java answers the query. Pinned with both sides'
+				// text so a repair reddens; booked in TODO.md under "A derived
+				// table's quoted column names do not survive to the executor
+				// layout".
+				name: "quoted USING against a derived right leg",
+				sql: `SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d USING ("k") ` +
+					`ORDER BY q1."id"`,
+				javaSays: "[[1]]",
+				goSays:   "executor.layout",
+			},
+		}
+
+		var disagreed []string
+		for _, c := range cases {
+			javaOut := render(javaRunner.RunWithSetup(ctx, schema, setup, c.sql))
+			goOut := render(goRunner.RunWithSetup(ctx, schema, setup, c.sql))
+			mark := "  "
+			switch {
+			case c.javaSays != "" || c.goSays != "":
+				// A pinned divergence: both sides are asserted verbatim so the
+				// pin fails if either engine moves, in either direction.
+				for _, e := range []struct{ engine, out, want string }{
+					{"java", javaOut, c.javaSays}, {"go", goOut, c.goSays},
+				} {
+					if e.want != "" && !strings.Contains(e.out, e.want) {
+						mark = "!!"
+						disagreed = append(disagreed, fmt.Sprintf(
+							"%s: %s no longer reports %q — a PINNED divergence changed, which "+
+								"is either the repair or a new fault\n    %s: %s\n    sql : %s",
+							c.name, e.engine, e.want, e.engine, e.out, c.sql))
+					}
+				}
+			case javaOut != goOut:
+				mark = "!!"
+				disagreed = append(disagreed, fmt.Sprintf(
+					"%s\n    java: %s\n    go  : %s\n    sql : %s",
+					c.name, javaOut, goOut, c.sql))
+			}
+			fmt.Fprintf(GinkgoWriter, "%s %-44s java=%-24s go=%s\n", mark, c.name, javaOut, goOut)
+		}
+
+		Expect(disagreed).To(BeEmpty(),
+			"the engines disagree on a QUOTED USING column, for %d of %d shapes. A quoted "+
+				"identifier keeps its case, so anything that folds a USING column to upper "+
+				"asks for a column that does not exist.\n\n%s",
+			len(disagreed), len(cases), strings.Join(disagreed, "\n"))
+	})
+})

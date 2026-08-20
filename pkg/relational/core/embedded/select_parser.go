@@ -3117,7 +3117,7 @@ type usingSource struct {
 // it is not described at all. That is what makes a derived table unable to
 // resolve against a same-named record type even if the caller-side gate is ever
 // loosened — there is no descriptor path left for it to reach.
-func (s usingSource) owns(col string) bool {
+func (s usingSource) owns(id semantic.Identifier) bool {
 	if s.cols == nil {
 		// Nothing describes this source — a name that did not resolve, or a
 		// derived schema that could not be derived. The caller's resolvable
@@ -3126,7 +3126,7 @@ func (s usingSource) owns(col string) bool {
 		// answer either way.
 		return false
 	}
-	_, ok := s.cols.LookupColumn(semantic.FromNormalized(col))
+	_, ok := s.cols.LookupColumn(id)
 	return ok
 }
 
@@ -3151,13 +3151,14 @@ func (s usingSource) owns(col string) bool {
 // in both engines, and the shape where nothing hides a copy — an ON join
 // putting two row-versioned sources in scope before a USING names it — is
 // AMBIGUOUS in both. Two owners really is two owners here.
-func usingOwnerOf(col string, sources []usingSource, hidden map[string]map[string]bool) (string, error) {
+func usingOwnerOf(colText, folded string, sources []usingSource, hidden map[string]map[string]bool) (string, error) {
+	id := semantic.NewUnquoted(colText)
 	var owners []string
 	for _, s := range sources {
-		if hidden[s.alias][col] {
+		if hidden[s.alias][folded] {
 			continue
 		}
-		if !s.owns(col) {
+		if !s.owns(id) {
 			continue
 		}
 		owners = append(owners, s.alias)
@@ -3168,7 +3169,7 @@ func usingOwnerOf(col string, sources []usingSource, hidden map[string]map[strin
 	case 0:
 		return "", nil
 	default:
-		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", col)
+		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", folded)
 	}
 }
 
@@ -3274,7 +3275,12 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		// reported the SECOND join's ambiguity when the real, earlier fault is
 		// that the subquery has no `k`. Measured against the live JVM, which
 		// reports the missing column.
-		rightCols := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)).cols
+		// Derived ONCE and reused as this join.s scope entry at the end of the
+		// loop: for a computed or join-bodied subquery legSource builds the
+		// inner logical plan, so calling it twice pays that cost twice and
+		// nested shapes compound it.
+		rightLeg := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j))
+		rightCols := rightLeg.cols
 		resolvable := rightCols != nil
 		for _, s := range sources {
 			// A source is describable either as a base table (descriptor) or as
@@ -3297,7 +3303,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			owners := make([]string, 0, len(j.usingColTexts))
 			for _, colText := range j.usingColTexts {
 				col := strings.ToUpper(functions.StripIdentifierQuotes(colText))
-				owner, err := usingOwnerOf(col, sources, hidden)
+				owner, err := usingOwnerOf(colText, col, sources, hidden)
 				if err != nil {
 					return err
 				}
@@ -3328,7 +3334,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `__ROW_VERSION` when the store keeps row versions and a
 				// descriptor never carries it, so a left owner found on one
 				// surface could be declared absent on the other.
-				if _, ok := rightCols.LookupColumn(semantic.FromNormalized(col)); !ok {
+				if _, ok := rightCols.LookupColumn(semantic.NewUnquoted(colText)); !ok {
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)
 				}
@@ -3357,7 +3363,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			}
 			hidden[j.alias][c] = true
 		}
-		sources = append(sources, legSource(j.alias, j.tableName, j.derivedQuery, isBase(j)))
+		sources = append(sources, rightLeg)
 	}
 	return nil
 }
