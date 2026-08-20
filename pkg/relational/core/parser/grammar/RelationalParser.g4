@@ -1462,7 +1462,7 @@ functionNameBase
 // them as table aliases would create a grammar ambiguity in `tableSourceItem`. They are, however, available as
 // function names via `scalarFunctionName`. To use them as identifiers, they must be double-quoted (e.g., "left").
 //
-// FULL is excluded from `nonReservedKeyword` for exactly the reason stated above, and is NOT listed here because it is
+// FULL is excluded from `keywordsCanBeId` for exactly the reason stated above, and is NOT listed here because it is
 // not a function name. It introduces the same production — `(LEFT | RIGHT | FULL) OUTER? JOIN` — so leaving it usable
 // as a bare alias made `FROM a FULL JOIN b` ambiguous between a full outer join and `FROM a AS FULL JOIN b`, an INNER
 // join whose left table has been renamed. The alias reading won, and SQL makes OUTER optional, so the short spelling
@@ -1470,7 +1470,7 @@ functionNameBase
 // returned 10 — the inner-join count, with no error anywhere. The qualified form failed loudly with 42703 "column
 // reference with qualifier A cannot be resolved", which is the same defect wearing its lucky face.
 //
-// Upstream carries FULL in `nonReservedKeyword` and is not wrong to: its QueryVisitor rejects FULL joins outright
+// Upstream carries FULL in `keywordsCanBeId` and is not wrong to: its QueryVisitor rejects FULL joins outright
 // (`joinType != JoinType.FULL`), so the alias reading is the only reading there and two spellings cannot disagree.
 // Go implements the join, so Go has to resolve the ambiguity that implementing it creates. `full` remains usable as
 // an identifier when double-quoted, exactly as LEFT and RIGHT are.
