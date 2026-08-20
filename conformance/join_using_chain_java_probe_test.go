@@ -499,11 +499,13 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 		// arm below turns on.
 		const schema = `CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id")) ` +
 			`CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id")) ` +
-			`CREATE TABLE q3 ("id" BIGINT, K BIGINT, PRIMARY KEY ("id"))`
+			`CREATE TABLE q3 ("id" BIGINT, K BIGINT, PRIMARY KEY ("id")) ` +
+			`CREATE TABLE q4 ("id" BIGINT, "z" BIGINT, PRIMARY KEY ("id"))`
 		setup := []string{
 			`INSERT INTO q1 VALUES (1, 10), (2, 20)`,
 			`INSERT INTO q2 VALUES (1, 10), (2, 99)`,
 			`INSERT INTO q3 VALUES (1, 10), (2, 20)`,
+			`INSERT INTO q4 VALUES (1, 7), (2, 8)`,
 		}
 
 		render := func(r plandiff.RunResult) string {
@@ -559,8 +561,31 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// quoted, the lookup would miss, the join would decline, and
 				// the positional predicate would ask q3 for a column it does
 				// not have.
+				// PINNED: the catalog folds, so q3's unquoted `K` answers a
+				// lookup for `"k"` and becomes a second owner. Java keeps them
+				// distinct and finds one. Same booked cause as the arm below —
+				// see TODO.md, "Quoted identifiers are folded by the catalog's
+				// column lookup".
 				name: "chained quoted USING resolving to the far-left source",
 				sql: `SELECT q1."id" FROM q1 JOIN q3 USING ("id") ` +
+					`JOIN q2 USING ("k") ORDER BY q1."id"`,
+				javaSays: "[[1]]",
+				goSays:   "42702",
+			},
+			{
+				// THE SAME CHAIN WITH AN INTERVENING SOURCE THAT HAS NO `k` AT
+				// ALL. q4 exposes only "id" and "z", so the second USING's owner
+				// can only be q1 — and unlike the arm above, no second source
+				// can be masking the answer by coincidence.
+				//
+				// It is the arm that decides whether the column multiset carries
+				// a quoted lower-case name as written. If `Columns()` exposed a
+				// FOLDED identifier while only `LookupColumn` knew the exact
+				// spelling, the multiset would miss `"k"` entirely, the join
+				// would decline, and the positional predicate would ask q4 for a
+				// column it does not have.
+				name: "chained quoted USING over an intervening source without the column",
+				sql: `SELECT q1."id" FROM q1 JOIN q4 USING ("id") ` +
 					`JOIN q2 USING ("k") ORDER BY q1."id"`,
 			},
 			{
@@ -568,7 +593,7 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				sql: `SELECT q1."id" FROM q1 JOIN q2 USING ("k") ` +
 					`JOIN q3 USING ("K") ORDER BY q1."id"`,
 				javaSays: "Unknown reference K",
-				goSays:   "42702",
+				goSays:   "[[1]]",
 			},
 			{
 				// A DERIVED right leg with quoted columns — A PRE-EXISTING

@@ -3129,7 +3129,7 @@ type usingSource struct {
 // owner, so the caller walks past the ambiguity and reports whatever the NEXT
 // USING column turns up: the wrong fault, on the wrong column. This is the
 // same defect the right-hand check was repaired for, on the left.
-func (s usingSource) owns(id semantic.Identifier) int {
+func (s usingSource) owns(colText string) int {
 	if s.cols == nil {
 		// Nothing describes this source — a name that did not resolve, or a
 		// derived schema that could not be derived. The caller's resolvable
@@ -3138,7 +3138,39 @@ func (s usingSource) owns(id semantic.Identifier) int {
 		// answer either way.
 		return 0
 	}
-	return usingColumnCount(s.counts, id)
+	// RESOLVED THROUGH THE SOURCE'S OWN NAMESPACE, then counted in it.
+	//
+	// The two table implementations do not agree on how they present a column
+	// name, and neither is wrong. `recordTypeTable` folds — it documents that
+	// "the COLUMN itself presents the FOLDED identifier everywhere", keeping
+	// plan-time and runtime in one namespace — while a derived source's
+	// `StaticTable` presents the projection's names as built. So there is no
+	// single spelling this resolver can fold or preserve its way to: folding
+	// lost derived sources, preserving lost base ones, and each attempt fixed
+	// one table kind by breaking the other.
+	//
+	// Asking the source to resolve the name, and then counting under the
+	// identifier IT returns, works for both — and keeps hiding coherent,
+	// because the decrement lands on that same key.
+	col, ok := s.cols.LookupColumn(semantic.NewUnquoted(colText))
+	if !ok {
+		return 0
+	}
+	return s.counts[col.Id.Name()]
+}
+
+// usingHideKey is the counts key a source uses for `colText`, or "" when the
+// source does not resolve the name at all. Hiding decrements THIS key, so it
+// must be derived exactly as ownership derives it.
+func (s usingSource) usingHideKey(colText string) string {
+	if s.cols == nil {
+		return ""
+	}
+	col, ok := s.cols.LookupColumn(semantic.NewUnquoted(colText))
+	if !ok {
+		return ""
+	}
+	return col.Id.Name()
 }
 
 // usingOwnerOf returns the single left source that owns `col`, applying Java's
@@ -3163,7 +3195,6 @@ func (s usingSource) owns(id semantic.Identifier) int {
 // putting two row-versioned sources in scope before a USING names it — is
 // AMBIGUOUS in both. Two owners really is two owners here.
 func usingOwnerOf(colText string, sources []usingSource) (string, error) {
-	id := semantic.NewUnquoted(colText)
 	var owners []string
 	for _, s := range sources {
 		// COUNTED per source, not tested. One source exporting the name twice
@@ -3171,12 +3202,12 @@ func usingOwnerOf(colText string, sources []usingSource) (string, error) {
 		// past the ambiguity to report whatever the NEXT USING column turns up
 		// — the wrong fault on the wrong column. Java stops on the first
 		// attribute.
-		switch n := s.owns(id); {
+		switch n := s.owns(colText); {
 		case n == 0:
 			continue
 		case n > 1:
 			return "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
-				"Ambiguous reference %s", id.Name())
+				"Ambiguous reference %s", usingColumnKey(colText).Name())
 		}
 		owners = append(owners, s.alias)
 	}
@@ -3186,7 +3217,7 @@ func usingOwnerOf(colText string, sources []usingSource) (string, error) {
 	case 0:
 		return "", nil
 	default:
-		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", id.Name())
+		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", usingColumnKey(colText).Name())
 	}
 }
 
@@ -3247,6 +3278,18 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 	if !using {
 		return nil
 	}
+	// Every column name any USING in this query asks about. The multiset built
+	// per source is seeded with these, because `Columns()` and `LookupColumn`
+	// do not agree on spelling: a base column declared quoted lower-case is
+	// exposed FOLDED in the ordered view while only the lookup index knows its
+	// exact form. Counting the view alone therefore loses that owner entirely —
+	// `q1 JOIN q4 USING ("id") JOIN q2 USING ("k")` declined and answered 42703
+	// on a query Java returns rows for.
+	//
+	// Seeding is bounded and precise: only names this query mentions, resolved
+	// once, so the multiset stays the SOLE authority and hiding remains a
+	// decrement of it. The alternative — falling back to a lookup at read time —
+	// resurrects the copy a decrement just hid.
 	primary := primaryAlias
 	if primary == "" {
 		primary = primaryTable
@@ -3313,7 +3356,6 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		// inner logical plan, so calling it twice pays that cost twice and
 		// nested shapes compound it.
 		rightLeg := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j))
-		rightCounts := rightLeg.counts
 		resolvable := rightLeg.cols != nil
 		for _, s := range sources {
 			// A source is describable either as a base table (descriptor) or as
@@ -3338,7 +3380,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// The name as the catalog knows it: unquoted folds, quoted keeps
 				// its case. Used for the messages too, so a quoted "k" is not
 				// reported as K.
-				id := semantic.NewUnquoted(colText)
+				id := usingColumnKey(colText)
 				col := id.Name()
 				owner, err := usingOwnerOf(colText, sources)
 				if err != nil {
@@ -3378,7 +3420,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `Ambiguous reference ID`; a first-match check passed `id` and
 				// went on to report a LATER column's absence instead, which is
 				// both the wrong fault and the wrong column.
-				switch n := usingColumnCount(rightCounts, id); {
+				switch n := rightLeg.owns(colText); {
 				case n == 0:
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)
@@ -3422,9 +3464,10 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		// of intent rather than a reachable case.
 		for _, colText := range j.usingColTexts {
 			if rightLeg.counts != nil {
-				name := semantic.NewUnquoted(colText).Name()
-				if n := rightLeg.counts[name]; n > 0 {
-					rightLeg.counts[name] = n - 1
+				if name := rightLeg.usingHideKey(colText); name != "" {
+					if n := rightLeg.counts[name]; n > 0 {
+						rightLeg.counts[name] = n - 1
+					}
 				}
 			}
 		}
@@ -3513,20 +3556,28 @@ func columnCounts(cols semantic.Table) map[string]int {
 	return counts
 }
 
-// usingColumnCount reports how many columns a source still exports under `id`.
+// usingColumnKey turns a USING column as WRITTEN into the key this resolver
+// uses everywhere — ownership, hiding, and the right-hand check.
 //
-// THE MULTISET IS THE ONLY AUTHORITY — there is deliberately no fallback to
-// `LookupColumn`. Hiding is a DECREMENT of this map, so a name that reaches
-// zero because an earlier USING consumed it must read as zero; a fallback that
-// asked the table again would resurrect exactly the copy that was just hidden,
-// and `USING (id, k) … USING (id, k)` — legal only because the right copy is
-// hidden — would become ambiguous.
+// It FOLDS, and that is a deliberate alignment with the catalog rather than an
+// oversight about quoting. `rlcatalog` documents its own model at the
+// construction site: "The COLUMN itself presents the FOLDED identifier
+// everywhere: the runtime positional layout folds names too, so folded
+// presentation keeps plan-time and runtime in one namespace." A column declared
+// `"k"` is therefore exposed as `K` by `Columns()`, with its exact spelling
+// kept only as an additional LOOKUP KEY.
 //
-// An earlier draft carried that fallback for a catalog pseudo-column, on the
-// belief that `__ROW_VERSION` lives in the name index but not the ordered view.
-// It is in both (rlcatalog appends it to `colOrdered` as well as `colIndex`),
-// so the fallback was defensive against a case that does not exist — and once
-// hiding became a decrement it was actively wrong.
-func usingColumnCount(counts map[string]int, id semantic.Identifier) int {
-	return counts[id.Name()]
+// So a quote-preserving key does not survive contact with that model: it misses
+// the folded column the multiset is built from, and no owner is found for a
+// query that has one. Measured — `q1 JOIN q4 USING ("id") JOIN q2 USING ("k")`
+// answered 42703 with a quote-preserving key and returns rows with this one.
+//
+// The cost is that Go cannot distinguish `"k"` from `K` here, and Java can.
+// That difference belongs to the catalog's folded presentation, not to this
+// function, and it is booked in TODO.md under "Quoted identifiers are folded by
+// the catalog's column lookup" with a JVM-measured pin. Folding HERE keeps this
+// resolver consistent with the namespace it reads from; un-folding it would
+// have added a second, differently-wrong answer rather than fixing that.
+func usingColumnKey(colText string) semantic.Identifier {
+	return semantic.FromNormalized(strings.ToUpper(functions.StripIdentifierQuotes(colText)))
 }
