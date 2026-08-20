@@ -244,17 +244,43 @@ func isGeneratedFile(src []byte, f *ast.File) bool {
 func flowComment(cg *ast.CommentGroup) string {
 	var b strings.Builder
 	for _, c := range cg.List {
-		text := c.Text
-		switch {
-		case strings.HasPrefix(text, "//"):
-			text = text[2:]
-		case strings.HasPrefix(text, "/*"):
-			text = strings.TrimSuffix(strings.TrimPrefix(text, "/*"), "*/")
+		for _, line := range commentLines(c) {
+			b.WriteString(line)
+			b.WriteByte(' ')
 		}
-		b.WriteString(text)
-		b.WriteByte(' ')
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// commentLines splits one comment into its text lines with every marker
+// removed: the `//` or `/*`/`*/` delimiters, and the ` * ` leader convention
+// that decorates each line of a block comment.
+//
+// The leader is not cosmetic to strip. Left in place, a phrase wrapped inside a
+// block comment flows as "review * rounds" — which no pattern matches, so the
+// wrap gate would be bypassed by nothing but a choice of comment style. The
+// same splitting feeds the per-line scan, so both passes agree on what a "line"
+// of a block comment is.
+func commentLines(c *ast.Comment) []string {
+	text := c.Text
+	block := strings.HasPrefix(text, "/*")
+	switch {
+	case strings.HasPrefix(text, "//"):
+		text = text[2:]
+	case block:
+		text = strings.TrimSuffix(strings.TrimPrefix(text, "/*"), "*/")
+	}
+	lines := strings.Split(text, "\n")
+	if !block {
+		return lines
+	}
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "*") {
+			lines[i] = trimmed[1:]
+		}
+	}
+	return lines
 }
 
 // commentGroupOffenses is the whole per-group decision, taking its inputs
@@ -267,32 +293,29 @@ func flowComment(cg *ast.CommentGroup) string {
 func commentGroupOffenses(rel string, cg *ast.CommentGroup, lineOf func(token.Pos) int) []string {
 	var offenses []string
 
-	// Which patterns already have a verdict from the per-line scan — reported
-	// OR allowlisted. The allowlisted half matters: an exemption is a decision
-	// about that content, and re-reporting it from the flowed pass below would
-	// re-raise what was already settled.
-	// EVERY matching pattern is settled, not just the first. One line often
-	// trips several — a role noun inside a cycle label matches both the bare
-	// role pattern and the label pattern — and stopping at the first left the
-	// others unsettled, so the flowed pass below reported the same line a
-	// second time. That is pinned in the wrap test. Reporting is
-	// still once per line: the offense string is the line, so the allowlist
-	// decision is about the text and not about which pattern found it.
-	settled := map[int]bool{}
+	// The per-line pass. Reporting is once per LINE even when several patterns
+	// hit it — a role noun inside a cycle label matches both the bare-role and
+	// the label pattern — because the offense string IS the line, so the
+	// allowlist decision is about the text and not about which pattern found
+	// it.
+	//
+	// flowedLines is the same content the flowed pass sees, normalised the same
+	// way, and it is what lets a flowed match be attributed back to a single
+	// line below.
+	var flowedLines []string
 	for _, c := range cg.List {
 		base := lineOf(c.Slash)
-		for i, line := range strings.Split(c.Text, "\n") {
-			matched := false
-			for p, re := range bannedCommentPatterns {
-				if re.MatchString(line) {
-					settled[p] = true
-					matched = true
-				}
-			}
-			if !matched {
+		// Matching uses the marker-stripped line so both passes see the same
+		// text; REPORTING uses the raw line, because that is what is in the
+		// file and what an allowlist entry is written against. commentLines
+		// returns one entry per raw line, so the two stay index-aligned.
+		raw := strings.Split(c.Text, "\n")
+		for i, line := range commentLines(c) {
+			flowedLines = append(flowedLines, strings.Join(strings.Fields(line), " "))
+			if !matchesBanned(line) {
 				continue
 			}
-			offense := rel + ":" + strconv.Itoa(base+i) + ": " + strings.TrimSpace(line)
+			offense := rel + ":" + strconv.Itoa(base+i) + ": " + strings.TrimSpace(raw[i])
 			if allowlisted(offense) {
 				continue
 			}
@@ -308,23 +331,66 @@ func commentGroupOffenses(rel string, cg *ast.CommentGroup, lineOf func(token.Po
 	//
 	// So the group is scanned again as ONE flowed string, reported against the
 	// group's first line because a wrapped phrase has no single line to blame.
-	// Per PATTERN, not per group: a pattern the line scan already settled is
-	// skipped here, so a plain hit is never double-counted and an exemption is
-	// not re-raised — while a DIFFERENT pattern wrapped in the same group is
-	// still caught.
+	//
+	// Scoped per MATCH, not per pattern and not per group. An earlier
+	// per-pattern form said "this pattern already had a verdict on some line,
+	// so skip it here", which is wrong in exactly the case that matters: a
+	// group holding an ALLOWLISTED occurrence of a pattern and, further down, a
+	// genuine WRAPPED occurrence of the same pattern reported nothing at all —
+	// the exemption granted to the first silently covered the second. This
+	// file's own prose is such a group, so the hole was live here.
+	//
+	// So each match is judged alone: attributed to the line scan if its text
+	// fits on one line (that pass owns it, reported or exempted), and otherwise
+	// allowlisted against a WINDOW around the match rather than the whole
+	// flowed group — a group-wide check lets any exempt fragment anywhere
+	// exempt everything else.
 	flowed := flowComment(cg)
-	for p, re := range bannedCommentPatterns {
-		if settled[p] || !re.MatchString(flowed) {
-			continue
+	for _, re := range bannedCommentPatterns {
+		for _, loc := range re.FindAllStringIndex(flowed, -1) {
+			span := flowed[loc[0]:loc[1]]
+			if lineContaining(flowedLines, span) {
+				continue // the per-line pass owns this occurrence
+			}
+			offense := rel + ":" + strconv.Itoa(lineOf(cg.Pos())) + ": " +
+				flowedWindow(flowed, loc[0], loc[1])
+			if allowlisted(offense) {
+				continue
+			}
+			offenses = append(offenses, offense)
 		}
-		offense := rel + ":" + strconv.Itoa(lineOf(cg.Pos())) + ": " + flowed
-		if allowlisted(offense) {
-			continue
-		}
-		offenses = append(offenses, offense)
-		break
 	}
 	return offenses
+}
+
+// lineContaining reports whether any single normalised line holds span whole —
+// i.e. whether the per-line pass already saw this occurrence.
+func lineContaining(lines []string, span string) bool {
+	for _, line := range lines {
+		if strings.Contains(line, span) {
+			return true
+		}
+	}
+	return false
+}
+
+// flowedWindowContext is how much text either side of a wrapped match is
+// reported. Enough to identify the sentence in a failure message and to write a
+// targeted allowlist entry against; small enough that an exemption cannot span
+// a whole comment block.
+const flowedWindowContext = 80
+
+func flowedWindow(flowed string, start, end int) string {
+	lo := max(start-flowedWindowContext, 0)
+	hi := min(end+flowedWindowContext, len(flowed))
+	w := flowed[lo:hi]
+	if lo > 0 {
+		w = "…" + w
+	}
+	if hi < len(flowed) {
+		w += "…"
+	}
+	return w
 }
 
 // TestSourceCommentHygiene scans every tracked Go file in the repository and
@@ -491,6 +557,15 @@ func TestBannedCommentPatterns_SurviveALineWrap(t *testing.T) {
 			{Text: "// pins the two round-4"},
 			{Text: "// review-found silent-wrong answers."},
 		}},
+		// A BLOCK comment is one ast.Comment holding every line, so the
+		// per-line scan splits it internally and the flowed pass has to strip
+		// the ` * ` leader convention as well as the outer delimiters. Leave the
+		// leader in and the flowed text reads "review * rounds", which no
+		// pattern matches — the wrap gate would be bypassed by nothing more
+		// than a comment style.
+		{List: []*ast.Comment{
+			{Text: "/*\n * while the check was optional here, successive review\n * rounds found the bound absent.\n */"},
+		}},
 	}
 	// lineOf is a stand-in FileSet: every synthetic comment reports line 1,
 	// which is all the reporting needs.
@@ -529,6 +604,33 @@ func TestBannedCommentPatterns_SurviveALineWrap(t *testing.T) {
 	}}
 	if got := commentGroupOffenses("x.go", plain, lineOf); len(got) != 1 {
 		t.Errorf("a single-line offense must be reported exactly once, got %d: %v", len(got), got)
+	}
+
+	// An EXEMPTION MUST NOT SPREAD. A group holding an allowlisted occurrence
+	// of a pattern and, further down, a genuine wrapped occurrence of the SAME
+	// pattern must still report the second one.
+	//
+	// This is not hypothetical and it is not remote: this very file is such a
+	// group. Its prose has to quote the banned forms to define them, those
+	// quoting lines are allowlisted, and a per-pattern "already settled"
+	// suppression therefore made every wrapped attribution anywhere in the same
+	// comment block invisible — in the one file most likely to contain one.
+	mixed := &ast.CommentGroup{List: []*ast.Comment{
+		// Allowlisted verbatim (it is one of this gate's own self-quoting lines).
+		{Text: `// Review-cycle labels ("review round 2", "Round-12 reviewer", "round-4`},
+		{Text: `// review-found"): WHEN in the process.`},
+		{Text: "// Separately, and further down: successive review"},
+		{Text: "// rounds found the bound absent on one type after another."},
+	}}
+	got := commentGroupOffenses("x.go", mixed, lineOf)
+	if len(got) == 0 {
+		t.Error("a wrapped attribution was suppressed by an allowlisted occurrence of the " +
+			"same pattern earlier in the group — an exemption must scope to its own match")
+	}
+	for _, o := range got {
+		if strings.Contains(o, "Review-cycle labels") {
+			t.Errorf("the allowlisted line was reported after all: %q", o)
+		}
 	}
 }
 
