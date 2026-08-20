@@ -209,9 +209,25 @@ var _ = Describe("JoinUsingChainJavaProbe", func() {
 				// looked at the first time. That has now happened twice on this
 				// branch with the hidden map, so the mirror is assumed to be
 				// broken until measured, not assumed to be fixed.
+				// The duplicate source is the PRIMARY leg, reached through an ON
+				// join, and `j` exists on no other source in scope — so neither
+				// the right-hand duplicate check nor a second owner can be what
+				// reports it.
+				//
+				// AND IT IS STILL NOT THIS RESOLVER THAT REPORTS IT. Collapsing
+				// the ownership count back to a boolean leaves this arm GREEN:
+				// Go answers `Ambiguous reference J` either way, from a later
+				// layer that catches the duplicate projection on its own. So
+				// the left-side count is symmetry with the right-hand check and
+				// defence against a future caller, NOT a repair for a defect
+				// reachable today — two earlier drafts of this comment claimed
+				// otherwise, and the mutation is what corrected them.
+				//
+				// The arm earns its place as the measurement behind that
+				// sentence, and as coverage of a shape nothing else exercises.
 				chained: true, name: "left source exports the USING name twice",
-				sql: "SELECT a.id FROM a JOIN (SELECT id, id FROM c) d USING (id) " +
-					"JOIN b USING (id, j)",
+				sql: "SELECT d.id FROM (SELECT j, j, id FROM c) d " +
+					"JOIN b ON d.id = b.id JOIN a USING (j)",
 			},
 		}
 
@@ -535,6 +551,19 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// lookup". Not fixed here: it changes identifier equality for
 				// every column reference in the engine, which is not something
 				// to slip into a USING change.
+				// A CHAINED quoted USING where the owner is NOT the prior right
+				// leg. `q3` has no `"k"`, so the second USING's owner must be
+				// `q1` — which only works if the column multiset carries the
+				// quoted spelling exactly as the catalog exports it. If
+				// `Columns()` exposed a folded key while the parsed name stayed
+				// quoted, the lookup would miss, the join would decline, and
+				// the positional predicate would ask q3 for a column it does
+				// not have.
+				name: "chained quoted USING resolving to the far-left source",
+				sql: `SELECT q1."id" FROM q1 JOIN q3 USING ("id") ` +
+					`JOIN q2 USING ("k") ORDER BY q1."id"`,
+			},
+			{
 				name: "a quoted USING must not hide the unquoted column",
 				sql: `SELECT q1."id" FROM q1 JOIN q2 USING ("k") ` +
 					`JOIN q3 USING ("K") ORDER BY q1."id"`,

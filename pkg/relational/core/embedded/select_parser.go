@@ -3138,7 +3138,7 @@ func (s usingSource) owns(id semantic.Identifier) int {
 		// answer either way.
 		return 0
 	}
-	return usingColumnCount(s.cols, s.counts, id)
+	return usingColumnCount(s.counts, id)
 }
 
 // usingOwnerOf returns the single left source that owns `col`, applying Java's
@@ -3162,13 +3162,10 @@ func (s usingSource) owns(id semantic.Identifier) int {
 // in both engines, and the shape where nothing hides a copy — an ON join
 // putting two row-versioned sources in scope before a USING names it — is
 // AMBIGUOUS in both. Two owners really is two owners here.
-func usingOwnerOf(colText string, sources []usingSource, hidden map[string]map[string]bool) (string, error) {
+func usingOwnerOf(colText string, sources []usingSource) (string, error) {
 	id := semantic.NewUnquoted(colText)
 	var owners []string
 	for _, s := range sources {
-		if hidden[s.alias][id.Name()] {
-			continue
-		}
 		// COUNTED per source, not tested. One source exporting the name twice
 		// is ambiguous by itself, and collapsing that to a single owner walks
 		// past the ambiguity to report whatever the NEXT USING column turns up
@@ -3235,6 +3232,21 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 	md *recordlayer.RecordMetaData, schemaName string,
 	isCTE func(string) bool, cteScopes map[string]semantic.ScopeSource,
 ) error {
+	// NOTHING TO DO WITHOUT A USING JOIN, and this is checked FIRST because
+	// both planner entry points call this for every SELECT. Building a source's
+	// column multiset means asking `Columns()`, which defensively copies, so
+	// without this a plain single-table or ON-join query paid an allocation and
+	// a copy per source for counts nothing would ever read.
+	using := false
+	for i := range joins {
+		if len(joins[i].usingColTexts) > 0 {
+			using = true
+			break
+		}
+	}
+	if !using {
+		return nil
+	}
 	primary := primaryAlias
 	if primary == "" {
 		primary = primaryTable
@@ -3273,8 +3285,6 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		s.counts = columnCounts(s.cols)
 		return s
 	}
-	// hidden[alias][COL] — the right copy an earlier USING consumed.
-	hidden := map[string]map[string]bool{}
 	sources := []usingSource{
 		legSource(primary, primaryTable, primaryDerived, primaryIsBase),
 	}
@@ -3303,9 +3313,8 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		// inner logical plan, so calling it twice pays that cost twice and
 		// nested shapes compound it.
 		rightLeg := legSource(j.alias, j.tableName, j.derivedQuery, isBase(j))
-		rightCols := rightLeg.cols
 		rightCounts := rightLeg.counts
-		resolvable := rightCols != nil
+		resolvable := rightLeg.cols != nil
 		for _, s := range sources {
 			// A source is describable either as a base table (descriptor) or as
 			// a derived/CTE projection (cols). Neither means the scope cannot be
@@ -3331,7 +3340,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// reported as K.
 				id := semantic.NewUnquoted(colText)
 				col := id.Name()
-				owner, err := usingOwnerOf(colText, sources, hidden)
+				owner, err := usingOwnerOf(colText, sources)
 				if err != nil {
 					return err
 				}
@@ -3369,7 +3378,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `Ambiguous reference ID`; a first-match check passed `id` and
 				// went on to report a LATER column's absence instead, which is
 				// both the wrong fault and the wrong column.
-				switch n := usingColumnCount(rightCols, rightCounts, id); {
+				switch n := usingColumnCount(rightCounts, id); {
 				case n == 0:
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)
@@ -3397,18 +3406,27 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 		// not the predicate was retargeted — the hiding is Java's rule about
 		// visibility, not about which predicate Go built.
 		//
-		// KEYED THE SAME WAY OWNERSHIP IS — by the quote-aware normalized
-		// identifier, from the column text as WRITTEN. `usingHiddenCols` is
-		// upper-folded for its own consumers (star expansion, unqualified
-		// resolution), and reusing it here would collapse a quoted `"k"` and an
-		// unquoted `K` into one key: a first `USING("k")` would then hide `K`
-		// from the second join. That is the same case-folding defect the
-		// ownership lookup was just repaired for, surviving in the sibling map.
+		// HIDING IS A DECREMENT OF THE SAME MULTISET OWNERSHIP READS, not a
+		// flag in a parallel map. That is the point: a sidecar
+		// `map[alias]map[name]bool` has to be maintained in step with the
+		// column data by convention, and this branch got that wrong three
+		// times in a row — ownership fixed while the hidden map kept folding
+		// case, then the right-hand count fixed while the left kept answering
+		// a boolean. Every one of those was two derivations of one fact.
+		// Decrementing leaves exactly one surface, so there is no mirror left
+		// to forget.
+		//
+		// A decrement rather than a delete because a source exporting the name
+		// twice has only ONE copy consumed — though such a source is ambiguous
+		// and has already been refused above, so the distinction is a statement
+		// of intent rather than a reachable case.
 		for _, colText := range j.usingColTexts {
-			if hidden[j.alias] == nil {
-				hidden[j.alias] = map[string]bool{}
+			if rightLeg.counts != nil {
+				name := semantic.NewUnquoted(colText).Name()
+				if n := rightLeg.counts[name]; n > 0 {
+					rightLeg.counts[name] = n - 1
+				}
 			}
-			hidden[j.alias][semantic.NewUnquoted(colText).Name()] = true
 		}
 		sources = append(sources, rightLeg)
 	}
@@ -3495,17 +3513,20 @@ func columnCounts(cols semantic.Table) map[string]int {
 	return counts
 }
 
-// usingColumnCount reports how many columns a source exports under `id`,
-// consulting the prebuilt multiset first and falling back to the name index for
-// a column the ordered view does not carry.
-func usingColumnCount(cols semantic.Table, counts map[string]int, id semantic.Identifier) int {
-	if n := counts[id.Name()]; n > 0 {
-		return n
-	}
-	if cols != nil {
-		if _, ok := cols.LookupColumn(id); ok {
-			return 1
-		}
-	}
-	return 0
+// usingColumnCount reports how many columns a source still exports under `id`.
+//
+// THE MULTISET IS THE ONLY AUTHORITY — there is deliberately no fallback to
+// `LookupColumn`. Hiding is a DECREMENT of this map, so a name that reaches
+// zero because an earlier USING consumed it must read as zero; a fallback that
+// asked the table again would resurrect exactly the copy that was just hidden,
+// and `USING (id, k) … USING (id, k)` — legal only because the right copy is
+// hidden — would become ambiguous.
+//
+// An earlier draft carried that fallback for a catalog pseudo-column, on the
+// belief that `__ROW_VERSION` lives in the name index but not the ordered view.
+// It is in both (rlcatalog appends it to `colOrdered` as well as `colIndex`),
+// so the fallback was defensive against a case that does not exist — and once
+// hiding became a decrement it was actively wrong.
+func usingColumnCount(counts map[string]int, id semantic.Identifier) int {
+	return counts[id.Name()]
 }
