@@ -522,6 +522,12 @@ func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
 	}); rErr != nil {
 		t.Fatalf("renderStatsStatus: %v", rErr)
 	}
+	// NOTE FOR ANYONE SIMPLIFYING THE AMBIGUOUS FIXTURE BELOW: its names are
+	// DOUBLE-ESCAPED on purpose. AmbiguousTypes arrives already decoded, and
+	// ToUserIdentifier is not idempotent, so wrapping it in userNames() renames
+	// the table rather than failing -- and this test is what catches that, but
+	// only while the fixture can tell one decode from two. Replace MY__01TABLE
+	// with A and the invariant stops being observable here.
 	if !strings.Contains(buf.String(), `"synthetic_types"`) ||
 		!strings.Contains(buf.String(), "JoinedAB") {
 		t.Errorf("the renderer drops the synthetic type names on the JSON path: %s\n"+
@@ -1124,4 +1130,40 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 			t.Errorf("the abort banner leaks the storage name: %s", got)
 		}
 	})
+}
+
+// THE COLLECT-SIDE SYNTHETIC REFUSAL NAMES THE SAME THING THE SHOW SIDE DOES.
+//
+// Both surfaces render md.SyntheticRecordTypeNames(), one through
+// renderStatsStatus and one through SyntheticRecordTypesNotModeledError.Error().
+// The first decoded and the second joined raw, so one schema printed MY$JOINED
+// under `frl stats show` and MY__1JOINED under `frl stats collect` — two
+// spellings of one declaration, from one source, disagreeing by construction.
+//
+// The field stays storage-keyed for programmatic consumers; Error() is the
+// rendering boundary and is where it is decoded, which is the same rule the CLI
+// follows.
+func TestSyntheticRefusalErrorNamesUserIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	const storage, sql = "MY__1JOINED", "MY$JOINED"
+	if recordlayer.ToUserIdentifier(storage) != sql {
+		t.Fatalf("fixture is wrong: %q does not decode to %q", storage, sql)
+	}
+
+	err := &recordlayer.SyntheticRecordTypesNotModeledError{TypeNames: []string{storage}}
+	msg := err.Error()
+	if !strings.Contains(msg, sql) {
+		t.Errorf("the refusal does not name the declaration by its SQL identifier: %s", msg)
+	}
+	if strings.Contains(msg, storage) {
+		t.Errorf("the refusal leaks the storage name: %s", msg)
+	}
+	// The FIELD must stay storage-keyed: a programmatic consumer matches it
+	// against metadata, which is storage-keyed too. Decoding at construction
+	// would break that and is why the decode lives in Error().
+	if err.TypeNames[0] != storage {
+		t.Errorf("TypeNames = %q, want the STORAGE name %q — decoding the field breaks "+
+			"consumers matching against metadata", err.TypeNames[0], storage)
+	}
 }

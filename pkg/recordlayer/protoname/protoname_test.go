@@ -130,11 +130,16 @@ func TestToUserIdentifierIsNotIdempotent(t *testing.T) {
 		t.Errorf("decode chain = %q -> %q, want MY__1TABLE -> MY$TABLE", once, twice)
 	}
 
-	// And the cases where it IS stable, so the hazard is known to be narrow
-	// rather than assumed to be everywhere.
-	for _, stable := range []string{"MY$TABLE", "PLAIN", "MY__1TABLE"} {
-		if got := ToUserIdentifier(ToUserIdentifier(stable)); got != ToUserIdentifier(stable) {
-			t.Errorf("%q is not stable under a second decode: %q", stable, got)
+	// And the property that DOES hold: decoding is stable from the SECOND
+	// application onward, so the hazard is exactly one extra decode and not an
+	// unbounded chain. Note MY__1TABLE is NOT itself stable -- it decodes to
+	// MY$TABLE -- which is the point: what is stable is the DECODED form, and
+	// calling this list "the stable cases" named the wrong thing.
+	for _, name := range []string{"MY$TABLE", "PLAIN", "MY__1TABLE"} {
+		onceDecoded := ToUserIdentifier(name)
+		if got := ToUserIdentifier(onceDecoded); got != onceDecoded {
+			t.Errorf("%q decodes to %q, which is NOT stable under a further decode: %q",
+				name, onceDecoded, got)
 		}
 	}
 }

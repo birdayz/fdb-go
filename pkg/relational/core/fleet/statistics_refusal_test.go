@@ -262,3 +262,37 @@ func TestAmbiguousRefusalSurvivesFanOut(t *testing.T) {
 			"set the reader always refuses", res.Collected)
 	}
 }
+
+// THE FAN-OUT'S SKIPPED TEXT NAMES TABLES THE OPERATOR HAS.
+//
+// describeSkipped renders record-type keys, which are STORAGE names, into the
+// error a refused or failed target prints — and the caller's own comment calls
+// that "the one field an operator actually sees". It is unexported, so no other
+// package can cover it: decoding it in the same change as the CLI's copy and
+// pinning only the CLI's is the two-consumers-one-pinned shape one level down.
+func TestDescribeSkippedNamesUserIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	const storage, sql = "MY__1TABLE", "MY$TABLE"
+	if recordlayer.ToUserIdentifier(storage) != sql {
+		t.Fatalf("fixture is wrong: %q does not decode to %q", storage, sql)
+	}
+
+	got := describeSkipped(map[string]string{storage: "exceeds MaxRecordsPerType"})
+	if !strings.Contains(got, sql) {
+		t.Errorf("describeSkipped does not name the table by its SQL identifier: %s", got)
+	}
+	if strings.Contains(got, storage) {
+		t.Errorf("describeSkipped leaks the storage name: %s", got)
+	}
+
+	// Ordering is by the USER name, since that is what a reader scans. Two
+	// entries make the sort observable; one cannot.
+	two := describeSkipped(map[string]string{
+		"ZZ__1TABLE": "second",
+		storage:      "first",
+	})
+	if !strings.HasPrefix(two, sql) {
+		t.Errorf("entries are not sorted by the name actually printed: %s", two)
+	}
+}

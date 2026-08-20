@@ -1000,11 +1000,31 @@ func ReadStatisticsAt(
 // there is no reading of that outcome a planner could safely use.
 type SyntheticRecordTypesNotModeledError struct {
 	// TypeNames are the synthetic declarations found, so a caller can say which.
+	//
+	// STORAGE names, like every other name field outside StatisticsStatus. A
+	// programmatic consumer matching against metadata needs them in the namespace
+	// metadata uses; Error() is where they become human-facing and is therefore
+	// where they are decoded.
 	TypeNames []string
 }
 
+// Error renders the refusal for a human, decoding the declarations to the SQL
+// identifiers the operator wrote.
+//
+// Error() IS the rendering boundary for an error value, so the same rule applies
+// here as in the CLI: the field stays in the namespace its programmatic
+// consumers need, and only the text a person reads is translated.
+//
+// Joining raw made ONE synthetic schema print MY$JOINED under `frl stats show`,
+// which decodes at its renderer, and MY__1JOINED under `frl stats collect`,
+// which surfaces this error -- two spellings of one declaration from one source,
+// disagreeing by construction rather than by accident.
 func (e *SyntheticRecordTypesNotModeledError) Error() string {
+	names := make([]string, len(e.TypeNames))
+	for i, n := range e.TypeNames {
+		names[i] = ToUserIdentifier(n)
+	}
 	return fmt.Sprintf("metadata declares synthetic record types this port does not model (%s); "+
 		"statistics collection refused rather than scanning the store for a set that "+
-		"could never be complete", strings.Join(e.TypeNames, ", "))
+		"could never be complete", strings.Join(names, ", "))
 }

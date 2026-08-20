@@ -675,7 +675,9 @@ func foundTriState(st embedded.StatisticsStatus) *bool {
 //
 // Metadata and the collector both key by storage names — a table quoted as
 // "MY$TABLE" is stored as MY__1TABLE — and the operator-facing surfaces in this
-// file were copying those keys verbatim.
+// file were copying those keys verbatim. That names a table the operator does
+// not have, and `per_type` is a documented interface, so a script keying by
+// table name silently misses rather than failing.
 //
 // NOT every name reaching this file is storage-keyed, and the difference is not
 // visible by looking. StatisticsStatus.AmbiguousTypes is ALREADY decoded, at its
@@ -683,9 +685,7 @@ func foundTriState(st embedded.StatisticsStatus) *bool {
 // would decode twice -- and ToUserIdentifier is NOT idempotent:
 // MY__01TABLE -> MY__1TABLE -> MY$TABLE, pinned by
 // TestToUserIdentifierIsNotIdempotent. A second decode does not fail, it renames
-// the table. Check the field's documented namespace before wrapping it. That names a table the operator does not
-// have, and `per_type` is a documented interface, so a script keying by table
-// name silently misses rather than failing.
+// the table. Check the field's documented namespace before wrapping it.
 //
 // Decoding HERE, not upstream, is deliberate: the collision the reader detects
 // lives in storage space, and the map the planner is handed must stay keyed the
