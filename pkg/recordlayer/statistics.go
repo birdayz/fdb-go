@@ -33,6 +33,7 @@ package recordlayer
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -141,9 +142,16 @@ func unpackStatistic(b []byte) (RecordTypeStatistic, bool) {
 
 // CollectOptions tunes a collection run.
 type CollectOptions struct {
-	// BatchSize is the number of records scanned per transaction. Collection is
-	// continuation-driven, so a large store costs many small transactions
-	// rather than one that cannot commit inside FDB's 5s limit.
+	// BatchSize is the maximum number of records scanned per transaction.
+	// Collection is continuation-driven, so a large store costs many small
+	// transactions rather than one big one.
+	//
+	// It is a ROW bound and therefore NOT what keeps a transaction inside FDB's
+	// 5s limit: a record can be a hundred bytes or, split across KV pairs,
+	// hundreds of kilobytes, so a fixed row count is anywhere from ~100KB to
+	// hundreds of megabytes of reading. TimeLimit and ScannedBytesLimit are the
+	// bounds that hold whatever the records weigh; a batch ends at whichever of
+	// the three comes first.
 	BatchSize int
 	// MaxRecordsPerType ABORTS the collection as soon as any one record type
 	// exceeds this many rows. Nothing is stored, and the report names the type
@@ -161,8 +169,25 @@ type CollectOptions struct {
 	// which not every layout has), so there is no way to keep scanning while
 	// skipping one type's rows.
 	MaxRecordsPerType int64
+	// TimeLimit bounds how long ONE scan transaction spends reading before it
+	// stops and hands back a continuation. Zero means defaultCollectTimeLimit.
+	//
+	// This, not BatchSize, is what keeps a transaction inside FDB's 5s limit.
+	// BatchSize bounds ROWS, and a row is not a fixed number of bytes.
+	TimeLimit time.Duration
+	// ScannedBytesLimit bounds how many bytes ONE scan transaction reads before
+	// it stops and hands back a continuation. Zero means
+	// defaultCollectScannedBytesLimit.
+	//
+	// Deterministic where TimeLimit is not, so it is the bound a test can drive.
+	ScannedBytesLimit int64
 	// Tags are FDB transaction tags applied to EVERY transaction this collection
 	// opens — each scan batch and the replacing write.
+	//
+	// EmbeddedConnection.CollectStatistics OVERWRITES this with the connection's
+	// own tags: at that layer the connection owns them, and a caller passing
+	// CollectOptions should not have to know they exist. Callers of this package
+	// directly (the fleet fan-out, tests) set it themselves and it is honoured.
 	//
 	// Threaded explicitly rather than wrapped around the database, because a
 	// wrapper has to reconstruct an *FDBDatabase and this package's copy-method
@@ -173,11 +198,34 @@ type CollectOptions struct {
 	Tags []string
 }
 
+// defaultCollectTimeLimit leaves room under FDB's 5s transaction limit for the
+// read-version fetch and the commit around the scan itself.
+const defaultCollectTimeLimit = 3 * time.Second
+
+// defaultCollectScannedBytesLimit bounds one batch's reads. Generous enough that
+// an ordinary batch never reaches it, small enough that a batch of split
+// multi-hundred-KB records stops long before the time limit would have to.
+const defaultCollectScannedBytesLimit int64 = 16 << 20
+
 func (o CollectOptions) batchSize() int {
 	if o.BatchSize <= 0 {
 		return 1000
 	}
 	return o.BatchSize
+}
+
+func (o CollectOptions) timeLimit() time.Duration {
+	if o.TimeLimit <= 0 {
+		return defaultCollectTimeLimit
+	}
+	return o.TimeLimit
+}
+
+func (o CollectOptions) scannedBytesLimit() int64 {
+	if o.ScannedBytesLimit <= 0 {
+		return defaultCollectScannedBytesLimit
+	}
+	return o.ScannedBytesLimit
 }
 
 // CollectionReport describes one run.
@@ -316,8 +364,40 @@ func CollectStatistics(
 			}
 			collectedAtVersion = v
 
+			// BOUND THE BATCH BY TIME AND BYTES, NOT ONLY BY ROWS.
+			//
+			// A row limit alone bounds nothing an FDB transaction cares about: a
+			// record can be a hundred bytes or, split across KV pairs, hundreds of
+			// kilobytes, so the default 1000-row batch is anywhere from ~100KB to
+			// hundreds of megabytes. The large end exceeds the 5s limit, db.Run
+			// retries it, and it exceeds the limit again -- so collection fails on
+			// exactly the stores whose size makes it worth collecting.
+			//
+			// FailOnScanLimitReached stays false (the default), so reaching either
+			// limit STOPS the cursor with a continuation rather than erroring. The
+			// loop below already routes HasStoppedBeforeEnd through that
+			// continuation, so a bounded batch resumes in the next transaction and
+			// the total stays exact.
+			//
+			// Built from DefaultExecutePropertiesIn, never a bare struct literal.
+			// The zero value gets three separate behaviours by accident: ScanState
+			// nil (the seeded-simulation seam -- see ScanState's doc comment, which
+			// names the raw-literal case exactly), StreamingModeSmall (the slowest
+			// mode, on a job that is nothing but a full-store scan), and snapshot
+			// isolation.
+			//
+			// Snapshot is right here, so it is set EXPLICITLY rather than inherited:
+			// a serializable full-store scan adds a read conflict range over the
+			// whole store, so any concurrent write would abort a collection that is
+			// by design an offline job running against a live store. Counting is a
+			// read; it must not make writers fail.
 			props := ScanProperties{
-				ExecuteProperties: ExecuteProperties{}.WithReturnedRowLimit(opts.batchSize()),
+				ExecuteProperties: DefaultExecutePropertiesIn(rtx.Env()).
+					WithIsolationLevel(IsolationLevelSnapshot).
+					WithReturnedRowLimit(opts.batchSize()).
+					WithTimeLimit(opts.timeLimit()).
+					WithScannedBytesLimit(opts.scannedBytesLimit()),
+				CursorStreamingMode: StreamingModeIterator,
 			}
 			cur := store.ScanRecords(batchContinuation, props)
 			defer func() { _ = cur.Close() }()
@@ -445,7 +525,17 @@ func CollectStatistics(
 	}
 
 	if storeSubspace == nil {
-		return report, nil
+		// Unreachable: the scan loop runs at least once and its first act is to
+		// open the store, which sets this; a failure to open returns an error
+		// from db.Run instead of arriving here.
+		//
+		// It is an ERROR rather than the early return it used to be, because that
+		// return reported SUCCESS having persisted nothing. That is the same shape
+		// as the capped run which used to exit 0 while storing nothing, and
+		// automation reads it as a completed refresh. An unreachable branch that
+		// fails silently is worth less than one that fails loudly.
+		return nil, fmt.Errorf(
+			"internal: collection finished without resolving the store subspace, so nothing was persisted")
 	}
 	nowNanos, wErr := writeStatistics(ctx, db, stats, storeSubspace, report, collectedAtVersion, opts.Tags)
 	if wErr != nil {
@@ -543,6 +633,9 @@ func ReadStatisticsAt(
 	var found bool
 	var readVersion int64
 	var malformed bool
+	// headerTypeCount is the entry count the WRITE recorded; it is compared with
+	// what this read actually assembled. Reset per attempt with everything else.
+	var headerTypeCount int64
 	// RunRead, not Run: this is on the PLAN path, and Run opens a read-write
 	// transaction and pays a commit round-trip for a read that writes nothing.
 	//
@@ -560,6 +653,7 @@ func ReadStatisticsAt(
 		found = false
 		readVersion = 0
 		malformed = false
+		headerTypeCount = 0
 		// Propagate rather than swallow: the freshness gate turns a missing
 		// version into a refusal either way, but an operator asking WHY wants
 		// the cluster's own error, not a generic "no version" sentinel.
@@ -622,6 +716,7 @@ func ReadStatisticsAt(
 			if isHeader {
 				out.CollectedAtVersion = st.CollectedAtVersion
 				out.CollectedAtUnixNanos = st.CollectedAtUnixNanos
+				headerTypeCount = st.Count
 				found = true
 				continue
 			}
@@ -642,6 +737,20 @@ func ReadStatisticsAt(
 		return StoreStatistics{}, false, readVersion, nil
 	}
 	if !found {
+		return StoreStatistics{}, false, readVersion, nil
+	}
+	// THE HEADER SAYS HOW MANY PER-TYPE ENTRIES THE WRITE PUT DOWN, so a read
+	// that returns a different number returned a DIFFERENT SET than was written.
+	// Header and entries are written in one transaction (ClearRange, then the
+	// header, then every entry), so on any consistent read they agree.
+	//
+	// This is the check that makes the header's Count field load-bearing rather
+	// than decorative -- it was previously written to durable bytes and never
+	// read, which is the shape that lets a value drift wrong without anything
+	// noticing. Disagreement is treated exactly like a malformed entry, because
+	// it means the same thing: a PARTIAL set, which the completeness gate above
+	// this is built to never receive.
+	if int64(len(out.PerType)) != headerTypeCount {
 		return StoreStatistics{}, false, readVersion, nil
 	}
 	return out, true, readVersion, nil

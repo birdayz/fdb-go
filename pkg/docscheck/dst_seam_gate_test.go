@@ -282,11 +282,7 @@ func TestScanLimiterStateArmingIsSeamed(t *testing.T) {
 				if !ok {
 					return true
 				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok {
-					return true
-				}
-				switch sel.Sel.Name {
+				switch calleeName(call.Fun) {
 				case armCall:
 					arms = true
 				case seamedCtr:
@@ -368,4 +364,27 @@ func seamSitesIn(rel string, f *ast.File) []seamSite {
 	}
 	ast.Inspect(f, visit)
 	return out
+}
+
+// calleeName returns the called function's own name for the two spellings a
+// call can take, WITHOUT the package or receiver qualifier:
+//
+//	pkg.Fn(x)  / recv.Method(x)  -> *ast.SelectorExpr -> "Fn" / "Method"
+//	Fn(x)                        -> *ast.Ident        -> "Fn"
+//
+// Matching only the selector form is a blind spot with a direction: a method
+// like WithTimeLimit is ALWAYS a selector, while a package-level constructor
+// like DefaultExecutePropertiesIn is a selector only when called from ANOTHER
+// package. So a selector-only matcher sees every arming site and misses every
+// same-package seam — it reports a file inside package recordlayer as unseamed
+// however correctly that file is written, and, worse, would report a genuinely
+// unseamed same-package site identically. The gate could not tell those apart.
+func calleeName(fun ast.Expr) string {
+	switch f := fun.(type) {
+	case *ast.SelectorExpr:
+		return f.Sel.Name
+	case *ast.Ident:
+		return f.Name
+	}
+	return ""
 }

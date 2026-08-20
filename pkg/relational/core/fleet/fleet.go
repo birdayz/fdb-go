@@ -88,10 +88,6 @@ type Event struct {
 	ToVersion   int
 	// Types is how many record types got a statistic (statistics mode only).
 	Types int
-	// Skipped maps a record type to why it has NO statistic (statistics mode
-	// only). Distinct from a zero count: "no rows" and "not counted" are
-	// different facts and only one of them describes an empty table.
-	Skipped map[string]string
 }
 
 // Options are the knobs shared by every fan-out mode.

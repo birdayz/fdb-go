@@ -3,7 +3,6 @@ package embedded
 import (
 	"context"
 	"database/sql/driver"
-	"errors"
 	"sort"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -242,7 +241,7 @@ func evaluateCollectedStatistics(
 		// Treating it as a real version would make every entry look infinitely
 		// stale, which is safe, but reporting WHY is what an operator needs.
 		if readVersion == 0 {
-			in.VersionErr = errNoReadVersion
+			in.VersionErr = &noClusterVersionError{}
 		}
 		in.CurrentVersion = readVersion
 	}
@@ -384,9 +383,19 @@ func (g *cascadesGenerator) fetchCollectedStatistics(
 	return properties.NewCollectedStatistics(st.perType)
 }
 
-// errNoReadVersion marks a statistics read whose transaction produced no
+// noClusterVersionError marks a statistics read whose transaction produced no
 // cluster version. Age is then unknown, and unknown age is not fresh.
-var errNoReadVersion = errors.New("statistics read produced no cluster version")
+//
+// A struct rather than an errors.New sentinel: this package matches errors by
+// TYPE (errors.As), the Go equivalent of catching a specific Java exception, and
+// a sentinel carries no structured context if this ever needs to say WHICH read
+// or WHY. VersionErr stays an error rather than a bool for the same reason -- a
+// real cluster error belongs in it too, and the gate treats both the same way.
+type noClusterVersionError struct{}
+
+func (e *noClusterVersionError) Error() string {
+	return "statistics read produced no cluster version"
+}
 
 // statisticsTags returns the connection's FDB transaction tags, which every
 // statistics transaction must carry.

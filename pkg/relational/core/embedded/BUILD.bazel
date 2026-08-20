@@ -210,6 +210,7 @@ go_test(
         "sparse_aggregate_candidate_test.go",
         "sparse_unique_index_ddl_test.go",
         "sql_plan_fuzz_test.go",
+        "statistics_leaf_typing_test.go",
         "statistics_reader_test.go",
         "struct_ddl_test.go",
         "system_rows_test.go",
@@ -408,6 +409,7 @@ go_test(
         "aggregate_having_no_double_projection_test.go",
         "statistics_reader.go",
         "statistics_reader_test.go",
+        "statistics_leaf_typing_test.go",
     ],
     deps = [
         "//gen",

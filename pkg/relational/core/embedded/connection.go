@@ -1132,7 +1132,7 @@ func (c *EmbeddedConnection) CollectStatistics(
 	if err != nil {
 		return nil, err
 	}
-	return recordlayer.CollectStatistics(ctx, c.sess.DB,
+	report, err := recordlayer.CollectStatistics(ctx, c.sess.DB,
 		func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
 			// SetSkipPossiblyRebuild + Open, never CreateOrOpen: counting rows is a
 			// READ. Opening a store runs checkPossiblyRebuild, which WRITES — a
@@ -1146,10 +1146,28 @@ func (c *EmbeddedConnection) CollectStatistics(
 		},
 		statsSubspace,
 		opts)
+	if err == nil {
+		// A cached plan outlives the statistic it was planned on. The plan
+		// cache is keyed by dbPath|schema|metaDataVersion|cacheKeyPart, and
+		// cacheKeyPart contributes only the literal "stat" -- not the version
+		// the statistic was collected at. So the freshness gate bounds how old
+		// a READ may be, not how old a PLAN may be, and without this a
+		// connection keeps serving plans built on counts it just replaced.
+		//
+		// This clears THIS connection's cache. Other live connections keep
+		// theirs until they are closed or their metadata moves; bounding plan
+		// staleness across a pool needs the collected version in the cache key,
+		// which is RFC-236 §7 scope, not this.
+		c.invalidatePlanCache()
+	}
+	return report, err
 }
 
 // ClearStatistics removes this schema's collected statistics.
 func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
+	if c.closed.Load() {
+		return driver.ErrBadConn
+	}
 	if c.sess == nil || c.sess.DB == nil || c.sess.Schema == "" {
 		return api.NewError(api.ErrCodeInvalidParameter,
 			"ClearStatistics requires a connection bound to a schema")
@@ -1158,5 +1176,12 @@ func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return recordlayer.ClearStatistics(ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...)
+	if err := recordlayer.ClearStatistics(ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...); err != nil {
+		return err
+	}
+	// Same reason as CollectStatistics: without this, a clear removes the
+	// statistic and the connection keeps planning as though it were still
+	// there, which is the one outcome an operator running clear is ruling out.
+	c.invalidatePlanCache()
+	return nil
 }

@@ -7,6 +7,7 @@ package recordlayer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -652,6 +653,61 @@ var _ = Describe("CollectStatistics", func() {
 		Expect(report.RecordsScanned).To(Equal(int64(orders + customers)))
 	})
 
+	// A BYTE-BOUNDED BATCH MUST STILL COUNT EXACTLY.
+	//
+	// BatchSize bounds ROWS, which bounds nothing an FDB transaction cares
+	// about: a record can be a hundred bytes or, split across KV pairs,
+	// hundreds of kilobytes, so a 1000-row batch is anywhere from ~100KB to
+	// hundreds of megabytes. The scan therefore also carries a TIME and a BYTES
+	// limit, and those are what actually keep a transaction inside FDB's 5s.
+	//
+	// Adding them buys a new way to be wrong. Reaching a scan limit stops the
+	// cursor mid-batch, and if that stop did not hand back a usable
+	// continuation, the collector would resume in the wrong place or not at
+	// all — and the failure would be a SILENT UNDERCOUNT, which is worse than
+	// the oversized transaction it was added to prevent, because an undercount
+	// is a well-formed number every downstream gate accepts.
+	//
+	// So this drives the bytes limit (deterministic, unlike time) hard enough
+	// to stop nearly every batch, and requires the total to stay exact.
+	It("counts exactly when the byte limit stops batches mid-scan", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		const orders, customers = 500, 20
+		seed(ctx, sub, orders, customers)
+
+		counter := &countingTransactor{inner: sharedDB.transactor}
+		countingDB := NewFDBDatabaseWithTransactor(counter, sharedDB.db)
+
+		report, err := CollectStatistics(ctx, countingDB,
+			func(rtx *FDBRecordContext) (*FDBRecordStore, error) {
+				return NewStoreBuilder().SetContext(rtx).
+					SetMetaDataProvider(metaData).SetSubspace(sub).CreateOrOpen()
+			}, stats, CollectOptions{
+				// A row budget far larger than the store, so ONLY the byte
+				// limit can end a batch. If the row limit were doing the work,
+				// this would be the ordinary exactness test wearing a new name.
+				BatchSize:         1_000_000,
+				ScannedBytesLimit: 1024,
+			})
+		Expect(err).NotTo(HaveOccurred())
+
+		// THE VACUITY GUARD. One scan transaction plus one write means the byte
+		// limit never stopped anything and the exactness assertion below is
+		// just the plain exactness test again.
+		Expect(counter.count()).To(BeNumerically(">", 2),
+			"collection took %d transactions, so the 1KB byte limit never stopped a "+
+				"batch — this test then proves nothing about resuming from a "+
+				"limit-stopped cursor", counter.count())
+
+		Expect(report.Collected["Order"].Count).To(Equal(int64(orders)),
+			"a byte-limited batch lost or repeated rows — a scan limit stopped the "+
+				"cursor and the continuation did not resume exactly where it stopped")
+		Expect(report.Collected["Customer"].Count).To(Equal(int64(customers)))
+		Expect(report.RecordsScanned).To(Equal(int64(orders + customers)))
+	})
+
 	// CAP AND EMPTY TOGETHER. Seeding every declared type at 0 and capping an
 	// oversized one are two rules that meet in the same loop, and each is
 	// exercised alone elsewhere in this file — which is precisely the shape that
@@ -929,10 +985,27 @@ var _ = Describe("CollectStatistics", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		// Write a per-type entry under the old reserved name, as a store whose
-		// metadata declares that type would.
+		// metadata declares that type would -- AND bump the header's entry count
+		// to match, because that is what a real collection of such a schema
+		// writes. Adding the entry alone builds a set whose entry count disagrees
+		// with its header, which no writer produces and which the reader now
+		// rejects as torn; the collision this test is about would then never be
+		// reached.
 		target := stats.forStore(sub)
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			rtx.Transaction().Set(target.Pack(tuple.Tuple{"__header__"}),
+			tx := rtx.Transaction()
+			hdrKey := target.Pack(statisticsHeaderKey)
+			raw, gErr := tx.Get(fdb.Key(hdrKey)).Get()
+			if gErr != nil {
+				return nil, gErr
+			}
+			hdr, hOK := unpackStatistic(raw)
+			if !hOK {
+				return nil, fmt.Errorf("header unreadable, so this test cannot build the state it needs")
+			}
+			hdr.Count++
+			tx.Set(fdb.Key(hdrKey), packStatistic(hdr))
+			tx.Set(target.Pack(tuple.Tuple{"__header__"}),
 				packStatistic(RecordTypeStatistic{Count: 99, CollectedAtVersion: 1}))
 			return nil, nil
 		})
@@ -948,6 +1021,53 @@ var _ = Describe("CollectStatistics", func() {
 		Expect(stored.PerType).To(HaveKey("__header__"))
 		Expect(stored.PerType["__header__"].Count).To(Equal(int64(99)))
 		Expect(stored.PerType).To(HaveKey("Order"))
+	})
+
+	// AN ENTRY COUNT THAT DISAGREES WITH THE HEADER IS A TORN SET.
+	//
+	// The header records how many per-type entries the write put down. Header
+	// and entries go down in ONE transaction (ClearRange, header, then each
+	// entry), so on any consistent read they agree; a disagreement means the
+	// read assembled a DIFFERENT SET than was written — a foreign writer, a
+	// partial clear, or corruption.
+	//
+	// That is the same fact a malformed entry carries, and it gets the same
+	// answer: nothing, rather than a partial set wearing a complete one's shape.
+	// This is also what makes the header's Count field load-bearing instead of
+	// decorative — it was previously written to durable bytes and never read,
+	// which is the shape that lets a value drift wrong with nothing noticing.
+	It("refuses a set whose entry count disagrees with its header", func() {
+		ctx := context.Background()
+		sub := specSubspace()
+		stats := statsRoot()
+		seed(ctx, sub, 6, 2)
+		_, err := CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Control: readable before the set is torn, or the refusal below is not
+		// about tearing.
+		_, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeTrue(),
+			"the set was already unreadable, so the refusal below proves nothing")
+
+		// Add ONE entry without telling the header. This is exactly the state a
+		// foreign writer produces, and the one the old header-collision test
+		// built by accident.
+		target := stats.forStore(sub)
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			rtx.Transaction().Set(target.Pack(tuple.Tuple{"SmuggledType"}),
+				packStatistic(RecordTypeStatistic{Count: 7, CollectedAtVersion: 1}))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, ok, err = ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ok).To(BeFalse(),
+			"a set carrying one more entry than its header recorded was returned as "+
+				"usable — the reader vouched for a set it did not assemble from a "+
+				"single consistent write")
 	})
 
 	// A MALFORMED ENTRY POISONS THE WHOLE SET.
@@ -1207,3 +1327,24 @@ var _ = Describe("CollectStatisticsIntegerKeys", func() {
 		Expect(got.PerType).To(BeEmpty())
 	})
 })
+
+// countingTransactor counts how many transactions a call opens, passing every
+// one straight through. Used as a vacuity guard: a test that claims a scan
+// limit forced the collector to resume across transactions has to show that
+// more than one scan transaction actually happened.
+type countingTransactor struct {
+	inner fdb.Transactor
+	n     int
+}
+
+func (c *countingTransactor) count() int { return c.n }
+
+func (c *countingTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
+	c.n++
+	return c.inner.Transact(fn)
+}
+
+func (c *countingTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
+	c.n++
+	return c.inner.ReadTransact(fn)
+}

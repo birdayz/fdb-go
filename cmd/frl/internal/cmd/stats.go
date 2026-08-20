@@ -163,8 +163,11 @@ func newStatsCollectCmd() *cobra.Command {
 		Long: "Reads EVERY record in the schema's store, tallies by record " +
 			"type, and replaces the stored statistics in one transaction.\n\n" +
 			"Cost is proportional to the store: this is an offline job. It " +
-			"scans in continuation-driven batches so no single transaction " +
-			"approaches FDB's 5s limit, whatever the store's size.\n\n" +
+			"scans in continuation-driven batches, each ending at whichever " +
+			"comes first of --batch-size records, a 3s time limit or a 16MB " +
+			"read limit. The last two are what hold whatever the records " +
+			"weigh, so no single transaction approaches FDB's 5s limit even " +
+			"when rows are large.\n\n" +
 			"--max-records-per-type ABORTS the collection as soon as any one " +
 			"table exceeds that many rows, and stores nothing. It aborts rather " +
 			"than skipping the table because skipping cannot help: the planner " +

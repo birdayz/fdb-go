@@ -343,7 +343,7 @@ func TestSyntheticVerdictIgnoresEverythingElse(t *testing.T) {
 			in: statisticsGateInput{
 				HasSyntheticTypes:  true,
 				SyntheticTypeNames: []string{"JoinedAB"},
-				ReadErr:            errNoReadVersion,
+				ReadErr:            &noClusterVersionError{},
 				DeclaredTypes:      []string{"A"},
 			},
 		},

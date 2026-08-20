@@ -33,11 +33,6 @@ func fleetProgressPrinter(cmd *cobra.Command) func(fleet.Event) {
 			fmt.Fprintf(out, "%s: built %v (%d records scanned)\n", ev.Target, ev.Indexes, ev.Records)
 		case fleet.OutcomeCollected:
 			fmt.Fprintf(out, "%s: collected %d types (%d records scanned)\n", ev.Target, ev.Types, ev.Records)
-			for _, name := range sortedKeys(ev.Skipped) {
-				// A skipped type is why the reader will refuse this schema, so it
-				// is the one thing an operator must see per target.
-				fmt.Fprintf(out, "%s:   %s NOT collected: %s\n", ev.Target, name, ev.Skipped[name])
-			}
 		case fleet.OutcomeNoWork:
 			fmt.Fprintf(out, "%s: nothing to build\n", ev.Target)
 		case fleet.OutcomeMigrated:

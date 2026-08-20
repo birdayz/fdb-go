@@ -555,6 +555,7 @@ go_test(
         "star_group_by_expansion_fdb_test.go",
         "statistics_fdb_test.go",
         "statistics_join_order_fdb_test.go",
+        "statistics_plancache_fdb_test.go",
         "store_timer_metrics_fdb_test.go",
         "streaming_row_continuation_fdb_test.go",
         "strict_leg_livelock_backstop_test.go",

@@ -145,11 +145,17 @@ func collectStatisticsStep(
 				fmt.Errorf("collection aborted after %d records: %s",
 					report.RecordsScanned, describeSkipped(report.Skipped))
 		}
+		// No Skipped on this event, deliberately. report.Skipped is non-empty
+		// ONLY on the aborted path, which leaves report.Collected empty -- and
+		// that case returned an error just above. So a Skipped carried here
+		// would provably always be empty, and a printer looping over it could
+		// never render a line. The aborted run's detail reaches the operator
+		// through that error text instead, which is the field the Failed printer
+		// actually renders.
 		return Event{
 			Outcome: OutcomeCollected,
 			Records: report.RecordsScanned,
 			Types:   len(report.Collected),
-			Skipped: report.Skipped,
 		}, nil
 	}
 }

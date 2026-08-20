@@ -112,9 +112,20 @@ no bytes-to-rows conversion, no unit mixing.
 
 Scanning is **continuation-driven and batched** — the store's own cursor
 machinery, the same way `OnlineIndexer` walks a store — so a large table costs
-many small transactions rather than one that cannot commit. `CollectOptions`
-carries the batch size and an optional per-type row cap; a type that hits the
-cap is recorded as **absent**, never as a partial count.
+many small transactions rather than one that cannot commit.
+
+A batch ends at whichever comes first of three bounds, and the row bound is the
+weakest of them: `BatchSize` counts RECORDS, and a record is not a fixed number
+of bytes (split records span several KV pairs), so a fixed row count is anywhere
+from ~100KB to hundreds of megabytes of reading. `TimeLimit` (3s) and
+`ScannedBytesLimit` (16MB) are the bounds that hold whatever the rows weigh, and
+they are what actually keeps a transaction inside FDB's 5s. Reaching a scan
+limit STOPS the cursor with a continuation rather than erroring
+(`FailOnScanLimitReached` stays false), so a bounded batch resumes in the next
+transaction and the total stays exact — pinned by a test that drives the byte
+limit hard enough to stop nearly every batch and requires the count to be
+unchanged. `CollectOptions` also carries an optional per-type row cap; a type
+that hits the cap is recorded as **absent**, never as a partial count.
 
 ### 4b. Where it is stored
 
@@ -143,9 +154,22 @@ Java is unaffected today and stays unaffected when it claims prefix 11.
 
 The cost of being outside is that dropping a store does not drop its statistics.
 That is handled by §5's freshness rule rather than by cleanup alone — an orphan
-is old, and old entries are refused — plus a `clear` verb on the CLI. An orphan
-cannot silently mislead: a recreated store would have to match both the prefix
-and the freshness window.
+is old, and old entries are refused ON READ — plus a `clear` verb on the CLI. An
+orphan cannot silently mislead a READ: a recreated store would have to match both
+the prefix and the freshness window.
+
+That scoping is load-bearing, because the freshness rule bounds READ staleness
+and nothing else. A PLAN built from a statistic outlives it: the plan-cache scope
+is `dbPath|schema|metaDataVersion|cacheKeyPart`, and `cacheKeyPart` renders
+`"stat"` from the connection FLAG, not from the version the statistic was
+collected at — so expiry, a `clear`, and a re-collection all leave the key
+byte-identical. `CollectStatistics` and `ClearStatistics` therefore invalidate
+the connection's plan cache explicitly, in BOTH directions (a newly collected
+statistic must reach the next query; a cleared one must stop reaching it), each
+arm pinned by its own mutation. What that does NOT cover is a plan cached on
+ANOTHER live connection, or one that simply ages past the window without either
+verb being called; bounding those needs `CollectedAtVersion` in the cache key,
+which is §7 scope.
 
 **Tenants.** FDB tenants are separate keyspaces, so a store's subspace prefix is
 only meaningful WITHIN its tenant: two tenants may hold byte-identical prefixes
@@ -339,6 +363,16 @@ distinction cost two review rounds to get right:
 
 Collected statistics are **estimates**, and must never become **bounds**.
 
+Read only as a safety rule, this section undersells what the separation buys.
+The clamp is also doing ACCURACY work: `RecordQueryIndexPlan.ProvenCardinalities`
+pins a unique full-equality probe to its exact multiplicity, so the estimate
+side's `0.1 * N` never reaches `FlatMapCost`'s `outerCard * innerCPU` term for a
+primary-key probe. Without that, a bigger collected `N` would make the INNER of
+a nested-loop join look more expensive in proportion to a table whose probe
+returns exactly one row — statistics would have made a correct decision worse,
+not better. The proof informing the estimate is what stops that, and it is the
+reason the boundary runs in one direction rather than simply existing.
+
 This is what makes a possibly-hours-old number safe to plan with: a stale count
 can cost a plan badly, and can never return a wrong row. The reason is
 structural, not careful — the ESTIMATE side (`Cost`) consumes a
@@ -375,9 +409,16 @@ cache-key component; the tests in §8.
 **Out, and named so they are not assumed:** histograms, NDV, MCV and any
 distribution (the collector could compute them — it scans — but selectivity
 consumes them and that is a second change); automatic/triggered collection;
-incremental recollection; per-index statistics; the `Cardinalities` clamp (§6);
-plan-cache invalidation on data drift. Collection does NOT invalidate cached
-plans, so a freshly collected statistic reaches only queries planned afterwards.
+incremental recollection; per-index statistics; the `Cardinalities` clamp (§6).
+
+Also out: bounding PLAN staleness in general. `CollectStatistics` and
+`ClearStatistics` do invalidate the calling connection's plan cache, so both
+verbs take effect on the next query of that connection (§4b). They cannot reach
+another live connection's cache, and nothing invalidates a plan that merely ages
+past the freshness window without either verb being called — a plan built on a
+statistic that has since expired keeps being served. Closing that means putting
+`CollectedAtVersion` into `cacheKeyPart`, which turns every expiry into a
+re-plan; it is a separate change with its own cost.
 
 ### 7.1 What being out of scope costs, measured
 
