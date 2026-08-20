@@ -237,16 +237,15 @@ func CollectStatistics(
 				storeSubspace = store.Subspace()
 			}
 			// The outer variables written inside this closure split into two
-			// groups with different safety arguments. No statement count is given,
-			// and that is deliberate: every attempt to write one here has been
-			// wrong. "Three" named three while seven variables are written; "ten"
-			// counted assignments and missed the two increments. The answer is
-			// twelve writes over seven variables, and a number that took four
-			// passes to get right is a number that will rot — so the PROPERTY is
-			// pinned here and the arithmetic is left to a command:
-			//
-			//	sed -n '/res, err := db.Run/,/^\t\t})$/p' statistics.go |
-			//	  grep -cE '^[[:space:]]+[a-zA-Z]+(\[[^]]*\])? *(=|\+\+)'
+			// groups with different safety arguments. They are ENUMERATED, not
+			// counted, and not left to a grep. A list can be checked against the
+			// code by reading it; every attempt here to state the same thing as a
+			// number or a command has drifted instead — naming three while seven
+			// are written, counting assignments and missing the increments, and two
+			// counting commands that each absorbed something they should not have.
+			// One of those was a write-only `batch` counter that nothing read; it
+			// is deleted now, which is the actual lesson. The arithmetic was never
+			// the thing worth pinning; the grouping is.
 			//
 			// FOUR are the per-attempt accumulators (batchCounts, batchScanned,
 			// batchContinuation, batchDone). They are assigned here BECAUSE they
@@ -285,7 +284,6 @@ func CollectStatistics(
 			cur := store.ScanRecords(batchContinuation, props)
 			defer func() { _ = cur.Close() }()
 
-			batch := 0
 			for {
 				r, cErr := cur.OnNext(ctx)
 				if cErr != nil {
@@ -314,7 +312,6 @@ func CollectStatistics(
 					batchCounts[rec.RecordType.Name]++
 				}
 				batchScanned++
-				batch++
 			}
 		})
 		_ = res

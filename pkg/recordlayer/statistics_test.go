@@ -846,14 +846,27 @@ var _ = Describe("CollectStatistics", func() {
 			"no read version was requested, so nothing was injected and this asserts nothing")
 
 		// And nothing may have been persisted from the failed run.
+		//
+		// On its own this assertion is VACUOUS: stats and sub are fresh per spec,
+		// so an untouched keyspace satisfies it and a mis-wired (stats, sub) pair
+		// would too. The successful collect below is its positive control — the
+		// SAME pair must then read back true, which is what turns the false above
+		// into a measurement of the failed run rather than of an empty keyspace.
 		_, ok, err := ReadStatistics(ctx, sharedDB, stats, sub)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ok).To(BeFalse(),
 			"a collection that could not stamp a version must write nothing at all")
 
-		// READ SIDE. Same fault, through the reader.
+		// READ SIDE. Same fault, through the reader — and the control for the
+		// assertion above.
 		Expect(CollectStatistics(ctx, sharedDB, builderFor(sub), stats, CollectOptions{BatchSize: 5})).
 			Error().NotTo(HaveOccurred())
+		_, okAfter, err := ReadStatistics(ctx, sharedDB, stats, sub)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(okAfter).To(BeTrue(),
+			"the same (stats, sub) pair must read back true after a SUCCESSFUL collect, "+
+				"or the false above was a statement about an empty keyspace and not about "+
+				"the failed run")
 		failing2 := &grvFailingTransactor{inner: sharedDB.transactor}
 		_, _, _, rErr := ReadStatisticsAt(ctx, NewFDBDatabaseWithTransactor(failing2, sharedDB.db), stats, sub)
 		Expect(rErr).To(MatchError(errInjectedGRV))
@@ -944,9 +957,25 @@ var errInjectedGRV = errors.New("injected: GetReadVersion failed")
 // through. The chaos package has FaultReadError for key reads but nothing for a
 // read VERSION, and a version failure is its own case: it is the one read whose
 // result gets persisted.
+//
+// SCOPE, stated because embedding the interface looks like it covers everything
+// and does not:
+//
+//   - It fails only the EXPLICIT GetReadVersion call and leaves the underlying
+//     reads working. A real cluster failure that killed the version would redden
+//     the key reads too, so this is not a cluster simulation — it is an isolator
+//     for the two call sites, which is what makes a failure here name one of
+//     them instead of pointing at the whole transaction.
+//   - Both live routes to a version ARE covered: rtx.ReadTransaction(true) goes
+//     through Snapshot(), rtx.ReadTransaction(false) through the writable
+//     transaction itself.
+//   - NOT covered: fdb.ReadTransaction embeds ReadTransactor, so a Transact or
+//     ReadTransact called THROUGH one of these wrappers hands back an unwrapped
+//     transaction, and any view accessor added to the interface later escapes
+//     the same way. Embedding stops the wrapper failing to COMPILE as the
+//     interface grows; it does not stop a new route around it.
 type grvFailingTransactor struct {
 	inner  fdb.Transactor
-	asked  int
 	failed int
 }
 
@@ -972,7 +1001,6 @@ type grvFailingWritable struct {
 }
 
 func (w *grvFailingWritable) GetReadVersion() fdb.FutureInt64 {
-	w.owner.asked++
 	w.owner.failed++
 	return failedInt64{}
 }
@@ -989,7 +1017,6 @@ type grvFailingRead struct {
 }
 
 func (r *grvFailingRead) GetReadVersion() fdb.FutureInt64 {
-	r.owner.asked++
 	r.owner.failed++
 	return failedInt64{}
 }
