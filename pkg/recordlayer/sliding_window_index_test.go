@@ -1533,6 +1533,51 @@ var _ = Describe("SlidingWindowIndex validation", func() {
 		return builder
 	}
 
+	// Java's validator does not END at the window checks: its last line is
+	// `delegateIndexValidator.validate(metaDataValidator)`
+	// (SlidingWindowIndexMaintainerFactory.java:238), so a windowed VECTOR is
+	// still validated AS a vector index. Without that call a malformed option
+	// reaches parseHNSWConfig, which is deliberately permissive and substitutes
+	// a default — so the index builds and writes a graph whose connectivity is
+	// not the one declared, indistinguishably from a correct index.
+	It("runs the wrapped vector index's option validation", func() {
+		idx := newWindowedVectorIndex("sw_bad_m", 2, gen.RowNumberWindowPredicate_ASC)
+		idx.Options[IndexOptionHNSWM] = "not-a-number"
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		_, err := builder.Build()
+		Expect(err).To(HaveOccurred(),
+			"a windowed vector index must be validated as a vector index too")
+		Expect(err.Error()).To(ContainSubstring("incorrect index options"))
+		Expect(err.Error()).To(ContainSubstring("hnswM"))
+	})
+
+	It("runs the wrapped vector index's metric validation", func() {
+		// The metric arm is separate from the numeric ones: parseHNSWConfig's
+		// default branch maps ANY unrecognised name to Euclidean, so a typo
+		// silently redefines what "nearest" means for every query the index
+		// serves. Java uses Metric.valueOf, which throws.
+		idx := newWindowedVectorIndex("sw_bad_metric", 2, gen.RowNumberWindowPredicate_ASC)
+		idx.Options[IndexOptionVectorMetric] = "COSIGN_METRIC"
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		_, err := builder.Build()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("incorrect index options"))
+	})
+
+	It("accepts a windowed vector index whose options are all well-formed", func() {
+		// The other direction, without which the two specs above are satisfied
+		// by a validator that refuses everything.
+		idx := newWindowedVectorIndex("sw_good_opts", 2, gen.RowNumberWindowPredicate_ASC)
+		idx.Options[IndexOptionHNSWM] = "16"
+		idx.Options[IndexOptionVectorMetric] = "COSINE_METRIC"
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		_, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("refuses a unique sliding window index", func() {
 		idx := newWindowedVectorIndex("sw_unique", 2, gen.RowNumberWindowPredicate_ASC)
 		idx.SetUnique()

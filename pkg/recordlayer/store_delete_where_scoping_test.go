@@ -387,6 +387,62 @@ var _ = Describe("DeleteRecordsWhere index scoping", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	// An UNGROUPED aggregate over a type-prefixed expression is the shape where
+	// "contains a record-type key" and "is keyed by the record type" come apart.
+	// Ungrouped() has a grouping count of zero, so every column — the type key
+	// included — is aggregated away and the index holds ONE entry for the whole
+	// type, keyed by nothing.
+	//
+	// Java's hasRecordTypePrefix guards on `getGroupingCount() > 0` and answers
+	// NO, so a whole-type delete derives an EMPTY index prefix and clears the
+	// index outright. Reading the grouped-away column as a physical prefix
+	// instead derives a one-column prefix naming no entry — which, now that
+	// every maintainer has a bound, is REFUSED, so a delete Java performs
+	// happily fails here.
+	It("clears an ungrouped aggregate on a whole-record-type delete", func() {
+		ks := specSubspace()
+
+		countIdx := NewCountNotNullIndex("order$count_all",
+			Ungrouped(Concat(RecordTypeKey(), Field("price"))))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(
+			Concat(RecordTypeKey(), Field("order_id")))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", countIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			rt := md.GetRecordType("Order")
+			Expect(rt).NotTo(BeNil())
+			for _, id := range []int64{1, 2, 3} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId: proto.Int64(id), Price: proto.Int32(int32(10 * id)),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+			before, lerr := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(lerr).NotTo(HaveOccurred())
+			Expect(before).NotTo(BeEmpty(),
+				"the aggregate must exist, or the clear below proves nothing")
+
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{rt.GetRecordTypeKey()})).To(Succeed(),
+				"Java clears this index outright on a whole-type delete; refusing it here "+
+					"would mean reading a grouped-away type column as a physical prefix")
+
+			after, aerr := AsList(ctx, store.ScanIndex(countIdx, TupleRangeAll, nil, ForwardScan()))
+			Expect(aerr).NotTo(HaveOccurred())
+			Expect(after).To(BeEmpty(), "the aggregate must go with its records")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	// A RANK index keeps a skip-list ranked set per GROUP in the secondary
 	// subspace, while its primary entries carry the grouped score too. When the
 	// primary key and the index root both begin (group, score) — which is the

@@ -343,7 +343,24 @@ func recordTypeKeyEquals(prefixVal, typeKey any) bool {
 }
 
 // hasRecordTypeKeyPrefix returns true if the expression starts with
-// RecordTypeKeyExpression. Matches Java's Key.Expressions.hasRecordTypePrefix().
+// RecordTypeKeyExpression. Matches Java's Key.Expressions.hasRecordTypePrefix
+// (Key.java:365-382) arm for arm.
+//
+// The WIDTH GUARDS on the two wrappers are the subtle half, and they are not
+// belt-and-braces. A wrapper can hide the record-type column entirely:
+//
+//   - Ungrouped(RecordTypeKey()) has grouping count ZERO, so every column
+//     including the type key is aggregated away and no physical entry is keyed
+//     by it. Java's `getGroupingCount() > 0` says "no type prefix", and a
+//     type-only delete then derives an EMPTY index prefix, clearing the whole
+//     index — which is right, because the index holds one entry for the type.
+//     Reading the grouped-away column as a physical prefix instead derives a
+//     one-column prefix naming no entry, and the delete Java accepts is refused.
+//   - KeyWithValue(..., 0) is the same shape: with a split point of zero the
+//     type key sits in the VALUE, not in the key.
+//
+// The NestingKeyExpression arm recurses without a guard, matching Java: a nest
+// navigates into a submessage, and its child is what starts the key.
 func hasRecordTypeKeyPrefix(expr KeyExpression) bool {
 	switch e := expr.(type) {
 	case *RecordTypeKeyExpression:
@@ -351,9 +368,11 @@ func hasRecordTypeKeyPrefix(expr KeyExpression) bool {
 	case *CompositeKeyExpression:
 		return len(e.expressions) > 0 && hasRecordTypeKeyPrefix(e.expressions[0])
 	case *GroupingKeyExpression:
-		return hasRecordTypeKeyPrefix(e.wholeKey)
+		return e.GetGroupingCount() > 0 && hasRecordTypeKeyPrefix(e.wholeKey)
 	case *KeyWithValueExpression:
-		return hasRecordTypeKeyPrefix(e.innerKey)
+		return e.splitPoint > 0 && hasRecordTypeKeyPrefix(e.innerKey)
+	case *NestingKeyExpression:
+		return hasRecordTypeKeyPrefix(e.child)
 	default:
 		return false
 	}

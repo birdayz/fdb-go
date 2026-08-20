@@ -1259,8 +1259,8 @@ func (m *vectorIndexMaintainer) SearchKNN(prefix tuple.Tuple, queryVector []floa
 // reads the whole key as the vector and indexes every record under the empty
 // prefix, so any non-empty prefix is unclearable. Java refuses that root shape
 // outright (getKeyWithValueExpression throws); Go accepts it for other
-// operations — a documented divergence — so the bound of zero is what expresses
-// the same refusal here.
+// operations — see "VECTOR index metadata validation" in DIVERGENCES.md — so
+// the bound of zero is what expresses the same refusal here.
 func (m *vectorIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	keyColumns := 0
 	if kwv, ok := m.index.RootExpression.(*KeyWithValueExpression); ok {
