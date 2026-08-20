@@ -163,19 +163,42 @@ type indexMaintainerDecorator interface {
 	delegateMaintainer() IndexMaintainer
 }
 
-// unwrapVectorMaintainer peels any decorators off a maintainer and returns the
-// vector maintainer underneath, if there is one.
-func unwrapVectorMaintainer(m IndexMaintainer) (*vectorIndexMaintainer, bool) {
+// maintainerAs peels decorators off a maintainer until one of them satisfies T.
+//
+// Every access method beyond the four on IndexMaintainer is reached by asking
+// whether the maintainer satisfies some capability — a concrete type for the
+// vector search entry points, a byDistanceScanner or orderedStreamScanner for
+// the generic index scan. A decorator satisfies none of them, so wrapping an
+// index silently REMOVES capabilities its delegate has, and the caller reports
+// the index as one that never had them ("does not support BY_DISTANCE scan").
+//
+// Asking through this helper makes the decorator's capability set exactly its
+// delegate's, automatically. The alternative — forwarding each capability from
+// the decorator by hand — breaks silently again the next time a capability
+// interface is added, and the breakage looks like a missing feature rather than
+// like a wrapper.
+//
+// Java has no equivalent problem: its decorator extends the same abstract
+// IndexMaintainer and overrides scan(), so nothing downstream ever asks what
+// the concrete class is.
+func maintainerAs[T any](m IndexMaintainer) (T, bool) {
 	for {
-		if vm, ok := m.(*vectorIndexMaintainer); ok {
-			return vm, true
+		if t, ok := any(m).(T); ok {
+			return t, true
 		}
 		d, ok := m.(indexMaintainerDecorator)
 		if !ok {
-			return nil, false
+			var zero T
+			return zero, false
 		}
 		m = d.delegateMaintainer()
 	}
+}
+
+// unwrapVectorMaintainer peels any decorators off a maintainer and returns the
+// vector maintainer underneath, if there is one.
+func unwrapVectorMaintainer(m IndexMaintainer) (*vectorIndexMaintainer, bool) {
+	return maintainerAs[*vectorIndexMaintainer](m)
 }
 
 func newSlidingWindowIndexMaintainer(
@@ -189,9 +212,6 @@ func newSlidingWindowIndexMaintainer(
 	spec, err := index.RowNumberWindowSpec()
 	if err != nil {
 		return nil, err
-	}
-	if err := validateRowNumberWindowSpec(spec); err != nil {
-		return nil, fmt.Errorf("sliding window index %q: %w", index.Name, err)
 	}
 	windowKey, err := spec.OrderingKey()
 	if err != nil {
@@ -774,26 +794,27 @@ func (m *slidingWindowIndexMaintainer) instrument(event Event, fn func() error) 
 }
 
 // DeleteWhere clears a partition group from the sliding-window subspace and
-// delegates. Supported ONLY when the window is partitioned.
-// Matches Java's SlidingWindowIndexMaintainer.deleteWhere (:686-698), whose
-// reachability is gated by canDeleteWhere (:317-326).
+// delegates. Supported ONLY when the window is partitioned AND the prefix names
+// partition columns — both decided by checkSlidingWindowDeleteWhere, which runs
+// as a preflight in DeleteRecordsWhere.
 //
-// Java expresses the gate as canDeleteWhere returning false for an
-// unpartitioned window, which makes FDBRecordStore throw
-// "deleteRecordsWhere not supported by index X" before deleteWhere is called.
-// Go's IndexMaintainer interface has no canDeleteWhere, so the refusal lives
-// here — and it must be a refusal, not a silent full clear: an unpartitioned
-// window has one entry list for the whole index, and there is no range of it
-// that corresponds to the requested prefix.
+// Matches Java's SlidingWindowIndexMaintainer.deleteWhere (:686-698), including
+// where the two checks live. Java's capability question is canDeleteWhere
+// (:317-326), asked by deleteRecordsWhereCheckIndexes before any range is
+// cleared; what remains INSIDE deleteWhere is a single Verify.verify on the
+// prefix width (:689-691) — an assertion, not the gate.
+//
+// The arity check below is that Verify: a backstop for a caller invoking the
+// maintainer directly, not the thing that makes deleteRecordsWhere safe. It
+// cannot be, and that distinction is the whole reason the preflight exists: by
+// the time this method runs, DeleteRecordsWhere has already queued the record,
+// version and count clears, so refusing here loses the records for any caller
+// that commits anyway.
+//
+// The unpartitioned case is left to the preflight for exactly that reason —
+// duplicating it here would put a second, useless refusal at the point where
+// refusing no longer helps.
 func (m *slidingWindowIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	if m.partitionKey == nil {
-		return &SlidingWindowDeleteWhereError{
-			IndexName: m.index.Name,
-			Message: "deleteRecordsWhere is not supported by an unpartitioned sliding window index; " +
-				"the window keeps one entry list for the whole index, so no range of it " +
-				"corresponds to the requested prefix",
-		}
-	}
 	if len(prefix) > m.partitionKeyColumnSize {
 		return &SlidingWindowDeleteWhereError{
 			IndexName: m.index.Name,

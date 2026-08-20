@@ -189,12 +189,23 @@ func rowNumberWindowSpecFromProto(p *gen.RowNumberWindowPredicate) (*RowNumberWi
 // This is the FACTORY's lookup — the one that decides whether an index gets
 // decorated at all. It is deliberately NOT the same shape as the MAINTAINER's
 // lookup below; see qualifyRowNumberWindowPredicateProto.
+//
+// AND IS TESTED FIRST, and that order is load-bearing rather than stylistic.
+// Java searches the PARSED predicate, so it can only ever see the arm
+// IndexPredicate.fromProto chose — and fromProto tests hasAndPredicate before
+// hasRowNumberWindowPredicate (IndexPredicate.java:106-118). Go searches the
+// RAW proto, where a malformed message can carry both arms at once, so the
+// order has to be restated here or the two engines pick different arms from the
+// same bytes: Go would decorate from a row-window arm that its own compiled
+// evaluator (predicateFromProto, same dispatch order) ignores, and the resulting
+// keyspace-10 and HNSW contents would not be Java's.
+//
+// The same discipline is written down at
+// cascades.constantPredicateArmIsTrue: answer only for the arm the evaluator
+// would actually run.
 func findRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPredicate {
 	if p == nil {
 		return nil
-	}
-	if rn := p.GetRowNumberWindowPredicate(); rn != nil {
-		return rn
 	}
 	if and := p.GetAndPredicate(); and != nil {
 		for _, child := range and.GetChildren() {
@@ -202,8 +213,16 @@ func findRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPre
 				return found
 			}
 		}
+		return nil
 	}
-	return nil
+	// Only the arms predicateFromProto would reach BEFORE the row-window one
+	// can shadow it; those are handled above (AND) and by falling through here
+	// for OR / constant / NOT / value, none of which carries a window.
+	if p.GetOrPredicate() != nil || p.GetConstantPredicate() != nil ||
+		p.GetNotPredicate() != nil || p.GetValuePredicate() != nil {
+		return nil
+	}
+	return p.GetRowNumberWindowPredicate()
 }
 
 // qualifyRowNumberWindowPredicateProto is the MAINTAINER's lookup — Java's
@@ -215,21 +234,34 @@ func findRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPre
 // AND(AND(rowWindow)) the factory decorates the index and this lookup then
 // FAILS, which is the behaviour a Java store would exhibit. Widening it here
 // would make Go accept metadata Java refuses.
+//
+// AND is tested first for the same reason as in the factory's search above: it
+// is the arm predicateFromProto would evaluate, and answering from a shadowed
+// one would qualify the window with a declaration the evaluator ignores.
 func qualifyRowNumberWindowPredicateProto(p *gen.Predicate) *gen.RowNumberWindowPredicate {
 	if p == nil {
 		return nil
 	}
-	if rn := p.GetRowNumberWindowPredicate(); rn != nil {
-		return rn
-	}
 	if and := p.GetAndPredicate(); and != nil {
 		for _, child := range and.GetChildren() {
+			// Java's getQualifyPredicate inspects the immediate children with a
+			// bare instanceof and does not recurse; the child's own arm order is
+			// still resolved the same way, so a child that is itself an AND is
+			// not a row-window child.
+			if child.GetAndPredicate() != nil {
+				continue
+			}
 			if rn := child.GetRowNumberWindowPredicate(); rn != nil {
 				return rn
 			}
 		}
+		return nil
 	}
-	return nil
+	if p.GetOrPredicate() != nil || p.GetConstantPredicate() != nil ||
+		p.GetNotPredicate() != nil || p.GetValuePredicate() != nil {
+		return nil
+	}
+	return p.GetRowNumberWindowPredicate()
 }
 
 // HasRowNumberWindowPredicate reports whether this index declares a row-number

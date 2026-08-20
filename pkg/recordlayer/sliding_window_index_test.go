@@ -655,6 +655,138 @@ var _ = Describe("SlidingWindowIndex", func() {
 			Expect(errors.As(derr, &swErr)).To(BeTrue(),
 				"an unpartitioned window has one entry list for the whole index; "+
 					"silently clearing all of it would be data loss")
+
+			// THE REFUSAL MUST COST NOTHING. Returning nil here commits the
+			// transaction — which is what a caller that logs the error and
+			// carries on would do — so if the refusal came after
+			// DeleteRecordsWhere had queued its record/version/count clears,
+			// the record would be gone while the index still described it.
+			// Java asks its capability questions in the deleter's constructor,
+			// before a single range is touched, and so must this.
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil(),
+				"a refused deleteRecordsWhere must not have already deleted the records")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// ...and the commit really happened, so this is read from FDB rather
+		// than from the aborted transaction's own writes.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
+			Expect(serr).NotTo(HaveOccurred())
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil())
+
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+			keys, _ := readSlidingWindowEntries(rtx.Transaction(), sw, nil)
+			Expect(keys).To(HaveLen(1), "the window must be untouched too")
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("deleteRecordsWhere is refused when the prefix names non-partition columns", func() {
+		ks := specSubspace()
+		// The trap this pins: an ARITY-only guard. The primary key and the HNSW
+		// prefix lead with `quantity`, the window partitions by `price`, and
+		// both are one column wide — so `DeleteRecordsWhere((7))` passes every
+		// width check while meaning two different things to the two structures.
+		//
+		// Clearing keyspace-10 partition (7) would wipe the window for price=7
+		// while the records actually being deleted are the quantity=7 ones,
+		// spread across every price partition — leaving entries, counts and
+		// boundaries that mis-promote on the next delete. Java asks the
+		// structural question instead: matchesSatisfyingQuery(partitionKey).
+		idx := NewVectorIndex("sw_dw_mismatch",
+			KeyWithValue(Concat(Field("quantity"), Field("coord_x"), Field("coord_y")), 1), 2)
+		Expect(idx.SetPredicateProto(&gen.Predicate{
+			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+				OrderingField:   []string{"order_id"},
+				Size:            proto.Int32(2),
+				Direction:       gen.RowNumberWindowPredicate_ASC.Enum(),
+				PartitionFields: []*gen.FieldPath{{Field: []string{"price"}}},
+			},
+		})).To(Succeed())
+		builder := baseMetaData()
+		builder.GetRecordType("Order").SetPrimaryKey(Concat(Field("quantity"), Field("order_id")))
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			for _, o := range []struct{ id, qty, price int64 }{
+				{1, 7, 100}, {2, 7, 200}, {3, 8, 100},
+			} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId:  proto.Int64(o.id),
+					Quantity: proto.Int32(int32(o.qty)),
+					Price:    proto.Int32(int32(o.price)),
+					CoordX:   proto.Int64(o.id), CoordY: proto.Int64(o.id),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(7)})
+			Expect(derr).To(HaveOccurred())
+			var swErr *SlidingWindowDeleteWhereError
+			Expect(errors.As(derr, &swErr)).To(BeTrue(),
+				"an arity-only guard accepts this and clears the wrong partition; got %v", derr)
+
+			// Nothing was deleted, and every window partition is intact.
+			sw := slidingWindowSubspaceFor(store.subspace, idx)
+			for _, price := range []int64{100, 200} {
+				keys, _ := readSlidingWindowEntries(rtx.Transaction(), sw, tuple.Tuple{price})
+				Expect(keys).NotTo(BeEmpty(), "price partition %d must be untouched", price)
+			}
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(7), int64(1)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil())
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("serves a generic BY_DISTANCE scan through the decorator", func() {
+		ks := specSubspace()
+		// ScanIndexByType is the path the SQL executor takes, and it reaches the
+		// access method by asking whether the maintainer satisfies
+		// byDistanceScanner. A decorator satisfies no capability interface of
+		// its delegate, so before the unwrap this reported a windowed vector
+		// index as one that "does not support BY_DISTANCE scan" — a capability
+		// REMOVED by wrapping, reported as one the index never had.
+		//
+		// The two dedicated entry points (SearchVectorIndex / ScanVectorIndex)
+		// do not cover this: they were patched with a vector-specific unwrap,
+		// and this is the interface-based site they do not go through.
+		idx := newWindowedVectorIndex("sw_by_distance", 10, gen.RowNumberWindowPredicate_ASC)
+		builder := baseMetaData()
+		builder.AddIndex("Order", idx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			_, e := store.SaveRecord(&gen.Order{
+				OrderId: proto.Int64(1), Price: proto.Int32(10),
+				CoordX: proto.Int64(3), CoordY: proto.Int64(4),
+			})
+			Expect(e).NotTo(HaveOccurred())
+
+			entries, cerr := AsList(ctx, store.ScanIndexByType(idx, IndexScanByDistance,
+				VectorDistanceScanRange([]float64{0, 0}, 5, 100), nil, ForwardScan()))
+			Expect(cerr).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1))
 			return nil, nil
 		})
 		Expect(err).NotTo(HaveOccurred())

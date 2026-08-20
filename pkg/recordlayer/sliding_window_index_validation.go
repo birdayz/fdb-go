@@ -96,9 +96,6 @@ func validateSlidingWindowIndex(md *RecordMetaData, idx *Index) error {
 	if err != nil {
 		return err
 	}
-	if err := validateRowNumberWindowSpec(spec); err != nil {
-		return err
-	}
 	if _, err := spec.OrderingKey(); err != nil {
 		return &MetaDataError{Message: fmt.Sprintf(
 			"sliding window index %q: ordering key: %v", idx.Name, err)}

@@ -56,55 +56,27 @@ func predicateFromProto(p *gen.Predicate) (IndexPredicate, error) {
 // rather than matched as a full index. Both of those are reachable from here
 // on, which they were not before this arm existed.
 //
-// The proto is validated rather than merely accepted: an unusable window
-// declaration (unknown direction, non-positive size, empty ordering path) must
-// fail when the metadata is loaded, not at the first record save.
+// The window DECLARATION is not validated here beyond what the proto itself
+// requires, and that restraint is deliberate. Java's
+// SlidingWindowIndexValidator checks six things (record types, index type,
+// predicate presence, uniqueness, placement) and the window's SIZE is not among
+// them; RowNumberWindowPredicate's constructor stores whatever the proto says.
+// So a size of 0 produces metadata Java LOADS — and then fails on the first
+// write, because `count < windowSize` is false for an empty window and the
+// window-full branch finds no boundary
+// (SlidingWindowIndexMaintainer.java:466-473).
+//
+// Refusing it at load time would therefore make a store Java can create
+// unopenable by Go, which is the exact failure wire compatibility exists to
+// prevent — the same argument that keeps a non-vector index carrying this
+// predicate loadable. Go reaches the identical write-time error by the
+// identical route, so the two engines agree on both halves: what loads, and
+// what fails.
 func rowNumberWindowPredicateFromProto(p *gen.RowNumberWindowPredicate) (IndexPredicate, error) {
-	spec, err := rowNumberWindowSpecFromProto(p)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateRowNumberWindowSpec(spec); err != nil {
+	if _, err := rowNumberWindowSpecFromProto(p); err != nil {
 		return nil, err
 	}
 	return func(proto.Message) bool { return true }, nil
-}
-
-// validateRowNumberWindowSpec rejects window declarations that cannot describe
-// a window. Java validates the size in the sliding-window factory's validator;
-// checking it here as well means a malformed declaration is refused wherever it
-// arrives, including on an index type that never reaches that validator.
-//
-// A non-positive N is the one that matters most: with N <= 0 the window is
-// empty forever, so the wrapped vector index would be maintained as
-// permanently empty while the entry list grows without bound — an index that
-// answers every search with nothing and never says why.
-func validateRowNumberWindowSpec(spec *RowNumberWindowSpec) error {
-	if len(spec.OrderingField) == 0 {
-		return &MetaDataError{Message: "row-number window predicate has an empty ordering field path"}
-	}
-	for _, name := range spec.OrderingField {
-		if name == "" {
-			return &MetaDataError{Message: "row-number window predicate has an empty ordering field name"}
-		}
-	}
-	if spec.Size <= 0 {
-		return &MetaDataError{Message: fmt.Sprintf(
-			"row-number window predicate has size %d; the window size must be positive", spec.Size)}
-	}
-	for i, path := range spec.PartitionFieldPaths {
-		if len(path) == 0 {
-			return &MetaDataError{Message: fmt.Sprintf(
-				"row-number window predicate partition field path %d is empty", i)}
-		}
-		for _, name := range path {
-			if name == "" {
-				return &MetaDataError{Message: fmt.Sprintf(
-					"row-number window predicate partition field path %d has an empty field name", i)}
-			}
-		}
-	}
-	return nil
 }
 
 // predicateProtoIsTautology reports whether a stored index predicate provably

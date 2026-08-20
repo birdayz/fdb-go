@@ -79,6 +79,35 @@ func (store *FDBRecordStore) DeleteRecordsWhere(prefix tuple.Tuple) error {
 			}
 		}
 
+		// A sliding-window index has a SECOND thing to satisfy, and it is not
+		// implied by the first. Java asks both, in one place and BEFORE any
+		// clear is queued: SlidingWindowIndexMaintainer.canDeleteWhere
+		// (:319-326) requires the delegate to accept the prefix AND the prefix
+		// to satisfy the PARTITION key, and deleteRecordsWhereCheckIndexes
+		// (FDBRecordStore.java:1997-2008) runs every such check in the deleter's
+		// constructor, throwing before a single range is touched.
+		//
+		// Both halves matter here:
+		//
+		//   - PARTITION, NOT ARITY. The delegate's check is against the index's
+		//     own key expression; keyspace 10 is keyed by the PARTITION key,
+		//     which may be a different field of the same width. With a
+		//     `quantity`-prefixed vector index and `PARTITION BY price`, a
+		//     prefix of (7) means quantity=7 to the delegate and would be read
+		//     as price=7 against the window — clearing one price partition
+		//     while the deleted records are spread across all of them, and
+		//     leaving entries, counts and boundaries that mis-promote later.
+		//
+		//   - BEFORE, NOT DURING. Refusing inside the maintainer's DeleteWhere
+		//     is too late: the record, version and count clears are already
+		//     queued on the transaction by then, so a caller that commits
+		//     anyway loses the records while the index keeps them.
+		if isSlidingWindowIndex(idx) {
+			if err := checkSlidingWindowDeleteWhere(idx, prefix, store.metaData, coveredTypeNames); err != nil {
+				return err
+			}
+		}
+
 		if !isUniversal {
 
 			if len(indexTypeNames) > 1 && !hasRecordTypeKeyPrefix(idx.RootExpression) {
@@ -349,6 +378,73 @@ func computeIndexDeletePrefix(idx *Index, prefix tuple.Tuple, md *RecordMetaData
 	}
 
 	return prefix, true
+}
+
+// checkSlidingWindowDeleteWhere is the sliding-window half of Java's
+// canDeleteWhere (SlidingWindowIndexMaintainer.java:319-326), run as a
+// PREFLIGHT so a refusal costs nothing — see the call site for why both
+// properties are load-bearing.
+//
+// Java expresses the structural half as
+// `matcher.matchesSatisfyingQuery(partitionKey)` followed by
+// StandardIndexMaintainer.canDeleteWhere, which together demand that the
+// delete-where be an EQUALITY match on a prefix of the partition key. Go's
+// delete-where is a positional primary-key prefix rather than a query, so the
+// same demand is expressed positionally: every column the prefix covers must be
+// the same key expression in the primary key and in the partition key.
+func checkSlidingWindowDeleteWhere(idx *Index, prefix tuple.Tuple, md *RecordMetaData, coveredTypes []string) error {
+	spec, err := idx.RowNumberWindowSpec()
+	if err != nil {
+		return fmt.Errorf("deleteRecordsWhere: sliding window index %q: %w", idx.Name, err)
+	}
+	partitionKey, err := spec.PartitionKey()
+	if err != nil {
+		return fmt.Errorf("deleteRecordsWhere: sliding window index %q: partition key: %w", idx.Name, err)
+	}
+	if partitionKey == nil {
+		return &SlidingWindowDeleteWhereError{
+			IndexName: idx.Name,
+			Message: "the window is unpartitioned, so it keeps one entry list for the whole " +
+				"index and no range of it corresponds to the requested prefix",
+		}
+	}
+	if len(prefix) > partitionKey.ColumnSize() {
+		return &SlidingWindowDeleteWhereError{
+			IndexName: idx.Name,
+			Message: fmt.Sprintf("prefix size %d exceeds partition key column size %d",
+				len(prefix), partitionKey.ColumnSize()),
+		}
+	}
+
+	pks := deleteWherePrimaryKeys(md, coveredTypes)
+	if len(pks) == 0 {
+		return &SlidingWindowDeleteWhereError{
+			IndexName: idx.Name,
+			Message:   "no primary key could be resolved for the record types being deleted",
+		}
+	}
+	partitionComponents := normalizeKeyForPositions(partitionKey)
+	for _, pk := range pks {
+		pkComponents := normalizeKeyForPositions(pk)
+		for i := range len(prefix) {
+			if i >= len(pkComponents) || i >= len(partitionComponents) {
+				return &SlidingWindowDeleteWhereError{
+					IndexName: idx.Name,
+					Message: fmt.Sprintf("prefix %v reaches past the partition key, so the window "+
+						"cannot be scoped to the deleted records", prefix),
+				}
+			}
+			if !keyExpressionEquals(pkComponents[i], partitionComponents[i]) {
+				return &SlidingWindowDeleteWhereError{
+					IndexName: idx.Name,
+					Message: fmt.Sprintf("prefix %v names primary-key columns that are not the "+
+						"window's partition columns, so clearing a partition group would clear a "+
+						"different set of records than the ones being deleted", prefix),
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // computeSingleTypeIndexDeletePrefix decides how much of a SINGLE-TYPE index a

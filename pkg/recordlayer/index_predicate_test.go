@@ -1535,54 +1535,56 @@ func TestSetPredicateProtoAcceptsRowNumberWindow(t *testing.T) {
 	}
 }
 
-// TestSetPredicateProtoRejectsMalformedRowNumberWindow pins the arms of
-// validateRowNumberWindowSpec, each of which describes a window that cannot
-// exist. They are checked when the metadata is LOADED rather than at the first
-// record save, because a store whose window declaration is unusable should fail
-// to open, not fail one write at a time.
+// TestSetPredicateProtoAcceptsWindowSizesJavaAccepts pins a DELIBERATE absence
+// of validation, and the reason it is deliberate.
 //
-// The non-positive size is the load-bearing one: with N <= 0 the window is empty
-// forever, so the wrapped vector index would be maintained as permanently empty
-// while the entry list grew without bound — an index that answers every search
-// with nothing and never says why.
-func TestSetPredicateProtoRejectsMalformedRowNumberWindow(t *testing.T) {
+// It is tempting to reject a zero or negative window at load time — such a
+// window is empty forever, so the wrapped vector index stays permanently empty
+// while the entry list grows. But Java does NOT reject it:
+// SlidingWindowIndexValidator checks record types, index type, predicate
+// presence, uniqueness and placement, and never the size, while
+// RowNumberWindowPredicate's constructor stores whatever the proto says. Such
+// metadata therefore LOADS in Java and fails on the first write instead.
+//
+// Refusing at load time would make a store Java can create unopenable by Go,
+// which is the failure wire compatibility exists to prevent. The write-time
+// failure is covered by the FDB spec that drives an actual save.
+func TestSetPredicateProtoAcceptsWindowSizesJavaAccepts(t *testing.T) {
+	t.Parallel()
+
+	for _, size := range []int32{0, -1} {
+		idx := NewIndex("topn", Field("score"))
+		if err := idx.SetPredicateProto(&gen.Predicate{
+			RowNumberWindowPredicate: &gen.RowNumberWindowPredicate{
+				OrderingField: []string{"score"},
+				Size:          proto.Int32(size),
+				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+			},
+		}); err != nil {
+			t.Fatalf("size %d: Go refused metadata Java accepts: %v", size, err)
+		}
+		if !idx.HasRowNumberWindowPredicate() {
+			t.Fatalf("size %d: the arm must still be carried", size)
+		}
+	}
+}
+
+// TestRowNumberWindowSpecRejectsAbsentRequiredFields pins the two checks that DO
+// remain, and why they reject nothing Java would accept.
+//
+// `direction` and `size` are proto2 REQUIRED fields, so no message off the wire
+// can be missing them — protobuf refuses to parse one that is, in either
+// language. Only an in-memory message can be, and there the nil-safe getters
+// fail OPEN: GetDirection() on an absent field returns the first declared enum
+// value, ASC. ASC and DESC evict from opposite ends of the window, so a silent
+// default would quietly keep the wrong records.
+func TestRowNumberWindowSpecRejectsAbsentRequiredFields(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
 		name string
 		pred *gen.RowNumberWindowPredicate
 	}{
-		{
-			name: "no ordering field",
-			pred: &gen.RowNumberWindowPredicate{
-				Size:      proto.Int32(100),
-				Direction: gen.RowNumberWindowPredicate_ASC.Enum(),
-			},
-		},
-		{
-			name: "empty ordering field name",
-			pred: &gen.RowNumberWindowPredicate{
-				OrderingField: []string{""},
-				Size:          proto.Int32(100),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
-			},
-		},
-		{
-			name: "zero size",
-			pred: &gen.RowNumberWindowPredicate{
-				OrderingField: []string{"score"},
-				Size:          proto.Int32(0),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
-			},
-		},
-		{
-			name: "negative size",
-			pred: &gen.RowNumberWindowPredicate{
-				OrderingField: []string{"score"},
-				Size:          proto.Int32(-1),
-				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
-			},
-		},
 		{
 			name: "absent direction",
 			pred: &gen.RowNumberWindowPredicate{
@@ -1591,21 +1593,10 @@ func TestSetPredicateProtoRejectsMalformedRowNumberWindow(t *testing.T) {
 			},
 		},
 		{
-			name: "empty partition path",
+			name: "absent size",
 			pred: &gen.RowNumberWindowPredicate{
-				OrderingField:   []string{"score"},
-				Size:            proto.Int32(100),
-				Direction:       gen.RowNumberWindowPredicate_ASC.Enum(),
-				PartitionFields: []*gen.FieldPath{{}},
-			},
-		},
-		{
-			name: "empty partition field name",
-			pred: &gen.RowNumberWindowPredicate{
-				OrderingField:   []string{"score"},
-				Size:            proto.Int32(100),
-				Direction:       gen.RowNumberWindowPredicate_ASC.Enum(),
-				PartitionFields: []*gen.FieldPath{{Field: []string{""}}},
+				OrderingField: []string{"score"},
+				Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
 			},
 		},
 	} {
@@ -1614,11 +1605,81 @@ func TestSetPredicateProtoRejectsMalformedRowNumberWindow(t *testing.T) {
 			t.Parallel()
 			idx := NewIndex("topn", Field("score"))
 			if err := idx.SetPredicateProto(&gen.Predicate{RowNumberWindowPredicate: tc.pred}); err == nil {
-				t.Fatal("SetPredicateProto accepted a window declaration that cannot describe a window")
+				t.Fatal("SetPredicateProto defaulted a required field instead of refusing")
 			}
 			if idx.HasPredicate() {
 				t.Fatal("a rejected predicate must leave the index unpredicated")
 			}
 		})
+	}
+}
+
+// TestRowNumberWindowLookupsFollowTheEvaluatorsArmOrder pins that the window
+// search answers for the arm predicateFromProto would actually RUN.
+//
+// A Predicate message declares "exactly one of the following" and a malformed
+// one can set several. predicateFromProto dispatches AND before row-window, and
+// so does Java's IndexPredicate.fromProto — Java's search then runs over the
+// PARSED predicate and can only see the arm that won. Go's search runs over the
+// raw proto, so the same precedence has to be restated there or the two engines
+// read different declarations out of identical bytes: Go would decorate the
+// index from a row-window arm its own evaluator ignores, and the keyspace-10
+// and HNSW contents would diverge from Java's.
+func TestRowNumberWindowLookupsFollowTheEvaluatorsArmOrder(t *testing.T) {
+	t.Parallel()
+
+	window := func(field string) *gen.RowNumberWindowPredicate {
+		return &gen.RowNumberWindowPredicate{
+			OrderingField: []string{field},
+			Size:          proto.Int32(5),
+			Direction:     gen.RowNumberWindowPredicate_ASC.Enum(),
+		}
+	}
+	trueArm := &gen.Predicate{ConstantPredicate: &gen.ConstantPredicate{
+		Value: gen.ConstantPredicate_TRUE.Enum(),
+	}}
+
+	// AND wins over a same-message row-window arm; the AND has no window, so
+	// neither lookup may report one.
+	shadowed := &gen.Predicate{
+		AndPredicate:             &gen.AndPredicate{Children: []*gen.Predicate{trueArm}},
+		RowNumberWindowPredicate: window("shadowed"),
+	}
+	if got := findRowNumberWindowPredicateProto(shadowed); got != nil {
+		t.Errorf("the factory search answered from a shadowed arm: %v", got.GetOrderingField())
+	}
+	if got := qualifyRowNumberWindowPredicateProto(shadowed); got != nil {
+		t.Errorf("the maintainer lookup answered from a shadowed arm: %v", got.GetOrderingField())
+	}
+
+	// The same shape where the AND *does* carry a window: both lookups must
+	// report THAT one, not the shadowed sibling. Distinct field names make the
+	// difference observable — matching on presence alone would pass either way.
+	both := &gen.Predicate{
+		AndPredicate: &gen.AndPredicate{Children: []*gen.Predicate{
+			{RowNumberWindowPredicate: window("live")},
+		}},
+		RowNumberWindowPredicate: window("shadowed"),
+	}
+	for name, got := range map[string]*gen.RowNumberWindowPredicate{
+		"factory":    findRowNumberWindowPredicateProto(both),
+		"maintainer": qualifyRowNumberWindowPredicateProto(both),
+	} {
+		if got == nil {
+			t.Errorf("%s lookup found no window at all", name)
+			continue
+		}
+		if got.GetOrderingField()[0] != "live" {
+			t.Errorf("%s lookup answered from the shadowed arm (%v)", name, got.GetOrderingField())
+		}
+	}
+
+	// A well-formed single-arm message is unaffected.
+	bare := &gen.Predicate{RowNumberWindowPredicate: window("only")}
+	if got := findRowNumberWindowPredicateProto(bare); got == nil || got.GetOrderingField()[0] != "only" {
+		t.Errorf("the factory search lost a bare window arm: %v", got)
+	}
+	if got := qualifyRowNumberWindowPredicateProto(bare); got == nil || got.GetOrderingField()[0] != "only" {
+		t.Errorf("the maintainer lookup lost a bare window arm: %v", got)
 	}
 }
