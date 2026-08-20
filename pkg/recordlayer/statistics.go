@@ -236,11 +236,21 @@ func CollectStatistics(
 			if storeSubspace == nil {
 				storeSubspace = store.Subspace()
 			}
-			// Three outer variables ARE assigned in here — storeSubspace above,
-			// declaredTypes on the next line, collectedAtVersion below — and
-			// they are safe under retry by IDEMPOTENCE: each is an overwrite
-			// with a value the same attempt would produce again, not an
-			// accumulation. That is a weaker property than the one the
+			// SEVEN distinct outer variables are assigned inside this closure —
+			// ten assignment statements, since batchDone takes three and
+			// batchContinuation two — and they split into two groups with
+			// different safety arguments. Worth counting precisely, because
+			// "three" was written here first and a reader counting would have
+			// found more and disbelieved the rest.
+			//
+			// FOUR are the per-attempt accumulators (batchCounts, batchScanned,
+			// batchContinuation, batchDone). They are assigned here BECAUSE they
+			// are reset here; that reset is the fix.
+			//
+			// THREE are not accumulators — storeSubspace above, declaredTypes on
+			// the next line, collectedAtVersion below — and they are safe under
+			// retry by IDEMPOTENCE: each is an overwrite with a value the same
+			// attempt would produce again. That is a weaker property than the
 			// accumulators get, so it is stated rather than glossed.
 			//
 			// What is checkable by reading is the narrower claim that matters:

@@ -699,10 +699,15 @@ var _ = Describe("CollectStatistics", func() {
 	//	ReadStatisticsAt              — out / found / readVersion
 	//	ClearStatistics               — captures nothing
 	//
-	// And it asserts the STORED bytes, not the returned report. The report is
-	// built before writeStatistics runs, so a report-only assertion cannot see a
-	// write or a read-back that a retry corrupted — which is exactly the half
-	// the earlier test could not reach.
+	// WHAT THIS ADDS over the double-count test above, which also replays: that
+	// one asserts the returned REPORT, and the report is built before
+	// writeStatistics runs. So it cannot see a persist corrupted by a retry. This
+	// one reads the bytes back, which is the only way writeStatistics enters any
+	// assertion at all.
+	//
+	// It does NOT subsume the read-path test below. Both attempts here observe
+	// the same bytes, so unreset read state stays invisible; catching that needs
+	// a mutation BETWEEN attempts, which is what that test does.
 	It("keeps collect, write, read and clear correct when every transaction retries", func() {
 		ctx := context.Background()
 		sub := specSubspace()
