@@ -19131,3 +19131,43 @@ a NULL beside a value.
 Nothing in this repo is blocked on the upstream fix — the read-side repair is
 complete and pinned — but the report should go out, and if upstream fixes it the
 probe here fails and says so.
+
+---
+
+### [ ] UPSTREAM — Java NPEs on `IN (SELECT …)` instead of raising its own assert
+
+MEASURED on both engines
+(`conformance/in_list_shapes_java_probe_test.go`, which asserts that both
+engines REFUSE this and would fail if either started accepting it):
+
+```
+SELECT id FROM t WHERE b IN (SELECT b FROM t WHERE id = 1)
+
+  java: NullPointerException: Cannot invoke
+        "…RelationalParser$ExpressionsContext.expression()"
+        because "expressionsContext" is null
+  go  : 0AF00: Cascades planner could not plan query
+```
+
+Java HAS an assert for this shape and never reaches it.
+`ExpressionVisitor.visitInPredicate` opens with
+
+```java
+Assert.thatUnchecked(ctx.inList().queryExpressionBody() == null,
+        ErrorCode.UNSUPPORTED_QUERY, "IN predicate does not support nested SELECT");
+```
+
+so the intent is a clean UNSUPPORTED_QUERY. The NPE comes from elsewhere in
+the visit reaching `ExpressionsContext.expression()` on the subquery branch,
+where `expressions` is null because the parse took `queryExpressionBody`.
+Something evaluates the expressions branch before — or instead of — that
+guard.
+
+NOT A GO PROBLEM, and nothing here is blocked on it: both engines refuse the
+query, so the conformance principle holds in OUTCOME and Go's refusal is the
+tidier of the two. It is booked because an NPE is an upstream defect worth
+reporting whoever hits it, and because the probe compares only the outcome for
+this arm — if upstream ever fixes the NPE into its intended assert, that arm
+becomes comparable by MESSAGE too and the probe should be tightened.
+
+TO REPORT UPSTREAM with the reproducer above.
