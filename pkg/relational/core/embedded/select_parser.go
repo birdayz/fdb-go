@@ -3278,18 +3278,6 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 	if !using {
 		return nil
 	}
-	// Every column name any USING in this query asks about. The multiset built
-	// per source is seeded with these, because `Columns()` and `LookupColumn`
-	// do not agree on spelling: a base column declared quoted lower-case is
-	// exposed FOLDED in the ordered view while only the lookup index knows its
-	// exact form. Counting the view alone therefore loses that owner entirely —
-	// `q1 JOIN q4 USING ("id") JOIN q2 USING ("k")` declined and answered 42703
-	// on a query Java returns rows for.
-	//
-	// Seeding is bounded and precise: only names this query mentions, resolved
-	// once, so the multiset stays the SOLE authority and hiding remains a
-	// decrement of it. The alternative — falling back to a lookup at read time —
-	// resurrects the copy a decrement just hid.
 	primary := primaryAlias
 	if primary == "" {
 		primary = primaryTable
@@ -3377,9 +3365,9 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			// predicate mixing the two rules can never be built.
 			owners := make([]string, 0, len(j.usingColTexts))
 			for _, colText := range j.usingColTexts {
-				// The name as the catalog knows it: unquoted folds, quoted keeps
-				// its case. Used for the messages too, so a quoted "k" is not
-				// reported as K.
+				// The folded spelling, for MESSAGES only — resolution happens
+				// per source, below. A quoted `"k"` is reported as `K`, which
+				// is the spelling every other error in this layer uses.
 				id := usingColumnKey(colText)
 				col := id.Name()
 				owner, err := usingOwnerOf(colText, sources)
@@ -3556,28 +3544,14 @@ func columnCounts(cols semantic.Table) map[string]int {
 	return counts
 }
 
-// usingColumnKey turns a USING column as WRITTEN into the key this resolver
-// uses everywhere — ownership, hiding, and the right-hand check.
+// usingColumnKey folds a USING column as written, for ERROR MESSAGES ONLY.
 //
-// It FOLDS, and that is a deliberate alignment with the catalog rather than an
-// oversight about quoting. `rlcatalog` documents its own model at the
-// construction site: "The COLUMN itself presents the FOLDED identifier
-// everywhere: the runtime positional layout folds names too, so folded
-// presentation keeps plan-time and runtime in one namespace." A column declared
-// `"k"` is therefore exposed as `K` by `Columns()`, with its exact spelling
-// kept only as an additional LOOKUP KEY.
-//
-// So a quote-preserving key does not survive contact with that model: it misses
-// the folded column the multiset is built from, and no owner is found for a
-// query that has one. Measured — `q1 JOIN q4 USING ("id") JOIN q2 USING ("k")`
-// answered 42703 with a quote-preserving key and returns rows with this one.
-//
-// The cost is that Go cannot distinguish `"k"` from `K` here, and Java can.
-// That difference belongs to the catalog's folded presentation, not to this
-// function, and it is booked in TODO.md under "Quoted identifiers are folded by
-// the catalog's column lookup" with a JVM-measured pin. Folding HERE keeps this
-// resolver consistent with the namespace it reads from; un-folding it would
-// have added a second, differently-wrong answer rather than fixing that.
+// It is emphatically NOT how the column is resolved: ownership, hiding and the
+// right-hand check all go through each source's own `LookupColumn`, because the
+// two table implementations present names differently and no single spelling
+// works for both. This exists so a message reads `K` rather than repeating the
+// user's quoting back at them, matching the spelling every other error in this
+// layer uses.
 func usingColumnKey(colText string) semantic.Identifier {
 	return semantic.FromNormalized(strings.ToUpper(functions.StripIdentifierQuotes(colText)))
 }
