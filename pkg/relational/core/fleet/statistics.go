@@ -58,12 +58,37 @@ func CollectStatistics(
 	opts StatisticsOptions,
 ) (Result, error) {
 	stats := recordlayer.NewStatisticsSubspace(ks.StatisticsSubspace())
-	return fanOut(ctx, ks, targets, opts.Options, func(ctx context.Context, t Target) (Event, error) {
-		ss, err := ks.SchemaSubspace(t.DatabaseID, t.SchemaName)
-		if err != nil {
-			return Event{}, err
-		}
-		md, err := PinnedMetadata(ctx, db, cat, t)
+	load := func(ctx context.Context, t Target) (*recordlayer.RecordMetaData, error) {
+		return PinnedMetadata(ctx, db, cat, t)
+	}
+	return fanOut(ctx, ks, targets, opts.Options, collectStatisticsStep(db, ks, stats, opts, load))
+}
+
+// collectStatisticsStep is the per-target step CollectStatistics fans out.
+//
+// Named rather than inline so a test can drive THE PRODUCTION CLOSURE through
+// fanOut. A test that builds its own closure of the same shape verifies its own
+// copy: the defect this guards — returning a non-nil error alongside a REFUSED
+// event, which makes fanOut stamp FAILED over it — lives in the caller's return
+// statement, and a hand-written stand-in simply does not contain it.
+// loadMetadata is how the step obtains a target's metadata. Injected so a test
+// can drive THE PRODUCTION STEP — including its return statements, which is
+// where the defect this guards actually lives — without a cluster or a catalog.
+type loadMetadata func(context.Context, Target) (*recordlayer.RecordMetaData, error)
+
+func collectStatisticsStep(
+	db *recordlayer.FDBDatabase,
+	ks *keyspace.RelationalKeyspace,
+	stats recordlayer.StatisticsSubspace,
+	opts StatisticsOptions,
+	load loadMetadata,
+) step {
+	return func(ctx context.Context, t Target) (Event, error) {
+		// Metadata FIRST, and the refusals below it, before the subspace is
+		// resolved or any store is opened. Every decision this step can reach
+		// without touching the cluster belongs above the ones that touch it —
+		// the whole point of refusing here is not paying for the work.
+		md, err := load(ctx, t)
 		if err != nil {
 			return Event{}, err
 		}
@@ -84,6 +109,10 @@ func CollectStatistics(
 		// separately in the summary, and prints its Err.
 		if ev, refused := syntheticRefusal(md); refused {
 			return ev, nil
+		}
+		ss, err := ks.SchemaSubspace(t.DatabaseID, t.SchemaName)
+		if err != nil {
+			return Event{}, err
 		}
 		report, err := recordlayer.CollectStatistics(ctx, db,
 			func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
@@ -122,7 +151,7 @@ func CollectStatistics(
 			Types:   len(report.Collected),
 			Skipped: report.Skipped,
 		}, nil
-	})
+	}
 }
 
 // CollectAllStatistics collects for every schema in databaseID.

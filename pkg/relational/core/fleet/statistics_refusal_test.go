@@ -111,14 +111,19 @@ func TestSyntheticRefusalSurvivesFanOut(t *testing.T) {
 	md := syntheticMetaData(t)
 	targets := []Target{{DatabaseID: "/db", SchemaName: "S"}}
 
-	// The production step's shape: set the outcome, return a NIL error.
-	res, err := fanOut(context.Background(), nil, targets, Options{}, func(context.Context, Target) (Event, error) {
-		ev, refused := syntheticRefusal(md)
-		if !refused {
-			return Event{Outcome: OutcomeCollected}, nil
-		}
-		return ev, nil
-	})
+	// THE PRODUCTION STEP, not a stand-in of the same shape. The defect being
+	// pinned lives in the caller's return statement — returning a non-nil error
+	// alongside a REFUSED event makes fanOut stamp FAILED over it — and a
+	// hand-written closure simply does not contain that statement, so it cannot
+	// exhibit the bug. An earlier version of this test did exactly that and
+	// stayed green under the real mutation.
+	//
+	// db/cat/ks are nil: the refusal is decided from metadata before any of them
+	// is touched, so a nil is safe here and would announce itself loudly if the
+	// guard ever moved below the store open.
+	step := collectStatisticsStep(nil, nil, recordlayer.StatisticsSubspace{}, StatisticsOptions{},
+		func(context.Context, Target) (*recordlayer.RecordMetaData, error) { return md, nil })
+	res, err := fanOut(context.Background(), nil, targets, Options{}, step)
 
 	// fanOut joins per-target errors, and a refusal carries one — so a non-nil
 	// error here is expected and is what makes the CLI exit non-zero.

@@ -393,10 +393,17 @@ func TestSyntheticVerdictIgnoresEverythingElse(t *testing.T) {
 //
 // This drives evaluateCollectedStatistics with a connection whose session
 // database is nil. If the early return is removed, the function reaches
-// statisticsLocation and ReadStatisticsAt and panics or errors on that nil —
-// either way it stops returning StatisticsSyntheticTypes, which is the
-// observable. A nil is a crude seam, but it is the one this function cannot
-// touch without saying so.
+// statisticsLocation and ReadStatisticsAt and PANICS on that nil, which the
+// recover below reports.
+//
+// The dependency is worth stating: it survives on the panic ALONE. An earlier
+// version of this comment said "panics or errors — either way it stops
+// returning StatisticsSyntheticTypes", and the second half is false: on an
+// error, evaluateCollectedStatistics sets in.ReadErr and decideStatistics'
+// GATE 0 still returns StatisticsSyntheticTypes, so the test would pass with the
+// I/O done. A defensive nil-guard added to statisticsLocation would therefore
+// disarm this test silently. If that happens, the seam has to become an explicit
+// failing database rather than a nil.
 func TestSyntheticVerdictTouchesNoIO(t *testing.T) {
 	t.Parallel()
 
