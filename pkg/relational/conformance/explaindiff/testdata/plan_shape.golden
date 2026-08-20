@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=354 queries=2566 dml=157 non_query=104 plan_errors=270 unexpected_errors=4
+# files=355 queries=2569 dml=157 non_query=104 plan_errors=270 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14054,6 +14054,26 @@ plan:  <PLAN-ERROR: 42803: column "A2" must appear in the GROUP BY clause or be 
 === qualified_star_more.yaml#3 expect-error=42803
 sql:   SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 GROUP BY a1
 plan:  <PLAN-ERROR: 42803: SELECT qualifier.* expands to columns not in GROUP BY>
+=== quoted_identifier_columns.yaml#0
+sql:   SELECT q1."id", q1."k" FROM q1 ORDER BY q1."id"
+plan:  Project([_current.ID#0, _current.K#1], Scan(Q1))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== quoted_identifier_columns.yaml#1
+sql:   SELECT d."k" FROM (SELECT "id", "k" FROM q2) d ORDER BY d."k"
+plan:  Project([_current.K#1], InMemorySort([_current.K#1 ASC], Project([_current.ID#0, _current.K#1], Scan(Q2))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== quoted_identifier_columns.yaml#2
+sql:   SELECT q1."id" FROM q1 JOIN q2 USING ("k") ORDER BY q1."id"
+plan:  Project([_current.ID#0], FlatMap(outer=Scan(Q1), inner=PredicatesFilter(Scan(Q2), [1 preds])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.X#1 DESC], Scan(T)))

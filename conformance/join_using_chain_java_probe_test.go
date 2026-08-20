@@ -549,8 +549,8 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// of the comparison.
 				//
 				// Pinned with both engines' text, and booked in TODO.md under
-				// "Quoted identifiers are folded by the catalog's column
-				// lookup". Not fixed here: it changes identifier equality for
+				// "Three identifier models coexist, and quoted names fall
+				// between them". Not fixed here: it changes identifier equality for
 				// every column reference in the engine, which is not something
 				// to slip into a USING change.
 				// A CHAINED quoted USING where the owner is NOT the prior right
@@ -564,8 +564,8 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// PINNED: the catalog folds, so q3's unquoted `K` answers a
 				// lookup for `"k"` and becomes a second owner. Java keeps them
 				// distinct and finds one. Same booked cause as the arm below —
-				// see TODO.md, "Quoted identifiers are folded by the catalog's
-				// column lookup".
+				// see TODO.md, "Three identifier models coexist, and quoted
+				// names fall between them".
 				name: "chained quoted USING resolving to the far-left source",
 				sql: `SELECT q1."id" FROM q1 JOIN q3 USING ("id") ` +
 					`JOIN q2 USING ("k") ORDER BY q1."id"`,
@@ -596,22 +596,39 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				goSays:   "[[1]]",
 			},
 			{
-				// A DERIVED right leg with quoted columns — A PRE-EXISTING
-				// DIVERGENCE, and the measurement is what established that.
+				// The USING spelling of the arm above — same cause, kept because
+				// it is the shape a user is most likely to write, and because
+				// it is what a review first reported as a USING bug.
 				//
-				// A review reported this as caused by the USING retarget
-				// upper-casing the column name. Half right: it DID, and that is
-				// fixed — the lookup is quote-aware now. But bypassing
-				// retargetUsingJoins entirely leaves this query failing exactly
-				// the same way, so the retarget is not what refuses it.
+				// It is not one: the ON form fails identically, and bypassing
+				// `retargetUsingJoins` entirely changes nothing. The report was
+				// half right — the retarget DID fold the column name, which is
+				// fixed — but that was never what refuses the query.
+				// THE SAME FAILURE WITH NO `USING` AT ALL, which is what says
+				// the fault is not in USING resolution. An explicit ON naming
+				// the same quoted column fails identically, so the subject is a
+				// quoted reference into a DERIVED source's row.
 				//
-				// What refuses it is downstream: the derived source's projection
-				// keeps the quoted lower-case names while the edge is declared
-				// with folded upper-case ones, and the executor layout rejects
-				// the mismatch. Java answers the query. Pinned with both sides'
-				// text so a repair reddens; booked in TODO.md under "A derived
-				// table's quoted column names do not survive to the executor
-				// layout".
+				// The mechanism, traced: three identifier models coexist and
+				// disagree. `rlcatalog` PRESENTS folded names and accepts
+				// either spelling on lookup; `StaticTable` — what a derived
+				// table gets — presents names as built and matches EXACTLY,
+				// documenting that "a case-preserved quoted name matches only
+				// its exact spelling"; and reference resolution preserves a
+				// quoted name while folding an unquoted one. So D's scope says
+				// RECORD(id,k) and the row that flows says RECORD(ID,K), and
+				// the executor refuses the mismatch.
+				//
+				// Both engines are self-consistent; only Go's THREE models are
+				// not. Booked in TODO.md — deciding which model wins changes
+				// identifier equality for every column reference.
+				name: "quoted column into a derived source, plain ON join",
+				sql: `SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d ` +
+					`ON q1."k" = d."k" ORDER BY q1."id"`,
+				javaSays: "[[1]]",
+				goSays:   "executor.layout",
+			},
+			{
 				name: "quoted USING against a derived right leg",
 				sql: `SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d USING ("k") ` +
 					`ORDER BY q1."id"`,

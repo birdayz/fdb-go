@@ -19329,85 +19329,71 @@ The divergence is PINNED, not merely described: the probe arm asserts BOTH
 engines' current wording, so it fails if Go is repaired or if either side
 moves to a third answer.
 
-## A derived table's quoted column names do not survive to the executor layout
 
-Quoted identifiers keep their case; unquoted ones fold to upper. A derived
-table whose projection names quoted lower-case columns keeps them
-lower-case, while the edge it feeds is declared with the folded upper-case
-form, and the executor rejects the mismatch:
+## Three identifier models coexist, and quoted names fall between them
 
-    CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
-    CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+This supersedes two earlier entries ("A derived table's quoted column names
+do not survive to the executor layout" and "Quoted identifiers are folded
+by the catalog's column lookup"). They were two symptoms; this is the
+cause, traced.
 
-    SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d USING ("k")
-                                                        ORDER BY q1."id"
+Go carries THREE rules for what a column name IS, and they disagree only
+for QUOTED identifiers — which is why everything looks fine until one
+appears:
 
+| authority                     | presents      | lookup matches            |
+|-------------------------------|---------------|---------------------------|
+| `rlcatalog.recordTypeTable`   | FOLDED        | exact spelling OR folded  |
+| `semantic.StaticTable`        | as built      | EXACT only, case-sensitive|
+| reference resolution          | —             | quoted preserved, unquoted folded |
+
+Each is internally defensible. `rlcatalog` folds deliberately — it says so
+at the construction site, because the runtime positional layout folds too
+and one namespace keeps plan-time and runtime together. `StaticTable`'s
+doc is the Java-correct rule: "a case-preserved quoted name matches only
+its exact spelling". Reference resolution follows the SQL standard. They
+simply cannot all hold at once.
+
+TWO MEASURED CONSEQUENCES, opposite directions, both pinned against a live
+JVM in `conformance/join_using_chain_java_probe_test.go`:
+
+GO REFUSES A VALID QUERY. A derived source presents its columns through
+`StaticTable`, so the scope says `RECORD(id,k)` while the row flowing from
+the folded base table says `RECORD(ID,K)`:
+
+    SELECT q1."id" FROM q1 JOIN (SELECT "id","k" FROM q2) d ON q1."k" = d."k"
     java: [[1]]
     go  : resolution error 11 at executor.layout: edge lookup D:
-          read as RECORD(id:LONG?,k:LONG?),
-          declared RECORD(ID:LONG?,K:LONG?)
+          read as RECORD(id,k), declared RECORD(ID,K)
 
-GO REFUSES A QUERY JAVA ANSWERS, which is the direction that always
-matters.
+USING is NOT involved — the plain ON form above fails identically, which
+is the measurement that localised this. An earlier reading blamed the
+USING resolver; it is not that.
 
-IT IS PRE-EXISTING, and that was established rather than assumed. A review
-reported it as caused by the USING retarget folding the column name to
-upper — which it did do, and which is fixed: the ownership lookup is now
-quote-aware (`semantic.NewUnquoted` on the raw column text rather than a
-blanket `strings.ToUpper`). But bypassing `retargetUsingJoins` entirely
-leaves this query failing in exactly the same way, so the retarget is not
-what refuses it. The fault is downstream of name resolution, in how a
-derived source's row type is declared versus how it is read.
+GO ANSWERS AN INVALID QUERY. The other direction, from `rlcatalog`'s
+folded fallback: `USING ("K")` against a column declared `"k"` returns
+rows where Java reports `Unknown reference K`, and an ambiguity on a
+quoted column is reported as `K` where Java says `k`.
 
-Pinned, both sides asserted verbatim, in
-`conformance/join_using_chain_java_probe_test.go`
-(`JoinUsingQuotedIdentifierJavaProbe`) so a repair reddens the pin rather
-than passing silently.
+WHY THE OBVIOUS LOCAL FIXES DO NOT WORK, both tried and reverted:
 
-THE WORK: make a derived source's declared row type agree with its
-projection's identifier casing — one normalisation, applied at both ends.
-The base-table arm in the same probe is the control: quoted USING against
-two base tables already works, so the folding is specific to the derived
-path.
+- Stopping `DisplayColumnName` from re-folding the resolved leaf changes
+  nothing — the folded names do not originate there.
+- Naming a derived scope's columns from the resolved column instead of the
+  authored text moves the failure rather than removing it: the scope then
+  says K, and `StaticTable`'s exact-match lookup refuses the quoted
+  reference `"k"`, so 42703 replaces the layout error.
 
-## Quoted identifiers are folded by the catalog's column lookup
+Both confirm the same thing: no single site owns this. It is a choice
+about which model wins.
 
-`semantic.Identifier` models SQL's rule correctly — an unquoted name folds
-to upper, a quoted one keeps its case, and `EqualsIgnoreQuoting` compares
-by normalized text. But the catalog's `LookupColumn` resolves
-case-insensitively, so a table exposing a quoted lower-case `"k"` answers
-a lookup for `"K"`, and the two become the same column.
+THE WORK: pick one model and make all three obey it. Java's is the
+reference and is the obvious candidate — quoted preserves, unquoted folds,
+equality exact on the normalized form — but adopting it means
+`rlcatalog` stops folding what it presents, and its comment says the
+runtime positional layout depends on that. So the decision is not
+"fix the lookup"; it is whether plan-time identifiers and the runtime row
+layout can stop sharing one folded namespace, and what that costs.
 
-Java does not. Measured
-(`conformance/join_using_chain_java_probe_test.go`,
-`JoinUsingQuotedIdentifierJavaProbe`, arm "a quoted USING must not hide
-the unquoted column"):
-
-    CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
-    CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
-    CREATE TABLE q3 ("id" BIGINT,  K  BIGINT, PRIMARY KEY ("id"))
-
-    SELECT q1."id" FROM q1 JOIN q2 USING ("k")
-                           JOIN q3 USING ("K") ORDER BY q1."id"
-
-    java: Unknown reference K   — no left source exposes "K"
-    go  : 42702 Ambiguous reference K — both q1."k" and q2."k" matched
-
-Both engines refuse, so no wrong rows ship; they disagree about WHY, and
-the underlying disagreement is about identifier equality rather than about
-USING.
-
-IT IS NOT THE USING RESOLVER. `retargetUsingJoins` derives its ownership
-key and its hidden-copy key identically, both quote-aware
-(`semantic.NewUnquoted` on the column text as written), so the two cannot
-disagree with each other. The folding happens inside the catalog lookup
-they both call.
-
-THE WORK: decide whether the catalog's column lookup should honour the
-quoting flag. It is deliberately case-insensitive today and a great deal
-depends on that, so this is an identifier-equality change affecting every
-column reference in the engine — not something to fold into a USING fix.
-Java is the reference and Java distinguishes them.
-
-Pinned rather than described: the probe arm asserts BOTH engines' current
-wording, so a repair reddens it instead of passing silently.
+Changes identifier equality for EVERY column reference in the engine.
+Needs an RFC and the review gate before implementation, and its own PR.

@@ -1,0 +1,31 @@
+# quoted_identifier_columns.yaml
+#
+# A QUOTED identifier keeps its case; an unquoted one folds to upper. Every
+# arm here is about whether the engine holds that rule consistently from
+# the SQL text through to the executor's row layout.
+#
+# The shapes below were measured against a live fdb-relational before
+# being written: see JoinUsingQuotedIdentifierJavaProbe in
+# conformance/join_using_chain_java_probe_test.go for the JVM side.
+name: quoted_identifier_columns
+schema_template: |
+  CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+  CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+setup:
+  - INSERT INTO q1 VALUES (1, 10), (2, 20)
+  - INSERT INTO q2 VALUES (1, 10), (2, 99)
+tests:
+  # A quoted column selected straight from a base table.
+  - query: SELECT q1."id", q1."k" FROM q1 ORDER BY q1."id"
+    rows:
+      - [1, 10]
+      - [2, 20]
+  # A derived table projecting quoted columns, selected by name.
+  - query: SELECT d."k" FROM (SELECT "id", "k" FROM q2) d ORDER BY d."k"
+    rows:
+      - [10]
+      - [99]
+  # A quoted USING against two base tables.
+  - query: SELECT q1."id" FROM q1 JOIN q2 USING ("k") ORDER BY q1."id"
+    rows:
+      - [1]

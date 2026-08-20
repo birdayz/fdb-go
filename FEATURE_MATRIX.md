@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**354 scenarios · 2827 query/assertion cases** across 18 feature areas — 2484 supported, 110 unsupported-feature pins, 233 error-path pins.
+**355 scenarios · 2830 query/assertion cases** across 18 feature areas — 2487 supported, 110 unsupported-feature pins, 233 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 32 | 249 | 216 | 10 | 23 |
-| **Total** | **354** | **2827** | **2484** | **110** | **233** |
+| Other | 33 | 252 | 219 | 10 | 23 |
+| **Total** | **355** | **2830** | **2487** | **110** | **233** |
 
 ## Aggregates & GROUP BY
 
@@ -484,6 +484,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `nested_projection_column_name` | 8 | 8 | 0 | 0 | a nested projection's OUTPUT NAME |
 | `output_column_naming` | 8 | 8 | 0 | 0 | a query's OUTPUT COLUMN NAMES are part of its |
 | `parse_channel_pins` | 6 | 6 | 0 | 0 | dotted display names survive the parser→IR |
+| `quoted_identifier_columns` | 3 | 3 | 0 | 0 | A QUOTED identifier keeps its case; an unquoted one folds to upper. |
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
