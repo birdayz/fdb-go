@@ -31,6 +31,11 @@ import (
 // hi's index by three orders of magnitude. One that multiplies by 0.1 either
 // way cannot tell them apart.
 //
+// The boundary this pins is recorded in RFC-236 §7.1, which also records why a
+// distinctness statistic is cheap here when it comes: every site applying
+// BoundSelectivity takes SCAN COMPARISONS, so the column is always part of a key,
+// and a key is stored sorted.
+//
 // This is a MEASUREMENT that reports the plan and prices it in index entries.
 // It deliberately does NOT assert which path is right: what it pins is the SIZE
 // OF THE GAP that no table-cardinality statistic can close, so that the day a

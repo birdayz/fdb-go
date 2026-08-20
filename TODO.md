@@ -19033,11 +19033,26 @@ codified this with a rationale the provider's own clamp refutes. The dimension
 that hid it: every other case in that file populates every type or none, and both
 pass with the bug fully present.
 
-**Still open, deliberately:** histograms / NDV / MCV and any distribution (the
-collector scans, so it COULD compute them, but selectivity consumes them and
-that is a separate change); automatic or triggered collection; incremental
-recollection; per-index statistics; plan-cache invalidation on data drift — a
-freshly collected statistic reaches only queries planned after it.
+**Still open, deliberately, and PRICED so the omission is not read as free:**
+histograms / NDV / MCV and any distribution. The collector scans, so it COULD
+compute them, but SELECTIVITY consumes them and that is a separate change: an
+index probe is estimated as `RecordTypeCardinality(table) *
+EqualityBoundSelectivity^equalities * RangeSelectivity^ranges`, and this work
+makes only the FIRST factor a measurement. The second stays 0.1 per equality
+whether the column holds two distinct values or two million.
+`TestFDB_SelectivityBlindSpotWithCollectedStatistics` prices that: holding the
+table count FIXED and varying only distinctness, two access paths that really
+differ by 1000x are priced identically at 200 rows, so the planner intersects
+them and reads 1001 index entries to reach a row one leg alone reaches in 1. No
+better row count can reach that plan. The next increment therefore has a
+committed number to be measured against — RFC-236 §7.1, which also records why
+that increment is cheap here (every site applying `BoundSelectivity` takes scan
+comparisons, so the column is always part of a key, and a key is stored sorted:
+exact NDV is one ordered pass, no sketch).
+
+Also still open: automatic or triggered collection; incremental recollection;
+per-index statistics; plan-cache invalidation on data drift — a freshly
+collected statistic reaches only queries planned after it.
 
 Full design, including the measurements that killed the two rejected designs:
 RFC-236.

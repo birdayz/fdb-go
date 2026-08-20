@@ -379,6 +379,38 @@ incremental recollection; per-index statistics; the `Cardinalities` clamp (§6);
 plan-cache invalidation on data drift. Collection does NOT invalidate cached
 plans, so a freshly collected statistic reaches only queries planned afterwards.
 
+### 7.1 What being out of scope costs, measured
+
+Naming NDV as out is only honest if the size of what is given up is known, so it
+is measured rather than asserted. An index probe is estimated as
+
+    RecordTypeCardinality(table)
+      * EqualityBoundSelectivity^equalities
+      * RangeSelectivity^ranges
+
+(`properties.BoundSelectivity`, applied at `plans/cost.go` for scan and index
+plans and at `planning_cost_model.go` for the partition path). This RFC makes the
+FIRST factor a measurement. The second stays a constant: 0.1 per equality whether
+the column holds two distinct values or two million.
+
+`TestFDB_SelectivityBlindSpotWithCollectedStatistics` prices that, holding the
+table count FIXED — one table, so both candidate access paths read the same
+collected number — and varying only distinctness. Over 2000 rows with `hi`
+unique and `lo` holding two values, the two paths really differ by 1000x; the
+cost model prices both legs at 200 rows, intersects them, and reads 1001 index
+entries to reach a row one leg alone reaches in 1.
+
+That plan is not a defect in the collector and no better row count can reach it.
+It is recorded here so the next increment has a committed number to be measured
+against, and so "statistics help" carries its own ceiling.
+
+One property makes that increment cheap when it comes. All three sites applying
+`BoundSelectivity` take SCAN COMPARISONS — bounds on primary-key or index-key
+columns. A key is stored sorted, so distinct values over it are one ordered pass
+counting prefix changes: exact, no sketch, no memory proportional to cardinality.
+Non-key columns never reach this factor at all; they take the residual
+`FilterSelectivity` path, which is a different and harder problem.
+
 ## 8. Tests
 
 - **Collector correctness.** Counts equal a ground-truth scan, across several
