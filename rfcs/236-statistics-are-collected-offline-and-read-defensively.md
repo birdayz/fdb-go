@@ -356,7 +356,9 @@ plans, so a freshly collected statistic reaches only queries planned afterwards.
   types, empty types, and after deletes.
 - **Batch invariance.** Batch 7 and batch 100000 must agree — the continuation
   path is exercised, not assumed.
-- **Cap.** A type over its row cap is recorded ABSENT, never partial.
+- **Cap.** Crossing the row cap ABORTS the run and stores nothing, and the
+  scan stops — asserted on RecordsScanned, because the report looks identical
+  whether the cap bounds work or only suppresses output.
 - **Replace, not merge.** Deleting a whole type and re-collecting removes its
   entry rather than leaving the old count behind.
 - **Reader gates, every arm driven** (`TestDecideStatistics`), plus a vacuity

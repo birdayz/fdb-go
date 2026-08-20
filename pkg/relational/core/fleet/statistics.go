@@ -3,6 +3,8 @@ package fleet
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
@@ -33,7 +35,8 @@ type StatisticsOptions struct {
 	Options
 	// Collect is passed to the collector for each schema. BatchSize bounds the
 	// records per transaction; MaxRecordsPerType caps the work spent on one
-	// type, recording it ABSENT rather than partial when exceeded.
+	// type: crossing it ABORTS that schema's collection and stores nothing,
+	// which surfaces as a per-target failure rather than an OutcomeCollected.
 	Collect recordlayer.CollectOptions
 }
 
@@ -85,6 +88,16 @@ func CollectStatistics(
 		if err != nil {
 			return Event{}, fmt.Errorf("collect statistics: %w", err)
 		}
+		// An ABORTED run stored nothing, so it is not "collected". Reporting it
+		// as such makes a 500-tenant fan-out that wrote nothing at all print
+		// collected=500 — a summary an operator reads as success, for the exact
+		// state they most need to see. A capped run leaves report.Collected
+		// empty and names the offending type in Skipped, which is what
+		// distinguishes it from a schema that genuinely had nothing to count.
+		if len(report.Collected) == 0 && len(report.Skipped) > 0 {
+			return Event{Records: report.RecordsScanned, Skipped: report.Skipped},
+				fmt.Errorf("collection aborted: %s", describeSkipped(report.Skipped))
+		}
 		return Event{
 			Outcome: OutcomeCollected,
 			Records: report.RecordsScanned,
@@ -109,6 +122,21 @@ func CollectAllStatistics(
 		return Result{}, fmt.Errorf("list fan-out targets: %w", err)
 	}
 	return CollectStatistics(ctx, db, cat, ks, targets, opts)
+}
+
+// describeSkipped renders why a run was abandoned, for the per-target error.
+// Sorted so a fan-out over many schemas produces diffable output.
+func describeSkipped(skipped map[string]string) string {
+	names := make([]string, 0, len(skipped))
+	for name := range skipped {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+": "+skipped[name])
+	}
+	return strings.Join(parts, "; ")
 }
 
 // countsOf flattens a collection report to name -> count for the Event.

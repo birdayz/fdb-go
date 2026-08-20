@@ -161,6 +161,16 @@ type CollectOptions struct {
 	// which not every layout has), so there is no way to keep scanning while
 	// skipping one type's rows.
 	MaxRecordsPerType int64
+	// Tags are FDB transaction tags applied to EVERY transaction this collection
+	// opens — each scan batch and the replacing write.
+	//
+	// Threaded explicitly rather than wrapped around the database, because a
+	// wrapper has to reconstruct an *FDBDatabase and this package's copy-method
+	// gate forbids the field-by-field form for good reason: the first attempt
+	// dropped env, which silently swaps a persisted timestamp's seeded clock for
+	// the wall clock. A parameter is visible at every call site; a dropped field
+	// is visible nowhere.
+	Tags []string
 }
 
 func (o CollectOptions) batchSize() int {
@@ -211,10 +221,11 @@ func CollectStatistics(
 	var storeSubspace subspace.Subspace
 	var collectedAtVersion int64
 	var declaredTypes map[string]*RecordType
-	capped := make(map[string]string)
-	// cappedTypes is the set abandoned mid-scan. It is durable across batches
-	// (a type over its cap stays over) and safe under retry: a re-run of the same
-	// rows re-derives the same membership.
+	// cappedTypes is the set that blew the cap. It is merged from a per-attempt
+	// set after Run returns, exactly like the counters — an earlier revision
+	// wrote it inside the closure on the argument that a retry re-derives the
+	// same membership, which holds only if the rows do not change underneath.
+	// Same discipline, no separate argument to be wrong about.
 	cappedTypes := make(map[string]struct{})
 
 	for {
@@ -240,10 +251,15 @@ func CollectStatistics(
 		var batchCounts map[string]int64
 		var batchScanned int64
 		var batchContinuation []byte
+		var batchCapped map[string]struct{}
 		res, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			if err := applyTags(rtx.Transaction(), opts.Tags); err != nil {
+				return nil, err
+			}
 			batchCounts = make(map[string]int64)
 			batchScanned = 0
 			batchContinuation = continuation
+			batchCapped = make(map[string]struct{})
 			batchDone = false
 			store, sErr := storeBuilder(rtx)
 			if sErr != nil {
@@ -347,7 +363,7 @@ func CollectStatistics(
 						counts[name]+batchCounts[name] > opts.MaxRecordsPerType {
 						// Stop here: nothing collected after this point can be
 						// used, so reading it is pure cost.
-						cappedTypes[name] = struct{}{}
+						batchCapped[name] = struct{}{}
 						batchScanned++
 						return nil, nil
 					}
@@ -364,6 +380,9 @@ func CollectStatistics(
 			counts[name] += c
 		}
 		scanned += batchScanned
+		for name := range batchCapped {
+			cappedTypes[name] = struct{}{}
+		}
 		continuation = batchContinuation
 		if len(cappedTypes) > 0 {
 			// Aborted. Store nothing: a partial pass has partial counts for every
@@ -379,7 +398,7 @@ func CollectStatistics(
 	if len(cappedTypes) > 0 {
 		report := &CollectionReport{
 			Collected:      map[string]RecordTypeStatistic{},
-			Skipped:        capped,
+			Skipped:        map[string]string{},
 			RecordsScanned: scanned,
 		}
 		for name := range cappedTypes {
@@ -410,12 +429,12 @@ func CollectStatistics(
 		}
 	}
 
-	// Apply the cap AFTER counting: a type over its cap is recorded absent, and
-	// the reason is kept so a caller is told rather than left to infer it from
-	// a missing key.
+	// The cap is applied DURING the scan and aborts the run above, so nothing
+	// here can be over it — this loop only turns finished tallies into the
+	// report.
 	report := &CollectionReport{
 		Collected:      make(map[string]RecordTypeStatistic),
-		Skipped:        capped,
+		Skipped:        map[string]string{},
 		RecordsScanned: scanned,
 	}
 	for name, c := range counts {
@@ -428,7 +447,7 @@ func CollectStatistics(
 	if storeSubspace == nil {
 		return report, nil
 	}
-	nowNanos, wErr := writeStatistics(ctx, db, stats, storeSubspace, report, collectedAtVersion)
+	nowNanos, wErr := writeStatistics(ctx, db, stats, storeSubspace, report, collectedAtVersion, opts.Tags)
 	if wErr != nil {
 		return nil, wErr
 	}
@@ -461,11 +480,15 @@ func writeStatistics(
 	storeSubspace subspace.Subspace,
 	report *CollectionReport,
 	version int64,
+	tags []string,
 ) (int64, error) {
 	target := stats.forStore(storeSubspace)
 	var nanos int64
 	_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 		tx := rtx.Transaction()
+		if err := applyTags(tx, tags); err != nil {
+			return nil, err
+		}
 		// The DST seam, not time.Now: these bytes are persisted.
 		nanos = rtx.Env().Now().UnixNano()
 		begin, end := target.FDBRangeKeys()
@@ -513,6 +536,7 @@ func ReadStatisticsAt(
 	db *FDBDatabase,
 	stats StatisticsSubspace,
 	storeSubspace subspace.Subspace,
+	tags ...string,
 ) (StoreStatistics, bool, int64, error) {
 	target := stats.forStore(storeSubspace)
 	var out StoreStatistics
@@ -529,6 +553,9 @@ func ReadStatisticsAt(
 	// found=true while taking attempt 2's read version — stale statistics wearing
 	// a fresh stamp, which is precisely what the freshness gate exists to reject.
 	_, err := db.RunRead(ctx, func(rtx fdb.ReadTransaction) (any, error) {
+		if tErr := applyTagsTo(rtx.Options(), tags); tErr != nil {
+			return nil, tErr
+		}
 		out = StoreStatistics{PerType: make(map[string]RecordTypeStatistic)}
 		found = false
 		readVersion = 0
@@ -551,7 +578,12 @@ func ReadStatisticsAt(
 		for _, kv := range kvs {
 			key, uErr := target.Unpack(kv.Key)
 			if uErr != nil || len(key) != 1 {
-				continue
+				// Same reasoning as an undecodable VALUE below: a key this build
+				// cannot parse is a set it cannot vouch for, and skipping it
+				// returns the rest with ok=true — the partial answer the
+				// all-or-nothing contract exists to forbid.
+				malformed = true
+				return nil, nil
 			}
 			// The header is discriminated by tuple ELEMENT TYPE, not by a
 			// reserved name. A string element is a record type; the integer
@@ -569,7 +601,8 @@ func ReadStatisticsAt(
 			}
 			name, isStr := key[0].(string)
 			if !isHeader && !isStr {
-				continue
+				malformed = true
+				return nil, nil
 			}
 			st, ok := unpackStatistic(kv.Value)
 			if !ok {
@@ -615,9 +648,13 @@ func ClearStatistics(
 	db *FDBDatabase,
 	stats StatisticsSubspace,
 	storeSubspace subspace.Subspace,
+	tags ...string,
 ) error {
 	target := stats.forStore(storeSubspace)
 	_, err := db.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+		if tErr := applyTags(rtx.Transaction(), tags); tErr != nil {
+			return nil, tErr
+		}
 		begin, end := target.FDBRangeKeys()
 		rtx.Transaction().ClearRange(fdb.KeyRange{Begin: fdb.Key(begin.FDBKey()), End: fdb.Key(end.FDBKey())})
 		return nil, nil

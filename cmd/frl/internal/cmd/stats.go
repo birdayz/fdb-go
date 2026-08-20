@@ -165,12 +165,17 @@ func newStatsCollectCmd() *cobra.Command {
 			"Cost is proportional to the store: this is an offline job. It " +
 			"scans in continuation-driven batches so no single transaction " +
 			"approaches FDB's 5s limit, whatever the store's size.\n\n" +
-			"--max-records-per-type bounds the work spent on one type. A type " +
-			"that EXCEEDS the cap is recorded as ABSENT, never as a partial " +
-			"count — and because the planner requires every type to be " +
-			"present, one capped type disables statistics for the whole " +
-			"schema. That is the intended trade: no statistic beats a wrong " +
-			"one.\n\n" +
+			"--max-records-per-type ABORTS the collection as soon as any one " +
+			"table exceeds that many rows, and stores nothing. It aborts rather " +
+			"than skipping the table because skipping cannot help: the planner " +
+			"needs every table present, so a skipped one disables statistics " +
+			"for the whole schema anyway — the old behaviour paid for a full " +
+			"scan and produced nothing usable. Aborting reaches the same place " +
+			"having read far less, and names the table that blew the budget.\n\n" +
+			"NOTE: an aborted run leaves any PREVIOUS statistics in place. " +
+			"`stats show` will keep reporting those until they expire, so a " +
+			"failed collection does not disable a working schema — but it also " +
+			"does not refresh it. Clear them if that is not what you want.\n\n" +
 			"Collection does not invalidate already-cached plans; connections " +
 			"pick the new counts up as their cached plans age out.",
 		Args: cobra.NoArgs,
@@ -213,7 +218,7 @@ func newStatsCollectCmd() *cobra.Command {
 	}
 	addr.register(c)
 	c.Flags().IntVar(&batchSize, "batch-size", 0, "records scanned per transaction (0 = library default, 1000)")
-	c.Flags().Int64Var(&maxRecordsPerType, "max-records-per-type", 0, "record a type as ABSENT once it exceeds this many rows (0 = no cap)")
+	c.Flags().Int64Var(&maxRecordsPerType, "max-records-per-type", 0, "abort the collection and store nothing once any one table exceeds this many rows (0 = no cap)")
 	c.Flags().BoolVar(&allSchemas, "all-schemas", false, "collect for EVERY schema in --database, one scan per schema, with per-schema failure isolation")
 	c.Flags().IntVar(&concurrency, "concurrency", 0, "schemas collected in parallel with --all-schemas (0 = fleet default)")
 	c.Flags().StringVarP(&outputFmt, "output", "o", "text", "output format: text or json")
@@ -422,6 +427,11 @@ func renderStatsStatus(
 			fmt.Fprintf(tw, "Age:\t%s of %s allowed\n",
 				renderVersionAge(st.AgeVersions), renderVersionAge(st.MaxAgeVersions))
 		}
+	}
+	if len(st.SyntheticTypes) > 0 {
+		// Naming them is the difference between a verdict and an instruction.
+		fmt.Fprintf(tw, "Synthetic types:\t%s (unmodeled by this port; statistics are refused for the schema)\n",
+			strings.Join(st.SyntheticTypes, ", "))
 	}
 	if len(st.MissingTypes) > 0 {
 		fmt.Fprintf(tw, "Missing types:\t%s\n", strings.Join(st.MissingTypes, ", "))

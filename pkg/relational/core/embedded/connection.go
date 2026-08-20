@@ -1096,6 +1096,9 @@ func (c *EmbeddedConnection) CollectStatistics(
 	ctx context.Context,
 	opts recordlayer.CollectOptions,
 ) (*recordlayer.CollectionReport, error) {
+	// The connection owns the tags; a caller passing CollectOptions should not
+	// have to know they exist.
+	opts.Tags = c.statisticsTags()
 	if c.closed.Load() {
 		return nil, driver.ErrBadConn
 	}
@@ -1115,7 +1118,7 @@ func (c *EmbeddedConnection) CollectStatistics(
 	if err != nil {
 		return nil, err
 	}
-	return recordlayer.CollectStatistics(ctx, c.statisticsDB(),
+	return recordlayer.CollectStatistics(ctx, c.sess.DB,
 		func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
 			// SetSkipPossiblyRebuild + Open, never CreateOrOpen: counting rows is a
 			// READ. Opening a store runs checkPossiblyRebuild, which WRITES — a
@@ -1141,5 +1144,5 @@ func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return recordlayer.ClearStatistics(ctx, c.statisticsDB(), statsSubspace, storeSubspace)
+	return recordlayer.ClearStatistics(ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...)
 }

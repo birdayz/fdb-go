@@ -6,7 +6,6 @@ import (
 	"errors"
 	"sort"
 
-	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -129,6 +128,9 @@ type StatisticsStatus struct {
 	// MissingTypes lists schema record types with no entry, sorted. Empty
 	// unless Refusal is StatisticsIncomplete.
 	MissingTypes []string
+	// SyntheticTypes names the unmodeled joined/unnested types, when those are
+	// why the refusal happened. Empty otherwise.
+	SyntheticTypes []string
 	// ExtraTypes lists collected types the schema no longer declares, sorted.
 	// These do NOT refuse — a dropped table leaves an orphan entry and the
 	// planner simply never asks for it — but an operator wants to see them.
@@ -157,6 +159,10 @@ type statisticsGateInput struct {
 	// HasSyntheticTypes reports that the metadata declares joined or unnested
 	// types that RecordTypes() omits, so DeclaredTypes is a PARTIAL set.
 	HasSyntheticTypes bool
+	// SyntheticTypeNames names them, so a refusal can say WHICH type cost the
+	// schema its statistics. "Metadata declares unmodeled synthetic types" is
+	// otherwise a verdict an operator cannot act on.
+	SyntheticTypeNames []string
 }
 
 // StatisticsStatus reports what the planner would decide about this
@@ -203,6 +209,9 @@ func evaluateCollectedStatistics(
 		DeclaredTypes:     make([]string, 0, len(declared)),
 		HasSyntheticTypes: md.DeclaresSyntheticRecordTypes(),
 	}
+	if in.HasSyntheticTypes {
+		in.SyntheticTypeNames = md.SyntheticRecordTypeNames()
+	}
 	for name := range declared {
 		in.DeclaredTypes = append(in.DeclaredTypes, name)
 	}
@@ -218,7 +227,7 @@ func evaluateCollectedStatistics(
 	// The cluster version comes from the SAME transaction as the entry, so the
 	// freshness gate compares two numbers drawn at one instant rather than
 	// paying a second round-trip for a pair that is only meaningful together.
-	stats, ok, readVersion, rErr := recordlayer.ReadStatisticsAt(ctx, c.statisticsDB(), statsSubspace, storeSubspace)
+	stats, ok, readVersion, rErr := recordlayer.ReadStatisticsAt(ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...)
 	in.ReadErr, in.Found, in.Stats = rErr, ok, stats
 	if rErr == nil && ok {
 		// A zero version is not "the epoch", it is a read that did not happen.
@@ -268,6 +277,8 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 	// from the partial set. A statistics completeness check is both of those.
 	if in.HasSyntheticTypes {
 		st.Refusal = StatisticsSyntheticTypes
+		st.SyntheticTypes = append([]string(nil), in.SyntheticTypeNames...)
+		sort.Strings(st.SyntheticTypes)
 		return st
 	}
 
@@ -369,61 +380,21 @@ func (g *cascadesGenerator) fetchCollectedStatistics(
 // cluster version. Age is then unknown, and unknown age is not fresh.
 var errNoReadVersion = errors.New("statistics read produced no cluster version")
 
-// taggedTransactor applies the connection's OptTransactionTags to every
-// transaction opened through it.
+// statisticsTags returns the connection's FDB transaction tags, which every
+// statistics transaction must carry.
 //
-// Statistics work does not go through beginTransaction — collection is a
-// library call that opens its own transactions via FDBDatabase.Run, one per
-// batch, plus the write. That seam's comment calls itself "the single
-// transaction-creation seam in the SQL layer", and this feature made that
-// false: the heaviest job in the system, a full-store scan, was the one
-// escaping the cluster's ratekeeper.
+// Threaded as a parameter rather than wrapped around the database. Wrapping
+// means reconstructing an *FDBDatabase, and this repo's copy-method gate
+// forbids the field-by-field form precisely because a dropped field is silent —
+// the first attempt here dropped env, which swaps a persisted timestamp's
+// seeded clock for the wall clock, unreplayably, and only when tags happen to
+// be configured. A parameter is visible at every call site.
 //
-// Wrapping the database rather than threading tags through CollectStatistics'
-// signature keeps the record layer unaware of a relational option, and covers
-// every transaction the job opens — scan batches, the replacing write, the
-// planner's read and clear — instead of the ones someone remembered.
-type taggedTransactor struct {
-	inner fdb.Transactor
-	tags  []string
-}
-
-func (t taggedTransactor) apply(o fdb.TransactionOptions) error {
-	for _, tag := range t.tags {
-		if err := o.SetTag(tag); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (t taggedTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
-	return t.inner.Transact(func(tx fdb.WritableTransaction) (any, error) {
-		if err := t.apply(tx.Options()); err != nil {
-			return nil, err
-		}
-		return fn(tx)
-	})
-}
-
-func (t taggedTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
-	return t.inner.ReadTransact(func(rtx fdb.ReadTransaction) (any, error) {
-		if err := t.apply(rtx.Options()); err != nil {
-			return nil, err
-		}
-		return fn(rtx)
-	})
-}
-
-// statisticsDB returns the database statistics work should run through: the
-// session's, wrapped so the connection's transaction tags are applied. With no
-// tags configured it is the session's database unchanged, so the untagged path
-// pays nothing.
-func (c *EmbeddedConnection) statisticsDB() *recordlayer.FDBDatabase {
-	tags, ok := c.Options().Get(api.OptTransactionTags).([]string)
-	if !ok || len(tags) == 0 {
-		return c.sess.DB
-	}
-	return recordlayer.NewFDBDatabaseWithTransactor(
-		taggedTransactor{inner: c.sess.DB.Transactor(), tags: tags}, c.sess.DB.Database())
+// Why it matters at all: beginTransaction's comment calls itself "the single
+// transaction-creation seam in the SQL layer", and statistics work does not go
+// through it — collection opens its own transaction per batch. Untagged, the
+// heaviest job in the system escapes the cluster's ratekeeper.
+func (c *EmbeddedConnection) statisticsTags() []string {
+	tags, _ := c.Options().Get(api.OptTransactionTags).([]string)
+	return tags
 }
