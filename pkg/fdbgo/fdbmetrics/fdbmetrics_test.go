@@ -159,7 +159,7 @@ func TestHandler_TextExposition(t *testing.T) {
 	// Iterates `counters` itself rather than a hardcoded name list. The previous
 	// version listed five names, so a nineteenth Go-only counter was never
 	// examined -- adding one with no provenance passed, and silently falsified
-	// the 18/13/5 split in the table's own doc, which nothing checked in the ADD
+	// the split in the table's own doc, which nothing checked in the ADD
 	// direction.
 	//
 	// counterOrigin's zero value is invalid, so a counterDef that forgets to
@@ -224,9 +224,16 @@ func helpLine(body, name string) (string, bool) {
 
 // THE DOCUMENTED SPLIT IS ASSERTED IN THE ADD DIRECTION.
 //
-// `counters`' doc says 18 entries, 13 with a C++ twin and five without;
-// Handler's says four latency summaries. Nothing checked either, so adding a
-// nineteenth counter or a fifth summary left both sentences quietly false --
+// `counters`' doc states the entry count and its C++-twin split; Handler's
+// states the summary count. Nothing checked either, so adding a counter or a
+// summary left both sentences quietly false -- and those sentences are what a
+// maintainer audits the classification against.
+//
+// The numbers are NOT restated here. A guard's prose should name WHERE a claim
+// lives, never repeat WHAT it says: a location stays true as the table grows,
+// a value does not, and a restatement above the assertion is one nothing can
+// ever redden for. The literals live in the assertion, which is the one place
+// a change has to walk past.
 // and those sentences are what a maintainer audits the classification against.
 //
 // Deliberately brittle: a legitimate addition SHOULD fail here, because the
@@ -255,10 +262,11 @@ func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
 			len(counters), cppTwin, goOnly, other)
 	}
 	if len(summaries) != 4 {
-		t.Errorf("table is %d summaries; the word \"four\" appears in the package "+
-			"doc and Handler's doc, and `summaries`' own doc encodes the same "+
-			"claim by enumerating them. Three homes, two spellings. Fixing only "+
-			"the nearest is how the last stale sentence survived", len(summaries))
+		t.Errorf("table is %d summaries. The CLAIM about how many there are lives "+
+			"in the package doc, in Handler's doc, and in `summaries`' own doc, "+
+			"which encodes it by enumerating them. Fix all three -- and note the "+
+			"word alone is not the claim; it also appears in `counters`' doc about "+
+			"something else", len(summaries))
 	}
 }
 
@@ -286,32 +294,53 @@ func declaresGoOnly(help string) bool {
 	return false
 }
 
-// THE PROVENANCE VOCABULARY IS PINNED, IN BOTH DIRECTIONS.
+// THE PROVENANCE VOCABULARY IS GUARDED ON THREE INDEPENDENT AXES.
 //
 // Sharing declaresGoOnly between the two origin arms stopped the vocabulary
-// being EXTENDED on one side only. It does not stop it being BROADENED: the
-// marker set {"Go"} passes every existing test, because no C++-twin help text
-// happens to contain "Go" while all five Go-only ones do. The arms are exact
-// complements only over the vocabulary the current help strings exercise, which
-// is a property of today's prose, not of the predicate.
+// being EXTENDED on one side only. It does not stop it drifting, and the ways
+// it can drift are not reducible to each other. Each axis below was added after
+// a mutation walked past the ones already here, and each fires ALONE for its
+// own case -- measured, not assumed:
 //
-// So each marker is pinned as EARNED -- some real help line must need it -- and
-// a negative control pins that the predicate does not fire on text that merely
-// mentions the words. Broadening to a substring of ordinary English now fails.
-func TestProvenanceVocabularyIsEarnedAndNarrow(t *testing.T) {
+//   - the LITERAL pin, on the slice. Broadening a marker to a commoner word
+//     ("Go aggregate" -> "aggregate") keeps every member load-bearing and every
+//     control passing, so only this fires.
+//   - NECESSITY, on the prose. Drifting a help text so one marker is no longer
+//     the sole carrier of any line ("(Go-only aggregate;") leaves the slice
+//     untouched, so only this fires. It also catches a marker that is a
+//     substring of another, which an occurrence check cannot.
+//   - the NEGATIVE CONTROL, on the predicate. {"Go"} passes the other two --
+//     no C++-twin help contains "Go" while every Go-only one does -- and fails
+//     here.
+//
+// The arms are exact complements only over the vocabulary the current help
+// strings exercise, which is a property of today's prose rather than of the
+// predicate. That is what the three axes together replace.
+func TestProvenanceVocabularyIsGuarded(t *testing.T) {
 	t.Parallel()
 
 	body := renderExposition(t)
 
 	// The vocabulary itself, pinned to LITERALS rather than derived from the
-	// same slice the predicate reads. Everything below leaves goOnlyMarkers as
-	// its own oracle: necessity asks whether each member is load-bearing, which
-	// stays true under a broadening that keeps every member load-bearing.
+	// same slice the predicate reads. NECESSITY below leaves goOnlyMarkers as its
+	// own oracle -- it asks whether each member is load-bearing, which stays true
+	// under a broadening that keeps every member load-bearing. The negative
+	// control does not: it tests the predicate against fixed strings.
 	// Changing "Go aggregate" to "aggregate" survives it -- the retries help line
 	// still supplies the only hit for that member, and no twin help contains the
 	// word -- while the predicate now accepts ordinary prose.
 	//
 	// A literal is the one oracle a change to the slice cannot move with it.
+	//
+	// It does NOT subsume the necessity loop below, and neither subsumes it:
+	// the literal watches the SLICE, necessity watches the PROSE. Drifting a help
+	// text to "(Go-only aggregate;" fires necessity alone; broadening a marker
+	// fires the literal alone. Written down because a guard that never fires on
+	// its own reads as dead code and gets deleted in a later cleanup.
+	//
+	// The literal also disambiguates necessity, which under redundancy flags BOTH
+	// members of a pair -- correct, but a maintainer acting on that alone could
+	// delete the canonical one.
 	if want := []string{"Go-only", "Go aggregate"}; !slices.Equal(goOnlyMarkers, want) {
 		t.Errorf("goOnlyMarkers = %q, want %q. These are the canonical provenance "+
 			"spellings; widening one to a commoner word lets non-provenance prose "+
