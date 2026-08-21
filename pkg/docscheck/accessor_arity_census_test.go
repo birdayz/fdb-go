@@ -384,15 +384,17 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 func TestAccessorArityClassCounts(t *testing.T) {
 	t.Parallel()
 
-	// RFC-232's exact views leave eight legitimate single-slot declines and
-	// twenty arity-tolerant path operations. Nested-path GROUP BY is shipped,
-	// so blocker/live-defect/uncertain are zero-ratchet classes.
+	// RFC-232's exact views leave some legitimate single-slot declines and some
+	// arity-tolerant path operations; the `pinned` map below is where those
+	// counts are stated and asserted. Nested-path GROUP BY is shipped, so
+	// blocker/live-defect/uncertain are zero-ratchet classes.
 	//
-	// The twentieth (c) is values.DisplayColumnName, added when the projection
-	// label authority stopped splitting a rendered name at its last dot and
-	// started reading the leaf out of the resolved accessors. The DECLINE count
-	// did not move with it, which is the reading that matters: the conversion
-	// added an arity-TOLERANT site, not another single-slot requirement.
+	// values.DisplayColumnName is one of the arity-tolerant sites, added when
+	// the projection label authority stopped splitting a rendered name at its
+	// last dot and started reading the leaf out of the resolved accessors. The
+	// DECLINE count did not move with it, which is the reading that matters:
+	// the conversion added an arity-TOLERANT site, not another single-slot
+	// requirement.
 	pinned := map[accessorArityClass]int{
 		arityCorrectDecline: 8,
 		arityBlocker:        0,

@@ -63,7 +63,7 @@ import (
 // # Why this is a predicate and not a list
 //
 // The first version of this gate held a LIST of seven method names, and it
-// missed `SelectExpression.WithSwappedQuantifiers` — an 18th instance of the
+// missed `SelectExpression.WithSwappedQuantifiers` — a real instance of the
 // class, in the very file whose WithQuantifiers motivated the sweep. A
 // hardcoded enumeration of what to check is the same defect the gate exists to
 // prevent, one level up: it is correct until someone adds a name, and that
