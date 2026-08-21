@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "chaos",
     srcs = [
+        "cluster_liveness.go",
         "concurrent.go",
         "fault.go",
         "fault_read.go",
@@ -58,6 +59,7 @@ go_test(
         "chaos_unique_test.go",
         "chaos_vector_spfresh_test.go",
         "chaos_version_test.go",
+        "cluster_liveness_test.go",
         "concurrent_test.go",
         "race_test.go",
         "random_test.go",

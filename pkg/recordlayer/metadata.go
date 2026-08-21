@@ -1376,16 +1376,24 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 //	  "rejects removed type" cases); the third is half of a rename. A removal
 //	  invalidates the derived field exactly as an insertion does.
 //
-//	clear(), the maps.* helpers, and whole-map assignment: none on this map.
-//	  online_indexer.go does assign a whole recordTypes, but that is a []string
-//	  on a different struct -- it was once miscounted into this census.
+//	clear(), the maps.* helpers, and whole-map assignment: none AFTER
+//	  construction. online_indexer.go does assign a whole recordTypes, but that
+//	  is a []string on a different struct -- it was once miscounted into this
+//	  census.
+//
+//	CONSTRUCTION is a separate route with the same fail-open, and is not a
+//	mutation of this map at all, which is why it sits outside the counts above:
+//	metadata_evolution_validator_test.go and online_indexer_preset_test.go each
+//	build &RecordMetaData{recordTypes: ...} directly, so Build never runs and
+//	ambiguousFound stays false -- reported as "no collision" over a set nobody
+//	derived.
 //
 // Twelve sites, ten of them after Build.
 //
 // This matters because Build DERIVES ambiguousNames from this map, so any
 // post-Build key-set change leaves the derived field describing a declared set
-// that no longer exists. Latent today, and measured so: neither of those two
-// test files calls AmbiguousDeclaredNames, so nothing reads the stale value. A
+// that no longer exists. Latent today, and measured so: none of the THREE files
+// named above calls AmbiguousDeclaredNames, so nothing reads the stale value. A
 // test that starts doing both re-arms it.
 //
 // Copying the map here would NOT close that. All ten post-Build sites touch the

@@ -56,6 +56,11 @@ func WithFaults(faults *FaultConfig) Option {
 // Each scenario gets its own FDB subspace for isolation.
 // By default, no faults are injected — use WithFaults() or InjectOnce().
 func NewScenario(t testing.TB, realDB fdb.Database, metadata *recordlayer.RecordMetaData, opts ...Option) *Scenario {
+	t.Helper()
+	// A scenario opened after the shared container died never ran against a
+	// live cluster; fail it as that rather than letting it wait out its own
+	// deadline and report as a defect in whatever it was testing.
+	requireClusterAlive(t)
 	cfg := scenarioConfig{
 		seed:   42,
 		faults: FaultsNone,
@@ -100,6 +105,11 @@ func (s *Scenario) SaveRecord(msg proto.Message) {
 		return nil, err
 	})
 	if err != nil {
+		if noteOpFailure("SaveRecord", err) {
+			s.t.Fatalf("chaos: SaveRecord at op %d (seed=%d) hit the CLUSTER, not the "+
+				"scenario: %v -- the shared FDB container looks gone, so read this "+
+				"as a container death rather than a SaveRecord defect", s.opIndex, s.seed, err)
+		}
 		s.t.Fatalf("chaos: SaveRecord at op %d (seed=%d): %v", s.opIndex, s.seed, err)
 	}
 	s.model.Save(msg)
@@ -119,6 +129,11 @@ func (s *Scenario) DeleteRecord(pk tuple.Tuple) {
 		return nil, err
 	})
 	if err != nil {
+		if noteOpFailure("DeleteRecord", err) {
+			s.t.Fatalf("chaos: DeleteRecord at op %d (seed=%d) hit the CLUSTER, not the "+
+				"scenario: %v -- the shared FDB container looks gone, so read this "+
+				"as a container death rather than a DeleteRecord defect", s.opIndex, s.seed, err)
+		}
 		s.t.Fatalf("chaos: DeleteRecord at op %d (seed=%d): %v", s.opIndex, s.seed, err)
 	}
 	s.model.Delete(pk)
@@ -137,6 +152,11 @@ func (s *Scenario) DeleteAllRecords() {
 		return nil, store.DeleteAllRecords()
 	})
 	if err != nil {
+		if noteOpFailure("DeleteAllRecords", err) {
+			s.t.Fatalf("chaos: DeleteAllRecords at op %d (seed=%d) hit the CLUSTER, not the "+
+				"scenario: %v -- the shared FDB container looks gone, so read this "+
+				"as a container death rather than a DeleteAllRecords defect", s.opIndex, s.seed, err)
+		}
 		s.t.Fatalf("chaos: DeleteAllRecords at op %d (seed=%d): %v", s.opIndex, s.seed, err)
 	}
 	s.model.DeleteAll()
@@ -157,6 +177,11 @@ func (s *Scenario) Verify() {
 		return Verify(store, s.model), nil
 	})
 	if err != nil {
+		if noteOpFailure("Verify", err) {
+			s.t.Fatalf("chaos: Verify at op %d (seed=%d) hit the CLUSTER, not the "+
+				"scenario: %v -- the shared FDB container looks gone, so read this "+
+				"as a container death rather than a Verify defect", s.opIndex, s.seed, err)
+		}
 		s.t.Fatalf("chaos: Verify at op %d (seed=%d): %v", s.opIndex, s.seed, err)
 	}
 	violations, _ := result.([]Violation)

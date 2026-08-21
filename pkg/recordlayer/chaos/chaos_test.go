@@ -55,7 +55,12 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
-	_ = container.Terminate(ctx)
+	// A FRESH context: `ctx` above is the 2-minute bring-up budget and m.Run()
+	// has long outlived it, so terminating on it is a silent no-op that leaks
+	// the container into the next run.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Minute)
+	_ = container.Terminate(stopCtx)
+	stopCancel()
 	_ = os.Remove(tmpFile.Name())
 	os.Exit(code)
 }
