@@ -202,12 +202,6 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			s.Removed = append(s.Removed, diffEntry{Name: userNameFor(oldMeta, name), raw: name})
 		}
 	}
-	// A rename between two spellings that RENDER alike -- stored A__0B becoming
-	// stored A__B, both decoding to A__B -- would print as `- A__B` / `+ A__B`:
-	// a real change the tool cannot express. Neither metadata is ambiguous on its
-	// own, so userNameFor cannot see it; the collision exists only ACROSS the
-	// pair being diffed.
-	//
 	for name, oldT := range oldTypes {
 		newT, ok := newTypes[name]
 		if !ok {

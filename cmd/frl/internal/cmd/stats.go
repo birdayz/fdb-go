@@ -231,7 +231,9 @@ func newStatsCollectCmd() *cobra.Command {
 							return rErr
 						}
 						return fmt.Errorf("collection aborted for %s and stored nothing: %s",
-							addr.describe(), describeSkippedTypes(report.Skipped))
+							addr.describe(), describeSkippedTypes(
+								safeDecoderOver(append(storedKeysOf(report.Collected), storedKeysOf(report.Skipped)...)),
+								report.Skipped))
 					}
 					return renderCollectReport(cmd, outputFmt, addr.describe(), report, time.Since(started))
 				})
@@ -342,28 +344,28 @@ func renderCollectReport(
 	report *recordlayer.CollectionReport,
 	elapsed time.Duration,
 ) error {
-	// Same as renderStatsStatus: decoded keys with no gate here, safe because
-	// collection refuses on an ambiguous schema before producing a report
-	// (fleet's ambiguousRefusal, and connection.go's check on the single-target
-	// path).
+	// ONE decoding decision for the whole report, over the union of every stored
+	// name it prints. Deciding per-map lets a colliding pair straddle collected
+	// and skipped: neither map sees a collision and the output still shows one
+	// name for two tables. See safeDecoderOver.
+	skippedRaw := report.Skipped
+	if skippedRaw == nil {
+		skippedRaw = map[string]string{}
+	}
+	decode := safeDecoderOver(append(storedKeysOf(report.Collected), storedKeysOf(skippedRaw)...))
 	collected := make(map[string]int64, len(report.Collected))
 	for name, st := range report.Collected {
-		collected[name] = st.Count
+		collected[decode(name)] = st.Count
 	}
-	collected = userKeyedCounts(collected)
 	if outputFmt == "json" {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
-		skipped := report.Skipped
-		if skipped == nil {
-			skipped = map[string]string{}
-		}
 		return enc.Encode(statsCollectResult{
 			Schema:         schema,
 			RecordsScanned: report.RecordsScanned,
 			DurationMS:     elapsed.Milliseconds(),
 			Collected:      collected,
-			Skipped:        userKeyed(skipped),
+			Skipped:        keyedBy(decode, skippedRaw),
 		})
 	}
 	out := cmd.OutOrStdout()
@@ -390,7 +392,7 @@ func renderCollectReport(
 	if len(report.Skipped) > 0 {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "not collected (the planner refuses statistics until every type has one):")
-		skippedByUser := userKeyed(report.Skipped)
+		skippedByUser := keyedBy(decode, report.Skipped)
 		for _, name := range sortedKeys(skippedByUser) {
 			fmt.Fprintf(out, "  %s: %s\n", name, skippedByUser[name])
 		}
@@ -449,16 +451,16 @@ func renderStatsStatus(
 	// one decode. Decoding per consumer is what left the text path leaking the
 	// storage name while JSON was correct -- the same one-of-two-consumers shape
 	// that put ReadRefusal on the text path only.
-	// Keyed by the DECODED name with NO ambiguity gate, which is safe only
-	// because the reader refuses first: under a collision two stored names decode
-	// alike and would collapse into one row, pricing one table with the other's
-	// count. This function holds a status, not a metadata, so it cannot check --
-	// the dependency is pinned by embedded's TestAmbiguityRefusalCarriesNoPerTypeMap.
+	// ONE decoding decision for the whole status, over every stored name it
+	// prints: the per-type keys AND the missing/extra lists. Deciding per-list
+	// lets a colliding pair straddle two of them, so each is individually correct
+	// and the output still shows one name for two tables. See safeDecoderOver.
+	decode := safeDecoderOver(append(append(
+		storedKeysOf(st.Stats.PerType), st.MissingTypes...), st.ExtraTypes...))
 	perType := make(map[string]int64, len(st.Stats.PerType))
 	for name, s := range st.Stats.PerType {
-		perType[name] = s.Count
+		perType[decode(name)] = s.Count
 	}
-	perType = userKeyedCounts(perType)
 	if outputFmt == "json" {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
@@ -477,8 +479,8 @@ func renderStatsStatus(
 			AmbiguousTypes:       st.AmbiguousTypes,
 			ReadRefusal:          string(st.ReadRefusal),
 			ReadError:            errString(st.ReadErr),
-			MissingTypes:         userNames(st.MissingTypes),
-			ExtraTypes:           userNames(st.ExtraTypes),
+			MissingTypes:         sortedBy(decode, st.MissingTypes),
+			ExtraTypes:           sortedBy(decode, st.ExtraTypes),
 		})
 	}
 
@@ -515,14 +517,14 @@ func renderStatsStatus(
 			strings.Join(st.AmbiguousTypes, ", "))
 	}
 	if len(st.MissingTypes) > 0 {
-		fmt.Fprintf(tw, "Missing types:\t%s\n", strings.Join(userNames(st.MissingTypes), ", "))
+		fmt.Fprintf(tw, "Missing types:\t%s\n", strings.Join(sortedBy(decode, st.MissingTypes), ", "))
 	}
 	if len(st.ExtraTypes) > 0 {
 		// Orphans never refuse: the planner asks by declared type name and
 		// simply never names a dropped table. Reported so an operator can tell
 		// a stale entry from a schema they misremembered.
 		fmt.Fprintf(tw, "Orphan types:\t%s (dropped from the schema; harmless)\n",
-			strings.Join(userNames(st.ExtraTypes), ", "))
+			strings.Join(sortedBy(decode, st.ExtraTypes), ", "))
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -625,13 +627,13 @@ func sortedKeys[V any](m map[string]V) []string {
 
 // describeSkippedTypes renders why a collection abandoned its run, sorted so
 // repeated invocations are diffable.
-func describeSkippedTypes(skipped map[string]string) string {
+func describeSkippedTypes(decode func(string) string, skipped map[string]string) string {
 	// DECODED, like every other operator-facing surface. This one is the error
 	// banner of the abort path, printed directly beneath a report body that was
 	// already decoded -- so leaving it raw made ONE run of `frl stats collect`
 	// print MY$TABLE in the not-collected block and MY__1TABLE in the error line
 	// under it. Two spellings of one table, three lines apart.
-	byUser := userKeyed(skipped)
+	byUser := keyedBy(decode, skipped)
 	parts := make([]string, 0, len(byUser))
 	for _, name := range sortedKeys(byUser) {
 		parts = append(parts, name+": "+byUser[name])
@@ -759,13 +761,15 @@ func userName(storage string) string {
 // the sql.go sites and meta_diff's sortSection. A set of functions is closed
 // and the compiler keeps it honest; a set of call sites is open and rots.
 //
-//	userName        one name, round-trip guarded, no declared-set context
-//	userNames       a slice, decoded then RE-SORTED in the printed namespace
-//	userNamesFor    userNames plus the ambiguity gate, for callers holding md
-//	userNameFor     userNamesFor's single-name form
-//	userFieldName   userFieldNames's single-name form
-//	userFieldNames  key-expression fields: decoded, ORDER PRESERVED, no gate
-//	userKeyed       a map re-keyed by the decoded name
+//	userName          one name, round-trip guarded, no declared-set context
+//	userNames         a slice, decoded then RE-SORTED in the printed namespace
+//	userNamesFor      userNames plus the ambiguity gate, for callers holding md
+//	userNameFor       userNamesFor's single-name form
+//	userFieldNames    key-expression fields: decoded, ORDER PRESERVED, no gate
+//	userFieldName     userFieldNames' single-name form
+//	safeDecoderOver   ONE decision for a whole output, from every name it prints
+//	keyedBy           re-keys a map through one such decision
+//	sortedBy          decodes a list through one such decision, sorted by output
 //
 // The sort has to be restated after decoding because the two orders differ, and
 // order has to be LEFT ALONE for key expressions because position is semantic
@@ -785,24 +789,6 @@ func userNames(storage []string) []string {
 		out[i] = userName(s)
 	}
 	sort.Strings(out)
-	return out
-}
-
-// userKeyed is userName over a map's keys.
-// Two distinct storage keys CAN decode to the same user identifier -- that is
-// exactly the collision StatisticsAmbiguousNames refuses -- and this map would
-// silently keep one of them. It is unreachable rather than handled: the
-// ambiguity gate refuses such a schema before any of these renderers run, so a
-// colliding pair never reaches a report. If that gate is ever relaxed, this
-// collapses two tables into one row and says nothing.
-func userKeyed[V any](m map[string]V) map[string]V {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]V, len(m))
-	for k, v := range m {
-		out[userName(k)] = v
-	}
 	return out
 }
 
@@ -874,44 +860,74 @@ func userFieldNames(fields []string) []string {
 // record_type resolving to the wrong table.
 func userFieldName(field string) string { return userName(field) }
 
-// userKeyedCounts re-keys a per-type count map to SQL identifiers, falling back
-// to the STORED keys if any two of them decode alike.
+// safeDecoderOver decides ONE decoding policy for a whole rendered output, from
+// every stored name that output will print.
 //
-// Self-contained on purpose. These renderers hold a report or a status, never a
-// metadata, so they cannot ask AmbiguousDeclaredNames. They used to rely on the
-// reader and both collect paths refusing an ambiguous schema first -- true, but
-// non-local: remove or bypass any of those guards and this silently overwrote
-// one colliding type with another's count, one row short and no error.
+// Per-MAP decisions are not enough, and the split is easy to miss: harden
+// `collected` and `skipped` separately and a pair can straddle them --
+// collected {A__B}, skipped {A__0B}. Neither map sees a collision, each is
+// individually correct, and the printed report still shows A__B twice for two
+// different stored types. The decision has to range over the union of what the
+// output prints, which is why this takes the names rather than the maps.
 //
-// The collapse needs no metadata to detect: if decoding produces fewer keys
-// than it consumed, two stored names landed on one. Same all-or-nothing rule as
-// everywhere else -- under a collision, stored names for every row.
-func userKeyedCounts(byStorage map[string]int64) map[string]int64 {
-	stored := func() map[string]int64 {
-		out := make(map[string]int64, len(byStorage))
-		for k, v := range byStorage {
-			out[k] = v
-		}
-		return out
+// Returns userName when decoding is unambiguous, and identity otherwise: the
+// same all-or-nothing rule the diff and the completer use.
+func safeDecoderOver(stored []string) func(string) string {
+	identity := func(s string) string { return s }
+	all := make(map[string]struct{}, len(stored))
+	for _, s := range stored {
+		all[s] = struct{}{}
 	}
-
-	out := make(map[string]int64, len(byStorage))
-	for s, v := range byStorage {
+	decoded := make(map[string]struct{}, len(stored))
+	for _, s := range stored {
 		d := userName(s)
-		// AMBIGUOUS: this row would print under a name that is a DIFFERENT
-		// entry's stored name, so a reader cannot tell which table it means.
-		if _, isOthersStoredName := byStorage[d]; isOthersStoredName && d != s {
-			return stored()
+		// The decoded spelling is a DIFFERENT entry's stored name, so the row
+		// would print under a label that means another table.
+		if _, isOthers := all[d]; isOthers && d != s {
+			return identity
 		}
-		out[d] = v
+		// Two stored names decoding alike would lose a row outright. Measured over
+		// 2730 valid proto names (~3.7M pairs) this arm never fires -- but the
+		// reason is the arm ABOVE, not userName's round-trip guard: 52 of those
+		// pairs collapse if the ambiguity check is removed. The round-trip guard
+		// only covers the case where BOTH names decode. Kept because "unreachable
+		// because of a check three lines up" is the non-local reasoning this file
+		// keeps getting wrong.
+		if _, dup := decoded[d]; dup {
+			return identity
+		}
+		decoded[d] = struct{}{}
 	}
-	// COLLAPSE: two stored names decoding to one key would lose a row outright.
-	// Unreachable while userName round-trip guards -- if s1 != s2 both decoded to
-	// d, encode(d) equals at most one of them, so the guard suppresses the other
-	// -- but checked rather than argued, because that guard lives one function
-	// away and non-local arguments are what this file keeps getting wrong.
-	if len(out) != len(byStorage) {
-		return stored()
+	return userName
+}
+
+// storedKeysOf collects a map's keys, for feeding safeDecoderOver.
+func storedKeysOf[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
+	return out
+}
+
+// keyedBy re-keys a map through one decoding decision.
+func keyedBy[V any](decode func(string) string, m map[string]V) map[string]V {
+	out := make(map[string]V, len(m))
+	for k, v := range m {
+		out[decode(k)] = v
+	}
+	return out
+}
+
+// sortedBy decodes a list through one decision and sorts by what it prints.
+func sortedBy(decode func(string) string, stored []string) []string {
+	if stored == nil {
+		return nil
+	}
+	out := make([]string, len(stored))
+	for i, s := range stored {
+		out[i] = decode(s)
+	}
+	sort.Strings(out)
 	return out
 }

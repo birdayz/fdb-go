@@ -1124,7 +1124,7 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 		t.Parallel()
 		// The banner is built by describeSkippedTypes and printed BELOW an
 		// already-decoded body, so a raw name here contradicts the lines above it.
-		got := describeSkippedTypes(map[string]string{storage: "exceeds MaxRecordsPerType"})
+		got := describeSkippedTypes(userName, map[string]string{storage: "exceeds MaxRecordsPerType"})
 		if !strings.Contains(got, sql) {
 			t.Errorf("the abort banner does not name the table by its SQL identifier: %s", got)
 		}
@@ -1139,7 +1139,7 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 		// helper sorts in storage space or user space. A__0B decodes to A__B and
 		// A__1B decodes to A$B, so the two orders DISAGREE: storage-sorted prints
 		// A__B first, user-sorted prints A$B first.
-		got := describeSkippedTypes(map[string]string{
+		got := describeSkippedTypes(userName, map[string]string{
 			"A__0B": "storage-first",
 			"A__1B": "user-first",
 		})
@@ -1240,41 +1240,53 @@ func TestStats_SyntheticTypeNamesAreRenderedVerbatim(t *testing.T) {
 	}
 }
 
-// A PER-TYPE MAP NEVER PRINTS ONE TABLE UNDER ANOTHER.S NAME.
+// ONE OUTPUT NEVER PRINTS TWO TABLES UNDER ONE NAME, EVEN ACROSS ITS LISTS.
 //
-// Decoding is not injective: stored MY__1TABLE and MY__01TABLE decode to
-// MY$TABLE and MY__1TABLE, and a schema declaring both means one decoded key
-// can collide with another stored key. Keyed naively, one row silently carries
-// the other's count — one row short, no error, wrong numbers.
+// Stored MY__1TABLE and MY__01TABLE decode to MY$TABLE and MY__1TABLE, so the
+// second would print under the FIRST one's stored name and a reader could not
+// tell which table it means.
 //
-// This used to be safe only because the reader and both collect paths refuse an
-// ambiguous schema first. That is true and NON-LOCAL: these renderers hold a
-// report or a status, never a metadata, so they could not check. Now they can,
-// because the collapse is visible without one — fewer keys out than in.
-func TestPerTypeCountsNeverCollapseTwoTablesIntoOneRow(t *testing.T) {
+// The decision has to range over the whole OUTPUT, not each map: harden
+// `collected` and `skipped` separately and the pair straddles them — one name
+// in each, neither map sees a collision, each is individually correct, and the
+// printed report still shows the same label twice for two different
+// stored types. That is the shape this drives.
+func TestOneOutputNeverPrintsTwoTablesUnderOneName(t *testing.T) {
 	t.Parallel()
 
-	// MY__01TABLE decodes to MY__1TABLE, which is the OTHER key verbatim.
 	const a, b = "MY__1TABLE", "MY__01TABLE"
 	if recordlayer.ToUserIdentifier(b) != a {
-		t.Fatalf("fixture is vacuous: %q decodes to %q, not %q — no collision arises",
-			b, recordlayer.ToUserIdentifier(b), a)
+		t.Fatalf("fixture is vacuous: %q decodes to %q, not %q", b, recordlayer.ToUserIdentifier(b), a)
 	}
 
-	got := userKeyedCounts(map[string]int64{a: 9, b: 4000})
-	if len(got) != 2 {
-		t.Fatalf("two stored types collapsed into %d row(s): %v", len(got), got)
-	}
-	// Under the ambiguity every key falls back to its stored spelling, so no row
-	// is labelled with a name that means another table.
-	if got[a] != 9 || got[b] != 4000 {
-		t.Errorf("rows are not keyed by their own stored names: %v (want %s=9, %s=4000)", got, a, b)
-	}
+	t.Run("straddling two maps", func(t *testing.T) {
+		t.Parallel()
+		// One name in each map — the case a per-map guard cannot see.
+		decode := safeDecoderOver([]string{a, b})
+		if got := decode(a); got != a {
+			t.Errorf("decode(%q) = %q; under a collision every name must stay stored", a, got)
+		}
+		if got := decode(b); got != b {
+			t.Errorf("decode(%q) = %q; under a collision every name must stay stored", b, got)
+		}
+	})
 
-	// And with no collision the keys are still DECODED — the fallback must not
-	// fire spuriously and leave every operator reading storage names.
-	plain := userKeyedCounts(map[string]int64{"MY__1TABLE": 7, "OTHER": 3})
-	if _, ok := plain["MY$TABLE"]; !ok {
-		t.Errorf("no collision here, so keys must be SQL identifiers: %v", plain)
-	}
+	t.Run("no collision still decodes", func(t *testing.T) {
+		t.Parallel()
+		// The fallback must not fire spuriously, or every operator reads storage
+		// names forever.
+		decode := safeDecoderOver([]string{a, "OTHER"})
+		if got := decode(a); got != "MY$TABLE" {
+			t.Errorf("decode(%q) = %q, want the SQL identifier MY$TABLE", a, got)
+		}
+	})
+
+	t.Run("keyedBy applies one decision to a whole map", func(t *testing.T) {
+		t.Parallel()
+		decode := safeDecoderOver([]string{a, b})
+		got := keyedBy(decode, map[string]int64{a: 9, b: 4000})
+		if len(got) != 2 || got[a] != 9 || got[b] != 4000 {
+			t.Errorf("rows are not keyed by their own stored names: %v", got)
+		}
+	})
 }
