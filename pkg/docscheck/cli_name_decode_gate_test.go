@@ -40,6 +40,13 @@ import (
 //     name. Lines naming a lookup helper are allowed, so a genuinely new lookup
 //     spelling slips through. Extend the allowlist, with the reason written next
 //     to it.
+//   - THE `// storage-compare` MARKER IS TRUSTED, NOT VERIFIED. The gate checks
+//     that the line ENDS with it — anchored, because an unanchored check was
+//     laundered two ways on the first try: past-tense prose
+//     (`// storage-compared above, so this is fine`) and the token inside a
+//     STRING LITERAL. Anchoring stops both, but nothing stops someone marking a
+//     genuine render. The marker records an intent that reading the line can
+//     confirm; it does not prove one.
 //   - IT IS LINE-BASED. A raw read on one line whose value is decoded on
 //     another reads as a leak (see the `names[i] = rt.Name` allowance) or, worse,
 //     the reverse.
@@ -128,7 +135,7 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 			// wrong: `nameRaw := rt.Name; return nameRaw` is a genuine render that
 			// a natural variable name silently exempted. A marker nobody writes by
 			// accident is the point; a naming habit is not.
-			if strings.Contains(line, "// storage-compare") {
+			if strings.HasSuffix(trimmed, "// storage-compare") {
 				continue
 			}
 			var ok bool

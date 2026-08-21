@@ -208,7 +208,11 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	// exactly the colliding entries, the same treatment the field lists get.
 	for ai, aRaw := range addedRaw {
 		for ri, rRaw := range removedRaw {
-			if aRaw != rRaw && s.Added[ai].Name == s.Removed[ri].Name {
+			// No aRaw != rRaw guard: the buckets are disjoint by construction (a
+			// name in Added is absent from oldTypes, and vice versa), so the raw
+			// spellings can never be equal here. Writing one would read as
+			// load-bearing when it is not.
+			if s.Added[ai].Name == s.Removed[ri].Name {
 				s.Added[ai].Name = aRaw
 				s.Removed[ri].Name = rRaw
 			}
