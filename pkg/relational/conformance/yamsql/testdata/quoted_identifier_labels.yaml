@@ -254,18 +254,22 @@ tests:
       - [2]
       - [3]
   # NO column-alias list, so the CTE's output names come from the SEED's own
-  # projection rather than from an alias override — the branch that folded, and
-  # the ONLY arm here that drives it. The temp table the self-reference scans is
-  # keyed by this name. Mutation-verified: restoring the fold reddens this arm
-  # and leaves the alias arms above green.
+  # projection rather than from an alias override. The temp table the
+  # self-reference scans is keyed by that name.
   #
-  # This comment used to add that the fold's sibling fourteen lines away
-  # assigned the name verbatim, so the two paths spelled one column two ways.
-  # That was invented — the sibling's name is already canonical, so it AGREES.
-  # The follow-up claim that the sibling is dead code was wrong too: the
-  # override needs the alias arity to MATCH, and the arity validator exempts
-  # recursive CTEs. The reason to carry the name verbatim is that it IS the
-  # name, not a disagreement and not a dead branch.
+  # THIS ARM PINS ONE OF TWO SITES that decide it, and saying otherwise is how
+  # the previous wording was wrong: measured by folding each site separately,
+  # this arm — whose seed PROJECTS explicitly — reddens when
+  # extractOutputProjectionNames folds, and does NOT move when the star-seed
+  # derivation below it folds. The star-seed arm further down is the sentinel
+  # for that one. Neither covers both.
+  #
+  # A retracted claim also lived here and is deleted rather than reworded: that
+  # the arity validator exempts recursive CTEs, so a mismatched alias list
+  # reaches the seed-derived path. It does not — `WITH RECURSIVE d(a) AS
+  # (SELECT * FROM t1 …)` is rejected 42F10 by the semantic-layer checks, which
+  # do not exempt recursion. The Go comment at the site records that; this copy
+  # was left behind because the grep for it was never run.
   - query: WITH RECURSIVE d AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
     unordered: true
     columns: ["id"]
@@ -288,3 +292,29 @@ tests:
       - [1]
       - [2]
       - [3]
+  # A TWO-COLUMN star seed and a DERIVED-TABLE star seed. The arm above pins the
+  # one-column case, which is the easiest of the shapes the gate removal newly
+  # admits; these two are the ones a reviewer asked for by name after finding
+  # that a single easy arm had twice been credited with more than it covers.
+  - query: WITH RECURSIVE d AS (SELECT * FROM QCASE WHERE id = 1 UNION ALL SELECT d.id + 1, d."KeepCase", d.plain FROM d WHERE d.id < 3) SELECT d.id FROM d ORDER BY d.id
+    columns: ["ID"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT "id" FROM q1) x WHERE x."id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # A JOIN seed still DECLINES, and the arm exists to pin the DIAGNOSTIC rather
+  # than the rejection. Removing the alias-list gate routed this shape from
+  # `recursive CTE seed width N disagrees with 0 output columns` — which says
+  # what is wrong — to a type-incompatibility message that does not, because
+  # legColumns' join arm publishes dotted names and no `d.<col>` can resolve
+  # against them. The derivation declines on a dotted field to keep the useful
+  # message; the shape has never planned, on this path or the alias one.
+  - query: WITH RECURSIVE d AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d."id" FROM d) SELECT * FROM d
+    error_code: "0AF00"

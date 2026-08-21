@@ -10245,16 +10245,25 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	//     logical_predicate.go) do not exempt recursive CTEs. A mismatched
 	//     alias list is rejected 42F10 long before it arrives here.
 	//
-	// WHAT IS PROVABLE, by deletion rather than by reading: the fallback block
-	// is live and load-bearing through the LENGTH of `seedSrc`, not the value
-	// of `seedOut`. Remove it and a matched-arity join seed fails exactly as an
-	// alias-free one used to — `recursive CTE seed width N disagrees with 0
-	// output columns`.
+	//  4. "It is load-bearing through the LENGTH of `seedSrc`, not the value of
+	//     `seedOut`." Both halves false, and this one is mine twice over: the
+	//     measurement it rested on was taken BEFORE the alias-list gate came
+	//     off the block below, and I carried it across the change without
+	//     re-taking it. `seedSrc` has no read after its own gate, so its writes
+	//     there are dead stores — deleting them builds clean and leaves the
+	//     2618-query plan golden byte-identical.
 	//
-	// `seedOut`'s own value reaches the temp-table key only through the
-	// NO-ALIAS path, since an alias list of matching length overrides it below.
-	// The alias-free arm in quoted_identifier_labels.yaml drives that, and it
-	// reddens under the fold while the alias arms stay green.
+	// WHAT THE BLOCK DELIVERS IS `seedOut`'s VALUE, and removing that gate made
+	// the no-alias path — where that value IS the published output schema — its
+	// principal consumer. An alias list of matching length overrides it, so the
+	// alias arms cannot see it at all.
+	//
+	// TWO sites decide that value and they are pinned by DIFFERENT arms, which
+	// took a fold at each to establish: folding extractOutputProjectionNames
+	// above reddens the alias-free arm whose seed PROJECTS explicitly, and
+	// folding `seedOut[i] = f.Name` below reddens the alias-free arm whose seed
+	// is a STAR. Neither arm covers both, and saying "the alias-free arm drives
+	// it" was true of the first while the second existed.
 	seedSrc := extractOuterProjectionColumns(seedBranches[0])
 	seedOut := make([]string, len(seedSrc))
 	copy(seedOut, extractOutputProjectionNames(seedBranches[0]))
@@ -10283,7 +10292,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// Found by a probe run to disprove a claim in the comment above, which is
 	// the second reason that comment is worth reading.
 	if len(seedSrc) == 0 {
-		if fields := t.derivedOutputColumns(seedBranches[0]); len(fields) > 0 {
+		if fields := t.derivedOutputColumns(seedBranches[0]); len(fields) > 0 && !anyDottedFieldName(fields) {
 			seedSrc = make([]string, len(fields))
 			seedOut = make([]string, len(fields))
 			for i, f := range fields {
@@ -10855,4 +10864,28 @@ func findUnsafeFuncInPredicate(p predicates.QueryPredicate) string {
 		return true
 	})
 	return found
+}
+
+// anyDottedFieldName reports whether any derived field carries a QUALIFIED name.
+//
+// It gates the recursive-CTE seed-schema derivation, and the reason is a
+// diagnostic rather than a correctness one. legColumns' JOIN arm returns dotted
+// names (`T1.ID`, `T2.W`), so deriving a seed schema from a join seed keys the
+// temp table by names no `d.<col>` reference can resolve. That shape has never
+// planned — the alias path fails on it identically — but without this gate it
+// stopped failing with `recursive CTE seed width N disagrees with 0 output
+// columns`, which says what is wrong, and started failing with `no exact common
+// result row: column 1 types LONG NULL and UNKNOWN NULL are incompatible`,
+// which does not.
+//
+// Declining here keeps the useful message. Making a join seed actually work
+// needs legColumns to publish bare names for that arm, which is a different
+// change with its own blast radius.
+func anyDottedFieldName(fields []values.Field) bool {
+	for _, f := range fields {
+		if strings.Contains(f.Name, ".") {
+			return true
+		}
+	}
+	return false
 }

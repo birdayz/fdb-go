@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2618 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
+# files=359 queries=2621 dml=157 non_query=104 plan_errors=272 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14417,6 +14417,29 @@ shape:     RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
+=== quoted_identifier_labels.yaml#27
+sql:   WITH RECURSIVE d AS (SELECT * FROM QCASE WHERE id = 1 UNION ALL SELECT d.id + 1, d."KeepCase", d.plain FROM d WHERE d.id < 3) SELECT d.id FROM d ORDER BY d.id
+plan:  Project([_current.ID#0], InMemorySort([_current.ID#0 ASC], RecursiveDfsJoin(PREORDER, Scan(QCASE, [=]), Project([(_current.ID#0 + 1), _current.KeepCase#1, _current.PLAIN#2], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryRecursiveDfsJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryTempTableScanPlan
+=== quoted_identifier_labels.yaml#28
+sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT "id" FROM q1) x WHERE x."id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+plan:  RecursiveDfsJoin(PREORDER, PredicatesFilter(Project([_current.id#0], Scan(Q1)), [1 preds]), Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
+shape: RecordQueryRecursiveDfsJoinPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryTempTableScanPlan
+=== quoted_identifier_labels.yaml#29 expect-error=0AF00
+sql:   WITH RECURSIVE d AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d."id" FROM d) SELECT * FROM d
+plan:  <PLAN-ERROR: 0AF00: recursive CTE seed width 4 disagrees with 0 output columns>
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))
