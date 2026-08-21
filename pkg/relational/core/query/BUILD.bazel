@@ -74,6 +74,7 @@ go_test(
         "name_resolves_in_columns_test.go",
         "plan_test.go",
         "projection_segments_test.go",
+        "proto_field_lookup_test.go",
         "qualifier_recovery_wiring_test.go",
         "recursive_cte_test.go",
         "rfc232_test_helpers_test.go",
@@ -101,6 +102,7 @@ go_test(
         "//pkg/relational/core/query/logical",
         "@org_golang_google_protobuf//proto",
         "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
         "@org_golang_google_protobuf//types/descriptorpb",
     ],
 )

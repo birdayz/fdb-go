@@ -237,7 +237,7 @@ func TestQualRecWiring_DerivedUnnestSourceCountsEveryArm(t *testing.T) {
 				"no-counterparty and never as a disagreement",
 		},
 		{
-			name: "bare",
+			name: "CARRIED undotted",
 			proj: &logical.LogicalProject{
 				Projections:    []string{"ARR"},
 				ProjectionRefs: []logical.ColumnRef{{Present: true, Bare: "ARR"}},
@@ -247,6 +247,21 @@ func TestQualRecWiring_DerivedUnnestSourceCountsEveryArm(t *testing.T) {
 			why: "a present triple with no dot. It recorded `bare` while the site split " +
 				"unconditionally; CARRIED is right now, and the distinction is not " +
 				"cosmetic — `bare` counts toward splitPopulation and CARRIED does not",
+		},
+		{
+			name: "bare — absent triple, no dot",
+			proj: &logical.LogicalProject{
+				Projections:    []string{"ARR"},
+				ProjectionRefs: nil,
+			},
+			src:   "ARR",
+			class: values.QualRecBare,
+			why: "THE ARM THE PRESENT-TRIPLE ROW ABOVE STOPPED COVERING. Turning that " +
+				"row's fixture Present flipped it to CARRIED and left QualRecBare " +
+				"unreached by this test — and the corpora reach only CARRIED and the " +
+				"dotted MANUFACTURED fallback, so bare classification could break with " +
+				"everything green. Absent triple AND no dot is the one input that still " +
+				"produces it",
 		},
 	}
 

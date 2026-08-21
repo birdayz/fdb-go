@@ -1854,9 +1854,20 @@ func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflec
 	// ToProtoBufCompliantName errors on a name that cannot be represented at
 	// all; that is a miss here, not a failure, because the caller's question is
 	// only whether this descriptor has the field.
+	// BOTH ATTEMPTS ARE REPEATED ON THE ESCAPED NAME, exact then fold, because
+	// escaping and case are INDEPENDENT axes and this function promises both.
+	// A hand-written lowercase proto exposing `a__0b` as SQL `a__b` is the
+	// shape that needs the pair: an unquoted reference arrives folded `A__B`,
+	// escapes to `A__0B`, and only the fold finds `a__0b`. An exact-only
+	// escaped attempt reports a valid array field as an undefined column.
 	if escaped, err := protoname.ToProtoBufCompliantName(name); err == nil && escaped != name {
 		if fd := fs.ByName(protoreflect.Name(escaped)); fd != nil {
 			return fd
+		}
+		for i := 0; i < fs.Len(); i++ {
+			if f := fs.Get(i); strings.EqualFold(string(f.Name()), escaped) {
+				return f
+			}
 		}
 	}
 	return nil
