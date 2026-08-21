@@ -136,6 +136,17 @@ func TestProtoFieldLookupTriesCaseAndEscapingTogether(t *testing.T) {
 				"answer is never made ambiguous by the existence of a case variant",
 		},
 		{
+			name:    "the exact match wins from BEHIND two folded candidates",
+			storage: []string{"a__2b", "A__2b", "A__2B"},
+			lookup:  "A.B",
+			want:    "A__2B",
+			why: "THE ARM THAT FORCED TWO PASSES. A single pass that decides ambiguity " +
+				"as it goes meets the two folded candidates first, declines, and never " +
+				"reaches the exact one — so a valid field resolves or not depending on " +
+				"DESCRIPTOR ORDER, which is not a property of the query. The row above " +
+				"passes under either implementation; only this one separates them",
+		},
+		{
 			name:    "two fields folding to one spelling, with no exact match, are declined",
 			storage: []string{"a__2b", "A__2b"},
 			lookup:  "A.B",

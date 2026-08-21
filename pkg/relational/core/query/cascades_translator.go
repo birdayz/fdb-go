@@ -1843,48 +1843,50 @@ func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflec
 		}
 	}
 	// THE ARGUMENT IS A SQL NAME AND THE DESCRIPTOR HOLDS STORAGE NAMES, so a
+	// THE ARGUMENT IS A SQL NAME AND THE DESCRIPTOR HOLDS STORAGE NAMES, so a
 	// name DDL had to escape is invisible to both attempts above. A column
 	// declared `"a.b"` is stored as `a__2b`; it comes back through
 	// ToUserIdentifier everywhere a user sees it, and arrives here spelled
 	// `a.b`, which is neither an exact nor a case-insensitive match for
-	// anything. Apply the same escaping DDL applied, and only after the two
-	// unescaped attempts have missed — an unescaped name is the overwhelming
-	// majority and must not pay for this.
+	// anything.
 	//
-	// ToProtoBufCompliantName errors on a name that cannot be represented at
-	// all; that is a miss here, not a failure, because the caller's question is
-	// only whether this descriptor has the field.
-	// DECODE THE STORAGE NAMES, DO NOT ENCODE THE QUERY NAME. Escaping and case
-	// are INDEPENDENT axes and this function promises both, so a hand-written
-	// lowercase proto exposing `a__0b` as SQL `a__b` needs the pair: an
-	// unquoted reference arrives folded `A__B` and only a fold finds it.
+	// DECODE THE STORAGE NAMES, DO NOT ENCODE THE QUERY NAME. The escaping is
+	// documented NON-INJECTIVE, so encoding the query name and fold-comparing
+	// the result accepts fields the identifier does not name: storage
+	// `___1__2foo` decodes to the SQL name `_$.foo`, while a quoted
+	// `t."___1.FOO"` encodes to `___1__2FOO`, which EqualFolds it. The unnest
+	// path treats a semantic miss as an untyped fallback rather than an
+	// undefined column, so it would explode an unrelated field. Decoding has no
+	// such collision — ToUserIdentifier is the mapping every consumer already
+	// uses to answer "what is this column called".
 	//
-	// The obvious way to get that — escape the query name and fold-compare the
-	// result against storage — is UNSOUND, because the escaping is documented
-	// non-injective. A storage field `___1__2foo` decodes to the SQL name
-	// `_$.foo`, while a quoted `t."___1.FOO"` encodes to `___1__2FOO`, which
-	// EqualFolds it. That accepts a field the identifier does not name, and the
-	// unnest path treats the semantic miss as an untyped fallback rather than
-	// an undefined column — so it would explode an unrelated field.
+	// TWO PASSES, NOT ONE, and the split is the same strict-then-relaxed rule
+	// as the unescaped attempts above. Deciding ambiguity inside a single pass
+	// makes the answer depend on DESCRIPTOR ORDER: over `a__2b`, `A__2b`,
+	// `A__2B` a lookup of `A.B` meets two folded candidates and declines before
+	// ever reaching the exact one. An exact answer is never made ambiguous by
+	// case variants existing, whatever order they are listed in.
 	//
-	// Comparing DECODED names has no such collision: ToUserIdentifier is the
-	// mapping every consumer already uses to answer "what is this column
-	// called". A name whose decode is ambiguous under folding is DECLINED
-	// rather than resolved to the first hit — two fields answering to one SQL
-	// spelling is exactly when guessing is worst.
+	// Ambiguity among FOLDED candidates declines rather than taking the first:
+	// two fields answering to one SQL spelling is exactly when guessing is
+	// worst, because which one wins is a property of the descriptor and not of
+	// the query.
+	for i := 0; i < fs.Len(); i++ {
+		f := fs.Get(i)
+		if protoname.ToUserIdentifier(string(f.Name())) == name {
+			return f
+		}
+	}
 	var folded protoreflect.FieldDescriptor
 	for i := 0; i < fs.Len(); i++ {
 		f := fs.Get(i)
-		decoded := protoname.ToUserIdentifier(string(f.Name()))
-		if decoded == name {
-			return f
+		if !strings.EqualFold(protoname.ToUserIdentifier(string(f.Name())), name) {
+			continue
 		}
-		if strings.EqualFold(decoded, name) {
-			if folded != nil {
-				return nil // ambiguous under folding; decline rather than guess
-			}
-			folded = f
+		if folded != nil {
+			return nil // ambiguous under folding; decline rather than guess
 		}
+		folded = f
 	}
 	return folded
 }
