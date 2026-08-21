@@ -2895,7 +2895,7 @@ func TestAggResultName_Count(t *testing.T) {
 	agg := expressions.AggregateSpec{
 		Function:    expressions.AggCount,
 		Operand:     mustNamedTestField(t, "id", values.NullableLong),
-		OperandName: "id",
+		OperandName: "ID",
 	}
 	if got := aggResultName(agg); got != "COUNT(ID)" {
 		t.Fatalf("expected COUNT(ID), got %s", got)
@@ -2907,7 +2907,7 @@ func TestAggResultName_Sum(t *testing.T) {
 	agg := expressions.AggregateSpec{
 		Function:    expressions.AggSum,
 		Operand:     mustNamedTestField(t, "price", values.NullableLong),
-		OperandName: "price",
+		OperandName: "PRICE",
 	}
 	if got := aggResultName(agg); got != "SUM(PRICE)" {
 		t.Fatalf("expected SUM(PRICE), got %s", got)
@@ -2919,7 +2919,7 @@ func TestAggResultName_Min(t *testing.T) {
 	agg := expressions.AggregateSpec{
 		Function:    expressions.AggMin,
 		Operand:     mustNamedTestField(t, "price", values.NullableLong),
-		OperandName: "price",
+		OperandName: "PRICE",
 	}
 	if got := aggResultName(agg); got != "MIN(PRICE)" {
 		t.Fatalf("expected MIN(PRICE), got %s", got)
@@ -2931,7 +2931,7 @@ func TestAggResultName_Max(t *testing.T) {
 	agg := expressions.AggregateSpec{
 		Function:    expressions.AggMax,
 		Operand:     mustNamedTestField(t, "price", values.NullableLong),
-		OperandName: "price",
+		OperandName: "PRICE",
 	}
 	if got := aggResultName(agg); got != "MAX(PRICE)" {
 		t.Fatalf("expected MAX(PRICE), got %s", got)
@@ -2943,7 +2943,7 @@ func TestAggResultName_Avg(t *testing.T) {
 	agg := expressions.AggregateSpec{
 		Function:    expressions.AggAvg,
 		Operand:     mustNamedTestField(t, "price", values.NullableLong),
-		OperandName: "price",
+		OperandName: "PRICE",
 	}
 	if got := aggResultName(agg); got != "AVG(PRICE)" {
 		t.Fatalf("expected AVG(PRICE), got %s", got)
@@ -2963,7 +2963,7 @@ func TestAggResultName_UnknownFunction(t *testing.T) {
 	agg := expressions.AggregateSpec{
 		Function:    expressions.AggregateFunction(99),
 		Operand:     mustNamedTestField(t, "x", values.NullableLong),
-		OperandName: "x",
+		OperandName: "X",
 	}
 	if got := aggResultName(agg); got != "AGG(X)" {
 		t.Fatalf("expected AGG(X), got %s", got)
@@ -6028,7 +6028,7 @@ func TestAggregateCursor_GroupedSum(t *testing.T) {
 		{
 			Function:    expressions.AggSum,
 			Operand:     mustTestFieldOrdinal(t, root, 0),
-			OperandName: "amount",
+			OperandName: "AMOUNT",
 		},
 	}
 	c := newAggregateCursor(inner, groupKeys, aggs, nil, nil)

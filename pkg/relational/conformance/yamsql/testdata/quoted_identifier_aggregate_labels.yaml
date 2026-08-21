@@ -1,0 +1,66 @@
+# quoted_identifier_aggregate_labels.yaml
+#
+# THE AGGREGATE RESULT-SET LABEL, on the two plan shapes that do NOT put a
+# projection above the aggregate and therefore derive their column names from a
+# different authority than every other scenario here: the AGGREGATE INDEX plan
+# and the bare streaming aggregate.
+#
+# Why this file exists at all: across the whole corpus only six scenarios carry
+# a `columns:` assertion, and NONE of them was on an aggregate-index query. The
+# label axis on this path had no coverage, which is not the same as the path
+# having no defects — a query with the right rows under the wrong column names
+# passes every row assertion ever written.
+name: quoted_identifier_aggregate_labels
+# Quoted mixed-case columns, so a fold anywhere on the way to a label is
+# visible. `plain` is declared UNQUOTED and is the control: it really is named
+# PLAIN, so an upper label for it is correct rather than a fold.
+schema_template: |
+  CREATE TABLE sales (
+    id BIGINT,
+    "Region" STRING,
+    "Amount" BIGINT,
+    plain BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX sum_by_region AS SELECT SUM("Amount") FROM sales GROUP BY "Region"
+setup:
+  - INSERT INTO sales VALUES (1, 'US', 100, 1)
+  - INSERT INTO sales VALUES (2, 'US', 200, 2)
+  - INSERT INTO sales VALUES (3, 'EU', 300, 3)
+tests:
+  # The aggregate-INDEX shape. plan_contains is not decoration: if the planner
+  # ever stops choosing the index this arm silently starts measuring the
+  # ordinary streaming path, which has a different naming authority.
+  - query: SELECT "Region", SUM("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
+    plan_contains: AggregateIndex
+    columns: ["Region", "SUM(Amount)"]
+    rows:
+      - ["EU", 300]
+      - ["US", 300]
+  # The bare SCALAR aggregate — no grouping, so nothing above it to re-name the
+  # column.
+  - query: SELECT SUM("Amount") FROM sales
+    columns: ["SUM(Amount)"]
+    rows:
+      - [600]
+  # The unquoted control on the same table and the same shape. `plain` folded at
+  # DDL time, so `SUM(PLAIN)` is the column's real name and not a fold — without
+  # this arm an upper label above could not be told apart from a fold that
+  # happened to be right.
+  - query: SELECT SUM(plain) FROM sales
+    columns: ["SUM(PLAIN)"]
+    rows:
+      - [6]
+  # A quoted ALIAS on the scalar shape. The alias is the output name and must
+  # reach the label verbatim.
+  - query: SELECT SUM("Amount") AS "total" FROM sales
+    columns: ["total"]
+    rows:
+      - [600]
+  # Grouped, no index available for MAX — the ordinary streaming-aggregate
+  # shape, both authorities in one row.
+  - query: SELECT "Region", MAX("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
+    columns: ["Region", "MAX(Amount)"]
+    rows:
+      - ["EU", 300]
+      - ["US", 200]

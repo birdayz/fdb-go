@@ -5239,7 +5239,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// dotted operand refs the ordinal frontier cannot resolve.
 		arg := ac.aggArg
 		if arg == "" && ac.aggExpr != nil {
-			arg = canonicalTextOf(ac.aggExpr)
+			arg = aggOperandCanonicalText(ac.aggExpr)
 		}
 		if arg == "" {
 			arg = "*"

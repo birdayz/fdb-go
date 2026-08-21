@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=358 queries=2593 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
+# files=359 queries=2604 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14060,6 +14060,38 @@ plan:  <PLAN-ERROR: 42803: column "A2" must appear in the GROUP BY clause or be 
 === qualified_star_more.yaml#3 expect-error=42803
 sql:   SELECT a.*, b.* FROM a, b WHERE a.a1 = b.b1 GROUP BY a1
 plan:  <PLAN-ERROR: 42803: SELECT qualifier.* expands to columns not in GROUP BY>
+=== quoted_identifier_aggregate_labels.yaml#0
+sql:   SELECT "Region", SUM("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
+plan:  Project([_current.Region#0, _current.SUM(Amount)#1], GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [Region], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES); keys=[Region#0], driving=0))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryMultiIntersectionOnValuesPlan
+shape:     RecordQueryAggregateIndexPlan
+shape:     RecordQueryAggregateIndexPlan
+=== quoted_identifier_aggregate_labels.yaml#1
+sql:   SELECT SUM("Amount") FROM sales
+plan:  Project([_current.SUM(Amount)#0], StreamingAgg(keys=[], Scan(SALES)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#2
+sql:   SELECT SUM(plain) FROM sales
+plan:  Project([_current.SUM(PLAIN)#0], StreamingAgg(keys=[], Scan(SALES)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#3
+sql:   SELECT SUM("Amount") AS "total" FROM sales
+plan:  Project([_current.SUM(Amount)#0], StreamingAgg(keys=[], Scan(SALES)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#4
+sql:   SELECT "Region", MAX("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
+plan:  Project([_current.Region#0, _current.MAX(Amount)#1], StreamingAgg(keys=[_current.Region#1], InMemorySort([_current.Region#1 ASC], Scan(SALES))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
 === quoted_identifier_columns.yaml#0
 sql:   SELECT q1."id", q1."k" FROM q1 ORDER BY q1."id"
 plan:  Project([_current.id#0, _current.k#1], Scan(Q1))
@@ -14230,6 +14262,43 @@ shape:   RecordQueryPredicatesFilterPlan
 shape:     RecordQueryScanPlan
 shape:   RecordQueryFirstOrDefaultPlan
 shape:     RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#17
+sql:   SELECT SUM("KeepCase") FROM QCASE
+plan:  Project([_current.SUM(KeepCase)#0], StreamingAgg(keys=[], Scan(QCASE)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#18
+sql:   SELECT SUM(plain) FROM QCASE
+plan:  Project([_current.SUM(PLAIN)#0], StreamingAgg(keys=[], Scan(QCASE)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#19
+sql:   SELECT SUM("PLAIN") FROM QCASE
+plan:  Project([_current.SUM(PLAIN)#0], StreamingAgg(keys=[], Scan(QCASE)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#20
+sql:   SELECT SUM("KeepCase" * plain) FROM QCASE
+plan:  Project([_current.SUM(KeepCase*PLAIN)#0], StreamingAgg(keys=[], Scan(QCASE)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#21
+sql:   SELECT SUM(plain) AS "total" FROM QCASE
+plan:  Project([_current.SUM(PLAIN)#0], StreamingAgg(keys=[], Scan(QCASE)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#22
+sql:   SELECT "KeepCase", SUM(plain) FROM QCASE GROUP BY "KeepCase"
+plan:  Project([_current.KeepCase#0, _current.SUM(PLAIN)#1], StreamingAgg(keys=[_current.KeepCase#1], InMemorySort([_current.KeepCase#1 ASC], Scan(QCASE))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))

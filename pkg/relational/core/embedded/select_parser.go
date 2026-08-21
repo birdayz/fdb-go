@@ -546,7 +546,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 	}
 	display := argCol
 	if display == "" && argExpr != nil {
-		display = canonicalTextOf(argExpr)
+		display = aggOperandCanonicalText(argExpr)
 	}
 	switch {
 	case display == "":

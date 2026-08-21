@@ -22,7 +22,7 @@ func pushFilterCountGroupBy(
 		[]expressions.AggregateSpec{{
 			Function:       expressions.AggCount,
 			Operand:        mustPushFilterField(t, scanRow, aggregateOperandName),
-			Alias:          "total",
+			Alias:          "TOTAL",
 			OperandName:    aggregateOperandName,
 			OperandIntType: values.TypeCodeLong,
 		}},
@@ -51,9 +51,9 @@ func requirePushFilterGroupByInnerAliases(
 	if len(aggregates) != 1 || aggregates[0].Operand == nil {
 		t.Fatalf("aggregates = %v, want one aggregate with an operand", aggregates)
 	}
-	if aggregates[0].Function != wantFunction || aggregates[0].Alias != "total" {
+	if aggregates[0].Function != wantFunction || aggregates[0].Alias != "TOTAL" {
 		t.Fatalf("aggregate = {%v alias %q}, want {%v alias %q}",
-			aggregates[0].Function, aggregates[0].Alias, wantFunction, "total")
+			aggregates[0].Function, aggregates[0].Alias, wantFunction, "TOTAL")
 	}
 	if aggregates[0].OperandName != wantOperand || aggregates[0].OperandIntType != values.TypeCodeLong {
 		t.Fatalf("aggregate metadata = {operand name %q, integer type %v}, want {%q, %v}",
@@ -177,7 +177,7 @@ func TestPushFilterThroughGroupBy_GroupingKeyPublishedVerbatim(t *testing.T) {
 		[]expressions.AggregateSpec{{
 			Function:       expressions.AggSum,
 			Operand:        mustPushFilterField(t, scanRow, "AMOUNT"),
-			Alias:          "total",
+			Alias:          "TOTAL",
 			OperandName:    "AMOUNT",
 			OperandIntType: values.TypeCodeLong,
 		}},

@@ -4261,7 +4261,8 @@ suites are the correctness authority (the §5 dual-window is already retired —
     genuine dup-name class for the (a) poison-marker. Build (a) against the POST-uppercasing identifier model
     or it encodes a workaround for a bug (b) removes. The gate covers BOTH the projection path (Q55) AND the
     AGGREGATE path (Q56 — buildDerivedTableSourceFromAgg, folded via NewUnquoted with its output names
-    already StripIdentifierQuotes'd, so the quoted flag is re-read off the Uid via cteBodyAllAliasesCaseSafe;
+    already normalized, so the quoted flag was re-read off the Uid via cteBodyAllAliasesCaseSafe — STALE
+    as of RFC-237: that helper is deleted and the capture keeps its spelling, so there is no flag to re-read;
     both the schema build and the dup gate consume the visible-only aggOutputCols authority so a hidden
     HAVING/ORDER-BY aggregate is neither advertised nor false-counted). (c) NEW (Graefe, pre-existing,
     general-read surface — NOT ON-only, NOT the rebind class): a WITHIN-SOURCE duplicate aggregate/projection
@@ -7306,9 +7307,27 @@ it is the folklore case the watch-list contract exists to catch (road-to-prod.md
 Measured on both engines (`conformance/quoted_identifier_case_java_probe_test.go`), for
 `CREATE TABLE qcase (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))`:
 
+**HALF OF THIS ENTRY IS NOW STALE — read the corrections before the tables.**
+RFC-237 landed and moved two of the facts below:
+
+1. The label column in the table is FIXED. Go reported `KEEPCASE` for
+   `SELECT "KeepCase"`; it now reports `KeepCase`, agreeing with Java, and the
+   JVM probe asserts the agreement rather than the divergence.
+2. "Where it lives" below names `rlcatalog.recordTypeTable.LookupColumn`'s
+   `foldedIndex` and `StripIdentifierQuotes`. Neither exists: `LookupColumn` is
+   exact, the relaxed pass moved to the SCOPE (`semantic/scope.go`), and the
+   function is `NormalizeIdentifier`. The over-determination argument the
+   entry rests on was measured against that old shape.
+
+What SURVIVES is the divergence itself — Go still resolves spellings Java
+rejects — and its current framing, with the current mechanism and the current
+remediation, is in `DIVERGENCES.md` ("Identifier resolution: Go over-resolves
+case, Java compares exactly") plus RFC-237 §3.3. Read those; this entry is kept
+for the measurement history, not as a description of today's code.
+
 | reference | Java | Go |
 |---|---|---|
-| `SELECT "KeepCase"` | ACCEPT, label `KeepCase`, 42 | ACCEPT, label `KEEPCASE`, 42 |
+| `SELECT "KeepCase"` | ACCEPT, label `KeepCase`, 42 | ACCEPT, label `KeepCase`, 42 (was `KEEPCASE`; RFC-237) |
 | `SELECT KeepCase` | REJECT 42703 | ACCEPT 42 |
 | `SELECT "KEEPCASE"` | REJECT 42703 | ACCEPT 42 |
 | `SELECT "keepcase"` | REJECT 42703 | ACCEPT 42 |
@@ -19525,7 +19544,7 @@ scope, with their evidence:
    `CASE_SENSITIVE_IDENTIFIERS`" does not close it:
    `SemanticAnalyzer.normalizeString` keeps a QUOTED string verbatim in *both*
    modes, so no Java setting makes `"K"` reach `"k"`. The real work is
-   preserving the QUOTING BIT through `StripIdentifierQuotes` /
+   preserving the QUOTING BIT through `NormalizeIdentifier` /
    `semantic.FromNormalized`, which discard it — `FromNormalized` hard-codes
    `wasQuoted: false` and is used ~59 times on the reference path. Probed: a
    `!want.WasQuoted()` gate on the relaxed pass is INERT, because there is no
@@ -19606,12 +19625,23 @@ both established the expensive way and neither obvious:
    catches the rest. Assert BOTH: the check never fires, and every reported
    label matches the authored spelling verbatim.
 
-Not built with RFC-237 because it is a new harness over the whole corpus that
-will surface an unknown number of further disagreements — landing it there
-meant shipping it red or fixing whatever it found under that PR's review. It
-needs its own RFC and the query-engine gate, which is exactly the process this
-kind of design question is supposed to go through.
+**BUILT, RUN, AND CLEAN — under RFC-237 §8, not deferred.** The reasoning
+above for deferring it ("it will surface an unknown number of further
+disagreements") was the deferral: an unknown number is a reason to go and
+count, not a reason to schedule. Counted, it was **31, all one class**, and
+fixing them was smaller than this write-up.
 
-Recorded here rather than left in a review thread: the two constraints above
-are what this cost to learn, and a reader who starts from the obvious
-DDL-perturbation sketch will rebuild the blind version.
+`TestIdentifierAgreementOverCorpus`
+(`pkg/relational/conformance/explaindiff/identifier_agreement_test.go`) is the
+gate. Constraint 1 above held and is what the built version does: it perturbs
+QUERY identifiers off `UidContext` nodes, never DDL and never SQL text.
+
+Constraint 2 did NOT survive contact, and the correction matters more than the
+original claim. The `edge lookup` oracle needs EXECUTION, and a plan-text
+comparison turned out to be both cheaper and strictly earlier — it caught all
+31 without FDB, without rows, and without a running store. What the built gate
+cannot see is written out in RFC-237 §8.2, measured by mutation rather than
+asserted; the headline is that a perturbation of unquoted → quoted-UPPER is
+blind to a FOLD, because those two spellings are exactly the pair a fold cannot
+tell apart. That axis is covered by the yamsql `columns:` arms and the unit
+pins, and the three instruments do not subsume one another.

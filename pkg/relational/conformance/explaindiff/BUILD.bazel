@@ -28,6 +28,8 @@ go_test(
     srcs = [
         "explaindiff_internal_test.go",
         "explaindiff_test.go",
+        "identifier_agreement_test.go",
+        "identifier_agreement_verdict_test.go",
         "ordering_census_test.go",
         "plan_shape_golden_test.go",
         "projected_exists_coverage_test.go",
@@ -45,5 +47,12 @@ go_test(
         "//pkg/relational/conformance/yamsql:testdata",
     ],
     embed = [":explaindiff"],
-    deps = ["//pkg/recordlayer/query/plan/cascades"],
+    deps = [
+        "//pkg/recordlayer/query/plan/cascades",
+        "//pkg/relational/conformance/yamsql",
+        "//pkg/relational/core/embedded",
+        "//pkg/relational/core/parser",
+        "//pkg/relational/core/parser/gen",
+        "@com_github_antlr4_go_antlr_v4//:antlr",
+    ],
 )

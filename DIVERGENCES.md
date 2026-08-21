@@ -2130,7 +2130,7 @@ the wire.
 **What closing it would actually take** — and this is the part that was
 recorded WRONG in two places before: not plumbing `CASE_SENSITIVE_IDENTIFIERS`
 (it would not help, see above) but **preserving the QUOTING BIT through
-`functions.StripIdentifierQuotes` and `semantic.FromNormalized`**, which
+`functions.NormalizeIdentifier` and `semantic.FromNormalized`**, which
 discard it today. `FromNormalized` hard-codes `wasQuoted: false` and is used
 ~59 times on the reference path, so the engine cannot currently tell `"K"` from
 `K` at resolution time at all. Probed: gating the relaxed pass on

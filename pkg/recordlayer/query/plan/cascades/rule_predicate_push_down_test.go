@@ -1927,16 +1927,22 @@ func TestPredicatePushDownRule_DoNotPushThroughGroupBy(t *testing.T) {
 			ppdFieldValue(baseQun, "c"),
 		},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggSum, Operand: ppdFieldValue(baseQun, "a"), Alias: "sum"},
+			{Function: expressions.AggSum, Operand: ppdFieldValue(baseQun, "a"), Alias: "SUM"},
 		},
 		baseQun,
 	))
 	groupByQun := forEachOf(groupBy)
 
-	// HAVING SUM < @1 — GroupBy's exact native output names a GROUPING key by
-	// the key value's own spelling (AggregateKeyColumnName takes it verbatim,
-	// because that column exists in the row it reads and in the projection
-	// above it), and an AGGREGATE by its upper-folded alias.
+	// HAVING SUM < @1 — GroupBy's exact native output names BOTH halves by the
+	// spelling it was handed: a GROUPING key by the key value's own
+	// (AggregateKeyColumnName takes it verbatim, because that column exists in
+	// the row it reads and in the projection above it), and an AGGREGATE by its
+	// alias, likewise verbatim.
+	//
+	// The alias above therefore has to BE the name. It used to be `sum`, and
+	// this fixture worked because the authority folded it on the way out — two
+	// spellings meeting through a fold, which is the shape that made a column
+	// declared `qty` report itself as `QTY` elsewhere in the same row.
 	pred := ppdFieldPred(groupByQun, "SUM", predicates.Comparison{
 		Type:    predicates.ComparisonLessThan,
 		Operand: values.NewConstantObjectValue(values.UniqueCorrelationIdentifier(), "1", values.NotNullLong),

@@ -2354,8 +2354,8 @@ func TestIntegration_StreamingAggregation_CountAndSum(t *testing.T) {
 			scan,
 			[]values.Value{integrationField(t, scan, 2)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "order_id"},
-				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "quantity"},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
 			},
 		))
 
@@ -2431,9 +2431,9 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "order_id"},
-				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "price"},
-				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
 		))
 
@@ -2611,9 +2611,9 @@ func TestIntegration_Aggregation_MinMaxAvg(t *testing.T) {
 			scan,
 			nil, // no grouping keys — aggregate over all
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "price"},
-				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "price"},
-				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
 		))
 
@@ -2820,10 +2820,10 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 			scan,
 			[]values.Value{integrationField(t, scan, 2)},
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "order_id"},
-				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "quantity"},
-				{Function: expressions.AggMin, Operand: integrationField(t, scan, 4), OperandName: "quantity"},
-				{Function: expressions.AggMax, Operand: integrationField(t, scan, 4), OperandName: "quantity"},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 4), OperandName: "QUANTITY"},
 			},
 		))
 
@@ -3126,10 +3126,10 @@ func TestIntegration_Aggregation_EmptyInput(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "order_id"},
-				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "price"},
-				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "price"},
-				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggCount, Operand: integrationField(t, scan, 0), OperandName: "ORDER_ID"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMin, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
+				{Function: expressions.AggMax, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
 		))
 
@@ -3780,7 +3780,7 @@ func TestIntegration_Aggregation_AVG(t *testing.T) {
 			scan,
 			nil,
 			[]expressions.AggregateSpec{
-				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggAvg, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
 		))
 
@@ -3841,7 +3841,7 @@ func TestIntegration_StreamingAggregation_SortedInput(t *testing.T) {
 			[]values.Value{integrationField(t, scan, 4)},
 			[]expressions.AggregateSpec{
 				{Function: expressions.AggCount, Operand: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong}, OperandName: "CONSTANT"},
-				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "price"},
+				{Function: expressions.AggSum, Operand: integrationField(t, scan, 2), OperandName: "PRICE"},
 			},
 		))
 

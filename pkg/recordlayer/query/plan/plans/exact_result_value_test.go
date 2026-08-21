@@ -104,7 +104,7 @@ func TestPlanResultValuesAreExactStableAndValidated(t *testing.T) {
 			return NewRecordQueryStreamingAggregationPlan(
 				newScan(t, "T", rowType),
 				nil,
-				[]expressions.AggregateSpec{{Function: expressions.AggCount, Alias: "count"}},
+				[]expressions.AggregateSpec{{Function: expressions.AggCount, Alias: "COUNT"}},
 			)
 		})
 		assertStableExactPlanResult(t, plan, values.NewRecordType("", false, []values.Field{

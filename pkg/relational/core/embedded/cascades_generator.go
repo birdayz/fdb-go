@@ -3626,14 +3626,19 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		}
 	}
 
+	// VERBATIM: these names are matched EXACTLY against the query's accessor
+	// path (AccessorNamePathMatchesNames), and they arrive from the index's key
+	// expression, which carries the DESCRIPTOR's spelling. Folding them here is
+	// a silent decline, not an error — an aggregate index declared
+	// `AS SELECT SUM("Amount") FROM sales GROUP BY "Region"` was never chosen,
+	// because the query's grouping key spells `Region` and this offered
+	// `REGION`. Right rows, full scan plus an in-memory sort, nothing red.
 	groupCols := make([]string, groupingCount)
-	for i := 0; i < groupingCount; i++ {
-		groupCols[i] = strings.ToUpper(allCols[i])
-	}
+	copy(groupCols, allCols[:groupingCount])
 
 	var aggColumn string
 	if groupedCount > 0 && groupingCount+groupedCount <= len(allCols) {
-		aggColumn = strings.ToUpper(allCols[groupingCount])
+		aggColumn = allCols[groupingCount]
 	}
 
 	rts := md.RecordTypesForIndex(idx)

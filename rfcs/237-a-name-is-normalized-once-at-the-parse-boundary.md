@@ -119,9 +119,15 @@ The class-level check, with its positive control:
 
 ```
 $ grep -rnE "NormalizeIdentifier\((functions\.)?(FullIdToName|NormalizeIdentifier)\(" --include='*.go' pkg/
-0 code hits          # any hits are this RFC's own prose, quoted in comments
+logical_predicate.go:8170:  // the parse capture (`NormalizeIdentifier(FullIdToName(fid))`,
+                     # ONE hit, and it is a COMMENT naming the retired shape.
+                     # Zero call sites — but the count is 1, not 0, and the
+                     # difference is the whole point of printing the output.
 $ grep -rl 'NormalizeIdentifier' --include='*.go' pkg/ | wc -l
-19                   # the control: the symbol is reachable and the pattern well-formed
+20                   # the control: the symbol is reachable and the pattern
+                     # well-formed. It was 19 when first measured; §8's operand
+                     # mint is the twentieth file, which is what a population
+                     # written into the claim is for.
 ```
 
 **And the function is renamed.** `StripIdentifierQuotes` → `NormalizeIdentifier`,
@@ -357,3 +363,213 @@ deleted, because their expected value changed sign:
 - `plan_context_builder_test.go` — index and primary-key column names reach the
   candidate with their case intact, pinned on the NAME because the failure is a
   silent decline.
+
+## 8. The instrument, and the sixth site it found
+
+§2 found its five sites by grepping for `strings.ToUpper`. That census cleared
+files that had live defects and it could not, even in principle, see the CTE
+double-normalize — a fold with no `ToUpper` at the call site, spelled as a
+function whose name promised a no-op. "Did I find every fold?" is not a
+question a sweep can answer.
+
+The replacement asks a question that is checkable. Under the rule in §1 an
+unquoted identifier and its upper-folded quoted twin are the SAME NAME, so
+rewriting every unquoted identifier in a query to `"UPPER"` is
+semantics-preserving BY CONSTRUCTION. Any behavioural difference is a Go
+defect — no oracle, no golden, no second engine.
+
+`TestIdentifierAgreementOverCorpus` does exactly that over the yamsql corpus.
+It works off `UidContext` nodes rather than the SQL text (`uid : simpleId |
+DOUBLE_QUOTE_ID`, so `SimpleId() != nil` IS the unquoted case), plans both
+spellings, and requires identical plan text.
+
+Run once, before any further fix, it reported:
+
+```
+identifier agreement: 2443 perturbed of 2447 plannable
+                      (4 did not plan at baseline)
+31 of 2443 statements plan differently
+```
+
+**31 disagreements, one structurally distinct class.** Every one was an
+aggregate over a COMPOUND argument, whose public output-column name was built
+from the raw SQL source slice:
+
+```
+SELECT SUM(qty * price)      →  SUM(QTY*PRICE)
+SELECT SUM("QTY" * "PRICE")  →  SUM("QTY"*"PRICE")     -- same name, two labels
+```
+
+Two repairs downstream — strip the whitespace, upper-fold the composed name —
+made the unquoted spelling look right and destroyed the quoted one. On a table
+whose columns are genuinely `qty` and `price` (quoted DDL) the damage is
+visible without any perturbation at all, and in a single result row:
+
+```
+SELECT "KeepCase", SUM(plain) FROM QCASE GROUP BY "KeepCase"
+  group key → KeepCase        (verbatim, fixed in §3.1)
+  aggregate → SUM(PLAIN)      (folded — the column is named plain)
+```
+
+Two naming authorities over one table, disagreeing about what its columns are
+called. The group-key half was already fixed here; the aggregate half was the
+straggler the census had missed.
+
+### 8.1 The fix
+
+`embedded.aggOperandCanonicalText` becomes the SOLE mint for the operand
+segment. It walks the argument's tokens and upper-cases every one — which is
+what the old blanket fold did, and is why no unquoted spelling moves — EXCEPT a
+delimited identifier, which contributes its inner text verbatim and without its
+quotes. Both properties are needed and neither suffices: upper-casing alone
+keeps the quotes, stripping the quotes alone still folds `"qty"` to `QTY`.
+
+The two repairs then come out of `expressions.AggregateResultColumnName`,
+because a name that arrives canonical must be carried, not edited. The one
+`ToUpper` that stays is on a CONSTANT's rendered placeholder, which is this
+package's own word for "a literal sat here" and not a user identifier.
+
+Blast radius over the corpus: **not one existing plan changed.**
+
+```
+$ go run ./cmd/explain-differ dump -out /tmp/after.txt
+$ diff -u …/plan_shape.golden /tmp/after.txt | grep -cE '^[-+]'
+0
+```
+
+That zero is the load-bearing claim: the rewrite reproduces the old spelling
+everywhere the old spelling was right, and differs only where it was wrong.
+Re-run after the fix, the gate reports `0 of 2443`.
+
+### 8.2 What the gate cannot see
+
+Written from shapes actually run, because a scope sentence written by
+describing the code is the failure that survives every other check.
+
+- **A fold applied to a name that is genuinely lower-case.** The perturbation
+  runs unquoted → quoted-UPPER, and those two are precisely the pair a fold
+  CANNOT tell apart. Verified by mutation: re-folding the AVG arm of the naming
+  authority left this gate green. That axis belongs to the yamsql `columns:`
+  arms and to the unit pins in
+  `expressions/group_by_naming_verbatim_test.go`; the two instruments are not
+  substitutes and neither subsumes the other.
+- **Result-set labels.** This compares planned PLAN TEXT. An authority that
+  only reaches `executor.ColumnDef` is invisible to it.
+- **Rows.** Nothing executes.
+- **Already-quoted identifiers, and DDL.** Neither is perturbed — `"KeepCase"`
+  has no second spelling, and the schema template is compiled once.
+- **Anything that is not a `uid`**: function names and type names are separate
+  grammar productions and are never rewritten.
+- **Statements whose UNPERTURBED form does not plan.** This one is ASSERTED
+  rather than logged, and the reason is a mutation that got away: reverting the
+  operand mint to raw parse text made every compound aggregate stop planning on
+  BOTH sides, each landed in this bucket, and the gate reported green over what
+  was left. The count went 4 → 31 while the verdict did not move. A difference
+  test is blind to a defect that breaks both spellings equally, so the size of
+  that bucket is the assertion (`identifierAgreementBaseFailCeiling`, alarm
+  direction GROWTH).
+
+The floor and that ceiling are both driven by
+`TestIdentifierAgreementVerdict`, because the corpus run reaches only the pass
+arm — an alarm that has never fired is indistinguishable from one that cannot.
+
+### 8.3 Guards whose expected value inverted, again
+
+Thirty-five `OperandName` / `Alias` literals across 8 test files fed a
+non-canonical spelling (`"price"`, `"total"`, `"cnt"`, `"sum"`, `"order_id"`)
+and asserted the upper-folded result — the count is
+`git diff -U0 -- '*_test.go' | grep -E '^\+' | grep -cE 'OperandName: *"|Alias: *"'`
+over this change, excluding the two files it adds. They were
+pinning the repair, not the contract: production has always minted the
+canonical spelling, and the fold is what let a fixture's `sum` meet a
+predicate's `SUM`. Each is now fed the spelling production produces. The one
+that inverted most cleanly is
+`TestAggregateResultColumnName_OperandNameDataWinsOverTheValue`: its input
+(`"PRICE * QTY"`) is unchanged and its expectation moved from `SUM(PRICE*QTY)`
+to `SUM(PRICE * QTY)`, which is the stronger form of the claim it always made —
+the carried text is not consulted, not repaired, and not re-derived.
+
+## 9. The label axis found a second silently-declining index
+
+§8.2 says the agreement gate is blind to a FOLD, because its perturbation runs
+unquoted → quoted-UPPER and those are exactly the two spellings a fold cannot
+tell apart. That is not a hedge — the blind spot cashed out immediately, and
+what found the defect was the other instrument.
+
+Six scenarios in the whole corpus carry a `columns:` assertion and NONE of them
+was on an aggregate-index query, so
+`quoted_identifier_aggregate_labels.yaml` was written to cover the two plan
+shapes that put no projection above the aggregate. Four of its five arms passed
+on the first run. The fifth did not:
+
+```
+plan does not contain "AggregateIndex":
+  Project([_current.Region#0, _current.SUM(Amount)#1],
+    StreamingAgg(keys=[_current.Region#1],
+      InMemorySort([_current.Region#1 ASC], Scan(SALES))))
+```
+
+An aggregate index declared `AS SELECT SUM("Amount") FROM sales GROUP BY
+"Region"` was never being chosen. Right rows, a full scan plus an in-memory
+sort, nothing red anywhere. The unquoted twin of the same query picks the
+index, which is what makes it a case defect rather than a matching one — the
+same §2.1 shape, one layer down, and armed by the same removal.
+
+One fold, in `cascades_generator.tryAggregateIndexCandidate`: it upper-folded
+the index's group and aggregate column names, which arrive from the key
+expression carrying the DESCRIPTOR's spelling. The consumer compares them
+exactly, so a quoted column offered `REGION` where the query held `Region`.
+Same §2.1 shape — a fold on the CONSUMPTION side of an exact match, invisible
+while the other side folded too.
+
+Blast radius, same command as §8.1: **not one existing plan moved.** The corpus
+is all-unquoted DDL, where the fold was a no-op; the change is visible only on
+the shapes that had no coverage at all.
+
+**A second fold was removed and then PUT BACK, and the reason is worth
+keeping.** `values.AccessorNamePath` also upper-folds, and the obvious reading
+is that it is one more site of this class. Removing it did fix the probe — but
+so did the candidate fix alone, which is how the redundancy was discovered.
+The suite then said what the corpus could not: five tests pin case-insensitive
+accessor identity as DESIGNED (`lazyFlat("city")` equals `lazyFlat("CITY")`;
+`bakedFused("ADDR","City")` equals `bakedFused("addr","city")`), so that fold
+is a deliberate match-domain rule, not a stray normalization.
+
+Whether it should SURVIVE RFC-237 is a real question and this RFC does not
+answer it. What it does record is why the corpus cannot answer it either: every
+corpus descriptor is DDL-fed and already upper, so removing the fold moved zero
+plans — a green that establishes nothing about the property. Answering it needs
+a fold-dependence count (how many accessor comparisons succeed ONLY under
+folding), which is the instrument the leg-identity censuses already implement
+for their own sites and report `foldOnly=0` on. Until that count exists for
+this site, the fold stays, and the smaller fix is the one that ships.
+
+The generalisable part is the ordering. The gate is what makes the CLASS
+tractable — 31 sites in one run, with no oracle. The `columns:` arms are what
+reach the half the gate cannot see. Neither found what the other did, and the
+census that preceded both would have found neither: there is no `strings.ToUpper`
+census that flags `strings.ToUpper(allCols[i])` as wrong, because it is only
+wrong relative to what the other side now carries. That last point cuts both
+ways, which is the paragraph above — the same census would flag
+`AccessorNamePath`'s fold as wrong, and there it is right.
+
+### 9.1 Two folds nearby that are NOT defects, and how that was established
+
+Both were checked rather than assumed, because "it looks like the same class"
+is how the accessor-path detour started.
+
+`cascades_generator`'s three `executor.ColumnDef.Name` folds (`buildAggColumns`
+twice, `deriveColumnsFromAggregateIndex` once) are the obvious next suspects —
+they fold a name on the result-set path. **Mutation says they are observed by
+nothing.** Replacing all three with `strings.ToLower` — a mutation that
+survives nogo, unlike the `"ZZMUT"+` first attempt, which failed the LINT and
+would have been read as a passing run — left the entire 359-scenario yamsql
+corpus green AND 161 aggregate/group/scalar/count real-FDB `sqldriver` tests
+green. Every aggregate plan carries a projection above it, and that projection
+owns the output names. What pins this going forward is not a comment: the five
+`quoted_identifier_aggregate_labels.yaml` arms assert the labels for both
+aggregate shapes, so a change that ever routes them through these folds
+reddens.
+
+The accessor-path fold is the other, and §9's note above is the record of why
+it stays. Neither is filed as future work; both are answered.

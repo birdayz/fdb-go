@@ -8328,7 +8328,23 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			}
 		}
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
-			spec.Alias = strings.ToUpper(a.Aliases[i])
+			// VERBATIM. The alias reached the logical layer through
+			// functions.NormalizeIdentifier at the parse boundary, so folding
+			// it here is the same second normalization this whole family of
+			// defects is.
+			//
+			// Say what the removal of that fold rests on, because it is NOT a
+			// corpus observation. Instrumented over the 2593-query corpus this
+			// branch is taken THREE times, and all three carry a canonical
+			// aggregate name that is already upper (`COUNT(*)`,
+			// `MAX(E2.SALARY)`, `SUM(ORDERS.QTY)`) — so the fold was a no-op
+			// everywhere it ran, and no query shape could be built that drove
+			// it with a delimited spelling. What IS pinned is the authority
+			// downstream: GroupByOutputColumnNames publishes an alias verbatim
+			// (expressions.TestGroupByOutputColumnNames_AliasIsVerbatim), so a
+			// fold reintroduced anywhere on the way to it is a fold that
+			// authority will faithfully report.
+			spec.Alias = a.Aliases[i]
 		}
 		// PLAN-TIME numeric-operand gate (Java NumericAggregationValue.encapsulate).
 		// Java looks the aggregate up in an operator map keyed by (function, operand

@@ -113,7 +113,7 @@ func aggGroupedFixture(t testing.TB) ([]QueryResult, []values.Value, []expressio
 		{
 			Function:    expressions.AggSum,
 			Operand:     mustTestFieldOrdinal(t, root, 0),
-			OperandName: "amount",
+			OperandName: "AMOUNT",
 		},
 	}
 	return rows, groupKeys, aggs

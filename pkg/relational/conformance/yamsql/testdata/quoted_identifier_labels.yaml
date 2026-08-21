@@ -182,3 +182,52 @@ tests:
     columns: ["x", "e"]
     rows:
       - [1, true]
+  # THE AGGREGATE LABEL WAS THE LAST AUTHORITY STILL FOLDING, and the shape
+  # that shows it is one row carrying both: the GROUP BY key reported
+  # `KeepCase` while the aggregate over the same table reported `SUM(PLAIN)`
+  # for a column named `plain`… and `SUM(KEEPCASE)` for one named `KeepCase`.
+  # Two naming authorities over one table disagreeing about what its columns
+  # are called, in a single result set.
+  #
+  # The operand segment is minted once now (aggOperandCanonicalText): every
+  # token upper-cased — which is what the old blanket fold did, and is why the
+  # unquoted twins below are unchanged — except a delimited identifier, which
+  # contributes its inner text verbatim.
+  - query: SELECT SUM("KeepCase") FROM QCASE
+    columns: ["SUM(KeepCase)"]
+    rows:
+      - [42]
+  # The unquoted twin. `plain` folded at DDL time, so the column really is
+  # named PLAIN and the label is upper for a reason, not by a fold.
+  - query: SELECT SUM(plain) FROM QCASE
+    columns: ["SUM(PLAIN)"]
+    rows:
+      - [7]
+  # The AGREEMENT arm, and the one this whole fix is measured by: an unquoted
+  # identifier and its upper-folded quoted twin are the same name, so the two
+  # spellings must be indistinguishable downstream. `SUM("PLAIN")` used to
+  # report `SUM("PLAIN")` — quotes and all — in a result-set column label.
+  - query: SELECT SUM("PLAIN") FROM QCASE
+    columns: ["SUM(PLAIN)"]
+    rows:
+      - [7]
+  # A COMPOUND operand, which is the arm the old code got wrong twice over:
+  # the raw source slice carried the quotes in, and the repair that stripped
+  # its whitespace also upper-folded the quoted half back out.
+  - query: SELECT SUM("KeepCase" * plain) FROM QCASE
+    columns: ["SUM(KeepCase*PLAIN)"]
+    rows:
+      - [294]
+  # A QUOTED ALIAS on an aggregate. The alias reaches the logical layer already
+  # normalized, and was then folded a second time on the way to the spec.
+  - query: SELECT SUM(plain) AS "total" FROM QCASE
+    columns: ["total"]
+    rows:
+      - [7]
+  # Both authorities in ONE row: the group key and the aggregate label must
+  # agree about the same table's columns. This is the shape that made the
+  # disagreement visible, so it is the shape that pins it.
+  - query: SELECT "KeepCase", SUM(plain) FROM QCASE GROUP BY "KeepCase"
+    columns: ["KeepCase", "SUM(PLAIN)"]
+    rows:
+      - [42, 7]

@@ -23,11 +23,11 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**358 scenarios · 2854 query/assertion cases** across 18 feature areas — 2510 supported, 110 unsupported-feature pins, 234 error-path pins.
+**359 scenarios · 2865 query/assertion cases** across 18 feature areas — 2521 supported, 110 unsupported-feature pins, 234 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 51 | 326 | 293 | 19 | 14 |
+| Aggregates & GROUP BY | 52 | 331 | 298 | 19 | 14 |
 | Joins | 64 | 303 | 288 | 2 | 13 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 34 | 272 | 238 | 10 | 24 |
-| **Total** | **358** | **2854** | **2510** | **110** | **234** |
+| Other | 34 | 278 | 244 | 10 | 24 |
+| **Total** | **359** | **2865** | **2521** | **110** | **234** |
 
 ## Aggregates & GROUP BY
 
@@ -98,6 +98,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `limit_aggregate` | 3 | 3 | 0 | 0 | LIMIT with GROUP BY aggregates |
 | `nested_aggregate_rejection` | 4 | 2 | 2 | 0 | Java's SemanticAnalyzer.validateGroupByAggregates rejects nested |
 | `order_by_aggregate` | 3 | 3 | 0 | 0 | ORDER BY aggregate expressions |
+| `quoted_identifier_aggregate_labels` | 5 | 5 | 0 | 0 | THE AGGREGATE RESULT-SET LABEL, on the two plan shapes that do NOT put a |
 | `select_count_where` | 5 | 5 | 0 | 0 | COUNT with various WHERE predicates |
 | `select_distinct` | 7 | 7 | 0 | 0 | SELECT DISTINCT pins the dedup semantics. |
 | `select_distinct_null` | 1 | 1 | 0 | 0 | SELECT DISTINCT with NULL values |
@@ -487,7 +488,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `output_column_naming` | 8 | 8 | 0 | 0 | a query's OUTPUT COLUMN NAMES are part of its |
 | `parse_channel_pins` | 6 | 6 | 0 | 0 | dotted display names survive the parser→IR |
 | `quoted_identifier_columns` | 6 | 5 | 0 | 1 | A QUOTED identifier keeps its case; an unquoted one folds to upper. |
-| `quoted_identifier_labels` | 17 | 17 | 0 | 0 | THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one |
+| `quoted_identifier_labels` | 23 | 23 | 0 | 0 | THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one |
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
