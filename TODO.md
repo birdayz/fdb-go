@@ -19734,43 +19734,43 @@ of the container rather than from the shape of an error string.
 
 ---
 
-## Prose counts that restate a value an assertion already owns
+## A gate for prose that restates a value an assertion already owns
 
-Two reviewers, sweeping independently after #760, found this class is repo-wide
-rather than the two instances that PR closed. Eight already-rotted, plus a
-larger set that is live-but-currently-correct. Three verified against source:
+The instances two reviewers surfaced after #760 are fixed in that PR's
+follow-up, not booked here: the arity census now names `pinned` and
+`rfcPublishedPopulation` instead of repeating them,
+`field_name_decision_test.go` names `fieldDebtAuthorityTotal` instead of
+contradicting it, and `cardinality_bounds.go` no longer encodes an arm count in
+the word "twelfth". One reported instance was investigated and is NOT a defect:
+`result_type_stub_census_test.go`'s "a thirteenth stub" is anchored to a count
+the same file twice describes as closed ("the former twelve-entry debt
+inventory therefore reached zero"), which is frozen-historical, not rotting.
 
-- `pkg/docscheck/field_name_decision_test.go:399` says "25 escapes across 14
-  authorities" while `const fieldDebtAuthorityTotal = 12` sits at `:444` in the
-  same file and is enforced at `:1867`. Prose contradicts an asserted const 45
-  lines down. The same comment names `groupByOutputBaker` as carrying five; that
-  symbol occurs exactly once in the file, in that comment.
-- `pkg/recordlayer/query/plan/cascades/properties/cardinality_bounds.go:181`
-  says "vacuously the day a twelfth arm is added", encoding 11, while
-  `LogicalCardinalityArms` at `:360` holds 17 entries.
-- `pkg/docscheck/result_type_stub_census_test.go:481` says "a thirteenth stub".
-  Reported by a sweep, NOT re-verified against the owning table -- confirm
-  before acting on it.
+What remains is enforcement, and the obvious formulation does not work.
 
-The writing rule this repo already converged on is stated twice, verbatim, and
-is the fix: do not write the number, name its owner or give the recipe.
+The writing rule itself is settled and already stated twice in-tree:
 `properties/collected_statistics.go:33` -- "The population is deliberately NOT
 written as a number here: an earlier revision said 'four', RFC-236 then added
-the fifth" -- followed by a grep recipe. `plans/in_union.go:212` states the
-scoping half.
+the fifth" -- followed by a grep recipe in place of the count.
+`plans/in_union.go:212` states the scoping half.
 
-A decidable gate exists and was specified during review, narrower than the
-undecidable "ban ordinals" version: within census test files, every DIGIT in a
-comment must appear as a pinned value in the same file, with frozen ones
-carrying an explicit historical marker. Natural-language ordinals are never
-examined, which is what keeps legitimate historical prose ("the first version of
-this gate") out of scope. It flags the `field_name_decision_test.go` gap today.
+The first gate proposed was: within census test files, every DIGIT in a comment
+must appear as a pinned value in the same file. Review showed that cannot
+enforce ownership, in both directions:
 
-Not folded into #762 on an explicit reviewer scope ruling: that PR is a
-comment-only fold of the two instances #760's sweep surfaced, and pulling four
-more packages into it would widen a reviewed diff.
+- FALSE NEGATIVE: a stale count passes whenever any unrelated assertion in the
+  file happens to pin the same value. The real "25 escapes across 14
+  authorities" defect would have been masked by any unrelated 14.
+- FALSE POSITIVE: RFC and revision numbers (RFC-230, rev 6) fail without
+  restating any population.
 
-DONE when: the eight rotted instances name their owner instead of a value, and
-the digit gate fails on a census-file comment whose number no in-file assertion
-holds -- proven by mutation, with the mutation shown present and the build
-result read, not only the test result.
+So value-equality is the wrong relation; the gate needs the comment to name its
+OWNER, not to coincidentally match a number. A workable shape is an explicit
+annotation the comment carries (the identifier whose assertion owns the figure),
+which the gate resolves and compares -- but that is a design, not a decision,
+and it has not been built or measured.
+
+DONE when: a gate fails on a census-file comment that states a population
+without naming the assertion that owns it, and passes on an RFC number and on a
+frozen historical count -- all three proven by mutation, with each mutation
+shown present and the build result read, not only the test result.

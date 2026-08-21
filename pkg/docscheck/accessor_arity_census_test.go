@@ -182,7 +182,7 @@ var accessorAritySites = map[string]accessorAritySite{
 // census pins, not budgets; a move requires reclassification and an RFC-230
 // current-state note.
 //
-// THE +2 OVER RFC-230 rev 6 §7.3's PUBLISHED 45 IS DisplayColumnName, and it is
+// THE +2 OVER THE PRIOR READING IS DisplayColumnName, and it is
 // classified rather than absorbed. The projection label authority stopped
 // splitting a rendered name at its last dot and now reads the LEAF out of the
 // resolved accessors — which needs the path's length twice, once to reject an
@@ -195,7 +195,7 @@ const (
 	arityGeneratedLines    = 8  // protobuf loops over PFieldPath.FieldAccessors
 	arityCommentLines      = 7  // historical SourceRelativeBaked legibility prose
 	arityCodeLines         = 32 // the live production population
-	arityExpressions       = 36 // four code lines contain multiple expressions
+	arityExpressions       = 36 // exceeds arityCodeLines: some lines hold >1
 )
 
 // accessorArityLine is the RFC's own sweep, as a regexp.
@@ -311,7 +311,7 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 
 	// ---- The RFC's published number, and its decomposition.
 	if rawLines != rfcPublishedPopulation {
-		t.Errorf("the arity sweep now matches %d non-test lines, RFC-230 rev 6 §7.3 published "+
+		t.Errorf("the arity sweep now matches %d non-test lines, RFC-230's current-state header publishes "+
 			"%d.\n\tRe-run: git grep -n \"len(.*Accessors)\" -- '*.go' | grep -v _test.go\n"+
 			"\tA changed population is a finding, not a nit: classify what moved and update "+
 			"this census and the RFC together.", rawLines, rfcPublishedPopulation)
@@ -383,6 +383,7 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 // reader.
 func TestAccessorArityClassCounts(t *testing.T) {
 	t.Parallel()
+
 	// RFC-232's exact views leave a set of legitimate single-slot declines and a
 	// set of arity-tolerant path operations. The counts are deliberately not
 	// written here: `pinned` below asserts them, and RFC-230's header states
@@ -390,12 +391,9 @@ func TestAccessorArityClassCounts(t *testing.T) {
 	// Nested-path GROUP BY is shipped, so blocker/live-defect/uncertain are
 	// zero-ratchet classes.
 	//
-	// values.DisplayColumnName is one of the arity-tolerant sites, added when
-	// the projection label authority stopped splitting a rendered name at its
-	// last dot and started reading the leaf out of the resolved accessors. The
-	// DECLINE count did not move with it, which is the reading that matters:
-	// the conversion added an arity-TOLERANT site, not another single-slot
-	// requirement.
+	// Why the arity-tolerant class grew without the DECLINE class moving is the
+	// DisplayColumnName story, which the const block above already tells; it is
+	// not repeated here.
 	pinned := map[accessorArityClass]int{
 		arityCorrectDecline: 8,
 		arityBlocker:        0,

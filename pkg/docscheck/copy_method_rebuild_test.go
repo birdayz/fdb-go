@@ -60,6 +60,7 @@ import (
 // is unrecoverable by reading. Under the struct-copy form they are distinct:
 // the reset is an explicit `cp.cached = nil` with a comment saying why. The
 // gate therefore does not need to distinguish them — the form does.
+//
 // # Why this is a predicate and not a list
 //
 // The first version of this gate held a LIST of seven method names, and it

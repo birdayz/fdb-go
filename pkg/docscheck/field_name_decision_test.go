@@ -396,9 +396,11 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 //	an ESCAPE   is one site where a name can leave typed context — one entry.
 //	an AUTHORITY is the declaration that owns it — `file.go # declaration`.
 //
-// Currently 25 escapes across 14 authorities. The gap is concentrated rather
-// than noise: groupByOutputBaker and deriveColumnsFromProjection carry five
-// each, and explainValueOrdinalsWithAliases carries three.
+// The escape and authority totals are not written here: fieldDebtAuthorityTotal
+// below declares the authority count and is asserted against the list, and the
+// group headers hold the per-bucket entry counts. The gap is concentrated
+// rather than noise -- a few authorities carry most of it; the report itself
+// names which, so this comment does not.
 //
 // The concentration is also where the retirements come from, and the last one is
 // the argument for keeping both numbers: AggregateResultColumnName's six arms
