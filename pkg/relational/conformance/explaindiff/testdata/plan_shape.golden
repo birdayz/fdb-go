@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2623 dml=157 non_query=104 plan_errors=272 unexpected_errors=4
+# files=359 queries=2626 dml=157 non_query=104 plan_errors=274 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14456,6 +14456,25 @@ sql:   SELECT "a.b" FROM dott
 plan:  Project([_current.a.b#0], Scan(DOTT))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#32 expect-error=0A000
+sql:   WITH RECURSIVE s AS (SELECT "id" FROM q1), d AS (SELECT * FROM s UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+plan:  <PLAN-ERROR: 0A000: condition is not met!>
+=== quoted_identifier_labels.yaml#33
+sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id", QCASE.id AS oid FROM q1, QCASE WHERE q1."id" = 1) x UNION ALL SELECT d."id" + 1, d.oid FROM d WHERE d."id" < 3) SELECT d."id" FROM d ORDER BY d."id"
+plan:  Project([_current.id#0], InMemorySort([_current.id#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1))), Project([(_current.id#0 + 1), _current.OID#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryRecursiveDfsJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryNestedLoopJoinPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryTempTableScanPlan
+=== quoted_identifier_labels.yaml#34 expect-error=0AF00
+sql:   WITH RECURSIVE d AS (SELECT * FROM q1, QCASE UNION ALL SELECT * FROM q1, QCASE UNION ALL SELECT d."id" FROM d) SELECT * FROM d
+plan:  <PLAN-ERROR: 0AF00: recursive CTE seed width 4 disagrees with 0 output columns>
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))

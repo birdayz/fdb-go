@@ -348,3 +348,28 @@ tests:
     columns: ["b"]
     rows:
       - [1]
+  # THE THREE ROUTES THE JOIN GATE'S PEEL DOES NOT FOLLOW, pinned so the
+  # negative results are tests rather than sentences. derivedOutputColumns can
+  # reach the join arm through a sibling-CTE seed, a derived table over a join,
+  # and a union over a join; the peel handles none of them directly. Measured,
+  # they do not need it — but for THREE DIFFERENT reasons, and an earlier draft
+  # of this block asserted one reason for all three.
+  #
+  # 1. A sibling-CTE seed does not reach the gate at all.
+  - query: WITH RECURSIVE s AS (SELECT "id" FROM q1), d AS (SELECT * FROM s UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+    error_code: "0A000"
+  # 2. A derived table over a join REACHES the route and is CORRECT, because the
+  #    derived table's own projection strips the qualifier before the seed
+  #    derivation sees it — the LogicalProject case the gate deliberately does
+  #    not peel. This arm was nearly pinned as another unreachable shape; it
+  #    plans, and pinning the rows is what caught that.
+  - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id", QCASE.id AS oid FROM q1, QCASE WHERE q1."id" = 1) x UNION ALL SELECT d."id" + 1, d.oid FROM d WHERE d."id" < 3) SELECT d."id" FROM d ORDER BY d."id"
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # 3. A union of star selects over a join already produces the message the gate
+  #    exists to preserve, so it needs no peel of its own.
+  - query: WITH RECURSIVE d AS (SELECT * FROM q1, QCASE UNION ALL SELECT * FROM q1, QCASE UNION ALL SELECT d."id" FROM d) SELECT * FROM d
+    error_code: "0AF00"

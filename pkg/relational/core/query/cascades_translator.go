@@ -9756,6 +9756,11 @@ func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.Logical
 // the table's metadata, in declaration order. Returns (nil, false) when the
 // body's bottom is not a resolvable scan (set operations, unnests, …), which
 // keeps those shapes on the lenient no-rename path.
+// The width-transparent set below (Distinct, Sort, Limit, Filter) is the same
+// membership seedResolvesThroughJoin peels. They are separate loops because
+// they bottom out on different questions — this one on a scan, that one on a
+// join — but a case added to either is a case the other probably wants, and
+// nothing but this sentence connects them.
 func (t *cascadesTranslator) starBodyColumns(op logical.LogicalOperator) ([]string, bool) {
 	for {
 		switch o := op.(type) {
@@ -10867,8 +10872,48 @@ func findUnsafeFuncInPredicate(p predicates.QueryPredicate) string {
 }
 
 // seedResolvesThroughJoin reports whether a recursive-CTE seed's output columns
-// would be derived through derivedOutputColumns' JOIN arm, by peeling exactly
-// the operators that arm's siblings peel.
+// would be derived through derivedOutputColumns' JOIN arm, by peeling the
+// width-transparent operators above it: Distinct, Sort, Limit, Filter. That
+// membership is shared with starBodyColumns' loop, which peels the same four
+// and then bottoms at a scan; the two are separate because they answer
+// different questions, and if one gains a case the other probably should too.
+//
+// WHAT THE PEEL DOES NOT FOLLOW, written first and by enumeration, because a
+// scope sentence that describes the code instead of probing it is the failure
+// that survives every other check — and a characterisation cannot be checked
+// against the switch it claims to summarize. derivedOutputColumns has ELEVEN
+// arms. This walk follows five: Join (the answer) and Distinct/Sort/Limit/
+// Filter (width-transparent). Of the remaining six, THREE are further routes
+// to legColumns' join arm and are not followed:
+//
+//   - LogicalScan -> legColumns -> cteScope -> derivedOutputColumns(body), the
+//     sibling-CTE seed;
+//   - LogicalCTE -> o.Body, a derived table over a join;
+//   - LogicalUnion -> unionOutputColumns -> its first branch.
+//
+// and THREE cannot reach that arm at all:
+//
+//   - LogicalProject takes its names from its own projection list and strips
+//     the qualifier there, so a join beneath it publishes bare names;
+//   - LogicalAggregate reaches legColumns for TYPES only — its names are the
+//     group keys and the calls' own aliases;
+//   - LogicalInlineValues answers from ExactLogicalResultType, never recursing.
+//
+// The first three were run, and they need no peel for THREE DIFFERENT reasons.
+// A first draft of this comment asserted one reason for all of them:
+//
+//   - the sibling-CTE seed does not reach the gate at all (`0A000: condition is
+//     not met!`);
+//   - the union-of-stars already produces the `seed width N` message this gate
+//     exists to preserve;
+//   - and the derived-table-over-join REACHES the route and is CORRECT, because
+//     the derived table's own projection strips the qualifier before the seed
+//     derivation sees it. That is the LogicalProject arm above, working.
+//
+// The corpus pins all three, including the ROWS of the one that plans — which
+// is what caught it being about to be filed as a fourth unreachable shape. A
+// change that moves any of them turns an arm red rather than silently re-arming
+// the blind spot.
 //
 // IT ASKS A STRUCTURAL QUESTION, and the first version of this gate did not.
 // That one tested the downstream OBSERVABLE — "does any derived field name
