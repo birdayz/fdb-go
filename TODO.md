@@ -19771,16 +19771,24 @@ enforce ownership, in both directions:
 So value-equality is the wrong relation, and the repair is to invert what the
 gate does: require the comment to CITE, never to VERIFY. A comment that states
 a population must carry the identifier whose assertion owns it, or a grep
-recipe -- and the gate checks only that a citation is PRESENT and resolves, not
-that any number matches. Nothing is compared, so the false negative disappears
-rather than being narrowed.
+recipe -- AND must not restate the figure itself. Both halves are load-bearing,
+and each closes a hole the other leaves open. Requiring only a citation still
+passes "14 authorities (fieldDebtAuthorityTotal)" after the constant moves to
+13: the citation is present and resolves, so a stale literal rides a valid
+pointer. Comparing literal against cited owner would catch that, but drags
+verification back in. Forbidding the literal removes the thing that can go
+stale, which is what `collected_statistics.go` already does in prose -- "the
+population is deliberately NOT written as a number here" -- so the gate is that
+sentence made mechanical. Nothing is compared, so the collision false negative
+disappears rather than being narrowed, and nothing is restated, so there is no
+literal left to drift.
 
 Two roles for a number have to stay separate, though. A line number inside a
 `file:line` reference is not a population claim, so the scan ignores it
 alongside RFC/revision numbers and dates -- a short list enumerated once. But
 `file:line` is NOT an acceptable citation FORM: this repo already holds that "a
 design trade defended by line numbers decays into an unfalsifiable claim"
-(`field_name_decision_test.go:1575`), and a gate accepting one would bless the
+(the phrase is in `field_name_decision_test.go`), and a gate accepting one would bless the
 least durable pointer available. A citation must name an identifier or give a
 recipe -- both survive an edit above them; a line number does not. That is
 `collected_statistics.go:33` made mechanical rather than aspirational.
@@ -19788,7 +19796,9 @@ recipe -- both survive an edit above them; a line number does not. That is
 One correction to the target, earned by a near-miss during review. Two
 reviewers checked the ORDINAL in `result_type_stub_census_test.go`, agreed it
 was frozen, and nearly closed the file -- while the sentence carrying it
-asserted in the present tense three things RFC-232 had made false. The digit
+asserted in the present tense that every aggregate-index plan carries
+values.UnknownType, that the callers pass the singleton explicitly, and that the
+constructor defaults a nil type to it -- all three false since RFC-232. The digit
 was sound; the prose around it was not. So the gate's subject is the TENSE and
 OWNERSHIP of prose adjacent to a pinned figure, not the digit itself. A sound
 number is exactly the cover this class hides behind.
@@ -19798,8 +19808,9 @@ one file and left standing in another, because no repo-wide grep for the
 superseded phrasing was run. A correction is not done until that grep returns
 zero across every file and the count is reported.
 
-DONE when: a gate fails on a census-file comment that states a population
-without citing an identifier or recipe that resolves, and passes on an RFC
-number, a date, and a frozen historical count -- all four proven by mutation,
-with each mutation shown present and the build result read, not only the test
-result.
+DONE when: the gate REDS on a census-file comment that states a population with
+no citation, and equally on one that restates the literal while carrying a valid
+citation -- that second arm is the one a citation-only rule would miss. And it
+stays GREEN on an RFC number, a date, and a frozen historical count. Every arm
+in that enumeration proven by mutation, with each mutation shown present and the
+build result read, not only the test result.

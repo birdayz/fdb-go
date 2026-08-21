@@ -15,17 +15,20 @@ import (
 // It sizes the PAYOFF of deriving a plan's result type from its result value,
 // and it exists because RFC-213's first draft could only INFER that payoff.
 //
-// Twelve plans return values.UnknownType from GetResultType, and every consumer
-// that reads a result type fails CLOSED on it — type-asserts *values.RecordType,
-// misses, and declines. Declining is INVISIBLE: it costs an optimization or a
-// proof, never a wrong row, so no test goes red and no number moves. That is
-// precisely why the size of the loss has to be counted rather than argued.
+// Twelve plans returned values.UnknownType from GetResultType when this census
+// was built, and every consumer that reads a result type fails CLOSED on one —
+// type-asserts *values.RecordType, misses, and declines. Declining is
+// INVISIBLE: it costs an optimization or a proof, never a wrong row, so no test
+// goes red and no number moves. That is precisely why the size of the loss had
+// to be counted rather than argued.
 //
-// WHAT A ZERO WOULD MEAN, and it is not "no problem": it would mean no corpus
-// query reaches these deciders with a stubbed plan at all, so RFC-213's
-// implementation would be correct and LATENT — worth doing for coherence, but
-// with no measurable plan-quality payoff to claim. That is a materially
-// different RFC, and a printed zero is the only thing that can say so.
+// RFC-232 CLOSED THAT POPULATION, so this paragraph is history: stubInventory()
+// is empty, and no GetResultType body under this tree returns the singleton.
+// The zero this census was built to detect has therefore ARRIVED, and by the
+// reading above that means RFC-213's implementation is correct and LATENT —
+// worth having for coherence, with no measurable plan-quality payoff left to
+// claim. The census stays as the instrument that would show the population
+// coming back.
 //
 // GATED by values.LegIdentityCensusEnabled, like every census on this path: the
 // recorder's first statement is the gate, so a disabled census costs one atomic
