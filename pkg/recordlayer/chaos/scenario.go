@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/fdbgo/fdb"
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -56,11 +57,6 @@ func WithFaults(faults *FaultConfig) Option {
 // Each scenario gets its own FDB subspace for isolation.
 // By default, no faults are injected — use WithFaults() or InjectOnce().
 func NewScenario(t testing.TB, realDB fdb.Database, metadata *recordlayer.RecordMetaData, opts ...Option) *Scenario {
-	t.Helper()
-	// A scenario opened after the shared container died never ran against a
-	// live cluster; fail it as that rather than letting it wait out its own
-	// deadline and report as a defect in whatever it was testing.
-	requireClusterAlive(t)
 	cfg := scenarioConfig{
 		seed:   42,
 		faults: FaultsNone,
@@ -90,12 +86,43 @@ func (s *Scenario) InjectOnce(fault FaultType) {
 	s.chaos.InjectOnce(fault)
 }
 
+// opContext bounds a single chaos operation.
+//
+// WHY THIS IS BOUNDED AT ALL, since the obvious reading is that it is belt and
+// braces. `Database.TransactCtx` retries "bounded only by
+// SetTransactionTimeout/SetTransactionRetryLimit (default unbounded)", and no
+// scenario sets either. On context.Background() a shared cluster that dies
+// mid-suite therefore does not fail these ops -- it hangs them, one after
+// another, until the package-level 15-minute alarm fires. That is where the
+// observed cost came from: 14 tests each waiting out their own deadline and a
+// panic whose stack names whichever test was unlucky, not the container.
+//
+// A bound turns that into a fast, TYPED context.DeadlineExceeded at the first
+// op of every subsequent scenario. Typed matters: it is what lets a caller use
+// errors.Is rather than matching on message text, which cannot be spoofed by an
+// error that merely quotes the phrase.
+//
+// It deliberately does NOT try to distinguish "cluster died" from "cluster is
+// slow". An earlier attempt did, by classifying error strings, and was removed:
+// the classifier's own signature list was the only thing pinning it, one of its
+// signatures could never be produced by any error in the tree, and a false
+// positive would have replaced every later scenario's real diagnosis with a
+// guess. Bounding is strictly weaker and strictly honest.
+//
+// 30s is far above any healthy op here -- the whole 229-test suite runs in well
+// under a minute against a live container -- and far below the package alarm,
+// so a dead cluster surfaces as N fast failures rather than one timeout.
+func (s *Scenario) opContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
+}
+
 // SaveRecord saves a record to the store and updates the model.
 // The transaction goes through the ChaosTransactor (fault injection).
 // On success, the model is updated. On failure, the test fails.
 func (s *Scenario) SaveRecord(msg proto.Message) {
 	s.t.Helper()
-	ctx := context.Background()
+	ctx, cancelOp := s.opContext()
+	defer cancelOp()
 	_, err := s.chaosDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := s.openStore(rtx)
 		if err != nil {
@@ -105,11 +132,6 @@ func (s *Scenario) SaveRecord(msg proto.Message) {
 		return nil, err
 	})
 	if err != nil {
-		if noteOpFailure("SaveRecord", err) {
-			s.t.Fatalf("chaos: SaveRecord at op %d (seed=%d) hit the CLUSTER, not the "+
-				"scenario: %v -- the shared FDB container looks gone, so read this "+
-				"as a container death rather than a SaveRecord defect", s.opIndex, s.seed, err)
-		}
 		s.t.Fatalf("chaos: SaveRecord at op %d (seed=%d): %v", s.opIndex, s.seed, err)
 	}
 	s.model.Save(msg)
@@ -119,7 +141,8 @@ func (s *Scenario) SaveRecord(msg proto.Message) {
 // DeleteRecord deletes a record by primary key and updates the model.
 func (s *Scenario) DeleteRecord(pk tuple.Tuple) {
 	s.t.Helper()
-	ctx := context.Background()
+	ctx, cancelOp := s.opContext()
+	defer cancelOp()
 	_, err := s.chaosDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := s.openStore(rtx)
 		if err != nil {
@@ -129,11 +152,6 @@ func (s *Scenario) DeleteRecord(pk tuple.Tuple) {
 		return nil, err
 	})
 	if err != nil {
-		if noteOpFailure("DeleteRecord", err) {
-			s.t.Fatalf("chaos: DeleteRecord at op %d (seed=%d) hit the CLUSTER, not the "+
-				"scenario: %v -- the shared FDB container looks gone, so read this "+
-				"as a container death rather than a DeleteRecord defect", s.opIndex, s.seed, err)
-		}
 		s.t.Fatalf("chaos: DeleteRecord at op %d (seed=%d): %v", s.opIndex, s.seed, err)
 	}
 	s.model.Delete(pk)
@@ -143,7 +161,8 @@ func (s *Scenario) DeleteRecord(pk tuple.Tuple) {
 // DeleteAllRecords deletes all records and resets the model.
 func (s *Scenario) DeleteAllRecords() {
 	s.t.Helper()
-	ctx := context.Background()
+	ctx, cancelOp := s.opContext()
+	defer cancelOp()
 	_, err := s.chaosDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := s.openStore(rtx)
 		if err != nil {
@@ -152,11 +171,6 @@ func (s *Scenario) DeleteAllRecords() {
 		return nil, store.DeleteAllRecords()
 	})
 	if err != nil {
-		if noteOpFailure("DeleteAllRecords", err) {
-			s.t.Fatalf("chaos: DeleteAllRecords at op %d (seed=%d) hit the CLUSTER, not the "+
-				"scenario: %v -- the shared FDB container looks gone, so read this "+
-				"as a container death rather than a DeleteAllRecords defect", s.opIndex, s.seed, err)
-		}
 		s.t.Fatalf("chaos: DeleteAllRecords at op %d (seed=%d): %v", s.opIndex, s.seed, err)
 	}
 	s.model.DeleteAll()
@@ -168,7 +182,8 @@ func (s *Scenario) DeleteAllRecords() {
 // Fails the test if any violations are found.
 func (s *Scenario) Verify() {
 	s.t.Helper()
-	ctx := context.Background()
+	ctx, cancelOp := s.opContext()
+	defer cancelOp()
 	result, err := s.cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := s.openStore(rtx)
 		if err != nil {
@@ -177,11 +192,6 @@ func (s *Scenario) Verify() {
 		return Verify(store, s.model), nil
 	})
 	if err != nil {
-		if noteOpFailure("Verify", err) {
-			s.t.Fatalf("chaos: Verify at op %d (seed=%d) hit the CLUSTER, not the "+
-				"scenario: %v -- the shared FDB container looks gone, so read this "+
-				"as a container death rather than a Verify defect", s.opIndex, s.seed, err)
-		}
 		s.t.Fatalf("chaos: Verify at op %d (seed=%d): %v", s.opIndex, s.seed, err)
 	}
 	violations, _ := result.([]Violation)
@@ -214,7 +224,8 @@ func (s *Scenario) openStore(rtx *recordlayer.FDBRecordContext) (*recordlayer.FD
 // Model is only updated on success.
 func (s *Scenario) TrySaveRecord(msg proto.Message) error {
 	s.t.Helper()
-	ctx := context.Background()
+	ctx, cancelOp := s.opContext()
+	defer cancelOp()
 	_, err := s.chaosDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := s.openStore(rtx)
 		if err != nil {

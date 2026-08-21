@@ -19727,35 +19727,32 @@ DONE when: GRV and commit classify an in-band 1100 as `basicLoadBalance` does
 (verified against the C++ source, not against this entry), a divergence test pins
 each, and both scope sentences above are narrowed to what their code covers.
 
-## Chaos suite: a mid-run container death is undetected, and cleanup is a no-op
+## Chaos suite: a dead container is reported as N deadlines, not as a dead container
 
-Same CI failure, independent of the client bug above.
+The COST of this is fixed; the ATTRIBUTION is not.
 
-1. **No mid-run death detection.** `pkg/testcontainers/foundationdb/foundationdb.go:101`
-   `isTransientContainerErr` and `:111` `retryContainerStart` cover container
-   **bring-up** only (`:96`: "a container bring-up failure"). A container that
-   dies after bring-up is undetected: every later test fails at op 0 with
-   `failed to read store info: context deadline exceeded`, and the real cause is
-   buried under N misleading failures. Observed: 14 failures and a 15-minute
-   package timeout from one death.
+What was wrong: scenario ops ran on `context.Background()`, and
+`Database.TransactCtx` retries "bounded only by
+SetTransactionTimeout/SetTransactionRetryLimit (default unbounded)" with neither
+set. So a shared container dying mid-suite did not fail the remaining ops, it
+HUNG them, until the package's 15-minute alarm fired — observed once as 14
+failures plus a timeout whose stack named an arbitrary test rather than the
+container. `pkg/recordlayer/chaos/scenario.go` now bounds every op, so the same
+death produces fast, TYPED `context.DeadlineExceeded` failures instead.
 
-2. **`pkg/recordlayer/chaos/chaos_test.go:58`** calls `container.Terminate(ctx)`
-   on a 2-minute context that `m.Run()` (`:57`) has already exhausted, so
-   termination is a silent no-op that leaks containers into the next run's
-   memory pressure.
+What remains: those failures still say "deadline exceeded", not "the container
+is gone". An earlier attempt to close that by classifying error strings was
+written and then removed — its signature list was the only thing pinning it, one
+signature could never be produced by any error in the tree, and a false positive
+would have replaced every later scenario's real diagnosis with a guess. If
+attribution is wanted, MEASURE it: probe `cleanDB` once in `NewScenario` under a
+bounded context and report the container state directly. Do not infer it from
+message text; this repo matches error TYPES.
 
-`chaos_test.go:26` hands ONE container to 228 tests (229 `func Test*` minus
-`TestMain`). They are NOT concurrent: `pkg/recordlayer/chaos/BUILD.bazel:66`
-sets `-test.parallel=1`, so `t.Parallel()` yields serialised execution.
+Note the blast radius is smaller than it looks: `chaos_test.go` hands one
+container to 228 tests (229 `func Test*` minus `TestMain`), but
+`pkg/recordlayer/chaos/BUILD.bazel:66` pins `-test.parallel=1`, so they run
+serially rather than concurrently.
 
-**Ryuk is NOT the cause and a fixer must not start there.** It is already ruled
-out with evidence elsewhere in this file: the `Reaper.connect` goroutine is alive
-in a 4h50m dump and its timeouts are 1m/10s — testcontainers' *connect* timeouts,
-not a reap interval. A suite holding its Reaper connection is never reaped, and
-`infra/cloud-init.yaml:263-310` deliberately keeps Ryuk alive precisely so it CAN
-collect orphans that otherwise leak ~700 MB RSS each. The disable switch is
-`TESTCONTAINERS_RYUK_DISABLED`; disabling it would remove the fallback cleanup
-that the expired `Terminate` above already fails to do.
-
-DONE when: a mid-run container death is detected and reported as itself rather
-than as N test timeouts, and `Terminate` runs on a context that is still live.
+DONE when: a scenario that cannot reach the cluster says so, from an observation
+of the container rather than from the shape of an error string.
