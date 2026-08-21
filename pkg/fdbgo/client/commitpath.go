@@ -115,6 +115,26 @@ func (tx *Transaction) commit(ctx context.Context, muts []Mutation, writeConflic
 	}
 
 	commitErr := tx.parseCommitReply(resp.Body)
+	// An IN-BAND maybeDelivered error means the commit proxy died while
+	// answering, so whether the mutation landed is UNKNOWN. It arrives here and
+	// not in the four transport arms above, which already map their failures to
+	// commit_unknown_result.
+	//
+	// C++ commits through basicLoadBalance with AtMostOnce::True
+	// (NativeAPI.actor.cpp:6638-6643), and that arm converts rather than
+	// retries: `if (atMostOnce) throw request_maybe_delivered()`
+	// (LoadBalance.actor.h:828-830). The single-proxy path does the same through
+	// brokenPromiseToMaybeDelivered (NativeAPI.actor.cpp:6633). A commit is NEVER
+	// re-sent on this class -- that would risk applying it twice -- which is why
+	// this converts and the GRV path continues.
+	//
+	// Go normalises maybeDelivered to commit_unknown_result AT THIS BOUNDARY
+	// rather than raising 1030 and mapping later; that is what the four
+	// transport arms above already do, so this arm now agrees with its siblings.
+	if dispositionForReplyError(commitErr, true) == replyConvertToMaybeDelivered {
+		tx.db.handleConnError(proxy.Address)
+		commitErr = &wire.FDBError{Code: ErrCommitUnknownResult}
+	}
 	if commitErr != nil && !tx.isDummy {
 		var fdbErr *wire.FDBError
 		if errors.As(commitErr, &fdbErr) && (fdbErr.Code == ErrCommitUnknownResult || fdbErr.Code == ErrClusterVersionChanged) {

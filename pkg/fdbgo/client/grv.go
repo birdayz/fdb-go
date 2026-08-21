@@ -1311,6 +1311,23 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			}
 			db.failMon.markAlive(proxy.Address)
 			v, lk, rkD, rkB, tti, ptd, perr := parseGetReadVersionReply(resp.Body)
+			// An IN-BAND maybeDelivered error is not this proxy's answer, it is
+			// the proxy going away while answering: a dying GrvProxy replies
+			// broken_promise (1100) inside the ErrorOr rather than dropping the
+			// connection, so it lands here and never in the resp.Err arm above.
+			//
+			// C++ basicLoadBalance treats 1100 and 1030 as one class and, at
+			// AtMostOnce::False, moves to the next alternative
+			// (LoadBalance.actor.h:823-830). GRV is AtMostOnce::False
+			// (NativeAPI.actor.cpp:3865). Returning perr raw was the divergence:
+			// 1100 is retryable under NONE of the three Go predicates, so a GRV
+			// issued while a proxy was dying failed TERMINALLY where C++ just
+			// asks the next proxy. Exhausting them all falls through to the
+			// backoff below, which is C++'s behaviour too.
+			if dispositionForReplyError(perr, false) == replyTryNextAlternative {
+				db.handleConnError(proxy.Address)
+				continue
+			}
 			return v, lk, rkD, rkB, tti, ptd, attemptEpoch, perr
 		}
 

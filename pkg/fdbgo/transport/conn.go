@@ -197,12 +197,16 @@ var ErrConnClosed = errors.New("connection closed")
 // its peer connection dies: tryGetReply waits on
 // IFailureMonitor::onDisconnectOrFailure and completes with
 // request_maybe_delivered() (fdbrpc/include/fdbrpc/fdbrpc.h:794-799 and
-// :815-820), and loadBalance classifies broken_promise/request_maybe_delivered
-// as maybeDelivered (fdbrpc/include/fdbrpc/LoadBalance.actor.h:344) — retrying
-// another alternative for reads (AtMostOnce::False), or throwing
-// request_maybe_delivered for a commit (AtMostOnce::True, LoadBalance.actor.h:
-// 369-370), which tryCommit maps to commit_unknown_result handling
-// (fdbclient/NativeAPI.actor.cpp:6937).
+// :815-820), and the load balancers classify broken_promise and
+// request_maybe_delivered as one maybeDelivered class
+// (fdbrpc/include/fdbrpc/LoadBalance.actor.h:344 for reads, :823-824 for GRV and
+// commit) — retrying another alternative for reads, which go through
+// loadBalance at AtMostOnce::False, and throwing request_maybe_delivered for a
+// commit, which goes through basicLoadBalance at AtMostOnce::True
+// (LoadBalance.actor.h:828-830, called from fdbclient/NativeAPI.actor.cpp:6638).
+// tryCommit maps that to commit_unknown_result handling. Reads and commits take
+// DIFFERENT load balancers; attributing the commit arm to loadBalance names a
+// function the commit path never calls.
 const codeRequestMaybeDelivered = 1030
 
 // ConnClosedError is the teardown error delivered to in-flight requests and
