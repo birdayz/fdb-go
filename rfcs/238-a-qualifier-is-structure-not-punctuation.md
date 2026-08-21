@@ -563,3 +563,36 @@ sweep deletes it. That argues against splitting after step 1 specifically. It is
 not the argument for one change; §1 is.
 
 This touches datum keys engine-wide.
+
+## 7. One follow-on that is scope, not oversight
+
+`protoFieldLookup` DECLINES when two storage names decode to one SQL identifier,
+which is right — a bind decided by descriptor order is worse than no bind. But a
+decline surfaces as `42703` (undefined column), and Java counts the matching
+attributes and reports `42702` (AMBIGUOUS_COLUMN). The reproducer:
+
+```
+descriptor holds repeated fields  foo___0bar  and  foo__0_bar
+                                  (both decode to the SQL name foo___bar)
+FROM t AS x, x."foo___bar" AS y   -> Go 42703, Java 42702
+```
+
+**Why it is not folded into the fix that found it.** The decline returns a nil
+descriptor, and `fieldPresent == false` is what the callers turn into 42703.
+Carrying "ambiguous" instead of "absent" means a new disposition threaded
+through `arrayFieldFromDescriptor`, `unnestArrayElementType`,
+`inlineValuesArrayElementType`, both `chained_unnest.go` call sites, and
+`classifyDerivedUnnestArray`'s disposition mapping — seven places and a new
+enum arm, each wanting its own pin.
+
+That is a coherent piece of work rather than a line, and it belongs to this
+RFC's family: it is the same "a flat name lost information upstream" mechanism,
+surfacing as an error class instead of as a wrong bind. It lands with step 6,
+where the derived-UNNEST path is already being reworked.
+
+**What is NOT deferred:** the wrong-column bind itself. A descriptor-order-
+dependent answer was the defect; it declines now, and the decline is pinned.
+What remains is which SQLSTATE the decline reports, on a shape DDL cannot
+produce — `protoname`'s own doc records why (two SQL names that collide under
+decoding would be duplicates at CREATE), so only hand-written imported
+descriptors reach it.

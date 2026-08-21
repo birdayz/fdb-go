@@ -107,6 +107,31 @@ func translateSpecialCharacters(userIdentifier string) string {
 // ToUserIdentifier reverses ToProtoBufCompliantName. Mirrors
 // ProtoUtils.toUserIdentifier: replacements applied in the exact inverse
 // order ("__2" -> ".", "__1" -> "$", "__0" -> "__").
+//
+// NEITHER DIRECTION IS INJECTIVE, and a caller that assumes either one is will
+// bind the wrong field. Both facts are load-bearing and neither is obvious from
+// the three substitutions above:
+//
+//   - ENCODING collides: `___1__2foo` decodes to `_$.foo`, so a DIFFERENT SQL
+//     name (`___1.FOO`) encodes to something that case-folds onto it. Matching
+//     a SQL name against storage by ENCODING the SQL name therefore accepts
+//     fields the identifier does not name. Decode the storage names instead —
+//     that is the direction every consumer already uses to answer "what is this
+//     column called".
+//   - DECODING collides too, which is easy to miss once the encode direction
+//     has been rejected for the same reason: `__0_` and `___0` both decode to
+//     `___`, so `foo__0_bar` and `foo___0bar` BOTH answer to the SQL name
+//     `foo___bar`. A descriptor can hold two fields with one SQL spelling.
+//
+// So a lookup keyed on decoded names must handle COLLISIONS rather than take
+// the first hit: which of two candidates wins is a property of the descriptor's
+// field order and not of the query. This is not hypothetical — five successive
+// defects in one lookup traced to this single unwritten fact, each fix correct
+// about the coordinate it addressed and silent about the next.
+//
+// A schema built through DDL cannot produce such a pair (the two SQL names
+// would be duplicates and rejected at CREATE), so the shapes that reach it come
+// from hand-written imported descriptors.
 func ToUserIdentifier(protoIdentifier string) string {
 	s := strings.ReplaceAll(protoIdentifier, dotEscape, ".")
 	s = strings.ReplaceAll(s, dollarEscape, "$")
