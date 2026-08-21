@@ -73,7 +73,10 @@ func newRecordPutCmd() *cobra.Command {
 			// Dry-run pass first, always: it validates the JSON against
 			// the descriptor and computes the PK — which the confirm
 			// prompt needs — without writing anything.
-			// Captured for the renderer, as in `record get`.
+			// Captured for the renderer, as in `record get`. BOTH store closures
+			// assign it, so the render uses the snapshot that actually produced the
+			// record shown: each withStore reloads metadata, and the confirm prompt
+			// between them leaves time for it to change.
 			var recMeta *recordlayer.RecordMetaData
 			staged, err := withStore(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) (*recordlayer.FDBStoredRecord[proto.Message], error) {
@@ -97,6 +100,7 @@ func newRecordPutCmd() *cobra.Command {
 			}
 			saved, err := withStore(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) (*recordlayer.FDBStoredRecord[proto.Message], error) {
+					recMeta = store.GetRecordMetaData()
 					msg, err := parseRecordJSON(store.GetRecordMetaData(), recordType, args[0])
 					if err != nil {
 						return nil, err

@@ -119,6 +119,14 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "func ") {
 				continue
 			}
+			// A `…Raw :=` binding is a COMPARISON input, not a render. Decoding is
+			// not injective — stored A__B and A__0B both render as A__B — so a
+			// diff has to compare stored spellings or it drops real changes. The
+			// `Raw` suffix is the convention that says so, and this gate is what
+			// keeps it meaning that.
+			if strings.Contains(line, "Raw :=") || strings.Contains(line, "Raw, ") {
+				continue
+			}
 			var ok bool
 			for _, a := range allowed {
 				if strings.Contains(line, a) {

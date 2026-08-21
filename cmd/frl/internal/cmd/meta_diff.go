@@ -198,8 +198,15 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			continue
 		}
 		var changes []fieldChange
-		if oldPK, newPK := pkFieldsOrUnset(oldT.PrimaryKey), pkFieldsOrUnset(newT.PrimaryKey); oldPK != newPK {
-			changes = append(changes, fieldChange{Field: "primary_key", Old: oldPK, New: newPK})
+		// Compared RAW (see pkFieldsRaw): two distinct stored keys can render
+		// identically, and a PK change that vanishes from a diff is the worst
+		// kind of silence this tool can produce.
+		if oldPK, newPK := pkFieldsRaw(oldT.PrimaryKey), pkFieldsRaw(newT.PrimaryKey); oldPK != newPK {
+			oldShown, newShown := pkFieldsOrUnset(oldT.PrimaryKey), pkFieldsOrUnset(newT.PrimaryKey)
+			if oldShown == newShown {
+				oldShown, newShown = oldPK, newPK
+			}
+			changes = append(changes, fieldChange{Field: "primary_key", Old: oldShown, New: newShown})
 		}
 		if oldT.SinceVersion != newT.SinceVersion {
 			changes = append(changes, fieldChange{
@@ -256,9 +263,21 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 		if oldI.Type != newI.Type {
 			changes = append(changes, fieldChange{Field: "type", Old: oldI.Type, New: newI.Type})
 		}
-		oldFields := strings.Join(userFieldNames(oldI.RootExpression.FieldNames()), ",")
-		newFields := strings.Join(userFieldNames(newI.RootExpression.FieldNames()), ",")
-		if oldFields != newFields {
+		// COMPARE IN STORAGE SPACE, RENDER DECODED. Decoding is not injective:
+		// stored A__B and A__0B BOTH render as A__B, so comparing the rendered
+		// strings makes a real index change compare equal and vanish from the
+		// diff -- silent, in the one tool whose job is to show what changed.
+		oldRaw := oldI.RootExpression.FieldNames()
+		newRaw := newI.RootExpression.FieldNames()
+		if strings.Join(oldRaw, ",") != strings.Join(newRaw, ",") {
+			oldFields := strings.Join(userFieldNames(oldRaw), ",")
+			newFields := strings.Join(userFieldNames(newRaw), ",")
+			if oldFields == newFields {
+				// The change is real but invisible once decoded; show the stored
+				// spelling so the operator can see what actually moved.
+				oldFields = strings.Join(oldRaw, ",")
+				newFields = strings.Join(newRaw, ",")
+			}
 			changes = append(changes, fieldChange{Field: "fields", Old: oldFields, New: newFields})
 		}
 		// Options carry uniqueness ("unique"), allowed-for-query, and
@@ -418,4 +437,20 @@ func pkFieldsOrUnset(ke recordlayer.KeyExpression) string {
 		return "(unset)"
 	}
 	return strings.Join(fn, ",")
+}
+
+// pkFieldsRaw is pkFieldsOrUnset without decoding, for COMPARISON.
+//
+// Decoding is not injective — stored A__B and A__0B both render as A__B — so
+// comparing rendered primary keys makes a real PK change compare equal and
+// disappear from the diff. Compare with this; render with pkFieldsOrUnset.
+func pkFieldsRaw(ke recordlayer.KeyExpression) string {
+	if ke == nil {
+		return "(unset)"
+	}
+	fnRaw := ke.FieldNames()
+	if len(fnRaw) == 0 {
+		return "(unset)"
+	}
+	return strings.Join(fnRaw, ",")
 }

@@ -510,3 +510,38 @@ func TestRecordScanJSONGatesRecordTypeOnAmbiguity(t *testing.T) {
 			"wrong table.", env.RecordType, bStore, recordlayer.ToUserIdentifier(bStore))
 	}
 }
+
+// A DIFF MUST COMPARE STORED NAMES, BECAUSE DECODING IS NOT INJECTIVE.
+//
+// Stored `A__B` and `A__0B` are different fields that BOTH render as `A__B`:
+// `A__0B` is the escaping of a literal `A__B`, and `A__B` decodes to itself.
+// So comparing rendered names makes a real index or primary-key change compare
+// equal and vanish — silently, from the one tool whose entire job is to report
+// what changed.
+//
+// This pins the reason pkFieldsRaw exists next to pkFieldsOrUnset. Collapsing
+// them back into one function is the regression.
+func TestDiffComparesStoredNamesNotRenderedOnes(t *testing.T) {
+	t.Parallel()
+
+	a := recordlayer.Field("A__B")
+	b := recordlayer.Field("A__0B")
+
+	// The premise: these two render identically. If that ever stops being true
+	// the test still passes for the wrong reason, so assert it.
+	if pkFieldsOrUnset(a) != pkFieldsOrUnset(b) {
+		t.Fatalf("fixture is vacuous: %q and %q no longer render alike (%q vs %q), "+
+			"so this test cannot observe the collapse it exists to prevent",
+			"A__B", "A__0B", pkFieldsOrUnset(a), pkFieldsOrUnset(b))
+	}
+	// And the comparison form must keep them apart.
+	if pkFieldsRaw(a) == pkFieldsRaw(b) {
+		t.Errorf("pkFieldsRaw collapses %q and %q to %q — a primary-key change "+
+			"between them would be dropped from `frl meta diff` entirely",
+			"A__B", "A__0B", pkFieldsRaw(a))
+	}
+	if pkFieldsRaw(a) != "A__B" || pkFieldsRaw(b) != "A__0B" {
+		t.Errorf("pkFieldsRaw must return the STORED spelling: got %q and %q",
+			pkFieldsRaw(a), pkFieldsRaw(b))
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"sync"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -23,6 +24,14 @@ import (
 type RecordMetaData struct {
 	// Map of record type names to their definitions
 	recordTypes map[string]*RecordType
+
+	// Memo for AmbiguousDeclaredNames. The answer is a function of the declared
+	// set, which is fixed after Build, and the CLI asks once per rendered name --
+	// unmemoised, a record scan is O(records x types) and a type listing
+	// O(types^2), re-deriving the same answer for every row it prints.
+	ambiguousOnce  sync.Once
+	ambiguousNames []string
+	ambiguousFound bool
 
 	// The protobuf file descriptor
 	fileDescriptor protoreflect.FileDescriptor
@@ -1799,6 +1808,17 @@ func countVersionColumns(expr KeyExpression) int {
 // Returns USER identifiers because the operator has to act on the SQL names;
 // the collision itself is detected in storage space, where it lives.
 func (m *RecordMetaData) AmbiguousDeclaredNames() ([]string, bool) {
+	if m == nil {
+		return nil, false
+	}
+	m.ambiguousOnce.Do(func() {
+		m.ambiguousNames, m.ambiguousFound = m.computeAmbiguousDeclaredNames()
+	})
+	return m.ambiguousNames, m.ambiguousFound
+}
+
+// computeAmbiguousDeclaredNames is the uncached body; call the memoised form.
+func (m *RecordMetaData) computeAmbiguousDeclaredNames() ([]string, bool) {
 	if m == nil {
 		return nil, false
 	}
