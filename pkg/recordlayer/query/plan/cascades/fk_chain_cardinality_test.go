@@ -1403,9 +1403,10 @@ func TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter(t *testing.
 // It calls planRowLayout DIRECTLY. That is deliberate and it is also this
 // test's limit: the fixtures below are NOT production shapes. The comment on
 // planRowLayout explains why the transitive decline cannot arrive through the
-// FK-cap entries at all, and the last two assertions here pin the two gates
-// that make that true -- so if either gate stops excluding a FlatMap leg, this
-// test reddens instead of the claim going quietly false.
+// FK-cap entries at all. The assertions below pin what is pinnable: gate one
+// (scanBindingOfLeaf excluding a FlatMap) is mutation-proven; the nil-layout
+// rejection is over-determined and only the OUTCOME can be pinned, which the
+// comment beside it says outright.
 //
 // Both recursions are driven, because the arm has two and a mutation to either
 // must be caught: replacing the inner one with fall-through once left the whole
@@ -1461,8 +1462,38 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 		t.Error("computePKThread(viaInner) is ok: a FlatMap-inner now threads a PK, " +
 			"so the transitive decline is reachable and the comment must be rewritten")
 	}
-	if computePKThread(viaOuter).ok {
-		t.Error("computePKThread(viaOuter) is ok: a declining outer no longer fails " +
-			"the frontier check, so the transitive decline is reachable")
+	// GATE 2, the frontier check. Reaching it needs an outer that THREADS a PK
+	// while declining a layout, which is exactly the RecordConstructor shape the
+	// comment on planRowLayout names: pkThreadThroughResultValue accepts a
+	// direct PK read, planRowLayout accepts only a bare QOV. Anything simpler
+	// (a NullValue outer, say) dies at !outerThread.ok one frame above and the
+	// assertion is then vacuous -- measured, not assumed.
+	rcOuter := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		base, probe, outerAlias, innerAlias,
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "ID", Value: fkChainCorrelatedRef(t, "T2", innerAlias, "ID")},
+		), false))
+	if !computePKThread(rcOuter).ok {
+		t.Fatal("fixture is vacuous: the RecordConstructor outer must THREAD a PK, " +
+			"otherwise the frontier gate is never reached and this assertion proves nothing")
+	}
+	if planRowLayout(rcOuter) != nil {
+		t.Fatal("fixture is vacuous: the RecordConstructor outer must DECLINE a layout, " +
+			"otherwise the frontier is known and the gate is never exercised")
+	}
+	wrapProbe := fkChainFKProbe(t, "T2", "t2_by_t1", "T1", wrapAlias)
+	viaRC := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		rcOuter, wrapProbe, wrapAlias, innerAlias,
+		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, planRowLayout(wrapProbe))), false))
+	// This pins the REJECTION, not one gate. Measured: disabling the frontier
+	// check alone leaves this green, because a nil outerLayout also fails
+	// threadPKIdentity and correlatedFieldIdentity further down -- the rejection
+	// is over-determined, so no fixture can isolate the frontier line. Saying
+	// this assertion "pins the frontier gate" would be a claim no test here can
+	// support; what it does pin is that a nil-layout outer is refused at all.
+	if innerFullyBindsThread(viaRC, computePKThread(rcOuter)) {
+		t.Error("innerFullyBindsThread accepted an outer whose layout is nil: every " +
+			"path that used to fail closed on an unknown domain now admits it, so " +
+			"planRowLayout's unreachability claim is stale")
 	}
 }

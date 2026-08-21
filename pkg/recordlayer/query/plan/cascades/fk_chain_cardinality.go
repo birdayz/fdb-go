@@ -687,9 +687,11 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // That is scoped to the FK-cap entries deliberately, and is NOT a universal
 // over every caller: computeMapPKThread passes singleChildRowLayout as an EAGER
 // argument with no .ok guard, so planRowLayout does run on a declining leg
-// there. The nil is discarded, because childThread.ok is false in exactly that
-// shape -- so the conclusion holds, but by a different route than the one
-// above, and stating it as "every entry" would be wrong.
+// there. The conclusion still holds, but NOT because childThread.ok is false --
+// the Reachable paragraph above says the opposite, that a RecordConstructor
+// threads a PK and declines a layout. It holds because pkThreadThroughFields
+// fails closed on the unknown frontier that nil layout produces. Same answer,
+// different route, and the route matters: nothing pins it.
 //
 // The recursion is therefore insurance, and the test that drives it hand-builds
 // the resultValue rather than reaching it from a plan.
