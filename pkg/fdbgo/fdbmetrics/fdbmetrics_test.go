@@ -26,11 +26,21 @@ func TestHandler_TextExposition(t *testing.T) {
 		TransactionRetries:               4,
 		ClientConnectionFailures:         2,
 		CoordinatorChanges:               1,
-		// Every counter gets a DISTINCT NON-ZERO value, so a renderer that crosses
-		// two wires shows up as a wrong number rather than a missing line. Both
-		// halves are load-bearing and both were once wrong here: two counters
-		// shared the value 1, so swapping their getters passed; and one was
-		// asserted as 0, which every unset counter renders as.
+		// Every counter gets a DISTINCT NON-ZERO value AND every expectation below
+		// is newline-anchored. All three are load-bearing, and each was wrong here
+		// in turn:
+		//
+		//   - two counters shared the value 1, so crossing their getters passed;
+		//   - one was asserted as 0, which every unset counter renders as, so it
+		//     held whether its getter was wired or not;
+		//   - the values were distinct but the matcher is strings.Contains, and 1,
+		//     2 and 4 are PREFIXES of 11-18, 21-22 and 42 -- eleven shadowed
+		//     pairs. A symmetric swap still failed on its other half, but a
+		//     one-directional mis-wire into a shadowing counter passed: pointing
+		//     coordinator_changes at TransactionsTooOld rendered 14, and
+		//     "…_total 1" matched it.
+		//
+		// The trailing \n is what makes each expectation a whole line.
 		TransactionsResourceConstrained:           12,
 		TransactionsProcessBehind:                 13,
 		TransactionsTooOld:                        14,
@@ -53,45 +63,45 @@ func TestHandler_TextExposition(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"# TYPE fdb_client_transactions_commit_started_total counter",
-		"fdb_client_transactions_commit_started_total 7",
-		"fdb_client_transactions_commit_completed_total 6",
-		"fdb_client_transactions_not_committed_total 3",
-		"fdb_client_transactions_maybe_committed_total 21",
-		"fdb_client_transaction_read_versions_completed_total 42",
+		"fdb_client_transactions_commit_started_total 7\n",
+		"fdb_client_transactions_commit_completed_total 6\n",
+		"fdb_client_transactions_not_committed_total 3\n",
+		"fdb_client_transactions_maybe_committed_total 21\n",
+		"fdb_client_transaction_read_versions_completed_total 42\n",
 		"# TYPE fdb_client_grv_cache_hits_total counter",
-		"fdb_client_grv_cache_hits_total 9",
+		"fdb_client_grv_cache_hits_total 9\n",
 		"# TYPE fdb_client_grv_in_band_maybe_delivered_total counter",
-		"fdb_client_grv_in_band_maybe_delivered_total 11",
-		"fdb_client_transaction_retries_total 4",
-		"fdb_client_transactions_throttled_total 22",
+		"fdb_client_grv_in_band_maybe_delivered_total 11\n",
+		"fdb_client_transaction_retries_total 4\n",
+		"fdb_client_transactions_throttled_total 22\n",
 		// RFC-114 counters.
 		"# TYPE fdb_client_connection_failures_total counter",
-		"fdb_client_connection_failures_total 2",
-		"fdb_client_coordinator_changes_total 1",
+		"fdb_client_connection_failures_total 2\n",
+		"fdb_client_coordinator_changes_total 1\n",
 		// The remaining counters, so that deleting ANY counterDef reddens this
 		// test by name. Without these the exposition named 11 of 18, and the
 		// TYPE-count check below cannot see a deletion at all.
-		"fdb_client_transactions_resource_constrained_total 12",
-		"fdb_client_transactions_process_behind_total 13",
-		"fdb_client_transactions_too_old_total 14",
-		"fdb_client_transactions_future_versions_total 15",
-		"fdb_client_transaction_batch_read_versions_completed_total 16",
-		"fdb_client_transaction_default_read_versions_completed_total 17",
-		"fdb_client_transaction_immediate_read_versions_completed_total 18",
+		"fdb_client_transactions_resource_constrained_total 12\n",
+		"fdb_client_transactions_process_behind_total 13\n",
+		"fdb_client_transactions_too_old_total 14\n",
+		"fdb_client_transactions_future_versions_total 15\n",
+		"fdb_client_transaction_batch_read_versions_completed_total 16\n",
+		"fdb_client_transaction_default_read_versions_completed_total 17\n",
+		"fdb_client_transaction_immediate_read_versions_completed_total 18\n",
 		// and every summary, same reason.
 		"# TYPE fdb_client_commit_latency_seconds summary",
-		"fdb_client_commit_latency_seconds_count 10",
+		"fdb_client_commit_latency_seconds_count 10\n",
 		"# TYPE fdb_client_grv_latency_seconds summary",
-		"fdb_client_grv_latency_seconds_count 20",
+		"fdb_client_grv_latency_seconds_count 20\n",
 		"# TYPE fdb_client_transaction_latency_seconds summary",
-		"fdb_client_transaction_latency_seconds_count 30",
+		"fdb_client_transaction_latency_seconds_count 30\n",
 		// RFC-114 latency summary.
 		"# TYPE fdb_client_read_latency_seconds summary",
 		`fdb_client_read_latency_seconds{quantile="0.5"} 0.001`,
 		`fdb_client_read_latency_seconds{quantile="0.9"} 0.005`,
 		`fdb_client_read_latency_seconds{quantile="0.99"} 0.02`,
-		"fdb_client_read_latency_seconds_sum 1.5",
-		"fdb_client_read_latency_seconds_count 100",
+		"fdb_client_read_latency_seconds_sum 1.5\n",
+		"fdb_client_read_latency_seconds_count 100\n",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("exposition missing %q\nbody:\n%s", want, body)

@@ -7,7 +7,7 @@
 //	http.Handle("/metrics", fdbmetrics.Handler(db))
 //
 // Deliberately NOT a prometheus.Collector: that would pull
-// github.com/prometheus/client_golang into the module for ~14 monotonic
+// github.com/prometheus/client_golang into the module for 18 monotonic
 // counters. A user who wants a Collector writes a trivial one over
 // db.Metrics():
 //
