@@ -100,7 +100,7 @@ func TestHandler_TextExposition(t *testing.T) {
 		"fdb_client_connection_failures_total 2\n",
 		"fdb_client_coordinator_changes_total 1\n",
 		// The remaining counters, so that deleting ANY counterDef reddens this
-		// test by name. Without these the exposition named 11 of 18, and the
+		// test by name. Without these the exposition named only some of them, and the
 		// TYPE-count check below cannot see a deletion at all.
 		"fdb_client_transactions_resource_constrained_total 12\n",
 		"fdb_client_transactions_process_behind_total 13\n",
@@ -145,7 +145,7 @@ func TestHandler_TextExposition(t *testing.T) {
 	// skips or duplicates an entry it WAS given.
 	//
 	// What catches an entry that was never defined is the explicit list above,
-	// and only because that list now names ALL of them. It named 11 of 18
+	// and only because that list now names ALL of them. It named only some of them,
 	// counters and 1 of 4 summaries when this comment first claimed otherwise:
 	// deleting transactions_too_old was invisible to both checks. Verified after
 	// filling it in -- deleting that same counterDef, and separately a summary,
@@ -234,7 +234,6 @@ func helpLine(body, name string) (string, bool) {
 // a value does not, and a restatement above the assertion is one nothing can
 // ever redden for. The literals live in the assertion, which is the one place
 // a change has to walk past.
-// and those sentences are what a maintainer audits the classification against.
 //
 // Deliberately brittle: a legitimate addition SHOULD fail here, because the
 // same change has to update the prose. That is the whole point of pinning a
@@ -255,10 +254,10 @@ func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
 	}
 	if len(counters) != 18 || cppTwin != 13 || goOnly != 5 || other != 0 {
 		t.Errorf("table is %d counters (%d C++ twin, %d Go-only, %d unclassified). "+
-			"The TOTAL 18 is written in two places, the package doc and the doc on "+
-			"`counters`; the 13 + 5 SPLIT only in the latter. Update the ones your "+
-			"change actually falsifies -- a split that holds the total needs one "+
-			"edit, not two",
+			"The ENTRY COUNT is written in the package doc and in `counters`' doc; "+
+			"the C++-twin SPLIT only in the latter. Update the ones your change "+
+			"actually falsifies -- a split that holds the total needs one edit, "+
+			"not two",
 			len(counters), cppTwin, goOnly, other)
 	}
 	if len(summaries) != 4 {
@@ -309,9 +308,12 @@ func declaresGoOnly(help string) bool {
 //     the sole carrier of any line ("(Go-only aggregate;") leaves the slice
 //     untouched, so only this fires. It also catches a marker that is a
 //     substring of another, which an occurrence check cannot.
-//   - the NEGATIVE CONTROL, on the predicate. {"Go"} passes the other two --
-//     no C++-twin help contains "Go" while every Go-only one does -- and fails
-//     here.
+//   - the NEGATIVE CONTROL, on the predicate BODY. Broadening the body itself
+//     -- an added `strings.Contains(help, "Go")` -- leaves the slice and the
+//     prose untouched, so only this fires. Note {"Go"} is NOT that case: it
+//     fires the literal pin too, and an earlier version of this bullet said
+//     otherwise because it was written before the pin existed and never
+//     re-measured.
 //
 // The arms are exact complements only over the vocabulary the current help
 // strings exercise, which is a property of today's prose rather than of the
