@@ -1323,6 +1323,11 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 }
 
 // RecordTypes returns all record types
+// NOTE: this returns the LIVE map, not a copy. Nothing in this package mutates
+// it after Build -- both writes are on the BUILDER (b.recordTypes) -- and that
+// is now load-bearing rather than merely tidy: AmbiguousDeclaredNames memoises
+// its answer on the assumption that the declared set is final. A caller that
+// mutates this map invalidates that memo silently.
 func (m *RecordMetaData) RecordTypes() map[string]*RecordType {
 	return m.recordTypes
 }
@@ -1804,6 +1809,14 @@ func countVersionColumns(expr KeyExpression) int {
 // computing over "all record types" can trust the answer. Both the statistics
 // reader and both collection entry points need it, and a shared property with
 // three consumers does not belong in any one of them.
+//
+// CASE-SENSITIVE, and every gate that cites this function inherits that. The
+// collision test is a map lookup on the escaped name, so a schema declaring
+// quoted "MY$TABLE" (stored MY__1TABLE) alongside quoted "my__1table" (stored
+// my__01table) is NOT reported: the spellings differ only in case. That gap
+// does not reach a destructive path, because GetRecordType is case-sensitive
+// too and never resolves one to the other -- but a renderer that lowercases
+// before comparing would re-open it. Tracked in TODO.md.
 //
 // Returns USER identifiers because the operator has to act on the SQL names;
 // the collision itself is detected in storage space, where it lives.

@@ -48,8 +48,8 @@ import (
 //     allowlisted individually.
 //
 // What it does cover: a renderer in cmd/frl that reaches a stored record-type or
-// column name through one of the four known spellings without going through a
-// decoding helper.
+// column name through one of the four known spellings, without going through a
+// decoding helper and without an explicit `// storage-compare` marker.
 func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -119,12 +119,16 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "func ") {
 				continue
 			}
-			// A `…Raw :=` binding is a COMPARISON input, not a render. Decoding is
-			// not injective — stored A__B and A__0B both render as A__B — so a
-			// diff has to compare stored spellings or it drops real changes. The
-			// `Raw` suffix is the convention that says so, and this gate is what
-			// keeps it meaning that.
-			if strings.Contains(line, "Raw :=") || strings.Contains(line, "Raw, ") {
+			// An explicit `// storage-compare` marker exempts a line: it reads a
+			// stored name for COMPARISON, not for display. Decoding is not
+			// injective — stored A__B and A__0B both render as A__B — so a diff
+			// has to compare stored spellings or it drops real changes.
+			//
+			// This used to key on a `…Raw` variable-name convention, and that was
+			// wrong: `nameRaw := rt.Name; return nameRaw` is a genuine render that
+			// a natural variable name silently exempted. A marker nobody writes by
+			// accident is the point; a naming habit is not.
+			if strings.Contains(line, "// storage-compare") {
 				continue
 			}
 			var ok bool

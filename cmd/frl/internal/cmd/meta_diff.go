@@ -179,8 +179,15 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	newTypes := newMeta.RecordTypes()
 	var s diffSection
 
+	// Bucketing is by STORED name (the map keys); only the rendered Name is
+	// decoded. Track the stored spelling alongside so a rendered collision
+	// ACROSS the two buckets can be undone below.
+	addedRaw := map[int]string{}
+	removedRaw := map[int]string{}
+
 	for name := range newTypes {
 		if _, ok := oldTypes[name]; !ok {
+			addedRaw[len(s.Added)] = name
 			s.Added = append(s.Added, diffEntry{
 				Name:   userNameFor(newMeta, name), // SQL identifier; map keys stay storage
 				Detail: "pk: " + pkFieldsOrUnset(newTypes[name].PrimaryKey),
@@ -189,7 +196,22 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	}
 	for name := range oldTypes {
 		if _, ok := newTypes[name]; !ok {
+			removedRaw[len(s.Removed)] = name
 			s.Removed = append(s.Removed, diffEntry{Name: userNameFor(oldMeta, name)})
+		}
+	}
+	// A rename between two spellings that RENDER alike -- stored A__0B becoming
+	// stored A__B, both of which decode to A__B -- would print as `- A__B` /
+	// `+ A__B`: a real change the tool cannot express. Neither metadata is
+	// ambiguous on its own, so userNameFor cannot see it; the collision only
+	// exists ACROSS the pair being diffed. Fall back to the stored spelling for
+	// exactly the colliding entries, the same treatment the field lists get.
+	for ai, aRaw := range addedRaw {
+		for ri, rRaw := range removedRaw {
+			if aRaw != rRaw && s.Added[ai].Name == s.Removed[ri].Name {
+				s.Added[ai].Name = aRaw
+				s.Removed[ri].Name = rRaw
+			}
 		}
 	}
 	for name, oldT := range oldTypes {
@@ -267,8 +289,8 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 		// stored A__B and A__0B BOTH render as A__B, so comparing the rendered
 		// strings makes a real index change compare equal and vanish from the
 		// diff -- silent, in the one tool whose job is to show what changed.
-		oldRaw := oldI.RootExpression.FieldNames()
-		newRaw := newI.RootExpression.FieldNames()
+		oldRaw := oldI.RootExpression.FieldNames() // storage-compare
+		newRaw := newI.RootExpression.FieldNames() // storage-compare
 		if strings.Join(oldRaw, ",") != strings.Join(newRaw, ",") {
 			oldFields := strings.Join(userFieldNames(oldRaw), ",")
 			newFields := strings.Join(userFieldNames(newRaw), ",")
@@ -448,7 +470,7 @@ func pkFieldsRaw(ke recordlayer.KeyExpression) string {
 	if ke == nil {
 		return "(unset)"
 	}
-	fnRaw := ke.FieldNames()
+	fnRaw := ke.FieldNames() // storage-compare
 	if len(fnRaw) == 0 {
 		return "(unset)"
 	}

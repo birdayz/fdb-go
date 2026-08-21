@@ -19646,3 +19646,29 @@ normalising blindly would break a schema deliberately created as `"main"`.
 `functions.StripIdentifierQuotes` in `sql.go`) and apply the SAME rule to
 `r.schema`/`r.database` before the catalog lookups in `loadSchemaTables` and
 `describeTable` — not a `strings.ToUpper`, which would break quoted names.
+
+---
+
+## [ ] `AmbiguousDeclaredNames` is CASE-SENSITIVE, so a case-folded collision is undetected
+
+The ambiguity contract every naming gate cites tests `declared[escaped]` — a map
+lookup, so it is case-sensitive. A schema declaring quoted `"MY$TABLE"` (stored
+`MY__1TABLE`) alongside quoted `"my__1table"` (stored `my__01table`) is therefore
+NOT reported as ambiguous: the spellings differ only in case.
+
+**Why this is not a live safety hole:** `GetRecordType` is case-sensitive too and
+never resolves one to the other, so no destructive path (`record delete --type`,
+which resolves through `lookupRecordType` → `GetRecordType`) can be handed the
+wrong table by it. It becomes one the moment any resolver or renderer folds case
+before comparing — `frl sql`'s `\d` already uses `strings.EqualFold` on the
+stored-name arm, which is why that command can describe the wrong table under
+this shape.
+
+**When fixing:** state the quoted-vs-unquoted identifier rule FIRST. The engine
+uppercases unquoted identifiers at DDL time but preserves case for quoted ones,
+so neither "always fold" nor "never fold" is right, and guessing breaks schemas
+deliberately created lower-case. The same rule is needed by the REPL
+case-normalisation item above — fix them together or neither.
+
+Documented at the contract itself (`RecordMetaData.AmbiguousDeclaredNames`,
+`pkg/recordlayer/metadata.go`), which points back here.

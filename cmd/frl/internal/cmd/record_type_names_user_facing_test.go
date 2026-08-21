@@ -545,3 +545,165 @@ func TestDiffComparesStoredNamesNotRenderedOnes(t *testing.T) {
 			pkFieldsRaw(a), pkFieldsRaw(b))
 	}
 }
+
+// A RENAME BETWEEN TWO SPELLINGS THAT RENDER ALIKE MUST STILL BE VISIBLE.
+//
+// Stored A__0B and A__B both decode to A__B. Rename a type from one to the
+// other and NEITHER metadata is ambiguous on its own, so the per-metadata gate
+// cannot see it — the collision exists only ACROSS the pair being diffed. The
+// diff would print `- A__B` / `+ A__B`: a real change the tool cannot express.
+func TestDiffShowsStoredNamesWhenRenamedNamesRenderAlike(t *testing.T) {
+	t.Parallel()
+
+	const fromStore, toStore = "A__0B", "A__B"
+	if userName(fromStore) != userName(toStore) {
+		t.Fatalf("fixture is vacuous: %q and %q no longer render alike (%q vs %q)",
+			fromStore, toStore, userName(fromStore), userName(toStore))
+	}
+	oldMeta := metaWithEscapedTypeName(t, fromStore)
+	newMeta := metaWithEscapedTypeName(t, toStore)
+	// Neither side collides on its own — that is what makes this case invisible
+	// to the per-metadata ambiguity gate.
+	if _, a := oldMeta.AmbiguousDeclaredNames(); a {
+		t.Fatalf("fixture is wrong: the OLD metadata is ambiguous by itself, so this " +
+			"test would pass through the ordinary gate rather than the cross-bucket one")
+	}
+	if _, a := newMeta.AmbiguousDeclaredNames(); a {
+		t.Fatal("fixture is wrong: the NEW metadata is ambiguous by itself")
+	}
+
+	s := diffRecordTypes(oldMeta, newMeta)
+	if len(s.Added) == 0 || len(s.Removed) == 0 {
+		t.Fatalf("fixture did not land: added=%d removed=%d, so nothing is compared",
+			len(s.Added), len(s.Removed))
+	}
+	for _, a := range s.Added {
+		for _, r := range s.Removed {
+			if a.Name == r.Name {
+				t.Errorf("the diff reports `- %s` / `+ %s` for a real rename between "+
+					"%q and %q — identical text on both sides means the change is "+
+					"invisible", r.Name, a.Name, fromStore, toStore)
+			}
+		}
+	}
+}
+
+// metaWithRenamedField stores Order's `order_id` under the given name, in the
+// proto message, the primary key and the index that references it.
+//
+// It exists because the diff's raw-vs-rendered split can only be observed on a
+// FIELD whose two spellings render alike, and no checked-in proto has one.
+func metaWithRenamedField(t *testing.T, to string) *recordlayer.RecordMetaData {
+	t.Helper()
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	b.AddIndex("Order", recordlayer.NewIndex("order_ix", recordlayer.Field("order_id")))
+	base, err := b.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	p, err := base.ToProto()
+	if err != nil {
+		t.Fatalf("to proto: %v", err)
+	}
+	p.JoinedRecordTypes = nil
+	for _, msg := range p.GetRecords().GetMessageType() {
+		if msg.GetName() != "Order" {
+			continue
+		}
+		for _, f := range msg.GetField() {
+			if f.GetName() == "order_id" {
+				f.Name = proto.String(to)
+			}
+		}
+	}
+	// The key expressions reference the field BY NAME; leaving them behind makes
+	// the rebuild reject the metadata.
+	rename := func(ke *gen.KeyExpression) {
+		if ke == nil {
+			return
+		}
+		if fld := ke.GetField(); fld != nil && fld.GetFieldName() == "order_id" {
+			fld.FieldName = proto.String(to)
+		}
+	}
+	for _, rt := range p.GetRecordTypes() {
+		if rt.GetName() == "Order" {
+			rename(rt.PrimaryKey)
+		}
+	}
+	for _, idx := range p.GetIndexes() {
+		if idx.GetName() == "order_ix" {
+			rename(idx.RootExpression)
+		}
+	}
+	md, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatalf("from proto: %v", err)
+	}
+	rt := md.GetRecordType("Order")
+	if rt == nil || pkFieldsRaw(rt.PrimaryKey) != to {
+		t.Fatalf("fixture did not land: Order's PK is %q, want %q",
+			pkFieldsRaw(rt.PrimaryKey), to)
+	}
+	return md
+}
+
+// THE DIFF ITSELF MUST SEE A FIELD CHANGE THAT RENDERS IDENTICALLY.
+//
+// TestDiffComparesStoredNamesNotRenderedOnes pins the HELPERS; this drives
+// diffRecordTypes and diffIndexes, which is where the bug actually lived —
+// reverting the raw comparison left the whole suite green because nothing
+// exercised those two functions on colliding spellings.
+func TestDiffSeesFieldChangeThatRendersIdentically(t *testing.T) {
+	t.Parallel()
+
+	const fromStore, toStore = "A__0B", "A__B"
+	if userName(fromStore) != userName(toStore) {
+		t.Fatalf("fixture is vacuous: %q and %q no longer render alike", fromStore, toStore)
+	}
+	oldMeta := metaWithRenamedField(t, fromStore)
+	newMeta := metaWithRenamedField(t, toStore)
+
+	t.Run("primary key", func(t *testing.T) {
+		s := diffRecordTypes(oldMeta, newMeta)
+		var found bool
+		for _, e := range s.Changed {
+			for _, c := range e.Changes {
+				if c.Field == "primary_key" {
+					found = true
+					if c.Old == c.New {
+						t.Errorf("primary_key change reported as %q -> %q — identical text "+
+							"means the change is invisible", c.Old, c.New)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("the PK moved from %q to %q and the diff reported NO primary_key "+
+				"change: comparing rendered names collapses them", fromStore, toStore)
+		}
+	})
+
+	t.Run("index fields", func(t *testing.T) {
+		s := diffIndexes(oldMeta, newMeta)
+		var found bool
+		for _, e := range s.Changed {
+			for _, c := range e.Changes {
+				if c.Field == "fields" {
+					found = true
+					if c.Old == c.New {
+						t.Errorf("fields change reported as %q -> %q — identical text means "+
+							"the change is invisible", c.Old, c.New)
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("the index field moved from %q to %q and the diff reported NO fields "+
+				"change: comparing rendered names collapses them", fromStore, toStore)
+		}
+	})
+}

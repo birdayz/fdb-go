@@ -342,6 +342,10 @@ func renderCollectReport(
 	report *recordlayer.CollectionReport,
 	elapsed time.Duration,
 ) error {
+	// Same as renderStatsStatus: decoded keys with no gate here, safe because
+	// collection refuses on an ambiguous schema before producing a report
+	// (fleet's ambiguousRefusal, and connection.go's check on the single-target
+	// path).
 	collected := make(map[string]int64, len(report.Collected))
 	for name, st := range report.Collected {
 		collected[userName(name)] = st.Count
@@ -444,6 +448,11 @@ func renderStatsStatus(
 	// one decode. Decoding per consumer is what left the text path leaking the
 	// storage name while JSON was correct -- the same one-of-two-consumers shape
 	// that put ReadRefusal on the text path only.
+	// Keyed by the DECODED name with NO ambiguity gate, which is safe only
+	// because the reader refuses first: under a collision two stored names decode
+	// alike and would collapse into one row, pricing one table with the other's
+	// count. This function holds a status, not a metadata, so it cannot check --
+	// the dependency is pinned by embedded's TestAmbiguityRefusalCarriesNoPerTypeMap.
 	perType := make(map[string]int64, len(st.Stats.PerType))
 	for name, s := range st.Stats.PerType {
 		perType[userName(name)] = s.Count
