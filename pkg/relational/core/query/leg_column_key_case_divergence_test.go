@@ -22,21 +22,34 @@ import (
 // `C.KEEPCASE` on the other, and a proto field named `customer_id` is
 // `C.customer_id` against `C.CUSTOMER_ID`.
 //
-// THIS TEST PINS THE DISAGREEMENT RATHER THAN RESOLVING IT, and the measurement
-// is why. Removing the fold is invisible from SQL: zero rows of the 2627-query
-// plan-shape golden move, and twelve targeted shapes chosen to reach a leg key
-// by different routes — a three-way join, a CTE and a derived table over a join
-// star, an UNNEST beside one, a grouped and a scalar aggregate over a quoted
-// mixed-case leg column, a correlated scalar subquery, and an alias-list
-// recursive CTE — produce byte-identical plans either way. What it is NOT
-// invisible to is this package's own contracts: TestLegColumns_NestedNoSpurious
-// Keys and TestLegColumns_NamingConsistentWithAnchoredRecord both assert the
-// FOLDED spelling, one of them under the word "verbatim".
+// THIS TEST PINS THE DISAGREEMENT RATHER THAN RESOLVING IT, and the reason is
+// that the folding line does TWO JOBS. tableColumns names a scan's columns
+// through ToUserIdentifier, which un-escapes and does NOT fold, so for a
+// hand-authored proto field `order_id` the fold in legColumns is
+// descriptor-to-SQL NORMALIZATION. For a DDL-declared `"KeepCase"`, which
+// arrives already canonical from the parse boundary, the same line is
+// RE-normalization — the thing RFC-237 exists to delete. Removing it therefore
+// breaks a real test AND keeping it breaks a real invariant, which means
+// neither spelling is the answer and "pick one" is the wrong question.
 //
-// So the two mechanisms have two contracts, both written down, and choosing
-// between them changes datum-key spelling engine-wide. That is a decision with
-// its own blast radius, not a line to flip inside a naming PR — TODO.md carries
-// it and points here.
+// The answer is to collapse the two producers: legColumns' join arm defers to
+// logicalLegFields, and the descriptor-name decision moves to that single
+// boundary. Whichever spelling wins, two producers of one datum key will drift
+// again. TODO.md carries that plan; this test watches the gap until then.
+//
+// The measurement that sized it: removing the fold is invisible from SQL — zero
+// rows of the 2627-query plan-shape golden move, and twelve targeted shapes
+// chosen to reach a leg key by different routes (a three-way join, a CTE and a
+// derived table over a join star, an UNNEST beside one, a grouped and a scalar
+// aggregate over a quoted mixed-case leg column, a correlated scalar subquery,
+// an alias-list recursive CTE) plan byte-identically either way. What it is not
+// invisible to is TestLegColumns_NestedNoSpuriousKeys, whose `order_id` is the
+// normalization job above.
+//
+// TestLegColumns_NamingConsistentWithAnchoredRecord also reddens and is NOT
+// evidence for either side: it builds its expectation by applying
+// `strings.ToUpper(c.Name)` itself, so it mirrors the implementation, reddens
+// for any change, and asserts nothing about which spelling is right.
 //
 // What this test buys until then: the disagreement cannot widen or silently
 // close without a red. It asserts the VALUE on both sides, not merely that they

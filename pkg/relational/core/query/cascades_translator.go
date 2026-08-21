@@ -10225,7 +10225,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// self-reference scans.
 	//
 	// It is live through the NO-ALIAS path only: with an explicit column-alias
-	// list, `outCols` below takes the aliases and seedOut never reaches the key.
+	// list OF MATCHING LENGTH, `outCols` below takes the aliases and seedOut
+	// never reaches the key. The length condition is load-bearing and is not a
+	// technicality: an alias list of the wrong arity leaves seedOut in place,
+	// which is how the width disagreement gets reported against the seed's own
+	// labels rather than against a list that does not describe it.
 	seedOut := append([]string(nil), extractOutputProjectionNames(seedBranches[0])...)
 	// A projection-less seed (`SELECT * FROM t`) exposes no projection names,
 	// which silently DROPPED an explicit CTE column-alias list

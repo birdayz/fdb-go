@@ -19851,14 +19851,24 @@ fold is invisible from SQL — zero rows of the 2627-query plan-shape golden mov
 and twelve targeted shapes reaching a leg key by different routes (three-way
 join, CTE and derived table over a join star, UNNEST beside one, grouped and
 scalar aggregates over a quoted mixed-case leg column, correlated scalar
-subquery, alias-list recursive CTE) plan byte-identically either way. It is NOT
-invisible to this package's own contracts: `TestLegColumns_NestedNoSpuriousKeys`
-and `TestLegColumns_NamingConsistentWithAnchoredRecord` both assert the FOLDED
-spelling, the second under the word "verbatim".
+subquery, alias-list recursive CTE) plan byte-identically either way.
 
-Two written contracts pointing opposite ways is what makes this a decision and
-not a line to flip: choosing either spelling changes datum keys engine-wide.
-`logicalLegFields`' reasoning is the stronger of the two — a descriptor-authored
-case is information and the fold destroys it — so the likely answer is verbatim
-plus updating those two tests, but it needs the query-engine gate and a sweep of
-every consumer that compares a leg key case-sensitively.
+**The work is not "pick a spelling" — that framing is wrong, and the reason is
+that the folding line does TWO JOBS.** `tableColumns` names a scan's columns
+through `ToUserIdentifier`, which un-escapes and does NOT fold, so for a
+hand-authored proto field `order_id` the fold is descriptor-to-SQL
+NORMALIZATION. For a DDL-declared `"KeepCase"`, already canonical from the
+parse boundary, the same line is RE-normalization. That is why removing it
+reddens `TestLegColumns_NestedNoSpuriousKeys` (whose `order_id` is the
+normalization job) while keeping it breaks the RFC-237 invariant.
+
+**Collapse the two producers instead:** `legColumns`' join arm defers to
+`logicalLegFields`, and the descriptor-name decision moves to that one
+boundary. Two producers of one datum key drift again whichever spelling wins.
+Needs the query-engine gate and a sweep of every consumer that compares a leg
+key case-sensitively.
+
+`TestLegColumns_NamingConsistentWithAnchoredRecord` also reddens on any change
+here and is NOT evidence: it builds its expectation with `strings.ToUpper(c.Name)`
+itself, mirroring the implementation, so it asserts nothing about which spelling
+is right.
