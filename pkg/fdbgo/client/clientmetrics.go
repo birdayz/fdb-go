@@ -55,6 +55,8 @@ type ClientMetrics struct {
 	// cache-off transaction (grvCacheHits stays 0) from a stale/served one.
 	grvCacheHits atomic.Int64
 
+	// Go-only: C++ has no twin for this. basicLoadBalance absorbs the error and
+	// counts nothing, so there is no TransactionMetrics name to match.
 	// grvInBandMaybeDelivered counts GRV replies carrying an IN-BAND
 	// maybeDelivered error (broken_promise 1100 / request_maybe_delivered
 	// 1030). Those take basicLoadBalance's next-alternative arm instead of

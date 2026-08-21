@@ -128,7 +128,12 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 	// satisfiable by unrelated traffic: both tests here run under t.Parallel(),
 	// so the sibling's arm entry could satisfy this one's delta and the check
 	// would pass for a run whose own injection never reached the branch.
-	armBefore := db.db.metrics.grvInBandMaybeDelivered.Load()
+	//
+	// Read through Snapshot() rather than the raw field, which also pins the
+	// snapshot assignment. Nothing else reads GRVInBandMaybeDelivered, so
+	// mis-wiring that line to a neighbouring counter compiles and passes every
+	// suite -- demonstrated.
+	armBefore := db.db.metrics.Snapshot().GRVInBandMaybeDelivered
 	db.db.grvCache.invalidate() // force a real round trip, not a cache hit
 	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
 		t.Fatalf("GRV returned %v; an in-band 1100 must be absorbed and retried, "+
@@ -140,7 +145,7 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 		t.Fatal("the intercept never fired: no in-band 1100 was injected, so every " +
 			"assertion below would hold for a run that exercised nothing")
 	}
-	if db.db.metrics.grvInBandMaybeDelivered.Load() == armBefore {
+	if db.db.metrics.Snapshot().GRVInBandMaybeDelivered == armBefore {
 		t.Fatal("a frame was replaced but the in-band arm never ran: the injection " +
 			"landed on something other than a GRV reply, so nothing below tests the " +
 			"code path this exists for")
@@ -169,9 +174,21 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 
 // AN IN-BAND maybeDelivered MUST STILL CLEAR A PRE-EXISTING ADDRESS FAILURE.
 //
-// This pins WHERE markAlive sits, not merely that it exists. Moving it below
-// the disposition check reddens this test, and so does deleting it from the GRV
-// path outright -- both measured, 3/3.
+// This pins that markAlive is REACHED BEFORE the disposition check, not its
+// exact line. Moving it below that check reddens this test 3/3, and deleting it
+// from the GRV path outright does too. Moving it below the PARSE but still
+// above the check is PASS 6/6 -- correctly, since that move preserves the
+// property; the gate is about reachability, not position.
+//
+// NOT pinned here: that no successful DIAL fires during the window. That is why
+// the alive edge is attributable to this path rather than to database.go's dial
+// site, and it is reasoning from the pooled connection, not an assertion. The
+// sibling pins dial counts, but for a different scenario.
+//
+// Discrimination is one-way: restoring handleConnError reddens the sibling 3/3
+// and reddens THIS test about 2 of 3, because that mutant races markAlive
+// against the failure it induces. Baseline is 3/3 green on both, so the
+// nondeterminism belongs to the mutant, not to what ships.
 //
 // The persistent injection is what makes the position observable. Let the GRV
 // succeed and the successful reply marks the address alive from either
@@ -247,7 +264,12 @@ func TestInBandMaybeDeliveredClearsAPreExistingAddressFailure(t *testing.T) {
 	// satisfiable by unrelated traffic: both tests here run under t.Parallel(),
 	// so the sibling's arm entry could satisfy this one's delta and the check
 	// would pass for a run whose own injection never reached the branch.
-	armBefore := db.db.metrics.grvInBandMaybeDelivered.Load()
+	//
+	// Read through Snapshot() rather than the raw field, which also pins the
+	// snapshot assignment. Nothing else reads GRVInBandMaybeDelivered, so
+	// mis-wiring that line to a neighbouring counter compiles and passes every
+	// suite -- demonstrated.
+	armBefore := db.db.metrics.Snapshot().GRVInBandMaybeDelivered
 	db.db.grvCache.invalidate()
 	// Bounded, and expected to EXPIRE: with every reply carrying an in-band
 	// 1100 the GRV can never complete, which is exactly the window in which the
@@ -262,7 +284,7 @@ func TestInBandMaybeDeliveredClearsAPreExistingAddressFailure(t *testing.T) {
 		t.Fatal("the intercept never replaced a GRV reply; the assertion below " +
 			"would hold for a run that injected nothing")
 	}
-	if db.db.metrics.grvInBandMaybeDelivered.Load() == armBefore {
+	if db.db.metrics.Snapshot().GRVInBandMaybeDelivered == armBefore {
 		t.Fatal("a frame was replaced but the in-band arm never ran; the assertion " +
 			"below would hold for a run that never reached the code under test")
 	}
