@@ -19819,9 +19819,21 @@ one file and left standing in another, because no repo-wide grep for the
 superseded phrasing was run. A correction is not done until that grep returns
 zero across every file and the count is reported.
 
+A frozen historical count has to stay green, which means the gate needs to tell
+one from a live claim MECHANICALLY -- and that is the hard half, because the
+defect that dominated this whole campaign was neither a missing citation nor a
+restated literal. It was PROSE THAT WENT STALE AROUND A SOUND NUMBER: "twelve
+plans return UnknownType" where the ordinal was correctly frozen and only the
+verb was wrong. A rule keyed on digits cannot see that; flipping "returned" to
+"return" changes no number at all. So a frozen count must carry an explicit
+marker the gate can read -- not merely be written in the past tense, which is
+not decidable -- and the marker is what licenses the literal.
+
 DONE when: the gate REDS on a census-file comment that states a population with
-no citation, and equally on one that restates the literal while carrying a valid
-citation -- that second arm is the one a citation-only rule would miss. And it
-stays GREEN on an RFC number, a date, and a frozen historical count. Every arm
-in that enumeration proven by mutation, with each mutation shown present and the
-build result read, not only the test result.
+no citation; on one that restates the literal while carrying a valid citation
+(the arm a citation-only rule would miss); and on a marked-historical claim
+whose verbs are flipped from past to present with its number left alone (the
+arm a digit-keyed rule would miss, and the one this campaign's own failures
+demand). It stays GREEN on an RFC number, a date, and a correctly marked frozen
+count. Every arm in that enumeration proven by mutation, with each mutation
+shown present and the build result read, not only the test result.

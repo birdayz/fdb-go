@@ -29,12 +29,17 @@ import (
 // element type, comparator.go and selector.go with no children), and the
 // detector does not count them.
 //
-// What that does NOT establish is a zero from THIS census, which classifies by
-// type code at the consumer and counts a nil type as unresolved too. The
-// reading above -- that a printed zero would make RFC-213 correct and LATENT --
-// still needs a corpus run to claim. The census stays because it is the only
-// thing that could produce that number, and because it would show the
-// population coming back.
+// THIS census has been run and it reads zero. The gate in
+// sqldriver/unresolved_result_type_census_gate_test.go records both surviving
+// consumers resolved over the whole corpus, against the 135 unresolved reads
+// RFC-213 measured before the change. So the payoff was DELIVERED, and that is
+// the opposite of the latent reading above: latent applied only to a zero seen
+// WHILE the stubs still existed. A post-intervention zero cannot say the
+// consumers were never reached -- the same gate asserts they still are, which
+// is what stops a future zero being read as the instrument going dark.
+//
+// The census therefore stays as the instrument that would show the population
+// coming back.
 //
 // GATED by values.LegIdentityCensusEnabled, like every census on this path: the
 // recorder's first statement is the gate, so a disabled census costs one atomic
