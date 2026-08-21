@@ -75,8 +75,17 @@ func parseColRef(s string) colRef {
 	// production rather than test input — `CAST('0.0' AS BIGINT)`,
 	// `COALESCE(NAME,'unknown')`, `SUM(CASEWHENSTATUS='open'…)`. What IS true,
 	// and is the number the deletion rests on, is that old and new disagree on
-	// exactly 4 inputs and all four are this package's own test rows: ZERO
-	// production decisions change.
+	// exactly FOUR inputs, every one of them a test row: three in
+	// colref_split_test.go (`Q'.Z'`, the `S=')'` row, `X.Y || '.'`) and the
+	// fourth, `R'.Z'`, in the yamsql corpus scenario that pins the SQL-visible
+	// side of the same shape. "All four are this package's own test rows" was
+	// the first phrasing and is wrong — the count survived the check, the
+	// locative did not.
+	//
+	// ZERO PRODUCTION DECISIONS CHANGE, from the instrumented old-vs-new run
+	// over the planning corpus rather than from inspection: a disagreement
+	// requires a closed literal span to alter either paren matching or the last
+	// depth-0 dot, and no production name does that.
 	//
 	// Note the sharpest of those names: `CAST('0.0' AS BIGINT)` is the second
 	// limit's shape — a literal containing a dot — and it resolves only because

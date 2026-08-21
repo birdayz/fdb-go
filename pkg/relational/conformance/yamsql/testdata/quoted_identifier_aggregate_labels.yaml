@@ -150,9 +150,11 @@ tests:
   # string splits identically under this algorithm and the one it replaced.
   #
   # Note what this row does NOT do, since it sits beside the limits it looks
-  # like it should exercise: the name is unqualified and carries no dot outside
-  # the literal, so it drives neither KNOWN LIMIT. It pins the label, nothing
-  # more.
+  # like it should exercise: it carries no dot AFTER the literal's paren, so
+  # both algorithms split at the same place and it drives neither KNOWN LIMIT.
+  # ("Unqualified" was the first way of saying that and is wrong — the name is
+  # qualified, `d.`; the operative property is where the dot sits relative to
+  # the literal.) It pins the label, nothing more.
   - query: SELECT * FROM (SELECT COUNT(CASE WHEN "Region" = ')' THEN "Amount" END) FROM sales) d
     columns: ["COUNT(CASEWHENRegion=')'THENAmountEND)"]
     rows:

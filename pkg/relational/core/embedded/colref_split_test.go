@@ -91,8 +91,12 @@ func TestParseColRef_SplitsAtDepthZero(t *testing.T) {
 		// carry a quote — `CAST('0.0' AS BIGINT)`, `COALESCE(NAME,'unknown')`,
 		// `SUM(CASEWHENSTATUS='open'…)`. The number the deletion actually rests
 		// on is different and narrower: old and new disagree on exactly FOUR
-		// inputs, and all four are rows in this file. Zero production decisions
-		// change.
+		// inputs, and every one is a test row — THREE in this file (`Q'.Z'`,
+		// this row, and `X.Y || '.'`), and the fourth is `R'.Z'`, which lives
+		// in the yamsql corpus scenario pinning the SQL-visible side. "All four
+		// are rows in this file" was the first phrasing; the count held up and
+		// the locative did not. Zero production decisions change, from the
+		// instrumented run rather than from reading the algorithm.
 		{
 			`I.COUNT(CASE WHEN S=')' THEN X.Y END)`, `I.COUNT(CASE WHEN S=')' THEN X`, `Y END)`,
 			"KNOWN LIMIT 1 of 2: a MATCHED paren inside a literal closes the real one. If " +

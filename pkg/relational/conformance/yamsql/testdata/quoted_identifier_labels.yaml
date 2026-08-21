@@ -261,9 +261,11 @@ tests:
   #
   # This comment used to add that the fold's sibling fourteen lines away
   # assigned the name verbatim, so the two paths spelled one column two ways.
-  # That was invented: the sibling requires an alias list to exist, and where
-  # one exists the override wins, so it is a dead store. The reason to carry the
-  # name verbatim is that it IS the name — not a disagreement that cannot happen.
+  # That was invented — the sibling's name is already canonical, so it AGREES.
+  # The follow-up claim that the sibling is dead code was wrong too: the
+  # override needs the alias arity to MATCH, and the arity validator exempts
+  # recursive CTEs. The reason to carry the name verbatim is that it IS the
+  # name, not a disagreement and not a dead branch.
   - query: WITH RECURSIVE d AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
     unordered: true
     columns: ["id"]
