@@ -141,6 +141,9 @@ func TestNameLineClassification(t *testing.T) {
 		"block comment with a quote":         `	shown := rt.Name /* a " b */ // md.GetRecordType( earlier`,
 		"allowlist token in a string":        `	fmt.Fprintln(out, "userNameFor(", rt.Name)`,
 		"allowlist token in a block comment": `	fmt.Fprintln(out, rt.Name) /* md.GetRecordType( */`,
+		"CR-padded line comment":             "\tfmt.Fprintln(out, rt.Name) //" + strings.Repeat("\r", 12) + "userNameFor(",
+		"CR-padded block comment":            "\tfmt.Fprintln(out, rt.Name) /*" + strings.Repeat("\r", 16) + "md.GetRecordType(*/",
+		"CR-padded raw string":               "\tfmt.Fprintln(out, `" + strings.Repeat("\r", 13) + "userNameFor(`, rt.Name)",
 	}
 	for name, line := range leaks {
 		if !nameLineIsLeak(line) {
@@ -189,20 +192,12 @@ func TestNameLineClassification(t *testing.T) {
 	// with no entry go unguarded, which is how this guard covered 9 of 11 and
 	// then 12 of 13 while claiming "every". A fixture that legitimately has no
 	// token names itself here.
-	// Empty on purpose: every fixture currently has a strippable token, including
-	// the comment one -- removing its `// ` leaves a real rt.Name, so the prefix
-	// exemption IS driven rather than skipped. An entry here is a claim that a
-	// fixture cannot be tokened, and it needs the reason written next to it.
-	noToken := map[string]string{}
 	for name, line := range exempt {
 		token, ok := tokens[name]
 		if !ok {
-			if _, expected := noToken[name]; expected {
-				continue
-			}
 			t.Errorf("%s: no entry in `tokens`, so nothing checks that this fixture "+
-				"reaches the allowlist at all. Add its exemption token, or name it in "+
-				"`noToken` with the reason:\n  %s", name, line)
+				"reaches the allowlist at all. Add the exemption token it relies on, so "+
+				"removing it can be shown to leave a leak:\n  %s", name, line)
 			continue
 		}
 		bare := strings.Replace(line, token, "", 1)
@@ -302,11 +297,6 @@ func nameLineIsLeak(line string) bool {
 	if strings.HasSuffix(trimmed, "// storage-compare") {
 		return false
 	}
-	// Allowlist tokens count only in the CODE, never in a trailing comment.
-	// Unanchored, `fmt.Fprintln(out, rt.Name) // resolved via md.GetRecordType(
-	// earlier` exempts a genuine render by mentioning a lookup in prose -- the
-	// same laundering the storage-compare marker was anchored to stop, one check
-	// lower down.
 	// Allowlist tokens count only in the CODE, never in a comment: unanchored,
 	// `fmt.Fprintln(out, rt.Name) // resolved via md.GetRecordType( earlier`
 	// exempts a genuine render by naming a lookup in prose.
@@ -330,47 +320,46 @@ func nameLineIsLeak(line string) bool {
 	return true
 }
 
-// codeBeforeComment returns the part of one source line before its first
-// comment, using the same lexer the compiler does.
-//
-// A line is not a compilation unit, so scanning it standalone produces errors
-// for unbalanced braces and the like; they are irrelevant here because token
-// POSITIONS are all this needs, and the scanner keeps producing them. The
-// error handler is nil for that reason, not by oversight.
 // executableCode returns the line with every COMMENT, STRING and CHAR token
-// replaced by a placeholder, so a token search sees only executable code.
+// blanked, so a token search sees only executable code.
 //
 // Stripping comments alone is not enough: `fmt.Fprintln(out, "userNameFor(",
 // rt.Name)` hides an allowlist token in a STRING and exempts a raw render, and
-// `/* md.GetRecordType( */` does the same in a block comment. Both are the same
-// laundering the marker anchoring and the comment stripping each closed one
-// layer at a time.
+// `/* md.GetRecordType( */` does the same in a block comment.
 //
-// Hand-rolling this failed three times running, every fix reopening the hole it
-// closed -- first `//` truncated inside "https://%s" (loud), then a rune's
-// escaped quote reopened the literal (silent), then a block comment holding an
-// apostrophe did (silent, and a regression). go/scanner is the lexer the
-// compiler uses; quoting, escapes, raw strings and comment forms are its
-// problem now.
+// Hand-rolling the lexing failed three times running, each fix reopening the
+// hole it closed -- first `//` truncated inside "https://%s" (loud), then a
+// rune's escaped quote reopened the literal (silent), then a block comment
+// holding an apostrophe did (silent, and a regression). go/scanner does the
+// LEXING now: quoting, escapes, raw strings and comment forms are its problem.
+//
+// The SPANS are still this function's problem, and got them wrong once. The
+// scanner applies stripCR to `//` comments, general comments and raw strings,
+// so len(lit) is SHORTER than the source text by the interior-CR count and
+// blanking that many bytes leaves an attacker-chosen tail exposed:
+//
+//	fmt.Fprintln(out, rt.Name) //<CR x12>userNameFor(
+//
+// exempted a real render. Carriage returns are removed before scanning so the
+// literal text and the source span are the same length again. That the corpus
+// cannot contain an interior CR -- nogo's gofumpt rejects it -- is not the
+// reason this is safe; relying on a gate this file never names is how the hole
+// would come back.
 //
 // A line is not a compilation unit, so scanning one standalone reports errors
 // for unbalanced delimiters. They are irrelevant: only token KIND and POSITION
-// matter here and the scanner keeps producing both, which is why the error
-// handler is nil rather than missing.
+// matter and the scanner keeps producing both, which is why the error handler
+// is nil rather than missing.
 func executableCode(line string) string {
+	// Same length after this as the spans the scanner reports.
+	line = strings.ReplaceAll(line, "\r", "")
+
 	var sc scanner.Scanner
 	fset := token.NewFileSet()
 	f := fset.AddFile("", fset.Base(), len(line))
 	sc.Init(f, []byte(line), nil, scanner.ScanComments)
 
 	out := []byte(line)
-	blank := func(from, to int) {
-		for i := from; i < to && i < len(out); i++ {
-			if i >= 0 {
-				out[i] = ' '
-			}
-		}
-	}
 	for {
 		pos, tok, lit := sc.Scan()
 		if tok == token.EOF {
@@ -380,14 +369,9 @@ func executableCode(line string) string {
 			continue
 		}
 		off := fset.Position(pos).Offset
-		n := len(lit)
-		if tok == token.COMMENT {
-			n = len(lit) // scanner returns the whole comment text
+		for i := off; i < off+len(lit) && i < len(out); i++ {
+			out[i] = ' '
 		}
-		if n == 0 {
-			n = len(line) - off // unterminated: blank to end
-		}
-		blank(off, off+n)
 	}
 	return string(out)
 }
