@@ -338,10 +338,15 @@ func nameLineIsLeak(line, masked string) bool {
 
 // maskLiterals blanks every COMMENT, STRING and CHAR token in src -- and the
 // inter-token whitespace after each, up to the next real token, since spans run
-// to that offset. Measured excess is 100% whitespace (a CRLF's \r, the next
-// line's indent), so it removes nothing a token search wants; byte offsets and
-// newlines are preserved either way, so the result splits into lines that line
-// up with the original.
+// to that offset. That excess is only ever whitespace, and by construction
+// rather than by measurement: the walk stops at the first non-inserted token,
+// so anything between a literal and that token is inter-token space (a CRLF's
+// \r, the next line's indent). A comment there would BE that token and stop it.
+// TestMaskingNeverBlanksRealCode pins the property; a measured percentage would
+// be a fact about one corpus and could not be seen to go stale.
+//
+// Byte offsets and newlines are preserved either way, so the result splits into
+// lines that line up with the original.
 //
 // It takes WHOLE SOURCE, not a line, and that is load-bearing. Go is not
 // line-oriented: a raw string opened on one line makes the next line's backtick
@@ -525,12 +530,18 @@ func TestMultilineBlockCommentIsFullyMasked(t *testing.T) {
 	}
 }
 
-// MASKING PRESERVES LENGTH AND NEWLINE COUNT, which is what lets masked lines
-// be paired with raw ones by index.
+// MASKING ONLY BLANKS: LENGTH, NEWLINE OFFSETS, AND EVERY OTHER BYTE UNCHANGED
+// EXCEPT WHERE IT BECAME A SPACE.
 //
-// nameLineIsLeak takes the two separately and cannot check they belong
-// together; the walk asserts the line COUNT but a within-line shift would slip
-// past it. Pinned here at the source: byte length and every newline offset.
+// nameLineIsLeak takes raw and masked separately and cannot check they belong
+// together; the walk asserts the line COUNT, but a shift WITHIN a line would
+// slip past that.
+//
+// The first version of this pinned only length and newline offsets — and was
+// blind to exactly the hazard its own comment raised: a within-line rotate
+// (every line's content permuted, length and newlines untouched) left all 789
+// tests green. So the loop also asserts that any byte which CHANGED became a
+// blank, which is what makes the correspondence real rather than plausible.
 func TestMaskingPreservesOffsets(t *testing.T) {
 	t.Parallel()
 
@@ -549,6 +560,16 @@ func TestMaskingPreservesOffsets(t *testing.T) {
 			continue
 		}
 		for i := range src {
+			// Any byte that CHANGED must have become a blank. Without this the
+			// loop sees only length and newline offsets, and a within-line
+			// permutation -- every line's content rotated, length and newlines
+			// untouched -- passes while raw and masked no longer correspond.
+			if got[i] != src[i] && got[i] != ' ' {
+				t.Errorf("%s: byte %d changed %q -> %q; masking may only BLANK, never "+
+					"substitute, or masked lines stop corresponding to raw ones",
+					name, i, src[i], got[i])
+				break
+			}
 			if (src[i] == '\n') != (got[i] == '\n') {
 				t.Errorf("%s: newline at offset %d was %q, became %q — line numbering "+
 					"shifts and every classification lands on the wrong line",
@@ -556,5 +577,74 @@ func TestMaskingPreservesOffsets(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+// MASKING NEVER BLANKS A BYTE OF REAL CODE.
+//
+// Spans run past a literal to the next non-inserted token, so they cover some
+// inter-token whitespace. The claim that the excess is ONLY whitespace is what
+// makes that safe, and it is a property rather than a percentage: assert it
+// directly instead of quoting a number measured over one corpus, which could
+// not be seen to go stale.
+//
+// The oracle is go/scanner's own token stream, taken independently of the span
+// arithmetic under test: every NON-literal token's bytes must survive masking
+// untouched.
+func TestMaskingNeverBlanksRealCode(t *testing.T) {
+	t.Parallel()
+
+	sources := map[string]string{
+		"plain":            "package p\nfunc f() { x := 1; y := \"s\" // c\n_ = x + y }\n",
+		"multiline raw":    "package p\nvar b = `a\nb` + c\n",
+		"multiline block":  "package p\nvar d = 1 /* a\nb */ + e\n",
+		"adjacent block":   "package p\nvar q = 1 /*a*//*b*/ + r\n",
+		"CRLF":             "package p\r\nvar x = 1 // c\r\nvar y = 2\r\n",
+		"unterminated str": "package p\nvar s = \"open\nvar t = rt.Name\n",
+	}
+	var checked int
+	for name, src := range sources {
+		masked := maskLiterals(src)
+		if len(masked) != len(src) {
+			t.Fatalf("%s: length changed, offsets are meaningless", name)
+		}
+		var sc scanner.Scanner
+		fset := token.NewFileSet()
+		f := fset.AddFile("", fset.Base(), len(src))
+		sc.Init(f, []byte(src), nil, scanner.ScanComments)
+		for {
+			pos, tok, lit := sc.Scan()
+			if tok == token.EOF {
+				break
+			}
+			if tok == token.COMMENT || tok == token.STRING || tok == token.CHAR {
+				continue
+			}
+			// An inserted semicolon has no source text to preserve.
+			if tok == token.SEMICOLON && lit == "\n" {
+				continue
+			}
+			off := fset.Position(pos).Offset
+			text := lit
+			if text == "" {
+				text = tok.String()
+			}
+			for i := 0; i < len(text) && off+i < len(src); i++ {
+				checked++
+				if src[off+i] != masked[off+i] {
+					t.Errorf("%s: byte %d of real token %q (%v) was blanked: %q -> %q",
+						name, i, text, tok, src[off+i], masked[off+i])
+					break
+				}
+			}
+		}
+	}
+	// Vacuity guard: a scanner that produced nothing would pass silently. The
+	// floor sits BELOW the 122 code bytes these six sources actually yield -- it
+	// exists to catch zero, and a floor above the real value is just a failing
+	// test dressed as a guard.
+	if checked < 100 {
+		t.Fatalf("only %d code bytes checked; the oracle is not reaching the sources "+
+			"and this would report clean regardless", checked)
 	}
 }
