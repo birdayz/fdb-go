@@ -14144,11 +14144,14 @@ None is speculative: each was re-verified against the tree before booking.
 
   Booked at 33, re-measured at 50, and 43 today. The command is written out
   rather than the number asserted, because that is the only form of this claim
-  anyone can check. NOTE for whoever re-runs it: keep `--include` QUOTED.
-  Unquoted, the shell rejects the unmatched wildcard, prints "no matches found"
-  to STDERR and never runs grep at all -- so the failure is loud, but a pipeline
-  that reads only stdout sees nothing and reports 0. It is the CAPTURE that is
-  silent, not the shell.
+  anyone can check. NOTE for whoever re-runs it: keep `--include` QUOTED, and
+  the reason is shell-dependent, so do not port the diagnosis. Under bash an
+  unmatched `--include=*.go` is passed through literally and grep runs, giving
+  the true count. Under the shell this was measured in (zsh; `echo $0` if you
+  are unsure -- the environment banner is not proof) the unmatched glob is
+  rejected, "no matches found" goes to STDERR, and grep never runs -- loud, but
+  a pipeline capturing only stdout sees nothing and reports 0. The capture is
+  what is silent, not the shell.
 
   **Go (AS FOUND; closed since by RFC-232):** `plans/flat_map.go` returned the
   `UnknownType` singleton with no reference to the plan's result value.

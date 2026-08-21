@@ -1366,7 +1366,10 @@ func TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter(t *testing.
 	}
 
 	// OUTER correlation: the emitted row is the outer leg's, so the layout is
-	// T1's -- the branch every hop-1 FlatMap in a chain takes.
+	// T1's. This is a SYNTHETIC shape, not the production chain path --
+	// fkChainFlat always correlates to the inner alias, and the hop-1 test above
+	// pins hop1 emitting its INNER leg. The branch is reachable and worth
+	// driving; it is just not the one a chain hop takes.
 	outerQOV := mustFKChain(values.NewQuantifiedObjectValue(outerAlias, planRowLayout(outer)))
 	if got := planRowLayout(newFlat(outerQOV)); values.OrdinalDomainOfType(got) != values.OrdinalDomainOfType(fkChainRowType("T1")) {
 		t.Errorf("planRowLayout over an OUTER-correlated resultValue = %v, want T1's layout", got)
