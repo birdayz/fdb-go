@@ -707,3 +707,62 @@ func TestDiffSeesFieldChangeThatRendersIdentically(t *testing.T) {
 		}
 	})
 }
+
+// THE DIFF IS DETERMINISTIC AND COLLISION-FREE AT A 1x2 POPULATION.
+//
+// The 1x1 case cannot see either hazard. An earlier pairwise fallback compared
+// Name fields it had already rewritten, so the result depended on Go map
+// iteration order and reproduced the very `+X / -X` collision it removed on
+// roughly a quarter of runs; and rewriting only the colliding pair creates a
+// fresh collision one step later (old {A__B, A__00B} -> new {A__0B, C__1X}).
+//
+// Two types per side, run repeatedly, asserting BOTH that no rendered name is
+// shared across the buckets and that the whole output is identical every time.
+func TestDiffIsDeterministicAndCollisionFreeAcrossBuckets(t *testing.T) {
+	t.Parallel()
+
+	// Renders: A__B->A__B, A__00B->A__0B, A__0B->A__B, C__1X->C$X.
+	oldMeta := metaWithTwoRenamedTypes(t, "A__B", "A__00B")
+	newMeta := metaWithTwoRenamedTypes(t, "A__0B", "C__1X")
+	for _, m := range []*recordlayer.RecordMetaData{oldMeta, newMeta} {
+		if _, amb := m.AmbiguousDeclaredNames(); amb {
+			t.Fatal("fixture is wrong: a side is ambiguous by itself, so this would " +
+				"exercise the ordinary gate rather than the cross-bucket one")
+		}
+	}
+
+	render := func() string {
+		s := diffRecordTypes(oldMeta, newMeta)
+		sortSection(&s)
+		var b strings.Builder
+		for _, e := range s.Removed {
+			b.WriteString("-" + e.Name + "\n")
+		}
+		for _, e := range s.Added {
+			b.WriteString("+" + e.Name + "\n")
+		}
+		return b.String()
+	}
+
+	first := render()
+	if strings.Count(first, "\n") < 4 {
+		t.Fatalf("fixture did not land: expected 2 added + 2 removed, got:\n%s", first)
+	}
+	// No rendered name may appear on both sides — that is the `+X / -X` shape.
+	s := diffRecordTypes(oldMeta, newMeta)
+	for _, a := range s.Added {
+		for _, r := range s.Removed {
+			if a.Name == r.Name {
+				t.Errorf("`+ %s` and `- %s` name two DIFFERENT stored types "+
+					"(%s vs %s):\n%s", a.Name, r.Name, a.raw, r.raw, first)
+			}
+		}
+	}
+	// And the output must not depend on map iteration order.
+	for i := 0; i < 200; i++ {
+		if got := render(); got != first {
+			t.Fatalf("diff output varies between runs (iteration %d):\nfirst:\n%s\ngot:\n%s",
+				i, first, got)
+		}
+	}
+}

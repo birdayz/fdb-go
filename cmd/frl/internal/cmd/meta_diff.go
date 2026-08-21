@@ -60,7 +60,10 @@ func newMetaDiffCmd() *cobra.Command {
 // Changes list, so the JSON can never under-report what the text shows
 // (the old name-only JSON contract hid WHAT changed from jq consumers).
 type diffEntry struct {
-	Name    string
+	Name string
+	// raw is the STORED spelling of Name, carried so a rendered collision can be
+	// undone deterministically. Unexported: bookkeeping, never output.
+	raw     string
 	Detail  string        // additions only; empty otherwise
 	Changes []fieldChange // modifications only; empty otherwise
 }
@@ -179,43 +182,64 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	newTypes := newMeta.RecordTypes()
 	var s diffSection
 
-	// Bucketing is by STORED name (the map keys); only the rendered Name is
-	// decoded. Track the stored spelling alongside so a rendered collision
-	// ACROSS the two buckets can be undone below.
-	addedRaw := map[int]string{}
-	removedRaw := map[int]string{}
-
+	// Bucketing is by STORED name (the map keys); only Name is decoded, and the
+	// stored spelling rides along in raw so a rendered collision can be undone.
 	for name := range newTypes {
 		if _, ok := oldTypes[name]; !ok {
-			addedRaw[len(s.Added)] = name
 			s.Added = append(s.Added, diffEntry{
 				Name:   userNameFor(newMeta, name), // SQL identifier; map keys stay storage
+				raw:    name,
 				Detail: "pk: " + pkFieldsOrUnset(newTypes[name].PrimaryKey),
 			})
 		}
 	}
 	for name := range oldTypes {
 		if _, ok := newTypes[name]; !ok {
-			removedRaw[len(s.Removed)] = name
-			s.Removed = append(s.Removed, diffEntry{Name: userNameFor(oldMeta, name)})
+			s.Removed = append(s.Removed, diffEntry{Name: userNameFor(oldMeta, name), raw: name})
 		}
 	}
 	// A rename between two spellings that RENDER alike -- stored A__0B becoming
-	// stored A__B, both of which decode to A__B -- would print as `- A__B` /
-	// `+ A__B`: a real change the tool cannot express. Neither metadata is
-	// ambiguous on its own, so userNameFor cannot see it; the collision only
-	// exists ACROSS the pair being diffed. Fall back to the stored spelling for
-	// exactly the colliding entries, the same treatment the field lists get.
-	for ai, aRaw := range addedRaw {
-		for ri, rRaw := range removedRaw {
-			// No aRaw != rRaw guard: the buckets are disjoint by construction (a
-			// name in Added is absent from oldTypes, and vice versa), so the raw
-			// spellings can never be equal here. Writing one would read as
-			// load-bearing when it is not.
-			if s.Added[ai].Name == s.Removed[ri].Name {
-				s.Added[ai].Name = aRaw
-				s.Removed[ri].Name = rRaw
-			}
+	// stored A__B, both decoding to A__B -- would print as `- A__B` / `+ A__B`:
+	// a real change the tool cannot express. Neither metadata is ambiguous on its
+	// own, so userNameFor cannot see it; the collision exists only ACROSS the
+	// pair being diffed.
+	//
+	// Resolved ALL-OR-NOTHING: if any decoded name repeats across the section,
+	// every entry falls back to its stored spelling.
+	//
+	// Rewriting only the colliding entries is not enough, and the counterexample
+	// is small: old {A__B, A__00B} -> new {A__0B, C__1X}. Decoded, Added is
+	// [A__B, C$X] and Removed is [A__B, A__0B], so the A__B pair is rewritten to
+	// raw -- which makes Added hold A__0B, colliding afresh with the A__0B that
+	// Removed already decoded to. A selective pass creates the collision it just
+	// removed, and iterating to a fixpoint is a lot of machinery for a case
+	// where every stored name is a correct answer.
+	//
+	// So this matches what userNamesFor does one level down: under a collision,
+	// stored names for everyone. Order-independent, no second-order collisions,
+	// and it covers Added-vs-Added as well as the cross-bucket case. An earlier
+	// pairwise version compared Name fields it had already rewritten, which made
+	// the output depend on Go map iteration order.
+	seen := map[string]int{}
+	for _, e := range s.Added {
+		seen[e.Name]++
+	}
+	for _, e := range s.Removed {
+		seen[e.Name]++
+	}
+	var collides bool
+	for _, n := range seen {
+		if n > 1 {
+			collides = true
+			break
+		}
+	}
+	if collides {
+		for i := range s.Added {
+			s.Added[i].Name = s.Added[i].raw
+		}
+		for i := range s.Removed {
+			s.Removed[i].Name = s.Removed[i].raw
 		}
 	}
 	for name, oldT := range oldTypes {
