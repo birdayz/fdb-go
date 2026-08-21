@@ -603,10 +603,14 @@ where the derived-UNNEST path is already being reworked.
 
 **What is NOT deferred:** the wrong-column bind itself. A descriptor-order-
 dependent answer was the defect; it declines now, and the decline is pinned.
-What remains is which SQLSTATE the decline reports, on a shape DDL cannot
-produce — `protoname`'s own doc records why (two SQL names that collide under
-decoding would be duplicates at CREATE), so only hand-written imported
-descriptors reach it.
+What remains is which SQLSTATE the decline reports.
+
+A DRAFT OF THIS PARAGRAPH ADDED "on a shape DDL cannot produce", citing
+`protoname` as the authority. That was false and `protoname` now says so in
+capitals — §7b carries the DDL counterexample. The reachability claim is
+withdrawn rather than narrowed, because the specific `foo___0bar`/`foo__0_bar`
+pair being import-only would still be beside the point: the shape a reader
+needs to know about is the DDL one, and it is one section down.
 
 ### 7b. A second follow-on, found while documenting the first
 
@@ -623,10 +627,21 @@ Both names begin `__` and pass through `ToProtoBufCompliantName` unchanged;
 Two legal, non-duplicate SQL columns; one decoded spelling; no buildable row
 type. A read of an UNRELATED column fails.
 
-**Java fails on it too**, measured on a live JVM: `Multiple entries with same
-key: ___=…Type$Record$Field@…` — the same cause at the same point. So the
-BEHAVIOUR is upstream-faithful and the escaping cannot be changed regardless,
-because escaped names are wire. Pinned in the cross-engine probe.
+**JAVA FAILS TOO, BUT ITS BLAST RADIUS IS THE TABLE AND GO'S IS THE SCHEMA.**
+That difference is the defect, and it took two wrong readings to reach:
+
+```
+SELECT id FROM innocent    Java ANSWERS      Go XX000
+SELECT id FROM coll        Java fails        Go XX000
+```
+
+A draft called this upstream-faithful on the strength of both engines failing
+everywhere — which came from a probe whose SETUP inserted into `coll`, so Java
+was failing on the INSERT and every later query inherited it. With no setup the
+engines separate. Reproducing Java means failing on `coll` and ANSWERING on
+everything else; the escaping itself cannot change, because escaped names are
+wire. Pinned in the cross-engine probe, whose unrelated-table arm is the one
+carrying this.
 
 **What is Go's alone is the PANIC.** `values.NewRecordType` panics on a
 duplicate field name; the driver recovers it into `XX000 internal error`. A
@@ -638,3 +653,25 @@ This is separate from §7: that one is a SQLSTATE refinement on a lookup
 decline, this one is a panic on a row-type construction. They share only the
 non-injectivity that produced both, which is now documented at `protoname`
 where the next caller will see it.
+
+**(8) The collision PANIC is gone, and this is an acceptance criterion rather
+than a description.** §7b established that `values.NewRecordType` panics on a
+duplicate decoded field name and that only the SQL-driver boundary turns it into
+`XX000` — a direct library caller gets the panic. Left as a §7b narrative, every
+other criterion here could pass with the crash intact, which is exactly the
+shape of a gate that cannot fail.
+
+```
+CREATE TABLE coll (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))
+```
+
+Row-type construction must return an ERROR for this schema, and a regression
+must call it directly — not through the driver, whose `recover` is what hides
+the defect today. `pkg/recordlayer/query/plan/cascades/values` is where the
+panic lives and where the no-panic pin belongs.
+
+TWO THINGS HAVE TO CHANGE, not one. The panic becomes an explicit error, which
+is design principle 4. And the failure becomes TABLE-LOCAL, matching Java: a
+query against a table that shares nothing with `coll` must answer. The
+cross-engine probe already asserts both directions, so the criterion is met when
+its Go arm flips and its Java arm does not move.

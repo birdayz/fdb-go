@@ -219,28 +219,39 @@ CREATE TABLE XPROBE (id BIGINT, "TOTAL" BIGINT, "X.TOTAL" BIGINT, PRIMARY KEY (i
 	})
 })
 
-// A SEPARATE SCHEMA, DELIBERATELY: a table whose columns collide under decoding
-// makes the WHOLE schema unreadable, so putting it beside the probes above
-// poisoned every one of them — five arms went red reporting the collision's
-// error for queries that never touched the table. That is worth stating rather
-// than quietly isolating, because it is the finding: the failure is not scoped
-// to the offending table.
+// A DECODED-NAME COLLISION HAS A DIFFERENT BLAST RADIUS ON EACH ENGINE, and
+// that difference is the finding. It took two wrong readings to get to it.
 //
 // `"___"` and `"___0"` are distinct, legal, non-duplicate SQL columns. Both
 // begin `__`, so both pass through ToProtoBufCompliantName UNCHANGED — and
 // `___0` then decodes to `___`, because the decode scan finds `__0` at index 1.
 // One decoded spelling for two columns; no buildable row type.
 //
-// BOTH ENGINES FAIL, which is what this measures and what could not have been
-// settled by reading either alone. Java's message names the same cause at the
-// same point. So the behaviour is upstream-faithful rather than a Go
-// divergence, and the escaping cannot be changed to fix it in any case because
-// escaped names are WIRE.
+// FIRST WRONG READING: "DDL cannot produce this." It can — the shape above is
+// ordinary DDL, and the preserved-`__`-prefix arm is why neither name is
+// escaped at all.
 //
-// What is Go's alone is that its internal failure is a PANIC, recovered at the
-// driver boundary into XX000 — tracked in RFC-238 §7b.
+// SECOND WRONG READING: "both engines fail, so this is upstream-faithful." That
+// came from putting COLL beside the probes above, where five unrelated arms went
+// red on BOTH engines. The shared setup INSERTed into COLL, so Java was failing
+// on the INSERT and every later query inherited it. Isolated, with no setup, the
+// engines separate:
+//
+//	SELECT id FROM INNOCENT     Java ANSWERS      Go XX000 (recovered panic)
+//	SELECT id FROM COLL         Java fails        Go XX000
+//
+// So Java's failure is TABLE-LOCAL and Go's is SCHEMA-WIDE. A collision in one
+// table takes down queries against every other table in the schema, which Java
+// does not do. That is a real divergence, not a faithfully reproduced upstream
+// defect, and it is what RFC-238 §7b has to fix — reproducing Java means
+// failing on COLL and answering on INNOCENT.
+//
+// The INNOCENT arm is the one that carries this. A COLL-only probe proves that
+// building the offending table's row type visits its own columns, which is true
+// and much weaker; it would also stay green if the blast radius later shrank to
+// Java's, and go on asserting a scope that no longer exists.
 var _ = Describe("DecodedNameCollisionJavaProbe", func() {
-	It("measures both engines on two columns that decode to one storage spelling", func() {
+	It("measures each engine's blast radius for a decoded-name collision", func() {
 		ctx := context.Background()
 		tenantName := fmt.Sprintf("collide_%s", uuid.New().String())
 		env, err := SetupTenantEnvironment(ctx, sharedContainer, tenantName)
@@ -254,30 +265,38 @@ var _ = Describe("DecodedNameCollisionJavaProbe", func() {
 		defer os.Remove(clusterFilePath)
 		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
 
-		schema := `CREATE TABLE COLL (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))`
+		// No setup rows: an INSERT into COLL is what made the first version of
+		// this probe read both engines as failing everywhere.
+		schema := `CREATE TABLE COLL (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))
+CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 
-		// The read names only `id`, which collides with nothing. It still
-		// fails, and that is the point — the row type is built for the whole
-		// table.
-		const sql = `SELECT id FROM COLL`
+		// THE DIVERGENCE. A query that never names COLL.
+		javaInnocent := javaRunner.RunWithSetup(ctx, schema, nil, `SELECT id FROM INNOCENT`).Err
+		goInnocent := goRunner.RunWithSetup(ctx, schema, nil, `SELECT id FROM INNOCENT`).Err
 
-		javaErr := javaRunner.RunWithSetup(ctx, schema, nil, sql).Err
-		goErr := goRunner.RunWithSetup(ctx, schema, nil, sql).Err
+		Expect(javaInnocent).NotTo(HaveOccurred(),
+			"Java stopped answering a query against an UNRELATED table. If Java's blast\n"+
+				"radius grew to the whole schema, Go's behaviour is upstream-faithful after\n"+
+				"all and RFC-238 §7b's framing must change.")
 
-		Expect(javaErr).To(HaveOccurred(),
-			"Java ANSWERED a decoded-name collision. If upstream fixed this, the Go side is\n"+
-				"no longer reproducing an upstream defect and RFC-238 §7b's framing must change.")
-		Expect(javaErr.Error()).To(ContainSubstring("Multiple entries with same key: ___="),
-			"Java still fails but for a DIFFERENT reason; re-read before assuming the causes\n"+
-				"still match.")
-
-		Expect(goErr).To(HaveOccurred(), "Go ANSWERED a shape whose row type cannot be built.")
+		Expect(goInnocent).To(HaveOccurred(),
+			"Go now ANSWERS the unrelated table — the divergence is CLOSED. Delete this\n"+
+				"assertion and close RFC-238 §7b rather than relaxing it.")
 		var ge *api.Error
-		Expect(errors.As(goErr, &ge)).To(BeTrue(),
-			"Go's failure stopped being an api.Error — a panic escaping the driver boundary\n"+
-				"would look like this, and is the outcome RFC-238 §7b exists to remove.")
+		Expect(errors.As(goInnocent, &ge)).To(BeTrue(),
+			"Go's failure stopped being an api.Error. A panic escaping the driver boundary\n"+
+				"looks exactly like this, and removing that panic is §7b's other half.")
 		Expect(string(ge.Code)).To(Equal("XX000"),
-			"Go's SQLSTATE moved. If it became a real diagnostic rather than an internal\n"+
-				"error, §7b is closed and this assertion should say so.")
+			"Go's SQLSTATE moved. If it became a real diagnostic, say so here.")
+
+		// THE SHARED HALF, so the arm above is about SCOPE and not about the
+		// collision being harmless on Java.
+		javaColl := javaRunner.RunWithSetup(ctx, schema, nil, `SELECT id FROM COLL`).Err
+		Expect(javaColl).To(HaveOccurred(),
+			"Java ANSWERED a read of the colliding table itself. Then the collision is not\n"+
+				"a defect on either engine and this whole section needs re-reading.")
+		Expect(javaColl.Error()).To(ContainSubstring("Multiple entries with same key: ___="),
+			"Java still fails on COLL but for a DIFFERENT reason; re-read before assuming\n"+
+				"the causes still match.")
 	})
 })

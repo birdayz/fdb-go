@@ -139,17 +139,25 @@ func translateSpecialCharacters(userIdentifier string) string {
 // decoded spelling; a row type that cannot be built. Reading even an UNRELATED
 // column of that table fails.
 //
-// JAVA FAILS ON IT TOO, measured on a live JVM rather than assumed — `Multiple
-// entries with same key: ___=…Type$Record$Field@…`, the same cause at the same
-// point. So this is the upstream defect reproduced faithfully, not a Go
-// divergence, and the escaped names being WIRE means the encoding cannot be
-// changed to make the round trip total anyway. Pinned in
+// JAVA FAILS ON IT TOO, but with a DIFFERENT BLAST RADIUS, and that difference
+// is the defect. Measured on a live JVM:
+//
+//	SELECT id FROM an_unrelated_table   Java ANSWERS      Go fails
+//	SELECT id FROM coll                 Java fails        Go fails
+//
+// Java's failure is TABLE-LOCAL. Go's takes down every query in the schema,
+// including tables sharing nothing with the colliding one. A draft here read
+// "both engines fail" as upstream-faithful; that came from a probe whose SETUP
+// inserted into the colliding table, so Java was failing on the INSERT and every
+// later query inherited it.
+//
+// The escaped names are WIRE, so the encoding cannot change — reproducing Java
+// means failing on `coll` and ANSWERING on everything else. Pinned in
 // conformance/dotted_and_recursive_seed_java_probe_test.go.
 //
-// What is Go's alone is that its internal failure is a PANIC, recovered at the
-// driver boundary into XX000. A library that panics where it could return an
-// error is design-principle 4, and it is tracked in RFC-238 §7 with this
-// reproducer.
+// Go's failure is also a PANIC, recovered at the driver boundary into XX000. A
+// library that panics where it could return an error is design principle 4.
+// Both halves are tracked in RFC-238 §7b.
 func ToUserIdentifier(protoIdentifier string) string {
 	s := strings.ReplaceAll(protoIdentifier, dotEscape, ".")
 	s = strings.ReplaceAll(s, dollarEscape, "$")
