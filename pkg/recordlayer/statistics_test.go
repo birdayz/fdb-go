@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"fdb.dev/gen"
@@ -2077,3 +2078,72 @@ func (f fixedInt64) MustGet() int64      { return int64(f) }
 func (fixedInt64) BlockUntilReady()      {}
 func (fixedInt64) IsReady() bool         { return true }
 func (fixedInt64) Cancel()               {}
+
+// THE SYNTHETIC REFUSAL NAMES THE SAME THING EVERY OTHER SURFACE DOES.
+//
+// A SYNTHETIC TYPE'S NAME IS PRINTED VERBATIM, AND THAT IS THE OPPOSITE OF THE
+// RULE FOR RECORD TYPES.
+//
+// LIVES HERE, not in the CLI package that first rendered it. The invariant is
+// this package's: a maintainer editing statistics.go runs pkg/recordlayer, and
+// with the test one package over that run was GREEN with the bug fully present.
+// A test that cannot fail where the code lives is a green about the wrong tree.
+//
+// The reason is the PRIOR on what produced the name, not its domain. Both kinds
+// end up as protobuf message names -- Java's
+// SyntheticRecordTypeBuilder.buildDescriptor sets the synthetic one through
+// DescriptorProto.setName, so it is validated like any other -- and
+// DecodeOnceIfReversible is a pure function of the string, so the round-trip
+// test itself does not separate them either. What separates them is that a
+// record type declared through SQL DDL passes through ToProtoBufCompliantName,
+// while NOTHING escapes into a synthetic name: Java's
+// addJoinedRecordType/addUnnestedRecordType store the caller's string and this
+// port never CREATES one -- metadata_proto.go only proto.Clones what Java
+// wrote. So a synthetic MY__1JOINED that round-trips is not evidence of
+// escaping, and decoding it would name a declaration that does not exist in the
+// operator's metadata -- the one artifact they can search, and the only thing
+// they can do with this refusal, since the port does not model the type at all.
+//
+// An earlier round here made both surfaces decode, to settle a real
+// inconsistency (`frl stats show` decoded, `frl stats collect` did not). The
+// inconsistency was real and the direction was wrong; both are verbatim now.
+func TestSyntheticRefusalErrorNamesTypesVerbatim(t *testing.T) {
+	t.Parallel()
+
+	// A name that WOULD decode, so a decoding regression is visible rather than
+	// a no-op: MY__1JOINED decodes to MY$JOINED.
+	const stored, ifDecoded = "MY__1JOINED", "MY$JOINED"
+	if ToUserIdentifier(stored) != ifDecoded {
+		t.Fatalf("fixture is vacuous: %q does not decode to %q, so this test cannot "+
+			"observe a decoding regression", stored, ifDecoded)
+	}
+
+	msg := (&SyntheticRecordTypesNotModeledError{TypeNames: []string{stored}}).Error()
+	if !strings.Contains(msg, stored) {
+		t.Errorf("the refusal does not name the declaration as the metadata stores it: %s", msg)
+	}
+	if strings.Contains(msg, ifDecoded) {
+		t.Errorf("the refusal DECODED a synthetic name: %s\n"+
+			"Java stores these verbatim (addJoinedRecordType) and this port never "+
+			"creates one, so the escaped reading is a guess that invents a "+
+			"declaration the operator cannot find in their metadata", msg)
+	}
+
+	// Order is whatever the caller supplied -- SyntheticRecordTypeNames sorts in
+	// storage space and, with nothing decoded, there is no second namespace for
+	// that order to disagree with. Pinned so a re-sort is not added back on the
+	// theory that it matches the record-type surfaces; it must not.
+	two := (&SyntheticRecordTypesNotModeledError{
+		TypeNames: []string{"A__0B", "A__1B"},
+	}).Error()
+	if strings.Index(two, "A__0B") > strings.Index(two, "A__1B") {
+		t.Errorf("the refusal reordered its input: %s", two)
+	}
+
+	// The FIELD must stay storage-keyed: a programmatic consumer matches it
+	// against metadata, which is storage-keyed too.
+	err := &SyntheticRecordTypesNotModeledError{TypeNames: []string{stored}}
+	if err.TypeNames[0] != stored {
+		t.Errorf("TypeNames = %q, want the STORED name %q", err.TypeNames[0], stored)
+	}
+}

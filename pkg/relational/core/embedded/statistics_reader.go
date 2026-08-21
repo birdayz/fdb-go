@@ -158,6 +158,12 @@ type StatisticsStatus struct {
 	// AmbiguousTypes is the colliding pair when Refusal is
 	// StatisticsAmbiguousNames: two declared names where one is the other's
 	// escaped form, so a lookup by either cannot say which table is meant.
+	//
+	// USER IDENTIFIERS, unlike every other name field on this struct. It is
+	// decoded at its source because the operator has to act on the SQL names, and
+	// it must NOT be decoded again: ToUserIdentifier is not idempotent, so a
+	// second pass renames the table rather than failing. The namespace is stated
+	// per field precisely because it cannot be inferred from the value.
 	AmbiguousTypes []string
 	// perType is the provider input, populated only when Usable.
 	perType map[string]float64
@@ -247,11 +253,20 @@ func evaluateCollectedStatistics(
 		in.DeclaredTypes = append(in.DeclaredTypes, name)
 	}
 
-	// Decide BEFORE any I/O when the answer cannot depend on it. Synthetic
-	// declarations fix the verdict outright, and reading anyway costs an FDB
-	// transaction on every opt-in plan-cache miss — one that may retry or wait on
-	// a cluster whose answer is then thrown away.
+	// Decide BEFORE any I/O when the answer cannot depend on it. Both
+	// metadata-only verdicts fix the outcome outright, and reading anyway costs
+	// an FDB transaction on every opt-in plan-cache miss — one that may retry or
+	// wait on a cluster whose answer is then thrown away.
+	//
+	// AMBIGUITY BELONGS HERE TOO. Its gate comment said it was decided "before
+	// any read", and that was true of decideStatistics and false of this caller:
+	// an ambiguous schema still paid the read and discarded the answer. A comment
+	// describing the gate rather than the path through it reads as a claim about
+	// the path.
 	if in.HasSyntheticTypes {
+		return decideStatistics(in)
+	}
+	if _, ambiguous := ambiguousDeclaredNamesIn(in.DeclaredTypes); ambiguous {
 		return decideStatistics(in)
 	}
 
@@ -329,7 +344,10 @@ func decideStatistics(in statisticsGateInput) StatisticsStatus {
 	}
 
 	// GATE 0b — NAME AMBIGUITY ACROSS THE TWO NAMESPACES. Metadata-only, like
-	// GATE 0, and therefore decided in the same place: before any read.
+	// GATE 0, and decided in the same place. evaluateCollectedStatistics
+	// short-circuits on it too, so an ambiguous schema costs no read -- that is a
+	// property of the CALLER, and this comment said "before any read" while the
+	// caller still performed one.
 	//
 	// It used to run LAST, after freshness and completeness, and that ordering
 	// was a bug rather than a preference. A colliding schema with no collected

@@ -190,14 +190,53 @@ func CollectAllStatistics(
 // describeSkipped renders why a run was abandoned, for the per-target error.
 // Sorted so a fan-out over many schemas produces diffable output.
 func describeSkipped(skipped map[string]string) string {
+	// Record-type keys are STORAGE names, and this text is what the fan-out
+	// prints for a refused or failed target -- the caller's own comment calls it
+	// "the one field an operator actually sees", which is exactly why it must not
+	// name a table the operator does not have.
+	//
+	// Decoding is decided ONCE for the whole string, from every name it will
+	// print, and it is suppressed entirely if any decoded spelling would be
+	// another entry's stored name or would collide with another decoded one.
+	// Two separate reasons, both learned the hard way in cmd/frl:
+	//
+	//   - Bare ToUserIdentifier has no round-trip guard, so a type legitimately
+	//     named __0Order renders as __Order, which re-encodes to __Order and
+	//     resolves to nothing.
+	//   - Keying a map by the decoded name LOSES a row on a collision rather
+	//     than merely mislabelling it -- one skipped type silently vanishes from
+	//     the one field an operator reads.
+	//
+	// SCOPE, and it is narrower than it looks: the decision is taken over the
+	// names this string will PRINT, not over every name the schema DECLARES. Two
+	// declared types can collide while the skipped subset does not, and this
+	// decoder would then decode happily on a schema that is ambiguous. What
+	// closes that is not this function -- it is ambiguousRefusal, which turns the
+	// whole target away before any collection runs, so a declared collision never
+	// reaches here. Delete that guard and this one narrows silently rather than
+	// failing.
+	//
+	// cmd/frl's docscheck gate cannot see this file, so the invariant is carried
+	// by calling the SHARED policy rather than by that gate. It used to be a
+	// local copy justified by "a test pins that the two agree" -- there was no
+	// such test, and there could not easily be one across an unexported boundary,
+	// so the copy is gone instead.
+	stored := make([]string, 0, len(skipped))
+	for name := range skipped {
+		stored = append(stored, name)
+	}
+	decode := recordlayer.SafeDecoderOver(stored, nil)
+
 	names := make([]string, 0, len(skipped))
 	for name := range skipped {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool { return decode(names[i]) < decode(names[j]) })
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, name+": "+skipped[name])
+		// Keyed by the STORED name throughout; only the printed label is decoded,
+		// so no row can be lost to a collision.
+		parts = append(parts, decode(name)+": "+skipped[name])
 	}
 	return strings.Join(parts, "; ")
 }

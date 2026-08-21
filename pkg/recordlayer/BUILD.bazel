@@ -278,6 +278,7 @@ go_test(
         "metadata_proto_test.go",
         "metadata_store_test.go",
         "metadata_test.go",
+        "metadata_user_identifier_lookup_test.go",
         "metadata_validation_test.go",
         "metadata_validator_additions_test.go",
         "million_record_test.go",

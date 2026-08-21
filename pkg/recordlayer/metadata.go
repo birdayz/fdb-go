@@ -24,6 +24,23 @@ type RecordMetaData struct {
 	// Map of record type names to their definitions
 	recordTypes map[string]*RecordType
 
+	// Whether two declared record types collide across the SQL and storage
+	// namespaces, DERIVED AT CONSTRUCTION by Build alongside
+	// fieldNumberToRecordType, not memoised on first ask.
+	//
+	// A lazy memo would answer whatever the declared set happened to be the
+	// first time anyone asked, so its staleness under mutation would depend on
+	// call ORDER -- mutate-then-ask and ask-then-mutate-then-ask giving
+	// different answers for the same object. Deriving it here makes the value
+	// unambiguously "the declared set Build saw", which is the same contract
+	// every other derived field on this struct already has.
+	//
+	// It is computed rather than recomputed per call because the CLI asks once
+	// per rendered name: a record scan is O(records x types) and a type listing
+	// O(types^2), re-deriving one answer for every row it prints. O(types) once.
+	ambiguousNames []string
+	ambiguousFound bool
+
 	// The protobuf file descriptor
 	fileDescriptor protoreflect.FileDescriptor
 
@@ -1060,6 +1077,13 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		return nil, err
 	}
 
+	// Derived here, beside fieldNumberToRecordType above, so the value is
+	// unambiguously the declared set THIS Build saw. See the field comment.
+	// Last, after every arm that can reject the metadata: a Build that returns
+	// an error derives nothing, and a Build that succeeds derives from final
+	// state rather than from state a later arm might still change.
+	md.ambiguousNames, md.ambiguousFound = md.computeAmbiguousDeclaredNames()
+
 	return md, nil
 }
 
@@ -1300,9 +1324,18 @@ func recordTypeKeyIdentity(key any) (string, bool) {
 // addresses RecordMetaData with a user identifier; Go's relational layer
 // uses RecordMetaData directly as its table catalog, so the translation
 // lives here — ONE boundary that every SQL path already funnels through —
-// rather than being sprinkled over the 25 call sites. Storage names stay
-// canonical: the fallback fires only when the direct key misses, so it can
-// never shadow a real type, and ToProtoBufCompliantName is deterministic.
+// rather than being sprinkled over the 25 call sites.
+//
+// The fallback fires only when the direct key misses, so it never SHADOWS a
+// stored type and ToProtoBufCompliantName is deterministic. It is not,
+// however, unambiguous: the escaping is not injective across the two
+// namespaces, so a schema declaring both MY__1TABLE (the storage form of SQL
+// MY$TABLE) and MY__01TABLE (the storage form of SQL MY__1TABLE) resolves a
+// lookup for the SQL name MY__1TABLE to the FIRST of those — the wrong entry.
+// No ordering fixes it; either order prices one of the pair wrong. See
+// AmbiguousDeclaredNames, which is how a caller computing over all record
+// types detects that case, and TestGetRecordTypeMisResolvesAnAmbiguousPair,
+// which pins the behaviour so a reordering "fix" fails loudly.
 func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 	if rt, ok := m.recordTypes[name]; ok {
 		return rt
@@ -1314,6 +1347,63 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 }
 
 // RecordTypes returns all record types
+//
+// NOTE: this returns the LIVE map, not a copy, and the map IS mutated after
+// Build.
+//
+// The census below is over changes to its KEY SET, because that is all the
+// derived field depends on: computeAmbiguousDeclaredNames ranges the keys and
+// probes declared[escaped], and never reads a *RecordType value. Mutating a
+// value already in the map is irrelevant here.
+//
+// ENUMERATED per site rather than counted by regex, and by SHAPE rather than by
+// one shape mistaken for all of them. Both mistakes were made here in
+// succession: first a count that included the sentence stating it, then an
+// assignment census presented as a mutation census -- which survived a round of
+// review, because the two read alike and the missing shape was delete().
+//
+//	Insertions, subscript form -- 8:
+//	  2 on the BUILDER, before any RecordMetaData exists, both in this file:
+//	    one in setRecordsWithUnionName, one in setRecordsWithoutUnion
+//	  6 post-Build, every one in a test:
+//	    1 in record_type_key_identity_test.go
+//	    5 in metadata_evolution_validator_test.go
+//
+//	Removals, delete() form -- 4, ALL post-Build, every one in a test:
+//	    1 in record_type_key_identity_test.go
+//	    3 in metadata_evolution_validator_test.go
+//	  Two of those three are bare removals with no paired insertion (the
+//	  "rejects removed type" cases); the third is half of a rename. A removal
+//	  invalidates the derived field exactly as an insertion does.
+//
+//	clear(), the maps.* helpers, and whole-map assignment: none AFTER
+//	  construction. online_indexer.go does assign a whole recordTypes, but that
+//	  is a []string on a different struct -- it was once miscounted into this
+//	  census.
+//
+//	CONSTRUCTION is a separate route with the same fail-open, and is not a
+//	mutation of this map at all, which is why it sits outside the counts above:
+//	metadata_evolution_validator_test.go and online_indexer_preset_test.go each
+//	build &RecordMetaData{recordTypes: ...} directly, so Build never runs and
+//	ambiguousFound stays false -- reported as "no collision" over a set nobody
+//	derived.
+//
+// Twelve sites, ten of them after Build.
+//
+// This matters because Build DERIVES ambiguousNames from this map, so any
+// post-Build key-set change leaves the derived field describing a declared set
+// that no longer exists. Latent today, and measured so: none of the THREE files
+// named above calls AmbiguousDeclaredNames, so nothing reads the stale value. A
+// test that starts doing both re-arms it.
+//
+// Copying the map here would NOT close that. All ten post-Build sites touch the
+// private field directly rather than through this accessor, so a copy prevents
+// none of them while adding an O(types) allocation to every caller -- including
+// computeAmbiguousDeclaredNames itself.
+//
+// The staleness is silent either way, but it is at least deterministic: the
+// field always means "what Build saw", never "whatever the set was the first
+// time somebody happened to ask", which is what the sync.Once it replaced meant.
 func (m *RecordMetaData) RecordTypes() map[string]*RecordType {
 	return m.recordTypes
 }
@@ -1796,9 +1886,26 @@ func countVersionColumns(expr KeyExpression) int {
 // reader and both collection entry points need it, and a shared property with
 // three consumers does not belong in any one of them.
 //
+// CASE-SENSITIVE, and every gate that cites this function inherits that. The
+// collision test is a map lookup on the escaped name, so a schema declaring
+// quoted "MY$TABLE" (stored MY__1TABLE) alongside quoted "my__1table" (stored
+// my__01table) is NOT reported: the spellings differ only in case. That gap
+// does not reach a destructive path, because GetRecordType is case-sensitive
+// too and never resolves one to the other -- but a renderer that lowercases
+// before comparing would re-open it. Tracked in TODO.md.
+//
 // Returns USER identifiers because the operator has to act on the SQL names;
 // the collision itself is detected in storage space, where it lives.
 func (m *RecordMetaData) AmbiguousDeclaredNames() ([]string, bool) {
+	if m == nil {
+		return nil, false
+	}
+	return m.ambiguousNames, m.ambiguousFound
+}
+
+// computeAmbiguousDeclaredNames is the derivation. Build calls it once and
+// stores the result; read AmbiguousDeclaredNames rather than calling this.
+func (m *RecordMetaData) computeAmbiguousDeclaredNames() ([]string, bool) {
 	if m == nil {
 		return nil, false
 	}

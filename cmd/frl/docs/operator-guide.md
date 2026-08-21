@@ -339,6 +339,60 @@ frl stats collect --database /myapp --all-schemas
 # What is stored, and whether the planner will actually use it.
 frl stats show --database /myapp --schema MAIN
 frl stats show --database /myapp --schema MAIN -o json | jq '.per_type'
+```
+
+Keys are the SQL identifiers you wrote, not the escaped storage names the record
+layer uses internally: a table quoted `"MY$TABLE"` is stored as `MY__1TABLE` and
+reported here as `MY$TABLE`. The names `frl stats` prints follow that rule --
+`per_type`, `missing_types`, `extra_types`, the skipped list, the abort banner
+and the fan-out's refusal text -- so a script may key by the name it created the
+table with.
+
+`synthetic_types` is the ONE exception, and deliberately so: it names joined and
+unnested record types, whose names Java stores exactly as the caller passed them
+to `addJoinedRecordType`. They are not known to be escaped, and this port never
+creates one, so `MY__1JOINED` could equally be a literal name or the escaping of
+`MY$JOINED`. It is printed verbatim, because the only thing you can do with it
+is match it against your Java-side metadata.
+
+Besides `synthetic_types` above, three more things in `frl` output are
+deliberately NOT translated — four in total — and they are worth knowing before
+reading the list that is:
+
+- **Index names.** A separate namespace; `GetIndex` has no escape fallback, so a
+  decoded index name would not resolve when passed back in.
+- **Context names.** Local to this CLI, never a record type.
+- **The `Proto message:` line of `frl meta types describe`** (`proto_message` in
+  JSON). That field reports the protobuf descriptor's full name, so the escaped
+  spelling is the correct answer there -- the `Name:` field one line above it is
+  the SQL identifier. One command, two namespaces, on purpose.
+
+Everything else that prints a record-type name prints the SQL identifier:
+
+- `frl meta types` (text and JSON), and `frl meta types describe`'s `Name` field
+- `frl meta diff` and `frl index describe`
+- the `record_type` field of `frl record get`, `frl record put` and
+  `frl record scan` JSON output (all three go through one writer)
+- `frl sql`'s `\d` table list and `\d <table>` column list, and its
+  `not found -- available: ...` message
+- shell completion, and the `not found -- available: ...` list shared by
+  `frl record scan` and `frl record count`
+
+A name copied out of any of them can be passed straight back in -- as `--type`,
+or to `\d` -- and that holds because of two guards working together, not because
+the lookup is forgiving:
+
+- A name is shown decoded only when the decoded spelling **provably re-encodes
+  to the stored one**. Where it does not (a record type legitimately named
+  `__0Order`, never escaped from anything), the stored name is printed
+  unchanged.
+- Where a schema declares two types whose names **collide across the two
+  namespaces** -- SQL `MY$TABLE` stores as `MY__1TABLE`, and a table whose SQL
+  name IS `MY__1TABLE` stores as `MY__01TABLE` -- every command prints the
+  STORED names instead. Uglier, and the only spellings that resolve to the type
+  you meant. A schema in that state wants renaming.
+
+```sh
 
 frl stats clear --database /myapp --schema MAIN --yes
 ```

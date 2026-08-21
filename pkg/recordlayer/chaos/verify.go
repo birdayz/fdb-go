@@ -88,7 +88,8 @@ func Verify(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	}
 
 	// 3. No orphan records (every store record must exist in model)
-	ctx := context.Background()
+	ctx, cancel := chaosOpContext()
+	defer cancel()
 	cursor := store.ScanRecords(nil, recordlayer.ForwardScan())
 	defer func() { _ = cursor.Close() }()
 

@@ -1,7 +1,6 @@
 package chaos
 
 import (
-	"context"
 	"math/rand/v2"
 	"sync"
 	"testing"
@@ -245,7 +244,8 @@ func TestSPFreshChaos_ConcurrentRefineRebalanceFaults(t *testing.T) {
 	t.Parallel()
 	md := spfreshChaosMetadata(t)
 	s := NewScenario(t, testRealDB, md, WithSeed(0x5905), WithFaults(FaultsRetryHeavy))
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	// Bootstrap a generation so the maintenance loops have something to scan.
 	for id := int64(1); id <= 8; id++ {
@@ -352,7 +352,8 @@ func TestSPFreshChaos_BulkBuildUnderFault(t *testing.T) {
 	// Very heavy commit_unknown (20%) so many build sub-transactions double-
 	// commit — the strongest stress on the build's per-step idempotence.
 	s := NewScenario(t, testRealDB, md, WithSeed(0x5907), WithFaults(FaultsRetryVeryHeavy))
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	markDisabled := func() {
 		_, err := s.CleanDB().Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

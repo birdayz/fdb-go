@@ -1,5 +1,6 @@
 // Package protoname is the protobuf identifier escaping shared by every
-// descriptor emitter in the tree.
+// descriptor emitter in the tree, and the DISPLAY policy that decides when an
+// escaped name may safely be shown as the SQL identifier it came from.
 //
 // It is a LEAF package on purpose. The escaping is needed by the DDL-time
 // emitter (pkg/relational/core/metadata), by pkg/recordlayer itself, and by
@@ -111,4 +112,80 @@ func ToUserIdentifier(protoIdentifier string) string {
 	s := strings.ReplaceAll(protoIdentifier, dotEscape, ".")
 	s = strings.ReplaceAll(s, dollarEscape, "$")
 	return strings.ReplaceAll(s, doubleUnderscoreEscape, "__")
+}
+
+// DecodeOnceIfReversible returns the SQL identifier for a stored name, but only
+// when the decoded spelling provably re-encodes to what was stored.
+//
+// Record-layer metadata does not only come from the SQL layer —
+// RecordMetaDataBuilder.SetRecords copies protobuf identifiers verbatim — so a
+// record type may legally be named __0Order having never been escaped from
+// anything. Decoding that yields __Order, which re-encodes to __Order and NOT
+// to __0Order, so the name shown would resolve to nothing. The round trip is
+// the provenance test and it needs no extra bookkeeping.
+//
+// It does NOT prove the decoded spelling is safe to OFFER: it says the second
+// step of a two-step lookup lands on the right entry, and nothing about the
+// first. Use SafeDecoderOver when other names are printed alongside.
+func DecodeOnceIfReversible(stored string) string {
+	user := ToUserIdentifier(stored)
+	if user == stored {
+		return stored
+	}
+	back, err := ToProtoBufCompliantName(user)
+	if err != nil || back != stored {
+		return stored
+	}
+	return user
+}
+
+// SafeDecoderOver decides ONE decoding policy for a whole rendered output, from
+// every name that output will print.
+//
+// Per-value decisions are not enough and the split is easy to miss: decide
+// separately for two lists and a colliding pair straddles them, each list is
+// individually correct, and the output still shows one label for two different
+// stored types.
+//
+// `decoded` are names this output will render through the returned function.
+// `verbatim` are names it prints unchanged — synthetic record types, which Java
+// stores exactly as the caller passed them and which must never be decoded.
+// They take part in the decision without being subject to it: a decoded name
+// that equals one of them is the same one-label-two-things hazard.
+//
+// Returns DecodeOnceIfReversible when unambiguous, identity otherwise —
+// all-or-nothing, because under a collision every stored name is already a
+// correct answer and a selective rewrite creates second-order collisions.
+func SafeDecoderOver(decoded, verbatim []string) func(string) string {
+	identity := func(s string) string { return s }
+	printed := make(map[string]struct{}, len(decoded)+len(verbatim))
+	for _, s := range decoded {
+		printed[s] = struct{}{}
+	}
+	for _, s := range verbatim {
+		printed[s] = struct{}{}
+	}
+	// Keyed by the DECODED name, valued by the STORED one it came from: a repeat
+	// of the same name is not a collision, and a set cannot tell the two apart.
+	// Probed -- SafeDecoderOver([]{"MY__1TABLE","MY__1TABLE"}, nil) used to return
+	// the stored spelling while the single-element call decoded, so any caller
+	// passing overlapping lists silently lost decoding for the whole output.
+	seen := make(map[string]string, len(decoded))
+	for _, s := range decoded {
+		d := DecodeOnceIfReversible(s)
+		// The decoded spelling is some OTHER printed name, so the row would carry
+		// a label that means a different thing.
+		if _, isOthers := printed[d]; isOthers && d != s {
+			return identity
+		}
+		// Two names decoding alike would lose a row outright. Measured never to
+		// fire over the valid-proto-name space — but the reason is the arm above,
+		// not DecodeOnceIfReversible's round trip, which only covers the case
+		// where both names decode. Checked rather than argued.
+		if from, dup := seen[d]; dup && from != s {
+			return identity
+		}
+		seen[d] = s
+	}
+	return DecodeOnceIfReversible
 }

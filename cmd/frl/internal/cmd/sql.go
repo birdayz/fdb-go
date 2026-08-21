@@ -1017,10 +1017,13 @@ func (r *sqlRunner) loadSchemaTables(dbURI, schemaName string) ([]tableInfo, err
 			if err != nil {
 				return nil, err
 			}
+			md := metaFromSchema(sch)
 			out := make([]tableInfo, 0, len(tbls))
 			for _, tbl := range tbls {
 				out = append(out, tableInfo{
-					name:    tbl.MetadataName(),
+					// SQL identifier. MetadataName is the record type's stored name,
+					// which is escaped; the sort below then orders by what is printed.
+					name:    userNameFor(md, tbl.MetadataName()),
 					columns: len(tbl.Columns()),
 				})
 			}
@@ -1060,15 +1063,22 @@ func (r *sqlRunner) describeTable(name string) error {
 			if err != nil {
 				return out, err
 			}
+			md := metaFromSchema(sch)
 			var names []string
 			for _, tbl := range tbls {
-				names = append(names, tbl.MetadataName())
-				if !strings.EqualFold(tbl.MetadataName(), name) {
+				names = append(names, userNameFor(md, tbl.MetadataName()))
+				// Accept EITHER spelling. The list above offers SQL identifiers, so a
+				// name copied out of it must resolve -- matching only the stored form
+				// would reject the very name this command just printed.
+				if !strings.EqualFold(tbl.MetadataName(), name) &&
+					!strings.EqualFold(userNameFor(md, tbl.MetadataName()), name) {
 					continue
 				}
 				for _, col := range tbl.Columns() {
 					out.cols = append(out.cols, columnInfo{
-						name:     col.MetadataName(),
+						// SQL identifier: a column name is a proto FIELD name and is
+						// escaped the same way a table name is.
+						name:     userFieldName(col.MetadataName()),
 						dataType: col.DataType().Code().String(),
 						nullable: col.DataType().IsNullable(),
 					})
@@ -1078,7 +1088,9 @@ func (r *sqlRunner) describeTable(name string) error {
 					Underlying() *recordlayer.RecordMetaData
 				}); ok {
 					if rt := up.Underlying().GetRecordType(tbl.MetadataName()); rt != nil && rt.PrimaryKey != nil {
-						out.pk = rt.PrimaryKey.FieldNames()
+						// SQL identifiers, like the column rows above -- otherwise one
+						// description prints two spellings of the same column.
+						out.pk = userFieldNames(rt.PrimaryKey.FieldNames())
 					}
 				}
 				return out, nil
@@ -1248,4 +1260,25 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// metaFromSchema digs the record-layer metadata out of a relational schema, or
+// nil when the schema is not backed by one.
+//
+// It exists so \d can apply the same ambiguity gate the rest of the CLI does:
+// under a colliding pair the decoded spelling of one type is the STORED key of
+// another, and \d's either-spelling accept then describes whichever the catalog
+// yields first. Read-only, so less dangerous than the completer that feeds
+// `record delete` — the same defect all the same.
+func metaFromSchema(sch relapi.Schema) *recordlayer.RecordMetaData {
+	if sch == nil {
+		return nil
+	}
+	up, ok := sch.SchemaTemplate().(interface {
+		Underlying() *recordlayer.RecordMetaData
+	})
+	if !ok {
+		return nil
+	}
+	return up.Underlying()
 }
