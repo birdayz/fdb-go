@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2615 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
+# files=359 queries=2617 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14156,6 +14156,21 @@ sql:   SELECT id, CASE WHEN "Region" = 'us' THEN 1 END, CASE WHEN "Region" = 'US
 plan:  Project([_current.ID#0, CASE(WHEN(predicate), [1]), CASE(WHEN(predicate), [1])], Scan(SALES))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#13
+sql:   SELECT "Q'"."Z'", "R'"."Z'" FROM (SELECT "Amount" AS "Z'" FROM sales WHERE id = 1) "Q'", (SELECT "Amount" AS "Z'" FROM sales WHERE id = 2) "R'"
+plan:  Project([_current.Z'#0, _current.Z'#1], NestedLoopJoin(INNER, Project([_current.Amount#2], Scan(SALES, [=])), Project([_current.Amount#2], Scan(SALES, [=]))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#14
+sql:   SELECT * FROM (SELECT COUNT(CASE WHEN "Region" = ')' THEN "Amount" END) FROM sales) d
+plan:  Project([_current.COUNT(CASEWHENRegion=')'THENAmountEND)#0], StreamingAgg(keys=[], Scan(SALES)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
 === quoted_identifier_columns.yaml#0
 sql:   SELECT q1."id", q1."k" FROM q1 ORDER BY q1."id"
 plan:  Project([_current.id#0, _current.k#1], Scan(Q1))

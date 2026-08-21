@@ -132,3 +132,28 @@ tests:
       - [1, null, 1]
       - [2, null, 1]
       - [3, null, null]
+  # TWO DERIVED ALIASES CARRYING APOSTROPHES, each exposing a column alias that
+  # carries one. This is the SQL-level pin for a regression that a unit row over
+  # the name-splitting helper could not express: that row bypasses identifier
+  # normalization, alias provenance, join planning and result metadata, so it
+  # asserted the helper's behaviour rather than the behaviour a user sees.
+  # Treating an apostrophe as a string-literal delimiter hid the qualifier dot
+  # between `Q'` and `Z'`, and these labels came back as `Q'.Z'` / `R'.Z'`.
+  - query: SELECT "Q'"."Z'", "R'"."Z'" FROM (SELECT "Amount" AS "Z'" FROM sales WHERE id = 1) "Q'", (SELECT "Amount" AS "Z'" FROM sales WHERE id = 2) "R'"
+    columns: ["Z'", "Z'"]
+    rows:
+      - [100, 200]
+  # A derived column whose generated name CONTAINS A STRING LITERAL, re-projected
+  # through a derived table. A review predicted the label would come back as the
+  # fragment `AMOUNTEND)` once parseColRef stopped treating quotes as literal
+  # delimiters; measured, it does not — the full name survives, and the same
+  # string splits identically under this algorithm and the one it replaced.
+  #
+  # Note what this row does NOT do, since it sits beside the limits it looks
+  # like it should exercise: the name is unqualified and carries no dot outside
+  # the literal, so it drives neither KNOWN LIMIT. It pins the label, nothing
+  # more.
+  - query: SELECT * FROM (SELECT COUNT(CASE WHEN "Region" = ')' THEN "Amount" END) FROM sales) d
+    columns: ["COUNT(CASEWHENRegion=')'THENAmountEND)"]
+    rows:
+      - [0]

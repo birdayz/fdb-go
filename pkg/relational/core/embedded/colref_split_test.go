@@ -82,10 +82,17 @@ func TestParseColRef_SplitsAtDepthZero(t *testing.T) {
 		//
 		// It is the deliberate side of a measured trade. Treating quotes as
 		// literal boundaries fixes this row and breaks `Q'.Z'` above, which is
-		// reachable through ordinary delimited identifiers; this row needs a
-		// string literal to appear in a derived NAME, and a live differential
-		// over 2,682,910 production calls found no literal-bearing name at all.
-		// A measured regression against an unmeasured one goes only one way.
+		// reachable through ordinary delimited identifiers.
+		//
+		// THE OTHER HALF OF THAT TRADE WAS MIS-STATED HERE, and the correction
+		// matters because it is what made the trade look one-sided. This said a
+		// differential "found no literal-bearing name at all". It does find
+		// them: 35 production names of 28,625 calls over the planning corpus
+		// carry a quote — `CAST('0.0' AS BIGINT)`, `COALESCE(NAME,'unknown')`,
+		// `SUM(CASEWHENSTATUS='open'…)`. The number the deletion actually rests
+		// on is different and narrower: old and new disagree on exactly FOUR
+		// inputs, and all four are rows in this file. Zero production decisions
+		// change.
 		{
 			`I.COUNT(CASE WHEN S=')' THEN X.Y END)`, `I.COUNT(CASE WHEN S=')' THEN X`, `Y END)`,
 			"KNOWN LIMIT 1 of 2: a MATCHED paren inside a literal closes the real one. If " +
@@ -94,6 +101,9 @@ func TestParseColRef_SplitsAtDepthZero(t *testing.T) {
 		},
 		// THE SECOND LIMIT, and the one the prose missed. A literal at depth 0
 		// has nothing enclosing it, so a dot inside it IS the last depth-0 dot.
+		// This is the limit that is NOT remote: `CAST('0.0' AS BIGINT)` is a
+		// real production name of exactly this shape, and it resolves only
+		// because CAST's parens enclose it.
 		// The sentence claiming "only a literal containing a PAREN is affected"
 		// was written from the enclosed row above rather than from the rule.
 		{

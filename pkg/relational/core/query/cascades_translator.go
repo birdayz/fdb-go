@@ -10218,13 +10218,25 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// not the seed's source PARENT. The temp table (which the self-reference scans)
 	// must therefore be keyed by UP for the join predicate to match. Both legs are
 	// normalized to emit these names; nothing renames the temp table afterwards.
-	// VERBATIM, and the tell that it had to be was fourteen lines down: the
-	// projection-less fallback below assigns `seedOut[i] = f.Name` unfolded,
-	// so one branch keyed the temp table `NODE` and the other `Node` for the
-	// same `WITH RECURSIVE d("Node", …)`. extractOutputProjectionNames returns
-	// names already normalized at the parse capture, so the fold here was a
-	// second normalization — and this list is what the TempTableInsert arm of
-	// expressionOutputColumns publishes as the CTE's output schema.
+	// VERBATIM. extractOutputProjectionNames returns names already normalized
+	// at the parse capture, so the fold here was a second normalization — and
+	// this list is what the TempTableInsert arm of expressionOutputColumns
+	// publishes as the CTE's output schema, keying the temp table the
+	// self-reference scans.
+	//
+	// It is live through the NO-ALIAS path only: with an explicit column-alias
+	// list, `outCols` below takes the aliases and seedOut never reaches the
+	// key. The alias-free arm in quoted_identifier_labels.yaml is what drives
+	// it, mutation-verified — restoring the fold reddens that arm and leaves
+	// the alias arms green.
+	//
+	// AN EARLIER VERSION OF THIS COMMENT CITED A DIFFERENT REASON AND IT WAS
+	// FABRICATED: that the projection-less fallback below assigns
+	// `seedOut[i] = f.Name` unfolded, so the two branches spelled one column
+	// two ways. They cannot. That fallback requires a column-alias list to
+	// exist, and where one exists the override wins, so the store is dead —
+	// measured, folding it moves zero lines of a 17,789-line plan dump while
+	// the branch itself fires. A tell that cannot fire is not a tell.
 	seedSrc := extractOuterProjectionColumns(seedBranches[0])
 	seedOut := make([]string, len(seedSrc))
 	copy(seedOut, extractOutputProjectionNames(seedBranches[0]))

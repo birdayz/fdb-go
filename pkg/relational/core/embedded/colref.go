@@ -67,10 +67,21 @@ func parseColRef(s string) colRef {
 	// The literal handling existed for the opposite shape — a MATCHED paren
 	// inside a string literal, `I.COUNT(CASE WHEN S=')' THEN X.Y END)`, where
 	// the literal's `)` closes the real `(` early and the inner dot lands at
-	// depth 0. Any such shape needs a string literal to appear in a derived
-	// NAME, and a live differential over 2,682,910 production calls found no
-	// literal-bearing name at all. So the trade is a measured regression
-	// against an unmeasured one, and it goes the only way it can.
+	// depth 0.
+	//
+	// LITERAL-BEARING NAMES DO OCCUR, and an earlier version of this comment
+	// said they do not. Re-measured against THIS algorithm over the planning
+	// corpus: 28,625 calls, 50 quote-bearing, 43 distinct, 35 of them
+	// production rather than test input — `CAST('0.0' AS BIGINT)`,
+	// `COALESCE(NAME,'unknown')`, `SUM(CASEWHENSTATUS='open'…)`. What IS true,
+	// and is the number the deletion rests on, is that old and new disagree on
+	// exactly 4 inputs and all four are this package's own test rows: ZERO
+	// production decisions change.
+	//
+	// Note the sharpest of those names: `CAST('0.0' AS BIGINT)` is the second
+	// limit's shape — a literal containing a dot — and it resolves only because
+	// CAST's parens enclose it. The limit is not remote; it is one missing pair
+	// of parentheses away.
 	//
 	// WHAT IT COSTS IS TWO SHAPES, NOT ONE, and both are pinned as stated
 	// limits. An earlier version of this comment said "only a literal
