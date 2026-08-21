@@ -1347,15 +1347,29 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 }
 
 // RecordTypes returns all record types
-// NOTE: this returns the LIVE map, not a copy. Nothing in this package mutates
-// it after Build -- both writes are on the BUILDER (b.recordTypes) -- and that
-// is load-bearing rather than merely tidy: Build DERIVES ambiguousNames from
-// this map and stores the result, so a caller that mutates the map afterwards
-// leaves that field describing a declared set that no longer exists.
 //
-// The failure is silent either way, but it is at least deterministic: the field
-// always means "what Build saw", never "whatever the set was the first time
-// somebody happened to ask".
+// NOTE: this returns the LIVE map, not a copy, and the map IS mutated after
+// Build -- the earlier claim that nothing does was simply false. Scoped: of the
+// 9 writes matching `.recordTypes[...] =` in pkg/recordlayer/*.go, 2 are on the
+// BUILDER (b.recordTypes, in this file) and 1 is an unrelated struct's field in
+// online_indexer.go; the other 6 are post-Build, all in tests --
+// record_type_key_identity_test.go:254 and metadata_evolution_validator_test.go
+// at 849, 863, 880, 895 and 912.
+//
+// That matters now because Build DERIVES ambiguousNames from this map, so a
+// post-Build mutation leaves the derived field describing a declared set that
+// no longer exists. Latent today and measured so: neither of those two test
+// files calls AmbiguousDeclaredNames, so nothing reads the stale value. A test
+// that starts doing both re-arms it.
+//
+// Copying the map here would NOT close this. All six mutators write the private
+// field directly rather than through this accessor, so a copy prevents none of
+// them while adding an O(types) allocation to every caller -- including
+// computeAmbiguousDeclaredNames itself.
+//
+// The staleness is silent either way, but it is at least deterministic: the
+// field always means "what Build saw", never "whatever the set was the first
+// time somebody happened to ask", which is what the sync.Once it replaced meant.
 func (m *RecordMetaData) RecordTypes() map[string]*RecordType {
 	return m.recordTypes
 }

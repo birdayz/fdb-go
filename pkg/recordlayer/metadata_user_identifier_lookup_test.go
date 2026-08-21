@@ -198,20 +198,30 @@ func TestGetRecordTypeMisResolvesAnAmbiguousPair(t *testing.T) {
 // immutable state. That is the property pinned here: many goroutines asking at
 // once must all get the same answer, with no synchronisation between them.
 //
-// The assertion alone is weak -- an unsynchronised lazy memo would usually pass
-// it too. The race detector removes the luck, and verified: reintroducing that
-// memo makes this test report DATA RACE and fail under -race.
+// WHAT IT DOES NOT CATCH, first, because the obvious reading of it is wrong.
 //
-// WHERE that happens, because it is not where you would guess. The PR race lane
-// (ci.yml's "Race detector") covers //pkg/relational/..., three //pkg/fdbgo/...
-// trees and //pkg/recordlayer/query/plan/cascades/... -- NOT this package. The
-// gate that runs it under -race is nightly-coverage.yml's race step, which
-// names //pkg/recordlayer:recordlayer_test explicitly. So a regression here is
-// caught by the nightly, one day late, not by the PR.
+// Reverting to the sync.Once memo this commit removed: PASS, no race reported.
+// Measured, and correct -- sync.Once is sound too. This test cannot tell you
+// eager derivation beats the Once; it pins only that the field is safe to read
+// without either. And "a read path that mutates shared state" is NOT caught
+// without -race: an unsynchronised lazy memo is exactly that shape, and it
+// passes, one === RUN, one --- PASS.
 //
-// Without -race the test still fails deterministically for the two failure
-// modes that do not need a data race: a Build that skipped the derivation, and
-// a read path that mutates shared state instead of reading it.
+// What it does catch. Under -race, an unsynchronised lazy memo reports DATA
+// RACE and fails -- measured, not predicted. Without -race, a Build that
+// skipped the derivation fails deterministically, through the vacuity guard
+// below rather than through the agreement check.
+//
+// WHERE -race runs, because the obvious guess is wrong there too: ci.yml's
+// "Race detector" lane covers //pkg/relational/..., three //pkg/fdbgo/... trees
+// and //pkg/recordlayer/query/plan/cascades/... -- NOT this package.
+// nightly-coverage.yml's race step names //pkg/recordlayer:recordlayer_test
+// explicitly. A regression here is caught by the nightly, one day late, not by
+// the PR.
+//
+// Reproduce with --@rules_go//go/config:race. NOT --features=race: that is not
+// this repo's flag, and it builds without instrumentation and passes, which is
+// indistinguishable from a genuine green.
 func TestAmbiguousDeclaredNamesReadsWithoutSynchronisation(t *testing.T) {
 	t.Parallel()
 

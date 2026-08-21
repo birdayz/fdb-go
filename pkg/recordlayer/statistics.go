@@ -1012,23 +1012,27 @@ type SyntheticRecordTypesNotModeledError struct {
 // Error renders the refusal for a human, naming the declarations EXACTLY as the
 // metadata stores them.
 //
-// Unlike a record-type name, a synthetic type's name is not drawn from the
-// domain the escaper's output lives in. A record type IS a protobuf message, so
-// its stored name is a legal protobuf identifier -- the same domain
-// protoname.ToProtoBufCompliantName maps into. That is what makes the
-// round-trip test in DecodeOnceIfReversible informative there: a name that
-// re-encodes to itself is indistinguishable from escaper output, and decoding
-// is the best available reading. It is NOT proof of provenance -- SetRecords
-// copies descriptor names verbatim -- which is exactly why that guard exists
-// instead of an unconditional decode.
+// The reason is the PRIOR on what produced the string -- not the domain, and
+// not proof of provenance. Both kinds of name end up as protobuf message names
+// (Java's SyntheticRecordTypeBuilder.buildDescriptor sets the synthetic one via
+// DescriptorProto.setName, so it is validated exactly like a record type's), so
+// the domain does not separate them; and DecodeOnceIfReversible is a pure
+// function of the string, so its round-trip test would run identically on
+// either. What differs is what could have written the name:
 //
-// A joined or unnested type is named by an arbitrary string handed to Java's
-// RecordMetaDataBuilder.addJoinedRecordType / addUnnestedRecordType, which
-// stores it with no such constraint -- and this port never CREATES one, it only
-// round-trips what Java wrote. The round-trip test therefore carries no
-// information about it: a stored MY__1JOINED is genuinely ambiguous between the
-// escaping of MY$JOINED and a literal MY__1JOINED, and decoding it would invent
-// a declaration the operator cannot find.
+//   - A record type declared through SQL DDL passes through
+//     protoname.ToProtoBufCompliantName. Among stored names that round-trip,
+//     escaped ones are therefore the case worth serving, and decoding is the
+//     best available reading. It is NOT proof -- SetRecords copies descriptor
+//     names verbatim -- which is exactly why that guard exists instead of an
+//     unconditional decode.
+//
+//   - Nothing escapes into a synthetic name. Java's
+//     RecordMetaDataBuilder.addJoinedRecordType / addUnnestedRecordType store
+//     the string their caller passed, and this port never CREATES one; it only
+//     round-trips what Java wrote. So a synthetic MY__1JOINED that round-trips
+//     is not evidence of escaping, and decoding it would invent MY$JOINED -- a
+//     declaration the operator cannot find.
 //
 // That matters most precisely here: this refusal exists because the port does
 // not model these types, so the only thing an operator can do with the name is

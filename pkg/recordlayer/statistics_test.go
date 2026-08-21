@@ -2089,19 +2089,20 @@ func (fixedInt64) Cancel()               {}
 // with the test one package over that run was GREEN with the bug fully present.
 // A test that cannot fail where the code lives is a green about the wrong tree.
 //
-// A record type IS a protobuf message, so its stored name is a legal protobuf
-// identifier -- the domain ToProtoBufCompliantName maps into -- which is what
-// makes DecodeOnceIfReversible's round-trip test informative there. It is not
-// proof of provenance; SetRecords copies descriptor names verbatim, which is
-// why the guard exists at all. A joined or unnested type is named by an
-// arbitrary string passed to Java's addJoinedRecordType/addUnnestedRecordType
-// under no such constraint, and this port never CREATES one --
-// metadata_proto.go only proto.Clones what Java wrote. So the round-trip test
-// carries no information here: MY__1JOINED is genuinely ambiguous between the
-// escaping of MY$JOINED and a literal MY__1JOINED, and decoding it would name a
-// declaration that does not exist in the operator's metadata -- the one
-// artifact they can search, and the only thing they can do with this refusal,
-// since the port does not model the type at all.
+// The reason is the PRIOR on what produced the name, not its domain. Both kinds
+// end up as protobuf message names -- Java's
+// SyntheticRecordTypeBuilder.buildDescriptor sets the synthetic one through
+// DescriptorProto.setName, so it is validated like any other -- and
+// DecodeOnceIfReversible is a pure function of the string, so the round-trip
+// test itself does not separate them either. What separates them is that a
+// record type declared through SQL DDL passes through ToProtoBufCompliantName,
+// while NOTHING escapes into a synthetic name: Java's
+// addJoinedRecordType/addUnnestedRecordType store the caller's string and this
+// port never CREATES one -- metadata_proto.go only proto.Clones what Java
+// wrote. So a synthetic MY__1JOINED that round-trips is not evidence of
+// escaping, and decoding it would name a declaration that does not exist in the
+// operator's metadata -- the one artifact they can search, and the only thing
+// they can do with this refusal, since the port does not model the type at all.
 //
 // An earlier round here made both surfaces decode, to settle a real
 // inconsistency (`frl stats show` decoded, `frl stats collect` did not). The

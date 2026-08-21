@@ -631,6 +631,18 @@ func TestMaskingNeverBlanksRealCode(t *testing.T) {
 // span arithmetic -- an oracle that reused the code under test would agree with
 // it by construction.
 func codeBytesSurvivingMask(src, masked string) (checked int, blanked []string) {
+	// A mismatched mask is a CALLER bug, and it has to be loud. The bound that
+	// used to sit on the inner loop (off+i < len(masked)) made it silent: with
+	// masked shorter than src every token stops at the bound, the function
+	// returns (0, nil), and both the finding count AND the byte count read as
+	// "clean". Unreachable from the caller below, which checks lengths first --
+	// but this function is also called directly from a test, and fail-open is
+	// the wrong default for the one line in here that can be reached wrongly.
+	if len(masked) != len(src) {
+		return 0, []string{fmt.Sprintf(
+			"masked is %d bytes for a %d-byte source; the two do not correspond, so "+
+				"nothing below would be a real comparison", len(masked), len(src))}
+	}
 	var sc scanner.Scanner
 	fset := token.NewFileSet()
 	f := fset.AddFile("", fset.Base(), len(src))
@@ -652,7 +664,7 @@ func codeBytesSurvivingMask(src, masked string) (checked int, blanked []string) 
 		if text == "" {
 			text = tok.String()
 		}
-		for i := 0; i < len(text) && off+i < len(src) && off+i < len(masked); i++ {
+		for i := 0; i < len(text) && off+i < len(src); i++ {
 			checked++
 			if src[off+i] != masked[off+i] {
 				blanked = append(blanked, fmt.Sprintf(
@@ -790,5 +802,30 @@ func TestCodeByteOracleArmsFire(t *testing.T) {
 	}
 	if c := codeByteFloorComplaints(live, 100); len(c) != 0 {
 		t.Errorf("the live sources do not clear the floor the gate sets: %v", c)
+	}
+
+	// The MISMATCH arm. A mask that does not correspond to its source used to
+	// return (0, nil) -- clean, from a comparison that never happened.
+	for _, tc := range []struct {
+		name          string
+		src, masked   string
+		wantChecked   int
+		wantComplaint bool
+	}{
+		{"masked shorter", "package p\nvar x = 1\n", "package p\n", 0, true},
+		{"masked longer", "package p\n", "package p\nvar x = 1\n", 0, true},
+		{"masked empty, source not", "package p\n", "", 0, true},
+		// Both empty DO correspond -- a zero-length mask over a zero-length
+		// source is not a mismatch, and must fall through to the zero arm.
+		{"both empty", "", "", 0, false},
+	} {
+		n, bad := codeBytesSurvivingMask(tc.src, tc.masked)
+		if n != tc.wantChecked {
+			t.Errorf("%s: checked %d, want %d", tc.name, n, tc.wantChecked)
+		}
+		if got := len(bad) > 0; got != tc.wantComplaint {
+			t.Errorf("%s: complaint=%v, want %v (%v); a mismatched mask that reports "+
+				"clean is a comparison that never ran", tc.name, got, tc.wantComplaint, bad)
+		}
 	}
 }
