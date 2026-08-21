@@ -562,16 +562,22 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// quoted, the lookup would miss, the join would decline, and
 				// the positional predicate would ask q3 for a column it does
 				// not have.
-				// PINNED: the scope's case-insensitive second pass reaches q3's
-				// unquoted `K` from a lookup for `"k"`, so q3 becomes a second
-				// owner. Java keeps them distinct and finds one. Same cause as
-				// the arm above — the read-side extension of RFC-237 §3.4, not
-				// a fold in any name.
+				// REPAIRED, and it is asserted as plain AGREEMENT now rather
+				// than as a pinned divergence — a strictly stronger check,
+				// since a pin only fails when the named substring moves.
+				//
+				// Go reported `Ambiguous reference K` here. The cause was the
+				// ownership search relaxing PER SOURCE: q1 declares `"k"` and
+				// q3 declares unquoted `K`, so a case-insensitive lookup found
+				// both and `usingOwnerOf` — which counts owners ACROSS sources
+				// — called it ambiguous. Exactly the shape RFC-237 §3.2 says
+				// must not exist, in a second adjudicator that had not been
+				// converted. It now runs every source STRICT and re-runs
+				// relaxed only when strict found no owner, so q1's exact `"k"`
+				// wins outright.
 				name: "chained quoted USING resolving to the far-left source",
 				sql: `SELECT q1."id" FROM q1 JOIN q3 USING ("id") ` +
 					`JOIN q2 USING ("k") ORDER BY q1."id"`,
-				javaSays: "[[1]]",
-				goSays:   "42702",
 			},
 			{
 				// THE SAME CHAIN WITH AN INTERVENING SOURCE THAT HAS NO `k` AT
@@ -590,6 +596,22 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 					`JOIN q2 USING ("k") ORDER BY q1."id"`,
 			},
 			{
+				// THE DIVERGENCE GOT WIDER HERE, and that is recorded rather
+				// than smoothed over. Before RFC-237 both engines REFUSED this
+				// — Java `Unknown reference K`, Go 42702 — so no wrong rows
+				// shipped either way. Go now ANSWERS: q1 and q2 both declare
+				// `"k"`, an earlier USING hides q2's right copy, and the
+				// scope's case-insensitive pass reaches the surviving `"k"`
+				// from the reference `"K"`.
+				//
+				// It is the same read-side extension the QuotedIdentifierCase
+				// probe measures (RFC-237 §3.4), reached through USING. Closing
+				// it is NOT plumbing CASE_SENSITIVE_IDENTIFIERS — Java keeps a
+				// quoted name verbatim in both modes, so no setting makes `"K"`
+				// reach `"k"`. It is preserving the QUOTING BIT through
+				// StripIdentifierQuotes/FromNormalized, which discards it
+				// today; §3.3 records the probe showing a WasQuoted() gate is
+				// inert for exactly that reason.
 				name: "a quoted USING must not hide the unquoted column",
 				sql: `SELECT q1."id" FROM q1 JOIN q2 USING ("k") ` +
 					`JOIN q3 USING ("K") ORDER BY q1."id"`,

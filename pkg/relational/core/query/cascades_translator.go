@@ -5145,9 +5145,13 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			// translator. The EXISTS fold has no separate slot metadata.
 			return nil
 		}
-		name := strings.ToUpper(col)
+		// Verbatim, like every other output-name authority: `SELECT "id" AS
+		// "x", EXISTS(…) AS "e"` reported X and E here while the plain
+		// projection beside it reported x and e, because this arm mints the
+		// FlatMap's result type on its own.
+		name := col
 		if i < len(p.Aliases) && p.Aliases[i] != "" {
-			name = strings.ToUpper(p.Aliases[i])
+			name = p.Aliases[i]
 		} else if _, isField := values.AsFieldValue(v); !isField {
 			// An UNALIASED COMPUTED (non-field) expression — `id + 1`, `COUNT(*)`,
 			// CASE, etc. The normal projection path names it with the GENERATED
@@ -5339,7 +5343,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			// Reuse the original SELECT-list alias (""==unaliased) so the cleanup's
 			// label derivation matches the non-hidden-sort path exactly.
 			if i < len(p.Aliases) {
-				projAliases[i] = strings.ToUpper(p.Aliases[i])
+				projAliases[i] = p.Aliases[i]
 			}
 			// The alias is reused, so its PROVENANCE is reused with it —
 			// truncated to the same outputCount. Copying the name without the

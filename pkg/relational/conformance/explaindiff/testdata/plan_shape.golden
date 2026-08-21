@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=357 queries=2580 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
+# files=357 queries=2585 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14108,6 +14108,12 @@ sql:   SELECT "id", "cat" FROM qidx WHERE "cat" > 10 ORDER BY "cat"
 plan:  Project([_current.id#0, _current.cat#1], IndexScan(QIDX_CAT, [<>] COVERING))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryCoveringIndexPlan
+=== quoted_identifier_index_bridge.yaml#3
+sql:   SELECT "id" FROM qnest WHERE CARDINALITY("struct"."int_arr") = 1
+plan:  Project([_current.id#0], PredicatesFilter(Scan(QNEST), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === quoted_identifier_labels.yaml#0
 sql:   SELECT "KeepCase" FROM QCASE WHERE id = 1
 plan:  Project([_current.KeepCase#1], Scan(QCASE, [=]))
@@ -14135,6 +14141,32 @@ shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFlatMapPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryExplodePlan
+=== quoted_identifier_labels.yaml#5
+sql:   SELECT * FROM (SELECT "id" FROM q1 WHERE "id" = 1) x
+plan:  Project([_current.id#0], PredicatesFilter(Scan(Q1), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#6
+sql:   WITH c AS (SELECT "id" FROM q1) SELECT * FROM c
+plan:  Project([_current.id#0], Scan(Q1))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#7
+sql:   WITH c AS (SELECT "id" FROM q1) SELECT c."id" FROM c WHERE c."id" > 1
+plan:  Project([_current.id#0], PredicatesFilter(Project([_current.id#0], Scan(Q1)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#8
+sql:   SELECT "id" AS "x", EXISTS (SELECT 1 FROM qcase WHERE qcase.id = q1."id") AS "e" FROM q1 WHERE "id" = 1
+plan:  FlatMap(outer=PredicatesFilter(Scan(Q1), [1 preds]), inner=FirstOrDefault(Scan(QCASE, [=])))
+shape: RecordQueryFlatMapPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+shape:   RecordQueryFirstOrDefaultPlan
+shape:     RecordQueryScanPlan
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))

@@ -2078,3 +2078,60 @@ sliding-window port that surfaced it.
 (A comment at `vector_index_maintainer.go` previously called the non-KeyWithValue
 root "a documented divergence" while nothing documented it. This entry is that
 documentation.)
+
+---
+
+## Identifier resolution: Go over-resolves case, Java compares exactly
+
+**Java's rule.** Identifiers are normalized ONCE, at the parse boundary
+(`SemanticAnalyzer.normalizeString`: quoted keeps its case, unquoted folds
+UPPER), and every comparison after that is exact — `Identifier.equals` is
+`String.equals` on the normalized name. There is NO configuration under which
+Java resolves `foo` against a column called `Foo`; `CASE_SENSITIVE_IDENTIFIERS`
+only selects which branch of `normalizeString` runs and makes Java *more*
+case-sensitive, never less.
+
+**Go's rule.** Presentation matches Java exactly (RFC-237). Lookup adds a
+SECOND PASS at each scope level: exact first, then an unambiguous
+case-insensitive match, then the parent. It counts candidates, so a folded
+reference matching two case-variants is 42702.
+
+**Measured against a live fdb-relational 4.12.11.0**, over
+`CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, …)`:
+
+| query | Java | Go |
+|---|---|---|
+| `SELECT "KeepCase"` | `[KeepCase][[42]]` | same |
+| `SELECT *` | `[ID KeepCase PLAIN]` | same |
+| `SELECT KeepCase` | 42703 | `[KeepCase][[42]]` |
+| `SELECT "KEEPCASE"` | 42703 | `[KeepCase][[42]]` |
+| `SELECT "keepcase"` | 42703 | `[KeepCase][[42]]` |
+| `SELECT "plain"` (unquoted DDL) | 42703 | `[PLAIN][[7]]` |
+
+and, reached through USING:
+
+```sql
+SELECT q1."id" FROM q1 JOIN q2 USING ("k") JOIN q3 USING ("K")
+java: Unknown reference K      go: [[1]]
+```
+
+Pinned as `goOnly` arms in `conformance/quoted_identifier_case_java_probe_test.go`
+and in `conformance/join_using_chain_java_probe_test.go`, so either engine
+moving reddens a test.
+
+**Why Go keeps it.** The populations differ, not the correctness. Java's SQL
+surface is always DDL-fed, so a descriptor whose field names are not already the
+normalized SQL spelling is a corner case. Here `rlcatalog.Wrap(md)` over a
+user's own hand-written `.proto` is a first-class entry point, and those
+descriptors carry lower/snake names — so `SELECT order_id` over a field
+literally called `order_id` has to keep working. Read-side only; never reaches
+the wire.
+
+**What closing it would actually take** — and this is the part that was
+recorded WRONG in two places before: not plumbing `CASE_SENSITIVE_IDENTIFIERS`
+(it would not help, see above) but **preserving the QUOTING BIT through
+`functions.StripIdentifierQuotes` and `semantic.FromNormalized`**, which
+discard it today. `FromNormalized` hard-codes `wasQuoted: false` and is used
+~59 times on the reference path, so the engine cannot currently tell `"K"` from
+`K` at resolution time at all. Probed: gating the relaxed pass on
+`!want.WasQuoted()` is INERT for exactly that reason.

@@ -196,18 +196,28 @@ func (s *Scope) AddSource(src ScopeSource) error {
 // A resolution pass. Every level is resolved twice: STRICT first, and RELAXED
 // only if strict found nothing at that same level.
 //
-// Java has both shapes and they are not interchangeable.
-// `SemanticAnalyzer.resolveIdentifierMaybe` (SemanticAnalyzer.java:427-438)
-// runs `lookup(id, operators, true)` over ALL operators of a fragment and, only
-// when that yields nothing, `lookup(id, operators, false)` over the SAME
-// operators, before walking to the parent. The whole-chain-first shape
-// (resolveIdentifier, :376-377) is reserved for relaxing WHAT a name denotes —
-// column, then whole row as a struct. A case fold relaxes HOW a name matches,
-// so it takes the per-level shape.
+// THE SHAPE IS JAVA'S; THE DIMENSION IT RELAXES IS NOT, and the two must not
+// be conflated. `SemanticAnalyzer.resolveIdentifierMaybe`
+// (SemanticAnalyzer.java:427-438) runs `lookup(id, operators, true)` over ALL
+// operators of a fragment and, only when that yields nothing, the same lookup
+// with `false` over the SAME operators, before walking to the parent. That
+// two-pass, whole-level, strict-then-relaxed structure is exactly what is
+// implemented here.
 //
-// The consequence is the wanted one: an inner scope's relaxed match beats an
-// outer scope's exact match, which is ordinary SQL shadowing. Letting an outer
-// exact match win would silently turn a local reference into a correlated one.
+// But Java's flag is `matchQualifiedOnly` (SemanticAnalyzer.java:444-446): it
+// relaxes whether the reference must be QUALIFIED, and both of its passes
+// compare through `Identifier.equals`, which is `String.equals` on the
+// normalized name (Identifier.java:155-157). JAVA NEVER RELAXES CASE, under
+// any option — `CASE_SENSITIVE_IDENTIFIERS` selects which branch of
+// normalizeString runs at the PARSE boundary and leaves the comparison exact
+// either way. So the relaxed pass below has no Java analogue and is not a
+// port; it is a Go-only read-side extension, argued on its own terms at
+// relaxedPass.
+//
+// The per-level placement is chosen for a reason that stands independently of
+// the citation: an inner scope's relaxed match beats an outer scope's exact
+// match, which is ordinary SQL shadowing. Letting an outer exact match win
+// would silently turn a local reference into a correlated one.
 type resolutionPass int
 
 const (
@@ -223,22 +233,37 @@ const (
 	//     catalog's own already-folded table index, never in a descriptor, so
 	//     there is nothing for a fold to repair.
 	//   - the quoting FLAG, beyond what EqualsIgnoreQuoting already ignores.
-	//   - `__DOT__` / `__DOLLAR__` / `__UNDERSCORE__` escaping. That is
+	//   - `__2` / `__1` / `__0` escaping (dot, dollar, double-underscore —
+	//     ProtoUtils.java:39-41, mirrored in protoname.go). That is
 	//     un-escaped once, at the catalog boundary, by ToUserIdentifier.
 	//   - Unicode case folding beyond strings.EqualFold's simple folding.
 	//
 	// COVERED: column names, and struct-field names below them.
 	//
-	// This is a read-side extension over Java, and it exists for a specific
-	// structural reason. Java ships `CASE_SENSITIVE_IDENTIFIERS`
-	// (Options.java:211, default false at :298, threaded to the analyzer via
-	// PlanContext.java:263) and its SQL surface is always DDL-fed, so a
+	// THIS HAS NO JAVA ANALOGUE. It is a Go-only read-side extension, not a
+	// port, and saying so precisely matters because the surrounding structure
+	// IS a port and the two are easy to conflate.
+	//
+	// Java compares identifiers exactly, always: `Identifier.equals` is
+	// `String.equals` on the normalized name (Identifier.java:155-157), and
+	// `CASE_SENSITIVE_IDENTIFIERS` (Options.java:211) only chooses which
+	// branch of normalizeString runs at the PARSE boundary — setting it makes
+	// Java MORE case-sensitive, never less. There is no configuration in which
+	// Java resolves `foo` against a column called `Foo`; its own
+	// case-sensitivity.yamsql shows the mismatch answering UNDEFINED.
+	//
+	// It exists because the two engines have different POPULATIONS, not
+	// because Java's rule is wrong. Java's SQL surface is always DDL-fed, so a
 	// descriptor whose field names are not already the normalized SQL spelling
 	// is a corner case there. Here, wrapping a user's own hand-written .proto
-	// as a SQL catalog is a first-class entry point and the case-sensitivity
-	// option is not plumbed, so an unquoted `SELECT order_id` over a field
-	// literally named `order_id` has to keep working. The extension is
-	// read-side only and never reaches the wire.
+	// as a SQL catalog is a first-class entry point, so an unquoted
+	// `SELECT order_id` over a field literally named `order_id` has to keep
+	// working. The extension is read-side only and never reaches the wire,
+	// which is what the project's rule permits.
+	//
+	// Its cost is measured and pinned, not assumed: three `goOnly` arms of
+	// QuotedIdentifierCaseJavaProbe record Go answering where Java raises
+	// 42703.
 	relaxedPass
 )
 

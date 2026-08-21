@@ -3129,7 +3129,7 @@ type usingSource struct {
 // owner, so the caller walks past the ambiguity and reports whatever the NEXT
 // USING column turns up: the wrong fault, on the wrong column. This is the
 // same defect the right-hand check was repaired for, on the left.
-func (s usingSource) owns(colText string) int {
+func (s usingSource) owns(colText string, pass usingResolutionPass) int {
 	if s.cols == nil {
 		// Nothing describes this source — a name that did not resolve, or a
 		// derived schema that could not be derived. The caller's resolvable
@@ -3146,15 +3146,42 @@ func (s usingSource) owns(colText string) int {
 	// back, and hiding decrements that same key; deriving the key here a
 	// second way is how the two halves come to disagree.
 	//
-	// The lookup is the RELAXED one because a bare USING column is an
-	// ordinary unquoted reference, and an unquoted reference reaches a
-	// lower-case raw-proto column through the case-insensitive pass.
-	col, ok := semantic.LookupColumnRelaxed(s.cols, semantic.NewUnquoted(colText))
+	// The PASS is the caller's, and that is the whole point. Asking each
+	// source to relax on its own lets a case-insensitive match at one source
+	// compete with an EXACT match at another, and `usingOwnerOf` counts owners
+	// ACROSS sources — so a reference with exactly one right answer comes back
+	// 42702. Measured: `q1 JOIN q3 USING ("id") JOIN q2 USING ("k")` over a q1
+	// declaring `"k"` and a q3 declaring unquoted `K` answers `[[1]]` on Java
+	// and reported Ambiguous reference K here. The caller runs every source
+	// strict first and only re-runs relaxed when strict found NO owner, which
+	// is the same shape Scope.ResolveColumn uses and for the same reason.
+	col, ok := s.resolve(colText, pass)
 	if !ok {
 		return 0
 	}
 	return s.counts[col.Id.Name()]
 }
+
+// resolve is the source's column lookup under one pass — exact, or exact then
+// case-insensitive. Shared by ownership and by hiding so the two cannot derive
+// the counts key differently.
+func (s usingSource) resolve(colText string, pass usingResolutionPass) (semantic.Column, bool) {
+	id := semantic.NewUnquoted(colText)
+	if pass == usingStrictPass {
+		return s.cols.LookupColumn(id)
+	}
+	return semantic.LookupColumnRelaxed(s.cols, id)
+}
+
+// usingResolutionPass mirrors semantic's strict/relaxed split for the USING
+// resolver, which does its own cross-source adjudication and therefore needs
+// its own two passes rather than a per-source relaxation.
+type usingResolutionPass int
+
+const (
+	usingStrictPass usingResolutionPass = iota
+	usingRelaxedPass
+)
 
 // usingHideKey is the counts key a source uses for `colText`, or "" when the
 // source does not resolve the name at all. Hiding decrements THIS key, so it
@@ -3163,7 +3190,12 @@ func (s usingSource) usingHideKey(colText string) string {
 	if s.cols == nil {
 		return ""
 	}
-	col, ok := semantic.LookupColumnRelaxed(s.cols, semantic.NewUnquoted(colText))
+	// Hiding is not adjudicated across sources — it decrements ONE source's
+	// own count — so it takes the relaxed lookup directly. It must agree with
+	// whichever pass ownership resolved under, and it does: a strict match is
+	// also a relaxed match, and the key is the identifier the SOURCE returns
+	// either way.
+	col, ok := s.resolve(colText, usingRelaxedPass)
 	if !ok {
 		return ""
 	}
@@ -3192,30 +3224,41 @@ func (s usingSource) usingHideKey(colText string) string {
 // putting two row-versioned sources in scope before a USING names it — is
 // AMBIGUOUS in both. Two owners really is two owners here.
 func usingOwnerOf(colText string, sources []usingSource) (string, error) {
-	var owners []string
-	for _, s := range sources {
-		// COUNTED per source, not tested. One source exporting the name twice
-		// is ambiguous by itself, and collapsing that to a single owner walks
-		// past the ambiguity to report whatever the NEXT USING column turns up
-		// — the wrong fault on the wrong column. Java stops on the first
-		// attribute.
-		switch n := s.owns(colText); {
-		case n == 0:
-			continue
-		case n > 1:
+	// STRICT over every source, then RELAXED over every source — never a mix.
+	//
+	// This resolver adjudicates ACROSS sources, so it needs the two passes for
+	// the same reason Scope.ResolveColumn does: a per-source relaxation lets a
+	// case-insensitive match at one source compete with an exact match at
+	// another and turns a reference with one right answer into 42702. That was
+	// live and measured — see usingSource.owns.
+	for _, pass := range [...]usingResolutionPass{usingStrictPass, usingRelaxedPass} {
+		var owners []string
+		for _, s := range sources {
+			// COUNTED per source, not tested. One source exporting the name
+			// twice is ambiguous by itself, and collapsing that to a single
+			// owner walks past the ambiguity to report whatever the NEXT USING
+			// column turns up — the wrong fault on the wrong column. Java stops
+			// on the first attribute.
+			switch n := s.owns(colText, pass); {
+			case n == 0:
+				continue
+			case n > 1:
+				return "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"Ambiguous reference %s", usingColumnKey(colText).Name())
+			}
+			owners = append(owners, s.alias)
+		}
+		switch len(owners) {
+		case 1:
+			return owners[0], nil
+		case 0:
+			continue // this pass found nothing; try the next
+		default:
 			return "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
 				"Ambiguous reference %s", usingColumnKey(colText).Name())
 		}
-		owners = append(owners, s.alias)
 	}
-	switch len(owners) {
-	case 1:
-		return owners[0], nil
-	case 0:
-		return "", nil
-	default:
-		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", usingColumnKey(colText).Name())
-	}
+	return "", nil
 }
 
 // retargetUsingJoins re-qualifies each `USING (cols)` join's synthesized ON
@@ -3405,7 +3448,12 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `Ambiguous reference ID`; a first-match check passed `id` and
 				// went on to report a LATER column's absence instead, which is
 				// both the wrong fault and the wrong column.
-				switch n := rightLeg.owns(colText); {
+				//
+				// RELAXED, unconditionally, because this is a SINGLE-source
+				// existence question — does this right leg export the column —
+				// with nothing to adjudicate against. The two-pass shape above
+				// exists only where owners are counted across sources.
+				switch n := rightLeg.owns(colText, usingRelaxedPass); {
 				case n == 0:
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)

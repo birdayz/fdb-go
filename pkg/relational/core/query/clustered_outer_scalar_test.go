@@ -17,16 +17,34 @@ import (
 	"fdb.dev/pkg/relational/core/query/logical"
 )
 
-// exactDemoRef resolves a demo-schema field against its real flowed type. The
-// fallback is reserved for deliberate foreign-scope/missing-column controls.
+// exactDemoRef resolves a demo-schema field against its real flowed type.
 //
 // `col` is the column as the DESCRIPTOR spells it — lower/snake for the demo
-// .proto — because a leg's flowed type now carries the descriptor's own names
-// and the lookup is exact. Spelling a real column upper here does not fail
-// loudly; it silently takes the foreign-column fallback and hands the test a
-// synthetic NotNullLong field, which is why every genuine column below is
-// spelled the descriptor's way and only the deliberate misses are not.
+// .proto — because a leg's flowed type carries the descriptor's own names and
+// the lookup is exact.
+//
+// THE MISS IS LOUD, AND IT HAS TO BE. This used to fall through silently to a
+// synthetic NotNullLong field whenever the column did not resolve, with a
+// comment asking the reader to keep every genuine column spelled the
+// descriptor's way — a rule nothing enforced, in a helper whose whole job is to
+// produce a REAL typed reference. It failed exactly that way and generated
+// greens across this file until an unrelated change moved the descriptor
+// spelling and the fallbacks started mattering.
+//
+// A caller that WANTS the synthetic field says so by going through corrEq's
+// demoRefOrForeign, which chooses per side — so the deliberate misses are
+// visible at their own call site and a typo here is not.
 func exactDemoRef(t *testing.T, alias, col string) values.Value {
+	t.Helper()
+	v, ok := demoRef(t, alias, col)
+	if !ok {
+		t.Fatalf("exactDemoRef(%q, %q): no such column on the demo schema — spell it "+
+			"as the DESCRIPTOR does (lower/snake)", alias, col)
+	}
+	return v
+}
+
+func demoRef(t *testing.T, alias, col string) (values.Value, bool) {
 	t.Helper()
 	table := "Order"
 	switch strings.ToUpper(col) {
@@ -39,22 +57,36 @@ func exactDemoRef(t *testing.T, alias, col string) values.Value {
 	typ := tr.ordinalLegType(scan(table, alias))
 	if typ != nil {
 		if ordinal, ok := typ.FieldIndexUnique(col); ok {
-			return exactTestField(t, exactTestQOV(t, alias, typ), ordinal)
+			return exactTestField(t, exactTestQOV(t, alias, typ), ordinal), true
 		}
 	}
-	return exactTestNamedField(t, alias, col, values.NotNullLong)
+	return nil, false
 }
 
 // corrEq builds the exact correlated equality
 // `<innerAlias>.<innerCol> = <leg>.<col>`.
+// Either side may name a column the demo schema does not have — several
+// callers build a predicate over invented aliases on purpose (a foreign scope,
+// an unnest element, a box leg) and only care that the shape reaches the gate.
+// So each side takes the real reference when there is one and the synthetic
+// field otherwise, chosen HERE rather than inside exactDemoRef: a typo in a
+// genuine column still fails loudly at every other call site.
 func corrEq(t *testing.T, innerAlias, innerCol, legAlias, legCol string) *predicates.ComparisonPredicate {
 	return &predicates.ComparisonPredicate{
-		Operand: exactDemoRef(t, innerAlias, innerCol),
+		Operand: demoRefOrForeign(t, innerAlias, innerCol),
 		Comparison: predicates.Comparison{
 			Type:    predicates.ComparisonEquals,
-			Operand: exactDemoRef(t, legAlias, legCol),
+			Operand: demoRefOrForeign(t, legAlias, legCol),
 		},
 	}
+}
+
+func demoRefOrForeign(t *testing.T, alias, col string) values.Value {
+	t.Helper()
+	if v, ok := demoRef(t, alias, col); ok {
+		return v
+	}
+	return exactTestNamedField(t, alias, col, values.NotNullLong)
 }
 
 // exactScalarProjection gives a direct-tree correlated-scalar fixture the

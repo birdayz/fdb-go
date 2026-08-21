@@ -24,7 +24,12 @@ error is the shape of the whole defect: nothing is *missing*, two things are
 
 ## 1. Java
 
-Java folds identifiers in exactly one place, and it is the parser:
+Java folds a COLUMN OR TABLE identifier in exactly one place, and it is the
+parser. (Not *every* identifier: `SqlFunctionCatalogImpl.java:77,93,99` folds
+FUNCTION names to lower, unconditionally and ignoring the case-sensitivity
+option. That is a separate namespace with its own rule and is untouched here —
+worth stating because "Java folds in one place" is the kind of sentence that
+gets read as a repo-wide fact.)
 
 ```java
 // SemanticAnalyzer.normalizeString (SemanticAnalyzer.java:146-153)
@@ -42,7 +47,8 @@ serde/RecordMetadataDeserializer.java:92   ProtoUtils.toUserIdentifier(storageNa
 ```
 
 and `ProtoUtils.toUserIdentifier` (util/ProtoUtils.java:79-81) only unescapes
-`__DOT__` / `__DOLLAR__` / `__UNDERSCORE__`. It never touches case.
+`__2` / `__1` / `__0` (dot, dollar, double-underscore — ProtoUtils.java:39-41).
+It never touches case.
 
 So Java's model is one sentence: **normalize at the parse boundary, match
 exactly everywhere else.** The DDL wrote the already-normalized spelling into
@@ -111,22 +117,35 @@ nothing left for a later layer to normalize and everything for it to destroy.
 SCOPE, as a second pass run at each level before falling to the parent
 (`resolutionPass` in `semantic/scope.go`).
 
-Java has both shapes and they are not interchangeable.
-`SemanticAnalyzer.resolveIdentifierMaybe` (SemanticAnalyzer.java:427-438) runs
-`lookup(id, operators, true)` over ALL operators of a fragment and, only when
-that yields nothing, `lookup(id, operators, false)` over the SAME operators,
-before walking to the parent. The whole-chain-first shape (`resolveIdentifier`,
-:376-377) is reserved for relaxing WHAT a name denotes — column, then whole row
-as a struct. A case fold relaxes HOW a name matches, so it takes the per-level
-shape. The consequence is the wanted one: an inner scope's relaxed match beats
-an outer scope's exact match, which is ordinary SQL shadowing; the alternative
-silently converts a local reference into a correlated one.
+**THE SHAPE IS JAVA'S. THE DIMENSION IT RELAXES IS NOT.** Both halves of that
+sentence are load-bearing, and an earlier revision of this RFC ran them
+together and claimed the whole thing as a port. It is not.
 
-**The relaxed pass COUNTS, it does not decline.** Two columns differing only by
-case are two candidates for a folded reference, so the reference is AMBIGUOUS
-(42702) and says so. The old per-table fallback declined on a collision, which
-reported 42703 — that the column does not exist — about a name that exists
-twice.
+The shape: `SemanticAnalyzer.resolveIdentifierMaybe` (SemanticAnalyzer.java:427-438)
+runs `lookup(id, operators, true)` over ALL operators of a fragment and, only
+when that yields nothing, the same lookup with `false` over the SAME operators,
+before walking to the parent. Two passes, whole-level, strict first. That
+structure is what is implemented here.
+
+The dimension: Java's flag is `matchQualifiedOnly` (SemanticAnalyzer.java:444-446),
+which relaxes whether the reference must be QUALIFIED. Both of its passes
+compare through `Identifier.equals` → `String.equals` on the normalized name
+(Identifier.java:155-157). **Java never relaxes case, under any option.** So
+the relaxed pass here has no Java analogue; see §3.4, which argues it on its
+own terms rather than on a precedent.
+
+The per-level placement stands independently of the citation: an inner scope's
+relaxed match beats an outer scope's exact match, which is ordinary SQL
+shadowing; the alternative silently converts a local reference into a
+correlated one.
+
+**The relaxed pass COUNTS, it does not decline** — also a Go decision, not a
+port. Two columns differing only by case are two candidates for a folded
+reference, so the reference is AMBIGUOUS (42702) and says so. The old per-table
+fallback declined on a collision, which reported 42703 — that the column does
+not exist — about a name that exists twice. Java, having no relaxed pass, has
+no analogous case: its own `case-sensitivity.yamsql` resolves a folded
+reference against the single exact match and never reports ambiguity.
 
 The fold did NOT stay on the table for a reason that matters: `Scope` collects
 candidates from every source and then adjudicates. A table that relaxed on its
@@ -143,8 +162,23 @@ Written first, from shapes actually run:
 - **qualifiers and source aliases.** They originate in SQL text or in the
   catalog's own already-folded table index, never in a descriptor, so there is
   nothing for a fold to repair. They stay folded.
-- **the quoting FLAG**, beyond what `EqualsIgnoreQuoting` already ignores.
-- **`__DOT__` / `__DOLLAR__` / `__UNDERSCORE__` escaping.** Unescaped once, at
+- **the quoting FLAG — and this is far stronger than "not covered".** The flag
+  does not EXIST downstream of the parse capture: `FromNormalized` hard-codes
+  `wasQuoted: false` and its own doc says the flag "is not recoverable from the
+  captured string", and it is used on the reference path in ~59 places. So the
+  engine structurally cannot tell `"K"` from `K` at resolution time, and the
+  relaxed pass therefore applies to a QUOTED reference exactly as it does to an
+  unquoted one. This was probed rather than reasoned: gating
+  `resolutionPass.matches` on `!want.WasQuoted()` is INERT — all four of
+  `SELECT "KEEPCASE"` / `"keepcase"` / `KeepCase` / `"Id"` still answer, and
+  the corpus stays green — because there is no flag left to gate on.
+
+  It matters because it names the wrong remediation everywhere else: making Go
+  conformant here is **preserving the quoting bit through
+  `StripIdentifierQuotes`/`FromNormalized`**, not plumbing
+  `CASE_SENSITIVE_IDENTIFIERS` (which, per §3.4, would not help — Java keeps a
+  quoted name verbatim in both modes).
+- **`__2` / `__1` / `__0` escaping** (dot, dollar, double-underscore). Unescaped once, at
   the catalog boundary, by `ToUserIdentifier`.
 - **Unicode case folding** beyond `strings.EqualFold`'s simple folding.
 - **`values.AccessorNamePath`** (`accessor_name_path.go:67,84,302`), which folds
@@ -174,7 +208,23 @@ Written first, from shapes actually run:
   mutation discipline forbids. `exactRowShapesAgree` compares field names
   exactly, so it IS decidable — by an FDB/executor test, which is the work.
 
-COVERED: column names, and struct-field names below them.
+- **CTE COLUMN LISTS.** `WITH c("x") AS (…)` still publishes `X` on one of the
+  five authorities that apply the list — four are reconciled here, the fifth is
+  unidentified and needs instrumentation. Pre-existing (three mutations prove
+  it), reproducer and the ruled-out routes booked in `TODO.md` under "A CTE
+  COLUMN LIST still folds a quoted alias", cross-referenced from the comment at
+  `exactCTEDefinitionRecordType`. The corpus is blind to it for exactly the
+  reason §2.1 describes: it drives CTE column lists and it drives quoted
+  identifiers, and never both at once.
+- **the POSITIONAL EXECUTOR ROW LAYOUT**, which still folds hard enough that
+  DDL has to guard against it: `ddl.go` refuses case-colliding quoted columns
+  with *"the positional row layout folds identifiers, so case-colliding quoted
+  columns are not supported."* That guard predates this change and survives it.
+
+COVERED: column names and struct-field names below them, **as minted from a
+descriptor or from a projection's own output naming.** Not every name in the
+engine — the four bullets above are names too, and the covered set is the one
+that reaches the two authorities §0's error is about.
 
 ### 3.4 Why the extension exists at all
 
@@ -211,11 +261,31 @@ is wrong.**
 
 ## 5. Blast radius
 
-Over the 2570-query yamsql plan-shape corpus, **not one existing plan changed
-shape.** The golden's only structural difference is the new reproducer's own
-entry. 35 lines of the golden differ, all of them names: computed grouping keys
-(`CASE(WHEN(predicate, TRUE), ['low','high'])` instead of the folded rendering)
-and the quoted-identifier scenario's `_current.id` / `_current.k`.
+Over the yamsql plan-shape corpus, **not one existing plan changed shape.**
+Both numbers below are the commands' output, not a recollection — an earlier
+revision of this section quoted "2570 queries" and "35 lines differ" and
+neither was reproducible from either artifact:
+
+```
+$ git diff f50e87947 HEAD -- …/plan_shape.golden | grep -c '^-shape:'
+0                     # zero shape lines removed: the structural claim
+
+$ git diff f50e87947 HEAD -- …/plan_shape.golden | grep -c '^-plan:'
+10                    # ten existing plan lines changed, all names
+
+$ head -2 …/plan_shape.golden                    # before → after
+# files=354 queries=2566 …
+# files=357 queries=2585 …
+```
+
+The 19 added queries are this change's own three new scenarios. The 10 changed
+`plan:` lines are computed grouping keys (`CASE(WHEN(predicate, TRUE),
+['low','high'])` instead of the folded rendering) and the quoted-identifier
+scenario's `_current.id` / `_current.k`.
+
+The `-shape:` count is the load-bearing half and the one to re-run: it is zero,
+and a fold anywhere in a naming authority cannot move it, so it is a clean
+statement that the planner's DECISIONS did not change.
 
 ## 6. Guards whose direction inverted
 

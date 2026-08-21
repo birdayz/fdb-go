@@ -177,8 +177,8 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if err != nil {
 		return nil
 	}
-	collection, err := resolveSeedCollection(ownerQOV, ownerWindow.leafOffset+arrIdx, u.Segments[2:])
-	if err != nil {
+	collection := resolveSeedCollection(ownerQOV, ownerWindow.leafOffset+arrIdx, u.Segments[2:])
+	if collection == nil {
 		return nil
 	}
 	wantArray := values.NewArrayType(collection.Type().IsNullable(), elementType)

@@ -7218,7 +7218,13 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				aliases := aliasList.AllFullId()
 				names := make([]string, len(aliases))
 				for j, fid := range aliases {
-					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+					// StripIdentifierQuotes ALREADY applied SQL identifier
+					// semantics — an unquoted alias came back folded UPPER and a
+					// quoted one verbatim — so a second fold here can only
+					// destroy `WITH c("x")`. This is the CAPTURE, which is why
+					// it is fixed here rather than at the three sites that
+					// APPLY the list: they can only publish what this stored.
+					names[j] = functions.StripIdentifierQuotes(functions.FullIdToName(fid))
 				}
 				cte.ColumnAliases = names
 			}
@@ -7395,7 +7401,13 @@ func buildLogicalPlanForQueryWithCatalog(
 				aliases := aliasList.AllFullId()
 				names := make([]string, len(aliases))
 				for j, fid := range aliases {
-					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+					// StripIdentifierQuotes ALREADY applied SQL identifier
+					// semantics — an unquoted alias came back folded UPPER and a
+					// quoted one verbatim — so a second fold here can only
+					// destroy `WITH c("x")`. This is the CAPTURE, which is why
+					// it is fixed here rather than at the three sites that
+					// APPLY the list: they can only publish what this stored.
+					names[j] = functions.StripIdentifierQuotes(functions.FullIdToName(fid))
 				}
 				cte.ColumnAliases = names
 			}
@@ -8140,7 +8152,28 @@ func exactCTEDefinitionRecordType(
 			return nil, false
 		}
 		for i, alias := range cte.ColumnAliases {
-			fields[i].Name = strings.ToUpper(alias)
+			// VERBATIM — the THIRD site applying this same alias list, beside
+			// cteBoundRowType and cascades_translator's derivedOutputColumns.
+			// A CTE column alias arrives already normalized by the parse
+			// capture, so the fold could only destroy `WITH c("x")`, and it
+			// did: the other two published `x` while this one published `X`,
+			// which the executor reported as
+			// `edge lookup C: read as RECORD(x), declared RECORD(X)` on
+			// `WITH c("x") AS (…) SELECT * FROM c WHERE c."x" > 5`.
+			//
+			// cteBoundRowType's own comment says the three agree by
+			// construction. That sentence is only true while all three spell
+			// the alias the same way.
+			//
+			// STILL BROKEN, and booked: a FIFTH authority folds this alias
+			// somewhere downstream, so `WITH c("x") AS (…) SELECT * FROM c`
+			// labels the column X and the predicate form dies with
+			// `edge lookup C: read as RECORD(x), declared RECORD(X)`. Four of
+			// the five sites are reconciled (the three parse captures, and
+			// this one); the fifth needs instrumentation rather than reading.
+			// Reproducer and the four ruled-out routes are in TODO.md under
+			// "A CTE COLUMN LIST still folds a quoted alias".
+			fields[i].Name = alias
 			fields[i].Ordinal = i
 		}
 	default:
@@ -9994,25 +10027,42 @@ func (p *existsSubqueryPlanner) tryBuildCorrelatedPrimaryUnnest(
 	var owner *semantic.ScopeSource
 	var col semantic.Column
 	aliasSeen := false
-	for i := range p.outerScopes {
-		src := &p.outerScopes[i]
-		if !src.Alias.EqualsIgnoreQuoting(ownerID) {
-			continue
-		}
-		aliasSeen = true
-		if src.Table == nil {
-			continue
-		}
-		candidateColumn, found := semantic.LookupColumnRelaxed(src.Table, fieldID)
-		if !found {
-			continue
+	// STRICT over every alias-matching source, then RELAXED over every one —
+	// never a mix. This loop COUNTS owners across sources and raises 42702 on
+	// two, so relaxing per source would let a case-insensitive match at one
+	// compete with an exact match at another and make a reference with exactly
+	// one right answer ambiguous. Same rule, same reason, as
+	// Scope.ResolveColumn and usingOwnerOf.
+	for _, relaxed := range [...]bool{false, true} {
+		for i := range p.outerScopes {
+			src := &p.outerScopes[i]
+			if !src.Alias.EqualsIgnoreQuoting(ownerID) {
+				continue
+			}
+			aliasSeen = true
+			if src.Table == nil {
+				continue
+			}
+			var candidateColumn semantic.Column
+			var found bool
+			if relaxed {
+				candidateColumn, found = semantic.LookupColumnRelaxed(src.Table, fieldID)
+			} else {
+				candidateColumn, found = src.Table.LookupColumn(fieldID)
+			}
+			if !found {
+				continue
+			}
+			if owner != nil {
+				return nil, true, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"correlated array source %q is ambiguous", strings.Join(sq.sourceSegments, "."))
+			}
+			owner = src
+			col = candidateColumn
 		}
 		if owner != nil {
-			return nil, true, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-				"correlated array source %q is ambiguous", strings.Join(sq.sourceSegments, "."))
+			break
 		}
-		owner = src
-		col = candidateColumn
 	}
 	if owner == nil {
 		if aliasSeen {

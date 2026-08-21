@@ -20,9 +20,11 @@ name: quoted_identifier_labels
 schema_template: |
   CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))
   CREATE TABLE QARR (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
+  CREATE TABLE q1 ("id" BIGINT, PRIMARY KEY ("id"))
 setup:
   - INSERT INTO QCASE VALUES (1, 42, 7)
   - INSERT INTO QARR VALUES (1, [10, 20])
+  - INSERT INTO q1 VALUES (1), (2)
 tests:
   # The explicit projection of the quoted column.
   - query: SELECT "KeepCase" FROM QCASE WHERE id = 1
@@ -62,3 +64,44 @@ tests:
     rows:
       - [10]
       - [20]
+  # A DERIVED source with a quoted lower-case column, which IS covered: the
+  # projection names the slot and the scope reads the same name.
+  - query: SELECT * FROM (SELECT "id" FROM q1 WHERE "id" = 1) x
+    columns: ["id"]
+    rows:
+      - [1]
+  # A CTE COLUMN LIST is a SEPARATE authority and is NOT covered — see the
+  # `WITH c("x")` entry in TODO.md for the reproducer, the four sites already
+  # reconciled and the fifth that still folds. It is deliberately NOT pinned
+  # here as a passing arm, because it does not pass: an arm asserting the
+  # divergent value would have to be rewritten by the fix rather than reddened
+  # by it, which is the wrong direction for a sentinel.
+  #
+  # What IS pinned here is the neighbouring shape that shares four of the five
+  # authorities and works, so a regression in those four still reddens
+  # something: a CTE with NO column list, whose columns come from its body's
+  # own quoted names.
+  - query: WITH c AS (SELECT "id" FROM q1) SELECT * FROM c
+    unordered: true
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH c AS (SELECT "id" FROM q1) SELECT c."id" FROM c WHERE c."id" > 1
+    columns: ["id"]
+    rows:
+      - [2]
+  # A quoted alias on a projection that also carries an EXISTS. The FlatMap
+  # this builds mints its result type in its OWN arm, not through the plain
+  # projection's naming authority, and that arm folded: the query reported
+  # X and E while the arms above it reported x and e.
+  #
+  # The plan assertion is not decoration — it is what says the arm is still
+  # exercising the FlatMap path. If a later change lowers EXISTS some other
+  # way, the labels could agree for a reason that has nothing to do with the
+  # authority under test.
+  - query: SELECT "id" AS "x", EXISTS (SELECT 1 FROM qcase WHERE qcase.id = q1."id") AS "e" FROM q1 WHERE "id" = 1
+    plan_contains: "FlatMap"
+    columns: ["x", "e"]
+    rows:
+      - [1, true]
