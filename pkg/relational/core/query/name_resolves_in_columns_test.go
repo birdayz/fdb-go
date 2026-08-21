@@ -51,10 +51,24 @@ func TestNameResolvesInColumns(t *testing.T) {
 			why: "the mirror of the row above — the widening is symmetric and so is the refusal",
 		},
 		{
-			name: "two case-differing columns are two slots, and neither is reached by a folded key",
+			name: "two case-differing columns are two slots, and the exact one resolves",
 			key:  "REGION", cols: []string{"Region", "REGION"}, want: true,
-			why: "the EXACT one resolves; a folding gate matched BOTH and still returned a " +
+			why: "exactly ONE exact match; a folding gate matched both and still returned a " +
 				"single bool, reporting resolution for an ambiguous row",
+		},
+		{
+			name: "duplicate EXACT columns do not resolve",
+			key:  "REGION", cols: []string{"REGION", "REGION"}, want: false,
+			why: "the guarded read counts matches and refuses >1 with FieldAmbiguousName, so a " +
+				"first-match bool admits here exactly what the read refuses below — the same " +
+				"failure the fold produced, surviving at byte-exactness. This is the arm the " +
+				"case-differing row above CANNOT drive, because that row has one exact match",
+		},
+		{
+			name: "duplicates elsewhere do not affect an unambiguous key",
+			key:  "ID", cols: []string{"REGION", "REGION", "ID"}, want: true,
+			why: "the count is per-KEY, not per-row: a row carrying some other name twice " +
+				"must not refuse a name it carries once",
 		},
 		{
 			name: "absent name does not resolve",
@@ -68,10 +82,13 @@ func TestNameResolvesInColumns(t *testing.T) {
 				"be the empty-set false positive",
 		},
 		{
-			name: "empty key does not match an empty column name",
+			name: "an empty key DOES match a single empty column name",
 			key:  "", cols: []string{""}, want: true,
 			why: "documents the degenerate case rather than leaving it to be discovered: " +
-				"the comparison is on the strings it is given, with no emptiness special case",
+				"the comparison is on the strings it is given, with no emptiness special " +
+				"case. The name of this row said `does not match` while asserting true — " +
+				"a row whose NAME contradicts its expectation reads as correct on the day " +
+				"the behaviour flips and the row reddens",
 		},
 	} {
 		if got := nameResolvesInColumns(tc.key, tc.cols); got != tc.want {

@@ -6722,7 +6722,15 @@ func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) 
 // expressionOutputColumns derives the OUTPUT column names, in ordinal order, of
 // a translated expression's row — the plan-time layout authority baked
 // consumer references resolve flat references against (Java's
-// FieldValue.ofFieldName against childValue.getResultType()). Coverage:
+// FieldValue.ofFieldName against childValue.getResultType()).
+//
+// Names are VERBATIM. Two arms below folded, and a review pointed out that the
+// fold was INERT — the sole consumer reads len() and never the names. That is a
+// reason to convert it rather than to leave it: an inert fold under a doc
+// promising name resolution is a fold that becomes live the first time someone
+// takes the doc at its word.
+//
+// Coverage:
 //   - LogicalProjectionExpression: the projection's output names
 //     (values.OutputColumnName — the same authority the executor's posNames
 //     derivation reads, so the baked ordinal and the emitted slot agree).
@@ -6750,7 +6758,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 			if rc, isRC := e.GetResultValue().(*values.RecordConstructorValue); isRC {
 				names := make([]string, len(rc.Fields))
 				for i, f := range rc.Fields {
-					names[i] = strings.ToUpper(f.Name)
+					names[i] = f.Name
 				}
 				return names
 			}
@@ -6811,7 +6819,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 			if rt, isRT := e.GetFlowedType().(*values.RecordType); isRT && len(rt.Fields) > 0 {
 				names := make([]string, len(rt.Fields))
 				for i, f := range rt.Fields {
-					names[i] = strings.ToUpper(f.Name)
+					names[i] = f.Name
 				}
 				return names
 			}
@@ -6861,21 +6869,31 @@ func projectionRefAt(p *logical.LogicalProject, i int) logical.ColumnRef {
 // the name-model fallback, which is only safe if that fallback folds the same
 // way. Nothing established that.
 //
-// The verbatim conversion also made an ambiguity REACHABLE that the fold then
-// hid: `Region` and `REGION` can now coexist as two distinct output slots, and
-// a folding gate answers "resolves" for a key that matches both — reporting
-// resolution for an ambiguous row, on a first-match bool.
+// AGREEING WITH THAT READ TAKES MORE THAN BYTE-EXACTNESS, which is the part a
+// previous revision of this comment got wrong while congratulating itself on
+// the rest. fieldRequestByName COUNTS matches and refuses `>1` with
+// FieldAmbiguousName. A first-match bool therefore answers "resolves" for a row
+// carrying the name TWICE, and the read below then refuses it — the same
+// "admits what its read refuses" failure the fold produced, surviving at
+// exactness. So this counts too, and resolves only on exactly one.
+//
+// The duplicate is reachable, and NOT because of folding: a projection may
+// legitimately publish two slots with one name (the aggregate's native row
+// documents exactly that, leaving SQL de-duplication to the projection above).
+// An earlier note here framed multiplicity as something the verbatim conversion
+// unmasked; it was always there, and only the case-differing pair was new.
 //
 // Every arm is pinned in TestNameResolvesInColumns. It had no test at all when
 // it was loosened, which is how a one-line change to a gate became two
 // regressions in two directions.
 func nameResolvesInColumns(key string, cols []string) bool {
+	matches := 0
 	for _, c := range cols {
 		if c == key {
-			return true
+			matches++
 		}
 	}
-	return false
+	return matches == 1
 }
 
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {

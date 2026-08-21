@@ -32,67 +32,57 @@ type colRef struct {
 // parse-tree triple (ColumnRef) exists and why callers that have it use it.
 // It stops this one from mangling names it has no business splitting.
 //
-// ONLY A MATCHED PAIR NESTS, AND ONLY A CLOSED QUOTE OPENS A LITERAL. Every
-// one of those qualifications was learned by getting it wrong:
+// ONLY A MATCHED PAIR NESTS, and that qualification was learned by getting it
+// wrong in both directions. A single-pass depth counter treats an UNMATCHED
+// paren as structure, and which way it is wrong depends on which way it scans:
+// right-to-left, `D.A)B` — `"a)b"` is a legal column name — reads the `)` as an
+// opening nest and returns one unqualified name; left-to-right, `A(B.C` reads
+// the `(` the same way. Neither direction is sound. Matching the pairs FIRST
+// makes both strays inert and removes the choice.
 //
-//   - A single-pass depth counter treats an UNMATCHED paren as structure, and
-//     which way it is wrong depends on the direction it scans. Right-to-left,
-//     `D.A)B` — `"a)b"` is a legal column name — reads the `)` as an opening
-//     nest and returns one unqualified name; left-to-right, `A(B.C` reads the
-//     `(` the same way. Neither direction is sound. Matching the pairs FIRST
-//     makes both strays inert and removes the choice.
-//   - The same is true of a stray QUOTE: `A'B.C` swallowed its dot when an
-//     unterminated quote was allowed to open a literal, which is the mirror of
-//     `D.A'B` on the quote axis.
-//   - A `)` inside a closed literal is not a paren. `I.COUNT(CASE WHEN S=')'
-//     THEN X.Y END)` closed the real `(` early, put the inner dot at depth 0,
-//     and split there — reviving the exact `AMOUNT)` mangle this function was
-//     changed to fix.
+// A QUOTE IS NOT STRUCTURE AT ALL — see the body for the measurement that
+// settled it. An intermediate version treated apostrophes as string-literal
+// delimiters, which fixed a literal containing a `)` and broke `Q'.Z'`, two
+// apostrophe-bearing identifiers either side of a real qualifier dot.
 //
-// WHAT THIS DOES NOT ESTABLISH, because the difference was measured: across
-// 2.68M calls over ./pkg/relational/... not one production name contained a
-// string literal, and the only inputs on which the new algorithm disagrees with
-// the old one are this file's own test rows. So the literal handling is
-// correctness for a shape that is reachable in principle — the operand mint
-// carries literals verbatim into derived names — and NOT a defect anyone has
-// hit. An earlier version of this comment said "so this is not hypothetical",
-// which asserted reach it had not measured.
-//
-// `A(B.C` splitting to `A(B` / `C` is likewise a CHOICE and not a correctness
-// claim: quotes are stripped by the time a name arrives here, so a delimited
+// `A(B.C` splitting to `A(B` / `C` is a CHOICE and not a correctness claim:
+// quotes are stripped by the time a name arrives here, so a delimited
 // `"f(a.b"` is indistinguishable from a qualified reference and this now splits
 // one the old code kept whole. The same limit applies to a dot inside a
 // delimited identifier — `"a.b"` reads as `a.b`. That is why the parse-tree
 // triple (ColumnRef) exists and why callers holding one use it instead.
 func parseColRef(s string) colRef {
-	// Pass 1: CLOSED literal spans. An UNTERMINATED quote is content, exactly
-	// like an unmatched paren, and for the same reason — `A'B.C` is one
-	// qualifier and one column, and treating the stray quote as an opener
-	// swallowed the dot. A `''` pair inside a span reads as close-then-reopen,
-	// which covers the escape with no special case.
-	lit := make([]bool, len(s))
-	for i, quote := 0, -1; i < len(s); i++ {
-		if s[i] != '\'' {
-			continue
-		}
-		if quote < 0 {
-			quote = i
-			continue
-		}
-		for j := quote; j <= i; j++ {
-			lit[j] = true
-		}
-		quote = -1
-	}
-	// Pass 2: MATCHED paren pairs, ignoring anything inside a literal span.
-	// nest[i] is true for a paren that has a partner; a stray one stays false
-	// and is inert below.
+	// A QUOTE IS NOT A DELIMITER HERE. An apostrophe in one of these flat names
+	// is far more often IDENTIFIER CONTENT than a string-literal boundary, and
+	// nothing local tells the two apart — so treating it as a boundary is a
+	// guess that costs more than it buys:
+	//
+	//	Q'.Z'   -- derived alias `Q'`, column alias `Z'`
+	//
+	// Pairing those two apostrophes makes `'.Z'` a literal span, hides the
+	// qualifier dot inside it, and `Rows.Columns()` over joined derived tables
+	// reports `["Q'.Z'", "R'.Z'"]` where `["Z'", "Z'"]` is right. That is a
+	// REACHABLE regression through ordinary delimited identifiers.
+	//
+	// The literal handling existed for the opposite shape — a `)` inside a
+	// string literal, `I.COUNT(CASE WHEN S=')' THEN X.Y END)`, where the
+	// literal's paren closes the real one early and the inner dot lands at
+	// depth 0. That shape needs a string literal to appear in a derived NAME,
+	// and a live differential over 2,682,910 production calls found no
+	// literal-bearing name at all. So the trade is a measured regression
+	// against an unmeasured one, and it goes the only way it can. The `)`-in-
+	// literal case is pinned as a stated limit instead.
+	//
+	// Note what this does NOT cost: a literal containing a DOT (`S='.'`) still
+	// resolves correctly, because the surrounding parens put that dot at depth
+	// 1 whether or not the quotes mean anything. Only a literal containing a
+	// PAREN is affected.
+	//
+	// Pass 1: MATCHED paren pairs. nest[i] is true for a paren that has a
+	// partner; a stray one stays false and is inert below.
 	nest := make([]bool, len(s))
 	var open []int
 	for i := 0; i < len(s); i++ {
-		if lit[i] {
-			continue
-		}
 		switch s[i] {
 		case '(':
 			open = append(open, i)
@@ -103,12 +93,9 @@ func parseColRef(s string) colRef {
 			}
 		}
 	}
-	// Pass 3: the last dot at depth 0 and outside a literal span is the split.
+	// Pass 2: the last dot at depth 0 is the split.
 	depth, split := 0, -1
 	for i := 0; i < len(s); i++ {
-		if lit[i] {
-			continue
-		}
 		switch {
 		case s[i] == '(' && nest[i]:
 			depth++
