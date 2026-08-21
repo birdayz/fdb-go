@@ -1396,21 +1396,20 @@ func TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter(t *testing.
 	}
 }
 
-// TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting is the case
-// the sibling test above cannot express: it uses scan legs, so its recursion
-// always bottoms out in a plan that HAS a layout, and every one of its
-// assertions holds under plain fall-through too.
+// TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting drives the
+// recursion the sibling test above cannot reach: with scan legs the arm and
+// plain fall-through agree, so nothing there discriminates them.
 //
-// Nesting is what makes the arm load-bearing. When the selected leg is itself a
-// FlatMap that declines, the recursion propagates that nil upward, while
-// fall-through would answer with the wrapper's own result type -- which exists,
-// and is exactly the row nobody checked.
+// It calls planRowLayout DIRECTLY. That is deliberate and it is also this
+// test's limit: the fixtures below are NOT production shapes. The comment on
+// planRowLayout explains why the transitive decline cannot arrive through the
+// FK-cap entries at all, and the last two assertions here pin the two gates
+// that make that true -- so if either gate stops excluding a FlatMap leg, this
+// test reddens instead of the claim going quietly false.
 //
-// BOTH legs are driven, and the INNER one is the production path: fkChainFlat
-// correlates its resultValue to innerAlias, and the NLJ implementation binds
-// the inner under innerCorr. A test that nested only on the OUTER leg would
-// leave the inner recursion free to be replaced by fall-through with the whole
-// target still green -- measured, not assumed.
+// Both recursions are driven, because the arm has two and a mutation to either
+// must be caught: replacing the inner one with fall-through once left the whole
+// target green.
 func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing.T) {
 	t.Parallel()
 
@@ -1430,7 +1429,7 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 			"otherwise neither case below can distinguish the arm from fall-through")
 	}
 
-	// INNER leg -- the production shape. The wrapper selects its inner, which
+	// INNER leg. The wrapper selects its inner, which
 	// is the declining FlatMap, so the decline must propagate.
 	wrapAlias := fkChainAlias(1)
 	viaInner := mustFKChain(plans.NewRecordQueryFlatMapPlan(
@@ -1449,5 +1448,21 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	if got := planRowLayout(viaOuter); got != nil {
 		t.Errorf("planRowLayout over a FlatMap whose OUTER declines = %v, want nil "+
 			"(the decline must propagate through nesting)", got)
+	}
+
+	// THE TWO GATES. The comment on planRowLayout says the transitive decline
+	// cannot arrive through the FK-cap entries. These pin the reasons, so a
+	// change to either gate reddens here rather than silently falsifying it.
+	if _, ok := scanBindingOfLeaf(declining); ok {
+		t.Error("scanBindingOfLeaf accepted a FlatMap: the inner-alias orientation " +
+			"is no longer excluded, so planRowLayout's unreachability claim is stale")
+	}
+	if computePKThread(viaInner).ok {
+		t.Error("computePKThread(viaInner) is ok: a FlatMap-inner now threads a PK, " +
+			"so the transitive decline is reachable and the comment must be rewritten")
+	}
+	if computePKThread(viaOuter).ok {
+		t.Error("computePKThread(viaOuter) is ok: a declining outer no longer fails " +
+			"the frontier check, so the transitive decline is reachable")
 	}
 }
