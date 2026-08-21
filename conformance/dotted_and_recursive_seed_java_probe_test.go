@@ -280,8 +280,11 @@ CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 				"all and RFC-238 §7b's framing must change.")
 
 		Expect(goInnocent).To(HaveOccurred(),
-			"Go now ANSWERS the unrelated table — the divergence is CLOSED. Delete this\n"+
-				"assertion and close RFC-238 §7b rather than relaxing it.")
+			"Go now ANSWERS the unrelated table — the divergence is CLOSED, which is what\n"+
+				"RFC-238 §7b's criterion asks for. FLIP this to NotTo(HaveOccurred()) and\n"+
+				"KEEP it. Do not delete it: it is the only Go-side pin that an unrelated\n"+
+				"table stays queryable, so deleting it lets a later return to schema-wide\n"+
+				"failure through unnoticed.")
 		var ge *api.Error
 		Expect(errors.As(goInnocent, &ge)).To(BeTrue(),
 			"Go's failure stopped being an api.Error. A panic escaping the driver boundary\n"+
@@ -289,14 +292,26 @@ CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 		Expect(string(ge.Code)).To(Equal("XX000"),
 			"Go's SQLSTATE moved. If it became a real diagnostic, say so here.")
 
-		// THE SHARED HALF, so the arm above is about SCOPE and not about the
-		// collision being harmless on Java.
+		// THE SHARED HALF, on BOTH engines. Java's alone would leave the arm
+		// above satisfiable by the wrong fix: an implementation that simply
+		// ignored the duplicate decoded fields makes every table queryable,
+		// including COLL, and a probe that never asks Go about COLL would call
+		// that a success. Failing on COLL is half the requirement.
 		javaColl := javaRunner.RunWithSetup(ctx, schema, nil, `SELECT id FROM COLL`).Err
+		goColl := goRunner.RunWithSetup(ctx, schema, nil, `SELECT id FROM COLL`).Err
+
 		Expect(javaColl).To(HaveOccurred(),
 			"Java ANSWERED a read of the colliding table itself. Then the collision is not\n"+
 				"a defect on either engine and this whole section needs re-reading.")
 		Expect(javaColl.Error()).To(ContainSubstring("Multiple entries with same key: ___="),
 			"Java still fails on COLL but for a DIFFERENT reason; re-read before assuming\n"+
 				"the causes still match.")
+
+		Expect(goColl).To(HaveOccurred(),
+			"Go ANSWERED the COLLIDING table. Two columns share one decoded spelling, so\n"+
+				"a row type naming both cannot be built and any answer here is reading one\n"+
+				"of them under the other's name. This assertion holds BEFORE and AFTER the\n"+
+				"§7b fix — table-local means failing HERE and answering on INNOCENT, not\n"+
+				"answering everywhere.")
 	})
 })

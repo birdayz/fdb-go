@@ -550,6 +550,37 @@ The pin asserts declared TYPE and NULLABILITY, not only the name, on both halves
 of the pair. Without it, criteria (1) through (6) can all pass with the type
 still wrong.
 
+**(8) The collision PANIC is gone AND the failure is table-local.** §7b measured
+both halves; this is where they become checkable, because a criterion living in
+a narrative section is prose and prose cannot fail.
+
+```
+grep -c 'panic("NewRecordType: duplicate field name' \
+  pkg/recordlayer/query/plan/cascades/values/type.go
+```
+
+**1 today; must be 0.** Construction returns an error instead. The regression
+must call `values.NewRecordType` DIRECTLY with two fields whose decoded names
+collide — not through the driver, whose `recover` is exactly what turns the
+panic into `XX000` and hides it.
+
+And the SCOPE, which the panic count alone does not cover:
+
+```
+CREATE TABLE coll (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))
+CREATE TABLE innocent (id BIGINT, v BIGINT, PRIMARY KEY (id))
+```
+
+`SELECT id FROM innocent` must ANSWER, matching Java, and `SELECT id FROM coll`
+must still FAIL, also matching Java. `DecodedNameCollisionJavaProbe` asserts
+both directions on both engines already, so this criterion is met when its Go
+INNOCENT arm flips to `NotTo(HaveOccurred())` — the arm's own failure message
+says to flip and keep it, never delete it — and its Go COLL arm does not move.
+
+That second half is why "no panic" is not sufficient on its own: an
+implementation that simply ignored the duplicate decoded fields would remove the
+panic and make BOTH tables queryable, reading one column under the other's name.
+
 ## 6. Why it is one change and not four items
 
 **The load-bearing reason is §1:** the seven steps are the two ends of one
@@ -649,29 +680,38 @@ library panicking where it can return an error is design principle 4, and the
 recovery is what makes the failure survivable rather than correct — a caller
 that is not the driver gets a panic.
 
+**AND THE SCHEMA-WIDE SCOPE IS NOT A CONSEQUENCE OF THE PANIC — IT IS A SECOND,
+INDEPENDENT MECHANISM.** Removing the panic alone leaves it in place, which is
+why (8) has two halves. The stack, captured by mutating the probe's Go COLL arm
+and reading what actually reddened:
+
+```
+values.NewRecordType                      type.go:768   panics
+executor.PositionalTypeForRecordLayout    query_result.go:277
+embedded.buildMatchCandidates             cascades_generator.go:2795
+embedded.GetMatchCandidates               cascades_generator.go:2744   sync.Once
+cascades.MatchLeafRule.OnMatch            rule_match_leaf.go:59
+```
+
+`buildMatchCandidates` walks EVERY record type in the metadata and builds a
+positional type for each, so one unbuildable table aborts the candidate set for
+all of them — and `sync.Once` then caches that outcome for the connection. The
+blast radius is schema-wide because the CONSTRUCTION is schema-wide, not because
+the failure mode is a panic.
+
+So the fix has a shape, and it is not "recover better": `NewRecordType` returns
+an error, `buildMatchCandidates` drops the one candidate that cannot be built
+and keeps the rest, and a query naming the colliding table then fails for want
+of a candidate. That is Java's table-local behaviour arrived at structurally —
+by not building what cannot be built — rather than by catching a panic nearer
+the leaf, which would leave the candidate set half-formed and the scope still
+wrong.
+
 This is separate from §7: that one is a SQLSTATE refinement on a lookup
-decline, this one is a panic on a row-type construction. They share only the
-non-injectivity that produced both, which is now documented at `protoname`
-where the next caller will see it.
+decline, this one is a panicking row-type construction whose failure is scoped
+to the wrong thing. They share only the non-injectivity that produced both,
+which is now documented at `protoname` where the next caller will see it.
 
-**(8) The collision PANIC is gone, and this is an acceptance criterion rather
-than a description.** §7b established that `values.NewRecordType` panics on a
-duplicate decoded field name and that only the SQL-driver boundary turns it into
-`XX000` — a direct library caller gets the panic. Left as a §7b narrative, every
-other criterion here could pass with the crash intact, which is exactly the
-shape of a gate that cannot fail.
-
-```
-CREATE TABLE coll (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))
-```
-
-Row-type construction must return an ERROR for this schema, and a regression
-must call it directly — not through the driver, whose `recover` is what hides
-the defect today. `pkg/recordlayer/query/plan/cascades/values` is where the
-panic lives and where the no-panic pin belongs.
-
-TWO THINGS HAVE TO CHANGE, not one. The panic becomes an explicit error, which
-is design principle 4. And the failure becomes TABLE-LOCAL, matching Java: a
-query against a table that shares nothing with `coll` must answer. The
-cross-engine probe already asserts both directions, so the criterion is met when
-its Go arm flips and its Java arm does not move.
+Both halves are criterion (8) in §5, with the commands that make them
+checkable. They are stated there rather than here because a requirement living
+only in a narrative section is prose, and prose cannot fail.
