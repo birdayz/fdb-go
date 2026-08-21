@@ -46,7 +46,7 @@ func TestHandler_TextExposition(t *testing.T) {
 		// trailing newline, but it is no longer load-bearing -- membership trims
 		// it -- and it is kept only so the strings read as the exposition lines
 		// they represent. Dropping one is a no-op; the terminal LF that the
-		// suffix used to cover incidentally is asserted on its own above.
+		// suffix used to cover incidentally is asserted on its own, further down.
 		TransactionsResourceConstrained:           12,
 		TransactionsProcessBehind:                 13,
 		TransactionsTooOld:                        14,
@@ -254,10 +254,10 @@ func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
 			len(counters), cppTwin, goOnly, other)
 	}
 	if len(summaries) != 4 {
-		t.Errorf("table is %d summaries; the prose says four in THREE places -- the "+
-			"package doc, Handler's doc, and the doc on `summaries`, which also "+
-			"enumerates them by name. Fixing only the nearest copy is how the last "+
-			"stale sentence survived", len(summaries))
+		t.Errorf("table is %d summaries; the word \"four\" appears in the package "+
+			"doc and Handler's doc, and `summaries`' own doc encodes the same "+
+			"claim by enumerating them. Three homes, two spellings. Fixing only "+
+			"the nearest is how the last stale sentence survived", len(summaries))
 	}
 }
 
@@ -276,9 +276,9 @@ func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
 // examined -- the subset-list defect, inside the test written to prevent it.
 var goOnlyMarkers = []string{"Go-only", "Go aggregate"}
 
-func declaresGoOnly(helpLine string) bool {
+func declaresGoOnly(help string) bool {
 	for _, marker := range goOnlyMarkers {
-		if strings.Contains(helpLine, marker) {
+		if strings.Contains(help, marker) {
 			return true
 		}
 	}
@@ -302,10 +302,20 @@ func TestProvenanceVocabularyIsEarnedAndNarrow(t *testing.T) {
 
 	body := renderExposition(t)
 
-	// Every marker earns its place: drop it and some Go-only counter loses its
-	// declaration. A marker no help line needs is vocabulary nobody audits.
-	for _, marker := range goOnlyMarkers {
-		used := false
+	// Every marker is NECESSARY, not merely present. Drop it and some Go-only
+	// counter must lose its declaration under the markers that remain.
+	//
+	// Occurrence is the weaker test and was the first thing written here: it
+	// passes for a marker that is a SUBSTRING of another, since the substring
+	// occurs wherever the longer one does. {"Go-only","Go aggregate","Go-"} was
+	// fully green that way -- and admitting "Go-" then accepts a help text
+	// reading "Go-side rollup", which declares no absent C++ twin at all.
+	for i, marker := range goOnlyMarkers {
+		remaining := make([]string, 0, len(goOnlyMarkers)-1)
+		remaining = append(remaining, goOnlyMarkers[:i]...)
+		remaining = append(remaining, goOnlyMarkers[i+1:]...)
+
+		needed := false
 		for _, c := range counters {
 			if c.origin != originGoOnly {
 				continue
@@ -314,15 +324,23 @@ func TestProvenanceVocabularyIsEarnedAndNarrow(t *testing.T) {
 			if !ok {
 				continue
 			}
-			// Does THIS marker carry the line on its own?
-			if strings.Contains(line, marker) {
-				used = true
+			declaredWithout := false
+			for _, m := range remaining {
+				if strings.Contains(line, m) {
+					declaredWithout = true
+					break
+				}
+			}
+			if !declaredWithout {
+				needed = true // only this marker carries that line
 				break
 			}
 		}
-		if !used {
-			t.Errorf("marker %q is in the predicate but no Go-only help line uses "+
-				"it; unused vocabulary widens the predicate without auditing anything",
+		if !needed {
+			t.Errorf("marker %q is unnecessary: every Go-only help line is still "+
+				"declared without it. An unnecessary marker only widens what the "+
+				"predicate accepts -- a substring of another marker passes an "+
+				"occurrence check while admitting text that declares nothing",
 				marker)
 		}
 	}
