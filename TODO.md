@@ -19833,20 +19833,28 @@ superseded phrasing was run. A correction is not done until that grep returns
 zero across every file and the count is reported.
 
 WHAT THIS GATE CANNOT DO, written first because the positive claim kept
-outrunning it. It cannot tell a stale claim from a live one when the prose
-carries NO figure. The defect that produced this very entry was a sentence
-asserting that two files "return the singleton on a branch" -- no number, no
-citation, simply false, and lifted from those files' own stale doc comments. No
-digit rule, citation rule or literal rule fires on it. It also cannot check
-TENSE: an earlier draft here demanded a past-to-present verb flip go red two
-sentences after conceding that past tense is not decidable, which is a
-contradiction, not a specification.
+outrunning it. Four things, all demonstrated during review rather than imagined:
 
-So the gate is a mechanical FLOOR, not the mechanism. Every one of the nine
-defects in this campaign was found by a reviewer reading prose against code, and
-none by any rule proposed here. What the floor buys is that the two shapes which
-ARE decidable stop recurring, and that is worth having precisely because they
-recurred repeatedly while everyone was watching for them.
+- It cannot see a stale claim carrying NO figure. The defect that produced this
+  entry was a sentence asserting two files "return the singleton on a branch" --
+  no number, no citation, simply false, and lifted from those files' own stale
+  doc comments. No digit, citation or literal rule fires on it.
+- It cannot check TENSE. An earlier draft here demanded a past-to-present verb
+  flip go red two sentences after conceding tense is not decidable, which is a
+  contradiction, not a specification.
+- Being digit-keyed, it is blind to populations written as WORDS. "Twelve plans
+  returned ..." heads the census file this entry is about, and this entry itself
+  described its own defect count in words until that was noticed.
+- It cannot tell whether a historical marker is WARRANTED. The marker is
+  author-asserted and the whole green side rests on it, so marking a live claim
+  historical immunises it. That is an escape hatch, not a check.
+
+So the gate is a mechanical FLOOR, not the mechanism. EVERY defect in this
+campaign was found by a reviewer reading prose against code, and none by any
+rule proposed here -- no count is given because it kept moving. What the floor
+buys is that the two shapes which ARE decidable stop recurring, and that is
+worth having precisely because they recurred repeatedly while everyone was
+watching for them.
 
 DONE when: the gate REDS on a census-file comment that states a population with
 no citation, and on one that restates the literal while carrying a valid

@@ -655,15 +655,20 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // above are stated in. Nil-safe: a missing leg has no layout, and the
 // resolution then declines rather than panicking.
 //
-// A FlatMap needs its own arm because this file needs the ORIGINATING LEG's
-// layout, not merely a row type. GetResultType() derives from the resultValue
-// now -- it answered UnknownType unconditionally when this arm was written --
-// but a type alone cannot say WHICH leg produced the row, and the recursion
-// below has to walk to that leg. Every hop of an FK chain past the first has a
-// FlatMap as its OUTER, so stopping at a type would fail the identity proof
-// closed for exactly the multi-hop shape this whole file exists for -- the cap
-// would still fire on hop 1 and silently stop firing on hops 2..n, which is the
-// order-dependent estimate fkChainCardinalityCap was written to remove.
+// A FlatMap needs its own arm to DECLINE, not to derive. When the resultValue
+// is a bare QuantifiedObjectValue the fall-through would already be correct:
+// GetResultType is resultValue.Type(), a QOV's Type() is its FlowedType(), so
+// the type IS the correlated leg's layout and the recursion below arrives where
+// the answer already was. What fall-through would NOT do is refuse the other
+// shapes. A resultValue that is a RecordConstructor merging both legs, or any
+// computed value, still HAS a type -- one this file cannot name a layout for --
+// and returning it would let the identity proof rest on a row nobody checked.
+// The two nil returns are therefore the whole point of the arm.
+//
+// Every hop of an FK chain past the first has a FlatMap as its OUTER, which is
+// why the shape matters here at all: a wrong answer would let the cap fire on
+// hop 1 and silently stop firing on hops 2..n, the order-dependent estimate
+// fkChainCardinalityCap was written to remove.
 //
 // The derivation is the resultValue's, because the resultValue is what shapes
 // the emitted row: a bare QuantifiedObjectValue over one of the two aliases

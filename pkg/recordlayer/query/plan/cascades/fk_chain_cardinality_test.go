@@ -1342,3 +1342,53 @@ func TestAlignIndexPKTypesByCoordinate_DuplicateDisplayNamesStayPositional(t *te
 		t.Fatalf("record-type-prefixed alignment = %v ok=%v, want [UNKNOWN FLOAT DOUBLE]", prefixed, ok)
 	}
 }
+
+// TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter drives the
+// three planRowLayout FlatMap paths the inner-leg test above never reaches.
+//
+// The arm's value is its REFUSALS, not its derivation: when the resultValue is
+// a bare QuantifiedObjectValue the fall-through would already be right, because
+// GetResultType is resultValue.Type() and a QOV's Type() is its FlowedType().
+// What fall-through would not do is decline on a resultValue this file cannot
+// name a layout for -- and a merged or computed row still HAS a type, so the
+// decline has to be deliberate. These three cases are the ones that make the
+// comment on planRowLayout checkable rather than asserted.
+func TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter(t *testing.T) {
+	t.Parallel()
+
+	outerAlias, innerAlias := fkChainAlias(0), values.NamedCorrelationIdentifier("i")
+	outer := fkChainFullScan("T1")
+	inner := fkChainFKProbe(t, "T2", "t2_by_t1", "T1", outerAlias)
+
+	newFlat := func(rv values.Value) plans.RecordQueryPlan {
+		return mustFKChain(plans.NewRecordQueryFlatMapPlan(
+			outer, inner, outerAlias, innerAlias, rv, false))
+	}
+
+	// OUTER correlation: the emitted row is the outer leg's, so the layout is
+	// T1's -- the branch every hop-1 FlatMap in a chain takes.
+	outerQOV := mustFKChain(values.NewQuantifiedObjectValue(outerAlias, planRowLayout(outer)))
+	if got := planRowLayout(newFlat(outerQOV)); values.OrdinalDomainOfType(got) != values.OrdinalDomainOfType(fkChainRowType("T1")) {
+		t.Errorf("planRowLayout over an OUTER-correlated resultValue = %v, want T1's layout", got)
+	}
+
+	// Not a bare QOV: a value that still HAS a type, which is exactly why the
+	// decline must be explicit. Returning that type would let the identity
+	// proof rest on a row this file never named.
+	notAQOV := values.NewNullValue(fkChainRowType("T2"))
+	if notAQOV.Type() == nil {
+		t.Fatal("fixture is vacuous: the non-QOV resultValue must carry a type, " +
+			"otherwise this case cannot distinguish declining from having nothing to return")
+	}
+	if got := planRowLayout(newFlat(notAQOV)); got != nil {
+		t.Errorf("planRowLayout over a non-QOV resultValue = %v, want nil (decline)", got)
+	}
+
+	// A QOV correlated to NEITHER leg: reaches the switch and falls past both
+	// cases, which is the second nil and a different path from the one above.
+	foreign := mustFKChain(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("elsewhere"), fkChainRowType("T2")))
+	if got := planRowLayout(newFlat(foreign)); got != nil {
+		t.Errorf("planRowLayout over a QOV correlated to neither leg = %v, want nil (decline)", got)
+	}
+}
