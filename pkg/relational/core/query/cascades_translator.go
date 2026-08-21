@@ -10226,11 +10226,11 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	//
 	// It is live through the NO-ALIAS path only: with an explicit column-alias
 	// list, `outCols` below takes the aliases and seedOut never reaches the
-	// key. The alias-free arm in quoted_identifier_labels.yaml is what drives
-	// it, mutation-verified — restoring the fold reddens that arm and leaves
-	// the alias arms green.
+	// key. TWO alias-free arms in quoted_identifier_labels.yaml drive it, one
+	// per site — see the enumeration at the end of this comment, which is the
+	// accurate version of a singular "the alias-free arm" that stood here.
 	//
-	// THREE CLAIMS ABOUT THE FALLBACK BELOW HAVE BEEN WRONG HERE, all of them
+	// FOUR CLAIMS ABOUT THE FALLBACK BELOW HAVE BEEN WRONG HERE, all of them
 	// assertions about what code can REACH, none of them executed before being
 	// written. Recorded together because the pattern is the lesson:
 	//
@@ -10292,7 +10292,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// Found by a probe run to disprove a claim in the comment above, which is
 	// the second reason that comment is worth reading.
 	if len(seedSrc) == 0 {
-		if fields := t.derivedOutputColumns(seedBranches[0]); len(fields) > 0 && !anyDottedFieldName(fields) {
+		if fields := t.derivedOutputColumns(seedBranches[0]); len(fields) > 0 && !seedResolvesThroughJoin(seedBranches[0]) {
 			seedSrc = make([]string, len(fields))
 			seedOut = make([]string, len(fields))
 			for i, f := range fields {
@@ -10866,26 +10866,49 @@ func findUnsafeFuncInPredicate(p predicates.QueryPredicate) string {
 	return found
 }
 
-// anyDottedFieldName reports whether any derived field carries a QUALIFIED name.
+// seedResolvesThroughJoin reports whether a recursive-CTE seed's output columns
+// would be derived through derivedOutputColumns' JOIN arm, by peeling exactly
+// the operators that arm's siblings peel.
 //
-// It gates the recursive-CTE seed-schema derivation, and the reason is a
-// diagnostic rather than a correctness one. legColumns' JOIN arm returns dotted
-// names (`T1.ID`, `T2.W`), so deriving a seed schema from a join seed keys the
-// temp table by names no `d.<col>` reference can resolve. That shape has never
-// planned — the alias path fails on it identically — but without this gate it
-// stopped failing with `recursive CTE seed width N disagrees with 0 output
-// columns`, which says what is wrong, and started failing with `no exact common
-// result row: column 1 types LONG NULL and UNKNOWN NULL are incompatible`,
-// which does not.
+// IT ASKS A STRUCTURAL QUESTION, and the first version of this gate did not.
+// That one tested the downstream OBSERVABLE — "does any derived field name
+// contain a dot" — because legColumns' join arm synthesizes `T1.ID` / `T2.W`.
+// A dot is not a join leg. Column names round-trip a literal dot through the
+// wire escape (protoname's `.`→`__2`, reversed by ToUserIdentifier, mirroring
+// Java's ProtoUtils), so an ordinary base-table column declared `"a.b"` comes
+// back dotted from a plain scan — and the string test could not tell it from a
+// qualifier the join arm prefixed. Measured: it declined
 //
-// Declining here keeps the useful message. Making a join seed actually work
-// needs legColumns to publish bare names for that arm, which is a different
-// change with its own blast radius.
-func anyDottedFieldName(fields []values.Field) bool {
-	for _, f := range fields {
-		if strings.Contains(f.Name, ".") {
+//	CREATE TABLE dott ("a.b" BIGINT, plain BIGINT, PRIMARY KEY ("a.b"))
+//	WITH RECURSIVE d AS (SELECT * FROM dott WHERE "a.b" = 1 UNION ALL …)
+//
+// which plans at this change's own base. Design principle 10: match the
+// architectural property that produces the behaviour, not an observable
+// downstream of it.
+//
+// What the gate is FOR is unchanged and is a diagnostic rather than a
+// correctness concern. A join seed keys the temp table by names no `d.<col>`
+// reference can resolve, so it has never planned — the alias-list path fails on
+// it identically. Without the gate it stopped failing with `recursive CTE seed
+// width N disagrees with 0 output columns`, which says what is wrong, and
+// started failing on incompatible column types, which does not. Making a join
+// seed actually work needs legColumns to publish bare names for that arm: a
+// different change with its own blast radius.
+func seedResolvesThroughJoin(op logical.LogicalOperator) bool {
+	for {
+		switch o := op.(type) {
+		case *logical.LogicalJoin:
 			return true
+		case *logical.LogicalDistinct:
+			op = o.Input
+		case *logical.LogicalSort:
+			op = o.Input
+		case *logical.LogicalLimit:
+			op = o.Input
+		case *logical.LogicalFilter:
+			op = o.Input
+		default:
+			return false
 		}
 	}
-	return false
 }

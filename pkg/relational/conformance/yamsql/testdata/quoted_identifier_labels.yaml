@@ -21,10 +21,12 @@ schema_template: |
   CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))
   CREATE TABLE QARR (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
   CREATE TABLE q1 ("id" BIGINT, PRIMARY KEY ("id"))
+  CREATE TABLE dott ("a.b" BIGINT, plain BIGINT, PRIMARY KEY ("a.b"))
 setup:
   - INSERT INTO QCASE VALUES (1, 42, 7)
   - INSERT INTO QARR VALUES (1, [10, 20])
   - INSERT INTO q1 VALUES (1), (2)
+  - INSERT INTO dott VALUES (1, 9)
 tests:
   # The explicit projection of the quoted column.
   - query: SELECT "KeepCase" FROM QCASE WHERE id = 1
@@ -234,10 +236,12 @@ tests:
   # An explicit CTE column-alias list OVERRIDES the seed-derived output names
   # entirely, so these two arms pin the ALIAS path and — measured, not assumed —
   # they do NOT drive the seed-derived one: with the fold restored they both
-  # still pass. The arm that drives it is the alias-free one below. They are
-  # kept because the alias path is its own authority worth pinning, and the
-  # comment says which path each covers so the next reader does not credit
-  # these with coverage they do not have.
+  # still pass. TWO alias-free arms below drive it, one per site — the
+  # explicitly-projecting one and the star-seed one — and this sentence said
+  # "the arm" for as long as there was one of them, which is the copy a reader
+  # reaches FIRST and so the one that misinforms hardest. They are kept because
+  # the alias path is its own authority worth pinning, and each comment says
+  # which path it covers so none is credited with coverage it does not have.
   - query: WITH RECURSIVE d("Node") AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
     unordered: true
     columns: ["Node"]
@@ -318,3 +322,29 @@ tests:
   # message; the shape has never planned, on this path or the alias one.
   - query: WITH RECURSIVE d AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d."id" FROM d) SELECT * FROM d
     error_code: "0AF00"
+  # A DELIMITED COLUMN NAME CONTAINING A DOT, star-seeded. This is the shape the
+  # first version of the join gate wrongly declined: it tested whether a derived
+  # field name contains a dot, because the join arm synthesizes `T1.ID` — but a
+  # dot round-trips the wire escape (`.` -> `__2`, reversed on the way back), so
+  # an ordinary base-table column declared `"a.b"` comes back dotted from a plain
+  # scan and the string test could not tell the two apart. It planned before that
+  # gate and stopped after, which makes it a regression rather than a
+  # hypothetical. The gate asks a structural question now — is the seed resolved
+  # through a join — and this plans again.
+  # NOTE the LABEL: `b`, not `a.b`. That is KNOWN LIMIT territory and it is
+  # pre-existing — the qualifier split takes the last depth-0 dot, and a
+  # delimited name carrying its own dot is indistinguishable from a qualified
+  # reference once the quotes are gone. Unchanged by this PR in either
+  # direction; the ROWS are what this arm is here for.
+  - query: WITH RECURSIVE d AS (SELECT * FROM dott WHERE "a.b" = 1 UNION ALL SELECT d."a.b" + 1, d.plain FROM d WHERE d."a.b" < 3) SELECT d."a.b" FROM d ORDER BY d."a.b"
+    columns: ["b"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # The same dotted column WITHOUT recursion — the control that says the arm
+  # above is about the seed derivation and not about dotted columns in general.
+  - query: SELECT "a.b" FROM dott
+    columns: ["b"]
+    rows:
+      - [1]
