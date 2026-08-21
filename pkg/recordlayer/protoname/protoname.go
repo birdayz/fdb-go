@@ -129,9 +129,27 @@ func translateSpecialCharacters(userIdentifier string) string {
 // defects in one lookup traced to this single unwritten fact, each fix correct
 // about the coordinate it addressed and silent about the next.
 //
-// A schema built through DDL cannot produce such a pair (the two SQL names
-// would be duplicates and rejected at CREATE), so the shapes that reach it come
-// from hand-written imported descriptors.
+// A DRAFT OF THIS PARAGRAPH SAID DDL CANNOT PRODUCE SUCH A PAIR. It can:
+//
+//	CREATE TABLE coll (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))
+//
+// Both names begin `__`, so both pass through ToProtoBufCompliantName UNCHANGED
+// — and `___0` then decodes to `___`, because the decode scan sees the `__0`
+// starting at index 1. Two distinct, legal, non-duplicate SQL columns; one
+// decoded spelling; a row type that cannot be built. Reading even an UNRELATED
+// column of that table fails.
+//
+// JAVA FAILS ON IT TOO, measured on a live JVM rather than assumed — `Multiple
+// entries with same key: ___=…Type$Record$Field@…`, the same cause at the same
+// point. So this is the upstream defect reproduced faithfully, not a Go
+// divergence, and the escaped names being WIRE means the encoding cannot be
+// changed to make the round trip total anyway. Pinned in
+// conformance/dotted_and_recursive_seed_java_probe_test.go.
+//
+// What is Go's alone is that its internal failure is a PANIC, recovered at the
+// driver boundary into XX000. A library that panics where it could return an
+// error is design-principle 4, and it is tracked in RFC-238 §7 with this
+// reproducer.
 func ToUserIdentifier(protoIdentifier string) string {
 	s := strings.ReplaceAll(protoIdentifier, dotEscape, ".")
 	s = strings.ReplaceAll(s, dollarEscape, "$")

@@ -580,10 +580,21 @@ FROM t AS x, x."foo___bar" AS y   -> Go 42703, Java 42702
 **Why it is not folded into the fix that found it.** The decline returns a nil
 descriptor, and `fieldPresent == false` is what the callers turn into 42703.
 Carrying "ambiguous" instead of "absent" means a new disposition threaded
-through `arrayFieldFromDescriptor`, `unnestArrayElementType`,
-`inlineValuesArrayElementType`, both `chained_unnest.go` call sites, and
-`classifyDerivedUnnestArray`'s disposition mapping — seven places and a new
-enum arm, each wanting its own pin.
+through, by FUNCTION rather than by call site — the two `protoFieldLookup`
+calls in `chained_unnest.go` sit in one function, and an earlier draft said
+"seven places" over a list naming six:
+
+| function | why it is on the path |
+| --- | --- |
+| `arrayFieldFromDescriptor` | turns a nil lookup into `fieldPresent == false` |
+| `unnestArrayElementType` | forwards that to the plain-unnest caller |
+| `inlineValuesArrayElementType` | the parallel signature for inline VALUES |
+| `descendToArrayField` | the chained path's own descent, both lookups |
+| `classifyDerivedUnnestArray` | maps the result onto a `derivedUnnestDisposition` |
+| `classifyChainedUnnestArray` | the chained TWIN of that mapping, and the one a "call sites" count hides |
+| the 42703 raise site | where the disposition becomes a SQLSTATE |
+
+Seven, plus a new `derivedUnnestDisposition` arm, each wanting its own pin.
 
 That is a coherent piece of work rather than a line, and it belongs to this
 RFC's family: it is the same "a flat name lost information upstream" mechanism,
@@ -596,3 +607,34 @@ What remains is which SQLSTATE the decline reports, on a shape DDL cannot
 produce — `protoname`'s own doc records why (two SQL names that collide under
 decoding would be duplicates at CREATE), so only hand-written imported
 descriptors reach it.
+
+### 7b. A second follow-on, found while documenting the first
+
+The claim that DDL cannot produce a decoded-name collision was FALSE, and the
+correction is worth more than the claim was:
+
+```
+CREATE TABLE coll (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))
+SELECT id FROM coll
+```
+
+Both names begin `__` and pass through `ToProtoBufCompliantName` unchanged;
+`___0` then decodes to `___`, because the decode scan finds `__0` at index 1.
+Two legal, non-duplicate SQL columns; one decoded spelling; no buildable row
+type. A read of an UNRELATED column fails.
+
+**Java fails on it too**, measured on a live JVM: `Multiple entries with same
+key: ___=…Type$Record$Field@…` — the same cause at the same point. So the
+BEHAVIOUR is upstream-faithful and the escaping cannot be changed regardless,
+because escaped names are wire. Pinned in the cross-engine probe.
+
+**What is Go's alone is the PANIC.** `values.NewRecordType` panics on a
+duplicate field name; the driver recovers it into `XX000 internal error`. A
+library panicking where it can return an error is design principle 4, and the
+recovery is what makes the failure survivable rather than correct — a caller
+that is not the driver gets a panic.
+
+This is separate from §7: that one is a SQLSTATE refinement on a lookup
+decline, this one is a panic on a row-type construction. They share only the
+non-injectivity that produced both, which is now documented at `protoname`
+where the next caller will see it.

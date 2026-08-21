@@ -218,3 +218,66 @@ CREATE TABLE XPROBE (id BIGINT, "TOTAL" BIGINT, "X.TOTAL" BIGINT, PRIMARY KEY (i
 				strings.Join(problems, "\n"))
 	})
 })
+
+// A SEPARATE SCHEMA, DELIBERATELY: a table whose columns collide under decoding
+// makes the WHOLE schema unreadable, so putting it beside the probes above
+// poisoned every one of them — five arms went red reporting the collision's
+// error for queries that never touched the table. That is worth stating rather
+// than quietly isolating, because it is the finding: the failure is not scoped
+// to the offending table.
+//
+// `"___"` and `"___0"` are distinct, legal, non-duplicate SQL columns. Both
+// begin `__`, so both pass through ToProtoBufCompliantName UNCHANGED — and
+// `___0` then decodes to `___`, because the decode scan finds `__0` at index 1.
+// One decoded spelling for two columns; no buildable row type.
+//
+// BOTH ENGINES FAIL, which is what this measures and what could not have been
+// settled by reading either alone. Java's message names the same cause at the
+// same point. So the behaviour is upstream-faithful rather than a Go
+// divergence, and the escaping cannot be changed to fix it in any case because
+// escaped names are WIRE.
+//
+// What is Go's alone is that its internal failure is a PANIC, recovered at the
+// driver boundary into XX000 — tracked in RFC-238 §7b.
+var _ = Describe("DecodedNameCollisionJavaProbe", func() {
+	It("measures both engines on two columns that decode to one storage spelling", func() {
+		ctx := context.Background()
+		tenantName := fmt.Sprintf("collide_%s", uuid.New().String())
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner)
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
+
+		schema := `CREATE TABLE COLL (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))`
+
+		// The read names only `id`, which collides with nothing. It still
+		// fails, and that is the point — the row type is built for the whole
+		// table.
+		const sql = `SELECT id FROM COLL`
+
+		javaErr := javaRunner.RunWithSetup(ctx, schema, nil, sql).Err
+		goErr := goRunner.RunWithSetup(ctx, schema, nil, sql).Err
+
+		Expect(javaErr).To(HaveOccurred(),
+			"Java ANSWERED a decoded-name collision. If upstream fixed this, the Go side is\n"+
+				"no longer reproducing an upstream defect and RFC-238 §7b's framing must change.")
+		Expect(javaErr.Error()).To(ContainSubstring("Multiple entries with same key: ___="),
+			"Java still fails but for a DIFFERENT reason; re-read before assuming the causes\n"+
+				"still match.")
+
+		Expect(goErr).To(HaveOccurred(), "Go ANSWERED a shape whose row type cannot be built.")
+		var ge *api.Error
+		Expect(errors.As(goErr, &ge)).To(BeTrue(),
+			"Go's failure stopped being an api.Error — a panic escaping the driver boundary\n"+
+				"would look like this, and is the outcome RFC-238 §7b exists to remove.")
+		Expect(string(ge.Code)).To(Equal("XX000"),
+			"Go's SQLSTATE moved. If it became a real diagnostic rather than an internal\n"+
+				"error, §7b is closed and this assertion should say so.")
+	})
+})
