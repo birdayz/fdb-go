@@ -857,21 +857,42 @@ and `escaped_table_secondary_index.yaml`, asserted at the WRONG value on purpose
 so the fix reddens them. A THIRD sentinel carries the same wrong-on-purpose
 value and is easy to miss because it is generated rather than written:
 `explaindiff/testdata/plan_shape.golden` records every corpus query's plan, so
-those two files' five queries appear there too
-(`plan_shape.golden:5905`, `:8789`, `:8800`). Re-bless it with the fix; a
-yamsql-only update leaves the golden red and reads as unrelated drift.
+those two files' five queries appear there too, under the stanza headers
+`=== escaped_table_secondary_index.yaml#0` and
+`=== intermingle_escaped_table_name.yaml#0` and `#2`. Named by STANZA and not
+by line, because the golden is generated and every new corpus file shifts its
+line numbers — the failure this very commit is correcting, one file over.
+Re-bless it with the fix; a yamsql-only update leaves the golden red and reads
+as unrelated drift.
 
-**THE DECISION: the plan tree carries STORAGE names, translated ONCE at the scan
-leaf.** `cascades_translator.go:3032` resolves `s.Table` to the record type's
-stored name before building the `FullUnorderedScanExpression`; candidates keep
-`rt.Name`; `EqualsWithoutChildren` then compares like with like and never learns
-about escaping.
+**THE DECISION: the plan tree carries STORAGE names, translated AT EVERY POINT
+A TABLE NAME ENTERS IT.** In Go that is four sites, not the one an earlier draft
+named: the scan leaf (`cascades_translator.go:3032`, `s.Table`) and the three
+DML targets — INSERT `:10750` (`ins.Table`), UPDATE `:10792` (`upd.Target`),
+DELETE `:10814` (`del.Target`). Candidates keep `rt.Name`;
+`EqualsWithoutChildren` then compares like with like and never learns about
+escaping.
+
+Translating only the scan leaf would ship a TWO-NAMESPACE PLAN TREE —
+`Scan(MY__1TABLE)` beneath `Delete(MY$TABLE)` — and the memo-identity argument
+below applies to the DML targets verbatim, because `delete.go:84` and
+`insert.go:101-107` compare that string in `EqualsWithoutChildren` -- it IS the
+structural key. It is not fatal at
+execution today only because `executor.go:4213` resolves the target through the
+tolerant `GetRecordType`; that tolerance is a boundary contract, not a licence
+to keep two namespaces in the tree.
+
+Go's type filter needs nothing: the translator never builds one. It arrives from
+`primary_scan_match_candidate.go:432`, already carrying the stored name.
 
 That is a 1:1 port. Java's `LogicalOperator.generateTableAccess` builds the scan
 from `semanticAnalyzer.getAllTableStorageNames()`
 (`LogicalOperator.java:262-270`), which is
 `table.getType().getStorageName()` (`SemanticAnalyzer.java:288-298`), and its
-type filter from `type.getStorageName()` (`LogicalOperator.java:280-282`). The
+type filter from `type.getStorageName()` (`LogicalOperator.java:280-282`). Java
+does the same for all three DML targets: INSERT `LogicalOperator.java:585`,
+UPDATE `QueryVisitor.java:836`, DELETE `QueryVisitor.java:876`, each reading
+`getStorageName()` off the target type. Five sites in Java, four in Go. The
 candidate side maps `RecordType::getName`
 (`PrimaryScanMatchCandidate.java:131-136`), which is `descriptor.getName()`
 (`RecordType.java:69`). Both sides independently arrive at the mangled string,
@@ -893,36 +914,71 @@ objections described Java's shipped behaviour rather than a cost.**
     `Scan(MY$TABLE)` is itself a divergence on the shared surface, not a
     feature to protect.
   - It said the render boundary would then have to decode through a
-    non-injective map. It would not. Java never decodes a record-type name on
-    the read path, and under this section's own premise — both names carried as
-    data — rendering a display name is a forward catalog lookup
-    (`RecordLayerSchemaTemplate.java:578-583`), not a decode.
+    non-injective map. Java DOES decode -- `Record.fromDescriptorPreservingName`
+    is `new Record(ProtoUtils.toUserIdentifier(descriptor.getName()),
+    descriptor.getName(), ...)` (`Type.java:2591-2593`), and
+    `RecordMetadataDeserializer.java:92` derives the user name the same way --
+    so "it would not decode" was simply false. The objection still fails, for a
+    different and better reason: Java decodes ONCE, at construction, and carries
+    both spellings on the Type, so the decoded name is only ever a DISPLAY
+    identity. Nothing resolves through it -- lookups go by storage name
+    (`RecordLayerSchemaTemplate.java:578-583`). A map that is not injective is
+    harmless in the direction where its output is never used to find anything.
 
 **AND THE SQL NAMESPACE IS NOT A LEGAL MEMO IDENTITY, which is the argument that
 settles it independently of Java.** Candidate scans flow `UnknownType`, so per
 `full_unordered_scan.go:110-118` the record-type NAMES are the sole
-discriminator between two scan expressions. SQL names are not injective over
-metadata that mixes DDL tables with `SetRecords` protos: a proto message named
-`A__1B` verbatim and a DDL table declared `"A__1B"` (stored `A__01B`) both
-present the SQL spelling `A__1B`. Two distinct record types, one memo key.
-Storage names are injective by construction — they ARE the descriptor's name.
+discriminator between two scan expressions. SQL names are not injective, and
+the example has to be chosen against the rule that DERIVES them, which an
+earlier draft got wrong: it paired a proto message named `A__1B` with a DDL
+table declared `"A__1B"`, but under Java's decode the proto presents `A$B` and
+the pair does not collide at all. A pair that DOES, under the decode rule
+whichever side supplies it: `X__0__1Y` and `X____1Y` both decode to `X__$Y`
+(the scan replaces `__1` before `__0`, so the first loses its `__0` and the
+second keeps two underscores). Two distinct record types, one memo key. Storage
+names are injective by construction — they ARE the descriptor's name.
 
 **WHERE THE SECOND NAME LIVES: not in `pkg/recordlayer`.** Java's core
 `RecordType` has ONE name, and `pkg/recordlayer` is the wire layer whose
 `RecordType` maps 1:1 to a stored protobuf message. The two Java-shaped homes
 are `values.RecordType`, which should grow `storageName` beside `name` as a port
 of `Type.java:2185,2225-2233,2536-2539`, and `metadata.RecordLayerTable`, whose
-`MetadataName()` returns `underlying.Name` (`metadata/table.go:52`) and thereby
+`MetadataName()` returns `underlying.Name` (`metadata/table.go:53`) and thereby
 conflates the two names at the one place Java keeps them apart
 (`RecordLayerTable.java:96-99`).
+
+**THE AFFECTED POPULATION IS ESCAPED NAMES ONLY — CASE DOES NOT JOIN IT.** The
+obvious widening is that a stored name which is merely not upper-case would
+suffer the same way, since DDL upper-cases unquoted identifiers while
+`SetRecords` keeps a proto message's CamelCase verbatim. Measured, and it does
+not (`mixed_case_stored_name_probe_test.go`): a table stored `Customer` and
+referenced unquoted fails LOUDLY with `42F01: table "CUSTOMER" does not exist`,
+and referenced as `"Customer"` keeps both access paths —
+`Scan(Customer, [=])` and `IndexScan(IDX_NAME, [=] COVERING)`, identical to the
+upper-case control. Only the escaping produces a name that resolves through
+metadata yet fails an exact string compare in the memo. The probe is committed
+rather than deleted because a NEGATIVE result is what bounds this section's
+scope, and nothing else pins it.
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
 places (`cascades_generator.go:2810`, `:3439`, `:3663`, `:3738`) and those are
 cross-compared in `rule_aggregate_data_access.go:84,299`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
-plans (`primary_scan_match_candidate.go:393,432`). Translating at the scan leaf
+plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
 leaves every one of them untouched, which is the other reason it is the right
 place.
+
+**AND THE FIX SWITCHES MATCHING ON, which is the point but should be said out
+loud rather than discovered.** Several rules take the scan as the other operand
+of an exact string compare — `rule_aggregate_data_access.go:70,84` and `:831`,
+`rule_ordered_index_scan.go:63,74`, `rule_type_filter_redundant.go:51`,
+`rule_implement_nested_loop_join.go:4479`. All of them currently decline for an
+escaped table for the same reason the primary candidate does. Landing this turns
+aggregate matching, ordered-index matching, redundant-type-filter elision and
+FK-probe matching ON for those tables in one step, so the plan diff at fix time
+is wider than the two scenarios and the golden will move in ways that are
+CORRECT rather than drift. `:299` in the aggregate rule is candidate-vs-candidate
+and does not move.
 
 **THE CONTINUATION SALT DOES MOVE, and saying it does not was wrong.**
 `PrimaryScanRule.OnMatch` builds the physical plan from the LOGICAL leaf's
