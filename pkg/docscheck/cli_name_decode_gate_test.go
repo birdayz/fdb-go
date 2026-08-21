@@ -51,9 +51,10 @@ import (
 //     and by its own test, not by this gate.
 //   - THE WALK'S MASKING IS NOT CORPUS-DRIVEN. Replacing maskLiterals with a
 //     plain line split in the corpus loop leaves this test green, because
-//     cmd/frl currently has no line where masking changes the verdict (measured:
-//     2 lines carry a spelling only inside a literal, both full-line comments
-//     already exempt). TestNameLineClassification drives the classifier and
+//     cmd/frl currently has no line where masking changes the verdict (measured
+//     over its 31 non-test files: exactly ONE line carries a spelling only
+//     inside a literal -- index.go:241, a full-line comment already exempt).
+//     TestNameLineClassification drives the classifier and
 //     TestMaskingCarriesLexicalStateAcrossLines drives the masker; the WIRING
 //     between them rests on those two, not on the corpus.
 //   - THE `// storage-compare` MARKER IS TRUSTED, NOT VERIFIED. The gate checks
@@ -365,12 +366,13 @@ func maskLiterals(src string) string {
 	sc.Init(f, []byte(src), nil, scanner.ScanComments)
 
 	type tokenSpan struct {
-		off   int
-		blank bool
+		off      int
+		blank    bool
+		inserted bool // auto-inserted semicolon: a position, not a boundary
 	}
 	var toks []tokenSpan
 	for {
-		pos, tok, _ := sc.Scan()
+		pos, tok, lit := sc.Scan()
 		off := fset.Position(pos).Offset
 		if tok == token.EOF {
 			toks = append(toks, tokenSpan{off: len(src)})
@@ -379,6 +381,18 @@ func maskLiterals(src string) string {
 		toks = append(toks, tokenSpan{
 			off:   off,
 			blank: tok == token.COMMENT || tok == token.STRING || tok == token.CHAR,
+			// go/scanner performs automatic semicolon insertion, and for a general
+			// comment containing newlines it emits that semicolon at the comment's
+			// FIRST newline -- an offset INSIDE the token that precedes it. Treat
+			// that as a span boundary and only the comment's first line is blanked:
+			//
+			//	_ = 1 /* opened here
+			//	md.GetRecordType( */ fmt.Fprintln(out, rt.Name)
+			//
+			// left line 2 byte-identical to the source, so a helper name in comment
+			// PROSE exempted a genuine render. An inserted semicolon carries the
+			// literal "\n"; a real one carries ";".
+			inserted: tok == token.SEMICOLON && lit == "\n",
 		})
 	}
 
@@ -387,9 +401,14 @@ func maskLiterals(src string) string {
 		if !t.blank {
 			continue
 		}
+		// The next REAL boundary, stepping over inserted semicolons.
 		end := len(src)
-		if i+1 < len(toks) {
-			end = toks[i+1].off
+		for j := i + 1; j < len(toks); j++ {
+			if toks[j].inserted {
+				continue
+			}
+			end = toks[j].off
+			break
 		}
 		for j := t.off; j < end && j < len(out); j++ {
 			// Newlines survive so line numbering does.
@@ -401,9 +420,13 @@ func maskLiterals(src string) string {
 	return string(out)
 }
 
-// maskedLine is maskLiterals for a single line, for the unit fixtures. A line
-// with no unterminated construct masks identically whether scanned alone or as
-// part of its file.
+// maskedLine is maskLiterals over one line, for the unit fixtures only.
+//
+// It does NOT generally agree with masking the same line inside its file, and
+// the difference is not limited to unterminated constructs: a perfectly ordinary
+// `x := rt.Name` sitting INSIDE a multi-line raw string masks to spaces in the
+// file and to itself alone. The fixtures are self-contained single lines, which
+// is why this is sound for them and why the corpus walk masks whole files.
 func maskedLine(line string) string { return maskLiterals(line) }
 
 // MASKING IS A WHOLE-FILE OPERATION, BECAUSE GO IS NOT LINE-ORIENTED.
@@ -444,5 +467,50 @@ func TestMaskingCarriesLexicalStateAcrossLines(t *testing.T) {
 	if !nameLineIsLeak(raw[closing], maskedLine(raw[closing])) {
 		t.Log("note: the single-line mask now agrees; if that becomes permanent the " +
 			"file-level requirement may be re-examined, but do not assume it")
+	}
+}
+
+// A MULTILINE BLOCK COMMENT IS BLANKED TO ITS END, NOT TO ITS FIRST NEWLINE.
+//
+// go/scanner performs automatic semicolon insertion, and for a general comment
+// containing newlines it emits that semicolon at the comment's FIRST newline —
+// an offset INSIDE the comment. Taking the next token's offset as the span end
+// then blanks only the first line, and a helper name sitting in comment PROSE
+// exempts a real render on the line where the comment closes.
+//
+// Found independently by two reviews on the same day; the fix skips inserted
+// semicolons, which carry the literal "\n" where a real one carries ";".
+func TestMultilineBlockCommentIsFullyMasked(t *testing.T) {
+	t.Parallel()
+
+	src := "package p\n" +
+		"func f() {\n" +
+		"\t_ = 1 /* opened here\n" +
+		"md.GetRecordType( */ fmt.Fprintln(out, rt.Name)\n" +
+		"}\n"
+
+	raw := strings.Split(src, "\n")
+	masked := strings.Split(maskLiterals(src), "\n")
+	if len(raw) != len(masked) {
+		t.Fatalf("masking changed the line count: %d vs %d", len(raw), len(masked))
+	}
+
+	const closing = 3 // the line that closes the comment and then renders
+	if !strings.Contains(raw[closing], "md.GetRecordType(") ||
+		!strings.Contains(raw[closing], "rt.Name") {
+		t.Fatalf("fixture drifted: line %d is %q", closing, raw[closing])
+	}
+	if masked[closing] == raw[closing] {
+		t.Fatalf("the comment tail was not blanked at all — masked line is byte-"+
+			"identical to source:\n  %q", masked[closing])
+	}
+	if strings.Contains(masked[closing], "md.GetRecordType(") {
+		t.Errorf("the allowlist token survives in comment prose, so it exempts the "+
+			"real rt.Name render on the same line:\n  raw    %q\n  masked %q",
+			raw[closing], masked[closing])
+	}
+	if !nameLineIsLeak(raw[closing], masked[closing]) {
+		t.Errorf("a genuine rt.Name render was exempted by a token in comment prose:\n"+
+			"  raw    %q\n  masked %q", raw[closing], masked[closing])
 	}
 }
