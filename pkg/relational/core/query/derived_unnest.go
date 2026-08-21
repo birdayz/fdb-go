@@ -142,9 +142,27 @@ func (t *cascadesTranslator) classifyDerivedUnnestArray(outerLeft logical.Logica
 	// so unlike recursiveRemapValues there IS a counterparty here, and whether
 	// the two agree is the whole conversion-readiness question for this site.
 	recordDerivedUnnestSplit(proj, slot, source)
-	baseCol := source
-	if dot := strings.LastIndexByte(source, '.'); dot >= 0 {
-		qual := source[:dot]
+	baseCol, qual := source, ""
+	// THE TRIPLE DECIDES QUALIFICATION WHEN IT IS PRESENT, and the split is
+	// the fallback for a slot that has none — the reading ProjectionRefs' own
+	// doc prescribes. A quoted one-segment column named `"a.b"` has
+	// Bare=`a.b` and Qualified=false, where the split manufactured a qualifier
+	// `a`, failed to match it against the scan, and declined the whole shape:
+	//
+	//	SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x
+	//	  -> 0AF00: unnest over a computed/non-passthrough … output
+	if slot < len(proj.ProjectionRefs) && proj.ProjectionRefs[slot].Present {
+		ref := proj.ProjectionRefs[slot]
+		baseCol = ref.Bare
+		if ref.Qualified {
+			qual = ref.Qualifier
+		}
+	} else if dot := strings.LastIndexByte(source, '.'); dot >= 0 {
+		qual, baseCol = source[:dot], source[dot+1:]
+	}
+	// A qualified source (`t.arr`) must name the body's scan; a bare one binds
+	// it.
+	if qual != "" {
 		scanAlias := scan.Alias
 		if scanAlias == "" {
 			scanAlias = scan.Table
@@ -152,7 +170,6 @@ func (t *cascadesTranslator) classifyDerivedUnnestArray(outerLeft logical.Logica
 		if !strings.EqualFold(qual, scanAlias) && !strings.EqualFold(qual, scan.Table) {
 			return values.UnknownType, "", derivedUnnestUnsupported
 		}
-		baseCol = source[dot+1:]
 	}
 	// The base scan must be a REAL table (not itself a CTE/derived — the
 	// body-level structural guard). A CTE-scoped scan has its table name in
@@ -247,6 +264,17 @@ func projectionOutputNames(body logical.LogicalOperator) []string {
 		out := proj.Projections[i]
 		if i < len(proj.Aliases) && proj.Aliases[i] != "" {
 			out = proj.Aliases[i]
+		} else if i < len(proj.ProjectionRefs) && proj.ProjectionRefs[i].Present {
+			// Qualification is parse-tree SEGMENT COUNT, never punctuation
+			// recovered from a rendering — the same authority
+			// exactLogicalResultType's projection arm uses, and for the same
+			// reason. A quoted one-segment column named `"a.b"` has
+			// Bare=`a.b`, so the last-dot split published this derived table's
+			// output as `b` and an unnest over it failed:
+			//
+			//	SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x
+			//	  -> 42703: column "a.b" does not exist on source "D"
+			out = proj.ProjectionRefs[i].Bare
 		} else if dot := strings.LastIndexByte(out, '.'); dot >= 0 {
 			out = out[dot+1:] // bare-column output name (qualifier stripped)
 		}

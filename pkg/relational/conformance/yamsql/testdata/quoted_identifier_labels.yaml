@@ -432,7 +432,7 @@ tests:
   # CREATE time and reads upper on every path — it says the arm is not simply
   # "everything is lower". And `id` from q1 is declared quoted-lower, so it
   # would read `ID` under the fold and `id` without it.
-  - query: SELECT * FROM QCASE q, q1 WHERE q.id = 1
+  - query: SELECT * FROM QCASE q, q1 WHERE q.id = 1 ORDER BY q1."id"
     columns: ["ID", "KeepCase", "PLAIN", "id"]
     rows:
       - [1, 42, 7, 1]

@@ -51,6 +51,7 @@ go_test(
         "clustered_outer_seed_contract_test.go",
         "cte_alias_rename_aliasing_test.go",
         "cte_column_alias_result_type_test.go",
+        "derived_unnest_dotted_name_test.go",
         "duplicate_alias_binding_test.go",
         "exists_enclosure_lift_test.go",
         "exists_gathered_bare_read_test.go",

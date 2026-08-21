@@ -14517,11 +14517,12 @@ shape:     RecordQueryFirstOrDefaultPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
 === quoted_identifier_labels.yaml#37
-sql:   SELECT * FROM QCASE q, q1 WHERE q.id = 1
-plan:  NestedLoopJoin(INNER, Scan(QCASE, [=]), Scan(Q1))
-shape: RecordQueryNestedLoopJoinPlan
-shape:   RecordQueryScanPlan
-shape:   RecordQueryScanPlan
+sql:   SELECT * FROM QCASE q, q1 WHERE q.id = 1 ORDER BY q1."id"
+plan:  InMemorySort([_current.id#3 ASC], NestedLoopJoin(INNER, Scan(QCASE, [=]), Scan(Q1)))
+shape: RecordQueryInMemorySortPlan
+shape:   RecordQueryNestedLoopJoinPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryScanPlan
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))

@@ -84,14 +84,16 @@ Note what the third column says: the surviving renderer is `logicalLegFields`,
 the exact-type authority, NOT the presentation site. Presentation reads the
 structured qualifier and renders only if a caller demands a flat key.
 
-**SIX sites parse it back, with THREE different rules**, and the first draft
-found four. Two of the six are at runtime and only one of those executes:
+**SEVEN sites parse it back, with THREE different rules**, and the first draft
+found four. Two are at runtime and only one of those executes; two are already
+migrated by this PR:
 
 | site | rule | live? |
 | --- | --- | --- |
 | `colref.go` (`parseColRef`) on the label path | LAST dot at paren depth zero | yes |
 | `derivedOutputColumns` | LAST dot | yes |
-| `classifyDerivedUnnestArray` (`derived_unnest.go:146`) | LAST dot | yes, nonzero corpus floor |
+| `classifyDerivedUnnestArray` (`derived_unnest.go:146`) | LAST dot | **MIGRATED** — see below |
+| `projectionOutputNames` (`derived_unnest.go:250`) | LAST dot | **MIGRATED** — see below |
 | `splitQualifier` (EXISTS sort keys) | LAST dot | yes, nonzero corpus floor |
 | `rowSlotForLegColumn` (`ordinal_join.go:1168`) | **FIRST** dot | **no — retired, revival alarm at 0** |
 | `isDottedQualifiedName` (`ordinal_join.go:1238`) | any dot, `{`/`[` prefix guard | yes, and it picks a JOIN ARM |
@@ -108,6 +110,34 @@ divergence between the producers. They cannot: they never execute. Migrating it
 is tidying dead code, which is worth doing when the surrounding change lands and
 is not evidence of anything; any criterion resting on it can pass while changing
 nothing that runs.
+
+**TWO OF THE SEVEN ARE ALREADY MIGRATED, AND DOING SO MEASURED THE CHAIN.** Both
+sat on the derived-UNNEST path and both now read `ProjectionRefs` — the same
+parse-tree triple `exactLogicalResultType`'s projection arm uses — falling back
+to the split only for a slot with no segments, which is the reading that field's
+own doc prescribes. The reproducer:
+
+```sql
+CREATE TABLE dottarr (id BIGINT, "a.b" BIGINT ARRAY, PRIMARY KEY (id));
+SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x;
+```
+
+It moved twice as the two landed, which is the useful part:
+
+| state | outcome |
+| --- | --- |
+| before | `42703: column "a.b" does not exist on source "D"` — the derived output was published as `b` |
+| after `projectionOutputNames` | `0AF00: unnest over a computed/non-passthrough … output` — the classify step manufactured qualifier `a`, failed to match the scan, and declined |
+| after `classifyDerivedUnnestArray` | `42703` again, from a THIRD site: the semantic derived-source registration for the UNNEST path |
+
+So the shape is still broken and the two fixes are still right — each removed a
+real flat-name recovery, and the controls (`d.arr`, `qarr.arr` over a plain
+derived table) plan unchanged. The third site is the same family one layer down,
+in the correlated-array-source resolution (`logical_predicate.go:10093` raises
+it; the derived source's column schema is what lacks `a.b`). Note that
+`SELECT d."a.b" FROM (SELECT "a.b" FROM dottarr) d` DOES resolve — so the
+ordinary projection binder is already correct and only the unnest-source path
+is not, which is where an implementer should start.
 
 **`isDottedQualifiedName` IS LIVE and is worse than a naming defect.** It is
 called from `rowIsMergeShaped` (`:1218`) and decides
@@ -241,7 +271,7 @@ than at the end.
 1. Add the structured qualifier alongside the rendered name. No behaviour
    change; golden byte-identical.
 2. Move label derivation off the split, onto the structured qualifier.
-3. Collapse ALL FIVE renderers, not the first two: `legColumns`' join arm defers
+3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `cascades_translator.go:4136`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
    to `logicalLegFields`, and `scalar_subquery_seed.go:143`,
    `clustered_outer_scalar.go:509` and `:537` defer to the same boundary, where
    the descriptor-name decision also moves. Collapsing a subset leaves live
@@ -315,15 +345,18 @@ lookup":
 
 | function | why it is not just lookup |
 | --- | --- |
-| `validateTablesAndColumnsInner` | splits a name that HAS a `ProjectionRefs` counterparty; its own comment says a disagreement RAISES `ErrCodeUndefinedColumn` on a column the parser saw perfectly well |
+| `validateTablesAndColumnsInner` (**TWO** calls) | splits a name that HAS a `ProjectionRefs` counterparty; its own comment says a disagreement RAISES `ErrCodeUndefinedColumn` on a column the parser saw perfectly well |
 | `descriptorForColumn` | splits to pick a DESCRIPTOR |
 | `protoFieldTypeName` | splits to pick a FIELD, which is §0's TYPE half — see criterion (7) |
 
-**26 callers − 5 − 3 = 18 after the change**, and that is the number to grep.
-Three separate places in the first draft said 21, 22, and 27; the count that
-matters is the one AFTER the retirements the RFC itself specifies, and stating
-it three ways meant a reader at implementation could see the criterion as
-failed while it succeeded.
+BOTH of `validateTablesAndColumnsInner`'s calls go, and that is not pedantry:
+for a one-segment `"T.COL"`, migrating only the first leaves the second looking
+up `COL` and raising 42703 anyway. A draft counted it as one site.
+
+**26 callers − 5 − 4 = 17 after the change**, and that is the number to grep.
+Earlier drafts said 21, 22, 27 and 18; the count that matters is the one AFTER
+the retirements the RFC itself specifies, and stating it five ways meant a
+reader at implementation could see the criterion as failed while it succeeded.
 
 The rest are genuine lookup and comparison — a bare-name proto lookup
 (`deriveProjectionColumnDef`, `columnDefFromRef`), a display-name comparison
@@ -371,7 +404,7 @@ ambiguity and none of `parseColRef`'s paren protection — deleting `colref.go`'
 documented limits while that site lives moves the ambiguity somewhere
 undocumented rather than removing it. Step 4 is what makes step 6 honest.
 
-`parseColRef` keeps 18 lookup/comparison callers after this (criterion 1), and
+`parseColRef` keeps 17 lookup/comparison callers after this (criterion 1), and
 those are NOT covered by the deletion: what is deleted is the file's claim to be
 a safe channel for LABELS, and the two limits are limits of that claim.
 
