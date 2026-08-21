@@ -1230,6 +1230,18 @@ const (
 	loadBalanceBackoffRate  = 2.0                   // LOAD_BALANCE_BACKOFF_RATE
 )
 
+// inBandMaybeDeliveredGRV counts GRV replies that carried an IN-BAND
+// maybeDelivered error and therefore took the next-alternative arm below.
+//
+// It exists because that arm is otherwise unobservable from a test. The arm
+// consumes the reply and continues; the retry then succeeds, so the read
+// version, the connection pool and the failure monitor all end in exactly the
+// state they would have reached had the arm never run. A test asserting on end
+// state therefore passes with the arm removed -- measured, on three separate
+// attempts at writing one. This counter is what lets a test prove the arm RAN
+// rather than that the run happened to end tidily.
+var inBandMaybeDeliveredGRV atomic.Int64
+
 // sendGRVRequest cycles all GRV proxies, matching C++ basicLoadBalance
 // with AtMostOnce::False. On broken_promise (transport error), tries next
 // proxy. On FDB application error, propagates immediately. If all proxies
@@ -1339,6 +1351,7 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			// asks the next proxy. Exhausting them all falls through to the
 			// backoff below, which is C++'s behaviour too.
 			if dispositionForReplyError(perr, false) == replyTryNextAlternative {
+				inBandMaybeDeliveredGRV.Add(1)
 				// NOTHING is touched here -- not the failure monitor, not the
 				// connection pool. basicLoadBalance does not either: its
 				// broken_promise arm just moves to the next alternative.

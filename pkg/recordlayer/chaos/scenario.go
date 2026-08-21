@@ -109,9 +109,16 @@ func (s *Scenario) InjectOnce(fault FaultType) {
 // positive would have replaced every later scenario's real diagnosis with a
 // guess. Bounding is strictly weaker and strictly honest.
 //
-// 30s is far above any healthy op here -- the whole 229-test suite runs in well
-// under a minute against a live container -- and far below the package alarm,
-// so a dead cluster surfaces as N fast failures rather than one timeout.
+// 30s is far above any healthy op here: the whole suite is 228 top-level tests
+// (229 `func Test*` minus TestMain) and runs in a MEASURED ~90s against a live
+// container, with the slowest single scenario a few seconds. It is far below
+// the 900s package alarm, so a dead cluster surfaces as fast failures rather
+// than one timeout.
+//
+// An earlier version of this sentence said "229 tests" and "well under a
+// minute". Both were wrong -- the population counted TestMain, and the runtime
+// was off by 1.5x -- and it was the premise this bound rests on. It survived a
+// sweep that fixed the same claim elsewhere because it wraps mid-phrase.
 func (s *Scenario) opContext() (context.Context, context.CancelFunc) {
 	return chaosOpContext()
 }
@@ -158,7 +165,13 @@ func chaosOpContext() (context.Context, context.CancelFunc) {
 // documented soak example is five minutes, so the context would expire mid-run
 // while the workers -- which watch their own wall clock, not this ctx -- kept
 // calling db.Run against a cancelled context in a hot error loop, then failed
-// final validation. The grace covers setup plus the post-run verification.
+// final validation.
+//
+// The grace is FIXED, not scaled, because what it covers does not grow with
+// Duration: store setup and drain. It does NOT cover the post-run verification
+// passes -- those build their own chaosRunContext(0) -- which is where the
+// unscaled exposure actually sits, since a verification scan reads a record set
+// whose size DOES grow with Duration.
 func chaosRunContext(workload time.Duration) (context.Context, context.CancelFunc) {
 	const grace = 2 * time.Minute
 	if workload < 0 {

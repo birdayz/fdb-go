@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,14 +87,28 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 	var injected atomic.Int64
 	grvErrBody := (&types.ErrorOrError{ErrorCode: ErrBrokenPromise}).MarshalFDB()
 	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
-		// CONTENT discrimination, not "first armed frame": the armed connection
-		// carries more than GRV replies, and replacing an arbitrary frame injects
-		// nothing the GRV path will ever parse. Measured -- an index-keyed
-		// intercept fired (counter 1) while the arm under test never ran, and the
-		// mutation test passed as a result. Replace only a frame that currently
-		// parses AS a GRV reply, and replace it with the ErrorOr<> envelope a
-		// dying proxy actually sends.
-		if _, _, _, _, _, _, err := parseGetReadVersionReply(body); err != nil {
+		// Discriminate by the ErrorOr<T> ENVELOPE fileID at body[4:8], not by
+		// "does it parse as a GRV reply". Two weaker versions were tried and both
+		// injected into the wrong frame:
+		//
+		//   - keying on per-conn frame index 0, which the warm-up above has
+		//     already consumed, so nothing was replaced at all;
+		//   - keying on parseGetReadVersionReply returning nil, which is NOT a GRV
+		//     discriminator: ReadErrorOrInto deliberately ignores fileIDs, so a
+		//     GetValue or GetKeyValues success body parses cleanly too. On a
+		//     single-process container these share this connection, so the
+		//     intercept could replace an unrelated reply, tick the counter, and
+		//     let the real GRV succeed untouched -- green without ever reaching
+		//     the arm under test.
+		//
+		// The fileID is stamped at offset 4 by writer_direct.go and is the same
+		// discriminator cycle_workload_test.go uses for the same reason.
+		//
+		// It measurably rejects: instrumented, this run sees 3 frames and rejects
+		// 1 -- the co-located coordinator reply. The parse-based predicate it
+		// replaced rejected 0 of the same 3, and was saved only by the injection
+		// happening to be consumed before that frame arrived.
+		if len(body) < 8 || binary.LittleEndian.Uint32(body[4:8]) != grvReplyEnvelopeFileID {
 			return body, false
 		}
 		if injected.CompareAndSwap(0, 1) {
@@ -103,6 +118,12 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 	})
 	sd.armAddr(addr)
 
+	// The arm-hit counter is what proves the ARM ran. The injection counter
+	// above proves only that a FRAME was replaced, which is a weaker claim and
+	// fails open: a well-formed ErrorOr<T> from any co-located role decodes as a
+	// GRV reply, so an intercept keyed on decodability can replace the wrong
+	// frame, tick its counter, and let the real GRV succeed untouched.
+	armBefore := inBandMaybeDeliveredGRV.Load()
 	db.db.grvCache.invalidate() // force a real round trip, not a cache hit
 	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
 		t.Fatalf("GRV returned %v; an in-band 1100 must be absorbed and retried, "+
@@ -113,6 +134,11 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 	if injected.Load() == 0 {
 		t.Fatal("the intercept never fired: no in-band 1100 was injected, so every " +
 			"assertion below would hold for a run that exercised nothing")
+	}
+	if inBandMaybeDeliveredGRV.Load() == armBefore {
+		t.Fatal("a frame was replaced but the in-band arm never ran: the injection " +
+			"landed on something other than a GRV reply, so nothing below tests the " +
+			"code path this exists for")
 	}
 
 	// The two things the removed handleConnError did, asserted separately so a
@@ -133,5 +159,104 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 			"1030 out to every unrelated in-flight RPC on the same connection, "+
 			"turning a concurrent commit into commit_unknown_result",
 			addr, dialsBefore, dialsAfter)
+	}
+}
+
+// AN IN-BAND maybeDelivered MUST STILL CLEAR A PRE-EXISTING ADDRESS FAILURE.
+//
+// WHAT THIS DOES NOT PIN, first, because the obvious reading is wrong: it does
+// NOT pin WHERE markAlive sits. Moving it below the disposition check leaves
+// this test green -- measured. The address is shared with the coordinator in
+// this sim, and a topology reply on the same address marks it alive too, so no
+// assertion on failure-monitor state can attribute the alive edge to the GRV
+// arm specifically. The argument for keeping markAlive above the check is
+// therefore reasoning, recorded at the call site, not something this harness
+// can distinguish.
+//
+// What it DOES pin: the GRV path clears a pre-existing address failure at all.
+// Deleting markAlive from that path reddens this test -- also measured. That is
+// the property worth a sentinel, because the failure monitor is keyed by
+// ADDRESS and a stuck failure excludes every co-located role.
+//
+// It starts from a FAILED address, the state the GRV-timeout arm leaves behind
+// (it marks the address failed and deliberately keeps the pooled connection).
+//
+// The failure monitor is keyed by ADDRESS, not by role. A well-formed frame
+// therefore proves the ADDRESS is reachable whatever the reply says, and the
+// alive edge is what wakes recovery waiters and lifts storage-server exclusion
+// for every role co-located there. If the in-band arm continues before reaching
+// markAlive, a healthy co-located role stays excluded and the waiters are never
+// signalled -- which is why markAlive belongs ABOVE the disposition check.
+func TestInBandMaybeDeliveredClearsAPreExistingAddressFailure(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, sd := newSimTestDB(t, ctx)
+
+	b := db.db.grvBatchers[grvBatcherDefault]
+	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
+		t.Fatalf("warm GRV: %v", err)
+	}
+	proxies, _ := db.db.getGRVProxies()
+	if len(proxies) == 0 {
+		t.Fatal("no GRV proxies after a successful GRV")
+	}
+	addr := proxies[0].Address
+
+	// The precondition this test exists for, and the one the sibling cannot
+	// create: the address is ALREADY failed when the in-band 1100 arrives.
+	db.db.failMon.markFailed(addr)
+	if !db.db.failMon.isFailed(addr) {
+		t.Fatalf("could not put %s into the failed state; the assertion below "+
+			"would pass without ever testing a recovery", addr)
+	}
+
+	var injected atomic.Int64
+	grvErrBody := (&types.ErrorOrError{ErrorCode: ErrBrokenPromise}).MarshalFDB()
+	sd.setIntercept(func(_ int, _ transport.UID, body []byte) ([]byte, bool) {
+		if len(body) < 8 || binary.LittleEndian.Uint32(body[4:8]) != grvReplyEnvelopeFileID {
+			return body, false
+		}
+		// EVERY GRV reply, not just the first. The position of markAlive is only
+		// observable while the in-band arm is the ONLY thing happening: let the
+		// GRV succeed and the successful reply marks the address alive from
+		// either position, so the end states are identical -- measured, this
+		// test passed with markAlive moved below the check until it injected
+		// persistently.
+		injected.Add(1)
+		return grvErrBody, false
+	})
+	sd.armAddr(addr)
+
+	// The arm-hit counter is what proves the ARM ran. The injection counter
+	// above proves only that a FRAME was replaced, which is a weaker claim and
+	// fails open: a well-formed ErrorOr<T> from any co-located role decodes as a
+	// GRV reply, so an intercept keyed on decodability can replace the wrong
+	// frame, tick its counter, and let the real GRV succeed untouched.
+	armBefore := inBandMaybeDeliveredGRV.Load()
+	db.db.grvCache.invalidate()
+	// Bounded, and expected to EXPIRE: with every reply carrying an in-band
+	// 1100 the GRV can never complete, which is exactly the window in which the
+	// two markAlive positions differ.
+	grvCtx, grvCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer grvCancel()
+	if _, _, _, err := b.getReadVersion(db.db, grvCtx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err == nil {
+		t.Fatal("GRV succeeded although every reply carried an in-band 1100; the " +
+			"injection is not reaching the path under test")
+	}
+	if injected.Load() == 0 {
+		t.Fatal("the intercept never replaced a GRV reply; the assertion below " +
+			"would hold for a run that injected nothing")
+	}
+	if inBandMaybeDeliveredGRV.Load() == armBefore {
+		t.Fatal("a frame was replaced but the in-band arm never ran; the assertion " +
+			"below would hold for a run that never reached the code under test")
+	}
+
+	if db.db.failMon.isFailed(addr) {
+		t.Errorf("%s is still marked failed after well-formed frames arrived from "+
+			"it. The GRV path must clear an address failure on frame receipt: the "+
+			"monitor is keyed by ADDRESS, so a stuck failure excludes every role "+
+			"co-located there and leaves recovery waiters asleep", addr)
 	}
 }
