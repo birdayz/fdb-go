@@ -345,10 +345,13 @@ func nameLineIsLeak(line, masked string) bool {
 // a CLOSER, and a per-line scanner reads it as an opener — blanking a real
 // helper call and rejecting valid code.
 //
-// Spans come from the offset of the NEXT token, never from len(lit). The
-// scanner applies stripCR to `//` comments, general comments and raw strings,
-// so len(lit) is shorter than the source by the interior-CR count and blanking
-// that many bytes leaves an attacker-chosen tail exposed.
+// Spans run to the offset of the next NON-INSERTED token, never to len(lit).
+// Two separate traps in one line. len(lit) is short because the scanner applies
+// stripCR to `//` comments, general comments and raw strings, so blanking that
+// many bytes leaves an attacker-chosen tail exposed. And the plain "next token"
+// is wrong too: automatic semicolon insertion puts a synthetic SEMICOLON at a
+// general comment's first newline, an offset INSIDE the comment, so stopping
+// there blanks only its first line.
 //
 // And CRs are NOT deleted to work around that. Deleting them changes
 // tokenization rather than reconciling spans: `*<CR>/` does not close a block
