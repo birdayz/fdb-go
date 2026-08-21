@@ -1,7 +1,7 @@
 # RFC-238: a qualifier is structure, not punctuation
 
 **Status:** PROPOSED
-**Scope:** how a source qualifier travels from the resolver to the two boundaries that consume a flat key — presentation, and leg resolution in the executor — and every producer and parser between them.
+**Scope:** how a source qualifier travels from the resolver to the two boundaries that genuinely consume a flat key — presentation, and the merge-shape decision in the executor — and every producer and parser between them.
 **Relates to:** RFC-237 (a name is normalized once, at the parse boundary), RFC-229 (a column states its own name), RFC-232 (field values are resolved field accesses).
 
 ## 0. The two queries
@@ -32,7 +32,7 @@ a delimiter to be re-found.
 One decision produces every symptom below: a leg's per-column datum key is
 carried as a **rendered string**, `ALIAS.COL`.
 
-**SEVEN sites MINT A LEG DATUM KEY.** The first draft listed two, which is the
+**EIGHT sites MINT A LEG DATUM KEY.** The first draft listed two, which is the
 census failure this repo has a rule about — a count taken over the file that
 motivated the work rather than over the population.
 
@@ -43,62 +43,85 @@ grep -rn --include='*.go' -E '\+ "\." \+' pkg/relational/core/ pkg/recordlayer/q
   | grep -v '_test.go' | wc -l          # 31
 ```
 
-**31 raw hits, of which 7 mint a leg datum key onto a `values.Field` or a
-`ColumnDef`.** The other 24 render a dotted string for a diagnostic message, a
-display label, or scope bookkeeping (`logical_predicate.go`'s `projCol.name`
-alongside an explicit `qualifier`/`bare` pair, which is already structured and
-is what this RFC generalizes). The number that matters is 7 and the number the
-grep prints is 31; classifying the difference is step 1's work, and any of the
-24 found to mint a key joins the table rather than being argued out of it.
+**31 raw hits, and THE SWEEP DOES NOT PRODUCE THE TABLE BELOW — it is a
+starting point, not the census.** Two ways it misses, both worth stating because
+the first two drafts pasted a command and let the reader assume it yielded the
+list:
+
+- it does not match `legColumns`, which builds `prefix := alias + "."` on one
+  line and appends the column on another, so a renderer central to this RFC is
+  absent from its own population sweep;
+- most of the 31 render a dotted string for a diagnostic, a display label, or
+  scope bookkeeping (`logical_predicate.go`'s `projCol.name`, which already
+  travels beside an explicit `qualifier`/`bare` pair — this RFC generalizing
+  that shape).
+
+So the census is the table, arrived at by reading the hits and the misses.
+Anything later found to mint a key joins it rather than being argued out of it.
 
 | site | what it renders | after |
 | --- | --- | --- |
-| `cascades_translator.go:767` (`legColumns`) | `ToUpper(alias) + "." + ToUpper(col)` | GONE |
-| `logical_result_type.go:621` (`logicalLegFields`) | `ToUpper(alias) + "." + col` | THE ONE |
+| `legColumns` | `ToUpper(alias) + "." + ToUpper(col)` (two lines; sweep misses it) | GONE |
+| `logicalLegFields` | `ToUpper(alias) + "." + col` | THE ONE |
 | `scalar_subquery_seed.go:143` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
 | `clustered_outer_scalar.go:509` | `leg.binding + "." + leg.typ.Fields[i].Name` | GONE |
 | `clustered_outer_scalar.go:537` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
-| `cascades_generator.go:5954` (`qualifyAndMergeColumns`) | `firstAlias + "." + ToUpper(c.Name)` | GONE |
-| `cascades_generator.go:5964` (`qualifyAndMergeColumns`) | `secondAlias + "." + ToUpper(c.Name)` | GONE |
+| `qualifyAndMergeColumns` (two sites) | `alias + "." + ToUpper(c.Name)` | GONE |
+| `cascades_translator.go:4136` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
 
-The middle three are the correlated-scalar and clustered-outer seeds and they
-already disagree among THEMSELVES on the case question — `:509` keeps the leg's
-own slot name verbatim while `:143` and `:537` fold the alias. The last two are
-the presentation renderer, which composes `ColumnDef.Name`; the first draft's
-"five collapse to one" omitted them and so was neither scoped nor checkable.
+The `clustered_outer_scalar` and `scalar_subquery_seed` sites already disagree
+among THEMSELVES on the case question — `:509` keeps the leg's own slot name
+verbatim while `:143` and `:537` fold the alias.
+
+`cascades_translator.go:4136` is not bookkeeping and the previous draft filed it
+that way: it mints `LEG.COL`, resolves it through `mergedType.FieldIndexUnique`,
+and BAKES the resulting ordinal into a predicate, across five merged and chained
+UNNEST paths. It is a producer and a consumer in one place, so leaving it out
+would have left the flat-key mechanism live after every listed renderer
+migrated.
 
 Note what the third column says: the surviving renderer is `logicalLegFields`,
 the exact-type authority, NOT the presentation site. Presentation reads the
 structured qualifier and renders only if a caller demands a flat key.
 
-**FOUR sites parse it back, with THREE different rules**, and one of them is at
-runtime:
+**SIX sites parse it back, with THREE different rules**, and the first draft
+found four. Two of the six are at runtime and only one of those executes:
 
-| site | how it recovers the qualifier |
-| --- | --- |
-| `colref.go` (`parseColRef`) on the label path | LAST dot at paren depth zero |
-| `cascades_translator.go:924` (`derivedOutputColumns`) | LAST dot |
-| `ordinal_join.go:1168` (`rowSlotForLegColumn`) | **FIRST** dot |
-| `ordinal_join.go:1238` (`isDottedQualifiedName`) | any dot, guarded by a `{`/`[` prefix |
+| site | rule | live? |
+| --- | --- | --- |
+| `colref.go` (`parseColRef`) on the label path | LAST dot at paren depth zero | yes |
+| `derivedOutputColumns` | LAST dot | yes |
+| `classifyDerivedUnnestArray` (`derived_unnest.go:146`) | LAST dot | yes, nonzero corpus floor |
+| `splitQualifier` (EXISTS sort keys) | LAST dot | yes, nonzero corpus floor |
+| `rowSlotForLegColumn` (`ordinal_join.go:1168`) | **FIRST** dot | **no — retired, revival alarm at 0** |
+| `isDottedQualifiedName` (`ordinal_join.go:1238`) | any dot, `{`/`[` prefix guard | yes, and it picks a JOIN ARM |
 
-The third is the reader half of this mechanism and it is the consumer of exactly
-the three seed renderers above — its own doc says the dotted arm "serves the
-correlated-scalar seed legs, whose seed leg types name columns literally
-`LEG.COL`". It is called ungated from `:1057`; only the census recording inside
-it is gated.
+**`rowSlotForLegColumn` IS RETIRED, and that matters more than its being a parser.**
+`rowSlotForLegColumn`'s only driver was `adaptLegPositional`'s
+layout-permutation gather, which the exact-ordinal seed removed from the live
+path. `AssertLegColumnProvenanceCensus` (`leg_column_provenance_census.go:609`)
+fails the build if it receives ANY call — an unconditional revival alarm, not a
+floor. So it is reachable in source and unreached in fact.
 
-The fourth is worse than a naming defect: `isDottedQualifiedName` decides
+A draft of this RFC treated its two `EqualFold` comparators as MASKING the case
+divergence between the producers. They cannot: they never execute. Migrating it
+is tidying dead code, which is worth doing when the surrounding change lands and
+is not evidence of anything; any criterion resting on it can pass while changing
+nothing that runs.
+
+**`isDottedQualifiedName` IS LIVE and is worse than a naming defect.** It is
+called from `rowIsMergeShaped` (`:1218`) and decides
 CONTROL FLOW — whether a row is merge-shaped — from a bare dot test. A scan row
 carrying a column declared `"a.b"` is misclassified there, which is §0 inside
-the executor, choosing a join arm.
+the executor, choosing a join arm. This is the runtime site that matters.
 
-**And the structure it needs already exists downstream.** `rt.Legs` carries
-`(Name, Start, Width)`, and `rowSlotForLegColumn` parses the string to recover a
-qualifier it then matches against those very legs. The thesis of this RFC is
-half-built already; what is missing is that the field does not say which leg it
-came from, so the reader re-derives it from punctuation.
+**And the structure it needs already exists downstream, in two places.**
+`rt.Legs` carries `(Name, Start, Width)`, and `ColumnDef` already separates
+`Name` (the datum key) from `Label` (the SQL label). Both are this RFC's thesis
+half-built: the containers are structured and the FIELD is not, so every reader
+re-derives from punctuation what the producer knew and dropped.
 
-Two of the five renderers already disagree — by case, on the column half — a
+Two of the eight renderers already disagree — by case, on the column half — a
 divergence in its own right, pinned by
 `pkg/relational/core/query/leg_column_key_case_divergence_test.go`. That is not
 a bug to fix by picking a spelling. It is the predictable consequence of having
@@ -135,7 +158,7 @@ so it never parses, and it needs no heuristic — its own doc states the rule:
 
 Carry `(sourceAlias, name)` as separate data on the field, alongside the flat
 name during migration. Label derivation then reads the structured qualifier
-instead of re-finding it, and the five renderers collapse to one.
+instead of re-finding it, and the eight renderers collapse to one.
 
 **THERE IS NO EXECUTOR ROW-MAP BOUNDARY**, and the first draft was built on one.
 `PositionalRow` is the SOLE runtime row (`positional_row.go:7`): slots are
@@ -145,33 +168,46 @@ and DML-only — it drops slot order and collapses duplicate names LAST-WINS —
 its doc says a caller that is not itself name-keyed must not use it. Rendering
 there would be dead code or would re-introduce that loss.
 
-**BUT THE EXECUTOR STILL RESOLVES BY NAME**, and the second draft's "the
+**BUT THE EXECUTOR STILL CONSUMES A FLAT NAME**, and the second draft's "the
 presentation boundary is the only place a flat key reaches anything that cannot
-address by ordinal" was false. `rowSlotForLegColumn` (`ordinal_join.go:1153`,
-called ungated from `:1057`) does a flat lookup, then splits at the FIRST dot and
-matches both halves `EqualFold` against `rt.Legs`. `PositionalRow`'s doc is
-accurate about `PositionalRow`; it was never a claim about the whole executor.
+address by ordinal" was false. `PositionalRow`'s doc is accurate about
+`PositionalRow`; it was never a claim about the whole executor.
 
-So there are TWO boundaries where a flat key is consumed, and the design has to
-name both:
+So there are TWO boundaries where a flat key is consumed, and the design names
+both:
 
-- the **presentation** boundary, where a `ColumnDef` gets its `Name` and `Label`
-  — genuinely the last place a flat key must exist, because a caller reading
-  `Rows.Columns()` cannot address by ordinal;
-- the **leg-resolution** boundary in `ordinal_join.go`, which does NOT need a
-  flat key at all. `rt.Legs` already carries `(Name, Start, Width)`; a field
-  that stated its own leg would be resolved by lookup, not by parsing.
+- the **presentation** boundary, where a `ColumnDef` gets its `Name` and
+  `Label` — genuinely the last place a flat key must exist, because a caller
+  reading `Rows.Columns()` cannot address by ordinal. Note `ColumnDef` already
+  separates the two fields, so half the structure is there;
+- the **merge-shape decision** in `ordinal_join.go`, which does NOT need a flat
+  key at all. `rowIsMergeShaped` scans field names for a dot; `rt.Legs` already
+  carries `(Name, Start, Width)`, so a row that stated its own leg structure
+  would be answered by lookup rather than by punctuation.
 
-The second is not a rendering site to keep — it is a parser to delete, and
-deleting it is what makes the qualifier structural at runtime rather than only
-at plan time.
+The second is not a rendering site to keep — it is a parser to delete, and it is
+the one runtime consumer that EXECUTES.
 
-**THE `EqualFold` COMPARATORS ARE PART OF THE DEBT, not incidental.**
-`:1179`/`:1185` compare leg and column halves case-insensitively, which is why
-removing the `legColumns` fold moved zero golden rows: the divergence pinned by
-`leg_column_key_case_divergence_test.go` is MASKED at the reader, not benign.
-A collapse that fixes the producers and leaves a folding comparator has not
-made the key canonical; it has moved the tolerance.
+**A THIRD DRAFT AIMED AT THE WRONG RUNTIME SITE, and the correction is worth
+keeping because it is the same failure the RFC is about.** That draft named
+`rowSlotForLegColumn` as the runtime boundary and its `EqualFold` comparators as
+MASKING the producer case divergence — the argument being that removing the
+`legColumns` fold moved zero golden rows because the reader could not tell the
+producers apart.
+
+Both halves are refuted, each by something already in the tree:
+
+- the reader is RETIRED. `AssertLegColumnProvenanceCensus` fails the build on
+  ANY call to it, because the exact-ordinal seed removed its only driver. Dead
+  comparators mask nothing;
+- the golden is generated through `embedded.PlanPhysicalForTest`, which never
+  runs the executor. A planning measurement was being explained by a runtime
+  mechanism.
+
+What the zero actually says is narrower: no PLANNED shape in the corpus depends
+on a leg key's case. That still argues for collapsing the producers — a latent
+disagreement between two writers of one key is worth removing — but it is not
+evidence of a live defect, and this RFC no longer claims one.
 
 ### Rejected alternatives
 
@@ -216,12 +252,23 @@ than at the end.
    qualifier. It is a SECOND parser and the first draft's step list left it
    standing while deleting the first one's limits, which would have hidden the
    same ambiguity one site over.
-5. **Migrate the RUNTIME reader.** `rowSlotForLegColumn` resolves against
-   `rt.Legs` by leg identity instead of splitting at the first dot, and
-   `isDottedQualifiedName` asks the field whether it is leg-qualified instead of
-   testing for a dot. Both `EqualFold` comparators become exact, which is what
-   makes the collapse in step 3 observable rather than masked. This step is
-   where the two-producer case divergence actually resolves.
+5. **Migrate the runtime, LIVE SITE FIRST.** `rowIsMergeShaped` asks the row
+   whether it is merge-shaped — from `rt.Legs` and each field's own leg
+   identity — instead of scanning names for a dot through
+   `isDottedQualifiedName`. That is the one runtime consumer that executes and
+   the only one deciding control flow.
+
+   `rowSlotForLegColumn` migrates in the same step for tidiness, not for
+   evidence: it is retired behind an unconditional revival alarm, so nothing
+   observable changes when its first-dot split and its `EqualFold` comparators
+   go. A draft of this RFC had it the other way round.
+
+   Also migrate the two remaining LIVE plan-time splitters the first draft
+   missed entirely: `classifyDerivedUnnestArray` (`derived_unnest.go:146`) and
+   `splitQualifier` for EXISTS sort keys, both with nonzero full-corpus floors.
+   Leaving them means a quoted one-segment name containing a dot is still read
+   as qualified on the derived-UNNEST and EXISTS-ordering paths after every
+   other criterion passes.
 6. Delete `parseColRef` from the label path and delete its limits.
 
 ## 5. Acceptance criteria
@@ -242,45 +289,48 @@ grep -rn --include='*.go' 'parseColRef(' pkg/relational/core/ \
 The `grep -v 'func …'` filter is load-bearing and the first draft omitted it: the
 raw count is 27 and includes the DECLARATION, which is the "grep -c counts lines,
 not what you meant" failure inside the criterion written to be checkable.
-Positive control on the same sweep, filtered the same way: `declaresColumn` = 1
-(its one call site), not 2. "The label path" was also undefined, which let any
-survivor be declared off-path. These are the callers that must be GONE, by
-file:line at `2c0527b84`:
+Positive control on the same sweep, filtered the same way: `declaresColumn`
+prints **1**. That control is itself line-counting — `declaresColumn` is invoked
+TWICE on one line (`declaresColumn(descs, name) && !declaresColumn(descs,
+ref.col)`), so the control reports 1 line for 2 calls, which is the exact defect
+it was added to guard against, one level up. It serves only to show the search
+is well-formed, and any count used as a GATE must count call expressions —
+`grep -o 'parseColRef(' | wc -l`, or an AST pass — not lines. "The label path"
+was also undefined, which let any survivor be declared off-path.
 
-| file:line | what it does |
+Callers are named by ENCLOSING FUNCTION, not by line: a file:line table is stale
+by the next commit that touches the file, and this criterion is read at
+implementation time. These five must be GONE:
+
+| function | what it does |
 | --- | --- |
-| `qualifier_stripped_label.go:76` | the interim itself; the whole file goes |
-| `cascades_generator.go:5072` | `label := parseColRef(f.Name).bare()` |
-| `cascades_generator.go:5337` | `label := parseColRef(f.Name).bare()` |
-| `cascades_generator.go:5162` | `columnDefDisplayName` |
-| `cascades_generator.go:6008` | `bare := parseColRef(name).bare()` |
+| `qualifierStrippedLabel` | the interim itself; the whole file goes |
+| `foldedColumnDef` | `label := parseColRef(f.Name).bare()` |
+| `ordinalUnnestColumnDef` | `label := parseColRef(f.Name).bare()` |
+| `columnDefDisplayName` | returns `parseColRef(c.Name).bare()` |
+| `buildAggColumns` | `bare := parseColRef(name).bare()` |
 
-The remaining 21 are NOT removed by this criterion: they read a bare name to
-look up a proto field (`:5015`, `:5114`, `:6289`, `:7185`), to compare against a
-display name (`:4423`, `:5181`), to choose a descriptor (`:4057`), or to test
-qualification (`:5945`, `:5960`), plus the callers in `colref.go`,
-`eval_map.go`, `logical_predicate.go` and `select_helpers.go`.
+Three more go in STEP 2, and the first draft mis-filed all three as "just
+lookup":
 
-**TWO OF THEM ARE NOT MERELY "LOOKUP", AND THE FIRST DRAFT'S BLANKET SENTENCE
-WAS WRONG ABOUT BOTH.**
+| function | why it is not just lookup |
+| --- | --- |
+| `validateTablesAndColumnsInner` | splits a name that HAS a `ProjectionRefs` counterparty; its own comment says a disagreement RAISES `ErrCodeUndefinedColumn` on a column the parser saw perfectly well |
+| `descriptorForColumn` | splits to pick a DESCRIPTOR |
+| `protoFieldTypeName` | splits to pick a FIELD, which is §0's TYPE half — see criterion (7) |
 
-`cascades_generator.go:7146` splits a projection name that HAS a
-`ProjectionRefs` counterparty, and its own comment says a disagreement there
-"does not merely resolve the wrong row, it RAISES ErrCodeUndefinedColumn on a
-column the parser saw perfectly well". It is the same ambiguity with a louder
-failure, and step 2 migrates it onto the structured qualifier along with the
-label sites.
+**26 callers − 5 − 3 = 18 after the change**, and that is the number to grep.
+Three separate places in the first draft said 21, 22, and 27; the count that
+matters is the one AFTER the retirements the RFC itself specifies, and stating
+it three ways meant a reader at implementation could see the criterion as
+failed while it succeeded.
 
-`descriptorForColumn:4057` and `protoFieldTypeName` split the name to pick a
-FIELD, so §0's collision has a TYPE half as well as a label half: with `TOTAL
-INTEGER` and `"X.TOTAL" BIGINT` in one descriptor, the dotted column's metadata
-reports INTEGER — the flowed Long conflates the two widths, so nothing
-downstream catches it. Fixing only the label leaves that wrong. Step 2 carries
-the structured declared name into these lookups, and criterion (7) pins the
-type and nullability.
-
-The rest are lookup and comparison, a separate question; moving them here would
-make this criterion unmeetable.
+The rest are genuine lookup and comparison — a bare-name proto lookup
+(`deriveProjectionColumnDef`, `columnDefFromRef`), a display-name comparison
+(`legRead.column`, `mergedRVSequenceDiverges`), a qualification test
+(`qualifyAndMergeColumns`), plus the callers in `colref.go`, `eval_map.go`,
+`logical_predicate.go` and `select_helpers.go`. They are a separate question;
+moving them here would make this criterion unmeetable.
 
 **(2) The two limits are deleted, not re-documented — and only after BOTH
 parsers are gone.** They are prose, not markers, and the first two drafts of
@@ -321,7 +371,7 @@ ambiguity and none of `parseColRef`'s paren protection — deleting `colref.go`'
 documented limits while that site lives moves the ambiguity somewhere
 undocumented rather than removing it. Step 4 is what makes step 6 honest.
 
-`parseColRef` keeps 22 lookup/comparison callers after this (criterion 1), and
+`parseColRef` keeps 18 lookup/comparison callers after this (criterion 1), and
 those are NOT covered by the deletion: what is deleted is the file's claim to be
 a safe channel for LABELS, and the two limits are limits of that claim.
 
@@ -364,21 +414,35 @@ the old fold did: a hand-authored proto field `order_id` and a DDL-declared
 `"KeepCase"` each come out right. Without it the collapse re-decides case with
 nothing watching.
 
-**(6) The runtime reader stops parsing, and its comparators stop folding.**
+**(6) The LIVE runtime splitter stops picking a join arm from punctuation.**
+
+`rowIsMergeShaped` must no longer call `isDottedQualifiedName`; a row states
+whether it is merge-shaped, from `rt.Legs` and the field's own leg identity.
+This is the runtime half that MATTERS, because it decides control flow:
 
 ```
-grep -c "strings.IndexByte(name, '.')" pkg/recordlayer/query/executor/ordinal_join.go
+grep -c 'isDottedQualifiedName' pkg/recordlayer/query/executor/ordinal_join.go
 ```
 
-**2 today; must be 0 at step 5.** And the two `EqualFold` comparisons inside
-`rowSlotForLegColumn` (`:1179` leg half, `:1185` column half) become exact.
+**3 today** — the call at `:1218`, the doc-comment mention at `:1225`, and the
+declaration at `:1238` — **and must be 0.** The count is 3 and not 2 because
+`grep -c` counts every line the identifier appears on, its own comment included;
+stating 2 here would have been the line-counting mistake one more time, in the
+paragraph correcting it.
 
-This criterion is the one that makes (5) meaningful rather than decorative. The
-case divergence pinned by `leg_column_key_case_divergence_test.go` moves ZERO
-golden rows today precisely because those comparators fold — the two producers
-disagree and the reader cannot tell. A collapse that fixes the producers and
-leaves a folding comparator has moved the tolerance, not removed it, and (5)
-alone would pass.
+**A DRAFT OF THIS CRITERION AIMED AT DEAD CODE.** It required
+`rowSlotForLegColumn`'s first-dot split and its two `EqualFold` comparators to
+go, and argued that those comparators were MASKING the producer case divergence
+— that the zero golden movement was tolerance rather than absence. Both halves
+are false. That reader is retired: `AssertLegColumnProvenanceCensus` fails the
+build if it receives any call. And the golden is generated by
+`embedded.PlanPhysicalForTest`, which never runs the executor, so no runtime
+comparator could have been masking a planning measurement in the first place.
+
+Migrating `rowSlotForLegColumn` alongside the rest is still right — a retired
+parser is still a parser, and a revival would revive the ambiguity with it — but
+it is tidying, and it is NOT evidence. A criterion resting on it can pass while
+changing nothing that executes, which is why it is not the gate here.
 
 **(7) The collision's TYPE half is fixed too, and pinned.** §0's pair diverges on
 more than the label: `descriptorForColumn`/`protoFieldTypeName` split the name to

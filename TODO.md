@@ -19853,12 +19853,18 @@ table over a join star, UNNEST beside one, grouped and scalar aggregates over a
 quoted mixed-case leg column, correlated scalar subquery, alias-list recursive
 CTE) plan byte-identically either way.
 
-**That zero is MASKING, not harmlessness.** `rowSlotForLegColumn`
-(`executor/ordinal_join.go:1179`, `:1185`) compares both halves of a leg key
-with `strings.EqualFold`, so the reader cannot tell the two producers apart. The
-divergence is invisible because something downstream tolerates it, and the
-tolerant comparator is part of the debt rather than a reason to leave the
-producers alone.
+**That zero is a PLANNING measurement and nothing more.** The plan-shape golden
+is generated through `embedded.PlanPhysicalForTest`, which never runs the
+executor. A reading that it is MASKING — that `rowSlotForLegColumn`'s
+`EqualFold` comparators hide the disagreement — was written here and is refuted
+by a standing gate: `AssertLegColumnProvenanceCensus` fails the build if that
+reader receives any call, because the exact-ordinal seed retired its only
+driver. Those comparators are in code that does not run.
+
+What the zero establishes is that no planned shape depends on a leg key's case.
+The divergence is a latent producer disagreement, which is an argument for
+collapsing the producers and not for chasing a runtime symptom that does not
+exist.
 
 **The work is not "pick a spelling" — that framing is wrong, and the reason is
 that the folding line does TWO JOBS.** `tableColumns` names a scan's columns

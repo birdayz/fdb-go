@@ -420,3 +420,20 @@ tests:
     columns: ["ID", "TOTAL"]
     rows:
       - [1, 10]
+  # A STAR OVER A JOIN — the dimension this scenario did not have. It asserts a
+  # star over a SINGLE table, and a projection through a join, and never both at
+  # once, so a label authority that only fires when a star's columns are merged
+  # across two legs shipped green through a change that removed fourteen folds.
+  # This is the fifteenth: qualifyAndMergeColumns folded a label that was
+  # already canonical, and `SELECT * FROM QCASE q, q1` reported KEEPCASE where
+  # `SELECT "KeepCase"` and `SELECT q."KeepCase"` both reported KeepCase.
+  #
+  # The two controls are the point. `PLAIN` was declared unquoted so it folds at
+  # CREATE time and reads upper on every path — it says the arm is not simply
+  # "everything is lower". And `id` from q1 is declared quoted-lower, so it
+  # would read `ID` under the fold and `id` without it.
+  - query: SELECT * FROM QCASE q, q1 WHERE q.id = 1
+    columns: ["ID", "KeepCase", "PLAIN", "id"]
+    rows:
+      - [1, 42, 7, 1]
+      - [1, 42, 7, 2]

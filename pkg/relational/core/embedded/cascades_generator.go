@@ -5949,7 +5949,14 @@ func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAli
 			// over a join yields bare column names (with duplicates), never
 			// U.NAME (verified against fdb-relational 4.11.1.0).
 			if qual.Label == "" {
-				qual.Label = strings.ToUpper(c.Name)
+				// VERBATIM. The label is the SQL name a user sees, and
+				// `c.Name` is already canonical from the parse boundary —
+				// folding it here reported KEEPCASE for a column declared
+				// `"KeepCase"` on the STAR-OVER-A-JOIN path alone, while the
+				// same column read explicitly, or starred over one table,
+				// reported KeepCase. The datum key below still folds: it is
+				// a key, not a name.
+				qual.Label = c.Name
 			}
 			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
 		}
@@ -5959,7 +5966,8 @@ func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAli
 		qual := c
 		if secondAlias != "" && !parseColRef(c.Name).isQualified() {
 			if qual.Label == "" {
-				qual.Label = strings.ToUpper(c.Name)
+				// VERBATIM, for the same reason as the first leg above.
+				qual.Label = c.Name
 			}
 			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
 		}

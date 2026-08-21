@@ -46,14 +46,26 @@ import (
 // is TestLegColumns_NestedNoSpuriousKeys, whose `order_id` is the normalization
 // job above.
 //
-// THAT ZERO IS MASKING, NOT HARMLESSNESS, and reading it as the latter is the
-// mistake this paragraph exists to prevent. `rowSlotForLegColumn`
-// (`executor/ordinal_join.go:1179`, `:1185`) compares BOTH halves of a leg key
-// with `strings.EqualFold`, so the reader cannot tell the two producers apart —
-// the divergence is invisible because something downstream is tolerant of it,
-// not because there is nothing to see. RFC-238 makes those comparators exact in
-// the same step that collapses the producers, which is what turns this zero
-// into evidence instead of silence.
+// WHAT THAT ZERO DOES AND DOES NOT ESTABLISH, because two wrong readings of it
+// have already been written down here.
+//
+// It is a PLANNING measurement. The plan-shape golden is generated through
+// `embedded.PlanPhysicalForTest` and never runs the executor, so a zero there
+// says nothing about runtime behaviour in either direction.
+//
+// It was then read as MASKING — that `rowSlotForLegColumn` compares both halves
+// of a leg key with `strings.EqualFold` and so cannot tell the two producers
+// apart. That is refuted by a standing gate rather than by argument:
+// `AssertLegColumnProvenanceCensus` fails the build if that reader receives ANY
+// call, because the exact-ordinal seed retired its only driver. The comparators
+// are in code that does not run, so they mask nothing.
+//
+// What the zero actually establishes is narrow and worth stating exactly: no
+// PLANNED shape in the corpus, and none of the twelve probed by hand, carries a
+// leg key whose case a planner decision depends on. The consumers that would
+// care are either retired or downstream of planning. That is why the divergence
+// is a latent producer disagreement rather than a live defect — and why the
+// fix is to collapse the producers, not to chase a symptom that has none.
 //
 // TestLegColumns_NamingConsistentWithAnchoredRecord also reddens and is NOT
 // evidence for either side: it builds its expectation by applying

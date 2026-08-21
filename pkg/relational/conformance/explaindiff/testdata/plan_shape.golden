@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2628 dml=157 non_query=104 plan_errors=273 unexpected_errors=4
+# files=359 queries=2629 dml=157 non_query=104 plan_errors=273 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14516,6 +14516,12 @@ shape:     RecordQueryScanPlan
 shape:     RecordQueryFirstOrDefaultPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryScanPlan
+=== quoted_identifier_labels.yaml#37
+sql:   SELECT * FROM QCASE q, q1 WHERE q.id = 1
+plan:  NestedLoopJoin(INNER, Scan(QCASE, [=]), Scan(Q1))
+shape: RecordQueryNestedLoopJoinPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryScanPlan
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))
