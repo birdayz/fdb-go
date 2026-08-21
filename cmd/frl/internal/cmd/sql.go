@@ -1086,7 +1086,11 @@ func (r *sqlRunner) describeTable(name string) error {
 					Underlying() *recordlayer.RecordMetaData
 				}); ok {
 					if rt := up.Underlying().GetRecordType(tbl.MetadataName()); rt != nil && rt.PrimaryKey != nil {
-						out.pk = rt.PrimaryKey.FieldNames()
+						// SQL identifiers, like the column rows above -- otherwise one
+						// description prints two spellings of the same column.
+						for _, f := range rt.PrimaryKey.FieldNames() {
+							out.pk = append(out.pk, userName(f))
+						}
 					}
 				}
 				return out, nil

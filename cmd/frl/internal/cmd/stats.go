@@ -690,8 +690,30 @@ func foundTriState(st embedded.StatisticsStatus) *bool {
 // Decoding HERE, not upstream, is deliberate: the collision the reader detects
 // lives in storage space, and the map the planner is handed must stay keyed the
 // way the planner asks. Only what a human or a script reads gets translated.
+//
+// DECODES ONLY WHEN THE RESULT PROVABLY MAPS BACK. This port's metadata does not
+// only come from the SQL layer -- RecordMetaDataBuilder.SetRecords copies
+// protobuf identifiers verbatim -- so a record type may legally be named
+// __0Order without ever having been escaped from anything. Decoding that yields
+// __Order, which re-encodes to __Order and NOT to __0Order, so the name shown to
+// the operator would resolve to nothing: GetRecordType misses on the direct key
+// and then skips its escape retry, because the escape is a no-op.
+//
+// The round trip IS the provenance test, and it needs no extra bookkeeping: if
+// encode(decode(s)) == s then the decoded spelling addresses exactly the same
+// type, which is the whole promise made to whoever copies a name out of the
+// output. When it does not hold, the stored name is shown unchanged -- uglier,
+// and correct.
 func userName(storage string) string {
-	return recordlayer.ToUserIdentifier(storage)
+	user := recordlayer.ToUserIdentifier(storage)
+	if user == storage {
+		return storage
+	}
+	back, err := recordlayer.ToProtoBufCompliantName(user)
+	if err != nil || back != storage {
+		return storage
+	}
+	return user
 }
 
 // userNames is userName over a slice, re-sorted BY THE DECODED NAME.

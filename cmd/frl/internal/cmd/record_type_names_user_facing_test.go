@@ -353,3 +353,116 @@ contexts:
 		}
 	}
 }
+
+// COMPLETION FALLS BACK TO STORED NAMES WHEN THE SCHEMA IS AMBIGUOUS.
+//
+// This is a safety guard, not a cosmetic one. Escaping is not injective across
+// the two namespaces: declare SQL types MY$TABLE (stored MY__1TABLE) and
+// MY__1TABLE (stored MY__01TABLE) together and decoding offers MY$TABLE and
+// MY__1TABLE — but GetRecordType tries the STORED key first, so accepting the
+// second candidate resolves to the FIRST type. These completers feed
+// `record put` and `record delete`, so that mis-resolution writes to or deletes
+// from a table the operator did not name.
+//
+// Under collision the stored names are offered instead: unhelpful on purpose,
+// because they are the only keys that resolve unambiguously.
+func TestCompletionFallsBackToStoredNamesWhenAmbiguous(t *testing.T) {
+	// MY$TABLE stores as MY__1TABLE; a table whose SQL name IS MY__1TABLE
+	// stores as MY__01TABLE. Declaring both storage names is exactly the
+	// collision.
+	const aStore, bStore = "MY__1TABLE", "MY__01TABLE"
+	md := metaWithTwoRenamedTypes(t, aStore, bStore)
+
+	names, ambiguous := md.AmbiguousDeclaredNames()
+	if !ambiguous {
+		t.Fatalf("fixture is vacuous: the pair does not collide, so the guard under "+
+			"test never engages (got %v)", names)
+	}
+
+	got := recordTypeCompletionNames(md)
+	if len(got) == 0 {
+		t.Fatal("completion offered nothing; the assertions below would be vacuous")
+	}
+	for _, want := range []string{aStore, bStore} {
+		var found bool
+		for _, c := range got {
+			if c == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("under collision, completion must offer the STORED name %q: %v", want, got)
+		}
+	}
+	// And it must NOT offer the decoded spelling, which is the one that
+	// resolves to the wrong type.
+	for _, c := range got {
+		if c == "MY$TABLE" {
+			t.Errorf("completion offered the decoded name MY$TABLE while the schema is "+
+				"ambiguous — accepting it resolves to a different table than the one "+
+				"whose SQL name that is: %v", got)
+		}
+	}
+}
+
+// metaWithTwoRenamedTypes stores Order and Customer under the two given names.
+// Kept separate from metaWithEscapedTypeName rather than generalised: the
+// single-rename form is used by eight arms and is clearer read straight.
+func metaWithTwoRenamedTypes(t *testing.T, orderTo, customerTo string) *recordlayer.RecordMetaData {
+	t.Helper()
+	rename := map[string]string{"Order": orderTo, "Customer": customerTo}
+	b := recordlayer.NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(recordlayer.Field("order_id"))
+	b.GetRecordType("Customer").SetPrimaryKey(recordlayer.Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(recordlayer.Field("id"))
+	base, err := b.Build()
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	p, err := base.ToProto()
+	if err != nil {
+		t.Fatalf("to proto: %v", err)
+	}
+	p.JoinedRecordTypes = nil
+	for _, msg := range p.GetRecords().GetMessageType() {
+		if to, ok := rename[msg.GetName()]; ok {
+			msg.Name = proto.String(to)
+		}
+		for _, f := range msg.GetField() {
+			if to, ok := rename[strings.TrimPrefix(f.GetName(), "_")]; ok &&
+				strings.HasPrefix(f.GetName(), "_") {
+				f.Name = proto.String("_" + to)
+			}
+			full := strings.TrimPrefix(f.GetTypeName(), ".")
+			short, pkgPrefix := full, ""
+			if i := strings.LastIndex(full, "."); i >= 0 {
+				short, pkgPrefix = full[i+1:], full[:i+1]
+			}
+			if to, ok := rename[short]; ok {
+				f.TypeName = proto.String("." + pkgPrefix + to)
+			}
+		}
+	}
+	for _, rt := range p.GetRecordTypes() {
+		if to, ok := rename[rt.GetName()]; ok {
+			rt.Name = proto.String(to)
+		}
+	}
+	for _, idx := range p.GetIndexes() {
+		for i, n := range idx.GetRecordType() {
+			if to, ok := rename[n]; ok {
+				idx.RecordType[i] = to
+			}
+		}
+	}
+	md, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatalf("from proto: %v", err)
+	}
+	for _, want := range []string{orderTo, customerTo} {
+		if _, ok := md.RecordTypes()[want]; !ok {
+			t.Fatalf("fixture did not land: no record type stored as %s", want)
+		}
+	}
+	return md
+}

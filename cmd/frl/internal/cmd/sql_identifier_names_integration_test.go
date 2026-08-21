@@ -46,7 +46,7 @@ CREATE SCHEMA TEMPLATE frlnames_tpl
 CREATE TABLE "MY$TABLE" (
   id BIGINT,
   "COL$X" STRING,
-  PRIMARY KEY (id)
+  PRIMARY KEY ("COL$X")
 );
 
 CREATE SCHEMA /frlnames/main WITH TEMPLATE frlnames_tpl;
@@ -111,6 +111,14 @@ CREATE SCHEMA /frlnames/main WITH TEMPLATE frlnames_tpl;
 	if strings.Contains(desc, storageCol) {
 		t.Errorf("describeTable(%q) leaks the storage column name %q:\n%s",
 			sqlName, storageCol, desc)
+	}
+	// The primary-key line comes from rt.PrimaryKey.FieldNames(), a DIFFERENT
+	// source than the column rows -- so an escaped column in the KEY is the only
+	// shape that can catch the two halves disagreeing. A fixture keyed on a plain
+	// column cannot express it, which is why this one is keyed on COL$X.
+	if !strings.Contains(desc, "primary key") && !strings.Contains(desc, "Primary key") {
+		t.Fatalf("no primary-key line in the description, so the assertion below is "+
+			"vacuous:\n%s", desc)
 	}
 
 	// The stored spelling still resolves — this WIDENS what is accepted rather

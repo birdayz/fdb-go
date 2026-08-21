@@ -161,3 +161,46 @@ func TestToUserIdentifierIsNotIdempotent(t *testing.T) {
 		}
 	}
 }
+
+// THE ESCAPE IS NOT A BIJECTION, WHICH IS WHY A DECODED NAME MUST BE
+// ROUND-TRIP-CHECKED BEFORE IT IS SHOWN TO ANYONE.
+//
+// Record-layer metadata does not only come from the SQL layer:
+// RecordMetaDataBuilder.SetRecords copies protobuf identifiers verbatim, so a
+// record type may legally be named __0Order having never been escaped from
+// anything. Decoding it is then not a translation, it is a rename — and the
+// renamed spelling addresses nothing, because re-encoding does not recover the
+// stored name.
+//
+// cmd/frl's userName relies on exactly this test: it decodes only when
+// encode(decode(s)) == s. If these shapes ever start round-tripping, that guard
+// becomes dead weight rather than load-bearing, and this test says so.
+func TestEscapeIsNotABijection(t *testing.T) {
+	t.Parallel()
+
+	// Shapes where decode-then-encode does NOT recover the input. Each would be
+	// displayed as a name that resolves to nothing, or to something else.
+	for _, s := range []string{
+		"__0Order", // decodes to __Order, which re-encodes to __Order
+		"A__3B",    // decode is identity, but encoding it yields A__03B
+	} {
+		user := ToUserIdentifier(s)
+		back, err := ToProtoBufCompliantName(user)
+		if err == nil && back == s {
+			t.Errorf("%q now round-trips (%q -> %q); the round-trip guard in "+
+				"cmd/frl's userName is no longer load-bearing and should be re-examined",
+				s, user, back)
+		}
+	}
+
+	// And the shapes that DO round-trip, which is what makes decoding safe for
+	// every name the SQL layer actually produces. A regression here would make
+	// the guard reject good names and silently stop decoding.
+	for _, s := range []string{"MY__1TABLE", "MY__01TABLE", "A__2B", "Order"} {
+		user := ToUserIdentifier(s)
+		back, err := ToProtoBufCompliantName(user)
+		if err != nil || back != s {
+			t.Errorf("%q must round-trip: decoded %q, re-encoded %q (err %v)", s, user, back, err)
+		}
+	}
+}
