@@ -23,12 +23,18 @@ import (
 // to be counted rather than argued.
 //
 // RFC-232 CLOSED THAT POPULATION, so this paragraph is history: stubInventory()
-// is empty, and no GetResultType body under this tree returns the singleton.
-// The zero this census was built to detect has therefore ARRIVED, and by the
-// reading above that means RFC-213's implementation is correct and LATENT —
-// worth having for coherence, with no measurable plan-quality payoff left to
-// claim. The census stays as the instrument that would show the population
-// coming back.
+// is empty, and findStubs finds no UNCONDITIONAL stub among the non-test plans
+// under planPkgDir. "Unconditional" is the word the instrument rests on --
+// bodies that return the singleton on a branch still exist (explode.go's
+// element type, comparator.go and selector.go with no children), and the
+// detector does not count them.
+//
+// What that does NOT establish is a zero from THIS census, which classifies by
+// type code at the consumer and counts a nil type as unresolved too. The
+// reading above -- that a printed zero would make RFC-213 correct and LATENT --
+// still needs a corpus run to claim. The census stays because it is the only
+// thing that could produce that number, and because it would show the
+// population coming back.
 //
 // GATED by values.LegIdentityCensusEnabled, like every census on this path: the
 // recorder's first statement is the gate, so a disabled census costs one atomic

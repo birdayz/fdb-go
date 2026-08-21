@@ -70,11 +70,11 @@ func TestDistinctKeyColumns_WrapperOverProjection(t *testing.T) {
 
 	// The wrapper. A PredicatesFilter changes no row shape and DOES forward its
 	// inner's type, which is what makes it the probe: anything it reports is the
-	// projection's answer verbatim. (RecordQueryLimitPlan would NOT work here — it
-	// is still a GetResultType stub answering UnknownType, so a Limit above a
-	// projection swallows the row the projection now states. That is a real gap,
-	// booked as CQ-101, and it is why this pin uses a forwarding wrapper: pinning
-	// the flip requires a wrapper that can transmit it.)
+	// projection's answer verbatim. (RecordQueryLimitPlan would serve equally now
+	// -- limit.go:GetResultType forwards through GetResultValue since RFC-232
+	// closed the stub population. It did not when this pin was written, which is
+	// why a PredicatesFilter was chosen; the choice is now arbitrary rather than
+	// forced, and either wrapper transmits the flip.)
 	wrapper, err := plans.NewRecordQueryPredicatesFilterPlan(proj, nil)
 	wrapper = mustConstruct(t, wrapper, err)
 

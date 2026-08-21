@@ -808,6 +808,14 @@ otherwise:
 Every one is a `RecordQueryFlatMapPlan`, which is still a `GetResultType` stub and which this RFC
 does not touch — so those 31 cannot have flipped, and the count is 31 before and after.
 
+
+> **STALE PREMISE (found by a #762 sweep, not re-derived here).** `flat_map.go`
+> `GetResultType()` now returns `p.resultValue.Type()`; it stopped being a stub when
+> RFC-232 landed. The "cannot have flipped" step above therefore no longer follows from
+> its stated reason, and the 31-before-and-after count needs re-measuring rather than
+> re-asserting. Left as written because this is a DRAFT awaiting a lap and the argument
+> is its author's to redo.
+
 The wrapper-over-projection arm is real but **not reached by the sqldriver FDB corpus** — which
 is what was MEASURED, and it is a weaker claim than "unreachable from SQL". The instrumented run
 above classifies every read at the site: 31 FlatMap, and five resolved reads over a Scan, a
@@ -828,6 +836,10 @@ That pin also surfaced **CQ-101**: it could not use a `LIMIT` as the wrapper, be
 `RecordQueryLimitPlan.GetResultType()` is still a flat `UnknownType` stub and swallows the row
 its inner now states. Booked with the measurement, deliberately not fixed here — flipping a stub
 needs its own role-differential, which is §5's own rule.
+
+> **STALE PREMISE (same sweep).** `limit.go` `GetResultType()` forwards through
+> `GetResultValue()` since RFC-232, so the LIMIT no longer swallows the row. CQ-101 is
+> now marked done in TODO.md.
 
 **Two censuses must be reconciled, not relaxed** (both files say so themselves):
 

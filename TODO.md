@@ -14122,12 +14122,17 @@ None is speculative: each was re-verified against the tree before booking.
   DIVERGENCES.md's read count by zero** — none of these values reaches the
   decline classifier. Book it for correctness, not for the residue.
 
-- [ ] **CQ-97 (MED, query-engine — needs its own RFC + Graefe ACK):
+- [x] **CQ-97 (MED, query-engine — needs its own RFC + Graefe ACK):
   `RecordQueryFlatMapPlan.GetResultType()` returns `values.UnknownType`
   unconditionally where Java derives it from the result value.** Found while
   refuting CQ-68 and explicitly not attempted there; it is a planner-wide typing
   change with its own blast radius, and stating it in a closing paragraph is how
   a live divergence becomes invisible.
+  
+  **DONE — closed by RFC-232; found still open during a #762 sweep.**
+  `plans/flat_map.go` `GetResultType()` returns `p.resultValue.Type()`, which is
+  the derivation from the result value this entry asked for. The text below is the
+  ORIGINAL finding, kept as the record of what was wrong.
 
   **Go:** `plans/flat_map.go:86` returns the `UnknownType` singleton with no
   reference to the plan's result value. **Java:**
@@ -16464,8 +16469,14 @@ None is speculative: each was re-verified against the tree before booking.
   Read Java first — `GraphExpansion` / `SelectExpression` construction for a
   derived table — before changing the Go translator.
 
-- [ ] **CQ-101 (query-engine): `RecordQueryLimitPlan` swallows the row its inner
+- [x] **CQ-101 (query-engine): `RecordQueryLimitPlan` swallows the row its inner
   now states, so a LIMIT above a projection re-hides what RFC-226 exposed.**
+  
+  **DONE — closed by RFC-232; found still open during a #762 sweep.** `plans/limit.go`
+  `GetResultType()` returns `p.GetResultValue().Type()`, so a LIMIT forwards the row its
+  inner states instead of answering the singleton. The entry stayed unchecked after the
+  fix landed elsewhere, which is how it came to schedule work that no longer existed.
+  The measurement below is the ORIGINAL finding, kept as the record of what was wrong.
   MEASURED at RFC-226 while pinning `distinctKeyColumns`:
 
   ```
