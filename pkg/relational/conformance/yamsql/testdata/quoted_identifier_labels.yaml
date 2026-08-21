@@ -231,3 +231,38 @@ tests:
     columns: ["KeepCase", "SUM(PLAIN)"]
     rows:
       - [42, 7]
+  # An explicit CTE column-alias list OVERRIDES the seed-derived output names
+  # entirely, so these two arms pin the ALIAS path and — measured, not assumed —
+  # they do NOT drive the seed-derived one: with the fold restored they both
+  # still pass. The arm that drives it is the alias-free one below. They are
+  # kept because the alias path is its own authority worth pinning, and the
+  # comment says which path each covers so the next reader does not credit
+  # these with coverage they do not have.
+  - query: WITH RECURSIVE d("Node") AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["Node"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # The explicitly-projected twin of the same alias list.
+  - query: WITH RECURSIVE d("Node") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["Node"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # NO column-alias list, so the CTE's output names come from the SEED's own
+  # projection rather than from an alias override — the branch that folded, and
+  # the ONLY arm here that drives it. The temp table the self-reference scans is
+  # keyed by this name, and the fold's own sibling fourteen lines away assigned
+  # it verbatim, so the two paths spelled one column two ways. Mutation-verified:
+  # restoring the fold reddens this arm and leaves the alias arms above green.
+  - query: WITH RECURSIVE d AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+      - [3]

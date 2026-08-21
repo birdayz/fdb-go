@@ -62,13 +62,19 @@ func TestParseColRef_SplitsAtDepthZero(t *testing.T) {
 			"hid the qualifier dot inside the span, and Rows.Columns() over joined derived " +
 			"tables reported [Q'.Z' R'.Z'] where [Z' Z'] is right"},
 		{`A''B.C`, "A''B", "C", "a doubled quote is content as well; nothing here reads it as an escape"},
-		// A DOT inside a string literal still resolves, and it costs nothing to
-		// get right: the parens around the literal put that dot at depth 1
-		// whether or not the quotes mean anything.
+		// A DOT inside a string literal resolves when something ENCLOSES it —
+		// here the call's own parens put it at depth 1 whether or not the
+		// quotes mean anything. The enclosure is the precondition, not the
+		// literal; see the depth-0 limit two rows below.
 		{
 			`I.COUNT(CASE WHEN S='.' THEN 1 END)`, "I", `COUNT(CASE WHEN S='.' THEN 1 END)`,
-			"a DOT inside a literal is not a split point, via paren depth alone",
+			"a DOT inside an ENCLOSED literal is not a split point, via paren depth alone",
 		},
+		// An UNMATCHED paren inside a literal is inert like any other stray, so
+		// this one is NOT a cost. Pinned because the sentence describing the
+		// cost got this backwards once, saying any paren in a literal was
+		// affected.
+		{`X.Y || ')'`, "X", `Y || ')'`, "a stray paren inside a literal changes nothing"},
 		// A STATED LIMIT — the one shape the quote decision costs, pinned so it
 		// is known rather than discovered. A PAREN inside a string literal is
 		// read as a real paren, closes the enclosing call early, and drops the
@@ -82,8 +88,17 @@ func TestParseColRef_SplitsAtDepthZero(t *testing.T) {
 		// A measured regression against an unmeasured one goes only one way.
 		{
 			`I.COUNT(CASE WHEN S=')' THEN X.Y END)`, `I.COUNT(CASE WHEN S=')' THEN X`, `Y END)`,
-			"KNOWN LIMIT: a paren inside a literal closes the real one. If this row ever " +
-				"needs to change, the fix is a structured name, not a cleverer scan",
+			"KNOWN LIMIT 1 of 2: a MATCHED paren inside a literal closes the real one. If " +
+				"this row ever needs to change, the fix is a structured name, not a " +
+				"cleverer scan",
+		},
+		// THE SECOND LIMIT, and the one the prose missed. A literal at depth 0
+		// has nothing enclosing it, so a dot inside it IS the last depth-0 dot.
+		// The sentence claiming "only a literal containing a PAREN is affected"
+		// was written from the enclosed row above rather than from the rule.
+		{
+			`X.Y || '.'`, `X.Y || '`, `'`,
+			"KNOWN LIMIT 2 of 2: an UNENCLOSED literal containing a dot splits inside itself",
 		},
 	} {
 		got := parseColRef(tc.in)

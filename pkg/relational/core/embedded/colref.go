@@ -64,19 +64,30 @@ func parseColRef(s string) colRef {
 	// reports `["Q'.Z'", "R'.Z'"]` where `["Z'", "Z'"]` is right. That is a
 	// REACHABLE regression through ordinary delimited identifiers.
 	//
-	// The literal handling existed for the opposite shape — a `)` inside a
-	// string literal, `I.COUNT(CASE WHEN S=')' THEN X.Y END)`, where the
-	// literal's paren closes the real one early and the inner dot lands at
-	// depth 0. That shape needs a string literal to appear in a derived NAME,
-	// and a live differential over 2,682,910 production calls found no
+	// The literal handling existed for the opposite shape — a MATCHED paren
+	// inside a string literal, `I.COUNT(CASE WHEN S=')' THEN X.Y END)`, where
+	// the literal's `)` closes the real `(` early and the inner dot lands at
+	// depth 0. Any such shape needs a string literal to appear in a derived
+	// NAME, and a live differential over 2,682,910 production calls found no
 	// literal-bearing name at all. So the trade is a measured regression
-	// against an unmeasured one, and it goes the only way it can. The `)`-in-
-	// literal case is pinned as a stated limit instead.
+	// against an unmeasured one, and it goes the only way it can.
 	//
-	// Note what this does NOT cost: a literal containing a DOT (`S='.'`) still
-	// resolves correctly, because the surrounding parens put that dot at depth
-	// 1 whether or not the quotes mean anything. Only a literal containing a
-	// PAREN is affected.
+	// WHAT IT COSTS IS TWO SHAPES, NOT ONE, and both are pinned as stated
+	// limits. An earlier version of this comment said "only a literal
+	// containing a PAREN is affected" and that "a literal containing a DOT
+	// still resolves correctly, because the surrounding parens put that dot at
+	// depth 1" — which was written by describing the one row that happened to
+	// be pinned, where parens DO enclose, rather than by probing the rule:
+	//
+	//	I.COUNT(CASE WHEN S='.' THEN 1 END)  -- fine: the call's parens enclose
+	//	X.Y || '.'                           -- NOT fine: nothing encloses it,
+	//	                                     -- so the literal's dot is the last
+	//	                                     -- depth-0 dot and splits there
+	//
+	// And it over-claimed in the other direction too: `X.Y || ')'` is correct,
+	// because an UNMATCHED paren inside a literal is inert like any other stray.
+	// The cost is a literal containing a MATCHED paren, or a literal containing
+	// a dot at depth 0.
 	//
 	// Pass 1: MATCHED paren pairs. nest[i] is true for a paren that has a
 	// partner; a stray one stays false and is inert below.

@@ -10218,11 +10218,16 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// not the seed's source PARENT. The temp table (which the self-reference scans)
 	// must therefore be keyed by UP for the join predicate to match. Both legs are
 	// normalized to emit these names; nothing renames the temp table afterwards.
+	// VERBATIM, and the tell that it had to be was fourteen lines down: the
+	// projection-less fallback below assigns `seedOut[i] = f.Name` unfolded,
+	// so one branch keyed the temp table `NODE` and the other `Node` for the
+	// same `WITH RECURSIVE d("Node", …)`. extractOutputProjectionNames returns
+	// names already normalized at the parse capture, so the fold here was a
+	// second normalization — and this list is what the TempTableInsert arm of
+	// expressionOutputColumns publishes as the CTE's output schema.
 	seedSrc := extractOuterProjectionColumns(seedBranches[0])
 	seedOut := make([]string, len(seedSrc))
-	for i, n := range extractOutputProjectionNames(seedBranches[0]) {
-		seedOut[i] = strings.ToUpper(n)
-	}
+	copy(seedOut, extractOutputProjectionNames(seedBranches[0]))
 	// A projection-less seed (`SELECT * FROM t`) exposes no projection columns,
 	// which silently DROPPED an explicit CTE column-alias list
 	// (`WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL …)`): the alias
