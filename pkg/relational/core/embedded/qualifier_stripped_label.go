@@ -54,9 +54,11 @@ import (
 //     that happens to carry a dot splits.
 //
 // RFC-238 IS THE FIX AND THIS IS THE INTERIM. The qualifier is carried as a
-// RENDERED STRING and re-parsed here; the RFC carries it as structure instead,
-// renders once at the executor's row map, and its acceptance criteria delete
-// this function's limits rather than re-document them.
+// RENDERED STRING by five sites and re-parsed by four, of which this is one;
+// the RFC carries it as structure instead, leaving a flat key only at the two
+// boundaries that genuinely consume one — presentation, and leg resolution in
+// the executor — and its acceptance criteria delete this function's limits
+// rather than re-document them.
 //
 // THE RIGHT ANSWER IS THE REFERENCE'S OWN ALIAS, and it is not available here.
 // A qualifier is a source alias, so a reference that knew which source it read

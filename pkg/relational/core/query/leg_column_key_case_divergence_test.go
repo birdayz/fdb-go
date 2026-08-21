@@ -9,9 +9,9 @@ import (
 
 // TWO MECHANISMS BUILD THE JOIN-LEG DATUM KEYS AND THEY DISAGREE BY CASE.
 // `legColumns` here and `logicalLegFields` in logical_result_type.go both
-// produce the per-leg keys the executor's row map is keyed by — `A.K`, `B.K`,
-// so two legs' `K` stay distinguishable — and they spell the COLUMN half
-// differently:
+// produce the per-leg keys `rowSlotForLegColumn` resolves against at runtime —
+// `A.K`, `B.K`, so two legs' `K` stay distinguishable — and they spell the
+// COLUMN half differently:
 //
 //   - logicalLegFields keeps it VERBATIM and says so at its site: "The COLUMN
 //     half is verbatim; only the ALIAS half is folded, and only because a
@@ -37,14 +37,23 @@ import (
 // boundary. Whichever spelling wins, two producers of one datum key will drift
 // again. TODO.md carries that plan; this test watches the gap until then.
 //
-// The measurement that sized it: removing the fold is invisible from SQL — zero
-// rows of the 2627-query plan-shape golden move, and twelve targeted shapes
-// chosen to reach a leg key by different routes (a three-way join, a CTE and a
-// derived table over a join star, an UNNEST beside one, a grouped and a scalar
-// aggregate over a quoted mixed-case leg column, a correlated scalar subquery,
-// an alias-list recursive CTE) plan byte-identically either way. What it is not
-// invisible to is TestLegColumns_NestedNoSpuriousKeys, whose `order_id` is the
-// normalization job above.
+// The measurement that sized it: removing the fold moves ZERO rows of the
+// 2627-query plan-shape golden, and twelve targeted shapes chosen to reach a leg
+// key by different routes (a three-way join, a CTE and a derived table over a
+// join star, an UNNEST beside one, a grouped and a scalar aggregate over a
+// quoted mixed-case leg column, a correlated scalar subquery, an alias-list
+// recursive CTE) plan byte-identically either way. What it is not invisible to
+// is TestLegColumns_NestedNoSpuriousKeys, whose `order_id` is the normalization
+// job above.
+//
+// THAT ZERO IS MASKING, NOT HARMLESSNESS, and reading it as the latter is the
+// mistake this paragraph exists to prevent. `rowSlotForLegColumn`
+// (`executor/ordinal_join.go:1179`, `:1185`) compares BOTH halves of a leg key
+// with `strings.EqualFold`, so the reader cannot tell the two producers apart —
+// the divergence is invisible because something downstream is tolerant of it,
+// not because there is nothing to see. RFC-238 makes those comparators exact in
+// the same step that collapses the producers, which is what turns this zero
+// into evidence instead of silence.
 //
 // TestLegColumns_NamingConsistentWithAnchoredRecord also reddens and is NOT
 // evidence for either side: it builds its expectation by applying

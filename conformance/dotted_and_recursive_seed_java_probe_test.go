@@ -2,7 +2,7 @@
 
 package conformance_test
 
-// MEASURES THREE CLAIMS ABOUT JAVA THAT ARRIVED AS ASSERTIONS, not as readings.
+// MEASURES FOUR CLAIMS ABOUT JAVA THAT ARRIVED AS ASSERTIONS, not as readings.
 // Each one decides whether a corpus row is a Java-authoritative pin or a Go
 // divergence blessed as expected — the difference between a regression net and
 // a green that means nothing — so each is measured against a live JVM here
@@ -19,6 +19,11 @@ package conformance_test
 //  3. `WITH RECURSIVE s AS (…), d AS (… UNION ALL … d …)` — a recursive CTE
 //     with a SIBLING — is accepted by Java, where Go rejects it `0A000`. If
 //     true, that is a missing capability rather than a shared rejection.
+//  4. A table declaring BOTH `"TOTAL"` and `"X.TOTAL"` makes two different
+//     queries render one string at the label boundary. This is the half that
+//     still diverges, and it is here rather than in the yamsql corpus because
+//     that corpus is Java-authoritative: pinning Go's answer there would credit
+//     a known divergence as supported. RFC-238 is the fix.
 //
 // Per the section contract these assertions state CURRENT MEASURED behaviour on
 // both engines. RED means one of the engines moved, which is the signal; it does
@@ -76,11 +81,13 @@ var _ = Describe("DottedAndRecursiveSeedJavaProbe", func() {
 		// seed can be made four columns wide.
 		schema := `CREATE TABLE DOTT ("a.b" BIGINT, plain BIGINT, PRIMARY KEY ("a.b"))
 CREATE TABLE Q1 ("id" BIGINT, PRIMARY KEY ("id"))
-CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))`
+CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))
+CREATE TABLE XPROBE (id BIGINT, "TOTAL" BIGINT, "X.TOTAL" BIGINT, PRIMARY KEY (id))`
 		setup := []string{
 			`INSERT INTO DOTT VALUES (1, 9)`,
 			`INSERT INTO Q1 VALUES (1), (2)`,
 			`INSERT INTO QCASE VALUES (1, 42, 7)`,
+			`INSERT INTO XPROBE VALUES (1, 10, 99)`,
 		}
 
 		classify := func(r plandiff.RunResult) seedProbeOutcome {
@@ -139,6 +146,21 @@ CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id)
 					"authority keeps the delimited name whole. So the truncation above is not " +
 					"a property of dotted columns — it is one path getting it wrong while its " +
 					"sibling, in the same engine, gets it right",
+			},
+			{
+				name:     "dotted_column_whose_tail_is_its_sibling",
+				sql:      `SELECT "X.TOTAL" FROM XPROBE`,
+				wantJava: `[X.TOTAL][[99]]`,
+				wantGo:   `[TOTAL][[99]]`,
+				why: "THE HALF OF RFC-238's PAIR THAT DIVERGES, and it lives here rather " +
+					"than in the yamsql corpus because that corpus is Java-authoritative — " +
+					"an arm asserting `TOTAL` there would convert a known divergence into " +
+					"a passing conformance case and credit it in the generated ledgers. " +
+					"XPROBE declares both `\"TOTAL\"` and `\"X.TOTAL\"`, so this read renders " +
+					"IDENTICALLY to the correlated `x.\"TOTAL\"` read (pinned in the corpus, " +
+					"correct at `TOTAL`) while wanting the opposite label. Note the VALUE: " +
+					"99 proves the right column was read, so only the label is wrong. Not a " +
+					"regression — this branch's base split the same way",
 			},
 			{
 				name:        "recursive_seed_arity_mismatch",

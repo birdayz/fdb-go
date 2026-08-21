@@ -400,28 +400,22 @@ tests:
   # merged branch-name row just as happily.
   - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.cc + 1, d.dd FROM d WHERE d.cc < 3) SELECT d.cc FROM d ORDER BY d.cc
     error_code: "42703"
-  # THE PAIR THAT PROVES NO RULE OVER THE FLAT NAME CAN BE RIGHT, and the
-  # SQL-VISIBLE half of it — the label is where the user sees the defect, and it
-  # was pinned only as a unit arm until now.
+  # THE CORRELATED HALF OF THE PAIR THAT PROVES NO RULE OVER THE FLAT NAME CAN
+  # BE RIGHT. `xprobe` declares BOTH `"TOTAL"` and `"X.TOTAL"`, so this read of
+  # `x."TOTAL"` renders as the seven characters `X.TOTAL` at the label boundary
+  # — identical to `SELECT "X.TOTAL" FROM xprobe`, which reads a DIFFERENT
+  # column and wants a different label. The information that separates them was
+  # discarded upstream, where the qualifier stopped being structure and became
+  # punctuation; RFC-238 carries it as structure instead.
   #
-  # `xprobe` declares BOTH `"TOTAL"` and `"X.TOTAL"`. The two queries below
-  # render identically at the label boundary, seven characters of `X.TOTAL`, and
-  # want DIFFERENT labels: the first reads one column whose declared name
-  # contains a dot, the second reads a different column through a qualifier.
-  # The information that separates them was discarded upstream, where the
-  # qualifier stopped being structure and became punctuation. RFC-238 carries it
-  # as structure instead and renders once, at the executor's row map.
-  #
-  # THE FIRST ARM IS PINNED AT TODAY'S WRONG ANSWER. Java reports `X.TOTAL`;
-  # Go reports `TOTAL`, as it did at this branch's base, so this is a declared
-  # cost and not a regression. RFC-238 flips it, and this arm going red is how
-  # that lands rather than a claim that it did.
-  - query: SELECT "X.TOTAL" FROM xprobe
-    columns: ["TOTAL"]
-    rows:
-      - [99]
-  # The other half, CORRECT today, and here so a fix for the arm above cannot
-  # pay for itself by breaking this one — the two are one decision.
+  # ONLY THIS HALF IS HERE, and that is the point. This corpus is
+  # Java-authoritative, so an arm asserting a label Java does not report would
+  # convert a known divergence into a passing conformance case and credit it in
+  # the generated ledgers. The other half — where Go says `TOTAL` and Java says
+  # `X.TOTAL` — is measured on BOTH engines in
+  # conformance/dotted_and_recursive_seed_java_probe_test.go, which is where a
+  # divergence belongs. This arm is correct today and is here so a fix for that
+  # one cannot pay for itself by breaking this one: they are one decision.
   - query: SELECT s.id, (SELECT x."TOTAL" FROM xprobe x WHERE x.id = s.id) FROM sprobe s
     columns: ["ID", "TOTAL"]
     rows:

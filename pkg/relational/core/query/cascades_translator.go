@@ -10244,9 +10244,9 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// THE SEED'S OUTPUT LABELS ARE A PROPERTY, and the repo already derives it.
 	// Two earlier attempts here asked a downstream question instead and both
 	// were wrong in the same direction — they read the join leg's DATUM KEYS
-	// (`legColumns`, which qualifies `T1.ID` so the executor's row map can tell
-	// two legs' `K` apart) as if they were SQL labels, and then tried to tell
-	// the two apart after the fact:
+	// (`legColumns`, which qualifies `T1.ID` so `rowSlotForLegColumn` can tell
+	// two legs' `K` apart at runtime) as if they were SQL labels, and then
+	// tried to tell the two apart after the fact:
 	//
 	//   - first by testing whether a derived name CONTAINS A DOT, which cannot
 	//     work: a column can genuinely be named `a.b`, and one declared that way

@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2629 dml=157 non_query=104 plan_errors=273 unexpected_errors=4
+# files=359 queries=2628 dml=157 non_query=104 plan_errors=273 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14508,11 +14508,6 @@ shape:           RecordQueryTempTableScanPlan
 sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.cc + 1, d.dd FROM d WHERE d.cc < 3) SELECT d.cc FROM d ORDER BY d.cc
 plan:  <PLAN-ERROR: 42703: column "D.CC" does not exist>
 === quoted_identifier_labels.yaml#36
-sql:   SELECT "X.TOTAL" FROM xprobe
-plan:  Project([_current.X.TOTAL#2], Scan(XPROBE))
-shape: RecordQueryProjectionPlan
-shape:   RecordQueryScanPlan
-=== quoted_identifier_labels.yaml#37
 sql:   SELECT s.id, (SELECT x."TOTAL" FROM xprobe x WHERE x.id = s.id) FROM sprobe s
 plan:  Project([_current.ID#0, _current.X.TOTAL#1], FlatMap(outer=Scan(SPROBE), inner=StrictFirstOrDefault(Project([_current.TOTAL#1], Scan(XPROBE, [=])))))
 shape: RecordQueryProjectionPlan

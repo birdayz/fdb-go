@@ -19847,11 +19847,18 @@ Pinned by `pkg/relational/core/query/leg_column_key_case_divergence_test.go`,
 which asserts both spellings so the gap can neither widen nor silently close.
 
 Measured, so the size of the decision is known rather than guessed: removing the
-fold is invisible from SQL — zero rows of the 2627-query plan-shape golden move,
-and twelve targeted shapes reaching a leg key by different routes (three-way
-join, CTE and derived table over a join star, UNNEST beside one, grouped and
-scalar aggregates over a quoted mixed-case leg column, correlated scalar
-subquery, alias-list recursive CTE) plan byte-identically either way.
+fold moves zero rows of the 2627-query plan-shape golden, and twelve targeted
+shapes reaching a leg key by different routes (three-way join, CTE and derived
+table over a join star, UNNEST beside one, grouped and scalar aggregates over a
+quoted mixed-case leg column, correlated scalar subquery, alias-list recursive
+CTE) plan byte-identically either way.
+
+**That zero is MASKING, not harmlessness.** `rowSlotForLegColumn`
+(`executor/ordinal_join.go:1179`, `:1185`) compares both halves of a leg key
+with `strings.EqualFold`, so the reader cannot tell the two producers apart. The
+divergence is invisible because something downstream tolerates it, and the
+tolerant comparator is part of the debt rather than a reason to leave the
+producers alone.
 
 **The work is not "pick a spelling" — that framing is wrong, and the reason is
 that the folding line does TWO JOBS.** `tableColumns` names a scan's columns
@@ -19866,7 +19873,7 @@ normalization job) while keeping it breaks the RFC-237 invariant.
 qualifier is carried as a RENDERED STRING and re-parsed downstream, which is the
 mechanism behind this divergence, the `a.b` label, `colref.go`'s two KNOWN
 LIMITs and the deleted `seedResolvesThroughJoin` alike. RFC-238 carries the
-design, the four-step order and the acceptance criteria that make the collapse
+design, the ordered steps and the acceptance criteria that make the collapse
 checkable; this entry is one of its symptoms and closes when it lands.
 
 `TestLegColumns_NamingConsistentWithAnchoredRecord` also reddens on any change
