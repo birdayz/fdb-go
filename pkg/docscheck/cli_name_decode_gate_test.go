@@ -539,9 +539,11 @@ func TestMultilineBlockCommentIsFullyMasked(t *testing.T) {
 //
 // The first version of this pinned only length and newline offsets — and was
 // blind to exactly the hazard its own comment raised: a within-line rotate
-// (every line's content permuted, length and newlines untouched) left all 789
-// tests green. So the loop also asserts that any byte which CHANGED became a
-// blank, which is what makes the correspondence real rather than plausible.
+// (every line's content permuted, length and newlines untouched) left EVERY
+// test in this package green, this one included.  So the loop also asserts
+// that a byte which CHANGED became a blank.  With that, the same rotate
+// reddens here and in TestMaskingNeverBlanksRealCode and nowhere else — the
+// corpus walk still cannot see it, so these two pins carry it alone.
 func TestMaskingPreservesOffsets(t *testing.T) {
 	t.Parallel()
 
@@ -608,43 +610,108 @@ func TestMaskingNeverBlanksRealCode(t *testing.T) {
 		if len(masked) != len(src) {
 			t.Fatalf("%s: length changed, offsets are meaningless", name)
 		}
-		var sc scanner.Scanner
-		fset := token.NewFileSet()
-		f := fset.AddFile("", fset.Base(), len(src))
-		sc.Init(f, []byte(src), nil, scanner.ScanComments)
-		for {
-			pos, tok, lit := sc.Scan()
-			if tok == token.EOF {
-				break
-			}
-			if tok == token.COMMENT || tok == token.STRING || tok == token.CHAR {
-				continue
-			}
-			// An inserted semicolon has no source text to preserve.
-			if tok == token.SEMICOLON && lit == "\n" {
-				continue
-			}
-			off := fset.Position(pos).Offset
-			text := lit
-			if text == "" {
-				text = tok.String()
-			}
-			for i := 0; i < len(text) && off+i < len(src); i++ {
-				checked++
-				if src[off+i] != masked[off+i] {
-					t.Errorf("%s: byte %d of real token %q (%v) was blanked: %q -> %q",
-						name, i, text, tok, src[off+i], masked[off+i])
-					break
-				}
-			}
+		per, blanked := codeBytesSurvivingMask(src, masked)
+		for _, b := range blanked {
+			t.Errorf("%s: %s", name, b)
 		}
+		// A source that yields no tokens checks nothing, and says so by
+		// passing. Caught here rather than by the aggregate below, which it
+		// cannot move far enough to trip.
+		if per == 0 {
+			t.Errorf("%s: the oracle read no code bytes from this source; it "+
+				"reports clean here no matter what masking does", name)
+		}
+		checked += per
 	}
-	// Vacuity guard: a scanner that produced nothing would pass silently. The
-	// floor sits BELOW the 122 code bytes these six sources actually yield -- it
-	// exists to catch zero, and a floor above the real value is just a failing
-	// test dressed as a guard.
+	// Vacuity guard, two floors, because they fail in different directions.
+	// Per source, since the aggregate has 22 bytes of headroom over the 100 it
+	// demands: four of these six could go silent without moving it. In total,
+	// since six sources each yielding one token would satisfy every per-source
+	// check and still read almost nothing. The 122 is what they yield today
+	// (30/15/16/16/20/25); the total floor sits deliberately below it -- a
+	// floor AT the measured value is a failing test dressed as a guard, red on
+	// the next edit to any source.
 	if checked < 100 {
 		t.Fatalf("only %d code bytes checked; the oracle is not reaching the sources "+
 			"and this would report clean regardless", checked)
+	}
+}
+
+// codeBytesSurvivingMask is the oracle above, split out so both of its arms can
+// be driven by a test rather than only by whatever the six sources happen to
+// yield. It returns how many bytes of real (non-literal, non-comment) tokens it
+// inspected, and a message per byte that masking blanked.
+//
+// The token stream comes from go/scanner directly, NOT from maskLiterals' own
+// span arithmetic -- an oracle that reused the code under test would agree with
+// it by construction.
+func codeBytesSurvivingMask(src, masked string) (checked int, blanked []string) {
+	var sc scanner.Scanner
+	fset := token.NewFileSet()
+	f := fset.AddFile("", fset.Base(), len(src))
+	sc.Init(f, []byte(src), nil, scanner.ScanComments)
+	for {
+		pos, tok, lit := sc.Scan()
+		if tok == token.EOF {
+			break
+		}
+		if tok == token.COMMENT || tok == token.STRING || tok == token.CHAR {
+			continue
+		}
+		// An inserted semicolon has no source text to preserve.
+		if tok == token.SEMICOLON && lit == "\n" {
+			continue
+		}
+		off := fset.Position(pos).Offset
+		text := lit
+		if text == "" {
+			text = tok.String()
+		}
+		for i := 0; i < len(text) && off+i < len(src) && off+i < len(masked); i++ {
+			checked++
+			if src[off+i] != masked[off+i] {
+				blanked = append(blanked, fmt.Sprintf(
+					"byte %d of real token %q (%v) was blanked: %q -> %q",
+					i, text, tok, src[off+i], masked[off+i]))
+				break
+			}
+		}
+	}
+	return checked, blanked
+}
+
+// BOTH ARMS OF THE ORACLE ABOVE FIRE.
+//
+// The blanked arm is exercised by the six sources every run; the zero-bytes arm
+// is not, and an arm no test drives is one whose first real firing gets read as
+// a finding instead of as an untested branch. Driven here directly.
+func TestCodeByteOracleArmsFire(t *testing.T) {
+	t.Parallel()
+
+	// Zero-bytes arm. A comment-only file is the realistic shape of a source
+	// that has silently stopped contributing: go/scanner yields a COMMENT and
+	// EOF, both skipped, so the oracle inspects nothing and reports clean.
+	for name, src := range map[string]string{
+		"empty":        "",
+		"comment only": "// nothing but a comment\n",
+		"blank lines":  "\n\n\n",
+	} {
+		if n, bad := codeBytesSurvivingMask(src, maskLiterals(src)); n != 0 || len(bad) != 0 {
+			t.Errorf("%s: want 0 code bytes and no findings, got %d and %v; the "+
+				"per-source floor cannot be reached and is dead", name, n, bad)
+		}
+	}
+
+	// Blanked arm, against a mask that eats everything. Not maskLiterals'
+	// output -- the point is that a wrong mask is REPORTED, so the mask here
+	// has to be one that is definitely wrong.
+	src := "package p\nvar x = rt.Name\n"
+	n, bad := codeBytesSurvivingMask(src, strings.Repeat(" ", len(src)))
+	if n == 0 {
+		t.Fatalf("oracle inspected no bytes of %q; nothing below is meaningful", src)
+	}
+	if len(bad) == 0 {
+		t.Errorf("a mask of %d blanks over %q produced no findings from %d inspected "+
+			"bytes; the oracle cannot report a blanked code byte", len(src), src, n)
 	}
 }
