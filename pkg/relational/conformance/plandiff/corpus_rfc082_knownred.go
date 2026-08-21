@@ -36,11 +36,14 @@ var rfc082KnownRed = map[string]bool{
 	// so literal-bearing result types match cross-engine (RFC-082 lock
 	// shrinks).
 	// select_count_alias REMOVED (the lock shrinks): a SCALAR aggregate's
-	// output alias was dropped because the ungrouped plan is a bare
-	// StreamingAgg with no projection to carry it, and buildAggColumns named
-	// the column from the expression while ignoring AggregateSpec.Alias.
-	// `SELECT COUNT(*) AS cnt` now reports CNT, matching Java. Found by the
-	// RFC-182 rowdiff harness; pinned by TestFDB_ScalarAggregate_KeepsAlias.
+	// output alias was dropped, and `SELECT COUNT(*) AS cnt` now reports CNT,
+	// matching Java. Found by the RFC-182 rowdiff harness; pinned by
+	// TestFDB_ScalarAggregate_KeepsAlias. The mechanism this used to name —
+	// "the ungrouped plan is a bare StreamingAgg with no projection to carry
+	// it, and buildAggColumns named the column" — is not the current one: no
+	// planned corpus query has a StreamingAgg at its root (0 of 2612), so the
+	// projection authority supplies the name. The removal from the lock stands
+	// either way; only the explanation was stale.
 	// "recursive_cte_depth_counter" was REMOVED (the lock shrank): the recursive
 	// leg's computed column (SELECT n + 1) silently stalled recursion one level
 	// early (count 2 instead of Java's 10) because the normalization wrap read

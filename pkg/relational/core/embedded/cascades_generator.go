@@ -5310,9 +5310,13 @@ func joinLegDerivationOrder(
 	return nlj.GetOuter(), nlj.GetInner(), outerAlias, innerAlias
 }
 
+// The field name is carried VERBATIM into both the datum key and the label.
+// f.Name comes off a RecordConstructorField that the seed builder already
+// named, so the two folds here were a second normalization of a name that had
+// one — the same conversion applied to every other output-naming site.
 func ordinalUnnestColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
-	name := strings.ToUpper(f.Name)
-	label := strings.ToUpper(parseColRef(f.Name).bare())
+	name := f.Name
+	label := parseColRef(f.Name).bare()
 	return columnDefFromRef(name, label, name, f.Value, descs)
 }
 
@@ -6027,10 +6031,20 @@ func buildAggColumns(
 		// of //pkg/relational/sqldriver green, while the same mutation on
 		// deriveColumnsFromProjection reddens yamsql in seconds. Every
 		// aggregate plan the corpus produces carries a projection above it,
-		// and that projection owns the names. So this arm is a dispatch that
-		// nothing currently reaches — kept because the executor can still
-		// produce a bare StreamingAgg root, and made to agree with the
-		// authority so that if it is ever reached it agrees.
+		// and that projection owns the names:
+		//
+		//	$ grep -c '^plan:  StreamingAgg' …/plan_shape.golden
+		//	0                       # of 2612 planned queries
+		//	$ grep -c StreamingAgg  …/plan_shape.golden
+		//	1115                    # the control: the node is everywhere, never at the root
+		//
+		// So this arm is UNREACHABLE FROM SQL AS PLANNED TODAY. That is the
+		// honest claim and it is narrower than the one that stood here, which
+		// asserted the executor "can still produce a bare StreamingAgg root"
+		// and had nothing behind it. The arm is kept because a dispatch that
+		// returns no columns is a worse failure than an unreached one, and it
+		// is made to agree with the authority so that if the planner ever does
+		// emit that root, it agrees.
 		name := expressions.AggregateResultColumnName(a)
 		// Aggregate result type stays first-leaf-resolved (unchanged): COUNT/AVG
 		// are operator-fixed and a SUM/MIN/MAX operand is overwhelmingly the

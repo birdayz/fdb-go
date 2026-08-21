@@ -1226,7 +1226,12 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 		if k.Bare != "" {
 			kt = typeOf(k.Bare)
 		}
-		fields = append(fields, values.Field{Name: strings.ToUpper(k.Display), FieldType: kt, Ordinal: len(fields)})
+		// VERBATIM, like every other output-naming authority. This function is
+		// what legColumns and derivedOutputColumns delegate to for an aggregate
+		// leg, so a fold here makes their verbatim contract false for exactly
+		// one arm — and it folded the ALIAS sixty lines below a comment saying
+		// an alias must not be folded. Two claims about one alias in one file.
+		fields = append(fields, values.Field{Name: k.Display, FieldType: kt, Ordinal: len(fields)})
 	}
 	for i, call := range a.Calls {
 		name := call.CanonicalName()
@@ -1251,7 +1256,7 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 			// simplifications.
 			ft = values.NewPrimitiveType(code, true)
 		}
-		fields = append(fields, values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: len(fields)})
+		fields = append(fields, values.Field{Name: name, FieldType: ft, Ordinal: len(fields)})
 	}
 	if len(fields) == 0 {
 		return nil
@@ -1259,12 +1264,18 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 	return fields
 }
 
-// normalizeAggOutputName folds a reference / output name to the whitespace- and
-// case-insensitive key the SELECT-list-over-GROUP-BY ordinal match compares on: a
-// projection references an aggregate by its canonical text (`SUM(UNITS * PRICE)`,
-// spaces intact from the parse tree) while the naming authority renders the
-// operand space-stripped (`SUM(UNITS*PRICE)`) — the two must match on the same
-// normalized key or the ordinal bake silently misses.
+// normalizeAggOutputName folds a reference / output name to the
+// WHITESPACE-insensitive key the SELECT-list-over-GROUP-BY ordinal match
+// compares on: a projection references an aggregate by its canonical text
+// (`SUM(UNITS * PRICE)`, spaces intact from the parse tree) while the naming
+// authority renders the operand space-stripped (`SUM(UNITS*PRICE)`) — the two
+// must match on the same normalized key or the ordinal bake silently misses.
+//
+// It is no longer CASE-insensitive, and the old doc said it was. The fold went
+// with RFC-237: both sides now carry the operand's declared spelling, so a
+// case-insensitive key would conflate two aggregates that differ only in a
+// case-sensitive token — the collision `COUNT(CASE WHEN s='x' …)` and `…'X'…`
+// produce, which is a wrong ANSWER rather than a wrong name.
 func normalizeAggOutputName(s string) string {
 	return strings.ReplaceAll(s, " ", "")
 }
@@ -6802,12 +6813,24 @@ func projectionRefAt(p *logical.LogicalProject, i int) logical.ColumnRef {
 	return p.ProjectionRefs[i]
 }
 
-// nameResolvesInColumns reports whether the group-key name resolves (exact, case-insensitive)
-// against the input row's output columns.
+// nameResolvesInColumns reports whether the group-key name resolves
+// case-insensitively against the input row's output columns.
+//
+// IT USED TO FOLD ONLY ONE SIDE — `strings.ToUpper(key)` byte-compared against
+// `cols` — which was an exact match wearing a fold's clothes, and it worked
+// only for as long as every output name was already upper. That population is
+// smaller now (a projection publishes its columns verbatim), so a verbatim
+// `Region` key would have missed a verbatim `Region` column. The failure is
+// LOUD (`no exact output-slot binding`) rather than a wrong answer, which is
+// why it had not been seen; it was still a live hazard this change enlarges.
+//
+// Case-insensitive on BOTH sides is what the doc always claimed, and it is the
+// right rule for this predicate specifically: the question is STRUCTURAL — is
+// this key present in the row at all — not "what is this column called". A
+// naming authority must not fold; a presence gate may.
 func nameResolvesInColumns(key string, cols []string) bool {
-	k := strings.ToUpper(key)
 	for _, c := range cols {
-		if c == k {
+		if strings.EqualFold(c, key) {
 			return true
 		}
 	}

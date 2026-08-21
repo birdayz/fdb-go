@@ -47,17 +47,26 @@ type AggregateSpec struct {
 	// "PRICE*QTY").
 	//
 	// PRODUCER CONTRACT — it must arrive ALREADY CANONICAL, because
-	// AggregateResultColumnName carries it verbatim and repairs nothing. Canonical
-	// means: whitespace already removed, every token upper-cased EXCEPT a
-	// delimited identifier (which keeps its declared spelling, unquoted) and a
-	// STRING LITERAL (which is data, not a name, and folding it collides two
-	// aggregates that count different things).
+	// AggregateResultColumnName carries it verbatim and repairs nothing.
+	// Canonical means the operand's TOKENS, concatenated with no whitespace
+	// BETWEEN them, each token upper-cased EXCEPT:
+	//
+	//   - a delimited identifier, which contributes its declared spelling
+	//     unquoted — INCLUDING any space inside it, so `"two words"` stays
+	//     `two words` and the name legitimately contains a space;
+	//   - a STRING LITERAL, which is data rather than a name, and folding it
+	//     collides two aggregates that count different things.
+	//
+	// The earlier wording here said "whitespace already removed", which the two
+	// exception clauses directly below it contradict: inter-token whitespace is
+	// dropped, whitespace INSIDE a token is content and is kept.
 	//
 	// Nothing validates this, and the reason is worth stating rather than
 	// leaving as an omission: the canonical form is produced from an ANTLR token
 	// stream at the parse boundary (embedded.aggOperandCanonicalText and the two
 	// name mints in logical_predicate.go), and a checker here would have to
-	// re-derive that from a flat string it cannot re-tokenize. The guard is
+	// re-derive that from a flat string it cannot re-tokenize — the same reason
+	// parseColRef cannot see a dot inside a delimited identifier. The guard is
 	// therefore the OUTPUT side — group_by_naming_verbatim_test.go pins that this
 	// field is published unedited, so a producer that folds shows up as a folded
 	// column name rather than as nothing.

@@ -5,12 +5,22 @@ package sqldriver_test
 //
 // A GROUPED aggregate keeps a projection above it that carries the output
 // aliases, so `SELECT b AS g, MAX(a) AS agg … GROUP BY b` reported [G AGG]
-// correctly. A SCALAR aggregate plans to the bare `StreamingAgg(keys=[], …)`
-// with no projection, and buildAggColumns named the column from the
-// expression while ignoring AggregateSpec.Alias — so `SELECT MAX(a) AS agg
-// FROM t` reported the column as `MAX(A)`. Rows were always correct; only
-// the metadata was wrong, the same class as the LIMIT-through-projection
-// alias drop.
+// correctly. A SCALAR aggregate was described as planning to a bare
+// `StreamingAgg(keys=[], …)` with no projection, so buildAggColumns named the
+// column from the expression while ignoring AggregateSpec.Alias — `SELECT
+// MAX(a) AS agg FROM t` reported `MAX(A)`. Rows were always correct; only the
+// metadata was wrong, the same class as the LIMIT-through-projection alias
+// drop.
+//
+// THAT MECHANISM IS NO LONGER THE ONE UNDER TEST, and this header said it was.
+// A scalar aggregate is projection-wrapped too — `grep -c '^plan:  StreamingAgg'`
+// over the 2612-query plan-shape golden is 0, against 1115 StreamingAgg lines
+// overall — so the naming that keeps this test green comes from the projection
+// authority, not from buildAggColumns. Measured by mutation: corrupting
+// buildAggColumns' Name and Label leaves this test 5/5 green. What the test
+// still pins is the OBSERVABLE — a scalar aggregate reports its alias — which
+// is the contract worth having; it just no longer identifies which authority
+// supplies it.
 
 import (
 	"context"

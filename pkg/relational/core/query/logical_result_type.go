@@ -149,8 +149,11 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 			if key.Value == nil || key.Value.Type() == nil {
 				return nil, fmt.Errorf("aggregate group key %d has no exact value", i)
 			}
+			// VERBATIM: this is the aggregate's exact result TYPE, the same
+			// authority aggregateOutputColumns publishes, and a fold here would
+			// put two spellings of one row in two places.
 			fields = append(fields, values.Field{
-				Name: strings.ToUpper(key.Display), Ordinal: len(fields), FieldType: key.Value.Type(),
+				Name: key.Display, Ordinal: len(fields), FieldType: key.Value.Type(),
 			})
 		}
 		for i, call := range typed.Calls {
@@ -159,7 +162,7 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 				return nil, typeErr
 			}
 			fields = append(fields, values.Field{
-				Name: strings.ToUpper(call.CanonicalName()), Ordinal: len(fields), FieldType: fieldType,
+				Name: call.CanonicalName(), Ordinal: len(fields), FieldType: fieldType,
 			})
 		}
 		return &values.RecordType{Fields: fields}, nil

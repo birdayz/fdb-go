@@ -130,10 +130,16 @@ func TestLimit_Explain(t *testing.T) {
 }
 
 // TestAggregateCall_CanonicalName pins the alias-free output-column rendering
-// (RFC-180 F-3): consumers key on strings.ToUpper(CanonicalName()) against
-// projection text rendered from the SAME operand string, so the shape —
-// FUNC(OPERAND) / FUNC(DISTINCT OPERAND) / COUNT(*), operand case preserved —
-// is load-bearing for name resolution, CTE columns, and insert-source typing.
+// (RFC-180 F-3): consumers key on CanonicalName() against projection text
+// rendered from the SAME operand string, so the shape — FUNC(OPERAND) /
+// FUNC(DISTINCT OPERAND) / COUNT(*), operand case preserved — is load-bearing
+// for name resolution, CTE columns, and insert-source typing.
+//
+// "strings.ToUpper(CanonicalName())" is what this used to say the consumers
+// key on. They do not, since RFC-237 stopped the aggregate-name normalizers
+// folding; the operand's case now survives to the comparison, which is what
+// makes the "operand case preserved" clause above matter rather than being
+// incidental.
 func TestAggregateCall_CanonicalName(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

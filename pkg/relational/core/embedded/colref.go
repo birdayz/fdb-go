@@ -32,27 +32,64 @@ type colRef struct {
 // parse-tree triple (ColumnRef) exists and why callers that have it use it.
 // It stops this one from mangling names it has no business splitting.
 //
-// The scan runs FORWARD and clamps at zero, which is not interchangeable with
-// the obvious backwards one. A delimited identifier may contain an UNMATCHED
-// `)` — `"a)b"` is a legal column name — and right-to-left an unmatched `)`
-// reads as an opening nest, so `D.A)B` found no depth-0 dot at all and came
-// back as one unqualified name. Left-to-right the same `)` is a stray close,
-// clamped away, and the dot after `D` is still at depth 0. Both directions
-// agree on `I.SUM(I.AMOUNT)`; only this one also agrees on `D.A)B`.
+// ONLY A MATCHED PAIR NESTS, AND A STRING LITERAL NESTS NOTHING. Both
+// qualifications were learned by getting them wrong:
+//
+//   - A single-pass depth counter treats an UNMATCHED paren as structure. Going
+//     right-to-left, `D.A)B` — `"a)b"` is a legal column name — read the `)` as
+//     an opening nest and returned one unqualified name; going left-to-right,
+//     `A(.COL` reads the `(` as an unclosed nest and does the same. Matching the
+//     pairs FIRST makes both strays inert and needs no direction at all.
+//   - A `)` inside a STRING LITERAL is not a paren. `I.COUNT(CASE WHEN S=')'
+//     THEN X.Y END)` closed the real `(` early, put the inner dot at depth 0,
+//     and split there — reviving the exact `AMOUNT)` mangle this function was
+//     changed to fix. Literals reach these names precisely because the operand
+//     mint now carries them verbatim, so this is not hypothetical.
+//
+// What it still cannot do is see a dot inside a DELIMITED IDENTIFIER: quotes
+// are already stripped by the time a name arrives here, so `"a.b"` is
+// indistinguishable from `a.b`. That is why the parse-tree triple (ColumnRef)
+// exists and why callers holding one use it instead.
 func parseColRef(s string) colRef {
-	depth, split := 0, -1
+	// Pass 1: match parens, skipping string literals. nest[i] is true for a
+	// paren that has a partner; a stray one is left false and ignored below.
+	nest := make([]bool, len(s))
+	var open []int
+	inLit := false
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
+		switch {
+		case inLit:
+			if s[i] == '\'' {
+				inLit = false
+			}
+		case s[i] == '\'':
+			inLit = true
+		case s[i] == '(':
+			open = append(open, i)
+		case s[i] == ')':
+			if n := len(open); n > 0 {
+				nest[open[n-1]], nest[i] = true, true
+				open = open[:n-1]
+			}
+		}
+	}
+	// Pass 2: the last dot at depth 0 and outside a literal is the split.
+	depth, split := 0, -1
+	inLit = false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case inLit:
+			if s[i] == '\'' {
+				inLit = false
+			}
+		case s[i] == '\'':
+			inLit = true
+		case s[i] == '(' && nest[i]:
 			depth++
-		case ')':
-			if depth > 0 {
-				depth--
-			}
-		case '.':
-			if depth == 0 {
-				split = i
-			}
+		case s[i] == ')' && nest[i]:
+			depth--
+		case s[i] == '.' && depth == 0:
+			split = i
 		}
 	}
 	if split < 0 {

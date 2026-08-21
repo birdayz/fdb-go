@@ -32,8 +32,24 @@ func TestParseColRef_SplitsAtDepthZero(t *testing.T) {
 		{"I.SUM(I.AMOUNT)", "I", "SUM(I.AMOUNT)", "the shape that produced the `AMOUNT)` label"},
 		{"D.f(x.y)", "D", "f(x.y)", "same, with a lower-case delimited name"},
 		{"D.A)B", "D", "A)B", "an UNMATCHED close paren is content, not a nest"},
-		{"D.A(B", "D", "A(B", "an unmatched OPEN paren swallows nothing after it"},
+		{"D.A(B", "D", "A(B", "an unmatched OPEN paren after the dot swallows nothing"},
+		{"A(.COL", "A(", "COL", "an unmatched OPEN paren BEFORE the dot must not swallow it either — " +
+			"the mirror of the D.A)B row, and the row a one-pass forward counter fails"},
+		{"A(B.C", "A(B", "C", "the same stray open with text after it; a forward counter " +
+			"returns this unqualified, a backward counter gets it right, and only " +
+			"matching the pairs first satisfies this row AND D.A)B together"},
 		{"A)B", "", "A)B", "unqualified, unmatched close"},
+		// A `)` inside a STRING LITERAL is not a paren. Reachable because the
+		// operand mint carries literals verbatim into these derived names.
+		{
+			`I.COUNT(CASE WHEN S=')' THEN X.Y END)`, "I", `COUNT(CASE WHEN S=')' THEN X.Y END)`,
+			"a close paren inside a literal must not close the real one",
+		},
+		{
+			`I.COUNT(CASE WHEN S='.' THEN 1 END)`, "I", `COUNT(CASE WHEN S='.' THEN 1 END)`,
+			"a DOT inside a literal is not a split point",
+		},
+		{`D.A'B`, "D", `A'B`, "an unterminated quote must not swallow the rest of the name"},
 	} {
 		got := parseColRef(tc.in)
 		if got.table != tc.table || got.col != tc.col {
