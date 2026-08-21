@@ -122,17 +122,18 @@ func TestNameLineClassification(t *testing.T) {
 	t.Parallel()
 
 	leaks := map[string]string{
-		"one-line function body":   `func typeName(rt *recordlayer.RecordType) string { return rt.Name }`,
-		"struct field render":      `	rt = rec.RecordType.Name`,
-		"plain field render":       `	shown := rt.Name`,
-		"method render":            `	names[i] = idx.RootExpression.FieldNames()[0]`,
-		"metadata name render":     `	out.name = tbl.MetadataName()`,
-		"marker in a string":       `	return fmt.Sprintf("%s // storage-compare", rt.Name)`,
-		"past-tense prose":         `	shown := rt.Name // storage-compared above, so this is fine`,
-		"marker not at line end":   `	shown := rt.Name // storage-compare (see above)`,
-		"unspaced marker":          `	shown := rt.Name //storage-compare`,
-		"block-comment marker":     `	shown := rt.Name /* storage-compare */`,
-		"allowlist token in prose": `	fmt.Fprintln(out, rt.Name) // resolved via md.GetRecordType( earlier`,
+		"one-line function body":             `func typeName(rt *recordlayer.RecordType) string { return rt.Name }`,
+		"struct field render":                `	rt = rec.RecordType.Name`,
+		"plain field render":                 `	shown := rt.Name`,
+		"method render":                      `	names[i] = idx.RootExpression.FieldNames()[0]`,
+		"metadata name render":               `	out.name = tbl.MetadataName()`,
+		"marker in a string":                 `	return fmt.Sprintf("%s // storage-compare", rt.Name)`,
+		"past-tense prose":                   `	shown := rt.Name // storage-compared above, so this is fine`,
+		"marker not at line end":             `	shown := rt.Name // storage-compare (see above)`,
+		"unspaced marker":                    `	shown := rt.Name //storage-compare`,
+		"block-comment marker":               `	shown := rt.Name /* storage-compare */`,
+		"allowlist token in prose":           `	fmt.Fprintln(out, rt.Name) // resolved via md.GetRecordType( earlier`,
+		"rune literal with an escaped quote": `	sep := '\''; fmt.Fprintln(out, rt.Name) // md.GetRecordType( earlier`,
 	}
 	for name, line := range leaks {
 		if !nameLineIsLeak(line) {
@@ -176,8 +177,25 @@ func TestNameLineClassification(t *testing.T) {
 		"prose naming a lookup":         "userNameFor(md, ",
 		"URL in a string literal":       "userNameFor(md, ",
 	}
-	for name, token := range tokens {
-		bare := strings.Replace(exempt[name], token, "", 1)
+	// Iterate EXEMPT, not tokens: keying the loop on the token map let a fixture
+	// with no entry go unguarded, which is how this guard covered 9 of 11 and
+	// then 12 of 13 while claiming "every". A fixture that legitimately has no
+	// token names itself here.
+	noToken := map[string]string{
+		"a comment line": "it is exempt by being a comment, which has no token to strip",
+	}
+	for name, line := range exempt {
+		token, ok := tokens[name]
+		if !ok {
+			if _, expected := noToken[name]; expected {
+				continue
+			}
+			t.Errorf("%s: no entry in `tokens`, so nothing checks that this fixture "+
+				"reaches the allowlist at all. Add its exemption token, or name it in "+
+				"`noToken` with the reason:\n  %s", name, line)
+			continue
+		}
+		bare := strings.Replace(line, token, "", 1)
 		if !nameLineIsLeak(bare) {
 			t.Errorf("%s: the fixture is exempt for the WRONG reason — with its token "+
 				"removed it is still not a leak, so it carries no tracked spelling and "+
@@ -274,7 +292,12 @@ func nameLineIsLeak(line string) bool {
 	// earlier` exempts a genuine render by mentioning a lookup in prose -- the
 	// same laundering the storage-compare marker was anchored to stop, one check
 	// lower down.
-	// Find the real comment token: the first `//` OUTSIDE a string literal.
+	// Find the real comment token: the first `//` outside a string, raw-string or
+	// RUNE literal. Runes matter: gating the escape skip on `"` alone makes
+	// `sep := '\\''` close on the escaped quote and reopen on the real one, so the
+	// line reads as in-string to EOL, the comment is never stripped, and prose
+	// tokens count again -- the exact laundering this stripping exists to stop,
+	// reintroduced by the parser added to stop it.
 	// Taking the first raw `//` truncates a line like
 	// `fmt.Fprintf(out, "https://%s", userNameFor(md, rt.Name))` inside the
 	// literal, dropping the allowlist token while the spelling check still sees
@@ -285,7 +308,7 @@ func nameLineIsLeak(line string) bool {
 		c := rune(code[i])
 		switch {
 		case inQuote != 0:
-			if c == '\\' && inQuote == '"' {
+			if c == '\\' && inQuote != '`' {
 				i++ // skip the escaped char
 			} else if c == inQuote {
 				inQuote = 0
