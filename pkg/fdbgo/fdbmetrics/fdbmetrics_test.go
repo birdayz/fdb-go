@@ -150,24 +150,81 @@ func TestHandler_TextExposition(t *testing.T) {
 			t.Errorf("counter %s declares no origin; counterOrigin's zero value is "+
 				"invalid precisely so this cannot pass unnoticed", c.name)
 		case originCPPTwin:
-			// Nothing to assert in the exposition: a C++ twin is a fact about
-			// the other implementation, not about this text.
+			// The COMPLEMENT. Without it the audit fails closed on the zero value
+			// only, not over the value space: relabelling a Go-only counter as a
+			// twin removes it from the Go-only arm while its help text still reads
+			// "Go-only", and that self-contradiction ships green. Same shape as a
+			// name deleted from a hardcoded list, one spelling further on.
+			if line, ok := helpLine(body, c.name); !ok {
+				t.Errorf("no HELP line for %s", c.name)
+			} else if strings.Contains(line, "Go-only") || strings.Contains(line, "Go aggregate") {
+				t.Errorf("%s is declared originCPPTwin but its HELP claims it is "+
+					"Go-only: %q", c.name, line)
+			}
 		case originGoOnly:
-			prefix := "# HELP " + c.name + " "
-			i := strings.Index(body, prefix)
-			if i < 0 {
-				t.Errorf("no HELP line for %s; its provenance cannot be checked", c.name)
-				continue
-			}
-			line := body[i:]
-			if j := strings.IndexByte(line, '\n'); j >= 0 {
-				line = line[:j]
-			}
 			// "Go aggregate" is transaction_retries' spelling: C++ retries those
 			// codes without a counter, which is the same claim.
-			if !strings.Contains(line, "Go-only") && !strings.Contains(line, "Go aggregate") {
+			if line, ok := helpLine(body, c.name); !ok {
+				t.Errorf("no HELP line for %s; its provenance cannot be checked", c.name)
+			} else if !strings.Contains(line, "Go-only") && !strings.Contains(line, "Go aggregate") {
 				t.Errorf("HELP for %s does not declare it Go-only: %q", c.name, line)
 			}
+		default:
+			// A new counterOrigin class with no arm here would silently opt every
+			// counter carrying it out of BOTH checks above -- the same escape as
+			// a name quietly dropped from a hardcoded list.
+			t.Errorf("%s has counterOrigin %d, which this audit does not handle; "+
+				"add an arm rather than letting a new class opt out", c.name, c.origin)
 		}
+	}
+}
+
+// helpLine returns the single "# HELP <name> ..." line for name from a rendered
+// exposition body. Split out because both origin arms need it, and because an
+// inline copy in each is how the two drift apart.
+func helpLine(body, name string) (string, bool) {
+	i := strings.Index(body, "# HELP "+name+" ")
+	if i < 0 {
+		return "", false
+	}
+	line := body[i:]
+	if j := strings.IndexByte(line, '\n'); j >= 0 {
+		line = line[:j]
+	}
+	return line, true
+}
+
+// THE DOCUMENTED SPLIT IS ASSERTED IN THE ADD DIRECTION.
+//
+// `counters`' doc says 18 entries, 13 with a C++ twin and five without;
+// Handler's says four latency summaries. Nothing checked either, so adding a
+// nineteenth counter or a fifth summary left both sentences quietly false --
+// and those sentences are what a maintainer audits the classification against.
+//
+// Deliberately brittle: a legitimate addition SHOULD fail here, because the
+// same change has to update the prose. That is the whole point of pinning a
+// number written in a comment.
+func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
+	t.Parallel()
+
+	var goOnly, cppTwin, other int
+	for _, c := range counters {
+		switch c.origin {
+		case originGoOnly:
+			goOnly++
+		case originCPPTwin:
+			cppTwin++
+		default:
+			other++
+		}
+	}
+	if len(counters) != 18 || cppTwin != 13 || goOnly != 5 || other != 0 {
+		t.Errorf("table is %d counters (%d C++ twin, %d Go-only, %d unclassified); "+
+			"the doc on `counters` says 18 = 13 + 5. Update BOTH, not one",
+			len(counters), cppTwin, goOnly, other)
+	}
+	if len(summaries) != 4 {
+		t.Errorf("table is %d summaries; Handler's doc says four latency "+
+			"distributions. Update BOTH", len(summaries))
 	}
 }
