@@ -4273,7 +4273,26 @@ suites are the correctness authority (the §5 dual-window is already retired —
     output-naming-authority / poison-marker family (resolver-level per-attribute 42702), booked here not
     fixed. (Distinct from the wrong-case-accept on those same paths, which is value-correct — the (b)
     uppercasing divergence — not a silent-wrong.) (d) NEW (Graefe ruling, LATENT executor silent-wrong, part
-    of the (b) read-surface uppercasing family): aggResultName (pkg/recordlayer/query/executor/executor.go
+    of the (b) read-surface uppercasing family):
+
+    **SUPERSEDED IN BOTH DIRECTIONS BY RFC-237 §8/§10 — read this before the text below.**
+    (i) The MECHANISM described here is GONE: `aggResultName` no longer ToUppers,
+    the naming authority carries its operand verbatim, and the operand mint now
+    keeps a STRING LITERAL out of the fold, so `COUNT(CASE WHEN s='x' …)` and
+    `…'X'…` publish two distinct names. Measured, both directions.
+    (ii) The SEVERITY was wrong: this is NOT latent. The claim below that grouped
+    CASE aggregation "does not compute in this engine" is false for the scalar
+    form — it computes, and it computes WRONG. With both names now distinct the
+    pair still returns `[2, 2]` where `[0, 2]` is correct, because the projection's
+    ordinal bind matches aggregates by a RENDERING (`COUNT(CASE(WHEN(predicate),
+    [1]))`) in which the predicate is opaque, so the two are indistinguishable to
+    it. Localised: the same pair outside an aggregate answers correctly, and a
+    pair whose literals differ by more than case answers correctly. Reproducer
+    and controls are pinned in `quoted_identifier_aggregate_labels.yaml`; the
+    open half is booked at the end of this file.
+
+    Original text, kept because its reasoning about WHY a folded slot key is
+    dangerous is still the right reasoning: aggResultName (pkg/recordlayer/query/executor/executor.go
     ~:2490) ToUppers the aggregate group-result slot key (`strings.ToUpper("SUM(%s)")` etc.), and
     finalizeGroup (streaming_cursors.go ~:349) writes each value under that folded key — so two aggregates
     differing only in a CASE-SENSITIVE token (a string literal: `COUNT(CASE WHEN s='x' …)` vs `…'X'…`)
@@ -19645,3 +19664,93 @@ asserted; the headline is that a perturbation of unquoted → quoted-UPPER is
 blind to a FOLD, because those two spellings are exactly the pair a fold cannot
 tell apart. That axis is covered by the yamsql `columns:` arms and the unit
 pins, and the three instruments do not subsume one another.
+
+---
+
+## An aggregate is bound to its output slot by a RENDERING that cannot tell two aggregates apart
+
+**LIVE WRONG ANSWER, reproducer below, found while closing RFC-237 §10.** Not
+the same defect as the folded slot key that entry (d) above describes — that one
+is fixed. This is what was underneath it.
+
+```sql
+-- sales rows: ('US'), ('US'), ('EU')
+SELECT COUNT(CASE WHEN "Region" = 'us' THEN 1 END),
+       COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
+-- returns [2, 2].  Correct is [0, 2].
+```
+
+Each aggregate is CORRECT in isolation (`'us'` alone → 0, `'US'` alone → 2), and
+the plan is correct: two distinct `AggregateSpec`s, distinct operand pointers,
+distinct `OperandName`s, distinct projection ordinals `#0` and `#1`.
+
+Two controls localise it, and both are pinned in
+`quoted_identifier_aggregate_labels.yaml` so the localisation cannot rot:
+
+- **Not CASE, and not string comparison.** The same case-only pair OUTSIDE an
+  aggregate — `SELECT CASE WHEN "Region"='us' …, CASE WHEN "Region"='US' …` —
+  returns the right rows.
+- **Not "two aggregates".** A pair whose literals differ by more than case —
+  `'EU'` and `'US'` — returns `[1, 2]`.
+
+**Root cause, as far as it is traced.** The post-aggregate projection binds each
+reference to an aggregate ORDINAL by matching a rendered name
+(`aggregateValueOutputName` → `aggregateOrdinalFor`, cascades_translator.go).
+For a CASE operand that rendering is `COUNT(CASE(WHEN(predicate), [1]))` — the
+predicate renders OPAQUELY — so both aggregates produce the identical key and
+the match cannot separate them. Removing every fold from that path (done, both
+`normalizeAggOutputName` and `aggregateValueOutputName`) does not help, because
+the two keys were never distinguished by CASE in the first place; they are
+distinguished by nothing.
+
+This is precisely the failure `AggregateResultColumnName`'s own doc warns about
+— "two columns sharing a leaf name treated as one" — inside a naming authority.
+A NAME cannot be the identity here. The bind has to be structural: match the
+operand VALUE, which is already distinct and already carried on the spec.
+
+**Why it is booked rather than fixed in RFC-237's PR:** it is a different root
+cause in a different layer (the Cascades ordinal bind, not identifier
+normalization), the fix changes matching from name-based to value-based, and
+that needs its own RFC and the query-engine gate. Every artifact needed to start
+is here: the reproducer, both controls, the two functions, and the reason the
+obvious fold-removal is not the fix.
+
+---
+
+## The FDB testcontainer cluster stalls under concurrent CI load, on master too
+
+**Not this branch, and not a flake to wave away.** Both reds carry the identical
+signature:
+
+```
+XX000: open catalog store: failed to read store info: context deadline exceeded
+```
+
+- PR CI's race lane: two `sqldriver` tests, on a runner shared with another
+  branch's CI.
+- **master's Nightly RowDiff**: TEN consecutive seeds, at exactly 60-second
+  intervals, tripping the sweep's own `ROWDIFF_CLUSTER_DEAD` guard — which
+  states the case better than this entry could: "That is not a flaky seed, it is
+  the cluster gone … which is how this sweep once consumed a CI runner for
+  4h21m."
+
+`TestFDB_MetamorphicPagingAtScale` under `-race` PASSES locally (1766s, green,
+same commit) on a machine not running a second CI concurrently. So the evidence
+points at the shared runner, not at the branch.
+
+What is NOT established, and is the actual work: whether the CONTAINER dies or
+whether the pure-Go client wedges against a healthy cluster. The second would be
+our bug — "C++ is the spec for the FDB client". The 60-second cadence is the
+sharpest clue and is unexplained: no `WithTimeout` on the sqldriver query path
+carries that value, and the client's own `DefaultRPCTimeout` is 5s with a
+GRV/read fallback that retries other replicas rather than surfacing a bare
+`context.DeadlineExceeded`. Note also that `OnError` cannot classify a bare
+`context.DeadlineExceeded` (`errors.As(err, &fdbErr)` fails, transaction.go), so
+whatever produces one ends the transaction instead of retrying — correct for a
+caller's cancellation, wrong for an internal RPC deadline, and the two are the
+same value.
+
+**master's Nightly RowDiff is also red for a SECOND, unrelated reason** — a real
+engine defect with a seed: `seed 3495589`, three variants, `resolution error 46
+at qov.binding: exact QOV "q$…" (RECORD<ID,A,B,C,S,F,D,E>) has no declared
+runtime binding`. Reproduce with `ROWDIFF_SEED_START=3495589 ROWDIFF_SEEDS=1`.

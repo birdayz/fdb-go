@@ -4057,12 +4057,16 @@ func isNumeric(v any) bool {
 // aggResultName derives the canonical group-result slot key for an aggregate,
 // delegating to the single naming authority (expressions.AggregateResultColumnName)
 // so the executor's emitted slot name and the translator's baked ordinal derive
-// from ONE rule. It ToUppers the rendered name, which FOLDS two aggregates that
-// differ only in a case-sensitive token (e.g. a string literal: `COUNT(CASE WHEN
-// s='x' …)` vs `…'X'…`) into ONE slot — finalizeGroup then writes both under the
-// same key. Currently a LATENT silent-wrong (grouped CASE aggregation does not
-// compute in this engine), not a live one; part of the read-surface uppercasing
-// family booked in TODO.md.
+// from ONE rule.
+//
+// IT NO LONGER FOLDS, and the collision this comment used to describe is gone
+// with the fold. The old text said the authority ToUppers its rendered name,
+// so two aggregates differing only in a case-sensitive token (a string literal:
+// `COUNT(CASE WHEN s='x' …)` vs `…'X'…`) collapsed into ONE slot and
+// finalizeGroup wrote both under the same key — a latent silent-wrong, since
+// grouped CASE aggregation does not compute in this engine. The authority is
+// verbatim now (RFC-237 §8), so those two aggregates key apart and the latent
+// collision is closed rather than still pending.
 func aggResultName(agg expressions.AggregateSpec) string {
 	return expressions.AggregateResultColumnName(agg)
 }

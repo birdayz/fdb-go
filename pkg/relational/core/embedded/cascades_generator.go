@@ -3626,13 +3626,20 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		}
 	}
 
-	// VERBATIM: these names are matched EXACTLY against the query's accessor
-	// path (AccessorNamePathMatchesNames), and they arrive from the index's key
-	// expression, which carries the DESCRIPTOR's spelling. Folding them here is
-	// a silent decline, not an error — an aggregate index declared
-	// `AS SELECT SUM("Amount") FROM sales GROUP BY "Region"` was never chosen,
-	// because the query's grouping key spells `Region` and this offered
-	// `REGION`. Right rows, full scan plus an in-memory sort, nothing red.
+	// VERBATIM: these names arrive from the index's key expression, which
+	// carries the DESCRIPTOR's spelling, and they are looked up EXACTLY
+	// downstream. Folding them here is a silent decline, not an error — an
+	// aggregate index declared `AS SELECT SUM("Amount") FROM sales GROUP BY
+	// "Region"` was never chosen, because the query row declares `Region` and
+	// this offered `REGION`. Right rows, full scan plus an in-memory sort,
+	// nothing red.
+	//
+	// Name the exact consumer, because the obvious candidate is the wrong one:
+	// it is NOT AccessorNamePathMatchesNames (values/accessor_name_path.go),
+	// which folds the candidate and therefore matched fine. It is
+	// rule_aggregate_data_access.go's LookupFieldUnique on the aggregate
+	// operand, which bottoms out in RecordType.fieldNameScan's `f.Name == name`
+	// (values/type.go) — a byte comparison with no fold anywhere near it.
 	groupCols := make([]string, groupingCount)
 	copy(groupCols, allCols[:groupingCount])
 
@@ -5979,7 +5986,11 @@ func buildAggColumns(
 		bare := parseColRef(name).bare()
 		label := ""
 		if !strings.EqualFold(name, bare) {
-			label = strings.ToUpper(bare)
+			// VERBATIM, like the aggregate half below and like
+			// AggregateKeyColumnName, which produced `name`. The comparison
+			// stays EqualFold because it asks a structural question — did the
+			// split remove a qualifier — not a naming one.
+			label = bare
 		}
 		// The TYPE resolves against ALL join-leaf descriptors, not just the
 		// first: a group key from a FAR join leg (`GROUP BY d.dname` over
@@ -5995,14 +6006,32 @@ func buildAggColumns(
 			}
 		}
 		cols = append(cols, executor.ColumnDef{
-			Name:     strings.ToUpper(name),
+			Name:     name,
 			Label:    label,
 			TypeName: typeName,
 			Nullable: nullable,
 		})
 	}
 	for _, a := range aggregates {
-		name := aggregateSpecName(a)
+		// THE AUTHORITY, not a third copy of it. This arm used to render the
+		// name itself (aggregateSpecName/aggOperandName), carrying its own
+		// space-strip and its own fold — the exact two repairs RFC-237 §8
+		// removed from expressions.AggregateResultColumnName, still standing
+		// here. Two copies of one naming rule is the shape that keeps
+		// producing wrong answers in this file's neighbourhood, so the copy is
+		// gone rather than corrected.
+		//
+		// Measured before the change, because "it looked wrong" is not a
+		// reason to touch a live path: suffixing every Name and Label out of
+		// deriveColumnsFromAggregation leaves the WHOLE yamsql corpus and all
+		// of //pkg/relational/sqldriver green, while the same mutation on
+		// deriveColumnsFromProjection reddens yamsql in seconds. Every
+		// aggregate plan the corpus produces carries a projection above it,
+		// and that projection owns the names. So this arm is a dispatch that
+		// nothing currently reaches — kept because the executor can still
+		// produce a bare StreamingAgg root, and made to agree with the
+		// authority so that if it is ever reached it agrees.
+		name := expressions.AggregateResultColumnName(a)
 		// Aggregate result type stays first-leaf-resolved (unchanged): COUNT/AVG
 		// are operator-fixed and a SUM/MIN/MAX operand is overwhelmingly the
 		// aggregated leg's own column. Far-leg aggregate-operand typing is a
@@ -6018,46 +6047,15 @@ func buildAggColumns(
 		// Name stays the generated spelling: it is the datum lookup key the
 		// aggregate cursor writes (see the group-key comment above); Label is
 		// what Rows.Columns() surfaces.
-		label := ""
-		if a.Alias != "" {
-			label = strings.ToUpper(a.Alias)
-		}
+		label := a.Alias
 		cols = append(cols, executor.ColumnDef{
-			Name:     strings.ToUpper(name),
+			Name:     name,
 			Label:    label,
 			TypeName: typeName,
 			Nullable: api.ColumnNullable,
 		})
 	}
 	return cols
-}
-
-func aggregateSpecName(a expressions.AggregateSpec) string {
-	operand := aggOperandName(a)
-	switch a.Function {
-	case expressions.AggCount:
-		return "COUNT(" + operand + ")"
-	case expressions.AggSum:
-		return "SUM(" + operand + ")"
-	case expressions.AggAvg:
-		return "AVG(" + operand + ")"
-	case expressions.AggMin:
-		return "MIN(" + operand + ")"
-	case expressions.AggMax:
-		return "MAX(" + operand + ")"
-	default:
-		return "AGG(" + operand + ")"
-	}
-}
-
-func aggOperandName(a expressions.AggregateSpec) string {
-	if cv, ok := a.Operand.(*values.ConstantValue); ok && cv.Value == nil {
-		return "*"
-	}
-	if a.OperandName != "" {
-		return strings.ReplaceAll(a.OperandName, " ", "")
-	}
-	return values.ColumnNameValue(a.Operand)
 }
 
 // aggregateResultType derives the SQL type name of an aggregate's result

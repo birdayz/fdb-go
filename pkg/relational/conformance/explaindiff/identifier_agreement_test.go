@@ -42,16 +42,39 @@ const identifierAgreementFloor = 2000
 // Measured at 4. The alarm direction is GROWTH.
 const identifierAgreementBaseFailCeiling = 10
 
+// identifierAgreementDrainCeiling caps the OTHER two exclusion buckets together:
+// statements with no unquoted identifier to perturb, and statements the
+// perturbation could not reparse.
+//
+// Both are zero today, and both are silent drains. The floor above cannot see
+// them: 443 statements could move from perturbed into these buckets before
+// `perturbed` fell to 2000, and every one of those is a statement this gate
+// stopped checking while still reporting a clean verdict over the rest. A
+// reparse failure in particular is the generator breaking, not the corpus
+// changing — it means the rewrite produced SQL the parser rejects, which is
+// exactly the bug that once turned four multi-byte-rune queries into confident
+// "engine disagreements".
+//
+// Measured at 0 and 0. The alarm direction is GROWTH.
+const identifierAgreementDrainCeiling = 25
+
 // identifierAgreementVerdict is the gate's decision, split out from the corpus
 // walk so every arm takes explicit state and can be driven by a unit test.
 // Returns "" when the run is a genuine pass. The corpus reading exercises only
 // the arms the corpus happens to reach — today that is the pass arm and nothing
 // else, which is exactly how a gate ships with a broken alarm.
-func identifierAgreementVerdict(perturbed, baseFailed int, disagree []string) string {
+func identifierAgreementVerdict(perturbed, baseFailed, drained int, disagree []string) string {
 	if perturbed < identifierAgreementFloor {
 		return fmt.Sprintf("only %d statements were perturbed, floor is %d — the gate is "+
 			"not measuring the corpus any more, and a clean verdict from it means nothing",
 			perturbed, identifierAgreementFloor)
+	}
+	if drained > identifierAgreementDrainCeiling {
+		return fmt.Sprintf("%d statements had no unquoted identifier or did not reparse, "+
+			"ceiling is %d. Both buckets are silent drains the floor cannot see, and a "+
+			"reparse failure means the GENERATOR is producing SQL the parser rejects — "+
+			"the verdict below is about whatever is left, not about the corpus",
+			drained, identifierAgreementDrainCeiling)
 	}
 	if baseFailed > identifierAgreementBaseFailCeiling {
 		return fmt.Sprintf("%d statements did not plan even UNPERTURBED, ceiling is %d. "+
@@ -175,7 +198,7 @@ func TestIdentifierAgreementOverCorpus(t *testing.T) {
 		"(%d had no unquoted identifier, %d did not reparse, %d did not plan at baseline)",
 		perturbed, plannable, noIdent, parseFail, baseFailed)
 
-	if v := identifierAgreementVerdict(perturbed, baseFailed, disagree); v != "" {
+	if v := identifierAgreementVerdict(perturbed, baseFailed, noIdent+parseFail, disagree); v != "" {
 		t.Fatal(v)
 	}
 }
@@ -195,7 +218,15 @@ func agreementHarness(stmt string) (agreementPlanner, bool) {
 	if yamsql.IsQuery(stmt) {
 		return agreementSelect, true
 	}
-	switch strings.ToUpper(strings.Fields(strings.TrimLeft(stmt, " \t\r\n("))[0]) {
+	// A blank or paren-only stanza has no first field, and indexing [0] on that
+	// PANICS the gate rather than skipping the statement — a gate that dies on
+	// its input is worse than one that reports nothing, because the panic is
+	// attributed to whatever change happened to add the stanza.
+	fields := strings.Fields(strings.TrimLeft(stmt, " \t\r\n("))
+	if len(fields) == 0 {
+		return agreementSelect, false
+	}
+	switch strings.ToUpper(fields[0]) {
 	case "DELETE", "UPDATE":
 		return agreementDML, true
 	}

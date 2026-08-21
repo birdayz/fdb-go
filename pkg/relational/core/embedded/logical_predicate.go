@@ -5980,7 +5980,7 @@ func fieldValueMatchesAggregateGroupKey(candidate, key values.Value, agg *logica
 }
 
 func normalizeAggregateBindingName(s string) string {
-	return strings.ReplaceAll(strings.ToUpper(s), " ", "")
+	return strings.ReplaceAll(s, " ", "")
 }
 
 // canonicalAggName is the single canonicaliser for an aggregate's result-row
@@ -5990,7 +5990,7 @@ func normalizeAggregateBindingName(s string) string {
 // drift. funcSymbol is the aggregate function symbol (e.g. "SUM", "COUNT", or
 // the count-star op's "COUNT(*)"); operand is the (already-resolved) argument
 // Value, or nil for a no-operand aggregate. The form mirrors what the executor's
-// aggResultName produces: FN(<uppercased ExplainValue, spaces stripped, one
+// aggResultName produces: FN(<ExplainValue verbatim, spaces stripped, one
 // outer-paren pair stripped>), with COUNT(*)/no-operand => "FN(*)".
 func canonicalAggName(funcSymbol string, operand values.Value) string {
 	fn := strings.ToUpper(funcSymbol)
@@ -5999,7 +5999,17 @@ func canonicalAggName(funcSymbol string, operand values.Value) string {
 	}
 	inner := "*"
 	if operand != nil {
-		inner = strings.ToUpper(values.ColumnNameValue(operand))
+		// VERBATIM. ColumnNameValue already renders each field by the name it
+		// declares, so an upper-fold here only destroys one: a correlated
+		// scalar subquery `(SELECT SUM(i."Amount") …)` labelled its column
+		// SUM(I.AMOUNT) while the very same aggregate reached through GROUP
+		// BY/HAVING labelled SUM(Amount). Two routes to one name, disagreeing.
+		//
+		// The whitespace strip STAYS and is not the same kind of edit: it
+		// normalizes the RENDERING's spacing (`(A * B)` -> `(A*B)`), which both
+		// sides of every comparison here derive from ColumnNameValue, so it is
+		// symmetric and touches no identifier.
+		inner = values.ColumnNameValue(operand)
 		inner = strings.ReplaceAll(inner, " ", "")
 		if len(inner) > 2 && inner[0] == '(' && inner[len(inner)-1] == ')' {
 			inner = inner[1 : len(inner)-1]
@@ -12188,7 +12198,14 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			if bareArg == "" {
 				bareArg = "*"
 			}
-			name := strings.ToUpper(fn) + "(" + strings.ToUpper(bareArg) + ")"
+			// bareArg is VERBATIM: it reached here through
+			// functions.NormalizeIdentifier at the parse boundary, so it already
+			// IS the column's name. The function symbol is folded because a
+			// function name is a different namespace with its own rule; the
+			// operand is not. `name` and the call's Operand below must move
+			// together — `name` is the alias this slot is published under and
+			// CanonicalName() recomposes Func + "(" + Operand + ")".
+			name := strings.ToUpper(fn) + "(" + bareArg + ")"
 			// Resolve the operand first so we can recognise COUNT(<non-null
 			// constant>) — e.g. COUNT(1) — which is exactly COUNT(*): it counts
 			// every row, so it can safely share the COUNT(*) slot rather than
@@ -12274,7 +12291,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 			aggCalls = append(aggCalls, logical.AggregateCall{
 				Func:       strings.ToUpper(fn),
-				Operand:    strings.ToUpper(bareArg),
+				Operand:    bareArg,
 				Star:       bareArg == "*",
 				BareColumn: e == nil && arg != "",
 			})

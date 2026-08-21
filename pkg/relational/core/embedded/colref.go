@@ -17,11 +17,48 @@ type colRef struct {
 
 // parseColRef splits a flat "TABLE.COL" string into a structured colRef.
 // Unqualified names produce colRef{"", "COL"}.
+//
+// The split ignores dots inside PARENTHESES, and that is a correctness fix
+// rather than a nicety. A derived aggregate name carries its own dots:
+// `I.SUM(I.AMOUNT)` is one qualifier and one derived column, but a plain
+// last-dot split cut it into table `I.SUM(I` and column `AMOUNT)` — and that
+// fragment was the RESULT-SET LABEL a user saw for
+//
+//	SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE …) FROM sales s
+//
+// A qualifier is never inside parentheses, so depth-0 is the only place a
+// split can be meant. This does not make the flat string a safe channel — a
+// delimited identifier may still contain a literal dot, which is why the
+// parse-tree triple (ColumnRef) exists and why callers that have it use it.
+// It stops this one from mangling names it has no business splitting.
+//
+// The scan runs FORWARD and clamps at zero, which is not interchangeable with
+// the obvious backwards one. A delimited identifier may contain an UNMATCHED
+// `)` — `"a)b"` is a legal column name — and right-to-left an unmatched `)`
+// reads as an opening nest, so `D.A)B` found no depth-0 dot at all and came
+// back as one unqualified name. Left-to-right the same `)` is a stray close,
+// clamped away, and the dot after `D` is still at depth 0. Both directions
+// agree on `I.SUM(I.AMOUNT)`; only this one also agrees on `D.A)B`.
 func parseColRef(s string) colRef {
-	if dot := strings.LastIndex(s, "."); dot >= 0 {
-		return colRef{table: s[:dot], col: s[dot+1:]}
+	depth, split := 0, -1
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '.':
+			if depth == 0 {
+				split = i
+			}
+		}
 	}
-	return colRef{col: s}
+	if split < 0 {
+		return colRef{col: s}
+	}
+	return colRef{table: s[:split], col: s[split+1:]}
 }
 
 // recordProjQualVsScan files one projected-column qualifier decision into the

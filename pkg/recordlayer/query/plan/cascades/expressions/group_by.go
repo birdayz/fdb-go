@@ -40,10 +40,28 @@ func (f AggregateFunction) String() string {
 
 // AggregateSpec describes one aggregate column in a GroupBy.
 type AggregateSpec struct {
-	Function    AggregateFunction
-	Operand     values.Value
-	Alias       string
-	OperandName string // canonical operand text for result-map keying (e.g. "PRICE*QTY")
+	Function AggregateFunction
+	Operand  values.Value
+	Alias    string
+	// OperandName is the canonical operand text for result-map keying (e.g.
+	// "PRICE*QTY").
+	//
+	// PRODUCER CONTRACT — it must arrive ALREADY CANONICAL, because
+	// AggregateResultColumnName carries it verbatim and repairs nothing. Canonical
+	// means: whitespace already removed, every token upper-cased EXCEPT a
+	// delimited identifier (which keeps its declared spelling, unquoted) and a
+	// STRING LITERAL (which is data, not a name, and folding it collides two
+	// aggregates that count different things).
+	//
+	// Nothing validates this, and the reason is worth stating rather than
+	// leaving as an omission: the canonical form is produced from an ANTLR token
+	// stream at the parse boundary (embedded.aggOperandCanonicalText and the two
+	// name mints in logical_predicate.go), and a checker here would have to
+	// re-derive that from a flat string it cannot re-tokenize. The guard is
+	// therefore the OUTPUT side — group_by_naming_verbatim_test.go pins that this
+	// field is published unedited, so a producer that folds shows up as a folded
+	// column name rather than as nothing.
+	OperandName string
 	// OperandIntType is the operand's STATIC integer width at plan time, used by
 	// the SUM/AVG accumulator to pick int32 vs int64 overflow semantics — Java's
 	// NumericAggregationValue selects SUM_I (Math.addExact on int, int32 overflow,

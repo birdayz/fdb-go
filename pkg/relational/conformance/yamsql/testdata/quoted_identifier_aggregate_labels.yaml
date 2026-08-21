@@ -64,3 +64,71 @@ tests:
     rows:
       - ["EU", 300]
       - ["US", 200]
+  # THE CORRELATED SCALAR SUBQUERY IS A SECOND ROUTE to an aggregate name, and
+  # it had its own fold: canonicalAggName upper-folded a rendering whose field
+  # names are already the declared ones, so this shape labelled SUM(X.AMOUNT)
+  # while the GROUP BY/HAVING route above labelled SUM(Amount) — two routes to
+  # one name, disagreeing, which is the whole defect class one layer over.
+  - query: SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE x."Region" = s."Region") AS "per_region" FROM sales s ORDER BY s.id
+    columns: ["ID", "per_region"]
+    rows:
+      - [1, 300]
+      - [2, 300]
+      - [3, 300]
+  # The UNALIASED twin, which is the one that actually exposes the derived name
+  # — the alias above would mask any fold behind it.
+  - query: SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE x."Region" = s."Region") FROM sales s ORDER BY s.id
+    columns: ["ID", "SUM(X.Amount)"]
+    rows:
+      - [1, 300]
+      - [2, 300]
+      - [3, 300]
+  # The unquoted control for the same shape. `plain` folded at DDL time, so the
+  # upper label is the column's real name — without this arm the verbatim claim
+  # above could not be told from a fold that happened to be right.
+  - query: SELECT s.id, (SELECT SUM(x.plain) FROM sales x WHERE x."Region" = s."Region") FROM sales s ORDER BY s.id
+    columns: ["ID", "SUM(X.PLAIN)"]
+    rows:
+      - [1, 3]
+      - [2, 3]
+      - [3, 3]
+  # THE EXECUTOR'S ROW MUST SPELL THE ALIAS THE PLAN DECLARES. The aggregate
+  # cursor names its emitted positional slots independently of
+  # GroupByOutputColumnNames — two copies of one naming rule — and it folded
+  # while the plan authority published verbatim. A derived table is what makes
+  # the disagreement observable: its projection binds `tot` BY NAME against the
+  # row the cursor emitted, so a row spelling it TOT is a row the reference
+  # cannot find.
+  - query: SELECT d."Region", d."tot" FROM (SELECT "Region", SUM("Amount") AS "tot" FROM sales GROUP BY "Region") d ORDER BY d."Region"
+    columns: ["Region", "tot"]
+    rows:
+      - ["EU", 300]
+      - ["US", 300]
+  # A STRING LITERAL IS DATA, NOT A NAME. The aggregate's output-column name is
+  # derived from its argument's token stream, and the mint upper-cases every
+  # token that is not a delimited identifier — which swept the literal up with
+  # the keywords, so `COUNT(CASE WHEN "Region" = 'us' …)` published itself under
+  # the same name as the `'US'` one. Two aggregates that count different things,
+  # one name. These two arms pin the labels apart and the isolated values.
+  - query: SELECT COUNT(CASE WHEN "Region" = 'us' THEN 1 END) FROM sales
+    columns: ["COUNT(CASEWHENRegion='us'THEN1END)"]
+    rows:
+      - [0]
+  - query: SELECT COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
+    columns: ["COUNT(CASEWHENRegion='US'THEN1END)"]
+    rows:
+      - [2]
+  # Two aggregates over literals differing by more than case, in ONE query, as
+  # the control: the pair mechanism works, so a failure of the case-only pair is
+  # about identity and not about having two aggregates.
+  - query: SELECT COUNT(CASE WHEN "Region" = 'EU' THEN 1 END), COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
+    rows:
+      - [1, 2]
+  # The same case-only pair OUTSIDE an aggregate answers correctly, which is
+  # what localises the open defect below to the aggregate ordinal bind rather
+  # than to CASE or to string comparison.
+  - query: SELECT id, CASE WHEN "Region" = 'us' THEN 1 END, CASE WHEN "Region" = 'US' THEN 1 END FROM sales ORDER BY id
+    rows:
+      - [1, null, 1]
+      - [2, null, 1]
+      - [3, null, null]

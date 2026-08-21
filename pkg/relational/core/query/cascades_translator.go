@@ -1266,7 +1266,7 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 // operand space-stripped (`SUM(UNITS*PRICE)`) — the two must match on the same
 // normalized key or the ordinal bake silently misses.
 func normalizeAggOutputName(s string) string {
-	return strings.ReplaceAll(strings.ToUpper(s), " ", "")
+	return strings.ReplaceAll(s, " ", "")
 }
 
 // bindPostAggregateValue resolves a structural logical draft against the real
@@ -1414,7 +1414,7 @@ func aggregateValueOutputName(av *values.AggregateValue) string {
 	}
 	operand := "*"
 	if av.Operand != nil {
-		operand = strings.ToUpper(values.ColumnNameValue(av.Operand))
+		operand = values.ColumnNameValue(av.Operand)
 		operand = strings.ReplaceAll(operand, " ", "")
 		if len(operand) > 2 && operand[0] == '(' && operand[len(operand)-1] == ')' {
 			operand = operand[1 : len(operand)-1]
@@ -7498,7 +7498,14 @@ func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
 	// Untranslatable when the outer columns are not derivable (only the catalog-free
 	// nil-md path — production always passes md): the opaque-seed fallback was RETIRED
 	// in RFC-077 7.6, so there is no result value to flow.
-	scalarCol := strings.ToUpper(csq.ScalarCol)
+	// VERBATIM: this NAMES the ordinal seed's inner-leg column, so it is the
+	// spelling the correlated subquery's result column reports. Folding it made
+	// `(SELECT SUM(x."Amount") …)` label itself SUM(X.AMOUNT) for a column
+	// declared `Amount` — the same defect as the aggregate mint, one boundary
+	// out. The other ToUpper on this field (logical_predicate.go's `want`,
+	// clustered_outer_scalar's innerKey) sit in front of EqualFold comparisons,
+	// where they decide nothing; this one decides a name.
+	scalarCol := csq.ScalarCol
 	outerCols := t.legColumns(outerPlan)
 	if outerCols == nil || outerAlias == "" || scalarCol == "" || csq.InnerAlias == "" {
 		return nil, nil, nil

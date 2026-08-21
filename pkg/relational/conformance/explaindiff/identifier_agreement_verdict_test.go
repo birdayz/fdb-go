@@ -21,6 +21,7 @@ func TestIdentifierAgreementVerdict(t *testing.T) {
 		name       string
 		perturbed  int
 		baseFailed int
+		drained    int
 		disagree   []string
 		wantSubstr string
 	}{
@@ -28,7 +29,21 @@ func TestIdentifierAgreementVerdict(t *testing.T) {
 			name:       "a clean run is the only pass",
 			perturbed:  identifierAgreementFloor,
 			baseFailed: identifierAgreementBaseFailCeiling,
+			drained:    identifierAgreementDrainCeiling,
 			wantSubstr: ok,
+		},
+		{
+			name:       "statements draining out of the measured set past the ceiling",
+			perturbed:  identifierAgreementFloor,
+			drained:    identifierAgreementDrainCeiling + 1,
+			wantSubstr: "had no unquoted identifier or did not reparse",
+		},
+		{
+			name:       "the drain ceiling outranks a disagreement — a shrinking set cannot indict",
+			perturbed:  identifierAgreementFloor,
+			drained:    identifierAgreementDrainCeiling + 1,
+			disagree:   []string{"some_file.yaml#3"},
+			wantSubstr: "had no unquoted identifier or did not reparse",
 		},
 		{
 			name:       "an empty population never reports clean",
@@ -59,7 +74,7 @@ func TestIdentifierAgreementVerdict(t *testing.T) {
 			wantSubstr: "the gate is not measuring the corpus any more",
 		},
 	} {
-		got := identifierAgreementVerdict(tc.perturbed, tc.baseFailed, tc.disagree)
+		got := identifierAgreementVerdict(tc.perturbed, tc.baseFailed, tc.drained, tc.disagree)
 		switch {
 		case tc.wantSubstr == ok && got != ok:
 			t.Errorf("%s: want pass, got %q", tc.name, got)

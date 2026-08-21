@@ -293,6 +293,17 @@ func AccessorNamePathKey(v Value) (string, bool) {
 // string path (aggregate group/agg columns, ordered index/PK sort columns)
 // rather than a Value. A single-element candidate (a top-level column) therefore
 // cannot match a nested query path — the fix for those sites (RFC-187 §3.2/§3.3).
+//
+// THE ToUpper ON THE CANDIDATE IS LOAD-BEARING AND MUST NOT BE DELETED ALONE.
+// It looks like one more site of RFC-237's fold class, and the candidate side
+// genuinely does arrive canonical now. But AccessorNamePath (above) still folds
+// the VALUE side, deliberately: five tests pin case-insensitive accessor
+// identity as a match-domain rule (`lazyFlat("city")` equals `lazyFlat("CITY")`,
+// `bakedFused("ADDR","City")` equals `bakedFused("addr","city")`). Fold one side
+// and not the other and a verbatim candidate can never meet an upper-folded
+// path — measured: an aggregate index over quoted columns silently stopped
+// matching. The two folds are one decision. Change them together or not at all,
+// and see RFC-237 §9 for what would settle whether to remove both.
 func AccessorNamePathMatchesNames(v Value, candidate []string) bool {
 	pv, ok := AccessorNamePath(v)
 	if !ok || len(pv) != len(candidate) {

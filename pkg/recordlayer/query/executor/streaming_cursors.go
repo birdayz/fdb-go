@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -938,9 +937,20 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 		}
 		// Alias-preferring output name (matches streamingAggOutputNames), so a downstream ref
 		// over an ALIASED aggregate (SUM(a*b) AS foo, a derived-table projection) resolves.
+		//
+		// VERBATIM, because "matches streamingAggOutputNames" is a claim this
+		// line has to keep: that function delegates to
+		// GroupByOutputColumnNames, which publishes an alias unfolded. This is
+		// the second of two copies of one naming rule, and two copies that
+		// disagree is the shape that produced the recursive-UNION-DISTINCT
+		// wrong answer. Note honestly that no constructible query drives it —
+		// a plan-supplied c.outputType wins whenever it is non-nil, and the
+		// derived-table arm written to reach it resolves by ordinal instead —
+		// so this is kept in step with its partner rather than pinned by a
+		// test of its own.
 		posName := name
 		if agg.Alias != "" {
-			posName = strings.ToUpper(agg.Alias)
+			posName = agg.Alias
 		}
 		posNames = append(posNames, posName)
 		posSlots = append(posSlots, val)
@@ -971,7 +981,7 @@ func emptyScalarAggregateRow(aggregates []expressions.AggregateSpec, outputType 
 		}
 		posName := name
 		if agg.Alias != "" {
-			posName = strings.ToUpper(agg.Alias)
+			posName = agg.Alias
 		}
 		posNames = append(posNames, posName)
 		posSlots = append(posSlots, val)

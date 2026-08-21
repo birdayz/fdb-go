@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2604 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
+# files=359 queries=2612 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14092,6 +14092,70 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryInMemorySortPlan
 shape:       RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#5
+sql:   SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE x."Region" = s."Region") AS "per_region" FROM sales s ORDER BY s.id
+plan:  Project([_current.ID#0, _current.X.SUM(X.Amount)#4], FlatMap(outer=Scan(SALES), inner=DefaultOnEmpty(Project([_current.SUM(X.Amount)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(SALES), [1 preds]))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#6
+sql:   SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE x."Region" = s."Region") FROM sales s ORDER BY s.id
+plan:  Project([_current.ID#0, _current.X.SUM(X.Amount)#4], FlatMap(outer=Scan(SALES), inner=DefaultOnEmpty(Project([_current.SUM(X.Amount)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(SALES), [1 preds]))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#7
+sql:   SELECT s.id, (SELECT SUM(x.plain) FROM sales x WHERE x."Region" = s."Region") FROM sales s ORDER BY s.id
+plan:  Project([_current.ID#0, _current.X.SUM(X.PLAIN)#4], FlatMap(outer=Scan(SALES), inner=DefaultOnEmpty(Project([_current.SUM(X.PLAIN)#0], StreamingAgg(keys=[], PredicatesFilter(Scan(SALES), [1 preds]))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryScanPlan
+shape:     RecordQueryDefaultOnEmptyPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryPredicatesFilterPlan
+shape:             RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#8
+sql:   SELECT d."Region", d."tot" FROM (SELECT "Region", SUM("Amount") AS "tot" FROM sales GROUP BY "Region") d ORDER BY d."Region"
+plan:  Project([_current.Region#0, _current.tot#1], Project([_current.Region#0, _current.SUM(Amount)#1], GroupExistenceMerge(AggregateIndex(COUNT, SUM_BY_REGION__GROUP_COUNT, [Region], SALES, live_groups_only), AggregateIndex(SUM, SUM_BY_REGION, [Region], SALES); keys=[Region#0], driving=0)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryMultiIntersectionOnValuesPlan
+shape:       RecordQueryAggregateIndexPlan
+shape:       RecordQueryAggregateIndexPlan
+=== quoted_identifier_aggregate_labels.yaml#9
+sql:   SELECT COUNT(CASE WHEN "Region" = 'us' THEN 1 END) FROM sales
+plan:  Project([_current.COUNT(CASEWHENRegion='us'THEN1END)#0], StreamingAgg(keys=[], Scan(SALES)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#10
+sql:   SELECT COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
+plan:  Project([_current.COUNT(CASEWHENRegion='US'THEN1END)#0], StreamingAgg(keys=[], Scan(SALES)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#11
+sql:   SELECT COUNT(CASE WHEN "Region" = 'EU' THEN 1 END), COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
+plan:  Project([_current.COUNT(CASEWHENRegion='EU'THEN1END)#0, _current.COUNT(CASEWHENRegion='US'THEN1END)#1], StreamingAgg(keys=[], Scan(SALES)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryScanPlan
+=== quoted_identifier_aggregate_labels.yaml#12
+sql:   SELECT id, CASE WHEN "Region" = 'us' THEN 1 END, CASE WHEN "Region" = 'US' THEN 1 END FROM sales ORDER BY id
+plan:  Project([_current.ID#0, CASE(WHEN(predicate), [1]), CASE(WHEN(predicate), [1])], Scan(SALES))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
 === quoted_identifier_columns.yaml#0
 sql:   SELECT q1."id", q1."k" FROM q1 ORDER BY q1."id"
 plan:  Project([_current.id#0, _current.k#1], Scan(Q1))

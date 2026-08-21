@@ -573,3 +573,61 @@ reddens.
 
 The accessor-path fold is the other, and §9's note above is the record of why
 it stays. Neither is filed as future work; both are answered.
+
+## 10. Review found three more, and two of them were claims this RFC made
+
+§8.1 called `aggOperandCanonicalText` "the SOLE mint" for the operand segment.
+That was false when written, and it is the exact failure §8.2's preamble
+legislates against: a scope sentence produced by describing the code just added
+rather than by probing what it covers. `AggregateSpec.OperandName` is set from
+`logical.AggregateCall.Operand`, and that field has **three** producers in
+non-test sources, not one.
+
+**The correlated scalar subquery had its own fold, and it was live.**
+`canonicalAggName` (`logical_predicate.go`) did
+`strings.ToUpper(ColumnNameValue(operand))` — verbatim the repair §8.1 removed
+from `AggregateResultColumnName`, still standing one route over. Measured:
+
+```
+SELECT o.id, (SELECT SUM(i."Amount") FROM inner_t i WHERE i.k = o.k) …
+  -> _current.SUM(I.AMOUNT)        -- correlated-scalar route
+SELECT k, SUM("Amount") FROM inner_t GROUP BY k HAVING SUM("Amount") > 1
+  -> _current.SUM(Amount)          -- GROUP BY / HAVING route
+```
+
+Two routes to one name, disagreeing, on a column declared `Amount`. The
+whitespace strip stays: it normalizes the RENDERING's spacing, both sides of
+every comparison there derive from `ColumnNameValue`, and it touches no
+identifier. The second producer (`Operand: strings.ToUpper(bareArg)`, with its
+`name` twin) is now verbatim too — the two must move together, because
+`CanonicalName()` recomposes `Func + "(" + Operand + ")"` and `name` is the
+alias the slot publishes under.
+
+**Adding the `columns:` arm the review asked for found a third defect that has
+nothing to do with case.** The derived label for an unaliased correlated-scalar
+aggregate was `AMOUNT)`. Not folded — *mangled*: `parseColRef` split
+`I.SUM(I.AMOUNT)` on its LAST dot, giving table `I.SUM(I` and column `AMOUNT)`,
+and that fragment was the result-set label. The split now ignores dots inside
+parentheses, because a qualifier is never inside one. Three defects on a single
+arm: `AMOUNT)` → `SUM(X.AMOUNT)` → `SUM(X.Amount)`.
+
+**And a claim about the MECHANISM was wrong, which is worse than a wrong
+number.** §9 said the aggregate-index candidate's folded names failed an exact
+match in `AccessorNamePathMatchesNames`. They cannot have: that function folds
+the candidate (`accessor_name_path.go`), so it matched fine. The real decliner
+is `LookupFieldUnique` on the aggregate operand
+(`rule_aggregate_data_access.go`), bottoming out in
+`RecordType.fieldNameScan`'s `f.Name == name`. The fix was right and the
+comment pointed the next reader at the wrong file; it now names the verified
+consumer.
+
+That correction also settles §9's open question in one direction. The
+`ToUpper` on the candidate in `AccessorNamePathMatchesNames` is not a stray
+fold to delete — it is one half of a PAIR with `AccessorNamePath`'s fold on the
+value side. Delete either alone and a verbatim candidate can never meet an
+upper-folded path; that is precisely what was measured when both were removed
+and then when the value side was restored. They are one decision, and the site
+now says so.
+
+Blast radius of this round, same command as §8.1: **zero existing plan lines
+removed.** Only the three new corpus arms appear.
