@@ -19768,13 +19768,17 @@ enforce ownership, in both directions:
 - FALSE POSITIVE: RFC and revision numbers (RFC-230, rev 6) fail without
   restating any population.
 
-So value-equality is the wrong relation; the gate needs the comment to name its
-OWNER, not to coincidentally match a number. A workable shape is an explicit
-annotation the comment carries (the identifier whose assertion owns the figure),
-which the gate resolves and compares -- but that is a design, not a decision,
-and it has not been built or measured.
+So value-equality is the wrong relation, and the repair is to invert what the
+gate does: require the comment to CITE, never to VERIFY. A comment that states
+a population must carry the identifier whose assertion owns it, or a grep
+recipe -- and the gate checks only that a citation is PRESENT and resolves, not
+that any number matches. Nothing is compared, so the false negative disappears
+rather than being narrowed, and RFC/revision numbers, dates and `file:line`
+references become syntactic exclusions that can be enumerated once. That is
+`collected_statistics.go:33` made mechanical rather than aspirational.
 
 DONE when: a gate fails on a census-file comment that states a population
-without naming the assertion that owns it, and passes on an RFC number and on a
-frozen historical count -- all three proven by mutation, with each mutation
-shown present and the build result read, not only the test result.
+without citing an identifier or recipe that resolves, and passes on an RFC
+number, a date, and a frozen historical count -- all four proven by mutation,
+with each mutation shown present and the build result read, not only the test
+result.

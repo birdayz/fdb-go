@@ -125,7 +125,7 @@ var accessorAritySites = map[string]accessorAritySite{
 	},
 	"pkg/recordlayer/query/plan/cascades/values/field_value_reanchor.go#reanchorValueThroughProducer": {
 		class: arityNestingOK, exprs: 1,
-		why: "the shared ordinary/owned implementation compares candidate and requested prefix lengths, verifies the complete prefix, and appends the arbitrary remaining suffix into the full mapped path; the two-level and four-leg producer-lineage mutation tests pin both depths.",
+		why: "the shared ordinary/owned implementation compares candidate and requested prefix lengths, verifies the complete prefix, and appends the arbitrary remaining suffix into the full mapped path; the producer-lineage mutation tests in values/field_value_reanchor_test.go pin the depths.",
 	},
 	"pkg/recordlayer/query/plan/cascades/values/values.go#fieldPath.RootOrdinalIn": {
 		class: arityNestingOK, exprs: 1,
