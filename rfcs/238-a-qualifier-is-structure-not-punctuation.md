@@ -92,7 +92,7 @@ migrated by this PR:
 | --- | --- | --- |
 | `colref.go` (`parseColRef`) on the label path | LAST dot at paren depth zero | yes |
 | `derivedOutputColumns` | LAST dot | yes |
-| `classifyDerivedUnnestArray` (`derived_unnest.go:146`) | LAST dot | yes — migrated and REVERTED, see below |
+| `classifyDerivedUnnestArray` (`derived_unnest.go:146`) | LAST dot | **MIGRATED** — see below |
 | `projectionOutputNames` (`derived_unnest.go:250`) | LAST dot | **MIGRATED** — see below |
 | `splitQualifier` (EXISTS sort keys) | LAST dot | yes, nonzero corpus floor |
 | `rowSlotForLegColumn` (`ordinal_join.go:1168`) | **FIRST** dot | **no — retired, revival alarm at 0** |
@@ -113,8 +113,8 @@ is tidying dead code, which is worth doing when the surrounding change lands and
 is not evidence of anything; any criterion resting on it can pass while changing
 nothing that runs.
 
-**ONE OF THE SEVEN IS MIGRATED, AND TRYING TO MIGRATE A SECOND MEASURED WHY THE
-ORDER MATTERS.** Both sit on the derived-UNNEST path. The reproducers:
+**TWO OF THE SEVEN ARE MIGRATED, AND ONE OF THEM WAS HIDING A SILENT
+WRONG-COLUMN BIND.** Both sit on the derived-UNNEST path. The reproducers:
 
 ```sql
 CREATE TABLE dottarr (id BIGINT, "a.b" BIGINT ARRAY, PRIMARY KEY (id));
@@ -129,24 +129,54 @@ SELECT x FROM (SELECT "a.b" AS a FROM dottarr) d, d.a AS x;       -- aliased, VA
 `ProjectionRefs` now, and the shape declines honestly instead:
 `0AF00: unnest over a computed/non-passthrough … output`.
 
-`classifyDerivedUnnestArray` was migrated the same way AND REVERTED, which is
-the useful result. With the triple, classification SUCCEEDS and the query dies
-further down, in the semantic derived-source registration, as
+`classifyDerivedUnnestArray` is migrated too, and the reason is sharper than
+naming. Its split BOUND THE WRONG COLUMN, silently and schema-dependently:
 
+```sql
+CREATE TABLE dottarr (id BIGINT, "a.b" BIGINT ARRAY, b BIGINT, PRIMARY KEY (id));
+SELECT x FROM (SELECT "a.b" AS z FROM dottarr AS a) d, d.z AS x;
 ```
-42703: column "A" does not exist on source "D"
-```
 
-on the ALIASED form — a valid query whose column `A` plainly does exist. Neither
-form runs either way, so the only thing the migration changed was trading an
-honest decline for a false statement about the schema. That is a regression, and
-the site keeps its split until step 6 migrates it TOGETHER with the registration
-that makes the answer available.
+The source renders `a.b`; the split manufactures qualifier `a`; that MATCHES the
+body scan's alias; and `b` — an unrelated sibling — becomes the array source.
+Measured both ways:
 
-This is the concrete argument for §6 that is not hand-waving: migrating one site
-of a chain can make the diagnostic worse while making nothing work, so the steps
-are ordered by what turns a decline into an ANSWER, not by which site is easiest
-to reach.
+| `b` declared | before | after |
+| --- | --- | --- |
+| `BIGINT` (scalar) | `42F10 … only on a column of repeated (array) type` — about the WRONG column | `42703 column "Z" …` |
+| `BIGINT ARRAY` | **PLANS**, over the wrong column | `42703 column "Z" …` |
+
+A query whose behaviour flips between "type error" and "plans" based on an
+unrelated column's declared type is a misbind, not a diagnostic problem. After,
+the two agree — the schema-dependence is gone.
+
+**AN INTERMEDIATE REVISION REVERTED THIS SITE AND WAS WRONG TO.** The argument
+was that migrating it turned an honest `0AF00 unsupported` into a false `42703`
+one layer down, and that a good message beats a bad one. True as far as it went,
+and it weighed two messages against each other while missing that the split's
+real cost is silent misbinding. Recorded because the reasoning is the trap: when
+neither branch works, it is tempting to grade the ERROR and forget to grade the
+BINDING.
+
+**WHAT REMAINS, AND EXACTLY WHERE THE CHASE STOPPED.** Both shapes now fail
+`42703: column "Z" does not exist on source "D"`, which is false — `Z` is the
+derived table's alias for the column. This is step 6's site, and the search is
+already narrowed:
+
+- `SELECT d.z FROM (SELECT "a.b" AS z FROM dottarr) d` RESOLVES, so the ordinary
+  projection binder is correct;
+- `SELECT x FROM (SELECT b AS z FROM dottarr) d, d.z AS x` reaches the unnest
+  path and reports `42F10` on the right column, so `D`/`Z` resolve there for an
+  ordinary column;
+- and the derived-source registration itself is NOT the culprit: instrumented,
+  `buildDerivedTableSourceFromTerm` finds `a.b` in the body table and mints the
+  virtual column under the alias `Z`.
+
+So the remaining site is the lateral-unnest source resolver specifically, not
+the scope registration that feeds it — a distinction worth having before anyone
+starts, because the registration is where a reader would look first and it is
+already right.
+
 
 
 **`isDottedQualifiedName` IS LIVE and is worse than a naming defect.** It is
@@ -303,26 +333,34 @@ than at the end.
    observable changes when its first-dot split and its `EqualFold` comparators
    go. A draft of this RFC had it the other way round.
 
-   Also migrate the two remaining LIVE plan-time splitters the first draft
-   missed entirely: `classifyDerivedUnnestArray` (`derived_unnest.go:146`) and
-   `splitQualifier` for EXISTS sort keys, both with nonzero full-corpus floors.
-   Leaving them means a quoted one-segment name containing a dot is still read
-   as qualified on the derived-UNNEST and EXISTS-ordering paths after every
-   other criterion passes.
-6. **Finish the derived-UNNEST chain.** Two of its three sites are already
-   migrated (see §1); the third is the semantic derived-source registration for
-   the unnest path, which still publishes a stripped name and fails
+   Also migrate `splitQualifier` for EXISTS sort keys, a LIVE plan-time
+   splitter with a nonzero full-corpus floor that the first draft missed
+   entirely. Leaving it means a quoted one-segment name containing a dot is
+   still read as qualified on the EXISTS-ordering path after every other
+   criterion passes.
+
+   (`classifyDerivedUnnestArray` was on this list and is already migrated —
+   see §1. It moved early because its split was binding the WRONG COLUMN, which
+   does not wait for a step.)
+6. **Finish the derived-UNNEST chain.** Two of its three sites are migrated
+   already (see §1); the third is the LATERAL-UNNEST SOURCE RESOLVER, which
+   still reports a column the derived table plainly publishes:
 
    ```sql
-   SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x
-     -> 42703: column "a.b" does not exist on source "D"
+   SELECT x FROM (SELECT "a.b" AS z FROM dottarr) d, d.z AS x
+     -> 42703: column "Z" does not exist on source "D"
    ```
 
-   This is a STEP and not a note because the shape is a live defect and the
-   remaining site is already identified: `SELECT d."a.b" FROM (…) d` resolves,
-   so the ordinary projection binder is correct and only the unnest-source
-   registration is not. The step lands the e2e arm the unit pin currently
-   stands in for.
+   §1 records where the chase stopped and, more usefully, three things it ruled
+   OUT: the projection binder resolves `d.z` fine, the unnest path resolves
+   `D`/`Z` fine for an ordinary column, and the derived-source registration was
+   instrumented and does mint the virtual column under `Z`. So it is the
+   resolver, not the scope that feeds it — which is where a reader would look
+   first.
+
+   This is a STEP and not a note because the shape is a live defect. It lands
+   the e2e arm the unit pin currently stands in for, and it is the step that
+   turns `classifyDerivedUnnestArray`'s decline into an answer.
 7. Delete `parseColRef` from the label path and delete its limits.
 
 ## 5. Acceptance criteria

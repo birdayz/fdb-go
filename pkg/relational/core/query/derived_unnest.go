@@ -142,26 +142,41 @@ func (t *cascadesTranslator) classifyDerivedUnnestArray(outerLeft logical.Logica
 	// so unlike recursiveRemapValues there IS a counterparty here, and whether
 	// the two agree is the whole conversion-readiness question for this site.
 	recordDerivedUnnestSplit(proj, slot, source)
-	// THE SPLIT STAYS HERE, DELIBERATELY, and a change that made it read the
-	// parse-tree triple instead was REVERTED. The triple is the right authority
-	// and this site is not where it pays: with the split, a one-segment column
-	// named `"a.b"` manufactures qualifier `a`, fails to match the body scan,
-	// and declines the shape `0AF00 unsupported` — which is honest, because the
-	// shape does not work. With the triple, classification SUCCEEDS and the
-	// query then dies further down, in the semantic derived-source
-	// registration, as
+	// THE PARSE-TREE TRIPLE DECIDES QUALIFICATION, and the split is the
+	// fallback for a slot that has no segments — the reading ProjectionRefs'
+	// own doc prescribes ("a ColumnRef that is not Present is unknown, never
+	// unqualified").
 	//
-	//	42703: column "A" does not exist on source "D"
+	// The split here was not merely imprecise, it BOUND THE WRONG COLUMN, and
+	// silently. Given
 	//
-	// on `SELECT x FROM (SELECT "a.b" AS a FROM dottarr) d, d.a AS x` — a VALID
-	// query whose column `A` does exist. Trading an honest decline for a false
-	// statement about the schema is a regression even though neither runs.
+	//	CREATE TABLE dottarr (id BIGINT, "a.b" BIGINT ARRAY, b BIGINT, …)
+	//	SELECT x FROM (SELECT "a.b" AS z FROM dottarr AS a) d, d.z AS x
 	//
-	// RFC-238 migrates this site together with that registration, which is the
-	// order that turns the decline into an answer instead of into a wrong error.
-	baseCol := source
-	if dot := strings.LastIndexByte(source, '.'); dot >= 0 {
-		qual := source[:dot]
+	// the source renders `a.b`, the split manufactures qualifier `a`, that
+	// MATCHES the body scan's alias, and `b` — an unrelated sibling column —
+	// becomes the array source. It reported 42F10 while `b` was scalar and
+	// PLANNED, over the wrong column, the moment `b` was declared an array. A
+	// schema-dependent wrong-column bind is worse than any diagnostic, which is
+	// why this is the triple's job even though the shape below still declines.
+	//
+	// A previous revision of this comment argued the opposite — that keeping the
+	// split was better because migrating it turned an honest `0AF00 unsupported`
+	// into a false 42703 one layer down. That weighed a bad message against a
+	// good one and missed that the split's real cost is silent misbinding.
+	baseCol, qual := source, ""
+	if slot < len(proj.ProjectionRefs) && proj.ProjectionRefs[slot].Present {
+		ref := proj.ProjectionRefs[slot]
+		baseCol = ref.Bare
+		if ref.Qualified {
+			qual = ref.Qualifier
+		}
+	} else if dot := strings.LastIndexByte(source, '.'); dot >= 0 {
+		qual, baseCol = source[:dot], source[dot+1:]
+	}
+	// A qualified source (`t.arr`) must name the body's scan; a bare one binds
+	// it.
+	if qual != "" {
 		scanAlias := scan.Alias
 		if scanAlias == "" {
 			scanAlias = scan.Table
@@ -169,7 +184,6 @@ func (t *cascadesTranslator) classifyDerivedUnnestArray(outerLeft logical.Logica
 		if !strings.EqualFold(qual, scanAlias) && !strings.EqualFold(qual, scan.Table) {
 			return values.UnknownType, "", derivedUnnestUnsupported
 		}
-		baseCol = source[dot+1:]
 	}
 	// The base scan must be a REAL table (not itself a CTE/derived — the
 	// body-level structural guard). A CTE-scoped scan has its table name in
