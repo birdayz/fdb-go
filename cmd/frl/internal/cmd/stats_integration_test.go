@@ -1290,3 +1290,75 @@ func TestOneOutputNeverPrintsTwoTablesUnderOneName(t *testing.T) {
 		}
 	})
 }
+
+// THE RENDERERS THEMSELVES FEED THE WHOLE UNION, not just one of their maps.
+//
+// The bug was never in the decision — it was in WHICH names get fed to it.
+// Testing safeDecoderOver in isolation pins the decision and leaves the wiring
+// free: narrow either call site back to one map and the helper still behaves
+// perfectly while the rendered output shows one label for two stored types.
+// So this drives the real renderers with the pair SPLIT across their two
+// sources.
+func TestRenderersFeedTheWholeUnionToTheDecoder(t *testing.T) {
+	t.Parallel()
+
+	// MY__01TABLE decodes to MY__1TABLE, which is the other name verbatim.
+	const a, b = "MY__1TABLE", "MY__01TABLE"
+	if recordlayer.ToUserIdentifier(b) != a {
+		t.Fatalf("fixture is vacuous: %q decodes to %q", b, recordlayer.ToUserIdentifier(b))
+	}
+
+	render := func(t *testing.T, fn func(*cobra.Command) error) string {
+		t.Helper()
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := fn(c); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		return buf.String()
+	}
+
+	t.Run("collect: pair split across collected and skipped", func(t *testing.T) {
+		t.Parallel()
+		rep := &recordlayer.CollectionReport{
+			Collected: map[string]recordlayer.RecordTypeStatistic{a: {Count: 7}},
+			Skipped:   map[string]string{b: "exceeds MaxRecordsPerType"},
+		}
+		out := render(t, func(c *cobra.Command) error {
+			return renderCollectReport(c, "json", "/x/MAIN", rep, time.Second)
+		})
+		// Decoding b yields a's stored name, so under the split BOTH must print
+		// stored. Seeing MY$TABLE means only `collected` was fed to the decision.
+		if strings.Contains(out, "MY$TABLE") {
+			t.Errorf("collected was decoded while skipped straddled the collision — "+
+				"the decision saw only one map:\n%s", out)
+		}
+		for _, want := range []string{a, b} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output does not name %q by its stored spelling:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("show: pair split across per_type and missing_types", func(t *testing.T) {
+		t.Parallel()
+		st := embedded.StatisticsStatus{
+			Usable: true, Found: true,
+			Stats:        recordlayer.StoreStatistics{PerType: map[string]recordlayer.RecordTypeStatistic{a: {Count: 7}}},
+			MissingTypes: []string{b},
+		}
+		out := render(t, func(c *cobra.Command) error {
+			return renderStatsStatus(c, "json", "/x/MAIN", st)
+		})
+		if strings.Contains(out, "MY$TABLE") {
+			t.Errorf("per_type was decoded while missing_types straddled the collision "+
+				"— the decision saw only one list:\n%s", out)
+		}
+		for _, want := range []string{a, b} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output does not name %q by its stored spelling:\n%s", want, out)
+			}
+		}
+	})
+}

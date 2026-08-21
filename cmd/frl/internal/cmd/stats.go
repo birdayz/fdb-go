@@ -457,6 +457,17 @@ func renderStatsStatus(
 	// and the output still shows one name for two tables. See safeDecoderOver.
 	decode := safeDecoderOver(append(append(
 		storedKeysOf(st.Stats.PerType), st.MissingTypes...), st.ExtraTypes...))
+	if len(st.AmbiguousTypes) > 0 {
+		// AmbiguousTypes are decoded at their SOURCE (AmbiguousDeclaredNames
+		// returns user identifiers), so they are not in the union above -- and a
+		// decoded name from one of the lists that happens to equal one of them
+		// would print the same label for two different things. Their presence
+		// says the schema is ambiguous, so nothing else here decodes either.
+		//
+		// Local on purpose: "unreachable because the reader refuses first" is the
+		// non-local argument that produced the straddling bug two commits ago.
+		decode = func(s string) string { return s }
+	}
 	perType := make(map[string]int64, len(st.Stats.PerType))
 	for name, s := range st.Stats.PerType {
 		perType[decode(name)] = s.Count
@@ -870,8 +881,13 @@ func userFieldName(field string) string { return userName(field) }
 // different stored types. The decision has to range over the union of what the
 // output prints, which is why this takes the names rather than the maps.
 //
-// Returns userName when decoding is unambiguous, and identity otherwise: the
-// same all-or-nothing rule the diff and the completer use.
+// Returns userName when decoding is unambiguous, and identity otherwise. The
+// GRANULARITY matches the diff and the completer -- all-or-nothing over one
+// output -- but the PREDICATE is wider than the diff's, and deliberately so.
+// The diff's three buckets are disjoint by stored name, so a repeated RENDERED
+// name is its whole hazard. Here a decoded name can also equal a DIFFERENT
+// entry's stored name, which the diff cannot suffer because each of its rows
+// resolves against its own metadata.
 func safeDecoderOver(stored []string) func(string) string {
 	identity := func(s string) string { return s }
 	all := make(map[string]struct{}, len(stored))

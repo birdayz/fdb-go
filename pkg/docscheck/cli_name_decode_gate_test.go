@@ -132,16 +132,44 @@ func TestNameLineClassification(t *testing.T) {
 		}
 	}
 
+	// EVERY exemption fixture must contain a tracked SPELLING as well as its
+	// exemption token. Without the spelling, nameLineIsLeak returns at the !hit
+	// check and the arm passes without ever reaching the allowlist — it proves
+	// the line is uninteresting, not that the exemption works. Four of these
+	// were written that way and pinned nothing.
 	exempt := map[string]string{
 		"decoded through userNameFor":   `	rt = userNameFor(md, rec.RecordType.Name)`,
-		"decoded through userNamesFor":  `	return userNamesFor(md, names)`,
+		"decoded through userNamesFor":  `	return userNamesFor(md, []string{rt.Name})`,
 		"decoded through userFieldName": `	name: userFieldName(col.MetadataName())`,
 		"field helper":                  `	return userFieldNames(idx.RootExpression.FieldNames())`,
 		"anchored marker":               `	oldRaw := oldI.RootExpression.FieldNames() // storage-compare`,
-		"lookup by stored name":         `	if rt := md.GetRecordType(name); rt != nil {`,
+		"lookup by stored name":         `	if rt := md.GetRecordType(tbl.MetadataName()); rt != nil {`,
+		"lookup for index types":        `	for _, rt := range md.RecordTypesForIndex(idx) { _ = rt.Name }`,
+		"EqualFold stored-name arm":     `	if !strings.EqualFold(tbl.MetadataName(), name) {`,
+		"collected for later decoding":  `		names[i] = rt.Name`,
 		"schema template namespace":     `	return fmt.Errorf("%s", tpl.MetadataName())`,
 		"a comment line":                `	// rt.Name is the escaped storage name`,
-		"no tracked spelling":           `	fmt.Fprintln(out, "nothing to see")`,
+	}
+	// Guard: an exemption fixture that carries no tracked spelling is exempt for
+	// the WRONG reason, so assert each one would be a leak with its token removed.
+	tokens := map[string]string{
+		"decoded through userNameFor":   "userNameFor(md, ",
+		"decoded through userNamesFor":  "userNamesFor(md, ",
+		"decoded through userFieldName": "userFieldName(",
+		"field helper":                  "userFieldNames(",
+		"anchored marker":               " // storage-compare",
+		"lookup by stored name":         "md.GetRecordType(",
+		"lookup for index types":        "md.RecordTypesForIndex(idx)",
+		"EqualFold stored-name arm":     "strings.EqualFold(",
+		"schema template namespace":     "tpl",
+	}
+	for name, token := range tokens {
+		bare := strings.Replace(exempt[name], token, "", 1)
+		if !nameLineIsLeak(bare) {
+			t.Errorf("%s: the fixture is exempt for the WRONG reason — with its token "+
+				"removed it is still not a leak, so it carries no tracked spelling and "+
+				"never reaches the allowlist:\n  %s", name, bare)
+		}
 	}
 	for name, line := range exempt {
 		if nameLineIsLeak(line) {

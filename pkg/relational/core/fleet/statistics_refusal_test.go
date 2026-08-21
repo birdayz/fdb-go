@@ -296,3 +296,60 @@ func TestDescribeSkippedNamesUserIdentifiers(t *testing.T) {
 		t.Errorf("entries are not sorted by the name actually printed: %s", two)
 	}
 }
+
+// THE FAN-OUT'S SKIPPED LIST LOSES NO ROW AND INVENTS NO NAME.
+//
+// This string is the one field an operator sees for a refused target. It used
+// to decode with a bare ToUserIdentifier into a map keyed by the DECODED name,
+// which fails two ways:
+//
+//   - a type legitimately named __0Order renders as __Order, which re-encodes
+//     to __Order and resolves to nothing;
+//   - two stored names colliding on one decoded key LOSE a row outright, so a
+//     skipped type silently vanishes from the only place it is reported.
+//
+// cmd/frl's docscheck gate scans cmd/frl only and cannot see this file, so the
+// invariant is pinned here.
+func TestDescribeSkippedLosesNoRowAndInventsNoName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no row lost on a collision", func(t *testing.T) {
+		t.Parallel()
+		// MY__01TABLE decodes to MY__1TABLE, which is the other key verbatim.
+		const a, b = "MY__1TABLE", "MY__01TABLE"
+		if recordlayer.ToUserIdentifier(b) != a {
+			t.Fatalf("fixture is vacuous: %q decodes to %q", b, recordlayer.ToUserIdentifier(b))
+		}
+		got := describeSkipped(map[string]string{a: "reason-a", b: "reason-b"})
+		for _, want := range []string{"reason-a", "reason-b"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("skipped list dropped %q — a skipped type vanished from the "+
+					"only field that reports it: %s", want, got)
+			}
+		}
+		// Under the collision every label is the stored spelling, so neither row
+		// claims to be the other table.
+		if !strings.Contains(got, a) || !strings.Contains(got, b) {
+			t.Errorf("under a collision both rows must be labelled by their STORED "+
+				"names: %s", got)
+		}
+	})
+
+	t.Run("a never-escaped name is not renamed", func(t *testing.T) {
+		t.Parallel()
+		// __0Order decodes to __Order, which does NOT re-encode back, so decoding
+		// it would show a name that resolves to nothing.
+		got := describeSkipped(map[string]string{"__0Order": "why"})
+		if !strings.Contains(got, "__0Order") {
+			t.Errorf("a name that does not round-trip must be shown as stored: %s", got)
+		}
+	})
+
+	t.Run("an ordinary escaped name still decodes", func(t *testing.T) {
+		t.Parallel()
+		got := describeSkipped(map[string]string{"MY__1TABLE": "why"})
+		if !strings.Contains(got, "MY$TABLE") {
+			t.Errorf("no collision here, so the SQL identifier must be shown: %s", got)
+		}
+	})
+}
