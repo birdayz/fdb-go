@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"sync"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -25,11 +24,20 @@ type RecordMetaData struct {
 	// Map of record type names to their definitions
 	recordTypes map[string]*RecordType
 
-	// Memo for AmbiguousDeclaredNames. The answer is a function of the declared
-	// set, which is fixed after Build, and the CLI asks once per rendered name --
-	// unmemoised, a record scan is O(records x types) and a type listing
-	// O(types^2), re-deriving the same answer for every row it prints.
-	ambiguousOnce  sync.Once
+	// Whether two declared record types collide across the SQL and storage
+	// namespaces, DERIVED AT CONSTRUCTION by Build alongside
+	// fieldNumberToRecordType, not memoised on first ask.
+	//
+	// A lazy memo would answer whatever the declared set happened to be the
+	// first time anyone asked, so its staleness under mutation would depend on
+	// call ORDER -- mutate-then-ask and ask-then-mutate-then-ask giving
+	// different answers for the same object. Deriving it here makes the value
+	// unambiguously "the declared set Build saw", which is the same contract
+	// every other derived field on this struct already has.
+	//
+	// It is computed rather than recomputed per call because the CLI asks once
+	// per rendered name: a record scan is O(records x types) and a type listing
+	// O(types^2), re-deriving one answer for every row it prints. O(types) once.
 	ambiguousNames []string
 	ambiguousFound bool
 
@@ -1044,7 +1052,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
-	return &RecordMetaData{
+	md := &RecordMetaData{
 		recordTypes:             types,
 		fileDescriptor:          b.fileDescriptor,
 		recordsSourceProto:      b.recordsSourceProto,
@@ -1060,7 +1068,11 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		subspaceKeyCounter:      b.subspaceKeyCounter,
 		usesSubspaceKeyCounter:  b.counterBasedSubspaceKeys,
 		preserved:               b.preserved,
-	}, nil
+	}
+	// Derived here, beside fieldNumberToRecordType above, so the value is
+	// unambiguously the declared set THIS Build saw. See the field comment.
+	md.ambiguousNames, md.ambiguousFound = md.computeAmbiguousDeclaredNames()
+	return md, nil
 }
 
 // FindRegisteredMessageType returns the message type registered for fullName
@@ -1325,9 +1337,13 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 // RecordTypes returns all record types
 // NOTE: this returns the LIVE map, not a copy. Nothing in this package mutates
 // it after Build -- both writes are on the BUILDER (b.recordTypes) -- and that
-// is now load-bearing rather than merely tidy: AmbiguousDeclaredNames memoises
-// its answer on the assumption that the declared set is final. A caller that
-// mutates this map invalidates that memo silently.
+// is load-bearing rather than merely tidy: Build DERIVES ambiguousNames from
+// this map and stores the result, so a caller that mutates the map afterwards
+// leaves that field describing a declared set that no longer exists.
+//
+// The failure is silent either way, but it is at least deterministic: the field
+// always means "what Build saw", never "whatever the set was the first time
+// somebody happened to ask".
 func (m *RecordMetaData) RecordTypes() map[string]*RecordType {
 	return m.recordTypes
 }
@@ -1824,13 +1840,11 @@ func (m *RecordMetaData) AmbiguousDeclaredNames() ([]string, bool) {
 	if m == nil {
 		return nil, false
 	}
-	m.ambiguousOnce.Do(func() {
-		m.ambiguousNames, m.ambiguousFound = m.computeAmbiguousDeclaredNames()
-	})
 	return m.ambiguousNames, m.ambiguousFound
 }
 
-// computeAmbiguousDeclaredNames is the uncached body; call the memoised form.
+// computeAmbiguousDeclaredNames is the derivation. Build calls it once and
+// stores the result; read AmbiguousDeclaredNames rather than calling this.
 func (m *RecordMetaData) computeAmbiguousDeclaredNames() ([]string, bool) {
 	if m == nil {
 		return nil, false

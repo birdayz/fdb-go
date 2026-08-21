@@ -1,7 +1,9 @@
 package recordlayer
 
 import (
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -185,5 +187,72 @@ func TestGetRecordTypeMisResolvesAnAmbiguousPair(t *testing.T) {
 		}
 		t.Fatalf("GetRecordType(%q) resolved to %q, want the mis-resolution to %q: %s",
 			bSQL, got.Name, aStorage, why)
+	}
+}
+
+// THE AMBIGUITY ANSWER IS DERIVED AT CONSTRUCTION, SO READING IT NEEDS NO LOCK.
+//
+// It was a sync.Once memo, where whichever caller arrived first did the work.
+// Dropping the Once is only sound because Build fills the field before the
+// metadata is reachable by anyone, which makes every later read a read of
+// immutable state. That is the property pinned here: many goroutines asking at
+// once must all get the same answer, with no synchronisation between them.
+//
+// The assertion alone is weak -- an unsynchronised lazy memo would usually pass
+// it too. The race detector removes the luck, and verified: reintroducing that
+// memo makes this test report DATA RACE and fail under -race.
+//
+// WHERE that happens, because it is not where you would guess. The PR race lane
+// (ci.yml's "Race detector") covers //pkg/relational/..., three //pkg/fdbgo/...
+// trees and //pkg/recordlayer/query/plan/cascades/... -- NOT this package. The
+// gate that runs it under -race is nightly-coverage.yml's race step, which
+// names //pkg/recordlayer:recordlayer_test explicitly. So a regression here is
+// caught by the nightly, one day late, not by the PR.
+//
+// Without -race the test still fails deterministically for the two failure
+// modes that do not need a data race: a Build that skipped the derivation, and
+// a read path that mutates shared state instead of reading it.
+func TestAmbiguousDeclaredNamesReadsWithoutSynchronisation(t *testing.T) {
+	t.Parallel()
+
+	// Same collision as TestGetRecordTypeMisResolvesAnAmbiguousPair: Order takes
+	// the storage form of SQL MY$TABLE, Customer the storage form of the SQL
+	// name that IS that storage form.
+	md := renameRecordTypesTo(t, map[string]string{
+		"Order": "MY__1TABLE", "Customer": "MY__01TABLE",
+	})
+
+	const readers = 64
+	type answer struct {
+		names []string
+		ok    bool
+	}
+	got := make([]answer, readers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release together, so the reads genuinely overlap
+			n, ok := md.AmbiguousDeclaredNames()
+			got[i] = answer{names: n, ok: ok}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	// Vacuity: an ambiguity that does not exist would have every reader agree on
+	// false, and the agreement check below would pass while proving nothing.
+	if !got[0].ok {
+		t.Fatalf("fixture is not ambiguous; every reader agreeing on false says "+
+			"nothing about how the answer is derived (got %+v)", got[0])
+	}
+	for i, a := range got {
+		if a.ok != got[0].ok || !slices.Equal(a.names, got[0].names) {
+			t.Fatalf("reader %d disagreed: got (%v, %v), reader 0 got (%v, %v); the "+
+				"answer is not immutable-after-Build as the dropped sync.Once assumed",
+				i, a.names, a.ok, got[0].names, got[0].ok)
+		}
 	}
 }
