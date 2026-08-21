@@ -19741,10 +19741,14 @@ follow-up, not booked here: the arity census now names `pinned` and
 `rfcPublishedPopulation` instead of repeating them,
 `field_name_decision_test.go` names `fieldDebtAuthorityTotal` instead of
 contradicting it, and `cardinality_bounds.go` no longer encodes an arm count in
-the word "twelfth". One reported instance was investigated and is NOT a defect:
-`result_type_stub_census_test.go`'s "a thirteenth stub" is anchored to a count
-the same file twice describes as closed ("the former twelve-entry debt
-inventory therefore reached zero"), which is frozen-historical, not rotting.
+the word "twelfth". One reported instance was investigated and split: in
+`result_type_stub_census_test.go` the ORDINAL ("a thirteenth stub") is sound,
+anchored to a count the same file twice describes as closed, but the sentence
+carrying it asserted in the PRESENT TENSE that the callers pass UnknownType and
+the constructor defaults nil to it -- both false since RFC-232, and refuted by
+the `want = 0` assertion in the very function that comment heads. Checking the
+number and clearing it is what nearly hid that; the prose around a sound figure
+is where this class actually survives. Fixed in the same PR.
 
 What remains is enforcement, and the obvious formulation does not work.
 
