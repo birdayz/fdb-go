@@ -1,7 +1,6 @@
 package chaos
 
 import (
-	"context"
 	mrand "math/rand/v2"
 	"sort"
 	"testing"
@@ -32,7 +31,8 @@ func TestSimFDB_RunRandomVerify(t *testing.T) {
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	model := NewStoreModel(md)
 	rng := mrand.New(mrand.NewPCG(seed, 0))
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	open := func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
 		return recordlayer.NewStoreBuilder().

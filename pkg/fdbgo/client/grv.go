@@ -1309,6 +1309,21 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				db.handleConnError(proxy.Address)
 				continue
 			}
+			// ALIVE on frame receipt, before classifying the reply. The failure
+			// monitor is keyed by ADDRESS, and a well-formed frame proves the
+			// address is reachable whatever the reply says.
+			//
+			// This briefly sat below the disposition check, on the reasoning that a
+			// broken_promise is the proxy dying. That was wrong in a way worth
+			// recording: an address already marked failed by the GRV-timeout arm
+			// above would then never be cleared by an in-band 1100 -- the continue
+			// skips past here -- so a healthy co-located role stays excluded and
+			// recovery waiters are never signalled. It also bought nothing: the
+			// alive->failed churn that produced a backoff spin came from the arm
+			// calling handleConnError, which is gone; markAlive is transition-gated
+			// and cannot close the shared recovered channel unless something first
+			// marked the address failed.
+			db.failMon.markAlive(proxy.Address)
 			v, lk, rkD, rkB, tti, ptd, perr := parseGetReadVersionReply(resp.Body)
 			// An IN-BAND maybeDelivered error is not this proxy's answer, it is
 			// the proxy going away while answering: a dying GrvProxy replies
@@ -1341,13 +1356,6 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				// no traffic.
 				continue
 			}
-			// Alive only NOW. Receiving a frame proves the socket is up, not that
-			// the proxy is healthy: a broken_promise IS the proxy going away, and
-			// marking it alive re-arms recordConnFailure's one-Warn-per-episode
-			// latch (topology.go), so every in-band 1100 would Warn afresh. A
-			// non-maybeDelivered application error still counts as alive -- the
-			// proxy answered properly, it just said no.
-			db.failMon.markAlive(proxy.Address)
 			return v, lk, rkD, rkB, tti, ptd, attemptEpoch, perr
 		}
 

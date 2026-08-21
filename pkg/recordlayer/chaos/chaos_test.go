@@ -54,11 +54,19 @@ func TestMain(m *testing.M) {
 		log.Fatalf("chaos: failed to open FDB: %v", err)
 	}
 
-	// The package budget every op context derives from. 10 minutes sits above
-	// any healthy run of this suite (well under a minute against a live
-	// container) and below the 900s package alarm, so a dead container spends
-	// the budget once and every remaining test then fails instantly rather than
-	// paying its own timeout.
+	// The package budget every op and run context derives from.
+	//
+	// 10 minutes against a MEASURED healthy suite of 90.2s (`bazelisk test
+	// //pkg/recordlayer/chaos:chaos_test`, 228 tests, live container) -- 6.7x
+	// headroom, and below the 900s size="large" alarm. An earlier version of
+	// this comment said "well under a minute", which was wrong by 1.5x and was
+	// the premise the headroom rested on; the number is measured now, and the
+	// population it was measured over is named so it can be seen to go stale.
+	//
+	// A dead container spends the budget once; every remaining test then fails
+	// immediately instead of paying its own timeout. Per-op bounding alone does
+	// NOT achieve that -- at -test.parallel=1, thirty tests at 30s each exhaust
+	// the 900s alarm on their own.
 	suite, suiteCancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	suiteCtx = suite
 
@@ -847,7 +855,8 @@ func TestVectorHighDimRaBitQBasic(t *testing.T) {
 	md := buildVectorHighDimRaBitQMetadata()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	db := recordlayer.NewFDBDatabase(testRealDB)
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	const numVectors = 10
 	const dims = 128

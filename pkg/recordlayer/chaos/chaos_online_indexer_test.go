@@ -1,7 +1,6 @@
 package chaos
 
 import (
-	"context"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -51,7 +50,8 @@ func buildOnlineIndexerCountMetadata() *recordlayer.RecordMetaData {
 // Returns the records' PKs for verification.
 func populateRecords(t testing.TB, db *recordlayer.FDBDatabase, md *recordlayer.RecordMetaData, sub subspace.Subspace, numRecords int) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
@@ -83,7 +83,8 @@ func populateRecords(t testing.TB, db *recordlayer.FDBDatabase, md *recordlayer.
 // records are indexed. Returns the number of index entries.
 func verifyValueIndexCompleteness(t testing.TB, store *recordlayer.FDBRecordStore, md *recordlayer.RecordMetaData, indexName string, expectedRecords int) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	idx := md.GetIndex(indexName)
 	if idx == nil {
@@ -128,7 +129,8 @@ func verifyValueIndexCompleteness(t testing.TB, store *recordlayer.FDBRecordStor
 // verifyCountIndexValue checks that a COUNT index has the expected total.
 func verifyCountIndexValue(t testing.TB, store *recordlayer.FDBRecordStore, md *recordlayer.RecordMetaData, indexName string, expectedTotal int64) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	idx := md.GetIndex(indexName)
 	if idx == nil {
@@ -169,7 +171,8 @@ func TestOnlineIndexerCommitUnknown(t *testing.T) {
 	md := buildOnlineIndexerValueMetadata()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	const numRecords = 20
 
@@ -232,7 +235,8 @@ func TestOnlineIndexerCommitUnknownSmallChunks(t *testing.T) {
 	md := buildOnlineIndexerValueMetadata()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	const numRecords = 15
 
@@ -290,7 +294,8 @@ func TestOnlineIndexerCommitUnknownCountIndex(t *testing.T) {
 	md := buildOnlineIndexerCountMetadata()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	const numRecords = 20
 
@@ -349,7 +354,8 @@ func TestOnlineIndexerHeavyFaults(t *testing.T) {
 	md := buildOnlineIndexerValueMetadata()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	const numRecords = 50
 
@@ -405,7 +411,8 @@ func TestOnlineIndexerAllFaults(t *testing.T) {
 	md := buildOnlineIndexerValueMetadata()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	const numRecords = 30
 

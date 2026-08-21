@@ -19705,8 +19705,15 @@ SetTransactionTimeout/SetTransactionRetryLimit (default unbounded)" with neither
 set. So a shared container dying mid-suite did not fail the remaining ops, it
 HUNG them, until the package's 15-minute alarm fired — observed once as 14
 failures plus a timeout whose stack named an arbitrary test rather than the
-container. `pkg/recordlayer/chaos/scenario.go` now bounds every op, so the same
-death produces fast, TYPED `context.DeadlineExceeded` failures instead.
+container. The package now carries a SUITE budget (`chaos_test.go`, 10 minutes against a
+measured 90.2s healthy run) from which every op and run context derives, and
+every call site is routed through it -- `scenario.go`, `concurrent.go`,
+`fault.go`, `verify.go`, `spfresh_driver.go`, and the 29 test-body contexts that
+previously took `context.Background()` directly. Per-op bounding ALONE does not
+work and was tried: at `-test.parallel=1`, thirty tests at 30s each exhaust the
+900s alarm on their own. With a shared budget a dead container spends it once
+and the remaining tests fail immediately, with a TYPED
+`context.DeadlineExceeded`.
 
 What remains: those failures still say "deadline exceeded", not "the container
 is gone". An earlier attempt to close that by classifying error strings was

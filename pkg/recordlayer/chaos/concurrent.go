@@ -67,7 +67,7 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 	// rather than failing it, and the package alarm is what finally reports --
 	// naming an arbitrary test instead of the container. RunConcurrent bypasses
 	// NewScenario entirely, so it needs its own bound.
-	ctx, cancelRun := chaosRunContext()
+	ctx, cancelRun := chaosRunContext(cfg.Duration)
 	defer cancelRun()
 
 	// Create the store once to initialize the header.
@@ -257,7 +257,7 @@ func buildModelFromStore(store *recordlayer.FDBRecordStore, metadata *recordlaye
 	// rather than failing it, and the package alarm is what finally reports --
 	// naming an arbitrary test instead of the container. RunConcurrent bypasses
 	// NewScenario entirely, so it needs its own bound.
-	ctx, cancelRun := chaosRunContext()
+	ctx, cancelRun := chaosRunContext(0) // a verification pass, not a workload: no Duration to derive from
 	defer cancelRun()
 
 	cursor := store.ScanRecords(nil, recordlayer.ForwardScan())
@@ -296,7 +296,7 @@ func verifySnapshotDerived(store *recordlayer.FDBRecordStore, model *StoreModel)
 	// rather than failing it, and the package alarm is what finally reports --
 	// naming an arbitrary test instead of the container. RunConcurrent bypasses
 	// NewScenario entirely, so it needs its own bound.
-	ctx, cancelRun := chaosRunContext()
+	ctx, cancelRun := chaosRunContext(0) // a verification pass, not a workload: no Duration to derive from
 	defer cancelRun()
 
 	// 1. Record count

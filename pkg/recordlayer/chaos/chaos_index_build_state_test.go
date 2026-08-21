@@ -1,7 +1,6 @@
 package chaos
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -29,7 +28,8 @@ import (
 // assertion about the swallow rather than about whichever read happens first.
 func TestFDB_LoadIndexBuildStatePropagatesCountReadFailure(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	builder := recordlayer.NewRecordMetaDataBuilder()
 	builder.SetRecords(gen.File_record_layer_demo_proto)

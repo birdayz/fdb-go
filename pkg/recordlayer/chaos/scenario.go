@@ -152,8 +152,19 @@ func chaosOpContext() (context.Context, context.CancelFunc) {
 }
 
 // chaosRunContext bounds a whole multi-operation run rather than one op.
-func chaosRunContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(suiteContext(), 2*time.Minute)
+//
+// The budget is DERIVED from the workload, not fixed. A fixed two minutes was
+// tried and is wrong: ConcurrentConfig.Duration is caller-chosen and the
+// documented soak example is five minutes, so the context would expire mid-run
+// while the workers -- which watch their own wall clock, not this ctx -- kept
+// calling db.Run against a cancelled context in a hot error loop, then failed
+// final validation. The grace covers setup plus the post-run verification.
+func chaosRunContext(workload time.Duration) (context.Context, context.CancelFunc) {
+	const grace = 2 * time.Minute
+	if workload < 0 {
+		workload = 0
+	}
+	return context.WithTimeout(suiteContext(), workload+grace)
 }
 
 // SaveRecord saves a record to the store and updates the model.
