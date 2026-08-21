@@ -168,10 +168,15 @@ func translateSpecialCharacters(userIdentifier string) string {
 //
 // Both halves — the panic and the schema-wide scope — are RFC-238 §5 criterion
 // (8), with the commands that make them checkable; §7b narrates how they were
-// measured. They are TWO mechanisms, not one: buildMatchCandidates builds a
-// positional type for EVERY record type behind a sync.Once, so removing the
-// panic alone would leave one unbuildable table still aborting the candidate
-// set for the whole schema.
+// measured. They are TWO mechanisms, not one. The colliding table's own read
+// fails table-locally, where it should, at the scan leaf that builds a row type
+// from just the table the query names. The schema-wide part is elsewhere:
+// buildMatchCandidates builds a positional type for every record type in the
+// metadata that has a primary key and a descriptor, so ONE unbuildable table
+// aborts the candidate set for all of them, and removing the panic does not
+// change that. Java is table-local because MetaDataPlanContext.forRootReference
+// narrows to the record types the QUERY names before building anything — not
+// because it tolerates a bad table.
 func ToUserIdentifier(protoIdentifier string) string {
 	s := strings.ReplaceAll(protoIdentifier, dotEscape, ".")
 	s = strings.ReplaceAll(s, dollarEscape, "$")

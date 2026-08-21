@@ -243,8 +243,16 @@ CREATE TABLE XPROBE (id BIGINT, "TOTAL" BIGINT, "X.TOTAL" BIGINT, PRIMARY KEY (i
 // So Java's failure is TABLE-LOCAL and Go's is SCHEMA-WIDE. A collision in one
 // table takes down queries against every other table in the schema, which Java
 // does not do. That is a real divergence, not a faithfully reproduced upstream
-// defect, and it is what RFC-238 §7b has to fix — reproducing Java means
-// failing on COLL and answering on INNOCENT.
+// defect, and it is what RFC-238 §5 criterion (8) requires (§7b narrates the
+// measurement) — reproducing Java means failing on COLL and answering on
+// INNOCENT.
+//
+// The two failures are not the same failure. COLL's is table-local already: the
+// scan leaf builds a row type from just the table the query names. INNOCENT's
+// comes from buildMatchCandidates, which builds one for every record type in
+// the metadata. Java narrows to the QUERY's record types before building
+// anything (MetaDataPlanContext.forRootReference), which is the whole of its
+// table-locality.
 //
 // The INNOCENT arm is the one that carries this. A COLL-only probe proves that
 // building the offending table's row type visits its own columns, which is true
@@ -284,13 +292,21 @@ CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 				"RFC-238 §5 criterion (8) asks for. FLIP this to NotTo(HaveOccurred()) and\n"+
 				"KEEP it. Do not delete it: it is the only Go-side pin that an unrelated\n"+
 				"table stays queryable, so deleting it lets a later return to schema-wide\n"+
-				"failure through unnoticed.")
+				"failure through unnoticed.\n"+
+				"\n"+
+				"The two assertions BELOW go with the flip — delete them, do not flip them.\n"+
+				"They classify a FAILURE, so with goInnocent nil they fail with messages\n"+
+				"that read backwards (\"Go's failure stopped being an api.Error\" is exactly\n"+
+				"what success looks like). The COLL arm keeps its own code pin, so nothing\n"+
+				"is lost by dropping these two.")
 		var ge *api.Error
 		Expect(errors.As(goInnocent, &ge)).To(BeTrue(),
-			"Go's failure stopped being an api.Error. A panic escaping the driver boundary\n"+
-				"looks exactly like this, and removing that panic is criterion (8)'s other half.")
+			"Go's INNOCENT failure is not an api.Error. A panic that escaped the driver\n"+
+				"boundary rather than being recovered looks exactly like this.")
 		Expect(string(ge.Code)).To(Equal("XX000"),
-			"Go's SQLSTATE moved. If it became a real diagnostic, say so here.")
+			"Go's INNOCENT SQLSTATE moved off XX000 while still failing. If it became a\n"+
+				"real diagnostic the schema-wide scope is still here and only the panic\n"+
+				"changed — say which error it is now.")
 
 		// THE SHARED HALF, on BOTH engines. Java's alone would leave the arm
 		// above satisfiable by the wrong fix: an implementation that simply
@@ -313,5 +329,21 @@ CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 				"of them under the other's name. This assertion holds BEFORE and AFTER the\n"+
 				"criterion (8) fix — table-local means failing HERE and answering on INNOCENT,\n"+
 				"not answering everywhere.")
+
+		// PIN THE CODE, not just "an error". `HaveOccurred` cannot tell a
+		// recovered panic from a real diagnostic, so on its own it stays green
+		// through exactly the change criterion (8) demands. When the panic
+		// becomes an error this reddens, which is the point: come here, write
+		// the new code down, and say what it means.
+		var gce *api.Error
+		Expect(errors.As(goColl, &gce)).To(BeTrue(),
+			"Go's COLL failure is not an api.Error at all. A panic that escaped the\n"+
+				"driver boundary rather than being recovered looks like this.")
+		Expect(string(gce.Code)).To(Equal("XX000"),
+			"Go's COLL SQLSTATE moved off XX000. If it became a REAL diagnostic, that is\n"+
+				"criterion (8)'s panic half landing — update the expected code here and say\n"+
+				"which error it is now. Do NOT relax this back to a bare HaveOccurred: the\n"+
+				"code is the only thing that distinguishes a recovered panic from a\n"+
+				"diagnosis.")
 	})
 })

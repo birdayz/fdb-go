@@ -564,7 +564,30 @@ must call `values.NewRecordType` DIRECTLY with two fields whose decoded names
 collide — not through the driver, whose `recover` is exactly what turns the
 panic into `XX000` and hides it.
 
-And the SCOPE, which the panic count alone does not cover:
+And the SCOPE, which the panic count alone does not cover — and which is a
+SECOND mechanism rather than a consequence of the first, so removing the panic
+does not remove it:
+
+```
+grep -rl --include='*.go' EvaluateRecordTypes pkg/ | grep -v _test.go
+```
+
+**EMPTY today except the definition file; must name the candidate-building
+site.** `buildMatchCandidates` builds a primary candidate for every record type
+in the metadata that has a primary key and a descriptor. Java's
+`MetaDataPlanContext.forRootReference` narrows to the types the QUERY names
+first (`MetaDataPlanContext.java:176-218`), which is where its table-locality
+comes from — it has no drop-list and no per-type catch.
+
+The narrowing needs `RecordTypesProperty`, and GO ALREADY HAS IT:
+`properties.EvaluateRecordTypes` (`record_types_property.go:29`) is a faithful
+port of `RecordTypesProperty.evaluate`, with tests, and NO production caller —
+its only two files are its own definition and its own test. So this is wiring an
+existing ported property into the one place that needs it, not building a
+capability. §7b says why a drop-list and a "fails for want of a candidate"
+argument are both wrong.
+
+The behaviour that narrowing must produce:
 
 ```
 CREATE TABLE coll (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))
@@ -572,10 +595,15 @@ CREATE TABLE innocent (id BIGINT, v BIGINT, PRIMARY KEY (id))
 ```
 
 `SELECT id FROM innocent` must ANSWER, matching Java, and `SELECT id FROM coll`
-must still FAIL, also matching Java. `DecodedNameCollisionJavaProbe` asserts
-both directions on both engines already, so this criterion is met when its Go
-INNOCENT arm flips to `NotTo(HaveOccurred())` — the arm's own failure message
-says to flip and keep it, never delete it — and its Go COLL arm does not move.
+must still FAIL, also matching Java — at `cascades_translator.go:3022`, which
+builds the scan leaf's row type from the one table the query names and is
+already table-local. `DecodedNameCollisionJavaProbe` asserts both directions on
+both engines. The criterion is met when its Go INNOCENT arm flips to
+`NotTo(HaveOccurred())` — the arm's own message says to flip and keep it, never
+delete it, and says which neighbouring assertions go with the flip — and its Go
+COLL arm still fails, with a SQLSTATE it pins rather than a bare `HaveOccurred`.
+Pinning the code is what makes the panic half checkable from the probe too: an
+`XX000` recovered panic and a real diagnostic are both "an error".
 
 That second half is why "no panic" is not sufficient on its own: an
 implementation that simply ignored the duplicate decoded fields would remove the
@@ -689,23 +717,43 @@ and reading what actually reddened:
 values.NewRecordType                      type.go:768   panics
 executor.PositionalTypeForRecordLayout    query_result.go:277
 embedded.buildMatchCandidates             cascades_generator.go:2795
-embedded.GetMatchCandidates               cascades_generator.go:2744   sync.Once
+embedded.GetMatchCandidates               cascades_generator.go:2744
 cascades.MatchLeafRule.OnMatch            rule_match_leaf.go:59
 ```
 
-`buildMatchCandidates` walks EVERY record type in the metadata and builds a
-positional type for each, so one unbuildable table aborts the candidate set for
-all of them — and `sync.Once` then caches that outcome for the connection. The
-blast radius is schema-wide because the CONSTRUCTION is schema-wide, not because
-the failure mode is a panic.
+`buildMatchCandidates` walks every record type in the metadata and builds a
+positional type for each one that has a primary key and a descriptor
+(`cascades_generator.go:2770`, `:2774`, `:2791` skip the rest). One unbuildable
+table therefore aborts the candidate set for all of them. The blast radius is
+schema-wide because the CONSTRUCTION is schema-wide, not because the failure
+mode is a panic.
 
-So the fix has a shape, and it is not "recover better": `NewRecordType` returns
-an error, `buildMatchCandidates` drops the one candidate that cannot be built
-and keeps the rest, and a query naming the colliding table then fails for want
-of a candidate. That is Java's table-local behaviour arrived at structurally —
-by not building what cannot be built — rather than by catching a panic nearer
-the leaf, which would leave the candidate set half-formed and the scope still
-wrong.
+Note where COLL itself fails, because it is NOT here: the scan leaf's row type
+is built at `cascades_translator.go:3022`, from `t.tableColumns(s.Table)` — the
+one table the query names. That path is already table-local and already the
+right place for the colliding table to fail. Only the candidate loop is
+schema-wide.
+
+**JAVA IS TABLE-LOCAL BECAUSE IT IS QUERY-SCOPED, NOT BECAUSE IT TOLERATES A BAD
+TABLE.** `MetaDataPlanContext.forRootReference` evaluates `RecordTypesProperty`
+over the root reference and builds primary candidates only for the types the
+QUERY names (`MetaDataPlanContext.java:176-218`). It has no drop-list and no
+per-type catch: an unbuildable candidate would abort its whole set too. It never
+touches `coll` when the query names `innocent` because it never looks at `coll`.
+
+So the fix is to port the NARROWING, and the two shapes that suggest themselves
+first are both wrong:
+
+  - A DROP-LIST — build every candidate, skip the ones that fail — is a Go-only
+    mechanism reaching a Java-shaped outcome by a different route. It also
+    leaves Go building every table's positional type on every query, which is
+    the cost Java's narrowing avoids and which nothing else in the port pays.
+  - "AND THEN THE QUERY FAILS FOR WANT OF A CANDIDATE" is false in Go, and it is
+    a Java invariant imported without its premise. `PrimaryScanRule.OnMatch`
+    (`rule_primary_scan.go:44-66`) yields a `RecordQueryScanPlan` from a
+    `FullUnorderedScanExpression` with no candidate at all; Java has no such
+    rule, so there a missing primary candidate really does mean the query cannot
+    be planned. In Go, no-candidate plans a scan.
 
 This is separate from §7: that one is a SQLSTATE refinement on a lookup
 decline, this one is a panicking row-type construction whose failure is scoped
