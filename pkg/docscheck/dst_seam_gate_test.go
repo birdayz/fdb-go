@@ -69,7 +69,11 @@ var seamAllowlist = map[string]string{
 	"pkg/relational/core/embedded/plan_logging.go:finish: time.Since": "planning duration on a log line; the log is not a persisted row",
 	"pkg/relational/core/embedded/execution_logging.go:finish: time.Since": "execution duration on a log line; the log is not a persisted row. " +
 		"Pairs with the beginExecLog entry above — same clock, same reasoning",
-	"pkg/recordlayer/store.go:DeleteRecord: time.Now":         "delete-latency metric",
+	"pkg/recordlayer/store.go:DeleteRecord: time.Now": "delete-latency metric",
+	"pkg/recordlayer/sliding_window_index_maintainer.go:instrument: time.Now": "sliding-window latency metric; the port of Java's " +
+		"timer.instrument(SlidingWindowEvent, future), whose value is the real elapsed time of an eviction or a re-election. " +
+		"The window's own PERSISTED bytes — the entry keys, the count, the boundary pointer — are derived from the record and " +
+		"the ordering field, never from this clock, so a seeded run replays identically with or without it",
 	"pkg/recordlayer/store.go:LoadRecord: time.Now":           "load-latency metric",
 	"pkg/recordlayer/store_builder.go:CreateOrOpen: time.Now": "store-open-latency metric",
 

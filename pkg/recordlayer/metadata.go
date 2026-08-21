@@ -1069,9 +1069,21 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		usesSubspaceKeyCounter:  b.counterBasedSubspaceKeys,
 		preserved:               b.preserved,
 	}
+
+	// Sliding-window (top-N vector) index validation. Runs on the assembled
+	// metadata rather than on the builder because it asks which record types an
+	// index covers, and RecordTypesForIndex is the one authority on that.
+	if err := validateSlidingWindowIndexes(md); err != nil {
+		return nil, err
+	}
+
 	// Derived here, beside fieldNumberToRecordType above, so the value is
 	// unambiguously the declared set THIS Build saw. See the field comment.
+	// Last, after every arm that can reject the metadata: a Build that returns
+	// an error derives nothing, and a Build that succeeds derives from final
+	// state rather than from state a later arm might still change.
 	md.ambiguousNames, md.ambiguousFound = md.computeAmbiguousDeclaredNames()
+
 	return md, nil
 }
 

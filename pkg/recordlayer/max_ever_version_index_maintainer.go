@@ -97,8 +97,22 @@ func (m *maxEverVersionIndexMaintainer) UpdateWhileWriteOnly(oldRecord, newRecor
 	return m.Update(oldRecord, newRecord)
 }
 
+// CanDeleteWhere bounds the prefix by the grouping columns. A MAX_EVER_VERSION
+// entry is one aggregate per group, keyed by the group alone with the grouped
+// columns in the VALUE — so a prefix naming a grouped column matches no key at
+// all, and the clear would silently do nothing while the records went away,
+// leaving a max that reports a version no surviving record has.
+func (m *maxEverVersionIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	return checkDeleteWhereBound(m.index, prefix)
+}
+
 // DeleteWhere clears all MAX_EVER_VERSION index entries whose key starts with the given prefix.
 func (m *maxEverVersionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere BEFORE
+	// it clears anything.
+	if err := m.CanDeleteWhere(prefix); err != nil {
+		return err
+	}
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 

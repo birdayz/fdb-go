@@ -20,6 +20,7 @@ go_test(
         "container_startup_timeout_test.go",
         "copy_method_rebuild_detector_test.go",
         "copy_method_rebuild_test.go",
+        "delete_where_bound_census_test.go",
         "docs_consistency_test.go",
         "dst_seam_gate_test.go",
         "duec_wallclock_gate_scope_test.go",

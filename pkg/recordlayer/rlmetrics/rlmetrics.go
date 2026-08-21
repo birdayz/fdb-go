@@ -138,6 +138,25 @@ func writeOne(w io.Writer, name string, cs *recordlayer.CounterSnapshot) error {
 		return err
 	}
 
+	if cs.Event.Kind == recordlayer.KindSizeDistribution {
+		// Java's StoreTimer.SizeEvent: a count of observations plus a sum of
+		// magnitudes. That is the same shape as a timed event — and therefore
+		// the same Prometheus type, a summary with no quantiles — but the sum
+		// is a dimensionless magnitude, not seconds, so it is emitted raw
+		// rather than divided.
+		//
+		// It must NOT fall through to the counter arm below. That arm renders
+		// Count alone, which for a distribution is the number of OBSERVATIONS,
+		// under a `_total` name that reads as the summed magnitude — a plausible
+		// number answering a different question.
+		metric := Namespace + name
+		_, err := fmt.Fprintf(w,
+			"# HELP %s %s: summed magnitude and observation count (record-layer size event).\n"+
+				"# TYPE %s summary\n%s_sum %d\n%s_count %d\n",
+			metric, title, metric, metric, cs.CumulativeValue, metric, cs.Count)
+		return err
+	}
+
 	// KindCount, KindSize, and any unclassified event are monotonic counters
 	// whose whole payload is in Count — for KindSize that payload is a byte
 	// total, which is why those event names already end in _bytes and the
@@ -154,8 +173,9 @@ func writeOne(w io.Writer, name string, cs *recordlayer.CounterSnapshot) error {
 		help = fmt.Sprintf("%s: cumulative bytes (record-layer size event).", title)
 	case recordlayer.KindUnspecified:
 		help = fmt.Sprintf("%s: total (record-layer event with no declared Kind; reported as a counter).", title)
-	case recordlayer.KindTimed, recordlayer.KindCount:
-		// KindTimed returned above; KindCount uses the default help.
+	case recordlayer.KindTimed, recordlayer.KindCount, recordlayer.KindSizeDistribution:
+		// KindTimed and KindSizeDistribution returned above; KindCount uses
+		// the default help.
 	}
 	metric := Namespace + name + "_total"
 	_, err := fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s %d\n",

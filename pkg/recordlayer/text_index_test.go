@@ -1947,9 +1947,22 @@ var _ = Describe("TEXT index", func() {
 	})
 
 	// =========================================================================
-	// 41. DeleteRecordsWhere clears type-specific TEXT index entries
+	// 41. DeleteRecordsWhere refuses a prefix a TEXT index cannot scope to
+	//
+	// This spec used to assert the OPPOSITE — "for type-specific TEXT index,
+	// this clears ALL index entries (not just the prefix range)" — and that
+	// expectation was the bug written down: deleting customer 1 also destroyed
+	// customer 2's tokens while customer 2's record survived, so a text search
+	// stopped finding a record that was still there.
+	//
+	// Java refuses instead. The delete-where is not a record-type comparison, so
+	// canDeleteWhereForIndexOnStoredTypes asks the maintainer
+	// (FDBRecordStore.java:2046); TextIndexMaintainer.canDeleteWhere delegates to
+	// canDeleteGroup, which needs the prefix to align with a GROUPING key, and an
+	// ungrouped index on `name` has none — so deleteRecordsWhereCheckIndexes
+	// throws "deleteRecordsWhere not supported by index …".
 	// =========================================================================
-	It("DeleteRecordsWhere clears type-specific TEXT index entries", func() {
+	It("DeleteRecordsWhere refuses a prefix a type-specific TEXT index cannot scope to", func() {
 		ks := specSubspace()
 
 		textIdx := NewTextIndex("customer_name_text", Field("name"))
@@ -1982,21 +1995,42 @@ var _ = Describe("TEXT index", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 
-		// DeleteRecordsWhere with prefix matching customer PK. For type-specific
-		// TEXT index, this clears ALL index entries (not just the prefix range).
+		// The prefix names customer 1 only, and an ungrouped TEXT index on
+		// `name` has no range that corresponds to it.
 		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())
 
-			err = store.DeleteRecordsWhere(tuple.Tuple{int64(1)})
+			derr := store.DeleteRecordsWhere(tuple.Tuple{int64(1)})
+			Expect(derr).To(HaveOccurred())
+			Expect(derr.Error()).To(ContainSubstring("customer_name_text"))
+
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Nothing was cleared, and — the assertion that would have caught the
+		// original bug — the SURVIVING customer's tokens are still searchable.
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).Open()
 			Expect(err).NotTo(HaveOccurred())
 
-			// All TEXT index entries cleared (type-specific index fully cleared).
 			entries, err := AsList(ctx, store.ScanIndexByType(
 				textIdx, IndexScanByTextToken, TupleRangeAll, nil, ForwardScan()))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(entries).To(BeEmpty())
+			Expect(entries).To(HaveLen(4))
+
+			tokens := make([]any, 0, len(entries))
+			for _, e := range entries {
+				tokens = append(tokens, e.Key[0])
+			}
+			Expect(tokens).To(ConsistOf("bar", "foo", "hello", "world"))
+
+			rec, rerr := store.LoadRecord(tuple.Tuple{int64(2)})
+			Expect(rerr).NotTo(HaveOccurred())
+			Expect(rec).NotTo(BeNil())
 
 			return nil, nil
 		})

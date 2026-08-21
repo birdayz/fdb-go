@@ -106,6 +106,20 @@ func TestWriteText_KindDecidesTheMetricShape(t *testing.T) {
 			wantType: "# TYPE fdb_recordlayer_e_total counter",
 		},
 		{
+			// Java's StoreTimer.SizeEvent — a count of OBSERVATIONS plus a sum of
+			// MAGNITUDES, so a summary whose _sum is the raw magnitude total (not
+			// divided by 1e9 the way a duration is) and whose _count is 7.
+			//
+			// The counter arm would render `_total 7` here, and 7 is the number of
+			// observations, not the summed magnitude — a plausible number under a
+			// name that reads as the other one. That is why the arm returns early
+			// rather than falling through.
+			name:     "size distribution",
+			event:    recordlayer.Event{Name: "e", Title: "E", Kind: recordlayer.KindSizeDistribution},
+			wantLine: "fdb_recordlayer_e_sum 3000000000",
+			wantType: "# TYPE fdb_recordlayer_e summary",
+		},
+		{
 			// An event that reached the timer without a declared Kind is still
 			// real activity, so it is exported rather than dropped — flagged in
 			// the help text so the omission shows up on the scrape.
@@ -128,6 +142,27 @@ func TestWriteText_KindDecidesTheMetricShape(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("size_distribution_count_is_observations_not_magnitude", func(t *testing.T) {
+		t.Parallel()
+		// The pair is what makes the assertion non-vacuous: _sum and _count must
+		// carry DIFFERENT numbers from the same snapshot, so a renderer that put
+		// the same value in both — or that dropped one — is caught. Asserting
+		// only _sum would pass against a renderer that emitted _sum twice.
+		got := render(t, snapshotSource{"e": {
+			Event: recordlayer.Event{Name: "e", Title: "E", Kind: recordlayer.KindSizeDistribution},
+			Count: 3, CumulativeValue: 11,
+		}})
+		if !strings.Contains(got, "fdb_recordlayer_e_sum 11\n") {
+			t.Errorf("_sum must carry the summed magnitude; got:\n%s", got)
+		}
+		if !strings.Contains(got, "fdb_recordlayer_e_count 3\n") {
+			t.Errorf("_count must carry the observation count; got:\n%s", got)
+		}
+		if strings.Contains(got, "_total") {
+			t.Errorf("a size distribution must not be rendered as a monotonic counter; got:\n%s", got)
+		}
+	})
 
 	t.Run("unspecified_kind_is_visible_in_help", func(t *testing.T) {
 		t.Parallel()

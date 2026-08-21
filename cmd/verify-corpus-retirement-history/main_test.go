@@ -1014,14 +1014,86 @@ func historyDigest(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// gitForTest runs one git command against a scratch repo.
+//
+// The `-c` flags disable git's automatic maintenance, and they are about test
+// CLEANUP rather than about speed. Auto-gc and the maintenance runner DETACH:
+// the foreground git exits, CombinedOutput returns, the test finishes, and a
+// background process is still writing inside .git. t.TempDir's RemoveAll then
+// races it and fails with "unlinkat .../.git: directory not empty" — a failure
+// with a passing test body, since every assertion already ran.
+//
+// These repos are three commits deep, so the default thresholds should never
+// trip. That is not a reason to leave it to chance: the settings are inherited
+// from whatever global git config the machine has, so the thresholds are not
+// this test's to assume. Auto-maintenance has no value in a repo that exists
+// for the length of one test function.
 func gitForTest(t *testing.T, repo string, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	fixed := []string{"-C", repo, "-c", "gc.auto=0", "-c", "maintenance.auto=false"}
+	command := exec.Command("git", append(fixed, args...)...)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
+	// `-c` applies to ONE invocation, so it covers `init` itself and nothing
+	// after it. Persisting the same settings into the new repo is what makes
+	// them hold for every later command — including any run by code under test
+	// rather than through this helper.
+	if len(args) > 0 && args[0] == "init" {
+		for _, kv := range [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}} {
+			cfg := exec.Command("git", "-C", repo, "config", kv[0], kv[1])
+			if cfgOut, cfgErr := cfg.CombinedOutput(); cfgErr != nil {
+				t.Fatalf("git config %s %s: %v: %s", kv[0], kv[1], cfgErr, cfgOut)
+			}
+		}
+	}
 	return strings.TrimSpace(string(output))
+}
+
+// TestScratchReposDisableGitAutoMaintenance pins the cleanup hardening in
+// gitForTest.
+//
+// It exists because of a failure whose test BODY passed: every assertion in
+// TestRunRejectsCheckoutTransformedNewLedgerBytes ran green and the target
+// still went red, on
+//
+//	TempDir RemoveAll cleanup: unlinkat .../001/.git: directory not empty
+//
+// which is RemoveAll racing something that writes into .git after the test is
+// done. Every exec site in this package waits on its child, and every git
+// command the code under test runs is read-only (ls-tree, cat-file, log,
+// rev-parse, merge-base), so the only writer that can outlive a test is git's
+// own DETACHED auto-maintenance, triggered by the write commands this helper
+// runs and configured by whatever global git config the machine happens to
+// have.
+//
+// Stated honestly: the original failure has not been reproduced — 50 runs of
+// the target, 20 before this change and 30 after, were green, and it appeared
+// once under full-suite load. So this closes the one mechanism that fits the
+// evidence rather than a confirmed reproduction, and this test pins that the
+// mechanism stays closed.
+func TestScratchReposDisableGitAutoMaintenance(t *testing.T) {
+	t.Parallel()
+	repo := t.TempDir()
+	gitForTest(t, repo, "init", "--quiet")
+
+	// Read RAW, not through gitForTest. The helper passes the same settings as
+	// `-c` overrides on every invocation, so asking it would return the value
+	// it just supplied and the assertion would hold with the persistence
+	// removed — a vacuous pin, which is what the first version of this was.
+	for _, want := range [][2]string{{"gc.auto", "0"}, {"maintenance.auto", "false"}} {
+		raw, err := exec.Command("git", "-C", repo, "config", "--local", "--get", want[0]).Output()
+		if err != nil {
+			t.Errorf("%s is not set in the repo's own config (%v) — auto-maintenance detaches, "+
+				"so a repo without it can have a background git writing into .git while "+
+				"t.TempDir removes it", want[0], err)
+			continue
+		}
+		if got := strings.TrimSpace(string(raw)); got != want[1] {
+			t.Errorf("%s = %q in the repo's own config, want %q", want[0], got, want[1])
+		}
+	}
 }
 
 // TestRunRejectsForcePushErasingRetirementLedgers pins the OTHER reason a

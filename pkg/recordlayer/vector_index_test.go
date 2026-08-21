@@ -3345,6 +3345,75 @@ var _ = Describe("VectorIndex Prefix Partitioning", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("DeleteWhere on a leading prefix clears the graphs BELOW it", func() {
+		ks := specSubspace()
+
+		// A grouped vector index keyed by (zone, category) stores each group at
+		// hnswSubspace.Sub(zone, category). Clearing only the graph AT (zone)
+		// left every category under it behind: the records were deleted while
+		// their HNSW nodes stayed queryable, so a search returned primary keys
+		// that no longer resolve to anything.
+		//
+		// Java range-clears Range.startsWith(indexSubspace.pack(prefix)), which
+		// takes the descendants with it.
+		vecIdx := NewVectorIndex("vec_two_level_group",
+			KeyWithValue(Concat(Field("quantity"), Field("price"), Field("vector_data")), 2), 3)
+		builder := baseMetaData()
+		builder.GetRecordType("Order").SetPrimaryKey(
+			Concat(Field("quantity"), Field("price"), Field("order_id")))
+		builder.AddIndex("Order", vecIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, serr := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			Expect(serr).NotTo(HaveOccurred())
+
+			// zone 1 has two categories; zone 2 is the control that must survive.
+			for _, o := range []struct{ id, zone, cat int64 }{
+				{1, 1, 10}, {2, 1, 20}, {3, 2, 10},
+			} {
+				_, e := store.SaveRecord(&gen.Order{
+					OrderId:    proto.Int64(o.id),
+					Quantity:   proto.Int32(int32(o.zone)),
+					Price:      proto.Int32(int32(o.cat)),
+					VectorData: serializeVector([]float64{float64(o.id), 0, 0}),
+				})
+				Expect(e).NotTo(HaveOccurred())
+			}
+
+			// Both of zone 1's category graphs hold a record.
+			for _, cat := range []int64{10, 20} {
+				res, e := store.SearchVectorIndexWithPrefix(vecIdx,
+					tuple.Tuple{int64(1), cat}, []float64{0, 0, 0}, 10, 100)
+				Expect(e).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(1))
+			}
+
+			Expect(store.DeleteRecordsWhere(tuple.Tuple{int64(1)})).To(Succeed())
+
+			// Every graph under zone 1 is gone — including (1, 20), which is a
+			// DESCENDANT of the cleared prefix rather than the prefix itself.
+			for _, cat := range []int64{10, 20} {
+				res, e := store.SearchVectorIndexWithPrefix(vecIdx,
+					tuple.Tuple{int64(1), cat}, []float64{0, 0, 0}, 10, 100)
+				Expect(e).NotTo(HaveOccurred())
+				Expect(res).To(BeEmpty(),
+					"category %d under the deleted zone still answers searches", cat)
+			}
+
+			// Zone 2 is untouched.
+			res, e := store.SearchVectorIndexWithPrefix(vecIdx,
+				tuple.Tuple{int64(2), int64(10)}, []float64{0, 0, 0}, 10, 100)
+			Expect(e).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(1))
+			Expect(res[0].PrimaryKey[0]).To(Equal(int64(2)))
+			return nil, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	It("grouped 2D vector index with bytes vector_data field", func() {
 		ks := specSubspace()
 
