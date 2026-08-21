@@ -1231,8 +1231,10 @@ const (
 )
 
 // sendGRVRequest cycles all GRV proxies, matching C++ basicLoadBalance
-// with AtMostOnce::False. On broken_promise (transport error), tries next
-// proxy. On FDB application error, propagates immediately. If all proxies
+// with AtMostOnce::False. On broken_promise, tries the next proxy -- whether it
+// arrives as a transport teardown or IN-BAND inside the reply, which is the
+// shape a dying proxy actually sends and which reaches the reply parser rather
+// than any transport arm. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
 func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext, tags []types.TransactionTagCount) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {

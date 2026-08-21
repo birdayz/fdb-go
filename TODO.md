@@ -19676,56 +19676,24 @@ Documented at the contract itself (`RecordMetaData.AmbiguousDeclaredNames`,
 `pkg/recordlayer/metadata.go`), which points back here.
 
 
-## Go returns a raw `broken_promise` (1100) where C++ absorbs it — GRV and commit paths
+## [x] Go returned a raw `broken_promise` (1100) where C++ absorbs it — FIXED
 
-**C++ is the spec for the FDB client, so this is a bug in Go** (design principle 2).
+A dying proxy answers the RPC with an error INSIDE the `ErrorOr<>` reply, so it
+reached the reply parser and missed every transport mapping (those all mint
+1030). 1100 is retryable under none of Go's three predicates, so a GRV or commit
+issued while a proxy was dying failed TERMINALLY where C++ retries or converts.
 
-Go absorbs 1100 at exactly 5 sites, **all storage-read** —
-`pkg/fdbgo/client/readpath.go:228`, `:464`, `:787` and
-`pkg/fdbgo/client/metrics.go:81`, `:251`. There is no absorption on the GRV or
-commit reply path:
+Fixed on this branch. `pkg/fdbgo/client/inband_reply_error.go` carries the
+`basicLoadBalance` rule once (`LoadBalance.actor.h:812-830`): 1100 and 1030 are
+one class, next-alternative at `AtMostOnce::False` (GRV,
+`NativeAPI.actor.cpp:3865`), convert to maybe-delivered at `AtMostOnce::True`
+(commit, `:6638-6643`) because a commit must never be re-sent. Twelve cases
+pinned plus a real `ErrorOr<CommitID>` body through `parseCommitReply`.
 
-- `pkg/fdbgo/client/grv.go:1375` `parseGetReadVersionReply` returns the in-band
-  server error verbatim, and `grv.go:1313` hands that `perr` back **unclassified**.
-- `pkg/fdbgo/client/commitpath.go:494` `parseCommitReply` likewise. Its caller at
-  `:117` maps only `ErrCommitUnknownResult` and `ErrClusterVersionChanged`
-  (`:118`–`:123`) and returns `commitErr` unchanged at `:124`.
-
-1100 is non-retryable in all three predicates (`fdb.IsRetryable`,
-`IsOnErrorRetryable`, `client.onErrorRetryable`), so it reaches the application
-as terminal. A proxy replies `broken_promise` in-band while its process is dying,
-which is exactly when this fires.
-
-**Match the right C++ path.** GRV and commit use `basicLoadBalance`, NOT
-`loadBalance` — `pkg/fdbgo/client/grv.go:1233` already says so in Go's own
-comment. `readpath.go:1045` cites `LoadBalance.actor.h:344`, which governs the
-storage-read path Go ALREADY mirrors; prescribing that for GRV/commit would be
-the wrong semantics, because `loadBalance` bounds retries and surfaces
-`all_alternatives_failed` while `basicLoadBalance` loops with backoff for GRV
-and, at `AtMostOnce::True`, surfaces `request_maybe_delivered` immediately for
-commit. C++ converts 1100 via a named helper (`brokenPromiseToMaybeDelivered`).
-The FDB C++ tree is NOT checked out in this repo, so read it before implementing
-rather than trusting the function names in this entry.
-
-Two comments are wider than their code and will mislead the fixer:
-
-- `readpath.go:1054` says the commit path "maps ANY teardown to
-  commit_unknown_result". It maps *transport* teardowns, which the Go transport
-  codes as **1030** (`pkg/fdbgo/transport/conn.go:206`, `:229`). An in-band
-  server 1100 bypasses it.
-- `grv.go:1234` says "On broken_promise (transport error), tries next proxy."
-  An in-band 1100 is not a transport error and does not reach that path.
-
-Found by root-causing a CI failure on PR #760: an FDB container died mid-run and
-`TestRankIndexCountDuplicatesHeavyFaultStress` failed with `broken_promise (1100)`
-at op 17. The fault injector is exonerated — `FaultsRetryVeryHeavy` enables only
-`FaultCommitUnknown`, which injects no error object and merely re-runs the closure
-(`chaos/fault.go:198-209`), and no non-test Go site mints 1100. It came from the
-server.
-
-DONE when: GRV and commit classify an in-band 1100 as `basicLoadBalance` does
-(verified against the C++ source, not against this entry), a divergence test pins
-each, and both scope sentences above are narrowed to what their code covers.
+Also corrected the comments that would have misled the next reader:
+`transport/conn.go` attributed commit's arm to `loadBalance`, which the commit
+path never calls; `readpath.go` claimed the commit path "never consults" the
+predicate; `grv.go` called broken_promise a transport error only.
 
 ## Chaos suite: a dead container is reported as N deadlines, not as a dead container
 
