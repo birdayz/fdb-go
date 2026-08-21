@@ -19886,3 +19886,185 @@ checkable; this entry is one of its symptoms and closes when it lands.
 here and is NOT evidence: it builds its expectation with `strings.ToUpper(c.Name)`
 itself, mirroring the implementation, so it asserts nothing about which spelling
 is right.
+
+---
+
+## [x] Record-type names print as SQL identifiers across the whole `frl` CLI
+
+`frl stats` decoded every record-type name it printed; nothing else did, so one
+table was `MY$TABLE` under one command and `MY__1TABLE` under another and a
+script crossing two commands silently missed. Closed by decoding at every render
+boundary: `meta_types_describe.go`'s `sortedRecordTypeNames` (which also backs
+the `not found -- available: ...` message in `lookupRecordType`, so a typo now
+offers names the operator can type) and its `writeRecordTypeDescription` /
+`writeRecordTypeDescriptionJSON` `Name` fields, `index.go`'s
+`recordTypeNames`, `meta.go`'s `writeTypesList`/`writeTypesListJSON`,
+`meta_diff.go`'s `diffRecordTypes`, `record.go`'s `writeRecordAsJSON`
+(`record_type`), and the two record-type arms of `completion.go`. `frl sql`'s
+`\d` table list, column list, PK line and "available:" message go through the
+same helpers, pinned e2e in `sql_identifier_names_integration_test.go`.
+COLUMN names are the same namespace and were raw in four more files until a
+source gate went in — `TestFRLRenderersDecodeNamesThroughHelpers`
+(`pkg/docscheck`) fails the build on a renderer that reaches a stored name
+through one of the spellings it knows: `.MetadataName()`, `.FieldNames()`,
+`rt.Name`, `.RecordType.Name`. It is a NARROWING, not a closure — a name reached
+any other way is still invisible to it, which is exactly how
+`rec.RecordType.Name` leaked past the gate's first version into `record scan
+-o json`'s `record_type`, the field the guide tells operators to pipe into
+`--type`.
+
+**The first census MISSED two of those**, and the way it missed is the lesson:
+it enumerated `RecordTypes()` call sites, but `writeRecordTypeDescription` takes
+a `*RecordType` ARGUMENT and `writeRecordAsJSON` reads `rec.RecordType.Name`, so
+neither appears in that grep. A census keyed on how a value is OBTAINED cannot
+find the sites that receive it already obtained. Sweep by what is PRINTED.
+
+Round-tripping holds ONLY under two guards, and neither is optional.
+`GetRecordType` resolves either namespace, but its DIRECT-key step answers
+first. So (a) a decoded name is shown only when `encode(decode(s)) == s`,
+otherwise it would resolve to nothing (`__0Order` -> `__Order` -> `__Order`,
+never back), and (b) under a declared collision the STORED names are shown
+instead, because the decoded spelling of one type is the stored key of another.
+Round-tripping is NOT the same as safe to offer: `MY__01TABLE` round-trips and
+its decode is exactly the colliding key. Pinned by
+`TestGetRecordTypeResolvesAUserIdentifier`,
+`TestGetRecordTypeMisResolvesAnAmbiguousPair`, `TestEscapeIsNotABijection`,
+`TestCompletionFallsBackToStoredNamesWhenAmbiguous`, and, for the whole CLI
+surface,
+`TestRecordTypeNamesRenderAsSQLIdentifiers`
+(`cmd/frl/internal/cmd/record_type_names_user_facing_test.go`), whose eight arms
+were each shown to redden under reversal of their own conversion.
+
+**Four surfaces are deliberately NOT converted**, and each has a reason that
+outlives this entry:
+- **INDEX names** — `GetIndex` (`metadata.go:1484`) is a raw map lookup with no
+  escape fallback, so a decoded index name would not resolve when passed back.
+  Decide index-name policy on its own terms; do not assume it matches.
+- **Context names** — local to the CLI, never a record type.
+- **The `Proto message:` line of `frl meta types describe`** (`proto_message` in
+  JSON) — that field reports the protobuf DESCRIPTOR full name, so the escaped
+  spelling is the right answer there. Its `Name:` field one line above IS
+  decoded, which makes this the one command that prints both namespaces on
+  purpose; the test asserts per-field rather than over the whole blob, since a
+  whole-output check would either miss a `Name` regression or forbid the proto
+  name that belongs there.
+- **SYNTHETIC type names** — Java stores these verbatim from
+  `addJoinedRecordType`, and this port never creates one (metadata_proto.go only
+  `proto.Clone`s them), so `MY__1JOINED` is genuinely ambiguous between a
+  literal name and the escaping of `MY$JOINED`. Decoding would invent a
+  declaration the operator cannot find. Pinned by
+  `TestSyntheticRefusalErrorNamesTypesVerbatim` and
+  `TestStats_SyntheticTypeNamesAreRenderedVerbatim`.
+
+**Trap for anyone extending this**: `ToUserIdentifier` is NOT idempotent, and
+the chain is NOT bounded at two — each decode peels ONE escape level, so
+`MY__001TABLE` -> `MY__01TABLE` -> `MY__1TABLE` -> `MY$TABLE`. Decode exactly
+once, at the boundary, and sort AFTER decoding (storage `[A__0B, A__1B]` prints
+as `[A__B, A$B]`). Both pinned in `protoname_test.go` and
+`TestStats_ListsAreSortedByTheDecodedName`.
+
+---
+
+## [ ] `frl sql` meta-commands ignore identifier case, so `\d` fails where SELECT works
+
+The engine uppercases unquoted identifiers at DDL time, so `CREATE SCHEMA
+/db/main` stores the schema as `MAIN`. `frl sql --database /db --schema main`
+connects fine, because the DSN path normalises — but `\d` and `\d <table>` pass
+`sqlRunner.schema` through verbatim to the catalog lookup, which then reports
+`42F51: schema </db/main> does not exist`. One connection, two answers.
+
+Found while building `TestIntegration_SQL_DescribeUsesSQLIdentifiers`, which is
+why that test hard-codes `MAIN` rather than the spelling an operator would
+type — see the NOTE in
+`cmd/frl/internal/cmd/sql_identifier_names_integration_test.go`. Not fixed
+there because it is a separate defect from the namespace work that test pins,
+and because the fix needs the quoted-vs-unquoted rule stated explicitly:
+normalising blindly would break a schema deliberately created as `"main"`.
+
+**When fixing:** find where the DSN path normalises (`buildFDBSQLDSN` /
+`functions.StripIdentifierQuotes` in `sql.go`) and apply the SAME rule to
+`r.schema`/`r.database` before the catalog lookups in `loadSchemaTables` and
+`describeTable` — not a `strings.ToUpper`, which would break quoted names.
+
+---
+
+## [ ] `AmbiguousDeclaredNames` is CASE-SENSITIVE, so a case-folded collision is undetected
+
+The ambiguity contract every naming gate cites tests `declared[escaped]` — a map
+lookup, so it is case-sensitive. A schema declaring quoted `"MY$TABLE"` (stored
+`MY__1TABLE`) alongside quoted `"my__1table"` (stored `my__01table`) is therefore
+NOT reported as ambiguous: the spellings differ only in case.
+
+**Why this is not a live safety hole:** `GetRecordType` is case-sensitive too and
+never resolves one to the other, so no destructive path (`record delete --type`,
+which resolves through `lookupRecordType` → `GetRecordType`) can be handed the
+wrong table by it. It becomes one the moment any resolver or renderer folds case
+before comparing — `frl sql`'s `\d` already uses `strings.EqualFold` on the
+stored-name arm, which is why that command can describe the wrong table under
+this shape.
+
+**When fixing:** state the quoted-vs-unquoted identifier rule FIRST. The engine
+uppercases unquoted identifiers at DDL time but preserves case for quoted ones,
+so neither "always fold" nor "never fold" is right, and guessing breaks schemas
+deliberately created lower-case. The same rule is needed by the REPL
+case-normalisation item above — fix them together or neither.
+
+Documented at the contract itself (`RecordMetaData.AmbiguousDeclaredNames`,
+`pkg/recordlayer/metadata.go`), which points back here.
+
+
+## [x] Go returned a raw `broken_promise` (1100) where C++ absorbs it — FIXED
+
+A dying proxy answers the RPC with an error INSIDE the `ErrorOr<>` reply, so it
+reached the reply parser and missed every transport mapping (those all mint
+1030). 1100 is retryable under none of Go's three predicates, so a GRV or commit
+issued while a proxy was dying failed TERMINALLY where C++ retries or converts.
+
+Fixed on this branch. `pkg/fdbgo/client/inband_reply_error.go` carries the
+`basicLoadBalance` rule once (`LoadBalance.actor.h:812-830`): 1100 and 1030 are
+one class, next-alternative at `AtMostOnce::False` (GRV,
+`NativeAPI.actor.cpp:3865`), convert to maybe-delivered at `AtMostOnce::True`
+(commit, `:6638-6643`) because a commit must never be re-sent. Twelve cases
+pinned plus a real `ErrorOr<CommitID>` body through `parseCommitReply`.
+
+Also corrected the comments that would have misled the next reader:
+`transport/conn.go` attributed commit's arm to `loadBalance`, which the commit
+path never calls; `readpath.go` claimed the commit path "never consults" the
+predicate; `grv.go` called broken_promise a transport error only.
+
+## Chaos suite: a dead container is reported as N deadlines, not as a dead container
+
+The COST of this is fixed; the ATTRIBUTION is not.
+
+What was wrong: scenario ops ran on `context.Background()`, and
+`Database.TransactCtx` retries "bounded only by
+SetTransactionTimeout/SetTransactionRetryLimit (default unbounded)" with neither
+set. So a shared container dying mid-suite did not fail the remaining ops, it
+HUNG them, until the package's 15-minute alarm fired — observed once as 14
+failures plus a timeout whose stack named an arbitrary test rather than the
+container. The package now carries a SUITE budget (`chaos_test.go`, 10 minutes against a
+measured 90.2s healthy run) from which every op and run context derives, and
+every call site is routed through it -- `scenario.go`, `concurrent.go`,
+`fault.go`, `verify.go`, `spfresh_driver.go`, and the 29 test-body contexts that
+previously took `context.Background()` directly. Per-op bounding ALONE does not
+work and was tried: at `-test.parallel=1`, thirty tests at 30s each exhaust the
+900s alarm on their own. With a shared budget a dead container spends it once
+and the remaining tests fail immediately, with a TYPED
+`context.DeadlineExceeded`.
+
+What remains: those failures still say "deadline exceeded", not "the container
+is gone". An earlier attempt to close that by classifying error strings was
+written and then removed — its signature list was the only thing pinning it, one
+signature could never be produced by any error in the tree, and a false positive
+would have replaced every later scenario's real diagnosis with a guess. If
+attribution is wanted, MEASURE it: probe `cleanDB` once in `NewScenario` under a
+bounded context and report the container state directly. Do not infer it from
+message text; this repo matches error TYPES.
+
+Note the blast radius is smaller than it looks: `chaos_test.go` hands one
+container to 228 tests (229 `func Test*` minus `TestMain`), but
+`pkg/recordlayer/chaos/BUILD.bazel:66` pins `-test.parallel=1`, so they run
+serially rather than concurrently.
+
+DONE when: a scenario that cannot reach the cluster says so, from an observation
+of the container rather than from the shape of an error string.

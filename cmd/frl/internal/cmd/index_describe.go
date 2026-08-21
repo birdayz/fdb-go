@@ -99,7 +99,7 @@ func writeIndexDescriptionJSON(out io.Writer, md *recordlayer.RecordMetaData, id
 	d := indexDescribeJSON{
 		Name:                idx.Name,
 		Type:                idx.Type,
-		ExpressionFields:    idx.RootExpression.FieldNames(),
+		ExpressionFields:    userFieldNames(idx.RootExpression.FieldNames()),
 		ColumnSize:          idx.RootExpression.ColumnSize(),
 		SubspaceKey:         fmt.Sprintf("%v", idx.SubspaceTupleKey()),
 		RecordTypes:         recordTypeNames(md, idx),
@@ -122,7 +122,7 @@ func writeIndexDescription(out io.Writer, md *recordlayer.RecordMetaData, idx *r
 	var b strings.Builder
 	fmt.Fprintf(&b, "Name:                   %s\n", idx.Name)
 	fmt.Fprintf(&b, "Type:                   %s\n", idx.Type)
-	fmt.Fprintf(&b, "Expression fields:      %s\n", strings.Join(idx.RootExpression.FieldNames(), ","))
+	fmt.Fprintf(&b, "Expression fields:      %s\n", strings.Join(userFieldNames(idx.RootExpression.FieldNames()), ","))
 	fmt.Fprintf(&b, "Column size:            %d\n", idx.RootExpression.ColumnSize())
 	fmt.Fprintf(&b, "Subspace key:           %v\n", idx.SubspaceTupleKey())
 	fmt.Fprintf(&b, "Record types:           %s\n", strings.Join(recordTypeNames(md, idx), ","))

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -522,6 +523,12 @@ func TestStats_ShowJSONCarriesSyntheticTypes(t *testing.T) {
 	}); rErr != nil {
 		t.Fatalf("renderStatsStatus: %v", rErr)
 	}
+	// NOTE FOR ANYONE SIMPLIFYING THE AMBIGUOUS FIXTURE BELOW: its names are
+	// DOUBLE-ESCAPED on purpose. AmbiguousTypes arrives already decoded, and
+	// ToUserIdentifier is not idempotent, so wrapping it in userNames() renames
+	// the table rather than failing -- and this test is what catches that, but
+	// only while the fixture can tell one decode from two. Replace MY__01TABLE
+	// with A and the invariant stops being observable here.
 	if !strings.Contains(buf.String(), `"synthetic_types"`) ||
 		!strings.Contains(buf.String(), "JoinedAB") {
 		t.Errorf("the renderer drops the synthetic type names on the JSON path: %s\n"+
@@ -704,6 +711,9 @@ func TestStats_EveryNotFoundRefusalIsClassified(t *testing.T) {
 		{embedded.StatisticsTorn, false, true},
 		{embedded.StatisticsReadFailed, false, false},
 		{embedded.StatisticsSyntheticTypes, false, false},
+		// Same as synthetic: decided from metadata without a read, so it may not
+		// claim absence, and collection cannot repair it either.
+		{embedded.StatisticsAmbiguousNames, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.refusal), func(t *testing.T) {
@@ -947,6 +957,10 @@ func TestStats_ShowJSONFoundIsTriState(t *testing.T) {
 		{"absent", embedded.StatisticsStatus{Refusal: embedded.StatisticsNotCollected}, false},
 		{"torn: entries WERE read", embedded.StatisticsStatus{Refusal: embedded.StatisticsTorn}, true},
 		{"read failed: unknown", embedded.StatisticsStatus{Refusal: embedded.StatisticsReadFailed}, nil},
+		// Ambiguity joined the unknown set when its verdict stopped paying a read.
+		// Without this case, dropping it from the nil arm restores `found: false` --
+		// the known-absence lie -- with the whole package still green.
+		{"ambiguous: never looked", embedded.StatisticsStatus{Refusal: embedded.StatisticsAmbiguousNames}, nil},
 		{"synthetic preflight: never looked", embedded.StatisticsStatus{Refusal: embedded.StatisticsSyntheticTypes}, nil},
 		// Expired/incomplete DID read a set, so existence is known true.
 		{"expired", embedded.StatisticsStatus{Refusal: embedded.StatisticsExpired, Found: true}, true},
@@ -964,4 +978,468 @@ func TestStats_ShowJSONFoundIsTriState(t *testing.T) {
 			}
 		})
 	}
+}
+
+// OPERATOR-FACING NAMES ARE SQL IDENTIFIERS, NOT STORAGE NAMES.
+//
+// Metadata and the collector key by ESCAPED names — a table quoted as
+// "MY$TABLE" is stored as MY__1TABLE — and every rendering surface copied those
+// keys verbatim. That names a table the operator does not have. `per_type` is a
+// documented interface, so a script keying by table name silently misses rather
+// than failing, which is the worse direction.
+//
+// Only the AMBIGUOUS pair was decoded when that gate was added: the copy in
+// front of me, not the class. This covers the SHOW path; the collect path has
+// its own test, because when this one claimed to "cover the class" the collect
+// decode could be reverted entirely with the suite still green.
+//
+// SYNTHETIC types are the documented EXCEPTION and are covered by their own
+// test below: their names are not known to be escaped, so decoding them would
+// invent a declaration. See SyntheticRecordTypesNotModeledError.Error().
+func TestStats_OperatorFacingNamesAreDecoded(t *testing.T) {
+	t.Parallel()
+
+	const storage, sql = "MY__1TABLE", "MY$TABLE"
+	if got := recordlayer.ToUserIdentifier(storage); got != sql {
+		t.Fatalf("fixture is wrong: %q decodes to %q, not %q — this test would then "+
+			"assert nothing about decoding", storage, got, sql)
+	}
+
+	render := func(t *testing.T, format string, st embedded.StatisticsStatus) string {
+		t.Helper()
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, format, "/x/MAIN", st); err != nil {
+			t.Fatalf("renderStatsStatus(%s): %v", format, err)
+		}
+		return buf.String()
+	}
+
+	cases := []struct {
+		name string
+		st   embedded.StatisticsStatus
+	}{
+		{"per_type", embedded.StatisticsStatus{
+			Usable: true, Found: true,
+			Stats: recordlayer.StoreStatistics{
+				PerType: map[string]recordlayer.RecordTypeStatistic{storage: {Count: 7}},
+			},
+		}},
+		{"missing_types", embedded.StatisticsStatus{
+			Refusal: embedded.StatisticsIncomplete, Found: true, MissingTypes: []string{storage},
+		}},
+		{"extra_types", embedded.StatisticsStatus{
+			Usable: true, Found: true, ExtraTypes: []string{storage},
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			st := tc.st
+			for _, format := range []string{"text", "json"} {
+				out := render(t, format, st)
+				if !strings.Contains(out, sql) {
+					t.Errorf("%s/%s does not name the table by its SQL identifier %q:\n%s",
+						tc.name, format, sql, out)
+				}
+				// And the raw storage name must NOT leak alongside it, or the
+				// assertion above is satisfied by printing both.
+				if strings.Contains(out, storage) {
+					t.Errorf("%s/%s leaks the storage name %q:\n%s",
+						tc.name, format, storage, out)
+				}
+			}
+		})
+	}
+}
+
+// THE COLLECT PATH DECODES TOO — REPORT BODY AND ERROR BANNER ALIKE.
+//
+// Reverting every decode in renderCollectReport left the suite green, because
+// the name test drove only renderStatsStatus while its comment claimed to cover
+// the class. Two surfaces, one of them tested, is the shape this whole PR exists
+// to fix.
+//
+// The banner matters as much as the body: on an aborted run they print three
+// lines apart, so leaving one raw showed MY$TABLE in the not-collected block and
+// MY__1TABLE in the error beneath it — one table, two spellings, same output.
+func TestStats_CollectPathDecodesNames(t *testing.T) {
+	t.Parallel()
+
+	const storage, sql = "MY__1TABLE", "MY$TABLE"
+	if recordlayer.ToUserIdentifier(storage) != sql {
+		t.Fatalf("fixture is wrong: %q does not decode to %q", storage, sql)
+	}
+
+	render := func(t *testing.T, format string, r *recordlayer.CollectionReport) string {
+		t.Helper()
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderCollectReport(c, format, "/x/MAIN", r, time.Second); err != nil {
+			t.Fatalf("renderCollectReport(%s): %v", format, err)
+		}
+		return buf.String()
+	}
+
+	t.Run("collected body", func(t *testing.T) {
+		t.Parallel()
+		r := &recordlayer.CollectionReport{
+			Collected:      map[string]recordlayer.RecordTypeStatistic{storage: {Count: 7}},
+			Skipped:        map[string]string{},
+			RecordsScanned: 7,
+		}
+		for _, format := range []string{"text", "json"} {
+			out := render(t, format, r)
+			if !strings.Contains(out, sql) {
+				t.Errorf("collect/%s does not name the table by its SQL identifier:\n%s", format, out)
+			}
+			if strings.Contains(out, storage) {
+				t.Errorf("collect/%s leaks the storage name:\n%s", format, out)
+			}
+		}
+	})
+
+	t.Run("skipped body", func(t *testing.T) {
+		t.Parallel()
+		r := &recordlayer.CollectionReport{
+			Collected:      map[string]recordlayer.RecordTypeStatistic{},
+			Skipped:        map[string]string{storage: "exceeds MaxRecordsPerType"},
+			RecordsScanned: 51,
+		}
+		for _, format := range []string{"text", "json"} {
+			out := render(t, format, r)
+			if !strings.Contains(out, sql) {
+				t.Errorf("collect-skipped/%s does not name the table by its SQL "+
+					"identifier:\n%s", format, out)
+			}
+			if strings.Contains(out, storage) {
+				t.Errorf("collect-skipped/%s leaks the storage name:\n%s", format, out)
+			}
+		}
+	})
+
+	t.Run("abort error banner", func(t *testing.T) {
+		t.Parallel()
+		// The banner is built by describeSkippedTypes and printed BELOW an
+		// already-decoded body, so a raw name here contradicts the lines above it.
+		got := describeSkippedTypes(userName, map[string]string{storage: "exceeds MaxRecordsPerType"})
+		if !strings.Contains(got, sql) {
+			t.Errorf("the abort banner does not name the table by its SQL identifier: %s", got)
+		}
+		if strings.Contains(got, storage) {
+			t.Errorf("the abort banner leaks the storage name: %s", got)
+		}
+	})
+
+	t.Run("abort banner orders by the decoded name", func(t *testing.T) {
+		t.Parallel()
+		// One entry cannot observe a sort, so the arm above passes whether the
+		// helper sorts in storage space or user space. A__0B decodes to A__B and
+		// A__1B decodes to A$B, so the two orders DISAGREE: storage-sorted prints
+		// A__B first, user-sorted prints A$B first.
+		got := describeSkippedTypes(userName, map[string]string{
+			"A__0B": "storage-first",
+			"A__1B": "user-first",
+		})
+		if !strings.HasPrefix(got, "A$B") {
+			t.Errorf("the abort banner is not ordered by the name it prints: %s", got)
+		}
+		// Guard the fixture: if decoding ever stopped changing the order, the
+		// assertion above would hold for a helper that never sorts by user name.
+		// Storage order is A__0B < A__1B; decoded it is A$B < A__B, because $ is
+		// 0x24 and _ is 0x5F. The two orders must DISAGREE or the assertion above
+		// holds for a helper that never sorts by the user name at all.
+		if userName("A__0B") <= userName("A__1B") {
+			t.Fatalf("fixture is vacuous: decoding no longer reverses %s/%s",
+				userName("A__0B"), userName("A__1B"))
+		}
+	})
+}
+
+// LISTS ARE ORDERED BY THE NAME ACTUALLY PRINTED.
+//
+// The gate sorts these lists in STORAGE space, correctly, since that is the
+// namespace it holds them in. The renderer decodes them — and the two orders
+// differ: storage-sorted [A__0B, A__1B] prints as [A__B, A$B], while a reader
+// scanning the output expects [A$B, A__B].
+//
+// Decoding is funnelled through a closed set of helpers (userName/userNames/
+// userNamesFor/userNameFor/userFieldNames/userKeyed, plus fleet's
+// describeSkipped) rather than scattered at call sites -- see stats.go, where
+// the call-site list was wrong three times before being replaced by the helper
+// set. This test covers userNames; the others carry their own arms.
+//
+// SyntheticRecordTypesNotModeledError.Error() decodes nothing and preserves
+// input order, pinned by TestSyntheticRefusalErrorNamesTypesVerbatim.
+func TestStats_ListsAreSortedByTheDecodedName(t *testing.T) {
+	t.Parallel()
+
+	// Storage order and user order DISAGREE for this pair, which is what makes
+	// the assertion meaningful: A__0B < A__1B as stored, A$B < A__B as printed.
+	storage := []string{"A__0B", "A__1B"}
+	if !sort.StringsAreSorted(storage) {
+		t.Fatalf("fixture is not storage-sorted: %v", storage)
+	}
+	wantUser := []string{"A$B", "A__B"}
+	got := userNames(storage)
+	if len(got) != 2 || got[0] != wantUser[0] || got[1] != wantUser[1] {
+		t.Fatalf("userNames(%v) = %v, want %v — decoded names must be re-sorted, or a "+
+			"storage-space order is printed in user space", storage, got, wantUser)
+	}
+	// Guard the fixture: if these ever decode to the same relative order, the
+	// test passes without exercising the re-sort.
+	decodedInPlace := []string{userName(storage[0]), userName(storage[1])}
+	if sort.StringsAreSorted(decodedInPlace) {
+		t.Fatalf("decoding %v preserves order (%v), so this test cannot observe the "+
+			"re-sort it exists to pin", storage, decodedInPlace)
+	}
+}
+
+// SYNTHETIC TYPE NAMES ARE THE EXCEPTION: RENDERED VERBATIM.
+//
+// Every other operator-facing name here is decoded, because it provably came
+// from escaping a SQL identifier. A joined/unnested type is named by an
+// arbitrary string handed to Java's addJoinedRecordType and stored verbatim,
+// and this port never creates one — so MY__1JOINED is ambiguous between the
+// escaping of MY$JOINED and a literal MY__1JOINED, and the decoded reading
+// names something the operator cannot find in their metadata.
+//
+// This test is the counterweight to TestStats_OperatorFacingNamesAreDecoded: if
+// someone "completes the class" by decoding synthetic names too, it fails.
+func TestStats_SyntheticTypeNamesAreRenderedVerbatim(t *testing.T) {
+	t.Parallel()
+
+	const stored, ifDecoded = "MY__1JOINED", "MY$JOINED"
+	if recordlayer.ToUserIdentifier(stored) != ifDecoded {
+		t.Fatalf("fixture is vacuous: %q does not decode to %q, so a decoding "+
+			"regression would be invisible here", stored, ifDecoded)
+	}
+
+	st := embedded.StatisticsStatus{
+		Refusal:        embedded.StatisticsSyntheticTypes,
+		SyntheticTypes: []string{stored},
+	}
+	for _, format := range []string{"text", "json"} {
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, format, "/x/MAIN", st); err != nil {
+			t.Fatalf("renderStatsStatus(%s): %v", format, err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, stored) {
+			t.Errorf("%s does not name the declaration as stored (%q):\n%s", format, stored, out)
+		}
+		if strings.Contains(out, ifDecoded) {
+			t.Errorf("%s DECODED a synthetic type name to %q:\n%s\nJava stores these "+
+				"verbatim and this port never creates one, so the escaped reading is a "+
+				"guess", format, ifDecoded, out)
+		}
+	}
+}
+
+// ONE OUTPUT NEVER PRINTS TWO TABLES UNDER ONE NAME, EVEN ACROSS ITS LISTS.
+//
+// Stored MY__1TABLE and MY__01TABLE decode to MY$TABLE and MY__1TABLE, so the
+// second would print under the FIRST one's stored name and a reader could not
+// tell which table it means.
+//
+// The decision has to range over the whole OUTPUT, not each map: harden
+// `collected` and `skipped` separately and the pair straddles them — one name
+// in each, neither map sees a collision, each is individually correct, and the
+// printed report still shows the same label twice for two different
+// stored types. That is the shape this drives.
+func TestOneOutputNeverPrintsTwoTablesUnderOneName(t *testing.T) {
+	t.Parallel()
+
+	const a, b = "MY__1TABLE", "MY__01TABLE"
+	if recordlayer.ToUserIdentifier(b) != a {
+		t.Fatalf("fixture is vacuous: %q decodes to %q, not %q", b, recordlayer.ToUserIdentifier(b), a)
+	}
+
+	t.Run("straddling two maps", func(t *testing.T) {
+		t.Parallel()
+		// One name in each map — the case a per-map guard cannot see.
+		decode := safeDecoderOver([]string{a, b}, nil)
+		if got := decode(a); got != a {
+			t.Errorf("decode(%q) = %q; under a collision every name must stay stored", a, got)
+		}
+		if got := decode(b); got != b {
+			t.Errorf("decode(%q) = %q; under a collision every name must stay stored", b, got)
+		}
+	})
+
+	t.Run("no collision still decodes", func(t *testing.T) {
+		t.Parallel()
+		// The fallback must not fire spuriously, or every operator reads storage
+		// names forever.
+		decode := safeDecoderOver([]string{a, "OTHER"}, nil)
+		if got := decode(a); got != "MY$TABLE" {
+			t.Errorf("decode(%q) = %q, want the SQL identifier MY$TABLE", a, got)
+		}
+	})
+
+	t.Run("keyedBy applies one decision to a whole map", func(t *testing.T) {
+		t.Parallel()
+		decode := safeDecoderOver([]string{a, b}, nil)
+		got := keyedBy(decode, map[string]int64{a: 9, b: 4000})
+		if len(got) != 2 || got[a] != 9 || got[b] != 4000 {
+			t.Errorf("rows are not keyed by their own stored names: %v", got)
+		}
+	})
+}
+
+// THE RENDERERS THEMSELVES FEED THE WHOLE UNION, not just one of their maps.
+//
+// The bug was never in the decision — it was in WHICH names get fed to it.
+// Testing safeDecoderOver in isolation pins the decision and leaves the wiring
+// free: narrow either call site back to one map and the helper still behaves
+// perfectly while the rendered output shows one label for two stored types.
+// So this drives the real renderers with the pair SPLIT across their two
+// sources.
+func TestRenderersFeedTheWholeUnionToTheDecoder(t *testing.T) {
+	t.Parallel()
+
+	// MY__01TABLE decodes to MY__1TABLE, which is the other name verbatim.
+	const a, b = "MY__1TABLE", "MY__01TABLE"
+	if recordlayer.ToUserIdentifier(b) != a {
+		t.Fatalf("fixture is vacuous: %q decodes to %q", b, recordlayer.ToUserIdentifier(b))
+	}
+
+	render := func(t *testing.T, fn func(*cobra.Command) error) string {
+		t.Helper()
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := fn(c); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		return buf.String()
+	}
+
+	t.Run("collect: pair split across collected and skipped", func(t *testing.T) {
+		t.Parallel()
+		rep := &recordlayer.CollectionReport{
+			Collected: map[string]recordlayer.RecordTypeStatistic{a: {Count: 7}},
+			Skipped:   map[string]string{b: "exceeds MaxRecordsPerType"},
+		}
+		out := render(t, func(c *cobra.Command) error {
+			return renderCollectReport(c, "json", "/x/MAIN", rep, time.Second)
+		})
+		// Decoding b yields a's stored name, so under the split BOTH must print
+		// stored. Seeing MY$TABLE means only `collected` was fed to the decision.
+		if strings.Contains(out, "MY$TABLE") {
+			t.Errorf("collected was decoded while skipped straddled the collision — "+
+				"the decision saw only one map:\n%s", out)
+		}
+		for _, want := range []string{a, b} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output does not name %q by its stored spelling:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("show: pair split across per_type and missing_types", func(t *testing.T) {
+		t.Parallel()
+		st := embedded.StatisticsStatus{
+			Usable: true, Found: true,
+			Stats:        recordlayer.StoreStatistics{PerType: map[string]recordlayer.RecordTypeStatistic{a: {Count: 7}}},
+			MissingTypes: []string{b},
+		}
+		out := render(t, func(c *cobra.Command) error {
+			return renderStatsStatus(c, "json", "/x/MAIN", st)
+		})
+		if strings.Contains(out, "MY$TABLE") {
+			t.Errorf("per_type was decoded while missing_types straddled the collision "+
+				"— the decision saw only one list:\n%s", out)
+		}
+		for _, want := range []string{a, b} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output does not name %q by its stored spelling:\n%s", want, out)
+			}
+		}
+	})
+}
+
+// NAMES DECODED AT THEIR SOURCE, AND NAMES PRINTED VERBATIM, JOIN THE DECISION.
+//
+// Two fields sit outside the union of stored names fed to the decoder, for
+// opposite reasons, and each can still collide with a decoded one:
+//
+//   - AmbiguousTypes is decoded at its SOURCE (AmbiguousDeclaredNames returns
+//     user identifiers), so it is not a stored name at all. Its presence also
+//     means the schema is ambiguous, so nothing in that output should decode.
+//   - SyntheticTypes is printed VERBATIM — Java stores those names exactly as
+//     the caller passed them — so a decoded name equalling one of them shows
+//     one label for two different declarations.
+//
+// Both arms were added without a pin and a mutation left the package green.
+func TestSourceDecodedAndVerbatimNamesJoinTheDecision(t *testing.T) {
+	t.Parallel()
+
+	t.Run("AmbiguousTypes forces stored names everywhere", func(t *testing.T) {
+		t.Parallel()
+		st := embedded.StatisticsStatus{
+			Found:          true,
+			Refusal:        embedded.StatisticsAmbiguousNames,
+			Stats:          recordlayer.StoreStatistics{PerType: map[string]recordlayer.RecordTypeStatistic{"MY__1TABLE": {Count: 7}}},
+			AmbiguousTypes: []string{"MY$TABLE", "MY__1TABLE"},
+		}
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, "json", "/x/MAIN", st); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		// per_type's key must stay stored: decoding it yields MY$TABLE, which is
+		// already printed as an ambiguous-pair member and means something else.
+		var got struct {
+			PerType map[string]int64 `json:"per_type"`
+		}
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+		}
+		if _, stored := got.PerType["MY__1TABLE"]; !stored {
+			t.Errorf("per_type was decoded while the schema is ambiguous: %v\n%s",
+				got.PerType, buf.String())
+		}
+	})
+
+	t.Run("SyntheticTypes participates as a verbatim name", func(t *testing.T) {
+		t.Parallel()
+		// MY__01JOINED decodes to MY__1JOINED, which is the synthetic name printed
+		// verbatim — one label, two declarations.
+		const stored, synth = "MY__01JOINED", "MY__1JOINED"
+		if recordlayer.ToUserIdentifier(stored) != synth {
+			t.Fatalf("fixture is vacuous: %q decodes to %q", stored, recordlayer.ToUserIdentifier(stored))
+		}
+		// Driven through the RENDERER, not the helper. The helper behaving
+		// correctly says nothing about whether the call site feeds it
+		// SyntheticTypes, and that wiring is exactly what regressed before.
+		st := embedded.StatisticsStatus{
+			Found:          true,
+			Refusal:        embedded.StatisticsSyntheticTypes,
+			Stats:          recordlayer.StoreStatistics{PerType: map[string]recordlayer.RecordTypeStatistic{stored: {Count: 7}}},
+			SyntheticTypes: []string{synth},
+		}
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, "json", "/x/MAIN", st); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		var got struct {
+			PerType map[string]int64 `json:"per_type"`
+		}
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+		}
+		if _, isStored := got.PerType[stored]; !isStored {
+			t.Errorf("per_type key was decoded to %q, the synthetic name printed "+
+				"verbatim beside it -- one label, two declarations: %v\n%s",
+				synth, got.PerType, buf.String())
+		}
+	})
 }

@@ -1,7 +1,6 @@
 package chaos
 
 import (
-	"context"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -44,7 +43,8 @@ func buildLeaderboardMetadata() (*recordlayer.RecordMetaData, *recordlayer.Index
 // Must be called before any chaos operations that touch the leaderboard index.
 func setupAllTimeWindow(t testing.TB, s *Scenario, idx *recordlayer.Index) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	_, err := s.cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -80,7 +80,8 @@ func setupAllTimeWindow(t testing.TB, s *Scenario, idx *recordlayer.Index) {
 // This catches leaderboard-specific corruption that generic Verify() skips.
 func verifyLeaderboardEntries(t testing.TB, s *Scenario, idx *recordlayer.Index) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	type entryInfo struct {
 		pk    tuple.Tuple
@@ -445,7 +446,8 @@ func TestLeaderboardMultipleWindows(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Set up both all-time and a bounded window [1000, 2000).
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	_, err := s.cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -521,7 +523,8 @@ func TestLeaderboardMultipleWindowsCommitUnknown(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Set up all-time + bounded [1000, 2000).
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	_, err := s.cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -578,7 +581,8 @@ func TestLeaderboardHighScoreFirst(t *testing.T) {
 	s := NewScenario(t, testRealDB, md)
 
 	// Set up all-time window with HighScoreFirst.
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	_, err := s.cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).
@@ -628,7 +632,8 @@ func TestLeaderboardHighScoreFirstStress(t *testing.T) {
 	s := NewScenario(t, testRealDB, md, WithSeed(44444), WithFaults(FaultsRetryVeryHeavy))
 
 	// Set up all-time window with HighScoreFirst.
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	_, err := s.cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
 		store, err := recordlayer.NewStoreBuilder().
 			SetContext(rtx).

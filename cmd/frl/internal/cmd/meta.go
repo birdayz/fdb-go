@@ -205,28 +205,45 @@ type typesListRow struct {
 	SinceVersion int    `json:"since_version,omitempty"` // 0 elided per convention
 }
 
-// writeTypesListJSON renders the record-type list as a JSON array sorted
-// by name. Shape matches writeTypesList's columns one-to-one so operators
-// can switch between formats without re-learning fields.
-func writeTypesListJSON(out io.Writer, md *recordlayer.RecordMetaData) error {
+// recordTypeNamesByUserOrder returns the metadata's record types as STORAGE
+// names, ordered by the SQL identifier each one is PRINTED as.
+//
+// Callers need both spellings: the storage name indexes RecordTypes(), and the
+// decoded name is what the operator sees. The two orders differ -- storage
+// [A__0B, A__1B] prints as [A__B, A$B] -- so sorting the keys would emit rows in
+// an order the reader cannot predict from the output.
+func recordTypeNamesByUserOrder(md *recordlayer.RecordMetaData) []string {
 	rts := md.RecordTypes()
 	names := make([]string, 0, len(rts))
 	for n := range rts {
 		names = append(names, n)
 	}
-	sort.Strings(names)
+	if _, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
+		sort.Strings(names)
+		return names
+	}
+	sort.Slice(names, func(i, j int) bool { return userName(names[i]) < userName(names[j]) })
+	return names
+}
+
+// writeTypesListJSON renders the record-type list as a JSON array sorted
+// by name. Shape matches writeTypesList's columns one-to-one so operators
+// can switch between formats without re-learning fields.
+func writeTypesListJSON(out io.Writer, md *recordlayer.RecordMetaData) error {
+	rts := md.RecordTypes()
+	names := recordTypeNamesByUserOrder(md)
 
 	rows := make([]typesListRow, 0, len(names))
 	for _, name := range names {
 		rt := rts[name]
 		pk := "(unset)"
 		if rt.PrimaryKey != nil {
-			if fn := rt.PrimaryKey.FieldNames(); len(fn) > 0 {
+			if fn := userFieldNames(rt.PrimaryKey.FieldNames()); len(fn) > 0 {
 				pk = strings.Join(fn, ",")
 			}
 		}
 		rows = append(rows, typesListRow{
-			Name:         name,
+			Name:         userNameFor(md, name), // SQL identifier; `name` stays the map key
 			PrimaryKey:   pk,
 			SinceVersion: rt.SinceVersion,
 		})
@@ -284,11 +301,7 @@ func writeTypesList(out io.Writer, md *recordlayer.RecordMetaData) error {
 		_, err := fmt.Fprintln(out, "(no record types in metadata)")
 		return err
 	}
-	names := make([]string, 0, len(rts))
-	for n := range rts {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := recordTypeNamesByUserOrder(md)
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tPRIMARY KEY\tSINCE VERSION")
@@ -299,7 +312,8 @@ func writeTypesList(out io.Writer, md *recordlayer.RecordMetaData) error {
 		if rt.SinceVersion > 0 {
 			since = fmt.Sprintf("%d", rt.SinceVersion)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", name, pk, since)
+		// SQL identifier; `name` stays the map key above.
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", userNameFor(md, name), pk, since)
 	}
 	return tw.Flush()
 }

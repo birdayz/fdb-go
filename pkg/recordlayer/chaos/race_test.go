@@ -1,7 +1,6 @@
 package chaos
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -26,7 +25,8 @@ func TestIntraTransactionRace(t *testing.T) {
 	md := buildConcurrentKitchenSinkMetadata()
 	db := recordlayer.NewFDBDatabase(testRealDB)
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	// Pre-create store.
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -170,7 +170,8 @@ func TestConcurrentSave200(t *testing.T) {
 	md := buildConcurrentKitchenSinkMetadata()
 	db := recordlayer.NewFDBDatabase(testRealDB)
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	const N = 200
 

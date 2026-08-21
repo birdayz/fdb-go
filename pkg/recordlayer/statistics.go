@@ -1000,9 +1000,46 @@ func ReadStatisticsAt(
 // there is no reading of that outcome a planner could safely use.
 type SyntheticRecordTypesNotModeledError struct {
 	// TypeNames are the synthetic declarations found, so a caller can say which.
+	//
+	// STORAGE names -- and unlike every other name field outside
+	// StatisticsStatus, they stay that way all the way out: Error() prints them
+	// verbatim too, for the reason given there. A programmatic consumer matching
+	// against metadata needs them in the namespace metadata uses, and here so
+	// does the human.
 	TypeNames []string
 }
 
+// Error renders the refusal for a human, naming the declarations EXACTLY as the
+// metadata stores them.
+//
+// The reason is the PRIOR on what produced the string -- not the domain, and
+// not proof of provenance. Both kinds of name end up as protobuf message names
+// (Java's SyntheticRecordTypeBuilder.buildDescriptor sets the synthetic one via
+// DescriptorProto.setName, so it is validated exactly like a record type's), so
+// the domain does not separate them; and DecodeOnceIfReversible is a pure
+// function of the string, so its round-trip test would run identically on
+// either. What differs is what could have written the name:
+//
+//   - A record type declared through SQL DDL passes through
+//     protoname.ToProtoBufCompliantName. Among stored names that round-trip,
+//     escaped ones are therefore the case worth serving, and decoding is the
+//     best available reading. It is NOT proof -- SetRecords copies descriptor
+//     names verbatim -- which is exactly why that guard exists instead of an
+//     unconditional decode.
+//
+//   - Nothing escapes into a synthetic name. Java's
+//     RecordMetaDataBuilder.addJoinedRecordType / addUnnestedRecordType store
+//     the string their caller passed, and this port never CREATES one; it only
+//     round-trips what Java wrote. So a synthetic MY__1JOINED that round-trips
+//     is not evidence of escaping, and decoding it would invent MY$JOINED -- a
+//     declaration the operator cannot find.
+//
+// That matters most precisely here: this refusal exists because the port does
+// not model these types, so the only thing an operator can do with the name is
+// match it against their Java-side metadata, which holds the verbatim string.
+//
+// The list arrives sorted by SyntheticRecordTypeNames and stays in that order;
+// with no decoding step there are not two namespaces to disagree about.
 func (e *SyntheticRecordTypesNotModeledError) Error() string {
 	return fmt.Sprintf("metadata declares synthetic record types this port does not model (%s); "+
 		"statistics collection refused rather than scanning the store for a set that "+

@@ -1051,8 +1051,11 @@ func isAllAlternativesFailed(err error) bool {
 // teardown code to the application. The Go read loops mirror that by treating
 // maybeDelivered exactly like all_alternatives_failed: invalidate the location,
 // bounded retry, and on exhaustion a RETRYABLE transaction_too_old. The commit
-// path never consults this — it maps ANY teardown to commit_unknown_result
-// (commitpath.go, C++ AtMostOnce::True → NativeAPI.actor.cpp:6937).
+// path consults this too, but converts instead of retrying: commit runs through
+// basicLoadBalance at AtMostOnce::True, which forbids a re-send, so commitpath.go
+// normalises maybeDelivered to commit_unknown_result. Its four TRANSPORT arms do
+// the same for teardowns coded 1030; this predicate is what additionally catches
+// an IN-BAND 1100, which no transport arm ever sees.
 func isMaybeDelivered(err error) bool {
 	var fdbErr *wire.FDBError
 	return errors.As(err, &fdbErr) &&

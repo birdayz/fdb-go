@@ -60,7 +60,14 @@ func newMetaDiffCmd() *cobra.Command {
 // Changes list, so the JSON can never under-report what the text shows
 // (the old name-only JSON contract hid WHAT changed from jq consumers).
 type diffEntry struct {
-	Name    string
+	Name string
+	// raw is the STORED spelling of Name. Set by diffRecordTypes on all three
+	// buckets, where a rendered collision has to be undone deterministically.
+	// NOT set by diffIndexes: index names are never decoded, so no collision can
+	// arise there and there is nothing to fall back to. Extending the fallback to
+	// index entries means populating it there first, or it emits empty names.
+	// Unexported: bookkeeping, never output.
+	raw     string
 	Detail  string        // additions only; empty otherwise
 	Changes []fieldChange // modifications only; empty otherwise
 }
@@ -179,17 +186,20 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	newTypes := newMeta.RecordTypes()
 	var s diffSection
 
+	// Bucketing is by STORED name (the map keys); only Name is decoded, and the
+	// stored spelling rides along in raw so a rendered collision can be undone.
 	for name := range newTypes {
 		if _, ok := oldTypes[name]; !ok {
 			s.Added = append(s.Added, diffEntry{
-				Name:   name,
+				Name:   userNameFor(newMeta, name), // SQL identifier; map keys stay storage
+				raw:    name,
 				Detail: "pk: " + pkFieldsOrUnset(newTypes[name].PrimaryKey),
 			})
 		}
 	}
 	for name := range oldTypes {
 		if _, ok := newTypes[name]; !ok {
-			s.Removed = append(s.Removed, diffEntry{Name: name})
+			s.Removed = append(s.Removed, diffEntry{Name: userNameFor(oldMeta, name), raw: name})
 		}
 	}
 	for name, oldT := range oldTypes {
@@ -198,8 +208,15 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			continue
 		}
 		var changes []fieldChange
-		if oldPK, newPK := pkFieldsOrUnset(oldT.PrimaryKey), pkFieldsOrUnset(newT.PrimaryKey); oldPK != newPK {
-			changes = append(changes, fieldChange{Field: "primary_key", Old: oldPK, New: newPK})
+		// Compared RAW (see pkFieldsRaw): two distinct stored keys can render
+		// identically, and a PK change that vanishes from a diff is the worst
+		// kind of silence this tool can produce.
+		if oldPK, newPK := pkFieldsRaw(oldT.PrimaryKey), pkFieldsRaw(newT.PrimaryKey); oldPK != newPK {
+			oldShown, newShown := pkFieldsOrUnset(oldT.PrimaryKey), pkFieldsOrUnset(newT.PrimaryKey)
+			if oldShown == newShown {
+				oldShown, newShown = oldPK, newPK
+			}
+			changes = append(changes, fieldChange{Field: "primary_key", Old: oldShown, New: newShown})
 		}
 		if oldT.SinceVersion != newT.SinceVersion {
 			changes = append(changes, fieldChange{
@@ -212,7 +229,49 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			changes = append(changes, fieldChange{Field: "record_type_key", Old: oldKey, New: newKey})
 		}
 		if len(changes) > 0 {
-			s.Changed = append(s.Changed, diffEntry{Name: name, Changes: changes})
+			s.Changed = append(s.Changed, diffEntry{Name: userNameFor(newMeta, name), raw: name, Changes: changes})
+		}
+	}
+	// Resolved ALL-OR-NOTHING, over ALL THREE buckets, and only once every bucket
+	// is populated.
+	//
+	// Two different stored types can render to one name, and then the diff says
+	// something it does not mean. It is not only a rename: old
+	// {Order:A__0B, Customer:A__B} -> new {Order:A__0B changed, Customer:C__1X}
+	// prints `~ A__B` for the CHANGED Order and `- A__B` for the REMOVED
+	// Customer -- two stored types, one printed name, no rename anywhere. So
+	// Changed counts too, and this runs after the Changed loop rather than
+	// before it, where it could not have seen those entries at all.
+	//
+	// Rewriting only the colliding entries is not enough: old {A__B, A__00B} ->
+	// new {A__0B, C__1X} decodes to Added [A__B, C$X] and Removed [A__B, A__0B],
+	// so rewriting the A__B pair makes Added hold A__0B, colliding afresh with
+	// Removed's decoded A__0B. Iterating to a fixpoint is a lot of machinery for
+	// a case where every stored name is already a correct answer, so any
+	// collision sends every entry to its stored spelling -- what userNamesFor
+	// does one level down.
+	//
+	// Order-independent: the tally reads no field this loop writes. An earlier
+	// pairwise version compared Name fields it had already rewritten, so the
+	// output depended on Go map iteration order.
+	seen := map[string]int{}
+	for _, b := range [][]diffEntry{s.Added, s.Removed, s.Changed} {
+		for _, e := range b {
+			seen[e.Name]++
+		}
+	}
+	var collides bool
+	for _, n := range seen {
+		if n > 1 {
+			collides = true
+			break
+		}
+	}
+	if collides {
+		for _, b := range [][]diffEntry{s.Added, s.Removed, s.Changed} {
+			for i := range b {
+				b[i].Name = b[i].raw
+			}
 		}
 	}
 	sortSection(&s)
@@ -238,7 +297,7 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			s.Added = append(s.Added, diffEntry{
 				Name: name,
 				Detail: fmt.Sprintf("%s on %s",
-					idx.Type, strings.Join(idx.RootExpression.FieldNames(), ",")),
+					idx.Type, strings.Join(userFieldNames(idx.RootExpression.FieldNames()), ",")),
 			})
 		}
 	}
@@ -256,9 +315,21 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 		if oldI.Type != newI.Type {
 			changes = append(changes, fieldChange{Field: "type", Old: oldI.Type, New: newI.Type})
 		}
-		oldFields := strings.Join(oldI.RootExpression.FieldNames(), ",")
-		newFields := strings.Join(newI.RootExpression.FieldNames(), ",")
-		if oldFields != newFields {
+		// COMPARE IN STORAGE SPACE, RENDER DECODED. Decoding is not injective:
+		// stored A__B and A__0B BOTH render as A__B, so comparing the rendered
+		// strings makes a real index change compare equal and vanish from the
+		// diff -- silent, in the one tool whose job is to show what changed.
+		oldRaw := oldI.RootExpression.FieldNames() // storage-compare
+		newRaw := newI.RootExpression.FieldNames() // storage-compare
+		if strings.Join(oldRaw, ",") != strings.Join(newRaw, ",") {
+			oldFields := strings.Join(userFieldNames(oldRaw), ",")
+			newFields := strings.Join(userFieldNames(newRaw), ",")
+			if oldFields == newFields {
+				// The change is real but invisible once decoded; show the stored
+				// spelling so the operator can see what actually moved.
+				oldFields = strings.Join(oldRaw, ",")
+				newFields = strings.Join(newRaw, ",")
+			}
 			changes = append(changes, fieldChange{Field: "fields", Old: oldFields, New: newFields})
 		}
 		// Options carry uniqueness ("unique"), allowed-for-query, and
@@ -413,9 +484,25 @@ func pkFieldsOrUnset(ke recordlayer.KeyExpression) string {
 	if ke == nil {
 		return "(unset)"
 	}
-	fn := ke.FieldNames()
+	fn := userFieldNames(ke.FieldNames())
 	if len(fn) == 0 {
 		return "(unset)"
 	}
 	return strings.Join(fn, ",")
+}
+
+// pkFieldsRaw is pkFieldsOrUnset without decoding, for COMPARISON.
+//
+// Decoding is not injective — stored A__B and A__0B both render as A__B — so
+// comparing rendered primary keys makes a real PK change compare equal and
+// disappear from the diff. Compare with this; render with pkFieldsOrUnset.
+func pkFieldsRaw(ke recordlayer.KeyExpression) string {
+	if ke == nil {
+		return "(unset)"
+	}
+	fnRaw := ke.FieldNames() // storage-compare
+	if len(fnRaw) == 0 {
+		return "(unset)"
+	}
+	return strings.Join(fnRaw, ",")
 }

@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/session"
+	"google.golang.org/protobuf/proto"
 )
 
 // decideStatistics is the whole read-side gate (RFC-236). It is exercised here
@@ -675,5 +677,137 @@ func TestConnectionSyntheticRefusalCarriesTheTypedError(t *testing.T) {
 	var apiErr *api.Error
 	if !errors.As(wrapped, &apiErr) || apiErr.Code != api.ErrCodeUnsupportedOperation {
 		t.Errorf("the relational error code was lost while wrapping: %v", wrapped)
+	}
+}
+
+// AN AMBIGUOUS SCHEMA MUST ALSO COST NO READ.
+//
+// The ambiguity gate's own comment claimed it was decided "before any read",
+// and that was true of decideStatistics and FALSE of evaluateCollectedStatistics,
+// which short-circuited only on synthetic types. So an ambiguous schema paid an
+// FDB transaction on every opt-in plan-cache miss and threw the answer away.
+//
+// A comment describing the GATE reads as a claim about the PATH through it, and
+// this is the second time in this feature that gap has been real. The nil
+// database is what makes the difference observable rather than merely slower.
+func TestAmbiguousVerdictTouchesNoIO(t *testing.T) {
+	t.Parallel()
+
+	md := ambiguousTestMetaData(t)
+	pair, ambiguous := md.AmbiguousDeclaredNames()
+	if !ambiguous {
+		t.Fatalf("fixture declares no colliding pair; this cannot reach the gate (%v)",
+			md.RecordTypes())
+	}
+
+	c := &EmbeddedConnection{sess: &session.Session{Schema: "S", DBPath: "/db"}}
+
+	var st StatisticsStatus
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("evaluateCollectedStatistics reached the read path for ambiguous "+
+					"metadata and panicked on the nil session Keyspace (%v). The verdict is fixed "+
+					"before any I/O, so the early return must precede statisticsLocation.", r)
+			}
+		}()
+		st = evaluateCollectedStatistics(context.Background(), c, md)
+	}()
+
+	if st.Refusal != StatisticsAmbiguousNames {
+		t.Fatalf("Refusal = %q, want %q", st.Refusal, StatisticsAmbiguousNames)
+	}
+	if len(st.AmbiguousTypes) != 2 {
+		t.Errorf("AmbiguousTypes = %v, want the pair %v", st.AmbiguousTypes, pair)
+	}
+}
+
+// ambiguousTestMetaData builds metadata declaring two record types whose names
+// collide across the SQL and storage namespaces.
+//
+// MY$TABLE is stored as MY__1TABLE, and a table whose SQL name IS MY__1TABLE is
+// stored as MY__01TABLE — so declaring both storage names is the collision. The
+// demo proto has no such pair, and SKIPPING when a fixture cannot express the
+// condition would leave the arm undriven while reporting green, so it is built.
+//
+// Renaming a record type means renaming three things, not one: the message, the
+// RecordTypes entry, and the UNION's field — both its name and its FULLY
+// QUALIFIED type reference. Missing the qualification silently matches nothing
+// and leaves the references dangling, and the types then stop resolving at all.
+func ambiguousTestMetaData(t *testing.T) *recordlayer.RecordMetaData {
+	t.Helper()
+	p, err := syntheticTestMetaData(t).ToProto()
+	if err != nil {
+		t.Fatalf("to proto: %v", err)
+	}
+	// No joined types: the synthetic gate runs first and would mask this one.
+	p.JoinedRecordTypes = nil
+	rename := map[string]string{"Order": "MY__1TABLE", "Customer": "MY__01TABLE"}
+	for _, msg := range p.GetRecords().GetMessageType() {
+		if to, ok := rename[msg.GetName()]; ok {
+			msg.Name = proto.String(to)
+		}
+		for _, f := range msg.GetField() {
+			full := strings.TrimPrefix(f.GetTypeName(), ".")
+			short, pkgPrefix := full, ""
+			if i := strings.LastIndex(full, "."); i >= 0 {
+				short, pkgPrefix = full[i+1:], full[:i+1]
+			}
+			if to, ok := rename[short]; ok {
+				f.TypeName = proto.String("." + pkgPrefix + to)
+				if strings.HasPrefix(f.GetName(), "_") {
+					f.Name = proto.String("_" + to)
+				}
+			}
+		}
+	}
+	for _, rt := range p.GetRecordTypes() {
+		if to, ok := rename[rt.GetName()]; ok {
+			rt.Name = proto.String(to)
+		}
+	}
+	md, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatalf("from proto: %v", err)
+	}
+	return md
+}
+
+// AN AMBIGUITY REFUSAL MUST CARRY NO PER-TYPE MAP, BECAUSE RENDERERS RELY ON IT.
+//
+// `frl stats show` and `frl stats collect` build their per-type maps keyed by
+// the DECODED name without an ambiguity gate of their own — they hold a status,
+// not a metadata, so they cannot check. That is only safe because this gate
+// refuses first and hands them nothing to key: under a collision two stored
+// names decode alike and would collapse into one row, pricing one table with
+// the other's count.
+//
+// The dependency is non-local, so it is pinned here rather than assumed. If
+// this ever starts returning a populated map alongside the refusal, those
+// renderers need their own gate — see cmd/frl/internal/cmd/stats.go's
+// renderStatsStatus and renderCollectReport.
+func TestAmbiguityRefusalCarriesNoPerTypeMap(t *testing.T) {
+	t.Parallel()
+
+	got := decideStatistics(statisticsGateInput{
+		Found: true,
+		Stats: statsAt(testVersion, map[string]int64{
+			"MY__1TABLE":  9,
+			"MY__01TABLE": 4000,
+		}),
+		CurrentVersion: testVersion + 1,
+		DeclaredTypes:  []string{"MY__1TABLE", "MY__01TABLE"},
+	})
+	if got.Refusal != StatisticsAmbiguousNames {
+		t.Fatalf("Refusal = %q, want %q — the fixture no longer drives the ambiguity "+
+			"gate, so the assertion below proves nothing", got.Refusal, StatisticsAmbiguousNames)
+	}
+	if n := len(got.Stats.PerType); n != 0 {
+		t.Errorf("PerType has %d entries alongside an ambiguity refusal; the CLI "+
+			"renderers key that map by the DECODED name with no gate of their own, "+
+			"so two colliding types would collapse into one row: %v", n, got.Stats.PerType)
+	}
+	if got.Usable {
+		t.Error("Usable = true alongside an ambiguity refusal")
 	}
 }

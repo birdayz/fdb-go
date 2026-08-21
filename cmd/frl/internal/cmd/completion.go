@@ -69,12 +69,7 @@ func registerRecordTypeCompletion(c *cobra.Command) {
 			if err != nil {
 				return nil, cobra.ShellCompDirectiveNoFileComp
 			}
-			rts := md.RecordTypes()
-			names := make([]string, 0, len(rts))
-			for n := range rts {
-				names = append(names, n)
-			}
-			return names, cobra.ShellCompDirectiveNoFileComp
+			return recordTypeCompletionNames(md), cobra.ShellCompDirectiveNoFileComp
 		})
 }
 
@@ -152,12 +147,7 @@ func recordTypeNameCompletion(cmd *cobra.Command, args []string, _ string) ([]st
 	if md == nil {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	rts := md.RecordTypes()
-	names := make([]string, 0, len(rts))
-	for n := range rts {
-		names = append(names, n)
-	}
-	return names, cobra.ShellCompDirectiveNoFileComp
+	return recordTypeCompletionNames(md), cobra.ShellCompDirectiveNoFileComp
 }
 
 // AnnotationOutputYAML is the cobra annotation key that flags a command
@@ -184,4 +174,32 @@ func registerFormatCompletion(c *cobra.Command) {
 		func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 			return values, cobra.ShellCompDirectiveNoFileComp
 		})
+}
+
+// recordTypeCompletionNames is what the two record-type completers offer.
+//
+// It decodes to SQL identifiers, EXCEPT when the schema declares a colliding
+// pair — then it offers the stored names unchanged.
+//
+// The collision is the reason, and it is a safety one rather than a cosmetic
+// one. Escaping is not injective across the two namespaces: with SQL types
+// MY$TABLE (stored MY__1TABLE) and MY__1TABLE (stored MY__01TABLE) declared
+// together, decoding offers MY$TABLE and MY__1TABLE — and GetRecordType tries
+// the STORED key first, so accepting the second candidate resolves to the FIRST
+// type. That mis-resolution is pinned by
+// TestGetRecordTypeMisResolvesAnAmbiguousPair, and these completers feed
+// `record put` and `record delete`, so a wrong resolution writes to or deletes
+// from a table the operator did not name.
+//
+// Offering stored names under collision is deliberately the unhelpful answer:
+// they are exactly the keys that resolve unambiguously, and a schema in this
+// state needs renaming, not a prettier completion list. The statistics reader
+// refuses outright on the same condition.
+func recordTypeCompletionNames(md *recordlayer.RecordMetaData) []string {
+	rts := md.RecordTypes()
+	names := make([]string, 0, len(rts))
+	for n := range rts {
+		names = append(names, n)
+	}
+	return userNamesFor(md, names)
 }

@@ -1,7 +1,6 @@
 package chaos
 
 import (
-	"context"
 	"testing"
 
 	"fdb.dev/pkg/fdbgo/fdb/subspace"
@@ -67,7 +66,8 @@ func verifyMaxEverVersionEntries(
 	groupingKeyCount int, // number of unique grouping keys ever saved (upper bound)
 ) {
 	t.Helper()
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 
 	idx := md.GetIndex(indexName)
 	if idx == nil {
@@ -139,7 +139,8 @@ func TestMaxEverVersionBasicVerify(t *testing.T) {
 	s.Verify()
 
 	// Additional check: exactly 1 ungrouped entry.
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
 	_, err := cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -201,7 +202,8 @@ func TestMaxEverVersionCommitUnknownDelete(t *testing.T) {
 	s.Verify()
 
 	// Verify the MAX_EVER_VERSION entry still exists (since _EVER semantics).
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
 	_, err := cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -239,7 +241,8 @@ func TestMaxEverVersionDeleteAllRecords(t *testing.T) {
 	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42)})
 	s.Verify()
 
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
 	_, err := cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -338,7 +341,8 @@ func TestMaxEverVersionGroupedBasicVerify(t *testing.T) {
 	s.Verify()
 
 	// Verify grouped entries: should be at most 2 entries (qty=5 and qty=10).
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
 	_, err := cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -394,7 +398,8 @@ func TestMaxEverVersionGroupedRandomFaults(t *testing.T) {
 	s.Verify()
 
 	// Final structural check on grouped entries.
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
 	_, err := cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -494,7 +499,8 @@ func TestMaxEverVersionGroupedDeleteAll(t *testing.T) {
 	s.SaveRecord(&gen.Order{OrderId: proto.Int64(99), Price: proto.Int32(42), Quantity: proto.Int32(7)})
 	s.Verify()
 
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
 	_, err := cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -585,7 +591,8 @@ func TestMaxEverVersionIdempotencyExplanation(t *testing.T) {
 	}
 
 	// Structural check: ungrouped entry should still exist (EVER semantics).
-	ctx := context.Background()
+	ctx, cancelCtx := chaosRunContext(0)
+	defer cancelCtx()
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
 	cleanDB := recordlayer.NewFDBDatabase(testRealDB)
 	_, err := cleanDB.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {

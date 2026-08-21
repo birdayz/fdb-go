@@ -141,7 +141,9 @@ func (c *ChaosTransactor) InjectReadErrorOnce(keyPrefix []byte) {
 
 // Transact implements fdb.Transactor. Wraps the inner Transact with fault injection.
 func (c *ChaosTransactor) Transact(fn func(fdb.WritableTransaction) (any, error)) (any, error) {
-	return c.TransactCtx(context.Background(), fn)
+	ctx, cancel := chaosOpContext()
+	defer cancel()
+	return c.TransactCtx(ctx, fn)
 }
 
 // TransactCtx implements fdb.CtxTransactor — same fault injection, threading ctx to the
@@ -213,7 +215,9 @@ func (c *ChaosTransactor) TransactCtx(ctx context.Context, fn func(fdb.WritableT
 
 // ReadTransact implements fdb.ReadTransactor. No fault injection on reads.
 func (c *ChaosTransactor) ReadTransact(fn func(fdb.ReadTransaction) (any, error)) (any, error) {
-	return c.ReadTransactCtx(context.Background(), fn)
+	ctx, cancel := chaosOpContext()
+	defer cancel()
+	return c.ReadTransactCtx(ctx, fn)
 }
 
 // ReadTransactCtx implements fdb.CtxReadTransactor (threads ctx to the inner read path).

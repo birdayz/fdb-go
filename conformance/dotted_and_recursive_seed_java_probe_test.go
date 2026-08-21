@@ -281,14 +281,14 @@ CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 
 		Expect(goInnocent).To(HaveOccurred(),
 			"Go now ANSWERS the unrelated table — the divergence is CLOSED, which is what\n"+
-				"RFC-238 §7b's criterion asks for. FLIP this to NotTo(HaveOccurred()) and\n"+
+				"RFC-238 §5 criterion (8) asks for. FLIP this to NotTo(HaveOccurred()) and\n"+
 				"KEEP it. Do not delete it: it is the only Go-side pin that an unrelated\n"+
 				"table stays queryable, so deleting it lets a later return to schema-wide\n"+
 				"failure through unnoticed.")
 		var ge *api.Error
 		Expect(errors.As(goInnocent, &ge)).To(BeTrue(),
 			"Go's failure stopped being an api.Error. A panic escaping the driver boundary\n"+
-				"looks exactly like this, and removing that panic is §7b's other half.")
+				"looks exactly like this, and removing that panic is criterion (8)'s other half.")
 		Expect(string(ge.Code)).To(Equal("XX000"),
 			"Go's SQLSTATE moved. If it became a real diagnostic, say so here.")
 
@@ -311,7 +311,7 @@ CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 			"Go ANSWERED the COLLIDING table. Two columns share one decoded spelling, so\n"+
 				"a row type naming both cannot be built and any answer here is reading one\n"+
 				"of them under the other's name. This assertion holds BEFORE and AFTER the\n"+
-				"§7b fix — table-local means failing HERE and answering on INNOCENT, not\n"+
-				"answering everywhere.")
+				"criterion (8) fix — table-local means failing HERE and answering on INNOCENT,\n"+
+				"not answering everywhere.")
 	})
 })

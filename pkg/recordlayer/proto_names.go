@@ -29,3 +29,15 @@ func CheckValidProtoBufCompliantName(name string) error {
 func ToUserIdentifier(protoIdentifier string) string {
 	return protoname.ToUserIdentifier(protoIdentifier)
 }
+
+// DecodeOnceIfReversible decodes a stored name to its SQL identifier only when
+// the result provably re-encodes. See protoname.DecodeOnceIfReversible.
+func DecodeOnceIfReversible(stored string) string {
+	return protoname.DecodeOnceIfReversible(stored)
+}
+
+// SafeDecoderOver returns one decoding policy for a whole rendered output. See
+// protoname.SafeDecoderOver.
+func SafeDecoderOver(decoded, verbatim []string) func(string) string {
+	return protoname.SafeDecoderOver(decoded, verbatim)
+}
