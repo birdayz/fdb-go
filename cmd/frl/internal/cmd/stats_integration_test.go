@@ -1262,7 +1262,7 @@ func TestOneOutputNeverPrintsTwoTablesUnderOneName(t *testing.T) {
 	t.Run("straddling two maps", func(t *testing.T) {
 		t.Parallel()
 		// One name in each map — the case a per-map guard cannot see.
-		decode := safeDecoderOver([]string{a, b})
+		decode := safeDecoderOver([]string{a, b}, nil)
 		if got := decode(a); got != a {
 			t.Errorf("decode(%q) = %q; under a collision every name must stay stored", a, got)
 		}
@@ -1275,7 +1275,7 @@ func TestOneOutputNeverPrintsTwoTablesUnderOneName(t *testing.T) {
 		t.Parallel()
 		// The fallback must not fire spuriously, or every operator reads storage
 		// names forever.
-		decode := safeDecoderOver([]string{a, "OTHER"})
+		decode := safeDecoderOver([]string{a, "OTHER"}, nil)
 		if got := decode(a); got != "MY$TABLE" {
 			t.Errorf("decode(%q) = %q, want the SQL identifier MY$TABLE", a, got)
 		}
@@ -1283,7 +1283,7 @@ func TestOneOutputNeverPrintsTwoTablesUnderOneName(t *testing.T) {
 
 	t.Run("keyedBy applies one decision to a whole map", func(t *testing.T) {
 		t.Parallel()
-		decode := safeDecoderOver([]string{a, b})
+		decode := safeDecoderOver([]string{a, b}, nil)
 		got := keyedBy(decode, map[string]int64{a: 9, b: 4000})
 		if len(got) != 2 || got[a] != 9 || got[b] != 4000 {
 			t.Errorf("rows are not keyed by their own stored names: %v", got)
@@ -1359,6 +1359,87 @@ func TestRenderersFeedTheWholeUnionToTheDecoder(t *testing.T) {
 			if !strings.Contains(out, want) {
 				t.Errorf("output does not name %q by its stored spelling:\n%s", want, out)
 			}
+		}
+	})
+}
+
+// NAMES DECODED AT THEIR SOURCE, AND NAMES PRINTED VERBATIM, JOIN THE DECISION.
+//
+// Two fields sit outside the union of stored names fed to the decoder, for
+// opposite reasons, and each can still collide with a decoded one:
+//
+//   - AmbiguousTypes is decoded at its SOURCE (AmbiguousDeclaredNames returns
+//     user identifiers), so it is not a stored name at all. Its presence also
+//     means the schema is ambiguous, so nothing in that output should decode.
+//   - SyntheticTypes is printed VERBATIM — Java stores those names exactly as
+//     the caller passed them — so a decoded name equalling one of them shows
+//     one label for two different declarations.
+//
+// Both arms were added without a pin and a mutation left the package green.
+func TestSourceDecodedAndVerbatimNamesJoinTheDecision(t *testing.T) {
+	t.Parallel()
+
+	t.Run("AmbiguousTypes forces stored names everywhere", func(t *testing.T) {
+		t.Parallel()
+		st := embedded.StatisticsStatus{
+			Found:          true,
+			Refusal:        embedded.StatisticsAmbiguousNames,
+			Stats:          recordlayer.StoreStatistics{PerType: map[string]recordlayer.RecordTypeStatistic{"MY__1TABLE": {Count: 7}}},
+			AmbiguousTypes: []string{"MY$TABLE", "MY__1TABLE"},
+		}
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, "json", "/x/MAIN", st); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		// per_type's key must stay stored: decoding it yields MY$TABLE, which is
+		// already printed as an ambiguous-pair member and means something else.
+		var got struct {
+			PerType map[string]int64 `json:"per_type"`
+		}
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+		}
+		if _, stored := got.PerType["MY__1TABLE"]; !stored {
+			t.Errorf("per_type was decoded while the schema is ambiguous: %v\n%s",
+				got.PerType, buf.String())
+		}
+	})
+
+	t.Run("SyntheticTypes participates as a verbatim name", func(t *testing.T) {
+		t.Parallel()
+		// MY__01JOINED decodes to MY__1JOINED, which is the synthetic name printed
+		// verbatim — one label, two declarations.
+		const stored, synth = "MY__01JOINED", "MY__1JOINED"
+		if recordlayer.ToUserIdentifier(stored) != synth {
+			t.Fatalf("fixture is vacuous: %q decodes to %q", stored, recordlayer.ToUserIdentifier(stored))
+		}
+		// Driven through the RENDERER, not the helper. The helper behaving
+		// correctly says nothing about whether the call site feeds it
+		// SyntheticTypes, and that wiring is exactly what regressed before.
+		st := embedded.StatisticsStatus{
+			Found:          true,
+			Refusal:        embedded.StatisticsSyntheticTypes,
+			Stats:          recordlayer.StoreStatistics{PerType: map[string]recordlayer.RecordTypeStatistic{stored: {Count: 7}}},
+			SyntheticTypes: []string{synth},
+		}
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, "json", "/x/MAIN", st); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		var got struct {
+			PerType map[string]int64 `json:"per_type"`
+		}
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+		}
+		if _, isStored := got.PerType[stored]; !isStored {
+			t.Errorf("per_type key was decoded to %q, the synthetic name printed "+
+				"verbatim beside it -- one label, two declarations: %v\n%s",
+				synth, got.PerType, buf.String())
 		}
 	})
 }

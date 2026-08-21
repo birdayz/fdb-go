@@ -208,12 +208,15 @@ func describeSkipped(skipped map[string]string) string {
 	//     the one field an operator reads.
 	//
 	// cmd/frl's docscheck gate cannot see this file, so the invariant is carried
-	// here by construction rather than by that gate.
+	// by calling the SHARED policy rather than by that gate. It used to be a
+	// local copy justified by "a test pins that the two agree" -- there was no
+	// such test, and there could not easily be one across an unexported boundary,
+	// so the copy is gone instead.
 	stored := make([]string, 0, len(skipped))
 	for name := range skipped {
 		stored = append(stored, name)
 	}
-	decode := safeSkippedDecoder(stored)
+	decode := recordlayer.SafeDecoderOver(stored, nil)
 
 	names := make([]string, 0, len(skipped))
 	for name := range skipped {
@@ -227,49 +230,6 @@ func describeSkipped(skipped map[string]string) string {
 		parts = append(parts, decode(name)+": "+skipped[name])
 	}
 	return strings.Join(parts, "; ")
-}
-
-// safeSkippedDecoder mirrors cmd/frl's safeDecoderOver: one decoding decision
-// for a whole rendered string, identity when decoding would be ambiguous.
-//
-// Deliberately duplicated rather than shared. This package must not import the
-// CLI, and the alternative -- a third home for four lines of policy -- buys
-// less than it costs. The pairing is pinned by a test that fails if the two
-// diverge on the same input.
-func safeSkippedDecoder(stored []string) func(string) string {
-	identity := func(s string) string { return s }
-	all := make(map[string]struct{}, len(stored))
-	for _, s := range stored {
-		all[s] = struct{}{}
-	}
-	decoded := make(map[string]struct{}, len(stored))
-	for _, s := range stored {
-		d := decodeOnceIfReversible(s)
-		if _, isOthers := all[d]; isOthers && d != s {
-			return identity
-		}
-		if _, dup := decoded[d]; dup {
-			return identity
-		}
-		decoded[d] = struct{}{}
-	}
-	return decodeOnceIfReversible
-}
-
-// decodeOnceIfReversible is cmd/frl's userName: decode only when the decoded
-// spelling provably re-encodes to the stored one, so a name that was never
-// escaped is shown unchanged rather than renamed into one that resolves to
-// nothing.
-func decodeOnceIfReversible(stored string) string {
-	user := recordlayer.ToUserIdentifier(stored)
-	if user == stored {
-		return stored
-	}
-	back, err := recordlayer.ToProtoBufCompliantName(user)
-	if err != nil || back != stored {
-		return stored
-	}
-	return user
 }
 
 // syntheticRefusal returns the refusal Event for metadata this port does not

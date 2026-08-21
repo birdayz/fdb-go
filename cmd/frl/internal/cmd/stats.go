@@ -232,7 +232,7 @@ func newStatsCollectCmd() *cobra.Command {
 						}
 						return fmt.Errorf("collection aborted for %s and stored nothing: %s",
 							addr.describe(), describeSkippedTypes(
-								safeDecoderOver(append(storedKeysOf(report.Collected), storedKeysOf(report.Skipped)...)),
+								safeDecoderOver(append(storedKeysOf(report.Collected), storedKeysOf(report.Skipped)...), nil),
 								report.Skipped))
 					}
 					return renderCollectReport(cmd, outputFmt, addr.describe(), report, time.Since(started))
@@ -352,7 +352,7 @@ func renderCollectReport(
 	if skippedRaw == nil {
 		skippedRaw = map[string]string{}
 	}
-	decode := safeDecoderOver(append(storedKeysOf(report.Collected), storedKeysOf(skippedRaw)...))
+	decode := safeDecoderOver(append(storedKeysOf(report.Collected), storedKeysOf(skippedRaw)...), nil)
 	collected := make(map[string]int64, len(report.Collected))
 	for name, st := range report.Collected {
 		collected[decode(name)] = st.Count
@@ -455,8 +455,12 @@ func renderStatsStatus(
 	// prints: the per-type keys AND the missing/extra lists. Deciding per-list
 	// lets a colliding pair straddle two of them, so each is individually correct
 	// and the output still shows one name for two tables. See safeDecoderOver.
-	decode := safeDecoderOver(append(append(
-		storedKeysOf(st.Stats.PerType), st.MissingTypes...), st.ExtraTypes...))
+	// ExtraTypes is a SUBSET of PerType's keys, so adding it to the union is
+	// dead weight -- dropping it leaves every test green. SyntheticTypes is not:
+	// it is printed VERBATIM alongside these, so a decoded name equalling one of
+	// them is a real collision, which is why it goes in as `verbatim`.
+	decode := safeDecoderOver(
+		append(storedKeysOf(st.Stats.PerType), st.MissingTypes...), st.SyntheticTypes)
 	if len(st.AmbiguousTypes) > 0 {
 		// AmbiguousTypes are decoded at their SOURCE (AmbiguousDeclaredNames
 		// returns user identifiers), so they are not in the union above -- and a
@@ -871,50 +875,15 @@ func userFieldNames(fields []string) []string {
 // record_type resolving to the wrong table.
 func userFieldName(field string) string { return userName(field) }
 
-// safeDecoderOver decides ONE decoding policy for a whole rendered output, from
-// every stored name that output will print.
+// safeDecoderOver is recordlayer.SafeDecoderOver, kept as a local name because
+// every renderer in this file calls it.
 //
-// Per-MAP decisions are not enough, and the split is easy to miss: harden
-// `collected` and `skipped` separately and a pair can straddle them --
-// collected {A__B}, skipped {A__0B}. Neither map sees a collision, each is
-// individually correct, and the printed report still shows A__B twice for two
-// different stored types. The decision has to range over the union of what the
-// output prints, which is why this takes the names rather than the maps.
-//
-// Returns userName when decoding is unambiguous, and identity otherwise. The
-// GRANULARITY matches the diff and the completer -- all-or-nothing over one
-// output -- but the PREDICATE is wider than the diff's, and deliberately so.
-// The diff's three buckets are disjoint by stored name, so a repeated RENDERED
-// name is its whole hazard. Here a decoded name can also equal a DIFFERENT
-// entry's stored name, which the diff cannot suffer because each of its rows
-// resolves against its own metadata.
-func safeDecoderOver(stored []string) func(string) string {
-	identity := func(s string) string { return s }
-	all := make(map[string]struct{}, len(stored))
-	for _, s := range stored {
-		all[s] = struct{}{}
-	}
-	decoded := make(map[string]struct{}, len(stored))
-	for _, s := range stored {
-		d := userName(s)
-		// The decoded spelling is a DIFFERENT entry's stored name, so the row
-		// would print under a label that means another table.
-		if _, isOthers := all[d]; isOthers && d != s {
-			return identity
-		}
-		// Two stored names decoding alike would lose a row outright. Measured over
-		// 2730 valid proto names (~3.7M pairs) this arm never fires -- but the
-		// reason is the arm ABOVE, not userName's round-trip guard: 52 of those
-		// pairs collapse if the ambiguity check is removed. The round-trip guard
-		// only covers the case where BOTH names decode. Kept because "unreachable
-		// because of a check three lines up" is the non-local reasoning this file
-		// keeps getting wrong.
-		if _, dup := decoded[d]; dup {
-			return identity
-		}
-		decoded[d] = struct{}{}
-	}
-	return userName
+// `verbatim` carries names the output prints UNCHANGED -- synthetic record
+// types, which Java stores exactly as the caller passed them. They take part in
+// the decision without being subject to it: a decoded name that equals one of
+// them is the same one-label-two-things hazard as any other collision.
+func safeDecoderOver(decoded, verbatim []string) func(string) string {
+	return recordlayer.SafeDecoderOver(decoded, verbatim)
 }
 
 // storedKeysOf collects a map's keys, for feeding safeDecoderOver.

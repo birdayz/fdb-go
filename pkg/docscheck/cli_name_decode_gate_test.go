@@ -122,16 +122,17 @@ func TestNameLineClassification(t *testing.T) {
 	t.Parallel()
 
 	leaks := map[string]string{
-		"one-line function body": `func typeName(rt *recordlayer.RecordType) string { return rt.Name }`,
-		"struct field render":    `	rt = rec.RecordType.Name`,
-		"plain field render":     `	shown := rt.Name`,
-		"method render":          `	names[i] = idx.RootExpression.FieldNames()[0]`,
-		"metadata name render":   `	out.name = tbl.MetadataName()`,
-		"marker in a string":     `	return fmt.Sprintf("%s // storage-compare", rt.Name)`,
-		"past-tense prose":       `	shown := rt.Name // storage-compared above, so this is fine`,
-		"marker not at line end": `	shown := rt.Name // storage-compare (see above)`,
-		"unspaced marker":        `	shown := rt.Name //storage-compare`,
-		"block-comment marker":   `	shown := rt.Name /* storage-compare */`,
+		"one-line function body":   `func typeName(rt *recordlayer.RecordType) string { return rt.Name }`,
+		"struct field render":      `	rt = rec.RecordType.Name`,
+		"plain field render":       `	shown := rt.Name`,
+		"method render":            `	names[i] = idx.RootExpression.FieldNames()[0]`,
+		"metadata name render":     `	out.name = tbl.MetadataName()`,
+		"marker in a string":       `	return fmt.Sprintf("%s // storage-compare", rt.Name)`,
+		"past-tense prose":         `	shown := rt.Name // storage-compared above, so this is fine`,
+		"marker not at line end":   `	shown := rt.Name // storage-compare (see above)`,
+		"unspaced marker":          `	shown := rt.Name //storage-compare`,
+		"block-comment marker":     `	shown := rt.Name /* storage-compare */`,
+		"allowlist token in prose": `	fmt.Fprintln(out, rt.Name) // resolved via md.GetRecordType( earlier`,
 	}
 	for name, line := range leaks {
 		if !nameLineIsLeak(line) {
@@ -156,6 +157,7 @@ func TestNameLineClassification(t *testing.T) {
 		"collected for later decoding":  `		names[i] = rt.Name`,
 		"schema template namespace":     `	return fmt.Errorf("%s", tpl.MetadataName())`,
 		"a comment line":                `	// rt.Name is the escaped storage name`,
+		"prose naming a lookup":         `	fmt.Fprintln(out, userNameFor(md, rt.Name)) // md.GetRecordType( earlier`,
 	}
 	// Guard: an exemption fixture that carries no tracked spelling is exempt for
 	// the WRONG reason, so assert each one would be a leak with its token removed.
@@ -169,6 +171,8 @@ func TestNameLineClassification(t *testing.T) {
 		"lookup for index types":        "md.RecordTypesForIndex(idx)",
 		"EqualFold stored-name arm":     "strings.EqualFold(",
 		"schema template namespace":     "tpl",
+		"collected for later decoding":  "names[i] = ",
+		"prose naming a lookup":         "userNameFor(md, ",
 	}
 	for name, token := range tokens {
 		bare := strings.Replace(exempt[name], token, "", 1)
@@ -263,8 +267,17 @@ func nameLineIsLeak(line string) bool {
 	if strings.HasSuffix(trimmed, "// storage-compare") {
 		return false
 	}
+	// Allowlist tokens count only in the CODE, never in a trailing comment.
+	// Unanchored, `fmt.Fprintln(out, rt.Name) // resolved via md.GetRecordType(
+	// earlier` exempts a genuine render by mentioning a lookup in prose -- the
+	// same laundering the storage-compare marker was anchored to stop, one check
+	// lower down.
+	code := trimmed
+	if i := strings.Index(code, "//"); i >= 0 {
+		code = code[:i]
+	}
 	for _, a := range allowed {
-		if strings.Contains(line, a) {
+		if strings.Contains(code, a) {
 			return false
 		}
 	}
