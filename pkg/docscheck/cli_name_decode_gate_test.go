@@ -336,9 +336,12 @@ func nameLineIsLeak(line, masked string) bool {
 	return true
 }
 
-// maskLiterals blanks every COMMENT, STRING and CHAR token in src, preserving
-// byte offsets and newlines so the result can be split into lines that line up
-// with the original.
+// maskLiterals blanks every COMMENT, STRING and CHAR token in src -- and the
+// inter-token whitespace after each, up to the next real token, since spans run
+// to that offset. Measured excess is 100% whitespace (a CRLF's \r, the next
+// line's indent), so it removes nothing a token search wants; byte offsets and
+// newlines are preserved either way, so the result splits into lines that line
+// up with the original.
 //
 // It takes WHOLE SOURCE, not a line, and that is load-bearing. Go is not
 // line-oriented: a raw string opened on one line makes the next line's backtick
@@ -466,10 +469,14 @@ func TestMaskingCarriesLexicalStateAcrossLines(t *testing.T) {
 			"  masked %q\nlexing it alone makes the closing backtick an opener, which "+
 			"blanks the helper call that exempts it", raw[closing], masked[closing])
 	}
-	// And the same line lexed ALONE is misread — the reason file-level matters.
+	// And the same line lexed ALONE is misread — which is WHY the walk masks
+	// whole files. Asserted, not logged: a t.Log here would let the file-level
+	// requirement quietly stop being load-bearing.
 	if !nameLineIsLeak(raw[closing], maskedLine(raw[closing])) {
-		t.Log("note: the single-line mask now agrees; if that becomes permanent the " +
-			"file-level requirement may be re-examined, but do not assume it")
+		t.Errorf("the single-line mask now AGREES with the file-level one for %q.\n"+
+			"That is not automatically fine: this fixture exists to show they differ, "+
+			"so re-derive whether whole-file masking is still required before relaxing "+
+			"it — do not just delete this check.", raw[closing])
 	}
 }
 
@@ -515,5 +522,39 @@ func TestMultilineBlockCommentIsFullyMasked(t *testing.T) {
 	if !nameLineIsLeak(raw[closing], masked[closing]) {
 		t.Errorf("a genuine rt.Name render was exempted by a token in comment prose:\n"+
 			"  raw    %q\n  masked %q", raw[closing], masked[closing])
+	}
+}
+
+// MASKING PRESERVES LENGTH AND NEWLINE COUNT, which is what lets masked lines
+// be paired with raw ones by index.
+//
+// nameLineIsLeak takes the two separately and cannot check they belong
+// together; the walk asserts the line COUNT but a within-line shift would slip
+// past it. Pinned here at the source: byte length and every newline offset.
+func TestMaskingPreservesOffsets(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"plain":            "package p\nvar x = 1 // c\n",
+		"multiline raw":    "package p\nvar b = `a\nb` + c\n",
+		"multiline block":  "package p\nvar d = 1 /* a\nb */ + e\n",
+		"CRLF":             "package p\r\nvar x = 1 // c\r\n",
+		"no trailing NL":   "package p\nvar x = 1 // c",
+		"unterminated str": "package p\nvar s = \"open\n",
+	} {
+		got := maskLiterals(src)
+		if len(got) != len(src) {
+			t.Errorf("%s: length changed %d -> %d; masked lines would no longer align "+
+				"with raw ones by index", name, len(src), len(got))
+			continue
+		}
+		for i := range src {
+			if (src[i] == '\n') != (got[i] == '\n') {
+				t.Errorf("%s: newline at offset %d was %q, became %q — line numbering "+
+					"shifts and every classification lands on the wrong line",
+					name, i, src[i], got[i])
+				break
+			}
+		}
 	}
 }
