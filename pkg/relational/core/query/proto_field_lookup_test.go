@@ -113,6 +113,38 @@ func TestProtoFieldLookupTriesCaseAndEscapingTogether(t *testing.T) {
 			why: "a dotted name whose escaped form is absent must still miss — the " +
 				"escape is a translation, not a wildcard",
 		},
+		{
+			name:    "the escaping is NON-INJECTIVE and encoding the query name is unsound",
+			storage: []string{"___1__2foo"},
+			lookup:  "___1.FOO",
+			want:    "",
+			why: "`___1__2foo` decodes to the SQL name `_$.foo`, so `___1.FOO` does NOT " +
+				"name it. An implementation that ESCAPES the query name gets " +
+				"`___1__2FOO` and EqualFolds this field — accepting a column the " +
+				"identifier never named, which the unnest path would then explode as an " +
+				"untyped fallback rather than reject. Comparing DECODED storage names " +
+				"has no such collision, and this arm is why the direction is not a " +
+				"stylistic choice",
+		},
+		{
+			name:    "an EXACT decoded match wins over a folded sibling",
+			storage: []string{"a__2b", "A__2B"},
+			lookup:  "A.B",
+			want:    "A__2B",
+			why: "`A__2B` decodes to `A.B` exactly while `a__2b` only folds to it. " +
+				"Strict-then-relaxed, the same order Scope.ResolveColumn uses: an exact " +
+				"answer is never made ambiguous by the existence of a case variant",
+		},
+		{
+			name:    "two fields folding to one spelling, with no exact match, are declined",
+			storage: []string{"a__2b", "A__2b"},
+			lookup:  "A.B",
+			want:    "",
+			why: "neither decodes to `A.B` exactly and both fold to it, so the SQL name " +
+				"is genuinely ambiguous. Returning the first is the worst available " +
+				"answer — a silent bind to whichever the descriptor happens to list " +
+				"first, which is not a property of the query",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

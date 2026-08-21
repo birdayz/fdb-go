@@ -11,7 +11,7 @@ package query
 //	site                 sqldriver corpus                 translator corpus
 //	recursiveRemap       retired/no traffic               retired/no traffic
 //	existsSortSplit      AGREED 44, everything else 0     5 calls, FIXTURE traffic only
-//	derivedUnnestSource  bare 13, everything else 0       4 calls, FIXTURE traffic only
+//	derivedUnnestSource  carried 15, everything else 0    5 calls, FIXTURE traffic only
 //
 // The right-hand column's last two entries are THIS FILE. Stating them as "the
 // site is reached" would be circular — the pins below are what reaches it — so

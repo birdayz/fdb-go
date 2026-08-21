@@ -1854,23 +1854,39 @@ func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflec
 	// ToProtoBufCompliantName errors on a name that cannot be represented at
 	// all; that is a miss here, not a failure, because the caller's question is
 	// only whether this descriptor has the field.
-	// BOTH ATTEMPTS ARE REPEATED ON THE ESCAPED NAME, exact then fold, because
-	// escaping and case are INDEPENDENT axes and this function promises both.
-	// A hand-written lowercase proto exposing `a__0b` as SQL `a__b` is the
-	// shape that needs the pair: an unquoted reference arrives folded `A__B`,
-	// escapes to `A__0B`, and only the fold finds `a__0b`. An exact-only
-	// escaped attempt reports a valid array field as an undefined column.
-	if escaped, err := protoname.ToProtoBufCompliantName(name); err == nil && escaped != name {
-		if fd := fs.ByName(protoreflect.Name(escaped)); fd != nil {
-			return fd
+	// DECODE THE STORAGE NAMES, DO NOT ENCODE THE QUERY NAME. Escaping and case
+	// are INDEPENDENT axes and this function promises both, so a hand-written
+	// lowercase proto exposing `a__0b` as SQL `a__b` needs the pair: an
+	// unquoted reference arrives folded `A__B` and only a fold finds it.
+	//
+	// The obvious way to get that — escape the query name and fold-compare the
+	// result against storage — is UNSOUND, because the escaping is documented
+	// non-injective. A storage field `___1__2foo` decodes to the SQL name
+	// `_$.foo`, while a quoted `t."___1.FOO"` encodes to `___1__2FOO`, which
+	// EqualFolds it. That accepts a field the identifier does not name, and the
+	// unnest path treats the semantic miss as an untyped fallback rather than
+	// an undefined column — so it would explode an unrelated field.
+	//
+	// Comparing DECODED names has no such collision: ToUserIdentifier is the
+	// mapping every consumer already uses to answer "what is this column
+	// called". A name whose decode is ambiguous under folding is DECLINED
+	// rather than resolved to the first hit — two fields answering to one SQL
+	// spelling is exactly when guessing is worst.
+	var folded protoreflect.FieldDescriptor
+	for i := 0; i < fs.Len(); i++ {
+		f := fs.Get(i)
+		decoded := protoname.ToUserIdentifier(string(f.Name()))
+		if decoded == name {
+			return f
 		}
-		for i := 0; i < fs.Len(); i++ {
-			if f := fs.Get(i); strings.EqualFold(string(f.Name()), escaped) {
-				return f
+		if strings.EqualFold(decoded, name) {
+			if folded != nil {
+				return nil // ambiguous under folding; decline rather than guess
 			}
+			folded = f
 		}
 	}
-	return nil
+	return folded
 }
 
 // arrayFieldFromDescriptor classifies a lateral unnest's array field by
