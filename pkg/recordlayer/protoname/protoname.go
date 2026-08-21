@@ -1,5 +1,6 @@
 // Package protoname is the protobuf identifier escaping shared by every
-// descriptor emitter in the tree.
+// descriptor emitter in the tree, and the DISPLAY policy that decides when an
+// escaped name may safely be shown as the SQL identifier it came from.
 //
 // It is a LEAF package on purpose. The escaping is needed by the DDL-time
 // emitter (pkg/relational/core/metadata), by pkg/recordlayer itself, and by
@@ -164,7 +165,12 @@ func SafeDecoderOver(decoded, verbatim []string) func(string) string {
 	for _, s := range verbatim {
 		printed[s] = struct{}{}
 	}
-	seen := make(map[string]struct{}, len(decoded))
+	// Keyed by the DECODED name, valued by the STORED one it came from: a repeat
+	// of the same name is not a collision, and a set cannot tell the two apart.
+	// Probed -- SafeDecoderOver([]{"MY__1TABLE","MY__1TABLE"}, nil) used to return
+	// the stored spelling while the single-element call decoded, so any caller
+	// passing overlapping lists silently lost decoding for the whole output.
+	seen := make(map[string]string, len(decoded))
 	for _, s := range decoded {
 		d := DecodeOnceIfReversible(s)
 		// The decoded spelling is some OTHER printed name, so the row would carry
@@ -176,10 +182,10 @@ func SafeDecoderOver(decoded, verbatim []string) func(string) string {
 		// fire over the valid-proto-name space — but the reason is the arm above,
 		// not DecodeOnceIfReversible's round trip, which only covers the case
 		// where both names decode. Checked rather than argued.
-		if _, dup := seen[d]; dup {
+		if from, dup := seen[d]; dup && from != s {
 			return identity
 		}
-		seen[d] = struct{}{}
+		seen[d] = s
 	}
 	return DecodeOnceIfReversible
 }

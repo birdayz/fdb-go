@@ -158,6 +158,7 @@ func TestNameLineClassification(t *testing.T) {
 		"schema template namespace":     `	return fmt.Errorf("%s", tpl.MetadataName())`,
 		"a comment line":                `	// rt.Name is the escaped storage name`,
 		"prose naming a lookup":         `	fmt.Fprintln(out, userNameFor(md, rt.Name)) // md.GetRecordType( earlier`,
+		"URL in a string literal":       `	fmt.Fprintf(out, "https://%s", userNameFor(md, rt.Name))`,
 	}
 	// Guard: an exemption fixture that carries no tracked spelling is exempt for
 	// the WRONG reason, so assert each one would be a leak with its token removed.
@@ -173,6 +174,7 @@ func TestNameLineClassification(t *testing.T) {
 		"schema template namespace":     "tpl",
 		"collected for later decoding":  "names[i] = ",
 		"prose naming a lookup":         "userNameFor(md, ",
+		"URL in a string literal":       "userNameFor(md, ",
 	}
 	for name, token := range tokens {
 		bare := strings.Replace(exempt[name], token, "", 1)
@@ -272,9 +274,28 @@ func nameLineIsLeak(line string) bool {
 	// earlier` exempts a genuine render by mentioning a lookup in prose -- the
 	// same laundering the storage-compare marker was anchored to stop, one check
 	// lower down.
+	// Find the real comment token: the first `//` OUTSIDE a string literal.
+	// Taking the first raw `//` truncates a line like
+	// `fmt.Fprintf(out, "https://%s", userNameFor(md, rt.Name))` inside the
+	// literal, dropping the allowlist token while the spelling check still sees
+	// rt.Name -- the gate would then reject correct code and fail the build.
 	code := trimmed
-	if i := strings.Index(code, "//"); i >= 0 {
-		code = code[:i]
+	var inQuote rune
+	for i := 0; i < len(code); i++ {
+		c := rune(code[i])
+		switch {
+		case inQuote != 0:
+			if c == '\\' && inQuote == '"' {
+				i++ // skip the escaped char
+			} else if c == inQuote {
+				inQuote = 0
+			}
+		case c == '"' || c == '`' || c == '\'':
+			inQuote = c
+		case c == '/' && i+1 < len(code) && code[i+1] == '/':
+			code = code[:i]
+			i = len(code) // done
+		}
 	}
 	for _, a := range allowed {
 		if strings.Contains(code, a) {

@@ -213,3 +213,40 @@ func TestEscapeIsNotABijection(t *testing.T) {
 		}
 	}
 }
+
+// A REPEATED NAME IS NOT A COLLISION.
+//
+// SafeDecoderOver's collision check keys on the DECODED name. Keyed as a set it
+// cannot tell "two stored names decode alike" from "one stored name listed
+// twice", so any caller passing overlapping lists silently lost decoding for
+// the whole output — measured: the two-element call returned the stored
+// spelling while the one-element call decoded.
+//
+// That mattered concretely: cmd/frl's status renderer feeds PerType's keys and
+// MissingTypes, and ExtraTypes is a SUBSET of PerType's keys, so re-adding it
+// would have forced stored names for every status carrying an orphan type.
+func TestSafeDecoderOverToleratesRepeats(t *testing.T) {
+	t.Parallel()
+
+	const stored, decoded = "MY__1TABLE", "MY$TABLE"
+	if ToUserIdentifier(stored) != decoded {
+		t.Fatalf("fixture is vacuous: %q decodes to %q", stored, ToUserIdentifier(stored))
+	}
+
+	once := SafeDecoderOver([]string{stored}, nil)(stored)
+	twice := SafeDecoderOver([]string{stored, stored}, nil)(stored)
+	if once != decoded {
+		t.Fatalf("single-element call did not decode: got %q", once)
+	}
+	if twice != once {
+		t.Errorf("listing the same name twice suppressed decoding (%q vs %q) — a "+
+			"repeat is not a collision, and a caller passing overlapping lists "+
+			"would silently lose decoding for its whole output", twice, once)
+	}
+
+	// And a genuine collision still suppresses.
+	const other = "MY__01TABLE" // decodes to MY__1TABLE, the other stored name
+	if got := SafeDecoderOver([]string{stored, other}, nil)(other); got != other {
+		t.Errorf("a real collision must fall back to stored names, got %q", got)
+	}
+}

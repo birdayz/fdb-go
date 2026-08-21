@@ -455,10 +455,14 @@ func renderStatsStatus(
 	// prints: the per-type keys AND the missing/extra lists. Deciding per-list
 	// lets a colliding pair straddle two of them, so each is individually correct
 	// and the output still shows one name for two tables. See safeDecoderOver.
-	// ExtraTypes is a SUBSET of PerType's keys, so adding it to the union is
-	// dead weight -- dropping it leaves every test green. SyntheticTypes is not:
-	// it is printed VERBATIM alongside these, so a decoded name equalling one of
-	// them is a real collision, which is why it goes in as `verbatim`.
+	// ExtraTypes is a SUBSET of PerType's keys, so feeding it would add only
+	// duplicates. That is now genuinely harmless -- SafeDecoderOver keys `seen`
+	// by the decoded name and VALUES it by the stored one, so a repeat of the
+	// same name is not a collision. It was not always: with a set, re-adding
+	// ExtraTypes forced stored names for every status carrying an orphan type.
+	// SyntheticTypes is different again: it is printed VERBATIM alongside these,
+	// so a decoded name equalling one of them is a real collision, which is why
+	// it goes in as `verbatim` rather than being left out.
 	decode := safeDecoderOver(
 		append(storedKeysOf(st.Stats.PerType), st.MissingTypes...), st.SyntheticTypes)
 	if len(st.AmbiguousTypes) > 0 {
@@ -751,15 +755,10 @@ func foundTriState(st embedded.StatisticsStatus) *bool {
 // json`'s record_type is documented as feeding --type, and because a listing an
 // operator copies from is not read-only in any useful sense.
 func userName(storage string) string {
-	user := recordlayer.ToUserIdentifier(storage)
-	if user == storage {
-		return storage
-	}
-	back, err := recordlayer.ToProtoBufCompliantName(user)
-	if err != nil || back != storage {
-		return storage
-	}
-	return user
+	// Delegated, not copied. A byte-identical second implementation is a second
+	// chance to diverge, and one output already mixes both paths -- `decode`
+	// from the shared helper, userNames/userNameFor from here.
+	return recordlayer.DecodeOnceIfReversible(storage)
 }
 
 // userNames is userName over a slice, re-sorted BY THE DECODED NAME.
@@ -773,8 +772,10 @@ func userName(storage string) string {
 // DECODING GOES THROUGH THESE HELPERS AND NOWHERE ELSE, which is the point:
 // a list of call SITES has been wrong three times here -- written as FOUR,
 // repaired to THREE by subtracting rather than re-sweeping, and still missing
-// the sql.go sites and meta_diff's sortSection. A set of functions is closed
-// and the compiler keeps it honest; a set of call sites is open and rots.
+// the sql.go sites and meta_diff's sortSection. A set of functions is
+// small enough to read; a set of call sites is open and rots. It is NOT closed
+// by the compiler: the policy is exported from recordlayer, so a new caller can
+// reach past these -- which is what the docscheck gate is for.
 //
 //	userName          one name, round-trip guarded, no declared-set context
 //	userNames         a slice, decoded then RE-SORTED in the printed namespace
