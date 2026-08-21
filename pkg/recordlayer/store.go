@@ -1378,11 +1378,24 @@ func (store *FDBRecordStore) ScanRecordsByType(recordTypeName string, continuati
 		)
 	}
 	// Slow path: full scan + filter (no RecordTypeKey prefix).
+	//
+	// Filter on the RESOLVED name, never on the caller's string. GetRecordType
+	// accepts a SQL identifier and maps it through the protobuf escaping, so
+	// `MY$TABLE` and `MY__1TABLE` both reach here for one type -- but only the
+	// stored spelling is what FDBStoredRecord.RecordType.Name holds. Comparing
+	// the caller's string made the fast path answer and the slow path return
+	// zero rows and a nil error, which is indistinguishable from "this type has
+	// no records". An unresolvable name keeps matching nothing, which is what
+	// the caller-string fallback preserves.
+	wantName := recordTypeName
+	if recordType != nil {
+		wantName = recordType.Name
+	}
 	inner := store.ScanRecords(continuation, scanProperties)
 	return &filterCursor[*FDBStoredRecord[proto.Message]]{
 		inner: inner,
 		predicate: func(rec *FDBStoredRecord[proto.Message]) bool {
-			return rec.RecordType.Name == recordTypeName
+			return rec.RecordType.Name == wantName
 		},
 	}
 }

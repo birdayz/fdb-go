@@ -325,6 +325,7 @@ go_test(
         "runner_tags_fdb_test.go",
         "runner_test.go",
         "save_error_test.go",
+        "scan_by_type_user_identifier_test.go",
         "scan_limit_test.go",
         "scan_limiter_anchor_test.go",
         "scan_properties_test.go",
