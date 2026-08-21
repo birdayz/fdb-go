@@ -141,6 +141,21 @@ func TestQualifierStrippedLabel(t *testing.T) {
 				"which is `_current` by the time labels are derived",
 		},
 		{
+			// The SAME LIMIT reached by an explicit projection rather than by
+			// a collision, and the reason the two collision rows above cannot
+			// both be right from a flat string.
+			name:  "LIMIT: selecting the dotted column whose tail is its sibling",
+			flat:  "X.TOTAL",
+			descs: []protoreflect.MessageDescriptor{xprobe},
+			want:  "TOTAL",
+			why: "`SELECT \"X.TOTAL\" FROM X_PROBE` should label `X.TOTAL` — Java does, and " +
+				"so does star expansion. It renders IDENTICALLY to the correlated read two " +
+				"rows up, which should label `TOTAL`, so no rule over the flat name can " +
+				"give both the right answer. NOT a regression against this branch's base, " +
+				"where the unconditional split also said `TOTAL`; it is the interim's " +
+				"declared cost, and the structured-provenance RFC removes this row",
+		},
+		{
 			// A DECLARED LIMIT. Nested members are not top-level fields.
 			name:  "LIMIT: nested field declared with a dot is invisible",
 			flat:  "s.k",

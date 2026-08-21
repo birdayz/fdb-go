@@ -4602,12 +4602,15 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// reported `a.b`, so one path was wrong beside a sibling
 					// that was right.
 					//
-					// The REFERENCE'S OWN ALIAS settles which dot is the
-					// qualifier — a qualifier is a source alias, and the
-					// reference knows which source it reads, so nothing has to
-					// guess from the rendering. See qualifierStrippedLabel for
-					// the shapes it does not cover and the two wrong answers
-					// that preceded it.
+					// WHICH DOT IS THE QUALIFIER is answered by the SCHEMA, on
+					// TWO facts: the whole name stands only when it is a
+					// declared column AND the split's column half is not.
+					// The reference's own ALIAS would settle it outright and
+					// does not reach this boundary — every root correlation is
+					// re-anchored to `_current` by the time labels are derived,
+					// which was measured, not assumed. qualifierStrippedLabel
+					// carries that measurement, the shapes two schema facts
+					// still get wrong, and the answers that preceded them.
 					cd.Label = qualifierStrippedLabel(outputNames[i], descs)
 				}
 			} else if !aliasMinted {
@@ -4970,10 +4973,10 @@ func deriveProjectionColumnDef(
 			// user sees it: `SELECT "KeepCase"` reports KeepCase, as Java does,
 			// where a fold here reported KEEPCASE.
 			//
-			// WHICH DOT IS THE QUALIFIER comes from the reference's own source
-			// alias, not from the rendering — see qualifierStrippedLabel, which
-			// carries the shapes it does not cover and the two wrong answers
-			// that preceded it.
+			// WHICH DOT IS THE QUALIFIER is answered by the SCHEMA, on two
+			// facts — see qualifierStrippedLabel, which also carries why the
+			// reference's own alias, the answer that would settle it outright,
+			// does not reach this boundary.
 			displayLabel = qualifierStrippedLabel(name, descs)
 		}
 	} else if aliasMinted {

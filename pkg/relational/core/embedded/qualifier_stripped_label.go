@@ -38,15 +38,25 @@ import (
 //
 //   - BOTH facts true at once. A schema with a column `"a.b"` AND some in-scope
 //     table with a column `b` makes (b) false, and `SELECT "a.b" FROM dott, other`
-//     labels the column `b` again. This is the residual of the collision above,
-//     narrowed but not gone, and it is pinned as a test rather than left as a
-//     sentence.
+//     labels the column `b` again. Sharper still within ONE table: `x_probe(id,
+//     TOTAL, "X.TOTAL")` renders `SELECT "X.TOTAL" FROM x_probe` and the
+//     correlated `SELECT x.total FROM x_probe x` IDENTICALLY, and they want
+//     DIFFERENT labels — so no rule over the flat name can serve both. This is
+//     the residual of the collision above, narrowed but not gone, and both
+//     spellings are arms rather than sentences. Neither is a regression against
+//     this branch's base, where the unconditional split gave the same answers;
+//     they are the interim's declared cost.
 //   - NESTED fields. `d.Fields()` is top-level only and a struct's members are
 //     not among them, so a nested field declared `"s.k"` is invisible to (a)
 //     and its label still splits to `k`.
 //   - Anything the descriptors in scope do not describe: a derived table's or
 //     CTE's output column is not declared by any of them, so a derived column
 //     that happens to carry a dot splits.
+//
+// RFC-238 IS THE FIX AND THIS IS THE INTERIM. The qualifier is carried as a
+// RENDERED STRING and re-parsed here; the RFC carries it as structure instead,
+// renders once at the executor's row map, and its acceptance criteria delete
+// this function's limits rather than re-document them.
 //
 // THE RIGHT ANSWER IS THE REFERENCE'S OWN ALIAS, and it is not available here.
 // A qualifier is a source alias, so a reference that knew which source it read

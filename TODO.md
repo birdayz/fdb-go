@@ -19862,11 +19862,12 @@ parse boundary, the same line is RE-normalization. That is why removing it
 reddens `TestLegColumns_NestedNoSpuriousKeys` (whose `order_id` is the
 normalization job) while keeping it breaks the RFC-237 invariant.
 
-**Collapse the two producers instead:** `legColumns`' join arm defers to
-`logicalLegFields`, and the descriptor-name decision moves to that one
-boundary. Two producers of one datum key drift again whichever spelling wins.
-Needs the query-engine gate and a sweep of every consumer that compares a leg
-key case-sensitively.
+**Collapse the two producers instead**, and that is only one end of it: the
+qualifier is carried as a RENDERED STRING and re-parsed downstream, which is the
+mechanism behind this divergence, the `a.b` label, `colref.go`'s two KNOWN
+LIMITs and the deleted `seedResolvesThroughJoin` alike. RFC-238 carries the
+design, the four-step order and the acceptance criteria that make the collapse
+checkable; this entry is one of its symptoms and closes when it lands.
 
 `TestLegColumns_NamingConsistentWithAnchoredRecord` also reddens on any change
 here and is NOT evidence: it builds its expectation with `strings.ToUpper(c.Name)`
