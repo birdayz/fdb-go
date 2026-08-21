@@ -167,11 +167,11 @@ func chaosOpContext() (context.Context, context.CancelFunc) {
 // calling db.Run against a cancelled context in a hot error loop, then failed
 // final validation.
 //
-// The grace is FIXED, not scaled, because what it covers does not grow with
-// Duration: store setup and drain. It does NOT cover the post-run verification
-// passes -- those build their own chaosRunContext(0) -- which is where the
-// unscaled exposure actually sits, since a verification scan reads a record set
-// whose size DOES grow with Duration.
+// The grace is FIXED, not scaled, and it does cover the post-run verification:
+// validateSnapshot runs on THIS context, and only the inner scans build their
+// own chaosRunContext(0). Nothing it covers grows with Duration -- setup and
+// drain do not, and the verified record set is bounded by cfg.MaxPKs (default
+// 50), not by how long the workload ran.
 func chaosRunContext(workload time.Duration) (context.Context, context.CancelFunc) {
 	const grace = 2 * time.Minute
 	if workload < 0 {
