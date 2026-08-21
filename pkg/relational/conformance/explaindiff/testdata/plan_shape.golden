@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2617 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
+# files=359 queries=2618 dml=157 non_query=104 plan_errors=271 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14405,6 +14405,15 @@ shape: RecordQueryRecursiveDfsJoinPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryTempTableScanPlan
+=== quoted_identifier_labels.yaml#26
+sql:   WITH RECURSIVE d AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+plan:  RecursiveDfsJoin(PREORDER, PredicatesFilter(Scan(Q1), [1 preds]), Project([(_current.id#0 + 1)], PredicatesFilter(TempTableScan(DforScan), [1 preds])))
+shape: RecordQueryRecursiveDfsJoinPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan

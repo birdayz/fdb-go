@@ -10230,21 +10230,31 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// it, mutation-verified — restoring the fold reddens that arm and leaves
 	// the alias arms green.
 	//
-	// AN EARLIER VERSION OF THIS COMMENT CITED A DIFFERENT REASON AND IT WAS
-	// FABRICATED: that the projection-less fallback below assigns
-	// `seedOut[i] = f.Name` unfolded, so the two branches spelled one column
-	// two ways. They do not — that `f.Name` comes from derivedOutputColumns and
-	// is ALREADY canonical, so the fallback AGREES with this store rather than
-	// contradicting it. Measured: folding it moves zero lines of a 17,789-line
-	// plan dump while the branch itself fires.
+	// THREE CLAIMS ABOUT THE FALLBACK BELOW HAVE BEEN WRONG HERE, all of them
+	// assertions about what code can REACH, none of them executed before being
+	// written. Recorded together because the pattern is the lesson:
 	//
-	// The first retraction then over-corrected, and that correction is the
-	// subtler fact worth keeping: the fallback is NOT dead code. The override
-	// below requires the alias list to MATCH IN LENGTH, not merely to exist,
-	// and ValidateCTEAliasArities is gated `&& !c.Recursive` — so a recursive
-	// CTE whose alias arity does not match reaches the fallback with the
-	// override silent. "The store is dead" was as unmeasured as the tell it
-	// replaced.
+	//  1. "Its `seedOut[i] = f.Name` disagrees with this store, so the two
+	//     spell one column two ways." No: that `f.Name` comes from
+	//     derivedOutputColumns and is already canonical, so it AGREES. Folding
+	//     it moves zero lines of a 17,789-line plan dump while the branch fires.
+	//  2. "So the store is dead." No.
+	//  3. "So it is live via an arity mismatch, since ValidateCTEAliasArities
+	//     is gated `&& !c.Recursive`." Also no — that validator is one of FIVE
+	//     arity checks, and the three in the semantic layer (plan_visitor.go,
+	//     logical_predicate.go) do not exempt recursive CTEs. A mismatched
+	//     alias list is rejected 42F10 long before it arrives here.
+	//
+	// WHAT IS PROVABLE, by deletion rather than by reading: the fallback block
+	// is live and load-bearing through the LENGTH of `seedSrc`, not the value
+	// of `seedOut`. Remove it and a matched-arity join seed fails exactly as an
+	// alias-free one used to — `recursive CTE seed width N disagrees with 0
+	// output columns`.
+	//
+	// `seedOut`'s own value reaches the temp-table key only through the
+	// NO-ALIAS path, since an alias list of matching length overrides it below.
+	// The alias-free arm in quoted_identifier_labels.yaml drives that, and it
+	// reddens under the fold while the alias arms stay green.
 	seedSrc := extractOuterProjectionColumns(seedBranches[0])
 	seedOut := make([]string, len(seedSrc))
 	copy(seedOut, extractOutputProjectionNames(seedBranches[0]))
@@ -10258,7 +10268,21 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// schema from the operator's output — table columns for a scan
 	// (derivedOutputColumns) — so the alias list applies and the seed normalizes
 	// onto it.
-	if len(seedSrc) == 0 && len(c.ColumnAliases) > 0 {
+	//
+	// AND IT IS NOT GATED ON AN ALIAS LIST, which it used to be
+	// (`&& len(c.ColumnAliases) > 0`). That gate made a projection-less seed
+	// with NO alias list — plain standard SQL — fail outright:
+	//
+	//	WITH RECURSIVE d AS (SELECT * FROM t1 …)
+	//	  -> 0AF00: recursive CTE seed width 2 disagrees with 0 output columns
+	//
+	// while the same query with an alias list, or with the star written out,
+	// planned fine. The alias list was never what made the derivation correct;
+	// it was just what the gate happened to require. Without the gate the
+	// alias-free form produces the byte-identical plan to its alias-list twin.
+	// Found by a probe run to disprove a claim in the comment above, which is
+	// the second reason that comment is worth reading.
+	if len(seedSrc) == 0 {
 		if fields := t.derivedOutputColumns(seedBranches[0]); len(fields) > 0 {
 			seedSrc = make([]string, len(fields))
 			seedOut = make([]string, len(fields))

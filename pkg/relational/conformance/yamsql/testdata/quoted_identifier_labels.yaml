@@ -273,3 +273,18 @@ tests:
       - [1]
       - [2]
       - [3]
+  # A PROJECTION-LESS SEED WITH NO ALIAS LIST — plain standard SQL, and it
+  # failed outright with `recursive CTE seed width N disagrees with 0 output
+  # columns`. The seed-schema derivation that handles `SELECT *` was gated on an
+  # alias list being present, so the star form worked with `d(a, b)` and with
+  # the columns written out, and only this shape fell through to nothing.
+  #
+  # Found by a probe run to DISPROVE a comment's claim about which branch was
+  # reachable — the claim was wrong and so was the gate beside it.
+  - query: WITH RECURSIVE d AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+      - [3]

@@ -15978,9 +15978,15 @@ None is speculative: each was re-verified against the tree before booking.
     `logical_predicate.go:10329` (inner- vs outer-scoping of a projection field),
     `cascades_generator.go:6376` (a projected column's qualifier matched against
     the scan's name/alias), and `:4476` (the display label, guarded by the
-    PARENTHESIS HEURISTIC at `colref.go:41-47` — `isPlainQualifiedColumnReference`
-    rejects on `()` because "parentheses identify the rendered aggregate/function
-    label at issue", which is a heuristic over a rendering, not a parse).
+    PARENTHESIS HEURISTIC — at the time of writing `colref.go:41-47`,
+    `isPlainQualifiedColumnReference`, which rejects on `()` because
+    "parentheses identify the rendered aggregate/function label at issue", a
+    heuristic over a rendering rather than a parse. STALE AS WRITTEN: that
+    function no longer exists. RFC-237 moved the parenthesis awareness INTO
+    `parseColRef` itself, which now matches paren pairs and splits at the last
+    depth-0 dot — so the concern is unchanged (it is still a heuristic over a
+    flat rendering, with two stated limits pinned in `colref_split_test.go`) but
+    the named site is gone.
   - `cascades_translator.go:5016` `splitQualifier` — the EXISTS fold's LAST-dot
     split. Its own doc concedes the deeper case: `A.B.C` is treated as qualifier
     `A.B`, column `C`.
@@ -16057,7 +16063,9 @@ None is speculative: each was re-verified against the tree before booking.
   - the display-label PARENTHESIS HEURISTIC (`isPlainQualifiedColumnReference`,
     `colref.go`) reads 0 over 750 SQL-corpus calls. It FIRES here, on the
     aggregate label `MAX(E.SALARY)` — without the guard that label's display name
-    is stripped to `SALARY)`.
+    is stripped to `SALARY)`. STALE NAME: the function is gone as of RFC-237,
+    which folded the same protection into `parseColRef`. The `SALARY)` failure
+    it describes is real and is the `AMOUNT)` defect that RFC-237 §10 fixed.
 
     **What the census did NOT do is refute a deletion, and the first writing of
     this bullet claimed it did.** Deleting the guard was already impossible:
