@@ -238,7 +238,7 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 		generated := ast.IsGenerated(f)
 
 		// Line arm: reproduce the RFC's grep exactly, then classify each hit as
-		// generated / comment-only / code so the published 52 stays checkable
+		// generated / comment-only / code so rfcPublishedPopulation stays checkable
 		// AND its decomposition stays honest.
 		commentLine := map[int]bool{}
 		for _, group := range f.Comments {
@@ -383,11 +383,12 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 // reader.
 func TestAccessorArityClassCounts(t *testing.T) {
 	t.Parallel()
-
-	// RFC-232's exact views leave some legitimate single-slot declines and some
-	// arity-tolerant path operations; the `pinned` map below is where those
-	// counts are stated and asserted. Nested-path GROUP BY is shipped, so
-	// blocker/live-defect/uncertain are zero-ratchet classes.
+	// RFC-232's exact views leave a set of legitimate single-slot declines and a
+	// set of arity-tolerant path operations. The counts are deliberately not
+	// written here: `pinned` below asserts them, and RFC-230's header states
+	// them as well, so prose would be a third copy that nothing reconciles.
+	// Nested-path GROUP BY is shipped, so blocker/live-defect/uncertain are
+	// zero-ratchet classes.
 	//
 	// values.DisplayColumnName is one of the arity-tolerant sites, added when
 	// the projection label authority stopped splitting a rendered name at its

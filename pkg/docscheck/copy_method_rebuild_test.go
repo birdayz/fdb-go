@@ -72,7 +72,7 @@ import (
 // So membership is structural. Go's convention for "return a modified copy" is
 // a `With…` prefix, which covers every instance found (WithQuantifiers,
 // WithChildren, WithNewChildren, WithSwappedQuantifiers) plus every one anyone
-// invents later, and the four bare verbs cover the non-`With` idioms.
+// invents later, and the bare verbs cover the non-`With` idioms.
 func isCopyMethodName(name string) bool {
 	switch name {
 	case "Copy", "Clone", "Duplicate", "Rebind":
