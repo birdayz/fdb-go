@@ -156,7 +156,7 @@ func TestHandler_TextExposition(t *testing.T) {
 	// EVERY counter DECLARES ITS ORIGIN, AND EVERY Go-only ONE SAYS SO IN HELP.
 	//
 	// Iterates `counters` itself rather than a hardcoded name list. The previous
-	// version listed five names, so a nineteenth Go-only counter was never
+	// version listed five names, so a further Go-only counter was never
 	// examined -- adding one with no provenance passed, and silently falsified
 	// the split in the table's own doc, which nothing checked in the ADD
 	// direction.

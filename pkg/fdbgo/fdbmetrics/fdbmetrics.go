@@ -47,7 +47,7 @@ func Handler(src MetricsSource) http.Handler {
 // The zero value is deliberately INVALID. A new counterDef that forgets to
 // declare its origin therefore fails the audit in fdbmetrics_test rather than
 // being silently classified -- the previous version of that audit iterated a
-// hardcoded list of five names, so a nineteenth Go-only counter was never
+// hardcoded list of five names, so a further Go-only counter was never
 // examined at all.
 type counterOrigin int
 
@@ -74,10 +74,10 @@ type counterDef struct {
 // coordinator_changes, and grv_in_band_maybe_delivered (basicLoadBalance
 // absorbs that error and counts nothing).
 //
-// The claim was unqualified while four of these already existed. A first attempt
-// to qualify it enumerated "the GRV cache pair" -- there is one such counter,
-// and the phantom second made the arithmetic reach five while hiding that
-// transaction_retries had been left out.
+// The claim was unqualified while four of these already existed. A first
+// attempt to qualify it enumerated "the GRV cache pair" -- there is one such
+// counter, and the phantom second made the arithmetic reach five while hiding
+// that transaction_retries had been left out.
 var counters = []counterDef{
 	{
 		"fdb_client_transactions_commit_started_total", "Commits sent (read-only fast-path commits excluded, matching C++).",
