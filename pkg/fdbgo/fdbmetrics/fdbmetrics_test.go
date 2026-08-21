@@ -26,26 +26,27 @@ func TestHandler_TextExposition(t *testing.T) {
 		TransactionRetries:               4,
 		ClientConnectionFailures:         2,
 		CoordinatorChanges:               1,
-		// Every counter gets a DISTINCT NON-ZERO value AND every expectation below
-		// is newline-anchored. All three are load-bearing, and each was wrong here
-		// in turn:
+		// Every counter gets a DISTINCT NON-ZERO value. That is the half still
+		// load-bearing; the history of the other half is below.
+		//
+		// Each requirement was wrong here in turn:
 		//
 		//   - two counters shared the value 1, so crossing their getters passed;
 		//   - one was asserted as 0, which every unset counter renders as, so it
 		//     held whether its getter was wired or not;
-		//   - the values were distinct but the matcher is strings.Contains, and 1,
-		//     2 and 4 are PREFIXES of 11-18, 21-22 and 42 -- eleven shadowed
-		//     pairs. A symmetric swap still failed on its other half, but a
-		//     one-directional mis-wire into a shadowing counter passed: pointing
-		//     coordinator_changes at TransactionsTooOld rendered 14, and
+		//   - the values were distinct but the matcher was then strings.Contains,
+		//     and 1, 2 and 4 are PREFIXES of 11-18, 21-22 and 42 -- eleven
+		//     shadowed pairs. A symmetric swap still failed on its other half,
+		//     but a one-directional mis-wire into a shadowing counter passed:
+		//     pointing coordinator_changes at TransactionsTooOld rendered 14, and
 		//     "…_total 1" matched it.
 		//
-		// The expectations below still carry a trailing newline, but it is no
-		// longer load-bearing: matching is whole-LINE membership, which trims it.
-		// It is kept because the strings then read as the exposition lines they
-		// are. Dropping one is a no-op today -- an earlier version anchored only
-		// the _total entries while claiming all of them, and that gap is closed
-		// by the matcher now rather than by the suffix.
+		// The matcher is whole-LINE membership NOW, which closed that family and
+		// the line-start boundary with it. The expectations still carry a
+		// trailing newline, but it is no longer load-bearing -- membership trims
+		// it -- and it is kept only so the strings read as the exposition lines
+		// they represent. Dropping one is a no-op; the terminal LF that the
+		// suffix used to cover incidentally is asserted on its own above.
 		TransactionsResourceConstrained:           12,
 		TransactionsProcessBehind:                 13,
 		TransactionsTooOld:                        14,
@@ -245,15 +246,18 @@ func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
 		}
 	}
 	if len(counters) != 18 || cppTwin != 13 || goOnly != 5 || other != 0 {
-		t.Errorf("table is %d counters (%d C++ twin, %d Go-only, %d unclassified); "+
-			"the prose says 18 = 13 + 5 in TWO places -- the package doc and the "+
-			"doc on `counters`. Update every one of them, not the first one found",
+		t.Errorf("table is %d counters (%d C++ twin, %d Go-only, %d unclassified). "+
+			"The TOTAL 18 is written in two places, the package doc and the doc on "+
+			"`counters`; the 13 + 5 SPLIT only in the latter. Update the ones your "+
+			"change actually falsifies -- a split that holds the total needs one "+
+			"edit, not two",
 			len(counters), cppTwin, goOnly, other)
 	}
 	if len(summaries) != 4 {
-		t.Errorf("table is %d summaries; the prose says four in TWO places -- the "+
-			"package doc and Handler's doc. Update every one of them; fixing only "+
-			"the nearer copy is how the last stale sentence survived", len(summaries))
+		t.Errorf("table is %d summaries; the prose says four in THREE places -- the "+
+			"package doc, Handler's doc, and the doc on `summaries`, which also "+
+			"enumerates them by name. Fixing only the nearest copy is how the last "+
+			"stale sentence survived", len(summaries))
 	}
 }
 
@@ -266,11 +270,84 @@ func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
 // one layer in. Adding a third spelling to the Go-only arm (the arm you must
 // touch to admit a new counter) while leaving the twin arm alone admitted a
 // twin whose HELP declared it Go-only; that was green before this was shared.
+// goOnlyMarkers is the provenance vocabulary, named once so the predicate and
+// the test that pins it cannot hold different lists. An earlier version of that
+// test hardcoded its own copy, so a marker added to the predicate was never
+// examined -- the subset-list defect, inside the test written to prevent it.
+var goOnlyMarkers = []string{"Go-only", "Go aggregate"}
+
 func declaresGoOnly(helpLine string) bool {
-	for _, marker := range []string{"Go-only", "Go aggregate"} {
+	for _, marker := range goOnlyMarkers {
 		if strings.Contains(helpLine, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+// THE PROVENANCE VOCABULARY IS PINNED, IN BOTH DIRECTIONS.
+//
+// Sharing declaresGoOnly between the two origin arms stopped the vocabulary
+// being EXTENDED on one side only. It does not stop it being BROADENED: the
+// marker set {"Go"} passes every existing test, because no C++-twin help text
+// happens to contain "Go" while all five Go-only ones do. The arms are exact
+// complements only over the vocabulary the current help strings exercise, which
+// is a property of today's prose, not of the predicate.
+//
+// So each marker is pinned as EARNED -- some real help line must need it -- and
+// a negative control pins that the predicate does not fire on text that merely
+// mentions the words. Broadening to a substring of ordinary English now fails.
+func TestProvenanceVocabularyIsEarnedAndNarrow(t *testing.T) {
+	t.Parallel()
+
+	body := renderExposition(t)
+
+	// Every marker earns its place: drop it and some Go-only counter loses its
+	// declaration. A marker no help line needs is vocabulary nobody audits.
+	for _, marker := range goOnlyMarkers {
+		used := false
+		for _, c := range counters {
+			if c.origin != originGoOnly {
+				continue
+			}
+			line, ok := helpLine(body, c.name)
+			if !ok {
+				continue
+			}
+			// Does THIS marker carry the line on its own?
+			if strings.Contains(line, marker) {
+				used = true
+				break
+			}
+		}
+		if !used {
+			t.Errorf("marker %q is in the predicate but no Go-only help line uses "+
+				"it; unused vocabulary widens the predicate without auditing anything",
+				marker)
+		}
+	}
+
+	// The negative control. These are the shapes a broadened predicate would
+	// start accepting, and none of them is a provenance declaration.
+	for _, notAClaim := range []string{
+		"Go",
+		"Golang",
+		"Read versions served from the GRV cache",
+		"retries in the Go client",
+		"",
+	} {
+		if declaresGoOnly(notAClaim) {
+			t.Errorf("declaresGoOnly(%q) is true; the predicate has been broadened "+
+				"to text that does not declare an absent C++ twin", notAClaim)
+		}
+	}
+}
+
+// renderExposition returns the handler's text output, so a test that only needs
+// the body does not restate the httptest wiring.
+func renderExposition(t *testing.T) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	Handler(fakeSource{}).ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	return rec.Body.String()
 }
