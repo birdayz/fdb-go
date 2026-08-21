@@ -166,8 +166,10 @@ func TestHandler_TextExposition(t *testing.T) {
 	//
 	// The classification only matters if it survives into the exposition, since
 	// whoever audits it is reading a scrape, not this repository -- which is why
-	// the Go-only arm asserts on the rendered HELP LINE rather than on the help
-	// string in source.
+	// BOTH arms assert on the rendered HELP LINE rather than on the help string
+	// in source -- the Go-only arm that it declares provenance, the twin arm
+	// that it does not claim any. An earlier version said only the Go-only arm
+	// did, which was true when the twin arm asserted nothing.
 	for _, c := range counters {
 		switch c.origin {
 		case originUnset:
