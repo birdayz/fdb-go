@@ -355,8 +355,9 @@ creates one, so `MY__1JOINED` could equally be a literal name or the escaping of
 `MY$JOINED`. It is printed verbatim, because the only thing you can do with it
 is match it against your Java-side metadata.
 
-Three things in `frl` output are deliberately NOT translated, and it is worth
-knowing them before reading the list that is:
+Besides `synthetic_types` above, three more things in `frl` output are
+deliberately NOT translated — four in total — and they are worth knowing before
+reading the list that is:
 
 - **Index names.** A separate namespace; `GetIndex` has no escape fallback, so a
   decoded index name would not resolve when passed back in.
@@ -367,12 +368,19 @@ knowing them before reading the list that is:
   the SQL identifier. One command, two namespaces, on purpose.
 
 Everything else that prints a record-type name prints the SQL identifier:
-`frl meta types` (text and JSON), `frl meta types describe`'s `Name` field,
-`frl meta diff`, `frl index describe`, `frl record scan -o json`'s
-`record_type`, shell completion, and the `not found -- available: ...` list
-shared by `frl record scan` and `frl record count`. A name copied out of any of
-them can be passed straight back in via `--type`, because the metadata resolves
-either spelling.
+
+- `frl meta types` (text and JSON), and `frl meta types describe`'s `Name` field
+- `frl meta diff` and `frl index describe`
+- the `record_type` field of `frl record get`, `frl record put` and
+  `frl record scan` JSON output (all three go through one writer)
+- `frl sql`'s `\d` table list and `\d <table>` column list, and its
+  `not found -- available: ...` message
+- shell completion, and the `not found -- available: ...` list shared by
+  `frl record scan` and `frl record count`
+
+A name copied out of any of them can be passed straight back in -- as `--type`,
+or to `\d` -- because both the metadata and the `\d` lookup resolve either
+spelling.
 
 ```sh
 

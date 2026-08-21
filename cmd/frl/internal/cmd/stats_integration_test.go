@@ -1165,9 +1165,12 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 // differ: storage-sorted [A__0B, A__1B] prints as [A__B, A$B], while a reader
 // scanning the output expects [A$B, A__B].
 //
-// Three sites decode such a list and all three sort in the namespace they print
-// (userNames and describeSkippedTypes here, and fleet's describeSkipped). This
-// test covers userNames; the other two carry their own ordering arms.
+// The sites that decode such a list all sort in the namespace they print:
+// userNames and describeSkippedTypes here, and fleet's describeSkipped.
+// meta.go's recordTypeNamesByUserOrder keeps storage names but orders them by
+// the decoded spelling, and meta_diff.go's sortSection sorts the printed Name
+// field whatever it holds. This test covers userNames; the others carry their
+// own arms.
 //
 // SyntheticRecordTypesNotModeledError.Error() is NOT in that set: it prints
 // verbatim, and TestSyntheticRefusalErrorNamesTypesVerbatim asserts it does not

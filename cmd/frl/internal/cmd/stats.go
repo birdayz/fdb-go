@@ -702,14 +702,23 @@ func userName(storage string) string {
 // space -- correctly, since that is the namespace it holds them in -- so the
 // renderer is where the order has to be restated in the namespace it prints.
 //
-// THREE sites decode a list and so must re-sort in the namespace they print:
-// this one, describeSkippedTypes below, and fleet's describeSkipped.
+// The sites that DECODE a list and therefore have to restate the sort: this
+// one, describeSkippedTypes below, and fleet's describeSkipped. meta.go's
+// recordTypeNamesByUserOrder does the same job from the other side -- it keeps
+// STORAGE names, because its callers need them as map keys, but orders them by
+// the decoded spelling. meta_diff.go's sortSection is correct by construction:
+// it sorts the Name field that is printed, whatever namespace that field holds.
 //
-// SyntheticRecordTypesNotModeledError.Error() is deliberately NOT one of them.
+// SyntheticRecordTypesNotModeledError.Error() is deliberately NOT in this set.
 // It was, and the decode was wrong: Java stores a synthetic type's name
-// verbatim, so decoding invents a declaration. With no decode there is only one
-// namespace and its caller's storage-space order is already the printed order --
-// re-sorting there now breaks a test that asserts it must not reorder.
+// verbatim, so decoding invents a declaration. With no decode there is one
+// namespace, its caller's storage-space order IS the printed order, and a test
+// asserts it must not reorder.
+//
+// This enumeration has been wrong twice. It said FOUR, then a decode was
+// removed and the count was fixed by SUBTRACTION rather than by re-sweeping --
+// which is how the meta.go and meta_diff.go entries stayed missing. Sweep by
+// what is PRINTED; a count maintained by arithmetic drifts from the code.
 func userNames(storage []string) []string {
 	if storage == nil {
 		return nil

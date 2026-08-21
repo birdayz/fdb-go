@@ -3,6 +3,9 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -277,4 +280,76 @@ func TestRecordTypeNamesRenderAsSQLIdentifiers(t *testing.T) {
 		}
 		assert(t, "meta diff", b.String())
 	})
+}
+
+// SHELL COMPLETION OFFERS SQL IDENTIFIERS.
+//
+// Separate from the table above because it drives the real cobra __complete
+// path end-to-end (and t.Setenv forbids t.Parallel). Completion is the surface
+// where the storage spelling is most harmful: whatever it offers is what the
+// operator presses TAB and accepts, so offering MY__1TABLE trains them to type
+// a name no other command prints.
+//
+// Only the record-type completions decode. Index-name completion
+// (indexNameCompletion) and context-name completion must NOT, and this test
+// deliberately does not touch them -- GetIndex has no escape fallback, so a
+// decoded index name would not resolve when accepted.
+func TestCompletionOffersSQLIdentifiers(t *testing.T) {
+	const storage, sql = "MY__1TABLE", "MY$TABLE"
+	if recordlayer.ToUserIdentifier(storage) != sql {
+		t.Fatalf("fixture is vacuous: %q does not decode to %q", storage, sql)
+	}
+
+	md := metaWithEscapedTypeName(t, storage)
+	metaPath := filepath.Join(t.TempDir(), "meta.pb")
+	f, err := os.Create(metaPath)
+	if err != nil {
+		t.Fatalf("create meta file: %v", err)
+	}
+	if err := recordlayer.WriteRecordMetaData(md, f); err != nil {
+		f.Close()
+		t.Fatalf("write meta: %v", err)
+	}
+	f.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := fmt.Sprintf(`current_context: local
+contexts:
+  - name: local
+    cluster_file: /tmp/fake.cluster
+    keyspace_path: /test
+    metadata:
+      meta_file: %s
+`, metaPath)
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("FRL_CONFIG", cfgPath)
+
+	for _, args := range [][]string{
+		{"record", "scan", "--type", ""},
+		{"meta", "types", "describe", ""},
+	} {
+		got := runCompletion(t, args...)
+		if len(got) == 0 {
+			t.Fatalf("__complete %v offered nothing; the fixture never reached the "+
+				"completion path and the assertions below would be vacuous", args)
+		}
+		var sawSQL, sawStorage bool
+		for _, c := range got {
+			if c == sql {
+				sawSQL = true
+			}
+			if c == storage {
+				sawStorage = true
+			}
+		}
+		if !sawSQL {
+			t.Errorf("__complete %v did not offer the SQL identifier %q: %v", args, sql, got)
+		}
+		if sawStorage {
+			t.Errorf("__complete %v offered the storage name %q — pressing TAB would "+
+				"accept a name no other command prints: %v", args, storage, got)
+		}
+	}
 }

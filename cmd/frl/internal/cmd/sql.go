@@ -1020,7 +1020,9 @@ func (r *sqlRunner) loadSchemaTables(dbURI, schemaName string) ([]tableInfo, err
 			out := make([]tableInfo, 0, len(tbls))
 			for _, tbl := range tbls {
 				out = append(out, tableInfo{
-					name:    tbl.MetadataName(),
+					// SQL identifier. MetadataName is the record type's stored name,
+					// which is escaped; the sort below then orders by what is printed.
+					name:    userName(tbl.MetadataName()),
 					columns: len(tbl.Columns()),
 				})
 			}
@@ -1062,13 +1064,19 @@ func (r *sqlRunner) describeTable(name string) error {
 			}
 			var names []string
 			for _, tbl := range tbls {
-				names = append(names, tbl.MetadataName())
-				if !strings.EqualFold(tbl.MetadataName(), name) {
+				names = append(names, userName(tbl.MetadataName()))
+				// Accept EITHER spelling. The list above offers SQL identifiers, so a
+				// name copied out of it must resolve -- matching only the stored form
+				// would reject the very name this command just printed.
+				if !strings.EqualFold(tbl.MetadataName(), name) &&
+					!strings.EqualFold(userName(tbl.MetadataName()), name) {
 					continue
 				}
 				for _, col := range tbl.Columns() {
 					out.cols = append(out.cols, columnInfo{
-						name:     col.MetadataName(),
+						// SQL identifier: a column name is a proto FIELD name and is
+						// escaped the same way a table name is.
+						name:     userName(col.MetadataName()),
 						dataType: col.DataType().Code().String(),
 						nullable: col.DataType().IsNullable(),
 					})
