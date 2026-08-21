@@ -40,7 +40,10 @@ func TestHandler_TextExposition(t *testing.T) {
 		//     coordinator_changes at TransactionsTooOld rendered 14, and
 		//     "…_total 1" matched it.
 		//
-		// The trailing \n is what makes each expectation a whole line.
+		// EVERY expectation below carries a trailing newline -- the TYPE lines and the
+		// quantile lines included, not just the _total ones. An earlier pass
+		// anchored only _total while the comment claimed all of them, leaving 11 of
+		// 34 open.
 		TransactionsResourceConstrained:           12,
 		TransactionsProcessBehind:                 13,
 		TransactionsTooOld:                        14,
@@ -62,20 +65,20 @@ func TestHandler_TextExposition(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"# TYPE fdb_client_transactions_commit_started_total counter",
+		"# TYPE fdb_client_transactions_commit_started_total counter\n",
 		"fdb_client_transactions_commit_started_total 7\n",
 		"fdb_client_transactions_commit_completed_total 6\n",
 		"fdb_client_transactions_not_committed_total 3\n",
 		"fdb_client_transactions_maybe_committed_total 21\n",
 		"fdb_client_transaction_read_versions_completed_total 42\n",
-		"# TYPE fdb_client_grv_cache_hits_total counter",
+		"# TYPE fdb_client_grv_cache_hits_total counter\n",
 		"fdb_client_grv_cache_hits_total 9\n",
-		"# TYPE fdb_client_grv_in_band_maybe_delivered_total counter",
+		"# TYPE fdb_client_grv_in_band_maybe_delivered_total counter\n",
 		"fdb_client_grv_in_band_maybe_delivered_total 11\n",
 		"fdb_client_transaction_retries_total 4\n",
 		"fdb_client_transactions_throttled_total 22\n",
 		// RFC-114 counters.
-		"# TYPE fdb_client_connection_failures_total counter",
+		"# TYPE fdb_client_connection_failures_total counter\n",
 		"fdb_client_connection_failures_total 2\n",
 		"fdb_client_coordinator_changes_total 1\n",
 		// The remaining counters, so that deleting ANY counterDef reddens this
@@ -89,17 +92,17 @@ func TestHandler_TextExposition(t *testing.T) {
 		"fdb_client_transaction_default_read_versions_completed_total 17\n",
 		"fdb_client_transaction_immediate_read_versions_completed_total 18\n",
 		// and every summary, same reason.
-		"# TYPE fdb_client_commit_latency_seconds summary",
+		"# TYPE fdb_client_commit_latency_seconds summary\n",
 		"fdb_client_commit_latency_seconds_count 10\n",
-		"# TYPE fdb_client_grv_latency_seconds summary",
+		"# TYPE fdb_client_grv_latency_seconds summary\n",
 		"fdb_client_grv_latency_seconds_count 20\n",
-		"# TYPE fdb_client_transaction_latency_seconds summary",
+		"# TYPE fdb_client_transaction_latency_seconds summary\n",
 		"fdb_client_transaction_latency_seconds_count 30\n",
 		// RFC-114 latency summary.
-		"# TYPE fdb_client_read_latency_seconds summary",
-		`fdb_client_read_latency_seconds{quantile="0.5"} 0.001`,
-		`fdb_client_read_latency_seconds{quantile="0.9"} 0.005`,
-		`fdb_client_read_latency_seconds{quantile="0.99"} 0.02`,
+		"# TYPE fdb_client_read_latency_seconds summary\n",
+		"fdb_client_read_latency_seconds{quantile=\"0.5\"} 0.001\n",
+		"fdb_client_read_latency_seconds{quantile=\"0.9\"} 0.005\n",
+		"fdb_client_read_latency_seconds{quantile=\"0.99\"} 0.02\n",
 		"fdb_client_read_latency_seconds_sum 1.5\n",
 		"fdb_client_read_latency_seconds_count 100\n",
 	} {
@@ -125,39 +128,46 @@ func TestHandler_TextExposition(t *testing.T) {
 		t.Errorf("rendered %d TYPE lines, want %d", got, want)
 	}
 
-	// EVERY Go-only counter DECLARES that in its HELP text.
+	// EVERY counter DECLARES ITS ORIGIN, AND EVERY Go-only ONE SAYS SO IN HELP.
 	//
-	// `counters`' doc classifies five entries as having no C++ TransactionMetrics
-	// twin. That classification is only auditable if it survives into the
-	// exposition, because whoever checks it is reading a scrape, not this
-	// repository. Two of the five carried no provenance at all until recently,
-	// and adding it was unpinned -- deleting either sentence left every package
-	// test green.
+	// Iterates `counters` itself rather than a hardcoded name list. The previous
+	// version listed five names, so a nineteenth Go-only counter was never
+	// examined -- adding one with no provenance passed, and silently falsified
+	// the 18/13/5 split in the table's own doc, which nothing checked in the ADD
+	// direction.
 	//
-	// Asserted as a property over the HELP LINE rather than as five fixed
-	// strings, so rewording a help text keeps passing while dropping the
-	// provenance does not.
-	for _, name := range []string{
-		"fdb_client_grv_cache_hits_total",
-		"fdb_client_transaction_retries_total",
-		"fdb_client_connection_failures_total",
-		"fdb_client_coordinator_changes_total",
-		"fdb_client_grv_in_band_maybe_delivered_total",
-	} {
-		prefix := "# HELP " + name + " "
-		i := strings.Index(body, prefix)
-		if i < 0 {
-			t.Errorf("no HELP line for %s; the provenance check below cannot run", name)
-			continue
-		}
-		line := body[i:]
-		if j := strings.IndexByte(line, '\n'); j >= 0 {
-			line = line[:j]
-		}
-		// "Go aggregate" is transaction_retries' spelling: C++ retries those
-		// codes without a counter, which is the same claim.
-		if !strings.Contains(line, "Go-only") && !strings.Contains(line, "Go aggregate") {
-			t.Errorf("HELP for %s does not declare it Go-only: %q", name, line)
+	// counterOrigin's zero value is invalid, so a counterDef that forgets to
+	// declare an origin fails here. That is what makes this fail CLOSED: the
+	// iteration cannot miss an entry, and an entry cannot opt out by omission.
+	//
+	// The classification only matters if it survives into the exposition, since
+	// whoever audits it is reading a scrape, not this repository -- which is why
+	// the Go-only arm asserts on the rendered HELP LINE rather than on the help
+	// string in source.
+	for _, c := range counters {
+		switch c.origin {
+		case originUnset:
+			t.Errorf("counter %s declares no origin; counterOrigin's zero value is "+
+				"invalid precisely so this cannot pass unnoticed", c.name)
+		case originCPPTwin:
+			// Nothing to assert in the exposition: a C++ twin is a fact about
+			// the other implementation, not about this text.
+		case originGoOnly:
+			prefix := "# HELP " + c.name + " "
+			i := strings.Index(body, prefix)
+			if i < 0 {
+				t.Errorf("no HELP line for %s; its provenance cannot be checked", c.name)
+				continue
+			}
+			line := body[i:]
+			if j := strings.IndexByte(line, '\n'); j >= 0 {
+				line = line[:j]
+			}
+			// "Go aggregate" is transaction_retries' spelling: C++ retries those
+			// codes without a counter, which is the same claim.
+			if !strings.Contains(line, "Go-only") && !strings.Contains(line, "Go aggregate") {
+				t.Errorf("HELP for %s does not declare it Go-only: %q", c.name, line)
+			}
 		}
 	}
 }
