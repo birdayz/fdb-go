@@ -64,6 +64,10 @@ func TestHandler_TextExposition(t *testing.T) {
 		t.Errorf("Content-Type = %q, want Prometheus text exposition", ct)
 	}
 	body := rec.Body.String()
+	lines := map[string]struct{}{}
+	for _, l := range strings.Split(body, "\n") {
+		lines[l] = struct{}{}
+	}
 	for _, want := range []string{
 		"# TYPE fdb_client_transactions_commit_started_total counter\n",
 		"fdb_client_transactions_commit_started_total 7\n",
@@ -106,8 +110,16 @@ func TestHandler_TextExposition(t *testing.T) {
 		"fdb_client_read_latency_seconds_sum 1.5\n",
 		"fdb_client_read_latency_seconds_count 100\n",
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("exposition missing %q\nbody:\n%s", want, body)
+		// WHOLE-LINE membership, not strings.Contains.
+		//
+		// A trailing \n anchors only the END of a line. With a substring match
+		// the START is still open, so output that ran two lines together --
+		// "# HELP x…# TYPE x counter\n" -- still contains the TYPE expectation
+		// and passed; a metric name with a prefix would satisfy a value entry
+		// the same way. Both boundaries are needed, and comparing against the
+		// set of rendered lines gives both at once.
+		if _, ok := lines[strings.TrimSuffix(want, "\n")]; !ok {
+			t.Errorf("exposition missing the whole line %q\nbody:\n%s", want, body)
 		}
 	}
 	// Every defined counter and summary renders a TYPE line.
