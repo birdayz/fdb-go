@@ -124,4 +124,40 @@ func TestHandler_TextExposition(t *testing.T) {
 	if got, want := strings.Count(body, "# TYPE "), len(counters)+len(summaries); got != want {
 		t.Errorf("rendered %d TYPE lines, want %d", got, want)
 	}
+
+	// EVERY Go-only counter DECLARES that in its HELP text.
+	//
+	// `counters`' doc classifies five entries as having no C++ TransactionMetrics
+	// twin. That classification is only auditable if it survives into the
+	// exposition, because whoever checks it is reading a scrape, not this
+	// repository. Two of the five carried no provenance at all until recently,
+	// and adding it was unpinned -- deleting either sentence left every package
+	// test green.
+	//
+	// Asserted as a property over the HELP LINE rather than as five fixed
+	// strings, so rewording a help text keeps passing while dropping the
+	// provenance does not.
+	for _, name := range []string{
+		"fdb_client_grv_cache_hits_total",
+		"fdb_client_transaction_retries_total",
+		"fdb_client_connection_failures_total",
+		"fdb_client_coordinator_changes_total",
+		"fdb_client_grv_in_band_maybe_delivered_total",
+	} {
+		prefix := "# HELP " + name + " "
+		i := strings.Index(body, prefix)
+		if i < 0 {
+			t.Errorf("no HELP line for %s; the provenance check below cannot run", name)
+			continue
+		}
+		line := body[i:]
+		if j := strings.IndexByte(line, '\n'); j >= 0 {
+			line = line[:j]
+		}
+		// "Go aggregate" is transaction_retries' spelling: C++ retries those
+		// codes without a counter, which is the same claim.
+		if !strings.Contains(line, "Go-only") && !strings.Contains(line, "Go aggregate") {
+			t.Errorf("HELP for %s does not declare it Go-only: %q", name, line)
+		}
+	}
 }
