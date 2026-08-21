@@ -207,6 +207,15 @@ func describeSkipped(skipped map[string]string) string {
 	//     than merely mislabelling it -- one skipped type silently vanishes from
 	//     the one field an operator reads.
 	//
+	// SCOPE, and it is narrower than it looks: the decision is taken over the
+	// names this string will PRINT, not over every name the schema DECLARES. Two
+	// declared types can collide while the skipped subset does not, and this
+	// decoder would then decode happily on a schema that is ambiguous. What
+	// closes that is not this function -- it is ambiguousRefusal, which turns the
+	// whole target away before any collection runs, so a declared collision never
+	// reaches here. Delete that guard and this one narrows silently rather than
+	// failing.
+	//
 	// cmd/frl's docscheck gate cannot see this file, so the invariant is carried
 	// by calling the SHARED policy rather than by that gate. It used to be a
 	// local copy justified by "a test pins that the two agree" -- there was no

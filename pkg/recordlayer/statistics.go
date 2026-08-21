@@ -1001,25 +1001,34 @@ func ReadStatisticsAt(
 type SyntheticRecordTypesNotModeledError struct {
 	// TypeNames are the synthetic declarations found, so a caller can say which.
 	//
-	// STORAGE names, like every other name field outside StatisticsStatus. A
-	// programmatic consumer matching against metadata needs them in the namespace
-	// metadata uses; Error() is where they become human-facing and is therefore
-	// where they are decoded.
+	// STORAGE names -- and unlike every other name field outside
+	// StatisticsStatus, they stay that way all the way out: Error() prints them
+	// verbatim too, for the reason given there. A programmatic consumer matching
+	// against metadata needs them in the namespace metadata uses, and here so
+	// does the human.
 	TypeNames []string
 }
 
 // Error renders the refusal for a human, naming the declarations EXACTLY as the
 // metadata stores them.
 //
-// Unlike a record-type name, a synthetic type's name is NOT known to be
-// escaped. A record type is a protobuf message, so its stored name provably
-// came from protoname.ToProtoBufCompliantName and decoding it recovers the SQL
-// identifier. A joined or unnested type is named by an arbitrary string handed
-// to Java's RecordMetaDataBuilder.addJoinedRecordType / addUnnestedRecordType,
-// which stores it verbatim -- and this port never CREATES one, it only
-// round-trips what Java wrote. So a stored MY__1JOINED is genuinely ambiguous
-// between the escaping of MY$JOINED and a literal MY__1JOINED, and decoding it
-// would invent a declaration the operator cannot find.
+// Unlike a record-type name, a synthetic type's name is not drawn from the
+// domain the escaper's output lives in. A record type IS a protobuf message, so
+// its stored name is a legal protobuf identifier -- the same domain
+// protoname.ToProtoBufCompliantName maps into. That is what makes the
+// round-trip test in DecodeOnceIfReversible informative there: a name that
+// re-encodes to itself is indistinguishable from escaper output, and decoding
+// is the best available reading. It is NOT proof of provenance -- SetRecords
+// copies descriptor names verbatim -- which is exactly why that guard exists
+// instead of an unconditional decode.
+//
+// A joined or unnested type is named by an arbitrary string handed to Java's
+// RecordMetaDataBuilder.addJoinedRecordType / addUnnestedRecordType, which
+// stores it with no such constraint -- and this port never CREATES one, it only
+// round-trips what Java wrote. The round-trip test therefore carries no
+// information about it: a stored MY__1JOINED is genuinely ambiguous between the
+// escaping of MY$JOINED and a literal MY__1JOINED, and decoding it would invent
+// a declaration the operator cannot find.
 //
 // That matters most precisely here: this refusal exists because the port does
 // not model these types, so the only thing an operator can do with the name is

@@ -2089,16 +2089,19 @@ func (fixedInt64) Cancel()               {}
 // with the test one package over that run was GREEN with the bug fully present.
 // A test that cannot fail where the code lives is a green about the wrong tree.
 //
-// A record type is a protobuf message, so its stored name provably came from
-// ToProtoBufCompliantName and decoding recovers the SQL identifier. A joined or
-// unnested type is named by an arbitrary string passed to Java's
-// addJoinedRecordType/addUnnestedRecordType and stored verbatim, and this port
-// never CREATES one -- metadata_proto.go only proto.Clones what Java wrote. So
-// MY__1JOINED is genuinely ambiguous between the escaping of MY$JOINED and a
-// literal MY__1JOINED, and decoding it would name a declaration that does not
-// exist in the operator's metadata -- the one artifact they can search, and the
-// only thing they can do with this refusal, since the port does not model the
-// type at all.
+// A record type IS a protobuf message, so its stored name is a legal protobuf
+// identifier -- the domain ToProtoBufCompliantName maps into -- which is what
+// makes DecodeOnceIfReversible's round-trip test informative there. It is not
+// proof of provenance; SetRecords copies descriptor names verbatim, which is
+// why the guard exists at all. A joined or unnested type is named by an
+// arbitrary string passed to Java's addJoinedRecordType/addUnnestedRecordType
+// under no such constraint, and this port never CREATES one --
+// metadata_proto.go only proto.Clones what Java wrote. So the round-trip test
+// carries no information here: MY__1JOINED is genuinely ambiguous between the
+// escaping of MY$JOINED and a literal MY__1JOINED, and decoding it would name a
+// declaration that does not exist in the operator's metadata -- the one
+// artifact they can search, and the only thing they can do with this refusal,
+// since the port does not model the type at all.
 //
 // An earlier round here made both surfaces decode, to settle a real
 // inconsistency (`frl stats show` decoded, `frl stats collect` did not). The
