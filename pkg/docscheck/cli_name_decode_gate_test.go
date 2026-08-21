@@ -40,6 +40,13 @@ import (
 //     name. Lines naming a lookup helper are allowed, so a genuinely new lookup
 //     spelling slips through. Extend the allowlist, with the reason written next
 //     to it.
+//   - IT SCANS cmd/frl ONLY. Other packages render record-type names too, and
+//     one of them was wrong the whole time this gate existed: the fleet
+//     package's skipped-types string decoded with a bare ToUserIdentifier into
+//     a map keyed by the decoded name, losing a row outright on a collision.
+//     Widening the walk means curating an allowlist per package; until that
+//     happens, a renderer outside cmd/frl carries the invariant by construction
+//     and by its own test, not by this gate.
 //   - THE `// storage-compare` MARKER IS TRUSTED, NOT VERIFIED. The gate checks
 //     that the line ENDS with it — anchored, because an unanchored check was
 //     laundered two ways on the first try: past-tense prose
