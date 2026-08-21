@@ -1451,9 +1451,16 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 			"(the decline must propagate through nesting)", got)
 	}
 
-	// THE TWO GATES. The comment on planRowLayout says the transitive decline
-	// cannot arrive through the FK-cap entries. These pin the reasons, so a
-	// change to either gate reddens here rather than silently falsifying it.
+	// WHAT THE NEXT TWO ASSERTIONS ACTUALLY BUY, which is not the same thing for
+	// each. The comment on planRowLayout says the transitive decline cannot
+	// arrive through the FK-cap entries; these are what stand behind that.
+	// scanBindingOfLeaf's exclusion of a FlatMap is genuinely pinned -- add a
+	// FlatMap case and the first assertion reddens. The nil-layout rejection is
+	// NOT pinned to any single guard, for the structural reason set out beside
+	// it below: only the outcome can be asserted. An earlier version of this
+	// block claimed both were pinned; that was measured false for the second and
+	// the phrasing is deliberately not repeated here, so a grep for it stays at
+	// zero.
 	if _, ok := scanBindingOfLeaf(declining); ok {
 		t.Error("scanBindingOfLeaf accepted a FlatMap: the inner-alias orientation " +
 			"is no longer excluded, so planRowLayout's unreachability claim is stale")
@@ -1481,7 +1488,29 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 		t.Fatal("fixture is vacuous: the RecordConstructor outer must DECLINE a layout, " +
 			"otherwise the frontier is known and the gate is never exercised")
 	}
-	wrapProbe := fkChainFKProbe(t, "T2", "t2_by_t1", "T1", wrapAlias)
+	// The probe must be baked against rcOuter's OWN emitted layout, not T1's.
+	// rcOuter emits the one-column RecordConstructor row; baking against T1's
+	// [ID, ADDRESS] domain would give correlatedFieldIdentity an independent
+	// reason to reject, and the assertion below would then pass for the wrong
+	// reason -- green even if a correctly baked outer started being accepted.
+	rcLayout, isRecord := rcOuter.GetResultType().(*values.RecordType)
+	if !isRecord {
+		t.Fatalf("fixture is vacuous: rcOuter must emit a record layout to bake against, got %T",
+			rcOuter.GetResultType())
+	}
+	wrapEq := predicates.Comparison{
+		Type:    predicates.ComparisonEquals,
+		Operand: fkChainField(rcLayout, wrapAlias, "ID"),
+	}
+	wrapRange := predicates.EmptyComparisonRange().Merge(&wrapEq)
+	if !wrapRange.Ok {
+		t.Fatal("fixture is vacuous: could not build the correlated equality range")
+	}
+	wrapProbe := mustFKChain(plans.NewRecordQueryIndexPlan("t2_by_t1",
+		[]*predicates.ComparisonRange{wrapRange.Range},
+		[]string{"T2"}, fkChainRowType("T2"), false)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false)
 	viaRC := mustFKChain(plans.NewRecordQueryFlatMapPlan(
 		rcOuter, wrapProbe, wrapAlias, innerAlias,
 		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, planRowLayout(wrapProbe))), false))
