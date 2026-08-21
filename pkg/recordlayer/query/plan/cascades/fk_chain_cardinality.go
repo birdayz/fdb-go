@@ -669,20 +669,26 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // fall-through answers the wrapper's own type. That type EXISTS, and is
 // precisely the row nobody checked.
 //
-// This is REACHABLE, not insurance. The two functions that consume a FlatMap's
-// resultValue disagree about what they accept: pkThreadThroughResultValue takes
-// a bare QOV OR a RecordConstructorValue whose PK fields are direct uncomputed
-// reads, while planRowLayout takes the bare QOV alone. A plan of that second
-// shape therefore threads a PK successfully and STILL declines here, which is
-// the intended answer -- this file can prove the identity without being able to
-// name the row's layout -- but it means the decline is a live path, not a guard
-// against something that cannot happen.
+// The LOCAL declines are reachable; the TRANSITIVE one is not, and the two must
+// not be conflated. Reachable: pkThreadThroughResultValue accepts a bare QOV OR
+// a RecordConstructorValue whose PK fields are direct uncomputed reads, while
+// planRowLayout accepts the bare QOV alone -- so a RecordConstructor FlatMap
+// threads a PK successfully and still declines here, which is the intended
+// answer (this file can prove the identity without naming the row's layout).
 //
-// Both call sites reach it through a FlatMap: innerFullyBindsThread asks for
-// fm.GetOuter()'s layout, and computeFlatMapPKThread for fm.GetInner()'s. Every
-// hop of an FK chain past the first has a FlatMap as its OUTER, so the outer
-// call is the one that nests in practice, and a wrong answer there would let
-// the cap fire on hop 1 and silently stop on hops 2..n -- the order-dependent
+// Unreachable: a FlatMap whose selected leg is ANOTHER declining FlatMap cannot
+// arrive, because every entry needs computePKThread to have succeeded first and
+// both orientations die there. Selected via the inner alias, the leg is a
+// FlatMap, and scanBindingOfLeaf has no FlatMap case -- it falls to default, so
+// innerFullyBindsThread is false. Selected via the outer, innerFullyBindsThread
+// itself calls planRowLayout(fm.GetOuter()), gets the nil, finds the frontier
+// unknown and fails closed. The recursion is therefore insurance, and the test
+// that drives it hand-builds the resultValue rather than reaching it from a
+// plan.
+//
+// Every hop of an FK chain past the first has a FlatMap as its OUTER, so the
+// outer call is the one that nests at all: a wrong answer there would let the
+// cap fire on hop 1 and silently stop on hops 2..n -- the order-dependent
 // estimate fkChainCardinalityCap was written to remove.
 //
 // The derivation is the resultValue's, because the resultValue is what shapes
