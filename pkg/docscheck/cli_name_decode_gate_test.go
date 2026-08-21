@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -604,36 +605,20 @@ func TestMaskingNeverBlanksRealCode(t *testing.T) {
 		"CRLF":             "package p\r\nvar x = 1 // c\r\nvar y = 2\r\n",
 		"unterminated str": "package p\nvar s = \"open\nvar t = rt.Name\n",
 	}
-	var checked int
+	per := make(map[string]int, len(sources))
 	for name, src := range sources {
 		masked := maskLiterals(src)
 		if len(masked) != len(src) {
 			t.Fatalf("%s: length changed, offsets are meaningless", name)
 		}
-		per, blanked := codeBytesSurvivingMask(src, masked)
+		n, blanked := codeBytesSurvivingMask(src, masked)
 		for _, b := range blanked {
 			t.Errorf("%s: %s", name, b)
 		}
-		// A source that yields no tokens checks nothing, and says so by
-		// passing. Caught here rather than by the aggregate below, which it
-		// cannot move far enough to trip.
-		if per == 0 {
-			t.Errorf("%s: the oracle read no code bytes from this source; it "+
-				"reports clean here no matter what masking does", name)
-		}
-		checked += per
+		per[name] = n
 	}
-	// Vacuity guard, two floors, because they fail in different directions.
-	// Per source, since the aggregate has 22 bytes of headroom over the 100 it
-	// demands: four of these six could go silent without moving it. In total,
-	// since six sources each yielding one token would satisfy every per-source
-	// check and still read almost nothing. The 122 is what they yield today
-	// (30/15/16/16/20/25); the total floor sits deliberately below it -- a
-	// floor AT the measured value is a failing test dressed as a guard, red on
-	// the next edit to any source.
-	if checked < 100 {
-		t.Fatalf("only %d code bytes checked; the oracle is not reaching the sources "+
-			"and this would report clean regardless", checked)
+	for _, c := range codeByteFloorComplaints(per, 100) {
+		t.Error(c)
 	}
 }
 
@@ -680,11 +665,49 @@ func codeBytesSurvivingMask(src, masked string) (checked int, blanked []string) 
 	return checked, blanked
 }
 
-// BOTH ARMS OF THE ORACLE ABOVE FIRE.
+// codeByteFloorComplaints is the VACUITY DECISION the oracle's caller makes,
+// taken out of the range loop so the rejection itself can be driven.
+//
+// Left inline it was unpinnable: every real source yields code bytes, so
+// deleting the per-source arm changed no result and the suite stayed green. A
+// guard whose failure path no test reaches is a guard that regresses silently.
+//
+// Two floors, because they fail in different directions. Per source, since a
+// single source going quiet moves the total by less than its headroom and would
+// slip past. In total, since sources each yielding one token satisfy every
+// per-source check and still read almost nothing. An empty map trips the total
+// arm, which is why there is no separate arm for it.
+func codeByteFloorComplaints(perSource map[string]int, floor int) []string {
+	names := make([]string, 0, len(perSource))
+	for n := range perSource {
+		names = append(names, n)
+	}
+	sort.Strings(names) // deterministic order, so a failure reads the same twice
+
+	var complaints []string
+	total := 0
+	for _, n := range names {
+		total += perSource[n]
+		if perSource[n] == 0 {
+			complaints = append(complaints, fmt.Sprintf(
+				"%s: the oracle read no code bytes from this source; it reports "+
+					"clean here no matter what masking does", n))
+		}
+	}
+	if total < floor {
+		complaints = append(complaints, fmt.Sprintf(
+			"only %d code bytes checked across %d sources, floor %d; the oracle is "+
+				"not reaching the sources and would report clean regardless",
+			total, len(perSource), floor))
+	}
+	return complaints
+}
+
+// EVERY ARM OF THE ORACLE AND OF ITS FLOORS FIRES.
 //
 // The blanked arm is exercised by the six sources every run; the zero-bytes arm
-// is not, and an arm no test drives is one whose first real firing gets read as
-// a finding instead of as an untested branch. Driven here directly.
+// and both floors are not, and an arm no test drives is one whose first real
+// firing gets read as a finding instead of as an untested branch.
 func TestCodeByteOracleArmsFire(t *testing.T) {
 	t.Parallel()
 
@@ -713,5 +736,59 @@ func TestCodeByteOracleArmsFire(t *testing.T) {
 	if len(bad) == 0 {
 		t.Errorf("a mask of %d blanks over %q produced no findings from %d inspected "+
 			"bytes; the oracle cannot report a blanked code byte", len(src), src, n)
+	}
+
+	// The FLOOR ARMS, driven through codeByteFloorComplaints itself. Counting
+	// zero is not the same as REJECTING zero, and only the rejection is what a
+	// deletion would remove.
+	for _, tc := range []struct {
+		name  string
+		per   map[string]int
+		floor int
+		want  int
+		says  string
+	}{
+		// The case that motivates a per-source floor at all: one source has
+		// gone silent while the total still clears comfortably. A total-only
+		// guard sees nothing here.
+		{"one silent, total fine", map[string]int{"a": 122, "b": 0}, 100, 1, "b:"},
+		{"two silent", map[string]int{"a": 122, "b": 0, "c": 0}, 100, 2, "b:"},
+		// Every source alive but the corpus shrunk: the per-source arm is
+		// silent and the total arm has to carry it.
+		{"all alive, total short", map[string]int{"a": 3, "b": 4}, 100, 1, "floor 100"},
+		// Both at once: one complaint per silent source, plus the total.
+		{"silent and short", map[string]int{"a": 3, "b": 0}, 100, 2, "floor 100"},
+		// No sources at all -- caught by the total arm, which is why there is
+		// no separate empty-map arm to delete.
+		{"no sources", map[string]int{}, 100, 1, "across 0 sources"},
+		// Healthy: nothing may fire, or the guard is noise that gets muted.
+		{"healthy", map[string]int{"a": 50, "b": 72}, 100, 0, ""},
+	} {
+		got := codeByteFloorComplaints(tc.per, tc.floor)
+		if len(got) != tc.want {
+			t.Errorf("%s: want %d complaints, got %d: %v", tc.name, tc.want, len(got), got)
+			continue
+		}
+		if tc.says != "" && !strings.Contains(strings.Join(got, "\n"), tc.says) {
+			t.Errorf("%s: no complaint mentions %q: %v", tc.name, tc.says, got)
+		}
+	}
+
+	// The floor the real test uses must be one the real sources clear, or the
+	// guard above is a failing test dressed as a guard. Measured, not assumed.
+	live := map[string]int{}
+	for name, src := range map[string]string{
+		"plain":            "package p\nfunc f() { x := 1; y := \"s\" // c\n_ = x + y }\n",
+		"multiline raw":    "package p\nvar b = `a\nb` + c\n",
+		"multiline block":  "package p\nvar d = 1 /* a\nb */ + e\n",
+		"adjacent block":   "package p\nvar q = 1 /*a*//*b*/ + r\n",
+		"CRLF":             "package p\r\nvar x = 1 // c\r\nvar y = 2\r\n",
+		"unterminated str": "package p\nvar s = \"open\nvar t = rt.Name\n",
+	} {
+		n, _ := codeBytesSurvivingMask(src, maskLiterals(src))
+		live[name] = n
+	}
+	if c := codeByteFloorComplaints(live, 100); len(c) != 0 {
+		t.Errorf("the live sources do not clear the floor the gate sets: %v", c)
 	}
 }
