@@ -14143,9 +14143,11 @@ None is speculative: each was re-verified against the tree before booking.
 
   Booked at 33, re-measured at 50, and 43 today. The command is written out
   rather than the number asserted, because that is the only form of this claim
-  anyone can check. NOTE for whoever re-runs it: the recipe works only with
-  `--include` QUOTED -- unquoted, fish expands the glob and the whole sweep
-  returns a silent zero.
+  anyone can check. NOTE for whoever re-runs it: keep `--include` QUOTED.
+  Unquoted, the shell rejects the unmatched wildcard, prints "no matches found"
+  to STDERR and never runs grep at all -- so the failure is loud, but a pipeline
+  that reads only stdout sees nothing and reports 0. It is the CAPTURE that is
+  silent, not the shell.
 
   **Go:** `plans/flat_map.go:86` returns the `UnknownType` singleton with no
   reference to the plan's result value. **Java:**

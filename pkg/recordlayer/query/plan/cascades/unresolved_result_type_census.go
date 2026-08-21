@@ -28,12 +28,14 @@ import (
 // explode.go still returns the singleton on a branch, through GetElementType(),
 // and the detector deliberately does not count it.
 //
-// THE DELIVERED PAYOFF IS ONE CONSUMER, and citing 135 would overstate it.
-// RFC-213 §6 measured those 135 unresolved reads as 31 at distinctKeyColumns
-// plus 104 at planRowRecordType. planRowRecordType was deleted rather than
-// fixed, so its 104 left with the consumer; bakedIntersectionKeys already read
-// 412/0 before the change. What actually flipped is distinctKeyColumns, 31
-// unresolved to 0 -- precisely the concentrated payoff §6 named, and a real one.
+// THE PAYOFF WAS DELIVERED IN FULL, and it is 135. RFC-213 §6 measured 135
+// unresolved reads across four consumers -- 31 at distinctKeyColumns, 104 at
+// planRowRecordType. All of them flipped: at d15a81c07 the gate recorded all
+// four reading UNRESOLVED 0, planRowRecordType among them at 784 resolved,
+// under MinSites 4. Two of those consumers were deleted AFTERWARDS by RFC-235,
+// when the three-quantifier NLJ arm that was their only live caller went away
+// -- a separate event, and not a way of retiring the reads instead of fixing
+// them. The gate reads the two survivors today.
 //
 // The census stays as the instrument that would show the population coming
 // back, and the sqldriver gate keeps asserting the consumers are still reached,
