@@ -655,14 +655,15 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // above are stated in. Nil-safe: a missing leg has no layout, and the
 // resolution then declines rather than panicking.
 //
-// A FlatMap needs its own arm because RecordQueryFlatMapPlan.GetResultType()
-// answers UnknownType unconditionally: the plan does not compute a row type
-// from its resultValue. Every hop of an FK chain past the first has a FlatMap
-// as its OUTER, so taking that answer at face value would fail the identity
-// proof closed for exactly the multi-hop shape this whole file exists for —
-// the cap would still fire on hop 1 and silently stop firing on hops 2..n,
-// which is the order-dependent estimate fkChainCardinalityCap was written to
-// remove.
+// A FlatMap needs its own arm because this file needs the ORIGINATING LEG's
+// layout, not merely a row type. GetResultType() derives from the resultValue
+// now -- it answered UnknownType unconditionally when this arm was written --
+// but a type alone cannot say WHICH leg produced the row, and the recursion
+// below has to walk to that leg. Every hop of an FK chain past the first has a
+// FlatMap as its OUTER, so stopping at a type would fail the identity proof
+// closed for exactly the multi-hop shape this whole file exists for -- the cap
+// would still fire on hop 1 and silently stop firing on hops 2..n, which is the
+// order-dependent estimate fkChainCardinalityCap was written to remove.
 //
 // The derivation is the resultValue's, because the resultValue is what shapes
 // the emitted row: a bare QuantifiedObjectValue over one of the two aliases

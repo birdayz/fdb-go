@@ -25,21 +25,19 @@ import (
 // RFC-232 CLOSED THAT POPULATION, so this paragraph is history: stubInventory()
 // is empty, and findStubs finds no UNCONDITIONAL stub among the non-test plans
 // under planPkgDir. "Unconditional" is the word the instrument rests on --
-// bodies that return the singleton on a branch still exist (explode.go's
-// element type, comparator.go and selector.go with no children), and the
-// detector does not count them.
+// explode.go still returns the singleton on a branch, through GetElementType(),
+// and the detector deliberately does not count it.
 //
-// THIS census has been run and it reads zero. The gate in
-// sqldriver/unresolved_result_type_census_gate_test.go records both surviving
-// consumers resolved over the whole corpus, against the 135 unresolved reads
-// RFC-213 measured before the change. So the payoff was DELIVERED, and that is
-// the opposite of the latent reading above: latent applied only to a zero seen
-// WHILE the stubs still existed. A post-intervention zero cannot say the
-// consumers were never reached -- the same gate asserts they still are, which
-// is what stops a future zero being read as the instrument going dark.
+// THE DELIVERED PAYOFF IS ONE CONSUMER, and citing 135 would overstate it.
+// RFC-213 §6 measured those 135 unresolved reads as 31 at distinctKeyColumns
+// plus 104 at planRowRecordType. planRowRecordType was deleted rather than
+// fixed, so its 104 left with the consumer; bakedIntersectionKeys already read
+// 412/0 before the change. What actually flipped is distinctKeyColumns, 31
+// unresolved to 0 -- precisely the concentrated payoff §6 named, and a real one.
 //
-// The census therefore stays as the instrument that would show the population
-// coming back.
+// The census stays as the instrument that would show the population coming
+// back, and the sqldriver gate keeps asserting the consumers are still reached,
+// so a future zero cannot be read as the instrument going dark.
 //
 // GATED by values.LegIdentityCensusEnabled, like every census on this path: the
 // recorder's first statement is the gate, so a disabled census costs one atomic

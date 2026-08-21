@@ -14134,6 +14134,19 @@ None is speculative: each was re-verified against the tree before booking.
   the derivation from the result value this entry asked for. The text below is the
   ORIGINAL finding, kept as the record of what was wrong.
 
+  **Clause 4 (the re-run count) was NOT done when this box was first ticked,
+  and is done here.** The entry itself demands a re-count, so the box could
+  not close on the derivation alone. Re-measured with the entry's own recipe:
+
+      grep -rn "\.GetResultType()" --include="*.go" pkg/ | grep -v _test | wc -l
+      -> 43
+
+  Booked at 33, re-measured at 50, and 43 today. The command is written out
+  rather than the number asserted, because that is the only form of this claim
+  anyone can check. NOTE for whoever re-runs it: the recipe works only with
+  `--include` QUOTED -- unquoted, fish expands the glob and the whole sweep
+  returns a silent zero.
+
   **Go:** `plans/flat_map.go:86` returns the `UnknownType` singleton with no
   reference to the plan's result value. **Java:**
   `RelationalExpression.java:195-196` derives the result type from the result
@@ -19819,21 +19832,28 @@ one file and left standing in another, because no repo-wide grep for the
 superseded phrasing was run. A correction is not done until that grep returns
 zero across every file and the count is reported.
 
-A frozen historical count has to stay green, which means the gate needs to tell
-one from a live claim MECHANICALLY -- and that is the hard half, because the
-defect that dominated this whole campaign was neither a missing citation nor a
-restated literal. It was PROSE THAT WENT STALE AROUND A SOUND NUMBER: "twelve
-plans return UnknownType" where the ordinal was correctly frozen and only the
-verb was wrong. A rule keyed on digits cannot see that; flipping "returned" to
-"return" changes no number at all. So a frozen count must carry an explicit
-marker the gate can read -- not merely be written in the past tense, which is
-not decidable -- and the marker is what licenses the literal.
+WHAT THIS GATE CANNOT DO, written first because the positive claim kept
+outrunning it. It cannot tell a stale claim from a live one when the prose
+carries NO figure. The defect that produced this very entry was a sentence
+asserting that two files "return the singleton on a branch" -- no number, no
+citation, simply false, and lifted from those files' own stale doc comments. No
+digit rule, citation rule or literal rule fires on it. It also cannot check
+TENSE: an earlier draft here demanded a past-to-present verb flip go red two
+sentences after conceding that past tense is not decidable, which is a
+contradiction, not a specification.
+
+So the gate is a mechanical FLOOR, not the mechanism. Every one of the nine
+defects in this campaign was found by a reviewer reading prose against code, and
+none by any rule proposed here. What the floor buys is that the two shapes which
+ARE decidable stop recurring, and that is worth having precisely because they
+recurred repeatedly while everyone was watching for them.
 
 DONE when: the gate REDS on a census-file comment that states a population with
-no citation; on one that restates the literal while carrying a valid citation
-(the arm a citation-only rule would miss); and on a marked-historical claim
-whose verbs are flipped from past to present with its number left alone (the
-arm a digit-keyed rule would miss, and the one this campaign's own failures
-demand). It stays GREEN on an RFC number, a date, and a correctly marked frozen
-count. Every arm in that enumeration proven by mutation, with each mutation
-shown present and the build result read, not only the test result.
+no citation, and on one that restates the literal while carrying a valid
+citation -- the arm a citation-only rule would miss. It stays GREEN on an RFC
+number, a date, and a count inside an explicitly marked historical block. Each
+arm proven by mutation, with the mutation shown present and the build result
+read, not only the test result. Its scope sentence must say census files ONLY:
+the production comments this campaign corrected -- in executor.go and in
+fk_chain_cardinality.go -- sit outside it by construction, and claiming
+otherwise would be the same over-claim one level up.
