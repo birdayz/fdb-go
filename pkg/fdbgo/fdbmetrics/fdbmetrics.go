@@ -52,10 +52,16 @@ type counterDef struct {
 // counters uses the C++ TransactionMetrics names where one exists, snake_cased
 // with the conventional fdb_client prefix and Prometheus _total suffix.
 //
-// Five entries have no C++ twin and are named on the same convention without
-// one: the GRV cache pair, the RFC-114 connection counters, and
-// grv_in_band_maybe_delivered (basicLoadBalance absorbs that error and counts
-// nothing). The claim was unqualified while four of them already existed.
+// Of the 18 entries, 13 have a C++ twin. The other five are named on the same
+// convention without one, and each says so in its own help text:
+// grv_cache_hits, transaction_retries, connection_failures,
+// coordinator_changes, and grv_in_band_maybe_delivered (basicLoadBalance
+// absorbs that error and counts nothing).
+//
+// The claim was unqualified while four of these already existed. A first attempt
+// to qualify it enumerated "the GRV cache pair" -- there is one such counter,
+// and the phantom second made the arithmetic reach five while hiding that
+// transaction_retries had been left out.
 var counters = []counterDef{
 	{
 		"fdb_client_transactions_commit_started_total", "Commits sent (read-only fast-path commits excluded, matching C++).",
