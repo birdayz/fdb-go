@@ -7266,7 +7266,7 @@ func referencesInformationSchema(ctx antlr.Tree) bool {
 		if tn := atom.TableName(); tn != nil {
 			if fid := tn.FullId(); fid != nil {
 				for _, uid := range fid.AllUid() {
-					if strings.EqualFold(functions.StripIdentifierQuotes(uid.GetText()), "INFORMATION_SCHEMA") {
+					if strings.EqualFold(functions.NormalizeIdentifier(uid.GetText()), "INFORMATION_SCHEMA") {
 						return true
 					}
 				}
@@ -7547,9 +7547,9 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 			continue
 		}
 		// Normalize the table name the same way execCreateSchemaTemplate and
-		// the column/index parsers do (StripIdentifierQuotes upper-cases
+		// the column/index parsers do (NormalizeIdentifier upper-cases
 		// unquoted identifiers), so index lookups by table name match.
-		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
+		tableName := functions.NormalizeIdentifier(td.Uid().GetText())
 		cols, pkCols, tdErr := parseTableDefinition(td, b)
 		if tdErr != nil {
 			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)

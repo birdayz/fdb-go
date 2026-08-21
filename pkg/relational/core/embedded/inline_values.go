@@ -66,7 +66,7 @@ func parseInlineValuesColumnDefinitions(list antlrgen.IUidListWithNestingsContex
 		if item == nil || item.Uid() == nil {
 			return nil, api.NewError(api.ErrCodeSyntaxError, "inline VALUES column name is missing")
 		}
-		definitions[i].Name = functions.StripIdentifierQuotes(item.Uid().GetText())
+		definitions[i].Name = functions.NormalizeIdentifier(item.Uid().GetText())
 		if nested := item.UidListWithNestingsInParens(); nested != nil {
 			children, err := parseInlineValuesColumnDefinitions(nested.UidListWithNestings())
 			if err != nil {

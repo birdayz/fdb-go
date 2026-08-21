@@ -109,7 +109,7 @@ func newSQLCmd() *cobra.Command {
 			// The schema is an SQL identifier: unquoted folds to upper case
 			// (matching CREATE SCHEMA and ?schema= normalization), so the
 			// meta-command catalog lookups (`\d`) and the connection agree.
-			initSchema = functions.StripIdentifierQuotes(initSchema)
+			initSchema = functions.NormalizeIdentifier(initSchema)
 			dsn := buildFDBSQLDSN(cf, databaseURI, initSchema)
 			db, err := sql.Open("fdbsql", dsn)
 			if err != nil {

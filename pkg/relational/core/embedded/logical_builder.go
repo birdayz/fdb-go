@@ -883,7 +883,7 @@ func buildLogicalPlanForInsert(ins antlrgen.IInsertStatementContext) logical.Log
 				if uw == nil || uw.Uid() == nil {
 					continue
 				}
-				cols = append(cols, functions.StripIdentifierQuotes(uw.Uid().GetText()))
+				cols = append(cols, functions.NormalizeIdentifier(uw.Uid().GetText()))
 			}
 		}
 	}
@@ -930,7 +930,7 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		// FullId segment per the parse tree, never a dot split of the
 		// rendering (a delimited identifier may contain a literal dot).
 		uids := el.FullColumnName().FullId().AllUid()
-		col := functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+		col := functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
 		sets = append(sets, logical.Assignment{
 			Column: col,
 			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),

@@ -820,7 +820,7 @@ func (c *EmbeddedConnection) beginTransaction() (*embeddedTx, error) {
 // create, create-drop-create-template.yamsql upper-case to a lower-case
 // create).
 func (c *EmbeddedConnection) SetDefaultSchema(s string) {
-	s = functions.StripIdentifierQuotes(s)
+	s = functions.NormalizeIdentifier(s)
 	c.sess.DefaultSchema = s
 	c.sess.Schema = s
 }

@@ -54,7 +54,7 @@ func parseOnSourceColSpec(spec antlrgen.IIndexColumnSpecContext) (onSourceIndexe
 			"unexpected index column spec node %T", spec)
 	}
 	col := onSourceIndexedColumn{
-		name: functions.StripIdentifierQuotes(sc.GetColumnName().GetText()),
+		name: functions.NormalizeIdentifier(sc.GetColumnName().GetText()),
 	}
 	oc := sc.OrderClause()
 	if oc == nil {
@@ -76,11 +76,11 @@ func parseOnSourceColSpec(spec antlrgen.IIndexColumnSpecContext) (onSourceIndexe
 // build the metadata registered so far, parse key and INCLUDE columns, and
 // run the OnSourceIndexGenerator port below.
 func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, b *metadata.Builder) error {
-	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+	indexName := functions.NormalizeIdentifier(def.GetIndexName().GetText())
 	if err := rejectReservedIndexName(indexName); err != nil {
 		return err
 	}
-	tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
+	tableName := functions.NormalizeIdentifier(def.GetSource().GetText())
 	unique := def.UNIQUE() != nil
 	// OPTIONS(LEGACY_EXTREMUM_EVER) — Java reads it as a presence flag
 	// (DdlVisitor.java:233-234). It can only matter to an aggregate arm, which
@@ -121,7 +121,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	if inc, ok := def.IncludeClause().(*antlrgen.IncludeClauseContext); ok {
 		if ul := inc.UidList(); ul != nil {
 			for _, uid := range ul.AllUid() {
-				name := functions.StripIdentifierQuotes(uid.GetText())
+				name := functions.NormalizeIdentifier(uid.GetText())
 				if !keySet[name] {
 					valueCols = append(valueCols, name)
 				}

@@ -5992,18 +5992,25 @@ func executeInMemorySort(
 
 // recursiveUnionOutputColumns returns the OUTPUT column names of a recursive
 // union leg by walking to its outermost projection plan and reading each slot's
-// alias (or the projection column name when unaliased), upper-cased. Returns nil
+// alias (or the projection column name when unaliased), VERBATIM. Returns nil
 // when no single-child path reaches a projection (e.g. a SELECT * seed), so the
 // caller falls back to the first row's layout. Used to restrict UNION DISTINCT
 // dedup to the CTE's real output columns (cteDedupKeyer), ignoring inert extra
 // columns the temp-table normalization may carry.
+//
+// Two things it must not do, and it did both. It upper-folded, which made the
+// dedup key ask a verbatim-named row for a name it does not carry — see
+// cteDedupKeyer for the wrong answer that produced. And it wrote the folded
+// names back into the slice `GetOutputNames()` handed out, mutating the PLAN's
+// own output schema from an executor helper: a defensive copy is not a
+// tidiness preference here, it is the difference between reading a plan and
+// rewriting one.
 func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 	for cur := p; cur != nil; {
 		if proj, ok := cur.(*plans.RecordQueryProjectionPlan); ok {
-			out := proj.GetOutputNames()
-			for i := range out {
-				out[i] = strings.ToUpper(out[i])
-			}
+			names := proj.GetOutputNames()
+			out := make([]string, len(names))
+			copy(out, names)
 			return out
 		}
 		children := cur.GetChildren()
@@ -6026,16 +6033,26 @@ func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 // Go extension: Java's recursive union has
 // no DISTINCT arm (RecordQueryRecursiveLevelUnionPlan is UNION ALL only).
 type cteDedupKeyer struct {
-	cols []string // canonical output columns, UPPER-cased
+	// cols are the canonical output columns VERBATIM — the spelling the plan
+	// declares, not a folded copy of it.
+	//
+	// This folded, and the failure was a WRONG ANSWER rather than an error. The
+	// bind below is `FieldIndexUnique`, an EXACT name lookup against the row's
+	// own layout: for a recursive CTE whose alias list is quoted lower-case the
+	// row declares `n` while the folded key asked for `N`, so every column bound
+	// dedupOrdAbsent, every row keyed as all-NULL, and UNION DISTINCT collapsed
+	// the entire result to one row. `WITH RECURSIVE r("n") AS (seed UNION …)`
+	// returned [1] where [1,2,3] was correct; the unquoted `r(n)` control
+	// returned all three, which is what makes it a case bug rather than a
+	// recursion bug.
+	cols []string
 	ords map[*values.RecordType][]int
 }
 
 func newCTEDedupKeyer(cols []string) *cteDedupKeyer {
-	upper := make([]string, len(cols))
-	for i, c := range cols {
-		upper[i] = strings.ToUpper(c)
-	}
-	return &cteDedupKeyer{cols: upper, ords: make(map[*values.RecordType][]int)}
+	canonical := make([]string, len(cols))
+	copy(canonical, cols)
+	return &cteDedupKeyer{cols: canonical, ords: make(map[*values.RecordType][]int)}
 }
 
 // dedupOrdAbsent and dedupOrdAmbiguous are the two NON-ordinal outcomes of

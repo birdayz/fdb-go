@@ -6,7 +6,7 @@ import (
 	"fdb.dev/pkg/relational/core/functions"
 )
 
-// TestStripIdentifierQuotes pins the SQL identifier normalization
+// TestNormalizeIdentifier pins the SQL identifier normalization
 // contract: quoted forms (`"…"` or backticks) strip the surrounding
 // pair and preserve case; unquoted forms fold to upper case (mirrors
 // Java SemanticAnalyzer.normalizeString with case-sensitive=false,
@@ -15,7 +15,7 @@ import (
 // identifier text. The helper is the canonical step before catalog
 // lookup, so a regression here would surface as ambiguous-column or
 // undefined-column SQL errors at runtime.
-func TestStripIdentifierQuotes(t *testing.T) {
+func TestNormalizeIdentifier(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		in, want string
@@ -43,8 +43,8 @@ func TestStripIdentifierQuotes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
-			if got := functions.StripIdentifierQuotes(tc.in); got != tc.want {
-				t.Errorf("StripIdentifierQuotes(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := functions.NormalizeIdentifier(tc.in); got != tc.want {
+				t.Errorf("NormalizeIdentifier(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

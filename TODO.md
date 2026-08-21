@@ -19566,3 +19566,52 @@ sits two arms after `CARDINALITY("int_arr") = NULL`, which aborts its block
 (booked separately as `conformance:java-planner-bug`).
 
 Cascades matching change — needs its own RFC and the Graefe gate.
+
+---
+
+## An identifier-agreement harness: perturb the QUERY, oracle on the edge check
+
+RFC-237 closed a defect class by censusing `strings.ToUpper` call sites. That
+instrument is the wrong one, and the evidence is the shape of what it missed
+rather than the count:
+
+- **`usingSource.owns` had no fold to find.** The census cleared the file, and
+  the defect was then INTRODUCED by the fix — a relaxed lookup dropped into a
+  cross-source adjudicator. A census of folds cannot see a defect whose
+  signature is "correct call, wrong adjudication level".
+- **the EXISTS/FlatMap projection arm was a fold and the census still missed
+  it**, because the census was scoped to the files already being edited.
+- **the CTE double-normalize had no `ToUpper` at the call site at all.** It was
+  `StripIdentifierQuotes(FullIdToName(fid))`, where the inner call already
+  normalizes. No sweep for a fold can find a fold spelled as a no-op.
+
+Three reviewers found three disjoint live sites in one change. That is not
+review working; it is a population that was never bounded.
+
+**THE RIGHT INSTRUMENT** turns "did I find every fold?" — unanswerable — into
+"does any authority disagree?", which is checkable. Two design constraints,
+both established the expensive way and neither obvious:
+
+1. **It must perturb QUERY identifiers, not only DDL ones.** The first sketch
+   of this harness was "run the corpus with every DDL identifier quoted and
+   case-shifted". That exercises descriptor → catalog → projection, and it
+   would have been BLIND to the double-normalize: `WITH c("x")` is a SQL-TEXT
+   construct that no amount of schema perturbation generates. Perturbing query
+   identifiers is a materially different and less well-defined instrument, and
+   that difficulty is the point rather than a reason to skip it.
+2. **The oracle is the executor's own consistency check, not just labels.**
+   `edge lookup X: read as RECORD(…), declared RECORD(…)` is what actually
+   fired on three of these — it compares two naming authorities at runtime and
+   is the only thing positioned to notice when they disagree. Label comparison
+   catches the rest. Assert BOTH: the check never fires, and every reported
+   label matches the authored spelling verbatim.
+
+Not built with RFC-237 because it is a new harness over the whole corpus that
+will surface an unknown number of further disagreements — landing it there
+meant shipping it red or fixing whatever it found under that PR's review. It
+needs its own RFC and the query-engine gate, which is exactly the process this
+kind of design question is supposed to go through.
+
+Recorded here rather than left in a review thread: the two constraints above
+are what this cost to learn, and a reader who starts from the obvious
+DDL-perturbation sketch will rebuild the blind version.

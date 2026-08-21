@@ -19,19 +19,21 @@ package conformance_test
 // `"keepcase"` all reach the column, while Java treats quoting as
 // case-PRESERVING and raises 42703 for every spelling but the exact one. Go is
 // MORE permissive, not less — it accepts references Java rejects, rather than
-// rejecting references Java accepts. It also REPORTS the column folded
-// (`KEEPCASE` against Java's `KeepCase`), which is the same fact seen from the
-// result-metadata side.
+// rejecting references Java accepts.
 //
-// This is a READ-SIDE name divergence, not a wire one. The stored proto
-// descriptor keeps the quoted spelling verbatim on both engines
-// (parseColumnDefinitions takes StripIdentifierQuotes' verbatim quoted
-// segment); the fold happens when the row layout is derived for execution, at
-// executor.PositionalTypeForDescriptor, which upper-cases every field name.
-// That split — descriptor case-preserving, row layout folded — is pinned
-// directly by executor.TestPositionalTypeFoldsDescriptorFieldCase, so the
-// "wire is unaffected" half of this entry is measured too and not asserted here
-// by inspection.
+// THE REPORTED-NAME HALF OF THAT FINDING IS CLOSED (RFC-237). Go also used to
+// report the column FOLDED — `KEEPCASE` where Java says `KeepCase` — because
+// every output-naming authority upper-folded. They no longer do: the three
+// agree-accept arms below are byte-identical across the engines, star
+// expansion included, and Go labels even its over-resolved answers with the
+// COLUMN's own spelling rather than the reference's. What survives is
+// LOOKUP-only permissiveness, which is the read-side extension argued at
+// semantic.relaxedPass and recorded in DIVERGENCES.md.
+//
+// It was never a wire divergence. The stored proto descriptor keeps the quoted
+// spelling verbatim on both engines (parseColumnDefinitions takes
+// NormalizeIdentifier's verbatim quoted segment); what folded was the row
+// layout derived for execution, and that is what RFC-237 removed.
 //
 // Per the section contract these assertions state CURRENT behaviour: RED means
 // the divergence moved. If Go starts rejecting the folded spellings (Java

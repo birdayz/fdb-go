@@ -444,7 +444,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	// wins over the reconstructed default ("SUM(v)") as the output column
 	// name.
 	if e.Uid() != nil {
-		outName = functions.StripIdentifierQuotes(e.Uid().GetText())
+		outName = functions.NormalizeIdentifier(e.Uid().GetText())
 	}
 	return fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, argSegs, true
 }
@@ -485,13 +485,13 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 				// segment.
 				uids := fid.AllUid()
 				argQualified = len(uids) > 1
-				argBare = functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+				argBare = functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
 				// EVERY segment is carried, not just the leading ones joined:
 				// an aggregate over a struct descent (`COUNT(a.n.sk)`) needs the
 				// boundaries, and the joined form asks for a source "A.N".
 				argSegs = make([]string, len(uids))
 				for qi, u := range uids {
-					argSegs[qi] = functions.StripIdentifierQuotes(u.GetText())
+					argSegs[qi] = functions.NormalizeIdentifier(u.GetText())
 				}
 				if argQualified {
 					argQualifier = strings.Join(argSegs[:len(uids)-1], ".")
@@ -607,14 +607,14 @@ func splitColumnRef(expr antlrgen.IExpressionContext) (bare, qualifier string, q
 	uids := atom.FullColumnName().FullId().AllUid()
 	parts := make([]string, len(uids))
 	for i, u := range uids {
-		// StripIdentifierQuotes folds unquoted segments and preserves
+		// NormalizeIdentifier folds unquoted segments and preserves
 		// quoted ones — the SQL binding semantics — but DISCARDS the
 		// per-segment quoted flag, so downstream cannot tell `"ID"`
 		// (quoted upper) from `id` (folded). Both bind the same column
 		// today; the flag must be carried (semantic.Identifier per
 		// segment) no later than WS-N Phase D, where case-faithful
 		// registrations make the distinction observable.
-		parts[i] = functions.StripIdentifierQuotes(u.GetText())
+		parts[i] = functions.NormalizeIdentifier(u.GetText())
 	}
 	if len(parts) == 0 {
 		return "", "", false, nil
@@ -682,7 +682,7 @@ func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string,
 	}
 	alias := ""
 	if e.Uid() != nil {
-		alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+		alias = functions.NormalizeIdentifier(e.Uid().GetText())
 	}
 	return colName, alias, nil
 }
@@ -897,7 +897,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"SELECT <qualifier>.* missing qualifier")
 				}
-				qual := functions.StripIdentifierQuotes(e.Uid().GetText())
+				qual := functions.NormalizeIdentifier(e.Uid().GetText())
 				if len(elems) == 1 {
 					projQualifier = qual
 				} else {
@@ -910,7 +910,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
 					if e.Uid() != nil {
-						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
+						countStarAlias = functions.NormalizeIdentifier(e.Uid().GetText())
 					}
 				} else if fn, argCol, argExpr, alias, isDistinct, argQual, argBare, argQualifier, argSegs, isAgg := extractAggFunc(e); isAgg {
 					if containsNestedAggregateInSelectElement(e, argExpr) {
@@ -935,7 +935,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 						// for anonymous-computed slots.
 						alias = ""
 						if e.Uid() != nil {
-							alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+							alias = functions.NormalizeIdentifier(e.Uid().GetText())
 						}
 						if alias != "" {
 							colName = alias
@@ -1258,7 +1258,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 		for _, item := range groupByCtx.AllGroupByItem() {
 			aliasName := ""
 			if item.Uid() != nil {
-				aliasName = functions.StripIdentifierQuotes(item.Uid().GetText())
+				aliasName = functions.NormalizeIdentifier(item.Uid().GetText())
 				// SQL identifiers are case-insensitive, so `GROUP BY
 				// col1 AS x, col2 AS X` must error 42702 even though
 				// the two aliases differ only in case. groupByAliases
@@ -1919,7 +1919,7 @@ func harvestBareColumnRefsOutsideSubqueries(expr antlrgen.IExpressionContext) []
 		}
 		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 			uids := c.FullColumnName().FullId().AllUid()
-			bare := functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+			bare := functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
 			if !seen[bare] {
 				seen[bare] = true
 				bares = append(bares, bare)
@@ -2194,7 +2194,7 @@ func atAliasOf(item *antlrgen.AtomTableItemContext) string {
 	if item == nil || item.GetAtAlias() == nil {
 		return ""
 	}
-	return functions.StripIdentifierQuotes(item.GetAtAlias().GetText())
+	return functions.NormalizeIdentifier(item.GetAtAlias().GetText())
 }
 
 // visibleFromAliases returns the set (upper-cased) of FROM-source aliases
@@ -2489,7 +2489,7 @@ func uidSegments(tableName antlrgen.ITableNameContext) []string {
 	uids := tableName.FullId().AllUid()
 	parts := make([]string, len(uids))
 	for i, u := range uids {
-		parts[i] = functions.StripIdentifierQuotes(u.GetText())
+		parts[i] = functions.NormalizeIdentifier(u.GetText())
 	}
 	return parts
 }
@@ -2615,7 +2615,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			alias := tblName
 			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
 			if item.GetAlias() != nil {
-				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+				alias = functions.NormalizeIdentifier(item.GetAlias().GetText())
 			}
 			extraCrossJoins = append(extraCrossJoins, joinClause{
 				tableName: tblName,
@@ -2629,7 +2629,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		case *antlrgen.SubqueryTableItemContext:
 			alias := ""
 			if item.GetAlias() != nil {
-				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+				alias = functions.NormalizeIdentifier(item.GetAlias().GetText())
 			}
 			if alias == "" {
 				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
@@ -2663,7 +2663,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
 		alias := ""
 		if subItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
+			alias = functions.NormalizeIdentifier(subItem.GetAlias().GetText())
 		}
 		if alias == "" {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
@@ -2744,7 +2744,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	// test's header, and re-running it is a reader's job, not the test's.)
 	leftAlias := ""
 	if atomItem.GetAlias() != nil {
-		leftAlias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
+		leftAlias = functions.NormalizeIdentifier(atomItem.GetAlias().GetText())
 	}
 	if leftAlias == "" {
 		leftAlias = strings.Join(parts, ".")
@@ -2800,7 +2800,7 @@ func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string
 		// hides them (star expansion + unqualified resolution).
 		for _, u := range joins[i].usingUids.AllUid() {
 			joins[i].usingHiddenCols = append(joins[i].usingHiddenCols,
-				strings.ToUpper(functions.StripIdentifierQuotes(u.GetText())))
+				strings.ToUpper(functions.NormalizeIdentifier(u.GetText())))
 			joins[i].usingColTexts = append(joins[i].usingColTexts, u.GetText())
 		}
 		joins[i].onExpr = synth
@@ -2832,7 +2832,7 @@ func synthesizeUsingOnExpr(uidList antlrgen.IUidListContext, leftAlias, rightAli
 	if len(uids) == 0 {
 		return nil, api.NewErrorf(api.ErrCodeSyntaxError, "JOIN ... USING requires at least one column")
 	}
-	// The alias values are NORMALIZED (StripIdentifierQuotes: unquoted folded
+	// The alias values are NORMALIZED (NormalizeIdentifier: unquoted folded
 	// UPPER, quoted verbatim with quotes removed). Splicing one back into SQL
 	// text bare would re-normalize it — a quoted-DDL alias `"e"` (stored `e`)
 	// would fold to `E` and resolve nothing (join-tests-outer.yamsql's USING
@@ -2917,7 +2917,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		// `JOIN Customer c` are picked up. Mirrors the FROM-clause
 		// path in semantic.BuildScopeFromFromClause.
 		if atomItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
+			alias = functions.NormalizeIdentifier(atomItem.GetAlias().GetText())
 		}
 		onExpr, usingUids := joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
 		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr, usingUids: usingUids, segments: parts}, nil
@@ -2953,7 +2953,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		alias := tblName
 		// Same implicit-alias note as InnerJoin.
 		if atomItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
+			alias = functions.NormalizeIdentifier(atomItem.GetAlias().GetText())
 		}
 		onExpr, usingUids := joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
 		return joinClause{tableName: tblName, joinType: jt, alias: alias, onExpr: onExpr, usingUids: usingUids, segments: parts}, nil
@@ -2986,7 +2986,7 @@ func joinOnOrUsing(onCtx antlrgen.IExpressionContext, using antlr.TerminalNode, 
 func joinClauseForSubquerySource(subItem *antlrgen.SubqueryTableItemContext, jt joinType) (joinClause, error) {
 	alias := ""
 	if subItem.GetAlias() != nil {
-		alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
+		alias = functions.NormalizeIdentifier(subItem.GetAlias().GetText())
 	}
 	if alias == "" {
 		return joinClause{}, api.NewError(api.ErrCodeUnsupportedOperation,
@@ -3081,7 +3081,7 @@ func cteNamePredicate(cteScopes map[string]semantic.ScopeSource) func(string) bo
 		return nil
 	}
 	return func(name string) bool {
-		_, ok := cteScopes[strings.ToUpper(functions.StripIdentifierQuotes(name))]
+		_, ok := cteScopes[strings.ToUpper(functions.NormalizeIdentifier(name))]
 		return ok
 	}
 }
@@ -3349,7 +3349,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			return s
 		}
 		if cteScopes != nil {
-			if src, ok := cteScopes[strings.ToUpper(functions.StripIdentifierQuotes(table))]; ok {
+			if src, ok := cteScopes[strings.ToUpper(functions.NormalizeIdentifier(table))]; ok {
 				s.cols = src.Table
 			}
 		}
@@ -3598,5 +3598,5 @@ func columnCounts(cols semantic.Table) map[string]int {
 // user's quoting back at them, matching the spelling every other error in this
 // layer uses.
 func usingColumnKey(colText string) semantic.Identifier {
-	return semantic.FromNormalized(strings.ToUpper(functions.StripIdentifierQuotes(colText)))
+	return semantic.FromNormalized(strings.ToUpper(functions.NormalizeIdentifier(colText)))
 }

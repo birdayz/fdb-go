@@ -7218,7 +7218,7 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				aliases := aliasList.AllFullId()
 				names := make([]string, len(aliases))
 				for j, fid := range aliases {
-					// StripIdentifierQuotes ALREADY applied SQL identifier
+					// NormalizeIdentifier ALREADY applied SQL identifier
 					// semantics — an unquoted alias came back folded UPPER and a
 					// quoted one verbatim — so a second fold here can only
 					// destroy `WITH c("x")`. This is the CAPTURE, which is why
@@ -7401,7 +7401,7 @@ func buildLogicalPlanForQueryWithCatalog(
 				aliases := aliasList.AllFullId()
 				names := make([]string, len(aliases))
 				for j, fid := range aliases {
-					// StripIdentifierQuotes ALREADY applied SQL identifier
+					// NormalizeIdentifier ALREADY applied SQL identifier
 					// semantics — an unquoted alias came back folded UPPER and a
 					// quoted one verbatim — so a second fold here can only
 					// destroy `WITH c("x")`. This is the CAPTURE, which is why
@@ -8167,7 +8167,7 @@ func exactCTEDefinitionRecordType(
 			//
 			// This site being verbatim was necessary and not sufficient: the
 			// alias was arriving here ALREADY folded, from a DOUBLE STRIP at
-			// the parse capture (`StripIdentifierQuotes(FullIdToName(fid))`,
+			// the parse capture (`NormalizeIdentifier(FullIdToName(fid))`,
 			// where FullIdToName already strips, so the outer call saw an
 			// unquoted `x` and upper-cased it). Four sites APPLY this list and
 			// one CAPTURES it; every application was correct and every one was
@@ -11892,7 +11892,7 @@ func (p *existsSubqueryPlanner) subqueryReferencesOuterColumn(body antlr.Tree) b
 			segments := make([]semantic.Identifier, 0, len(uids))
 			for _, uid := range uids {
 				segments = append(segments,
-					semantic.FromNormalized(functions.StripIdentifierQuotes(uid.GetText())))
+					semantic.FromNormalized(functions.NormalizeIdentifier(uid.GetText())))
 			}
 			if _, _, _, err := outerScope.ResolvePathNested(segments); err == nil {
 				found = true

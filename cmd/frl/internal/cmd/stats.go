@@ -96,7 +96,7 @@ func (f *statsAddressFlags) register(c *cobra.Command) {
 
 // describe renders the target for messages and confirmation prompts.
 func (f *statsAddressFlags) describe() string {
-	return f.database + "/" + functions.StripIdentifierQuotes(f.schema)
+	return f.database + "/" + functions.NormalizeIdentifier(f.schema)
 }
 
 // withStatsConn resolves the address, opens one pinned SQL connection, and
@@ -129,7 +129,7 @@ func (f *statsAddressFlags) withStatsConn(
 	// The schema is an SQL identifier: unquoted folds to upper case (the same
 	// rule CREATE SCHEMA applies), so `--schema main` addresses the schema that
 	// `create schema /db/main` created.
-	schema := functions.StripIdentifierQuotes(f.schema)
+	schema := functions.NormalizeIdentifier(f.schema)
 	dsn := buildFDBSQLDSN(target.clusterFile(), f.database, schema)
 	db, err := sql.Open("fdbsql", dsn)
 	if err != nil {

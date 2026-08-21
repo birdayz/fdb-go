@@ -1694,7 +1694,7 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 		// struct declares`.
 		name := values.OrdinalFieldName(i)
 		if ewon.Uid() != nil {
-			name = functions.StripIdentifierQuotes(ewon.Uid().GetText())
+			name = functions.NormalizeIdentifier(ewon.Uid().GetText())
 		}
 		fields = append(fields, values.RecordConstructorField{Name: name, Value: v})
 	}
@@ -1706,7 +1706,7 @@ func (r *Resolver) walkRecordConstructorInner(rc antlrgen.IRecordConstructorCont
 	// dropped here, so every named literal produced an ANONYMOUS record and
 	// the declared name never reached result metadata.
 	if ofType := rcc.OfTypeClause(); ofType != nil && ofType.Uid() != nil {
-		rcv.SetTypeName(functions.StripIdentifierQuotes(ofType.Uid().GetText()))
+		rcv.SetTypeName(functions.NormalizeIdentifier(ofType.Uid().GetText()))
 	}
 	return rcv, nil
 }

@@ -118,11 +118,17 @@ describing the bug it sat on.
 The class-level check, with its positive control:
 
 ```
-$ grep -rnE "StripIdentifierQuotes\((functions\.)?(FullIdToName|StripIdentifierQuotes)\(" --include='*.go' pkg/
-0 code hits          # two hits are this RFC's own prose, quoted in comments
-$ grep -rl 'StripIdentifierQuotes' --include='*.go' pkg/ | wc -l
-18                   # the control: the symbol is reachable and the pattern well-formed
+$ grep -rnE "NormalizeIdentifier\((functions\.)?(FullIdToName|NormalizeIdentifier)\(" --include='*.go' pkg/
+0 code hits          # any hits are this RFC's own prose, quoted in comments
+$ grep -rl 'NormalizeIdentifier' --include='*.go' pkg/ | wc -l
+19                   # the control: the symbol is reachable and the pattern well-formed
 ```
+
+**And the function is renamed.** `StripIdentifierQuotes` → `NormalizeIdentifier`,
+81 references. A comment guarding a name that lies is a weaker fix than a name
+that does not: `NormalizeIdentifier(FullIdToName(fid))` reads as obviously
+wrong at the call site, where `StripIdentifierQuotes(FullIdToName(fid))` read
+as a defensive no-op — which is exactly how it survived.
 
 Removing that capture fold then ARMED two more: the recursive-CTE output-row
 builders folded too, and had been agreeing with the capture rather than being

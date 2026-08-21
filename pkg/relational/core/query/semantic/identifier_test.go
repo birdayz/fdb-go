@@ -159,7 +159,7 @@ func TestFromNormalizedDiscardsTheQuotingFlag(t *testing.T) {
 	t.Parallel()
 	// The captured text of a QUOTED identifier is indistinguishable from an
 	// unquoted one that happened to be written in the same case, because
-	// StripIdentifierQuotes returns bare text either way.
+	// NormalizeIdentifier returns bare text either way.
 	fromQuoted := FromNormalized("x")
 	if fromQuoted.WasQuoted() {
 		t.Fatal("FromNormalized now reports WasQuoted — the quoting bit survives the " +

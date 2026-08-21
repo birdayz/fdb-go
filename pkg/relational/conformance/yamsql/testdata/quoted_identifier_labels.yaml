@@ -142,6 +142,32 @@ tests:
       - [1]
       - [2]
       - [3]
+  # BARE `UNION` — the DISTINCT arm, and a WRONG-ANSWER path the UNION ALL pair
+  # above cannot see.
+  #
+  # The dedup keyer binds each canonical output column to the row's layout by
+  # EXACT name (`FieldIndexUnique`), and both it and the column list it is
+  # given were upper-folded. For a quoted lower-case alias the row declares `n`
+  # and the key asked for `N`, so every column bound ABSENT, every row keyed as
+  # all-NULL, and DISTINCT collapsed the whole result to one row: `[1]` instead
+  # of `[1,2,3]`. No error — just missing rows.
+  #
+  # The unquoted control below is what makes it a CASE bug rather than a
+  # recursion or dedup bug: same query, same dedup path, all three rows.
+  - query: WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
+    unordered: true
+    columns: ["n"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
+    unordered: true
+    columns: ["N"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
   # A quoted alias on a projection that also carries an EXISTS. The FlatMap
   # this builds mints its result type in its OWN arm, not through the plain
   # projection's naming authority, and that arm folded: the query reported

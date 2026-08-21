@@ -128,7 +128,7 @@ func normalizeSQL(sql string) string {
 // the same reason — case is significant there:
 //   - single quotes '...' — string literals (the value's case is data)
 //   - double quotes "..." and backticks `...` — DELIMITED IDENTIFIERS, which
-//     are case-SENSITIVE in this engine (StripIdentifierQuotes preserves their
+//     are case-SENSITIVE in this engine (NormalizeIdentifier preserves their
 //     case; only UNQUOTED identifiers fold to upper). Folding `"a"` and `"A"`
 //     together here would give two distinct columns one cache key — a
 //     wrong-plan bug in the same family as the GetText() non-injectivity.

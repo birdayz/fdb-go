@@ -609,7 +609,7 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// it is NOT plumbing CASE_SENSITIVE_IDENTIFIERS — Java keeps a
 				// quoted name verbatim in both modes, so no setting makes `"K"`
 				// reach `"k"`. It is preserving the QUOTING BIT through
-				// StripIdentifierQuotes/FromNormalized, which discards it
+				// NormalizeIdentifier/FromNormalized, which discards it
 				// today; §3.3 records the probe showing a WasQuoted() gate is
 				// inert for exactly that reason.
 				name: "a quoted USING must not hide the unquoted column",

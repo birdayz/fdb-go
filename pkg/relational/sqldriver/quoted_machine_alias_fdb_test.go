@@ -3,7 +3,7 @@ package sqldriver_test
 // A QUOTED, machine-shaped table alias (`AS "q$1"`, `AS "Q$DUP1"` — the
 // lexer admits $ inside quoted identifiers) must resolve IDENTICALLY in
 // every position. The parse capture strips quotes early
-// (StripIdentifierQuotes keeps quoted text verbatim), and the embedded
+// (NormalizeIdentifier keeps quoted text verbatim), and the embedded
 // builders used to re-wrap those captured strings with NewUnquoted —
 // re-FOLDING the verbatim `q$1` to `Q$1` — so the FROM registration and
 // the quote-aware reference channel disagreed on the same alias: the
