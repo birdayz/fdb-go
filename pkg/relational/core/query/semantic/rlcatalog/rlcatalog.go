@@ -328,7 +328,7 @@ func columnForField(f protoreflect.FieldDescriptor, enclosing []protoreflect.Ful
 	// IN, so the descriptor's spelling IS the SQL name. Folding it here
 	// published a second spelling of the same column and put the catalog into
 	// disagreement with the row layout, which reads its slot names from the
-	// same descriptor (values.FieldNameForProtoField). RFC-236.
+	// same descriptor (values.FieldNameForProtoField). RFC-237.
 	col := semantic.Column{
 		Id:       semantic.FromNormalized(recordlayer.ToUserIdentifier(string(f.Name()))),
 		Type:     protoFieldToSQL(elemF),

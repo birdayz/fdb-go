@@ -78,7 +78,14 @@ var bannedCommentPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)@claude\b`),
 	// Review-cycle labels ("review round 2", "Round-12 reviewer", "round-4
 	// review-found"): WHEN in the process, which rots exactly like a shift tag.
-	regexp.MustCompile(`(?i)\breview(er)?s?[-\s]+round\b|\bround[-\s]*[0-9]+[-\s]+review`),
+	//
+	// `rounds?` and not `round`: the PLURAL is the form that appears when the
+	// attribution is a narrative rather than a label ("successive review rounds
+	// then found"), and it is the form that shipped past this gate. `\bround\b`
+	// rejected it outright — the trailing `s` is a word character, so the
+	// boundary never matched — which made the singular-only pattern read as
+	// coverage of a class it half-covered.
+	regexp.MustCompile(`(?i)\breview(er)?s?[-\s]+rounds?\b|\bround[-\s]*[0-9]+[-\s]+review`),
 }
 
 // hygieneAllowlist exempts individual offenses from the gate. Entries are
@@ -103,6 +110,15 @@ var hygieneAllowlist = []string{
 	"names them explicitly (\"no `per @claude`\"",
 	`comment that says "this points a reviewer at the failing file"`,
 	`Review-cycle labels ("review round 2"`,
+	// The plural arm's own rationale, which has to name the form it added.
+	`attribution is a narrative rather than a label ("successive review rounds`,
+	// The flowed-scan rationale, reported as the whole flowed group because the
+	// quoted form is itself wrapped. Scoped to a fragment only that block
+	// contains.
+	`is the same attribution as "review rounds", and the per-line scan above cannot see it`,
+	// The accepted-cases heading in TestBannedCommentPatterns_GenericAttribution,
+	// which contrasts fixpoint/retry "rounds" with review ones.
+	"// Rounds that are not review rounds.",
 }
 
 // generatedMarker is Go's official generated-file convention
@@ -221,8 +237,208 @@ func isGeneratedFile(src []byte, f *ast.File) bool {
 	return f != nil && ast.IsGenerated(f)
 }
 
+// flowComment renders a comment group as one line: markers stripped, every run
+// of whitespace (newlines included) collapsed to a single space. It is what
+// lets a banned phrase be recognised across a line wrap, which is how the
+// author of a comment actually reads it.
+func flowComment(cg *ast.CommentGroup) string {
+	flowed, _ := flowCommentWithOrigin(cg)
+	return flowed
+}
+
+// normalisedGroupLines is every line of the group with its markers removed and
+// its whitespace runs collapsed — one entry per raw line, in order, so a caller
+// iterating raw lines can index straight into it.
+func normalisedGroupLines(cg *ast.CommentGroup) []string {
+	var out []string
+	for _, c := range cg.List {
+		for _, line := range commentLines(c) {
+			out = append(out, strings.Join(strings.Fields(line), " "))
+		}
+	}
+	return out
+}
+
+// flowCommentWithOrigin returns the flowed group together with, for every byte
+// of it, the index of the group line that byte came from.
+//
+// The origin map is what lets a match be attributed to a single source line by
+// POSITION. Attributing by text instead — searching the lines for the matched
+// substring — collapses two occurrences of the same phrase into one, so an
+// exempt occurrence silently covers a later wrapped one.
+//
+// Joining separator bytes take the PRECEDING line's index. A separator can only
+// be interior to a match when the match also covers real characters on both
+// sides, in which case those characters already disagree and the match is
+// correctly seen as spanning.
+func flowCommentWithOrigin(cg *ast.CommentGroup) (string, []int) {
+	var b strings.Builder
+	var origin []int
+	last := -1
+	for i, line := range normalisedGroupLines(cg) {
+		if line == "" {
+			continue
+		}
+		if last >= 0 {
+			b.WriteByte(' ')
+			origin = append(origin, last)
+		}
+		b.WriteString(line)
+		for j := 0; j < len(line); j++ {
+			origin = append(origin, i)
+		}
+		last = i
+	}
+	return b.String(), origin
+}
+
+// commentLines splits one comment into its text lines with every marker
+// removed: the `//` or `/*`/`*/` delimiters, and the ` * ` leader convention
+// that decorates each line of a block comment.
+//
+// The leader is not cosmetic to strip. Left in place, a phrase wrapped inside a
+// block comment flows as "review * rounds" — which no pattern matches, so the
+// wrap gate would be bypassed by nothing but a choice of comment style. The
+// same splitting feeds the per-line scan, so both passes agree on what a "line"
+// of a block comment is.
+func commentLines(c *ast.Comment) []string {
+	text := c.Text
+	block := strings.HasPrefix(text, "/*")
+	switch {
+	case strings.HasPrefix(text, "//"):
+		text = text[2:]
+	case block:
+		text = strings.TrimSuffix(strings.TrimPrefix(text, "/*"), "*/")
+	}
+	lines := strings.Split(text, "\n")
+	if !block {
+		return lines
+	}
+	for i, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "*") {
+			lines[i] = trimmed[1:]
+		}
+	}
+	return lines
+}
+
+// commentGroupOffenses is the whole per-group decision, taking its inputs
+// explicitly so a test can drive every arm without a source tree. That
+// separation is the point: the wrapped arm has NO offender in the repository —
+// deliberately — so the full-tree run cannot exercise it, and a green there
+// would say nothing about whether the flowed pass works.
+//
+// lineOf maps a position to a 1-based line, so the caller owns the FileSet.
+func commentGroupOffenses(rel string, cg *ast.CommentGroup, lineOf func(token.Pos) int) []string {
+	var offenses []string
+
+	// The per-line pass. Reporting is once per LINE even when several patterns
+	// hit it — a role noun inside a cycle label matches both the bare-role and
+	// the label pattern — because the offense string IS the line, so the
+	// allowlist decision is about the text and not about which pattern found
+	// it.
+	//
+	// Matching runs on the NORMALISED line — markers stripped, whitespace runs
+	// collapsed — which is the identical text the flowed pass sees. That
+	// agreement is load-bearing rather than tidy: a banned form written with a
+	// doubled space inside it matches only after flowing, and a per-line pass
+	// reading the un-normalised line would miss it while the flowed pass
+	// attributed it back to that line as already handled. It escaped both.
+	//
+	// REPORTING still quotes the raw line, because that is what is in the file
+	// and what an allowlist entry is written against.
+	norm := normalisedGroupLines(cg)
+	i := 0
+	for _, c := range cg.List {
+		base := lineOf(c.Slash)
+		raw := strings.Split(c.Text, "\n")
+		for r := range raw {
+			line := norm[i]
+			i++
+			if !matchesBanned(line) {
+				continue
+			}
+			offense := rel + ":" + strconv.Itoa(base+r) + ": " + strings.TrimSpace(raw[r])
+			if allowlisted(offense) {
+				continue
+			}
+			offenses = append(offenses, offense)
+		}
+	}
+
+	// A banned phrase does not have to sit on one line. Wrap it and the
+	// per-line scan above cannot see it — the match spans the break, while the
+	// reader sees one sentence. This gate's own prose says a gate whose wording
+	// is stricter than its patterns is worse than none, and a per-line-only
+	// scan is exactly that.
+	//
+	// So the group is scanned again as ONE flowed string, reported against the
+	// group's first line because a wrapped phrase has no single line to blame.
+	//
+	// Scoped per MATCH, not per pattern and not per group. An earlier
+	// per-pattern form said "this pattern already had a verdict on some line,
+	// so skip it here", which is wrong in exactly the case that matters: a
+	// group holding an ALLOWLISTED occurrence of a pattern and, further down, a
+	// genuine WRAPPED occurrence of the same pattern reported nothing at all —
+	// the exemption granted to the first silently covered the second. This
+	// file's own prose is such a group, so the hole was live here.
+	//
+	// So each match is judged alone, and located by POSITION rather than by its
+	// text. Searching the lines for a match's text was the same bug one level
+	// down: with the identical phrase on an exempt line and again in a wrap,
+	// both occurrences find the exempt line and the wrapped one disappears. The
+	// earlier version of this test dodged that by using the singular on one side
+	// and the plural on the other, so it passed for the wrong reason.
+	//
+	// Attribution is therefore: a match belongs to the per-line pass exactly
+	// when every character of it came from ONE source line. Since both passes
+	// now run the same regex over the same normalised text, such a match was
+	// necessarily found there too — reported or exempted — so skipping it here
+	// is sound rather than hopeful. Anything else spans a wrap and is reported,
+	// allowlisted against a WINDOW around the match rather than the whole
+	// flowed group, since a group-wide check lets any exempt fragment anywhere
+	// exempt everything else.
+	flowed, lineAt := flowCommentWithOrigin(cg)
+	for _, re := range bannedCommentPatterns {
+		for _, loc := range re.FindAllStringIndex(flowed, -1) {
+			if lineAt[loc[0]] == lineAt[loc[1]-1] {
+				continue // the per-line pass owns this occurrence
+			}
+			offense := rel + ":" + strconv.Itoa(lineOf(cg.Pos())) + ": " +
+				flowedWindow(flowed, loc[0], loc[1])
+			if allowlisted(offense) {
+				continue
+			}
+			offenses = append(offenses, offense)
+		}
+	}
+	return offenses
+}
+
+// flowedWindowContext is how much text either side of a wrapped match is
+// reported. Enough to identify the sentence in a failure message and to write a
+// targeted allowlist entry against; small enough that an exemption cannot span
+// a whole comment block.
+const flowedWindowContext = 80
+
+func flowedWindow(flowed string, start, end int) string {
+	lo := max(start-flowedWindowContext, 0)
+	hi := min(end+flowedWindowContext, len(flowed))
+	w := flowed[lo:hi]
+	if lo > 0 {
+		w = "…" + w
+	}
+	if hi < len(flowed) {
+		w += "…"
+	}
+	return w
+}
+
 // TestSourceCommentHygiene scans every tracked Go file in the repository and
-// fails, with file:line, on any comment line matching a banned pattern.
+// fails, with file:line, on any comment matching a banned pattern — per line,
+// and again with the whole group flowed onto one line so a phrase broken across
+// a wrap cannot slip through.
 func TestSourceCommentHygiene(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
@@ -254,23 +470,9 @@ func TestSourceCommentHygiene(t *testing.T) {
 			sawSelf = true
 		}
 
+		lineOf := func(p token.Pos) int { return fset.Position(p).Line }
 		for _, cg := range f.Comments {
-			for _, c := range cg.List {
-				base := fset.Position(c.Slash).Line
-				for i, line := range strings.Split(c.Text, "\n") {
-					for _, re := range bannedCommentPatterns {
-						if !re.MatchString(line) {
-							continue
-						}
-						offense := rel + ":" + strconv.Itoa(base+i) + ": " + strings.TrimSpace(line)
-						if allowlisted(offense) {
-							continue
-						}
-						offenses = append(offenses, offense)
-						break // one report per comment line, even if several patterns hit
-					}
-				}
-			}
+			offenses = append(offenses, commentGroupOffenses(rel, cg, lineOf)...)
 		}
 	}
 
@@ -322,6 +524,13 @@ func TestBannedCommentPatterns_GenericAttribution(t *testing.T) {
 		"// 3.14 -> TRUE. Round-12 reviewer flagged the missing values.NullableDouble",
 		"// read len(stmts.AllStatement()) before nil-checking. Round-2 review",
 		"// pins the two round-4 review-found silent-wrong",
+		// The PLURAL, which the singular-anchored pattern let through: the
+		// trailing `s` is a word character, so `\bround\b` never matched. It is
+		// the form a narrative attribution takes rather than a label, and it was
+		// live in the tree (a CTE registration comment ending "the exact
+		// two-authorities anti-pattern").
+		"// two-authorities anti-pattern (review rounds 3-7).",
+		"// while the check was optional, successive review rounds found the bound absent",
 	}
 	for _, line := range rejected {
 		if !matchesBanned(line) {
@@ -355,6 +564,147 @@ func TestBannedCommentPatterns_GenericAttribution(t *testing.T) {
 // so the pattern set can be asserted directly instead of only through a
 // whole-tree scan (which can only ever prove the tree is currently clean, never
 // that a pattern would catch anything).
+// TestBannedCommentPatterns_SurviveALineWrap pins the flowed scan. The
+// full-tree gate cannot pin it: the tree has no wrapped offender (that is the
+// point), so a green there is a green over an empty set and says nothing about
+// whether the flowed pass works.
+//
+// The wrap is not an exotic case. A comment is written as prose and hard-wrapped
+// afterwards, so WHICH line a phrase lands on is decided by column width, not by
+// the author — the same sentence is caught or missed depending on where it
+// started. A per-line-only scan therefore covers a random subset of what its
+// prose claims.
+func TestBannedCommentPatterns_SurviveALineWrap(t *testing.T) {
+	t.Parallel()
+
+	// Each case is a comment group whose banned phrase straddles the break, and
+	// whose per-line halves are innocuous on their own — that is what makes the
+	// wrap a bypass rather than a near miss, and the loop below asserts it
+	// rather than trusting it.
+	//
+	// Every case is a MULTI-WORD pattern, because those are the only ones a
+	// wrap can split: the single-word bans (a bare role noun, a bot handle, a
+	// shift tag) survive any wrap, since a break falls between words and
+	// flowing rejoins them with the same single space.
+	wrapped := []*ast.CommentGroup{
+		{List: []*ast.Comment{
+			{Text: "// while the check was optional here, successive review"},
+			{Text: "// rounds found the bound absent on one type after another."},
+		}},
+		{List: []*ast.Comment{
+			{Text: "// plan-time ordinals, from round-2"},
+			{Text: "// review on the ordinal accessors."},
+		}},
+		{List: []*ast.Comment{
+			{Text: "// pins the two round-4"},
+			{Text: "// review-found silent-wrong answers."},
+		}},
+		// A BLOCK comment is one ast.Comment holding every line, so the
+		// per-line scan splits it internally and the flowed pass has to strip
+		// the ` * ` leader convention as well as the outer delimiters. Leave the
+		// leader in and the flowed text reads "review * rounds", which no
+		// pattern matches — the wrap gate would be bypassed by nothing more
+		// than a comment style.
+		{List: []*ast.Comment{
+			{Text: "/*\n * while the check was optional here, successive review\n * rounds found the bound absent.\n */"},
+		}},
+	}
+	// lineOf is a stand-in FileSet: every synthetic comment reports line 1,
+	// which is all the reporting needs.
+	lineOf := func(token.Pos) int { return 1 }
+
+	for _, cg := range wrapped {
+		for _, c := range cg.List {
+			if matchesBanned(c.Text) {
+				t.Fatalf("a half of this case matches on its own, so it does not test the "+
+					"wrap: %q", c.Text)
+			}
+		}
+		if got := commentGroupOffenses("x.go", cg, lineOf); len(got) == 0 {
+			t.Errorf("a banned phrase split across a line wrap was ACCEPTED: %q", flowComment(cg))
+		}
+	}
+
+	// And flowing must not INVENT a match: joining adjacent innocuous lines is
+	// the risk the flowed pass introduces, so the accepted direction is pinned
+	// too.
+	innocuous := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: "// Each round of the fixpoint re-fires the rule; the ordering is"},
+		{Text: "// reviewed against the Java planner before every metadata bump."},
+	}}
+	if got := commentGroupOffenses("x.go", innocuous, lineOf); len(got) > 0 {
+		t.Errorf("flowing two innocuous lines manufactured an attribution: %v", got)
+	}
+
+	// A plain single-line hit must be reported ONCE, not again from the flowed
+	// pass. Without the per-pattern `settled` bookkeeping every ordinary
+	// offense would be double-counted, which inflates the failure list and
+	// makes a real second offense in the same group hard to see.
+	plain := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: "// the original value. Caught by reviewer round 7."},
+		{Text: "// The rest of this comment is innocuous."},
+	}}
+	if got := commentGroupOffenses("x.go", plain, lineOf); len(got) != 1 {
+		t.Errorf("a single-line offense must be reported exactly once, got %d: %v", len(got), got)
+	}
+
+	// An EXEMPTION MUST NOT SPREAD. A group holding an allowlisted occurrence
+	// of a pattern and, further down, a genuine wrapped occurrence of the SAME
+	// pattern must still report the second one.
+	//
+	// This is not hypothetical and it is not remote: this very file is such a
+	// group. Its prose has to quote the banned forms to define them, those
+	// quoting lines are allowlisted, and a per-pattern "already settled"
+	// suppression therefore made every wrapped attribution anywhere in the same
+	// comment block invisible — in the one file most likely to contain one.
+	mixed := &ast.CommentGroup{List: []*ast.Comment{
+		// Allowlisted verbatim (it is one of this gate's own self-quoting lines).
+		{Text: `// Review-cycle labels ("review round 2", "Round-12 reviewer", "round-4`},
+		{Text: `// review-found"): WHEN in the process.`},
+		{Text: "// Separately, and further down: successive review"},
+		{Text: "// rounds found the bound absent on one type after another."},
+	}}
+	got := commentGroupOffenses("x.go", mixed, lineOf)
+	if len(got) == 0 {
+		t.Error("a wrapped attribution was suppressed by an allowlisted occurrence of the " +
+			"same pattern earlier in the group — an exemption must scope to its own match")
+	}
+	for _, o := range got {
+		if strings.Contains(o, "Review-cycle labels") {
+			t.Errorf("the allowlisted line was reported after all: %q", o)
+		}
+	}
+
+	// The same shape with IDENTICAL text on both sides. The case above uses the
+	// singular on the exempt line and the plural in the wrap, so a suppression
+	// keyed on the matched TEXT rather than on the OCCURRENCE still reported the
+	// second one — the test passed for the wrong reason. Here both occurrences
+	// carry the SAME spelling, so an occurrence must be located by position or
+	// the wrapped one is attributed to the exempt line and vanishes.
+	sameText := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: `// Review-cycle labels ("review rounds 2-4") are what this bans.`},
+		{Text: "// Separately, and further down: successive review"},
+		{Text: "// rounds found the bound absent on one type after another."},
+	}}
+	if got := commentGroupOffenses("x.go", sameText, lineOf); len(got) != 2 {
+		t.Errorf("expected the exempt line AND the wrapped occurrence to be judged separately "+
+			"(2 offenses: the quoting line is not on the allowlist in this synthetic group), "+
+			"got %d: %v", len(got), got)
+	}
+
+	// Flowing COLLAPSES whitespace, so a form the per-line regex misses can
+	// appear only after flowing. Attributing that match back to "the line it
+	// came from" then hides it: the line never matched, so no pass reports it.
+	// Two spaces is all it takes.
+	collapsed := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: "// see audit   #12 for the rationale."},
+	}}
+	if got := commentGroupOffenses("x.go", collapsed, lineOf); len(got) != 1 {
+		t.Errorf("a banned form that only appears once whitespace is collapsed must still be "+
+			"reported, got %d: %v", len(got), got)
+	}
+}
+
 func matchesBanned(line string) bool {
 	for _, re := range bannedCommentPatterns {
 		if re.MatchString(line) {

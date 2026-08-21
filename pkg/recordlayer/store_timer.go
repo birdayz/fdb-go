@@ -42,6 +42,23 @@ const (
 	// number means to a consumer (bytes, not occurrences) even though the
 	// storage is identical.
 	KindSize
+
+	// KindSizeDistribution is Java's StoreTimer.SizeEvent
+	// (StoreTimer.java:401-402), which is a DIFFERENT thing from the Count above
+	// despite the shared word "size", and the difference is not cosmetic:
+	//
+	//   - a size Count answers "how many bytes in total", so one number says
+	//     everything and Java increments it;
+	//   - a SizeEvent answers "how big was it each time" — Java records it with
+	//     recordSize (StoreTimer.java:569-571), which adds the MAGNITUDE to
+	//     cumulativeValue and the OBSERVATION to count, and getKeysAndValues
+	//     then emits both `_count` and `_size` (StoreTimer.java:756-757).
+	//
+	// Collapsing the second onto the first loses the observation count and
+	// reports a sum of magnitudes under a key that reads as a count — for the
+	// sliding window's SW_WINDOW_COUNT that would render "the window was size 2,
+	// then 2, then 1" as the number 5.
+	KindSizeDistribution
 )
 
 // String renders the kind for diagnostics.
@@ -53,6 +70,8 @@ func (k Kind) String() string {
 		return "count"
 	case KindSize:
 		return "size"
+	case KindSizeDistribution:
+		return "size_distribution"
 	case KindUnspecified:
 		return "unspecified"
 	default:
@@ -248,6 +267,20 @@ func (t *StoreTimer) IncrementBy(event Event, amount int64) {
 	t.getOrCreateCounter(event).Increment(amount)
 }
 
+// RecordSize records one observation of a magnitude — Java's
+// StoreTimer.recordSize (StoreTimer.java:569-571), which is Counter.record: the
+// SIZE accumulates in CumulativeValue and the OBSERVATION in Count.
+//
+// Deliberately not Increment: a KindSizeDistribution event is asked "how big was
+// it each time", and folding the magnitude into Count would answer a question
+// nobody asked with a number that looks like an answer to this one.
+func (t *StoreTimer) RecordSize(event Event, size int64) {
+	if t == nil {
+		return
+	}
+	t.getOrCreateCounter(event).Record(size)
+}
+
 // GetCounter returns the counter for the given event, or nil if never recorded.
 func (t *StoreTimer) GetCounter(event Event) *Counter {
 	if t == nil {
@@ -356,10 +389,16 @@ func (t *StoreTimer) Add(other *StoreTimer) {
 // StoreTimer.getKeysAndValues produces (StoreTimer.java:747-780) and feeds to
 // KeyValueLogMessage.
 //
-// The suffix rules are Java's, verbatim: every event emits `<name>_count`, and
+// The suffix rules are Java's, verbatim: every event emits `<name>_count`; a
+// SizeEvent additionally emits `<name>_size` carrying the summed magnitudes; and
 // a timed event additionally emits `<name>_micros` carrying nanoseconds divided
 // by 1000 with integer truncation. A Count — including a size Count — emits
 // only `_count`, because its cumulative value is 0 by construction.
+//
+// The SizeEvent arm comes FIRST in Java (StoreTimer.java:755-759) and so does it
+// here: Java tests `instanceof SizeEvent` before `instanceof Count`, so a
+// SizeEvent gets `_size` even though its cumulative value would also satisfy the
+// timed branch's shape.
 //
 // This is the LOGGING surface and is deliberately distinct from the Prometheus
 // exposition in pkg/recordlayer/rlmetrics, which speaks that ecosystem's
@@ -377,8 +416,13 @@ func (t *StoreTimer) KeysAndValues() map[string]int64 {
 		}
 		ev := c.Event()
 		result[ev.Name+"_count"] = c.Count()
-		if ev.Kind == KindTimed {
+		switch ev.Kind {
+		case KindSizeDistribution:
+			result[ev.Name+"_size"] = c.CumulativeValue()
+		case KindTimed:
 			result[ev.Name+"_micros"] = c.CumulativeValue() / 1000
+		case KindCount, KindSize, KindUnspecified:
+			// Cumulative value is 0 by construction; only `_count` is meaningful.
 		}
 		return true
 	})

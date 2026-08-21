@@ -31,6 +31,8 @@ func fleetProgressPrinter(cmd *cobra.Command) func(fleet.Event) {
 		switch ev.Outcome {
 		case fleet.OutcomeBuilt:
 			fmt.Fprintf(out, "%s: built %v (%d records scanned)\n", ev.Target, ev.Indexes, ev.Records)
+		case fleet.OutcomeCollected:
+			fmt.Fprintf(out, "%s: collected %d types (%d records scanned)\n", ev.Target, ev.Types, ev.Records)
 		case fleet.OutcomeNoWork:
 			fmt.Fprintf(out, "%s: nothing to build\n", ev.Target)
 		case fleet.OutcomeMigrated:
@@ -49,8 +51,8 @@ func fleetProgressPrinter(cmd *cobra.Command) func(fleet.Event) {
 // between passes to see a fleet converging.
 func fleetSummary(cmd *cobra.Command, res fleet.Result) {
 	fmt.Fprintf(cmd.OutOrStdout(),
-		"targets=%d migrated=%d skipped=%d built=%d no-work=%d failed=%d refused=%d\n",
-		res.Total, res.Migrated, res.Skipped, res.Built, res.NoWork, res.Failed, res.Refused)
+		"targets=%d migrated=%d skipped=%d built=%d collected=%d no-work=%d failed=%d refused=%d\n",
+		res.Total, res.Migrated, res.Skipped, res.Built, res.Collected, res.NoWork, res.Failed, res.Refused)
 }
 
 // fleetOpen dials FDB and opens the relational catalog the sqldriver writes
@@ -260,4 +262,61 @@ func fleetDescribeVersions(latest map[string]int) string {
 	}
 	sort.Strings(parts)
 	return "template version " + strings.Join(parts, ", ")
+}
+
+// runFleetStatsCollect is `stats collect --all-schemas`: collect planner
+// statistics for every schema in one database, one scan per schema.
+//
+// A fleet is exactly where this matters. Statistics are per-schema by
+// construction — they are keyed by the store's own subspace prefix — so a
+// thousand-tenant deployment needs a thousand collections, and an operator
+// writing that loop by hand gets no per-tenant failure isolation and no
+// bounded concurrency. Both already exist here; this is the same `step` an
+// index build is.
+//
+// It deliberately shares fleet.ListTargets with the index and migration
+// fan-outs rather than enumerating schemas its own way. A statistics pass that
+// covered a different set of schemas than the migration pass would leave
+// exactly the tenants nobody thought about uncollected — and an uncollected
+// type is what makes the reader refuse a whole schema.
+func runFleetStatsCollect(
+	cmd *cobra.Command,
+	addr *statsAddressFlags,
+	collect recordlayer.CollectOptions,
+	concurrency int,
+) error {
+	// Resolve the CLUSTER only: a fan-out has no single schema, so it resolves
+	// the context the way the catalog commands do.
+	cf, err := resolveCatalogContext(addr.contextName, addr.clusterFile)
+	if err != nil {
+		return err
+	}
+	db, cat, err := fleetOpen(cf)
+	if err != nil {
+		return err
+	}
+	ctx := cmd.Context()
+
+	targets, err := fleet.ListTargets(ctx, db, cat, addr.database)
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		return fmt.Errorf("no schemas found in database %q", addr.database)
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "collecting statistics across %s in %s\n",
+		fleetDescribeTargets(targets), addr.database)
+
+	res, runErr := fleet.CollectStatistics(ctx, db, cat, relationalKeyspace(), targets,
+		fleet.StatisticsOptions{
+			Options: fleet.Options{
+				Concurrency: concurrency,
+				Progress:    fleetProgressPrinter(cmd),
+			},
+			Collect: collect,
+		})
+	// The summary prints even on failure: a partially collected fleet is
+	// exactly the state the numbers are needed for.
+	fleetSummary(cmd, res)
+	return runErr
 }

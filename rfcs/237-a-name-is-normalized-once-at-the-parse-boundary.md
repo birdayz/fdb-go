@@ -1,4 +1,4 @@
-# RFC-236: a name is normalized once, at the parse boundary
+# RFC-237: a name is normalized once, at the parse boundary
 
 **Status:** IMPLEMENTED
 **Scope:** identifier PRESENTATION at every authority that mints a column name, and identifier LOOKUP at every scope that resolves one.

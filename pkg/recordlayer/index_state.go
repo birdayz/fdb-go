@@ -470,6 +470,17 @@ func (store *FDBRecordStore) clearIndexData(index *Index) error {
 	secSubspace := store.subspace.Sub(IndexSecondarySpaceKey, index.SubspaceTupleKey())
 	store.context.Transaction().ClearRange(secSubspace)
 
+	// Clear sliding-window bookkeeping. Matches Java's
+	// `context.clear(indexSlidingWindowSubspace(index).range())`.
+	//
+	// It has to go with the rest: the keyspace-10 entry list and its
+	// count/boundary describe WHICH records are in the index that was just
+	// emptied. Leaving them behind starts a rebuild believing the window is
+	// already full, so the first insert compares against a boundary naming a
+	// record the graph no longer holds and skips its own insert.
+	store.context.Transaction().ClearRange(
+		store.subspace.Sub(IndexSlidingWindowSpaceKey, index.SubspaceTupleKey()))
+
 	// Clear uniqueness violations
 	uvSubspace := store.subspace.Sub(IndexUniquenessViolationsKey, index.SubspaceTupleKey())
 	store.context.Transaction().ClearRange(uvSubspace)
@@ -502,6 +513,13 @@ func (store *FDBRecordStore) removeFormerIndexData(former *FormerIndex) error {
 
 	// Clear secondary space
 	store.context.Transaction().ClearRange(store.subspace.Sub(IndexSecondarySpaceKey, subKey))
+
+	// Clear sliding-window bookkeeping. Matches Java's removeFormerIndex, which
+	// clears INDEX_SLIDING_WINDOW_SPACE_KEY alongside the others. A dropped
+	// index that left its keyspace-10 region behind would leak it forever: no
+	// maintainer exists for a former index, so nothing would ever clear it, and
+	// a later index reusing the subspace key would inherit a full window.
+	store.context.Transaction().ClearRange(store.subspace.Sub(IndexSlidingWindowSpaceKey, subKey))
 
 	// Clear uniqueness violations
 	store.context.Transaction().ClearRange(store.subspace.Sub(IndexUniquenessViolationsKey, subKey))

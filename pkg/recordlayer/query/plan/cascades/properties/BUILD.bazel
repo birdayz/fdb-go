@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "cardinality.go",
         "cardinality_bounds.go",
+        "collected_statistics.go",
         "comparisons_property.go",
         "coordinate_bound_claim.go",
         "cost.go",
@@ -27,6 +28,7 @@ go_library(
     importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/properties",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/recordlayer/protoname",
         "//pkg/recordlayer/query/plan/cascades/combinatorics",
         "//pkg/recordlayer/query/plan/cascades/expressions",
         "//pkg/recordlayer/query/plan/cascades/predicates",
@@ -37,11 +39,14 @@ go_library(
 go_test(
     name = "properties_test",
     srcs = [
+        "cardinality_proof_statistics_free_test.go",
         "cardinality_test.go",
+        "collected_statistics_names_test.go",
         "cost_formulas_test.go",
         "cost_test.go",
         "derivations_property_test.go",
         "expression_count_property_test.go",
+        "full_scan_empty_types_cost_test.go",
         "ordering_fuzz_test.go",
         "ordering_key_resolution_test.go",
         "ordering_test.go",

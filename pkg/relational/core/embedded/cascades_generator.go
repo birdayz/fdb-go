@@ -473,7 +473,18 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
-	stats := g.fetchTableStatistics(ctx, md)
+	// COLLECTED statistics (RFC-236) take precedence when the connection opted in
+	// and every gate passes; otherwise the legacy record-count-key source, which
+	// is inert for SQL-created schemas since RFC-204 removed that key. Both are
+	// best-effort and both degrade to the cost model's constant.
+	stats, structurallyRefused := g.fetchCollectedStatistics(ctx, md, popts)
+	if stats == nil && !structurallyRefused {
+		// Only ABSENCE falls through to the legacy source. A structural refusal
+		// is a statement about the SCHEMA, so no other count source is safe for
+		// it either -- and the legacy path is live precisely for the hand-built
+		// metadata that can declare synthetic types.
+		stats = g.fetchTableStatistics(ctx, md)
+	}
 	planner := newCascadesPlanner(md, popts, cascades.BatchAExpressionRules(), stats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)
@@ -1084,7 +1095,6 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, buriedErr.Error())
 	}
 
-	dmlStats := g.fetchTableStatistics(ctx, md)
 	// DML reads through the same match candidates a SELECT does (the WHERE of an
 	// UPDATE/DELETE is planned identically), so it needs the same readable-index
 	// view — Java applies the filter in MetaDataPlanContext, below both — and it
@@ -1105,6 +1115,17 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// can move between pages and be emitted twice. See
 	// PlannerConfiguration.SingleReadVersion.
 	popts.config.SingleReadVersion = g.c.activeTx != nil
+	// Collected statistics take precedence; the legacy count-key source is the
+	// fallback. Placed after popts exists, since gate 1 reads the flag from it.
+	dmlStats, dmlStructurallyRefused := g.fetchCollectedStatistics(ctx, md, popts)
+	if dmlStats == nil && !dmlStructurallyRefused {
+		// Same rule as the SELECT path: a structural refusal suppresses the
+		// legacy source too. This second site was NOT named in the review that
+		// found the first -- the compiler surfaced it when the signature changed,
+		// which is the argument for changing the signature rather than adding a
+		// guard at the one call site somebody happened to look at.
+		dmlStats = g.fetchTableStatistics(ctx, md)
+	}
 	planner := newCascadesPlanner(md, popts, planningRules, dmlStats)
 
 	bestExpr, _, planErr := planner.PlanWithContext(ctx, ref)

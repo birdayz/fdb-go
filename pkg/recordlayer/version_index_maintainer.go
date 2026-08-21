@@ -151,8 +151,20 @@ func (m *versionIndexMaintainer) Scan(scanRange TupleRange, continuation []byte,
 	return newIndexCursor(m.index, m.indexSubspace, m.tx, scanRange, continuation, scanProperties)
 }
 
+// CanDeleteWhere bounds the prefix by the index's matchable width. VERSION
+// entries are a plain B-tree with no secondary structure, so the root's own
+// columns are the bound.
+func (m *versionIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
+	return checkDeleteWhereBound(m.index, prefix)
+}
+
 // DeleteWhere clears all index entries whose key starts with the given prefix.
 func (m *versionIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere BEFORE
+	// it clears anything.
+	if err := m.CanDeleteWhere(prefix); err != nil {
+		return err
+	}
 	return deleteWhereRange(m.tx, m.indexSubspace, prefix)
 }
 

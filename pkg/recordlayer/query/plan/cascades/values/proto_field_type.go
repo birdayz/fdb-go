@@ -256,7 +256,7 @@ func enumTypeForProto(ed protoreflect.EnumDescriptor) Type {
 // after it is exact. A fold here was invisible for a DDL-created schema, whose
 // descriptor names are already the normalized spelling, and wrong for
 // everything else — it named a column something no reference could spell, and
-// it made the index-matching bridge miss SILENTLY (RFC-236 §2.1).
+// it made the index-matching bridge miss SILENTLY (RFC-237 §2.1).
 func FieldNameForProtoField(field protoreflect.FieldDescriptor) string {
 	return protoname.ToUserIdentifier(string(field.Name()))
 }

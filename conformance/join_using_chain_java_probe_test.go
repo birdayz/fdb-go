@@ -548,7 +548,7 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// of the comparison.
 				//
 				// It is the scope's case-insensitive SECOND PASS, which is a
-				// deliberate read-side extension (RFC-236 §3.4): Go does not
+				// deliberate read-side extension (RFC-237 §3.4): Go does not
 				// plumb Java's CASE_SENSITIVE_IDENTIFIERS option, and wrapping a
 				// hand-written .proto as a SQL catalog — where field names never
 				// went through DDL normalization — is a first-class entry point
@@ -565,7 +565,7 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// PINNED: the scope's case-insensitive second pass reaches q3's
 				// unquoted `K` from a lookup for `"k"`, so q3 becomes a second
 				// owner. Java keeps them distinct and finds one. Same cause as
-				// the arm above — the read-side extension of RFC-236 §3.4, not
+				// the arm above — the read-side extension of RFC-237 §3.4, not
 				// a fold in any name.
 				name: "chained quoted USING resolving to the far-left source",
 				sql: `SELECT q1."id" FROM q1 JOIN q3 USING ("id") ` +
@@ -619,7 +619,7 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// D's scope said RECORD(id,k) while the row that flowed said
 				// RECORD(ID,K).
 				//
-				// There is one model now (RFC-236): a name is normalized once,
+				// There is one model now (RFC-237): a name is normalized once,
 				// at the parse boundary, and carried verbatim after it. These
 				// two shapes are therefore asserted as plain AGREEMENT rather
 				// than as pinned disagreement, which is a strictly stronger

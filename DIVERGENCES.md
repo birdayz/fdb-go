@@ -2034,3 +2034,47 @@ Pinned by `metadata_builder_test.go` "record type key packs to Java's bytes":
 byte-level assertions that every narrower integer width collapses to one key,
 that a string key reaches the bytes rather than the type name, and that a bytes
 key keeps tuple type code `0x01` rather than being folded into a string.
+
+### VECTOR index metadata validation: Go has none, Java has `VectorIndexValidator` (OPEN — owner decision)
+
+**Java:** `VectorIndexMaintainerFactory.VectorIndexValidator.validate`
+(`indexes/VectorIndexMaintainerFactory.java:96-111`) runs at metadata-build time
+and does three things: the base `IndexValidator.validate`, `validateStructure()`
+(the root must be a `KeyWithValueExpression`, must not contain a grouping
+expression, must have at least one column after the split point, and the index
+must not be unique), and `VectorIndexHelper.getConfig(index)` — whose parse
+failures are rethrown as `MetaDataException("incorrect index options")`. The
+dimension count is MANDATORY there: `getConfig` throws `"need to specify the
+number of dimensions"` when `hnswNumDimensions` is absent.
+
+**Go:** no metadata-time vector validation exists. `parseHNSWConfig`
+(`vector_index_maintainer.go`) is written to be permissive — every option is read
+through an "if it scans and is in range, use it" guard — so a typo'd `hnswM`, an
+out-of-range `hnswEfConstruction` and an unrecognised `hnswMetric` all fall
+through to a DEFAULT. The index builds, writes, and serves queries, with a graph
+whose connectivity (or whose notion of "nearest") differs from the declaration,
+indistinguishably from a correctly-declared index.
+
+**What is closed:** the OPTION half, for windowed vector indexes only, as the
+delegate call Java's `SlidingWindowIndexValidator` ends with —
+`validateVectorIndexOptionsAtBuild` in `vector_index_validation.go`, called from
+`validateSlidingWindowIndex`. Scoped there because windowed vector indexes are
+new, so nothing pre-existing can break.
+
+**What is open, and why it is an owner call rather than a deferral:** applying
+the same validation to PLAIN vector indexes was implemented and MEASURED, and it
+reddens the existing suite — Go builds vector indexes without
+`hnswNumDimensions`, which Java requires. Closing it therefore means Go begins
+REJECTING metadata it currently accepts, which can make an existing Go-authored
+store fail to open. The structure half is wider still: 36 test sites build vector
+indexes on roots that are not `KeyWithValueExpression`, which Java refuses
+outright.
+
+Both directions are real Java divergences and both change behaviour across the
+whole vector surface, so the choice — accept the break, migrate the call sites,
+or keep Go permissive and say so — belongs to the owner rather than to the
+sliding-window port that surfaced it.
+
+(A comment at `vector_index_maintainer.go` previously called the non-KeyWithValue
+root "a documented divergence" while nothing documented it. This entry is that
+documentation.)

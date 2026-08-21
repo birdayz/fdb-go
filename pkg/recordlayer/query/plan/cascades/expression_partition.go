@@ -596,6 +596,38 @@ func partitionCost(p *PlanPartition) float64 {
 		return 1e18
 	}
 	bounds := properties.ProvenCardinalitiesFrom(e, nil)
+	// DefaultStatistics, hardcoded, is safe ONLY because nothing in production
+	// reaches here. SelectMinCostPartition is this function's sole caller, and it
+	// has no production caller of its own — it is a port of Java's
+	// ExpressionPartitionMatchers.argmin kept for parity. So there is one cost
+	// model in the search today, not two.
+	//
+	// That is a claim about the tree, so here is how to re-check it rather than
+	// trust it (the unexported-func gate in pkg/docscheck cannot: its population
+	// is UNEXPORTED functions, and this one is exported):
+	//
+	//	grep -rn 'SelectMinCostPartition(' --include='*.go' . | grep -v _test.go |
+	//	  grep -v 'func SelectMinCostPartition' | grep -vc ':[0-9]*:[[:space:]]*//'
+	//
+	// That counts CALL sites: it drops the definition AND comment lines. The
+	// comment filter is currently REDUNDANT — the command line above happens to
+	// contain "_test.go", so the earlier filter already eats this line — and it
+	// is kept because that is an accident of wording, not a property. The first
+	// version of this comment had neither filter and returned 1, matching the
+	// very line warning against exactly that.
+	//
+	// It is 0 as written; the same command for FilterPlanPartitions in this file
+	// returns 3, which is the control showing it can find production callers
+	// when they exist. Any non-zero reading here means the paragraph below has
+	// become live.
+	//
+	// If that changes, this becomes a real Cascades inconsistency rather than a
+	// latent one: the same expression would be ranked here against a constant
+	// 1e6 per record type while being COSTED for plan selection against collected
+	// counts (RFC-236), so a partition could be discarded for being expensive
+	// under an estimate the planner itself no longer believes. Making
+	// SelectMinCostPartition reachable therefore means threading the planner's
+	// StatisticsProvider down to here, not adding a caller.
 	stats := properties.DefaultStatistics{}
 	c := properties.CostWithinBounds(e, nil, bounds, stats, func() properties.Cost {
 		return hc.HintCost(nil, stats)

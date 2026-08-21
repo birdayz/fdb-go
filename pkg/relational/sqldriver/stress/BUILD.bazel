@@ -7,6 +7,7 @@ go_test(
         "group_existence_plan_cost_test.go",
         "raw_fdb_bench_test.go",
         "recordlayer_bench_test.go",
+        "statistics_join_order_stress_test.go",
         "stress_test.go",
         "vector_stress_test.go",
     ],

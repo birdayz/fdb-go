@@ -2848,7 +2848,7 @@ func registerCTEOnOnlyScope(dst map[string]semantic.ScopeSource, upperName strin
 	// width against the alias list (42F10) — a static width predictor at
 	// registration kept re-implementing source resolution (stars, shadowing,
 	// unnest, nested WITH) and drifting from the real resolver, the exact
-	// two-authorities anti-pattern (review rounds 3-7).
+	// two-authorities anti-pattern.
 	if src, ok := buildCTEOnOnlySource(upperName, cteQuery, colAliases, md, schemaName, cteScopes, dst); ok {
 		dst[upperName] = src
 		return nil

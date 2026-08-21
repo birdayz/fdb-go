@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -1071,3 +1072,144 @@ var (
 	_ driver.NamedValueChecker  = (*EmbeddedConnection)(nil)
 	_ driver.Tx                 = (*embeddedTx)(nil)
 )
+
+// CollectStatistics gathers per-record-type row counts for this connection's
+// schema and stores them for the planner to read (RFC-236).
+//
+// It is an OFFLINE maintenance operation that happens to be reachable through a
+// connection: it scans every record in the store, so it belongs in a
+// `frl stats collect` run or a scheduled job, never on a query path. The
+// connection is simply the thing that already knows the database path, the
+// schema, the catalog and the keyspace.
+//
+// Reach it from a *sql.DB with Conn.Raw:
+//
+//	conn.Raw(func(dc any) error {
+//	    _, err := dc.(*embedded.EmbeddedConnection).CollectStatistics(ctx, opts)
+//	    return err
+//	})
+//
+// Collection does NOT invalidate cached plans. A plan built before this ran
+// keeps serving from the per-connection cache until its scope changes, so a
+// freshly collected statistic reaches only queries planned after it. That is a
+// stated limitation of phase 1, not an oversight — see RFC-236.
+func (c *EmbeddedConnection) CollectStatistics(
+	ctx context.Context,
+	opts recordlayer.CollectOptions,
+) (*recordlayer.CollectionReport, error) {
+	// The connection owns the tags; a caller passing CollectOptions should not
+	// have to know they exist.
+	opts.Tags = c.statisticsTags()
+	if c.closed.Load() {
+		return nil, driver.ErrBadConn
+	}
+	if c.sess == nil || c.sess.DB == nil || c.sess.Schema == "" {
+		return nil, api.NewError(api.ErrCodeInvalidParameter,
+			"CollectStatistics requires a connection bound to a schema")
+	}
+	if err := c.ensureMetaData(ctx); err != nil {
+		return nil, err
+	}
+	md := c.cachedMetaData()
+	if md == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedSchema,
+			"no metadata for schema %q", c.sess.Schema)
+	}
+	// Refuse BEFORE scanning. The reader refuses this metadata unconditionally
+	// (statistics_reader.go's GATE 0: RecordTypes() omits synthetic types, so
+	// completeness is undecidable), which means a collection here would read every
+	// record in the store to produce a set that can never be used. Failing up
+	// front costs nothing and says why; succeeding would bill a full scan for an
+	// outcome the planner has already decided to reject.
+	if md.DeclaresSyntheticRecordTypes() {
+		// WRAPS the collector's typed error rather than minting a second
+		// representation of the same rule. This check and the collector's are one
+		// concept fired at two depths; giving them different error types made the
+		// typed one UNREACHABLE through the relational path, so a test pinning it
+		// with errors.As would pass on the direct path and be structurally unable
+		// to fire on this one -- a green from an empty set, wearing an error type.
+		// WrapErrorf, not NewErrorf with %v: the typed error must be the CAUSE so
+		// errors.As reaches it, not text pasted into a message. Formatting it in
+		// would look identical to a reader and be invisible to a matcher, which is
+		// the same fix-that-is-not-one this PR keeps producing.
+		return nil, api.WrapErrorf(
+			&recordlayer.SyntheticRecordTypesNotModeledError{
+				TypeNames: md.SyntheticRecordTypeNames(),
+			},
+			api.ErrCodeUnsupportedOperation, "schema %q", c.sess.Schema)
+	}
+	if pair, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
+		// Refuse BEFORE scanning, for the same reason as the synthetic check
+		// above: the reader refuses an ambiguous schema unconditionally, so a
+		// collection here reads every record to produce a set that can never be
+		// used. The reader reaches its own ambiguity gate only after absence,
+		// freshness and completeness -- so without this an operator with no
+		// statistics is told to collect, collects, is told it succeeded, and is
+		// still refused.
+		return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
+			"schema %q declares record types whose names collide across the SQL and "+
+				"storage namespaces (%s), so a lookup cannot say which table is meant; "+
+				"collection refused rather than scanning the store for a set the "+
+				"planner would always reject",
+			c.sess.Schema, strings.Join(pair, " and "))
+	}
+	statsSubspace, storeSubspace, err := c.statisticsLocation()
+	if err != nil {
+		return nil, err
+	}
+	report, err := recordlayer.CollectStatistics(ctx, c.sess.DB,
+		func(rtx *recordlayer.FDBRecordContext) (*recordlayer.FDBRecordStore, error) {
+			// SetSkipPossiblyRebuild + Open, never CreateOrOpen: counting rows is a
+			// READ. Opening a store runs checkPossiblyRebuild, which WRITES — a
+			// header version bump, index clears, rebuild marks — whenever the
+			// metadata handed to it is newer than the store header. A job that
+			// exists to measure a store must not migrate it, and the tenant it
+			// would fire on is the one already mid-migration.
+			return c.newStoreBuilder().SetContext(rtx).
+				SetMetaDataProvider(md).SetSubspace(storeSubspace).
+				SetSkipPossiblyRebuild(true).Open()
+		},
+		statsSubspace,
+		opts)
+	if err == nil {
+		// A cached plan outlives the statistic it was planned on. The plan
+		// cache is keyed by dbPath|schema|metaDataVersion|cacheKeyPart, and
+		// cacheKeyPart contributes only the literal "stat" -- not the version
+		// the statistic was collected at. So the freshness gate bounds how old
+		// a READ may be, not how old a PLAN may be, and without this a
+		// connection keeps serving plans built on counts it just replaced.
+		//
+		// This clears THIS connection's cache. Two residuals remain, and the
+		// second is easy to omit because the first is the one that comes to mind:
+		// other live connections keep their entries until closed or until their
+		// metadata moves, AND a plan on any connection that simply AGES PAST the
+		// freshness window is never re-planned, because nothing calls either verb
+		// in that case. Both need the collected version in the cache key, which is
+		// RFC-236 §7 scope, not this.
+		c.invalidatePlanCache()
+	}
+	return report, err
+}
+
+// ClearStatistics removes this schema's collected statistics.
+func (c *EmbeddedConnection) ClearStatistics(ctx context.Context) error {
+	if c.closed.Load() {
+		return driver.ErrBadConn
+	}
+	if c.sess == nil || c.sess.DB == nil || c.sess.Schema == "" {
+		return api.NewError(api.ErrCodeInvalidParameter,
+			"ClearStatistics requires a connection bound to a schema")
+	}
+	statsSubspace, storeSubspace, err := c.statisticsLocation()
+	if err != nil {
+		return err
+	}
+	if err := recordlayer.ClearStatistics(ctx, c.sess.DB, statsSubspace, storeSubspace, c.statisticsTags()...); err != nil {
+		return err
+	}
+	// Same reason as CollectStatistics: without this, a clear removes the
+	// statistic and the connection keeps planning as though it were still
+	// there, which is the one outcome an operator running clear is ruling out.
+	c.invalidatePlanCache()
+	return nil
+}

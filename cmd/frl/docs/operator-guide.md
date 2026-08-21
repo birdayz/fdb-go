@@ -314,3 +314,77 @@ with no `meta_file` wiring. Neither needs `keyspace_path` or a metadata
 source in the context; they address stores by `--database`/`--schema`.
 Plain-core clusters (no relational layer) get a clear "no relational
 catalog on this cluster" error pointing back at Path A/B.
+
+## Planner statistics
+
+The query planner orders joins by how big it thinks each table is. With no
+statistics it thinks every table is the same size, so on a join it picks a side
+by a tie-break over plan structure — right or wrong by luck, and the same way
+every time. `frl stats` gives it the real numbers.
+
+Measured on a 1,000,000-row table joined against a 50-row one, the arrangement
+where the tie-break guesses wrong runs **dramatically faster** once statistics
+are on; the arrangement where it already guessed right does not move. See
+`TestFDB_Stress_StatisticsJoinOrder`.
+
+```sh
+# One schema.
+frl stats collect --database /myapp --schema MAIN
+
+# Every schema in the database — one scan each, per-schema failure isolation,
+# bounded concurrency. This is the fleet form, same machinery as
+# `index build --all-schemas`.
+frl stats collect --database /myapp --all-schemas
+
+# What is stored, and whether the planner will actually use it.
+frl stats show --database /myapp --schema MAIN
+frl stats show --database /myapp --schema MAIN -o json | jq '.per_type'
+
+frl stats clear --database /myapp --schema MAIN --yes
+```
+
+**They are opt-in per connection.** Collecting changes nothing on its own; a
+connection asks for them:
+
+```
+fdbsql:///myapp?schema=MAIN&planner_statistics=true
+```
+
+Two connections differing only in this flag do not share cached plans.
+
+**Collection is an offline job.** It reads every record, in
+continuation-driven batches so no single transaction approaches FDB's 5s limit.
+Schedule it like an index build, sized to how fast your data changes SHAPE —
+not how fast it changes. A table that doubles matters; a table where rows are
+updated in place does not.
+
+**`show` reports the planner's own verdict**, from the planner's own code — so
+`USABLE` means the planner accepts it, not that this command found some bytes.
+When it says `NOT USABLE` it names the gate that refused:
+
+| Verdict | Meaning | Fix |
+|---|---|---|
+| `not collected` | nothing stored for this schema | run `collect` |
+| `expired` | older than ~24h | run `collect` |
+| `incomplete` | at least one table has no entry | run `collect`; if it recurs, a table is exceeding `--max-records-per-type` |
+| `stamped ahead of the cluster` | the entry's version is ahead of the cluster's — a restore from backup moves versions backwards | run `collect` |
+| `cluster version unavailable` | the freshness check could not read a version | a cluster problem, not a statistics problem |
+
+An **empty table is fine** — it collects as an exact 0 and counts as complete.
+Only a table skipped by `--max-records-per-type` leaves a genuine hole, so
+`incomplete` recurring across runs means that cap, not empty tables.
+
+Completeness is **schema-wide**: one uncollected table disables statistics for
+every query in that schema. That is deliberate. A missing table is treated as
+the planner's default 1,000,000 rows, which standing beside a real 150-row
+count would rank the missing table as the largest in the schema and drive the
+join from the wrong side. Half a statistic is worse than none.
+
+**Staleness cannot corrupt results.** A stale count can make the planner choose
+a worse plan; it can never make a query return wrong rows. Row counts feed the
+COST model only — never the structural bounds a rule uses to drop a `DISTINCT`
+or a sort. If you would rather have no statistics than old ones, `clear` them.
+
+**Java is unaffected.** Statistics are stored outside every record store's
+subspace, so a Java client sharing the cluster neither sees nor is disturbed by
+them, and `clear` cannot reach record or index data.

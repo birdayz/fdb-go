@@ -432,20 +432,30 @@ func (m *textIndexMaintainer) Scan(scanRange TupleRange, continuation []byte, sc
 	return cursor
 }
 
-// DeleteWhere clears all TEXT index data for records matching the prefix.
-// For TEXT indexes, this can only be aligned with grouping keys — once text
-// is tokenized, there's no efficient way to remove documents within the
-// grouped part. Matches Java's TextIndexMaintainer.canDeleteWhere() which
-// delegates to canDeleteGroup().
-//
-// For non-grouped TEXT indexes, only an empty prefix (clear everything) is
-// allowed. For grouped TEXT indexes, the prefix must match the grouping columns.
-func (m *textIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
-	// Validate prefix alignment with grouping key.
-	// Java's canDeleteWhere → canDeleteGroup requires GroupingKeyExpression
-	// and validates that the prefix aligns with the grouping columns.
+// CanDeleteWhere is Java's TextIndexMaintainer.canDeleteWhere, which delegates
+// to canDeleteGroup: once text is tokenized there is no efficient way to remove
+// documents from within a grouped part, so only a grouping-aligned prefix (or
+// none at all) can be range-cleared.
+func (m *textIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	if _, ok := m.index.RootExpression.(*GroupingKeyExpression); !ok && len(prefix) > 0 {
 		return fmt.Errorf("TEXT index %q is not grouped; deleteWhere requires empty prefix", m.index.Name)
+	}
+	// A grouped TEXT index is keyed (group..., token, primaryKey). The bunched
+	// token map lives at the GROUP, so a prefix reaching into the token column
+	// would clear part of a bunch's range and leave the rest — which is also why
+	// Java routes this through canDeleteGroup rather than accepting any prefix a
+	// grouped root can express.
+	return checkDeleteWhereBound(m.index, prefix)
+}
+
+// DeleteWhere clears the TEXT index entries under the prefix. Java has no
+// override here — TextIndexMaintainer inherits StandardIndexMaintainer's
+// deleteWhere, which clears the index subspace range and nothing else.
+func (m *textIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere
+	// BEFORE it clears anything, which is where this refusal actually helps.
+	if err := m.CanDeleteWhere(prefix); err != nil {
+		return err
 	}
 	// Clear index entries using PrefixRange to include the exact prefix key
 	// (matching Java's Range.startsWith pattern).
@@ -464,8 +474,21 @@ func (m *textIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
 		m.tx.ClearRange(r)
 	}
 
-	// Clear tokenizer version entries in secondary subspace.
-	if m.secSubspace != nil {
+	// Tokenizer versions are keyed by PRIMARY KEY (secSubspace / 0 / pk), not by
+	// the index's grouping columns, so a grouped delete has no range that names
+	// exactly the departing records' entries. Java accepts that and never touches
+	// this subspace in deleteWhere at all, leaving the entries of deleted records
+	// behind; clearing the whole subspace instead — which this used to do — takes
+	// the versions of every SURVIVING record with it, and each of those then reads
+	// back as GLOBAL_MIN_VERSION and gets needlessly re-tokenized on its next
+	// update.
+	//
+	// So only the whole-index clear touches it. There the prefix covers every
+	// record the index describes, no survivor can have an entry here, and Go
+	// reclaims the space Java leaks. A scoped clear leaves it alone, matching
+	// Java exactly; the stranded entries are inert — the insert path overwrites
+	// unconditionally, so a primary key that comes back is written fresh.
+	if len(prefix) == 0 && m.secSubspace != nil {
 		r, err := fdb.PrefixRange(m.secSubspace.Bytes())
 		if err != nil {
 			return fmt.Errorf("text index deleteWhere: %w", err)

@@ -310,7 +310,7 @@ var engineGaps = []EngineGap{
 	// logic, and the property the null-rejecting ordering proof rests on.
 	// Matching Java here would mean breaking 3VL on the index path.
 	//
-	// This file was invisible until the identifier change (RFC-236) made its
+	// This file was invisible until the identifier change (RFC-237) made its
 	// nested quoted index DDL — `CARDINALITY("struct"."int_arr")` — build: the
 	// whole file was skipped as unsupported-DDL:struct-index with queries=0, so
 	// its other 29 queries had never executed either.

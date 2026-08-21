@@ -6057,9 +6057,11 @@ cycles; query-engine items are `query-engine`/`todo-worker` cycles with a Graefe
      encodes integer record-type keys (`int/int32/int64`) and silently falls back to the message type
      NAME for string/bytes explicit `SetRecordTypeKey` — a wire divergence from Java (which encodes every
      key type); the R2c preset already guards against it but the encoding itself should be fixed.
-     **N/A:** `SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics
-     instrumentation for an HNSW window-decorator index type Go does not have; index-scrub rangeSet fix
-     (#4226) — Go has no scrubber. Gate: Torvalds + codex + @claude.
+     **N/A:** index-scrub rangeSet fix (#4226) — Go has no scrubber. Gate: Torvalds + codex + @claude.
+     ~~`SlidingWindowIndexMaintainer` (+163, #4233-adjacent) — pure metrics instrumentation for an
+     HNSW window-decorator index type Go does not have~~ **SUPERSEDED** — that "N/A" rested on Go not
+     having the index type, which is no longer true: the whole decorator is ported (keyspace 10,
+     `slidingWindowIndexMaintainer`), and its instrumentation came with it.
    - **[x] R3 — DONE (RFC-140)** — parser grammar: `(AT atAlias=uid)?` on `atomTableItem` (#4112) +
      `functionNameKeyword: LEFT|RIGHT` moved out of `functionNameBase` into `scalarFunctionName` (#4272).
      Parser regenerated. LEFT/RIGHT remain function names but are rejected as identifiers/aliases; AT
@@ -19329,10 +19331,145 @@ The divergence is PINNED, not merely described: the probe arm asserts BOTH
 engines' current wording, so it fails if Go is repaired or if either side
 moves to a third answer.
 
+---
+
+## CQ-88 / RFC-236 — planner statistics: COLLECTED offline, read DEFENSIVELY
+
+**Status: implemented.** The planner can now order joins by real per-table row
+counts. Off by default; a connection opts in with `?planner_statistics=true`.
+
+**Why the two obvious designs did not work**, both measured rather than argued:
+
+- **`GetEstimatedRangeSizeBytes`** is a sampled estimator with a ~100KB floor.
+  It reports 0 for a non-empty small table and quantizes everything above. A
+  join-order decision turns on exactly the small-vs-large distinction it cannot
+  see (`per_type_size_estimate_probe_test.go`).
+- **Reading counts from index metadata** requires a COUNT index the schema may
+  not have, and only answers for the types it covers — leaving the reader to
+  mix real counts with defaults, which is the inverting case below.
+
+So counts are collected by SCANNING, offline, by an operator-scheduled job.
+COUNTING rather than sampling is the point: it removes the floor, the
+quantization, and the bytes-to-rows conversion in one move.
+
+The counts are EXACT for a store at rest, and only then. Collection spans
+transactions -- a full scan does not fit in one -- so a record whose PRIMARY KEY
+moves concurrently can be counted twice or missed. That does not restore the
+estimator's problem, and the asymmetry is the reason: the estimator's error was
+SYSTEMATIC and SIZE-CORRELATED, deterministically 0 for a non-empty small table
+AT REST, in exactly the direction join order is most sensitive to. Key-move
+error is bounded by key-move traffic, uncorrelated with table size, and cannot
+manufacture a 0. See RFC-236 §4.
+
+**Storage is outside every record store's subspace**, keyed by the store's own
+subspace prefix bytes. Java owns record-store keyspaces 0-10 and marks the enum
+`@API(UNSTABLE)`, so writing inside one would be a wire-compat hazard for a
+feature Java does not have. Keying by prefix bytes makes it layout-agnostic: a
+store is its prefix, however the prefix was derived.
+
+**The failure mode that shaped the whole read side.** A refusal returns
+`LeafScanCardinality` = 1e6, larger than almost any real count. So a PARTIAL
+statistic is not merely less useful than none — it is INVERTING: one missing
+type standing beside a real 150-row count makes the missing table the largest
+in the schema and drives the join from the wrong side. Every gate is therefore
+all-or-nothing, and completeness is schema-wide rather than query-wide (it is
+undecidable query-wide at read time, and insufficient anyway, because
+`FullUnorderedScanExpression` SUMS per-type cardinalities).
+
+**Freshness is judged on FDB VERSIONS, not wall clock.** Versions are the
+cluster's own clock — immune to skew between the host that collected and the
+host planning. A wall-clock comparison across two machines can make an entry
+effectively immortal, defeating the gate silently. A NEGATIVE age refuses
+rather than reading as infinitely fresh (a restore from backup moves versions
+backwards).
+
+**Staleness cannot produce wrong rows, structurally.** The estimate side
+(`Cost`) takes a `StatisticsProvider`; the proof side (`Cardinalities`,
+`provenCardinalities`, `CardinalityProver`) does not, so a rule dropping a
+DISTINCT because "max is 1" reasons from plan shape and cannot be misled by a
+number. That was a fact about signatures, which erodes without anyone deciding
+to erode it — it is now pinned by `TestCardinalityProofTakesNoStatistics` and
+`TestProofInformsEstimateNotTheReverse`. `fkChainCardinalityCap` is the one
+site where a statistic becomes something the code calls a bound; its binding
+argument is structural, only its magnitude is statistical, and it reaches
+`properties.Cost` and stops.
+
+**What proves it works**, since a plan change is not by itself an improvement:
+
+- Directional (`TestFDB_CollectedStatisticsDriveJoinOrder`): the same schema and
+  SQL over MIRRORED arrangements. Flag off, the plans must be IDENTICAL; flag
+  on, they must DIFFER and each drive from whichever table is smaller in ITS
+  arrangement. A fixed tie-break cannot follow row counts across a mirrored
+  pair. This caught the feature being completely inert — `ConnectionOptions`
+  mapped two DSN parameters and silently ignored every other, so
+  `PLANNER_STATISTICS` had no route from the connection string at all. Option
+  resolved, cache key rendered, reader wired, feature dead. A
+  single-arrangement test would have passed on the tie-break landing well.
+- Measured (`TestFDB_Stress_StatisticsJoinOrder`): OFF vs ON *within* one
+  arrangement, never across the pair — the two arrangements return different
+  row counts, so a max taken across them compares different queries. The
+  arrangements split into WIN (plan changed) and CONTROL (plan unchanged) BY
+  THEIR PLANS, not by their timings, and both classes must be non-empty.
+
+**The tenant question was answered by reading the codebase, not by adding
+flags.** The RFC first proposed `--tenant` / `--all-tenants` over
+`ListTenants()`. `grep -rnE 'ListTenants|OpenTenant|TenantName|fdb\.Tenant'
+--include='*.go' pkg/relational/` returns 0 (the same sweep over `pkg/fdbgo/`
+returns 90, so the command works). A case-insensitive grep for "tenant" there
+returns 80 non-test hits, and that is the point: the multi-tenancy that exists
+is SaaS tenancy expressed as SCHEMAS, and `pkg/relational/core/fleet` already fans out over them with
+per-target transactions, failure isolation, bounded concurrency and a resumable
+pass. `fleet.CollectStatistics` is one more `step` beside the index build, and
+shares `ListTargets` with the other modes so a statistics pass cannot cover a
+different set of schemas than a migration pass.
+
+**TWO CORRECTNESS BUGS SURVIVED A GREEN SUITE AND WERE CAUGHT BY REVIEW.** Both
+are worth recording because the suite was thorough in every dimension except the
+two that mattered.
+
+The collector DOUBLE-COUNTED a retried batch. `db.Run` retries its closure, and
+the tally went into counters declared outside it, so a batch tripping
+`transaction_too_old` re-read and re-added its rows. Exactness — the entire
+premise — was false the first time a batch exceeded 5s, and `--batch-size` is a
+shipped flag inviting exactly that. Worst possible direction: retries hit the
+LONGEST batches, so the inflation lands on the biggest tables, the ones a
+join-order decision is most sensitive to. Pinned by a transactor that invokes the
+closure twice; mutation reads 40 for a 20-row table, exactly 2x.
+
+An EMPTY TABLE disabled statistics for the whole schema, permanently. A declared
+type with no rows produced no entry and the completeness gate is schema-wide, so
+a fresh schema — mostly empty tables — could never use the feature. A test had
+codified this with a rationale the provider's own clamp refutes. The dimension
+that hid it: every other case in that file populates every type or none, and both
+pass with the bug fully present.
+
+**Still open, deliberately, and PRICED so the omission is not read as free:**
+histograms / NDV / MCV and any distribution. The collector scans, so it COULD
+compute them, but SELECTIVITY consumes them and that is a separate change: an
+index probe is estimated as `RecordTypeCardinality(table) *
+EqualityBoundSelectivity^equalities * RangeSelectivity^ranges`, and this work
+makes only the FIRST factor a measurement. The second stays 0.1 per equality
+whether the column holds two distinct values or two million.
+`TestFDB_SelectivityBlindSpotWithCollectedStatistics` prices that: holding the
+table count FIXED and varying only distinctness, two access paths that really
+differ by 1000x are priced identically at 200 rows, so the planner intersects
+them and reads 1001 index entries to reach a row one leg alone reaches in 1. No
+better row count can reach that plan. The next increment therefore has a
+committed number to be measured against — RFC-236 §7.1, which also records why
+that increment is cheap here (every site applying `BoundSelectivity` takes scan
+comparisons, so the column is always part of a key, and a key is stored sorted:
+exact NDV is one ordered pass, no sketch).
+
+Also still open: automatic or triggered collection; incremental recollection;
+per-index statistics; plan-cache invalidation on data drift — a freshly
+collected statistic reaches only queries planned after it.
+
+Full design, including the measurements that killed the two rejected designs:
+RFC-236.
 
 ## Three identifier models coexist, and quoted names fall between them — CLOSED
 
-**CLOSED by RFC-236** (`rfcs/236-a-name-is-normalized-once-at-the-parse-boundary.md`).
+**CLOSED by RFC-237** (`rfcs/237-a-name-is-normalized-once-at-the-parse-boundary.md`).
 There is ONE model now: a name is normalized once, at the parse boundary
 (quoted keeps its case, unquoted folds UPPER), and carried VERBATIM everywhere
 after it; lookup is EXACT at a scope level, with an unambiguous case-insensitive
@@ -19368,7 +19505,7 @@ scope, with their evidence:
 2. **Go still over-resolves relative to Java**, by design: `SELECT KeepCase`,
    `SELECT "KEEPCASE"` and `SELECT "keepcase"` all answer against a column
    declared `"KeepCase"`, where Java raises 42703. That is the documented
-   read-side extension (RFC-236 §3.4) and exists because Go does not plumb
+   read-side extension (RFC-237 §3.4) and exists because Go does not plumb
    Java's `CASE_SENSITIVE_IDENTIFIERS` option while `rlcatalog.Wrap(md)` over a
    user's own `.proto` is a first-class entry point here. Measured, and pinned
    as `goOnly` arms in `QuotedIdentifierCaseJavaProbe`. Closing it means

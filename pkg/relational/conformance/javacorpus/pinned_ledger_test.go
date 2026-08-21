@@ -153,7 +153,7 @@ package javacorpus_test
 // 0 has no resolved Value`, which that file already produced at the previous
 // revision — a pre-existing gap gaining a second carrier, not a new one.
 //
-// RFC-236 THEN UNBLOCKS A FILE THAT HAD NEVER EXECUTED A SINGLE QUERY.
+// RFC-237 THEN UNBLOCKS A FILE THAT HAD NEVER EXECUTED A SINGLE QUERY.
 // `arrays-cardinality.yamsql` declares `CREATE INDEX … AS SELECT
 // CARDINALITY("struct"."int_arr")` — a NESTED QUOTED path — which the index
 // generator rejected, so `unsupported-DDL:struct-index` claimed the whole file
@@ -239,7 +239,7 @@ const pinnedFileTotal = 238
 // The previous revision's two lines are still described below it in this file's
 // history; they were the inline-VALUES pair.
 //
-// RFC-236 ALSO MOVED EXACTLY ONE LINE, and it was diffed against the dumped
+// RFC-237 ALSO MOVED EXACTLY ONE LINE, and it was diffed against the dumped
 // assignment rather than re-blessed on the hash:
 //
 //	-arrays-cardinality.yamsql  skip unsupported-DDL:struct-index

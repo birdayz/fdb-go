@@ -68,6 +68,7 @@ class ConformanceServer {
         new TimeWindowLeaderboardSteps(),
         new MultidimensionalIndexSteps(),
         new VectorIndexSteps(),
+        new SlidingWindowIndexSteps(),
         new BenchmarkSteps(),
         new MetaDataStoreSteps(),
         new SqlPlanSteps(),

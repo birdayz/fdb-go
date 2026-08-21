@@ -435,11 +435,22 @@ func (m *spfreshIndexMaintainer) Scan(scanRange TupleRange, continuation []byte,
 	return &errorCursor[*IndexEntry]{err: fmt.Errorf("spfresh index %q: BY_VALUE scan not supported; use BY_DISTANCE", m.index.Name)}
 }
 
-// DeleteWhere clears the whole index keyspace under the prefix. For 094.1
-// only the full clear (empty prefix) is meaningful (no grouped SPFresh yet).
-func (m *spfreshIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+// CanDeleteWhere accepts only the whole-index clear: SPFresh has no grouped
+// form in 094.1, so there is no prefix under which a subset of its posting
+// lists lives.
+func (m *spfreshIndexMaintainer) CanDeleteWhere(prefix tuple.Tuple) error {
 	if len(prefix) != 0 {
 		return fmt.Errorf("spfresh index %q: grouped DeleteWhere not supported in 094.1", m.index.Name)
+	}
+	return nil
+}
+
+// DeleteWhere clears the whole index keyspace.
+func (m *spfreshIndexMaintainer) DeleteWhere(prefix tuple.Tuple) error {
+	// Backstop for direct callers; DeleteRecordsWhere asks CanDeleteWhere
+	// BEFORE it clears anything.
+	if err := m.CanDeleteWhere(prefix); err != nil {
+		return err
 	}
 	r, err := fdb.PrefixRange(m.indexSubspace.Bytes())
 	if err != nil {
