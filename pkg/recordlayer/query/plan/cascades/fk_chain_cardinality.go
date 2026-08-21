@@ -677,14 +677,22 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // answer (this file can prove the identity without naming the row's layout).
 //
 // Unreachable: a FlatMap whose selected leg is ANOTHER declining FlatMap cannot
-// arrive, because every entry needs computePKThread to have succeeded first and
-// both orientations die there. Selected via the inner alias, the leg is a
-// FlatMap, and scanBindingOfLeaf has no FlatMap case -- it falls to default, so
-// innerFullyBindsThread is false. Selected via the outer, innerFullyBindsThread
-// itself calls planRowLayout(fm.GetOuter()), gets the nil, finds the frontier
-// unknown and fails closed. The recursion is therefore insurance, and the test
-// that drives it hand-builds the resultValue rather than reaching it from a
-// plan.
+// arrive through the FK-cap entries, because those need computePKThread to have
+// succeeded and both orientations die there. Selected via the inner alias the
+// leg is a FlatMap, and scanBindingOfLeaf has no FlatMap case -- it falls to
+// default, so innerFullyBindsThread is false. Selected via the outer,
+// innerFullyBindsThread itself calls planRowLayout(fm.GetOuter()), gets the
+// nil, finds the frontier unknown and fails closed.
+//
+// That is scoped to the FK-cap entries deliberately, and is NOT a universal
+// over every caller: computeMapPKThread passes singleChildRowLayout as an EAGER
+// argument with no .ok guard, so planRowLayout does run on a declining leg
+// there. The nil is discarded, because childThread.ok is false in exactly that
+// shape -- so the conclusion holds, but by a different route than the one
+// above, and stating it as "every entry" would be wrong.
+//
+// The recursion is therefore insurance, and the test that drives it hand-builds
+// the resultValue rather than reaching it from a plan.
 //
 // Every hop of an FK chain past the first has a FlatMap as its OUTER, so the
 // outer call is the one that nests at all: a wrong answer there would let the
