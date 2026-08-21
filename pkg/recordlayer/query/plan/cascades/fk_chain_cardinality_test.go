@@ -1485,12 +1485,17 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	viaRC := mustFKChain(plans.NewRecordQueryFlatMapPlan(
 		rcOuter, wrapProbe, wrapAlias, innerAlias,
 		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, planRowLayout(wrapProbe))), false))
-	// This pins the REJECTION, not one gate. Measured: disabling the frontier
-	// check alone leaves this green, because a nil outerLayout also fails
-	// threadPKIdentity and correlatedFieldIdentity further down -- the rejection
-	// is over-determined, so no fixture can isolate the frontier line. Saying
-	// this assertion "pins the frontier gate" would be a claim no test here can
-	// support; what it does pin is that a nil-layout outer is refused at all.
+	// This pins the REJECTION, not one gate, and the distinction is structural
+	// rather than a limit of this fixture. frontier.IsKnown() is false exactly
+	// when the layout is not a *RecordType or has no fields; threadPKIdentity
+	// succeeds only when it IS a *RecordType with an in-range ordinal. The two
+	// are mutually exclusive, so a nil outerLayout is refused THREE times over
+	// -- the frontier check, threadPKIdentity, and then the empty-wantKeys
+	// return -- and the frontier guard is strictly subsumed by the others.
+	// Measured: disabling it alone leaves the whole suite green. No fixture can
+	// isolate that line, so claiming this assertion "pins the frontier gate"
+	// would be unsupportable. What it does pin is the outcome, and that is not
+	// vacuous: strip all three layers and this fires.
 	if innerFullyBindsThread(viaRC, computePKThread(rcOuter)) {
 		t.Error("innerFullyBindsThread accepted an outer whose layout is nil: every " +
 			"path that used to fail closed on an unknown domain now admits it, so " +

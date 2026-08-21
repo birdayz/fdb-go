@@ -689,9 +689,12 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // argument with no .ok guard, so planRowLayout does run on a declining leg
 // there. The conclusion still holds, but NOT because childThread.ok is false --
 // the Reachable paragraph above says the opposite, that a RecordConstructor
-// threads a PK and declines a layout. It holds because pkThreadThroughFields
-// fails closed on the unknown frontier that nil layout produces. Same answer,
-// different route, and the route matters: nothing pins it.
+// threads a PK and declines a layout. It holds by two different routes, and
+// both are worth naming because neither is pinned. If the resultValue is a bare
+// QOV, pkThreadThroughResultValue returns childThread without ever READING the
+// layout, so the nil is harmless by being unused. If it is a
+// RecordConstructor, pkThreadThroughFields fails closed on the unknown frontier
+// that nil produces.
 //
 // The recursion is therefore insurance, and the test that drives it hand-builds
 // the resultValue rather than reaching it from a plan.
