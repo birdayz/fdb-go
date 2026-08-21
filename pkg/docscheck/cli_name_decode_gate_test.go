@@ -68,6 +68,105 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 			"deps of this target, or the gate reports clean while reading nothing", dir, err)
 	}
 
+	var scanned int
+	var leaks []string
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, n))
+		if err != nil {
+			t.Fatalf("read %s: %v", n, err)
+		}
+		scanned++
+		for i, line := range strings.Split(string(b), "\n") {
+			if nameLineIsLeak(line) {
+				leaks = append(leaks, fmt.Sprintf("%s:%d: %s", n, i+1, strings.TrimSpace(line)))
+			}
+		}
+	}
+
+	// VACUITY GUARD. Under Bazel a test runs in a runfiles tree holding only its
+	// declared inputs, so without the `data` dep this loop reads an empty
+	// directory and reports clean — passing while checking nothing. The first
+	// run of this gate did exactly that and this guard is what caught it.
+	if scanned < 10 {
+		t.Fatalf("scanned only %d non-test .go files under %s; the gate is not "+
+			"reaching the package and would report clean regardless", scanned, dir)
+	}
+	for _, l := range leaks {
+		t.Errorf("frl renders a stored name without a decoding helper:\n  %s\n"+
+			"  Wrap it (userFieldNames/userName/userNameFor/userNamesFor), or if it "+
+			"is a LOOKUP rather than a render, add its spelling to this gate's "+
+			"allowlist with a note saying why it keys by the stored name.", l)
+	}
+}
+
+// EVERY ARM OF THE GATE IS DRIVEN HERE, not by whatever the corpus contains.
+//
+// The corpus walk above only exercises the arms its files happen to hit. That
+// is not coverage: the one-line-function arm had NO instance in cmd/frl, so
+// restoring the `func ` exemption — the exact fail-open that once let
+// `func typeName(rt *T) string { return rt.Name }` through — left the gate
+// green. Every shape below is a real leak or a real exemption, so each arm
+// fails loudly when it regresses.
+func TestNameLineClassification(t *testing.T) {
+	t.Parallel()
+
+	leaks := map[string]string{
+		"one-line function body": `func typeName(rt *recordlayer.RecordType) string { return rt.Name }`,
+		"struct field render":    `	rt = rec.RecordType.Name`,
+		"plain field render":     `	shown := rt.Name`,
+		"method render":          `	names[i] = idx.RootExpression.FieldNames()[0]`,
+		"metadata name render":   `	out.name = tbl.MetadataName()`,
+		"marker in a string":     `	return fmt.Sprintf("%s // storage-compare", rt.Name)`,
+		"past-tense prose":       `	shown := rt.Name // storage-compared above, so this is fine`,
+		"marker not at line end": `	shown := rt.Name // storage-compare (see above)`,
+		"unspaced marker":        `	shown := rt.Name //storage-compare`,
+		"block-comment marker":   `	shown := rt.Name /* storage-compare */`,
+	}
+	for name, line := range leaks {
+		if !nameLineIsLeak(line) {
+			t.Errorf("%s: should be flagged as a leak, was exempted:\n  %s", name, line)
+		}
+	}
+
+	exempt := map[string]string{
+		"decoded through userNameFor":   `	rt = userNameFor(md, rec.RecordType.Name)`,
+		"decoded through userNamesFor":  `	return userNamesFor(md, names)`,
+		"decoded through userFieldName": `	name: userFieldName(col.MetadataName())`,
+		"field helper":                  `	return userFieldNames(idx.RootExpression.FieldNames())`,
+		"anchored marker":               `	oldRaw := oldI.RootExpression.FieldNames() // storage-compare`,
+		"lookup by stored name":         `	if rt := md.GetRecordType(name); rt != nil {`,
+		"schema template namespace":     `	return fmt.Errorf("%s", tpl.MetadataName())`,
+		"a comment line":                `	// rt.Name is the escaped storage name`,
+		"no tracked spelling":           `	fmt.Fprintln(out, "nothing to see")`,
+	}
+	for name, line := range exempt {
+		if nameLineIsLeak(line) {
+			t.Errorf("%s: should be exempt, was flagged as a leak:\n  %s", name, line)
+		}
+	}
+
+	// Vacuity guard: if the spelling set were emptied, every "leak" above would
+	// silently become exempt and only this check would notice.
+	if nameLineIsLeak(`	x := 1`) {
+		t.Error("a line with no tracked spelling was flagged; the classifier is over-broad")
+	}
+}
+
+// nameLineIsLeak classifies ONE source line: does it reach a stored
+// record-type or column name without going through a decoding helper?
+//
+// Split out from the corpus walk so every arm can be driven directly. The arms
+// were previously exercised only by whatever the scanned files happened to
+// contain, which is not coverage: the one-line-function arm had NO instance in
+// the corpus, so restoring the `func ` exemption that once let
+// `func typeName(rt *T) string { return rt.Name }` through left the gate green.
+// A gate whose branches depend on the corpus is a gate that fails open the day
+// the corpus changes.
+func nameLineIsLeak(line string) bool {
 	// Spellings that reach a stored name. The struct-FIELD forms are here
 	// because omitting them is how the highest-consequence leak survived this
 	// gate's first version: `rec.RecordType.Name` is neither a .MetadataName()
@@ -99,73 +198,40 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 		// that; re-check by hand if index.go's recordTypeNames changes shape.
 		"names[i] = rt.Name",
 	}
-	var scanned int
-	var leaks []string
-	for _, e := range entries {
-		n := e.Name()
-		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(dir, n))
-		if err != nil {
-			t.Fatalf("read %s: %v", n, err)
-		}
-		scanned++
-		for i, line := range strings.Split(string(b), "\n") {
-			var hit bool
-			for _, sp := range spellings {
-				if strings.Contains(line, sp) {
-					hit = true
-					break
-				}
-			}
-			if !hit {
-				continue
-			}
-			trimmed := strings.TrimSpace(line)
-			// Comment lines only. A `func ` skip used to live here and was a hole:
-			// `func typeName(rt *T) string { return rt.Name }` is a one-line render
-			// that walked past with no marker at all.
-			if strings.HasPrefix(trimmed, "//") {
-				continue
-			}
-			// An explicit `// storage-compare` marker exempts a line: it reads a
-			// stored name for COMPARISON, not for display. Decoding is not
-			// injective — stored A__B and A__0B both render as A__B — so a diff
-			// has to compare stored spellings or it drops real changes.
-			//
-			// This used to key on a `…Raw` variable-name convention, and that was
-			// wrong: `nameRaw := rt.Name; return nameRaw` is a genuine render that
-			// a natural variable name silently exempted. A marker nobody writes by
-			// accident is the point; a naming habit is not.
-			if strings.HasSuffix(trimmed, "// storage-compare") {
-				continue
-			}
-			var ok bool
-			for _, a := range allowed {
-				if strings.Contains(line, a) {
-					ok = true
-					break
-				}
-			}
-			if !ok {
-				leaks = append(leaks, fmt.Sprintf("%s:%d: %s", n, i+1, trimmed))
-			}
-		}
-	}
 
-	// VACUITY GUARD. Under Bazel a test runs in a runfiles tree holding only its
-	// declared inputs, so without the `data` dep this loop reads an empty
-	// directory and reports clean — passing while checking nothing. The first
-	// run of this gate did exactly that and this guard is what caught it.
-	if scanned < 10 {
-		t.Fatalf("scanned only %d non-test .go files under %s; the gate is not "+
-			"reaching the package and would report clean regardless", scanned, dir)
+	var hit bool
+	for _, sp := range spellings {
+		if strings.Contains(line, sp) {
+			hit = true
+			break
+		}
 	}
-	for _, l := range leaks {
-		t.Errorf("frl renders a stored name without a decoding helper:\n  %s\n"+
-			"  Wrap it (userFieldNames/userName/userNameFor/userNamesFor), or if it "+
-			"is a LOOKUP rather than a render, add its spelling to this gate's "+
-			"allowlist with a note saying why it keys by the stored name.", l)
+	if !hit {
+		return false
 	}
+	trimmed := strings.TrimSpace(line)
+	// Comment lines only. A `func ` skip used to live here and was a hole:
+	// `func typeName(rt *T) string { return rt.Name }` is a one-line render that
+	// walked past with no marker at all.
+	if strings.HasPrefix(trimmed, "//") {
+		return false
+	}
+	// An explicit `// storage-compare` marker exempts a line: it reads a stored
+	// name for COMPARISON, not display. Decoding is not injective — stored A__B
+	// and A__0B both render as A__B — so a diff has to compare stored spellings
+	// or it drops real changes.
+	//
+	// ANCHORED, because an unanchored check was laundered two ways on the first
+	// try: past-tense prose (`// storage-compared above, so this is fine`) and
+	// the token inside a STRING LITERAL. It also used to key on a `…Raw`
+	// variable-name convention, which a maintainer trips by accident.
+	if strings.HasSuffix(trimmed, "// storage-compare") {
+		return false
+	}
+	for _, a := range allowed {
+		if strings.Contains(line, a) {
+			return false
+		}
+	}
+	return true
 }

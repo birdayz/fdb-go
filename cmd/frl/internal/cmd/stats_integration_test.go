@@ -1239,3 +1239,42 @@ func TestStats_SyntheticTypeNamesAreRenderedVerbatim(t *testing.T) {
 		}
 	}
 }
+
+// A PER-TYPE MAP NEVER PRINTS ONE TABLE UNDER ANOTHER.S NAME.
+//
+// Decoding is not injective: stored MY__1TABLE and MY__01TABLE decode to
+// MY$TABLE and MY__1TABLE, and a schema declaring both means one decoded key
+// can collide with another stored key. Keyed naively, one row silently carries
+// the other's count — one row short, no error, wrong numbers.
+//
+// This used to be safe only because the reader and both collect paths refuse an
+// ambiguous schema first. That is true and NON-LOCAL: these renderers hold a
+// report or a status, never a metadata, so they could not check. Now they can,
+// because the collapse is visible without one — fewer keys out than in.
+func TestPerTypeCountsNeverCollapseTwoTablesIntoOneRow(t *testing.T) {
+	t.Parallel()
+
+	// MY__01TABLE decodes to MY__1TABLE, which is the OTHER key verbatim.
+	const a, b = "MY__1TABLE", "MY__01TABLE"
+	if recordlayer.ToUserIdentifier(b) != a {
+		t.Fatalf("fixture is vacuous: %q decodes to %q, not %q — no collision arises",
+			b, recordlayer.ToUserIdentifier(b), a)
+	}
+
+	got := userKeyedCounts(map[string]int64{a: 9, b: 4000})
+	if len(got) != 2 {
+		t.Fatalf("two stored types collapsed into %d row(s): %v", len(got), got)
+	}
+	// Under the ambiguity every key falls back to its stored spelling, so no row
+	// is labelled with a name that means another table.
+	if got[a] != 9 || got[b] != 4000 {
+		t.Errorf("rows are not keyed by their own stored names: %v (want %s=9, %s=4000)", got, a, b)
+	}
+
+	// And with no collision the keys are still DECODED — the fallback must not
+	// fire spuriously and leave every operator reading storage names.
+	plain := userKeyedCounts(map[string]int64{"MY__1TABLE": 7, "OTHER": 3})
+	if _, ok := plain["MY$TABLE"]; !ok {
+		t.Errorf("no collision here, so keys must be SQL identifiers: %v", plain)
+	}
+}

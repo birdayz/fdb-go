@@ -348,8 +348,9 @@ func renderCollectReport(
 	// path).
 	collected := make(map[string]int64, len(report.Collected))
 	for name, st := range report.Collected {
-		collected[userName(name)] = st.Count
+		collected[name] = st.Count
 	}
+	collected = userKeyedCounts(collected)
 	if outputFmt == "json" {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
@@ -455,8 +456,9 @@ func renderStatsStatus(
 	// the dependency is pinned by embedded's TestAmbiguityRefusalCarriesNoPerTypeMap.
 	perType := make(map[string]int64, len(st.Stats.PerType))
 	for name, s := range st.Stats.PerType {
-		perType[userName(name)] = s.Count
+		perType[name] = s.Count
 	}
+	perType = userKeyedCounts(perType)
 	if outputFmt == "json" {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
@@ -871,3 +873,45 @@ func userFieldNames(fields []string) []string {
 // holding an md is exactly the bug that let `record scan -o json` print a
 // record_type resolving to the wrong table.
 func userFieldName(field string) string { return userName(field) }
+
+// userKeyedCounts re-keys a per-type count map to SQL identifiers, falling back
+// to the STORED keys if any two of them decode alike.
+//
+// Self-contained on purpose. These renderers hold a report or a status, never a
+// metadata, so they cannot ask AmbiguousDeclaredNames. They used to rely on the
+// reader and both collect paths refusing an ambiguous schema first -- true, but
+// non-local: remove or bypass any of those guards and this silently overwrote
+// one colliding type with another's count, one row short and no error.
+//
+// The collapse needs no metadata to detect: if decoding produces fewer keys
+// than it consumed, two stored names landed on one. Same all-or-nothing rule as
+// everywhere else -- under a collision, stored names for every row.
+func userKeyedCounts(byStorage map[string]int64) map[string]int64 {
+	stored := func() map[string]int64 {
+		out := make(map[string]int64, len(byStorage))
+		for k, v := range byStorage {
+			out[k] = v
+		}
+		return out
+	}
+
+	out := make(map[string]int64, len(byStorage))
+	for s, v := range byStorage {
+		d := userName(s)
+		// AMBIGUOUS: this row would print under a name that is a DIFFERENT
+		// entry's stored name, so a reader cannot tell which table it means.
+		if _, isOthersStoredName := byStorage[d]; isOthersStoredName && d != s {
+			return stored()
+		}
+		out[d] = v
+	}
+	// COLLAPSE: two stored names decoding to one key would lose a row outright.
+	// Unreachable while userName round-trip guards -- if s1 != s2 both decoded to
+	// d, encode(d) equals at most one of them, so the guard suppresses the other
+	// -- but checked rather than argued, because that guard lives one function
+	// away and non-local arguments are what this file keeps getting wrong.
+	if len(out) != len(byStorage) {
+		return stored()
+	}
+	return out
+}
