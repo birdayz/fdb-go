@@ -92,7 +92,7 @@ migrated by this PR:
 | --- | --- | --- |
 | `colref.go` (`parseColRef`) on the label path | LAST dot at paren depth zero | yes |
 | `derivedOutputColumns` | LAST dot | yes |
-| `classifyDerivedUnnestArray` (`derived_unnest.go:146`) | LAST dot | **MIGRATED** — see below |
+| `classifyDerivedUnnestArray` (`derived_unnest.go:146`) | LAST dot | yes — migrated and REVERTED, see below |
 | `projectionOutputNames` (`derived_unnest.go:250`) | LAST dot | **MIGRATED** — see below |
 | `splitQualifier` (EXISTS sort keys) | LAST dot | yes, nonzero corpus floor |
 | `rowSlotForLegColumn` (`ordinal_join.go:1168`) | **FIRST** dot | **no — retired, revival alarm at 0** |
@@ -101,9 +101,11 @@ migrated by this PR:
 **`rowSlotForLegColumn` IS RETIRED, and that matters more than its being a parser.**
 `rowSlotForLegColumn`'s only driver was `adaptLegPositional`'s
 layout-permutation gather, which the exact-ordinal seed removed from the live
-path. `AssertLegColumnProvenanceCensus` (`leg_column_provenance_census.go:609`)
-fails the build if it receives ANY call — an unconditional revival alarm, not a
-floor. So it is reachable in source and unreached in fact.
+path. `AssertLegColumnProvenanceCensus` asserts `c.Calls != 0` -> FAIL
+(`leg_column_provenance_census.go:609`), unconditionally and with no floors
+pointer. That is the sharp fact, and sharper than "the dotted arm never
+answers": the whole READER is retired, not just one of its arms. So it is
+reachable in source and unreached in fact.
 
 A draft of this RFC treated its two `EqualFold` comparators as MASKING the case
 divergence between the producers. They cannot: they never execute. Migrating it
@@ -111,33 +113,41 @@ is tidying dead code, which is worth doing when the surrounding change lands and
 is not evidence of anything; any criterion resting on it can pass while changing
 nothing that runs.
 
-**TWO OF THE SEVEN ARE ALREADY MIGRATED, AND DOING SO MEASURED THE CHAIN.** Both
-sat on the derived-UNNEST path and both now read `ProjectionRefs` — the same
-parse-tree triple `exactLogicalResultType`'s projection arm uses — falling back
-to the split only for a slot with no segments, which is the reading that field's
-own doc prescribes. The reproducer:
+**ONE OF THE SEVEN IS MIGRATED, AND TRYING TO MIGRATE A SECOND MEASURED WHY THE
+ORDER MATTERS.** Both sit on the derived-UNNEST path. The reproducers:
 
 ```sql
 CREATE TABLE dottarr (id BIGINT, "a.b" BIGINT ARRAY, PRIMARY KEY (id));
-SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x;
+
+SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x;        -- unaliased
+SELECT x FROM (SELECT "a.b" AS a FROM dottarr) d, d.a AS x;       -- aliased, VALID
 ```
 
-It moved twice as the two landed, which is the useful part:
+`projectionOutputNames` sliced the derived output at its last dot and published
+`b`, so the unaliased form died `42703: column "a.b" does not exist on source
+"D"` — a false statement, since the derived table does output `a.b`. It reads
+`ProjectionRefs` now, and the shape declines honestly instead:
+`0AF00: unnest over a computed/non-passthrough … output`.
 
-| state | outcome |
-| --- | --- |
-| before | `42703: column "a.b" does not exist on source "D"` — the derived output was published as `b` |
-| after `projectionOutputNames` | `0AF00: unnest over a computed/non-passthrough … output` — the classify step manufactured qualifier `a`, failed to match the scan, and declined |
-| after `classifyDerivedUnnestArray` | `42703` again, from a THIRD site: the semantic derived-source registration for the UNNEST path |
+`classifyDerivedUnnestArray` was migrated the same way AND REVERTED, which is
+the useful result. With the triple, classification SUCCEEDS and the query dies
+further down, in the semantic derived-source registration, as
 
-So the shape is still broken and the two fixes are still right — each removed a
-real flat-name recovery, and the controls (`d.arr`, `qarr.arr` over a plain
-derived table) plan unchanged. The third site is the same family one layer down,
-in the correlated-array-source resolution (`logical_predicate.go:10093` raises
-it; the derived source's column schema is what lacks `a.b`). Note that
-`SELECT d."a.b" FROM (SELECT "a.b" FROM dottarr) d` DOES resolve — so the
-ordinary projection binder is already correct and only the unnest-source path
-is not, which is where an implementer should start.
+```
+42703: column "A" does not exist on source "D"
+```
+
+on the ALIASED form — a valid query whose column `A` plainly does exist. Neither
+form runs either way, so the only thing the migration changed was trading an
+honest decline for a false statement about the schema. That is a regression, and
+the site keeps its split until step 6 migrates it TOGETHER with the registration
+that makes the answer available.
+
+This is the concrete argument for §6 that is not hand-waving: migrating one site
+of a chain can make the diagnostic worse while making nothing work, so the steps
+are ordered by what turns a decline into an ANSWER, not by which site is easiest
+to reach.
+
 
 **`isDottedQualifiedName` IS LIVE and is worse than a naming defect.** It is
 called from `rowIsMergeShaped` (`:1218`) and decides
@@ -299,7 +309,21 @@ than at the end.
    Leaving them means a quoted one-segment name containing a dot is still read
    as qualified on the derived-UNNEST and EXISTS-ordering paths after every
    other criterion passes.
-6. Delete `parseColRef` from the label path and delete its limits.
+6. **Finish the derived-UNNEST chain.** Two of its three sites are already
+   migrated (see §1); the third is the semantic derived-source registration for
+   the unnest path, which still publishes a stripped name and fails
+
+   ```sql
+   SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x
+     -> 42703: column "a.b" does not exist on source "D"
+   ```
+
+   This is a STEP and not a note because the shape is a live defect and the
+   remaining site is already identified: `SELECT d."a.b" FROM (…) d` resolves,
+   so the ordinary projection binder is correct and only the unnest-source
+   registration is not. The step lands the e2e arm the unit pin currently
+   stands in for.
+7. Delete `parseColRef` from the label path and delete its limits.
 
 ## 5. Acceptance criteria
 
@@ -393,7 +417,7 @@ this criterion did not:
 grep -c 'strings.LastIndexByte' pkg/relational/core/query/cascades_translator.go
 ```
 
-**1 today; must be 0 at step 4, before step 6 deletes `colref.go:95`.** Control,
+**1 today; must be 0 at step 4, before step 7 deletes `colref.go:95`.** Control,
 because a zero from a mistyped path reads identically to success: that symbol
 has **8** non-test hits repo-wide under `pkg/relational/core`
 (`grep -rn --include='*.go' 'strings.LastIndexByte' pkg/relational/core/ | grep -v '_test.go' | wc -l`),
@@ -402,7 +426,7 @@ so a sweep returning 0 there is a broken command, not a finished migration.
 `cascades_translator.go:924` recovers a qualifier by the LAST dot, with the same
 ambiguity and none of `parseColRef`'s paren protection — deleting `colref.go`'s
 documented limits while that site lives moves the ambiguity somewhere
-undocumented rather than removing it. Step 4 is what makes step 6 honest.
+undocumented rather than removing it. Step 4 is what makes step 7 honest.
 
 `parseColRef` keeps 17 lookup/comparison callers after this (criterion 1), and
 those are NOT covered by the deletion: what is deleted is the file's claim to be
@@ -490,7 +514,7 @@ still wrong.
 
 ## 6. Why it is one change and not four items
 
-**The load-bearing reason is §1:** the six steps are the two ends of one
+**The load-bearing reason is §1:** the seven steps are the two ends of one
 mechanism. A qualifier carried as a rendered string has to stop being rendered
 AND stop being parsed, and neither half is a fix on its own.
 

@@ -142,27 +142,26 @@ func (t *cascadesTranslator) classifyDerivedUnnestArray(outerLeft logical.Logica
 	// so unlike recursiveRemapValues there IS a counterparty here, and whether
 	// the two agree is the whole conversion-readiness question for this site.
 	recordDerivedUnnestSplit(proj, slot, source)
-	baseCol, qual := source, ""
-	// THE TRIPLE DECIDES QUALIFICATION WHEN IT IS PRESENT, and the split is
-	// the fallback for a slot that has none — the reading ProjectionRefs' own
-	// doc prescribes. A quoted one-segment column named `"a.b"` has
-	// Bare=`a.b` and Qualified=false, where the split manufactured a qualifier
-	// `a`, failed to match it against the scan, and declined the whole shape:
+	// THE SPLIT STAYS HERE, DELIBERATELY, and a change that made it read the
+	// parse-tree triple instead was REVERTED. The triple is the right authority
+	// and this site is not where it pays: with the split, a one-segment column
+	// named `"a.b"` manufactures qualifier `a`, fails to match the body scan,
+	// and declines the shape `0AF00 unsupported` — which is honest, because the
+	// shape does not work. With the triple, classification SUCCEEDS and the
+	// query then dies further down, in the semantic derived-source
+	// registration, as
 	//
-	//	SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x
-	//	  -> 0AF00: unnest over a computed/non-passthrough … output
-	if slot < len(proj.ProjectionRefs) && proj.ProjectionRefs[slot].Present {
-		ref := proj.ProjectionRefs[slot]
-		baseCol = ref.Bare
-		if ref.Qualified {
-			qual = ref.Qualifier
-		}
-	} else if dot := strings.LastIndexByte(source, '.'); dot >= 0 {
-		qual, baseCol = source[:dot], source[dot+1:]
-	}
-	// A qualified source (`t.arr`) must name the body's scan; a bare one binds
-	// it.
-	if qual != "" {
+	//	42703: column "A" does not exist on source "D"
+	//
+	// on `SELECT x FROM (SELECT "a.b" AS a FROM dottarr) d, d.a AS x` — a VALID
+	// query whose column `A` does exist. Trading an honest decline for a false
+	// statement about the schema is a regression even though neither runs.
+	//
+	// RFC-238 migrates this site together with that registration, which is the
+	// order that turns the decline into an answer instead of into a wrong error.
+	baseCol := source
+	if dot := strings.LastIndexByte(source, '.'); dot >= 0 {
+		qual := source[:dot]
 		scanAlias := scan.Alias
 		if scanAlias == "" {
 			scanAlias = scan.Table
@@ -170,6 +169,7 @@ func (t *cascadesTranslator) classifyDerivedUnnestArray(outerLeft logical.Logica
 		if !strings.EqualFold(qual, scanAlias) && !strings.EqualFold(qual, scan.Table) {
 			return values.UnknownType, "", derivedUnnestUnsupported
 		}
+		baseCol = source[dot+1:]
 	}
 	// The base scan must be a REAL table (not itself a CTE/derived — the
 	// body-level structural guard). A CTE-scoped scan has its table name in

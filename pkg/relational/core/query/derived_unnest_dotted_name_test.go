@@ -16,12 +16,18 @@ import (
 //	SELECT x FROM (SELECT "a.b" FROM dottarr) d, d."a.b" AS x
 //	  -> 42703: column "a.b" does not exist on source "D"
 //
-// WHY THIS IS A UNIT PIN AND NOT THAT QUERY. The shape does NOT plan yet even
-// with this fixed: it advances to a third site in the same family, the semantic
-// derived-source registration for the unnest path, and fails 42703 again from
-// there. RFC-238 carries the chain and the measurement. Until that lands, an
-// e2e arm could only assert the failure — which would pin the wrong thing and,
-// in the Java-authoritative corpus, credit it as supported.
+// WHY THIS IS A UNIT PIN AND NOT THAT QUERY. The shape does NOT plan even with
+// this fixed — it declines one site later, in classifyDerivedUnnestArray, which
+// still splits DELIBERATELY (see the comment there: migrating it too makes a
+// VALID aliased form fail with a false 42703 instead of an honest decline, and
+// the honest decline is the better of two non-working answers). RFC-238 step 6
+// migrates that site together with the semantic registration that makes the
+// query actually work, and lands the e2e arm this stands in for.
+//
+// What this fix DOES change, observably: the query above used to fail
+// `42703: column "a.b" does not exist on source "D"`, which is false — the
+// derived table does output `a.b`. It now declines `0AF00 … not yet supported`,
+// which is true.
 //
 // So the pin is here, where the corrected authority is directly observable. It
 // reddens if the site goes back to splitting, whatever the sites downstream of
