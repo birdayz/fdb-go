@@ -40,10 +40,12 @@ func TestHandler_TextExposition(t *testing.T) {
 		//     coordinator_changes at TransactionsTooOld rendered 14, and
 		//     "…_total 1" matched it.
 		//
-		// EVERY expectation below carries a trailing newline -- the TYPE lines and the
-		// quantile lines included, not just the _total ones. An earlier pass
-		// anchored only _total while the comment claimed all of them, leaving 11 of
-		// 34 open.
+		// The expectations below still carry a trailing newline, but it is no
+		// longer load-bearing: matching is whole-LINE membership, which trims it.
+		// It is kept because the strings then read as the exposition lines they
+		// are. Dropping one is a no-op today -- an earlier version anchored only
+		// the _total entries while claiming all of them, and that gap is closed
+		// by the matcher now rather than by the suffix.
 		TransactionsResourceConstrained:           12,
 		TransactionsProcessBehind:                 13,
 		TransactionsTooOld:                        14,
@@ -169,7 +171,7 @@ func TestHandler_TextExposition(t *testing.T) {
 			// name deleted from a hardcoded list, one spelling further on.
 			if line, ok := helpLine(body, c.name); !ok {
 				t.Errorf("no HELP line for %s", c.name)
-			} else if strings.Contains(line, "Go-only") || strings.Contains(line, "Go aggregate") {
+			} else if declaresGoOnly(line) {
 				t.Errorf("%s is declared originCPPTwin but its HELP claims it is "+
 					"Go-only: %q", c.name, line)
 			}
@@ -178,7 +180,7 @@ func TestHandler_TextExposition(t *testing.T) {
 			// codes without a counter, which is the same claim.
 			if line, ok := helpLine(body, c.name); !ok {
 				t.Errorf("no HELP line for %s; its provenance cannot be checked", c.name)
-			} else if !strings.Contains(line, "Go-only") && !strings.Contains(line, "Go aggregate") {
+			} else if !declaresGoOnly(line) {
 				t.Errorf("HELP for %s does not declare it Go-only: %q", c.name, line)
 			}
 		default:
@@ -232,11 +234,31 @@ func TestDocumentedCounterSplitMatchesTheTable(t *testing.T) {
 	}
 	if len(counters) != 18 || cppTwin != 13 || goOnly != 5 || other != 0 {
 		t.Errorf("table is %d counters (%d C++ twin, %d Go-only, %d unclassified); "+
-			"the doc on `counters` says 18 = 13 + 5. Update BOTH, not one",
+			"the prose says 18 = 13 + 5 in TWO places -- the package doc and the "+
+			"doc on `counters`. Update every one of them, not the first one found",
 			len(counters), cppTwin, goOnly, other)
 	}
 	if len(summaries) != 4 {
-		t.Errorf("table is %d summaries; Handler's doc says four latency "+
-			"distributions. Update BOTH", len(summaries))
+		t.Errorf("table is %d summaries; the prose says four in TWO places -- the "+
+			"package doc and Handler's doc. Update every one of them; fixing only "+
+			"the nearer copy is how the last stale sentence survived", len(summaries))
 	}
+}
+
+// declaresGoOnly reports whether a HELP line says its counter has no C++
+// TransactionMetrics twin. "Go aggregate" is transaction_retries' spelling:
+// C++ retries those codes without a counter, which is the same claim.
+//
+// ONE predicate, shared by both origin arms. helpLine was extracted for exactly
+// this reason while the phrase list stayed copied into each -- the same defect
+// one layer in. Adding a third spelling to the Go-only arm (the arm you must
+// touch to admit a new counter) while leaving the twin arm alone admitted a
+// twin whose HELP declared it Go-only; that was green before this was shared.
+func declaresGoOnly(helpLine string) bool {
+	for _, marker := range []string{"Go-only", "Go aggregate"} {
+		if strings.Contains(helpLine, marker) {
+			return true
+		}
+	}
+	return false
 }
