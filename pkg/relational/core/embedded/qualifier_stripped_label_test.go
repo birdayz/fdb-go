@@ -102,7 +102,12 @@ func TestQualifierStrippedLabel(t *testing.T) {
 				"as a label of `X.TOTAL` where the base gives `TOTAL`, which is a " +
 				"machinery qualifier leaking into user-visible metadata. It is a " +
 				"separate row because a per-descriptor scan closes the two-table form " +
-				"and leaves this one",
+				"and leaves this one. THE PAIR THAT MAKES IT A LIMIT RATHER THAN A BUG " +
+				"IS SQL-VISIBLE, in quoted_identifier_labels.yaml: `SELECT \"X.TOTAL\" " +
+				"FROM xprobe` wants `X.TOTAL` and this correlated read wants `TOTAL`, " +
+				"and the two render identically here. Adding the first as a second unit " +
+				"row would have re-run this exact call with this exact expectation and " +
+				"proved nothing, which is why it is a corpus arm instead",
 		},
 		{
 			name:  "derived aggregate keeps its own parenthesised dots",
@@ -139,21 +144,6 @@ func TestQualifierStrippedLabel(t *testing.T) {
 				"`a.b`. This is the residual of the collision two rows up — narrowed, " +
 				"not closed — and closing it needs the reference's own source alias, " +
 				"which is `_current` by the time labels are derived",
-		},
-		{
-			// The SAME LIMIT reached by an explicit projection rather than by
-			// a collision, and the reason the two collision rows above cannot
-			// both be right from a flat string.
-			name:  "LIMIT: selecting the dotted column whose tail is its sibling",
-			flat:  "X.TOTAL",
-			descs: []protoreflect.MessageDescriptor{xprobe},
-			want:  "TOTAL",
-			why: "`SELECT \"X.TOTAL\" FROM X_PROBE` should label `X.TOTAL` — Java does, and " +
-				"so does star expansion. It renders IDENTICALLY to the correlated read two " +
-				"rows up, which should label `TOTAL`, so no rule over the flat name can " +
-				"give both the right answer. NOT a regression against this branch's base, " +
-				"where the unconditional split also said `TOTAL`; it is the interim's " +
-				"declared cost, and the structured-provenance RFC removes this row",
 		},
 		{
 			// A DECLARED LIMIT. Nested members are not top-level fields.

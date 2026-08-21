@@ -32,12 +32,23 @@ a delimiter to be re-found.
 One decision produces every symptom below: a leg's per-column datum key is
 carried as a **rendered string**, `ALIAS.COL`.
 
-Two sites render it:
+**FIVE sites render it**, not two. The first draft of this RFC listed two, which
+is the census failure this repo has a rule about — a count taken over the file
+that motivated the work rather than over the population:
 
 | site | what it renders |
 | --- | --- |
 | `cascades_translator.go:767` (`legColumns`) | `strings.ToUpper(alias) + "." + strings.ToUpper(col)` |
 | `logical_result_type.go:621` (`logicalLegFields`) | `strings.ToUpper(alias) + "." + col` |
+| `scalar_subquery_seed.go:143` | `strings.ToUpper(innerAlias) + "." + scalarCol` |
+| `clustered_outer_scalar.go:509` | `leg.binding + "." + leg.typ.Fields[i].Name` |
+| `clustered_outer_scalar.go:537` | `strings.ToUpper(innerAlias) + "." + scalarCol` |
+
+The last three are the correlated-scalar and clustered-outer seeds, and they
+matter to the ORDER below: collapsing only the first two leaves three live paths
+still discarding provenance and still spelling datum keys independently — and
+note they already disagree among themselves on the case question, `:509` keeping
+the leg's own slot name verbatim while `:143` and `:537` fold the alias.
 
 At least two parse it back:
 
@@ -78,12 +89,24 @@ so it never parses, and it needs no heuristic — its own doc states the rule:
 ## 3. The design
 
 Carry `(sourceAlias, name)` as separate data on the field, alongside the flat
-name during migration. Render ONCE, at the executor's row-map boundary, which is
-the only place a flat key is genuinely required — the row map is keyed by string
-and two legs' `K` must stay distinguishable there.
+name during migration. Label derivation then reads the structured qualifier
+instead of re-finding it, and the five renderers collapse to one.
 
-Label derivation then reads the structured qualifier instead of re-finding it,
-and the two renderers collapse to one.
+**THERE IS NO EXECUTOR ROW-MAP BOUNDARY, and the first draft of this design was
+built on one.** `PositionalRow` is the SOLE runtime row (`positional_row.go:7`):
+slots are indexed by ORDINAL and every column reference reads a plan-time-baked
+ordinal — "there is no runtime name resolution", the Type's names serve plan-time
+binding and diagnostics. The one name-keyed projection, `positionalToMap`
+(`:284`), is deliberately lossy and DML-only: it drops slot order and collapses
+duplicate names LAST-WINS, and its doc says a caller that is not itself
+name-keyed must not use it.
+
+So "render once at the executor's row map" would either be dead code or would
+re-introduce the duplicate-name loss that projection exists to warn about. The
+structured identity is preserved through the POSITIONAL type and layout — where
+it already lives — and the single rendering site is the PRESENTATION boundary:
+where a `ColumnDef` gets its `Name` and `Label`, which is the only place a flat
+key reaches anything that cannot address by ordinal.
 
 ### Rejected alternatives
 
@@ -117,30 +140,101 @@ than at the end.
 1. Add the structured qualifier alongside the rendered name. No behaviour
    change; golden byte-identical.
 2. Move label derivation off the split, onto the structured qualifier.
-3. Collapse the two renderers: `legColumns`' join arm defers to
-   `logicalLegFields`, and the descriptor-name decision moves to that one
-   boundary.
-4. Delete the parser and its limits.
+3. Collapse ALL FIVE renderers, not the first two: `legColumns`' join arm defers
+   to `logicalLegFields`, and `scalar_subquery_seed.go:143`,
+   `clustered_outer_scalar.go:509` and `:537` defer to the same boundary, where
+   the descriptor-name decision also moves. Collapsing a subset leaves live
+   paths spelling keys independently — and those three already disagree with
+   each other on case.
+4. Migrate `derivedOutputColumns`' own recovery at
+   `cascades_translator.go:924` (`strings.LastIndexByte`) onto the structured
+   qualifier. It is a SECOND parser and the four steps as first written left it
+   standing while deleting the first one's limits, which would have hidden the
+   same ambiguity one site over.
+5. Delete `parseColRef` from the label path and delete its limits.
 
 ## 5. Acceptance criteria
 
-This is what makes the collapse checkable rather than asserted. If any of the
-three survives, the collapse did not happen and the stand-ins have become the
-design:
+These make the collapse checkable rather than asserted. Each one is a command
+with an expected output, because a criterion naming an artifact by a description
+gets satisfied by assertion — two of the first draft's did, and they are
+rewritten here.
 
-- `parseColRef` has NO caller on the label path.
-- Both of `colref.go`'s KNOWN LIMITs are **deleted**, not re-documented.
-- `qualifier_stripped_label_test.go`'s three `LIMIT:` arms are **removed by the
-  fix**, not carried past it.
+**(1) The label path stops parsing.** `parseColRef` has **27** non-test callers
+under `pkg/relational/core` today (`grep -rn --include='*.go' 'parseColRef('
+pkg/relational/core/ | grep -v '_test.go' | wc -l`; positive control on the same
+sweep: `declaresColumn` = 2, so the search is well-formed). "The label path" was
+undefined in the first draft, which let any survivor be declared off-path. These
+are the callers that must be GONE, by file:line at `2c0527b84`:
 
-Plus: `leg_column_key_case_divergence_test.go` goes red on step 3 and is deleted
-there, because the two producers it watches no longer both exist.
+| file:line | what it does |
+| --- | --- |
+| `qualifier_stripped_label.go:76` | the interim itself; the whole file goes |
+| `cascades_generator.go:5072` | `label := parseColRef(f.Name).bare()` |
+| `cascades_generator.go:5337` | `label := parseColRef(f.Name).bare()` |
+| `cascades_generator.go:5162` | `columnDefDisplayName` |
+| `cascades_generator.go:6008` | `bare := parseColRef(name).bare()` |
+
+The remaining 22 are NOT in scope and must be unchanged: they read a bare name
+to look up a proto field (`:5015`, `:5114`, `:6289`, `:7185`), to compare
+against a display name (`:4423`, `:5181`), to choose a descriptor (`:4057`), or
+to test qualification (`:5945`, `:5960`), plus the callers in `colref.go`,
+`eval_map.go`, `logical_predicate.go` and `select_helpers.go`. Those are lookup
+and comparison, not label derivation; they are a separate question and moving
+them here would make this criterion unmeetable.
+
+**(2) The two limits are deleted, not re-documented — and only after BOTH
+parsers are gone.** They are prose, not markers: `grep -rn "KNOWN LIMIT"
+colref.go` returns nothing today, which the first draft's wording did not
+survive. They live in the block at `colref.go:95` headed *"WHAT IT COSTS IS TWO
+SHAPES, NOT ONE"*: a literal containing a matched paren, and a literal
+containing a depth-zero dot. That block, and the two rows in
+`colref_split_test.go` that pin them, are deleted.
+
+The ordering is load-bearing. `cascades_translator.go:924` recovers a qualifier
+by `strings.LastIndexByte`, which has the SAME ambiguity and does not even have
+the paren protection — deleting `colref.go`'s documented limits while that site
+lives moves the ambiguity rather than removing it, and moves it somewhere
+undocumented. Step 4 is what makes step 5 honest.
+
+`parseColRef` keeps 22 lookup/comparison callers after this (criterion 1), and
+those are NOT covered by the deletion: what is deleted is the file's claim to be
+a safe channel for LABELS, and the two limits are limits of that claim.
+
+**(3) The interim's limits are removed BY the fix.** `grep -c 'name:  "LIMIT:'
+pkg/relational/core/embedded/qualifier_stripped_label_test.go` returns 2 today
+and must return 0 — by the file being deleted, not by the arms being relaxed.
+
+And the SQL-visible half moves with them: `quoted_identifier_labels.yaml`'s
+`SELECT "X.TOTAL" FROM xprobe` is pinned at today's WRONG label (`TOTAL`, where
+Java says `X.TOTAL`), so this RFC landing turns that arm red. Flipping it to
+`X.TOTAL` in the same commit is the demonstration; its sibling — the correlated
+read, correct today at `TOTAL` — must stay green, because a fix that pays for
+one by breaking the other has not separated them, it has moved the wrong answer.
+
+**(4) One rendering site, shown in the same commit.** At step 3,
+`ALIAS + "." + COL` must be rendered in exactly ONE place, shown by grep in that
+commit's message. `leg_column_key_case_divergence_test.go` is deleted **in that
+same commit** and not before: it watches two producers, and deleting it earlier
+would satisfy the criterion while the second producer still exists.
+
+**(5) Step 3 lands a replacement pin, or it has silently re-decided the case
+question.** Deleting (4)'s test drops the only thing watching the
+descriptor-name axis. The new single boundary needs a pin asserting BOTH jobs
+the old fold did: a hand-authored proto field `order_id` and a DDL-declared
+`"KeepCase"` each come out right. Without it the collapse re-decides case with
+nothing watching.
 
 ## 6. Why it is one change and not four items
 
-The four steps are the two ends of one mechanism. Splitting them across items
-would leave the tree in a state where structured provenance exists and nothing
-reads it, which is indistinguishable from dead code and would be deleted by the
-next person to sweep for it.
+**The load-bearing reason is §1:** the four steps are the two ends of one
+mechanism. A qualifier carried as a rendered string has to stop being rendered
+AND stop being parsed, and neither half is a fix on its own.
+
+*Secondary, and only about one particular bad split:* step 1 is deliberately
+reader-less and golden-identical, so landing it alone leaves structured
+provenance that nothing reads — indistinguishable from dead code, and the next
+sweep deletes it. That argues against splitting after step 1 specifically. It is
+not the argument for one change; §1 is.
 
 This touches datum keys engine-wide.

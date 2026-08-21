@@ -22,11 +22,15 @@ schema_template: |
   CREATE TABLE QARR (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
   CREATE TABLE q1 ("id" BIGINT, PRIMARY KEY ("id"))
   CREATE TABLE dott ("a.b" BIGINT, plain BIGINT, PRIMARY KEY ("a.b"))
+  CREATE TABLE xprobe (id BIGINT, "TOTAL" BIGINT, "X.TOTAL" BIGINT, PRIMARY KEY (id))
+  CREATE TABLE sprobe (id BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO QCASE VALUES (1, 42, 7)
   - INSERT INTO QARR VALUES (1, [10, 20])
   - INSERT INTO q1 VALUES (1), (2)
   - INSERT INTO dott VALUES (1, 9)
+  - INSERT INTO xprobe VALUES (1, 10, 99)
+  - INSERT INTO sprobe VALUES (1)
 tests:
   # The explicit projection of the quoted column.
   - query: SELECT "KeepCase" FROM QCASE WHERE id = 1
@@ -396,3 +400,29 @@ tests:
   # merged branch-name row just as happily.
   - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.cc + 1, d.dd FROM d WHERE d.cc < 3) SELECT d.cc FROM d ORDER BY d.cc
     error_code: "42703"
+  # THE PAIR THAT PROVES NO RULE OVER THE FLAT NAME CAN BE RIGHT, and the
+  # SQL-VISIBLE half of it — the label is where the user sees the defect, and it
+  # was pinned only as a unit arm until now.
+  #
+  # `xprobe` declares BOTH `"TOTAL"` and `"X.TOTAL"`. The two queries below
+  # render identically at the label boundary, seven characters of `X.TOTAL`, and
+  # want DIFFERENT labels: the first reads one column whose declared name
+  # contains a dot, the second reads a different column through a qualifier.
+  # The information that separates them was discarded upstream, where the
+  # qualifier stopped being structure and became punctuation. RFC-238 carries it
+  # as structure instead and renders once, at the executor's row map.
+  #
+  # THE FIRST ARM IS PINNED AT TODAY'S WRONG ANSWER. Java reports `X.TOTAL`;
+  # Go reports `TOTAL`, as it did at this branch's base, so this is a declared
+  # cost and not a regression. RFC-238 flips it, and this arm going red is how
+  # that lands rather than a claim that it did.
+  - query: SELECT "X.TOTAL" FROM xprobe
+    columns: ["TOTAL"]
+    rows:
+      - [99]
+  # The other half, CORRECT today, and here so a fix for the arm above cannot
+  # pay for itself by breaking this one — the two are one decision.
+  - query: SELECT s.id, (SELECT x."TOTAL" FROM xprobe x WHERE x.id = s.id) FROM sprobe s
+    columns: ["ID", "TOTAL"]
+    rows:
+      - [1, 10]
