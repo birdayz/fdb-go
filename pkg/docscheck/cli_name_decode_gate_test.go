@@ -49,6 +49,13 @@ import (
 //     Widening the walk means curating an allowlist per package; until that
 //     happens, a renderer outside cmd/frl carries the invariant by construction
 //     and by its own test, not by this gate.
+//   - THE WALK'S MASKING IS NOT CORPUS-DRIVEN. Replacing maskLiterals with a
+//     plain line split in the corpus loop leaves this test green, because
+//     cmd/frl currently has no line where masking changes the verdict (measured:
+//     2 lines carry a spelling only inside a literal, both full-line comments
+//     already exempt). TestNameLineClassification drives the classifier and
+//     TestMaskingCarriesLexicalStateAcrossLines drives the masker; the WIRING
+//     between them rests on those two, not on the corpus.
 //   - THE `// storage-compare` MARKER IS TRUSTED, NOT VERIFIED. The gate checks
 //     that the line ENDS with it — anchored, because an unanchored check was
 //     laundered two ways on the first try: past-tense prose
@@ -89,8 +96,15 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 			t.Fatalf("read %s: %v", n, err)
 		}
 		scanned++
+		// Masked at FILE level, so a raw string or comment spanning lines is one
+		// construct rather than something re-lexed per line.
+		maskedLines := strings.Split(maskLiterals(string(b)), "\n")
 		for i, line := range strings.Split(string(b), "\n") {
-			if nameLineIsLeak(line) {
+			if i >= len(maskedLines) {
+				t.Fatalf("%s: masked source has %d lines but raw has more; the mask "+
+					"changed the line count, which misaligns every classification", n, len(maskedLines))
+			}
+			if nameLineIsLeak(line, maskedLines[i]) {
 				leaks = append(leaks, fmt.Sprintf("%s:%d: %s", n, i+1, strings.TrimSpace(line)))
 			}
 		}
@@ -144,9 +158,10 @@ func TestNameLineClassification(t *testing.T) {
 		"CR-padded line comment":             "\tfmt.Fprintln(out, rt.Name) //" + strings.Repeat("\r", 12) + "userNameFor(",
 		"CR-padded block comment":            "\tfmt.Fprintln(out, rt.Name) /*" + strings.Repeat("\r", 16) + "md.GetRecordType(*/",
 		"CR-padded raw string":               "\tfmt.Fprintln(out, `" + strings.Repeat("\r", 13) + "userNameFor(`, rt.Name)",
+		"CR inside a block comment":          "\tfmt.Fprintln(out, rt.Name) /* // *" + "\r" + "/ userNameFor( */",
 	}
 	for name, line := range leaks {
-		if !nameLineIsLeak(line) {
+		if !nameLineIsLeak(line, maskedLine(line)) {
 			t.Errorf("%s: should be flagged as a leak, was exempted:\n  %s", name, line)
 		}
 	}
@@ -201,21 +216,21 @@ func TestNameLineClassification(t *testing.T) {
 			continue
 		}
 		bare := strings.Replace(line, token, "", 1)
-		if !nameLineIsLeak(bare) {
+		if !nameLineIsLeak(bare, maskedLine(bare)) {
 			t.Errorf("%s: the fixture is exempt for the WRONG reason — with its token "+
 				"removed it is still not a leak, so it carries no tracked spelling and "+
 				"never reaches the allowlist:\n  %s", name, bare)
 		}
 	}
 	for name, line := range exempt {
-		if nameLineIsLeak(line) {
+		if nameLineIsLeak(line, maskedLine(line)) {
 			t.Errorf("%s: should be exempt, was flagged as a leak:\n  %s", name, line)
 		}
 	}
 
 	// Vacuity guard: if the spelling set were emptied, every "leak" above would
 	// silently become exempt and only this check would notice.
-	if nameLineIsLeak(`	x := 1`) {
+	if nameLineIsLeak(`	x := 1`, maskedLine(`	x := 1`)) {
 		t.Error("a line with no tracked spelling was flagged; the classifier is over-broad")
 	}
 }
@@ -230,7 +245,7 @@ func TestNameLineClassification(t *testing.T) {
 // `func typeName(rt *T) string { return rt.Name }` through left the gate green.
 // A gate whose branches depend on the corpus is a gate that fails open the day
 // the corpus changes.
-func nameLineIsLeak(line string) bool {
+func nameLineIsLeak(line, masked string) bool {
 	// Spellings that reach a stored name. The struct-FIELD forms are here
 	// because omitting them is how the highest-consequence leak survived this
 	// gate's first version: `rec.RecordType.Name` is neither a .MetadataName()
@@ -311,7 +326,7 @@ func nameLineIsLeak(line string) bool {
 	// So it is not hand-rolled any more. go/scanner is the same lexer the
 	// compiler uses; every quote, escape, raw string and block comment is its
 	// problem, not this gate's.
-	code := executableCode(line)
+	code := masked
 	for _, a := range allowed {
 		if strings.Contains(code, a) {
 			return false
@@ -320,58 +335,114 @@ func nameLineIsLeak(line string) bool {
 	return true
 }
 
-// executableCode returns the line with every COMMENT, STRING and CHAR token
-// blanked, so a token search sees only executable code.
+// maskLiterals blanks every COMMENT, STRING and CHAR token in src, preserving
+// byte offsets and newlines so the result can be split into lines that line up
+// with the original.
 //
-// Stripping comments alone is not enough: `fmt.Fprintln(out, "userNameFor(",
-// rt.Name)` hides an allowlist token in a STRING and exempts a raw render, and
-// `/* md.GetRecordType( */` does the same in a block comment.
+// It takes WHOLE SOURCE, not a line, and that is load-bearing. Go is not
+// line-oriented: a raw string opened on one line makes the next line's backtick
+// a CLOSER, and a per-line scanner reads it as an opener — blanking a real
+// helper call and rejecting valid code.
 //
-// Hand-rolling the lexing failed three times running, each fix reopening the
-// hole it closed -- first `//` truncated inside "https://%s" (loud), then a
-// rune's escaped quote reopened the literal (silent), then a block comment
-// holding an apostrophe did (silent, and a regression). go/scanner does the
-// LEXING now: quoting, escapes, raw strings and comment forms are its problem.
-//
-// The SPANS are still this function's problem, and got them wrong once. The
+// Spans come from the offset of the NEXT token, never from len(lit). The
 // scanner applies stripCR to `//` comments, general comments and raw strings,
-// so len(lit) is SHORTER than the source text by the interior-CR count and
-// blanking that many bytes leaves an attacker-chosen tail exposed:
+// so len(lit) is shorter than the source by the interior-CR count and blanking
+// that many bytes leaves an attacker-chosen tail exposed.
 //
-//	fmt.Fprintln(out, rt.Name) //<CR x12>userNameFor(
+// And CRs are NOT deleted to work around that. Deleting them changes
+// tokenization rather than reconciling spans: `*<CR>/` does not close a block
+// comment in Go, so removing the CR creates `*/`, ends the comment early, and
+// leaves the rest of it unmasked —
+// `fmt.Fprintln(out, rt.Name) /* // *<CR>/ userNameFor( */` was exempted that
+// way. Offsets from the original bytes need no such trick.
 //
-// exempted a real render. Carriage returns are removed before scanning so the
-// literal text and the source span are the same length again. That the corpus
-// cannot contain an interior CR -- nogo's gofumpt rejects it -- is not the
-// reason this is safe; relying on a gate this file never names is how the hole
-// would come back.
-//
-// A line is not a compilation unit, so scanning one standalone reports errors
-// for unbalanced delimiters. They are irrelevant: only token KIND and POSITION
-// matter and the scanner keeps producing both, which is why the error handler
-// is nil rather than missing.
-func executableCode(line string) string {
-	// Same length after this as the spans the scanner reports.
-	line = strings.ReplaceAll(line, "\r", "")
-
+// Errors from the scanner are ignored: only token KIND and POSITION matter and
+// it keeps producing both, which is why the handler is nil rather than missing.
+func maskLiterals(src string) string {
 	var sc scanner.Scanner
 	fset := token.NewFileSet()
-	f := fset.AddFile("", fset.Base(), len(line))
-	sc.Init(f, []byte(line), nil, scanner.ScanComments)
+	f := fset.AddFile("", fset.Base(), len(src))
+	sc.Init(f, []byte(src), nil, scanner.ScanComments)
 
-	out := []byte(line)
+	type tokenSpan struct {
+		off   int
+		blank bool
+	}
+	var toks []tokenSpan
 	for {
-		pos, tok, lit := sc.Scan()
+		pos, tok, _ := sc.Scan()
+		off := fset.Position(pos).Offset
 		if tok == token.EOF {
+			toks = append(toks, tokenSpan{off: len(src)})
 			break
 		}
-		if tok != token.COMMENT && tok != token.STRING && tok != token.CHAR {
+		toks = append(toks, tokenSpan{
+			off:   off,
+			blank: tok == token.COMMENT || tok == token.STRING || tok == token.CHAR,
+		})
+	}
+
+	out := []byte(src)
+	for i, t := range toks {
+		if !t.blank {
 			continue
 		}
-		off := fset.Position(pos).Offset
-		for i := off; i < off+len(lit) && i < len(out); i++ {
-			out[i] = ' '
+		end := len(src)
+		if i+1 < len(toks) {
+			end = toks[i+1].off
+		}
+		for j := t.off; j < end && j < len(out); j++ {
+			// Newlines survive so line numbering does.
+			if out[j] != '\n' {
+				out[j] = ' '
+			}
 		}
 	}
 	return string(out)
+}
+
+// maskedLine is maskLiterals for a single line, for the unit fixtures. A line
+// with no unterminated construct masks identically whether scanned alone or as
+// part of its file.
+func maskedLine(line string) string { return maskLiterals(line) }
+
+// MASKING IS A WHOLE-FILE OPERATION, BECAUSE GO IS NOT LINE-ORIENTED.
+//
+// A raw string opened on one line makes the NEXT line's backtick a closer. Lex
+// that line alone and the backtick reads as an OPENER, so everything after it
+// gets blanked — including a real decoding helper — while the raw spelling
+// before it still counts. The gate then rejects valid, correctly decoded code.
+//
+// This cannot be expressed against a single line, which is exactly why the
+// per-line version survived so long.
+func TestMaskingCarriesLexicalStateAcrossLines(t *testing.T) {
+	t.Parallel()
+
+	src := "package p\n" +
+		"var banner = `opened here\n" +
+		"still inside` + userNameFor(md, rt.Name)\n"
+
+	masked := strings.Split(maskLiterals(src), "\n")
+	raw := strings.Split(src, "\n")
+	if len(masked) != len(raw) {
+		t.Fatalf("masking changed the line count (%d vs %d); every classification "+
+			"would misalign", len(masked), len(raw))
+	}
+
+	// Line 3 closes the raw string and then makes a real, correctly decoded
+	// call. It must NOT be reported as a leak.
+	const closing = 2
+	if !strings.Contains(raw[closing], "userNameFor(") {
+		t.Fatalf("fixture drifted: line %d is %q", closing, raw[closing])
+	}
+	if nameLineIsLeak(raw[closing], masked[closing]) {
+		t.Errorf("the closing line of a multi-line raw string was flagged:\n  raw    %q\n"+
+			"  masked %q\nlexing it alone makes the closing backtick an opener, which "+
+			"blanks the helper call that exempts it", raw[closing], masked[closing])
+	}
+	// And the same line lexed ALONE is misread — the reason file-level matters.
+	if !nameLineIsLeak(raw[closing], maskedLine(raw[closing])) {
+		t.Log("note: the single-line mask now agrees; if that becomes permanent the " +
+			"file-level requirement may be re-examined, but do not assume it")
+	}
 }
