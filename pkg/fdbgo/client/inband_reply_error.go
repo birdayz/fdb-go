@@ -32,7 +32,7 @@ const (
 	// unchanged and so does Go.
 	replySurfaceError replyDisposition = iota
 	// replyTryNextAlternative: maybeDelivered at AtMostOnce::False. GRV uses
-	// this (NativeAPI.actor.cpp:3865) -- ask another proxy.
+	// this (NativeAPI.actor.cpp:7258, in getConsistentReadVersion at :7231) -- ask another proxy.
 	replyTryNextAlternative
 	// replyConvertToMaybeDelivered: maybeDelivered at AtMostOnce::True. Commit
 	// uses this (NativeAPI.actor.cpp:6638-6643). The request must NOT be
@@ -42,11 +42,17 @@ const (
 )
 
 // dispositionForReplyError classifies an in-band reply error exactly as
-// basicLoadBalance does. A nil error is not a disposition question; callers
-// check that first, and it maps to replySurfaceError so a mistaken call cannot
-// invent a retry.
+// basicLoadBalance does.
+//
+// BOTH callers pass through here unconditionally, and nil is the HOT path --
+// every successful GRV and every successful commit reaches it. nil needs no
+// guard of its own: isMaybeDelivered is an errors.As test, which is false for
+// nil. An explicit `err == nil` clause used to sit here; deleting it reddened
+// nothing, because it never did any work, so it is gone rather than left
+// looking load-bearing. The nil cases in the test pin the CONTRACT, not that
+// clause.
 func dispositionForReplyError(err error, atMostOnce bool) replyDisposition {
-	if err == nil || !isMaybeDelivered(err) {
+	if !isMaybeDelivered(err) {
 		return replySurfaceError
 	}
 	if atMostOnce {

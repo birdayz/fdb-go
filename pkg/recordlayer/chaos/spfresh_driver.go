@@ -1,8 +1,6 @@
 package chaos
 
 import (
-	"context"
-
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -18,13 +16,13 @@ import (
 // (an undrained queue or a poisoned task surfaces here). Maintenance changes
 // layout/recall, not record membership, so it does not touch the model.
 func (s *Scenario) RebalanceSPFresh(indexName string) (int, error) {
-	return recordlayer.RebalanceSPFreshIndex(context.Background(), s.chaosDB, s.openStore, indexName)
+	return recordlayer.RebalanceSPFreshIndex(mustOpCtx(), s.chaosDB, s.openStore, indexName)
 }
 
 // RefineSPFresh runs one budgeted RFC-104 refinement pass through the
 // fault-injecting transactor. Returns (moved, cycleConverged, error).
 func (s *Scenario) RefineSPFresh(indexName string, budget int) (int, bool, error) {
-	return recordlayer.RefineSPFreshIndex(context.Background(), s.chaosDB, s.openStore, indexName, budget)
+	return recordlayer.RefineSPFreshIndex(mustOpCtx(), s.chaosDB, s.openStore, indexName, budget)
 }
 
 // SweepSPFresh runs one bounded multi-tenant sweep pass through the
@@ -33,7 +31,7 @@ func (s *Scenario) RefineSPFresh(indexName string, budget int) (int, bool, error
 // call; tests read timer.GetCount(CountSPFreshSplits/Merges/...) to PROVE the
 // lifecycle fired under faults (not a fake checkbox).
 func (s *Scenario) SweepSPFresh(indexName string, timer *recordlayer.StoreTimer) (recordlayer.SPFreshSweepResult, error) {
-	return recordlayer.SweepSPFreshIndexes(context.Background(), s.chaosDB,
+	return recordlayer.SweepSPFreshIndexes(mustOpCtx(), s.chaosDB,
 		[]recordlayer.SPFreshTenant{{StoreBuilder: s.openStore, IndexName: indexName}},
 		recordlayer.SPFreshSweepOptions{Timer: timer, MaxRoundsPerTenant: 16, MaxActionsPerTenant: 256})
 }
@@ -46,7 +44,7 @@ func (s *Scenario) SweepSPFresh(indexName string, timer *recordlayer.StoreTimer)
 // clean pass completes it.
 func (s *Scenario) DrainSPFresh(indexName string) {
 	s.t.Helper()
-	if _, err := recordlayer.RebalanceSPFreshIndex(context.Background(), s.cleanDB, s.openStore, indexName); err != nil {
+	if _, err := recordlayer.RebalanceSPFreshIndex(mustOpCtx(), s.cleanDB, s.openStore, indexName); err != nil {
 		s.t.Fatalf("chaos: DrainSPFresh %q (seed=%d): %v", indexName, s.seed, err)
 	}
 }

@@ -54,7 +54,16 @@ func TestMain(m *testing.M) {
 		log.Fatalf("chaos: failed to open FDB: %v", err)
 	}
 
+	// The package budget every op context derives from. 10 minutes sits above
+	// any healthy run of this suite (well under a minute against a live
+	// container) and below the 900s package alarm, so a dead container spends
+	// the budget once and every remaining test then fails instantly rather than
+	// paying its own timeout.
+	suite, suiteCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	suiteCtx = suite
+
 	code := m.Run()
+	suiteCancel()
 	// A FRESH context: `ctx` above is the 2-minute bring-up budget and m.Run()
 	// has long outlived it, so terminating on it is a silent no-op that leaks
 	// the container into the next run.

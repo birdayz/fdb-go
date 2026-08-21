@@ -113,7 +113,47 @@ func (s *Scenario) InjectOnce(fault FaultType) {
 // under a minute against a live container -- and far below the package alarm,
 // so a dead cluster surfaces as N fast failures rather than one timeout.
 func (s *Scenario) opContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
+	return chaosOpContext()
+}
+
+// suiteCtx bounds the WHOLE package, and every op context derives from it.
+//
+// Bounding each op alone does not fix the cascade it was meant to fix. With
+// -test.parallel=1 the tests run one after another, so a container that dies
+// early makes each of the ~228 remaining scenarios pay its own full op timeout:
+// at 30s apiece, THIRTY tests exhaust the 900s package alarm and the run ends
+// exactly as it did before, in a timeout naming an arbitrary test.
+//
+// A shared budget caps the TOTAL rather than the per-op cost. Once it is spent
+// every derived context is already done, so the remaining tests fail instantly
+// instead of each waiting. No classifier and no inference: an expired deadline
+// is an observed fact, not a guess about why.
+//
+// It is set by TestMain and left nil elsewhere, which is why every read goes
+// through suiteContext() rather than touching the var.
+var suiteCtx context.Context
+
+// suiteContext returns the package budget, or Background when unset -- a
+// non-test caller (there are none today) must not inherit a nil context.
+func suiteContext() context.Context {
+	if suiteCtx == nil {
+		return context.Background()
+	}
+	return suiteCtx
+}
+
+// chaosOpContext bounds ONE FDB operation, under the suite budget above. Package-level because the bound has
+// to cover paths that never build a Scenario -- RunConcurrent, the
+// ChaosTransactor compatibility wrappers, verification reads and the SPFresh
+// driver all reach FDB directly, and an unbounded one of those hangs exactly
+// like an unbounded scenario op.
+func chaosOpContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(suiteContext(), 30*time.Second)
+}
+
+// chaosRunContext bounds a whole multi-operation run rather than one op.
+func chaosRunContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(suiteContext(), 2*time.Minute)
 }
 
 // SaveRecord saves a record to the store and updates the model.
@@ -249,4 +289,17 @@ func (s *Scenario) FaultLog() []FaultLogEntry {
 // Seed returns the scenario's random seed.
 func (s *Scenario) Seed() uint64 {
 	return s.seed
+}
+
+// mustOpCtx is chaosOpContext for call sites that pass a context straight into
+// a helper and have nowhere to hang the cancel func.
+//
+// Leaking the cancel is deliberate and bounded: the context is
+// garbage-collected when its timer fires, these are test-only paths, and the
+// alternative -- leaving context.Background() -- is the unbounded hang this
+// whole change exists to remove. A leaked 30s timer per SPFresh maintenance
+// call is strictly cheaper than a suite that waits out its package alarm.
+func mustOpCtx() context.Context {
+	ctx, _ := chaosOpContext() //nolint:govet // see above: bounded, test-only
+	return ctx
 }

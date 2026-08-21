@@ -62,7 +62,13 @@ func RunConcurrent(t testing.TB, realDB fdb.Database, metadata *recordlayer.Reco
 
 	db := recordlayer.NewFDBDatabase(realDB)
 	sub := subspace.FromBytes(tuple.Tuple{t.Name()}.Pack())
-	ctx := context.Background()
+	// Bounded for the same reason scenario.go bounds its ops: TransactCtx retries
+	// unbounded by default, so a shared container dying mid-suite HANGS this
+	// rather than failing it, and the package alarm is what finally reports --
+	// naming an arbitrary test instead of the container. RunConcurrent bypasses
+	// NewScenario entirely, so it needs its own bound.
+	ctx, cancelRun := chaosRunContext()
+	defer cancelRun()
 
 	// Create the store once to initialize the header.
 	_, err := db.Run(ctx, func(rtx *recordlayer.FDBRecordContext) (any, error) {
@@ -246,7 +252,13 @@ func VerifySnapshot(store *recordlayer.FDBRecordStore, metadata *recordlayer.Rec
 // buildModelFromStore scans all records and builds a StoreModel.
 func buildModelFromStore(store *recordlayer.FDBRecordStore, metadata *recordlayer.RecordMetaData) *StoreModel {
 	model := NewStoreModel(metadata)
-	ctx := context.Background()
+	// Bounded for the same reason scenario.go bounds its ops: TransactCtx retries
+	// unbounded by default, so a shared container dying mid-suite HANGS this
+	// rather than failing it, and the package alarm is what finally reports --
+	// naming an arbitrary test instead of the container. RunConcurrent bypasses
+	// NewScenario entirely, so it needs its own bound.
+	ctx, cancelRun := chaosRunContext()
+	defer cancelRun()
 
 	cursor := store.ScanRecords(nil, recordlayer.ForwardScan())
 	defer func() { _ = cursor.Close() }()
@@ -279,7 +291,13 @@ func buildModelFromStore(store *recordlayer.FDBRecordStore, metadata *recordlaye
 // snapshot-reconstructed model (no history-dependent checks).
 func verifySnapshotDerived(store *recordlayer.FDBRecordStore, model *StoreModel) []Violation {
 	var violations []Violation
-	ctx := context.Background()
+	// Bounded for the same reason scenario.go bounds its ops: TransactCtx retries
+	// unbounded by default, so a shared container dying mid-suite HANGS this
+	// rather than failing it, and the package alarm is what finally reports --
+	// naming an arbitrary test instead of the container. RunConcurrent bypasses
+	// NewScenario entirely, so it needs its own bound.
+	ctx, cancelRun := chaosRunContext()
+	defer cancelRun()
 
 	// 1. Record count
 	if model.metadata.GetRecordCountKey() != nil {

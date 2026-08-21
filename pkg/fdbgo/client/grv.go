@@ -1231,10 +1231,8 @@ const (
 )
 
 // sendGRVRequest cycles all GRV proxies, matching C++ basicLoadBalance
-// with AtMostOnce::False. On broken_promise, tries the next proxy -- whether it
-// arrives as a transport teardown or IN-BAND inside the reply, which is the
-// shape a dying proxy actually sends and which reaches the reply parser rather
-// than any transport arm. On FDB application error, propagates immediately. If all proxies
+// with AtMostOnce::False. On broken_promise (transport error), tries next
+// proxy. On FDB application error, propagates immediately. If all proxies
 // fail, applies exponential backoff and retries — loops until success or
 // db.ctx cancellation (matching C++ infinite loop + quorum(ok,1) wait).
 func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uint32, txnCount uint32, span types.SpanContext, tags []types.TransactionTagCount) (version int64, locked bool, rkDefaultThrottled, rkBatchThrottled bool, tagThrottleInfo []types.TransactionTagThrottle, proxyTagThrottledDuration float64, attemptEpoch int64, err error) {
@@ -1311,7 +1309,6 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 				db.handleConnError(proxy.Address)
 				continue
 			}
-			db.failMon.markAlive(proxy.Address)
 			v, lk, rkD, rkB, tti, ptd, perr := parseGetReadVersionReply(resp.Body)
 			// An IN-BAND maybeDelivered error is not this proxy's answer, it is
 			// the proxy going away while answering: a dying GrvProxy replies
@@ -1321,15 +1318,36 @@ func (b *grvBatcher) sendGRVRequest(db *database, ctx context.Context, flags uin
 			// C++ basicLoadBalance treats 1100 and 1030 as one class and, at
 			// AtMostOnce::False, moves to the next alternative
 			// (LoadBalance.actor.h:823-830). GRV is AtMostOnce::False
-			// (NativeAPI.actor.cpp:3865). Returning perr raw was the divergence:
+			// (NativeAPI.actor.cpp:7258, in getConsistentReadVersion at :7231). Returning perr raw was the divergence:
 			// 1100 is retryable under NONE of the three Go predicates, so a GRV
 			// issued while a proxy was dying failed TERMINALLY where C++ just
 			// asks the next proxy. Exhausting them all falls through to the
 			// backoff below, which is C++'s behaviour too.
 			if dispositionForReplyError(perr, false) == replyTryNextAlternative {
-				db.handleConnError(proxy.Address)
+				// NOTHING is touched here -- not the failure monitor, not the
+				// connection pool. basicLoadBalance does not either: its
+				// broken_promise arm just moves to the next alternative.
+				//
+				// An earlier version called handleConnError, which was actively
+				// harmful. The connection is demonstrably HEALTHY -- a well-formed
+				// reply just arrived on it -- and connPool is keyed by ADDRESS, so
+				// closing it for a dying GrvProxy co-located with a CommitProxy
+				// pushes an unrelated in-flight COMMIT into resp.Err and
+				// manufactures a commit_unknown_result. It also re-armed the
+				// one-Warn-per-episode latch every cycle and, via markAlive closing
+				// the shared recovered channel, let all three grvBatchers zero each
+				// other's exhaustion backoff -- a fast spin. And it bought nothing:
+				// this loop never consults the excluded set, so the marking steered
+				// no traffic.
 				continue
 			}
+			// Alive only NOW. Receiving a frame proves the socket is up, not that
+			// the proxy is healthy: a broken_promise IS the proxy going away, and
+			// marking it alive re-arms recordConnFailure's one-Warn-per-episode
+			// latch (topology.go), so every in-band 1100 would Warn afresh. A
+			// non-maybeDelivered application error still counts as alive -- the
+			// proxy answered properly, it just said no.
+			db.failMon.markAlive(proxy.Address)
 			return v, lk, rkD, rkB, tti, ptd, attemptEpoch, perr
 		}
 
