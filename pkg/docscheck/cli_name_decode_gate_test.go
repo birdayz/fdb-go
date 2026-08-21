@@ -2,6 +2,8 @@ package docscheck
 
 import (
 	"fmt"
+	"go/scanner"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +136,11 @@ func TestNameLineClassification(t *testing.T) {
 		"block-comment marker":               `	shown := rt.Name /* storage-compare */`,
 		"allowlist token in prose":           `	fmt.Fprintln(out, rt.Name) // resolved via md.GetRecordType( earlier`,
 		"rune literal with an escaped quote": `	sep := '\''; fmt.Fprintln(out, rt.Name) // md.GetRecordType( earlier`,
+		"block comment with an apostrophe":   `	shown := rt.Name /* don't */ // md.GetRecordType( earlier`,
+		"block comment with a backtick":      `	shown := rt.Name /* a ` + "`" + ` b */ // md.GetRecordType( earlier`,
+		"block comment with a quote":         `	shown := rt.Name /* a " b */ // md.GetRecordType( earlier`,
+		"allowlist token in a string":        `	fmt.Fprintln(out, "userNameFor(", rt.Name)`,
+		"allowlist token in a block comment": `	fmt.Fprintln(out, rt.Name) /* md.GetRecordType( */`,
 	}
 	for name, line := range leaks {
 		if !nameLineIsLeak(line) {
@@ -175,15 +182,18 @@ func TestNameLineClassification(t *testing.T) {
 		"schema template namespace":     "tpl",
 		"collected for later decoding":  "names[i] = ",
 		"prose naming a lookup":         "userNameFor(md, ",
+		"a comment line":                "// ",
 		"URL in a string literal":       "userNameFor(md, ",
 	}
 	// Iterate EXEMPT, not tokens: keying the loop on the token map let a fixture
 	// with no entry go unguarded, which is how this guard covered 9 of 11 and
 	// then 12 of 13 while claiming "every". A fixture that legitimately has no
 	// token names itself here.
-	noToken := map[string]string{
-		"a comment line": "it is exempt by being a comment, which has no token to strip",
-	}
+	// Empty on purpose: every fixture currently has a strippable token, including
+	// the comment one -- removing its `// ` leaves a real rt.Name, so the prefix
+	// exemption IS driven rather than skipped. An entry here is a claim that a
+	// fixture cannot be tokened, and it needs the reason written next to it.
+	noToken := map[string]string{}
 	for name, line := range exempt {
 		token, ok := tokens[name]
 		if !ok {
@@ -258,6 +268,11 @@ func nameLineIsLeak(line string) bool {
 		"names[i] = rt.Name",
 	}
 
+	// The SPELLING check runs on the RAW line, not the masked code: masking here
+	// would fail OPEN (a spelling hidden in a literal is not a render, but so is
+	// a spelling the mask mis-locates). Raw fails CLOSED -- worst case something
+	// harmless is flagged and a human looks. Only the ALLOWLIST, which grants
+	// exemptions, is masked; that is the direction where a mistake is silent.
 	var hit bool
 	for _, sp := range spellings {
 		if strings.Contains(line, sp) {
@@ -292,38 +307,87 @@ func nameLineIsLeak(line string) bool {
 	// earlier` exempts a genuine render by mentioning a lookup in prose -- the
 	// same laundering the storage-compare marker was anchored to stop, one check
 	// lower down.
-	// Find the real comment token: the first `//` outside a string, raw-string or
-	// RUNE literal. Runes matter: gating the escape skip on `"` alone makes
-	// `sep := '\\''` close on the escaped quote and reopen on the real one, so the
-	// line reads as in-string to EOL, the comment is never stripped, and prose
-	// tokens count again -- the exact laundering this stripping exists to stop,
-	// reintroduced by the parser added to stop it.
-	// Taking the first raw `//` truncates a line like
-	// `fmt.Fprintf(out, "https://%s", userNameFor(md, rt.Name))` inside the
-	// literal, dropping the allowlist token while the spelling check still sees
-	// rt.Name -- the gate would then reject correct code and fail the build.
-	code := trimmed
-	var inQuote rune
-	for i := 0; i < len(code); i++ {
-		c := rune(code[i])
-		switch {
-		case inQuote != 0:
-			if c == '\\' && inQuote != '`' {
-				i++ // skip the escaped char
-			} else if c == inQuote {
-				inQuote = 0
-			}
-		case c == '"' || c == '`' || c == '\'':
-			inQuote = c
-		case c == '/' && i+1 < len(code) && code[i+1] == '/':
-			code = code[:i]
-			i = len(code) // done
-		}
-	}
+	// Allowlist tokens count only in the CODE, never in a comment: unanchored,
+	// `fmt.Fprintln(out, rt.Name) // resolved via md.GetRecordType( earlier`
+	// exempts a genuine render by naming a lookup in prose.
+	//
+	// Finding where the code ends is GO LEXING, and hand-rolling it failed three
+	// times in a row -- each fix reopening the hole it closed. Taking the first
+	// `//` truncated inside `"https://%s"` and rejected valid code (loud). Adding
+	// literal tracking made a rune's escaped quote reopen the literal (silent).
+	// Fixing that left `/* don't */` opening a literal that never closes, which
+	// is silent too and was a REGRESSION against the naive version.
+	//
+	// So it is not hand-rolled any more. go/scanner is the same lexer the
+	// compiler uses; every quote, escape, raw string and block comment is its
+	// problem, not this gate's.
+	code := executableCode(line)
 	for _, a := range allowed {
 		if strings.Contains(code, a) {
 			return false
 		}
 	}
 	return true
+}
+
+// codeBeforeComment returns the part of one source line before its first
+// comment, using the same lexer the compiler does.
+//
+// A line is not a compilation unit, so scanning it standalone produces errors
+// for unbalanced braces and the like; they are irrelevant here because token
+// POSITIONS are all this needs, and the scanner keeps producing them. The
+// error handler is nil for that reason, not by oversight.
+// executableCode returns the line with every COMMENT, STRING and CHAR token
+// replaced by a placeholder, so a token search sees only executable code.
+//
+// Stripping comments alone is not enough: `fmt.Fprintln(out, "userNameFor(",
+// rt.Name)` hides an allowlist token in a STRING and exempts a raw render, and
+// `/* md.GetRecordType( */` does the same in a block comment. Both are the same
+// laundering the marker anchoring and the comment stripping each closed one
+// layer at a time.
+//
+// Hand-rolling this failed three times running, every fix reopening the hole it
+// closed -- first `//` truncated inside "https://%s" (loud), then a rune's
+// escaped quote reopened the literal (silent), then a block comment holding an
+// apostrophe did (silent, and a regression). go/scanner is the lexer the
+// compiler uses; quoting, escapes, raw strings and comment forms are its
+// problem now.
+//
+// A line is not a compilation unit, so scanning one standalone reports errors
+// for unbalanced delimiters. They are irrelevant: only token KIND and POSITION
+// matter here and the scanner keeps producing both, which is why the error
+// handler is nil rather than missing.
+func executableCode(line string) string {
+	var sc scanner.Scanner
+	fset := token.NewFileSet()
+	f := fset.AddFile("", fset.Base(), len(line))
+	sc.Init(f, []byte(line), nil, scanner.ScanComments)
+
+	out := []byte(line)
+	blank := func(from, to int) {
+		for i := from; i < to && i < len(out); i++ {
+			if i >= 0 {
+				out[i] = ' '
+			}
+		}
+	}
+	for {
+		pos, tok, lit := sc.Scan()
+		if tok == token.EOF {
+			break
+		}
+		if tok != token.COMMENT && tok != token.STRING && tok != token.CHAR {
+			continue
+		}
+		off := fset.Position(pos).Offset
+		n := len(lit)
+		if tok == token.COMMENT {
+			n = len(lit) // scanner returns the whole comment text
+		}
+		if n == 0 {
+			n = len(line) - off // unterminated: blank to end
+		}
+		blank(off, off+n)
+	}
+	return string(out)
 }
