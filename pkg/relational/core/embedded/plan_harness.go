@@ -346,8 +346,29 @@ func planPhysicalDMLForTest(
 	if err != nil {
 		return nil, fmt.Errorf("schema DDL: %w", err)
 	}
-	md := tmpl.Underlying()
+	return planPhysicalDMLWithMetadata(sql, tmpl.Underlying(), stats, reach)
+}
 
+// PlanPhysicalDMLWithMetadata is PlanPhysicalDMLForTest against PRE-BUILT
+// metadata, the DML counterpart of PlanQueryWithMetadata. DDL upper-cases every
+// unquoted identifier, so a record type whose STORED name is mixed-case or
+// otherwise not what DDL would produce cannot be expressed through the DDL form
+// at all -- and that shape is exactly what the identifier-namespace probes need
+// to measure.
+func PlanPhysicalDMLWithMetadata(
+	sql string,
+	md *recordlayer.RecordMetaData,
+	stats properties.StatisticsProvider,
+) (plans.RecordQueryPlan, error) {
+	return planPhysicalDMLWithMetadata(sql, md, stats, nil)
+}
+
+func planPhysicalDMLWithMetadata(
+	sql string,
+	md *recordlayer.RecordMetaData,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
 	root, err := parser.Parse(sql)
 	if err != nil {
 		return nil, fmt.Errorf("parse SQL: %w", err)
