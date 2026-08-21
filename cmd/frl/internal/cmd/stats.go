@@ -702,12 +702,14 @@ func userName(storage string) string {
 // space -- correctly, since that is the namespace it holds them in -- so the
 // renderer is where the order has to be restated in the namespace it prints.
 //
-// FOUR sites decode a list and so must re-sort in the namespace they print:
-// this one, describeSkippedTypes below, fleet's describeSkipped, and
-// SyntheticRecordTypesNotModeledError.Error(). Characterising them as "the
-// collect path" hid that the fourth did NOT re-sort, so one refusal listed
-// declarations in an order no reader could predict while the report above it
-// was correct. Enumerated, because a list can be checked and a phrase cannot.
+// THREE sites decode a list and so must re-sort in the namespace they print:
+// this one, describeSkippedTypes below, and fleet's describeSkipped.
+//
+// SyntheticRecordTypesNotModeledError.Error() is deliberately NOT one of them.
+// It was, and the decode was wrong: Java stores a synthetic type's name
+// verbatim, so decoding invents a declaration. With no decode there is only one
+// namespace and its caller's storage-space order is already the printed order --
+// re-sorting there now breaks a test that asserts it must not reorder.
 func userNames(storage []string) []string {
 	if storage == nil {
 		return nil

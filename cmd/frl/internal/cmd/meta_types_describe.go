@@ -86,7 +86,7 @@ func writeRecordTypeDescriptionJSON(out io.Writer, md *recordlayer.RecordMetaDat
 		rtk = fmt.Sprintf("%v", rt.GetRecordTypeKey())
 	}
 	desc := recordTypeDescription{
-		Name:             rt.Name,
+		Name:             userName(rt.Name), // SQL identifier; rt.Name is the escaped storage name
 		PrimaryKey:       pk,
 		SinceVersion:     rt.SinceVersion,
 		RecordTypeKey:    rtk,
@@ -135,7 +135,7 @@ func sortedRecordTypeNames(md *recordlayer.RecordMetaData) []string {
 
 func writeRecordTypeDescription(out io.Writer, md *recordlayer.RecordMetaData, rt *recordlayer.RecordType) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Name:                   %s\n", rt.Name)
+	fmt.Fprintf(&b, "Name:                   %s\n", userName(rt.Name)) // SQL identifier
 	pk := pkFieldsOrUnset(rt.PrimaryKey)
 	fmt.Fprintf(&b, "Primary key:            %s\n", pk)
 	if rt.SinceVersion > 0 {

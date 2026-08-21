@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
 
 	"fdb.dev/gen"
+	"fdb.dev/pkg/fdbgo/fdb/tuple"
 	"fdb.dev/pkg/recordlayer"
 )
 
@@ -157,6 +159,97 @@ func TestRecordTypeNamesRenderAsSQLIdentifiers(t *testing.T) {
 			t.Fatal("expected a lookup miss")
 		}
 		assert(t, "lookupRecordType error", err.Error())
+	})
+
+	t.Run("meta types describe (text)", func(t *testing.T) {
+		t.Parallel()
+		rt := md.GetRecordType(storage)
+		if rt == nil {
+			t.Fatal("fixture did not land: the escaped type is not resolvable")
+		}
+		var buf bytes.Buffer
+		if err := writeRecordTypeDescription(&buf, md, rt); err != nil {
+			t.Fatalf("writeRecordTypeDescription: %v", err)
+		}
+		// This output deliberately carries TWO namespaces: `Name:` is the SQL
+		// identifier, `Proto message:` is the descriptor's full name and is
+		// CORRECTLY the storage spelling. So assert per line, not over the blob --
+		// a whole-output check would either miss the Name regression or forbid the
+		// proto name that is supposed to be there.
+		got := buf.String()
+		var nameLine string
+		for _, l := range strings.Split(got, "\n") {
+			if strings.HasPrefix(l, "Name:") {
+				nameLine = l
+				break
+			}
+		}
+		if nameLine == "" {
+			t.Fatalf("no Name: line in the description:\n%s", got)
+		}
+		if !strings.Contains(nameLine, sql) || strings.Contains(nameLine, storage) {
+			t.Errorf("the Name line is not the SQL identifier %q: %s", sql, nameLine)
+		}
+		if !strings.Contains(got, "Proto message:") || !strings.Contains(got, storage) {
+			t.Errorf("the Proto message line should still carry the descriptor name %q "+
+				"(it is a proto fact, not a SQL one):\n%s", storage, got)
+		}
+	})
+
+	t.Run("meta types describe (json)", func(t *testing.T) {
+		t.Parallel()
+		rt := md.GetRecordType(storage)
+		if rt == nil {
+			t.Fatal("fixture did not land: the escaped type is not resolvable")
+		}
+		var buf bytes.Buffer
+		if err := writeRecordTypeDescriptionJSON(&buf, md, rt); err != nil {
+			t.Fatalf("writeRecordTypeDescriptionJSON: %v", err)
+		}
+		// Same two-namespace split as the text form, checked on the typed fields
+		// so the assertion cannot drift onto the wrong one.
+		var desc struct {
+			Name         string `json:"name"`
+			ProtoMessage string `json:"proto_message"`
+		}
+		if err := json.Unmarshal(buf.Bytes(), &desc); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+		}
+		if desc.Name != sql {
+			t.Errorf("name = %q, want the SQL identifier %q", desc.Name, sql)
+		}
+		if !strings.Contains(desc.ProtoMessage, storage) {
+			t.Errorf("proto_message = %q, want it to carry the descriptor name %q",
+				desc.ProtoMessage, storage)
+		}
+	})
+
+	t.Run("record scan (json)", func(t *testing.T) {
+		t.Parallel()
+		// `stats show -o json` keys per_type by the DECODED name, so a script
+		// joining scan output to statistics needs the same spelling here.
+		rt := md.GetRecordType(storage)
+		if rt == nil {
+			t.Fatal("fixture did not land: the escaped type is not resolvable")
+		}
+		var buf bytes.Buffer
+		rec := &recordlayer.FDBStoredRecord[proto.Message]{
+			PrimaryKey: tuple.Tuple{int64(1)},
+			RecordType: rt,
+			Record:     &gen.Order{},
+		}
+		if err := writeRecordAsJSON(&buf, rec); err != nil {
+			t.Fatalf("writeRecordAsJSON: %v", err)
+		}
+		var env struct {
+			RecordType string `json:"record_type"`
+		}
+		if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+		}
+		if env.RecordType != sql {
+			t.Errorf("record_type = %q, want the SQL identifier %q", env.RecordType, sql)
+		}
 	})
 
 	t.Run("meta diff", func(t *testing.T) {

@@ -1165,10 +1165,13 @@ func TestStats_CollectPathDecodesNames(t *testing.T) {
 // differ: storage-sorted [A__0B, A__1B] prints as [A__B, A$B], while a reader
 // scanning the output expects [A$B, A__B].
 //
-// Four sites decode such a list; all four now sort in the namespace they print
-// (userNames and describeSkippedTypes here, fleet's describeSkipped, and
-// SyntheticRecordTypesNotModeledError.Error(), pinned in its own package).
-// This test covers userNames; the other three carry their own ordering arms.
+// Three sites decode such a list and all three sort in the namespace they print
+// (userNames and describeSkippedTypes here, and fleet's describeSkipped). This
+// test covers userNames; the other two carry their own ordering arms.
+//
+// SyntheticRecordTypesNotModeledError.Error() is NOT in that set: it prints
+// verbatim, and TestSyntheticRefusalErrorNamesTypesVerbatim asserts it does not
+// reorder its input.
 func TestStats_ListsAreSortedByTheDecodedName(t *testing.T) {
 	t.Parallel()
 

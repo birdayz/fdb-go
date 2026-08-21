@@ -19554,26 +19554,41 @@ RFC-236.
 
 `frl stats` decoded every record-type name it printed; nothing else did, so one
 table was `MY$TABLE` under one command and `MY__1TABLE` under another and a
-script crossing two commands silently missed. Closed by decoding at every
-render boundary: `meta_types_describe.go`'s `sortedRecordTypeNames` (which also
-backs the `not found -- available: ...` message in `lookupRecordType`, so a
-typo now offers names the operator can type), `index.go`'s `recordTypeNames`,
-`meta.go`'s `writeTypesList`/`writeTypesListJSON`, `meta_diff.go`'s
-`diffRecordTypes`, and the two record-type arms of `completion.go`.
+script crossing two commands silently missed. Closed by decoding at every render
+boundary: `meta_types_describe.go`'s `sortedRecordTypeNames` (which also backs
+the `not found -- available: ...` message in `lookupRecordType`, so a typo now
+offers names the operator can type) and its `writeRecordTypeDescription` /
+`writeRecordTypeDescriptionJSON` `Name` fields, `index.go`'s
+`recordTypeNames`, `meta.go`'s `writeTypesList`/`writeTypesListJSON`,
+`meta_diff.go`'s `diffRecordTypes`, `record.go`'s `writeRecordAsJSON`
+(`record_type`), and the two record-type arms of `completion.go`.
+
+**The first census MISSED two of those**, and the way it missed is the lesson:
+it enumerated `RecordTypes()` call sites, but `writeRecordTypeDescription` takes
+a `*RecordType` ARGUMENT and `writeRecordAsJSON` reads `rec.RecordType.Name`, so
+neither appears in that grep. A census keyed on how a value is OBTAINED cannot
+find the sites that receive it already obtained. Sweep by what is PRINTED.
 
 Round-tripping holds: `GetRecordType` (`metadata.go:1297`) resolves EITHER
 namespace, so a name copied out of any of these still works as `--type`. Pinned
 by `TestGetRecordTypeResolvesAUserIdentifier` and, for the whole CLI surface,
 `TestRecordTypeNamesRenderAsSQLIdentifiers`
-(`cmd/frl/internal/cmd/record_type_names_user_facing_test.go`), whose five arms
+(`cmd/frl/internal/cmd/record_type_names_user_facing_test.go`), whose eight arms
 were each shown to redden under reversal of their own conversion.
 
-**Three surfaces are deliberately NOT converted**, and each has a reason that
+**Four surfaces are deliberately NOT converted**, and each has a reason that
 outlives this entry:
 - **INDEX names** — `GetIndex` (`metadata.go:1484`) is a raw map lookup with no
   escape fallback, so a decoded index name would not resolve when passed back.
   Decide index-name policy on its own terms; do not assume it matches.
 - **Context names** — local to the CLI, never a record type.
+- **The `Proto message:` line of `frl meta types describe`** (`proto_message` in
+  JSON) — that field reports the protobuf DESCRIPTOR full name, so the escaped
+  spelling is the right answer there. Its `Name:` field one line above IS
+  decoded, which makes this the one command that prints both namespaces on
+  purpose; the test asserts per-field rather than over the whole blob, since a
+  whole-output check would either miss a `Name` regression or forbid the proto
+  name that belongs there.
 - **SYNTHETIC type names** — Java stores these verbatim from
   `addJoinedRecordType`, and this port never creates one (metadata_proto.go only
   `proto.Clone`s them), so `MY__1JOINED` is genuinely ambiguous between a

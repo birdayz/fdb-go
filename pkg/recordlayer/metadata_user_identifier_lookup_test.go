@@ -170,12 +170,20 @@ func TestGetRecordTypeMisResolvesAnAmbiguousPair(t *testing.T) {
 		t.Fatalf("GetRecordType(%q) missed entirely; expected the mis-resolution, not a miss", bSQL)
 	}
 	if got.Name != aStorage {
-		t.Fatalf("GetRecordType(%q) resolved to %q; the ambiguity hazard has changed shape "+
-			"and AmbiguousDeclaredNames' reasoning needs re-reading", bSQL, got.Name)
-	}
-	if got.Name == bStorage {
-		t.Fatalf("GetRecordType(%q) now resolves correctly — if the escaping became "+
-			"injective or the catalog became user-keyed, the ambiguity gates can be "+
-			"revisited; until then they are load-bearing", bSQL)
+		// The reorder case gets its OWN message, and it has to live inside this
+		// branch: `!= aStorage` already covers `== bStorage`, so a separate
+		// if-block below would be unreachable and the explanation it carries
+		// would never print.
+		why := "the ambiguity hazard has changed shape, and AmbiguousDeclaredNames' " +
+			"reasoning needs re-reading"
+		if got.Name == bStorage {
+			why = "the lookup now resolves the SQL name to its own type -- reordering " +
+				"GetRecordType's two lookups does NOT fix this class, it only moves " +
+				"which of the pair resolves wrong. If the escaping became injective " +
+				"or the catalog became user-keyed, the ambiguity gates can be " +
+				"revisited; until then they are load-bearing"
+		}
+		t.Fatalf("GetRecordType(%q) resolved to %q, want the mis-resolution to %q: %s",
+			bSQL, got.Name, aStorage, why)
 	}
 }

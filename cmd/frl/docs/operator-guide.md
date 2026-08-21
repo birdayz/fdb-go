@@ -355,15 +355,24 @@ creates one, so `MY__1JOINED` could equally be a literal name or the escaping of
 `MY$JOINED`. It is printed verbatim, because the only thing you can do with it
 is match it against your Java-side metadata.
 
-Every `frl` command that prints a record-type name follows the same rule --
-`frl meta types`, `frl meta diff`, `frl index describe`, shell completion, and
-the `not found -- available: ...` list shared by `frl record scan` and
-`frl record count`. A name copied out of any of them can be passed straight back
-in via `--type`, because the metadata resolves either spelling.
+Three things in `frl` output are deliberately NOT translated, and it is worth
+knowing them before reading the list that is:
 
-Two things on that output are deliberately NOT record-type names and are not
-translated: INDEX names, which are a separate namespace with no escape
-round-trip, and context names, which are local to this CLI.
+- **Index names.** A separate namespace; `GetIndex` has no escape fallback, so a
+  decoded index name would not resolve when passed back in.
+- **Context names.** Local to this CLI, never a record type.
+- **The `Proto message:` line of `frl meta types describe`** (`proto_message` in
+  JSON). That field reports the protobuf descriptor's full name, so the escaped
+  spelling is the correct answer there -- the `Name:` field one line above it is
+  the SQL identifier. One command, two namespaces, on purpose.
+
+Everything else that prints a record-type name prints the SQL identifier:
+`frl meta types` (text and JSON), `frl meta types describe`'s `Name` field,
+`frl meta diff`, `frl index describe`, `frl record scan -o json`'s
+`record_type`, shell completion, and the `not found -- available: ...` list
+shared by `frl record scan` and `frl record count`. A name copied out of any of
+them can be passed straight back in via `--type`, because the metadata resolves
+either spelling.
 
 ```sh
 

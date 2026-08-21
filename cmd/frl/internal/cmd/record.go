@@ -177,7 +177,10 @@ func writeRecordAsJSON(out io.Writer, rec *recordlayer.FDBStoredRecord[proto.Mes
 	}
 	rt := ""
 	if rec.RecordType != nil {
-		rt = rec.RecordType.Name
+		// SQL identifier: `stats show -o json` keys per_type by the decoded name,
+		// so emitting the storage form here is exactly the cross-command miss a
+		// script joining the two would hit.
+		rt = userName(rec.RecordType.Name)
 	}
 	// Envelope rather than raw record — downstream tools need the type and
 	// PK when a scan spans multiple record types.
