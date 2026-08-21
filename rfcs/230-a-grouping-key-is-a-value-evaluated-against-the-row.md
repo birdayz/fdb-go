@@ -2089,9 +2089,10 @@ nothing they can check and quietly converts a technical record into a process on
 
 **The one case where the mechanism outlives the correction.** One of §12's three slips came
 from a sweep that returned nothing and was read as proof of absence. With the glob
-**unquoted**, `grep --include=*.go` behaves PER SHELL: zsh and fish reject the unmatched
-wildcard and abort BEFORE grep runs, while bash passes the pattern through literally and
-grep runs normally. Under the aborting shells the command never executes, so a capture that
+**unquoted**, `grep --include=*.go` is decided by the GLOB MODE, not the shell name: where
+an unmatched wildcard is rejected (zsh here, fish, and bash under `failglob`) the command
+aborts BEFORE grep runs, while where it is passed through literally (bash by default) grep
+runs normally and the count is true. Under the aborting shells the command never executes, so a capture that
 reads only stdout sees nothing and reports no hits for a symbol present 60 times -- the
 failure is loud on stderr, and it is the capture that is silent. The corrected line number
 is worth one line; the rule behind it is worth keeping:
