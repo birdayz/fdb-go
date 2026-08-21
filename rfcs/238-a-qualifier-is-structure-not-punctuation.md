@@ -840,7 +840,7 @@ WithoutChildren` compares its record-type list element by element and has no
 metadata to resolve with — nor should it: it is structural equality on a memo
 expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
 `buildMatchCandidates` passes `[]string{rt.Name}` (stored,
-`cascades_generator.go:2801`) and `cascades_translator.go:3023` passes
+`cascades_generator.go:2810`) and `cascades_translator.go:3032` passes
 `[]string{s.Table}` (SQL).
 
 The visible cost, same query shape over one schema, one per table:
@@ -854,10 +854,15 @@ u            ->  IndexScan(IDX_TAG, [=] COVERING)          index used
 
 Both pairs are pinned in `yamsql/testdata/intermingle_escaped_table_name.yaml`
 and `escaped_table_secondary_index.yaml`, asserted at the WRONG value on purpose
-so the fix reddens them.
+so the fix reddens them. A THIRD sentinel carries the same wrong-on-purpose
+value and is easy to miss because it is generated rather than written:
+`explaindiff/testdata/plan_shape.golden` records every corpus query's plan, so
+those two files' five queries appear there too
+(`plan_shape.golden:5905`, `:8789`, `:8800`). Re-bless it with the fix; a
+yamsql-only update leaves the golden red and reads as unrelated drift.
 
 **THE DECISION: the plan tree carries STORAGE names, translated ONCE at the scan
-leaf.** `cascades_translator.go:3023` resolves `s.Table` to the record type's
+leaf.** `cascades_translator.go:3032` resolves `s.Table` to the record type's
 stored name before building the `FullUnorderedScanExpression`; candidates keep
 `rt.Name`; `EqualsWithoutChildren` then compares like with like and never learns
 about escaping.
@@ -877,17 +882,21 @@ which is exactly what makes the raw `recordTypes.equals` at
 objections described Java's shipped behaviour rather than a cost.**
 
   - It said storage names in the plan would make EXPLAIN print
-    `Scan(MY__1TABLE)`. Java's EXPLAIN prints exactly that. Its own goldens
-    carry `SCAN([IS my__1adjacency__1list, ...]) | FILTER _.my__parent ...` and
-    `SCAN([IS foo__2table__1nested, ...])` (`valid-identifiers.yamsql:237,422`) —
-    storage spellings for both the table and its columns, beside UNMANGLED index
-    names in the same line. So Go printing `Scan(MY$TABLE)` is itself a
-    divergence on the shared surface, not a feature to protect.
+    `Scan(MY__1TABLE)`. Java's EXPLAIN prints exactly that:
+    `SCAN([IS foo__2table__1nested, ...])` and
+    `SCAN([IS my__1adjacency__1list, ...])`, at
+    `valid-identifiers.yamsql:237` and `:422`. The RECORD-TYPE name is mangled;
+    :237 goes on to project `level2$field.1` in the same line, so the columns
+    beside it are NOT. Index names are mangled nowhere — the covering scans at
+    `:222`, `:227`, `:232` print `foo.table$nested.repeated.idx.field.1.3`
+    verbatim. Three namespaces in one output, deliberately. So Go printing
+    `Scan(MY$TABLE)` is itself a divergence on the shared surface, not a
+    feature to protect.
   - It said the render boundary would then have to decode through a
     non-injective map. It would not. Java never decodes a record-type name on
     the read path, and under this section's own premise — both names carried as
     data — rendering a display name is a forward catalog lookup
-    (`RecordLayerSchemaTemplate.java:580`), not a decode.
+    (`RecordLayerSchemaTemplate.java:578-583`), not a decode.
 
 **AND THE SQL NAMESPACE IS NOT A LEGAL MEMO IDENTITY, which is the argument that
 settles it independently of Java.** Candidate scans flow `UnknownType`, so per
@@ -907,15 +916,26 @@ of `Type.java:2185,2225-2233,2536-2539`, and `metadata.RecordLayerTable`, whose
 conflates the two names at the one place Java keeps them apart
 (`RecordLayerTable.java:96-99`).
 
-**THE OTHER SITES THAT KEY OFF A RECORD-TYPE NAME MUST NOT MOVE.** `rt.Name`
-reaches candidates at four places (`cascades_generator.go:2801`, `:3430`,
-`:3654`, `:3729`) and those are cross-compared in
-`rule_aggregate_data_access.go:84,299`; converting one silently disables
-aggregate matching. `queriedRecordTypes` flows into physical plans
-(`primary_scan_match_candidate.go:393,432`) and into the continuation salt
-(`scan_range_execution_identity.go:348,445,510`), which is wire. Translating at
-the scan leaf leaves all of them untouched, which is the other reason it is the
-right place.
+**THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
+places (`cascades_generator.go:2810`, `:3439`, `:3663`, `:3738`) and those are
+cross-compared in `rule_aggregate_data_access.go:84,299`; converting one
+silently disables aggregate matching. `queriedRecordTypes` flows into physical
+plans (`primary_scan_match_candidate.go:393,432`). Translating at the scan leaf
+leaves every one of them untouched, which is the other reason it is the right
+place.
+
+**THE CONTINUATION SALT DOES MOVE, and saying it does not was wrong.**
+`PrimaryScanRule.OnMatch` builds the physical plan from the LOGICAL leaf's
+names (`rule_primary_scan.go:46`), and `executor.go:323` feeds that plan to
+`primaryScanRangeFingerprintSalt` — so for an escaped table the salt input goes
+from `MY$TABLE` to `MY__1TABLE`. That is harmless, but only for a reason with an
+expiry condition, which is why it has to be written down rather than waved
+through: the salt is computed ONLY when `len(comps) > 0` (`executor.go:322`),
+and an escaped table has no pushed-down comparisons today, so no continuation
+can exist through that path to be invalidated. The fix creates the pushdown and
+the salt in the same stroke. Anything that changes that ordering — a partial
+landing that gives an escaped table comparisons before the salt input settles —
+breaks live continuations.
 
 **This is a DESIGN CHANGE TO THE CASCADES MATCHING INFRASTRUCTURE and is not
 implemented here.** It needs its ACK before the code, which is the gate this repo
