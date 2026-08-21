@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**357 scenarios · 2846 query/assertion cases** across 18 feature areas — 2502 supported, 110 unsupported-feature pins, 234 error-path pins.
+**358 scenarios · 2852 query/assertion cases** across 18 feature areas — 2508 supported, 110 unsupported-feature pins, 234 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -39,13 +39,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 12 | 180 | 177 | 0 | 3 |
+| Index usage | 13 | 180 | 177 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 34 | 264 | 230 | 10 | 24 |
-| **Total** | **357** | **2846** | **2502** | **110** | **234** |
+| Other | 34 | 270 | 236 | 10 | 24 |
+| **Total** | **358** | **2852** | **2508** | **110** | **234** |
 
 ## Aggregates & GROUP BY
 
@@ -404,7 +404,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |
 | `multi_column_index_java` | 7 | 7 | 0 | 0 | Multi-column (composite) index patterns. |
-| `quoted_identifier_index_bridge` | 4 | 4 | 0 | 0 | THE INDEX MUST STILL MATCH WHEN THE COLUMN NAME IS NOT UPPER. |
+| `nested_struct_index_never_matches_gap` | 1 | 1 | 0 | 0 | THIS FILE IS A GAP MARKER, NOT COVERAGE. |
+| `quoted_identifier_index_bridge` | 3 | 3 | 0 | 0 | THE INDEX MUST STILL MATCH WHEN THE COLUMN NAME IS NOT UPPER. |
 | `rfc202_generated_index_plans` | 7 | 7 | 0 | 0 | RFC-202 gate (d): the generator's index |
 | `secondary_index_pushdown` | 80 | 80 | 0 | 0 | Secondary-index pushdown: `SELECT ... |
 | `unique_index_violation` | 5 | 3 | 0 | 2 | Tests that unique index constraints are enforced. |
@@ -486,7 +487,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `output_column_naming` | 8 | 8 | 0 | 0 | a query's OUTPUT COLUMN NAMES are part of its |
 | `parse_channel_pins` | 6 | 6 | 0 | 0 | dotted display names survive the parser→IR |
 | `quoted_identifier_columns` | 6 | 5 | 0 | 1 | A QUOTED identifier keeps its case; an unquoted one folds to upper. |
-| `quoted_identifier_labels` | 9 | 9 | 0 | 0 | THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one |
+| `quoted_identifier_labels` | 15 | 15 | 0 | 0 | THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one |
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |

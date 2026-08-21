@@ -70,17 +70,8 @@ tests:
     columns: ["id"]
     rows:
       - [1]
-  # A CTE COLUMN LIST is a SEPARATE authority and is NOT covered — see the
-  # `WITH c("x")` entry in TODO.md for the reproducer, the four sites already
-  # reconciled and the fifth that still folds. It is deliberately NOT pinned
-  # here as a passing arm, because it does not pass: an arm asserting the
-  # divergent value would have to be rewritten by the fix rather than reddened
-  # by it, which is the wrong direction for a sentinel.
-  #
-  # What IS pinned here is the neighbouring shape that shares four of the five
-  # authorities and works, so a regression in those four still reddens
-  # something: a CTE with NO column list, whose columns come from its body's
-  # own quoted names.
+  # A CTE with no column list, whose columns come from its body's own quoted
+  # names — the control for the arms below it.
   - query: WITH c AS (SELECT "id" FROM q1) SELECT * FROM c
     unordered: true
     columns: ["id"]
@@ -91,6 +82,66 @@ tests:
     columns: ["id"]
     rows:
       - [2]
+  # A CTE COLUMN LIST with a quoted lower-case name.
+  #
+  # The alias was captured as `StripIdentifierQuotes(FullIdToName(fid))`, and
+  # FullIdToName ALREADY strips — so the outer call saw an unquoted `x` and
+  # folded it. A DOUBLE STRIP, which is invisible for every unquoted alias
+  # (folding twice is folding once) and destroys every quoted one.
+  #
+  # It survived four other fixes on this same alias list because each of those
+  # sites APPLIES the list and this one CAPTURES it: every application was
+  # correct and every one of them was handed X. That is why the arms below
+  # come in three shapes — the label, the qualified read, and the predicate —
+  # since the capture reaches each through a different authority and only the
+  # third one reached the executor.
+  - query: WITH c("x") AS (SELECT "id" FROM q1) SELECT * FROM c
+    unordered: true
+    columns: ["x"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH c("x") AS (SELECT "id" FROM q1) SELECT c."x" FROM c
+    unordered: true
+    columns: ["x"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH c("x") AS (SELECT "id" FROM q1) SELECT * FROM c WHERE c."x" > 1
+    columns: ["x"]
+    rows:
+      - [2]
+  # And the UNQUOTED alias still folds, because that fold is the parse
+  # boundary's and is the only one in the language.
+  - query: WITH c(x) AS (SELECT "id" FROM q1) SELECT * FROM c WHERE c.x > 1
+    columns: ["X"]
+    rows:
+      - [2]
+  # A RECURSIVE CTE's column list, which was latent ONLY because the capture
+  # folded: with the capture fixed, the recursive output-row builders became
+  # the disagreeing half and the same `edge lookup R: read as RECORD(n),
+  # declared RECORD(N)` appeared one layer down. A guard whose expected value
+  # inverts when a neighbouring fold is removed.
+  #
+  # THE SEED IS A COLUMN READ, NOT AN INTEGER LITERAL, and that is deliberate:
+  # a literal-seeded recursive CTE has a separate NULLABILITY defect
+  # (`RECORD(N:INT)` vs `RECORD(N:INT?)`) that fails the same way and would be
+  # mistaken for this one in either direction. The unquoted control below is
+  # what separates them — it must stay green while the quoted arm is fixed.
+  - query: WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
+    unordered: true
+    columns: ["n"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
+    unordered: true
+    columns: ["N"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
   # A quoted alias on a projection that also carries an EXISTS. The FlatMap
   # this builds mints its result type in its OWN arm, not through the plain
   # projection's naming authority, and that arm folded: the query reported

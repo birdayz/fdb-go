@@ -9821,7 +9821,7 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 	fields := make([]values.Field, len(outCols))
 	for i := range fields {
 		fields[i] = values.Field{
-			Name:      strings.ToUpper(outCols[i]),
+			Name:      outCols[i],
 			Ordinal:   i,
 			FieldType: seed.Fields[i].FieldType,
 		}
@@ -10140,7 +10140,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	}
 	outCols := seedOut
 	if len(c.ColumnAliases) > 0 && len(c.ColumnAliases) == len(outCols) {
-		outCols = c.ColumnAliases // already upper-cased
+		outCols = c.ColumnAliases // normalized once, at the parse capture
 	}
 
 	// Derive the exact positional row shared by every iteration BEFORE creating
@@ -10178,7 +10178,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	seedFields := make([]values.Field, len(outCols))
 	for i := range outCols {
 		seedFields[i] = values.Field{
-			Name:      strings.ToUpper(outCols[i]),
+			Name:      outCols[i],
 			FieldType: seedType.Fields[i].FieldType,
 			Ordinal:   i,
 		}

@@ -7224,7 +7224,7 @@ func buildLogicalPlanForQueryWithCTECatalog(
 					// destroy `WITH c("x")`. This is the CAPTURE, which is why
 					// it is fixed here rather than at the three sites that
 					// APPLY the list: they can only publish what this stored.
-					names[j] = functions.StripIdentifierQuotes(functions.FullIdToName(fid))
+					names[j] = functions.FullIdToName(fid)
 				}
 				cte.ColumnAliases = names
 			}
@@ -7407,7 +7407,7 @@ func buildLogicalPlanForQueryWithCatalog(
 					// destroy `WITH c("x")`. This is the CAPTURE, which is why
 					// it is fixed here rather than at the three sites that
 					// APPLY the list: they can only publish what this stored.
-					names[j] = functions.StripIdentifierQuotes(functions.FullIdToName(fid))
+					names[j] = functions.FullIdToName(fid)
 				}
 				cte.ColumnAliases = names
 			}
@@ -8165,14 +8165,13 @@ func exactCTEDefinitionRecordType(
 			// construction. That sentence is only true while all three spell
 			// the alias the same way.
 			//
-			// STILL BROKEN, and booked: a FIFTH authority folds this alias
-			// somewhere downstream, so `WITH c("x") AS (…) SELECT * FROM c`
-			// labels the column X and the predicate form dies with
-			// `edge lookup C: read as RECORD(x), declared RECORD(X)`. Four of
-			// the five sites are reconciled (the three parse captures, and
-			// this one); the fifth needs instrumentation rather than reading.
-			// Reproducer and the four ruled-out routes are in TODO.md under
-			// "A CTE COLUMN LIST still folds a quoted alias".
+			// This site being verbatim was necessary and not sufficient: the
+			// alias was arriving here ALREADY folded, from a DOUBLE STRIP at
+			// the parse capture (`StripIdentifierQuotes(FullIdToName(fid))`,
+			// where FullIdToName already strips, so the outer call saw an
+			// unquoted `x` and upper-cased it). Four sites APPLY this list and
+			// one CAPTURES it; every application was correct and every one was
+			// handed X.
 			fields[i].Name = alias
 			fields[i].Ordinal = i
 		}

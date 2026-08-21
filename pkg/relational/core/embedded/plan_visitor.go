@@ -381,7 +381,7 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 					// destroy `WITH c("x")`. This is the CAPTURE, which is why
 					// it is fixed here rather than at the three sites that
 					// APPLY the list: they can only publish what this stored.
-					names[j] = functions.StripIdentifierQuotes(functions.FullIdToName(fid))
+					names[j] = functions.FullIdToName(fid)
 				}
 				cte.ColumnAliases = names
 			}

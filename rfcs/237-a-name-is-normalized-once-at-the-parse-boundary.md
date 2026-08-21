@@ -97,6 +97,40 @@ hand-written `.proto` — the field request missed, `expandValueIndex` returned
 nothing about it, because that corpus is DDL-fed and its descriptors are
 already upper.
 
+### 2.2 The one that hid the longest was a function whose name promises a no-op
+
+`functions.StripIdentifierQuotes` is not a quote stripper. It is THE
+normalizer — an unquoted identifier comes back UPPER-FOLDED, which is Java's
+`normalizeString` — so it is not idempotent and must be applied exactly once.
+
+All three CTE column-alias captures called
+`StripIdentifierQuotes(FullIdToName(fid))`, and `FullIdToName` already applies
+it per segment. So `"x"` became `x` became **`X`**, and `WITH c("x")` published
+a column no reference could name.
+
+It survived a full review lap, and the way it survived is the lesson: the four
+sites that CONSUME a CTE's alias list were each audited and each found
+faithful, because they were. The corruption was upstream of all of them. A
+sweep for `strings.ToUpper` cannot see it — there is no `ToUpper` at the call
+site — and a comment was added directly above the surviving fold correctly
+describing the bug it sat on.
+
+The class-level check, with its positive control:
+
+```
+$ grep -rnE "StripIdentifierQuotes\((functions\.)?(FullIdToName|StripIdentifierQuotes)\(" --include='*.go' pkg/
+0 code hits          # two hits are this RFC's own prose, quoted in comments
+$ grep -rl 'StripIdentifierQuotes' --include='*.go' pkg/ | wc -l
+18                   # the control: the symbol is reachable and the pattern well-formed
+```
+
+Removing that capture fold then ARMED two more: the recursive-CTE output-row
+builders folded too, and had been agreeing with the capture rather than being
+correct. A guard whose expected value inverts when a neighbouring fold is
+removed — pinned now with a nullable-seeded recursive shape AND its unquoted
+control, because a literal-seeded one fails identically for an unrelated
+nullability reason and would be mistaken for it in either direction.
+
 ## 3. The design
 
 **One presentation rule, one lookup rule, each implemented once.**
@@ -208,14 +242,6 @@ Written first, from shapes actually run:
   mutation discipline forbids. `exactRowShapesAgree` compares field names
   exactly, so it IS decidable — by an FDB/executor test, which is the work.
 
-- **CTE COLUMN LISTS.** `WITH c("x") AS (…)` still publishes `X` on one of the
-  five authorities that apply the list — four are reconciled here, the fifth is
-  unidentified and needs instrumentation. Pre-existing (three mutations prove
-  it), reproducer and the ruled-out routes booked in `TODO.md` under "A CTE
-  COLUMN LIST still folds a quoted alias", cross-referenced from the comment at
-  `exactCTEDefinitionRecordType`. The corpus is blind to it for exactly the
-  reason §2.1 describes: it drives CTE column lists and it drives quoted
-  identifiers, and never both at once.
 - **the POSITIONAL EXECUTOR ROW LAYOUT**, which still folds hard enough that
   DDL has to guard against it: `ddl.go` refuses case-colliding quoted columns
   with *"the positional row layout folds identifiers, so case-colliding quoted
@@ -275,10 +301,10 @@ $ git diff f50e87947 HEAD -- …/plan_shape.golden | grep -c '^-plan:'
 
 $ head -2 …/plan_shape.golden                    # before → after
 # files=354 queries=2566 …
-# files=357 queries=2585 …
+# files=358 queries=2591 …
 ```
 
-The 19 added queries are this change's own three new scenarios. The 10 changed
+The 25 added queries are this change's own four new scenarios. The 10 changed
 `plan:` lines are computed grouping keys (`CASE(WHEN(predicate, TRUE),
 ['low','high'])` instead of the folded rendering) and the quoted-identifier
 scenario's `_current.id` / `_current.k`.

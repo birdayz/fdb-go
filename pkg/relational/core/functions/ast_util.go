@@ -12,6 +12,19 @@ import (
 // surrounding `"` or backticks and otherwise preserved case-for-case;
 // unquoted identifiers are folded to upper case. Mirrors Java's
 // SemanticAnalyzer.normalizeString (case-sensitive=false default).
+// THE NAME UNDERSELLS IT: this is the NORMALIZER, not a quote stripper. An
+// unquoted identifier comes back UPPER-FOLDED — Java's
+// SemanticAnalyzer.normalizeString — so it is NOT idempotent and must be
+// applied exactly ONCE, at the parse boundary.
+//
+// Applying it twice silently destroys every quoted identifier and is invisible
+// for every unquoted one, because folding twice is folding once. That is not
+// hypothetical: all three CTE column-alias captures called
+// `StripIdentifierQuotes(FullIdToName(fid))`, and FullIdToName already applies
+// it per segment — so `"x"` became `x` became `X`, and `WITH c("x")` published
+// a column no reference could name. It survived a whole review lap because
+// every site that CONSUMED the alias was faithful; the corruption was upstream
+// of all of them, spelled as a function whose name promises a no-op.
 func StripIdentifierQuotes(s string) string {
 	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
 		return s[1 : len(s)-1]

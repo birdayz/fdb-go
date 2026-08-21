@@ -19533,69 +19533,6 @@ scope, with their evidence:
 
 ---
 
-## A CTE COLUMN LIST still folds a quoted alias, on one of five authorities
-
-**Reproducer, measured on this tree:**
-
-```sql
-CREATE TABLE q1 ("id" BIGINT, PRIMARY KEY ("id"))
-
-WITH c("x") AS (SELECT "id" FROM q1) SELECT * FROM c
-  -> answers, but labels the column X
-
-WITH c("x") AS (SELECT "id" FROM q1) SELECT c."x" FROM c
-  -> projection slot 0 (C.x#0): resolution error 46 at qov.binding:
-     exact QOV "C" (RECORD<x LONG NULL> NOT NULL) has no declared runtime binding
-
-WITH c("x") AS (SELECT "id" FROM q1) SELECT * FROM c WHERE c."x" > 1
-  -> resolution error 11 at executor.layout:
-     edge lookup C: read as RECORD(x:LONG?), declared RECORD(X:LONG?)
-```
-
-`WITH c AS (SELECT "id" FROM q1)` — the SAME query with no column list —
-answers correctly and is pinned in `quoted_identifier_labels.yaml`. So the
-column list is the discriminating variable, not the quoted name.
-
-**PRE-EXISTING, not introduced by RFC-237, and that is measured rather than
-assumed.** Three mutations, each verified present before running, each left the
-failure byte-identical: restoring the fold at `logical_predicate.go`'s
-`exactCTEDefinitionRecordType`, at `logical_result_type.go`'s
-`cteBoundRowType`, and at `cascades_translator.go`'s `derivedOutputColumns`.
-`applyCTEColumnAliases` is byte-identical to the merge-base.
-
-**FIVE authorities apply a CTE's alias list, and FOUR are now reconciled:**
-
-| site | state |
-|---|---|
-| the three parse CAPTURES (`plan_visitor`, `logical_predicate` ×2) | fixed — `StripIdentifierQuotes` already applied SQL identifier semantics, so the `strings.ToUpper` after it could only destroy `WITH c("x")` |
-| `exactCTEDefinitionRecordType` | fixed — verbatim |
-| `cteBoundRowType` (`logical_result_type.go`) | already verbatim |
-| `derivedOutputColumns` (`cascades_translator.go`) | already verbatim |
-| **the fifth, still unidentified** | **folds** |
-
-The fifth is what produces `X`. It was hunted by inspection through the scope
-side (`applyCTEColumnAliases` → `FullIdToName` → `StripIdentifierQuotes`, all
-verbatim), the star expander (`starColumnsFromScope`, which takes
-`c.Id.Name()` verbatim), the translator's `translateCTE` (which registers the
-ALIAS PROJECTION as the CTE body, so `legColumns` reads `Aliases[i]`, now
-verbatim) and the projection's own output naming (`OutputColumnName`, verbatim)
-— every one of which says `x`. It needs INSTRUMENTATION, not more reading: a
-probe that prints the row type at each of those four points for this exact
-query will name it in one run.
-
-**WHY THE CORPUS IS BLIND.** 357 scenarios drive CTE column lists, and they
-drive quoted identifiers, and none drives both at once. Structurally the same
-blindness as the index bridge RFC-237 §2.1 describes: every DDL-fed shape has
-the two authorities agreeing because everything is already upper, and only a
-non-upper spelling separates them.
-
-Do NOT pin the divergent value as a passing arm when fixing this — an arm
-asserting `X` would be rewritten by the fix rather than reddened by it. Pin the
-three reproducer shapes above at their CORRECT answers.
-
-Cross-referenced from `rfcs/237-a-name-is-normalized-once-at-the-parse-boundary.md`
-§3.3 and from the comment at `exactCTEDefinitionRecordType`.
-
 ---
 
 ## A nested-struct CARDINALITY index is BUILT but never MATCHED
@@ -19618,8 +19555,11 @@ NESTED struct path, not to CARDINALITY and not to quoted identifiers.
 **Rows are correct either way**, which is the whole difficulty: a declining
 candidate full-scans and filters to exactly the right answer, so no row
 assertion anywhere can see it. Pinned instead at the FULL SCAN in
-`quoted_identifier_index_bridge.yaml`, so closing the gap reddens that arm
-rather than passing silently.
+`nested_struct_index_never_matches_gap.yaml` — a file whose NAME says it is a
+gap marker rather than coverage, so the deliberately-wrong assertion inside it
+cannot be misread as "nested struct indexes work". Closing the gap REDDENS that
+arm; the redness is the handoff. When it lands, delete that file and add the
+`plan_contains: IndexScan(...)` arm to `quoted_identifier_index_bridge.yaml`.
 
 The Java corpus cannot cover it: the only corpus query exercising the index
 sits two arms after `CARDINALITY("int_arr") = NULL`, which aborts its block

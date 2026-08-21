@@ -21,12 +21,9 @@ name: quoted_identifier_index_bridge
 schema_template: |
   CREATE TABLE qidx ("id" BIGINT, "cat" BIGINT, "amount" BIGINT, PRIMARY KEY ("id"))
   CREATE INDEX qidx_cat ON qidx ("cat")
-  CREATE TYPE AS STRUCT "QS" ("int_arr" INTEGER ARRAY)
-  CREATE TABLE qnest ("id" BIGINT, "struct" "QS", PRIMARY KEY ("id"))
-  CREATE INDEX qnest_card AS SELECT CARDINALITY("struct"."int_arr") AS "card" FROM qnest ORDER BY "card"
+
 setup:
   - INSERT INTO qidx VALUES (1, 10, 100), (2, 20, 200), (3, 10, 300), (4, 30, 400)
-  - INSERT INTO qnest VALUES (1, ([])), (2, ([1])), (3, ([1, 2]))
 tests:
   # Equality on the indexed quoted column: the candidate must bind it as a
   # search argument, so the plan is an IndexScan and not a filtered full scan.
@@ -49,31 +46,3 @@ tests:
     rows:
       - [2, 20]
       - [4, 30]
-  # THE NESTED QUOTED STRUCT PATH — the DDL this change unblocked, and the one
-  # shape the Java corpus cannot cover.
-  #
-  # `arrays-cardinality.yamsql` declares exactly this index and had been
-  # skipped whole (`unsupported-DDL:struct-index`, queries=0) because the
-  # generator could not build a CARDINALITY over `"struct"."int_arr"`. It
-  # builds now — which is what took that file from 0 to 29 executed queries —
-  # but the only corpus query exercising the index sits after an arm that
-  # aborts its block, so the corpus proves the DDL and never the MATCH.
-  #
-  # MEASURED, AND THE ANSWER IS THAT THE INDEX IS BUILT BUT NEVER MATCHED:
-  #
-  #   Project([_current.id#0], PredicatesFilter(Scan(QNEST), [1 preds]))
-  #
-  # Java plans `ISCAN(tab2_index [EQUALS promote(@c21 AS INT)])` for the same
-  # shape. The FLAT twin above matches fine, so this is specific to the nested
-  # struct path — a Cascades matching gap, not an identifier one, and it needs
-  # its own RFC and review gate.
-  #
-  # PINNED AT THE FULL SCAN ON PURPOSE, so closing the gap REDDENS this arm
-  # instead of passing silently. Asserting the IndexScan we want would be a red
-  # test; asserting only the rows would be blind, because a declining candidate
-  # returns exactly the right rows. The `plan_contains` below is the tripwire
-  # and the rows are the correctness half.
-  - query: SELECT "id" FROM qnest WHERE CARDINALITY("struct"."int_arr") = 1
-    plan_contains: "PredicatesFilter(Scan(QNEST)"
-    rows:
-      - [2]

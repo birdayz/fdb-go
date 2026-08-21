@@ -261,9 +261,11 @@ const (
 	// working. The extension is read-side only and never reaches the wire,
 	// which is what the project's rule permits.
 	//
-	// Its cost is measured and pinned, not assumed: three `goOnly` arms of
-	// QuotedIdentifierCaseJavaProbe record Go answering where Java raises
-	// 42703.
+	// Its cost is measured and pinned, not assumed: every `goOnly` arm of
+	// QuotedIdentifierCaseJavaProbe records Go answering where Java raises
+	// 42703. Deliberately not a count — the arms are a population that grows,
+	// and a number here is one nobody re-runs
+	// (`grep -c 'mode: goOnly'` on that file is the check).
 	relaxedPass
 )
 
