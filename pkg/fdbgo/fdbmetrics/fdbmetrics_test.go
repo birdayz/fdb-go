@@ -145,11 +145,10 @@ func TestHandler_TextExposition(t *testing.T) {
 	// skips or duplicates an entry it WAS given.
 	//
 	// What catches an entry that was never defined is the explicit list above,
-	// and only because that list now names ALL of them. It named only some of them,
-	// counters and 1 of 4 summaries when this comment first claimed otherwise:
-	// deleting transactions_too_old was invisible to both checks. Verified after
-	// filling it in -- deleting that same counterDef, and separately a summary,
-	// each fails BY NAME.
+	// and only because that list now names ALL of them. It named a subset when
+	// this comment first claimed otherwise, and deleting transactions_too_old
+	// was invisible to both checks. Verified after filling it in -- deleting
+	// that same counterDef, and separately a summary, each fails BY NAME.
 	if got, want := strings.Count(body, "# TYPE "), len(counters)+len(summaries); got != want {
 		t.Errorf("rendered %d TYPE lines, want %d", got, want)
 	}
