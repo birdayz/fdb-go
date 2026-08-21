@@ -7,6 +7,7 @@ go_library(
         "colref.go",
         "connection.go",
         "ddl.go",
+        "declared_column_name.go",
         "eval_map.go",
         "eval_predicate_map.go",
         "execution_logging.go",
@@ -413,6 +414,7 @@ go_test(
         "statistics_reader_test.go",
         "statistics_leaf_typing_test.go",
         "colref_split_test.go",
+        "declared_column_name.go",
     ],
     deps = [
         "//gen",

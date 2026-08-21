@@ -19762,3 +19762,103 @@ same value.
 engine defect with a seed: `seed 3495589`, three variants, `resolution error 46
 at qov.binding: exact QOV "q$…" (RECORD<ID,A,B,C,S,F,D,E>) has no declared
 runtime binding`. Reproduce with `ROWDIFF_SEED_START=3495589 ROWDIFF_SEEDS=1`.
+
+---
+
+## Two measured Java divergences on the recursive-CTE path
+
+Both are pinned by `conformance/dotted_and_recursive_seed_java_probe_test.go`,
+which measures them against a live JVM rather than asserting them. Run it with
+`bazelisk test //conformance:conformance_test --test_arg="--ginkgo.focus=DottedAndRecursiveSeedJavaProbe" --test_arg="--ginkgo.v"`
+and read the per-shape lines; the probe asserts CURRENT behaviour on BOTH
+engines, so it goes red when either one moves, in either direction.
+
+**A recursive CTE alongside a plain one is a MISSING CAPABILITY, not a shared
+rejection.** Java plans it and returns rows:
+
+```sql
+WITH RECURSIVE s AS (SELECT "id" FROM Q1),
+     d AS (SELECT * FROM s UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3)
+SELECT * FROM d
+```
+
+Java answers `[id]` with `[1] [2] [2] [3] [3]`; Go rejects `0A000: condition is
+not met!` from `plan_visitor.go`, and does so whether or not the sibling's body
+contains a join. This is the one to do first of the two — it is a capability
+gap, and a corpus row asserting the `0A000` would be blessing it.
+
+**The arity SQLSTATE disagrees.** For a four-column seed against a one-column
+recursive term Java rejects `42F10 Invalid column position number: 1`, where Go
+now reports `0AF00: recursive CTE branches have no exact common result row:
+recursive branch 0 has width 1, want 4`. Go's message is the more informative
+of the two and the SQLSTATE is the divergence; the fix is to reach Java's arity
+validator before the branch-row derivation, not to reword the message. Until
+then the corpus row for that shape pins the SQLSTATE only, and the explaindiff
+golden carries the exact message.
+
+## The rowdiff QOV binding failure has a three-clause minimal shape
+
+`ROWDIFF_SEED_START=3495589 ROWDIFF_SEEDS=1` reproduces on master; the sweep is
+red on it. All three of the seed's failing variants differ only in their SELECT
+list and fail identically with
+
+```
+resolution error 46 at qov.binding: exact QOV "q$NN" (T_RD row type) has no
+declared runtime binding
+```
+
+Minimized against a 6-row `t_rd` with indexes on `a` and `d` (one run, all ten
+shapes measured, harness preserved at
+`scratchpad/qov_probe_test.go.txt` in the session that took it — reconstruct it
+from this table, which is the part that matters):
+
+| shape | result |
+| --- | --- |
+| `LEFT JOIN … WHERE r.a IN (1, 1)` | **ERR** |
+| the same with no `ORDER BY` | **ERR** |
+| the same ordering only the preserved side | **ERR** |
+| `… WHERE r.a IN (1)` | OK |
+| `… WHERE r.a IN (1, 2)` | OK |
+| `… WHERE r.a = 1` | OK |
+| `INNER JOIN … WHERE r.a IN (1, 1)` | OK |
+| `LEFT JOIN … WHERE l.a IN (1, 1)` (preserved side) | OK |
+| `LEFT JOIN … WHERE r.c IN (1, 1)` (`c` is NOT indexed) | OK |
+| `LEFT JOIN …` with no `WHERE` | OK |
+
+So the trigger is the conjunction of three things and no fewer: an OUTER join, a
+DUPLICATE-valued `IN` list, and an INDEXED column of the NULL-PADDED side.
+Neither the `ORDER BY` nor the projection participates. The failing QOV is a
+planner-MINTED `q$N` over the whole `T_RD` row, which is the same class as
+`pkg/relational/sqldriver/outer_join_nested_field_binding_fdb_test.go` — "the
+leg was bound under a DIFFERENT exact QOV than the one the projection holds" —
+with the mint coming from the duplicate-`IN` plan rather than from a nested
+field read.
+
+## Two mechanisms build the join-leg datum keys and they disagree by case
+
+`legColumns` (cascades_translator.go) folds the COLUMN half of a leg key to
+UPPER; `logicalLegFields` (logical_result_type.go) keeps it verbatim and its
+comment says why — "only the ALIAS half is folded, and only because a source
+alias never comes from a descriptor". So a leg column declared `"KeepCase"` is
+`C.KEEPCASE` on one route and `C.KeepCase` on the other, and a proto field
+`customer_id` is `C.CUSTOMER_ID` against `C.customer_id`.
+
+Pinned by `pkg/relational/core/query/leg_column_key_case_divergence_test.go`,
+which asserts both spellings so the gap can neither widen nor silently close.
+
+Measured, so the size of the decision is known rather than guessed: removing the
+fold is invisible from SQL — zero rows of the 2627-query plan-shape golden move,
+and twelve targeted shapes reaching a leg key by different routes (three-way
+join, CTE and derived table over a join star, UNNEST beside one, grouped and
+scalar aggregates over a quoted mixed-case leg column, correlated scalar
+subquery, alias-list recursive CTE) plan byte-identically either way. It is NOT
+invisible to this package's own contracts: `TestLegColumns_NestedNoSpuriousKeys`
+and `TestLegColumns_NamingConsistentWithAnchoredRecord` both assert the FOLDED
+spelling, the second under the word "verbatim".
+
+Two written contracts pointing opposite ways is what makes this a decision and
+not a line to flip: choosing either spelling changes datum keys engine-wide.
+`logicalLegFields`' reasoning is the stronger of the two — a descriptor-authored
+case is information and the fold destroys it — so the likely answer is verbatim
+plus updating those two tests, but it needs the query-engine gate and a sweep of
+every consumer that compares a leg key case-sensitively.

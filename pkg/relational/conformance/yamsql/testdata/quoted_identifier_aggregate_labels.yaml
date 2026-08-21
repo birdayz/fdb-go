@@ -144,9 +144,9 @@ tests:
     rows:
       - [100, 200]
   # A derived column whose generated name CONTAINS A STRING LITERAL, re-projected
-  # through a derived table. A review predicted the label would come back as the
-  # fragment `AMOUNTEND)` once parseColRef stopped treating quotes as literal
-  # delimiters; measured, it does not — the full name survives, and the same
+  # through a derived table. The label was predicted to come back as the fragment
+  # `AMOUNTEND)` once parseColRef stopped treating quotes as literal delimiters;
+  # measured, it does not — the full name survives, and the same
   # string splits identically under this algorithm and the one it replaced.
   #
   # Note what this row does NOT do, since it sits beside the limits it looks

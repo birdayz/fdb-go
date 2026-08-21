@@ -87,6 +87,7 @@ go_test(
         "delete_conformance_test.go",
         "delete_records_where_conformance_test.go",
         "divergence_holds_test.go",
+        "dotted_and_recursive_seed_java_probe_test.go",
         "dup_alias_exists_order_probe_test.go",
         "duplicate_alias_java_probe_test.go",
         "duplicate_groupby_java_probe_test.go",

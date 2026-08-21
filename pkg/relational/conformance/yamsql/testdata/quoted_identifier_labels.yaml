@@ -298,8 +298,8 @@ tests:
       - [3]
   # A TWO-COLUMN star seed and a DERIVED-TABLE star seed. The arm above pins the
   # one-column case, which is the easiest of the shapes the gate removal newly
-  # admits; these two are the ones a reviewer asked for by name after finding
-  # that a single easy arm had twice been credited with more than it covers.
+  # admits — and a single easy arm had twice been credited with covering more
+  # than it does, which is why the wider two are here as well.
   - query: WITH RECURSIVE d AS (SELECT * FROM QCASE WHERE id = 1 UNION ALL SELECT d.id + 1, d."KeepCase", d.plain FROM d WHERE d.id < 3) SELECT d.id FROM d ORDER BY d.id
     columns: ["ID"]
     rows:
@@ -313,31 +313,50 @@ tests:
       - [1]
       - [2]
       - [3]
-  # A JOIN seed still DECLINES, and the arm exists to pin the DIAGNOSTIC rather
-  # than the rejection. Removing the alias-list gate routed this shape from
-  # `recursive CTE seed width N disagrees with 0 output columns` — which says
-  # what is wrong — to a type-incompatibility message that does not, because
-  # legColumns' join arm publishes dotted names and no `d.<col>` can resolve
-  # against them. The derivation declines on a dotted field to keep the useful
-  # message; the shape has never planned, on this path or the alias one.
+  # A JOIN SEED WITH AN EXPLICIT COLUMN-ALIAS LIST. This is ordinary SQL and it
+  # planned at this branch's base; two intermediate commits broke it, both by
+  # reading the join leg's DATUM KEYS (`A.K`, which exist so the executor's row
+  # map can tell two legs' `K` apart) as if they were SQL labels and then trying
+  # to detect the difference downstream — first by testing for a dot in the
+  # name, then by testing whether the seed resolved through a join. The second
+  # test vetoed this shape along with the one it was aimed at.
+  #
+  # Deriving the labels as a PROPERTY (ExactLogicalOutputLabels, which simply
+  # never adds the qualifier) removes the question. The rows are the point: four
+  # bare labels arrive, the alias list length-matches them, and the recursion
+  # reads its own output columns.
+  - query: WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d.w + 1, d.x, d.y, d.z FROM d WHERE d.w < 3) SELECT d.w FROM d ORDER BY d.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # The same seed with a MISMATCHED recursive arm — four columns against one.
+  # That is invalid UNION arity and has never planned, but for a year it said so
+  # in the language of naming (`seed width 4 disagrees with 0 output columns`),
+  # because the label derivation declined and left the output list empty. It now
+  # reports the arity directly. The arm is here for the MESSAGE, which the
+  # explaindiff golden pins; a corpus row can only assert the SQLSTATE.
   - query: WITH RECURSIVE d AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d."id" FROM d) SELECT * FROM d
     error_code: "0AF00"
-  # A DELIMITED COLUMN NAME CONTAINING A DOT, star-seeded. This is the shape the
-  # first version of the join gate wrongly declined: it tested whether a derived
-  # field name contains a dot, because the join arm synthesizes `T1.ID` — but a
-  # dot round-trips the wire escape (`.` -> `__2`, reversed on the way back), so
-  # an ordinary base-table column declared `"a.b"` comes back dotted from a plain
-  # scan and the string test could not tell the two apart. It planned before that
-  # gate and stopped after, which makes it a regression rather than a
-  # hypothetical. The gate asks a structural question now — is the seed resolved
-  # through a join — and this plans again.
-  # NOTE the LABEL: `b`, not `a.b`. That is KNOWN LIMIT territory and it is
-  # pre-existing — the qualifier split takes the last depth-0 dot, and a
-  # delimited name carrying its own dot is indistinguishable from a qualified
-  # reference once the quotes are gone. Unchanged by this PR in either
-  # direction; the ROWS are what this arm is here for.
+  # A DELIMITED COLUMN NAME CONTAINING A DOT, star-seeded. This is the shape an
+  # intermediate commit wrongly declined: it tested whether a derived field name
+  # contains a dot, because a join leg synthesizes `T1.ID` — but a dot
+  # round-trips the wire escape (`.` -> `__2`, reversed on the way back), so an
+  # ordinary base-table column declared `"a.b"` comes back dotted from a plain
+  # scan and the string test could not tell the two apart. It planned before
+  # that test and stopped after, which makes it a regression rather than a
+  # hypothetical. Nothing slices at a dot now — the qualifier is removed by not
+  # being added — and this plans again.
+  # NOTE the LABEL: `a.b`, the whole declared name. It used to be `b`, because
+  # the label split at the last depth-0 dot and a delimited name carrying its
+  # own dot is indistinguishable from a qualified reference once the quotes are
+  # gone. Measured against a live JVM, Java reports `a.b` — and Go's own STAR
+  # expansion already did, so one label path was wrong beside a sibling that was
+  # right. The schema settles it now: a name that is IN FULL a declared column
+  # has no qualifier to remove.
   - query: WITH RECURSIVE d AS (SELECT * FROM dott WHERE "a.b" = 1 UNION ALL SELECT d."a.b" + 1, d.plain FROM d WHERE d."a.b" < 3) SELECT d."a.b" FROM d ORDER BY d."a.b"
-    columns: ["b"]
+    columns: ["a.b"]
     rows:
       - [1]
       - [2]
@@ -345,31 +364,35 @@ tests:
   # The same dotted column WITHOUT recursion — the control that says the arm
   # above is about the seed derivation and not about dotted columns in general.
   - query: SELECT "a.b" FROM dott
-    columns: ["b"]
+    columns: ["a.b"]
     rows:
       - [1]
-  # THE THREE ROUTES THE JOIN GATE'S PEEL DOES NOT FOLLOW, pinned so the
-  # negative results are tests rather than sentences. derivedOutputColumns can
-  # reach the join arm through a sibling-CTE seed, a derived table over a join,
-  # and a union over a join; the peel handles none of them directly. Measured,
-  # they do not need it — but for THREE DIFFERENT reasons, and an earlier draft
-  # of this block asserted one reason for all three.
+  # THE SEED'S LABELS COME FROM A PROPERTY, so these arms drive the property's
+  # arms rather than a walk's. An earlier version of this block pinned three
+  # "routes a gate does not follow"; the gate is gone, and two of those three
+  # drove neither route they named.
   #
-  # 1. A sibling-CTE seed does not reach the gate at all.
-  - query: WITH RECURSIVE s AS (SELECT "id" FROM q1), d AS (SELECT * FROM s UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
-    error_code: "0A000"
-  # 2. A derived table over a join REACHES the route and is CORRECT, because the
-  #    derived table's own projection strips the qualifier before the seed
-  #    derivation sees it — the LogicalProject case the gate deliberately does
-  #    not peel. This arm was nearly pinned as another unreachable shape; it
-  #    plans, and pinning the rows is what caught that.
+  # A DERIVED TABLE over a join. The derived table's own projection publishes
+  # bare labels, so this needs nothing special — and it is worth a row because
+  # it was one edit away from being filed as an unreachable shape. It plans.
   - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id", QCASE.id AS oid FROM q1, QCASE WHERE q1."id" = 1) x UNION ALL SELECT d."id" + 1, d.oid FROM d WHERE d."id" < 3) SELECT d."id" FROM d ORDER BY d."id"
     columns: ["id"]
     rows:
       - [1]
       - [2]
       - [3]
-  # 3. A union of star selects over a join already produces the message the gate
-  #    exists to preserve, so it needs no peel of its own.
-  - query: WITH RECURSIVE d AS (SELECT * FROM q1, QCASE UNION ALL SELECT * FROM q1, QCASE UNION ALL SELECT d."id" FROM d) SELECT * FROM d
-    error_code: "0AF00"
+  # A UNION of joins under that derived table, with the two branches aliased
+  # DIFFERENTLY so the union arm is observable from outside the package: SQL
+  # publishes the FIRST branch's names, so `d.aa` resolves...
+  - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.aa + 1, d.bb FROM d WHERE d.aa < 3) SELECT d.aa FROM d ORDER BY d.aa
+    columns: ["AA"]
+    rows:
+      - [1]
+      - [2]
+      - [2]
+      - [3]
+      - [3]
+  # ...and `d.cc` does not. Without this second half the arm above passes on a
+  # merged branch-name row just as happily.
+  - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.cc + 1, d.dd FROM d WHERE d.cc < 3) SELECT d.cc FROM d ORDER BY d.cc
+    error_code: "42703"

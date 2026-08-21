@@ -4591,7 +4591,36 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// `SELECT "KeepCase"` report KEEPCASE while `SELECT *` over
 					// the same table reported KeepCase; Java reports KeepCase
 					// for both, measured.
+					//
+					// WHICH DOT IS THE QUALIFIER IS NOT A QUESTION THE STRING
+					// CAN ANSWER. A column DECLARED `"a.b"` round-trips the wire
+					// escape (`.`→`__2`, reversed by ToUserIdentifier) and
+					// arrives here spelled `a.b`, which the last-dot split read
+					// as qualifier `a` plus column `b` — a label for a column no
+					// engine calls that. Measured against a live JVM: Java
+					// reports `a.b`, and Go's own STAR expansion already
+					// reported `a.b`, so one path was wrong beside a sibling
+					// that was right.
+					//
+					// The SCHEMA settles which dots are qualifiers, and it
+					// settles exactly ONE case: a name that is IN FULL a
+					// declared column has no qualifier to remove, whatever
+					// dots it contains. Everything else still goes through the
+					// split, which is what the other shapes here need — a
+					// correlated aggregate's output name is `X.SUM(X.Amount)`
+					// and a CTE column list's rename publishes `N` over a read
+					// of `ID`; neither is a declared column under that spelling.
+					//
+					// TWO EARLIER ATTEMPTS USED THE REFERENCE'S ACCESSOR LEAF
+					// and both were wrong, because that leaf is the row's field
+					// name and the row's field name is SOMETIMES a qualified
+					// datum key. `X.SUM(X.Amount)` is its own leaf, so a
+					// "keep it when the name IS the leaf" rule kept the
+					// qualifier and labelled the column `X.SUM(X.Amount)`.
 					cd.Label = parseColRef(outputNames[i]).bare()
+					if nameIsWholeDeclaredColumn(outputNames[i], descs) {
+						cd.Label = outputNames[i]
+					}
 				}
 			} else if !aliasMinted {
 				cd.Label = outputNames[i]
@@ -4943,23 +4972,38 @@ func deriveProjectionColumnDef(
 	displayLabel := label
 	if label == "" {
 		if _, isField := values.AsFieldValue(v); isField && name != "" {
-			// The label is the bare LEAF of the column's NAME, derived above,
-			// never of fv.Field. The two happen to agree for a fused nested
-			// reference today — the mint names it after its leaf — and that
-			// agreement is exactly what must not be relied on: it did not hold
-			// when this arm was written (Field carried the struct ROOT, so
-			// `n.sk` and `n.co` both labelled `N`), and Field is one segment
-			// where the label is a function of the whole NAME, qualifier
-			// included. Java takes the leaf of the resolved identifier
-			// (Identifier.withoutQualifier, Identifier.java:101-106) applied by
-			// the top-level clearQualifier, which is SK and CO.
+			// Java takes the leaf of the RESOLVED IDENTIFIER —
+			// Identifier.withoutQualifier, applied by the top-level
+			// clearQualifier — so `SELECT u.name` over a join reports NAME and
+			// a nested `n.sk` reports SK, not the struct root.
+			//
+			// TAKE IT FROM THE PATH, NOT FROM THE RENDERED NAME. Java's
+			// identifier is a LIST of parts, so its leaf is the last PART; the
+			// substring after the last dot is only the same thing while no part
+			// contains a dot. A column DECLARED `"a.b"` is exactly one part
+			// that does, and it round-trips the wire escape (`.`→`__2`,
+			// reversed by ToUserIdentifier), so it arrives here spelled `a.b`
+			// and the string split reported `b` — a label for a column no
+			// engine calls that. Measured against a live JVM: Java reports
+			// `a.b`, and Go's own STAR expansion already reported `a.b`, so one
+			// path was wrong beside a sibling that was right.
+			//
+			// The accessor path is that list. Its last accessor's display name
+			// is the leaf by construction, with no string to re-parse.
 			//
 			// The leaf is taken VERBATIM. A quoted DDL column keeps its case
-			// through the whole engine now, and the result-set label is where
-			// the user sees that: `SELECT "KeepCase"` reports KeepCase, which
-			// is what Java reports, where a fold here reported KEEPCASE for a
-			// column no engine calls that.
+			// through the whole engine, and the result-set label is where the
+			// user sees it: `SELECT "KeepCase"` reports KeepCase, as Java does,
+			// where a fold here reported KEEPCASE.
+			// The SCHEMA settles exactly one case — a name that is IN FULL a
+			// declared column has no qualifier to remove, whatever dots it
+			// contains. Every other shape still goes through the split; see
+			// the sibling site in deriveColumnsFromProjection for the two that
+			// need it and for the two wrong answers that preceded this one.
 			displayLabel = parseColRef(name).bare()
+			if nameIsWholeDeclaredColumn(name, descs) {
+				displayLabel = name
+			}
 		}
 	} else if aliasMinted {
 		// A MACHINERY-pinned alias — the duplicated-bare-leaf dedup pins the

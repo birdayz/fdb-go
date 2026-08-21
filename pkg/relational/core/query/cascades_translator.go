@@ -9756,11 +9756,6 @@ func (t *cascadesTranslator) inCTEDefiningScope(key string, body logical.Logical
 // the table's metadata, in declaration order. Returns (nil, false) when the
 // body's bottom is not a resolvable scan (set operations, unnests, …), which
 // keeps those shapes on the lenient no-rename path.
-// The width-transparent set below (Distinct, Sort, Limit, Filter) is the same
-// membership seedResolvesThroughJoin peels. They are separate loops because
-// they bottom out on different questions — this one on a scan, that one on a
-// join — but a case added to either is a case the other probably wants, and
-// nothing but this sentence connects them.
 func (t *cascadesTranslator) starBodyColumns(op logical.LogicalOperator) ([]string, bool) {
 	for {
 		switch o := op.(type) {
@@ -10224,86 +10219,49 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// must therefore be keyed by UP for the join predicate to match. Both legs are
 	// normalized to emit these names; nothing renames the temp table afterwards.
 	// VERBATIM. extractOutputProjectionNames returns names already normalized
-	// at the parse capture, so the fold here was a second normalization — and
+	// at the parse capture, so a fold here would be a second normalization — and
 	// this list is what the TempTableInsert arm of expressionOutputColumns
 	// publishes as the CTE's output schema, keying the temp table the
 	// self-reference scans.
 	//
 	// It is live through the NO-ALIAS path only: with an explicit column-alias
-	// list, `outCols` below takes the aliases and seedOut never reaches the
-	// key. TWO alias-free arms in quoted_identifier_labels.yaml drive it, one
-	// per site — see the enumeration at the end of this comment, which is the
-	// accurate version of a singular "the alias-free arm" that stood here.
-	//
-	// FOUR CLAIMS ABOUT THE FALLBACK BELOW HAVE BEEN WRONG HERE, all of them
-	// assertions about what code can REACH, none of them executed before being
-	// written. Recorded together because the pattern is the lesson:
-	//
-	//  1. "Its `seedOut[i] = f.Name` disagrees with this store, so the two
-	//     spell one column two ways." No: that `f.Name` comes from
-	//     derivedOutputColumns and is already canonical, so it AGREES. Folding
-	//     it moves zero lines of a 17,789-line plan dump while the branch fires.
-	//  2. "So the store is dead." No.
-	//  3. "So it is live via an arity mismatch, since ValidateCTEAliasArities
-	//     is gated `&& !c.Recursive`." Also no — that validator is one of FIVE
-	//     arity checks, and the three in the semantic layer (plan_visitor.go,
-	//     logical_predicate.go) do not exempt recursive CTEs. A mismatched
-	//     alias list is rejected 42F10 long before it arrives here.
-	//
-	//  4. "It is load-bearing through the LENGTH of `seedSrc`, not the value of
-	//     `seedOut`." Both halves false, and this one is mine twice over: the
-	//     measurement it rested on was taken BEFORE the alias-list gate came
-	//     off the block below, and I carried it across the change without
-	//     re-taking it. `seedSrc` has no read after its own gate, so its writes
-	//     there are dead stores — deleting them builds clean and leaves the
-	//     2618-query plan golden byte-identical.
-	//
-	// WHAT THE BLOCK DELIVERS IS `seedOut`'s VALUE, and removing that gate made
-	// the no-alias path — where that value IS the published output schema — its
-	// principal consumer. An alias list of matching length overrides it, so the
-	// alias arms cannot see it at all.
-	//
-	// TWO sites decide that value and they are pinned by DIFFERENT arms, which
-	// took a fold at each to establish: folding extractOutputProjectionNames
-	// above reddens the alias-free arm whose seed PROJECTS explicitly, and
-	// folding `seedOut[i] = f.Name` below reddens the alias-free arm whose seed
-	// is a STAR. Neither arm covers both, and saying "the alias-free arm drives
-	// it" was true of the first while the second existed.
-	seedSrc := extractOuterProjectionColumns(seedBranches[0])
-	seedOut := make([]string, len(seedSrc))
-	copy(seedOut, extractOutputProjectionNames(seedBranches[0]))
-	// A projection-less seed (`SELECT * FROM t`) exposes no projection columns,
+	// list, `outCols` below takes the aliases and seedOut never reaches the key.
+	seedOut := append([]string(nil), extractOutputProjectionNames(seedBranches[0])...)
+	// A projection-less seed (`SELECT * FROM t`) exposes no projection names,
 	// which silently DROPPED an explicit CTE column-alias list
 	// (`WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL …)`): the alias
 	// gate below never length-matched, the temp table stayed keyed by the base
 	// columns, and a recursive reference to `a` was a silent NULL under the name
-	// model / a loud OrdinalResolutionError under the ordinal model (a gap in
-	// alias-list handling that predates the ordinal model). Derive the seed
-	// schema from the operator's output — table columns for a scan
-	// (derivedOutputColumns) — so the alias list applies and the seed normalizes
-	// onto it.
+	// model / a loud OrdinalResolutionError under the ordinal model. It also
+	// failed the plain no-alias form outright — `WITH RECURSIVE d AS
+	// (SELECT * FROM t1 …)`, standard SQL, got `seed width 2 disagrees with 0
+	// output columns` while its alias-list twin planned.
 	//
-	// AND IT IS NOT GATED ON AN ALIAS LIST, which it used to be
-	// (`&& len(c.ColumnAliases) > 0`). That gate made a projection-less seed
-	// with NO alias list — plain standard SQL — fail outright:
+	// THE SEED'S OUTPUT LABELS ARE A PROPERTY, and the repo already derives it.
+	// Two earlier attempts here asked a downstream question instead and both
+	// were wrong in the same direction — they read the join leg's DATUM KEYS
+	// (`legColumns`, which qualifies `T1.ID` so the executor's row map can tell
+	// two legs' `K` apart) as if they were SQL labels, and then tried to tell
+	// the two apart after the fact:
 	//
-	//	WITH RECURSIVE d AS (SELECT * FROM t1 …)
-	//	  -> 0AF00: recursive CTE seed width 2 disagrees with 0 output columns
+	//   - first by testing whether a derived name CONTAINS A DOT, which cannot
+	//     work: a column can genuinely be named `a.b`, and one declared that way
+	//     round-trips the wire escape (`.`→`__2`, reversed by ToUserIdentifier)
+	//     so it comes back dotted from a plain scan;
+	//   - then by testing whether the seed RESOLVES THROUGH A JOIN, which is
+	//     structural rather than textual but still a guess about where the datum
+	//     keys come from — and it vetoed the explicit-alias path too, so
+	//     `WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM a, b UNION ALL …)`
+	//     stopped planning although it plans at this branch's base.
 	//
-	// while the same query with an alias list, or with the star written out,
-	// planned fine. The alias list was never what made the derivation correct;
-	// it was just what the gate happened to require. Without the gate the
-	// alias-free form produces the byte-identical plan to its alias-list twin.
-	// Found by a probe run to disprove a claim in the comment above, which is
-	// the second reason that comment is worth reading.
-	if len(seedSrc) == 0 {
-		if fields := t.derivedOutputColumns(seedBranches[0]); len(fields) > 0 && !seedResolvesThroughJoin(seedBranches[0]) {
-			seedSrc = make([]string, len(fields))
-			seedOut = make([]string, len(fields))
-			for i, f := range fields {
-				seedSrc[i] = f.Name
-				seedOut[i] = f.Name
-			}
+	// ExactLogicalOutputLabels is the answer both were approximating: it walks
+	// the same structure as the exact result type and simply does not add the
+	// qualifier, so no consumer has to recover a label from a rendered key. Its
+	// own doc states the rule — "removed STRUCTURALLY, by not adding it, never
+	// by slicing at a dot".
+	if len(extractOuterProjectionColumns(seedBranches[0])) == 0 {
+		if labels, err := ExactLogicalOutputLabels(seedBranches[0], t.md, nil); err == nil && len(labels) > 0 {
+			seedOut = labels
 		}
 	}
 	outCols := seedOut
@@ -10869,91 +10827,4 @@ func findUnsafeFuncInPredicate(p predicates.QueryPredicate) string {
 		return true
 	})
 	return found
-}
-
-// seedResolvesThroughJoin reports whether a recursive-CTE seed's output columns
-// would be derived through derivedOutputColumns' JOIN arm, by peeling the
-// width-transparent operators above it: Distinct, Sort, Limit, Filter. That
-// membership is shared with starBodyColumns' loop, which peels the same four
-// and then bottoms at a scan; the two are separate because they answer
-// different questions, and if one gains a case the other probably should too.
-//
-// WHAT THE PEEL DOES NOT FOLLOW, written first and by enumeration, because a
-// scope sentence that describes the code instead of probing it is the failure
-// that survives every other check — and a characterisation cannot be checked
-// against the switch it claims to summarize. derivedOutputColumns has ELEVEN
-// arms. This walk follows five: Join (the answer) and Distinct/Sort/Limit/
-// Filter (width-transparent). Of the remaining six, THREE are further routes
-// to legColumns' join arm and are not followed:
-//
-//   - LogicalScan -> legColumns -> cteScope -> derivedOutputColumns(body), the
-//     sibling-CTE seed;
-//   - LogicalCTE -> o.Body, a derived table over a join;
-//   - LogicalUnion -> unionOutputColumns -> its first branch.
-//
-// and THREE cannot reach that arm at all:
-//
-//   - LogicalProject takes its names from its own projection list and strips
-//     the qualifier there, so a join beneath it publishes bare names;
-//   - LogicalAggregate reaches legColumns for TYPES only — its names are the
-//     group keys and the calls' own aliases;
-//   - LogicalInlineValues answers from ExactLogicalResultType, never recursing.
-//
-// The first three were run, and they need no peel for THREE DIFFERENT reasons.
-// A first draft of this comment asserted one reason for all of them:
-//
-//   - the sibling-CTE seed does not reach the gate at all (`0A000: condition is
-//     not met!`);
-//   - the union-of-stars already produces the `seed width N` message this gate
-//     exists to preserve;
-//   - and the derived-table-over-join REACHES the route and is CORRECT, because
-//     the derived table's own projection strips the qualifier before the seed
-//     derivation sees it. That is the LogicalProject arm above, working.
-//
-// The corpus pins all three, including the ROWS of the one that plans — which
-// is what caught it being about to be filed as a fourth unreachable shape. A
-// change that moves any of them turns an arm red rather than silently re-arming
-// the blind spot.
-//
-// IT ASKS A STRUCTURAL QUESTION, and the first version of this gate did not.
-// That one tested the downstream OBSERVABLE — "does any derived field name
-// contain a dot" — because legColumns' join arm synthesizes `T1.ID` / `T2.W`.
-// A dot is not a join leg. Column names round-trip a literal dot through the
-// wire escape (protoname's `.`→`__2`, reversed by ToUserIdentifier, mirroring
-// Java's ProtoUtils), so an ordinary base-table column declared `"a.b"` comes
-// back dotted from a plain scan — and the string test could not tell it from a
-// qualifier the join arm prefixed. Measured: it declined
-//
-//	CREATE TABLE dott ("a.b" BIGINT, plain BIGINT, PRIMARY KEY ("a.b"))
-//	WITH RECURSIVE d AS (SELECT * FROM dott WHERE "a.b" = 1 UNION ALL …)
-//
-// which plans at this change's own base. Design principle 10: match the
-// architectural property that produces the behaviour, not an observable
-// downstream of it.
-//
-// What the gate is FOR is unchanged and is a diagnostic rather than a
-// correctness concern. A join seed keys the temp table by names no `d.<col>`
-// reference can resolve, so it has never planned — the alias-list path fails on
-// it identically. Without the gate it stopped failing with `recursive CTE seed
-// width N disagrees with 0 output columns`, which says what is wrong, and
-// started failing on incompatible column types, which does not. Making a join
-// seed actually work needs legColumns to publish bare names for that arm: a
-// different change with its own blast radius.
-func seedResolvesThroughJoin(op logical.LogicalOperator) bool {
-	for {
-		switch o := op.(type) {
-		case *logical.LogicalJoin:
-			return true
-		case *logical.LogicalDistinct:
-			op = o.Input
-		case *logical.LogicalSort:
-			op = o.Input
-		case *logical.LogicalLimit:
-			op = o.Input
-		case *logical.LogicalFilter:
-			op = o.Input
-		default:
-			return false
-		}
-	}
 }

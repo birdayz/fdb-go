@@ -65,6 +65,7 @@ go_test(
         "inline_values_translation_test.go",
         "is_scan_family_leg_test.go",
         "left_outer_seed_test.go",
+        "leg_column_key_case_divergence_test.go",
         "leg_identity_census_main_test.go",
         "leg_kind_discriminator_test.go",
         "leg_ref_nested_admission_test.go",

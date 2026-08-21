@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2626 dml=157 non_query=104 plan_errors=274 unexpected_errors=4
+# files=359 queries=2627 dml=157 non_query=104 plan_errors=273 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -14437,10 +14437,23 @@ shape:       RecordQueryScanPlan
 shape:   RecordQueryProjectionPlan
 shape:     RecordQueryPredicatesFilterPlan
 shape:       RecordQueryTempTableScanPlan
-=== quoted_identifier_labels.yaml#29 expect-error=0AF00
+=== quoted_identifier_labels.yaml#29
+sql:   WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d.w + 1, d.x, d.y, d.z FROM d WHERE d.w < 3) SELECT d.w FROM d ORDER BY d.w
+plan:  Project([_current.W#0], InMemorySort([_current.W#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.id#0, _current.ID#1, _current.KeepCase#2, _current.PLAIN#3], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1))), Project([(_current.W#0 + 1), _current.X#1, _current.Y#2, _current.Z#3], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryRecursiveDfsJoinPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryNestedLoopJoinPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryTempTableScanPlan
+=== quoted_identifier_labels.yaml#30 expect-error=0AF00
 sql:   WITH RECURSIVE d AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d."id" FROM d) SELECT * FROM d
-plan:  <PLAN-ERROR: 0AF00: recursive CTE seed width 4 disagrees with 0 output columns>
-=== quoted_identifier_labels.yaml#30
+plan:  <PLAN-ERROR: 0AF00: recursive CTE branches have no exact common result row: recursive branch 0 has width 1, want 4>
+=== quoted_identifier_labels.yaml#31
 sql:   WITH RECURSIVE d AS (SELECT * FROM dott WHERE "a.b" = 1 UNION ALL SELECT d."a.b" + 1, d.plain FROM d WHERE d."a.b" < 3) SELECT d."a.b" FROM d ORDER BY d."a.b"
 plan:  Project([_current.a.b#0], InMemorySort([_current.a.b#0 ASC], RecursiveDfsJoin(PREORDER, PredicatesFilter(Scan(DOTT), [1 preds]), Project([(_current.a.b#0 + 1), _current.PLAIN#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
 shape: RecordQueryProjectionPlan
@@ -14451,14 +14464,11 @@ shape:         RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
-=== quoted_identifier_labels.yaml#31
+=== quoted_identifier_labels.yaml#32
 sql:   SELECT "a.b" FROM dott
 plan:  Project([_current.a.b#0], Scan(DOTT))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
-=== quoted_identifier_labels.yaml#32 expect-error=0A000
-sql:   WITH RECURSIVE s AS (SELECT "id" FROM q1), d AS (SELECT * FROM s UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
-plan:  <PLAN-ERROR: 0A000: condition is not met!>
 === quoted_identifier_labels.yaml#33
 sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id", QCASE.id AS oid FROM q1, QCASE WHERE q1."id" = 1) x UNION ALL SELECT d."id" + 1, d.oid FROM d WHERE d."id" < 3) SELECT d."id" FROM d ORDER BY d."id"
 plan:  Project([_current.id#0], InMemorySort([_current.id#0 ASC], RecursiveDfsJoin(PREORDER, Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, [1 preds], Scan(QCASE), Scan(Q1))), Project([(_current.id#0 + 1), _current.OID#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
@@ -14472,9 +14482,31 @@ shape:           RecordQueryScanPlan
 shape:       RecordQueryProjectionPlan
 shape:         RecordQueryPredicatesFilterPlan
 shape:           RecordQueryTempTableScanPlan
-=== quoted_identifier_labels.yaml#34 expect-error=0AF00
-sql:   WITH RECURSIVE d AS (SELECT * FROM q1, QCASE UNION ALL SELECT * FROM q1, QCASE UNION ALL SELECT d."id" FROM d) SELECT * FROM d
-plan:  <PLAN-ERROR: 0AF00: recursive CTE seed width 4 disagrees with 0 output columns>
+=== quoted_identifier_labels.yaml#34
+sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.aa + 1, d.bb FROM d WHERE d.aa < 3) SELECT d.aa FROM d ORDER BY d.aa
+plan:  Project([_current.AA#0], InMemorySort([_current.AA#0 ASC], RecursiveDfsJoin(PREORDER, UnorderedUnion(Project([_current.AA#0, _current.BB#1], Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, PredicatesFilter(Scan(Q1), [1 preds]), Scan(QCASE)))), Project([_current.CC#0, _current.DD#1], Project([_current.id#0, _current.ID#1], NestedLoopJoin(INNER, PredicatesFilter(Scan(Q1), [1 preds]), Scan(QCASE))))), Project([(_current.AA#0 + 1), _current.BB#1], PredicatesFilter(TempTableScan(DforScan), [1 preds])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryRecursiveDfsJoinPlan
+shape:       RecordQueryUnorderedUnionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryNestedLoopJoinPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
+shape:               RecordQueryScanPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryNestedLoopJoinPlan
+shape:               RecordQueryPredicatesFilterPlan
+shape:                 RecordQueryScanPlan
+shape:               RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryTempTableScanPlan
+=== quoted_identifier_labels.yaml#35 expect-error=42703
+sql:   WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.cc + 1, d.dd FROM d WHERE d.cc < 3) SELECT d.cc FROM d ORDER BY d.cc
+plan:  <PLAN-ERROR: 42703: column "D.CC" does not exist>
 === quoted_identifier_pins.yaml#0
 sql:   SELECT id FROM t ORDER BY "x" DESC
 plan:  Project([_current.ID#0], InMemorySort([_current.x#1 DESC], Scan(T)))
