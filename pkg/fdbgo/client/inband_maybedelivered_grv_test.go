@@ -130,9 +130,11 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 	// would pass for a run whose own injection never reached the branch.
 	//
 	// Read through Snapshot() rather than the raw field, which also pins the
-	// snapshot assignment. Nothing else reads GRVInBandMaybeDelivered, so
-	// mis-wiring that line to a neighbouring counter compiles and passes every
-	// suite -- demonstrated.
+	// snapshot assignment. Nothing else EXERCISES that assignment: fdbmetrics
+	// reads the field, but its test builds a snapshot literal and never calls
+	// Snapshot(), so it stays green under a mis-wire. Measured -- pointing the
+	// assignment at a neighbouring counter compiled and passed every suite until
+	// these two sentinels read it this way.
 	armBefore := db.db.metrics.Snapshot().GRVInBandMaybeDelivered
 	db.db.grvCache.invalidate() // force a real round trip, not a cache hit
 	if _, _, _, err := b.getReadVersion(db.db, ctx, grvPriorityDefault, types.SpanContext{}, nil, false, false); err != nil {
@@ -185,10 +187,11 @@ func TestInBandMaybeDeliveredLeavesGRVProxyUntouched(t *testing.T) {
 // site, and it is reasoning from the pooled connection, not an assertion. The
 // sibling pins dial counts, but for a different scenario.
 //
-// Discrimination is one-way: restoring handleConnError reddens the sibling 3/3
-// and reddens THIS test about 2 of 3, because that mutant races markAlive
-// against the failure it induces. Baseline is 3/3 green on both, so the
-// nondeterminism belongs to the mutant, not to what ships.
+// Discrimination is one-way: restoring handleConnError reddens the sibling
+// every time, and reddens THIS test only sometimes -- 1 of 3 in one sample and
+// 3 of 3 in another, so it is nondeterministic rather than a rate worth
+// quoting. That mutant races markAlive against the failure it induces.
+// Baseline is green 3/3 on both, so the nondeterminism belongs to the mutant.
 //
 // The persistent injection is what makes the position observable. Let the GRV
 // succeed and the successful reply marks the address alive from either
@@ -266,9 +269,11 @@ func TestInBandMaybeDeliveredClearsAPreExistingAddressFailure(t *testing.T) {
 	// would pass for a run whose own injection never reached the branch.
 	//
 	// Read through Snapshot() rather than the raw field, which also pins the
-	// snapshot assignment. Nothing else reads GRVInBandMaybeDelivered, so
-	// mis-wiring that line to a neighbouring counter compiles and passes every
-	// suite -- demonstrated.
+	// snapshot assignment. Nothing else EXERCISES that assignment: fdbmetrics
+	// reads the field, but its test builds a snapshot literal and never calls
+	// Snapshot(), so it stays green under a mis-wire. Measured -- pointing the
+	// assignment at a neighbouring counter compiled and passed every suite until
+	// these two sentinels read it this way.
 	armBefore := db.db.metrics.Snapshot().GRVInBandMaybeDelivered
 	db.db.grvCache.invalidate()
 	// Bounded, and expected to EXPIRE: with every reply carrying an in-band

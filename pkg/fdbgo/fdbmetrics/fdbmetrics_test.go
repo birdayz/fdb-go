@@ -65,6 +65,13 @@ func TestHandler_TextExposition(t *testing.T) {
 		}
 	}
 	// Every defined counter and summary renders a TYPE line.
+	//
+	// This does NOT catch a missing counterDef, and cannot: both sides derive
+	// from `counters`, so deleting an entry moves them together and the equality
+	// still holds. Measured -- removing one fired only the explicit string
+	// assertions above, and this check stayed silent. It catches a renderer that
+	// skips or duplicates an entry it WAS given; naming each counter above is
+	// what catches one that was never defined.
 	if got, want := strings.Count(body, "# TYPE "), len(counters)+len(summaries); got != want {
 		t.Errorf("rendered %d TYPE lines, want %d", got, want)
 	}

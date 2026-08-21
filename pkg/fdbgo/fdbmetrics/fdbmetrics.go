@@ -49,8 +49,13 @@ type counterDef struct {
 	get  func(s client.ClientMetricsSnapshot) int64
 }
 
-// counters uses the C++ TransactionMetrics names, snake_cased with the
-// conventional fdb_client prefix and Prometheus _total suffix.
+// counters uses the C++ TransactionMetrics names where one exists, snake_cased
+// with the conventional fdb_client prefix and Prometheus _total suffix.
+//
+// Five entries have no C++ twin and are named on the same convention without
+// one: the GRV cache pair, the RFC-114 connection counters, and
+// grv_in_band_maybe_delivered (basicLoadBalance absorbs that error and counts
+// nothing). The claim was unqualified while four of them already existed.
 var counters = []counterDef{
 	{
 		"fdb_client_transactions_commit_started_total", "Commits sent (read-only fast-path commits excluded, matching C++).",
