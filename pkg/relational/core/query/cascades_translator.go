@@ -1843,7 +1843,6 @@ func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflec
 		}
 	}
 	// THE ARGUMENT IS A SQL NAME AND THE DESCRIPTOR HOLDS STORAGE NAMES, so a
-	// THE ARGUMENT IS A SQL NAME AND THE DESCRIPTOR HOLDS STORAGE NAMES, so a
 	// name DDL had to escape is invisible to both attempts above. A column
 	// declared `"a.b"` is stored as `a__2b`; it comes back through
 	// ToUserIdentifier everywhere a user sees it, and arrives here spelled
@@ -1867,15 +1866,28 @@ func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflec
 	// ever reaching the exact one. An exact answer is never made ambiguous by
 	// case variants existing, whatever order they are listed in.
 	//
-	// Ambiguity among FOLDED candidates declines rather than taking the first:
-	// two fields answering to one SQL spelling is exactly when guessing is
-	// worst, because which one wins is a property of the descriptor and not of
-	// the query.
+	// AMBIGUITY DECLINES IN BOTH PASSES, and the exact one needs it just as much
+	// as the folded one — a first draft checked only the folded pass, which
+	// reads as though decoding were injective. It is not: `foo___0bar` and
+	// `foo__0_bar` BOTH decode to `foo___bar`, so a descriptor can hold two
+	// fields answering exactly to one SQL identifier. Returning the first is a
+	// bind decided by descriptor order, which is not a property of the query,
+	// and the unnest path would then classify or explode whichever came first.
+	//
+	// So each pass scans to completion before it answers.
+	var exact protoreflect.FieldDescriptor
 	for i := 0; i < fs.Len(); i++ {
 		f := fs.Get(i)
-		if protoname.ToUserIdentifier(string(f.Name())) == name {
-			return f
+		if protoname.ToUserIdentifier(string(f.Name())) != name {
+			continue
 		}
+		if exact != nil {
+			return nil // two fields decode to this exact name; decline
+		}
+		exact = f
+	}
+	if exact != nil {
+		return exact
 	}
 	var folded protoreflect.FieldDescriptor
 	for i := 0; i < fs.Len(); i++ {

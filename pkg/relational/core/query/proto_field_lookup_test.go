@@ -147,6 +147,17 @@ func TestProtoFieldLookupTriesCaseAndEscapingTogether(t *testing.T) {
 				"passes under either implementation; only this one separates them",
 		},
 		{
+			name:    "two fields decoding to one EXACT spelling are declined",
+			storage: []string{"foo___0bar", "foo__0_bar"},
+			lookup:  "foo___bar",
+			want:    "",
+			why: "DECODING IS NOT INJECTIVE EITHER, which is easy to assume once the " +
+				"encode direction has been rejected for that reason. `___0` and `__0_` " +
+				"both decode to `___`, so both storage names answer EXACTLY to " +
+				"`foo___bar`. A first draft checked ambiguity only in the folded pass " +
+				"and would have returned whichever field the descriptor listed first",
+		},
+		{
 			name:    "two fields folding to one spelling, with no exact match, are declined",
 			storage: []string{"a__2b", "A__2b"},
 			lookup:  "A.B",
