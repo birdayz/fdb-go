@@ -293,6 +293,7 @@ go_test(
         "online_indexer_progress_log_test.go",
         "online_indexer_test.go",
         "online_indexer_throttle_defaults_test.go",
+        "online_indexer_user_identifier_test.go",
         "order_predicate_integration_test.go",
         "orelse_continuation_test.go",
         "per_type_size_estimate_probe_test.go",

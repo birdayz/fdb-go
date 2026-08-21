@@ -574,18 +574,71 @@ grep -rl --include='*.go' EvaluateRecordTypes pkg/ | grep -v _test.go
 
 **EMPTY today except the definition file; must name the candidate-building
 site.** `buildMatchCandidates` builds a primary candidate for every record type
-in the metadata that has a primary key and a descriptor. Java's
+in the metadata with a usable primary key, and a positional type for each of
+those that also has a descriptor. Java's
 `MetaDataPlanContext.forRootReference` narrows to the types the QUERY names
 first (`MetaDataPlanContext.java:176-218`), which is where its table-locality
 comes from — it has no drop-list and no per-type catch.
+**EMPTY today except the definition file; must name the candidate-building
+site.** `buildMatchCandidates` builds a primary candidate for every record type
+in the metadata with a usable primary key, and a positional type for each of
+those that also has a descriptor. Java's `MetaDataPlanContext.forRootReference`
+narrows to the types the QUERY names first (`MetaDataPlanContext.java:176-218`),
+which is where its table-locality comes from — it has no drop-list and no
+per-type catch.
 
-The narrowing needs `RecordTypesProperty`, and GO ALREADY HAS IT:
-`properties.EvaluateRecordTypes` (`record_types_property.go:29`) is a faithful
-port of `RecordTypesProperty.evaluate`, with tests, and NO production caller —
-its only two files are its own definition and its own test. So this is wiring an
-existing ported property into the one place that needs it, not building a
-capability. §7b says why a drop-list and a "fails for want of a candidate"
-argument are both wrong.
+BOTH LOOPS, NOT JUST THE PRIMARY ONE. `buildMatchCandidates` continues into
+`c.md.GetAllIndexes()` (`cascades_generator.go:2817`) — every index in the
+SCHEMA — and each resulting `metadataIndexDef` derives its row type through the
+same `PositionalTypeForRecordLayout` (`:3392`, `:3421`). So a colliding table
+that owns ANY secondary index reproduces the panic for a query that never names
+it, and the two-table schema below would not catch it, because neither table has
+an index. Java narrows this list too, from the same set:
+`for (final var recordType : queriedRecordTypes) { indexList.addAll(readableOf(...recordType.getAllIndexes())); }`.
+Add an indexed arm to the probe alongside the fix.
+
+THE NARROWING NEEDS `RecordTypesProperty`, AND GO HAS MOST OF IT.
+`properties.EvaluateRecordTypes` (`record_types_property.go:29`) is a port of
+`RecordTypesProperty.evaluate` with tests and NO production caller — its only
+two files are its own definition and its own test. Two gaps have to close before
+it can be wired, and the second is a correctness gap rather than an ergonomic
+one:
+
+  - IT TAKES A `RelationalExpression` WHERE JAVA TAKES A `Reference`. The union
+    over `ref.Members()` that a `Reference` entry point needs is already written
+    inline for child references (`record_types_property.go:88`); it wants
+    lifting to a top-level function.
+  - IT DOES NOT INTERSECT AT A TYPE FILTER. Java returns
+    `Sets.filter(childResults.get(0), typeFilter.getRecordTypes()::contains)`
+    (`RecordTypesProperty.java:118-119`) — the filter's set INTERSECTED with the
+    child's. Go returns `GetRecordTypes()` and never looks at the child
+    (`record_types_property.go:37-51`), under a comment rationalising it as
+    "already the intersection result from planning" — which is not true at
+    plan-context construction, before the planner has run. The result is a
+    SUPERSET, so a
+    `TypeFilter([INNOCENT, COLL])` over a scan that can only produce `INNOCENT`
+    still reports `COLL`, the candidate is still built, and the panic this
+    criterion removes comes back. An earlier draft of this section called the
+    helper "a faithful port"; it is not, and wiring it as-is would have shipped
+    a narrowing that does not narrow.
+
+Completing and testing the property is therefore part of this criterion, not a
+prerequisite someone else already met. §7b says why a drop-list and a "fails for
+want of a candidate" argument are both wrong.
+
+AND THE NARROWING GOES WHERE THE CANDIDATES ARE BUILT — it does not have to move
+earlier in the pipeline, which was the first objection to it. Java evaluates the
+property over the ROOT REFERENCE, and every production `newCascadesPlanner` site
+already holds one before it constructs the context:
+`cascades_generator.go:488` and `:1129`, and `scalar_subquery_planning.go:70`,
+each build `ref`/`subRef` first and pass it to `PlanWithContext` on the next
+line. That is Java's `planPartial` shape (`CascadesPlanner.java:378-388`). So
+`buildCascadesPlanContext` (`cascades_generator.go:2714`) takes the reference and
+narrows there; the `sync.Once` defers only the BUILDING, not the reference.
+
+An empty result then yields an empty candidate set, which is what Java does too
+(`MetaDataPlanContext.java:178-180`) and which is harmless here because
+`rule_primary_scan.go:46` yields a scan with no candidate at all.
 
 The behaviour that narrowing must produce:
 
@@ -721,12 +774,15 @@ embedded.GetMatchCandidates               cascades_generator.go:2744
 cascades.MatchLeafRule.OnMatch            rule_match_leaf.go:59
 ```
 
-`buildMatchCandidates` walks every record type in the metadata and builds a
-positional type for each one that has a primary key and a descriptor
-(`cascades_generator.go:2770`, `:2774`, `:2791` skip the rest). One unbuildable
-table therefore aborts the candidate set for all of them. The blast radius is
-schema-wide because the CONSTRUCTION is schema-wide, not because the failure
-mode is a panic.
+`buildMatchCandidates` walks every record type in the metadata. Two guards skip
+a type outright — no primary key (`cascades_generator.go:2773`) and no key
+components (`:2777`) — and every type that survives both gets a positional type
+built from its descriptor. A third guard (`:2791`) does NOT skip: a type with no
+descriptor still gets a candidate, flowing `UnknownType`, so it is the only one
+that reaches the end without a positional type. One unbuildable table therefore
+aborts the candidate set for all of them. The blast radius is schema-wide
+because the CONSTRUCTION is schema-wide, not because the failure mode is a
+panic.
 
 Note where COLL itself fails, because it is NOT here: the scan leaf's row type
 is built at `cascades_translator.go:3022`, from `t.tableColumns(s.Table)` — the
@@ -763,3 +819,99 @@ which is now documented at `protoname` where the next caller will see it.
 Both halves are criterion (8) in §5, with the commands that make them
 checkable. They are stated there rather than here because a requirement living
 only in a narrative section is prose, and prose cannot fail.
+
+### 7c. Go dropped one of Java's two names, and five defects came out of it
+
+Chasing §7b's blast radius turned up a family, not an incident. Every member has
+the same shape — one side holds the SQL identifier, the other holds the stored
+protobuf identifier, and something compares them as strings — and the family is
+large enough that the individual fixes are not the finding.
+
+Measured, on this branch:
+
+```
+FDBRecordStore.ScanRecordsByType    slow path filtered on the caller's string    0 rows, nil error
+executeTypeFilter                   allowed set keyed on the plan's string       latent
+OnlineIndexer                       shouldIndexRecordForIndex vs                 built, readable,
+                                    indexedRecordTypes disagreed                 EMPTY index
+CREATE INDEX ... ON "MY$TABLE"      md.RecordTypes()[sqlName]                    42F59 unknown table
+primary/index match candidates      registered under rt.Name, query scan          NO access path
+                                    carries s.Table                              for an escaped table
+```
+
+The first four are fixed here, each with a regression that reddens without the
+fix. The fifth is the one this section is about, because it cannot be fixed the
+same way.
+
+**IT IS NOT FIXABLE AT THE COMPARISON.** `FullUnorderedScanExpression.Equals-
+WithoutChildren` compares its record-type list element by element and has no
+metadata to resolve with — nor should it: it is structural equality on a memo
+expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
+`buildMatchCandidates` passes `[]string{rt.Name}` (stored) and
+`cascades_translator.go:3023` passes `[]string{s.Table}` (SQL).
+
+The visible cost, same query shape over one schema, one per table:
+
+```
+u            ->  TypeFilter([U], Scan(U, [<>]))            PK range
+"MY$TABLE"   ->  PredicatesFilter(Scan(MY$TABLE), ...)     full scan, residual
+u            ->  IndexScan(IDX_TAG, [=] COVERING)          index used
+"MY$TABLE"   ->  PredicatesFilter(Scan(MY$TABLE), ...)     index built, never chosen
+```
+
+Both pairs are pinned in `yamsql/testdata/intermingle_escaped_table_name.yaml`
+and `escaped_table_secondary_index.yaml`. They are asserted at the WRONG value on
+purpose, so the fix reddens them.
+
+**JAVA CARRIES BOTH NAMES AS DATA. GO CARRIES ONE AND RECOVERS THE OTHER.** That
+is the whole divergence, and it is stated most plainly in
+`RecordLayerIndex.Builder.build` (`RecordLayerIndex.java:259-261`):
+
+```java
+if (tableStorageName == null) {
+    tableStorageName = ProtoUtils.toProtoBufCompliantName(tableName);
+}
+```
+
+The entity holds `tableName` AND `tableStorageName`, side by side, computed once.
+No Java site re-escapes a SQL name or re-decodes a stored one to answer "are
+these the same table" — it compares the field it needs.
+
+Go's `RecordType` has only the stored `Name`. The SQL spelling is recoverable
+only by `ToUserIdentifier`, which is NOT INJECTIVE in either direction (see
+`protoname`), which is why the display side needed
+`DecodeOnceIfReversible`/`SafeDecoderOver` to answer a question that should
+never have needed answering: the name was known at DDL time and thrown away.
+
+**THE DECISION: carry both names, and register candidates in the namespace the
+plan uses.** `RecordType` grows the SQL identifier beside `Name`, populated where
+the metadata is built from DDL (and equal to `Name` for metadata that never came
+from SQL — a proto loaded through `SetRecords` has no SQL name, and inventing one
+by decoding is the exact mistake `DecodeOnceIfReversible` exists to avoid). The
+match candidate is then registered under the same spelling the translator emits,
+and `EqualsWithoutChildren` compares like with like without learning about
+escaping at all.
+
+Two alternatives lose:
+
+  - **Translate the plan to storage names.** Superficially Java-shaped, and it
+    does make the comparison work. But EXPLAIN then prints `Scan(MY__1TABLE)`,
+    every plan-shape golden acquires storage spellings, and the CLI's display
+    policy has to decode them back — through a non-injective map. It moves the
+    problem to the render boundary and makes it worse.
+  - **Resolve at each comparison.** That is what the four fixed defects above
+    do, and it is right AT A BOUNDARY THAT HAS METADATA — a store, an executor,
+    a DDL site. It is wrong inside the memo: a structural equality that consults
+    metadata is not structural, and the next comparison site would have to
+    remember. Four sites needed this fix and none of them knew about the others;
+    a fifth is not a pattern to extend.
+
+The boundary resolutions stay regardless. They are what makes a caller holding
+either spelling correct, which is the contract `GetRecordType` already offers and
+which those four sites were silently not honouring.
+
+**This section is a DESIGN CHANGE TO THE CASCADES MATCHING INFRASTRUCTURE and is
+not implemented here.** It needs its ACK before the code, which is the gate this
+repo puts on query-engine work. What IS here is the measurement, the pinned
+divergence in two scenarios, and the four boundary fixes that are correct
+independently of how the fifth is resolved.

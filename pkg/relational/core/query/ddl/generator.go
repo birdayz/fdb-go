@@ -77,7 +77,11 @@ func Generate(op logical.LogicalOperator, md *recordlayer.RecordMetaData, opts O
 	// display names (the runtime positional namespace), which corrupt a
 	// quoted-DDL column ("col1" → COL1) if rendered into metadata.
 	res := storageNames{}
-	if rt := md.RecordTypes()[d.scan.Table]; rt != nil {
+	// GetRecordType: d.scan.Table is the SQL identifier, the map is keyed by the
+	// STORED protobuf name, and an escaped name misses. A miss here silently
+	// leaves res.root nil, so the index would be built from folded display names
+	// instead of storage ones -- the corruption this block exists to prevent.
+	if rt := md.GetRecordType(d.scan.Table); rt != nil {
 		res.root = rt.Descriptor
 	}
 	// The predicate arm runs before the value/aggregate split, as in Java
@@ -497,7 +501,9 @@ func projectedValues(d *decomposed, md *recordlayer.RecordMetaData) ([]values.Va
 // scanned record type, in declaration order — the state Java's plan is
 // already in when the generator runs (the star expands during planning).
 func starValues(scan *logical.LogicalScan, md *recordlayer.RecordMetaData) ([]values.Value, error) {
-	rt := md.RecordTypes()[scan.Table]
+	// GetRecordType: see the note at storageNames. A raw map index by the SQL
+	// identifier misses on any escaped table name.
+	rt := md.GetRecordType(scan.Table)
 	if rt == nil {
 		return nil, api.NewErrorf(api.ErrCodeUndefinedTable,
 			"Unknown table %q", scan.Table)

@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**359 scenarios · 2892 query/assertion cases** across 18 feature areas — 2545 supported, 111 unsupported-feature pins, 236 error-path pins.
+**361 scenarios · 2897 query/assertion cases** across 18 feature areas — 2550 supported, 111 unsupported-feature pins, 236 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -39,13 +39,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 13 | 180 | 177 | 0 | 3 |
+| Index usage | 14 | 182 | 179 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 34 | 295 | 258 | 11 | 26 |
-| **Total** | **359** | **2892** | **2545** | **111** | **236** |
+| Other | 35 | 298 | 261 | 11 | 26 |
+| **Total** | **361** | **2897** | **2550** | **111** | **236** |
 
 ## Aggregates & GROUP BY
 
@@ -401,6 +401,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `composite_secondary_index_prefix_pushdown` | 11 | 11 | 0 | 0 | Pure-prefix pushdown on composite secondary indexes: when WHERE |
 | `covering_index_java` | 7 | 7 | 0 | 0 | Covering index optimization. |
 | `covering_index_pushdown` | 26 | 26 | 0 | 0 | Covering-index pushdown: when every column the SELECT reads from each |
+| `escaped_table_secondary_index` | 2 | 2 | 0 | 0 | A TABLE WHOSE NAME ESCAPES COULD NOT BE GIVEN A SECONDARY INDEX AT ALL. |
 | `index_range_and_or` | 10 | 10 | 0 | 0 | Port of Java standard-tests.yamsql — AND/OR range predicates with index. |
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |
@@ -477,6 +478,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `information_schema` | 5 | 4 | 0 | 1 | INFORMATION_SCHEMA.* system-table queries. |
 | `int_float_lanes` | 6 | 4 | 0 | 2 | 32-bit arithmetic lanes end-to-end |
 | `integer_range` | 12 | 5 | 0 | 7 | INTEGER (32-bit) column range enforcement. |
+| `intermingle_escaped_table_name` | 3 | 3 | 0 | 0 | THE ONE SQL SHAPE THAT REACHES THE SLOW TYPE-SCAN PATH WITH A NAME THAT NEEDS |
 | `java_alignment_probes` | 14 | 14 | 0 | 0 | Probes derived from Java's yamsql test suite to verify Go matches |
 | `min_max_string` | 3 | 0 | 3 | 0 | MIN/MAX on string columns is REJECTED |
 | `mixed_agg_nonagg` | 4 | 4 | 0 | 0 | Mixed aggregate and non-aggregate expressions |

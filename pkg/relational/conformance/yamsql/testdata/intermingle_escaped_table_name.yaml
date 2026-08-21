@@ -1,0 +1,89 @@
+# intermingle_escaped_table_name.yaml
+#
+# THE ONE SQL SHAPE THAT REACHES THE SLOW TYPE-SCAN PATH WITH A NAME THAT NEEDS
+# RESOLVING, which is why it needs a scenario of its own rather than a record-
+# layer unit test.
+#
+# Two independent conditions have to hold at once and neither is exotic:
+#
+#   1. INTERMINGLE_TABLES=true, so buildPrimaryKeyExpression
+#      (pkg/relational/core/metadata/builder.go) skips the RecordTypeKey()
+#      prefix. FDBRecordStore.ScanRecordsByType then takes its SLOW path --
+#      full scan plus a per-record type predicate -- instead of a prefix range.
+#   2. A table name that ESCAPES: `MY$TABLE` is stored as the protobuf
+#      identifier `MY__1TABLE`. The plan carries the SQL spelling
+#      (RecordQueryScanPlan's record types come straight from the translator),
+#      while every stored record carries the escaped one.
+#
+# With both, a predicate that compares the plan's string against the record's
+# stored name matches NOTHING, and the query returns zero rows with no error --
+# the shape that reads as "the table is empty". Measured: with the resolution
+# removed from FDBRecordStore.ScanRecordsByType, the first and third queries
+# below return 0 rows instead of 3 and 2, while the unescaped table keeps
+# answering.
+#
+# WHAT THIS FILE DOES NOT COVER, stated because the neighbouring fix invites the
+# assumption: RecordQueryTypeFilterPlan resolves its allowed set the same way,
+# and removing THAT resolution leaves every query here green. Its only
+# production origin passes the stored spelling already, so no SQL shape reaches
+# it with a name needing resolution -- the guard is against a plan-side change,
+# and the executor unit test is what pins it. Do not read a green here as
+# covering both sites.
+#
+# The non-escaped table `u` is not decoration. Its rows sit in the SAME key
+# range under intermingling, so a predicate that flipped the other way -- match
+# everything rather than nothing -- shows up here as u's rows appearing in
+# MY$TABLE's result, instead of passing as "found the rows". It also carries the
+# plan comparison below.
+#
+# THE PLANS ARE PINNED BECAUSE THEY DISAGREE, AND THAT DISAGREEMENT IS A KNOWN
+# OPEN DEFECT. Queries 2 and 3 are the same shape over the same schema, one per
+# table:
+#
+#   u          ->  TypeFilter([U], Scan(U, [<>]))          range, PK pushdown
+#   "MY$TABLE" ->  PredicatesFilter(Scan(MY$TABLE), ...)   full scan, residual
+#
+# The escaped table loses primary-key pushdown entirely. The cause is the same
+# two-namespace split the row assertions above are about, one layer up:
+# buildMatchCandidates registers the primary-scan candidate under the STORED
+# name (cascades_generator.go passes []string{rt.Name}) while the query's
+# FullUnorderedScanExpression carries the SQL name from the translator, and
+# FullUnorderedScanExpression.EqualsWithoutChildren compares those strings
+# literally. No candidate matches, so no index or PK access path is ever
+# available to an escaped table. Tracked in RFC-238; these two assertions are
+# what will redden when it is fixed, which is when to update them TOGETHER --
+# they are a matched pair, and one moving alone means the fix was partial.
+name: intermingle_escaped_table_name
+schema_template: |
+  CREATE TABLE "MY$TABLE" (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE u (id BIGINT, tag STRING, PRIMARY KEY (id))
+  WITH OPTIONS(INTERMINGLE_TABLES=true)
+setup:
+  - INSERT INTO "MY$TABLE" VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')
+  - INSERT INTO u VALUES (10, 'x'), (11, 'y')
+tests:
+  # Unbounded scan of the escaped table. Under intermingling this walks the
+  # shared key range with no TypeFilter node at all, so ALL the type scoping is
+  # ScanRecordsByType's predicate: zero rows means it compared raw, five rows
+  # means it stopped comparing.
+  - query: SELECT id, name FROM "MY$TABLE" ORDER BY id
+    plan_contains: "Scan(MY$TABLE)"
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+      - [3, 'gamma']
+
+  # The unescaped control, and the good half of the plan pair above.
+  - query: SELECT id, tag FROM u WHERE id > 9 ORDER BY id
+    plan_contains: "TypeFilter([U], Scan(U, [<>]))"
+    rows:
+      - [10, 'x']
+      - [11, 'y']
+
+  # The same shape on the escaped table: rows still correct, plan still a full
+  # scan with a residual predicate. Correct answers, no access path.
+  - query: SELECT id, name FROM "MY$TABLE" WHERE id > 1 ORDER BY id
+    plan_contains: "PredicatesFilter(Scan(MY$TABLE)"
+    rows:
+      - [2, 'beta']
+      - [3, 'gamma']

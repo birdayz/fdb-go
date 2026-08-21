@@ -141,7 +141,14 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 		return api.NewErrorf(api.ErrCodeInternalError,
 			"index %q: schema template built without metadata", indexName)
 	}
-	rt := md.RecordTypes()[tableName]
+	// GetRecordType, not a raw map index. The map is keyed by the STORED
+	// protobuf name; tableName is the SQL identifier off the parse tree, and for
+	// a quoted name carrying '$', '.' or "__" the two differ. A raw lookup
+	// therefore reported `CREATE INDEX ... ON "MY$TABLE"` as referencing an
+	// unknown table -- an escaped table could not be given a secondary index at
+	// all. GetRecordType applies the escaping on a miss, which is the one place
+	// that translation lives.
+	rt := md.GetRecordType(tableName)
 	if rt == nil || rt.Descriptor == nil {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"index %q references unknown table %q", indexName, tableName)

@@ -346,4 +346,47 @@ CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))`
 				"code is the only thing that distinguishes a recovered panic from a\n"+
 				"diagnosis.")
 	})
+
+	// AN INDEX ON THE COLLIDING TABLE, because narrowing the primary-candidate
+	// loop alone does not close this. buildMatchCandidates continues into
+	// GetAllIndexes() -- every index in the SCHEMA -- and each resulting index
+	// def derives its row type through the same PositionalTypeForRecordLayout.
+	// So a fix that narrows only the first loop makes the arm above pass while
+	// this one still fails, and the criterion would be declared met.
+	//
+	// Java narrows the index list from the same queried-type set
+	// (forRootReference collects recordType.getAllIndexes() per queried type),
+	// so it answers INNOCENT here exactly as it does without the index.
+	It("measures the same blast radius when the colliding table owns an index", func() {
+		ctx := context.Background()
+		tenantName := fmt.Sprintf("collide_idx_%s", uuid.New().String())
+		env, err := SetupTenantEnvironment(ctx, sharedContainer, tenantName)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = env.Cleanup(ctx) }()
+		srv, err := NewIsolatedJavaInvoker()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = srv.Close() }()
+		javaRunner := plandiff.NewJavaRunnerHTTP(javaBaseURL(srv), env.ClusterFile).(plandiff.SetupRunner)
+		clusterFilePath := writeClusterFileToTemp(env.ClusterFile)
+		defer os.Remove(clusterFilePath)
+		goRunner := plandiff.NewGoSQLSetupRunner(clusterFilePath)
+
+		schema := `CREATE TABLE COLL (id BIGINT, "___" BIGINT, "___0" BIGINT, PRIMARY KEY (id))
+CREATE TABLE INNOCENT (id BIGINT, v BIGINT, PRIMARY KEY (id))
+CREATE INDEX coll_idx ON COLL (id)`
+
+		javaInnocent := javaRunner.RunWithSetup(ctx, schema, nil, `SELECT id FROM INNOCENT`).Err
+		goInnocent := goRunner.RunWithSetup(ctx, schema, nil, `SELECT id FROM INNOCENT`).Err
+
+		Expect(javaInnocent).NotTo(HaveOccurred(),
+			"Java stopped answering the unrelated table once COLL grew an index. If Java's\n"+
+				"index list is NOT narrowed to the queried types after all, the second half\n"+
+				"of criterion (8) is describing a Java behaviour that does not exist.")
+
+		Expect(goInnocent).To(HaveOccurred(),
+			"Go now answers the unrelated table WITH an index on COLL. Flip this to\n"+
+				"NotTo(HaveOccurred()) and KEEP it -- it is the arm that distinguishes\n"+
+				"narrowing BOTH candidate loops from narrowing only the primary one. If the\n"+
+				"unindexed arm above flips and this one does not, the index loop was missed.")
+	})
 })

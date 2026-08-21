@@ -1,0 +1,53 @@
+# escaped_table_secondary_index.yaml
+#
+# A TABLE WHOSE NAME ESCAPES COULD NOT BE GIVEN A SECONDARY INDEX AT ALL.
+#
+#   CREATE INDEX idx_name ON "MY$TABLE" (name)
+#     -> 42F59: index "IDX_NAME" references unknown table "MY$TABLE"
+#
+# The ON-source path resolved the table with a RAW map index --
+# md.RecordTypes()[tableName] -- and that map is keyed by the STORED protobuf
+# name, `MY__1TABLE`. The SQL identifier off the parse tree misses it. The
+# translation lives in exactly one place, RecordMetaData.GetRecordType, which
+# retries through the escaping on a miss; three DDL sites were indexing the map
+# directly instead (index_onsource.go and two in query/ddl/generator.go).
+#
+# The unescaped table is here so a failure is attributable: if BOTH CREATE INDEX
+# statements start failing, the DDL broke generally rather than on the escaping.
+#
+# THE INDEX IS BUILT AND MAINTAINED BUT NOT YET CHOSEN, and the plan assertions
+# say so rather than pretending otherwise. Measured, same query shape, one per
+# table:
+#
+#   u          ->  IndexScan(IDX_TAG, [=] COVERING)
+#   "MY$TABLE" ->  PredicatesFilter(Scan(MY$TABLE), [1 preds])
+#
+# The match candidates are registered under the STORED name while the query's
+# scan expression carries the SQL one, and the two are compared as strings
+# (FullUnorderedScanExpression.EqualsWithoutChildren), so no candidate ever
+# matches an escaped table. Creating the index is a real fix -- the DDL error
+# was a hard functional gap -- and the matching is the open half, tracked in
+# RFC-238. When it lands the first assertion reddens; that is the signal to
+# update this file, not to relax it.
+name: escaped_table_secondary_index
+schema_template: |
+  CREATE TABLE "MY$TABLE" (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE u (id BIGINT, tag STRING, PRIMARY KEY (id))
+  CREATE INDEX idx_name ON "MY$TABLE" (name)
+  CREATE INDEX idx_tag ON u (tag)
+setup:
+  - INSERT INTO "MY$TABLE" VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')
+  - INSERT INTO u VALUES (10, 'x'), (11, 'y')
+tests:
+  # The DDL above is the assertion: reaching this query at all means CREATE
+  # INDEX on an escaped table no longer reports the table as unknown.
+  - query: SELECT id FROM "MY$TABLE" WHERE name = 'beta'
+    plan_contains: "PredicatesFilter(Scan(MY$TABLE)"
+    rows:
+      - [2]
+
+  # The unescaped control, both for the DDL and for the plan below.
+  - query: SELECT id FROM u WHERE tag = 'x'
+    plan_contains: "IndexScan(IDX_TAG, [=] COVERING)"
+    rows:
+      - [10]

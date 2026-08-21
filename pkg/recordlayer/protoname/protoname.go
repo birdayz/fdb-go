@@ -172,9 +172,9 @@ func translateSpecialCharacters(userIdentifier string) string {
 // fails table-locally, where it should, at the scan leaf that builds a row type
 // from just the table the query names. The schema-wide part is elsewhere:
 // buildMatchCandidates builds a positional type for every record type in the
-// metadata that has a primary key and a descriptor, so ONE unbuildable table
-// aborts the candidate set for all of them, and removing the panic does not
-// change that. Java is table-local because MetaDataPlanContext.forRootReference
+// metadata that has a usable primary key and a descriptor, so ONE unbuildable
+// table aborts the candidate set for all of them, and removing the panic does
+// not change that. Java is table-local because MetaDataPlanContext.forRootReference
 // narrows to the record types the QUERY names before building anything — not
 // because it tolerates a bad table.
 func ToUserIdentifier(protoIdentifier string) string {

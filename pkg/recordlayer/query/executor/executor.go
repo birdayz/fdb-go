@@ -1617,8 +1617,25 @@ func executeTypeFilter(
 	if err != nil {
 		return nil, err
 	}
+	// Key the set on the RESOLVED name. The predicate below compares against
+	// FDBStoredRecord.RecordType.Name, which is the STORED spelling, while
+	// GetRecordTypes() is only as normalised as whoever built the plan made it:
+	// RecordQueryScanPlan carries the SQL table name straight from the
+	// translator, so the same accessor means different namespaces on two plan
+	// types. A raw comparison then filters out every row and returns zero,
+	// which is the silent shape -- no error, an empty result that reads as "no
+	// records of this type". Resolving here is the same one-line rule
+	// ScanRecordsByType applies, and it leaves an unresolvable name matching
+	// nothing, exactly as before.
 	allowed := make(map[string]bool, len(p.GetRecordTypes()))
+	md := store.GetRecordMetaData()
 	for _, rt := range p.GetRecordTypes() {
+		if md != nil {
+			if resolved := md.GetRecordType(rt); resolved != nil {
+				allowed[resolved.Name] = true
+				continue
+			}
+		}
 		allowed[rt] = true
 	}
 

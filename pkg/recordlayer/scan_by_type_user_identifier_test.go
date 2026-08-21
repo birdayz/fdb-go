@@ -22,8 +22,11 @@ import (
 // the very name `record scan -o json` had just printed would report success and
 // silently process nothing.
 //
-// The two paths must agree, and the only way they can disagree is one resolving
-// the name while the other compares it raw.
+// EVERY ARM SEEDS BOTH TYPES, and that is not tidiness. With only the type under
+// test in the subspace, "want 1" is satisfied by a predicate that matches
+// EVERYTHING, and "want 0" is satisfied by an EMPTY STORE -- so a regression to
+// match-all would have passed the whole file. The Customer row is what makes
+// each count discriminate.
 var _ = Describe("ScanRecordsByType with a SQL identifier", func() {
 	ctx := context.Background()
 
@@ -33,6 +36,56 @@ var _ = Describe("ScanRecordsByType with a SQL identifier", func() {
 		md, err := renameRecordTypes(multiTypeMetaData(), map[string]string{"Order": "MY__1TABLE"})
 		Expect(err).NotTo(HaveOccurred())
 		return md
+	}
+
+	// seedOneOfEach writes one MY__1TABLE row and one Customer row, so a count
+	// of 1 means "matched the right type" rather than "matched anything".
+	seedOneOfEach := func(md *RecordMetaData) {
+		GinkgoHelper()
+		renamed := md.GetRecordType("MY__1TABLE")
+		Expect(renamed).NotTo(BeNil())
+		order := dynamicpb.NewMessage(renamed.Descriptor)
+		order.Set(renamed.Descriptor.Fields().ByName("order_id"), protoreflect.ValueOfInt64(7))
+
+		customer := md.GetRecordType("Customer")
+		Expect(customer).NotTo(BeNil())
+		cust := dynamicpb.NewMessage(customer.Descriptor)
+		cust.Set(customer.Descriptor.Fields().ByName("customer_id"), protoreflect.ValueOfInt64(9))
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := store.SaveRecord(order); err != nil {
+				return nil, err
+			}
+			return store.SaveRecord(cust)
+		})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	scanNames := func(md *RecordMetaData, typeName string) []string {
+		GinkgoHelper()
+		out, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(specSubspace()).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			recs, err := AsList(ctx, store.ScanRecordsByType(typeName, nil, ForwardScan()))
+			if err != nil {
+				return nil, err
+			}
+			names := make([]string, 0, len(recs))
+			for _, r := range recs {
+				names = append(names, r.RecordType.Name)
+			}
+			return names, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		return out.([]string)
 	}
 
 	It("routes this fixture down the slow path, which is what makes the arms below mean anything", func() {
@@ -46,40 +99,17 @@ var _ = Describe("ScanRecordsByType with a SQL identifier", func() {
 				"prefix-less primary key again, or move the arms to a type that has one.")
 	})
 
-	DescribeTable("finds the record under either spelling of its name",
+	DescribeTable("finds only that type's records under either spelling of its name",
 		func(scanName string) {
 			md := renamedOrderMetaData()
-			ks := specSubspace()
-
-			rt := md.GetRecordType("MY__1TABLE")
-			Expect(rt).NotTo(BeNil())
-			rec := dynamicpb.NewMessage(rt.Descriptor)
-			rec.Set(rt.Descriptor.Fields().ByName("order_id"), protoreflect.ValueOfInt64(7))
-
-			_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-				if err != nil {
-					return nil, err
-				}
-				return store.SaveRecord(rec)
-			})
-			Expect(err).NotTo(HaveOccurred())
-
-			got, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-				store, err := NewStoreBuilder().
-					SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-				if err != nil {
-					return nil, err
-				}
-				return AsList(ctx, store.ScanRecordsByType(scanName, nil, ForwardScan()))
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(got).To(HaveLen(1),
-				"ScanRecordsByType(%q) returned no rows and no error. GetRecordType accepts\n"+
-					"the SQL identifier, so the caller gets past validation; the slow-path\n"+
-					"predicate must compare against the RESOLVED RecordType.Name, never the\n"+
-					"string it was handed.", scanName)
+			seedOneOfEach(md)
+			Expect(scanNames(md, scanName)).To(Equal([]string{"MY__1TABLE"}),
+				"ScanRecordsByType(%q) did not return exactly the MY__1TABLE row. Zero rows\n"+
+					"with a nil error is what a raw comparison produces -- GetRecordType\n"+
+					"accepts the SQL identifier, so the caller gets past validation, and the\n"+
+					"slow-path predicate must compare against the RESOLVED RecordType.Name.\n"+
+					"A Customer row is present too, so a match-everything predicate fails\n"+
+					"here rather than passing as 'found it'.", scanName)
 		},
 		Entry("storage spelling", "MY__1TABLE"),
 		Entry("SQL identifier", "MY$TABLE"),
@@ -87,18 +117,11 @@ var _ = Describe("ScanRecordsByType with a SQL identifier", func() {
 
 	It("still matches nothing for a name that resolves to no type at all", func() {
 		md := renamedOrderMetaData()
-		ks := specSubspace()
-
-		got, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
-			store, err := NewStoreBuilder().
-				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
-			if err != nil {
-				return nil, err
-			}
-			return AsList(ctx, store.ScanRecordsByType("NoSuchType", nil, ForwardScan()))
-		})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(got).To(BeEmpty(),
+		// Seeded deliberately: scanning an EMPTY subspace returns nothing no
+		// matter what the predicate does, so the arm would hold under a
+		// match-everything regression and pin nothing at all.
+		seedOneOfEach(md)
+		Expect(scanNames(md, "NoSuchType")).To(BeEmpty(),
 			"An unresolvable name started matching records. Resolving the name for the\n"+
 				"predicate must not turn a miss into a match-everything.")
 	})

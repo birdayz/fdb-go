@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=359 queries=2631 dml=157 non_query=104 plan_errors=274 unexpected_errors=4
+# files=361 queries=2636 dml=157 non_query=104 plan_errors=274 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -5900,6 +5900,17 @@ plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 3 aliases defined>
 === error_codes_java.yaml#9 expect-error=0A000
 sql:   SELECT SUM(MAX(val)) FROM t
 plan:  <PLAN-ERROR: 0A000: unsupported nested aggregate(s)>
+=== escaped_table_secondary_index.yaml#0
+sql:   SELECT id FROM "MY$TABLE" WHERE name = 'beta'
+plan:  Project([_current.ID#0], PredicatesFilter(Scan(MY$TABLE), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+=== escaped_table_secondary_index.yaml#1
+sql:   SELECT id FROM u WHERE tag = 'x'
+plan:  Project([_current.ID#0], IndexScan(IDX_TAG, [=] COVERING))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryCoveringIndexPlan
 === exists.yaml#0
 sql:   SELECT id FROM orders WHERE EXISTS (SELECT k FROM flags) ORDER BY id
 plan:  Project([_current.ID#0], FlatMap(outer=Scan(ORDERS), inner=PredicatesFilter(FirstOrDefault(Project([_current.K#0], Scan(FLAGS))), [1 preds])))
@@ -8773,6 +8784,23 @@ sql:   SELECT CAST(NULL AS INTEGER) IS NULL FROM IntTest WHERE id = 1
 plan:  Project([predicate], Scan(INTTEST, [=]))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
+=== intermingle_escaped_table_name.yaml#0
+sql:   SELECT id, name FROM "MY$TABLE" ORDER BY id
+plan:  Project([_current.ID#0, _current.NAME#1], Scan(MY$TABLE))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== intermingle_escaped_table_name.yaml#1
+sql:   SELECT id, tag FROM u WHERE id > 9 ORDER BY id
+plan:  Project([_current.ID#0, _current.TAG#1], TypeFilter([U], Scan(U, [<>])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryTypeFilterPlan
+shape:     RecordQueryScanPlan
+=== intermingle_escaped_table_name.yaml#2
+sql:   SELECT id, name FROM "MY$TABLE" WHERE id > 1 ORDER BY id
+plan:  Project([_current.ID#0, _current.NAME#1], PredicatesFilter(Scan(MY$TABLE), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
 === intermingle_type_filter.yaml#0
 sql:   SELECT id, name FROM t WHERE id > 2 ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], TypeFilter([T], Scan(T, [<>])))

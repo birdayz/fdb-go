@@ -69,6 +69,18 @@ func renameRecordTypes(src *RecordMetaData, rename map[string]string) (*RecordMe
 			}
 		}
 	}
+	// Indexes reference their record types BY NAME in a parallel list, so a
+	// rename that stops here produces metadata that will not build at all --
+	// "unknown record type %q referenced by index %q" -- the moment the renamed
+	// type owns one. Silent for every caller whose fixture has no index, which
+	// is why it went unnoticed.
+	for _, idx := range p.GetIndexes() {
+		for i, name := range idx.RecordType {
+			if to, ok := rename[name]; ok {
+				idx.RecordType[i] = to
+			}
+		}
+	}
 	md, err := RecordMetaDataFromProto(p)
 	if err != nil {
 		return nil, err

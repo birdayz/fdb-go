@@ -1649,8 +1649,21 @@ func (oi *OnlineIndexer) allTargetIndexesIdempotent() bool {
 func (oi *OnlineIndexer) shouldIndexRecordForIndex(rec *FDBStoredRecord[proto.Message], idx *Index) bool {
 	if len(oi.recordTypes) > 0 {
 		// Preset record types override — applies to all indexes in single-target.
+		//
+		// RESOLVE each configured name, exactly as indexedRecordTypes does. Both
+		// read the same oi.recordTypes, which SetRecordTypes takes verbatim from
+		// an exported builder, and GetRecordType accepts a SQL identifier for a
+		// type stored under its escaped spelling. Comparing raw here while
+		// resolving there let the two disagree about the SAME configuration: the
+		// indexer would report the type as in scope and then index none of its
+		// records, leaving a BUILT, READABLE, EMPTY index. That is worse than an
+		// empty scan -- queries answer from it and are wrong.
 		for _, t := range oi.recordTypes {
-			if rec.RecordType.Name == t {
+			want := t
+			if rt := oi.metaData.GetRecordType(t); rt != nil {
+				want = rt.Name
+			}
+			if rec.RecordType.Name == want {
 				return true
 			}
 		}
