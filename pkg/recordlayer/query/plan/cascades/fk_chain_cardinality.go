@@ -670,9 +670,13 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // precisely the row nobody checked.
 //
 // Every hop of an FK chain past the first has a FlatMap as its OUTER, so the
-// nested shape is the one the cap actually meets: a wrong answer would let it
-// fire on hop 1 and silently stop firing on hops 2..n, the order-dependent
-// estimate fkChainCardinalityCap was written to remove.
+// cap really does hand this function a FlatMap in production. What is NOT
+// established is that a DECLINING leg arises there: a chain's inner legs are
+// probes, and fkChainFlat correlates to the inner alias, so the transitive
+// path is fail-closed insurance rather than a shape known to occur. It is
+// pinned anyway, because the cost of being wrong is the cap firing on hop 1
+// and silently stopping on hops 2..n -- the order-dependent estimate
+// fkChainCardinalityCap was written to remove.
 //
 // The derivation is the resultValue's, because the resultValue is what shapes
 // the emitted row: a bare QuantifiedObjectValue over one of the two aliases
