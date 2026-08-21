@@ -399,7 +399,7 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 // The escape and authority totals are not written here: fieldDebtAuthorityTotal
 // below declares the authority count and is asserted against the list, and the
 // group headers hold the per-bucket entry counts. Which authorities carry the
-// most escapes is derivable from knownFieldDecisionDebt below, via
+// most escapes is derivable from knownFieldDecisionDebt above, via
 // fieldDecisionAuthorityOf; the bucket report does not break it out, so no
 // concentration figure is stated here either.
 //

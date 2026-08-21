@@ -19773,9 +19773,30 @@ gate does: require the comment to CITE, never to VERIFY. A comment that states
 a population must carry the identifier whose assertion owns it, or a grep
 recipe -- and the gate checks only that a citation is PRESENT and resolves, not
 that any number matches. Nothing is compared, so the false negative disappears
-rather than being narrowed, and RFC/revision numbers, dates and `file:line`
-references become syntactic exclusions that can be enumerated once. That is
+rather than being narrowed.
+
+Two roles for a number have to stay separate, though. A line number inside a
+`file:line` reference is not a population claim, so the scan ignores it
+alongside RFC/revision numbers and dates -- a short list enumerated once. But
+`file:line` is NOT an acceptable citation FORM: this repo already holds that "a
+design trade defended by line numbers decays into an unfalsifiable claim"
+(`field_name_decision_test.go:1575`), and a gate accepting one would bless the
+least durable pointer available. A citation must name an identifier or give a
+recipe -- both survive an edit above them; a line number does not. That is
 `collected_statistics.go:33` made mechanical rather than aspirational.
+
+One correction to the target, earned by a near-miss during review. Two
+reviewers checked the ORDINAL in `result_type_stub_census_test.go`, agreed it
+was frozen, and nearly closed the file -- while the sentence carrying it
+asserted in the present tense three things RFC-232 had made false. The digit
+was sound; the prose around it was not. So the gate's subject is the TENSE and
+OWNERSHIP of prose adjacent to a pinned figure, not the digit itself. A sound
+number is exactly the cover this class hides behind.
+
+The same round produced the other half of that lesson: the claim was fixed in
+one file and left standing in another, because no repo-wide grep for the
+superseded phrasing was run. A correction is not done until that grep returns
+zero across every file and the count is reported.
 
 DONE when: a gate fails on a census-file comment that states a population
 without citing an identifier or recipe that resolves, and passes on an RFC
