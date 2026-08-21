@@ -29,6 +29,22 @@ func recordDerivedUnnestSplit(proj *logical.LogicalProject, slot int, source str
 			ident, present = strings.ToUpper(ref.Qualifier), true
 		}
 	}
+	// A PRESENT TRIPLE IS NOW CARRIED, NOT A SPLIT, because the site stopped
+	// splitting when one is there. Reporting the split's counterfactual verdict
+	// would file a one-segment `"a.b"` as DIVERGED — a hard failure on a
+	// census-enabled run — for a decision no longer taken, and would report an
+	// ordinary `t.arr` as AGREED when nothing agreed with anything: the triple
+	// simply answered. CARRIED is the class for exactly that, and it is the
+	// class splitPopulation excludes.
+	if present {
+		witness := ident
+		if ident == "" {
+			witness = "<unqualified>"
+		}
+		values.RecordQualifierRecovery(values.QualRecSiteDerivedUnnestSource,
+			values.QualRecCarried, strings.ToUpper(source), witness)
+		return
+	}
 	class, _ := values.ClassifyQualifierRecovery(strings.ToUpper(source), ident, present)
 	witness := ident
 	if !present {

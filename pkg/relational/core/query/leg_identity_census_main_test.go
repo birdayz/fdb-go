@@ -109,8 +109,17 @@ var translatorQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		values.QualRecSiteDerivedUnnestSource: 2,
 	},
 	Split: [6]int{
-		values.QualRecSiteExistsSortSplit:     2,
-		values.QualRecSiteDerivedUnnestSource: 2,
+		values.QualRecSiteExistsSortSplit: 2,
+		// 2 -> 1 when classifyDerivedUnnestArray converted to the parse-tree
+		// triple. Only a slot with NO triple still splits, and this package's
+		// population is the wiring pin: three of its four arms now record
+		// CARRIED and one records MANUFACTURED.
+		//
+		// This floor no longer measures "does the site split" — it measures
+		// "does the FALLBACK still exist and get exercised", which is what
+		// keeps the fallback from rotting untested while every real caller
+		// carries segments.
+		values.QualRecSiteDerivedUnnestSource: 1,
 	},
 }
 

@@ -24,6 +24,7 @@ schema_template: |
   CREATE TABLE dott ("a.b" BIGINT, plain BIGINT, PRIMARY KEY ("a.b"))
   CREATE TABLE xprobe (id BIGINT, "TOTAL" BIGINT, "X.TOTAL" BIGINT, PRIMARY KEY (id))
   CREATE TABLE sprobe (id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dottarr (id BIGINT, "a.b" BIGINT ARRAY, b BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO QCASE VALUES (1, 42, 7)
   - INSERT INTO QARR VALUES (1, [10, 20])
@@ -31,6 +32,7 @@ setup:
   - INSERT INTO dott VALUES (1, 9)
   - INSERT INTO xprobe VALUES (1, 10, 99)
   - INSERT INTO sprobe VALUES (1)
+  - INSERT INTO dottarr VALUES (1, [10, 20], 7)
 tests:
   # The explicit projection of the quoted column.
   - query: SELECT "KeepCase" FROM QCASE WHERE id = 1
@@ -437,3 +439,32 @@ tests:
     rows:
       - [1, 42, 7, 1]
       - [1, 42, 7, 2]
+  # AN UNNEST OF A DELIMITED DOTTED ARRAY COLUMN THROUGH A DERIVED TABLE, and
+  # the arm exists because the path that resolves it used to bind THE WRONG
+  # COLUMN, silently and schema-dependently.
+  #
+  # `dottarr` declares `"a.b" BIGINT ARRAY` beside a scalar `b`, and the body's
+  # scan is aliased `a`. Three sites each recovered a qualifier from the flat
+  # rendering `a.b`: the derived output name was published as `b`; the array
+  # classifier manufactured qualifier `a`, matched it against the scan alias,
+  # and took the SIBLING `b` as the array source; and the descriptor lookup was
+  # handed the SQL name where the proto stores `a__2b`.
+  #
+  # The middle one is what makes this an arm rather than a diagnostic note. With
+  # `b` scalar it reported `42F10 … only on a column of repeated type` — about a
+  # column the query never mentions — and with `b` declared an ARRAY it PLANNED,
+  # over that wrong column. A query whose outcome flips when an unrelated column
+  # changes type is a misbind.
+  #
+  # The ROWS are the proof: 10 and 20 are `"a.b"`'s elements. `b` holds 7, so a
+  # regression to the sibling cannot produce this answer under any reading.
+  - query: SELECT x FROM (SELECT "a.b" AS z FROM dottarr AS a) d, d.z AS x ORDER BY x
+    columns: ["X"]
+    rows:
+      - [10]
+      - [20]
+  # The scalar control: unnesting `b` itself is a type error, and it must stay
+  # one. It is what says the arm above is about resolving the RIGHT column and
+  # not about the type check having been loosened.
+  - query: SELECT x FROM (SELECT b AS z FROM dottarr) d, d.z AS x
+    error_code: "42F10"

@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -1839,6 +1840,23 @@ func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflec
 	for i := 0; i < fs.Len(); i++ {
 		if f := fs.Get(i); strings.EqualFold(string(f.Name()), name) {
 			return f
+		}
+	}
+	// THE ARGUMENT IS A SQL NAME AND THE DESCRIPTOR HOLDS STORAGE NAMES, so a
+	// name DDL had to escape is invisible to both attempts above. A column
+	// declared `"a.b"` is stored as `a__2b`; it comes back through
+	// ToUserIdentifier everywhere a user sees it, and arrives here spelled
+	// `a.b`, which is neither an exact nor a case-insensitive match for
+	// anything. Apply the same escaping DDL applied, and only after the two
+	// unescaped attempts have missed — an unescaped name is the overwhelming
+	// majority and must not pay for this.
+	//
+	// ToProtoBufCompliantName errors on a name that cannot be represented at
+	// all; that is a miss here, not a failure, because the caller's question is
+	// only whether this descriptor has the field.
+	if escaped, err := protoname.ToProtoBufCompliantName(name); err == nil && escaped != name {
+		if fd := fs.ByName(protoreflect.Name(escaped)); fd != nil {
+			return fd
 		}
 	}
 	return nil

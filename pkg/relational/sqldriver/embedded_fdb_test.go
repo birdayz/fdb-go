@@ -546,9 +546,24 @@ var qualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		// recorder and its call site both still stand, and what stopped is the
 		// corpus REACHING them. That is a claim about this suite, so it is a
 		// declaration that a filter may drop — not a tree fact.
-		values.QualRecSiteProjQualVsScan:      0,
-		values.QualRecSiteExistsSortSplit:     4,
-		values.QualRecSiteDerivedUnnestSource: 2,
+		values.QualRecSiteProjQualVsScan:  0,
+		values.QualRecSiteExistsSortSplit: 4,
+		// derivedUnnestSource: 2 -> 0, and THE DIRECTION OF THIS GUARD
+		// INVERTED. classifyDerivedUnnestArray decides from the parse-tree
+		// triple now and splits only for a slot that has none; measured over
+		// this corpus, all 15 calls carry one. A positive floor is therefore
+		// unsatisfiable, and the alarm is GROWTH: a non-zero means a slot
+		// reached the site WITHOUT segments, which is a finding about the
+		// CAPTURE rather than about this site.
+		//
+		// It stays here as a 0 DECLARATION rather than moving to
+		// qualifierRecoveryRetiredSplit below, on that list's own criterion:
+		// the splitting arm is not gone from the tree, it is the documented
+		// fallback for an absent triple. What is empty is this corpus's
+		// population, which is a claim about this suite and may be dropped by
+		// a filter — and the query package's wiring pin drives the fallback
+		// directly, so it is not untested.
+		values.QualRecSiteDerivedUnnestSource: 0,
 		values.QualRecSiteDisplayLabelStrip:   70,
 	},
 }
