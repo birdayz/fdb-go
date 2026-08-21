@@ -1349,20 +1349,30 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 // RecordTypes returns all record types
 //
 // NOTE: this returns the LIVE map, not a copy, and the map IS mutated after
-// Build -- the earlier claim that nothing does was simply false. Scoped: of the
-// 9 writes matching `.recordTypes[...] =` in pkg/recordlayer/*.go, 2 are on the
-// BUILDER (b.recordTypes, in this file) and 1 is an unrelated struct's field in
-// online_indexer.go; the other 6 are post-Build, all in tests --
-// record_type_key_identity_test.go:254 and metadata_evolution_validator_test.go
-// at 849, 863, 880, 895 and 912.
+// Build -- the earlier claim that nothing does was false. ENUMERATED, not
+// counted by regex, for two reasons both learned here: a count written into a
+// comment becomes a match for the pattern it names, and a count is not
+// checkable while a list is.
 //
-// That matters now because Build DERIVES ambiguousNames from this map, so a
+//	On the BUILDER (b.recordTypes), before any RecordMetaData exists:
+//	  2 subscript assignments, both in this file, in setRecords.
+//
+//	Post-Build, on a built *RecordMetaData -- every one of them in a test:
+//	  1 in record_type_key_identity_test.go
+//	  5 in metadata_evolution_validator_test.go
+//
+// Eight in total. There is no third bucket: online_indexer.go's recordTypes is
+// a []string on a different struct, assigned whole, and is not a write to this
+// map at all -- it was miscounted here once, and the miscount balanced only
+// because a phantom entry cancelled the self-match.
+//
+// This matters now because Build DERIVES ambiguousNames from this map, so a
 // post-Build mutation leaves the derived field describing a declared set that
-// no longer exists. Latent today and measured so: neither of those two test
+// no longer exists. Latent today, and measured so: neither of those two test
 // files calls AmbiguousDeclaredNames, so nothing reads the stale value. A test
 // that starts doing both re-arms it.
 //
-// Copying the map here would NOT close this. All six mutators write the private
+// Copying the map here would NOT close that. All six mutators write the private
 // field directly rather than through this accessor, so a copy prevents none of
 // them while adding an O(types) allocation to every caller -- including
 // computeAmbiguousDeclaredNames itself.

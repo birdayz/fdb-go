@@ -632,12 +632,21 @@ func TestMaskingNeverBlanksRealCode(t *testing.T) {
 // it by construction.
 func codeBytesSurvivingMask(src, masked string) (checked int, blanked []string) {
 	// A mismatched mask is a CALLER bug, and it has to be loud. The bound that
-	// used to sit on the inner loop (off+i < len(masked)) made it silent: with
-	// masked shorter than src every token stops at the bound, the function
-	// returns (0, nil), and both the finding count AND the byte count read as
-	// "clean". Unreachable from the caller below, which checks lengths first --
-	// but this function is also called directly from a test, and fail-open is
-	// the wrong default for the one line in here that can be reached wrongly.
+	// used to sit on the inner loop made it quiet in the WORST way -- not by
+	// reporting nothing, which the floors below would catch, but by reporting a
+	// believable number. Tokens that fit inside the shorter mask were compared
+	// normally and everything past it was skipped, so the function returned a
+	// plausible count with no findings.
+	//
+	// Measured, on the table below: a 20-byte source against a 10-byte mask
+	// returned checked=8, blanked=nil. Not (0, nil) -- and that distinction is
+	// the whole point, because the vacuity floors catch zero and cannot catch an
+	// 8 that looks exactly like real work.
+	//
+	// Unreachable from the caller below, which compares lengths first. But this
+	// function is called directly from a test too, and fail-open is the wrong
+	// default for the one line in here reachable with a mask that does not
+	// correspond to its source.
 	if len(masked) != len(src) {
 		return 0, []string{fmt.Sprintf(
 			"masked is %d bytes for a %d-byte source; the two do not correspond, so "+
