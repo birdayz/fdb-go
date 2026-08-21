@@ -10,7 +10,24 @@
 # name, `MY__1TABLE`. The SQL identifier off the parse tree misses it. The
 # translation lives in exactly one place, RecordMetaData.GetRecordType, which
 # retries through the escaping on a miss; three DDL sites were indexing the map
-# directly instead (index_onsource.go and two in query/ddl/generator.go).
+# directly instead. THE SCHEMA BELOW DRIVES ALL THREE, and each was checked by
+# reverting it and watching this file redden -- the ON-source index alone leaves
+# the other two green, which is how the first version of this file over-claimed:
+#
+#   index_onsource.go     CREATE INDEX idx_name ON "MY$TABLE" (name)
+#                         -> 42F59 references unknown table
+#   generator.go starValues
+#                         CREATE INDEX ... AS SELECT * FROM "MY$TABLE"
+#                         -> 42F01 Unknown table
+#   generator.go storageNames
+#                         the same AS-SELECT, ordered by the ESCAPED COLUMN
+#                         "c$1". Its miss is SILENT -- res.root stays nil and
+#                         the key expression is built from folded display names
+#                         -> XX000 field "c$1" not found in message "MY__1TABLE"
+#
+# The escaped COLUMN is therefore not decoration either: with an unescaped
+# column the folded and storage spellings coincide and the third arm tests
+# nothing.
 #
 # The unescaped table is here so a failure is attributable: if BOTH CREATE INDEX
 # statements start failing, the DDL broke generally rather than on the escaping.
@@ -26,17 +43,20 @@
 # scan expression carries the SQL one, and the two are compared as strings
 # (FullUnorderedScanExpression.EqualsWithoutChildren), so no candidate ever
 # matches an escaped table. Creating the index is a real fix -- the DDL error
-# was a hard functional gap -- and the matching is the open half, tracked in
-# RFC-238. When it lands the first assertion reddens; that is the signal to
-# update this file, not to relax it.
+# was a hard functional gap -- and the matching is the open half, decided in
+# RFC-238 §7c: the scan leaf resolves the table to its STORED name, as Java's
+# LogicalOperator.generateTableAccess does. When that lands the first assertion
+# becomes an IndexScan over IDX_NAME; that is the signal to update this file,
+# not to relax it.
 name: escaped_table_secondary_index
 schema_template: |
-  CREATE TABLE "MY$TABLE" (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE "MY$TABLE" (id BIGINT, name STRING, "c$1" BIGINT, PRIMARY KEY (id))
   CREATE TABLE u (id BIGINT, tag STRING, PRIMARY KEY (id))
   CREATE INDEX idx_name ON "MY$TABLE" (name)
   CREATE INDEX idx_tag ON u (tag)
+  CREATE INDEX idx_as_select AS SELECT * FROM "MY$TABLE" ORDER BY "c$1", id
 setup:
-  - INSERT INTO "MY$TABLE" VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma')
+  - INSERT INTO "MY$TABLE" VALUES (1, 'alpha', 100), (2, 'beta', 200), (3, 'gamma', 300)
   - INSERT INTO u VALUES (10, 'x'), (11, 'y')
 tests:
   # The DDL above is the assertion: reaching this query at all means CREATE

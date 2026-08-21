@@ -6,6 +6,7 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
@@ -148,7 +149,22 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	// unknown table -- an escaped table could not be given a secondary index at
 	// all. GetRecordType applies the escaping on a miss, which is the one place
 	// that translation lives.
-	rt := md.GetRecordType(tableName)
+	//
+	// ONLY FOR A SINGLE SEGMENT, decided on the PARSE TREE and not by looking
+	// for a dot in the text. tableName comes from GetText(), which concatenates
+	// a multi-segment FullId into `S.T` -- indistinguishable from a table
+	// declared as the quoted identifier `"S.T"`, whose storage name is S__2T.
+	// Escaping the flattened form would then resolve a SCHEMA-QUALIFIED
+	// reference onto that unrelated table and attach the index, and any UNIQUE
+	// constraint with it, to the wrong record type. A qualified source keeps the
+	// raw lookup, which misses and reports the table as unknown -- the behaviour
+	// it has always had.
+	var rt *recordlayer.RecordType
+	if fid, ok := def.GetSource().(*antlrgen.FullIdContext); ok && len(fid.AllUid()) > 1 {
+		rt = md.RecordTypes()[tableName]
+	} else {
+		rt = md.GetRecordType(tableName)
+	}
 	if rt == nil || rt.Descriptor == nil {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"index %q references unknown table %q", indexName, tableName)

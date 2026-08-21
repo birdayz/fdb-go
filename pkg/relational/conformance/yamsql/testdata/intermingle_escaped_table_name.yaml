@@ -50,9 +50,16 @@
 # FullUnorderedScanExpression carries the SQL name from the translator, and
 # FullUnorderedScanExpression.EqualsWithoutChildren compares those strings
 # literally. No candidate matches, so no index or PK access path is ever
-# available to an escaped table. Tracked in RFC-238; these two assertions are
-# what will redden when it is fixed, which is when to update them TOGETHER --
-# they are a matched pair, and one moving alone means the fix was partial.
+# available to an escaped table. RFC-238 §7c decides the fix: the scan leaf
+# resolves the table to its STORED name, as Java does
+# (LogicalOperator.generateTableAccess builds its scan from
+# getAllTableStorageNames), so both sides of the comparison land in one
+# namespace. When that lands, the third assertion becomes
+# `TypeFilter([MY__1TABLE], Scan(MY__1TABLE, [<>]))` and the first becomes
+# `Scan(MY__1TABLE)` -- Java's EXPLAIN prints storage spellings too
+# (valid-identifiers.yamsql:237,422), so that is conformance, not a
+# regression. Update all three TOGETHER: they are a matched set, and one
+# moving alone means the fix was partial.
 name: intermingle_escaped_table_name
 schema_template: |
   CREATE TABLE "MY$TABLE" (id BIGINT, name STRING, PRIMARY KEY (id))

@@ -158,6 +158,7 @@ go_test(
         "index_ddl_order_by_shape_test.go",
         "index_ddl_probe_test.go",
         "index_key_columns_kwv_test.go",
+        "index_onsource_escaped_table_test.go",
         "index_onsource_generator_test.go",
         "index_state_planning_test.go",
         "inline_values_execution_test.go",
@@ -417,6 +418,7 @@ go_test(
         "colref_split_test.go",
         "qualifier_stripped_label.go",
         "qualifier_stripped_label_test.go",
+        "index_onsource_escaped_table_test.go",
     ],
     deps = [
         "//gen",

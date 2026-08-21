@@ -3019,6 +3019,15 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			"scan %q has no exact catalog row type", s.Table))
 		return nil
 	}
+	// s.Table is the SQL identifier, and passing it here is the OPEN HALF of
+	// RFC-238 §7c. buildMatchCandidates registers every match candidate under
+	// the STORED protobuf name, and FullUnorderedScanExpression.
+	// EqualsWithoutChildren compares the two record-type lists as strings, so a
+	// table whose name escapes (`MY$TABLE` stored as `MY__1TABLE`) matches no
+	// candidate: no primary-key pushdown, no index access path, ever. Java
+	// translates HERE -- LogicalOperator.generateTableAccess builds its scan
+	// from getAllTableStorageNames -- and that is the decided fix. Pinned, at
+	// the wrong value on purpose, by the two escaped-name yamsql scenarios.
 	scan, err := expressions.NewFullUnorderedScanExpression(
 		[]string{s.Table}, values.NewRecordType("", false, cols))
 	if err != nil {

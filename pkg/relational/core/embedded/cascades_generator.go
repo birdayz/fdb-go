@@ -2794,6 +2794,15 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			// RecordMetaData.getPlannerType, RecordMetaData.java:732-739).
 			flowed = executor.PositionalTypeForRecordLayout(rt.Descriptor, c.md.IsStoreRecordVersions())
 		}
+		// rt.Name is the STORED protobuf name, and that is correct here: it is
+		// what Java's PrimaryScanMatchCandidate carries, it is injective by
+		// construction, and it flows into physical plans and the continuation
+		// salt. The DEFECT is on the other side -- cascades_translator.go builds
+		// the query's FullUnorderedScanExpression from the SQL table name, and
+		// FullUnorderedScanExpression.EqualsWithoutChildren compares the two
+		// lists as strings, so a table whose name escapes matches NO candidate
+		// and gets no access path at all. RFC-238 §7c decides the fix: the scan
+		// leaf translates once, here nothing changes.
 		primaryCandidate := cascades.NewPrimaryScanMatchCandidate(
 			nil,
 			aliases,

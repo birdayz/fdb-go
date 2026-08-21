@@ -388,5 +388,17 @@ CREATE INDEX coll_idx ON COLL (id)`
 				"NotTo(HaveOccurred()) and KEEP it -- it is the arm that distinguishes\n"+
 				"narrowing BOTH candidate loops from narrowing only the primary one. If the\n"+
 				"unindexed arm above flips and this one does not, the index loop was missed.")
+
+		// PIN THE CODE for the same reason the unindexed arms do: HaveOccurred
+		// cannot tell a recovered panic from a real diagnostic, so alone it stays
+		// green through exactly the change criterion (8) demands.
+		var ige *api.Error
+		Expect(errors.As(goInnocent, &ige)).To(BeTrue(),
+			"Go's failure with an index on COLL is not an api.Error. A panic that\n"+
+				"escaped the driver boundary rather than being recovered looks like this.")
+		Expect(string(ige.Code)).To(Equal("XX000"),
+			"Go's SQLSTATE moved on the indexed shape. If it became a REAL diagnostic\n"+
+				"the panic half landed while the scope half did not -- say which error it\n"+
+				"is now rather than relaxing this to a bare HaveOccurred.")
 	})
 })

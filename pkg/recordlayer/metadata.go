@@ -1554,8 +1554,14 @@ func (m *RecordMetaData) UsesSubspaceKeyCounter() bool {
 // including both single-type and multi-type indexes.
 // Does NOT include universal indexes — use GetUniversalIndexes() for those.
 // Matches Java's RecordType.getAllIndexes().
+//
+// Resolves through GetRecordType rather than indexing the map, so a caller
+// holding the SQL identifier for a type stored under its escaped protobuf name
+// gets that type's indexes instead of nil. A raw lookup here returns "this type
+// has no indexes", which is a silent wrong answer wherever the result feeds an
+// index-selection decision.
 func (m *RecordMetaData) GetIndexesForRecordType(name string) []*Index {
-	rt := m.recordTypes[name]
+	rt := m.GetRecordType(name)
 	if rt == nil {
 		return nil
 	}

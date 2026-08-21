@@ -575,13 +575,6 @@ grep -rl --include='*.go' EvaluateRecordTypes pkg/ | grep -v _test.go
 **EMPTY today except the definition file; must name the candidate-building
 site.** `buildMatchCandidates` builds a primary candidate for every record type
 in the metadata with a usable primary key, and a positional type for each of
-those that also has a descriptor. Java's
-`MetaDataPlanContext.forRootReference` narrows to the types the QUERY names
-first (`MetaDataPlanContext.java:176-218`), which is where its table-locality
-comes from — it has no drop-list and no per-type catch.
-**EMPTY today except the definition file; must name the candidate-building
-site.** `buildMatchCandidates` builds a primary candidate for every record type
-in the metadata with a usable primary key, and a positional type for each of
 those that also has a descriptor. Java's `MetaDataPlanContext.forRootReference`
 narrows to the types the QUERY names first (`MetaDataPlanContext.java:176-218`),
 which is where its table-locality comes from — it has no drop-list and no
@@ -820,12 +813,11 @@ Both halves are criterion (8) in §5, with the commands that make them
 checkable. They are stated there rather than here because a requirement living
 only in a narrative section is prose, and prose cannot fail.
 
-### 7c. Go dropped one of Java's two names, and five defects came out of it
+### 7c. The plan tree is in the WRONG NAMESPACE, and Java says which one is right
 
 Chasing §7b's blast radius turned up a family, not an incident. Every member has
 the same shape — one side holds the SQL identifier, the other holds the stored
-protobuf identifier, and something compares them as strings — and the family is
-large enough that the individual fixes are not the finding.
+protobuf identifier, and something compares them as strings.
 
 Measured, on this branch:
 
@@ -847,8 +839,9 @@ same way.
 WithoutChildren` compares its record-type list element by element and has no
 metadata to resolve with — nor should it: it is structural equality on a memo
 expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
-`buildMatchCandidates` passes `[]string{rt.Name}` (stored) and
-`cascades_translator.go:3023` passes `[]string{s.Table}` (SQL).
+`buildMatchCandidates` passes `[]string{rt.Name}` (stored,
+`cascades_generator.go:2801`) and `cascades_translator.go:3023` passes
+`[]string{s.Table}` (SQL).
 
 The visible cost, same query shape over one schema, one per table:
 
@@ -860,58 +853,73 @@ u            ->  IndexScan(IDX_TAG, [=] COVERING)          index used
 ```
 
 Both pairs are pinned in `yamsql/testdata/intermingle_escaped_table_name.yaml`
-and `escaped_table_secondary_index.yaml`. They are asserted at the WRONG value on
-purpose, so the fix reddens them.
+and `escaped_table_secondary_index.yaml`, asserted at the WRONG value on purpose
+so the fix reddens them.
 
-**JAVA CARRIES BOTH NAMES AS DATA. GO CARRIES ONE AND RECOVERS THE OTHER.** That
-is the whole divergence, and it is stated most plainly in
-`RecordLayerIndex.Builder.build` (`RecordLayerIndex.java:259-261`):
+**THE DECISION: the plan tree carries STORAGE names, translated ONCE at the scan
+leaf.** `cascades_translator.go:3023` resolves `s.Table` to the record type's
+stored name before building the `FullUnorderedScanExpression`; candidates keep
+`rt.Name`; `EqualsWithoutChildren` then compares like with like and never learns
+about escaping.
 
-```java
-if (tableStorageName == null) {
-    tableStorageName = ProtoUtils.toProtoBufCompliantName(tableName);
-}
-```
+That is a 1:1 port. Java's `LogicalOperator.generateTableAccess` builds the scan
+from `semanticAnalyzer.getAllTableStorageNames()`
+(`LogicalOperator.java:262-270`), which is
+`table.getType().getStorageName()` (`SemanticAnalyzer.java:288-298`), and its
+type filter from `type.getStorageName()` (`LogicalOperator.java:280-282`). The
+candidate side maps `RecordType::getName`
+(`PrimaryScanMatchCandidate.java:131-136`), which is `descriptor.getName()`
+(`RecordType.java:69`). Both sides independently arrive at the mangled string,
+which is exactly what makes the raw `recordTypes.equals` at
+`FullUnorderedScanExpression.java:130` sound rather than lucky.
 
-The entity holds `tableName` AND `tableStorageName`, side by side, computed once.
-No Java site re-escapes a SQL name or re-decodes a stored one to answer "are
-these the same table" — it compares the field it needs.
+**AN EARLIER DRAFT OF THIS SECTION DECIDED THE OPPOSITE, and both of its
+objections described Java's shipped behaviour rather than a cost.**
 
-Go's `RecordType` has only the stored `Name`. The SQL spelling is recoverable
-only by `ToUserIdentifier`, which is NOT INJECTIVE in either direction (see
-`protoname`), which is why the display side needed
-`DecodeOnceIfReversible`/`SafeDecoderOver` to answer a question that should
-never have needed answering: the name was known at DDL time and thrown away.
+  - It said storage names in the plan would make EXPLAIN print
+    `Scan(MY__1TABLE)`. Java's EXPLAIN prints exactly that. Its own goldens
+    carry `SCAN([IS my__1adjacency__1list, ...]) | FILTER _.my__parent ...` and
+    `SCAN([IS foo__2table__1nested, ...])` (`valid-identifiers.yamsql:237,422`) —
+    storage spellings for both the table and its columns, beside UNMANGLED index
+    names in the same line. So Go printing `Scan(MY$TABLE)` is itself a
+    divergence on the shared surface, not a feature to protect.
+  - It said the render boundary would then have to decode through a
+    non-injective map. It would not. Java never decodes a record-type name on
+    the read path, and under this section's own premise — both names carried as
+    data — rendering a display name is a forward catalog lookup
+    (`RecordLayerSchemaTemplate.java:580`), not a decode.
 
-**THE DECISION: carry both names, and register candidates in the namespace the
-plan uses.** `RecordType` grows the SQL identifier beside `Name`, populated where
-the metadata is built from DDL (and equal to `Name` for metadata that never came
-from SQL — a proto loaded through `SetRecords` has no SQL name, and inventing one
-by decoding is the exact mistake `DecodeOnceIfReversible` exists to avoid). The
-match candidate is then registered under the same spelling the translator emits,
-and `EqualsWithoutChildren` compares like with like without learning about
-escaping at all.
+**AND THE SQL NAMESPACE IS NOT A LEGAL MEMO IDENTITY, which is the argument that
+settles it independently of Java.** Candidate scans flow `UnknownType`, so per
+`full_unordered_scan.go:110-118` the record-type NAMES are the sole
+discriminator between two scan expressions. SQL names are not injective over
+metadata that mixes DDL tables with `SetRecords` protos: a proto message named
+`A__1B` verbatim and a DDL table declared `"A__1B"` (stored `A__01B`) both
+present the SQL spelling `A__1B`. Two distinct record types, one memo key.
+Storage names are injective by construction — they ARE the descriptor's name.
 
-Two alternatives lose:
+**WHERE THE SECOND NAME LIVES: not in `pkg/recordlayer`.** Java's core
+`RecordType` has ONE name, and `pkg/recordlayer` is the wire layer whose
+`RecordType` maps 1:1 to a stored protobuf message. The two Java-shaped homes
+are `values.RecordType`, which should grow `storageName` beside `name` as a port
+of `Type.java:2185,2225-2233,2536-2539`, and `metadata.RecordLayerTable`, whose
+`MetadataName()` returns `underlying.Name` (`metadata/table.go:52`) and thereby
+conflates the two names at the one place Java keeps them apart
+(`RecordLayerTable.java:96-99`).
 
-  - **Translate the plan to storage names.** Superficially Java-shaped, and it
-    does make the comparison work. But EXPLAIN then prints `Scan(MY__1TABLE)`,
-    every plan-shape golden acquires storage spellings, and the CLI's display
-    policy has to decode them back — through a non-injective map. It moves the
-    problem to the render boundary and makes it worse.
-  - **Resolve at each comparison.** That is what the four fixed defects above
-    do, and it is right AT A BOUNDARY THAT HAS METADATA — a store, an executor,
-    a DDL site. It is wrong inside the memo: a structural equality that consults
-    metadata is not structural, and the next comparison site would have to
-    remember. Four sites needed this fix and none of them knew about the others;
-    a fifth is not a pattern to extend.
+**THE OTHER SITES THAT KEY OFF A RECORD-TYPE NAME MUST NOT MOVE.** `rt.Name`
+reaches candidates at four places (`cascades_generator.go:2801`, `:3430`,
+`:3654`, `:3729`) and those are cross-compared in
+`rule_aggregate_data_access.go:84,299`; converting one silently disables
+aggregate matching. `queriedRecordTypes` flows into physical plans
+(`primary_scan_match_candidate.go:393,432`) and into the continuation salt
+(`scan_range_execution_identity.go:348,445,510`), which is wire. Translating at
+the scan leaf leaves all of them untouched, which is the other reason it is the
+right place.
 
-The boundary resolutions stay regardless. They are what makes a caller holding
-either spelling correct, which is the contract `GetRecordType` already offers and
-which those four sites were silently not honouring.
-
-**This section is a DESIGN CHANGE TO THE CASCADES MATCHING INFRASTRUCTURE and is
-not implemented here.** It needs its ACK before the code, which is the gate this
-repo puts on query-engine work. What IS here is the measurement, the pinned
-divergence in two scenarios, and the four boundary fixes that are correct
-independently of how the fifth is resolved.
+**This is a DESIGN CHANGE TO THE CASCADES MATCHING INFRASTRUCTURE and is not
+implemented here.** It needs its ACK before the code, which is the gate this repo
+puts on query-engine work. What IS here is the measurement, the pinned
+divergence in two scenarios, and the four boundary fixes — which stay correct
+independently of the fifth, because they make a caller holding either spelling
+correct, the contract `GetRecordType` already offers.
