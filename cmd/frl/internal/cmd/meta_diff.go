@@ -182,14 +182,14 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	for name := range newTypes {
 		if _, ok := oldTypes[name]; !ok {
 			s.Added = append(s.Added, diffEntry{
-				Name:   name,
+				Name:   userName(name), // SQL identifier; the map keys stay storage
 				Detail: "pk: " + pkFieldsOrUnset(newTypes[name].PrimaryKey),
 			})
 		}
 	}
 	for name := range oldTypes {
 		if _, ok := newTypes[name]; !ok {
-			s.Removed = append(s.Removed, diffEntry{Name: name})
+			s.Removed = append(s.Removed, diffEntry{Name: userName(name)})
 		}
 	}
 	for name, oldT := range oldTypes {
@@ -212,7 +212,7 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			changes = append(changes, fieldChange{Field: "record_type_key", Old: oldKey, New: newKey})
 		}
 		if len(changes) > 0 {
-			s.Changed = append(s.Changed, diffEntry{Name: name, Changes: changes})
+			s.Changed = append(s.Changed, diffEntry{Name: userName(name), Changes: changes})
 		}
 	}
 	sortSection(&s)

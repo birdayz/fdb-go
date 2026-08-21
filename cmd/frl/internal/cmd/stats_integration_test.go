@@ -992,6 +992,10 @@ func TestStats_ShowJSONFoundIsTriState(t *testing.T) {
 // front of me, not the class. This covers the SHOW path; the collect path has
 // its own test, because when this one claimed to "cover the class" the collect
 // decode could be reverted entirely with the suite still green.
+//
+// SYNTHETIC types are the documented EXCEPTION and are covered by their own
+// test below: their names are not known to be escaped, so decoding them would
+// invent a declaration. See SyntheticRecordTypesNotModeledError.Error().
 func TestStats_OperatorFacingNamesAreDecoded(t *testing.T) {
 	t.Parallel()
 
@@ -1027,9 +1031,6 @@ func TestStats_OperatorFacingNamesAreDecoded(t *testing.T) {
 		}},
 		{"extra_types", embedded.StatisticsStatus{
 			Usable: true, Found: true, ExtraTypes: []string{storage},
-		}},
-		{"synthetic_types", embedded.StatisticsStatus{
-			Refusal: embedded.StatisticsSyntheticTypes, SyntheticTypes: []string{storage},
 		}},
 	}
 	for _, tc := range cases {
@@ -1189,5 +1190,48 @@ func TestStats_ListsAreSortedByTheDecodedName(t *testing.T) {
 	if sort.StringsAreSorted(decodedInPlace) {
 		t.Fatalf("decoding %v preserves order (%v), so this test cannot observe the "+
 			"re-sort it exists to pin", storage, decodedInPlace)
+	}
+}
+
+// SYNTHETIC TYPE NAMES ARE THE EXCEPTION: RENDERED VERBATIM.
+//
+// Every other operator-facing name here is decoded, because it provably came
+// from escaping a SQL identifier. A joined/unnested type is named by an
+// arbitrary string handed to Java's addJoinedRecordType and stored verbatim,
+// and this port never creates one — so MY__1JOINED is ambiguous between the
+// escaping of MY$JOINED and a literal MY__1JOINED, and the decoded reading
+// names something the operator cannot find in their metadata.
+//
+// This test is the counterweight to TestStats_OperatorFacingNamesAreDecoded: if
+// someone "completes the class" by decoding synthetic names too, it fails.
+func TestStats_SyntheticTypeNamesAreRenderedVerbatim(t *testing.T) {
+	t.Parallel()
+
+	const stored, ifDecoded = "MY__1JOINED", "MY$JOINED"
+	if recordlayer.ToUserIdentifier(stored) != ifDecoded {
+		t.Fatalf("fixture is vacuous: %q does not decode to %q, so a decoding "+
+			"regression would be invisible here", stored, ifDecoded)
+	}
+
+	st := embedded.StatisticsStatus{
+		Refusal:        embedded.StatisticsSyntheticTypes,
+		SyntheticTypes: []string{stored},
+	}
+	for _, format := range []string{"text", "json"} {
+		var buf bytes.Buffer
+		c := &cobra.Command{}
+		c.SetOut(&buf)
+		if err := renderStatsStatus(c, format, "/x/MAIN", st); err != nil {
+			t.Fatalf("renderStatsStatus(%s): %v", format, err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, stored) {
+			t.Errorf("%s does not name the declaration as stored (%q):\n%s", format, stored, out)
+		}
+		if strings.Contains(out, ifDecoded) {
+			t.Errorf("%s DECODED a synthetic type name to %q:\n%s\nJava stores these "+
+				"verbatim and this port never creates one, so the escaped reading is a "+
+				"guess", format, ifDecoded, out)
+		}
 	}
 }

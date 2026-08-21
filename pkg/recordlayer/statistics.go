@@ -33,7 +33,6 @@ package recordlayer
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -1009,28 +1008,27 @@ type SyntheticRecordTypesNotModeledError struct {
 	TypeNames []string
 }
 
-// Error renders the refusal for a human, decoding the declarations to the SQL
-// identifiers the operator wrote.
+// Error renders the refusal for a human, naming the declarations EXACTLY as the
+// metadata stores them.
 //
-// Error() IS the rendering boundary for an error value, so the same rule applies
-// here as in the CLI: the field stays in the namespace its programmatic
-// consumers need, and only the text a person reads is translated.
+// Unlike a record-type name, a synthetic type's name is NOT known to be
+// escaped. A record type is a protobuf message, so its stored name provably
+// came from protoname.ToProtoBufCompliantName and decoding it recovers the SQL
+// identifier. A joined or unnested type is named by an arbitrary string handed
+// to Java's RecordMetaDataBuilder.addJoinedRecordType / addUnnestedRecordType,
+// which stores it verbatim -- and this port never CREATES one, it only
+// round-trips what Java wrote. So a stored MY__1JOINED is genuinely ambiguous
+// between the escaping of MY$JOINED and a literal MY__1JOINED, and decoding it
+// would invent a declaration the operator cannot find.
 //
-// Joining raw made ONE synthetic schema print MY$JOINED under `frl stats show`,
-// which decodes at its renderer, and MY__1JOINED under `frl stats collect`,
-// which surfaces this error -- two spellings of one declaration from one source,
-// disagreeing by construction rather than by accident.
+// That matters most precisely here: this refusal exists because the port does
+// not model these types, so the only thing an operator can do with the name is
+// match it against their Java-side metadata, which holds the verbatim string.
+//
+// The list arrives sorted by SyntheticRecordTypeNames and stays in that order;
+// with no decoding step there are not two namespaces to disagree about.
 func (e *SyntheticRecordTypesNotModeledError) Error() string {
-	names := make([]string, len(e.TypeNames))
-	for i, n := range e.TypeNames {
-		names[i] = ToUserIdentifier(n)
-	}
-	// Re-sort in the namespace being PRINTED. TypeNames arrives sorted in
-	// STORAGE space (SyntheticRecordTypeNames sorts before returning), and the
-	// two orders disagree: storage-sorted [A__0B, A__1B] decodes to
-	// [A__B, A$B], so a reader scanning for A$B finds it second.
-	sort.Strings(names)
 	return fmt.Sprintf("metadata declares synthetic record types this port does not model (%s); "+
 		"statistics collection refused rather than scanning the store for a set that "+
-		"could never be complete", strings.Join(names, ", "))
+		"could never be complete", strings.Join(e.TypeNames, ", "))
 }

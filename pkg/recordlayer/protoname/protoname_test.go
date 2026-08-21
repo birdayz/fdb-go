@@ -130,16 +130,34 @@ func TestToUserIdentifierIsNotIdempotent(t *testing.T) {
 		t.Errorf("decode chain = %q -> %q, want MY__1TABLE -> MY$TABLE", once, twice)
 	}
 
-	// And the property that DOES hold: decoding is stable from the SECOND
-	// application onward, so the hazard is exactly one extra decode and not an
-	// unbounded chain. Note MY__1TABLE is NOT itself stable -- it decodes to
-	// MY$TABLE -- which is the point: what is stable is the DECODED form, and
-	// calling this list "the stable cases" named the wrong thing.
-	for _, name := range []string{"MY$TABLE", "PLAIN", "MY__1TABLE"} {
-		onceDecoded := ToUserIdentifier(name)
-		if got := ToUserIdentifier(onceDecoded); got != onceDecoded {
-			t.Errorf("%q decodes to %q, which is NOT stable under a further decode: %q",
-				name, onceDecoded, got)
+	// THE CHAIN IS NOT BOUNDED AT TWO. Each decode peels exactly ONE escape
+	// level, so a name with N nested escapes needs N decodes to settle:
+	//
+	//	MY__001TABLE -> MY__01TABLE -> MY__1TABLE -> MY$TABLE
+	//
+	// An earlier version of this test asserted decoding was "stable from the
+	// second application onward", which is true only for names escaped once and
+	// made the hazard sound like a fixed off-by-one. It is not bounded: the
+	// depth is whatever the name carries. That is why the rule is to track a
+	// value's namespace rather than to decode defensively "one more time".
+	chain := []string{"MY__001TABLE", "MY__01TABLE", "MY__1TABLE", "MY$TABLE"}
+	for i := 0; i < len(chain)-1; i++ {
+		if got := ToUserIdentifier(chain[i]); got != chain[i+1] {
+			t.Errorf("ToUserIdentifier(%q) = %q, want %q — the escape depth changed",
+				chain[i], got, chain[i+1])
+		}
+	}
+	// Only the fully decoded form is a fixed point.
+	if got := ToUserIdentifier("MY$TABLE"); got != "MY$TABLE" {
+		t.Errorf("the decoded form is not stable: MY$TABLE -> %q", got)
+	}
+	// And the intermediate forms are NOT fixed points, which is the whole
+	// hazard. Guard it so the loop above cannot go vacuous by every element
+	// happening to be stable.
+	for _, notStable := range []string{"MY__001TABLE", "MY__01TABLE", "MY__1TABLE"} {
+		if ToUserIdentifier(notStable) == notStable {
+			t.Errorf("%q is a fixed point; the nesting hazard this test pins is gone",
+				notStable)
 		}
 	}
 }

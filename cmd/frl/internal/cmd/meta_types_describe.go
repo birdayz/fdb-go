@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -119,14 +118,19 @@ func summariseIndexes(indexes []*recordlayer.Index) []indexSummary {
 	return out
 }
 
+// sortedRecordTypeNames returns the record types as SQL identifiers, sorted by
+// the name it returns. RecordTypes() is keyed by the ESCAPED storage name, and
+// this list is both what `frl meta types` prints and what the
+// "not found -- available: ..." message offers, so it has to name tables the way
+// the operator created them. GetRecordType accepts either namespace, so a name
+// taken from this list still resolves when passed back in via --type.
 func sortedRecordTypeNames(md *recordlayer.RecordMetaData) []string {
 	rts := md.RecordTypes()
 	names := make([]string, 0, len(rts))
 	for n := range rts {
 		names = append(names, n)
 	}
-	sort.Strings(names)
-	return names
+	return userNames(names)
 }
 
 func writeRecordTypeDescription(out io.Writer, md *recordlayer.RecordMetaData, rt *recordlayer.RecordType) error {

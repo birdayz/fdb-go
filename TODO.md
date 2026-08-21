@@ -19550,50 +19550,41 @@ RFC-236.
 
 ---
 
-## [ ] Only `frl stats` prints SQL record-type names; the rest of the CLI prints storage names
+## [x] Record-type names print as SQL identifiers across the whole `frl` CLI
 
-`frl stats` decodes every record-type name it prints to the SQL identifier the
-operator wrote — a table quoted `"MY$TABLE"` is stored as `MY__1TABLE` and
-reported as `MY$TABLE`. No other `frl` command does, so the same table is
-`MY$TABLE` under one command and `MY__1TABLE` under another.
+`frl stats` decoded every record-type name it printed; nothing else did, so one
+table was `MY$TABLE` under one command and `MY__1TABLE` under another and a
+script crossing two commands silently missed. Closed by decoding at every
+render boundary: `meta_types_describe.go`'s `sortedRecordTypeNames` (which also
+backs the `not found -- available: ...` message in `lookupRecordType`, so a
+typo now offers names the operator can type), `index.go`'s `recordTypeNames`,
+`meta.go`'s `writeTypesList`/`writeTypesListJSON`, `meta_diff.go`'s
+`diffRecordTypes`, and the two record-type arms of `completion.go`.
 
-**Measured surface.** Of the 9 `RecordTypes()`/`RecordTypesForIndex()` sites
-under `cmd/frl/internal/cmd` (non-test), `status.go:99` is a `len()` and renders
-no name. The other 8 render or complete names raw:
-`meta_types_describe.go:123` (`sortedRecordTypeNames`, which also backs the
-`not found — available: …` message in `lookupRecordType`), `index.go:233`
-(`recordTypeNames`), `completion.go:72,155`, `meta.go:212,282`, and
-`meta_diff.go:178,179`.
+Round-tripping holds: `GetRecordType` (`metadata.go:1297`) resolves EITHER
+namespace, so a name copied out of any of these still works as `--type`. Pinned
+by `TestGetRecordTypeResolvesAUserIdentifier` and, for the whole CLI surface,
+`TestRecordTypeNamesRenderAsSQLIdentifiers`
+(`cmd/frl/internal/cmd/record_type_names_user_facing_test.go`), whose five arms
+were each shown to redden under reversal of their own conversion.
 
-**The input side already accepts BOTH namespaces, so this is render-only.**
-`RecordMetaData.GetRecordType` (`metadata.go:1297`) tries the direct key and then
-retries through `ToProtoBufCompliantName`, deliberately and with a comment
-explaining why the translation lives at that one boundary. So `--type MY$TABLE`
-resolves TODAY, and decoding the renderers does not strand the operator with a
-name the commands reject. That fallback had no test that ever passed a
-`$`-bearing identifier: measured over `pkg/recordlayer/*.go` EXCLUDING
-subpackages, 1453 literal `GetRecordType("…")` call sites, 0 of them escaped
-(1632 recursive). It is now pinned by two tests in
-`pkg/recordlayer/metadata_user_identifier_lookup_test.go` —
-`TestGetRecordTypeResolvesAUserIdentifier` for the fallback itself, and
-`TestGetRecordTypeMisResolvesAnAmbiguousPair` for its LIMIT: on a
-`MY__1TABLE`/`MY__01TABLE` collision the direct hit answers first and returns
-the wrong entry, which is why `AmbiguousDeclaredNames` exists. Check both still
-hold before relying on the fallback.
+**Three surfaces are deliberately NOT converted**, and each has a reason that
+outlives this entry:
+- **INDEX names** — `GetIndex` (`metadata.go:1484`) is a raw map lookup with no
+  escape fallback, so a decoded index name would not resolve when passed back.
+  Decide index-name policy on its own terms; do not assume it matches.
+- **Context names** — local to the CLI, never a record type.
+- **SYNTHETIC type names** — Java stores these verbatim from
+  `addJoinedRecordType`, and this port never creates one (metadata_proto.go only
+  `proto.Clone`s them), so `MY__1JOINED` is genuinely ambiguous between a
+  literal name and the escaping of `MY$JOINED`. Decoding would invent a
+  declaration the operator cannot find. Pinned by
+  `TestSyntheticRefusalErrorNamesTypesVerbatim` and
+  `TestStats_SyntheticTypeNamesAreRenderedVerbatim`.
 
-`GetIndex` (`metadata.go:1484`) has NO such fallback — a raw map lookup. It is
-not a blocker here (what `index describe` leaks is record-type names, the
-forgiving kind), but decide index-NAME policy explicitly rather than assuming it
-matches.
-
-**Two traps, both worked in `cmd/frl/internal/cmd/stats.go`.**
-`ToUserIdentifier` is NOT idempotent (`MY__01TABLE` → `MY__1TABLE` → `MY$TABLE`,
-pinned by `TestToUserIdentifierIsNotIdempotent`), so a second decode silently
-RENAMES a table rather than erroring — decode exactly once, at the boundary. And
-sort AFTER decoding: storage order and user order differ (`[A__0B, A__1B]`
-renders as `[A__B, A$B]`, pinned by `TestStats_ListsAreSortedByTheDecodedName`).
-See `userName`/`userNames`.
-
-**Not folded into the statistics PR** because it changes operator-visible output
-for ~5 unrelated commands and wants its own review; the statistics doc is bounded
-to `frl stats` so this does not read as already done.
+**Trap for anyone extending this**: `ToUserIdentifier` is NOT idempotent, and
+the chain is NOT bounded at two — each decode peels ONE escape level, so
+`MY__001TABLE` -> `MY__01TABLE` -> `MY__1TABLE` -> `MY$TABLE`. Decode exactly
+once, at the boundary, and sort AFTER decoding (storage `[A__0B, A__1B]` prints
+as `[A__B, A$B]`). Both pinned in `protoname_test.go` and
+`TestStats_ListsAreSortedByTheDecodedName`.

@@ -88,6 +88,7 @@ go_test(
         "output_test.go",
         "record_render_test.go",
         "record_test.go",
+        "record_type_names_user_facing_test.go",
         "sql_integration_test.go",
         "sql_test.go",
         "stats_integration_test.go",

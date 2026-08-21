@@ -74,7 +74,9 @@ func registerRecordTypeCompletion(c *cobra.Command) {
 			for n := range rts {
 				names = append(names, n)
 			}
-			return names, cobra.ShellCompDirectiveNoFileComp
+			// SQL identifiers: completion must offer what the operator can type.
+			// GetRecordType resolves either namespace, so it still round-trips.
+			return userNames(names), cobra.ShellCompDirectiveNoFileComp
 		})
 }
 
@@ -157,7 +159,9 @@ func recordTypeNameCompletion(cmd *cobra.Command, args []string, _ string) ([]st
 	for n := range rts {
 		names = append(names, n)
 	}
-	return names, cobra.ShellCompDirectiveNoFileComp
+	// SQL identifiers: completion must offer what the operator can type.
+	// GetRecordType resolves either namespace, so the value still round-trips.
+	return userNames(names), cobra.ShellCompDirectiveNoFileComp
 }
 
 // AnnotationOutputYAML is the cobra annotation key that flags a command

@@ -2081,65 +2081,65 @@ func (fixedInt64) Cancel()               {}
 
 // THE SYNTHETIC REFUSAL NAMES THE SAME THING EVERY OTHER SURFACE DOES.
 //
+// A SYNTHETIC TYPE'S NAME IS PRINTED VERBATIM, AND THAT IS THE OPPOSITE OF THE
+// RULE FOR RECORD TYPES.
+//
 // LIVES HERE, not in the CLI package that first rendered it. The invariant is
 // this package's: a maintainer editing statistics.go runs pkg/recordlayer, and
 // with the test one package over that run was GREEN with the bug fully present.
 // A test that cannot fail where the code lives is a green about the wrong tree.
 //
-// Both surfaces render md.SyntheticRecordTypeNames(), one through
-// renderStatsStatus and one through SyntheticRecordTypesNotModeledError.Error().
-// The first decoded and the second joined raw, so one schema printed MY$JOINED
-// under `frl stats show` and MY__1JOINED under `frl stats collect` — two
-// spellings of one declaration, from one source, disagreeing by construction.
+// A record type is a protobuf message, so its stored name provably came from
+// ToProtoBufCompliantName and decoding recovers the SQL identifier. A joined or
+// unnested type is named by an arbitrary string passed to Java's
+// addJoinedRecordType/addUnnestedRecordType and stored verbatim, and this port
+// never CREATES one -- metadata_proto.go only proto.Clones what Java wrote. So
+// MY__1JOINED is genuinely ambiguous between the escaping of MY$JOINED and a
+// literal MY__1JOINED, and decoding it would name a declaration that does not
+// exist in the operator's metadata -- the one artifact they can search, and the
+// only thing they can do with this refusal, since the port does not model the
+// type at all.
 //
-// The field stays storage-keyed for programmatic consumers; Error() is the
-// rendering boundary and is where it is decoded, which is the same rule the CLI
-// follows.
-func TestSyntheticRefusalErrorNamesUserIdentifiers(t *testing.T) {
+// An earlier round here made both surfaces decode, to settle a real
+// inconsistency (`frl stats show` decoded, `frl stats collect` did not). The
+// inconsistency was real and the direction was wrong; both are verbatim now.
+func TestSyntheticRefusalErrorNamesTypesVerbatim(t *testing.T) {
 	t.Parallel()
 
-	const storage, sql = "MY__1JOINED", "MY$JOINED"
-	if ToUserIdentifier(storage) != sql {
-		t.Fatalf("fixture is wrong: %q does not decode to %q", storage, sql)
+	// A name that WOULD decode, so a decoding regression is visible rather than
+	// a no-op: MY__1JOINED decodes to MY$JOINED.
+	const stored, ifDecoded = "MY__1JOINED", "MY$JOINED"
+	if ToUserIdentifier(stored) != ifDecoded {
+		t.Fatalf("fixture is vacuous: %q does not decode to %q, so this test cannot "+
+			"observe a decoding regression", stored, ifDecoded)
 	}
 
-	err := &SyntheticRecordTypesNotModeledError{TypeNames: []string{storage}}
-	msg := err.Error()
-	if !strings.Contains(msg, sql) {
-		t.Errorf("the refusal does not name the declaration by its SQL identifier: %s", msg)
+	msg := (&SyntheticRecordTypesNotModeledError{TypeNames: []string{stored}}).Error()
+	if !strings.Contains(msg, stored) {
+		t.Errorf("the refusal does not name the declaration as the metadata stores it: %s", msg)
 	}
-	if strings.Contains(msg, storage) {
-		t.Errorf("the refusal leaks the storage name: %s", msg)
-	}
-	// The FIELD must stay storage-keyed: a programmatic consumer matches it
-	// against metadata, which is storage-keyed too. Decoding at construction
-	// would break that and is why the decode lives in Error().
-	if err.TypeNames[0] != storage {
-		t.Errorf("TypeNames = %q, want the STORAGE name %q — decoding the field breaks "+
-			"consumers matching against metadata", err.TypeNames[0], storage)
+	if strings.Contains(msg, ifDecoded) {
+		t.Errorf("the refusal DECODED a synthetic name: %s\n"+
+			"Java stores these verbatim (addJoinedRecordType) and this port never "+
+			"creates one, so the escaped reading is a guess that invents a "+
+			"declaration the operator cannot find in their metadata", msg)
 	}
 
-	// ORDER IS BY THE NAME PRINTED. TypeNames arrives sorted in STORAGE space
-	// (SyntheticRecordTypeNames sorts before returning), and one element cannot
-	// observe a sort at all — so this arm drives the multi-element case the
-	// single-element assertions above are blind to.
-	//
-	// A__0B decodes to A__B and A__1B decodes to A$B, so storage order and user
-	// order DISAGREE ($ is 0x24, _ is 0x5F).
-	if ToUserIdentifier("A__0B") <= ToUserIdentifier("A__1B") {
-		t.Fatalf("fixture is vacuous: decoding no longer reverses %s/%s",
-			ToUserIdentifier("A__0B"), ToUserIdentifier("A__1B"))
-	}
+	// Order is whatever the caller supplied -- SyntheticRecordTypeNames sorts in
+	// storage space and, with nothing decoded, there is no second namespace for
+	// that order to disagree with. Pinned so a re-sort is not added back on the
+	// theory that it matches the record-type surfaces; it must not.
 	two := (&SyntheticRecordTypesNotModeledError{
-		TypeNames: []string{"A__0B", "A__1B"}, // storage-sorted, as the caller supplies
+		TypeNames: []string{"A__0B", "A__1B"},
 	}).Error()
-	first := strings.Index(two, ToUserIdentifier("A__1B"))  // A$B
-	second := strings.Index(two, ToUserIdentifier("A__0B")) // A__B
-	if first < 0 || second < 0 {
-		t.Fatalf("both declarations should be named: %s", two)
+	if strings.Index(two, "A__0B") > strings.Index(two, "A__1B") {
+		t.Errorf("the refusal reordered its input: %s", two)
 	}
-	if first > second {
-		t.Errorf("the refusal lists declarations in storage order, not the order it "+
-			"prints them in: %s", two)
+
+	// The FIELD must stay storage-keyed: a programmatic consumer matches it
+	// against metadata, which is storage-keyed too.
+	err := &SyntheticRecordTypesNotModeledError{TypeNames: []string{stored}}
+	if err.TypeNames[0] != stored {
+		t.Errorf("TypeNames = %q, want the STORED name %q", err.TypeNames[0], stored)
 	}
 }

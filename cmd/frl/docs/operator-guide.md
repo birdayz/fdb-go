@@ -343,17 +343,27 @@ frl stats show --database /myapp --schema MAIN -o json | jq '.per_type'
 
 Keys are the SQL identifiers you wrote, not the escaped storage names the record
 layer uses internally: a table quoted `"MY$TABLE"` is stored as `MY__1TABLE` and
-reported here as `MY$TABLE`. Every name `frl stats` prints follows that rule --
-`per_type`, `missing_types`, `extra_types`, `synthetic_types`, the skipped list,
-the abort banner and the fan-out's refusal text -- so a script may key by the
-name it created the table with.
+reported here as `MY$TABLE`. The names `frl stats` prints follow that rule --
+`per_type`, `missing_types`, `extra_types`, the skipped list, the abort banner
+and the fan-out's refusal text -- so a script may key by the name it created the
+table with.
 
-That is a statement about `frl stats` and not yet about the whole CLI. The
-commands that still print the storage form are `frl meta types`, `frl meta
-diff`, `frl index describe`, and the `not found -- available: ...` list shared
-by `frl record scan` and `frl record count`. Tracked in `TODO.md`; until it is
-closed, do not assume a record-type name is in the same namespace across two
-commands.
+`synthetic_types` is the ONE exception, and deliberately so: it names joined and
+unnested record types, whose names Java stores exactly as the caller passed them
+to `addJoinedRecordType`. They are not known to be escaped, and this port never
+creates one, so `MY__1JOINED` could equally be a literal name or the escaping of
+`MY$JOINED`. It is printed verbatim, because the only thing you can do with it
+is match it against your Java-side metadata.
+
+Every `frl` command that prints a record-type name follows the same rule --
+`frl meta types`, `frl meta diff`, `frl index describe`, shell completion, and
+the `not found -- available: ...` list shared by `frl record scan` and
+`frl record count`. A name copied out of any of them can be passed straight back
+in via `--type`, because the metadata resolves either spelling.
+
+Two things on that output are deliberately NOT record-type names and are not
+translated: INDEX names, which are a separate namespace with no escape
+round-trip, and context names, which are local to this CLI.
 
 ```sh
 

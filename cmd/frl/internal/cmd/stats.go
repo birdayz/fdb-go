@@ -462,7 +462,7 @@ func renderStatsStatus(
 			CurrentVersion:       st.CurrentVersion,
 			AgeVersions:          st.AgeVersions,
 			MaxAgeVersions:       st.MaxAgeVersions,
-			SyntheticTypes:       userNames(st.SyntheticTypes),
+			SyntheticTypes:       st.SyntheticTypes, // VERBATIM -- see userName's note
 			AmbiguousTypes:       st.AmbiguousTypes,
 			ReadRefusal:          string(st.ReadRefusal),
 			ReadError:            errString(st.ReadErr),
@@ -493,7 +493,7 @@ func renderStatsStatus(
 	if len(st.SyntheticTypes) > 0 {
 		// Naming them is the difference between a verdict and an instruction.
 		fmt.Fprintf(tw, "Synthetic types:\t%s (unmodeled by this port; statistics are refused for the schema)\n",
-			strings.Join(userNames(st.SyntheticTypes), ", "))
+			strings.Join(st.SyntheticTypes, ", ")) // VERBATIM
 	}
 	if len(st.AmbiguousTypes) > 0 {
 		// Same reason as synthetic types: a verdict an operator cannot act on is
