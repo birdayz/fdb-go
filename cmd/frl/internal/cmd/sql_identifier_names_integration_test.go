@@ -32,7 +32,8 @@ import (
 // --schema while \d reports "schema does not exist". That is a case-
 // normalisation bug in the REPL, separate from the namespace work here, and it
 // is why this test hard-codes the stored spelling rather than the one an
-// operator would type.
+// operator would type. Tracked in TODO.md ("frl sql meta-commands ignore
+// identifier case"), which points back here.
 func TestIntegration_SQL_DescribeUsesSQLIdentifiers(t *testing.T) {
 	bindConfig(t)
 

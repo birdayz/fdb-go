@@ -218,6 +218,10 @@ func recordTypeNamesByUserOrder(md *recordlayer.RecordMetaData) []string {
 	for n := range rts {
 		names = append(names, n)
 	}
+	if _, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
+		sort.Strings(names)
+		return names
+	}
 	sort.Slice(names, func(i, j int) bool { return userName(names[i]) < userName(names[j]) })
 	return names
 }
@@ -234,12 +238,12 @@ func writeTypesListJSON(out io.Writer, md *recordlayer.RecordMetaData) error {
 		rt := rts[name]
 		pk := "(unset)"
 		if rt.PrimaryKey != nil {
-			if fn := rt.PrimaryKey.FieldNames(); len(fn) > 0 {
+			if fn := userFieldNames(rt.PrimaryKey.FieldNames()); len(fn) > 0 {
 				pk = strings.Join(fn, ",")
 			}
 		}
 		rows = append(rows, typesListRow{
-			Name:         userName(name), // SQL identifier; `name` stays the map key
+			Name:         userNameFor(md, name), // SQL identifier; `name` stays the map key
 			PrimaryKey:   pk,
 			SinceVersion: rt.SinceVersion,
 		})
@@ -309,7 +313,7 @@ func writeTypesList(out io.Writer, md *recordlayer.RecordMetaData) error {
 			since = fmt.Sprintf("%d", rt.SinceVersion)
 		}
 		// SQL identifier; `name` stays the map key above.
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", userName(name), pk, since)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", userNameFor(md, name), pk, since)
 	}
 	return tw.Flush()
 }

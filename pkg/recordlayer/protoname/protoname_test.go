@@ -193,9 +193,18 @@ func TestEscapeIsNotABijection(t *testing.T) {
 		}
 	}
 
-	// And the shapes that DO round-trip, which is what makes decoding safe for
-	// every name the SQL layer actually produces. A regression here would make
-	// the guard reject good names and silently stop decoding.
+	// And the shapes that DO round-trip. A regression here would make the guard
+	// reject good names and silently stop decoding.
+	//
+	// ROUND-TRIPPING IS NOT THE SAME AS SAFE TO OFFER, and MY__01TABLE in this
+	// very list is the counterexample: it round-trips, yet its decoded spelling
+	// MY__1TABLE is itself a legal STORED name, so if both are declared then
+	// GetRecordType's direct-key step answers with the other type. That is why
+	// the round-trip guard is paired with an ambiguity gate rather than trusted
+	// alone -- see cmd/frl's userNamesFor and
+	// TestGetRecordTypeMisResolvesAnAmbiguousPair. What this loop pins is only
+	// that decoding these names LOSES NOTHING; whether offering one is safe
+	// depends on the declared set, which this package cannot see.
 	for _, s := range []string{"MY__1TABLE", "MY__01TABLE", "A__2B", "Order"} {
 		user := ToUserIdentifier(s)
 		back, err := ToProtoBufCompliantName(user)

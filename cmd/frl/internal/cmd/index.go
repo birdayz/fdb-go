@@ -240,5 +240,5 @@ func recordTypeNames(md *recordlayer.RecordMetaData, idx *recordlayer.Index) []s
 	}
 	// SQL identifiers, sorted by the name printed -- rt.Name is the escaped
 	// storage name, and this list is what `frl index describe` shows.
-	return userNames(names)
+	return userNamesFor(md, names)
 }

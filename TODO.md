@@ -19561,7 +19561,13 @@ offers names the operator can type) and its `writeRecordTypeDescription` /
 `writeRecordTypeDescriptionJSON` `Name` fields, `index.go`'s
 `recordTypeNames`, `meta.go`'s `writeTypesList`/`writeTypesListJSON`,
 `meta_diff.go`'s `diffRecordTypes`, `record.go`'s `writeRecordAsJSON`
-(`record_type`), and the two record-type arms of `completion.go`.
+(`record_type`), and the two record-type arms of `completion.go`. `frl sql`'s
+`\d` table list, column list, PK line and "available:" message go through the
+same helpers, pinned e2e in `sql_identifier_names_integration_test.go`.
+COLUMN names are the same namespace and were raw in four more files until a
+source gate went in -- `TestFRLRenderersDecodeNamesThroughHelpers`
+(`pkg/docscheck`) now fails the build on any renderer that reaches past the
+helpers.
 
 **The first census MISSED two of those**, and the way it missed is the lesson:
 it enumerated `RecordTypes()` call sites, but `writeRecordTypeDescription` takes
@@ -19569,9 +19575,18 @@ a `*RecordType` ARGUMENT and `writeRecordAsJSON` reads `rec.RecordType.Name`, so
 neither appears in that grep. A census keyed on how a value is OBTAINED cannot
 find the sites that receive it already obtained. Sweep by what is PRINTED.
 
-Round-tripping holds: `GetRecordType` (`metadata.go:1297`) resolves EITHER
-namespace, so a name copied out of any of these still works as `--type`. Pinned
-by `TestGetRecordTypeResolvesAUserIdentifier` and, for the whole CLI surface,
+Round-tripping holds ONLY under two guards, and neither is optional.
+`GetRecordType` resolves either namespace, but its DIRECT-key step answers
+first. So (a) a decoded name is shown only when `encode(decode(s)) == s`,
+otherwise it would resolve to nothing (`__0Order` -> `__Order` -> `__Order`,
+never back), and (b) under a declared collision the STORED names are shown
+instead, because the decoded spelling of one type is the stored key of another.
+Round-tripping is NOT the same as safe to offer: `MY__01TABLE` round-trips and
+its decode is exactly the colliding key. Pinned by
+`TestGetRecordTypeResolvesAUserIdentifier`,
+`TestGetRecordTypeMisResolvesAnAmbiguousPair`, `TestEscapeIsNotABijection`,
+`TestCompletionFallsBackToStoredNamesWhenAmbiguous`, and, for the whole CLI
+surface,
 `TestRecordTypeNamesRenderAsSQLIdentifiers`
 (`cmd/frl/internal/cmd/record_type_names_user_facing_test.go`), whose eight arms
 were each shown to redden under reversal of their own conversion.
@@ -19603,3 +19618,26 @@ the chain is NOT bounded at two — each decode peels ONE escape level, so
 once, at the boundary, and sort AFTER decoding (storage `[A__0B, A__1B]` prints
 as `[A__B, A$B]`). Both pinned in `protoname_test.go` and
 `TestStats_ListsAreSortedByTheDecodedName`.
+
+---
+
+## [ ] `frl sql` meta-commands ignore identifier case, so `\d` fails where SELECT works
+
+The engine uppercases unquoted identifiers at DDL time, so `CREATE SCHEMA
+/db/main` stores the schema as `MAIN`. `frl sql --database /db --schema main`
+connects fine, because the DSN path normalises — but `\d` and `\d <table>` pass
+`sqlRunner.schema` through verbatim to the catalog lookup, which then reports
+`42F51: schema </db/main> does not exist`. One connection, two answers.
+
+Found while building `TestIntegration_SQL_DescribeUsesSQLIdentifiers`, which is
+why that test hard-codes `MAIN` rather than the spelling an operator would
+type — see the NOTE in
+`cmd/frl/internal/cmd/sql_identifier_names_integration_test.go`. Not fixed
+there because it is a separate defect from the namespace work that test pins,
+and because the fix needs the quoted-vs-unquoted rule stated explicitly:
+normalising blindly would break a schema deliberately created as `"main"`.
+
+**When fixing:** find where the DSN path normalises (`buildFDBSQLDSN` /
+`functions.StripIdentifierQuotes` in `sql.go`) and apply the SAME rule to
+`r.schema`/`r.database` before the catalog lookups in `loadSchemaTables` and
+`describeTable` — not a `strings.ToUpper`, which would break quoted names.

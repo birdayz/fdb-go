@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"sort"
-
 	"github.com/spf13/cobra"
 
 	"fdb.dev/cmd/frl/internal/config"
@@ -203,9 +201,5 @@ func recordTypeCompletionNames(md *recordlayer.RecordMetaData) []string {
 	for n := range rts {
 		names = append(names, n)
 	}
-	if _, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
-		sort.Strings(names)
-		return names
-	}
-	return userNames(names)
+	return userNamesFor(md, names)
 }

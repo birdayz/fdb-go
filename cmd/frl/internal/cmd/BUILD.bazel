@@ -115,3 +115,12 @@ go_test(
         "@org_golang_google_protobuf//types/known/structpb",
     ],
 )
+
+# keep: the non-test sources, staged into pkg/docscheck's runfiles so its
+# name-decoding gate can read them under Bazel. Without this the gate reads an
+# empty directory and reports clean while checking nothing.
+filegroup(
+    name = "cmd_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)

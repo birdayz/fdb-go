@@ -86,7 +86,7 @@ func writeRecordTypeDescriptionJSON(out io.Writer, md *recordlayer.RecordMetaDat
 		rtk = fmt.Sprintf("%v", rt.GetRecordTypeKey())
 	}
 	desc := recordTypeDescription{
-		Name:             userName(rt.Name), // SQL identifier; rt.Name is the escaped storage name
+		Name:             userNameFor(md, rt.Name), // SQL identifier; rt.Name is escaped
 		PrimaryKey:       pk,
 		SinceVersion:     rt.SinceVersion,
 		RecordTypeKey:    rtk,
@@ -112,7 +112,7 @@ func summariseIndexes(indexes []*recordlayer.Index) []indexSummary {
 		out[i] = indexSummary{
 			Name:   idx.Name,
 			Type:   idx.Type,
-			Fields: idx.RootExpression.FieldNames(),
+			Fields: userFieldNames(idx.RootExpression.FieldNames()),
 		}
 	}
 	return out
@@ -130,12 +130,16 @@ func sortedRecordTypeNames(md *recordlayer.RecordMetaData) []string {
 	for n := range rts {
 		names = append(names, n)
 	}
-	return userNames(names)
+	// Gated on ambiguity: this list is what lookupRecordType offers after a typo,
+	// and record put/delete resolve --type through that same lookup, so a decoded
+	// name under a collision would suggest a spelling that resolves to a
+	// DIFFERENT table.
+	return userNamesFor(md, names)
 }
 
 func writeRecordTypeDescription(out io.Writer, md *recordlayer.RecordMetaData, rt *recordlayer.RecordType) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Name:                   %s\n", userName(rt.Name)) // SQL identifier
+	fmt.Fprintf(&b, "Name:                   %s\n", userNameFor(md, rt.Name)) // SQL identifier
 	pk := pkFieldsOrUnset(rt.PrimaryKey)
 	fmt.Fprintf(&b, "Primary key:            %s\n", pk)
 	if rt.SinceVersion > 0 {
@@ -159,14 +163,14 @@ func writeRecordTypeDescription(out io.Writer, md *recordlayer.RecordMetaData, r
 		fmt.Fprintln(&b, "Indexes:")
 		for _, idx := range own {
 			fmt.Fprintf(&b, "  %s (%s on %s)\n",
-				idx.Name, idx.Type, strings.Join(idx.RootExpression.FieldNames(), ","))
+				idx.Name, idx.Type, strings.Join(userFieldNames(idx.RootExpression.FieldNames()), ","))
 		}
 	}
 	if len(multi) > 0 {
 		fmt.Fprintln(&b, "Multi-type indexes:")
 		for _, idx := range multi {
 			fmt.Fprintf(&b, "  %s (%s on %s)\n",
-				idx.Name, idx.Type, strings.Join(idx.RootExpression.FieldNames(), ","))
+				idx.Name, idx.Type, strings.Join(userFieldNames(idx.RootExpression.FieldNames()), ","))
 		}
 	}
 	if len(own) == 0 && len(multi) == 0 {
@@ -180,7 +184,7 @@ func writeRecordTypeDescription(out io.Writer, md *recordlayer.RecordMetaData, r
 		fmt.Fprintln(&b, "Universal indexes:")
 		for _, idx := range univ {
 			fmt.Fprintf(&b, "  %s (%s on %s)\n",
-				idx.Name, idx.Type, strings.Join(idx.RootExpression.FieldNames(), ","))
+				idx.Name, idx.Type, strings.Join(userFieldNames(idx.RootExpression.FieldNames()), ","))
 		}
 	}
 

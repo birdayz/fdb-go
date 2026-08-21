@@ -704,6 +704,21 @@ func foundTriState(st embedded.StatisticsStatus) *bool {
 // type, which is the whole promise made to whoever copies a name out of the
 // output. When it does not hold, the stored name is shown unchanged -- uglier,
 // and correct.
+//
+// WHAT THIS DOES NOT PROVE. The round trip shows encode(decode(s)) == s, which
+// makes GetRecordType's SECOND step land on s. It says nothing about the FIRST
+// step: if some other record type is stored under the decoded spelling itself,
+// the direct-key hit answers first and returns that one instead. That is the
+// non-injectivity hazard, it is a property of the lookup rather than of this
+// decode, and AmbiguousDeclaredNames is what detects it -- see
+// TestGetRecordTypeMisResolvesAnAmbiguousPair.
+//
+// So this guard is not the whole story, and deliberately so: it is applied
+// unconditionally because a name that resolves to NOTHING is always wrong,
+// while the ambiguous-pair case needs the declared set and is handled where the
+// consequence is worst -- recordTypeCompletionNames, which feeds `record put`
+// and `record delete`. A read-only renderer showing an ambiguous name is
+// misleading; a completer offering one can delete the wrong table.
 func userName(storage string) string {
 	user := recordlayer.ToUserIdentifier(storage)
 	if user == storage {
@@ -724,23 +739,28 @@ func userName(storage string) string {
 // space -- correctly, since that is the namespace it holds them in -- so the
 // renderer is where the order has to be restated in the namespace it prints.
 //
-// The sites that DECODE a list and therefore have to restate the sort: this
-// one, describeSkippedTypes below, and fleet's describeSkipped. meta.go's
-// recordTypeNamesByUserOrder does the same job from the other side -- it keeps
-// STORAGE names, because its callers need them as map keys, but orders them by
-// the decoded spelling. meta_diff.go's sortSection is correct by construction:
-// it sorts the Name field that is printed, whatever namespace that field holds.
+// DECODING GOES THROUGH THESE HELPERS AND NOWHERE ELSE, which is the point:
+// a list of call SITES has been wrong three times here -- written as FOUR,
+// repaired to THREE by subtracting rather than re-sweeping, and still missing
+// the sql.go sites and meta_diff's sortSection. A set of functions is closed
+// and the compiler keeps it honest; a set of call sites is open and rots.
 //
-// SyntheticRecordTypesNotModeledError.Error() is deliberately NOT in this set.
-// It was, and the decode was wrong: Java stores a synthetic type's name
-// verbatim, so decoding invents a declaration. With no decode there is one
-// namespace, its caller's storage-space order IS the printed order, and a test
-// asserts it must not reorder.
+//	userName        one name, round-trip guarded, no declared-set context
+//	userNames       a slice, decoded then RE-SORTED in the printed namespace
+//	userNamesFor    userNames plus the ambiguity gate, for callers holding md
+//	userNameFor     userNameFor's single-name form
+//	userFieldNames  key-expression fields: decoded, ORDER PRESERVED, no gate
+//	userKeyed       a map re-keyed by the decoded name
 //
-// This enumeration has been wrong twice. It said FOUR, then a decode was
-// removed and the count was fixed by SUBTRACTION rather than by re-sweeping --
-// which is how the meta.go and meta_diff.go entries stayed missing. Sweep by
-// what is PRINTED; a count maintained by arithmetic drifts from the code.
+// The sort has to be restated after decoding because the two orders differ, and
+// order has to be LEFT ALONE for key expressions because position is semantic
+// there. fleet's describeSkipped is the one decoder outside this file; it sorts
+// after decoding for the same reason userNames does.
+//
+// SyntheticRecordTypesNotModeledError.Error() decodes NOTHING and must not:
+// Java stores a synthetic type's name verbatim, so decoding invents a
+// declaration. It also must not re-sort -- a test asserts it preserves input
+// order -- because with no decode there is only one namespace.
 func userNames(storage []string) []string {
 	if storage == nil {
 		return nil
@@ -767,6 +787,65 @@ func userKeyed[V any](m map[string]V) map[string]V {
 	out := make(map[string]V, len(m))
 	for k, v := range m {
 		out[userName(k)] = v
+	}
+	return out
+}
+
+// userNamesFor is userNames with the ambiguity gate applied, for callers that
+// hold the metadata.
+//
+// userName takes a STRING, so it cannot see whether some other record type is
+// declared under the decoded spelling — and that is the case where a decoded
+// name resolves to the WRONG type rather than to none. Anything holding an
+// md should come through here instead.
+//
+// Under a collision the STORED names are returned, sorted in storage space.
+// They are deliberately the less pleasant answer: they are the only spellings
+// that resolve at GetRecordType's first step, so they are the only ones that
+// mean what they say. A schema in this state wants renaming, not a prettier
+// listing — which is the same call the statistics reader makes when it refuses
+// outright on the identical condition.
+func userNamesFor(md *recordlayer.RecordMetaData, names []string) []string {
+	if md != nil {
+		if _, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
+			out := append([]string(nil), names...)
+			sort.Strings(out)
+			return out
+		}
+	}
+	return userNames(names)
+}
+
+// userNameFor is userNamesFor for a single name.
+func userNameFor(md *recordlayer.RecordMetaData, name string) string {
+	if md != nil {
+		if _, ambiguous := md.AmbiguousDeclaredNames(); ambiguous {
+			return name
+		}
+	}
+	return userName(name)
+}
+
+// userFieldNames decodes a key expression's field names for display, PRESERVING
+// ORDER.
+//
+// A column name is a protobuf FIELD name and is escaped exactly like a record
+// type name, so `frl sql`'s \d printing COL$X while `frl meta types describe`
+// printed COL__1X for that same column was one defect wearing two spellings.
+//
+// Two deliberate differences from userNamesFor. Order is never touched: these
+// are key expressions, where position is semantic — sorting a primary key would
+// misreport the key. And the ambiguity gate does not apply: the collision it
+// guards is a property of the declared RECORD TYPE set, which is what
+// AmbiguousDeclaredNames inspects, and no destructive command resolves a target
+// by column name.
+func userFieldNames(fields []string) []string {
+	if fields == nil {
+		return nil
+	}
+	out := make([]string, len(fields))
+	for i, f := range fields {
+		out[i] = userName(f)
 	}
 	return out
 }

@@ -182,14 +182,14 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	for name := range newTypes {
 		if _, ok := oldTypes[name]; !ok {
 			s.Added = append(s.Added, diffEntry{
-				Name:   userName(name), // SQL identifier; the map keys stay storage
+				Name:   userNameFor(newMeta, name), // SQL identifier; map keys stay storage
 				Detail: "pk: " + pkFieldsOrUnset(newTypes[name].PrimaryKey),
 			})
 		}
 	}
 	for name := range oldTypes {
 		if _, ok := newTypes[name]; !ok {
-			s.Removed = append(s.Removed, diffEntry{Name: userName(name)})
+			s.Removed = append(s.Removed, diffEntry{Name: userNameFor(oldMeta, name)})
 		}
 	}
 	for name, oldT := range oldTypes {
@@ -212,7 +212,7 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			changes = append(changes, fieldChange{Field: "record_type_key", Old: oldKey, New: newKey})
 		}
 		if len(changes) > 0 {
-			s.Changed = append(s.Changed, diffEntry{Name: userName(name), Changes: changes})
+			s.Changed = append(s.Changed, diffEntry{Name: userNameFor(newMeta, name), Changes: changes})
 		}
 	}
 	sortSection(&s)
@@ -238,7 +238,7 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			s.Added = append(s.Added, diffEntry{
 				Name: name,
 				Detail: fmt.Sprintf("%s on %s",
-					idx.Type, strings.Join(idx.RootExpression.FieldNames(), ",")),
+					idx.Type, strings.Join(userFieldNames(idx.RootExpression.FieldNames()), ",")),
 			})
 		}
 	}
@@ -256,8 +256,8 @@ func diffIndexes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 		if oldI.Type != newI.Type {
 			changes = append(changes, fieldChange{Field: "type", Old: oldI.Type, New: newI.Type})
 		}
-		oldFields := strings.Join(oldI.RootExpression.FieldNames(), ",")
-		newFields := strings.Join(newI.RootExpression.FieldNames(), ",")
+		oldFields := strings.Join(userFieldNames(oldI.RootExpression.FieldNames()), ",")
+		newFields := strings.Join(userFieldNames(newI.RootExpression.FieldNames()), ",")
 		if oldFields != newFields {
 			changes = append(changes, fieldChange{Field: "fields", Old: oldFields, New: newFields})
 		}
@@ -413,7 +413,7 @@ func pkFieldsOrUnset(ke recordlayer.KeyExpression) string {
 	if ke == nil {
 		return "(unset)"
 	}
-	fn := ke.FieldNames()
+	fn := userFieldNames(ke.FieldNames())
 	if len(fn) == 0 {
 		return "(unset)"
 	}

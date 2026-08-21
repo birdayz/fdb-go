@@ -15,6 +15,7 @@ go_test(
         "build_constrained_filename_test.go",
         "build_membership_test.go",
         "cli_error_first_word_gate_test.go",
+        "cli_name_decode_gate_test.go",
         "container_memory_tag_test.go",
         "container_startup_timeout_test.go",
         "copy_method_rebuild_detector_test.go",
@@ -74,6 +75,7 @@ go_test(
     # keep: living docs + archived snapshots staged into runfiles so the guard can read
     # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
     data = [
+        "//cmd/frl/internal/cmd:cmd_sources",
         "//:CHANGELOG.md",
         "//:DIVERGENCES.md",
         "//:MODULE.bazel",
