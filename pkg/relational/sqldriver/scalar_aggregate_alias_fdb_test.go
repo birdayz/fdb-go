@@ -14,7 +14,7 @@ package sqldriver_test
 //
 // THAT MECHANISM IS NO LONGER THE ONE UNDER TEST, and this header said it was.
 // A scalar aggregate is projection-wrapped too — `grep -c '^plan:  StreamingAgg'`
-// over the 2612-query plan-shape golden is 0, against 1115 StreamingAgg lines
+// over the plan-shape golden is 0 of its 2769 planned lines, against 1115 StreamingAgg lines
 // overall — so the naming that keeps this test green comes from the projection
 // authority, not from buildAggColumns. Measured by mutation: corrupting
 // buildAggColumns' Name and Label leaves this test 5/5 green. What the test

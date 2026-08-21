@@ -50,6 +50,11 @@ func TestParseColRef_SplitsAtDepthZero(t *testing.T) {
 			"a DOT inside a literal is not a split point",
 		},
 		{`D.A'B`, "D", `A'B`, "an unterminated quote must not swallow the rest of the name"},
+		{`A'B.C`, `A'B`, "C", "the MIRROR of the row above on the quote axis: a stray quote " +
+			"BEFORE the dot made this UNQUALIFIED, because an unterminated quote was allowed " +
+			"to open a literal and swallow the dot. Both paren directions were pinned and " +
+			"only one quote direction was. It splits like A(B.C, at the last depth-0 dot"},
+		{`A''B.C`, "A''B", "C", "a `''` pair is a CLOSED span, so the dot after it is still a split point"},
 	} {
 		got := parseColRef(tc.in)
 		if got.table != tc.table || got.col != tc.col {

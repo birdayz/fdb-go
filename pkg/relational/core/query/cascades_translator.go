@@ -1179,8 +1179,11 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 }
 
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:
-// the GROUP BY keys (bare column names, upper-cased) followed by each
-// aggregate's output name (alias when present, else the aggregate text).
+// the GROUP BY keys (bare column names, VERBATIM) followed by each
+// aggregate's output name (alias when present, else the aggregate text, also
+// verbatim). "upper-cased" is what this said while the body below folded; the
+// body stopped, and leaving the sentence would have been the same two-claims-
+// in-one-file failure the fold itself was.
 // Mirrors extractOutputColumns(LogicalAggregate). Phase D: group keys
 // carry the INPUT leg's flowed type for the keyed column; aggregate
 // calls carry Java's result type (values.JavaAggregateResultCode over
@@ -1209,6 +1212,12 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 			// match that is itself UnknownType still counts as seen — a
 			// later typed duplicate must not overwrite it (the name stays
 			// indeterminate).
+			// The conflict test is CODE-ONLY, which leaves one gap worth
+			// naming rather than discovering: two DELIMITED columns differing
+			// only in case and sharing a type code resolve silently here, where
+			// Java raises AMBIGUOUS_COLUMN. Not a wrong type — the two do share
+			// it — but a missing rejection, and the fold on the line above is
+			// what lets them meet at all.
 			if matched && found.Code() != c.FieldType.Code() {
 				return values.UnknownType
 			}
@@ -5508,16 +5517,21 @@ func sortKeyQualifierIdentity(k logical.SortKey) (string, bool) {
 	return "", false
 }
 
-// sortKeyFieldRef returns the RAW (possibly-qualified) upper-cased field reference
-// a column sort key names — `T1.ID`, `COL1` — or "" when the key is a computed
+// sortKeyFieldRef returns the RAW (possibly-qualified) field reference a column
+// sort key names — `T1.ID`, `COL1` — or "" when the key is a computed
 // expression. Unlike sortKeyName it does NOT strip the qualifier, so callers can
 // (a) build the source-column VALUE the key references for value-based output
 // membership, and (b) name an appended hidden field by the qualified provenance
 // (collision-free with an output alias — RFC-141 R4 P2b).
+//
+// VERBATIM: use (b) MINTS A FIELD NAME, so this is an output-naming authority
+// wearing a reference's clothes, and it took its inputs from the same
+// ColumnNameValue rendering and SortKey.Expr text that every neighbouring
+// authority stopped folding.
 func sortKeyFieldRef(k logical.SortKey) string {
 	if fv, ok := values.AsFieldValue(k.Value); ok {
 		// A composite leg reference (FieldValue{col, QOV(leg)}) — render LEG.COL.
-		return strings.ToUpper(values.ColumnNameValue(fv))
+		return values.ColumnNameValue(fv)
 	}
 	if k.Value != nil {
 		// Non-field Value (computed expression) — not a nameable column.
@@ -5535,7 +5549,7 @@ func sortKeyFieldRef(k logical.SortKey) string {
 			return ""
 		}
 	}
-	return strings.ToUpper(field)
+	return field
 }
 
 // sortKeySourceValue returns the SOURCE-COLUMN value a column sort key references
@@ -6690,10 +6704,17 @@ func governingProjection(expr expressions.RelationalExpression, seen map[*expres
 	return nil
 }
 
-// projectionOutputColumnNames returns the UPPER-cased output-column names a projection emits
-// — the alias when present, else the derived name of the projected Value (values.
-// OutputColumnName, the same authority the physical projection uses). These are the names a
-// name-model group key resolves against.
+// projectionOutputColumnNames returns the output-column names a projection emits,
+// VERBATIM — the alias when present, else the derived name of the projected Value
+// (values.OutputColumnName, the same authority the physical projection uses).
+// These are the names a name-model group key resolves against.
+//
+// "UPPER-cased" is what this said, and it was never this function's decision to
+// make: it returns GetOutputNames() unchanged, and that method's own doc says
+// "the exact… slot names". The sentence mattered because it is the `cols` side
+// of nameResolvesInColumns four lines below — a reader trusting it would
+// conclude that folding the KEY alone was symmetric, which is precisely the
+// mistake that gate shipped.
 func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) []string {
 	return proj.GetOutputNames()
 }
@@ -6813,24 +6834,44 @@ func projectionRefAt(p *logical.LogicalProject, i int) logical.ColumnRef {
 	return p.ProjectionRefs[i]
 }
 
-// nameResolvesInColumns reports whether the group-key name resolves
-// case-insensitively against the input row's output columns.
+// nameResolvesInColumns reports whether the group-key name resolves EXACTLY
+// against the input row's output columns.
 //
-// IT USED TO FOLD ONLY ONE SIDE — `strings.ToUpper(key)` byte-compared against
-// `cols` — which was an exact match wearing a fold's clothes, and it worked
-// only for as long as every output name was already upper. That population is
-// smaller now (a projection publishes its columns verbatim), so a verbatim
-// `Region` key would have missed a verbatim `Region` column. The failure is
-// LOUD (`no exact output-slot binding`) rather than a wrong answer, which is
-// why it had not been seen; it was still a live hazard this change enlarges.
+// THE RULE IS "A GATE FOLDS EXACTLY AS THE READ IT GUARDS FOLDS", and getting
+// that wrong in either direction is a bug this function has now had both ways.
+// The read it guards is fieldRequestByName (values/field_value.go), which is
+// `fields[i].name == request.name` — byte-exact. So this must be byte-exact
+// too:
 //
-// Case-insensitive on BOTH sides is what the doc always claimed, and it is the
-// right rule for this predicate specifically: the question is STRUCTURAL — is
-// this key present in the row at all — not "what is this column called". A
-// naming authority must not fold; a presence gate may.
+//   - It used to fold ONE side, `strings.ToUpper(key)` against a raw `cols`.
+//     That worked only while every output name was already upper. A projection
+//     publishes its columns verbatim now, so a `Region` key missed a `Region`
+//     column and hard-refused with `no exact output-slot binding` — a query
+//     Java answers. Loud, not a wrong answer, which is why it went unseen.
+//   - Folding BOTH sides fixes that case and buys a worse one: it is strictly
+//     WIDER than the guarded read, so a `REGION` key over a `Region` column is
+//     admitted here and then MISSES down there. A gate that admits what its
+//     read refuses moves the failure somewhere less legible.
+//
+// "It is a presence gate, so it may fold" was the argument for EqualFold, and
+// it is the wrong invariant twice over. The question is not what KIND of
+// predicate this is but which read it stands in front of — and this is not a
+// lookup at all, it is a FAIL-CLOSED REFUSAL (see the caller): loosening it
+// does not make a query resolve, it moves the query out of a loud refusal into
+// the name-model fallback, which is only safe if that fallback folds the same
+// way. Nothing established that.
+//
+// The verbatim conversion also made an ambiguity REACHABLE that the fold then
+// hid: `Region` and `REGION` can now coexist as two distinct output slots, and
+// a folding gate answers "resolves" for a key that matches both — reporting
+// resolution for an ambiguous row, on a first-match bool.
+//
+// Every arm is pinned in TestNameResolvesInColumns. It had no test at all when
+// it was loosened, which is how a one-line change to a gate became two
+// regressions in two directions.
 func nameResolvesInColumns(key string, cols []string) bool {
 	for _, c := range cols {
-		if strings.EqualFold(c, key) {
+		if c == key {
 			return true
 		}
 	}

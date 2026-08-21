@@ -6034,7 +6034,9 @@ func buildAggColumns(
 		// and that projection owns the names:
 		//
 		//	$ grep -c '^plan:  StreamingAgg' …/plan_shape.golden
-		//	0                       # of 2612 planned queries
+		//	0                       # of 2769 lines that DID plan (the 2612 query
+		//	                        # count includes 271 plan errors, which emit no
+		//	                        # plan: line at all — so it is the wrong denominator)
 		//	$ grep -c StreamingAgg  …/plan_shape.golden
 		//	1115                    # the control: the node is everywhere, never at the root
 		//

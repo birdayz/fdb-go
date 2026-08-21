@@ -5160,6 +5160,15 @@ func aggregateCallDraftValue(call logical.AggregateCall, operand values.Value) v
 	return &values.AggregateValue{Op: op, Operand: operand}
 }
 
+// aggregateNativeOutputName is the name at one ordinal of the aggregate's
+// native output row: a group key first (by its resolved Value, else its Bare,
+// else its Display), then a call by its CanonicalName.
+//
+// VERBATIM on every arm. Those are the same three inputs — key.Bare,
+// key.Display, CanonicalName() — that the translator's aggregateOutputColumns
+// publishes, and the two must spell one row the same way. The output reaches
+// SortKey.Expr and the explain name, so a fold here renames a column the
+// authority named otherwise.
 func aggregateNativeOutputName(agg *logical.LogicalAggregate, ordinal int) string {
 	if agg == nil || ordinal < 0 {
 		return ""
@@ -5170,15 +5179,15 @@ func aggregateNativeOutputName(agg *logical.LogicalAggregate, ordinal int) strin
 			return aggregateGroupKeyOutputName(key.Value)
 		}
 		if key.Bare != "" {
-			return strings.ToUpper(key.Bare)
+			return key.Bare
 		}
-		return strings.ToUpper(key.Display)
+		return key.Display
 	}
 	callIdx := ordinal - len(agg.GroupKeys)
 	if callIdx < 0 || callIdx >= len(agg.Calls) {
 		return ""
 	}
-	return strings.ToUpper(agg.Calls[callIdx].CanonicalName())
+	return agg.Calls[callIdx].CanonicalName()
 }
 
 // unsafeScalarFunctionName returns the name of the first scalar function in v
@@ -8502,7 +8511,12 @@ func cteSortQualifierMatchesScan(qualifier string, scan *logical.LogicalScan) bo
 // keyed by in the aggregate's result row — the exact mirror of the executor's
 // aggKeyName (executor.go): a FieldValue group key flows under its bare Field
 // name (`V`), every other (computed) group key under its ExplainValue. The
-// uppercase form matches the key the executor writes and the sort cursor reads.
+// name is carried VERBATIM, which is what makes "mirror" true: aggKeyName
+// delegates to expressions.AggregateKeyColumnName, and that authority stopped
+// folding under RFC-237. Two of the three arms here kept folding while the
+// nested arm did not, so this function disagreed with its declared authority on
+// two shapes out of three — under a doc sentence asserting they agree, which is
+// the failure class rather than a typo.
 // Load-bearing for a lateral-unnest SHADOWING group key, whose resolved Value is
 // a QUALIFIED FieldValue(QOV(V), V): its bare field name `V` (not the explain
 // `V.V`) is the aggregate output column. RFC-142.
@@ -8516,9 +8530,9 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 		return path
 	}
 	if fv, ok := values.AsFieldValue(gkv); ok {
-		return strings.ToUpper(fv.DisplayName())
+		return fv.DisplayName()
 	}
-	return strings.ToUpper(values.ColumnNameValue(gkv))
+	return values.ColumnNameValue(gkv)
 }
 
 func findSort(op logical.LogicalOperator) *logical.LogicalSort {

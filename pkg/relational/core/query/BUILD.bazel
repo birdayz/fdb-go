@@ -68,6 +68,7 @@ go_test(
         "leg_identity_census_main_test.go",
         "leg_kind_discriminator_test.go",
         "leg_ref_nested_admission_test.go",
+        "name_resolves_in_columns_test.go",
         "plan_test.go",
         "projection_segments_test.go",
         "qualifier_recovery_wiring_test.go",

@@ -41,7 +41,7 @@ var rfc082KnownRed = map[string]bool{
 	// TestFDB_ScalarAggregate_KeepsAlias. The mechanism this used to name —
 	// "the ungrouped plan is a bare StreamingAgg with no projection to carry
 	// it, and buildAggColumns named the column" — is not the current one: no
-	// planned corpus query has a StreamingAgg at its root (0 of 2612), so the
+	// planned corpus query has a StreamingAgg at its root (0 of 2769 planned lines), so the
 	// projection authority supplies the name. The removal from the lock stands
 	// either way; only the explanation was stale.
 	// "recursive_cte_depth_counter" was REMOVED (the lock shrank): the recursive
