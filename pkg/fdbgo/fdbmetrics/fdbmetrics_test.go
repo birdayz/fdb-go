@@ -21,6 +21,7 @@ func TestHandler_TextExposition(t *testing.T) {
 		TransactionsMaybeCommitted:       1,
 		TransactionReadVersionsCompleted: 42,
 		GRVCacheHits:                     9,
+		GRVInBandMaybeDelivered:          11,
 		TransactionRetries:               4,
 		ClientConnectionFailures:         2,
 		CoordinatorChanges:               1,
@@ -43,6 +44,8 @@ func TestHandler_TextExposition(t *testing.T) {
 		"fdb_client_transaction_read_versions_completed_total 42",
 		"# TYPE fdb_client_grv_cache_hits_total counter",
 		"fdb_client_grv_cache_hits_total 9",
+		"# TYPE fdb_client_grv_in_band_maybe_delivered_total counter",
+		"fdb_client_grv_in_band_maybe_delivered_total 11",
 		"fdb_client_transaction_retries_total 4",
 		"fdb_client_transactions_throttled_total 0",
 		// RFC-114 counters.

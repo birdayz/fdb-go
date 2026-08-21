@@ -109,6 +109,10 @@ var counters = []counterDef{
 		func(s client.ClientMetricsSnapshot) int64 { return s.GRVCacheHits },
 	},
 	{
+		"fdb_client_grv_in_band_maybe_delivered_total", "GRV replies carrying an in-band maybeDelivered error (1100/1030), taking basicLoadBalance's next-alternative arm; the rate at which GRV proxies die mid-reply.",
+		func(s client.ClientMetricsSnapshot) int64 { return s.GRVInBandMaybeDelivered },
+	},
+	{
 		"fdb_client_transaction_retries_total", "All OnError-sanctioned retries (Go aggregate; includes codes C++ retries without a counter).",
 		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionRetries },
 	},
