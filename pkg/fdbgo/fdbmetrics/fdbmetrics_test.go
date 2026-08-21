@@ -2,6 +2,7 @@ package fdbmetrics
 
 import (
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -301,6 +302,22 @@ func TestProvenanceVocabularyIsEarnedAndNarrow(t *testing.T) {
 	t.Parallel()
 
 	body := renderExposition(t)
+
+	// The vocabulary itself, pinned to LITERALS rather than derived from the
+	// same slice the predicate reads. Everything below leaves goOnlyMarkers as
+	// its own oracle: necessity asks whether each member is load-bearing, which
+	// stays true under a broadening that keeps every member load-bearing.
+	// Changing "Go aggregate" to "aggregate" survives it -- the retries help line
+	// still supplies the only hit for that member, and no twin help contains the
+	// word -- while the predicate now accepts ordinary prose.
+	//
+	// A literal is the one oracle a change to the slice cannot move with it.
+	if want := []string{"Go-only", "Go aggregate"}; !slices.Equal(goOnlyMarkers, want) {
+		t.Errorf("goOnlyMarkers = %q, want %q. These are the canonical provenance "+
+			"spellings; widening one to a commoner word lets non-provenance prose "+
+			"satisfy the origin audit. Change the help texts, not the vocabulary",
+			goOnlyMarkers, want)
+	}
 
 	// Every marker is NECESSARY, not merely present. Drop it and some Go-only
 	// counter must lose its declaration under the markers that remain.
