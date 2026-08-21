@@ -8,8 +8,8 @@
 //
 // Deliberately NOT a prometheus.Collector: that would pull
 // github.com/prometheus/client_golang into the module for 18 monotonic
-// counters. A user who wants a Collector writes a trivial one over
-// db.Metrics():
+// counters and four latency summaries. A user who wants a Collector writes a
+// trivial one over db.Metrics():
 //
 //	prometheus.NewCounterFunc(opts, func() float64 {
 //	    return float64(db.Metrics().TransactionsNotCommitted)
