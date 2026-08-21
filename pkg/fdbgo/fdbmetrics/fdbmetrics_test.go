@@ -18,15 +18,19 @@ func TestHandler_TextExposition(t *testing.T) {
 		TransactionsCommitStarted:        7,
 		TransactionsCommitCompleted:      6,
 		TransactionsNotCommitted:         3,
-		TransactionsMaybeCommitted:       1,
+		TransactionsThrottled:            22,
+		TransactionsMaybeCommitted:       21,
 		TransactionReadVersionsCompleted: 42,
 		GRVCacheHits:                     9,
 		GRVInBandMaybeDelivered:          11,
 		TransactionRetries:               4,
 		ClientConnectionFailures:         2,
 		CoordinatorChanges:               1,
-		// Every counter and summary gets a DISTINCT value, so a renderer that
-		// crosses two wires shows up as a wrong number rather than a missing line.
+		// Every counter gets a DISTINCT NON-ZERO value, so a renderer that crosses
+		// two wires shows up as a wrong number rather than a missing line. Both
+		// halves are load-bearing and both were once wrong here: two counters
+		// shared the value 1, so swapping their getters passed; and one was
+		// asserted as 0, which every unset counter renders as.
 		TransactionsResourceConstrained:           12,
 		TransactionsProcessBehind:                 13,
 		TransactionsTooOld:                        14,
@@ -52,14 +56,14 @@ func TestHandler_TextExposition(t *testing.T) {
 		"fdb_client_transactions_commit_started_total 7",
 		"fdb_client_transactions_commit_completed_total 6",
 		"fdb_client_transactions_not_committed_total 3",
-		"fdb_client_transactions_maybe_committed_total 1",
+		"fdb_client_transactions_maybe_committed_total 21",
 		"fdb_client_transaction_read_versions_completed_total 42",
 		"# TYPE fdb_client_grv_cache_hits_total counter",
 		"fdb_client_grv_cache_hits_total 9",
 		"# TYPE fdb_client_grv_in_band_maybe_delivered_total counter",
 		"fdb_client_grv_in_band_maybe_delivered_total 11",
 		"fdb_client_transaction_retries_total 4",
-		"fdb_client_transactions_throttled_total 0",
+		"fdb_client_transactions_throttled_total 22",
 		// RFC-114 counters.
 		"# TYPE fdb_client_connection_failures_total counter",
 		"fdb_client_connection_failures_total 2",

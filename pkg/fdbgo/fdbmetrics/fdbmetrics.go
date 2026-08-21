@@ -116,11 +116,11 @@ var counters = []counterDef{
 		func(s client.ClientMetricsSnapshot) int64 { return s.TransactionImmediateReadVersionsCompleted },
 	},
 	{
-		"fdb_client_grv_cache_hits_total", "Read versions served from the GRV cache (USE_GRV_CACHE opt-in; complement of read_versions_completed).",
+		"fdb_client_grv_cache_hits_total", "Read versions served from the GRV cache (USE_GRV_CACHE opt-in; complement of read_versions_completed). Go-only: no C++ TransactionMetrics counter.",
 		func(s client.ClientMetricsSnapshot) int64 { return s.GRVCacheHits },
 	},
 	{
-		"fdb_client_grv_in_band_maybe_delivered_total", "GRV replies carrying an in-band maybeDelivered error (1100/1030), taking basicLoadBalance's next-alternative arm; the rate at which GRV proxies die mid-reply.",
+		"fdb_client_grv_in_band_maybe_delivered_total", "GRV replies carrying an in-band maybeDelivered error (1100/1030), taking basicLoadBalance's next-alternative arm; the rate at which GRV proxies die mid-reply. Go-only: no C++ TransactionMetrics counter.",
 		func(s client.ClientMetricsSnapshot) int64 { return s.GRVInBandMaybeDelivered },
 	},
 	{
