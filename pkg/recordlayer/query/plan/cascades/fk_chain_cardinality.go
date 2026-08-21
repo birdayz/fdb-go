@@ -655,20 +655,24 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // above are stated in. Nil-safe: a missing leg has no layout, and the
 // resolution then declines rather than panicking.
 //
-// A FlatMap needs its own arm to DECLINE, not to derive. When the resultValue
-// is a bare QuantifiedObjectValue the fall-through would already be correct:
-// GetResultType is resultValue.Type(), a QOV's Type() is its FlowedType(), so
-// the type IS the correlated leg's layout and the recursion below arrives where
-// the answer already was. What fall-through would NOT do is refuse the other
-// shapes. A resultValue that is a RecordConstructor merging both legs, or any
-// computed value, still HAS a type -- one this file cannot name a layout for --
-// and returning it would let the identity proof rest on a row nobody checked.
-// The two nil returns are therefore the whole point of the arm.
+// A FlatMap needs its own arm to DECLINE, and it declines in three places, not
+// two. Two are local: a resultValue that is not a bare QuantifiedObjectValue,
+// and one correlated to neither leg. The third is TRANSITIVE, and it is why the
+// recursion is here at all -- when the correlated leg is itself a FlatMap that
+// declines, planRowLayout carries that nil upward.
 //
-// Every hop of an FK chain past the first has a FlatMap as its OUTER, which is
-// why the shape matters here at all: a wrong answer would let the cap fire on
-// hop 1 and silently stop firing on hops 2..n, the order-dependent estimate
-// fkChainCardinalityCap was written to remove.
+// Fall-through cannot produce the third. GetResultType is resultValue.Type()
+// and a QOV's Type() is its FlowedType(), so wherever the leg HAS a layout the
+// two agree -- which is exactly why a fixture built from scan legs cannot tell
+// the arm from fall-through, and why the pin for this uses a nested FlatMap.
+// Nest a declining one under another and they diverge: the arm answers nil,
+// fall-through answers the wrapper's own type. That type EXISTS, and is
+// precisely the row nobody checked.
+//
+// Every hop of an FK chain past the first has a FlatMap as its OUTER, so the
+// nested shape is the one the cap actually meets: a wrong answer would let it
+// fire on hop 1 and silently stop firing on hops 2..n, the order-dependent
+// estimate fkChainCardinalityCap was written to remove.
 //
 // The derivation is the resultValue's, because the resultValue is what shapes
 // the emitted row: a bare QuantifiedObjectValue over one of the two aliases

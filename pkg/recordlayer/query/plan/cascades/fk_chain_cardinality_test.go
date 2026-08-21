@@ -1344,15 +1344,15 @@ func TestAlignIndexPKTypesByCoordinate_DuplicateDisplayNamesStayPositional(t *te
 }
 
 // TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter drives the
-// three planRowLayout FlatMap paths the inner-leg test above never reaches.
+// OUTER branch and the two LOCAL declines -- a resultValue that is not a bare
+// QOV, and one correlated to neither leg.
 //
-// The arm's value is its REFUSALS, not its derivation: when the resultValue is
-// a bare QuantifiedObjectValue the fall-through would already be right, because
-// GetResultType is resultValue.Type() and a QOV's Type() is its FlowedType().
-// What fall-through would not do is decline on a resultValue this file cannot
-// name a layout for -- and a merged or computed row still HAS a type, so the
-// decline has to be deliberate. These three cases are the ones that make the
-// comment on planRowLayout checkable rather than asserted.
+// It deliberately uses scan legs, and that is its limit: wherever a leg HAS a
+// layout the arm and plain fall-through agree, so none of these three cases can
+// tell them apart on its own. Measured, not assumed -- under a mutation that
+// replaces the OUTER recursion with fall-through, this test still passes. The
+// discriminating case is the nested one, and it lives in the sibling test
+// below; these three pin the paths, that one pins the reason.
 func TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter(t *testing.T) {
 	t.Parallel()
 
@@ -1390,5 +1390,48 @@ func TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter(t *testing.
 		values.NamedCorrelationIdentifier("elsewhere"), fkChainRowType("T2")))
 	if got := planRowLayout(newFlat(foreign)); got != nil {
 		t.Errorf("planRowLayout over a QOV correlated to neither leg = %v, want nil (decline)", got)
+	}
+}
+
+// TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting is the case
+// the sibling test above cannot express: it uses a plain scan as outer, so its
+// recursion always bottoms out in a plan that HAS a layout, and every one of
+// its assertions would hold under plain fall-through too.
+//
+// Nesting is what makes the arm load-bearing. When the outer is itself a
+// FlatMap that declines, the recursion propagates that nil upward, while
+// fall-through would answer with the wrapper's own result type -- which exists,
+// and is exactly the row nobody checked. A chain hop past the first has a
+// FlatMap as its OUTER, so this is the shape the cap actually meets.
+func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing.T) {
+	t.Parallel()
+
+	outerAlias, innerAlias := fkChainAlias(0), values.NamedCorrelationIdentifier("i")
+	base := fkChainFullScan("T1")
+	probe := fkChainFKProbe(t, "T2", "t2_by_t1", "T1", outerAlias)
+
+	// A FlatMap that DECLINES: its resultValue is not a bare QOV.
+	declining := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		base, probe, outerAlias, innerAlias,
+		values.NewNullValue(fkChainRowType("T2")), false))
+	if got := planRowLayout(declining); got != nil {
+		t.Fatalf("fixture is vacuous: inner FlatMap must decline, got %v", got)
+	}
+
+	// Wrap it. The wrapper's resultValue IS a bare QOV over the declining
+	// outer, so the arm recurses into it and must inherit the decline.
+	wrapAlias := fkChainAlias(1)
+	wrapper := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		declining, probe, wrapAlias, innerAlias,
+		mustFKChain(values.NewQuantifiedObjectValue(wrapAlias, declining.GetResultType())), false))
+
+	// The discriminating pair: the arm declines, fall-through would not.
+	if got := planRowLayout(wrapper); got != nil {
+		t.Errorf("planRowLayout over a FlatMap whose OUTER declines = %v, want nil "+
+			"(the decline must propagate through nesting)", got)
+	}
+	if wrapper.GetResultType() == nil {
+		t.Fatal("fixture is vacuous: fall-through must have SOMETHING to return, " +
+			"otherwise this case cannot distinguish the arm from fall-through")
 	}
 }

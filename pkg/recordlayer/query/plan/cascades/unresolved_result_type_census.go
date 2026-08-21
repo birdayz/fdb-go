@@ -28,14 +28,19 @@ import (
 // explode.go still returns the singleton on a branch, through GetElementType(),
 // and the detector deliberately does not count it.
 //
-// THE PAYOFF WAS DELIVERED IN FULL, and it is 135. RFC-213 §6 measured 135
-// unresolved reads across four consumers -- 31 at distinctKeyColumns, 104 at
-// planRowRecordType. All of them flipped: at d15a81c07 the gate recorded all
-// four reading UNRESOLVED 0, planRowRecordType among them at 784 resolved,
-// under MinSites 4. Two of those consumers were deleted AFTERWARDS by RFC-235,
-// when the three-quantifier NLJ arm that was their only live caller went away
-// -- a separate event, and not a way of retiring the reads instead of fixing
-// them. The gate reads the two survivors today.
+// HISTORICAL, and the figures below are frozen at the readings named with them.
+// RFC-213 §6 measured 135 unresolved reads over FIVE consumers -- 31 at
+// distinctKeyColumns, 104 at planRowRecordType, and zero at the other three,
+// one of which (predicatesFilterIsFullPKPointProbe) declined none of 14,486.
+// All 135 flipped: at d15a81c07 the gate recorded four consumers at UNRESOLVED
+// 0, planRowRecordType among them at 784 resolved, under MinSites 4. RFC-232 is
+// not the sole cause -- RFC-226 landed inside the same window -- so what is
+// provable is that the reads flipped, not which change flipped each one.
+//
+// Two of those consumers were deleted AFTERWARDS by RFC-235, when the
+// three-quantifier NLJ arm that was their only live caller went away. That is a
+// separate event, and not a way of retiring reads instead of fixing them: the
+// zero predates it. The gate reads the two survivors today.
 //
 // The census stays as the instrument that would show the population coming
 // back, and the sqldriver gate keeps asserting the consumers are still reached,

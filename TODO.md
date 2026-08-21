@@ -14029,11 +14029,12 @@ None is speculative: each was re-verified against the tree before booking.
   because a shrinking count cannot be told from a darkening site) so the
   population stays counted while it stands.
 
-  A fifth divergence was found in passing and is NOT actioned here:
-  `RecordQueryFlatMapPlan.GetResultType()` (`plans/flat_map.go:86`) returns
-  `values.UnknownType` unconditionally, where Java derives it from the result
-  value (`RelationalExpression.java:195-196`). That is a planner-wide typing
-  change with its own blast radius; it is stated, not attempted.
+  A fifth divergence was found in passing and was NOT actioned here:
+  `RecordQueryFlatMapPlan.GetResultType()` returned `values.UnknownType`
+  unconditionally, where Java derives it from the result value
+  (`RelationalExpression.java:195-196`). CLOSED SINCE by RFC-232 -- flat_map.go
+  now returns `p.resultValue.Type()`; see CQ-97. Kept as the record of what was
+  found, not as a live divergence.
 
   **THE CQ-67 REOPEN TRIGGER DID NOT FIRE.** `NestedHitMustBeZero` stayed armed
   and green across every corpus run here. No conversion was made, so no reference
@@ -14149,8 +14150,9 @@ None is speculative: each was re-verified against the tree before booking.
   that reads only stdout sees nothing and reports 0. It is the CAPTURE that is
   silent, not the shell.
 
-  **Go:** `plans/flat_map.go:86` returns the `UnknownType` singleton with no
-  reference to the plan's result value. **Java:**
+  **Go (AS FOUND; closed since by RFC-232):** `plans/flat_map.go` returned the
+  `UnknownType` singleton with no reference to the plan's result value.
+  **Java:**
   `RelationalExpression.java:195-196` derives the result type from the result
   value, so a `RecordQueryFlatMapPlan` states the row it actually flows.
 
