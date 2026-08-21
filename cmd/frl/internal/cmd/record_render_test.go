@@ -25,7 +25,7 @@ func TestWriteRecordAsJSON_ValidJSONWithNUL(t *testing.T) {
 		Record:     &gen.Order{OrderId: proto.Int64(42)},
 	}
 	var buf bytes.Buffer
-	if err := writeRecordAsJSON(&buf, rec); err != nil {
+	if err := writeRecordAsJSON(&buf, nil, rec); err != nil {
 		t.Fatalf("writeRecordAsJSON: %v", err)
 	}
 	line := strings.TrimRight(buf.String(), "\n")
@@ -53,7 +53,7 @@ func TestWriteRecordAsJSON_HappyPath(t *testing.T) {
 		Record:     &gen.Order{OrderId: proto.Int64(42), Price: proto.Int32(100)},
 	}
 	var buf bytes.Buffer
-	if err := writeRecordAsJSON(&buf, rec); err != nil {
+	if err := writeRecordAsJSON(&buf, nil, rec); err != nil {
 		t.Fatalf("writeRecordAsJSON: %v", err)
 	}
 	out := buf.String()
@@ -86,7 +86,7 @@ func TestWriteRecordAsJSON_NilRecordType(t *testing.T) {
 		Record:     &gen.Order{OrderId: proto.Int64(1)},
 	}
 	var buf bytes.Buffer
-	if err := writeRecordAsJSON(&buf, rec); err != nil {
+	if err := writeRecordAsJSON(&buf, nil, rec); err != nil {
 		t.Fatalf("writeRecordAsJSON: %v", err)
 	}
 	var obj map[string]any

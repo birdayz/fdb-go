@@ -714,11 +714,14 @@ func foundTriState(st embedded.StatisticsStatus) *bool {
 // TestGetRecordTypeMisResolvesAnAmbiguousPair.
 //
 // So this guard is not the whole story, and deliberately so: it is applied
-// unconditionally because a name that resolves to NOTHING is always wrong,
-// while the ambiguous-pair case needs the declared set and is handled where the
-// consequence is worst -- recordTypeCompletionNames, which feeds `record put`
-// and `record delete`. A read-only renderer showing an ambiguous name is
-// misleading; a completer offering one can delete the wrong table.
+// unconditionally, because a name that resolves to NOTHING is always wrong and
+// needs no context to rule out. The ambiguous-pair case needs the declared set,
+// so it lives in userNamesFor/userNameFor -- which every renderer holding an md
+// now routes through, not just the completer. An earlier round gated only the
+// completer on the argument that a read-only renderer showing an ambiguous name
+// is merely misleading; that was wrong twice over, because `record scan -o
+// json`'s record_type is documented as feeding --type, and because a listing an
+// operator copies from is not read-only in any useful sense.
 func userName(storage string) string {
 	user := recordlayer.ToUserIdentifier(storage)
 	if user == storage {
@@ -748,7 +751,8 @@ func userName(storage string) string {
 //	userName        one name, round-trip guarded, no declared-set context
 //	userNames       a slice, decoded then RE-SORTED in the printed namespace
 //	userNamesFor    userNames plus the ambiguity gate, for callers holding md
-//	userNameFor     userNameFor's single-name form
+//	userNameFor     userNamesFor's single-name form
+//	userFieldName   userFieldNames's single-name form
 //	userFieldNames  key-expression fields: decoded, ORDER PRESERVED, no gate
 //	userKeyed       a map re-keyed by the decoded name
 //
@@ -849,3 +853,12 @@ func userFieldNames(fields []string) []string {
 	}
 	return out
 }
+
+// userFieldName is userFieldNames for a single column name.
+//
+// Separate from userName so the CALL SITE says which namespace it is in. A
+// column takes no ambiguity gate (that collision is a property of the declared
+// record-type set) while a record type does, and a bare userName at a site
+// holding an md is exactly the bug that let `record scan -o json` print a
+// record_type resolving to the wrong table.
+func userFieldName(field string) string { return userName(field) }

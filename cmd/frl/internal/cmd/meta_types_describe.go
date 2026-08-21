@@ -122,8 +122,13 @@ func summariseIndexes(indexes []*recordlayer.Index) []indexSummary {
 // the name it returns. RecordTypes() is keyed by the ESCAPED storage name, and
 // this list is both what `frl meta types` prints and what the
 // "not found -- available: ..." message offers, so it has to name tables the way
-// the operator created them. GetRecordType accepts either namespace, so a name
-// taken from this list still resolves when passed back in via --type.
+// the operator created them.
+//
+// It goes through userNamesFor rather than userNames because a name taken from
+// this list is passed back in via --type, and record put/delete resolve through
+// that same lookup: under a declared collision the decoded spelling of one type
+// is the STORED key of another, so the lookup would land on the wrong one. The
+// gate suppresses decoding entirely in that case.
 func sortedRecordTypeNames(md *recordlayer.RecordMetaData) []string {
 	rts := md.RecordTypes()
 	names := make([]string, 0, len(rts))

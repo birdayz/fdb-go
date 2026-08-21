@@ -73,8 +73,11 @@ func newRecordPutCmd() *cobra.Command {
 			// Dry-run pass first, always: it validates the JSON against
 			// the descriptor and computes the PK — which the confirm
 			// prompt needs — without writing anything.
+			// Captured for the renderer, as in `record get`.
+			var recMeta *recordlayer.RecordMetaData
 			staged, err := withStore(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) (*recordlayer.FDBStoredRecord[proto.Message], error) {
+					recMeta = store.GetRecordMetaData()
 					msg, err := parseRecordJSON(store.GetRecordMetaData(), recordType, args[0])
 					if err != nil {
 						return nil, err
@@ -86,7 +89,7 @@ func newRecordPutCmd() *cobra.Command {
 			}
 			if dryRun {
 				fmt.Fprintln(cmd.ErrOrStderr(), "dry run — nothing written; would save:")
-				return writeRecordAsJSON(cmd.OutOrStdout(), staged)
+				return writeRecordAsJSON(cmd.OutOrStdout(), recMeta, staged)
 			}
 			if err := confirmWrite(cmd, yes, fmt.Sprintf("save %s record with primary key %s into %s",
 				recordType, formatPK(staged.PrimaryKey), target.describe())); err != nil {
@@ -103,7 +106,7 @@ func newRecordPutCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeRecordAsJSON(cmd.OutOrStdout(), saved)
+			return writeRecordAsJSON(cmd.OutOrStdout(), recMeta, saved)
 		},
 	}
 	addr.register(c, true)

@@ -379,8 +379,18 @@ Everything else that prints a record-type name prints the SQL identifier:
   `frl record scan` and `frl record count`
 
 A name copied out of any of them can be passed straight back in -- as `--type`,
-or to `\d` -- because both the metadata and the `\d` lookup resolve either
-spelling.
+or to `\d` -- and that holds because of two guards working together, not because
+the lookup is forgiving:
+
+- A name is shown decoded only when the decoded spelling **provably re-encodes
+  to the stored one**. Where it does not (a record type legitimately named
+  `__0Order`, never escaped from anything), the stored name is printed
+  unchanged.
+- Where a schema declares two types whose names **collide across the two
+  namespaces** -- SQL `MY$TABLE` stores as `MY__1TABLE`, and a table whose SQL
+  name IS `MY__1TABLE` stores as `MY__01TABLE` -- every command prints the
+  STORED names instead. Uglier, and the only spellings that resolve to the type
+  you meant. A schema in that state wants renaming.
 
 ```sh
 

@@ -19565,9 +19565,14 @@ offers names the operator can type) and its `writeRecordTypeDescription` /
 `\d` table list, column list, PK line and "available:" message go through the
 same helpers, pinned e2e in `sql_identifier_names_integration_test.go`.
 COLUMN names are the same namespace and were raw in four more files until a
-source gate went in -- `TestFRLRenderersDecodeNamesThroughHelpers`
-(`pkg/docscheck`) now fails the build on any renderer that reaches past the
-helpers.
+source gate went in — `TestFRLRenderersDecodeNamesThroughHelpers`
+(`pkg/docscheck`) fails the build on a renderer that reaches a stored name
+through one of the spellings it knows: `.MetadataName()`, `.FieldNames()`,
+`rt.Name`, `.RecordType.Name`. It is a NARROWING, not a closure — a name reached
+any other way is still invisible to it, which is exactly how
+`rec.RecordType.Name` leaked past the gate's first version into `record scan
+-o json`'s `record_type`, the field the guide tells operators to pipe into
+`--type`.
 
 **The first census MISSED two of those**, and the way it missed is the lesson:
 it enumerated `RecordTypes()` call sites, but `writeRecordTypeDescription` takes

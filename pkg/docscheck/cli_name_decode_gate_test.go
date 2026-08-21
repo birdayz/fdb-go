@@ -25,10 +25,31 @@ import (
 // So the property is asserted on the SOURCE instead: a bare .FieldNames() or
 // .MetadataName() reaching a renderer is a leak by construction.
 //
-// NOT covered, deliberately: this cannot tell a render from a LOOKUP, and a
-// lookup must key by the stored name. Lines that name a lookup helper are
-// allowed, which means a genuinely new lookup spelling would slip through — the
-// allowlist below is the thing to extend when that happens, not the gate.
+// NOT COVERED — read this list first, because it is larger than the positive
+// claim and the positive claim has already been too broad once:
+//
+//   - THE SPELLING SET IS FINITE. The gate matches `.MetadataName()`,
+//     `.FieldNames()`, `rt.Name` and `.RecordType.Name`. A renderer that reaches
+//     a stored name any other way is invisible to it. This is not hypothetical:
+//     the gate's FIRST version matched only the two method calls, and
+//     `rec.RecordType.Name` walked straight past it into `record scan -o json`'s
+//     `record_type` — the field the guide tells operators to pipe into `--type`,
+//     i.e. into `record delete`. Adding a spelling is the fix; assuming the set
+//     is complete is the bug.
+//   - IT CANNOT TELL A RENDER FROM A LOOKUP, and a lookup must key by the stored
+//     name. Lines naming a lookup helper are allowed, so a genuinely new lookup
+//     spelling slips through. Extend the allowlist, with the reason written next
+//     to it.
+//   - IT IS LINE-BASED. A raw read on one line whose value is decoded on
+//     another reads as a leak (see the `names[i] = rt.Name` allowance) or, worse,
+//     the reverse.
+//   - `.MetadataName()` IS ALSO DEFINED ON SCHEMA TEMPLATES AND SCHEMAS, whose
+//     names are not protobuf-escaped and must NOT be decoded. Those are
+//     allowlisted individually.
+//
+// What it does cover: a renderer in cmd/frl that reaches a stored record-type or
+// column name through one of the four known spellings without going through a
+// decoding helper.
 func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 	t.Parallel()
 
@@ -40,17 +61,36 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 			"deps of this target, or the gate reports clean while reading nothing", dir, err)
 	}
 
-	// A line may hold a raw name when it goes through a decoding helper, or when
-	// it is a LOOKUP keyed by the stored name.
+	// Spellings that reach a stored name. The struct-FIELD forms are here
+	// because omitting them is how the highest-consequence leak survived this
+	// gate's first version: `rec.RecordType.Name` is neither a .MetadataName()
+	// nor a .FieldNames() call, so `record scan -o json` printed an ungated
+	// record_type — the value the guide tells operators to pipe into
+	// `record delete`.
+	spellings := []string{".FieldNames()", ".MetadataName()", "rt.Name", ".RecordType.Name"}
+
+	// A line may hold a raw name when it goes through an md-AWARE helper, or
+	// when it is a LOOKUP keyed by the stored name.
+	//
+	// Bare userName( is NOT on this list and needs no exemption: it decodes
+	// without consulting the declared set, so at a site holding an md it is the
+	// very bug found at record.go. The helpers in stats.go that wrap it do not
+	// trip the gate because none of their lines carry a flagged spelling -- if
+	// that ever changes, add the exemption rather than allowlisting userName(.
 	allowed := []string{
-		"userFieldNames(", "userName(", "userNameFor(", "userNamesFor(",
+		"userFieldNames(", "userFieldName(", "userNameFor(", "userNamesFor(",
 		"GetRecordType(",                      // lookup: keys by the stored name
 		"RecordTypesForIndex(",                // lookup
 		"EqualFold(tbl.MetadataName(), name)", // lookup: the stored-spelling arm
-		// A SCHEMA TEMPLATE name is a third namespace: it comes from CREATE SCHEMA
-		// TEMPLATE and is never protobuf-escaped, so decoding it would be the same
-		// invented-name mistake this gate exists to prevent, pointing the other way.
+		// A SCHEMA TEMPLATE name is a third namespace: it comes from CREATE
+		// SCHEMA TEMPLATE and is never protobuf-escaped, so decoding it would be
+		// the same invented-name mistake this gate exists to prevent, pointing
+		// the other way.
 		"tpl.MetadataName()",
+		// Collects stored names into a slice that this same function returns
+		// through userNamesFor two lines later. A line-based gate cannot see
+		// that; re-check by hand if index.go's recordTypeNames changes shape.
+		"names[i] = rt.Name",
 	}
 	var scanned int
 	var leaks []string
@@ -65,7 +105,14 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 		}
 		scanned++
 		for i, line := range strings.Split(string(b), "\n") {
-			if !strings.Contains(line, ".FieldNames()") && !strings.Contains(line, ".MetadataName()") {
+			var hit bool
+			for _, sp := range spellings {
+				if strings.Contains(line, sp) {
+					hit = true
+					break
+				}
+			}
+			if !hit {
 				continue
 			}
 			trimmed := strings.TrimSpace(line)

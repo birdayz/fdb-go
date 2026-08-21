@@ -65,8 +65,12 @@ func newRecordGetCmd() *cobra.Command {
 				return err
 			}
 			pk := parsePrimaryKey(args[0])
+			// Captured for the renderer: the store closure has ended by the time
+			// writeRecordAsJSON runs, and record_type must be gated on ambiguity.
+			var recMeta *recordlayer.RecordMetaData
 			rec, err := withStore(cmd.Context(), target,
 				func(store *recordlayer.FDBRecordStore) (*recordlayer.FDBStoredRecord[proto.Message], error) {
+					recMeta = store.GetRecordMetaData()
 					if recordType != "" {
 						rt, err := lookupRecordType(store.GetRecordMetaData(), recordType)
 						if err != nil {
@@ -88,7 +92,7 @@ func newRecordGetCmd() *cobra.Command {
 			if rec == nil {
 				return fmt.Errorf("record %v not found in %s", pk, target.describe())
 			}
-			return writeRecordAsJSON(cmd.OutOrStdout(), rec)
+			return writeRecordAsJSON(cmd.OutOrStdout(), recMeta, rec)
 		},
 	}
 	addr.register(c, true)
@@ -166,7 +170,16 @@ func parsePrimaryKey(raw string) tuple.Tuple {
 // %q produces Go-quoted strings which escape NULs as `\x00` (invalid JSON).
 // If a PK ever contains a byte that needs \uXXXX encoding, the envelope
 // must still parse as JSON — otherwise `jq` breaks mid-pipeline.
-func writeRecordAsJSON(out io.Writer, rec *recordlayer.FDBStoredRecord[proto.Message]) error {
+// writeRecordAsJSON takes md so the `record_type` field can be gated on
+// ambiguity.
+//
+// Without that gate this is the highest-consequence leak in the CLI: the
+// operator guide tells people this value feeds --type, so
+// `record scan -o json | jq -r .record_type` piped into `record delete` is a
+// supported workflow. Under a declared collision the ungated decode printed the
+// spelling that resolves to the OTHER type, and the delete landed on the wrong
+// table.
+func writeRecordAsJSON(out io.Writer, md *recordlayer.RecordMetaData, rec *recordlayer.FDBStoredRecord[proto.Message]) error {
 	// UseProtoNames: operators wrote their .proto files with snake_case —
 	// render field names the same way they declared them, so grep / jq on
 	// scan output matches their schema. protojson defaults to lowerCamel
@@ -180,7 +193,7 @@ func writeRecordAsJSON(out io.Writer, rec *recordlayer.FDBStoredRecord[proto.Mes
 		// SQL identifier: `stats show -o json` keys per_type by the decoded name,
 		// so emitting the storage form here is exactly the cross-command miss a
 		// script joining the two would hit.
-		rt = userName(rec.RecordType.Name)
+		rt = userNameFor(md, rec.RecordType.Name)
 	}
 	// Envelope rather than raw record — downstream tools need the type and
 	// PK when a scan spans multiple record types.
@@ -278,7 +291,7 @@ func scanAndRender(
 		if !result.HasNext() {
 			return nil
 		}
-		if err := writeRecordAsJSON(out, result.GetValue()); err != nil {
+		if err := writeRecordAsJSON(out, store.GetRecordMetaData(), result.GetValue()); err != nil {
 			return err
 		}
 	}

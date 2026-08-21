@@ -1078,7 +1078,7 @@ func (r *sqlRunner) describeTable(name string) error {
 					out.cols = append(out.cols, columnInfo{
 						// SQL identifier: a column name is a proto FIELD name and is
 						// escaped the same way a table name is.
-						name:     userName(col.MetadataName()),
+						name:     userFieldName(col.MetadataName()),
 						dataType: col.DataType().Code().String(),
 						nullable: col.DataType().IsNullable(),
 					})

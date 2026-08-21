@@ -241,7 +241,7 @@ func TestRecordTypeNamesRenderAsSQLIdentifiers(t *testing.T) {
 			RecordType: rt,
 			Record:     &gen.Order{},
 		}
-		if err := writeRecordAsJSON(&buf, rec); err != nil {
+		if err := writeRecordAsJSON(&buf, md, rec); err != nil {
 			t.Fatalf("writeRecordAsJSON: %v", err)
 		}
 		var env struct {
@@ -465,4 +465,48 @@ func metaWithTwoRenamedTypes(t *testing.T, orderTo, customerTo string) *recordla
 		}
 	}
 	return md
+}
+
+// `record scan -o json`'s record_type IS GATED, because that field is an input.
+//
+// The operator guide documents it as feeding --type, so
+// `record scan -o json | jq -r .record_type` piped into `record delete` is a
+// supported workflow. Under a declared collision the ungated decode printed the
+// spelling that resolves to the OTHER type, and the delete landed on the wrong
+// table — the same hazard as the completer, at the one site where the output is
+// machine-consumed by default.
+func TestRecordScanJSONGatesRecordTypeOnAmbiguity(t *testing.T) {
+	t.Parallel()
+
+	const aStore, bStore = "MY__1TABLE", "MY__01TABLE"
+	md := metaWithTwoRenamedTypes(t, aStore, bStore)
+	if _, ambiguous := md.AmbiguousDeclaredNames(); !ambiguous {
+		t.Fatal("fixture is vacuous: the pair does not collide, so the gate never engages")
+	}
+	rt := md.GetRecordType(bStore)
+	if rt == nil || rt.Name != bStore {
+		t.Fatalf("fixture did not land: no record type stored as %s", bStore)
+	}
+
+	var buf bytes.Buffer
+	err := writeRecordAsJSON(&buf, md, &recordlayer.FDBStoredRecord[proto.Message]{
+		PrimaryKey: tuple.Tuple{int64(1)},
+		RecordType: rt,
+		Record:     &gen.Order{},
+	})
+	if err != nil {
+		t.Fatalf("writeRecordAsJSON: %v", err)
+	}
+	var env struct {
+		RecordType string `json:"record_type"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, buf.String())
+	}
+	if env.RecordType != bStore {
+		t.Errorf("record_type = %q, want the STORED name %q.\n"+
+			"Decoding it yields %q, which is the STORED key of the OTHER declared "+
+			"type — so piping this value into `record delete --type` deletes the "+
+			"wrong table.", env.RecordType, bStore, recordlayer.ToUserIdentifier(bStore))
+	}
 }
