@@ -61,8 +61,12 @@ func newMetaDiffCmd() *cobra.Command {
 // (the old name-only JSON contract hid WHAT changed from jq consumers).
 type diffEntry struct {
 	Name string
-	// raw is the STORED spelling of Name, carried so a rendered collision can be
-	// undone deterministically. Unexported: bookkeeping, never output.
+	// raw is the STORED spelling of Name. Set by diffRecordTypes on all three
+	// buckets, where a rendered collision has to be undone deterministically.
+	// NOT set by diffIndexes: index names are never decoded, so no collision can
+	// arise there and there is nothing to fall back to. Extending the fallback to
+	// index entries means populating it there first, or it emits empty names.
+	// Unexported: bookkeeping, never output.
 	raw     string
 	Detail  string        // additions only; empty otherwise
 	Changes []fieldChange // modifications only; empty otherwise
@@ -204,44 +208,6 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 	// own, so userNameFor cannot see it; the collision exists only ACROSS the
 	// pair being diffed.
 	//
-	// Resolved ALL-OR-NOTHING: if any decoded name repeats across the section,
-	// every entry falls back to its stored spelling.
-	//
-	// Rewriting only the colliding entries is not enough, and the counterexample
-	// is small: old {A__B, A__00B} -> new {A__0B, C__1X}. Decoded, Added is
-	// [A__B, C$X] and Removed is [A__B, A__0B], so the A__B pair is rewritten to
-	// raw -- which makes Added hold A__0B, colliding afresh with the A__0B that
-	// Removed already decoded to. A selective pass creates the collision it just
-	// removed, and iterating to a fixpoint is a lot of machinery for a case
-	// where every stored name is a correct answer.
-	//
-	// So this matches what userNamesFor does one level down: under a collision,
-	// stored names for everyone. Order-independent, no second-order collisions,
-	// and it covers Added-vs-Added as well as the cross-bucket case. An earlier
-	// pairwise version compared Name fields it had already rewritten, which made
-	// the output depend on Go map iteration order.
-	seen := map[string]int{}
-	for _, e := range s.Added {
-		seen[e.Name]++
-	}
-	for _, e := range s.Removed {
-		seen[e.Name]++
-	}
-	var collides bool
-	for _, n := range seen {
-		if n > 1 {
-			collides = true
-			break
-		}
-	}
-	if collides {
-		for i := range s.Added {
-			s.Added[i].Name = s.Added[i].raw
-		}
-		for i := range s.Removed {
-			s.Removed[i].Name = s.Removed[i].raw
-		}
-	}
 	for name, oldT := range oldTypes {
 		newT, ok := newTypes[name]
 		if !ok {
@@ -269,7 +235,49 @@ func diffRecordTypes(oldMeta, newMeta *recordlayer.RecordMetaData) diffSection {
 			changes = append(changes, fieldChange{Field: "record_type_key", Old: oldKey, New: newKey})
 		}
 		if len(changes) > 0 {
-			s.Changed = append(s.Changed, diffEntry{Name: userNameFor(newMeta, name), Changes: changes})
+			s.Changed = append(s.Changed, diffEntry{Name: userNameFor(newMeta, name), raw: name, Changes: changes})
+		}
+	}
+	// Resolved ALL-OR-NOTHING, over ALL THREE buckets, and only once every bucket
+	// is populated.
+	//
+	// Two different stored types can render to one name, and then the diff says
+	// something it does not mean. It is not only a rename: old
+	// {Order:A__0B, Customer:A__B} -> new {Order:A__0B changed, Customer:C__1X}
+	// prints `~ A__B` for the CHANGED Order and `- A__B` for the REMOVED
+	// Customer -- two stored types, one printed name, no rename anywhere. So
+	// Changed counts too, and this runs after the Changed loop rather than
+	// before it, where it could not have seen those entries at all.
+	//
+	// Rewriting only the colliding entries is not enough: old {A__B, A__00B} ->
+	// new {A__0B, C__1X} decodes to Added [A__B, C$X] and Removed [A__B, A__0B],
+	// so rewriting the A__B pair makes Added hold A__0B, colliding afresh with
+	// Removed's decoded A__0B. Iterating to a fixpoint is a lot of machinery for
+	// a case where every stored name is already a correct answer, so any
+	// collision sends every entry to its stored spelling -- what userNamesFor
+	// does one level down.
+	//
+	// Order-independent: the tally reads no field this loop writes. An earlier
+	// pairwise version compared Name fields it had already rewritten, so the
+	// output depended on Go map iteration order.
+	seen := map[string]int{}
+	for _, b := range [][]diffEntry{s.Added, s.Removed, s.Changed} {
+		for _, e := range b {
+			seen[e.Name]++
+		}
+	}
+	var collides bool
+	for _, n := range seen {
+		if n > 1 {
+			collides = true
+			break
+		}
+	}
+	if collides {
+		for _, b := range [][]diffEntry{s.Added, s.Removed, s.Changed} {
+			for i := range b {
+				b[i].Name = b[i].raw
+			}
 		}
 	}
 	sortSection(&s)

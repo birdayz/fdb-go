@@ -123,7 +123,10 @@ func TestFRLRenderersDecodeNamesThroughHelpers(t *testing.T) {
 				continue
 			}
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "func ") {
+			// Comment lines only. A `func ` skip used to live here and was a hole:
+			// `func typeName(rt *T) string { return rt.Name }` is a one-line render
+			// that walked past with no marker at all.
+			if strings.HasPrefix(trimmed, "//") {
 				continue
 			}
 			// An explicit `// storage-compare` marker exempts a line: it reads a

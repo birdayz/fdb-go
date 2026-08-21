@@ -766,3 +766,80 @@ func TestDiffIsDeterministicAndCollisionFreeAcrossBuckets(t *testing.T) {
 		}
 	}
 }
+
+// A CHANGED ENTRY CAN COLLIDE WITH A REMOVED ONE, WITH NO RENAME INVOLVED.
+//
+// old {Order:A__0B, Customer:A__B} -> new {Order:A__0B changed, Customer:C__1X}
+// prints `~ A__B` for the CHANGED Order and `- A__B` for the REMOVED Customer:
+// two different stored types under one printed name. Nothing was renamed, so
+// reasoning about rename-halves misses it entirely — and an earlier version of
+// the fallback both excluded Changed from its tally and ran before the Changed
+// bucket was populated, so it could not have seen these entries at all.
+func TestDiffChangedBucketParticipatesInCollisionFallback(t *testing.T) {
+	t.Parallel()
+
+	oldMeta := metaWithTwoRenamedTypes(t, "A__0B", "A__B")
+	// Bump Order so it lands in CHANGED rather than being identical on both
+	// sides -- without this the bucket is EMPTY and the assertion below is
+	// vacuous, which is how the first version of this test passed under a
+	// mutation that removed Changed from the tally entirely.
+	newMeta := withSinceVersion(t, metaWithTwoRenamedTypes(t, "A__0B", "C__1X"), "A__0B", 1)
+	// NOTE the asymmetry, which is what makes this case interesting: oldMeta IS
+	// ambiguous alone (A__B escapes to A__0B, also declared), so its Removed
+	// entry renders as the STORED A__B -- while newMeta is not, so its Changed
+	// entry renders as the DECODED A__B. Two gates, each correct on its own
+	// metadata, producing one printed name for two stored types.
+	if _, amb := newMeta.AmbiguousDeclaredNames(); amb {
+		t.Fatal("fixture is wrong: newMeta is ambiguous alone, so its Changed entry " +
+			"would already render stored and the collision could not arise")
+	}
+
+	s := diffRecordTypes(oldMeta, newMeta)
+	if len(s.Removed) == 0 || len(s.Changed) == 0 {
+		t.Fatalf("fixture did not land: removed=%d changed=%d -- BOTH buckets must be "+
+			"non-empty or the uniqueness assertion below is vacuous",
+			len(s.Removed), len(s.Changed))
+	}
+	// Every printed name across all three buckets must be unique — that is the
+	// whole claim, and Changed is a bucket like any other.
+	seen := map[string][]string{}
+	for _, b := range [][]diffEntry{s.Added, s.Removed, s.Changed} {
+		for _, e := range b {
+			seen[e.Name] = append(seen[e.Name], e.raw)
+		}
+	}
+	for name, raws := range seen {
+		if len(raws) > 1 {
+			t.Errorf("printed name %q names %d different stored types (%v) — the diff "+
+				"is saying something it does not mean", name, len(raws), raws)
+		}
+	}
+}
+
+// withSinceVersion returns md with one record type's since-version bumped, so
+// the type lands in the diff's CHANGED bucket rather than Added/Removed.
+func withSinceVersion(t *testing.T, md *recordlayer.RecordMetaData, storage string, since int32) *recordlayer.RecordMetaData {
+	t.Helper()
+	p, err := md.ToProto()
+	if err != nil {
+		t.Fatalf("to proto: %v", err)
+	}
+	var hit bool
+	for _, rt := range p.GetRecordTypes() {
+		if rt.GetName() == storage {
+			rt.SinceVersion = proto.Int32(since)
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("no record type stored as %s to bump", storage)
+	}
+	if p.GetVersion() < since {
+		p.Version = proto.Int32(since)
+	}
+	out, err := recordlayer.RecordMetaDataFromProto(p)
+	if err != nil {
+		t.Fatalf("from proto: %v", err)
+	}
+	return out
+}
