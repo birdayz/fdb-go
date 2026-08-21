@@ -398,9 +398,10 @@ func bucketCounts(m map[string]fieldDebt) (counts map[string]int, untagged []str
 //
 // The escape and authority totals are not written here: fieldDebtAuthorityTotal
 // below declares the authority count and is asserted against the list, and the
-// group headers hold the per-bucket entry counts. The gap is concentrated
-// rather than noise -- a few authorities carry most of it; the report itself
-// names which, so this comment does not.
+// group headers hold the per-bucket entry counts. Which authorities carry the
+// most escapes is derivable from knownFieldDecisionDebt below, via
+// fieldDecisionAuthorityOf; the bucket report does not break it out, so no
+// concentration figure is stated here either.
 //
 // The concentration is also where the retirements come from, and the last one is
 // the argument for keeping both numbers: AggregateResultColumnName's six arms
