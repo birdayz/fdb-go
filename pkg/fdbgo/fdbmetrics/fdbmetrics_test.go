@@ -66,6 +66,16 @@ func TestHandler_TextExposition(t *testing.T) {
 		t.Errorf("Content-Type = %q, want Prometheus text exposition", ct)
 	}
 	body := rec.Body.String()
+	// The terminal LF, asserted SEPARATELY because whole-line membership stopped
+	// covering it. strings.Split returns an unterminated final sample as the last
+	// element, so the trimmed lookup below succeeds either way -- the previous
+	// newline-bearing assertions caught this only as a side effect, and switching
+	// matchers silently traded one boundary for another. Prometheus text format
+	// 0.0.4 requires the last line to end with LF.
+	if !strings.HasSuffix(body, "\n") {
+		t.Errorf("exposition does not end with LF, which the 0.0.4 text format "+
+			"requires; last 40 bytes: %q", body[max(0, len(body)-40):])
+	}
 	lines := map[string]struct{}{}
 	for _, l := range strings.Split(body, "\n") {
 		lines[l] = struct{}{}
