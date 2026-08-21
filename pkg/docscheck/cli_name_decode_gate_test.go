@@ -814,7 +814,10 @@ func TestCodeByteOracleArmsFire(t *testing.T) {
 	}
 
 	// The MISMATCH arm. A mask that does not correspond to its source used to
-	// return (0, nil) -- clean, from a comparison that never happened.
+	// return a PLAUSIBLE count with no findings -- checked=8, blanked=nil for
+	// the 20/10 case below, because the tokens that fit were compared normally
+	// and the rest skipped. Not (0, nil), which the vacuity floors would have
+	// caught; eight believable checks walk straight past them.
 	for _, tc := range []struct {
 		name          string
 		src, masked   string

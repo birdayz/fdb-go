@@ -1349,32 +1349,48 @@ func (m *RecordMetaData) GetRecordType(name string) *RecordType {
 // RecordTypes returns all record types
 //
 // NOTE: this returns the LIVE map, not a copy, and the map IS mutated after
-// Build -- the earlier claim that nothing does was false. ENUMERATED, not
-// counted by regex, for two reasons both learned here: a count written into a
-// comment becomes a match for the pattern it names, and a count is not
-// checkable while a list is.
+// Build.
 //
-//	On the BUILDER (b.recordTypes), before any RecordMetaData exists:
-//	  2 subscript assignments, both in this file, in setRecords.
+// The census below is over changes to its KEY SET, because that is all the
+// derived field depends on: computeAmbiguousDeclaredNames ranges the keys and
+// probes declared[escaped], and never reads a *RecordType value. Mutating a
+// value already in the map is irrelevant here.
 //
-//	Post-Build, on a built *RecordMetaData -- every one of them in a test:
-//	  1 in record_type_key_identity_test.go
-//	  5 in metadata_evolution_validator_test.go
+// ENUMERATED per site rather than counted by regex, and by SHAPE rather than by
+// one shape mistaken for all of them. Both mistakes were made here in
+// succession: first a count that included the sentence stating it, then an
+// assignment census presented as a mutation census -- which survived a round of
+// review, because the two read alike and the missing shape was delete().
 //
-// Eight in total. There is no third bucket: online_indexer.go's recordTypes is
-// a []string on a different struct, assigned whole, and is not a write to this
-// map at all -- it was miscounted here once, and the miscount balanced only
-// because a phantom entry cancelled the self-match.
+//	Insertions, subscript form -- 8:
+//	  2 on the BUILDER, before any RecordMetaData exists, both in this file:
+//	    one in setRecordsWithUnionName, one in setRecordsWithoutUnion
+//	  6 post-Build, every one in a test:
+//	    1 in record_type_key_identity_test.go
+//	    5 in metadata_evolution_validator_test.go
 //
-// This matters now because Build DERIVES ambiguousNames from this map, so a
-// post-Build mutation leaves the derived field describing a declared set that
-// no longer exists. Latent today, and measured so: neither of those two test
-// files calls AmbiguousDeclaredNames, so nothing reads the stale value. A test
-// that starts doing both re-arms it.
+//	Removals, delete() form -- 4, ALL post-Build, every one in a test:
+//	    1 in record_type_key_identity_test.go
+//	    3 in metadata_evolution_validator_test.go
+//	  Two of those three are bare removals with no paired insertion (the
+//	  "rejects removed type" cases); the third is half of a rename. A removal
+//	  invalidates the derived field exactly as an insertion does.
 //
-// Copying the map here would NOT close that. All six mutators write the private
-// field directly rather than through this accessor, so a copy prevents none of
-// them while adding an O(types) allocation to every caller -- including
+//	clear(), the maps.* helpers, and whole-map assignment: none on this map.
+//	  online_indexer.go does assign a whole recordTypes, but that is a []string
+//	  on a different struct -- it was once miscounted into this census.
+//
+// Twelve sites, ten of them after Build.
+//
+// This matters because Build DERIVES ambiguousNames from this map, so any
+// post-Build key-set change leaves the derived field describing a declared set
+// that no longer exists. Latent today, and measured so: neither of those two
+// test files calls AmbiguousDeclaredNames, so nothing reads the stale value. A
+// test that starts doing both re-arms it.
+//
+// Copying the map here would NOT close that. All ten post-Build sites touch the
+// private field directly rather than through this accessor, so a copy prevents
+// none of them while adding an O(types) allocation to every caller -- including
 // computeAmbiguousDeclaredNames itself.
 //
 // The staleness is silent either way, but it is at least deterministic: the

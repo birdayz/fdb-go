@@ -19674,3 +19674,71 @@ case-normalisation item above — fix them together or neither.
 
 Documented at the contract itself (`RecordMetaData.AmbiguousDeclaredNames`,
 `pkg/recordlayer/metadata.go`), which points back here.
+
+## Go returns a raw `broken_promise` (1100) where C++ absorbs it — GRV and commit reply parse
+
+**C++ is the spec for the FDB client, so this is a bug in Go** (design principle 2).
+
+C++ absorbs 1100 inside `loadBalance` (`LoadBalance.actor.h:344`, via the
+`maybeDelivered` classification) before the application ever sees it. Go absorbs
+it at exactly 5 sites, **all read-side** — `pkg/fdbgo/client/readpath.go:228`,
+`:464`, `:787` and `pkg/fdbgo/client/metrics.go:81`, `:251`. `readpath.go:1044`
+even cites `LoadBalance.actor.h:344` by name.
+
+There is **no absorption on two reply-parse paths**:
+
+- `pkg/fdbgo/client/grv.go:1375` `parseGetReadVersionReply`
+- `pkg/fdbgo/client/commitpath.go:494` `parseCommitReply`
+
+Both do `wire.ReadErrorOrInto(...)` and return the in-band server error verbatim
+under a `fmt.Errorf("...: %w", …)` wrap. 1100 is non-retryable in all three
+predicates (`fdb.IsRetryable`, `IsOnErrorRetryable`, `client.onErrorRetryable`),
+so it reaches the application as terminal. A proxy replies `broken_promise`
+in-band while its process is dying, which is exactly when this fires.
+
+`readpath.go:1054` claims the commit path "maps ANY teardown to
+commit_unknown_result". It maps *transport* teardowns, which the Go transport
+codes as **1030** (`pkg/fdbgo/transport/conn.go:206`, `:229`). An in-band server
+1100 bypasses that entirely — the comment is wider than the code.
+
+Found via a CI failure on PR #760: one FDB container died mid-run and
+`TestRankIndexCountDuplicatesHeavyFaultStress` failed with
+`broken_promise (1100)` at op 17. The fault injector is exonerated —
+`FaultsRetryVeryHeavy` enables only `FaultCommitUnknown`, which injects no error
+object at all and merely re-runs the closure (`chaos/fault.go:198-209`), and no
+non-test site in Go mints 1100. The 1100 came from the server.
+
+Not fixed on PR #760: that branch touches zero `pkg/fdbgo` files, and a client
+retry-classification change needs the FDB C++ client reviewer gate rather than
+riding a CLI-naming PR.
+
+DONE when: GRV and commit reply parse classify an in-band 1100 the way
+`loadBalance` does, a divergence test pins each against the C++ behaviour, and
+`readpath.go:1054`'s scope sentence names transport teardowns specifically.
+
+## Chaos suite: one container shared by 229 parallel tests, with two unguarded kill paths
+
+Same CI failure. Independent of the client bug above, and it is what turns one
+container blip into 14 failures plus a 15-minute package timeout.
+
+1. **No mid-run death detection.** `pkg/testcontainers/foundationdb/foundationdb.go:101`
+   `isTransientContainerErr` and `:111` `retryContainerStart` cover container
+   **bring-up** only (`:96`: "a container bring-up failure"). A container that
+   dies after bring-up is undetected: every later test fails at op 0 with
+   `failed to read store info: context deadline exceeded`, 60s each, and the
+   real cause is buried under 14 misleading failures.
+
+2. **Ryuk runs at defaults** — no `RYUK_DISABLED` anywhere in the tree — so its
+   60s reap is an unguarded mid-run kill, and 60s matches the observed
+   per-test timeout signature exactly.
+
+3. **`pkg/recordlayer/chaos/chaos_test.go:57`** calls `container.Terminate(ctx)`
+   on a 2-minute context that `m.Run()` has already exhausted, so termination
+   is a silent no-op that leaks containers into the next run's memory pressure.
+
+`chaos_test.go:26` hands ONE container to 229 tests that all call `t.Parallel()`,
+so the blast radius of a single death is the whole package.
+
+DONE when: a mid-run container death is detected and reported as itself rather
+than as N test timeouts, Ryuk's reap cannot fire under a running suite, and
+`Terminate` runs on a context that is still live.
