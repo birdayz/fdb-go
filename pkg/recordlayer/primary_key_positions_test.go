@@ -277,6 +277,20 @@ func TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey
 			"gone and the multi-type/universal fix has been reverted")
 	}
 
+	// THE "OLD POSITIONS WERE [0,-1]" CLAIM, asserted rather than asserted-in-a-
+	// comment. Everything below describes what an older build wrote, and that
+	// description is only worth anything if this overlap really does produce a
+	// PARTIAL position vector — one component found in the index key, one not.
+	// A shape that produced [0,0] or nil would make the legacy entry a different
+	// tuple and this whole test a fiction.
+	oldPositions := buildPrimaryKeyComponentPositions(
+		Field("price"), Concat(Field("price"), Field("order_id")))
+	if len(oldPositions) != 2 || oldPositions[0] != 0 || oldPositions[1] != -1 {
+		t.Fatalf("this overlap yields positions %v, want [0 -1]. The legacy entry shape below is "+
+			"derived from that vector, so if it has changed the fixture no longer reproduces what "+
+			"an older build actually wrote.", oldPositions)
+	}
+
 	// What this build writes: (price) + the WHOLE primary key.
 	current := idx.getEntryPrimaryKey(tuple.Tuple{int64(100), int64(100), int64(7)})
 	if len(current) != 2 || current[0] != int64(100) || current[1] != int64(7) {
