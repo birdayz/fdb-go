@@ -326,12 +326,18 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 		case !inClaimSweepScope(rel):
 			continue
 		}
-		if strings.HasSuffix(rel, ".java") {
-			javaSwept++
-		}
 		b, readErr := os.ReadFile(filepath.Join(root, rel))
 		if readErr != nil {
 			continue
+		}
+		// AFTER the read, not before. Counting at the point a path passes the
+		// filter would let the floor be satisfied by files that were discovered,
+		// scoped and then failed to open — zero Java BYTES read, with `scanned`
+		// and `controlHit` still carried by the thousands of Go files. That is
+		// the same discovery-is-not-coverage error this floor was added to fix,
+		// one line earlier.
+		if strings.HasSuffix(rel, ".java") {
+			javaSwept++
 		}
 		scanned++
 		flat := flattenClaimText(string(b))

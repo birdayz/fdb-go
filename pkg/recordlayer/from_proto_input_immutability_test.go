@@ -94,6 +94,27 @@ func TestRelativeTypeNameFixtureActuallyCarriesARelativeName(t *testing.T) {
 			len(md.Dependencies), depAbsolute)
 	}
 
+	// THE MESSAGE-SCOPED EXTENSION, guarded BY POSITION rather than by the
+	// aggregate count above. `depRelative` is satisfied by the plain field
+	// alone, so deleting the extension would leave this test green with the
+	// third write site unprobed again — which is the defect the extension was
+	// added to close, one level up. Count the position itself.
+	extRelative := 0
+	for _, d := range md.Dependencies {
+		for _, m := range d.GetMessageType() {
+			for _, ext := range m.GetExtension() {
+				if tn := ext.GetTypeName(); tn != "" && tn[0] != '.' {
+					extRelative++
+				}
+			}
+		}
+	}
+	if extRelative == 0 {
+		t.Fatal("no dependency declares a MESSAGE-SCOPED extension with a relative type name. " +
+			"absolutizeFieldTypeNames writes in three positions and this fixture would reach only " +
+			"two, so TestRecordMetaDataFromProtoDoesNotMutateItsInput would not cover the third")
+	}
+
 	t.Logf("fixture type names: records %d relative / %d absolute; %d dependencies, %d relative / %d absolute",
 		relative, absolute, len(md.Dependencies), depRelative, depAbsolute)
 }
@@ -168,11 +189,33 @@ func relativeTypeNameMetaData(t *testing.T) *gen.MetaData {
 					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
 					Extendee: proto.String(".probe.Inner"),
-					TypeName: proto.String("Inner"),
+					// ABSOLUTE here, and relativized below by the helper. An
+					// earlier revision wrote it relative and appended the
+					// dependency AFTER the only relativizeTypeNames call, so the
+					// helper's message-scoped-extension loop was never executed:
+					// deleting that loop left every test green while the comment
+					// claimed the mirror was in step with the function it
+					// mirrors. Dead code in a fixture builder reads exactly like
+					// working code.
+					TypeName: proto.String(".probe.Inner"),
 				}},
 			},
 		},
 	}
+	// The dependency goes through the SAME helper as the records descriptor, so
+	// its relative names are produced by the code under discussion rather than
+	// typed in already-relative.
+	dep.MessageType[1].Field[0].TypeName = proto.String(".probe.Inner")
+	relativizeTypeNames(dep)
+
+	// Position-specific: the aggregate relative count is satisfied by the plain
+	// field alone, so it cannot tell whether the extension arm ran.
+	if got := dep.MessageType[1].Extension[0].GetTypeName(); got != "Inner" {
+		t.Fatalf("relativizeTypeNames left the dependency's message-scoped extension type name as "+
+			"%q, want %q -- the helper's DescriptorProto.Extension loop did not run, so this "+
+			"fixture cannot exercise the third position absolutizeFieldTypeNames writes", got, "Inner")
+	}
+
 	p.Dependencies = append(p.Dependencies, dep)
 	return p
 }
@@ -224,11 +267,12 @@ func lastNameComponent(name string) string {
 	return name
 }
 
-// countTypeNameShapes reports how many message-typed field names are relative
-// (no leading dot) versus absolute, across messages, nested types,
-// message-scoped extensions and file-level extensions -- the same four
-// positions relativizeTypeNames rewrites, so the guard counts what the fixture
-// actually built.
+// countTypeNameShapes reports how many message-typed names are relative (no
+// leading dot) versus absolute, over the same THREE positions relativizeTypeNames
+// rewrites -- message fields, message-scoped extensions, file-level extensions --
+// so the guard counts what the fixture actually built. Nested types are recursion
+// into those positions, not a fourth one; an earlier revision counted them as one
+// and so said "four" twelve lines under a comment saying "three".
 func countTypeNameShapes(fd *descriptorpb.FileDescriptorProto) (relative, absolute int) {
 	if fd == nil {
 		return 0, 0

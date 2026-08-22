@@ -2372,7 +2372,8 @@ the primary key the index key covers.** Do not go looking for only one of them:
   positions, `colSize = 1 < 2`, so it returns `entryKey[1:]` = `(id)`: a
   one-element primary key where the real one has two. Non-empty, plausible and
   wrong. An operator told to watch for empty primary keys concludes these stores
-  are unaffected.
+  are unaffected. Pinned by
+  `TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey`.
 
 **And the old entries never go away on their own.** Post-upgrade, deleting or
 re-saving a record computes the UNTRIMMED index key and clears that; the old
@@ -2421,11 +2422,21 @@ earlier revisions of this section were wrong in different ways — the first sai
 only that, the second added the surrounding steps but still described the bump
 in a form that is SILENTLY INERT.
 
-**Which of the five apply depends on your path**, and only steps 3 and 4 are
+**Which of the five apply depends on your path**, and steps 3, 4 and 5 are
 universal. Step 2 is needed only when the metadata goes through
 `FDBMetaDataStore` — an in-process metadata provider runs no evolution validator
-at all. Step 1 applies wherever an old binary can still reach the store. Step 5
-applies wherever the rebuild is not inline.
+at all. Step 1 applies wherever an old binary can still reach the store.
+
+Step 5 is universal even though only PART of it is conditional, and getting that
+backwards is how the whole procedure silently fails. An earlier revision said
+step 5 "applies wherever the rebuild is not inline", which contradicts the trap
+step 5 exists to describe: on the inline path (`recordCount <= 200`) the rebuild
+runs during the open, so nothing prompts you to check — and a wrongly bumped
+index was never selected, was never touched, and is sitting there `READABLE` and
+stale looking exactly like a success. It is the `OnlineIndexer` RUN that is
+conditional on the rebuild not being inline. The VERIFICATION is not conditional
+on anything, and it is the only thing that distinguishes a migration that ran
+from one that did nothing.
 
 **On steps 3 and 4 this section defers to `cq90BumpIndexVersion`** in
 `pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go`, which
@@ -2488,12 +2499,16 @@ step 1 is stale; it is a test exercising the bump, not the deployment.
    Note the count index need NOT itself be affected by this bug for that to
    happen — exclusion is by membership in `indexesToBuild`, not by affectedness.
    An earlier revision said the count source was "exactly the class this bug
-   affects", which is wrong twice over: `snapshotTotalRecordCount` asks for
-   `GroupAll(EmptyKey())`, the UNGROUPED universal COUNT index, whose key
-   overlaps no primary key and which therefore was never trimmed. Only a
-   record-type-grouped COUNT against a record-type-prefixed primary key is in
-   the affected class. The instruction stands; the justification was borrowed
-   from the wrong criterion.
+   affects", and a later one over-corrected by calling the selected index
+   UNGROUPED. Both are wrong. `snapshotTotalRecordCount` REQUESTS
+   `GroupAll(EmptyKey())`, but the request is not the index: `isGroupPrefix`
+   accepts an operand whose grouping is a PREFIX of the index's, and an empty
+   grouping prefixes every grouping, so a universal COUNT index grouped by
+   anything is selectable and the aggregate rolls up every group. What is true
+   is narrower: the count source need not be in the affected class at all,
+   because exclusion is by membership in `indexesToBuild` and nothing else. The
+   instruction stands on that alone, and neither claim about the index's shape
+   was needed to support it.
 
    With more than one affected index, REPEAT steps 3 through 5 per index rather
    than batching the bumps. Each round leaves the header at the previous round's

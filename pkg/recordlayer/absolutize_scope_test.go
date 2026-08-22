@@ -22,9 +22,24 @@ import (
 // protodesc builds the file happily and the field simply points somewhere else.
 // Records written through it would carry the wrong message's fields.
 //
-// The two arms are the two directions this can go wrong: the rewrite must move a
-// nested reference to the NESTED type, and must still reach the top-level type
-// when the declaring scope has no candidate of its own.
+// Two of the three arms are the two directions this can go wrong: the rewrite
+// must move a nested reference to the NESTED type, and must still reach the
+// top-level type when the declaring scope has no candidate of its own.
+//
+// The third is the MULTI-COMPONENT axis, and it is where this resolver
+// deliberately departs from the `protodesc` it feeds. For `A.B`, protobuf's
+// language rule — protoc's — resolves the FIRST component outward and then
+// requires the rest beneath it, so `A.B` inside `Host` means `Host.A.B` when
+// `Host.A` exists, and FAILS rather than falling back to `.pkg.A.B`. protoc
+// says so out loud: "is resolved to probe.Host.A.B, which is not defined. The
+// innermost scope is searched first in name resolution." protodesc instead
+// retries the whole reference at each level and would bind `.probe.A.B`.
+//
+// This follows protoc, because protoc is what compiled every descriptor that
+// can reach here and Java resolves the same way — a shape protoc rejects cannot
+// come out of a .proto file, so matching protodesc's laxer walk would only
+// paper over a descriptor no compiler produced. The arm pins the strict answer
+// so the departure is a decision on record rather than an accident.
 func TestAbsolutizeFieldTypeNamesPreservesLexicalScope(t *testing.T) {
 	t.Parallel()
 
@@ -116,5 +131,70 @@ func TestAbsolutizeFieldTypeNamesPreservesLexicalScope(t *testing.T) {
 					"message's fields.", wantBinding, got)
 			}
 		})
+	}
+}
+
+// THE MULTI-COMPONENT AXIS, kept out of the table above because its assertion is
+// about the rewritten NAME rather than about a binding that survives: the shape
+// it pins is one protodesc refuses to build, by design.
+//
+// `A.B` written inside `Host`, where `Host.A` exists but declares no `B`, and a
+// top-level `.probe.A.B` does exist. protoc resolves the first component
+// outward, finds `Host.A`, requires `B` beneath it, and ERRORS -- it does not
+// continue outward to `.probe.A`. protodesc retries the whole reference per
+// level and would bind `.probe.A.B` instead.
+//
+// This resolver follows protoc, so it produces `.probe.Host.A.B`. Feeding that
+// to protodesc then fails loudly, which is the correct outcome for a descriptor
+// no compiler could have emitted -- and is why the arm asserts the NAME and the
+// resulting error rather than a successful binding.
+func TestAbsolutizeFieldTypeNamesResolvesTheFirstComponentOutward(t *testing.T) {
+	t.Parallel()
+
+	fd := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("absolutize_multicomponent.proto"),
+		Package: proto.String("probe"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			// .probe.A.B exists at the top level -- the binding protodesc's
+			// laxer walk would have chosen.
+			{
+				Name:       proto.String("A"),
+				NestedType: []*descriptorpb.DescriptorProto{{Name: proto.String("B")}},
+			},
+			{
+				Name: proto.String("Host"),
+				// Host.A exists but has NO nested B, so the first component
+				// matches here and the rest does not.
+				NestedType: []*descriptorpb.DescriptorProto{{Name: proto.String("A")}},
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name:     proto.String("f"),
+					Number:   proto.Int32(1),
+					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					TypeName: proto.String("A.B"),
+				}},
+			},
+		},
+	}
+
+	absolutizeFieldTypeNames(fd)
+
+	got := fd.MessageType[1].Field[0].GetTypeName()
+	if got != ".probe.Host.A.B" {
+		t.Fatalf("absolutizeFieldTypeNames produced %q, want %q.\n"+
+			"The first component `A` resolves to Host.A in the innermost scope that declares it, "+
+			"and the remainder is required beneath it -- protoc does not continue outward to "+
+			"`.probe.A.B`, and neither does this. Producing `.probe.A.B` would silently bind a "+
+			"reference protoc rejects.", got, ".probe.Host.A.B")
+	}
+
+	// And the consequence, asserted rather than described: protodesc refuses it.
+	// That is the intended outcome -- a loud failure on a descriptor no compiler
+	// emits, rather than a quiet binding to a different message.
+	if _, err := protodesc.NewFile(fd, nil); err == nil {
+		t.Fatal("protodesc accepted `.probe.Host.A.B`, so either Host.A gained a nested B or the " +
+			"resolver stopped following protoc's first-component rule. Re-read the doc comment " +
+			"before relaxing this: the departure from protodesc is deliberate")
 	}
 }
