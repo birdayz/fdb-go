@@ -1126,7 +1126,9 @@ the style gate this section rejects. Run the command.
 
 `TestRFC238WeakCitesAreTheOnesSection7dNames` pins the one thing worth pinning:
 the weak SET for this document, by name. WHAT THAT PINS IS THE SET AND NOTHING
-ELSE — the corpus figures the census prints are asserted by no test at all. In
+ELSE — of the figures the census prints, only three carry assertions, and they
+are FLOORS against a collapsed population (files, distinct cites, resolved), not
+values. The classification split is asserted nowhere. In
 THIS revision the set has FIVE members. Three cite a doc comment on purpose:
 `positional_row.go:7`, `colref.go:95` and `full_unordered_scan.go:110-118`. Two
 are this section's own narrative naming cites it CORRECTED —

@@ -2135,3 +2135,53 @@ discard it today. `FromNormalized` hard-codes `wasQuoted: false` and is used
 ~59 times on the reference path, so the engine cannot currently tell `"K"` from
 `K` at resolution time at all. Probed: gating the relaxed pass on
 `!want.WasQuoted()` is INERT for exactly that reason.
+
+---
+
+## Index fields are exported in Go and `private final` in Java
+
+**Java.** `Index` holds `private final String name`, `private final KeyExpression
+rootExpression` and `private final Map<String,String> options`
+(`Index.java:63-78`), exposed by getters only (`:294`, `:310`, `:329`). There is
+no `setName` and no `setRootExpression`. Because those fields cannot be
+rewritten, `RecordMetaDataBuilder.build` passes `indexes`, `universalIndexes`
+and `formerIndexes` DIRECTLY into `new RecordMetaData(...)`
+(`RecordMetaDataBuilder.java:1457-1459`) and shares them with the builder
+safely.
+
+**Go.** `Index.Name`, `Index.RootExpression` and `Index.Options` are exported,
+as are all four fields of `FormerIndex`. `Build` shares the same containers Java
+shares, so a caller that keeps the `*Index` it passed to `AddIndex` — which is
+the normal pattern, and which Java REQUIRES, since `build` sets
+`primaryKeyComponentPositions` on that very object — can rewrite the built
+metadata after the fact. A changed `RootExpression` reads existing entries under
+a new expression; a changed `FormerIndex.SubspaceKey` defeats the
+subspace-reuse guard.
+
+**Why not clone.** It was tried and reverted. Java shares, so cloning is a
+Go-only invention; a shallow copy does not isolate anyway, because the
+KeyExpression graph exposes exported mutators (`DimensionsKeyExpression`'s
+fields, which bound `CanDeleteWhere` at runtime; `RecordTypeKeyExpression.Nest`;
+the live child slice from `CompositeKeyExpression.SubKeyExpressions`) and a
+`[]byte` subspace key shares its backing array; and it splits "the caller's
+index" from "the metadata's index" across 544 call sites that pass a pre-`Build`
+`*Index` to `ScanIndex`, `RebuildIndex` and `SetIndex`. In `OnlineIndexer` that
+split degraded the containment check from "is the metadata's definition" to
+"shares a name with it" — building entries under one definition and marking
+another readable. It also broke cross-engine conformance (`go: pk=[]` vs
+`java: pk=[1]`) until positions were computed before the copy.
+
+**The Java-aligned fix is encapsulation**: unexport `Name`, `RootExpression` and
+`Options` behind getters, the pattern already used on that same struct for
+`subspaceKey`/`SubspaceTupleKey()`. Then post-`Build` mutation is impossible
+rather than merely undocumented, and sharing is safe for the same reason it is
+safe in Java. It is ~1146 call sites across `.Name`, `.RootExpression` and
+`.Options`, so it is its own change.
+
+Record types are NOT part of this divergence: Java builds fresh `RecordType`
+objects into a new map (`RecordMetaDataBuilder.java:1461`), and Go copies each
+record type and its association slices to match — which is what stops a
+post-`Build` `RemoveIndex` from orphaning already-built metadata.
+
+Pinned by `TestBuiltMetadataSharesIndexObjectsWithTheBuilder`, which fails when
+the divergence closes.
