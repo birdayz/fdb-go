@@ -2479,15 +2479,26 @@ right and this section is stale.
    until an `OnlineIndexer.BuildIndex` run finishes. That call handles
    `DISABLED` → `WRITE_ONLY` → `READABLE` itself.
 
+   That paragraph describes the DEFAULT policy. An application that installs
+   `WriteOnlyIfTooLargePolicy` lands `WRITE_ONLY` rather than `DISABLED` on the
+   same stores, and one that sets `SetSkipPossiblyRebuild(true)` gets no
+   transition at all, because the store never calls `checkPossiblyRebuild`. The
+   procedure survives both — the rebuild still has to be run and completed — but
+   the state you observe partway through will not match the wording above.
+
    **The trap:** if step 3 was done wrong, the index was never selected, was never
    touched, and is therefore STILL `READABLE` from before. Asserting `READABLE`
    passes on exactly the failure this procedure exists to prevent. Verify the
    rebuild by something that distinguishes ran from never-ran — the index appears
    in `GetIndexesToBuildSince(oldHeaderVersion)` before the open, or
    `BuildIndex` reports a non-zero scanned count — not by the end state alone.
-**Why shipping it anyway is right.** Java MISREADS the old entries — it does not
-fail on them, which is worse. Java assigns no positions to these indexes either,
-so it applies the same untrimmed decode to a trimmed entry and derives the same
-wrong primary key described above. The old bytes were therefore never
+**Why shipping it anyway is right.** Java assigns no positions to these indexes
+either, so it applies the same untrimmed decode to a trimmed entry and derives
+the same wrong primary key described above — its DECODE misreads rather than
+errors, exactly as Go's does. (Its scan does not necessarily stay quiet: Java's
+default `IndexOrphanBehavior` is `ERROR` too, so a record-fetching scan on the
+derived key fails there in the same way. "Java does not fail on them" was a
+claim about the decode stated at the scan level, which is the same slip the
+duplicate-rows paragraph above corrects.) The old bytes were therefore never
 Java-compatible, which is the whole point of the port. The choice is between
-data that silently disagrees with Java forever and one rebuild.
+data that disagrees with Java forever and one rebuild.

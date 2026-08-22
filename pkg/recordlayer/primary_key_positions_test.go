@@ -194,18 +194,22 @@ func buildPriceKeyedMetaData(register func(*RecordMetaDataBuilder, *Index), inde
 // for a multi-type or universal index are TRIMMED; this build writes them whole
 // and reads them with nil positions.
 //
-// What that does to a trimmed entry is the part worth pinning: it does not
-// error, it returns an EMPTY primary key. For an index whose key IS the primary
-// key, colSize equals the trimmed entry's length, so the `colSize < len` guard
-// is false and the empty tuple is returned. A scan over pre-upgrade data
-// therefore yields rows with no primary key rather than a failure, and the
-// metadata-evolution validator cannot see it either: it compares two BUILT
+// What that does to a trimmed entry is the part worth pinning, and it depends
+// on how much of the primary key the index key covers: a FULL overlap yields an
+// EMPTY primary key (colSize equals the trimmed entry's length, so the
+// `colSize < len` guard is false), and a PARTIAL overlap yields a SHORT, wrong
+// one. Both are pinned below. Neither errors at the decode. The
+// metadata-evolution validator cannot see either: it compares two BUILT
 // metadata objects, and after the upgrade both sides derive nil.
 //
-// The remedy is operational, not a version gate -- there is nothing on disk to
-// gate on, and the old format was itself nondeterministic for universal indexes.
-// Bump the affected index's lastModifiedVersion, which IS persisted and does
-// trigger a rebuild.
+// THE REMEDY IS NOT RESTATED HERE. DIVERGENCES.md, "UPGRADING BREAKS EXISTING
+// DATA FOR THE AFFECTED INDEXES, SILENTLY", is the one copy. An earlier version
+// of this header said "bump the affected index's lastModifiedVersion, which IS
+// persisted and does trigger a rebuild" -- which is the form that is SILENTLY
+// INERT whenever the store header's metadata version is already ahead of the
+// index's, and it survived here after being refuted in DIVERGENCES.md and in a
+// commit message, because the sweep for superseded copies was run for a
+// different claim in that same commit and not for this one.
 func TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey(t *testing.T) {
 	t.Parallel()
 
@@ -235,5 +239,65 @@ func TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey(t *testing.T) {
 			"That is BETTER than the empty tuple this pins, so the hazard has changed shape: "+
 			"re-read the migration paragraph in DIVERGENCES.md before relaxing anything, because "+
 			"it tells operators the failure is silent.", legacy)
+	}
+}
+
+// THE PARTIAL-OVERLAP SHAPE, which is the commoner one and does NOT look broken.
+//
+// Its sibling above covers a full overlap, where the trimmed entry's length
+// equals colSize and getEntryPrimaryKey takes the `return tuple.Tuple{}` branch.
+// That is one side of one guard. A partial overlap takes the OTHER side --
+// `colSize < len(entryKey)` is TRUE -- and returns a short, plausible, wrong key
+// instead of an obviously empty one. An operator told to watch for empty primary
+// keys reads those stores as unaffected.
+//
+// The claim was prose in DIVERGENCES.md with no arm here, which is the
+// pin-the-cousin failure: the single-component primary key above cannot express
+// this shape at all, because with one component there is no "short" to be.
+func TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey(t *testing.T) {
+	t.Parallel()
+
+	// Index key (price); primary key (price, order_id). `price` overlaps at
+	// position 0 and `order_id` does not, so an older build computed positions
+	// [0, -1] and wrote the entry as (price, order_id) -- length 2, the primary
+	// key trimmed from two components down to one.
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	b.GetRecordType("Order").SetPrimaryKey(Concat(Field("price"), Field("order_id")))
+	b.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+	b.AddMultiTypeIndex([]string{"Order", "Customer"}, NewIndex("mt_partial", Field("price")))
+
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	idx := md.GetIndex("mt_partial")
+	if idx.HasPrimaryKeyComponentPositions() {
+		t.Fatal("this build assigned positions to a multi-type index; the premise of this test is " +
+			"gone and the multi-type/universal fix has been reverted")
+	}
+
+	// What this build writes: (price) + the WHOLE primary key.
+	current := idx.getEntryPrimaryKey(tuple.Tuple{int64(100), int64(100), int64(7)})
+	if len(current) != 2 || current[0] != int64(100) || current[1] != int64(7) {
+		t.Fatalf("an entry written by THIS build reads back with primary key %v, want [100 7]", current)
+	}
+
+	// What an older build wrote: (price, order_id), with `price` trimmed out of
+	// the primary key because it already appeared in the index key.
+	legacy := idx.getEntryPrimaryKey(tuple.Tuple{int64(100), int64(7)})
+
+	// NOT EMPTY -- that is the whole point of this arm. It is one component
+	// where the real key has two, and the component it does contain is the
+	// order_id sitting in the slot the price should occupy.
+	if len(legacy) == 0 {
+		t.Fatalf("a partial-overlap pre-upgrade entry read back EMPTY (%v). That is the "+
+			"full-overlap symptom, and DIVERGENCES.md tells operators these two shapes differ; "+
+			"if they no longer do, that section is wrong", legacy)
+	}
+	if len(legacy) != 1 || legacy[0] != int64(7) {
+		t.Fatalf("a partial-overlap pre-upgrade entry read back with primary key %v, want [7] -- "+
+			"a one-component key where the real one is [100 7]. If this is now correct the hazard "+
+			"has changed shape; re-read the migration section before relaxing anything", legacy)
 	}
 }

@@ -278,7 +278,29 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	// `.claude/worktrees/`. Both halves matter here: stale agent worktrees carry
 	// pre-withdrawal copies of exactly this claim, and sweeping them would
 	// report findings about code that was never on this branch.
-	for _, rel := range trackedGoFiles(t, root) {
+	//
+	// THE .java FILES ARE SWEPT TOO, and they were the population this gate
+	// could not see. A sixth copy of a retired count survived in
+	// conformance/multi_type_index_conformance.java precisely because every
+	// instrument here — this walk and the ad-hoc claimsweep both — filtered to
+	// .go and .md, so the sweep reported zero hits with a PASSING positive
+	// control. A true zero over the wrong population reads exactly like a clean
+	// tree. The Java conformance steps are prose-carrying source that cites Java
+	// line numbers and counts, so they belong in the corpus.
+	corpus := trackedGoFiles(t, root)
+	javaFiles, javaErr := fallbackWalk(root, func(name string) bool {
+		return strings.HasSuffix(name, ".java")
+	})
+	if javaErr != nil {
+		t.Fatalf("walking for .java sources: %v", javaErr)
+	}
+	if len(javaFiles) == 0 {
+		t.Fatal("no .java files found; the conformance server is Java and this sweep is supposed to " +
+			"cover it, so an empty Java corpus means the walk is broken rather than the tree clean")
+	}
+	corpus = append(corpus, javaFiles...)
+
+	for _, rel := range corpus {
 		switch {
 		case rel == selfPath:
 			selfSeen = true
@@ -327,7 +349,7 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	}
 
 	if len(offenders) != 0 {
-		t.Fatalf("a withdrawn index-call-site count is stated as a live claim in %d Go file(s):\n  %s\n\n"+
+		t.Fatalf("a withdrawn index-call-site count is stated as a live claim in %d source file(s):\n  %s\n\n"+
 			"Both 544 and 545 were real measurements of populations that were NOT the one the sentence around them described. "+
 			"State the population, or cite DIVERGENCES.md where they are withdrawn — do not restate the number.",
 			len(offenders), strings.Join(offenders, "\n  "))
