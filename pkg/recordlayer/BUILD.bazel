@@ -163,6 +163,7 @@ go_test(
     name = "recordlayer_test",
     timeout = "long",
     srcs = [
+        "absolutize_extension_test.go",
         "aggregate_function_named_index_test.go",
         "aggregate_function_test.go",
         "aggregate_function_unit_test.go",

@@ -855,14 +855,28 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 	if pkg != "" {
 		prefix = "." + pkg + "."
 	}
+	absolutize := func(f *descriptorpb.FieldDescriptorProto) {
+		tn := f.GetTypeName()
+		if tn != "" && tn[0] != '.' {
+			absolute := prefix + tn
+			f.TypeName = &absolute
+		}
+	}
 	var visitMessage func(msg *descriptorpb.DescriptorProto)
 	visitMessage = func(msg *descriptorpb.DescriptorProto) {
 		for _, f := range msg.GetField() {
-			tn := f.GetTypeName()
-			if tn != "" && tn[0] != '.' {
-				absolute := prefix + tn
-				f.TypeName = &absolute
-			}
+			absolutize(f)
+		}
+		// MESSAGE-SCOPED EXTENSIONS: `DescriptorProto.Extension`, the `extend`
+		// block written INSIDE a message, which proto2 allows. This walk used to
+		// cover fields and nested types here and extensions only at FILE level,
+		// so a relative type name in this position reached the resolver as
+		// written. It survived because no fixture could express it: every other
+		// descriptor in the corpus is built from a compiled Go file via
+		// protodesc.ToFileDescriptorProto, which emits absolute names, making
+		// absolutization a no-op on all of them.
+		for _, ext := range msg.GetExtension() {
+			absolutize(ext)
 		}
 		for _, nested := range msg.GetNestedType() {
 			visitMessage(nested)
@@ -873,11 +887,7 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 	}
 	// Same for extensions at the file level.
 	for _, ext := range fd.GetExtension() {
-		tn := ext.GetTypeName()
-		if tn != "" && tn[0] != '.' {
-			absolute := prefix + tn
-			ext.TypeName = &absolute
-		}
+		absolutize(ext)
 	}
 }
 
