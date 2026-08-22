@@ -126,3 +126,80 @@ var _ = Describe("ScanRecordsByType with a SQL identifier", func() {
 				"predicate must not turn a miss into a match-everything.")
 	})
 })
+
+// THE RECORD LAYER WILL NOT RESCUE A MIS-SPELLED NAME, and that is correct
+// behaviour whose consequence one layer up is a silent wrong answer.
+//
+// GetRecordType is CASE-SENSITIVE (its only fallback is the protobuf escaping,
+// which is a no-op on an already-upper-case name), so a scan asked for `ORDER`
+// against metadata storing `Order` resolves nothing and matches nothing. Java's
+// RecordMetaData.getRecordType is case-sensitive too; this is not the defect.
+//
+// The defect is that the SQL layer hands it that spelling. recordTypeCI
+// (logical_predicate.go:6553) resolves a DML target case-INSENSITIVELY, so
+// `DELETE FROM customer` validates against a type stored `Customer` and then
+// plans Delete(CUSTOMER, Scan(CUSTOMER, ...)). This spec is the other half of
+// that chain: the scan finds nothing, executeDelete deletes by primary key over
+// an empty set, and the statement reports success having removed no rows.
+//
+// Pinned here rather than only in the planner probe because the two halves rot
+// independently: a change that made GetRecordType fold case would close the
+// hole while leaving the planner emitting a name it never resolved, and this
+// arm is what would say so.
+var _ = Describe("ScanRecordsByType with a case-divergent name", func() {
+	ctx := context.Background()
+
+	It("matches nothing for the SQL-normalized spelling of a mixed-case stored type", func() {
+		md := multiTypeMetaData()
+		Expect(md.GetRecordType("Order")).NotTo(BeNil(),
+			"the fixture stopped storing a mixed-case type name; this spec needs one")
+		Expect(md.GetRecordType("ORDER")).To(BeNil(),
+			"GetRecordType started folding case. That closes the SQL-layer hole this\n"+
+				"spec documents -- go read RFC-238 §7c's DML population before deciding\n"+
+				"whether it is still a divergence, and do not simply delete this arm.")
+
+		ks := specSubspace()
+		orderType := md.GetRecordType("Order")
+		rec := dynamicpb.NewMessage(orderType.Descriptor)
+		rec.Set(orderType.Descriptor.Fields().ByName("order_id"), protoreflect.ValueOfInt64(3))
+
+		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			return store.SaveRecord(rec)
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		got, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
+			store, err := NewStoreBuilder().
+				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
+			if err != nil {
+				return nil, err
+			}
+			upper, err := AsList(ctx, store.ScanRecordsByType("ORDER", nil, ForwardScan()))
+			if err != nil {
+				return nil, err
+			}
+			exact, err := AsList(ctx, store.ScanRecordsByType("Order", nil, ForwardScan()))
+			if err != nil {
+				return nil, err
+			}
+			return []int{len(upper), len(exact)}, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		counts := got.([]int)
+
+		Expect(counts[1]).To(Equal(1),
+			"the exact spelling stopped finding the record, so the arm below is about a\n"+
+				"broken fixture rather than about case")
+		Expect(counts[0]).To(Equal(0),
+			"ScanRecordsByType(\"ORDER\") now finds records of the type stored \"Order\".\n"+
+				"If the record layer started folding case, RFC-238 §7c's DML population is\n"+
+				"closed from below and the planner side needs re-measuring -- it currently\n"+
+				"emits Scan(CUSTOMER) for a type stored Customer and relies on nothing\n"+
+				"rescuing it.")
+	})
+})

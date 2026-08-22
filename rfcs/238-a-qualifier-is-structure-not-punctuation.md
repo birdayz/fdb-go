@@ -887,9 +887,16 @@ quantified-object value as
 `NewQuantifiedObjectValue(NamedCorrelationIdentifier(p.GetTargetRecordType()),
 ...)` (`executor.go:4361-4363`), and the SET right-hand sides are correlated to
 it. Re-spelling `upd.Target` alone would leave `SET name = name` bound to a
-correlation nobody publishes. The translation has to rebase the transforms onto
-the new identifier in the same step, or carry the correlation separately from
-the structural identity. INSERT has no such coupling: `executor.go:4213`
+correlation nobody publishes.
+
+The answer is to CARRY THE CORRELATION SEPARATELY from the structural identity,
+and that is not one option of two. Java never couples them:
+`QueryVisitor.java:836` sets `targetRecordType` from `getStorageName()` at
+construction, and `UpdateExpression.java:100-105` correlates the transforms to
+the SOURCE quantifier only. Go's coupling is its own, originating at
+`logical_predicate.go:6752` where `buildSelectScope` takes the bare table name
+as the alias. "Rebase the transforms onto the new identifier" would preserve
+that divergence while working around it. INSERT has no such coupling: `executor.go:4213`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
 path, not the general tolerance an earlier draft read it as.
 
@@ -940,8 +947,9 @@ objections described Java's shipped behaviour rather than a cost.**
     `RecordLayerTable.getName()`, and `RecordMetadataDeserializer.java:92-96`
     keys its builder map by the decoded name, so a decode collision routes two
     declarations through one builder there. Go documents the same misresolution
-    at `metadata.go:1330-1338`. The objection was about the plan tree; confined
-    to the plan tree it fails, and stated any wider it is false.
+    at `metadata.go:1330-1338`. The OBJECTION was about the plan tree, and confined there it fails. Outside
+    the memo it gains force rather than losing it -- so it is this REBUTTAL,
+    not the objection, that must not be stated any wider.
 
 **AND THE SQL NAMESPACE IS NOT A LEGAL MEMO IDENTITY, which is the argument that
 settles it independently of Java.** Candidate scans flow `UnknownType`, so per
@@ -999,9 +1007,27 @@ is deletable: together they are what says the section covers two populations and
 which resolver admits each.
 
 The rule the section is really about is therefore not "escaped names" but: **a
-name that a RESOLVER matched loosely must be replaced by what it matched**, and
-Go carries the caller's spelling forward from two different loose resolvers —
-`GetRecordType`'s escaping retry and `recordTypeCI`'s case fold.
+name that a RESOLVER matched loosely must be replaced by what it matched**. Go
+carries the caller's spelling forward from THREE loose resolvers, not two:
+
+  - `RecordMetaData.GetRecordType` -- exact, then the protobuf-escaping retry.
+  - `recordTypeCI` (`logical_predicate.go:6553`) -- exact, then a case fold.
+  - `cascadesTranslator.resolveRecordType` (`cascades_translator.go:568`) --
+    exact, then the escaping retry, then a case fold. `translateUpdate` already
+    calls it, via `tableColumns(upd.Target)` at `:10786`, three lines above the
+    `NewUpdateExpression` that then discards what it found.
+
+That last one is why the fix is smaller than it looks on the UPDATE path: the
+resolved name is already in hand at the site that needs it.
+
+AND THE TWO CASE-FOLDING RESOLVERS DISAGREE ON DETERMINISM, which has to be
+settled before "what it matched" is even well defined. `resolveRecordType`
+carries an explicit `name < bestName` tie-break and a comment explaining that
+map iteration order is not stable. `recordTypeCI` returns the FIRST `EqualFold`
+hit over a randomized map range with no tie-break at all, so for metadata
+holding two names that fold together it answers differently between runs. One
+function documents the hazard; the other reproduces it. Whichever resolver the
+translation adopts, it needs the tie-break.
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
 places (`cascades_generator.go:2810`, `:3439`, `:3663`, `:3738`) and those are
