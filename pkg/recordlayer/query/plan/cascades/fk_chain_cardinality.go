@@ -655,14 +655,56 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // above are stated in. Nil-safe: a missing leg has no layout, and the
 // resolution then declines rather than panicking.
 //
-// A FlatMap needs its own arm because RecordQueryFlatMapPlan.GetResultType()
-// answers UnknownType unconditionally: the plan does not compute a row type
-// from its resultValue. Every hop of an FK chain past the first has a FlatMap
-// as its OUTER, so taking that answer at face value would fail the identity
-// proof closed for exactly the multi-hop shape this whole file exists for —
-// the cap would still fire on hop 1 and silently stop firing on hops 2..n,
-// which is the order-dependent estimate fkChainCardinalityCap was written to
-// remove.
+// A FlatMap needs its own arm to DECLINE, and it declines in three places, not
+// two. Two are local: a resultValue that is not a bare QuantifiedObjectValue,
+// and one correlated to neither leg. The third is TRANSITIVE, and it is why the
+// recursion is here at all -- when the correlated leg is itself a FlatMap that
+// declines, planRowLayout carries that nil upward.
+//
+// Fall-through cannot produce the third. GetResultType is resultValue.Type()
+// and a QOV's Type() is its FlowedType(), so wherever the leg HAS a layout the
+// two agree -- which is exactly why a fixture built from scan legs cannot tell
+// the arm from fall-through, and why the pin for this uses a nested FlatMap.
+// Nest a declining one under another and they diverge: the arm answers nil,
+// fall-through answers the wrapper's own type. That type EXISTS, and is
+// precisely the row nobody checked.
+//
+// The LOCAL declines are reachable; the TRANSITIVE one is not, and the two must
+// not be conflated. Reachable: pkThreadThroughResultValue accepts a bare QOV OR
+// a RecordConstructorValue whose PK fields are direct uncomputed reads, while
+// planRowLayout accepts the bare QOV alone -- so a RecordConstructor FlatMap
+// threads a PK successfully and still declines here, which is the intended
+// answer (this file can prove the identity without naming the row's layout).
+//
+// Unreachable: a FlatMap whose selected leg is ANOTHER declining FlatMap cannot
+// arrive through the FK-cap entries, because those need computePKThread to have
+// succeeded and both orientations die there. Selected via the inner alias the
+// leg is a FlatMap, and scanBindingOfLeaf has no FlatMap case -- it falls to
+// default, so innerFullyBindsThread is false. Selected via the outer,
+// innerFullyBindsThread itself calls planRowLayout(fm.GetOuter()), gets the
+// nil, finds the frontier unknown and fails closed.
+//
+// That is scoped to the FK-cap entries deliberately, and is NOT a universal
+// over every caller: computeMapPKThread passes singleChildRowLayout as an EAGER
+// argument with no .ok guard, so planRowLayout does run on a declining leg
+// there. The conclusion still holds, but NOT because childThread.ok is false --
+// the Reachable paragraph above says the opposite, that a RecordConstructor
+// threads a PK and declines a layout. It holds by three routes, none of them
+// pinned, and they differ in KIND rather than in degree. A bare QOV over
+// childAlias returns childThread without ever reading the layout, so the nil is
+// harmless by being unused. A RecordConstructor reaches pkThreadThroughFields,
+// which fails closed on the unknown frontier that nil produces. Anything else
+// -- a computed value, or nil -- returns the zero pkThread, also without
+// reading the layout. Only the middle one is a fail-closed check; the other two
+// simply never consult it.
+//
+// The recursion is therefore insurance, and the test that drives it hand-builds
+// the resultValue rather than reaching it from a plan.
+//
+// Every hop of an FK chain past the first has a FlatMap as its OUTER, so the
+// outer call is the one that nests at all: a wrong answer there would let the
+// cap fire on hop 1 and silently stop on hops 2..n -- the order-dependent
+// estimate fkChainCardinalityCap was written to remove.
 //
 // The derivation is the resultValue's, because the resultValue is what shapes
 // the emitted row: a bare QuantifiedObjectValue over one of the two aliases

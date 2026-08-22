@@ -56,7 +56,7 @@ func TestClassifyResultTypeReadUnresolved_DrivesBothClasses(t *testing.T) {
 		},
 		{
 			"the UnknownType singleton is unresolved", values.UnknownType, true,
-			"the twelve stubbed GetResultType implementations return exactly this",
+			"the GetResultType stubs RFC-232 retired returned exactly this",
 		},
 		{
 			"a nil type is unresolved", nil, true,

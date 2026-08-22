@@ -60,10 +60,11 @@ import (
 // is unrecoverable by reading. Under the struct-copy form they are distinct:
 // the reset is an explicit `cp.cached = nil` with a comment saying why. The
 // gate therefore does not need to distinguish them — the form does.
+//
 // # Why this is a predicate and not a list
 //
 // The first version of this gate held a LIST of seven method names, and it
-// missed `SelectExpression.WithSwappedQuantifiers` — an 18th instance of the
+// missed `SelectExpression.WithSwappedQuantifiers` — a real instance of the
 // class, in the very file whose WithQuantifiers motivated the sweep. A
 // hardcoded enumeration of what to check is the same defect the gate exists to
 // prevent, one level up: it is correct until someone adds a name, and that
@@ -72,7 +73,7 @@ import (
 // So membership is structural. Go's convention for "return a modified copy" is
 // a `With…` prefix, which covers every instance found (WithQuantifiers,
 // WithChildren, WithNewChildren, WithSwappedQuantifiers) plus every one anyone
-// invents later, and the four bare verbs cover the non-`With` idioms.
+// invents later, and the bare verbs cover the non-`With` idioms.
 func isCopyMethodName(name string) bool {
 	switch name {
 	case "Copy", "Clone", "Duplicate", "Rebind":

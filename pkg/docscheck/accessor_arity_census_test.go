@@ -125,7 +125,7 @@ var accessorAritySites = map[string]accessorAritySite{
 	},
 	"pkg/recordlayer/query/plan/cascades/values/field_value_reanchor.go#reanchorValueThroughProducer": {
 		class: arityNestingOK, exprs: 1,
-		why: "the shared ordinary/owned implementation compares candidate and requested prefix lengths, verifies the complete prefix, and appends the arbitrary remaining suffix into the full mapped path; the two-level and four-leg producer-lineage mutation tests pin both depths.",
+		why: "the shared ordinary/owned implementation compares candidate and requested prefix lengths, verifies the complete prefix, and appends the arbitrary remaining suffix into the full mapped path; the producer-lineage mutation tests in values/field_value_reanchor_test.go pin the depths.",
 	},
 	"pkg/recordlayer/query/plan/cascades/values/values.go#fieldPath.RootOrdinalIn": {
 		class: arityNestingOK, exprs: 1,
@@ -182,7 +182,7 @@ var accessorAritySites = map[string]accessorAritySite{
 // census pins, not budgets; a move requires reclassification and an RFC-230
 // current-state note.
 //
-// THE +2 OVER RFC-230 rev 6 §7.3's PUBLISHED 45 IS DisplayColumnName, and it is
+// THE +2 OVER THE PRIOR READING IS DisplayColumnName, and it is
 // classified rather than absorbed. The projection label authority stopped
 // splitting a rendered name at its last dot and now reads the LEAF out of the
 // resolved accessors — which needs the path's length twice, once to reject an
@@ -195,7 +195,7 @@ const (
 	arityGeneratedLines    = 8  // protobuf loops over PFieldPath.FieldAccessors
 	arityCommentLines      = 7  // historical SourceRelativeBaked legibility prose
 	arityCodeLines         = 32 // the live production population
-	arityExpressions       = 36 // four code lines contain multiple expressions
+	arityExpressions       = 36 // exceeds arityCodeLines: some lines hold >1
 )
 
 // accessorArityLine is the RFC's own sweep, as a regexp.
@@ -238,7 +238,7 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 		generated := ast.IsGenerated(f)
 
 		// Line arm: reproduce the RFC's grep exactly, then classify each hit as
-		// generated / comment-only / code so the published 52 stays checkable
+		// generated / comment-only / code so rfcPublishedPopulation stays checkable
 		// AND its decomposition stays honest.
 		commentLine := map[int]bool{}
 		for _, group := range f.Comments {
@@ -311,7 +311,7 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 
 	// ---- The RFC's published number, and its decomposition.
 	if rawLines != rfcPublishedPopulation {
-		t.Errorf("the arity sweep now matches %d non-test lines, RFC-230 rev 6 §7.3 published "+
+		t.Errorf("the arity sweep now matches %d non-test lines, RFC-230's current-state header publishes "+
 			"%d.\n\tRe-run: git grep -n \"len(.*Accessors)\" -- '*.go' | grep -v _test.go\n"+
 			"\tA changed population is a finding, not a nit: classify what moved and update "+
 			"this census and the RFC together.", rawLines, rfcPublishedPopulation)
@@ -384,15 +384,16 @@ func TestAccessorArityCensusIsClassified(t *testing.T) {
 func TestAccessorArityClassCounts(t *testing.T) {
 	t.Parallel()
 
-	// RFC-232's exact views leave eight legitimate single-slot declines and
-	// twenty arity-tolerant path operations. Nested-path GROUP BY is shipped,
-	// so blocker/live-defect/uncertain are zero-ratchet classes.
+	// RFC-232's exact views leave a set of legitimate single-slot declines and a
+	// set of arity-tolerant path operations. The counts are deliberately not
+	// written here: `pinned` below asserts them, and RFC-230's header states
+	// them as well, so prose would be a third copy that nothing reconciles.
+	// Nested-path GROUP BY is shipped, so blocker/live-defect/uncertain are
+	// zero-ratchet classes.
 	//
-	// The twentieth (c) is values.DisplayColumnName, added when the projection
-	// label authority stopped splitting a rendered name at its last dot and
-	// started reading the leaf out of the resolved accessors. The DECLINE count
-	// did not move with it, which is the reading that matters: the conversion
-	// added an arity-TOLERANT site, not another single-slot requirement.
+	// Why the arity-tolerant class grew without the DECLINE class moving is the
+	// DisplayColumnName story, which the const block above already tells; it is
+	// not repeated here.
 	pinned := map[accessorArityClass]int{
 		arityCorrectDecline: 8,
 		arityBlocker:        0,

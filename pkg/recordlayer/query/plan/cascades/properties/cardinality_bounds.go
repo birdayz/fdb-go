@@ -178,7 +178,7 @@ func provenCardinalities(e expressions.RelationalExpression, child []Cardinaliti
 //
 // Every arm here mirrors a PHYSICAL twin's ProvenCardinalities exactly; the
 // pairing is enumerated and enforced by the parity test, which fails on any arm
-// with no table entry rather than passing vacuously the day a twelfth arm is
+// with no table entry rather than passing vacuously the day another arm is
 // added.
 //
 // Where an arm's answer differs from Java's CardinalitiesVisitor arm for the

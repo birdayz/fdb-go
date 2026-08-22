@@ -142,24 +142,65 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 }
 
-// fkChainFKProbe is a non-unique secondary-index equality probe against rt,
-// correlated to outerAlias.ID — the PRECEDING table's own primary key. It
-// models a plain SCALAR index (one entry per record — no FAN_OUT field), so
-// it stamps distinctRecordsKnown/createsDuplicates=false exactly as
-// abstract_data_access_rule.go does in production from the match candidate's
-// createsDuplicates() signal — a scalar index never fans out, so
-// ProducesDistinctRecords() must read true for the FK-chain cap to fire on
-// it, same as production.
-func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
-	t.Helper()
+// fkChainProbeFromRange stamps an FK-chain index probe. Four helpers route
+// through it — fkChainFKProbe, fkChainFKProbeAgainst, fkChainFanOutFKProbe and
+// fkChainFKProbeRTPrefixed — so a stamp added here reaches those four and no
+// others. That matters because a missing stamp makes scanBindingOfLeaf's index
+// arm fail closed, and an assertion behind that guard then exits above the
+// thing it meant to test — which happened here once, from a hand-rolled copy of
+// this chain. The reach guard in the nesting test catches THAT specific
+// omission loudly, so the residual risk is a DIFFERENT signal added later that
+// no guard checks; sharing the chain is what covers the ones nobody thought to
+// assert.
+//
+// Deliberately NOT a claim about the file. fkChainPKProbe builds its own plan
+// and is a SCAN with a different stamp set, so it does not belong here. Every
+// remaining plans.NewRecordQueryIndexPlan( in this file is built inline inside
+// its own test, and nothing here reaches any of them. Grep that constructor to
+// enumerate them; a count written down here rots the moment another one lands.
+func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange, commonPK []values.Value, createsDuplicates bool) plans.RecordQueryPlan {
 	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
-		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
+		[]*predicates.ComparisonRange{rng},
 		[]string{rt}, fkChainRowType(rt), false)).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey(fkChainIDPK()).
-		WithDistinctRecordsSignal(false)
+		WithCommonPrimaryKey(commonPK).
+		WithDistinctRecordsSignal(createsDuplicates)
+}
+
+// fkChainFKProbe is a non-unique secondary-index equality probe against rt,
+// correlated to outerAlias.ID — the PRECEDING table's own primary key. It
+// models a plain SCALAR index (one entry per record — no FAN_OUT field), so it
+// stamps createsDuplicates=false exactly as abstract_data_access_rule.go does
+// in production from the match candidate's createsDuplicates() signal.
+// distinctRecordsKnown is set true either way -- the setter always does that,
+// it is the KNOWN bit, not the answer -- so a scalar index reads
+// ProducesDistinctRecords()=true and the FK-chain cap can fire on it, same as
+// production.
+func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
+	t.Helper()
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), fkChainIDPK(), false)
+}
+
+// fkChainFKProbeAgainst is fkChainFKProbe for an outer whose layout is not in
+// fkChainLayouts -- a FlatMap emitting a RecordConstructor row, say. The
+// operand is baked against that layout so the comparand's ordinal domain
+// matches the row the outer actually emits; baking against a registry entry
+// instead gives correlatedFieldIdentity an unrelated reason to decline. Why the
+// stamps are shared rather than repeated here is fkChainProbeFromRange's doc,
+// not this one.
+func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.RecordType, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
+	t.Helper()
+	cmp := predicates.Comparison{
+		Type:    predicates.ComparisonEquals,
+		Operand: fkChainField(outerLayout, outerAlias, "ID"),
+	}
+	rng := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !rng.Ok {
+		t.Fatalf("failed to build correlated eq range against %s", outerLayout.RecordName)
+	}
+	return fkChainProbeFromRange(rt, idx, rng.Range, fkChainIDPK(), false)
 }
 
 // fkChainFanOutFKProbe is fkChainFKProbe but models a FAN-OUT index (one
@@ -168,14 +209,7 @@ func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.Cor
 // than once per probe. See TestFKChainCardinalityCap_DeclinesOnFanOutIndex.
 func fkChainFanOutFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
-		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
-		[]string{rt}, fkChainRowType(rt), false)).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
-		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey(fkChainIDPK()).
-		WithDistinctRecordsSignal(true)
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), fkChainIDPK(), true)
 }
 
 // fkChainRTPrefixedPK models the primary key shape
@@ -201,14 +235,8 @@ func fkChainRTPrefixedPK() []values.Value {
 // fkChainRTPrefixedPK).
 func fkChainFKProbeRTPrefixed(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
-		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
-		[]string{rt}, fkChainRowType(rt), false)).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
-		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey(fkChainRTPrefixedPK()).
-		WithDistinctRecordsSignal(false)
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"),
+		fkChainRTPrefixedPK(), false)
 }
 
 func fkChainFlat(outer, inner plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
@@ -1340,5 +1368,222 @@ func TestAlignIndexPKTypesByCoordinate_DuplicateDisplayNamesStayPositional(t *te
 	if !ok || len(prefixed) != 3 || prefixed[0] != values.UnknownType ||
 		prefixed[1] != values.NotNullFloat || prefixed[2] != values.NotNullDouble {
 		t.Fatalf("record-type-prefixed alignment = %v ok=%v, want [UNKNOWN FLOAT DOUBLE]", prefixed, ok)
+	}
+}
+
+// TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter drives the
+// OUTER branch and the two LOCAL declines -- a resultValue that is not a bare
+// QOV, and one correlated to neither leg.
+//
+// It deliberately uses scan legs, and that is its limit: wherever a leg HAS a
+// layout the arm and plain fall-through agree, so none of these three cases can
+// tell them apart on its own. Measured, not assumed -- under a mutation that
+// replaces the OUTER recursion with fall-through, this test still passes. The
+// discriminating case is the nested one, and it lives in the sibling test
+// below; these three pin the paths, that one pins the reason.
+func TestFKChainCardinalityCap_FlatMapLayoutArmDeclinesAndPicksOuter(t *testing.T) {
+	t.Parallel()
+
+	outerAlias, innerAlias := fkChainAlias(0), values.NamedCorrelationIdentifier("i")
+	outer := fkChainFullScan("T1")
+	inner := fkChainFKProbe(t, "T2", "t2_by_t1", "T1", outerAlias)
+
+	newFlat := func(rv values.Value) plans.RecordQueryPlan {
+		return mustFKChain(plans.NewRecordQueryFlatMapPlan(
+			outer, inner, outerAlias, innerAlias, rv, false))
+	}
+
+	// OUTER correlation: the emitted row is the outer leg's, so the layout is
+	// T1's. This is a SYNTHETIC shape, not the production chain path --
+	// fkChainFlat always correlates to the inner alias, and the hop-1 test above
+	// pins hop1 emitting its INNER leg. The branch is reachable and worth
+	// driving; it is just not the one a chain hop takes.
+	outerQOV := mustFKChain(values.NewQuantifiedObjectValue(outerAlias, planRowLayout(outer)))
+	if got := planRowLayout(newFlat(outerQOV)); values.OrdinalDomainOfType(got) != values.OrdinalDomainOfType(fkChainRowType("T1")) {
+		t.Errorf("planRowLayout over an OUTER-correlated resultValue = %v, want T1's layout", got)
+	}
+
+	// Not a bare QOV: a value that still HAS a type, which is exactly why the
+	// decline must be explicit. Returning that type would let the identity
+	// proof rest on a row this file never named.
+	notAQOV := values.NewNullValue(fkChainRowType("T2"))
+	if notAQOV.Type() == nil {
+		t.Fatal("fixture is vacuous: the non-QOV resultValue must carry a type, " +
+			"otherwise this case cannot distinguish declining from having nothing to return")
+	}
+	if got := planRowLayout(newFlat(notAQOV)); got != nil {
+		t.Errorf("planRowLayout over a non-QOV resultValue = %v, want nil (decline)", got)
+	}
+
+	// A QOV correlated to NEITHER leg: reaches the switch and falls past both
+	// cases, which is the second nil and a different path from the one above.
+	foreign := mustFKChain(values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("elsewhere"), fkChainRowType("T2")))
+	if got := planRowLayout(newFlat(foreign)); got != nil {
+		t.Errorf("planRowLayout over a QOV correlated to neither leg = %v, want nil (decline)", got)
+	}
+}
+
+// TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting drives the
+// recursion the sibling test above cannot reach: with scan legs the arm and
+// plain fall-through agree, so nothing there discriminates them.
+//
+// It calls planRowLayout DIRECTLY. That is deliberate and it is also this
+// test's limit: the fixtures below are NOT production shapes. The comment on
+// planRowLayout explains why the transitive decline cannot arrive through the
+// FK-cap entries at all. The assertions below pin what is pinnable: gate one
+// (scanBindingOfLeaf excluding a FlatMap) is mutation-proven; the nil-layout
+// rejection is over-determined and only the OUTCOME can be pinned, which the
+// comment beside it says outright.
+//
+// Both recursions are driven, because the arm has two and a mutation to either
+// must be caught: replacing the inner one with fall-through once left the whole
+// target green.
+func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing.T) {
+	t.Parallel()
+
+	outerAlias, innerAlias := fkChainAlias(0), values.NamedCorrelationIdentifier("i")
+	base := fkChainFullScan("T1")
+	probe := fkChainFKProbe(t, "T2", "t2_by_t1", "T1", outerAlias)
+
+	// A FlatMap that DECLINES: its resultValue is not a bare QOV.
+	declining := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		base, probe, outerAlias, innerAlias,
+		values.NewNullValue(fkChainRowType("T2")), false))
+	if got := planRowLayout(declining); got != nil {
+		t.Fatalf("fixture is vacuous: the nested FlatMap must decline, got %v", got)
+	}
+	if declining.GetResultType() == nil {
+		t.Fatal("fixture is vacuous: fall-through must have SOMETHING to return, " +
+			"otherwise neither case below can distinguish the arm from fall-through")
+	}
+
+	// INNER leg. The wrapper selects its inner, which
+	// is the declining FlatMap, so the decline must propagate.
+	wrapAlias := fkChainAlias(1)
+	viaInner := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		base, declining, wrapAlias, innerAlias,
+		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, declining.GetResultType())), false))
+	if got := planRowLayout(viaInner); got != nil {
+		t.Errorf("planRowLayout over a FlatMap whose INNER declines = %v, want nil "+
+			"(the decline must propagate through the recursion production takes)", got)
+	}
+
+	// OUTER leg -- the same property on the other recursion. Synthetic, but the
+	// arm has two recursions and a mutation to either must be caught.
+	viaOuter := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		declining, probe, wrapAlias, innerAlias,
+		mustFKChain(values.NewQuantifiedObjectValue(wrapAlias, declining.GetResultType())), false))
+	if got := planRowLayout(viaOuter); got != nil {
+		t.Errorf("planRowLayout over a FlatMap whose OUTER declines = %v, want nil "+
+			"(the decline must propagate through nesting)", got)
+	}
+
+	// WHAT THE NEXT TWO ASSERTIONS ACTUALLY BUY, which is not the same thing for
+	// each. The comment on planRowLayout says the transitive decline cannot
+	// arrive through the FK-cap entries; these are what stand behind that.
+	// scanBindingOfLeaf's exclusion of a FlatMap is genuinely pinned -- add a
+	// FlatMap case and the first assertion reddens. The nil-layout rejection is
+	// NOT pinned to any single guard, for the structural reason set out beside
+	// it below: only the outcome can be asserted. An earlier version of this
+	// block claimed both were pinned; that was measured false for the second and
+	// the phrasing is deliberately not repeated here, so a grep for it stays at
+	// zero.
+	if _, ok := scanBindingOfLeaf(declining); ok {
+		t.Error("scanBindingOfLeaf accepted a FlatMap: the inner-alias orientation " +
+			"is no longer excluded, so planRowLayout's unreachability claim is stale")
+	}
+	if computePKThread(viaInner).ok {
+		t.Error("computePKThread(viaInner) is ok: a FlatMap-inner now threads a PK, " +
+			"so the transitive decline is reachable and the comment must be rewritten")
+	}
+	// GATE 2, the frontier check. Reaching it needs an outer that THREADS a PK
+	// while declining a layout, which is exactly the RecordConstructor shape the
+	// comment on planRowLayout names: pkThreadThroughResultValue accepts a
+	// direct PK read, planRowLayout accepts only a bare QOV. Anything simpler
+	// (a NullValue outer, say) dies at !outerThread.ok one frame above and the
+	// assertion is then vacuous -- measured, not assumed.
+	rcOuter := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		base, probe, outerAlias, innerAlias,
+		values.NewRecordConstructorValue(
+			values.RecordConstructorField{Name: "ID", Value: fkChainCorrelatedRef(t, "T2", innerAlias, "ID")},
+		), false))
+	if !computePKThread(rcOuter).ok {
+		t.Fatal("fixture is vacuous: the RecordConstructor outer must THREAD a PK, " +
+			"otherwise the frontier gate is never reached and this assertion proves nothing")
+	}
+	if planRowLayout(rcOuter) != nil {
+		t.Fatal("fixture is vacuous: the RecordConstructor outer must DECLINE a layout, " +
+			"otherwise the frontier is known and the gate is never exercised")
+	}
+	// The probe must be baked against rcOuter's OWN emitted layout, not T1's.
+	// rcOuter emits the one-column RecordConstructor row; baking against T1's
+	// [ID, ADDRESS] domain would give correlatedFieldIdentity an independent
+	// reason to reject, and the assertion below would then pass for the wrong
+	// reason -- green even if a correctly baked outer started being accepted.
+	rcLayout, isRecord := rcOuter.GetResultType().(*values.RecordType)
+	if !isRecord {
+		t.Fatalf("fixture is vacuous: rcOuter must emit a record layout to bake against, got %T",
+			rcOuter.GetResultType())
+	}
+	wrapProbe := fkChainFKProbeAgainst(t, "T2", "t2_by_t1", rcLayout, wrapAlias)
+	if binding, ok := scanBindingOfLeaf(wrapProbe); !ok || len(binding.comparisons) == 0 {
+		t.Fatalf("fixture is vacuous: scanBindingOfLeaf rejects the wrap probe "+
+			"(ok=%v, comparisons=%d), so innerFullyBindsThread returns at its FIRST "+
+			"guard and the layers below are never reached", ok, len(binding.comparisons))
+	}
+	viaRC := mustFKChain(plans.NewRecordQueryFlatMapPlan(
+		rcOuter, wrapProbe, wrapAlias, innerAlias,
+		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, planRowLayout(wrapProbe))), false))
+	// This pins the REJECTION, not one gate, and the distinction is structural
+	// rather than a limit of this fixture. frontier.IsKnown() is false exactly
+	// when the layout is not a *RecordType or has no fields; threadPKIdentity
+	// succeeds only when it IS a *RecordType with an in-range ordinal. The two
+	// are mutually exclusive, so a nil outerLayout is refused by the frontier
+	// check, by threadPKIdentity and by the empty-wantKeys return, and the
+	// frontier guard is strictly subsumed by the other two. Those three are
+	// jointly sufficient and minimal -- measured, with the caveat in the
+	// encoding note below, which is the thing to read before re-measuring.
+	// Measured: disabling it alone leaves the whole suite green. No fixture can
+	// isolate that line, so claiming this assertion "pins the frontier gate"
+	// would be unsupportable.
+	//
+	// What it DOES pin is specific and realistic, and one token proves it:
+	// change :525 from planRowLayout(fm.GetOuter()) to
+	// fm.GetOuter().GetResultType() and this reddens. So the assertion holds the
+	// frontier and wantKeys to the PROVEN row layout rather than the DECLARED
+	// result type -- which is the whole reason planRowLayout exists, and the
+	// swap a future reader is most likely to make.
+	//
+	// How many layers refuse a nil outerLayout depends on how the mutation is
+	// ENCODED, which is worth knowing before anyone re-measures this. Encoded
+	// FAIL-OPEN -- frontier guard removed, threadPKIdentity's !ok arm continuing
+	// instead of returning, wantKeys guard removed -- the three together redden
+	// this, and each PAIR leaves it green, so that triple is minimal. Encoded
+	// KEEP-THE-KEY, where the zero key is retained on !ok, the same three leave
+	// it green — but NOT because correlatedFieldIdentity rejects. That was the
+	// first guess and it fails its own removal test: hand the bind loop a KNOWN
+	// frontier so cfi cannot decline, and this is still green, with control
+	// reaching the wantKeys lookup. The decisive blocker is the retained key's
+	// UNKNOWN Domain. Both sides of the lookup are canonicalized by the same
+	// WithCorrelation, so correlation cannot discriminate; ColumnIdentity.Domain
+	// documents that every producer returning ok yields a KNOWN one, so an
+	// unknown Domain equals no accepting derivation's key, bound stays empty and
+	// the coverage check fails. cfi is only the first short-circuit. Both
+	// encodings were measured. The earlier version of this comment reported only
+	// the second and concluded the three were not the whole set, which is false
+	// under the first.
+	//
+	// One thing it does NOT establish: describing this as firing exactly when
+	// that function ACCEPTS would be a tautology rather than a measurement --
+	// the assertion IS that call, and it fires on true.
+	//
+	// The reach guard further up is what keeps any of this honest: without the
+	// probe's full stamp set, scanBindingOfLeaf rejects at the FIRST guard and
+	// none of it is reached.
+	if innerFullyBindsThread(viaRC, computePKThread(rcOuter)) {
+		t.Error("innerFullyBindsThread accepted an outer with no PROVEN layout: either every " +
+			"path that failed closed on an unknown domain now admits it, or the frontier " +
+			"is being taken from the DECLARED result type instead of planRowLayout")
 	}
 }

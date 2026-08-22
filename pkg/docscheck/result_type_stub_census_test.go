@@ -478,9 +478,14 @@ func TestResultTypeConsumersFailClosed(t *testing.T) {
 //
 // RecordQueryAggregateIndexPlan's GetResultType returns a stored field, so the
 // inventory above correctly does not list it — and yet every aggregate index
-// plan the planner builds carries values.UnknownType, because all three
-// production callers pass the singleton EXPLICITLY and the constructor also
-// defaults nil to it. It is a thirteenth stub, made one layer up.
+// plan the planner built ONCE carried values.UnknownType, because the
+// production callers passed the singleton EXPLICITLY and the constructor
+// defaulted a nil type to it. That was a thirteenth stub, made one layer up.
+//
+// RFC-232 CLOSED IT, which is why this paragraph is historical and not a live
+// claim: the callers now derive an exact result type before constructing the
+// plan, and the constructor returns an error rather than defaulting. `want`
+// below holds that population at zero and is what would catch a relapse.
 //
 // This gate exists because the first version of RFC-213 asserted these plans
 // "return a stored real type" and was wrong: it had inspected the method and not
