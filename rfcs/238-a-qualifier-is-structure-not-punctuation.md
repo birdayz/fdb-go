@@ -581,7 +581,7 @@ which is where its table-locality comes from — it has no drop-list and no
 per-type catch.
 
 BOTH LOOPS, NOT JUST THE PRIMARY ONE. `buildMatchCandidates` continues into
-`c.md.GetAllIndexes()` (`cascades_generator.go:2826`) — every index in the
+`c.md.GetAllIndexes()` (`cascades_generator.go:2840`) — every index in the
 SCHEMA — and each resulting `metadataIndexDef` derives its row type through the
 same `PositionalTypeForRecordLayout` (`:3392`, `:3421`). So a colliding table
 that owns ANY secondary index reproduces the panic for a query that never names
@@ -623,10 +623,10 @@ AND THE NARROWING GOES WHERE THE CANDIDATES ARE BUILT — it does not have to mo
 earlier in the pipeline, which was the first objection to it. Java evaluates the
 property over the ROOT REFERENCE, and every production `newCascadesPlanner` site
 already holds one before it constructs the context:
-`cascades_generator.go:488` and `:1129`, and `scalar_subquery_planning.go:70`,
+`cascades_generator.go:488` and `:1143`, and `scalar_subquery_planning.go:70`,
 each build `ref`/`subRef` first and pass it to `PlanWithContext` on the next
 line. That is Java's `planPartial` shape (`CascadesPlanner.java:378-388`). So
-`buildCascadesPlanContext` (`cascades_generator.go:2714`) takes the reference and
+`buildCascadesPlanContext` (`cascades_generator.go:2728`) takes the reference and
 narrows there; the `sync.Once` defers only the BUILDING, not the reference.
 
 An empty result then yields an empty candidate set, which is what Java does too
@@ -762,15 +762,15 @@ and reading what actually reddened:
 ```
 values.NewRecordType                      type.go:768   panics
 executor.PositionalTypeForRecordLayout    query_result.go:277
-embedded.buildMatchCandidates             cascades_generator.go:2795
-embedded.GetMatchCandidates               cascades_generator.go:2744
+embedded.buildMatchCandidates             cascades_generator.go:2809
+embedded.GetMatchCandidates               cascades_generator.go:2758
 cascades.MatchLeafRule.OnMatch            rule_match_leaf.go:59
 ```
 
 `buildMatchCandidates` walks every record type in the metadata. Two guards skip
-a type outright — no primary key (`cascades_generator.go:2773`) and no key
-components (`:2777`) — and every type that survives both gets a positional type
-built from its descriptor. A third guard (`:2791`) does NOT skip: a type with no
+a type outright — no primary key (`cascades_generator.go:2787`) and no key
+components (`:2805`) — and every type that survives both gets a positional type
+built from its descriptor. A third guard (`:2805`) does NOT skip: a type with no
 descriptor still gets a candidate, flowing `UnknownType`, so it is the only one
 that reaches the end without a positional type. One unbuildable table therefore
 aborts the candidate set for all of them. The blast radius is schema-wide
@@ -840,7 +840,7 @@ WithoutChildren` compares its record-type list element by element and has no
 metadata to resolve with — nor should it: it is structural equality on a memo
 expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
 `buildMatchCandidates` passes `[]string{rt.Name}` (stored,
-`cascades_generator.go:2810`) and `cascades_translator.go:3032` passes
+`cascades_generator.go:2824`) and `cascades_translator.go:3032` passes
 `[]string{s.Table}` (SQL).
 
 The visible cost, same query shape over one schema, one per table:
@@ -998,7 +998,7 @@ VALIDATION DIVERGENCE, and every other path already said so. Java rejects —
 UNDEFINED_TABLE / "Unknown table RESTAURANT"
 (`CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3`). Go's SELECT path
 rejects. Go's `INSERT … VALUES` rejects, through `md.GetRecordType(insOp.Table)`
-(`cascades_generator.go:1042`). Only UPDATE and DELETE folded.
+(`cascades_generator.go:1056`). Only UPDATE and DELETE folded.
 
 So the DML target now resolves strictly, and the case arm leaves this section
 entirely. **Canonicalising it — which is what this section proposed one revision
@@ -1030,7 +1030,7 @@ correct response.
 
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
-places (`cascades_generator.go:2810`, `:3439`, `:3663`, `:3738`) and those are
+places (`cascades_generator.go:2824`, `:3453`, `:3677`, `:3752`) and those are
 cross-compared in `rule_aggregate_data_access.go:84,299`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
 plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
@@ -1089,7 +1089,8 @@ asked for. The obvious response is a gate over `file.go:NNN` cites in `rfcs/`.
 It was measured and it is the wrong instrument, twice over.
 
 **As a "does the cited line look like code" check: 1603 weak of 2955 cites
-repo-wide.** At that rate the heuristic is measuring citation STYLE — most of
+repo-wide** -- every `file.go:NNN` in `rfcs/*.md` resolved against the tree and
+its target line classified blank / brace / comment / code. At that rate the heuristic is measuring citation STYLE — most of
 those are deliberate cites into doc comments, which is a legitimate thing to
 cite — not staleness. RFC-238's own count under it is 5, and all five are sound:
 `positional_row.go:7`, `colref.go:95`, `metadata.go:1330-1338`,
@@ -1109,4 +1110,43 @@ been silent for six of the seven.
 So neither shape is built. What actually works is the discipline the failures
 point at: when a commit edits a file, re-run the cites into THAT file, and do it
 by sweeping rather than by fixing the copies someone happened to name.
+
+
+### 7e. The target is validated after its columns are, and only UPDATE now escapes that
+
+Making the DML target strict exposed an ORDERING that the fold had been hiding.
+The 42F01 guard runs on the BUILT logical operator, so anything that resolves
+columns during construction speaks first. Measured against
+`CREATE TABLE "Customer" (id BIGINT, name STRING, PRIMARY KEY (id))`:
+
+```
+UPDATE customer SET nosuchcol = 'z'     42F01   (after the fix below)
+DELETE FROM customer WHERE nosuchcol=1  42703   column "NOSUCHCOL" does not exist
+SELECT nosuchcol FROM customer          42703   column "NOSUCHCOL" does not exist
+```
+
+Every one of those names a column of a table that does not exist. Java reports
+the TABLE in all three — its DML visitors and its analyzer both resolve the
+target through an exact `SemanticAnalyzer.getTable` before anything looks at a
+column.
+
+The UPDATE row is closed here, cheaply and with no blast radius: the SET-column
+check had its own `recordTypeCI` call (`logical_predicate.go:6719`) that folded
+case purely to find the descriptor, so making it strict leaves `rt` nil for an
+unresolvable target, the SET check declines, and the 42F01 is what answers.
+
+THE OTHER TWO ROWS SHARE ONE RESOLVER AND CANNOT BE CLOSED SEPARATELY.
+`buildWherePredicateForTableE` (`logical_predicate.go:130`) resolves its table
+through `semantic.Analyzer.ResolveTable` over `rlcatalog.Wrap(md)` — the SAME
+analyzer the SELECT path uses. Making it strict fixes the DELETE row and the
+SELECT row together, moves both toward Java, and changes the SQLSTATE of every
+existing query that names a bad column on a case-mismatched table. That is a
+decision about the SELECT diagnostic surface, not about DML, and it is not made
+here.
+
+All three rows are asserted at their measured values in
+`unquoted_dml_against_a_quoted_table.yaml`, the SELECT twin beside the DELETE
+one specifically so the pair cannot drift apart unnoticed: today they agree with
+each other and disagree with UPDATE, and any change has to come to that file and
+say which way it is making them agree.
 

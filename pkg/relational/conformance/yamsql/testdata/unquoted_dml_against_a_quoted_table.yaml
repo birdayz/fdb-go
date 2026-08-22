@@ -54,6 +54,36 @@ tests:
   - query: UPDATE customer SET name = 'zzz' WHERE id = 1
     error: "42F01"
 
+  # A NONEXISTENT COLUMN ON THE SAME NONEXISTENT TABLE MUST STILL SAY 42F01.
+  # The SET-column check runs during logical construction, BEFORE the target
+  # guard runs on the built op, so while it resolved its table case-insensitively
+  # this reported `42703 column "NOSUCHCOL" not found in table "CUSTOMER"` --
+  # diagnosing a column of a table that does not exist. The table is the first
+  # thing wrong and must be the thing reported.
+  - query: UPDATE customer SET nosuchcol = 'z' WHERE id = 1
+    error: "42F01"
+
+  # THE WHERE SIDE STILL ANSWERS 42703, AND THAT IS AGREEMENT, NOT AN OVERSIGHT.
+  # The WHERE-column resolver runs during logical construction and folds case,
+  # so it names the column before the target guard runs on the built operator.
+  # SELECT does exactly the same thing with the same spelling, so changing this
+  # one alone would make DML disagree with SELECT to fix a diagnostic ordering
+  # neither of them gets right. Asserted at the value it HAS, so that a change
+  # to either path has to come here and say which way the two are being made to
+  # agree.
+  - query: DELETE FROM customer WHERE nosuchcol = 1
+    error: "42703"
+
+  # The SELECT twin, which is what makes the arm above agreement rather than a
+  # DML-only wart. If these two ever diverge, that is the finding.
+  - query: SELECT nosuchcol FROM customer
+    error: "42703"
+
+  # And the control that keeps the arms above about the TABLE: on the table as
+  # declared, a nonexistent column is a genuine 42703.
+  - query: UPDATE "Customer" SET nosuchcol = 'z' WHERE id = 1
+    error: "42703"
+
   # The rows are still here. A rejection that had partially applied would show
   # up as a changed row rather than as an error.
   - query: SELECT id, name FROM "Customer" ORDER BY id

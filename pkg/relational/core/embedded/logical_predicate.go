@@ -6713,10 +6713,20 @@ func buildLogicalPlanForUpdateWithCatalog(
 	tableName = resolved
 	bare := bareTableName(tableName)
 
-	// Resolve the target type case-insensitively for the SET-column check below. (Missing
-	// target tables are rejected with 42F01 in planDML after resolveQualifiedTableNames;
-	// rt stays nil here for a missing/qualified target and the SET check is then skipped.)
-	rt := recordTypeCI(md, bare)
+	// Resolve the target type STRICTLY, the same way planDML's 42F01 guard does.
+	// (Missing target tables are rejected with 42F01 in planDML after
+	// resolveQualifiedTableNames; rt stays nil here for a missing/qualified target
+	// and the SET check below is then skipped.)
+	//
+	// It folded case once, and the ORDER of the two checks made that visible as a
+	// wrong error rather than a lax one: this runs during logical construction,
+	// planDML's guard runs afterwards on the built op, so `UPDATE customer SET
+	// nosuchcol = 'z'` against a table declared `"Customer"` reported
+	// `42703 column "NOSUCHCOL" not found in table "CUSTOMER"` -- diagnosing a
+	// column of a table that does not exist -- instead of 42F01. Strict here means
+	// rt is nil for that target and the SET check declines, leaving the 42F01 to
+	// be the answer.
+	rt := md.GetRecordType(bare)
 
 	// Validate each SET target column exists in the table, mirroring INSERT's
 	// build-time check (insert_cascades.go). Without this, an UPDATE that assigns a
