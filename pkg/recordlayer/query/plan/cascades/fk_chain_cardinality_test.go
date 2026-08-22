@@ -145,10 +145,13 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 // fkChainProbeFromRange stamps an FK-chain index probe. Exactly three helpers
 // route through it -- fkChainFKProbe, fkChainFKProbeAgainst and
 // fkChainFanOutFKProbe -- so a stamp added here reaches those three and no
-// others. That matters because omitting WithDistinctRecordsSignal makes
-// scanBindingOfLeaf's index arm fail closed, and an assertion behind that guard
-// then exits above the thing it meant to test; that happened here once, from a
-// hand-rolled copy of this chain.
+// others. That matters because a missing stamp makes scanBindingOfLeaf's index
+// arm fail closed, and an assertion behind that guard then exits above the
+// thing it meant to test -- which happened here once, from a hand-rolled copy
+// of this chain. The reach guard in the nesting test now catches THAT specific
+// omission loudly, so the residual risk is a DIFFERENT signal added later that
+// no guard checks; sharing the chain is what covers the ones nobody thought to
+// assert.
 //
 // Deliberately NOT a claim about the file: fkChainPKProbe and
 // fkChainFKProbeRTPrefixed build their own plans inline and nothing here
@@ -1566,8 +1569,8 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	// three were not the whole set, which is false under the first.
 	//
 	// One thing it does NOT establish: describing this as firing exactly when
-	// that function rejects would be a tautology rather than a measurement --
-	// the assertion IS that call.
+	// that function ACCEPTS would be a tautology rather than a measurement --
+	// the assertion IS that call, and it fires on true.
 	//
 	// The reach guard further up is what keeps any of this honest: without the
 	// probe's full stamp set, scanBindingOfLeaf rejects at the FIRST guard and
