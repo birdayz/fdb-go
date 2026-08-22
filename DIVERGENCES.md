@@ -2140,48 +2140,94 @@ discard it today. `FromNormalized` hard-codes `wasQuoted: false` and is used
 
 ## Index fields are exported in Go and `private final` in Java
 
-**Java.** `Index` holds `private final String name`, `private final KeyExpression
-rootExpression` and `private final Map<String,String> options`
-(`Index.java:63-78`), exposed by getters only (`:294`, `:310`, `:329`). There is
-no `setName` and no `setRootExpression`. Because those fields cannot be
-rewritten, `RecordMetaDataBuilder.build` passes `indexes`, `universalIndexes`
-and `formerIndexes` DIRECTLY into `new RecordMetaData(...)`
-(`RecordMetaDataBuilder.java:1457-1459`) and shares them with the builder
-safely.
+**Java.** `Index` holds `private final` `name`, `type`, `rootExpression`,
+`options` and `predicate` (`Index.java:63-78`), exposed by getters only
+(`:294`, `:310`, `:329`). There is no `setName` and no `setRootExpression`.
+Because the fields cannot be rewritten, `RecordMetaDataBuilder.build` passes
+`indexes`, `universalIndexes` and `formerIndexes` DIRECTLY into
+`new RecordMetaData(...)` (`RecordMetaDataBuilder.java:1457-1459`) and shares
+them safely.
 
-**Go.** `Index.Name`, `Index.RootExpression` and `Index.Options` are exported,
-as are all four fields of `FormerIndex`. `Build` shares the same containers Java
-shares, so a caller that keeps the `*Index` it passed to `AddIndex` — which is
-the normal pattern, and which Java REQUIRES, since `build` sets
-`primaryKeyComponentPositions` on that very object — can rewrite the built
-metadata after the fact. A changed `RootExpression` reads existing entries under
-a new expression; a changed `FormerIndex.SubspaceKey` defeats the
-subspace-reuse guard.
+**Go.** Those fields are exported. `Build` copies every CONTAINER but shares the
+`*Index` OBJECTS, so a caller that keeps the index it passed to `AddIndex` — the
+normal pattern, and one Java REQUIRES, since `build` sets
+`primaryKeyComponentPositions` on that very object (`:1466`) — can rewrite the
+built metadata afterwards. Each field is its own hazard: `RootExpression` reads
+existing entries under a new expression, `Type` dispatches to a different
+maintainer, `Predicate` filters by something the entries were never built with,
+`Name` desynchronises the registry key so `ToProto` emits an empty record-type
+list that reloads as universal.
 
-**Why not clone.** It was tried and reverted. Java shares, so cloning is a
-Go-only invention; a shallow copy does not isolate anyway, because the
-KeyExpression graph exposes exported mutators (`DimensionsKeyExpression`'s
-fields, which bound `CanDeleteWhere` at runtime; `RecordTypeKeyExpression.Nest`;
-the live child slice from `CompositeKeyExpression.SubKeyExpressions`) and a
-`[]byte` subspace key shares its backing array; and it splits "the caller's
-index" from "the metadata's index" across 544 call sites that pass a pre-`Build`
-`*Index` to `ScanIndex`, `RebuildIndex` and `SetIndex`. In `OnlineIndexer` that
-split degraded the containment check from "is the metadata's definition" to
-"shares a name with it" — building entries under one definition and marking
-another readable. It also broke cross-engine conformance (`go: pk=[]` vs
-`java: pk=[1]`) until positions were computed before the copy.
+**Why the objects are shared and not copied.** Copying them was tried and
+reverted. Java shares, so it is a Go-only invention; a shallow copy does not
+isolate anyway, because the KeyExpression graph exposes exported mutators
+(`DimensionsKeyExpression`'s fields, which bound `CanDeleteWhere` at runtime;
+`RecordTypeKeyExpression.Nest`; the live child slice from
+`CompositeKeyExpression.SubKeyExpressions`); and it splits "the caller's index"
+from "the metadata's index" across the 545 sites that pass a pre-`Build`
+`*Index` straight to `ScanIndex`, `RebuildIndex` or `SetIndex`
+(`grep -rn "ScanIndex(\|RebuildIndex(\|SetIndex(" --include='*.go' pkg/ cmd/
+conformance/ | wc -l` → 545). In `OnlineIndexer` that split degraded the
+containment check from "is the metadata's definition" to "shares a name with
+it". It also broke cross-engine conformance (`go: pk=[]` vs `java: pk=[1]`).
 
-**The Java-aligned fix is encapsulation**: unexport `Name`, `RootExpression` and
-`Options` behind getters, the pattern already used on that same struct for
-`subspaceKey`/`SubspaceTupleKey()`. Then post-`Build` mutation is impossible
-rather than merely undocumented, and sharing is safe for the same reason it is
-safe in Java. It is ~1146 call sites across `.Name`, `.RootExpression` and
-`.Options`, so it is its own change.
-
-Record types are NOT part of this divergence: Java builds fresh `RecordType`
-objects into a new map (`RecordMetaDataBuilder.java:1461`), and Go copies each
-record type and its association slices to match — which is what stops a
-post-`Build` `RemoveIndex` from orphaning already-built metadata.
+**The fix is encapsulation**, not copying: unexport those fields behind getters,
+the pattern already used on the same struct for `subspaceKey`/
+`SubspaceTupleKey()`. Then sharing is safe for the same reason it is safe in
+Java. Scope, with commands: `.RootExpression` 248 sites and `.Options` on index
+variables 191 (`grep -rn '\.RootExpression\b'` / `'idx\.Options\|ndex\.Options'`
+over `pkg/ cmd/ conformance/ --include='*.go'`); `.Name` is not countable by
+grep because many other types carry it. It is its own change.
 
 Pinned by `TestBuiltMetadataSharesIndexObjectsWithTheBuilder`, which fails when
-the divergence closes.
+the divergence closes. NOTE the pin covers `*Index` identity and `.Name` only —
+`Type`, `RootExpression`, `Options` and `Predicate` are named here but driven by
+no arm.
+
+---
+
+## `universalIndexes` is a Map in Java and a slice in Go
+
+Java's `RecordMetaDataBuilder.universalIndexes` is a `Map<String,Index>` and
+`removeIndex` does `universalIndexes.remove(name)`
+(`RecordMetaDataBuilder.java:1189-1198`) — a removal both the builder and any
+metadata sharing the map see cleanly. Go's is a `[]*Index` and
+`removeIndexFromSlice` compacts it IN PLACE (`result := indexes[:0]`,
+`metadata.go`), which rewrites the backing array.
+
+Go therefore COPIES the slice into the built metadata where Java shares the map.
+Sharing it reproduced a state Java cannot reach: after `Build` then
+`RemoveIndex`, `[uni_a uni_b]` became `[uni_b uni_b]` — the survivor duplicated,
+so its maintainer runs twice on every save and a COUNT/SUM aggregate takes a
+non-idempotent double atomic ADD, while the removed index stayed registered with
+no record types, the orphan state `Build` refuses at construction.
+
+The general rule, which "share what Java shares" does not capture: sharing is
+safe only when mutation is not in-place-destructive. Same field name, different
+container, different answer. `formerIndexes` is copied for the same reason even
+though it is append-only today — that is luck, not a property, and its elements
+are copied too because `FormerIndex.SubspaceKey` is `any` and may hold a
+`[]byte` whose backing array would otherwise be shared.
+
+Pinned by `TestPostBuildRemoveIndexLeavesUniversalIndexesIntact`.
+
+---
+
+## Go snapshots a record type's index lists; Java shares them
+
+Java's `RecordType` constructor assigns the builder's live lists
+(`RecordType.java:70-71`: `this.indexes = indexes;`), and `removeIndex` mutates
+them through `recordType.getIndexes().remove(index)`
+(`RecordMetaDataBuilder.java:1194-1195`). So in Java a post-`build()`
+`removeIndex` DOES strip the association from already-built metadata, whose
+`ToProto` then emits an empty record-type list that a reload reads as universal.
+
+Go copies each record type's `indexes` and `multiTypeIndexes` slices
+(`metadata.go`), so its built metadata keeps the association. Java rebuilds the
+RecordType *wrapper* (`RecordMetaDataBuilder.java:1464`) but not the lists
+inside it; Go rebuilds both.
+
+This is a deliberate Go-only difference in the direction of coherence, not a
+port, and it was previously described here as alignment — which it is not. Left
+as-is because the alternative is to reproduce a state that makes built metadata
+serialize wrongly; raise it upstream rather than matching it.

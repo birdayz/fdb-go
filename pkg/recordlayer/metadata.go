@@ -692,12 +692,14 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // metadata whose index registry and record-type associations do not agree in
 // both directions -- see the bijection check below.
 //
-// The returned metadata shares no mutable state with the builder: record
-// types, indexes, former indexes and the records descriptor are all cloned, so
-// no post-Build mutation on either side reaches the other. Copying only the
-// MAPS, which is what this comment used to describe, left the pointers inside
-// them shared -- which is how a post-Build RemoveIndex orphaned already-built
-// metadata and a post-Build rename made it serialize as universal.
+// The returned metadata COPIES every container and shares the *Index objects.
+// Copying the containers keeps a later builder mutation from rewriting what
+// Build returned; sharing the objects is what callers depend on when they hand
+// a pre-Build *Index to ScanIndex, RebuildIndex or SetIndex, and what keeps
+// OnlineIndexer's containment check an identity check rather than a name check.
+// The objects therefore stay mutable through their exported fields, which is a
+// divergence from Java's `private final`: DIVERGENCES.md has the analysis, the
+// measured call-site count and the fix.
 func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Check for errors accumulated during builder method calls.
 	if len(b.buildErrors) > 0 {
@@ -919,29 +921,22 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		typeKeySeen[dedup] = name
 	}
 
-	// DETACH THE BUILT METADATA FROM THE BUILDER, or the association invariant
-	// checked above expires the moment the builder is touched again.
+	// Compute primaryKeyComponentPositions ON THE BUILDER'S OBJECTS, and before
+	// the containers are copied below.
 	//
-	// Copying only the MAP leaves the *RecordType pointers shared, so
-	// `md, _ := b.Build(); b.RemoveIndex("x")` strips x from the RecordType md
-	// holds while md.indexes keeps its own copied entry. md.ToProto() then emits
-	// x with an EMPTY RecordType list, and a reload reads that as UNIVERSAL --
-	// the index comes back maintained for every record type. The check in this
-	// function cannot see that: it runs once, and the mutation happens after.
-	//
-	// Compute primaryKeyComponentPositions for each index, ON THE BUILDER'S
-	// OBJECTS and BEFORE they are cloned below.
-	//
-	// The order is load-bearing and the cross-engine conformance suite is what
+	// The order is load-bearing and only the cross-engine conformance suite
 	// proved it. Java sets these positions on the very Index objects the caller
 	// registered (RecordMetaDataBuilder.build calls
 	// index.setPrimaryKeyComponentPositions), and callers rely on that: the
 	// composite-index conformance store keeps the *Index it passed to AddIndex
-	// and hands that same object to ScanIndex. Computing the positions after
-	// the clone left the caller's object with nil positions while the metadata
-	// wrote entries with the primary key DEDUPED, so the scan decoded
-	// `pk=[]` where Java produced `pk=[1]` -- a wire-visible disagreement from
-	// a purely in-memory change.
+	// and hands that same object to ScanIndex. A revision that copied the index
+	// OBJECTS and computed positions afterwards left the caller's object with
+	// nil positions while the metadata wrote entries with the primary key
+	// DEDUPED, so the scan decoded `pk=[]` where Java produced `pk=[1]` -- a
+	// wire-visible disagreement from a change that looked purely in-memory.
+	// The object copy is gone, so the two are one pointer again and the hazard
+	// is latent rather than live; the order still matters the moment anyone
+	// reintroduces a copy, which is why it is stated rather than assumed.
 	//
 	// Matches Java's RecordMetaDataBuilder, which calls
 	// buildPrimaryKeyComponentPositions() over each record type's own indexes.
@@ -967,47 +962,78 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
-	// THE RECORD TYPES ARE REBUILT; THE INDEXES ARE SHARED. That split is
-	// Java's, checked against it rather than chosen here.
+	// WHICH CONTAINERS ARE COPIED, AND WHY IT IS NOT "THE ONES JAVA COPIES".
 	//
-	// Java's build() constructs FRESH RecordType objects into a new map
-	// (`builtRecordTypes.put(name, recordTypeBuilder.build(metaData))`), so the
-	// returned metadata never shares a record type with the builder. Go does
-	// the same below, and it is load-bearing: without it, `b.RemoveIndex(x)`
-	// after Build stripped the association from the object md held, and
-	// md.ToProto() then emitted x with an EMPTY RecordType list, which a reload
-	// reads as UNIVERSAL.
+	// Java shares every index container with its builder, so the obvious rule
+	// is "share what Java shares". That rule is wrong here, and checking it at
+	// the level of WHICH FIELDS are passed rather than WHAT KIND OF CONTAINER
+	// is what made it look right: sharing is safe only when mutation is not
+	// in-place-destructive. Java's universalIndexes is a Map<String,Index> and
+	// removeIndex does a map removal, which both sides see cleanly. Go's is a
+	// SLICE and removeIndexFromSlice compacts it in place (`indexes[:0]`), so
+	// sharing the backing array means a post-Build RemoveIndex rewrites the
+	// built metadata's slice under it -- leaving one universal index DUPLICATED
+	// (store.go iterates GetUniversalIndexes on every save, so its maintainer
+	// runs twice, and for COUNT/SUM a double atomic ADD is not idempotent) and
+	// another ORPHANED, which is the very class the validation above refuses.
 	//
-	// Java passes `indexes, universalIndexes, formerIndexes` DIRECTLY into
-	// `new RecordMetaData(...)` — it clones none of them, because Index's
-	// name, rootExpression and options are `private final` and cannot be
-	// rewritten after the fact. Go exports those fields, so the same sharing
-	// leaves post-Build mutation reachable here that is impossible there. That
-	// is a real divergence and it is recorded in DIVERGENCES.md; the fix is
-	// encapsulation, not copying.
+	// So the containers are copied and the OBJECTS are shared. The pointer
+	// identity is what the call sites depend on when they hand a pre-Build
+	// *Index to ScanIndex, RebuildIndex or SetIndex, and it is what keeps
+	// OnlineIndexer's containment check an identity check rather than a name
+	// check. Copying the containers costs nothing and changes none of that.
 	//
-	// AN EARLIER REVISION CLONED THE INDEXES, and it was wrong three ways.
-	// Java shares them, so the clone was a Go-only invention. A shallow struct
-	// copy did not achieve isolation anyway — RootExpression's graph exposes
-	// exported mutators (DimensionsKeyExpression's fields, which bound
-	// CanDeleteWhere at runtime; RecordTypeKeyExpression.Nest; live child
-	// slices from SubKeyExpressions) and a []byte subspace key shares its
-	// backing array. And it split "the caller's index" from "the metadata's
-	// index" across 544 call sites that pass a pre-Build *Index straight to
-	// ScanIndex, RebuildIndex and SetIndex — including OnlineIndexer, whose
-	// containment check would have degraded from "is the metadata's
-	// definition" to "shares a name with it", building entries under one
-	// definition and then marking another readable.
+	// formerIndexes is copied for the same reason even though it is append-only
+	// today: it is correct by luck, one in-place mutation away from identical
+	// breakage, and the luck is not written down anywhere.
+	//
+	// The record-type slices are copied too, and that one IS a Go-only
+	// divergence rather than alignment: Java's RecordType constructor assigns
+	// the builder's live lists (RecordType.java:70-71) and removeIndex mutates
+	// them through recordType.getIndexes(), so Java's built metadata DOES lose
+	// the association. Go keeps it. That is a deliberate difference in the
+	// direction of coherence, recorded in DIVERGENCES.md rather than presented
+	// as a port.
 	types := make(map[string]*RecordType, len(b.recordTypes))
 	for k, v := range b.recordTypes {
 		rt := *v
 		rt.indexes = append([]*Index(nil), v.indexes...)
 		rt.multiTypeIndexes = append([]*Index(nil), v.multiTypeIndexes...)
+		// A []byte record-type key shares its backing array through the struct
+		// copy, and that array is the type's on-disk PREFIX: mutating it after
+		// the duplicate-key check has passed moves every record of that type,
+		// or collides it with another. Java stores an immutable ByteString.
+		// make+copy, never append([]byte(nil), …), which returns NIL for an
+		// empty input -- nil is how this field spells "absent", so an
+		// empty-bytes key would stop serializing and the type would fall back
+		// to its union field number. TestRecordTypeKey_EmptyBytesSurvives
+		// ProtoRoundTrip pins that and has already caught this exact idiom here.
+		if raw, ok := v.explicitRecordTypeKey.([]byte); ok && raw != nil {
+			dup := make([]byte, len(raw))
+			copy(dup, raw)
+			rt.explicitRecordTypeKey = dup
+		}
 		types[k] = &rt
 	}
 	indexes := make(map[string]*Index, len(b.indexes))
 	for k, v := range b.indexes {
 		indexes[k] = v
+	}
+	universalIndexes := append([]*Index(nil), b.universalIndexes...)
+	formerIndexes := make([]*FormerIndex, len(b.formerIndexes))
+	for i, fi := range b.formerIndexes {
+		f := *fi
+		// Same trap one field over: SubspaceKey is `any` and may hold []byte.
+		if raw, ok := fi.SubspaceKey.([]byte); ok && raw != nil {
+			dup := make([]byte, len(raw))
+			copy(dup, raw)
+			f.SubspaceKey = dup
+		}
+		formerIndexes[i] = &f
+	}
+	var recordsSourceProto *descriptorpb.FileDescriptorProto
+	if b.recordsSourceProto != nil {
+		recordsSourceProto = proto.Clone(b.recordsSourceProto).(*descriptorpb.FileDescriptorProto)
 	}
 
 	// Validate no duplicate subspace keys among current indexes.
@@ -1287,14 +1313,14 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	md := &RecordMetaData{
 		recordTypes:             types,
 		fileDescriptor:          b.fileDescriptor,
-		recordsSourceProto:      b.recordsSourceProto,
+		recordsSourceProto:      recordsSourceProto,
 		version:                 b.version,
 		recordCountKey:          b.recordCountKey,
 		storeRecordVersions:     b.storeRecordVersions,
 		splitLongRecords:        b.splitLongRecords,
 		indexes:                 indexes,
-		universalIndexes:        b.universalIndexes,
-		formerIndexes:           b.formerIndexes,
+		universalIndexes:        universalIndexes,
+		formerIndexes:           formerIndexes,
 		unionDescriptor:         b.unionDescriptor,
 		fieldNumberToRecordType: fnToRT,
 		subspaceKeyCounter:      b.subspaceKeyCounter,

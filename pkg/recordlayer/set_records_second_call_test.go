@@ -571,7 +571,12 @@ func TestBuildRefusesAnIndexBothUniversalAndAssociated(t *testing.T) {
 	}
 }
 
-// and the reload rekeys it. The message must say that rather than borrowing the
+// A RENAMED UNIVERSAL INDEX reaches the registry-key check and nothing else:
+// the association walk never sees universal indexes, so `mismatched` cannot fire
+// for it. Its harm differs too -- an empty record-type list is the CORRECT
+// encoding for a universal index, so nothing widens or narrows; what breaks is
+// that GetIndex(oldKey) answers with an index calling itself something else, and
+// the reload rekeys it. The message must say that rather than borrowing the
 // type-specific one.
 func TestBuildRefusesARenamedUniversalIndex(t *testing.T) {
 	t.Parallel()
@@ -592,9 +597,6 @@ func TestBuildRefusesARenamedUniversalIndex(t *testing.T) {
 			"the index name disagreeing across a reload", err)
 	}
 }
-
-// THE BUILT METADATA OWNS EVERYTHING IT HOLDS, driven through every public
-// mutation route rather than argued about.
 
 // A DUPLICATE ASSOCIATION IS ACCEPTED, MATCHING JAVA, and this arm exists
 // because an earlier revision refused it and that would have broken loading.
@@ -627,25 +629,19 @@ func TestBuildAcceptsADuplicateAssociationBecauseJavaDoes(t *testing.T) {
 	}
 }
 
-// GO SHARES ITS INDEX OBJECTS WITH THE BUILDER; JAVA CANNOT. These arms pin a
+// GO SHARES ITS INDEX OBJECTS WITH THE BUILDER; JAVA CANNOT. This arm pins a
 // DIVERGENCE, not a design.
 //
-// Java's Index has `private final` name, rootExpression and options with
-// getters only, and RecordMetaDataBuilder passes its index maps straight into
-// `new RecordMetaData(...)` — sharing is safe there because the fields cannot
-// be rewritten. Go exports those fields, so the same sharing leaves post-Build
-// mutation reachable here and impossible there.
+// Java's Index fields are `private final`, so sharing is safe there. Go exports
+// them, so the same sharing leaves post-Build mutation reachable here and
+// impossible there. DIVERGENCES.md, "Index fields are exported in Go and
+// `private final` in Java", carries the analysis, the reason copying the
+// objects is the wrong fix, and the measured call-site count -- this comment
+// deliberately restates none of it, because that argument previously lived in
+// three files with two different numbers.
 //
-// An earlier revision cloned the indexes to close that. It was the wrong layer:
-// Java shares them, a shallow copy did not achieve isolation anyway (the
-// KeyExpression graph exposes exported mutators and a []byte subspace key
-// shares its backing array), and it split "the caller's index" from "the
-// metadata's index" across 544 call sites that hand a pre-Build *Index to
-// ScanIndex, RebuildIndex and SetIndex — degrading OnlineIndexer's containment
-// check from "is the metadata's definition" to "shares a name with it".
-//
-// WHEN ENCAPSULATION LANDS THESE ARMS FAIL. That is the signal to delete them,
-// not to relax them. DIVERGENCES.md carries the entry.
+// WHEN ENCAPSULATION LANDS THIS ARM FAILS. That is the signal to delete it, not
+// to relax it.
 func TestBuiltMetadataSharesIndexObjectsWithTheBuilder(t *testing.T) {
 	t.Parallel()
 
@@ -671,5 +667,63 @@ func TestBuiltMetadataSharesIndexObjectsWithTheBuilder(t *testing.T) {
 	if md.GetIndex("shared_idx").Name != "renamed_after_build" {
 		t.Error("the rename did not reach the built metadata — the divergence may be " +
 			"closed; see above before deleting")
+	}
+}
+
+// A POST-BUILD RemoveIndex MUST NOT REWRITE THE BUILT METADATA'S UNIVERSAL
+// SLICE, and this arm exists because sharing that slice did exactly that.
+//
+// removeIndexFromSlice compacts in place (`result := indexes[:0]`), so a shared
+// backing array is rewritten under the built metadata: the survivor appears
+// TWICE and the removed index becomes an orphan that is still registered. Both
+// are states Build refuses at construction, recreated afterwards in the object
+// Build returned. Java cannot reach either — its universalIndexes is a
+// Map<String,Index> and removeIndex is a map removal.
+//
+// The duplicate is not cosmetic. store.go iterates GetUniversalIndexes on every
+// record save, so the maintainer runs once per copy, and for COUNT/SUM that is
+// a double atomic ADD — non-idempotent, silently doubling the counter.
+func TestPostBuildRemoveIndexLeavesUniversalIndexesIntact(t *testing.T) {
+	t.Parallel()
+
+	uniA := NewIndex("uni_a", EmptyKey())
+	uniB := NewIndex("uni_b", EmptyKey())
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	setDemoPrimaryKeys(b)
+	b.AddUniversalIndex(uniA)
+	b.AddUniversalIndex(uniB)
+
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	before := append([]*Index(nil), md.GetUniversalIndexes()...)
+	if len(before) != 2 {
+		t.Fatalf("setup: %d universal indexes, want 2", len(before))
+	}
+
+	b.RemoveIndex("uni_a")
+
+	after := md.GetUniversalIndexes()
+	if len(after) != 2 {
+		t.Fatalf("the built metadata now reports %d universal indexes, want 2 — a "+
+			"post-Build builder mutation rewrote its slice", len(after))
+	}
+	seen := map[string]int{}
+	for _, idx := range after {
+		seen[idx.Name]++
+	}
+	for name, n := range seen {
+		if n != 1 {
+			t.Errorf("universal index %q appears %d times in the built metadata; its "+
+				"maintainer runs once per copy on every save, and for COUNT/SUM that is a "+
+				"non-idempotent double atomic ADD", name, n)
+		}
+	}
+	if reg := md.GetIndex("uni_a"); reg != nil {
+		if got := len(md.RecordTypesForIndex(reg)); got == 0 {
+			t.Error("uni_a is still registered but covers no record type — the orphan " +
+				"state Build refuses, recreated after Build returned")
+		}
 	}
 }
