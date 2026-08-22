@@ -261,3 +261,66 @@ func indexNamed(indexes []*Index, name string) bool {
 	}
 	return false
 }
+
+// BUILD REFUSES AN INDEX NO RECORD TYPE CLAIMS, which is what makes the orphan
+// state unreachable BY CONSTRUCTION rather than by an enumeration of routes.
+//
+// Refusing a second SetRecords closes the route Java closes, and an earlier
+// revision of RFC-238 §7f concluded from that the state was closed. It was not:
+// this builder hands out LIVE maps, so deleting a record type after registering
+// an index against it reaches the same state with one SetRecords call and no
+// error at all. Java never had to defend this — it has no getRecordTypes on the
+// builder. Enumerating routes is how the previous claim went wrong, so the
+// property is now checked in Build, where a route nobody has thought of yet is
+// still refused.
+func TestBuildRefusesAnIndexNoRecordTypeClaims(t *testing.T) {
+	t.Parallel()
+
+	newBuilderWithOrderIndex := func() (*RecordMetaDataBuilder, *Index) {
+		idx := NewIndex("orphan_by_delete", Field("price"))
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		setDemoPrimaryKeys(b)
+		b.AddIndex("Order", idx)
+		return b, idx
+	}
+
+	// The control: the same registration, nothing deleted. Without it, an
+	// implementation that refused EVERY index would satisfy the arm below.
+	ctl, ctlIdx := newBuilderWithOrderIndex()
+	ctlMD, err := ctl.Build()
+	if err != nil {
+		t.Fatalf("CONTROL Build: %v", err)
+	}
+	if got := len(ctlMD.RecordTypesForIndex(ctlIdx)); got != 1 {
+		t.Fatalf("CONTROL: RecordTypesForIndex = %d, want 1", got)
+	}
+
+	// The live-map route: GetRecordTypes returns the builder's own map.
+	b, _ := newBuilderWithOrderIndex()
+	delete(b.GetRecordTypes(), "Order")
+	md, err := b.Build()
+	if err == nil {
+		t.Fatalf("Build SUCCEEDED with an index no record type claims.\n"+
+			"RecordTypesForIndex = %d, GetIndex keeps the registry entry = %v.\n"+
+			"That metadata serializes with an EMPTY RecordType list, which a reload\n"+
+			"reads as UNIVERSAL — the index comes back maintained for every type, or\n"+
+			"refuses to load when its key is not valid on all of them.",
+			len(md.RecordTypesForIndex(md.GetIndex("orphan_by_delete"))),
+			md.GetIndex("orphan_by_delete") != nil)
+	}
+	if !strings.Contains(err.Error(), "orphan_by_delete") {
+		t.Errorf("Build failed with %q, which does not name the offending index", err)
+	}
+
+	// A UNIVERSAL index is registered and claimed by no record type BY DESIGN.
+	// The check must not reject it — without this arm, a check that refused
+	// every unassociated index would pass everything above.
+	ub := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	setDemoPrimaryKeys(ub)
+	uIdx := NewIndex("universal_ok", EmptyKey())
+	ub.AddUniversalIndex(uIdx)
+	if _, err := ub.Build(); err != nil {
+		t.Errorf("Build refused a UNIVERSAL index: %v — universal indexes belong to no "+
+			"record type by design, and the association check must exempt them", err)
+	}
+}

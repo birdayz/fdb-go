@@ -26,21 +26,27 @@ const rfc238Path = "rfcs/238-a-qualifier-is-structure-not-punctuation.md"
 // this document. Those cites are now written with their directory and this
 // test holds them there.
 //
-// SCOPE, as the list of what it does NOT cover:
+// SCOPE, as the list of what it does NOT cover. NO COUNTS APPEAR HERE ON
+// PURPOSE: two independent counts of the same file disagreed on every
+// per-document tally this comment used to carry, because "how many cites"
+// depends on unstated choices no sentence here settled. TestRFCCiteCensusRepoWide prints
+// the corpus census on every run; this list says what is excluded, not how much.
 //
-//   - Only `rfcs/238-...md`. The same run reports 341 ambiguous, 93 dangling
-//     and 23 past-EOF cites across all of `rfcs/*.md` -- a real cleanup, not a
-//     one-line widening of this test.
-//   - Only GO cites. RFC-238 carries 25 further line cites (59 Go of 84
-//     total): 24 into `.java` files in the vendored tree, which is gitignored,
-//     so the resolution this gate performs is unavailable for them; and ONE
-//     into `valid-identifiers.yamsql`, which IS tracked and could be covered.
-//     It is not, because the parser here only understands `.go`.
-//   - Not the 52 unqualified Go cites that resolve uniquely only because their
-//     basename happens to be unique in the tree TODAY. A second file of that
-//     name makes them ambiguous and this gate reddens, which is the design
-//     rather than a wart: the cite gets qualified at that point, as the
-//     `metadata.go` ones were. (7 of the 59 already carry a directory.)
+//   - Only `rfcs/238-...md`. The rest of `rfcs/*.md` carries ambiguous,
+//     dangling and past-EOF cites in quantity -- a real cleanup, not a one-line
+//     widening of this test.
+//   - Only GO cites. RFC-238 also cites `.java` files in the vendored tree,
+//     which is gitignored, so the resolution this gate performs is unavailable
+//     for them at all; and one `.yamsql` file, which IS tracked and could be
+//     covered but is not, because the parser here understands only `.go`.
+//   - Not the Go cites that resolve uniquely only because their basename
+//     happens to be unique in the tree TODAY. A second file of that name makes
+//     them ambiguous and this gate reddens, which is the design rather than a
+//     wart: the cite gets qualified at that point, as the `metadata.go` ones
+//     were.
+//   - Not a cite to anything that is not a file:line -- a dangling reference to
+//     a TEST NAME is invisible here, and this PR shipped one, in the comment on
+//     the very guard it was adding.
 func TestRFC238CitesResolveUniquely(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
@@ -126,7 +132,7 @@ func TestCiteProblemNamesEveryWayACiteCanBeUnusable(t *testing.T) {
 // A range counts as code when EITHER endpoint is code, which is the rule §7d
 // states. The scratch checker that preceded it classified each ENDPOINT
 // separately and reported every non-code one, which is what made
-// `pkg/recordlayer/metadata.go:1383-1385` and `record_types_property.go:37-51`
+// `pkg/recordlayer/metadata.go:1443-1445` and `record_types_property.go:37-51`
 // -- code ranges that CLOSE on a brace -- read weak. A draft of §7d then wrote
 // a sentence explaining those two, and the sentence was false for a third cite.
 func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
@@ -139,8 +145,7 @@ func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
 		"colref.go:95",
 		"derived_unnest.go:250",
 		"full_unordered_scan.go:110-118",
-		"pkg/recordlayer/metadata.go:1330-1338",
-		"pkg/recordlayer/metadata.go:1370-1378",
+		"pkg/recordlayer/metadata.go:1430-1438",
 		"positional_row.go:7",
 	}
 
@@ -382,5 +387,93 @@ func TestFileLinesDropsTheTerminalNewlineSentinel(t *testing.T) {
 			t.Errorf("%s: lineCount = %d, want %d — a wrong count here silently widens "+
 				"every bounds check in this file by that much", tc.name, got, tc.want)
 		}
+	}
+}
+
+// THE REPO-WIDE CENSUS §7d QUOTES, computed rather than remembered.
+//
+// It ASSERTS nothing about the totals. Pinning them would be the style gate
+// §7d rejects, and they move with every RFC edit. What it does is PRINT them,
+// so the section's figures can be re-derived by running one target instead of
+// trusting a number in prose — which matters because §7d shipped a wrong count
+// in four consecutive revisions while the underlying algorithm was correct, and
+// because two people implementing its stated rule from prose got different
+// answers.
+//
+// The assertions are the anti-vacuity floors. Without them a scan that lost the
+// tree, or a parser that matched nothing, would print a tidy all-zero census
+// and pass.
+//
+//	bazelisk test //pkg/docscheck:docscheck_test --test_output=streamed \
+//	  --test_arg=-test.run=TestRFCCiteCensusRepoWide --test_arg=-test.v
+func TestRFCCiteCensusRepoWide(t *testing.T) {
+	t.Parallel()
+	root := sourceTreeRoot(t)
+	index := goFileSuffixIndex(t, root)
+
+	entries, err := os.ReadDir(filepath.Join(root, "rfcs"))
+	if err != nil {
+		t.Fatalf("reading rfcs/: %v", err)
+	}
+	var docs int
+	seen := map[string]bool{}
+	var all []rfcCite
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		docs++
+		for _, c := range citesIn(t, filepath.Join(root, "rfcs", e.Name())) {
+			if seen[c.text] {
+				continue
+			}
+			seen[c.text] = true
+			all = append(all, c)
+		}
+	}
+
+	var ambiguous, dangling, pastEOF int
+	classes := map[string]int{}
+	for _, c := range all {
+		cands := index[c.path]
+		switch {
+		case len(cands) == 0:
+			dangling++
+			continue
+		case len(cands) > 1:
+			ambiguous++
+			continue
+		}
+		lines := fileLines(t, filepath.Join(root, cands[0]))
+		if !citeInBounds(c, len(lines)) {
+			pastEOF++
+			continue
+		}
+		class := classifyCiteLine(lines[c.start-1])
+		if class != "code" && c.end > c.start && classifyCiteLine(lines[c.end-1]) == "code" {
+			class = "code"
+		}
+		classes[class]++
+	}
+	resolved := classes["code"] + classes["comment"] + classes["brace"] + classes["blank"]
+	weak := resolved - classes["code"]
+
+	t.Logf("CENSUS over %d files in rfcs/: %d distinct cites — %d ambiguous, %d dangling, "+
+		"%d past-EOF, %d resolved (%d code / %d comment / %d brace / %d blank), %d weak",
+		docs, len(all), ambiguous, dangling, pastEOF, resolved,
+		classes["code"], classes["comment"], classes["brace"], classes["blank"], weak)
+
+	// Anti-vacuity. These are floors on the POPULATION, not on the findings:
+	// they fail when the scan lost the tree, never when the corpus improves.
+	if docs < 100 {
+		t.Fatalf("only %d RFC files scanned; the walk lost rfcs/", docs)
+	}
+	if len(all) < 2000 {
+		t.Fatalf("only %d distinct cites parsed; the parser matched almost nothing, and "+
+			"every count above is a fact about that failure rather than about the corpus", len(all))
+	}
+	if resolved < 1500 {
+		t.Fatalf("only %d cites resolved of %d; the Go file index is broken, which would "+
+			"make the dangling and ambiguous counts meaningless", resolved, len(all))
 	}
 }

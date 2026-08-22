@@ -284,11 +284,13 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 // (RecordMetaDataBuilder.java:384, :423; setLocalFileDescriptor and
 // addDependency carry the same guard), so a second setter call is not something
 // Java tolerates and then repairs downstream — it is not reachable at all. Go
-// permitted it, and that single divergence is what produced every orphaned
-// index this file used to be able to build: the overwrite replaced each
-// RecordType with a fresh one whose index slices are nil while the flat
-// registry b.indexes kept its entry, leaving an index registered and associated
-// with nothing. Build succeeded, RecordTypesForIndex came back empty,
+// permitted it, and that divergence is one route to an orphaned index: the
+// overwrite replaced every RecordType the SECOND descriptor also declares with a
+// fresh one whose index slices are nil -- a type present only in the first
+// survived, indexes intact -- while the flat registry b.indexes kept its entry,
+// leaving an index registered and associated with nothing. It is not the only
+// route, which is why Build now checks the property directly; see the
+// association check there. Build succeeded, RecordTypesForIndex came back empty,
 // GetIndexesForRecordType lost it, and ToProto then emitted it with an EMPTY
 // RecordType list — which a reload reads as UNIVERSAL, because that is Java's
 // intended encoding for a universal index. So the index came back either
@@ -296,10 +298,15 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 // all of them) or unloadable (when it is not: Build validates a universal index
 // against every type and refuses).
 //
-// The guard records a build error rather than throwing, because this builder
-// reports by accumulating into buildErrors and this package does not panic in
-// library code; the second descriptor is NOT applied, so a caller that ignores
-// the Build error still sees the first descriptor rather than a half-merged one.
+// The guard records a build error rather than throwing because a SETTER has no
+// error channel: it returns *RecordMetaDataBuilder for chaining, so it defers to
+// Build, which is what every other rejecting setter here does. That is the
+// checkable reason, and it is not "the package never panics" -- it does, at 12
+// sites across the 7 non-test files of this directory, one of them GetRecordType
+// below, which panics because
+// a GETTER has no builder to return and Java throws there too. The second
+// descriptor is NOT applied, so a caller that ignores the Build error still sees
+// the first descriptor rather than a half-merged one.
 // JAVA HAS AN ESCAPE HATCH THIS PACKAGE DOES NOT: updateRecords
 // (RecordMetaDataBuilder.java:451, :476) evolves a descriptor after the first
 // one is set, validating the union against the evolution validator and bumping
@@ -753,6 +760,59 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 				}
 			}
 		}
+	}
+
+	// EVERY REGISTERED INDEX IS UNIVERSAL OR ASSOCIATED, checked here rather
+	// than argued about at the call sites that could break it.
+	//
+	// An index in b.indexes that no record type claims and that is not
+	// universal is an ORPHAN: RecordTypesForIndex returns nothing for it,
+	// GetIndexesForRecordType loses it, the aggregate-index plan derives its
+	// result columns from a nil descriptor, and ToProto emits it with an EMPTY
+	// RecordType list -- which a reload reads as UNIVERSAL, so it returns
+	// either maintained for every record type or as metadata that will not load
+	// at all. RFC-238 §7f carries the analysis.
+	//
+	// Refusing a second SetRecords closes the route Java closes, but it does
+	// NOT close the state, and an earlier revision of §7f claimed it did. This
+	// builder hands out LIVE maps -- GetRecordTypes returns b.recordTypes
+	// itself, and after Build both RecordTypes and GetAllIndexes are live too --
+	// so `AddIndex("T", idx)` followed by `delete(b.GetRecordTypes(), "T")`
+	// reaches the same state with one SetRecords call and no error. Java has no
+	// getRecordTypes on its builder at all, so it never had to defend this.
+	// Enumerating the routes is how the previous claim went wrong; this check
+	// makes the property structural, so a route nobody has thought of yet is
+	// still refused.
+	//
+	// Names are sorted so the reported index does not depend on map order.
+	universalNames := make(map[string]struct{}, len(b.universalIndexes))
+	for _, idx := range b.universalIndexes {
+		universalNames[idx.Name] = struct{}{}
+	}
+	associatedNames := make(map[string]struct{}, len(b.indexes))
+	for _, rt := range b.recordTypes {
+		for _, idx := range rt.indexes {
+			associatedNames[idx.Name] = struct{}{}
+		}
+		for _, idx := range rt.multiTypeIndexes {
+			associatedNames[idx.Name] = struct{}{}
+		}
+	}
+	orphaned := make([]string, 0, len(b.indexes))
+	for name := range b.indexes {
+		if _, ok := universalNames[name]; ok {
+			continue
+		}
+		if _, ok := associatedNames[name]; ok {
+			continue
+		}
+		orphaned = append(orphaned, name)
+	}
+	if len(orphaned) > 0 {
+		sort.Strings(orphaned)
+		return nil, &MetaDataError{Message: fmt.Sprintf(
+			"index %q is registered but associated with no record type and is not universal",
+			orphaned[0])}
 	}
 
 	// Validate no duplicate record type keys.

@@ -948,7 +948,7 @@ objections described Java's shipped behaviour rather than a cost.**
     `RecordLayerTable.getName()`, and `RecordMetadataDeserializer.java:92-96`
     keys its builder map by the decoded name, so a decode collision routes two
     declarations through one builder there. Go documents the same misresolution
-    at `pkg/recordlayer/metadata.go:1370-1378`. The OBJECTION was about the plan tree, and confined there it fails. Outside
+    at `pkg/recordlayer/metadata.go:1430-1438`. The OBJECTION was about the plan tree, and confined there it fails. Outside
     the memo it gains force rather than losing it -- so it is this REBUTTAL,
     not the objection, that must not be stated any wider.
 
@@ -1019,7 +1019,7 @@ resolver happened to match.
 THE TWO MECHANISMS ARE UNLIKE, and an earlier revision of this section stated a
 single rule over both — "a name a resolver matched loosely must be replaced by
 what it matched" — which is where the wrong prescription came from.
-`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go:1383-1385`):
+`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go:1443-1445`):
 `ToProtoBufCompliantName` is total and deterministic, the SQL name and the
 stored name are two spellings of ONE declaration, and its ambiguity is a
 declared-name collision rather than an iteration-order accident. Rewriting there
@@ -1102,31 +1102,41 @@ in `rfcs/`. Half of that is worth having and is now built; the other half
 measures citation STYLE and is not.
 
 **RESOLUTION — built.** A cite naming a basename the tree holds three of is not
-a cite: it resolves to whichever file the walk meets first. Measured at
-`c053d85e5`, the parent of this commit, over `rfcs/*.md`: 341 of 2523 distinct
-cites are AMBIGUOUS that way, 93 name a file that does not exist and 23 name a
-line past EOF. That is a real defect class under any style, so `pkg/docscheck`'s
-`TestRFC238CitesResolveUniquely` holds all three at zero — for THIS document
-only; the rest is a cleanup, not a widening.
+a cite: it resolves to whichever file the walk meets first. That is a real
+defect class under any style, so `pkg/docscheck`'s
+`TestRFC238CitesResolveUniquely` holds ambiguous, dangling and past-EOF at zero
+— for THIS document only; the rest is a cleanup, not a widening.
 
-**CLASSIFICATION — not built.** Of the 2066 cites that do resolve there, 918
-read "weak" (not a line of code), and 645 of those land on a `//` line. Citing
-a doc comment is a legitimate thing to do, so at that rate the check scores style
-rather than staleness. `TestRFC238WeakCitesAreTheOnesSection7dNames` therefore
-pins the weak SET by name rather than gating it. WHAT THAT PINS IS THE SET AND
-NOTHING ELSE: every corpus figure in this section -- 2523, 341, 93, 23, 2066,
-918, 645, and the 54/12/61 below -- reproduces today but is asserted by no test,
-so each is a fact about a named SHA rather than a maintained invariant. In THIS
-revision the set has SEVEN members. Four cite a doc comment on purpose:
+**CLASSIFICATION — not built.** Most resolved cites that are not code land on a
+`//` line, and citing a doc comment is a legitimate thing to do, so at that rate
+the check scores style rather than staleness.
+
+THE FIGURES BEHIND BOTH PARAGRAPHS ARE COMPUTED, NOT QUOTED FROM MEMORY.
+`TestRFCCiteCensusRepoWide` prints the whole census on every run:
+
+    bazelisk test //pkg/docscheck:docscheck_test --test_output=streamed \
+      --test_arg=-test.run=TestRFCCiteCensusRepoWide --test_arg=-test.v
+
+At the commit that added it, over 243 files in `rfcs/`: 2522 distinct cites —
+341 ambiguous, 93 dangling, 23 past-EOF, 2065 resolved (1147 code / 645 comment
+/ 193 brace / 80 blank), 918 weak. Those numbers move with every RFC edit,
+INCLUDING edits to this section, and nothing pins them; the test is the
+authority and this paragraph is a snapshot. That is deliberate. Pinning them
+would be the style gate this section rejects, and quoting them from memory is
+how four consecutive revisions shipped a wrong one.
+
+`TestRFC238WeakCitesAreTheOnesSection7dNames` pins the one thing worth pinning:
+the weak SET for this document, by name. WHAT THAT PINS IS THE SET AND NOTHING
+ELSE — every corpus figure above reproduces today but is asserted by no test. In
+THIS revision the set has SIX members. Four cite a doc comment on purpose:
 `positional_row.go:7`, `colref.go:95`, `full_unordered_scan.go:110-118` and
-`pkg/recordlayer/metadata.go:1370-1378`. Three are this section's own narrative
-naming cites it CORRECTED — `derived_unnest.go:250`,
-`cascades_generator.go:2826` and `pkg/recordlayer/metadata.go:1330-1338` — and
-they read weak precisely because they name lines that have since moved, which is
-what the sentences around them say. That third one joined the set in the review
-round that corrected the guard's comment: the correction pushed
-`GetRecordType`'s doc block down, and the SUPERSEDED cite this section quotes
-landed on comment lines. Writing about drift produces drift.
+`pkg/recordlayer/metadata.go:1430-1438`. Two are this section's own narrative
+naming cites it CORRECTED — `derived_unnest.go:250` and
+`cascades_generator.go:2826` — which read weak precisely because they name lines
+that have since moved, the thing the sentences around them say. The membership
+is not stable: one superseded `metadata.go` cite joined the set when a comment
+pushed `GetRecordType` down and left later when the file grew again. That is why
+the TEST is the authority and this list is a snapshot of it.
 
 THE DISCIPLINE IS THE OTHER HALF, and it took three failures to state:
 
@@ -1179,29 +1189,32 @@ crossed a declaration boundary. Four others drifted INSIDE one function —
 `buildMatchCandidates`, `:4136`/`:4204` both inside the same rebase,
 `:924`/`:925` both in `derivedOutputColumns` — and the sixth,
 `pkg/recordlayer/metadata.go:1330-1338` → `:1343-1351` → `:1352-1360` →
-`:1360-1368` → `:1370-1378`, moved FOUR times inside the DOC COMMENT above
-`GetRecordType`, pushed down each time by a comment added above it -- twice by
-this section, once by the guard §7f describes, and once by the review round that
-corrected that guard's own comment. A function-range gate is silent for that one
-too, so it would have fired for one of six.
+`:1360-1368` → `:1370-1378` → `:1430-1438`, moved FIVE times inside the DOC
+COMMENT above `GetRecordType`, pushed down each time by something added above
+it: twice by this section, once by the guard §7f describes, once by the round
+that corrected that guard's comment, and once by the association check in
+`Build`. The count in this sentence has been wrong at every revision that
+quoted it, which is the argument for the census test rather than for a sixth
+correction. A function-range gate is silent for that one too, so it would have
+fired for one of six.
 
-THAT IS A SAMPLE, NOT THE BRANCH. An earlier revision said "the seven cites this
-branch corrected", which was one commit's count written as if it were the
-branch's. Implementing the stated rule — a file cited at a new line where an old line for
-that file disappeared — over `b6d50f95d6..c053d85e5` gives 54 corrections across
-12 of the range's 61 commits; a stricter hand-filtered rule gives fewer. The
-base is the MERGE-BASE, written as a SHA, not `origin/master`: master is not an
-ancestor of this branch (`git merge-base --is-ancestor origin/master c053d85e5`
-exits 1), so an `origin/master..` denominator moves every time master advances
-and the figure stops being reproducible. An earlier revision of this very
-sentence made that mistake.
-The count is genuinely rule-dependent, because one file cited from several
-places yields several "corrections" for one edit, so the rule ships with the
-figure. What is not rule-dependent is that it was never seven, and that the
-drift is dominated by whole-file shifts rather than moves between functions:
-`cascades_generator.go:2826` alone moved four further times (`:2840` → `:2839` →
-`:2848` → `:2858`), all but one of them a whole-file shift, every one staying
-inside the same function.
+THAT IS A SAMPLE, NOT THE BRANCH, and the branch figure is DELIBERATELY ABSENT.
+An earlier revision said "the seven cites this branch corrected", which was one
+commit's count written as if it were the branch's. Three later revisions each
+replaced it with a different precise number, and a reviewer implementing the
+rule as stated got anywhere from 47 to 70 depending on how a "correction" is
+counted — one file cited from several places yields several corrections for one
+edit, and whether to count occurrences or cite-sites is not settled by the
+sentence. A number nobody can reproduce from the rule beside it is worse than no
+number, because it reads as measured.
+
+What IS reproducible, and is all this section needs: it was never seven; the
+drift is dominated by whole-file shifts rather than moves between functions
+(`cascades_generator.go:2826` alone moved four further times, `:2840` → `:2839` →
+`:2848` → `:2858`, every one staying inside the same function); and the corpus
+figures above are printed by a committed test rather than quoted from memory. If
+a branch-wide count is ever wanted, ship the counter next to the claim — four
+revisions of prose did not get there.
 
 ### 7e. The target is validated after its columns are, and UPDATE is on both sides of it
 
@@ -1288,20 +1301,36 @@ for different reasons, which is why they stay separate here:
     A draft of this bullet cited §7c as the thing that arms it, which reads as
     licence to make the change §7c forbids.
 
-  - EMPTY ASSOCIATION — CLOSED BY PORTING A GUARD JAVA ALWAYS HAD.
-    `RecordTypesForIndex` returns nothing for an index that is neither universal
-    nor associated; the aggregate rule then leaves `recordTypeName` empty and
-    `GetRecordType("")` misses. Every route to that state ran through a SECOND
-    `SetRecords` call, and Java forbids one: both `setRecords` overloads open
-    with `if (recordsDescriptor != null) { throw new MetaDataException("Records
-    already set."); }` (`RecordMetaDataBuilder.java:384`, `:423`, with the same
-    guard on `setLocalFileDescriptor` and `addDependency`). Go permitted it.
-    That one divergence in the builder API was the whole of this axis, and
-    porting the guard is the whole of the fix.
+  - EMPTY ASSOCIATION — CLOSED IN `Build`, AFTER AN ENUMERATION OF ROUTES GOT
+    IT WRONG. `RecordTypesForIndex` returns nothing for an index that is neither
+    universal nor associated; the aggregate rule then leaves `recordTypeName`
+    empty and `GetRecordType("")` misses.
 
-WHAT THE STATE COST WHILE IT WAS REACHABLE, recorded because a guard is only
-obviously worth keeping once someone knows what it stops. A second `SetRecords`
-replaced every `RecordType` with a fresh one whose index slices are nil while
+    A revision of this bullet said every route ran through a SECOND `SetRecords`
+    call, and closed on that basis. Java does forbid the second call — both
+    `setRecords` overloads open with `if (recordsDescriptor != null) { throw new
+    MetaDataException("Records already set."); }`
+    (`RecordMetaDataBuilder.java:384`, `:423`, same guard on
+    `setLocalFileDescriptor` and `addDependency`) — Go permitted it, and porting
+    that guard is right on its own terms. But it is NOT the only route, and the
+    claim that it was survived a full review round because nobody could
+    enumerate what nobody had thought of.
+
+    THE BUILDER HANDS OUT LIVE MAPS. `GetRecordTypes` returns `b.recordTypes`
+    itself, not a copy, so `AddIndex("Order", idx)` followed by
+    `delete(b.GetRecordTypes(), "Order")` reaches the state with ONE `SetRecords`
+    call and no error; after `Build`, `RecordTypes` and `GetAllIndexes` are live
+    too. Java never had to defend this — its builder has no `getRecordTypes` at
+    all. So the property is now asserted in `Build`: every registered index must
+    be universal or claimed by some record type, or the build fails naming the
+    index. That closes the routes above and the ones not yet found, which is the
+    difference between a checked property and a list.
+
+WHAT THE STATE COST, recorded because a check is only obviously worth keeping
+once someone knows what it stops. A second `SetRecords` replaced every
+`RecordType` THE SECOND DESCRIPTOR ALSO DECLARED with a fresh one whose index
+slices are nil -- a type present only in the first survived with its indexes
+intact, which an earlier revision of this paragraph got wrong -- while
 the flat registry `b.indexes` kept its entry, so an index registered against a
 type the second descriptor STILL DECLARED came back associated with nothing.
 `Build` succeeded. `RecordTypesForIndex` came back empty and
@@ -1326,7 +1355,10 @@ which a spelling that silently associated nothing satisfies its own
 assertion — by `TestRefusedSetRecordsLeavesTheFirstDescriptorInPlace` for the
 ordering, and by `TestUniversalIndexRoundTripsThroughAnEmptyRecordTypeList`,
 which pins the encoding so a later reader does not mistake the reload behaviour
-for the bug.
+for the bug. The `Build` check has its own arm,
+`TestBuildRefusesAnIndexNoRecordTypeClaims`, which drives the live-map route and
+separately pins that a UNIVERSAL index is EXEMPT -- without that second half, a
+check rejecting every unassociated index would satisfy the first.
 
 Two drafts got the mechanism wrong in opposite directions and both are worth
 recording, because each is the reading a later engineer arrives at first. One

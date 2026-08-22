@@ -20152,3 +20152,37 @@ DONE when: the census walks refuse a nested second copy of the repo (a directory
 containing its own `MODULE.bazel`/`go.mod` below the root is the cheap
 signal), and a unit pin drives that refusal rather than the corpus happening to
 be clean.
+
+---
+
+## Go refuses to load metadata Java loads fine: no synthetic-record-type arm in the proto reader
+
+WIRE-COMPAT HARD LINE, pre-existing, found while reviewing RFC-238 §7f.
+
+Java's proto loader walks each index's `getRecordTypeList()` and sorts every
+name into one of THREE buckets
+(`RecordMetaDataBuilder.java:183-215`): a record type, a SYNTHETIC record type
+(joined or unnested), or unknown — and only the third throws. When the names
+resolve to synthetic types it attaches the index to the synthetic builder
+(`syntheticRecordTypeBuilder.getIndexes().add(index)`, `:204`) instead of
+calling `addMultiTypeIndex`.
+
+Go's `RecordMetaDataFromProto` (`pkg/recordlayer/metadata_proto.go`) has only
+two buckets. A name that is not in `builder.recordTypes` is an error:
+
+    unknown record type %q referenced by index %q
+
+So any metadata Java wrote that carries an index over a joined or unnested
+record type is REJECTED by Go on load. That is the wire-compat line this port
+exists to hold — Go and Java share a cluster and must read each other's
+metadata — and it fails in the direction that is hardest to notice, because a
+Go-only deployment never produces such metadata and so never sees it.
+
+Related, same file, same reader: synthetic record types are not built at all on
+the Go side, so even with the arm added the index would need a synthetic type to
+attach to. Check whether `pkg/recordlayer` models them before sizing this.
+
+DONE when: a metadata proto carrying an index over a synthetic record type
+round-trips through `RecordMetaDataFromProto` without error, pinned by a test
+that fails with the current reader, and the cross-engine conformance corpus has
+an entry that writes such metadata from Java and reads it from Go.
