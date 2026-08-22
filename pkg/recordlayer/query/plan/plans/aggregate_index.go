@@ -25,7 +25,10 @@ import (
 //     THAT LOOKUP IS NIL-TOLERANT AND ITS MISS IS SILENT, which is a live
 //     hazard rather than a nicety: on a miss the descriptor stays nil and every
 //     GROUP BY column is reported as STRING and the aggregate as BIGINT --
-//     plausible defaults, wrong types, no error. It matters here because this
+//     plausible defaults, wrong types, no error. A SECOND consumer defaults
+//     differently: the multi-intersection derivation reports GROUP BY columns
+//     as BIGINT on the same miss, so the degraded type depends on which
+//     derivation ran. It matters here because this
 //     field carries whichever namespace the plan was built in (RFC-238 §7c),
 //     so a plan built with a SQL spelling against metadata keyed by the stored
 //     one misses and degrades exactly that way. A draft of this comment claimed

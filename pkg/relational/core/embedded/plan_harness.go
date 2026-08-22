@@ -419,6 +419,11 @@ func planPhysicalDMLWithMetadata(
 	// is in production: both raise 42F01 and they word it differently, so a
 	// harness that ran only the sweep reported the SELECT wording where production
 	// reports the target's.
+	// rejectDuplicateUnnestAlias too -- production runs it on the DML path and a
+	// harness that skips it plans a shape production refuses.
+	if err := rejectDuplicateUnnestAlias(logicalOp, md); err != nil {
+		return nil, err
+	}
 	var harnessTarget string
 	switch dop := logicalOp.(type) {
 	case *logical.LogicalDelete:

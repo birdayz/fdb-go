@@ -7262,6 +7262,16 @@ func collectCTENamesInner(op logical.LogicalOperator, names map[string]bool) {
 	for _, ch := range op.Children() {
 		collectCTENamesInner(ch, names)
 	}
+	// Subquery plans hang off side fields rather than Children(), and a scalar
+	// subquery may define its OWN CTE. Any consumer that descends into those
+	// plans must see the CTE names declared inside them, or a perfectly good
+	// `WITH x AS (...) SELECT ... FROM x` reads as a reference to a table that
+	// does not exist. The asymmetry was live and cost three valid DML statements
+	// a 42F01 naming the CTE: validateScanTables descends into subquery plans and
+	// this did not.
+	for _, sub := range subqueryPlans(op) {
+		collectCTENamesInner(sub, names)
+	}
 }
 
 func hasAggregate(op logical.LogicalOperator) bool {
@@ -7735,19 +7745,32 @@ func (r *paginatingRows) env() *dst.Env {
 // question with its own measurements (RFC-238 section 7e). Widening the fix to
 // carry that decision along is how one change becomes two.
 //
-// AND CHILDREN() ONLY, WHICH IS ALSO DELIBERATE AND WAS NOT AT FIRST. A draft
-// added a walk over subqueryPlans on the reasoning that side-field subqueries
-// are invisible to Children(). It bought nothing and cost correctness. Nothing
-// reached it: upgradeDMLWhereWithCatalog falls back and DROPS the EXISTS
-// subqueries, so a bad table inside a DML EXISTS is unreachable by
-// construction -- measured, `DELETE ... WHERE EXISTS (SELECT 1 FROM
-// nosuchtable)` answers 0AF00 from the shape check either way. And it broke a
-// VALID query: a scalar subquery defining its own CTE hangs that CTE off the
-// same side field, so collectCTENames (Children() only) returned an empty map
-// and the walk rejected the CTE's own scan with 42F01. A recursion that reaches
-// nothing it was written for and rejects something correct is not a partial
-// fix; it is a defect. The remaining gap -- DML subquery sources -- is real and
-// is 0AF00 today, which is loud rather than silent.
+// AND IT WALKS SUBQUERY PLANS AS WELL AS Children(), which the function it
+// halves does not. Three claims were made about that walk in three different
+// places and all three were wrong; these are the measurements.
+//
+// IT IS NOT LOAD-BEARING FOR ANY SQL-VISIBLE SHAPE TESTED. Removing it leaves
+// every arm of unquoted_dml_against_a_quoted_table.yaml green, including
+// `DELETE FROM t WHERE id = (SELECT MAX(id) FROM nosuchtable)` and the EXISTS
+// form. Production rejects both through other checks. What the walk guards is
+// the HARNESS path: planPhysicalDMLWithMetadata is a hand-maintained copy of
+// planDML that explain-differ plans the whole corpus through, and there the
+// scalar-subquery source does reach it.
+//
+// IT ALSO REJECTED THREE VALID STATEMENTS until collectCTENames was made
+// symmetric. A scalar subquery may define its own CTE, and that CTE hangs off
+// the same side field this walk descends into, so a Children()-only name
+// collection arrived empty and the walk rejected the CTE's own scan with 42F01.
+// The two functions must descend into the same places or one sees a table where
+// the other declared a CTE; the yaml pins both directions.
+//
+// A DML EXISTS SUBQUERY IS NOT WHY THIS EXISTS. `DELETE ... WHERE EXISTS
+// (SELECT 1 FROM nosuchtable)` answers 0AF00 from the unsupported-shape check
+// with the walk or without it, and upgradeDMLWhereWithCatalog does INSTALL
+// EXISTS subqueries on its success path -- what it cannot install is one whose
+// inner build already failed. An earlier comment said it dropped them
+// unconditionally; that was wrong, and the conclusion it supported was right
+// for a different reason.
 func validateScanTables(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
 	if op == nil || md == nil {
 		return nil

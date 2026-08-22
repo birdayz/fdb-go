@@ -32,6 +32,7 @@
 name: unquoted_dml_against_a_quoted_table
 schema_template: |
   CREATE TABLE "Customer" (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO "Customer" VALUES (1, 'alpha'), (2, 'beta')
 tests:
@@ -171,15 +172,46 @@ tests:
   - query: DELETE FROM "Customer" WHERE id IN (SELECT id FROM "Customer" WHERE id = 9)
     error: "0AF00"
 
-  # THE SUBQUERY RECURSION, which is the half of validateScanTables the function
-  # it halves does not have. EXISTS is a supported DML predicate shape (unlike
-  # IN, above), and its body is carried on a side field rather than in
-  # Children(), so a bad table in there is reachable ONLY through that extra
-  # walk. Without it this arm succeeds and deletes nothing.
+  # A BAD TABLE INSIDE A DML EXISTS IS 0AF00, not 42F01, and that is the
+  # unsupported-shape check answering rather than any table validation. An
+  # earlier version of this comment claimed the arm was reachable only through
+  # validateScanTables' subquery walk and would succeed without it -- measured
+  # false, it is 0AF00 with the walk and without it. EXISTS IS a supported DML
+  # predicate shape when its body builds; what fails here is the body.
   - query: DELETE FROM "Customer" WHERE EXISTS (SELECT 1 FROM nosuchtable)
     error: "0AF00"
 
   # The store is untouched by any of the rejected statements above.
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [2, 'beta']
+      - [9, 'nine']
+
+  # A SCALAR SUBQUERY SOURCE OVER A MISSING TABLE, rejected. These two arms do
+  # NOT discriminate the subqueryPlans walk in validateScanTables -- measured,
+  # removing that walk leaves both green, because production rejects them
+  # through other checks. They pin the user-visible contract, and the walk's
+  # own job is on the harness path the golden goes through. Do not cite these
+  # as evidence for that walk.
+  - query: DELETE FROM t WHERE id = (SELECT MAX(id) FROM nosuchtable)
+    error: "42F01"
+
+  - query: UPDATE t SET v = 1 WHERE id = (SELECT MAX(id) FROM nosuchtable)
+    error: "42F01"
+
+  # AND THE SAME SHAPE WITH A CTE DEFINED INSIDE IT MUST STILL WORK. THESE TWO
+  # DO discriminate: mutation-verified, dropping collectCTENames' subquery walk
+  # reddens exactly this pair with `42F01 table "X" does not exist`. The walk
+  # descends into subquery plans, so the name collection must descend into the
+  # same ones or one sees a table where the other declared a CTE.
+  - query: DELETE FROM "Customer" WHERE id = (WITH x AS (SELECT id FROM "Customer" WHERE id = 99) SELECT MAX(id) FROM x)
+    rowcount: 0
+
+  - query: UPDATE "Customer" SET name = 'z' WHERE id = (WITH x AS (SELECT id FROM "Customer" WHERE id = 99) SELECT MAX(id) FROM x)
+    rowcount: 0
+
+  # The store is still untouched: every statement above either rejected or
+  # matched nothing.
   - query: SELECT id, name FROM "Customer" ORDER BY id
     rows:
       - [2, 'beta']
