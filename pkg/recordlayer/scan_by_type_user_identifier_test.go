@@ -163,13 +163,25 @@ var _ = Describe("ScanRecordsByType with a case-divergent name", func() {
 		rec := dynamicpb.NewMessage(orderType.Descriptor)
 		rec.Set(orderType.Descriptor.Fields().ByName("order_id"), protoreflect.ValueOfInt64(3))
 
+		// A SECOND TYPE, for the reason this file states at the top: with only
+		// Order present, "the exact spelling finds 1" is satisfied by a predicate
+		// matching EVERYTHING, so the control below would hold under the very
+		// regression the arm after it is watching for.
+		customerType := md.GetRecordType("Customer")
+		Expect(customerType).NotTo(BeNil())
+		cust := dynamicpb.NewMessage(customerType.Descriptor)
+		cust.Set(customerType.Descriptor.Fields().ByName("customer_id"), protoreflect.ValueOfInt64(9))
+
 		_, err := sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 			store, err := NewStoreBuilder().
 				SetContext(rtx).SetMetaDataProvider(md).SetSubspace(ks).CreateOrOpen()
 			if err != nil {
 				return nil, err
 			}
-			return store.SaveRecord(rec)
+			if _, err := store.SaveRecord(rec); err != nil {
+				return nil, err
+			}
+			return store.SaveRecord(cust)
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -193,8 +205,9 @@ var _ = Describe("ScanRecordsByType with a case-divergent name", func() {
 		counts := got.([]int)
 
 		Expect(counts[1]).To(Equal(1),
-			"the exact spelling stopped finding the record, so the arm below is about a\n"+
-				"broken fixture rather than about case")
+			"the exact spelling did not find exactly the one Order row. A Customer row\n"+
+				"is present too, so 2 means the predicate stopped discriminating and 0\n"+
+				"means the fixture never stored anything -- the arm below is about neither.")
 		Expect(counts[0]).To(Equal(0),
 			"ScanRecordsByType(\"ORDER\") now finds records of the type stored \"Order\".\n"+
 				"If the record layer started folding case, RFC-238 §7c's DML population is\n"+

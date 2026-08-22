@@ -1000,7 +1000,21 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	case *logical.LogicalUpdate:
 		dmlTarget = dop.Target
 	}
-	if dmlTarget != "" && recordTypeCI(md, bareTableName(dmlTarget)) == nil {
+	// STRICT resolution for a DML target -- GetRecordType, not the case-folding
+	// recordTypeCI. An unquoted `DELETE FROM customer` against a table declared
+	// `"Customer"` is UNDEFINED, and every other path already says so: the SELECT
+	// path rejects it, INSERT ... VALUES rejects it (`md.GetRecordType(insOp.Table)`
+	// below), and Java rejects it -- `select * from restaurant` against a table
+	// declared `"Restaurant"` throws UNDEFINED_TABLE / "Unknown table RESTAURANT"
+	// (CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3).
+	//
+	// Folding here was worse than a validation divergence. It ACCEPTED the
+	// statement and then carried the SQL-normalised `CUSTOMER` into the plan,
+	// where no record type answers to it: the scan matched nothing and the DELETE
+	// reported success having removed no rows. Canonicalising the name instead
+	// would be worse still -- it would let an unquoted write mutate a table that
+	// can only be named with quotes.
+	if dmlTarget != "" && md.GetRecordType(bareTableName(dmlTarget)) == nil {
 		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(dmlTarget)))
 	}
 

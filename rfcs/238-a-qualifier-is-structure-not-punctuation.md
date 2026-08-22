@@ -895,7 +895,7 @@ and that is not one option of two. Java never couples them:
 `QueryVisitor.java:836` sets `targetRecordType` from `getStorageName()` at
 construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
-`logical_predicate.go:6752` where `buildSelectScope` takes the bare table name
+`logical_predicate.go:6751` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
 that divergence while working around it. INSERT has no such coupling: `executor.go:4213`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
@@ -974,61 +974,60 @@ of `Type.java:2185,2225-2233,2536-2539`, and `metadata.RecordLayerTable`, whose
 conflates the two names at the one place Java keeps them apart
 (`RecordLayerTable.java:62` and `:77`).
 
-**THE AFFECTED POPULATION IS TWO, AND THE SECOND IS LARGER — CASE JOINS IT ON
-THE DML PATH.** A first reading of this bounded the section to escaped names on
-the strength of a SELECT-only measurement, and that was wrong twice: wrong as a
-conclusion, and wrong as a method, because SELECT and DML do not resolve a table
-name the same way and nothing said so.
+**THE POPULATION IS ESCAPED NAMES, AND THE CASE ARM WAS A DIFFERENT BUG THAT IS
+FIXED HERE.** This section reached that answer three times by three routes, and
+only the third is sound. Recording all three, because the first two are the
+readings a later engineer will re-derive.
 
-SELECT rejects an unquoted reference to a mixed-case stored name outright — a
-table stored `Customer` queried as `customer` fails with `42F01: table
-"CUSTOMER" does not exist`, and quoted as `"Customer"` keeps both access paths.
-That much held. DML does not follow it. `recordTypeCI`
-(`logical_predicate.go:6553`) resolves a DML target CASE-INSENSITIVELY, so the
-statement VALIDATES and then carries the SQL-normalised spelling into the plan:
+FIRST: "escaped names only", from a SELECT-only measurement. Wrong as method —
+SELECT and DML did not resolve a table name the same way and nothing said so.
 
-```
-stored=CUSTOMER  DELETE FROM customer     Delete(CUSTOMER, Scan(CUSTOMER, [=]))
-stored=Customer  DELETE FROM customer     Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))
-stored=Customer  DELETE FROM "Customer"   Delete(Customer, Scan(Customer, [=]))
-```
+SECOND: "two populations, and case is the larger one", after measuring DML.
+`recordTypeCI` (`logical_predicate.go:6553`) resolved a DML target
+CASE-INSENSITIVELY, so an unquoted `DELETE FROM customer` against a table
+declared `"Customer"` VALIDATED and then planned
+`Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))` — a target
+naming no record type in that metadata, over a scan that matched nothing. The
+statement reported success having deleted no rows; UPDATE modified none. Pinned
+end to end in `yamsql/testdata/unquoted_dml_against_a_quoted_table.yaml`, which
+without the fix reports `expected error 42F01, got nil` on both.
 
-Two things are wrong in the middle row and only one of them is a lost access
-path. The target itself reads `CUSTOMER`, which is not the name of any record
-type in that metadata — `GetRecordType("CUSTOMER")` misses (the escaping is a
-no-op on it, so there is no fallback to take), which is the same exact-compare
-failure the escaped names produce, reached by CASE instead. And the population
-is the larger one: CamelCase message names are idiomatic proto, so this is every
-`SetRecords` application that issues unquoted DML, not a quoted-identifier
-corner.
+THIRD, and correct: that fold was never a legal alias to canonicalise. It was a
+VALIDATION DIVERGENCE, and every other path already said so. Java rejects —
+`select * from restaurant` against a table declared `"Restaurant"` throws
+UNDEFINED_TABLE / "Unknown table RESTAURANT"
+(`CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3`). Go's SELECT path
+rejects. Go's `INSERT … VALUES` rejects, through `md.GetRecordType(insOp.Table)`
+(`cascades_generator.go:1042`). Only UPDATE and DELETE folded.
 
-Both arms are pinned in `mixed_case_stored_name_probe_test.go` — the SELECT
-arms as the negative result they are, the DML arms as the positive one. Neither
-is deletable: together they are what says the section covers two populations and
-which resolver admits each.
+So the DML target now resolves strictly, and the case arm leaves this section
+entirely. **Canonicalising it — which is what this section proposed one revision
+ago — would have been worse than the bug.** A rewrite from `CUSTOMER` to the
+stored `Customer` lets an unquoted write MUTATE a table that can only be named
+with quotes: silently doing the wrong thing in place of silently doing nothing.
 
-The rule the section is really about is therefore not "escaped names" but: **a
-name that a RESOLVER matched loosely must be replaced by what it matched**. Go
-carries the caller's spelling forward from THREE loose resolvers, not two:
+What remains is escaping, and it is genuinely different in kind: quoting is
+MANDATORY to write `"MY$TABLE"` at all, and quoting it still does not make the
+SQL spelling and the stored spelling coincide. There is no strict-resolution
+answer available there, because the two names are different by construction
+rather than by a resolver being lax.
 
-  - `RecordMetaData.GetRecordType` -- exact, then the protobuf-escaping retry.
-  - `recordTypeCI` (`logical_predicate.go:6553`) -- exact, then a case fold.
-  - `cascadesTranslator.resolveRecordType` (`cascades_translator.go:568`) --
-    exact, then the escaping retry, then a case fold. `translateUpdate` already
-    calls it, via `tableColumns(upd.Target)` at `:10786`, three lines above the
-    `NewUpdateExpression` that then discards what it found.
+Storage-name rewriting is therefore reserved for the protobuf escaping — one
+rule, one population, and not a general licence to canonicalise whatever a
+resolver happened to match.
 
-That last one is why the fix is smaller than it looks on the UPDATE path: the
-resolved name is already in hand at the site that needs it.
+THE TWO MECHANISMS ARE UNLIKE, and an earlier revision of this section stated a
+single rule over both — "a name a resolver matched loosely must be replaced by
+what it matched" — which is where the wrong prescription came from.
+`GetRecordType`'s retry is an ENCODING (`metadata.go:1343-1345`):
+`ToProtoBufCompliantName` is total and deterministic, the SQL name and the
+stored name are two spellings of ONE declaration, and its ambiguity is a
+declared-name collision rather than an iteration-order accident. Rewriting there
+is recovering what the schema already said. The case fold is a SEARCH — one Java
+never performs — over names that are two DIFFERENT declarations, and rewriting
+there invents an identity the schema denies. Same-looking operation, opposite
+correct response.
 
-AND THE TWO CASE-FOLDING RESOLVERS DISAGREE ON DETERMINISM, which has to be
-settled before "what it matched" is even well defined. `resolveRecordType`
-carries an explicit `name < bestName` tie-break and a comment explaining that
-map iteration order is not stable. `recordTypeCI` returns the FIRST `EqualFold`
-hit over a randomized map range with no tie-break at all, so for metadata
-holding two names that fold together it answers differently between runs. One
-function documents the hazard; the other reproduces it. Whichever resolver the
-translation adopts, it needs the tie-break.
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
 places (`cascades_generator.go:2810`, `:3439`, `:3663`, `:3738`) and those are
@@ -1039,14 +1038,17 @@ leaves every one of them untouched, which is the other reason it is the right
 place.
 
 **AND THE FIX SWITCHES MATCHING ON, which is the point but should be said out
-loud rather than discovered.** Three gates compare the SCAN's record types
-against a CANDIDATE's and therefore decline today for the same reason the
-primary candidate does: `rule_aggregate_data_access.go:84` and `:831`,
-`rule_ordered_index_scan.go:74`, `rule_implement_nested_loop_join.go:4480`.
-Landing this turns aggregate matching, ordered-index matching and FK-probe
-matching ON for those tables in one step, so the plan diff at fix time is wider
-than the two scenarios and the golden will move in ways that are CORRECT rather
-than drift.
+loud rather than discovered.** FIVE gates compare the SCAN's record types against
+a CANDIDATE's and therefore decline today for the same reason the primary
+candidate does: `rule_aggregate_data_access.go:84` and `:831`,
+`rule_ordered_index_scan.go:74`, `rule_implement_nested_loop_join.go:4480`, and
+`rule_streaming_agg_from_index.go:100`, which is live in
+`BatchAExpressionRules`. Landing this turns aggregate matching, ordered-index
+matching, FK-probe matching and streaming aggregation ON for those tables in one
+step, so the plan diff at fix time is wider than the two scenarios and the
+golden will move in ways that are CORRECT rather than drift. A grouped query
+over an affected table with a covering index is the sentinel that last one
+needs.
 
 Two NEAR MEMBERS are not members, and both were on an earlier version of this
 list. `rule_aggregate_data_access.go:299` is candidate-vs-candidate. And
@@ -1078,3 +1080,33 @@ puts on query-engine work. What IS here is the measurement, the pinned
 divergence in two scenarios, and the four boundary fixes — which stay correct
 independently of the fifth, because they make a caller holding either spelling
 correct, the contract `GetRecordType` already offers.
+
+### 7d. Why there is no line-cite gate, recorded so it is not re-proposed
+
+This section's line cites drifted twice in three commits, both times because a
+commit edited the file it cited — once by the very comment block the section
+asked for. The obvious response is a gate over `file.go:NNN` cites in `rfcs/`.
+It was measured and it is the wrong instrument, twice over.
+
+**As a "does the cited line look like code" check: 1603 weak of 2955 cites
+repo-wide.** At that rate the heuristic is measuring citation STYLE — most of
+those are deliberate cites into doc comments, which is a legitimate thing to
+cite — not staleness. RFC-238's own count under it is 5, and all five are sound:
+`positional_row.go:7`, `colref.go:95`, `metadata.go:1330-1338`,
+`full_unordered_scan.go:110-118`, and `record_types_property.go:37-51`. That
+last is a CODE range that happens to end on a closing brace, not a doc-comment
+range — a distinction an earlier note here got wrong, and the reason "weak" is
+not a synonym for "stale".
+
+**As a "does the cite still name its function" check: it catches 1 in 7.** Of
+the seven cites this branch corrected, only `derived_unnest.go:250` → `:287`
+crossed a declaration boundary. Every other one drifted INSIDE a single
+function — `:3022`/`:3031` in the same builder, `:2817`/`:2826` both inside
+`buildMatchCandidates`, `:4136`/`:4204` both inside the same rebase,
+`:924`/`:925` both in `derivedOutputColumns`. A function-range gate would have
+been silent for six of the seven.
+
+So neither shape is built. What actually works is the discipline the failures
+point at: when a commit edits a file, re-run the cites into THAT file, and do it
+by sweeping rather than by fixing the copies someone happened to name.
+

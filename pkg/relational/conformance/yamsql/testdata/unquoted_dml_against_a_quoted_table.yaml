@@ -1,0 +1,70 @@
+# unquoted_dml_against_a_quoted_table.yaml
+#
+# AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME.
+#
+# `CREATE TABLE "Customer"` stores the record type as `Customer`. An unquoted
+# `DELETE FROM customer` normalises to `CUSTOMER`, which is a different name.
+# Java rejects that outright -- `select * from restaurant` against a table
+# declared `"Restaurant"` throws UNDEFINED_TABLE / "Unknown table RESTAURANT"
+# (CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3) -- and so did
+# every Go path except DML, which resolved its target through a CASE-FOLDING
+# helper.
+#
+# THE FOLD DID NOT MAKE THE STATEMENT WORK; IT MADE IT LIE. Validation passed,
+# and the plan then carried the SQL-normalised `CUSTOMER` as its delete target
+# and as the type it read -- a name no record type in that metadata answers to.
+# Nothing was read, nothing was removed, and the statement reported success. The
+# same shape on UPDATE modified nothing. The plan itself is not asserted here
+# because after the fix these statements do not plan at all; it is recorded in
+# RFC-238 and measured in mixed_case_stored_name_probe_test.go, which reaches
+# the translator with validation bypassed.
+#
+# CANONICALISING THE NAME WOULD HAVE BEEN WORSE, which is why this file asserts
+# a rejection rather than a row count. Rewriting `CUSTOMER` to the stored
+# `Customer` would let an unquoted write mutate a table that can only be named
+# with quotes -- silently doing the wrong thing instead of silently doing
+# nothing. Strict resolution is what Java does and what the SELECT and
+# INSERT ... VALUES paths here already did.
+#
+# The quoted arms are the control: the same statements, spelled the way the
+# table was declared, must work. Without them a regression that rejected ALL
+# DML would pass this file.
+name: unquoted_dml_against_a_quoted_table
+schema_template: |
+  CREATE TABLE "Customer" (id BIGINT, name STRING, PRIMARY KEY (id))
+setup:
+  - INSERT INTO "Customer" VALUES (1, 'alpha'), (2, 'beta')
+tests:
+  # The control: quoted, the spellings coincide and everything works.
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+
+  # SELECT already rejected this, and must keep doing so -- it is the arm that
+  # says the DML behaviour below is agreement rather than a new divergence.
+  - query: SELECT id FROM customer
+    error: "42F01"
+
+  # THE FIX. Before it this returned success having deleted nothing.
+  - query: DELETE FROM customer WHERE id = 1
+    error: "42F01"
+
+  # And the same for UPDATE, which had the identical shape.
+  - query: UPDATE customer SET name = 'zzz' WHERE id = 1
+    error: "42F01"
+
+  # The rows are still here. A rejection that had partially applied would show
+  # up as a changed row rather than as an error.
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+
+  # The quoted DML controls: same statements, declared spelling, must work.
+  - query: DELETE FROM "Customer" WHERE id = 1
+    rowcount: 1
+
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [2, 'beta']

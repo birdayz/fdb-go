@@ -91,14 +91,23 @@ func TestMixedCaseStoredNameAccessPaths(t *testing.T) {
 	}
 }
 
-// AND THE SAME QUESTION ON THE DML PATH, where the answer is the opposite one.
+// THE SAME QUESTION ON THE DML PATH, MEASURED WITH VALIDATION BYPASSED, which
+// is the only reason these plans still exist to look at.
 //
-// SELECT rejects an unquoted reference to a mixed-case stored name outright.
-// DML does not: `recordTypeCI` (logical_predicate.go:6553) resolves the target
-// CASE-INSENSITIVELY, so `UPDATE customer …` and `DELETE FROM customer …`
-// validate against a type stored `Customer` and then carry the SQL-normalized
-// `CUSTOMER` into the plan. That is the same query-vs-candidate namespace
-// mismatch the escaped names produce, reached by case instead of by escaping.
+// Production now rejects an unquoted DML target that does not resolve strictly
+// -- `DELETE FROM customer` against a table declared `"Customer"` is 42F01,
+// matching Java and matching this engine's own SELECT and INSERT paths. That
+// rejection is pinned end-to-end in
+// yamsql/testdata/unquoted_dml_against_a_quoted_table.yaml, and it is the
+// user-visible contract.
+//
+// This harness plans from metadata directly and never runs that validation, so
+// it sees what the TRANSLATOR would emit if the guard were ever relaxed: a
+// target reading `CUSTOMER`, which names no record type in this metadata, over
+// a scan that would match nothing. Before the guard was made strict that plan
+// was reachable from SQL and the DELETE reported success having removed no
+// rows. Keeping it measured here is defence in depth -- if someone loosens the
+// validation again, this file says what they would be shipping.
 func TestMixedCaseStoredNameDMLAccessPaths(t *testing.T) {
 	t.Parallel()
 
