@@ -162,6 +162,32 @@ func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.Cor
 		WithDistinctRecordsSignal(false)
 }
 
+// fkChainFKProbeAgainst is fkChainFKProbe for an outer whose layout is not in
+// fkChainLayouts -- a FlatMap emitting a RecordConstructor row, say. It exists
+// so the STAMPS cannot drift: a hand-rolled index plan that omits
+// WithDistinctRecordsSignal is rejected by scanBindingOfLeaf's first guard, and
+// any assertion behind that guard then passes without reaching what it claims
+// to test. That happened here once; sharing the constructor is what stops it.
+func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.RecordType, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
+	t.Helper()
+	cmp := predicates.Comparison{
+		Type:    predicates.ComparisonEquals,
+		Operand: fkChainField(outerLayout, outerAlias, "ID"),
+	}
+	rng := predicates.EmptyComparisonRange().Merge(&cmp)
+	if !rng.Ok {
+		t.Fatalf("failed to build correlated eq range against %s", outerLayout.RecordName)
+	}
+	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
+		[]*predicates.ComparisonRange{rng.Range},
+		[]string{rt}, fkChainRowType(rt), false)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithCommonPrimaryKey(fkChainIDPK()).
+		WithDistinctRecordsSignal(false)
+}
+
 // fkChainFanOutFKProbe is fkChainFKProbe but models a FAN-OUT index (one
 // entry per repeated/nested element, e.g. an index over a repeated field) —
 // createsDuplicates=true, so the SAME physical record/PK can be emitted more
@@ -1498,19 +1524,12 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 		t.Fatalf("fixture is vacuous: rcOuter must emit a record layout to bake against, got %T",
 			rcOuter.GetResultType())
 	}
-	wrapEq := predicates.Comparison{
-		Type:    predicates.ComparisonEquals,
-		Operand: fkChainField(rcLayout, wrapAlias, "ID"),
+	wrapProbe := fkChainFKProbeAgainst(t, "T2", "t2_by_t1", rcLayout, wrapAlias)
+	if binding, ok := scanBindingOfLeaf(wrapProbe); !ok || len(binding.comparisons) == 0 {
+		t.Fatalf("fixture is vacuous: scanBindingOfLeaf rejects the wrap probe "+
+			"(ok=%v, comparisons=%d), so innerFullyBindsThread returns at its FIRST "+
+			"guard and the layers below are never reached", ok, len(binding.comparisons))
 	}
-	wrapRange := predicates.EmptyComparisonRange().Merge(&wrapEq)
-	if !wrapRange.Ok {
-		t.Fatal("fixture is vacuous: could not build the correlated equality range")
-	}
-	wrapProbe := mustFKChain(plans.NewRecordQueryIndexPlan("t2_by_t1",
-		[]*predicates.ComparisonRange{wrapRange.Range},
-		[]string{"T2"}, fkChainRowType("T2"), false)).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false)
 	viaRC := mustFKChain(plans.NewRecordQueryFlatMapPlan(
 		rcOuter, wrapProbe, wrapAlias, innerAlias,
 		mustFKChain(values.NewQuantifiedObjectValue(innerAlias, planRowLayout(wrapProbe))), false))
@@ -1518,13 +1537,23 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	// rather than a limit of this fixture. frontier.IsKnown() is false exactly
 	// when the layout is not a *RecordType or has no fields; threadPKIdentity
 	// succeeds only when it IS a *RecordType with an in-range ordinal. The two
-	// are mutually exclusive, so a nil outerLayout is refused THREE times over
-	// -- the frontier check, threadPKIdentity, and then the empty-wantKeys
-	// return -- and the frontier guard is strictly subsumed by the others.
+	// are mutually exclusive, so a nil outerLayout is refused by AT LEAST the
+	// frontier check, threadPKIdentity and the empty-wantKeys return, and the
+	// frontier guard is strictly subsumed by the others. "At least" is exact:
+	// disabling those three together still leaves this green, so they are not
+	// the whole set and no count is asserted here.
 	// Measured: disabling it alone leaves the whole suite green. No fixture can
 	// isolate that line, so claiming this assertion "pins the frontier gate"
-	// would be unsupportable. What it does pin is the outcome, and that is not
-	// vacuous: strip all three layers and this fires.
+	// would be unsupportable.
+	//
+	// What it DOES pin, measured rather than argued: it fires iff
+	// innerFullyBindsThread accepts. `return true` at the top of that function
+	// reddens this with the message below. It does NOT fire when the three
+	// layers above are stripped together -- tried, still green -- so those three
+	// are not an exhaustive account of why a nil-layout outer is refused, and
+	// this comment does not claim they are. The reach guard further up is what
+	// keeps even this much honest: without the probe's full stamp set,
+	// scanBindingOfLeaf rejects at the FIRST guard and none of it is reached.
 	if innerFullyBindsThread(viaRC, computePKThread(rcOuter)) {
 		t.Error("innerFullyBindsThread accepted an outer whose layout is nil: every " +
 			"path that used to fail closed on an unknown domain now admits it, so " +

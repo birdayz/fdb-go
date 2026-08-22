@@ -691,10 +691,12 @@ func correlatedFieldIdentity(v values.Value, frontier values.OrdinalDomain) (val
 // the Reachable paragraph above says the opposite, that a RecordConstructor
 // threads a PK and declines a layout. It holds by two different routes, and
 // both are worth naming because neither is pinned. If the resultValue is a bare
-// QOV, pkThreadThroughResultValue returns childThread without ever READING the
+// QOV over childAlias, pkThreadThroughResultValue returns childThread without
+// ever READING the
 // layout, so the nil is harmless by being unused. If it is a
 // RecordConstructor, pkThreadThroughFields fails closed on the unknown frontier
-// that nil produces.
+// that nil produces. Anything else -- a computed value, nil -- returns the zero
+// pkThread without reading the layout either, a third disposition.
 //
 // The recursion is therefore insurance, and the test that drives it hand-builds
 // the resultValue rather than reaching it from a plan.
