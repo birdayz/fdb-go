@@ -5,6 +5,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
@@ -277,5 +278,87 @@ func TestAbsolutizeFieldTypeNamesFallsBackForNamesTheFileDoesNotDeclare(t *testi
 			"A name no scope in this file declares must fall back to the package prefix. Leaving it "+
 			"RELATIVE is what broke twelve cross-engine SQL scenarios, and rewriting it to anything "+
 			"else would bind a different type.", got, ".com.apple.foundationdb.record.UUID")
+	}
+}
+
+// A CROSS-PACKAGE REFERENCE MUST RESOLVE INTO THE IMPORT, not under this file's
+// own package.
+//
+// This is the regression the extendee rewrite introduced and the dependency-aware
+// `declared` set repairs. A packaged file importing `other.Host` and writing
+// `extendee = "other.Host"` had that name rewritten to `.probe.other.Host` --
+// which exists nowhere -- so a descriptor that previously LOADED stopped loading.
+// Before the extendee rewrite the name was left alone and protodesc resolved it
+// correctly, so the rewrite turned a latent divergence into a fatal one.
+//
+// Both positions are driven, because `Extendee` and `TypeName` go through the
+// same resolver and only one of them was ever exercised by a cross-package
+// fixture. The arms assert the NAME rather than a binding: the point is what the
+// rewrite produces, and a wrong name here is not a mis-binding but an
+// unresolvable descriptor.
+func TestAbsolutizeFieldTypeNamesResolvesIntoDependencies(t *testing.T) {
+	t.Parallel()
+
+	dep := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("absolutize_dep.proto"),
+		Package: proto.String("other"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Host"),
+			ExtensionRange: []*descriptorpb.DescriptorProto_ExtensionRange{
+				{Start: proto.Int32(1000), End: proto.Int32(2000)},
+			},
+		}},
+	}
+
+	fd := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("absolutize_crosspkg.proto"),
+		Package:    proto.String("probe"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{"absolutize_dep.proto"},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Local"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:   proto.String("h"),
+				Number: proto.Int32(1),
+				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				// Relative, binding into the imported package.
+				TypeName: proto.String("other.Host"),
+			}},
+		}},
+		Extension: []*descriptorpb.FieldDescriptorProto{{
+			Name:   proto.String("x"),
+			Number: proto.Int32(1001),
+			Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+			// The position that broke: same shape, different field.
+			Extendee: proto.String("other.Host"),
+		}},
+	}
+
+	absolutizeFieldTypeNames(fd, dep)
+
+	if got := fd.MessageType[0].Field[0].GetTypeName(); got != ".other.Host" {
+		t.Errorf("field type_name = %q, want %q -- a name binding into an imported package must "+
+			"not be rewritten under this file's own package", got, ".other.Host")
+	}
+	if got := fd.Extension[0].GetExtendee(); got != ".other.Host" {
+		t.Errorf("extendee = %q, want %q -- this is the regression the extendee rewrite introduced: "+
+			"`.probe.other.Host` exists nowhere, so a descriptor that used to load stops loading",
+			got, ".other.Host")
+	}
+
+	// And the consequence, so the arm is about behaviour and not only strings.
+	depFD, err := protodesc.NewFile(dep, nil)
+	if err != nil {
+		t.Fatalf("building the dependency: %v", err)
+	}
+	files := &protoregistry.Files{}
+	if err := files.RegisterFile(depFD); err != nil {
+		t.Fatalf("registering the dependency: %v", err)
+	}
+	if _, err := protodesc.NewFile(fd, files); err != nil {
+		t.Fatalf("the absolutized descriptor does not build: %v", err)
 	}
 }

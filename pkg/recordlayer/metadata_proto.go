@@ -907,23 +907,78 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 // Leaving names for protodesc would silently diverge from Java on compound
 // names -- see TestAbsolutizeFieldTypeNamesResolvesTheFirstComponentOutward.
 //
-// The fallback is a BEST EFFORT, not a correct answer in every case. Where this
-// file's package is itself a prefix of the name (`probe.Inner` inside package
-// `probe`), it yields `.probe.probe.Inner` where protoc yields `.probe.Inner`,
-// because Java's first-part lookup consults package descriptors and this map
-// holds only types. Those shapes predate the scope walk, fail LOUDLY as
-// unresolvable rather than binding something wrong, and are the reason this says
-// best-effort instead of best-available.
-func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
+// THE FALLBACK IS A BEST EFFORT, and it disagrees with protoc for TWO distinct
+// reasons, not one. An earlier revision named a single example and gave a cause
+// that explains only that example; a protoc differential over 307 accepted
+// descriptors put the disagreement at 123 of them, so the scope of this needs
+// stating properly:
+//
+//  1. PACKAGES ARE NOT IN `declared`. It holds types only, so the walk can never
+//     stop at a package scope. `probe.Inner` inside package `probe` yields
+//     `.probe.probe.Inner` where protoc resolves the first component `probe` as
+//     a PACKAGE and yields `.probe.Inner`. Java's first-part lookup consults
+//     package descriptors (Descriptors.java's AGGREGATES_ONLY); this map does
+//     not.
+//  2. THE FALLBACK TRIES ONLY THIS FILE'S OWN PACKAGE, never an ancestor and
+//     never the root. protoc keeps walking outward through enclosing packages.
+//     So a bare name whose target lives in an ancestor package -- `UUID` inside
+//     `package com.apple.foundationdb.record.testTupleFields`, which is exactly
+//     what `test_records_tuple_fields.proto` writes -- yields
+//     `.com.apple.foundationdb.record.testTupleFields.UUID` where protoc yields
+//     `.com.apple.foundationdb.record.UUID`. A dotted cross-package reference
+//     from a packaged file (`other.Outer.Inner` inside package `probe`) is the
+//     same mechanism.
+//
+// Both predate the scope walk, and both fail LOUDLY as unresolvable rather than
+// binding something wrong -- 123 of 123 were errors, zero mis-bindings. They are
+// unreachable today because no producer emits a file with a package: Go's
+// buildFileDescriptor sets Name and Dependency only, and Java's
+// FileDescriptorSerializer sets Name only. Both were read to confirm it. That is
+// what makes this best-effort rather than a shipped defect, and it is also why
+// the shapes are Java's own protos rather than hypotheticals.
+func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*descriptorpb.FileDescriptorProto) {
 	pkg := fd.GetPackage()
 	pkgPrefix := "."
 	if pkg != "" {
 		pkgPrefix = "." + pkg + "."
 	}
 
-	// declared holds every fully-qualified type name this file declares, so a
-	// candidate scope can be tested rather than assumed.
+	// declared holds every fully-qualified name a candidate scope may resolve
+	// against: the types this file declares, the types its DEPENDENCIES declare,
+	// and every PACKAGE prefix in play.
+	//
+	// All three are needed, and each closes one way this walk used to disagree
+	// with protoc:
+	//
+	//   - Dependency types. Without them a name binding into an import falls
+	//     through to the fallback, which prepends this file's own package. `UUID`
+	//     inside `package com.apple.foundationdb.record.testTupleFields` became
+	//     `.com.apple.foundationdb.record.testTupleFields.UUID` where protoc
+	//     walks out to `.com.apple.foundationdb.record.UUID`. That is Java's own
+	//     test_records_tuple_fields.proto.
+	//   - Packages. Java's first-part lookup consults package descriptors
+	//     (Descriptors.java's AGGREGATES_ONLY). Without them the walk can never
+	//     stop at a package scope, so `probe.Inner` inside package `probe`
+	//     became `.probe.probe.Inner` instead of `.probe.Inner`.
+	//   - Both together are what makes a cross-package EXTENDEE work. Routing
+	//     `Extendee` through this walk without dependency symbols rewrote a valid
+	//     `other.Host` (imported) to `.probe.other.Host` and made the descriptor
+	//     fail to load — turning a latent divergence into a fatal one, in the
+	//     commit that added the extendee rewrite.
 	declared := map[string]bool{}
+	addPackage := func(p string) {
+		if p == "" {
+			return
+		}
+		// Every prefix is a scope protoc can stop at: `a.b.c` declares `.a`,
+		// `.a.b` and `.a.b.c`.
+		full := "."
+		for _, part := range strings.Split(p, ".") {
+			full += part
+			declared[full] = true
+			full += "."
+		}
+	}
 	var collect func(scope string, msgs []*descriptorpb.DescriptorProto, enums []*descriptorpb.EnumDescriptorProto)
 	collect = func(scope string, msgs []*descriptorpb.DescriptorProto, enums []*descriptorpb.EnumDescriptorProto) {
 		for _, e := range enums {
@@ -935,7 +990,17 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 			collect(full+".", m.GetNestedType(), m.GetEnumType())
 		}
 	}
+	addPackage(pkg)
 	collect(pkgPrefix, fd.GetMessageType(), fd.GetEnumType())
+	for _, dep := range deps {
+		depPkg := dep.GetPackage()
+		depPrefix := "."
+		if depPkg != "" {
+			depPrefix = "." + depPkg + "."
+		}
+		addPackage(depPkg)
+		collect(depPrefix, dep.GetMessageType(), dep.GetEnumType())
+	}
 
 	// absolutize resolves tn as protobuf would from `scope`, which is the
 	// fully-qualified name of the DECLARING message plus a dot (or the package
@@ -1043,9 +1108,16 @@ func rebuildFileDescriptor(
 	recordsProto *descriptorpb.FileDescriptorProto,
 	depsProto []*descriptorpb.FileDescriptorProto,
 ) (protoreflect.FileDescriptor, error) {
-	absolutizeFieldTypeNames(recordsProto)
+	// The dependency set is passed so the resolver can see imported types and
+	// packages. Without it a name binding into an import falls through to the
+	// file's own package prefix, which is wrong for every cross-package
+	// reference and FATAL for a cross-package extendee.
+	absolutizeFieldTypeNames(recordsProto, depsProto...)
 	for _, dp := range depsProto {
-		absolutizeFieldTypeNames(dp)
+		// Each dependency is resolved against the whole set too: dependencies
+		// import one another, and `tuple_fields.proto` referencing a type from a
+		// sibling is the same shape as the records proto doing it.
+		absolutizeFieldTypeNames(dp, depsProto...)
 	}
 	// Build dependency resolver
 	resolver := &descriptorResolver{files: make(map[string]protoreflect.FileDescriptor)}
@@ -1134,14 +1206,18 @@ func (r *descriptorResolver) FindFileByPath(path string) (protoreflect.FileDescr
 		r.files[path] = fd
 		return fd, nil
 	}
-	// The sentinel, for the same reason FindDescriptorByName returns it: protodesc
-	// compares this against protoregistry.NotFound with `==` (desc.go's import
-	// resolution), and a descriptive error is treated as fatal on a path that is
-	// otherwise willing to tolerate an unresolvable option import. Unreachable at
-	// proto2/proto3 today, and fixed anyway because it is the identical defect one
-	// function up -- leaving the pair inconsistent is how the next reader concludes
-	// the sentinel is optional here.
-	return nil, protoregistry.NotFound
+	// THE REGISTRY'S OWN ERROR, not an unconditional sentinel. protodesc compares
+	// against protoregistry.NotFound with `==` (desc.go's import resolution), so
+	// a genuine miss has to arrive as that exact value -- and GlobalFiles already
+	// returns exactly it for a miss, so passing the error through is both correct
+	// and simpler.
+	//
+	// Rewriting every failure to NotFound would go too far in the other
+	// direction: FindFileByPath also reports AMBIGUITY when the registry holds
+	// more than one descriptor at a path, and flattening that to "missing" lets
+	// protodesc treat an ambiguous import as an allowed absent one. A miss is
+	// tolerable; a conflict is not, and the two must stay distinguishable.
+	return nil, err
 }
 
 func (r *descriptorResolver) FindDescriptorByName(name protoreflect.FullName) (protoreflect.Descriptor, error) {
