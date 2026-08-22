@@ -948,7 +948,7 @@ objections described Java's shipped behaviour rather than a cost.**
     `RecordLayerTable.getName()`, and `RecordMetadataDeserializer.java:92-96`
     keys its builder map by the decoded name, so a decode collision routes two
     declarations through one builder there. Go documents the same misresolution
-    at `pkg/recordlayer/metadata.go:1360-1368`. The OBJECTION was about the plan tree, and confined there it fails. Outside
+    at `pkg/recordlayer/metadata.go:1370-1378`. The OBJECTION was about the plan tree, and confined there it fails. Outside
     the memo it gains force rather than losing it -- so it is this REBUTTAL,
     not the objection, that must not be stated any wider.
 
@@ -1019,7 +1019,7 @@ resolver happened to match.
 THE TWO MECHANISMS ARE UNLIKE, and an earlier revision of this section stated a
 single rule over both — "a name a resolver matched loosely must be replaced by
 what it matched" — which is where the wrong prescription came from.
-`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go:1373-1375`):
+`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go:1383-1385`):
 `ToProtoBufCompliantName` is total and deterministic, the SQL name and the
 stored name are two spellings of ONE declaration, and its ambiguity is a
 declared-name collision rather than an iteration-order accident. Rewriting there
@@ -1113,13 +1113,20 @@ only; the rest is a cleanup, not a widening.
 read "weak" (not a line of code), and 645 of those land on a `//` line. Citing
 a doc comment is a legitimate thing to do, so at that rate the check scores style
 rather than staleness. `TestRFC238WeakCitesAreTheOnesSection7dNames` therefore
-pins the weak SET by name rather than gating it, so this section cannot drift
-from the tree. In THIS revision that set is `positional_row.go:7`,
-`colref.go:95`, `full_unordered_scan.go:110-118`,
-`pkg/recordlayer/metadata.go:1360-1368` (four doc-comment cites) plus
-`derived_unnest.go:250` and `cascades_generator.go:2826`, which are this
-section's own narrative naming cites it CORRECTED — they read weak because they
-name lines that have since moved, which is what the sentences around them say.
+pins the weak SET by name rather than gating it. WHAT THAT PINS IS THE SET AND
+NOTHING ELSE: every corpus figure in this section -- 2523, 341, 93, 23, 2066,
+918, 645, and the 54/12/61 below -- reproduces today but is asserted by no test,
+so each is a fact about a named SHA rather than a maintained invariant. In THIS
+revision the set has SEVEN members. Four cite a doc comment on purpose:
+`positional_row.go:7`, `colref.go:95`, `full_unordered_scan.go:110-118` and
+`pkg/recordlayer/metadata.go:1370-1378`. Three are this section's own narrative
+naming cites it CORRECTED — `derived_unnest.go:250`,
+`cascades_generator.go:2826` and `pkg/recordlayer/metadata.go:1330-1338` — and
+they read weak precisely because they name lines that have since moved, which is
+what the sentences around them say. That third one joined the set in the review
+round that corrected the guard's comment: the correction pushed
+`GetRecordType`'s doc block down, and the SUPERSEDED cite this section quotes
+landed on comment lines. Writing about drift produces drift.
 
 THE DISCIPLINE IS THE OTHER HALF, and it took three failures to state:
 
@@ -1172,16 +1179,22 @@ crossed a declaration boundary. Four others drifted INSIDE one function —
 `buildMatchCandidates`, `:4136`/`:4204` both inside the same rebase,
 `:924`/`:925` both in `derivedOutputColumns` — and the sixth,
 `pkg/recordlayer/metadata.go:1330-1338` → `:1343-1351` → `:1352-1360` →
-`:1360-1368`, moved THREE times inside the DOC COMMENT above `GetRecordType`,
-pushed down each time by a comment added above it -- twice by this section and
-once by the guard §7f describes. A function-range gate is silent for that one
+`:1360-1368` → `:1370-1378`, moved FOUR times inside the DOC COMMENT above
+`GetRecordType`, pushed down each time by a comment added above it -- twice by
+this section, once by the guard §7f describes, and once by the review round that
+corrected that guard's own comment. A function-range gate is silent for that one
 too, so it would have fired for one of six.
 
 THAT IS A SAMPLE, NOT THE BRANCH. An earlier revision said "the seven cites this
 branch corrected", which was one commit's count written as if it were the
-branch's. Implementing the stated rule over `origin/master..c053d85e5` — a file
-cited at a new line where an old line for that file disappeared — gives 54
-corrections across 12 of 61 commits; a stricter hand-filtered rule gives fewer.
+branch's. Implementing the stated rule — a file cited at a new line where an old line for
+that file disappeared — over `b6d50f95d6..c053d85e5` gives 54 corrections across
+12 of the range's 61 commits; a stricter hand-filtered rule gives fewer. The
+base is the MERGE-BASE, written as a SHA, not `origin/master`: master is not an
+ancestor of this branch (`git merge-base --is-ancestor origin/master c053d85e5`
+exits 1), so an `origin/master..` denominator moves every time master advances
+and the figure stops being reproducible. An earlier revision of this very
+sentence made that mistake.
 The count is genuinely rule-dependent, because one file cited from several
 places yields several "corrections" for one edit, so the rule ships with the
 figure. What is not rule-dependent is that it was never seven, and that the

@@ -300,8 +300,18 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 // reports by accumulating into buildErrors and this package does not panic in
 // library code; the second descriptor is NOT applied, so a caller that ignores
 // the Build error still sees the first descriptor rather than a half-merged one.
-// RFC-238 §7f carries the analysis; TestSetRecordsRefusesASecondCall and
-// TestOverwriteAfterRegistrationIsUnreachable pin it.
+// JAVA HAS AN ESCAPE HATCH THIS PACKAGE DOES NOT: updateRecords
+// (RecordMetaDataBuilder.java:451, :476) evolves a descriptor after the first
+// one is set, validating the union against the evolution validator and bumping
+// the meta-data version. Go has never had it, so refusing the second call
+// leaves no way to change a descriptor at all. That is a pre-existing gap, not
+// one this guard opened, and it is booked at the END of TODO.md with the Java
+// line numbers.
+//
+// RFC-238 §7f carries the analysis. Pinned by TestSetRecordsRefusesASecondCall,
+// TestRefusedSetRecordsLeavesTheFirstDescriptorInPlace (which is the only arm
+// that catches a guard written one line lower) and
+// TestUniversalIndexRoundTripsThroughAnEmptyRecordTypeList.
 func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
 	if b.fileDescriptor != nil {
 		b.buildErrors = append(b.buildErrors, &MetaDataError{Message: "Records already set."})

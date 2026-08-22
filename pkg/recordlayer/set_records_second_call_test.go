@@ -112,10 +112,16 @@ func TestSetRecordsRefusesASecondCall(t *testing.T) {
 			idx := NewIndex("assoc_idx", tc.key)
 			md, err := newDemoBuilder(tc.register, idx, true).Build()
 			if err == nil {
-				t.Fatalf("Build SUCCEEDED after a second SetRecords.\n"+
-					"The guard is gone, and with it the only thing keeping an index from\n"+
-					"being registered and associated with nothing: RecordTypesForIndex = %d.",
-					len(md.RecordTypesForIndex(idx)))
+				t.Fatalf("Build SUCCEEDED after a second SetRecords — the guard is gone, and\n"+
+					"the metadata it produced is exactly the state the guard exists to prevent:\n"+
+					"  RecordTypesForIndex          = %d (want %d)\n"+
+					"  GetIndexesForRecordType(Order) contains it = %v\n"+
+					"  GetIndex keeps the flat-registry entry     = %v\n"+
+					"An index registered and associated with nothing also SERIALIZES that way,\n"+
+					"and a reload reads an empty RecordType list as UNIVERSAL.",
+					len(md.RecordTypesForIndex(idx)), tc.associated,
+					indexNamed(md.GetIndexesForRecordType("Order"), "assoc_idx"),
+					md.GetIndex("assoc_idx") != nil)
 			}
 			if !strings.Contains(err.Error(), "Records already set.") {
 				t.Errorf("Build failed with %q, want it to carry Java's wording "+
@@ -230,6 +236,13 @@ func newDemoBuilder(register func(*RecordMetaDataBuilder, *Index), idx *Index, s
 	register(b, idx)
 	if secondSetRecords {
 		b.SetRecords(gen.File_record_layer_demo_proto)
+		// Re-apply the primary keys an UNGUARDED second call would have dropped.
+		// With the guard this is a no-op, and that is the point: without it, an
+		// unguarded second SetRecords replaces every RecordType, Build fails on a
+		// missing primary key, and the arm below never reaches the orphan it is
+		// about -- its err==nil branch becomes unreachable and its failure text
+		// becomes a claim about a state nothing produced.
+		setDemoPrimaryKeys(b)
 	}
 	return b
 }

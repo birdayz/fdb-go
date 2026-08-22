@@ -20068,3 +20068,87 @@ serially rather than concurrently.
 
 DONE when: a scenario that cannot reach the cluster says so, from an observation
 of the container rather than from the shape of an error string.
+
+---
+
+## The metadata builder diverges from Java in three places, found while closing RFC-238 §7f
+
+These are one subsystem and should land as one PR. All three were surfaced by
+review during PR #761 and verified against the Java source at tag 4.12.11.0;
+none is caused by that PR, and none is blocked on anything.
+
+**1. `updateRecords()` is not ported, so a descriptor cannot be evolved at all.**
+`SetRecords` now refuses a second call, matching Java
+(`RecordMetaDataBuilder.java:384`, `:423`). Java's sanctioned way to change a
+descriptor afterwards is `updateRecords(FileDescriptor)` /
+`updateRecords(FileDescriptor, boolean processExtensionOptions)`
+(`RecordMetaDataBuilder.java:451`, `:476`), plus
+`FDBMetaDataStore.updateRecords` / `updateRecordsAsync`. It validates the new
+descriptor, runs the evolution validator over the union
+(`evolutionValidator.validateUnion`), bumps the meta-data version, adds new
+record types and updates existing message descriptors via
+`updateUnionFieldsAndRecordTypes`, sets `sinceVersion` on the new types and
+their indexes, and finally swaps `recordsDescriptor`/`unionDescriptor`. Go has
+none of it. The gap PREDATES the guard — Go never had `updateRecords` — but the
+guard removes the broken approximation a caller could previously stumble into,
+so the gap is now the only story.
+
+**2. `primaryKeyComponentPositions` is computed for indexes Java never computes
+it for, and nondeterministically.** Java's `build()` sets it only from
+`recordTypeBuilder.getIndexes()` — single-type indexes
+(`RecordMetaDataBuilder.java:1461-1468`); `addMultiTypeIndex` with >=2 types
+puts the index on `getMultiTypeIndexes()` (`:1167-1178`) and `addUniversalIndex`
+into `universalIndexes` (`:1184`), neither of which that loop reads, so both
+keep `null` and `Index.trimPrimaryKey` is a no-op — Java writes
+`valueKey + FULL primary key`. Go's `metadata.go` Build computes positions for
+`rt.indexes`, `rt.multiTypeIndexes` AND `b.universalIndexes`, and for the
+universal case draws the primary key from `for _, rt := range types { …; break }`
+over a MAP, so the value is nondeterministic across builds of identical
+metadata. WIRE IMPACT: for a multi-type index whose key contains a PK field
+(two types keyed on `id` with a shared index on `(id, ts)`), Go writes
+`[id, ts]` where Java writes `[id, ts, id]`. `RecordMetaDataFromProto` ends in
+`builder.Build()`, so Go does this to metadata JAVA wrote. `pk_dedup_test.go`
+documents the change as a bugfix ("full redundant PKs"), i.e. Go matched Java
+and was "fixed" into the divergence. No conformance test uses a multi-type index
+at all (`grep -rln AddMultiTypeIndex conformance/` → 0; control `AddIndex` → 5+
+files), which is the dimension that let it ship green. The fix inverts two
+`pk_dedup_test.go` arms and dissolves the lone `Skip` in
+`index_registration_matrix_test.go:37`, whose universal arm becomes a
+no-positions assertion instead of being skipped.
+
+**3. `GetIndexesForRecordType` may be the wrong accessor at several call sites.**
+It returns `rt.indexes + rt.multiTypeIndexes`. Java's `RecordType.getIndexes()`
+is single-type only and `getAllIndexes()` adds multi-type AND universal
+(`RecordType.java:90`, `:101`, `:118-124`); Go has the single-type analog as
+`RecordType.GetIndexes()`. `IndexFunctionHelper.indexesForRecordTypes` returns
+`getIndexes()` alone for ONE record type name — "the indexes that apply to
+exactly the given types, no more, no less" (`IndexFunctionHelper.java:178-189`)
+— so Go's `record_function.go:78` offers a BROADER candidate set than Java. The
+save path composes `GetIndexesForRecordType` + `GetUniversalIndexes` explicitly
+(`store.go:1079`) and is fine; the other non-test callers were not audited
+against Java one by one. Audit all of them, then pick the Java-matching
+accessor per site.
+
+DONE when: `updateRecords` is ported with evolution-validator coverage;
+`primaryKeyComponentPositions` is computed only where Java computes it, pinned
+by a Go↔Java conformance pair for a multi-type index whose key overlaps a
+primary key; and every `GetIndexesForRecordType` call site is either confirmed
+against its Java counterpart or switched.
+
+---
+
+## A scratch tree inside the worktree can turn a docscheck census into fiction
+
+`fallbackWalk`'s exclusion list (`pkg/docscheck/source_hygiene_test.go`) names
+build and VCS directories but nothing that covers an ad-hoc extract. During PR
+#761 a reviewer's `git archive` extract sat briefly at
+`<worktree>/scratchpad/<sha>/`, and `TestNoFirstMatchNameLookup` walked into it
+and failed on a path that had since been deleted. A second copy of the repo
+inside the worktree DOUBLES every basename, so a census that counts declarations
+or resolves cites by basename silently reports twice the population — the
+failure mode here was loud only because the directory vanished mid-run.
+
+DONE when: the census walks refuse a nested second copy of the repo (a directory
+containing its own `MODULE.bazel`/`go.mod` below the root is the cheap
+signal), and a unit pin drives that refusal rather than the corpus happening to
+be clean.

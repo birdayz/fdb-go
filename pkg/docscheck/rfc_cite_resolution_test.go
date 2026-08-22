@@ -126,7 +126,7 @@ func TestCiteProblemNamesEveryWayACiteCanBeUnusable(t *testing.T) {
 // A range counts as code when EITHER endpoint is code, which is the rule §7d
 // states. The scratch checker that preceded it classified each ENDPOINT
 // separately and reported every non-code one, which is what made
-// `pkg/recordlayer/metadata.go:1373-1375` and `record_types_property.go:37-51`
+// `pkg/recordlayer/metadata.go:1383-1385` and `record_types_property.go:37-51`
 // -- code ranges that CLOSE on a brace -- read weak. A draft of §7d then wrote
 // a sentence explaining those two, and the sentence was false for a third cite.
 func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
@@ -139,7 +139,8 @@ func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
 		"colref.go:95",
 		"derived_unnest.go:250",
 		"full_unordered_scan.go:110-118",
-		"pkg/recordlayer/metadata.go:1360-1368",
+		"pkg/recordlayer/metadata.go:1330-1338",
+		"pkg/recordlayer/metadata.go:1370-1378",
 		"positional_row.go:7",
 	}
 
