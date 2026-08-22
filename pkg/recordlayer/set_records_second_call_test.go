@@ -38,14 +38,6 @@ import (
 // refused" from "this registration never associated anything in the first
 // place" -- with a single shared control over one spelling, a registration that
 // silently did nothing passed every other arm.
-//
-// NOTE ON WHAT THESE ARMS NOW DETECT: with the Build invariant in place, three
-// of the four spellings fail Build on the ORPHAN check before reaching the
-// "Records already set." message, because an unguarded second call orphans
-// their index. Only the universal spelling, which is exempt from that check,
-// still exercises the guard's own message. Both are detections of a missing
-// guard; they differ in which layer speaks first. RFC-238 §7f carries the
-// analysis.
 func TestSetRecordsRefusesASecondCall(t *testing.T) {
 	t.Parallel()
 
@@ -518,6 +510,203 @@ func TestBuildRequiresRegistryAndAssociationsToAgree(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "mt_idx") {
 			t.Errorf("Build failed with %q, which does not name the offending index", err)
+		}
+	})
+}
+
+// UNIVERSAL AND ASSOCIATED ARE MUTUALLY EXCLUSIVE, because the encoding cannot
+// represent both and Java cannot construct it.
+//
+// One proto field carries the coverage: an index with an empty `recordType`
+// list is universal, and a non-empty one names its types. So an index that is
+// BOTH universal and associated with "Order" serializes as `recordType=[Order]`
+// and the reload DROPS it from universalIndexes — a silent narrowing on the
+// wire. In memory it is worse: the store maintains it once for being universal
+// and once for the association, and for COUNT/SUM that is a double atomic ADD,
+// which is not idempotent.
+//
+// Java reaches neither state: addUniversalIndex and addMultiTypeIndex write to
+// disjoint places and nothing merges them. The exemption in Build's forward
+// walk is what let it through here — a universal index skipped the association
+// test before anything looked at whether it was ALSO associated.
+func TestBuildRefusesAnIndexBothUniversalAndAssociated(t *testing.T) {
+	t.Parallel()
+
+	idx := NewIndex("both_idx", EmptyKey())
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	setDemoPrimaryKeys(b)
+	b.AddUniversalIndex(idx)
+
+	// The control: universal alone builds.
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("CONTROL Build: %v", err)
+	}
+
+	// Now ALSO associate it, through the exported accessor.
+	rt := b.GetRecordTypes()["Order"]
+	rt.multiTypeIndexes = append(rt.multiTypeIndexes, idx)
+
+	md, err := b.Build()
+	if err == nil {
+		p, perr := md.ToProto()
+		var serialized string
+		if perr == nil {
+			for _, ip := range p.Indexes {
+				if ip.GetName() == "both_idx" {
+					serialized = fmt.Sprintf("recordType=%v", ip.RecordType)
+				}
+			}
+		}
+		t.Fatalf("Build ACCEPTED an index that is BOTH universal and associated.\n"+
+			"It serializes as %s, so the reload drops it from GetUniversalIndexes — the\n"+
+			"coverage NARROWS across a round trip. In memory it is maintained twice, and\n"+
+			"for COUNT/SUM a double atomic ADD is not idempotent.", serialized)
+	}
+	if !strings.Contains(err.Error(), "both_idx") {
+		t.Errorf("Build failed with %q, which does not name the offending index", err)
+	}
+}
+
+// A RECORD TYPE MAY CLAIM AN INDEX ONCE. AddMultiTypeIndex does not deduplicate
+// its name list, so ["Order","Order"] appends the same index twice and
+// GetIndexesForRecordType returns it twice — the same double atomic ADD as
+// above, from a plausible caller typo rather than from an accessor exploit. The
+// proto loader has the same shape, so it is reachable from the wire too.
+func TestBuildRefusesADuplicateAssociation(t *testing.T) {
+	t.Parallel()
+
+	idx := NewIndex("dup_idx", Field("price"))
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	setDemoPrimaryKeys(b)
+	b.AddMultiTypeIndex([]string{"Order", "Order"}, idx)
+
+	md, err := b.Build()
+	if err == nil {
+		t.Fatalf("Build ACCEPTED a record type claiming one index twice: "+
+			"GetIndexesForRecordType(Order) returns %d copies of it, and each copy is "+
+			"maintained separately on write.",
+			len(md.GetIndexesForRecordType("Order")))
+	}
+	if !strings.Contains(err.Error(), "dup_idx") {
+		t.Errorf("Build failed with %q, which does not name the offending index", err)
+	}
+}
+
+// A RENAMED UNIVERSAL INDEX reaches the registry-key check and nothing else:
+// the association walk never sees universal indexes, so `mismatched` cannot
+// fire for it. Its harm is also different — an empty record-type list is the
+// CORRECT encoding for a universal index, so nothing widens or narrows; what
+// breaks is that GetIndex(oldKey) returns an index reporting a different name,
+// and the reload rekeys it. The message must say that rather than borrowing the
+// type-specific one.
+func TestBuildRefusesARenamedUniversalIndex(t *testing.T) {
+	t.Parallel()
+
+	idx := NewIndex("uni_alpha", EmptyKey())
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	setDemoPrimaryKeys(b)
+	b.AddUniversalIndex(idx)
+	idx.Name = "uni_beta"
+
+	_, err := b.Build()
+	if err == nil {
+		t.Fatal("Build ACCEPTED a universal index whose Name no longer matches its registry key")
+	}
+	if strings.Contains(err.Error(), "universal index") && strings.Contains(err.Error(), "reloads as") {
+		t.Errorf("Build failed with %q — that is the TYPE-SPECIFIC harm. For a universal "+
+			"index an empty record-type list is correct; the harm is the registry key and "+
+			"the index name disagreeing across a reload", err)
+	}
+}
+
+// THE BUILT METADATA OWNS EVERYTHING IT HOLDS, driven through every public
+// mutation route rather than argued about.
+//
+// Validation in Build establishes facts about the BUILDER's objects. If those
+// objects are shared, the facts stop being true of what Build returned the
+// moment the caller touches anything — and three separate defects were found
+// that way: RemoveIndex orphaning already-built metadata, a post-Build rename
+// making ToProto emit an empty record-type list that reloads as universal, and
+// a former index's SubspaceKey being rewritten under the reuse guard.
+//
+// The route each arm drives is EXPORTED and needs no accessor tricks: the
+// caller simply keeps the object it passed in, or asks for it back.
+func TestBuiltMetadataOwnsEverythingItHolds(t *testing.T) {
+	t.Parallel()
+
+	build := func(t *testing.T) (*RecordMetaDataBuilder, *Index, *RecordMetaData) {
+		t.Helper()
+		idx := NewIndex("owned_idx", Field("price"))
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		setDemoPrimaryKeys(b)
+		b.AddIndex("Order", idx)
+		// A SEPARATE index, retired, so the fixture has a former index without
+		// the live one reusing its subspace key -- which Build refuses, and did.
+		b.AddIndex("Order", NewIndex("retired_idx", Field("quantity")))
+		b.RemoveIndex("retired_idx")
+		md, err := b.Build()
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		return b, idx, md
+	}
+
+	t.Run("renaming the index the caller still holds", func(t *testing.T) {
+		t.Parallel()
+		_, idx, md := build(t)
+		idx.Name = "renamed_after_build"
+
+		if got := md.GetIndex("owned_idx"); got == nil {
+			t.Fatal("the built metadata lost its index when the caller renamed the object it passed in")
+		} else if got.Name != "owned_idx" {
+			t.Errorf("md.GetIndex(\"owned_idx\").Name = %q, want %q — ToProto emits idx.Name "+
+				"while looking the record-type list up by the MAP key, so a desync serializes "+
+				"an empty record-type list, which reloads as UNIVERSAL", got.Name, "owned_idx")
+		}
+		p, err := md.ToProto()
+		if err != nil {
+			t.Fatalf("ToProto: %v", err)
+		}
+		for _, ip := range p.Indexes {
+			if ip.GetName() == "owned_idx" && len(ip.RecordType) != 1 {
+				t.Errorf("serialized RecordType = %v, want [Order]", ip.RecordType)
+			}
+			if ip.GetName() == "renamed_after_build" {
+				t.Error("the rename reached the serialized form")
+			}
+		}
+	})
+
+	t.Run("rewriting the key expression", func(t *testing.T) {
+		t.Parallel()
+		_, idx, md := build(t)
+		idx.RootExpression = Field("quantity")
+
+		if got := md.GetIndex("owned_idx").RootExpression; got != nil {
+			if _, isPrice := got.(*FieldKeyExpression); isPrice {
+				// The concrete type is right; compare the rendered form.
+				if fmt.Sprint(got) == fmt.Sprint(Field("quantity")) {
+					t.Error("the key expression rewrite reached the built metadata — entries " +
+						"already written under the old expression would be read under the new one")
+				}
+			}
+		}
+	})
+
+	t.Run("rewriting a former index subspace key", func(t *testing.T) {
+		t.Parallel()
+		b, _, md := build(t)
+		former := b.GetFormerIndexes()
+		if len(former) == 0 {
+			t.Skip("no former index recorded; the RemoveIndex in the fixture no longer produces one")
+		}
+		before := md.GetFormerIndexes()[0].SubspaceKey
+		former[0].SubspaceKey = "rewritten_by_the_builder"
+
+		if after := md.GetFormerIndexes()[0].SubspaceKey; fmt.Sprint(after) != fmt.Sprint(before) {
+			t.Errorf("the built metadata's former-index SubspaceKey changed from %v to %v — "+
+				"that value is what stops a live index being handed a retired key space",
+				before, after)
 		}
 	})
 }

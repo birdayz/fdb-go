@@ -20340,34 +20340,3 @@ the production comments this campaign corrected -- in executor.go and in
 fk_chain_cardinality.go -- sit outside it by construction, and claiming
 otherwise would be the same over-claim one level up.
 
----
-
-## Built metadata still shares its `*Index` objects with the builder
-
-`Build` now DETACHES the associations — it copies each `RecordType` and clones
-its `indexes`/`multiTypeIndexes` slices, and clones the `universalIndexes` and
-`formerIndexes` headers — so a post-`Build` builder mutation can no longer
-orphan already-built metadata. That fixed the route where `b.RemoveIndex("x")`
-after `Build` made `md.ToProto()` emit an empty `RecordType` list, which a
-reload reads as UNIVERSAL.
-
-WHAT IT DOES NOT DETACH is the `*Index` objects themselves. Both maps hold the
-same pointers, so mutating an index's OWN fields through the builder after
-`Build` still reaches the built metadata — `SetSubspaceKey`, or anything that
-rewrites `RootExpression`. A changed key expression is a WIRE change: entries
-already written under the old expression are then read under the new one.
-
-Two other fields cross by reference at the same construction site and are listed
-so this is an enumeration rather than a characterisation: `preserved` (a struct
-of slices) and `recordsSourceProto` (a raw `*descriptorpb.FileDescriptorProto`).
-Neither has a public mutation route today, which is why they are lower priority
-than `*Index`, not why they are absent.
-
-Unproven either way: whether any caller mutates an index after `Build`. The
-suite does not, but "no test does it" is not "no caller can".
-
-DONE when: either the `*Index` objects are cloned at the same seam as the
-association slices, or the builder stops handing out live references at all
-(`GetRecordTypes` returning the live map is what makes every one of these
-reachable), with a test that mutates an index through the builder after `Build`
-and asserts the built metadata and its serialized form are unchanged.

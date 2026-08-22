@@ -1117,17 +1117,16 @@ THE FIGURES BEHIND BOTH PARAGRAPHS ARE COMPUTED, NOT QUOTED FROM MEMORY.
     bazelisk test //pkg/docscheck:docscheck_test --test_output=streamed \
       --test_arg=-test.run=TestRFCCiteCensusRepoWide --test_arg=-test.v
 
-At the commit that added it, over 243 files in `rfcs/`: 2522 distinct cites —
-341 ambiguous, 93 dangling, 23 past-EOF, 2065 resolved (1147 code / 645 comment
-/ 193 brace / 80 blank), 918 weak. Those numbers move with every RFC edit,
-INCLUDING edits to this section, and nothing pins them; the test is the
-authority and this paragraph is a snapshot. That is deliberate. Pinning them
-would be the style gate this section rejects, and quoting them from memory is
-how four consecutive revisions shipped a wrong one.
+NO SNAPSHOT OF THOSE FIGURES APPEARS HERE. One did, and it rotted twice inside
+this branch -- the second time while `918 weak` stayed ACCIDENTALLY correct
+across the drift, which is exactly the half that cannot signal staleness. The
+numbers move with every RFC edit INCLUDING edits to this section, so a prose
+copy is stale the moment the section is touched. Pinning them instead would be
+the style gate this section rejects. Run the command.
 
 `TestRFC238WeakCitesAreTheOnesSection7dNames` pins the one thing worth pinning:
 the weak SET for this document, by name. WHAT THAT PINS IS THE SET AND NOTHING
-ELSE — every corpus figure above reproduces today but is asserted by no test. In
+ELSE — the corpus figures the census prints are asserted by no test at all. In
 THIS revision the set has FIVE members. Three cite a doc comment on purpose:
 `positional_row.go:7`, `colref.go:95` and `full_unordered_scan.go:110-118`. Two
 are this section's own narrative naming cites it CORRECTED —
@@ -1170,7 +1169,7 @@ was added above it, including twice by this section. Its successive line numbers
 are NOT listed here: each listing was itself a cite that drifted, and a sentence
 whose number was wrong at every revision that quoted it should not carry the
 number. That cite now names the FUNCTION and cannot drift again. A function-range
-gate is silent for all six, so it would have fired for one of them.
+gate is silent for that one too, so it would have fired for one of six.
 
 THAT IS A SAMPLE, NOT THE BRANCH, and the branch figure is DELIBERATELY ABSENT.
 An earlier revision said "the seven cites this branch corrected", which was one

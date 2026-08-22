@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"sort"
 
@@ -692,12 +693,12 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // metadata whose index registry and record-type associations do not agree in
 // both directions -- see the bijection check below.
 //
-// Each record type is COPIED and its association slices cloned, so a later
-// builder mutation cannot reach the returned metadata. Copying only the MAP,
-// which is what this comment used to describe, left the *RecordType pointers
-// shared and was exactly how a post-Build RemoveIndex orphaned already-built
-// metadata. The index OBJECTS are still shared; the detach comment below
-// enumerates what that leaves open.
+// The returned metadata shares no mutable state with the builder: record
+// types, indexes, former indexes and the records descriptor are all cloned, so
+// no post-Build mutation on either side reaches the other. Copying only the
+// MAPS, which is what this comment used to describe, left the pointers inside
+// them shared -- which is how a post-Build RemoveIndex orphaned already-built
+// metadata and a post-Build rename made it serialize as universal.
 func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Check for errors accumulated during builder method calls.
 	if len(b.buildErrors) > 0 {
@@ -781,59 +782,75 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// either maintained for every record type or as metadata that will not load
 	// at all. RFC-238 §7f carries the analysis.
 	//
-	// THE REGISTRY AND THE ASSOCIATIONS MUST AGREE IN BOTH DIRECTIONS, and each
-	// direction catches a state the other does not.
+	// THE REGISTRY AND THE ASSOCIATIONS MUST AGREE, and "agree" has more parts
+	// than it looks. Each class below is a state that serializes wrong or is
+	// maintained wrong, and each was reached through the exported API.
 	//
-	// WHAT THIS DOES NOT CONSTRAIN, first: an index's OWN fields. Its key
-	// expression, subspace key and options stay shared with the builder after
-	// Build, so mutating them still reaches the built metadata. That hazard is
-	// open and booked in TODO.md under "Built metadata still shares its *Index
-	// objects with the builder".
+	// UNIVERSAL AND ASSOCIATED ARE MUTUALLY EXCLUSIVE. One proto field carries
+	// coverage: an empty recordType list means universal, a non-empty one names
+	// types. An index that is both serializes as the non-empty form, so a
+	// reload DROPS it from universalIndexes -- coverage narrows on the wire --
+	// and in memory the store maintains it twice, which for COUNT/SUM is a
+	// double atomic ADD and those are not idempotent. Java reaches neither
+	// state: addUniversalIndex and addMultiTypeIndex write to disjoint places.
 	//
-	// FORWARD -- every registered index is keyed by its own name, and is
-	// universal or claimed by some record type. The name half is not
-	// redundant: Index.Name is EXPORTED, so a caller can rename the object it
-	// registered, leaving b.indexes keyed "alpha" holding an index called
-	// "beta". buildIndexRecordTypeMap keys by idx.Name while ToProto looks the
-	// list up by the MAP key, so that mismatch serializes an EMPTY RecordType
-	// list -- the UNIVERSAL encoding. An earlier revision compared names only,
-	// caught this, and was then changed to compare objects only, which fixed
-	// the divergence below and re-armed this.
+	// A RECORD TYPE CLAIMS AN INDEX AT MOST ONCE. AddMultiTypeIndex does not
+	// deduplicate its name list, so ["Order","Order"] appends twice and every
+	// write maintains both copies -- the same double ADD from a typo rather
+	// than an exploit. The proto loader appends per name with no dedup either.
 	//
-	// BACKWARD -- every associated index is the object the registry holds under
-	// its name. Without this, an association can be replaced on ONE record type
-	// while the registered object stays reachable through a sibling type, so
-	// the forward walk finds it and stops: the write path then takes its
-	// definition from GetIndexesForRecordType and scans take theirs from
-	// GetIndex, and one subspace is written and read under different key
-	// expressions.
+	// THE REGISTRY KEY IS THE INDEX'S OWN NAME. Index.Name is exported, so a
+	// caller can rename the object it registered. buildIndexRecordTypeMap keys
+	// by idx.Name while ToProto looks the list up by the MAP key, so for a
+	// type-specific index the mismatch serializes an empty recordType list --
+	// the universal encoding. For a universal index the empty list is already
+	// correct; the harm there is that the registry key and the name disagree,
+	// so GetIndex(oldKey) answers with an index calling itself something else
+	// and the reload rekeys it. Different harms, different messages.
 	//
-	// Together the two directions are the bijection between b.indexes and the
-	// associations. Names are sorted so the reported index does not depend on
-	// map order.
+	// AND EVERY ASSOCIATION IS THE REGISTERED OBJECT. Registered as a DIFFERENT
+	// object means write and read paths hold two definitions of one index;
+	// registered as NOTHING means it is maintained on write, never scanned,
+	// never serialized, and never subspace-key-checked. Also different.
 	universalObjs := make(map[*Index]struct{}, len(b.universalIndexes))
 	for _, idx := range b.universalIndexes {
 		universalObjs[idx] = struct{}{}
 	}
 
 	associatedObjs := make(map[*Index]struct{}, len(b.indexes))
-	mismatched := make([]string, 0, len(b.indexes))
+	var alsoUniversal, duplicated, unregistered, mismatched []string
 	for _, rt := range b.recordTypes {
+		claimed := make(map[*Index]struct{}, len(rt.indexes)+len(rt.multiTypeIndexes))
 		for _, group := range [][]*Index{rt.indexes, rt.multiTypeIndexes} {
 			for _, idx := range group {
+				if _, dup := claimed[idx]; dup {
+					duplicated = append(duplicated, idx.Name)
+					continue
+				}
+				claimed[idx] = struct{}{}
 				associatedObjs[idx] = struct{}{}
-				if reg, ok := b.indexes[idx.Name]; !ok || reg != idx {
+				if _, uni := universalObjs[idx]; uni {
+					alsoUniversal = append(alsoUniversal, idx.Name)
+					continue
+				}
+				switch reg, ok := b.indexes[idx.Name]; {
+				case !ok:
+					unregistered = append(unregistered, idx.Name)
+				case reg != idx:
 					mismatched = append(mismatched, idx.Name)
 				}
 			}
 		}
 	}
 
-	renamed := make([]string, 0, len(b.indexes))
-	orphaned := make([]string, 0, len(b.indexes))
+	var renamed, renamedUniversal, orphaned []string
 	for name, idx := range b.indexes {
 		if idx.Name != name {
-			renamed = append(renamed, name)
+			if _, uni := universalObjs[idx]; uni {
+				renamedUniversal = append(renamedUniversal, name)
+			} else {
+				renamed = append(renamed, name)
+			}
 			continue
 		}
 		if _, ok := universalObjs[idx]; ok {
@@ -845,25 +862,32 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		orphaned = append(orphaned, name)
 	}
 
-	if len(renamed) > 0 {
-		sort.Strings(renamed)
-		return nil, &MetaDataError{Message: fmt.Sprintf(
-			"index registered under %q reports the name %q; the association would serialize "+
-				"as an empty record-type list, which reloads as a universal index",
-			renamed[0], b.indexes[renamed[0]].Name)}
-	}
-	if len(mismatched) > 0 {
-		sort.Strings(mismatched)
-		return nil, &MetaDataError{Message: fmt.Sprintf(
-			"index %q is associated as one object and registered as a different one; "+
-				"the write path and the read path would use different definitions",
-			mismatched[0])}
-	}
-	if len(orphaned) > 0 {
-		sort.Strings(orphaned)
-		return nil, &MetaDataError{Message: fmt.Sprintf(
-			"index %q is registered but associated with no record type and is not universal",
-			orphaned[0])}
+	// Reported one at a time, first by sorted name, so the message does not
+	// depend on map order.
+	for _, bad := range []struct {
+		names  []string
+		format string
+	}{
+		{alsoUniversal, "index %q is universal AND associated with a record type; " +
+			"the record-type list encodes one or the other, so this narrows to type-specific " +
+			"on reload while being maintained twice in memory"},
+		{duplicated, "index %q is claimed more than once by a single record type; " +
+			"every copy is maintained separately on write"},
+		{renamed, "index registered under %q reports a different name; the association " +
+			"would serialize as an empty record-type list, which reloads as a universal index"},
+		{renamedUniversal, "universal index registered under %q reports a different name; " +
+			"the registry key and the index name would disagree across a reload"},
+		{unregistered, "index %q is associated with a record type but is not registered; " +
+			"it is maintained on write, never scanned, and never serialized"},
+		{mismatched, "index %q is associated as one object and registered as a different one; " +
+			"the write path and the read path would use different definitions"},
+		{orphaned, "index %q is registered but associated with no record type and is not universal"},
+	} {
+		if len(bad.names) == 0 {
+			continue
+		}
+		sort.Strings(bad.names)
+		return nil, &MetaDataError{Message: fmt.Sprintf(bad.format, bad.names[0])}
 	}
 
 	// Validate no duplicate record type keys.
@@ -903,30 +927,126 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// the index comes back maintained for every record type. The check in this
 	// function cannot see that: it runs once, and the mutation happens after.
 	//
-	// WHAT THIS DETACHES IS THE ASSOCIATIONS. What still crosses by reference,
-	// enumerated rather than characterised, because "detached" would otherwise
-	// imply more than is true:
+	// Compute primaryKeyComponentPositions for each index, ON THE BUILDER'S
+	// OBJECTS and BEFORE they are cloned below.
 	//
-	//   - the *Index objects. Both maps hold the same pointers, so mutating an
-	//     index's OWN fields (key expression, subspace key, options) after Build
-	//     still reaches the built metadata, and a changed key expression is a
-	//     WIRE change. This is the one with a public mutation route.
-	//   - preserved, a struct of slices, and recordsSourceProto, a raw
-	//     *descriptorpb.FileDescriptorProto. Neither has a public mutation route
-	//     today, which is why they rank below *Index and not why they are absent.
+	// The order is load-bearing and the cross-engine conformance suite is what
+	// proved it. Java sets these positions on the very Index objects the caller
+	// registered (RecordMetaDataBuilder.build calls
+	// index.setPrimaryKeyComponentPositions), and callers rely on that: the
+	// composite-index conformance store keeps the *Index it passed to AddIndex
+	// and hands that same object to ScanIndex. Computing the positions after
+	// the clone left the caller's object with nil positions while the metadata
+	// wrote entries with the primary key DEDUPED, so the scan decoded
+	// `pk=[]` where Java produced `pk=[1]` -- a wire-visible disagreement from
+	// a purely in-memory change.
 	//
-	// All three are open and booked in TODO.md under "Built metadata still
-	// shares its *Index objects with the builder".
+	// Matches Java's RecordMetaDataBuilder, which calls
+	// buildPrimaryKeyComponentPositions() over each record type's own indexes.
+	for _, rt := range b.recordTypes {
+		for _, idx := range rt.indexes {
+			if idx.primaryKeyComponentPositions == nil {
+				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
+			}
+		}
+		for _, idx := range rt.multiTypeIndexes {
+			if idx.primaryKeyComponentPositions == nil {
+				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
+			}
+		}
+	}
+	// Universal indexes: use the first record type's primary key (they should all match)
+	for _, idx := range b.universalIndexes {
+		if idx.primaryKeyComponentPositions == nil {
+			for _, rt := range b.recordTypes {
+				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
+				break
+			}
+		}
+	}
+
+	// THE BUILT METADATA OWNS EVERYTHING IT HOLDS. Nothing below is shared with
+	// the builder, so no post-Build mutation through any accessor on either
+	// side can reach the other.
+	//
+	// Copying the containers is not enough, and that was the previous bug: the
+	// *Index pointers stayed shared, so `md, _ := b.Build(); idx.Name = "beta"`
+	// left the registry keyed "alpha" holding an index calling itself "beta",
+	// and ToProto -- which looks the record-type list up by the MAP key while
+	// emitting idx.Name -- serialized an empty recordType list, the UNIVERSAL
+	// encoding. Every validation above runs on the builder's objects; cloning
+	// here is what keeps those results true of what is returned.
+	//
+	// A SHALLOW struct copy suffices, plus the Options map and the positions
+	// slice, because the only mutable state reachable from an Index is its own
+	// exported fields: the KeyExpression graph behind RootExpression exposes no
+	// exported field, so it cannot be rewritten through the returned metadata.
+	// FormerIndex is copied for the same reason -- all four of its fields are
+	// exported, GetFormerIndexes is live on both sides, and its SubspaceKey is
+	// the value the subspace-reuse guard tests. recordsSourceProto is cloned
+	// because SetRecordsSourceProto stores the caller's pointer and ToProto
+	// emits it.
+	//
+	// TestBuiltMetadataOwnsEverythingItHolds drives each of those routes, and
+	// each clone is independently mutation-pinned: dropping the registry clone
+	// reddens the rename and key-expression arms alone, dropping the
+	// FormerIndex clone reddens only its own.
+	cloned := make(map[*Index]*Index, len(b.indexes))
+	cloneIndex := func(idx *Index) *Index {
+		if c, ok := cloned[idx]; ok {
+			return c
+		}
+		c := *idx
+		if idx.Options != nil {
+			c.Options = maps.Clone(idx.Options)
+		}
+		if idx.primaryKeyComponentPositions != nil {
+			c.primaryKeyComponentPositions = append([]int(nil), idx.primaryKeyComponentPositions...)
+		}
+		cloned[idx] = &c
+		return &c
+	}
+
 	types := make(map[string]*RecordType, len(b.recordTypes))
 	for k, v := range b.recordTypes {
 		rt := *v
-		rt.indexes = append([]*Index(nil), v.indexes...)
-		rt.multiTypeIndexes = append([]*Index(nil), v.multiTypeIndexes...)
+		rt.indexes = make([]*Index, len(v.indexes))
+		for i, idx := range v.indexes {
+			rt.indexes[i] = cloneIndex(idx)
+		}
+		rt.multiTypeIndexes = make([]*Index, len(v.multiTypeIndexes))
+		for i, idx := range v.multiTypeIndexes {
+			rt.multiTypeIndexes[i] = cloneIndex(idx)
+		}
+		if raw, ok := v.explicitRecordTypeKey.([]byte); ok && raw != nil {
+			// make+copy, NOT append([]byte(nil), …): append returns NIL for an
+			// empty input, and nil is how this field spells "absent", so an
+			// EMPTY bytes key would stop serializing and the type would fall
+			// back to its union field number -- a different key space.
+			// TestRecordTypeKey_EmptyBytesSurvivesProtoRoundTrip pins it, and
+			// caught this exact idiom being reintroduced here.
+			dup := make([]byte, len(raw))
+			copy(dup, raw)
+			rt.explicitRecordTypeKey = dup
+		}
 		types[k] = &rt
 	}
 	indexes := make(map[string]*Index, len(b.indexes))
 	for k, v := range b.indexes {
-		indexes[k] = v
+		indexes[k] = cloneIndex(v)
+	}
+	universalIndexes := make([]*Index, len(b.universalIndexes))
+	for i, idx := range b.universalIndexes {
+		universalIndexes[i] = cloneIndex(idx)
+	}
+	formerIndexes := make([]*FormerIndex, len(b.formerIndexes))
+	for i, fi := range b.formerIndexes {
+		f := *fi
+		formerIndexes[i] = &f
+	}
+	var clonedRecordsSourceProto *descriptorpb.FileDescriptorProto
+	if b.recordsSourceProto != nil {
+		clonedRecordsSourceProto = proto.Clone(b.recordsSourceProto).(*descriptorpb.FileDescriptorProto)
 	}
 
 	// Validate no duplicate subspace keys among current indexes.
@@ -1183,33 +1303,6 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// RecordTypeKeyExpression resolves the key from the record's own type at
 	// evaluation time, exactly as Java's does, which needs no binding at all.
 
-	// Compute primaryKeyComponentPositions for each index.
-	// For each record type that has this index, compute the overlap between
-	// the index key expression and the primary key. If a primary key component
-	// already appears in the index key, it is deduplicated from the index entry.
-	// Matches Java's RecordMetaDataBuilder which calls buildPrimaryKeyComponentPositions().
-	for _, rt := range types {
-		for _, idx := range rt.indexes {
-			if idx.primaryKeyComponentPositions == nil {
-				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
-			}
-		}
-		for _, idx := range rt.multiTypeIndexes {
-			if idx.primaryKeyComponentPositions == nil {
-				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
-			}
-		}
-	}
-	// Universal indexes: use the first record type's primary key (they should all match)
-	for _, idx := range b.universalIndexes {
-		if idx.primaryKeyComponentPositions == nil {
-			for _, rt := range types {
-				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
-				break
-			}
-		}
-	}
-
 	// Pre-compute union field numbers and message factories for direct wire
 	// format encoding/decoding (skips UnionDescriptor allocation entirely).
 	fnToRT := make(map[protowire.Number]*RecordType, len(types))
@@ -1233,14 +1326,14 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	md := &RecordMetaData{
 		recordTypes:             types,
 		fileDescriptor:          b.fileDescriptor,
-		recordsSourceProto:      b.recordsSourceProto,
+		recordsSourceProto:      clonedRecordsSourceProto,
 		version:                 b.version,
 		recordCountKey:          b.recordCountKey,
 		storeRecordVersions:     b.storeRecordVersions,
 		splitLongRecords:        b.splitLongRecords,
 		indexes:                 indexes,
-		universalIndexes:        append([]*Index(nil), b.universalIndexes...),
-		formerIndexes:           append([]*FormerIndex(nil), b.formerIndexes...),
+		universalIndexes:        universalIndexes,
+		formerIndexes:           formerIndexes,
 		unionDescriptor:         b.unionDescriptor,
 		fieldNumberToRecordType: fnToRT,
 		subspaceKeyCounter:      b.subspaceKeyCounter,
