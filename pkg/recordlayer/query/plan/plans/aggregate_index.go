@@ -33,28 +33,27 @@ import (
 //     type depends on which derivation ran, which is worse than either default
 //     alone.
 //
-//     RFC-238 §7f carries the same two reachability axes. The namespace one is
-//     FORBIDDEN by §7c's committed design, which translates on the QUERY side
-//     precisely so the candidate side does not move; it does not arm, and the
-//     reference is not licence to move it. The EMPTY association needs no
-//     namespace change at all: RecordTypesForIndex returns nothing for an index
-//     that is neither universal nor associated, the aggregate rule then leaves
-//     this field empty, and GetRecordType("") misses. Every obvious route to
-//     that state is gated by the metadata builder; what survives is
-//     OVERWRITE-AFTER-REGISTRATION -- SetRecords called after ANY
-//     type-associating registration (AddIndex; the ONE-name AddMultiTypeIndex,
-//     which returns AddIndex; or AddMultiTypeIndex over two or more names),
-//     over a descriptor that STILL DECLARES the type: the setter replaces the
-//     RecordType and so drops its index slices while the flat registry keeps
-//     the entry. A nil-or-empty-name AddMultiTypeIndex delegates instead to
-//     AddUniversalIndex and is NOT affected -- that registry hangs off the
-//     builder, not off any RecordType. All four readings are pinned by
-//     TestOverwriteAfterRegistrationOrphansTheIndexAssociation in
-//     pkg/recordlayer, and metadata.go states the same route at the setter that
-//     causes it. It matters HERE because this field carries whichever namespace
-//     the plan was built in (RFC-238 §7c), so a plan built with a SQL spelling
-//     against metadata keyed by the stored one misses and degrades exactly that
-//     way.
+//     RFC-238 §7f carries the two axes that could reach the miss, and BOTH ARE
+//     NOW CLOSED, for different reasons. The namespace one is forbidden by
+//     §7c's committed design, which translates on the QUERY side precisely so
+//     the candidate side does not move; it does not arm, and the reference is
+//     not licence to move it. The EMPTY association -- RecordTypesForIndex
+//     returning nothing for an index that is neither universal nor associated,
+//     leaving this field empty so GetRecordType("") misses -- had exactly one
+//     route, a SECOND SetRecords call, and metadata.go now refuses that the way
+//     Java always has ("Records already set."). Pinned by
+//     TestSetRecordsRefusesASecondCall in pkg/recordlayer.
+//
+//     WHAT THAT ROUTE COST IS NOT WHAT THIS COMMENT ANALYSES, which is worth
+//     knowing before reviving the analysis above. An orphaned index did not
+//     merely lose its descriptor: ToProto emitted it with an EMPTY RecordType
+//     list, and a reload reads that as UNIVERSAL, so after a serialization
+//     round trip RecordTypesForIndex answered with EVERY type rather than none.
+//     The degraded-result-type hazard described here therefore did not survive
+//     a reload; a different defect did. It matters HERE because this field
+//     carries whichever namespace the plan was built in (RFC-238 §7c), so a
+//     plan built with a SQL spelling against metadata keyed by the stored one
+//     misses and degrades exactly that way.
 //
 //   - resultType: the rich Type of the aggregated result row.
 //

@@ -276,29 +276,37 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 	return b.setRecordsWithUnionName(fd, "UnionDescriptor")
 }
 
-// A SECOND CALL OVERWRITES, AND THE OVERWRITE DISCARDS INDEX ASSOCIATIONS.
-// Every union field builds a FRESH RecordType, whose index slices are nil, and
-// stores it over b.recordTypes[name]; the flat registry b.indexes keeps its
-// entry either way. So a type-associating registration (AddIndex; the one-name
-// AddMultiTypeIndex, which returns AddIndex; or AddMultiTypeIndex over two or
-// more names) followed by SetRecords over a descriptor that STILL DECLARES that
-// type leaves an index that is registered and associated with nothing: Build
-// succeeds, RecordTypesForIndex comes back empty, GetIndexesForRecordType loses
-// it. That is an index-maintenance hole as well as a plan-typing one.
-// AddUniversalIndex is unaffected because its registry hangs off the builder.
-// setRecordsWithoutUnion below overwrites the same way.
+// A SECOND CALL IS REFUSED, WHICH IS WHY THE ORPHAN ROUTE BELOW IS CLOSED.
+// Java's two setRecords overloads both open with
 //
-// AND THE ORPHAN DOES NOT STAY ONE. ToProto walks the flat registry, so it
-// still emits the index -- with an EMPTY RecordType list, since that list comes
-// from the associations just discarded -- and a reload maps an empty list to
-// UNIVERSAL. The index comes back maintained for EVERY record type, which is a
-// widening rather than a loss. Java reads those bytes identically, so this is a
-// semantic defect on both engines, not a compatibility one.
+//	if (recordsDescriptor != null) { throw new MetaDataException("Records already set."); }
 //
-// Pinned by TestOverwriteAfterRegistrationOrphansTheIndexAssociation and
-// TestOrphanedIndexRoundTripsAsUniversal; RFC-238 §7f carries the analysis and
-// the booked guard.
+// (RecordMetaDataBuilder.java:384, :423; setLocalFileDescriptor and
+// addDependency carry the same guard), so a second setter call is not something
+// Java tolerates and then repairs downstream — it is not reachable at all. Go
+// permitted it, and that single divergence is what produced every orphaned
+// index this file used to be able to build: the overwrite replaced each
+// RecordType with a fresh one whose index slices are nil while the flat
+// registry b.indexes kept its entry, leaving an index registered and associated
+// with nothing. Build succeeded, RecordTypesForIndex came back empty,
+// GetIndexesForRecordType lost it, and ToProto then emitted it with an EMPTY
+// RecordType list — which a reload reads as UNIVERSAL, because that is Java's
+// intended encoding for a universal index. So the index came back either
+// maintained for every record type (a silent widening, when its key is valid on
+// all of them) or unloadable (when it is not: Build validates a universal index
+// against every type and refuses).
+//
+// The guard records a build error rather than throwing, because this builder
+// reports by accumulating into buildErrors and this package does not panic in
+// library code; the second descriptor is NOT applied, so a caller that ignores
+// the Build error still sees the first descriptor rather than a half-merged one.
+// RFC-238 §7f carries the analysis; TestSetRecordsRefusesASecondCall and
+// TestOverwriteAfterRegistrationIsUnreachable pin it.
 func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
+	if b.fileDescriptor != nil {
+		b.buildErrors = append(b.buildErrors, &MetaDataError{Message: "Records already set."})
+		return b
+	}
 	b.fileDescriptor = fd
 
 	// Find the named union message to map fields to record types.

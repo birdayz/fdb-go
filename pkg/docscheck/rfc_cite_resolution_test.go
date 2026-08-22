@@ -1,6 +1,7 @@
 package docscheck
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,7 +15,7 @@ const rfc238Path = "rfcs/238-a-qualifier-is-structure-not-punctuation.md"
 // A CITE NAMING A BASENAME THE TREE HOLDS THREE OF IS NOT A CITE, and this is
 // the half of a cite gate that is worth building. RFC-238 §7d measures the
 // other half -- "does the cited line look like code" -- and rejects it: at
-// 98a5e8aa4, 917 of 2063 resolved cites repo-wide read weak and 644 of those
+// c053d85e5, 918 of 2066 resolved cites repo-wide read weak and 645 of those
 // land on a `//` line, so that check scores citation STYLE. Resolution is
 // different. An ambiguous or dangling cite is wrong under every style.
 //
@@ -22,7 +23,7 @@ const rfc238Path = "rfcs/238-a-qualifier-is-structure-not-punctuation.md"
 // checker that indexed Go files by BASENAME, so `metadata.go:1343-1345`
 // resolved against whichever of the tree's three `metadata.go` files the walk
 // met first, and the resulting classification was reported as a fact about
-// this document. The two cites are now written with their directory and this
+// this document. Those cites are now written with their directory and this
 // test holds them there.
 //
 // SCOPE, as the list of what it does NOT cover:
@@ -30,14 +31,16 @@ const rfc238Path = "rfcs/238-a-qualifier-is-structure-not-punctuation.md"
 //   - Only `rfcs/238-...md`. The same run reports 341 ambiguous, 93 dangling
 //     and 23 past-EOF cites across all of `rfcs/*.md` -- a real cleanup, not a
 //     one-line widening of this test.
-//   - Only GO cites. RFC-238 carries 24 further line cites into `.java` and
-//     `.yamsql` files (60 Go of 84 total). The Java tree is gitignored, so the
-//     resolution this gate performs is not available for them at all.
-//   - Not the 58 unqualified Go cites that resolve uniquely only because
-//     their basename happens to be unique in the tree TODAY. A second file of that name makes
-//     them ambiguous and this gate reddens, which is the design rather than a
-//     wart: the cite gets qualified at that point, as the two `metadata.go`
-//     cites were.
+//   - Only GO cites. RFC-238 carries 25 further line cites (59 Go of 84
+//     total): 24 into `.java` files in the vendored tree, which is gitignored,
+//     so the resolution this gate performs is unavailable for them; and ONE
+//     into `valid-identifiers.yamsql`, which IS tracked and could be covered.
+//     It is not, because the parser here only understands `.go`.
+//   - Not the 52 unqualified Go cites that resolve uniquely only because their
+//     basename happens to be unique in the tree TODAY. A second file of that
+//     name makes them ambiguous and this gate reddens, which is the design
+//     rather than a wart: the cite gets qualified at that point, as the
+//     `metadata.go` ones were. (7 of the 59 already carry a directory.)
 func TestRFC238CitesResolveUniquely(t *testing.T) {
 	t.Parallel()
 	root := sourceTreeRoot(t)
@@ -52,23 +55,66 @@ func TestRFC238CitesResolveUniquely(t *testing.T) {
 
 	for _, c := range cites {
 		cands := index[c.path]
+		lines := 0
+		if len(cands) == 1 {
+			lines = lineCount(t, filepath.Join(root, cands[0]))
+		}
+		if problem := citeProblem(c, cands, lines); problem != "" {
+			t.Errorf("cite %q %s", c.text, problem)
+		}
+	}
+}
+
+// citeProblem is the whole decision, kept OUT of the loop above so it can be
+// driven by a test. This document has zero ambiguous, zero dangling and zero
+// past-EOF cites, so every arm of it is unexercised by the corpus — a gate
+// whose error paths only ever run when someone breaks the tree is a gate nobody
+// has seen work. An earlier version also hand-inlined the bounds rule here
+// while the extracted citeInBounds was pinned separately, which is two
+// implementations of one rule with one of them untested.
+func citeProblem(c rfcCite, cands []string, lines int) string {
+	switch {
+	case len(cands) == 0:
+		return "resolves to NO file in the tracked tree"
+	case len(cands) > 1:
+		return fmt.Sprintf("is AMBIGUOUS — %d tracked files match that path suffix (%s). "+
+			"Qualify it with enough leading directory to name one file; a reader (and any "+
+			"tool) otherwise resolves it to whichever the walk meets first",
+			len(cands), strings.Join(cands, ", "))
+	case !citeInBounds(c, lines):
+		if c.end != 0 {
+			return fmt.Sprintf("names lines %d-%d of %s, which has %d lines",
+				c.start, c.end, cands[0], lines)
+		}
+		return fmt.Sprintf("names line %d of %s, which has %d lines", c.start, cands[0], lines)
+	}
+	return ""
+}
+
+// EVERY ERROR ARM OF THE GATE, driven directly. The corpus reaches none of
+// them, so without this the gate's failure behaviour is an assumption.
+func TestCiteProblemNamesEveryWayACiteCanBeUnusable(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		c     rfcCite
+		cands []string
+		lines int
+		want  string // substring; "" means the cite must be accepted
+	}{
+		{"clean", rfcCite{start: 10}, []string{"a/b.go"}, 100, ""},
+		{"clean range", rfcCite{start: 10, end: 20}, []string{"a/b.go"}, 100, ""},
+		{"dangling", rfcCite{start: 10}, nil, 0, "resolves to NO file"},
+		{"ambiguous", rfcCite{start: 10}, []string{"a/b.go", "c/b.go"}, 0, "is AMBIGUOUS — 2 tracked files"},
+		{"start past EOF", rfcCite{start: 101}, []string{"a/b.go"}, 100, "names line 101 of a/b.go, which has 100 lines"},
+		{"end past EOF", rfcCite{start: 90, end: 101}, []string{"a/b.go"}, 100, "names lines 90-101 of a/b.go, which has 100 lines"},
+	} {
+		got := citeProblem(tc.c, tc.cands, tc.lines)
 		switch {
-		case len(cands) == 0:
-			t.Errorf("cite %q resolves to NO file in the tracked tree", c.text)
-			continue
-		case len(cands) > 1:
-			t.Errorf("cite %q is AMBIGUOUS — %d tracked files match that path suffix (%s). "+
-				"Qualify it with enough leading directory to name one file; a reader (and any "+
-				"tool) otherwise resolves it to whichever the walk meets first",
-				c.text, len(cands), strings.Join(cands, ", "))
-			continue
-		}
-		n := lineCount(t, filepath.Join(root, cands[0]))
-		if c.start < 1 || c.start > n {
-			t.Errorf("cite %q names line %d of %s, which has %d lines", c.text, c.start, cands[0], n)
-		}
-		if c.end != 0 && c.end > n {
-			t.Errorf("cite %q names end line %d of %s, which has %d lines", c.text, c.end, cands[0], n)
+		case tc.want == "" && got != "":
+			t.Errorf("%s: rejected with %q, want accepted", tc.name, got)
+		case tc.want != "" && !strings.Contains(got, tc.want):
+			t.Errorf("%s: got %q, want it to contain %q", tc.name, got, tc.want)
 		}
 	}
 }
@@ -80,7 +126,7 @@ func TestRFC238CitesResolveUniquely(t *testing.T) {
 // A range counts as code when EITHER endpoint is code, which is the rule §7d
 // states. The scratch checker that preceded it classified each ENDPOINT
 // separately and reported every non-code one, which is what made
-// `pkg/recordlayer/metadata.go:1365-1367` and `record_types_property.go:37-51`
+// `pkg/recordlayer/metadata.go:1373-1375` and `record_types_property.go:37-51`
 // -- code ranges that CLOSE on a brace -- read weak. A draft of §7d then wrote
 // a sentence explaining those two, and the sentence was false for a third cite.
 func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
@@ -93,7 +139,7 @@ func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
 		"colref.go:95",
 		"derived_unnest.go:250",
 		"full_unordered_scan.go:110-118",
-		"pkg/recordlayer/metadata.go:1352-1360",
+		"pkg/recordlayer/metadata.go:1360-1368",
 		"positional_row.go:7",
 	}
 
