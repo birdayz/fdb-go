@@ -142,6 +142,28 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 }
 
+// fkChainProbeFromRange stamps an FK-chain index probe. Exactly three helpers
+// route through it -- fkChainFKProbe, fkChainFKProbeAgainst and
+// fkChainFanOutFKProbe -- so a stamp added here reaches those three and no
+// others. That matters because omitting WithDistinctRecordsSignal makes
+// scanBindingOfLeaf's index arm fail closed, and an assertion behind that guard
+// then exits above the thing it meant to test; that happened here once, from a
+// hand-rolled copy of this chain.
+//
+// Deliberately NOT a claim about the file: fkChainPKProbe and
+// fkChainFKProbeRTPrefixed build their own plans inline and nothing here
+// reaches them, as do several fixtures in the tests themselves.
+func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange, createsDuplicates bool) plans.RecordQueryPlan {
+	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
+		[]*predicates.ComparisonRange{rng},
+		[]string{rt}, fkChainRowType(rt), false)).
+		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
+		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
+		WithCommonPrimaryKey(fkChainIDPK()).
+		WithDistinctRecordsSignal(createsDuplicates)
+}
+
 // fkChainFKProbe is a non-unique secondary-index equality probe against rt,
 // correlated to outerAlias.ID — the PRECEDING table's own primary key. It
 // models a plain SCALAR index (one entry per record — no FAN_OUT field), so
@@ -150,28 +172,9 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 // createsDuplicates() signal — a scalar index never fans out, so
 // ProducesDistinctRecords() must read true for the FK-chain cap to fire on
 // it, same as production.
-// fkChainProbeFromRange is the single stamping site for the two FK-probe helpers
-// below. It is NOT the only place this file stamps an index plan -- other
-// fixtures build their own inline, and this does not reach them.
-// Both callers below route through it, so a signal added here reaches every
-// fixture. That is not decoration: omitting WithDistinctRecordsSignal makes
-// scanBindingOfLeaf's index arm fail closed, which silently moves an assertion's
-// exit to a guard above the thing it meant to test. A duplicated stamp chain
-// would let exactly that regress for the next signal anyone adds.
-func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange) plans.RecordQueryPlan {
-	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
-		[]*predicates.ComparisonRange{rng},
-		[]string{rt}, fkChainRowType(rt), false)).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
-		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey(fkChainIDPK()).
-		WithDistinctRecordsSignal(false)
-}
-
 func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"))
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), false)
 }
 
 // fkChainFKProbeAgainst is fkChainFKProbe for an outer whose layout is not in
@@ -190,7 +193,7 @@ func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.Rec
 	if !rng.Ok {
 		t.Fatalf("failed to build correlated eq range against %s", outerLayout.RecordName)
 	}
-	return fkChainProbeFromRange(rt, idx, rng.Range)
+	return fkChainProbeFromRange(rt, idx, rng.Range, false)
 }
 
 // fkChainFanOutFKProbe is fkChainFKProbe but models a FAN-OUT index (one
@@ -199,14 +202,7 @@ func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.Rec
 // than once per probe. See TestFKChainCardinalityCap_DeclinesOnFanOutIndex.
 func fkChainFanOutFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
-		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
-		[]string{rt}, fkChainRowType(rt), false)).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
-		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey(fkChainIDPK()).
-		WithDistinctRecordsSignal(true)
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), true)
 }
 
 // fkChainRTPrefixedPK models the primary key shape
