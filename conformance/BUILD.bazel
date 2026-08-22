@@ -116,6 +116,7 @@ go_test(
         "metadata_store_conformance_test.go",
         "min_max_ever_index_conformance_test.go",
         "min_max_ever_tuple_index_conformance_test.go",
+        "multi_type_index_conformance_test.go",
         "multidimensional_index_conformance_test.go",
         "nested_groupby_key_java_probe_test.go",
         "nesting_index_conformance_test.go",
