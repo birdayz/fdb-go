@@ -866,15 +866,30 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 // A NAME THIS FILE DOES NOT DECLARE FALLS BACK TO THE PACKAGE PREFIX, which is
 // what this function did unconditionally before it learned about scope. Only
 // this file's own declarations are visible here, so a name binding into a
-// dependency cannot be resolved properly, and the prefix is the best available
-// answer. An earlier version of this rewrite left such names RELATIVE on the
-// reasoning that protodesc performs the same outward walk anyway; that is false
-// for the shape the relational DDL builder actually emits, and the cross-engine
-// suite failed twelve SQL scenarios on it. See the fallback for the detail.
+// dependency cannot be resolved properly. An earlier version left such names
+// RELATIVE and the cross-engine suite failed twelve SQL scenarios; the fallback
+// is what repaired them, and it is pinned by
+// TestAbsolutizeFieldTypeNamesFallsBackForNamesTheFileDoesNotDeclare.
 //
-// So the scope walk only ever CHANGES the answer where the file itself declares
-// a candidate -- exactly the shadowing case -- and is otherwise identical to the
-// blanket rewrite it replaced.
+// WHY ABSOLUTIZE AT ALL, stated correctly because the first answer here was
+// wrong: NOT because protodesc fails to walk outward. It does walk, and an
+// earlier version of this comment blamed it for a failure caused by this
+// package's own descriptorResolver returning a descriptive error instead of the
+// protoregistry.NotFound sentinel -- which protodesc compares with `!=`, so
+// anything else aborted its walk at the first candidate. That is fixed at
+// FindDescriptorByName. The real reason is a genuine divergence: protodesc
+// retries the WHOLE reference at each enclosing scope, while protoc and Java
+// resolve the FIRST COMPONENT outward and then require the rest beneath it.
+// Leaving names for protodesc would silently diverge from Java on compound
+// names -- see TestAbsolutizeFieldTypeNamesResolvesTheFirstComponentOutward.
+//
+// The fallback is a BEST EFFORT, not a correct answer in every case. Where this
+// file's package is itself a prefix of the name (`probe.Inner` inside package
+// `probe`), it yields `.probe.probe.Inner` where protoc yields `.probe.Inner`,
+// because Java's first-part lookup consults package descriptors and this map
+// holds only types. Those shapes predate the scope walk, fail LOUDLY as
+// unresolvable rather than binding something wrong, and are the reason this says
+// best-effort instead of best-available.
 func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 	pkg := fd.GetPackage()
 	pkgPrefix := "."
@@ -1086,23 +1101,57 @@ func (r *descriptorResolver) FindDescriptorByName(name protoreflect.FullName) (p
 	if err == nil {
 		return d, nil
 	}
-	return nil, fmt.Errorf("descriptor not found: %s", name)
+	// THE SENTINEL, NOT A DESCRIPTIVE ERROR. protodesc's resolver walks a
+	// relative name outward through enclosing scopes, and it decides whether to
+	// KEEP WALKING by comparing this error to protoregistry.NotFound with `!=`
+	// -- a direct equality (`desc_resolve.go`'s findDescriptor), not errors.Is,
+	// so a wrapped sentinel does not survive it either. Returning anything else
+	// is treated as fatal and ABORTS the walk at the very first candidate, which
+	// turns "not here, try the enclosing scope" into "cannot resolve type".
+	//
+	// That is not hypothetical: it is why relative names appeared not to resolve
+	// at all, and it was misdiagnosed once already as protodesc failing to walk
+	// outward. protodesc walks correctly; this resolver was stopping it.
+	return nil, protoregistry.NotFound
 }
 
-// findInFile searches for a descriptor by name in a file.
+// findInFile searches for a descriptor by name in a file, INCLUDING nested
+// types.
+//
+// It used to scan only the top-level messages and enums, so a legitimate
+// `.pkg.Outer.Inner` was reported missing even though the file declares it --
+// and, before the sentinel fix above, that miss was reported as a fatal error
+// rather than a miss, aborting the caller's outward walk as well. Nested types
+// are the common case for the descriptors this port loads.
 func findInFile(fd protoreflect.FileDescriptor, name protoreflect.FullName) protoreflect.Descriptor {
-	msgs := fd.Messages()
-	for i := 0; i < msgs.Len(); i++ {
-		m := msgs.Get(i)
-		if m.FullName() == name {
-			return m
-		}
+	if d := findInMessages(fd.Messages(), name); d != nil {
+		return d
 	}
 	enums := fd.Enums()
 	for i := 0; i < enums.Len(); i++ {
 		e := enums.Get(i)
 		if e.FullName() == name {
 			return e
+		}
+	}
+	return nil
+}
+
+// findInMessages searches msgs and everything declared beneath them.
+func findInMessages(msgs protoreflect.MessageDescriptors, name protoreflect.FullName) protoreflect.Descriptor {
+	for i := 0; i < msgs.Len(); i++ {
+		m := msgs.Get(i)
+		if m.FullName() == name {
+			return m
+		}
+		enums := m.Enums()
+		for j := 0; j < enums.Len(); j++ {
+			if e := enums.Get(j); e.FullName() == name {
+				return e
+			}
+		}
+		if d := findInMessages(m.Messages(), name); d != nil {
+			return d
 		}
 	}
 	return nil

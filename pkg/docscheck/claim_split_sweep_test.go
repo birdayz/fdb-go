@@ -366,13 +366,17 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	if controlHit == 0 {
 		t.Fatalf("positive control %q matched 0 of %d swept files; the sweep cannot be trusted to find anything", control, scanned)
 	}
-	// THE JAVA FLOOR THAT ACTUALLY MEANS SOMETHING: files that reached the read
-	// loop, not files the walk discovered. The two differ, and the difference is
-	// not academic — moving the Java sources to a directory outside the prefix
-	// filter leaves the walk finding all of them and the sweep reading NONE, and
-	// a discovery-side floor stays green while a live claim sits in one of them.
-	// The Go half contributes thousands of files, so `scanned` cannot notice.
-	// This is `selfSeen`'s pattern applied to the population that was blind.
+	// THE READ-SIDE JAVA FLOOR. Its trigger is narrower than the scope-side floor
+	// above, and naming the wrong one is how a guard gets credited with work it
+	// does not do: moving every Java source outside the prefix filter is caught
+	// at `javaInScope`, and execution never reaches here. What THIS floor owns is
+	// files that were discovered, passed the filter, and then failed to OPEN —
+	// zero Java bytes read, with `scanned` and `controlHit` still carried by
+	// thousands of Go files.
+	//
+	// It is also why the increment sits below `os.ReadFile` rather than above it.
+	// Above, it counted the same population as `javaInScope` by construction and
+	// could never fire on its own.
 	if javaSwept == 0 {
 		t.Fatalf("the walk found %d .java file(s) and %d of them passed the scope filter, but ZERO "+
 			"were swept. Discovery is not coverage: the sweep is green over a population it never "+

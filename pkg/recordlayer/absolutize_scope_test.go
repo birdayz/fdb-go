@@ -198,3 +198,61 @@ func TestAbsolutizeFieldTypeNamesResolvesTheFirstComponentOutward(t *testing.T) 
 			"before relaxing this: the departure from protodesc is deliberate")
 	}
 }
+
+// THE FALLBACK ARM: a name this file does not declare.
+//
+// This is the half of the resolver that repaired twelve cross-engine SQL
+// scenarios, and for two commits it was reached by NO test in this package --
+// proven, not assumed: a panic() planted at the fallback left the whole package
+// green, while the same panic on the walk branch reddened it. The scope walk had
+// two arms and the fallback had none, so the arm that actually broke production
+// was the untested one.
+//
+// The shape is the relational DDL builder's, which is the producer that emits
+// relative names at all: a file with NO package, a message-scoped field, and a
+// dotted name binding into a dependency. Nothing in the file declares `com`, so
+// the outward walk finds no candidate and the package prefix -- here just "." --
+// is the answer. That is exactly the rewrite the old blanket code performed, and
+// getting it wrong made protodesc resolve against the enclosing message and fail
+// with `cannot resolve type "T_UUID.com.apple.foundationdb.record.UUID"`.
+func TestAbsolutizeFieldTypeNamesFallsBackForNamesTheFileDoesNotDeclare(t *testing.T) {
+	t.Parallel()
+
+	fd := &descriptorpb.FileDescriptorProto{
+		Name:   proto.String("absolutize_fallback.proto"),
+		Syntax: proto.String("proto2"),
+		// NO package, which is what makes the prefix a bare "." and is the shape
+		// the DDL builder emits.
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("T_UUID"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:   proto.String("u"),
+				Number: proto.Int32(1),
+				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				// Dotted, and binding into a DEPENDENCY: no scope in this file
+				// declares `com`, so the walk must fall through.
+				TypeName: proto.String("com.apple.foundationdb.record.UUID"),
+			}},
+		}},
+	}
+
+	// The premise, asserted so this cannot pass because the walk happened to
+	// find something: the file declares no `com`.
+	for _, m := range fd.MessageType {
+		if m.GetName() == "com" {
+			t.Fatal("the fixture declares a top-level `com`, so the outward walk would resolve it " +
+				"and this arm would exercise the walk rather than the fallback")
+		}
+	}
+
+	absolutizeFieldTypeNames(fd)
+
+	got := fd.MessageType[0].Field[0].GetTypeName()
+	if got != ".com.apple.foundationdb.record.UUID" {
+		t.Fatalf("absolutizeFieldTypeNames produced %q, want %q.\n"+
+			"A name no scope in this file declares must fall back to the package prefix. Leaving it "+
+			"RELATIVE is what broke twelve cross-engine SQL scenarios, and rewriting it to anything "+
+			"else would bind a different type.", got, ".com.apple.foundationdb.record.UUID")
+	}
+}
