@@ -169,23 +169,25 @@ func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange, crea
 
 // fkChainFKProbe is a non-unique secondary-index equality probe against rt,
 // correlated to outerAlias.ID — the PRECEDING table's own primary key. It
-// models a plain SCALAR index (one entry per record — no FAN_OUT field), so
-// it stamps distinctRecordsKnown/createsDuplicates=false exactly as
-// abstract_data_access_rule.go does in production from the match candidate's
-// createsDuplicates() signal — a scalar index never fans out, so
-// ProducesDistinctRecords() must read true for the FK-chain cap to fire on
-// it, same as production.
+// models a plain SCALAR index (one entry per record — no FAN_OUT field), so it
+// stamps createsDuplicates=false exactly as abstract_data_access_rule.go does
+// in production from the match candidate's createsDuplicates() signal.
+// distinctRecordsKnown is set true either way -- the setter always does that,
+// it is the KNOWN bit, not the answer -- so a scalar index reads
+// ProducesDistinctRecords()=true and the FK-chain cap can fire on it, same as
+// production.
 func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
 	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), false)
 }
 
 // fkChainFKProbeAgainst is fkChainFKProbe for an outer whose layout is not in
-// fkChainLayouts -- a FlatMap emitting a RecordConstructor row, say. It exists
-// so the STAMPS cannot drift: a hand-rolled index plan that omits
-// WithDistinctRecordsSignal is rejected by scanBindingOfLeaf's first guard, and
-// any assertion behind that guard then passes without reaching what it claims
-// to test. That happened here once; sharing the constructor is what stops it.
+// fkChainLayouts -- a FlatMap emitting a RecordConstructor row, say. The
+// operand is baked against that layout so the comparand's ordinal domain
+// matches the row the outer actually emits; baking against a registry entry
+// instead gives correlatedFieldIdentity an unrelated reason to decline. Why the
+// stamps are shared rather than repeated here is fkChainProbeFromRange's doc,
+// not this one.
 func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.RecordType, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
 	cmp := predicates.Comparison{
