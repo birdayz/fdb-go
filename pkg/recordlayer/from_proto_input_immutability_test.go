@@ -241,6 +241,17 @@ func relativizeTypeNames(fd *descriptorpb.FileDescriptorProto) {
 	}
 	relativize := func(f *descriptorpb.FieldDescriptorProto) {
 		f.TypeName = proto.String(lastNameComponent(f.GetTypeName()))
+		// EXTENDEE TOO, because absolutizeFieldTypeNames writes it. This mirror
+		// lagged that by a lap: the production pass gained an Extendee write and
+		// this kept rewriting TypeName only, so every fixture reaching it left
+		// extendees ALREADY ABSOLUTE, `resolveName` returned early on them, and
+		// deleting the production `f.Extendee = &abs` line reddened nothing —
+		// 177 tests, 0 failures. A mirror that lags its subject does not merely
+		// under-test; it makes the subject's new code unreachable, which is the
+		// failure the "keep the two walks in step" note below exists to prevent.
+		if e := f.GetExtendee(); e != "" {
+			f.Extendee = proto.String(lastNameComponent(e))
+		}
 	}
 	var walk func(msgs []*descriptorpb.DescriptorProto)
 	walk = func(msgs []*descriptorpb.DescriptorProto) {

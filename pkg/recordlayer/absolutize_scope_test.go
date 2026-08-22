@@ -362,3 +362,214 @@ func TestAbsolutizeFieldTypeNamesResolvesIntoDependencies(t *testing.T) {
 		t.Fatalf("the absolutized descriptor does not build: %v", err)
 	}
 }
+
+// ABSOLUTIZATION IS LOAD-BEARING, and this is the shape that proves it.
+//
+// A review argued the pass should be deleted: once descriptorResolver returns
+// the NotFound sentinel protodesc's walk works, and over 307 protoc-accepted
+// descriptors the rewrite chooses a name protoc would not in 123 of them. The
+// argument is careful and the conclusion is wrong -- disabling the pass fails a
+// real stored template, `struct_uuid_vector`, in the cross-engine byte-goldens.
+//
+// THE MECHANISM IS A FIELD-NAME / TYPE-NAME COLLISION. The template is
+//
+//	CREATE TYPE AS STRUCT SV (...)  CREATE TABLE T (id BIGINT, sv SV, ...)
+//
+// so message `T` carries a field named `SV` whose type is ALSO `SV`. protodesc
+// registers fields into the same by-name map it resolves type references
+// against (desc_init.go's makeBase), so resolving relative `SV` from inside `T`
+// finds `T.SV` -- the FIELD -- binds it, and dies at desc_resolve.go's `case 0`
+// with "unknown kind". That error has exactly one emitter and it is NOT a
+// not-found: it fires when resolution SUCCEEDS and returns something that is
+// neither message nor enum.
+//
+// protoc accepts the same source, because its type_name lookup skips non-type
+// symbols. protodesc has no such filter. That is a THIRD protodesc-vs-protoc
+// divergence, distinct from the two the function's doc comment describes, and
+// `declared` holding only messages and enums is exactly why this pass agrees
+// with protoc where protodesc does not.
+//
+// An earlier revision of this file said a minimal reproduction had been
+// ATTEMPTED AND FAILED, and told the reader a green unit probe proves nothing.
+// That was false and it was the deterrent kind of false. The missing ingredient
+// was the collision: relative name, empty package and unset kind are each
+// insufficient on their own, which the control arm below pins.
+func TestAbsolutizationIsRequiredWhenAFieldShadowsItsOwnType(t *testing.T) {
+	t.Parallel()
+
+	build := func(fieldName string) *descriptorpb.FileDescriptorProto {
+		return &descriptorpb.FileDescriptorProto{
+			Name:   proto.String("absolutize_necessity.proto"),
+			Syntax: proto.String("proto2"),
+			// No package: the shape the relational DDL builder emits.
+			MessageType: []*descriptorpb.DescriptorProto{
+				{Name: proto.String("SV")},
+				{
+					Name: proto.String("T"),
+					Field: []*descriptorpb.FieldDescriptorProto{{
+						Name:   proto.String(fieldName),
+						Number: proto.Int32(1),
+						Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+						// Relative, as stored.
+						TypeName: proto.String("SV"),
+					}},
+				},
+			},
+		}
+	}
+
+	// THE COLLISION: the field is named `SV` and its type is `SV`.
+	if _, err := protodesc.NewFile(build("SV"), nil); err == nil {
+		t.Fatal("protodesc built the colliding descriptor unrewritten. If that now works the pass " +
+			"may be removable -- but check the cross-engine byte-goldens before concluding it, " +
+			"because struct_uuid_vector is what caught the last attempt")
+	}
+
+	rewritten := build("SV")
+	absolutizeFieldTypeNames(rewritten)
+	if got := rewritten.MessageType[1].Field[0].GetTypeName(); got != ".SV" {
+		t.Fatalf("absolutizeFieldTypeNames produced %q, want %q -- which is what protoc writes for "+
+			"this source", got, ".SV")
+	}
+	if _, err := protodesc.NewFile(rewritten, nil); err != nil {
+		t.Fatalf("the absolutized descriptor does not build: %v", err)
+	}
+
+	// THE CONTROL, and the reason the first reproduction attempt failed: without
+	// the collision the same descriptor builds fine unrewritten. Relative name,
+	// empty package and unset kind are each insufficient; it is the field name
+	// shadowing the type name that does it.
+	if _, err := protodesc.NewFile(build("sv_lower"), nil); err != nil {
+		t.Fatalf("renaming the field should remove the collision and let the UNREWRITTEN descriptor "+
+			"build, but it failed: %v -- so this arm is not isolating what it claims", err)
+	}
+}
+
+// A PACKAGE-QUALIFIED NAME INSIDE ITS OWN PACKAGE.
+//
+// `extend probe.Ext` written in package `probe`. protoc accepts it and binds
+// `.probe.Ext`, because its first-component lookup consults PACKAGES as well as
+// types (Java's AGGREGATES_ONLY is message|enum|package|service).
+//
+// This was measurably broken before the walk learned about packages. Left
+// relative, protodesc bound it correctly, so the extendee rewrite -- correct in
+// itself -- routed it through a fallback that prepended the file's own package
+// and produced `.probe.probe.Ext`, which exists nowhere: a descriptor that
+// LOADED stopped loading. A protoc differential put this shape at 8 regressed
+// builds, every one of them here.
+//
+// IT PINS THE WALK, NOT THE FALLBACK, and the distinction is worth stating
+// because the fix could have been made in either place. With `.probe` in
+// `declared` the walk resolves this at root scope and the fallback is never
+// reached -- mutating the fallback leaves this arm green. The fallback's own
+// behaviour is pinned separately, below.
+//
+// Both positions are driven because `TypeName` and `Extendee` share one resolver
+// and diverged once already by being written at different times.
+func TestAbsolutizeFieldTypeNamesResolvesAPackageQualifiedNameInItsOwnPackage(t *testing.T) {
+	t.Parallel()
+
+	fd := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("absolutize_pkgqual.proto"),
+		Package: proto.String("probe"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{
+				Name: proto.String("Ext"),
+				ExtensionRange: []*descriptorpb.DescriptorProto_ExtensionRange{
+					{Start: proto.Int32(1000), End: proto.Int32(2000)},
+				},
+			},
+			{
+				Name: proto.String("Local"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name:   proto.String("e"),
+					Number: proto.Int32(1),
+					Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					// Package-qualified, from inside that same package.
+					TypeName: proto.String("probe.Ext"),
+				}},
+			},
+		},
+		Extension: []*descriptorpb.FieldDescriptorProto{{
+			Name:     proto.String("x"),
+			Number:   proto.Int32(1001),
+			Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+			Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+			Extendee: proto.String("probe.Ext"),
+		}},
+	}
+
+	absolutizeFieldTypeNames(fd)
+
+	if got := fd.MessageType[1].Field[0].GetTypeName(); got != ".probe.Ext" {
+		t.Errorf("field type_name = %q, want %q -- the first component `probe` is this file's own "+
+			"PACKAGE, so the walk must stop at root rather than prepending the package again", got, ".probe.Ext")
+	}
+	if got := fd.Extension[0].GetExtendee(); got != ".probe.Ext" {
+		t.Errorf("extendee = %q, want %q -- `.probe.probe.Ext` exists nowhere and makes the "+
+			"descriptor fail to load", got, ".probe.Ext")
+	}
+
+	if _, err := protodesc.NewFile(fd, nil); err != nil {
+		t.Fatalf("the absolutized descriptor does not build: %v", err)
+	}
+}
+
+// THE FALLBACK ROOTS AT `.`, NOT AT THIS FILE'S PACKAGE.
+//
+// Reached only when nothing in the file or its dependencies declares the name's
+// first component, so the fixture uses a name that is declared nowhere. Java
+// does a ROOT lookup at this point (Descriptors.java's lookupSymbol, after the
+// scope loop falls through); it never prepends the file's own package.
+//
+// That was a Go invention, and a protoc differential over 3089 accepted
+// descriptors put EVERY name divergence in this branch while it prepended the
+// package -- 1256 of them -- and none in the walk above it. Rooting it takes the
+// count to zero.
+//
+// The arm asserts the NAME rather than a successful build: the name is
+// unresolvable by construction, and that is correct. protoc rejects it too. What
+// must not happen is inventing a different unresolvable name that hides which
+// symbol was actually missing.
+func TestAbsolutizeFieldTypeNamesFallsBackToRootNotToThePackage(t *testing.T) {
+	t.Parallel()
+
+	fd := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("absolutize_fallback_root.proto"),
+		Package: proto.String("probe"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Local"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:   proto.String("f"),
+				Number: proto.Int32(1),
+				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				// `elsewhere` is declared by nothing here and by no dependency,
+				// so the walk runs out of scopes and the fallback decides.
+				TypeName: proto.String("elsewhere.Target"),
+			}},
+		}},
+	}
+
+	// The premise: no declaration anywhere can match the first component, in any
+	// scope the walk visits. Without this the arm could be exercising the walk.
+	for _, m := range fd.MessageType {
+		if m.GetName() == "elsewhere" {
+			t.Fatal("the fixture declares `elsewhere`; the walk would resolve it and this arm " +
+				"would not reach the fallback")
+		}
+	}
+
+	absolutizeFieldTypeNames(fd)
+
+	if got := fd.MessageType[0].Field[0].GetTypeName(); got != ".elsewhere.Target" {
+		t.Fatalf("fallback produced %q, want %q.\n"+
+			"Prepending this file's package gives `.probe.elsewhere.Target`, which is the shape a "+
+			"protoc differential scored at 1256 divergences -- all of them in this branch.",
+			got, ".elsewhere.Target")
+	}
+}

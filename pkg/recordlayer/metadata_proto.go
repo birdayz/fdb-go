@@ -887,13 +887,23 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 // The sentinel fix does not cover this. The two changes repair different things
 // and both are required.
 //
-// AND A MINIMAL UNIT REPRODUCTION WAS ATTEMPTED AND FAILED, which is worth
-// knowing before anyone re-opens this. A hand-built descriptor with a relative
-// message-field type name builds FINE unrewritten -- with kind unset, and
-// through this package's own resolver, both. Whatever `struct_uuid_vector`
-// carries that matters is not captured by the obvious fixture, so the
-// cross-engine byte-golden is the pin, and a green unit probe is NOT evidence
-// that this pass is removable.
+// THE MECHANISM IS A FIELD-NAME / TYPE-NAME COLLISION. `struct_uuid_vector` is
+// `CREATE TYPE AS STRUCT SV (...) CREATE TABLE T (id BIGINT, sv SV, ...)`, so
+// message `T` carries a field named `SV` whose type is ALSO `SV`. protodesc
+// registers fields into the same by-name map it resolves type references
+// against (desc_init.go's makeBase), so relative `SV` from inside `T` finds
+// `T.SV` -- the FIELD -- and dies at desc_resolve.go's `case 0` with "unknown
+// kind". That error has one emitter and it is not a not-found: it fires when
+// resolution SUCCEEDS and returns something that is neither message nor enum.
+//
+// protoc accepts the same source, because its type_name lookup skips non-type
+// symbols and protodesc's does not. `declared` holding only messages and enums
+// is exactly why this pass agrees with protoc here. Pinned by
+// TestAbsolutizationIsRequiredWhenAFieldShadowsItsOwnType, whose control renames
+// the field and shows the unrewritten descriptor then builds fine -- relative
+// name, empty package and unset kind are each insufficient on their own, which
+// is why a first attempt at reproducing this failed and wrongly concluded the
+// mechanism was unknowable.
 //
 // WHY ABSOLUTIZE AT ALL, stated correctly because the first answer here was
 // wrong: NOT because protodesc fails to walk outward. It does walk, and an
@@ -1027,24 +1037,26 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 			trimmed := strings.TrimSuffix(s, ".")
 			i := strings.LastIndexByte(trimmed, '.')
 			if i < 0 {
-				// NOTHING IN THIS FILE DECLARES IT, so it binds into a
-				// dependency and the package prefix is a BEST EFFORT -- which
-				// is what this function did unconditionally before it learned
-				// about scope. Not "the best available answer": see the
-				// best-effort paragraph on the function, which names the
-				// families where protoc chooses differently. This copy said
-				// best-available for a lap after that one was corrected.
+				// THE WALK FELL OFF THE END: nothing this file or its
+				// dependencies declares matches the first component. Java does a
+				// ROOT lookup here (Descriptors.java's lookupSymbol, the
+				// fall-through after the scope loop) -- it does NOT prepend the
+				// file's own package, and neither does this.
 				//
-				// Leaving it RELATIVE here is not an option, and that is
-				// measured rather than assumed: the relational DDL builder emits
-				// `com.apple.foundationdb.record.UUID` inside a message, in a
-				// file whose package is EMPTY, so the prefix is just "." and the
-				// old blanket rewrite happened to produce the correct absolute
-				// name. Leaving it alone made protodesc resolve against the
-				// enclosing message and fail with `cannot resolve type
-				// "T_UUID.com.apple.foundationdb.record.UUID"` -- twelve
-				// cross-engine SQL scenarios, caught by the conformance suite.
-				return pkgPrefix + name, true
+				// That distinction is the whole of the difference. A protoc
+				// differential over 3089 accepted descriptors put every single
+				// name divergence in this branch when it prepended `pkgPrefix`,
+				// and none in the walk above it; seeding the walk with dependency
+				// and package symbols and rooting this fallback takes it to 0.
+				// The package-prefix version was a Go invention with no Java
+				// counterpart, and it was FATAL rather than merely divergent for
+				// a cross-package extendee: `extend probe.Ext` inside package
+				// `probe` became `.probe.probe.Ext`, which exists nowhere.
+				//
+				// Leaving the name RELATIVE is still not an option -- that is
+				// what the absolutization exists for, and the necessity case is
+				// pinned by TestAbsolutizationIsRequiredWhenAFieldShadowsItsOwnType.
+				return "." + name, true
 			}
 			s = trimmed[:i+1]
 		}
