@@ -2208,7 +2208,7 @@ would otherwise imply. It is a `map[string]string` shared with the built
 metadata, and Go has two EXPORTED methods that mutate it in place:
 `Index.SetUnique` does `idx.Options[IndexOptionUnique] = "true"` and
 `Index.SetClearWhenZero` sets or `delete`s its key. So
-`md.GetIndex("x").SetUnique(true)` flips uniqueness on already-built metadata
+`md.GetIndex("x").SetUnique()` flips uniqueness on already-built metadata
 with no field assignment at all, and unexporting `Options` would leave both
 setters working exactly as before.
 
@@ -2281,3 +2281,56 @@ Note the empty-record-type-list state that motivated so much of this work is
 reachable only by copying ONE of the two and sharing the other. Go did that
 briefly and it produced exactly that bug. Copy both or share both; the mixture
 is what breaks.
+
+---
+
+## FIXED: Go assigned primaryKeyComponentPositions to multi-type and universal indexes
+
+Kept as a record rather than deleted, because the shape is a template: a Go-only
+"improvement" over Java that changes index entry BYTES is a wire break wearing
+the costume of an optimisation, and the tests that shipped with it asserted the
+divergence as the desired behaviour.
+
+`primaryKeyComponentPositions` decides whether an index entry carries the
+record's primary key whole or with the components already present in the index
+key removed (`Index.TrimPrimaryKey`). Java assigns it at exactly one place --
+`RecordMetaDataBuilder.java:1466`, the only `setPrimaryKeyComponentPositions`
+call site in the tree -- inside `for (Index index : recordTypeBuilder.getIndexes())`.
+`getIndexes()` and `getMultiTypeIndexes()` are separate fields
+(`RecordTypeIndexesBuilder.java:43-44`), and `addMultiTypeIndex` routes by arity:
+zero names to `universalIndexes`, exactly one to `getIndexes()`, two or more to
+`getMultiTypeIndexes()`. So Java never assigns positions to a genuinely
+multi-type or to a universal index.
+
+Go assigned them to all three, and both halves reached the wire.
+
+**Against Java.** Two record types keyed on the same field, with a multi-type
+index on that field: Go computed positions `[0]`, `TrimPrimaryKey` returned an
+EMPTY tuple, and the entry key was `(price)` where Java writes `(price, pk)`.
+Different bytes in FDB for identical metadata.
+
+**Against itself, which is worse.** Universal indexes took "the first record
+type's primary key" by `break`ing out of a range over `b.recordTypes` -- a MAP.
+With record types whose primary keys differ, the choice varied per `Build`
+inside a single process: 40 builds of one metadata produced positions 33 times
+and nil 7 times. Two Go stores opened from the same metadata could write index
+entries that disagree with each other, and nothing about the metadata would
+explain why.
+
+The Go-side tests covering the shape asserted the divergence directly --
+"Multi-type index entries had full redundant PKs instead of trimmed PKs" was
+written up as the bug being fixed. The redundancy IS the format. That is why the
+divergence shipped green: the only coverage of the behaviour encoded it, and a
+single shared "PK is deduped" expectation was applied across all three
+registration arms in `index_registration_matrix_test.go`, so the one arm out of
+three that Java actually dedups made the other two look uniform rather than
+wrong. Its universal arm additionally `Skip`ped, on the true-but-irrelevant
+grounds that `order_id` is not a field of `Customer` -- a fact about the key that
+matrix picked, which left the arm whose behaviour was wrong unrun.
+
+Pinned by `TestPositionsAreAssignedOnlyToSingleTypeIndexes` (all four
+registration spellings, with the single-type arms as the control that keeps the
+negative assertions honest) and by
+`TestUniversalIndexPositionsDoNotDependOnMapIterationOrder` (40 builds, record
+types deliberately given DIFFERENT primary keys, since with identical ones every
+choice agrees and the map order stops mattering).

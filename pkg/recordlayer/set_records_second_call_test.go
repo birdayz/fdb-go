@@ -635,10 +635,12 @@ func TestBuildAcceptsADuplicateAssociationBecauseJavaDoes(t *testing.T) {
 // Java's Index fields are `private final`, so sharing is safe there. Go exports
 // them, so the same sharing leaves post-Build mutation reachable here and
 // impossible there. DIVERGENCES.md, "Index fields are exported in Go and
-// `private final` in Java", carries the analysis, the reason copying the
-// objects is the wrong fix, and the measured call-site count -- this comment
-// deliberately restates none of it, because that argument previously lived in
-// three files with two different numbers.
+// `private final` in Java", carries the analysis and the reason copying the
+// objects is the wrong fix -- this comment deliberately restates none of it,
+// because that argument previously lived in three files with two different
+// numbers. Those numbers are now WITHDRAWN there rather than reconciled: they
+// were two correct counts of two different populations, and neither counted the
+// one the sentence around them named.
 //
 // WHEN ENCAPSULATION LANDS THIS ARM FAILS. That is the signal to delete it, not
 // to relax it.

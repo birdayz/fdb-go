@@ -20346,20 +20346,33 @@ otherwise would be the same over-claim one level up.
 ## `RecordMetaDataBuilder.Build` does six jobs in one frame
 
 Measured with `awk '/^func \(b \*RecordMetaDataBuilder\) Build\(\)/,/^}/'
-pkg/recordlayer/metadata.go | wc -l`: 668 lines at the commit that books this,
-and it has GROWN in each of the last three commits rather than shrunk -- every
-correctness fix lands inside the same frame. It drains `buildErrors`, validates
-the registry/association invariant in seven classes, computes
-`primaryKeyComponentPositions`, copies the containers, validates subspace keys,
-precomputes union field numbers, and constructs the result.
+pkg/recordlayer/metadata.go | wc -l`: 675 lines at the commit that books this.
+Run per commit over the four preceding it the trend is **not** monotonic --
+658, 620, 644, 668, 675, i.e. -38, +24, +24, +7. An earlier revision of this
+entry said it "has GROWN in each of the last three commits"; one of them shrank
+it by 38 lines, and that sentence was written from the direction of the last two
+deltas rather than from the series. The true statement is narrower and still
+sufficient: every correctness fix in this area lands inside the same frame, and
+the one commit that shortened it did so by DELETING a divergent loop rather than
+by extracting anything.
+
+`Build` drains `buildErrors`, validates the registry/association invariant in
+**six** refused classes (`pkg/recordlayer/metadata.go:900-912` --
+`alsoUniversal`, `renamed`, `renamedUniversal`, `unregistered`, `mismatched`,
+`orphaned`), computes `primaryKeyComponentPositions`, copies the containers,
+validates subspace keys, precomputes union field numbers, and constructs the
+result. A seventh association class, the duplicate, is deliberately ACCEPTED
+because Java accepts it -- an earlier revision counted seven, which counts the
+one case that is not validated.
 
 The concrete cost is not length, it is that an ORDERING DEPENDENCY between two
 of those jobs is invisible. Positions must be computed BEFORE the containers are
 copied, because Java sets them on the objects the caller registered and the scan
 call sites read positions off those same objects; getting that backwards
 produced `go: pk=[]` against `java: pk=[1]` and was caught only by the
-cross-engine conformance suite. Today a comment is the only thing holding it. As
-two calls in a short frame it would be obvious.
+cross-engine conformance suite. Today a comment inside `Build` is the only thing
+holding it, and that comment names this entry so the two halves point at each
+other. As two calls in a short frame it would be obvious.
 
 Two seams lift out cleanly, both self-contained: the registry/association census
 and the positions-plus-copy step. `validateIndexBijection()` and `detachFrom(b)`

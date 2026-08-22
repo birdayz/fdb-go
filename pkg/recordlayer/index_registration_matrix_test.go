@@ -18,12 +18,25 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 		name        string
 		register    func(builder *RecordMetaDataBuilder, idx *Index)
 		isUniversal bool
+		// wantPositions is whether Build assigns primaryKeyComponentPositions to
+		// an index registered this way, and so whether its entries carry a
+		// TRIMMED primary key. Only single-type registration does: Java's sole
+		// setPrimaryKeyComponentPositions call site
+		// (RecordMetaDataBuilder.java:1465-1467) iterates
+		// `recordTypeBuilder.getIndexes()`, which `addMultiTypeIndex` feeds only
+		// when given exactly one record-type name.
+		//
+		// This was a single expectation applied to all three arms, asserting
+		// dedup everywhere. That is Java's behaviour for one arm out of three,
+		// and driving the arms through one shared expectation is what made the
+		// divergence look uniform instead of wrong.
+		wantPositions bool
 	}
 
 	cases := []registrationCase{
-		{"SingleType", func(b *RecordMetaDataBuilder, idx *Index) { b.AddIndex("Order", idx) }, false},
-		{"MultiType", func(b *RecordMetaDataBuilder, idx *Index) { b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx) }, false},
-		{"Universal", func(b *RecordMetaDataBuilder, idx *Index) { b.AddUniversalIndex(idx) }, true},
+		{"SingleType", func(b *RecordMetaDataBuilder, idx *Index) { b.AddIndex("Order", idx) }, false, true},
+		{"MultiType", func(b *RecordMetaDataBuilder, idx *Index) { b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx) }, false, false},
+		{"Universal", func(b *RecordMetaDataBuilder, idx *Index) { b.AddUniversalIndex(idx) }, true, false},
 	}
 
 	for _, rc := range cases {
@@ -33,27 +46,49 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 			// 1. PK dedup
 			// ----------------------------------------------------------
 			It(fmt.Sprintf("%s: PK dedup", rc.name), func() {
-				if rc.isUniversal {
-					Skip("Universal indexes cannot use type-specific PK fields (order_id not on Customer)")
-				}
 				ks := specSubspace()
 
-				// Index on (order_id, price). order_id overlaps with Order PK.
-				pkDedupIdx := NewIndex("pkdedup_idx", Concat(Field("order_id"), Field("price")))
-
+				// THE UNIVERSAL ARM USED TO Skip HERE, on the true observation
+				// that order_id is not a field of Customer. That is a fact about
+				// the KEY this matrix picked, not about universal indexes, and
+				// skipping left the one arm whose behaviour was wrong unrun.
+				// Keying every record type on `price` -- the only field all
+				// three declare -- makes the arm executable with a real PK
+				// overlap, which is what the assertion needs.
+				var (
+					pkDedupIdx *Index
+					wantKey    tuple.Tuple
+					pk         KeyExpression
+				)
 				builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
-				builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
-				builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
-				builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+				if rc.isUniversal {
+					pk = Field("price")
+					pkDedupIdx = NewIndex("pkdedup_idx", Field("price"))
+					builder.GetRecordType("Order").SetPrimaryKey(pk)
+					builder.GetRecordType("Customer").SetPrimaryKey(pk)
+					builder.GetRecordType("TypedRecord").SetPrimaryKey(pk)
+					// Untrimmed: (price, price). Trimmed it would be (price).
+					wantKey = tuple.Tuple{int64(100), int64(100)}
+				} else {
+					pkDedupIdx = NewIndex("pkdedup_idx", Concat(Field("order_id"), Field("price")))
+					builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+					builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+					builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+					if rc.wantPositions {
+						wantKey = tuple.Tuple{int64(1), int64(100)}
+					} else {
+						wantKey = tuple.Tuple{int64(1), int64(100), int64(1)}
+					}
+				}
 				rc.register(builder, pkDedupIdx)
 				md, err := builder.Build()
 				Expect(err).NotTo(HaveOccurred())
 
-				// Verify PK component positions were computed.
 				idx := md.GetIndex("pkdedup_idx")
 				Expect(idx).NotTo(BeNil())
-				Expect(idx.HasPrimaryKeyComponentPositions()).To(BeTrue(),
-					"index registered via %s should have primaryKeyComponentPositions computed", rc.name)
+				Expect(idx.HasPrimaryKeyComponentPositions()).To(Equal(rc.wantPositions),
+					"index registered via %s: Java assigns primaryKeyComponentPositions only to "+
+						"single-type indexes, so HasPrimaryKeyComponentPositions must be %v", rc.name, rc.wantPositions)
 
 				_, err = sharedDB.Run(ctx, func(rtx *FDBRecordContext) (any, error) {
 					store, err := NewStoreBuilder().
@@ -66,10 +101,17 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 					entries, err := AsList(ctx, store.ScanIndex(pkDedupIdx, TupleRangeAll, nil, ForwardScan()))
 					Expect(err).NotTo(HaveOccurred())
 					Expect(entries).To(HaveLen(1))
-					// With dedup: key = [order_id, price] (2 elements, PK not appended).
-					Expect(entries[0].Key).To(HaveLen(2),
-						"entry key should be [order_id, price] with PK deduped")
-					Expect(entries[0].PrimaryKey()).To(Equal(tuple.Tuple{int64(1)}))
+					// The full tuple, not its length: PrimaryKey() reads the
+					// trailing element and returns the same answer under either
+					// layout, so it cannot distinguish trimmed from untrimmed.
+					Expect(entries[0].Key).To(Equal(wantKey),
+						"entry key for a %s registration", rc.name)
+
+					wantPK := tuple.Tuple{int64(1)}
+					if rc.isUniversal {
+						wantPK = tuple.Tuple{int64(100)}
+					}
+					Expect(entries[0].PrimaryKey()).To(Equal(wantPK))
 
 					return nil, nil
 				})

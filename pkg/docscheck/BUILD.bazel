@@ -14,6 +14,7 @@ go_test(
         "api_parity_options_test.go",
         "build_constrained_filename_test.go",
         "build_membership_test.go",
+        "claim_split_sweep_test.go",
         "cli_error_first_word_gate_test.go",
         "cli_name_decode_gate_test.go",
         "container_memory_tag_test.go",
