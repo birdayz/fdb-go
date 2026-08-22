@@ -111,8 +111,9 @@ func TestRelativeTypeNameFixtureActuallyCarriesARelativeName(t *testing.T) {
 	}
 	if extRelative == 0 {
 		t.Fatal("no dependency declares a MESSAGE-SCOPED extension with a relative type name. " +
-			"absolutizeFieldTypeNames writes in three positions and this fixture would reach only " +
-			"two, so TestRecordMetaDataFromProtoDoesNotMutateItsInput would not cover the third")
+			"absolutizeFieldTypeNames writes at three POSITIONS -- message fields, message-scoped " +
+			"extensions, file-level extensions -- and this fixture would reach only two, so " +
+			"TestRecordMetaDataFromProtoDoesNotMutateItsInput would not cover the third")
 	}
 
 	t.Logf("fixture type names: records %d relative / %d absolute; %d dependencies, %d relative / %d absolute",
@@ -283,17 +284,26 @@ func lastNameComponent(name string) string {
 	return name
 }
 
-// countTypeNameShapes reports how many message-typed names are relative (no
-// leading dot) versus absolute, over the same THREE positions relativizeTypeNames
-// rewrites -- message fields, message-scoped extensions, file-level extensions --
-// so the guard counts what the fixture actually built. Nested types are recursion
-// into those positions, not a fourth one; an earlier revision counted them as one
-// and so said "four" twelve lines under a comment saying "three".
+// countTypeNameShapes reports how many type references are relative (no leading
+// dot) versus absolute, over everything relativizeTypeNames rewrites, so the
+// vacuity guard counts what the fixture actually built.
+//
+// THAT IS THREE POSITIONS TIMES TWO NAME FIELDS. The positions are message
+// fields, message-scoped extensions and file-level extensions -- nested types
+// are recursion into those, not a fourth. The name fields are `type_name` AND
+// `extendee`, because absolutizeFieldTypeNames rewrites both.
+//
+// The extendee half was missing here for a lap after the production pass gained
+// it, so a fixture could carry a relative extendee and the guard would report it
+// as no relative names at all. Two earlier revisions of this enumeration were
+// wrong in the other direction, counting nested types as a fourth position and
+// saying "four" twelve lines under a comment saying "three"; the distinction
+// between a POSITION and a NAME FIELD is what both were missing.
 func countTypeNameShapes(fd *descriptorpb.FileDescriptorProto) (relative, absolute int) {
 	if fd == nil {
 		return 0, 0
 	}
-	tally := func(name string) {
+	tallyName := func(name string) {
 		if name == "" {
 			return
 		}
@@ -303,21 +313,26 @@ func countTypeNameShapes(fd *descriptorpb.FileDescriptorProto) (relative, absolu
 			relative++
 		}
 	}
+	// BOTH name fields, because absolutizeFieldTypeNames rewrites both.
+	tally := func(f *descriptorpb.FieldDescriptorProto) {
+		tallyName(f.GetTypeName())
+		tallyName(f.GetExtendee())
+	}
 	var walk func(msgs []*descriptorpb.DescriptorProto)
 	walk = func(msgs []*descriptorpb.DescriptorProto) {
 		for _, m := range msgs {
 			for _, f := range m.Field {
-				tally(f.GetTypeName())
+				tally(f)
 			}
 			for _, ext := range m.Extension {
-				tally(ext.GetTypeName())
+				tally(ext)
 			}
 			walk(m.NestedType)
 		}
 	}
 	walk(fd.MessageType)
 	for _, ext := range fd.Extension {
-		tally(ext.GetTypeName())
+		tally(ext)
 	}
 	return relative, absolute
 }

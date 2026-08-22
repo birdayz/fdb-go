@@ -104,3 +104,81 @@ func TestDescriptorResolverFindsNestedDeclarations(t *testing.T) {
 			"is declared; matching this would mean the walk compares suffixes rather than full names.", err)
 	}
 }
+
+// findInFile's TOP-LEVEL ENUM branch, which was reachable by no test.
+//
+// Measured: disabling it (`if false && e.FullName() == name`) left the whole
+// pkg/recordlayer package green, while the same harness disabling the nested
+// recursion reddens TestDescriptorResolverFindsNestedDeclarations and only that
+// arm. Disjoint results, so the green was a real negative rather than a suite
+// that notices nothing.
+//
+// The asymmetry is the tell: the premise guard in absolutize_scope_test.go was
+// extended to check top-level enums precisely because `declared` holds enums
+// too, while the resolver's own fixture declared none.
+func TestDescriptorResolverFindsTopLevelEnums(t *testing.T) {
+	t.Parallel()
+
+	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("resolver_toplevel_enum.proto"),
+		Package: proto.String("probe"),
+		Syntax:  proto.String("proto2"),
+		EnumType: []*descriptorpb.EnumDescriptorProto{{
+			Name: proto.String("TopEnum"),
+			Value: []*descriptorpb.EnumValueDescriptorProto{
+				{Name: proto.String("ZERO"), Number: proto.Int32(0)},
+			},
+		}},
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Msg")}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("building the fixture: %v", err)
+	}
+
+	r := &descriptorResolver{files: map[string]protoreflect.FileDescriptor{fd.Path(): fd}}
+
+	got, err := r.FindDescriptorByName("probe.TopEnum")
+	if err != nil {
+		t.Fatalf("FindDescriptorByName(\"probe.TopEnum\") = %v; the file declares it at the top "+
+			"level, and a miss is reported to protodesc as a resolution failure", err)
+	}
+	if _, isEnum := got.(protoreflect.EnumDescriptor); !isEnum {
+		t.Fatalf("resolved probe.TopEnum to %T, want an EnumDescriptor", got)
+	}
+
+	// The control: the message branch is a separate loop, so a fixture that only
+	// ever resolved messages would not have exercised the enum one.
+	if _, err := r.FindDescriptorByName("probe.Msg"); err != nil {
+		t.Fatalf("FindDescriptorByName(\"probe.Msg\") = %v, want the message", err)
+	}
+}
+
+// FindFileByPath must pass the registry's own error through, and it had zero
+// test coverage -- `git grep FindFileByPath -- '*_test.go'` returned nothing,
+// against 8 hits for FindDescriptorByName.
+//
+// Both directions matter and they pull opposite ways. protodesc compares against
+// protoregistry.NotFound with `==` to decide whether an absent OPTION import is
+// tolerable, so a genuine miss has to arrive as that exact value. But rewriting
+// every failure to NotFound goes too far: the registry also reports AMBIGUITY
+// when more than one descriptor sits at a path, and flattening that to "missing"
+// would let protodesc treat a conflicting import as an allowed absent one. A
+// miss is tolerable; a conflict is not.
+func TestFindFileByPathPassesTheRegistryErrorThrough(t *testing.T) {
+	t.Parallel()
+
+	r := &descriptorResolver{files: map[string]protoreflect.FileDescriptor{}}
+
+	_, err := r.FindFileByPath("nothing/declares/this.proto")
+	if err == nil {
+		t.Fatal("FindFileByPath found a file for a path nothing declares")
+	}
+	// `==`, mirroring protodesc's own comparison rather than the looser
+	// errors.Is: a wrapped sentinel would pass errors.Is and still be treated as
+	// fatal by protodesc, so asserting that way would pin the wrong contract.
+	if err != protoregistry.NotFound {
+		t.Fatalf("FindFileByPath returned %#v for a true miss (errors.Is NotFound = %v); protodesc "+
+			"compares with `==`, so anything else makes an absent option import fatal",
+			err, errors.Is(err, protoregistry.NotFound))
+	}
+}
