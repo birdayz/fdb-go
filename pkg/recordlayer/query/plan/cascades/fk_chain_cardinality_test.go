@@ -154,9 +154,10 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 // assert.
 //
 // Deliberately NOT a claim about the file. fkChainPKProbe builds its own plan
-// and is a SCAN with a different stamp set, so it does not belong here. Eight
-// further index-plan fixtures are constructed inline in the tests themselves,
-// and nothing here reaches any of them.
+// and is a SCAN with a different stamp set, so it does not belong here. Every
+// remaining plans.NewRecordQueryIndexPlan( in this file is built inline inside
+// its own test, and nothing here reaches any of them. Grep that constructor to
+// enumerate them; a count written down here rots the moment another one lands.
 func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange, commonPK []values.Value, createsDuplicates bool) plans.RecordQueryPlan {
 	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{rng},
@@ -1563,12 +1564,15 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	// it green — but NOT because correlatedFieldIdentity rejects. That was the
 	// first guess and it fails its own removal test: hand the bind loop a KNOWN
 	// frontier so cfi cannot decline, and this is still green, with control
-	// reaching the wantKeys lookup. The decisive blocker is the retained ZERO
-	// ColumnIdentity, which no resolved key can ever equal, so bound stays empty
-	// and the coverage check fails. cfi is only the first short-circuit. Both
-	// encodings were measured. The
-	// earlier version of this comment reported only the second and concluded the
-	// three were not the whole set, which is false under the first.
+	// reaching the wantKeys lookup. The decisive blocker is the retained key's
+	// UNKNOWN Domain. Both sides of the lookup are canonicalized by the same
+	// WithCorrelation, so correlation cannot discriminate; ColumnIdentity.Domain
+	// documents that every producer returning ok yields a KNOWN one, so an
+	// unknown Domain equals no accepting derivation's key, bound stays empty and
+	// the coverage check fails. cfi is only the first short-circuit. Both
+	// encodings were measured. The earlier version of this comment reported only
+	// the second and concluded the three were not the whole set, which is false
+	// under the first.
 	//
 	// One thing it does NOT establish: describing this as firing exactly when
 	// that function ACCEPTS would be a tautology rather than a measurement --
