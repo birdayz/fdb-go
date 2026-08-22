@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=362 queries=2643 dml=166 non_query=109 plan_errors=281 unexpected_errors=4
+# files=362 queries=2643 dml=167 non_query=109 plan_errors=285 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -5151,7 +5151,7 @@ sql:   UPDATE t SET nonexistent = 5 WHERE id = 1
 plan:  <PLAN-ERROR: 42703: column "NONEXISTENT" not found in table "T">
 === dml_error_codes.yaml#2 expect-error=42F01
 sql:   DELETE FROM nonexistent WHERE id = 1
-plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
+plan:  <PLAN-ERROR: 42F01: Unknown table NONEXISTENT>
 === dml_error_codes.yaml#4 expect-error=22000
 sql:   UPDATE t SET v = 'text' WHERE id = 1
 plan:  Update(T, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(T, [=])))
@@ -17217,24 +17217,13 @@ sql:   SELECT id FROM customer
 plan:  <PLAN-ERROR: 42F01: table "CUSTOMER" does not exist>
 === unquoted_dml_against_a_quoted_table.yaml#2 expect-error=42F01
 sql:   DELETE FROM customer WHERE id = 1
-plan:  Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))
-shape: RecordQueryDeletePlan
-shape:   RecordQueryPredicatesFilterPlan
-shape:     RecordQueryScanPlan
+plan:  <PLAN-ERROR: 42F01: Unknown table CUSTOMER>
 === unquoted_dml_against_a_quoted_table.yaml#3 expect-error=42F01
 sql:   UPDATE customer SET name = 'zzz' WHERE id = 1
-plan:  Update(CUSTOMER, [1 transforms], UnorderedPrimaryKeyDistinct(PredicatesFilter(Scan(CUSTOMER), [1 preds])))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+plan:  <PLAN-ERROR: 42F01: Unknown table CUSTOMER>
 === unquoted_dml_against_a_quoted_table.yaml#4 expect-error=42F01
 sql:   UPDATE customer SET nosuchcol = 'z' WHERE id = 1
-plan:  Update(CUSTOMER, [1 transforms], UnorderedPrimaryKeyDistinct(PredicatesFilter(Scan(CUSTOMER), [1 preds])))
-shape: RecordQueryUpdatePlan
-shape:   RecordQueryUnorderedPrimaryKeyDistinctPlan
-shape:     RecordQueryPredicatesFilterPlan
-shape:       RecordQueryScanPlan
+plan:  <PLAN-ERROR: 42F01: Unknown table CUSTOMER>
 === unquoted_dml_against_a_quoted_table.yaml#5 expect-error=42703
 sql:   DELETE FROM customer WHERE nosuchcol = 1
 plan:  <PLAN-ERROR: 42703: column "NOSUCHCOL" does not exist>
@@ -17273,7 +17262,10 @@ plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
 === unquoted_dml_against_a_quoted_table.yaml#19 expect-error=0AF00
 sql:   DELETE FROM "Customer" WHERE id IN (SELECT id FROM "Customer" WHERE id = 9)
 plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
-=== unquoted_dml_against_a_quoted_table.yaml#20
+=== unquoted_dml_against_a_quoted_table.yaml#20 expect-error=0AF00
+sql:   DELETE FROM "Customer" WHERE EXISTS (SELECT 1 FROM nosuchtable)
+plan:  <PLAN-ERROR: 0AF00: DML Cascades translation failed>
+=== unquoted_dml_against_a_quoted_table.yaml#21
 sql:   SELECT id, name FROM "Customer" ORDER BY id
 plan:  Project([_current.ID#0, _current.NAME#1], Scan(Customer))
 shape: RecordQueryProjectionPlan

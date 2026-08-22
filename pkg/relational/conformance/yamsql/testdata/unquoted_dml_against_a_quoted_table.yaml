@@ -171,6 +171,14 @@ tests:
   - query: DELETE FROM "Customer" WHERE id IN (SELECT id FROM "Customer" WHERE id = 9)
     error: "0AF00"
 
+  # THE SUBQUERY RECURSION, which is the half of validateScanTables the function
+  # it halves does not have. EXISTS is a supported DML predicate shape (unlike
+  # IN, above), and its body is carried on a side field rather than in
+  # Children(), so a bad table in there is reachable ONLY through that extra
+  # walk. Without it this arm succeeds and deletes nothing.
+  - query: DELETE FROM "Customer" WHERE EXISTS (SELECT 1 FROM nosuchtable)
+    error: "0AF00"
+
   # The store is untouched by any of the rejected statements above.
   - query: SELECT id, name FROM "Customer" ORDER BY id
     rows:

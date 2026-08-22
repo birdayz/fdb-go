@@ -91,8 +91,8 @@ func TestMixedCaseStoredNameAccessPaths(t *testing.T) {
 	}
 }
 
-// THE SAME QUESTION ON THE DML PATH, MEASURED WITH VALIDATION BYPASSED, which
-// is the only reason these plans still exist to look at.
+// THE SAME QUESTION ON THE DML PATH. The answer used to differ from SELECT's
+// and no longer does, which is the point of keeping the table.
 //
 // Production now rejects an unquoted DML target that does not resolve strictly
 // -- `DELETE FROM customer` against a table declared `"Customer"` is 42F01,
@@ -106,13 +106,15 @@ func TestMixedCaseStoredNameAccessPaths(t *testing.T) {
 // yamsql/testdata/unquoted_dml_against_a_quoted_table.yaml, and it is the
 // user-visible contract.
 //
-// This harness plans from metadata directly and never runs that validation, so
-// it sees what the TRANSLATOR would emit if the guard were ever relaxed: a
-// target reading `CUSTOMER`, which names no record type in this metadata, over
-// a scan that would match nothing. Before the guard was made strict that plan
-// was reachable from SQL and the DELETE reported success having removed no
-// rows. Keeping it measured here is defence in depth -- if someone loosens the
-// validation again, this file says what they would be shipping.
+// This harness once planned from metadata with none of that validation, and the
+// plans it produced are the record of what the defect looked like: a target
+// reading `CUSTOMER`, which names no record type in this metadata, over a scan
+// that matched nothing -- reachable from SQL, and the DELETE reported success
+// having removed no rows. The harness now mirrors production's target guard AND
+// its source sweep, in that order, so those two rows read 42F01 with
+// production's exact wording. A harness that validates LESS than production is
+// a harness whose golden cannot see production's behaviour, which is how the
+// DML path came to be missing the SELECT path's validation in the first place.
 func TestMixedCaseStoredNameDMLAccessPaths(t *testing.T) {
 	t.Parallel()
 
@@ -172,11 +174,11 @@ func TestMixedCaseStoredNameDMLAccessPaths(t *testing.T) {
 		// editing these.
 		{
 			"mixed/unquoted UPDATE", bareUpd,
-			"Update(CUSTOMER, [1 transforms], UnorderedPrimaryKeyDistinct(PredicatesFilter(Scan(CUSTOMER), [1 preds])))",
+			"ERROR: 42F01: Unknown table CUSTOMER",
 		},
 		{
 			"mixed/unquoted DELETE", bareDel,
-			"Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))",
+			"ERROR: 42F01: Unknown table CUSTOMER",
 		},
 
 		// Quoted, the spellings coincide and everything is right.

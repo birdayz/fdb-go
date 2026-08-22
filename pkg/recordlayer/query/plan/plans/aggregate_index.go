@@ -14,14 +14,26 @@ import (
 // tree sense). Mirrors Java's RecordQueryAggregateIndexPlan.
 //
 // Fields:
+//
 //   - indexPlan: the underlying index scan plan.
-//   - recordTypeName: the base record type name. It is NOT used for a metadata
-//     lookup, which an earlier version of this list said: its only consumers
-//     are the explain string and the scan-range execution identity, so it is a
-//     LABEL and a salt input. That matters because it carries whichever
-//     namespace the plan was built in -- see RFC-238 §7c -- and a lookup would
-//     have had to reckon with that.
+//
+//   - recordTypeName: the base record type name, used FOR A METADATA LOOKUP
+//     (cascades_generator.go derives this plan's result-column types by calling
+//     md.GetRecordType on it) as well as for the explain string and the
+//     scan-range execution identity.
+//
+//     THAT LOOKUP IS NIL-TOLERANT AND ITS MISS IS SILENT, which is a live
+//     hazard rather than a nicety: on a miss the descriptor stays nil and every
+//     GROUP BY column is reported as STRING and the aggregate as BIGINT --
+//     plausible defaults, wrong types, no error. It matters here because this
+//     field carries whichever namespace the plan was built in (RFC-238 §7c),
+//     so a plan built with a SQL spelling against metadata keyed by the stored
+//     one misses and degrades exactly that way. A draft of this comment claimed
+//     no lookup existed; it does, and it is the consumer most exposed to the
+//     namespace question.
+//
 //   - resultType: the rich Type of the aggregated result row.
+//
 //   - aggregateFunction: the name of the aggregate function
 //     (e.g. "SUM", "COUNT", "MIN", "MAX").
 type RecordQueryAggregateIndexPlan struct {

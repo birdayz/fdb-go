@@ -411,6 +411,29 @@ func planPhysicalDMLWithMetadata(
 	if err := resolveQualifiedTableNames(logicalOp, defaultEmbeddedSchema); err != nil {
 		return nil, err
 	}
+	// Mirror planDML's TARGET guard and source sweep, in that order. This harness
+	// is a hand-maintained copy of that function and explain-differ plans the
+	// whole corpus through it, so a check living only in production is a check the
+	// golden cannot see -- which is how the DML path came to be missing the SELECT
+	// path's validation at all. The ORDER is load-bearing for the same reason it
+	// is in production: both raise 42F01 and they word it differently, so a
+	// harness that ran only the sweep reported the SELECT wording where production
+	// reports the target's.
+	var harnessTarget string
+	switch dop := logicalOp.(type) {
+	case *logical.LogicalDelete:
+		harnessTarget = dop.Target
+	case *logical.LogicalUpdate:
+		harnessTarget = dop.Target
+	case *logical.LogicalInsert:
+		harnessTarget = dop.Table
+	}
+	if harnessTarget != "" && md.GetRecordType(bareTableName(harnessTarget)) == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(harnessTarget)))
+	}
+	if err := validateScanTables(logicalOp, md); err != nil {
+		return nil, err
+	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}

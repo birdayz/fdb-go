@@ -7717,7 +7717,8 @@ func (r *paginatingRows) env() *dst.Env {
 	return r.conn.sess.DB.Env()
 }
 
-// validateScanTables is validateTablesAndColumns' TABLE half, for the DML path.
+// validateScanTables is validateTablesAndColumns' TABLE half, for the DML path,
+// and it walks the same tree the original does -- Children() only.
 //
 // The SELECT path runs the full validation in runFromResolutionPostPasses; the
 // DML path never did, so a table that does not exist escaped every check when
@@ -7733,6 +7734,20 @@ func (r *paginatingRows) env() *dst.Env {
 // ordering of column-vs-table diagnostics on the DML path is a separate open
 // question with its own measurements (RFC-238 section 7e). Widening the fix to
 // carry that decision along is how one change becomes two.
+//
+// AND CHILDREN() ONLY, WHICH IS ALSO DELIBERATE AND WAS NOT AT FIRST. A draft
+// added a walk over subqueryPlans on the reasoning that side-field subqueries
+// are invisible to Children(). It bought nothing and cost correctness. Nothing
+// reached it: upgradeDMLWhereWithCatalog falls back and DROPS the EXISTS
+// subqueries, so a bad table inside a DML EXISTS is unreachable by
+// construction -- measured, `DELETE ... WHERE EXISTS (SELECT 1 FROM
+// nosuchtable)` answers 0AF00 from the shape check either way. And it broke a
+// VALID query: a scalar subquery defining its own CTE hangs that CTE off the
+// same side field, so collectCTENames (Children() only) returned an empty map
+// and the walk rejected the CTE's own scan with 42F01. A recursion that reaches
+// nothing it was written for and rejects something correct is not a partial
+// fix; it is a defect. The remaining gap -- DML subquery sources -- is real and
+// is 0AF00 today, which is loud rather than silent.
 func validateScanTables(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
 	if op == nil || md == nil {
 		return nil
