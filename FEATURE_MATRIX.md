@@ -23,7 +23,7 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**362 scenarios · 2914 query/assertion cases** across 18 feature areas — 2556 supported, 111 unsupported-feature pins, 247 error-path pins.
+**362 scenarios · 2918 query/assertion cases** across 18 feature areas — 2557 supported, 113 unsupported-feature pins, 248 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
@@ -32,7 +32,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
-| DML (INSERT / UPDATE / DELETE) | 26 | 227 | 198 | 1 | 28 |
+| DML (INSERT / UPDATE / DELETE) | 26 | 231 | 199 | 3 | 29 |
 | Ordering & pagination | 16 | 122 | 118 | 0 | 4 |
 | Scalar functions & expressions | 34 | 381 | 328 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 35 | 298 | 261 | 11 | 26 |
-| **Total** | **362** | **2914** | **2556** | **111** | **247** |
+| **Total** | **362** | **2918** | **2557** | **113** | **248** |
 
 ## Aggregates & GROUP BY
 
@@ -280,7 +280,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `insert_select_transform` | 2 | 2 | 0 | 0 | INSERT ... |
 | `insert_values_expr` | 27 | 22 | 1 | 4 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
 | `multi_insert_delete` | 6 | 6 | 0 | 0 | Multiple INSERT/DELETE/UPDATE operations |
-| `unquoted_dml_against_a_quoted_table` | 17 | 6 | 0 | 11 | AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME. |
+| `unquoted_dml_against_a_quoted_table` | 21 | 7 | 2 | 12 | AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME. |
 | `update_case_when` | 10 | 9 | 0 | 1 | UPDATE SET col = CASE ... |
 | `update_comprehensive` | 8 | 8 | 0 | 0 | Comprehensive UPDATE patterns |
 | `update_computed_multi` | 5 | 5 | 0 | 0 | Verifies multi-column UPDATE with self-referencing SET expressions. |

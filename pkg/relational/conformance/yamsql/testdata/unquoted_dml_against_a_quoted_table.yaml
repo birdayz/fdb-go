@@ -128,8 +128,13 @@ tests:
   # alone leaves this arm green, and only mutating BOTH reddens it. Measured:
   # disabling the target guard reddens the two INSERT ... SELECT arms and not
   # this one; disabling the VALUES check alone reddens nothing; disabling both
-  # reddens all three. Pinned so a consolidation of the two paths cannot quietly
-  # drop the survivor.
+  # reddens all three.
+  #
+  # THE VALUES CHECK MUST NOT BE DELETED AS THE REDUNDANT ONE. Its `rt` is
+  # consumed two lines later as `rt.Descriptor` by buildInsertValuesArray, so
+  # its nil branch is a precondition of a USE, not a duplicate validator. The
+  # guard is what makes the ERROR clean; that check is what makes the code
+  # after it safe.
   - query: INSERT INTO customer VALUES (9, 'nope')
     error: "42F01"
 
@@ -137,6 +142,36 @@ tests:
   - query: INSERT INTO "Customer" VALUES (9, 'nine')
     rowcount: 1
 
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [2, 'beta']
+      - [9, 'nine']
+
+  # THE SOURCE SIDE, which is the same defect one word over and was live after
+  # the target side was closed. `INSERT INTO "Customer" SELECT ... FROM customer`
+  # reported SUCCESS with zero rows against a source table that does not exist,
+  # while the identical bare SELECT answered 42F01: the DML path never ran the
+  # table validation the SELECT path runs, so only the TARGET was ever checked.
+  - query: INSERT INTO "Customer" SELECT id + 100, name FROM customer
+    error: "42F01"
+
+  # A SUBQUERY SOURCE IS 0AF00 EITHER WAY, and the pair below is what says that
+  # is an unsupported SHAPE rather than a naming failure. `DELETE ... WHERE id
+  # IN (SELECT ...)` does not plan on this path at all -- the quoted arm, whose
+  # every name is spelled exactly as declared, fails identically. Asserting only
+  # the unquoted one would have read as "the source check does not reach
+  # subqueries", which is a different and wrong conclusion.
+  #
+  # If either arm ever moves, they must move TOGETHER unless the shape became
+  # supported, in which case the unquoted one becomes 42F01 and the quoted one
+  # succeeds.
+  - query: DELETE FROM "Customer" WHERE id IN (SELECT id FROM customer)
+    error: "0AF00"
+
+  - query: DELETE FROM "Customer" WHERE id IN (SELECT id FROM "Customer" WHERE id = 9)
+    error: "0AF00"
+
+  # The store is untouched by any of the rejected statements above.
   - query: SELECT id, name FROM "Customer" ORDER BY id
     rows:
       - [2, 'beta']

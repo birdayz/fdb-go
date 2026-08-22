@@ -15,7 +15,12 @@ import (
 //
 // Fields:
 //   - indexPlan: the underlying index scan plan.
-//   - recordTypeName: the base record type name (for metadata lookup).
+//   - recordTypeName: the base record type name. It is NOT used for a metadata
+//     lookup, which an earlier version of this list said: its only consumers
+//     are the explain string and the scan-range execution identity, so it is a
+//     LABEL and a salt input. That matters because it carries whichever
+//     namespace the plan was built in -- see RFC-238 §7c -- and a lookup would
+//     have had to reckon with that.
 //   - resultType: the rich Type of the aggregated result row.
 //   - aggregateFunction: the name of the aggregate function
 //     (e.g. "SUM", "COUNT", "MIN", "MAX").

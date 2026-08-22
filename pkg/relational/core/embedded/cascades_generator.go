@@ -1026,6 +1026,16 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(dmlTarget)))
 	}
 
+	// SOURCE tables too, and AFTER the target check so the target keeps its own
+	// wording. Both raise 42F01, but they say it differently -- "Unknown table X"
+	// here versus the SELECT path's `table "X" does not exist` -- and the
+	// cross-engine corpus pins the target one. Running the source sweep first
+	// silently re-worded every `DELETE FROM nosuchtable`, which the corpus caught
+	// as an error-wording divergence rather than as anything about sources.
+	if err := validateScanTables(logicalOp, md); err != nil {
+		return nil, err
+	}
+
 	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
 	// alias (earlier OR later) in the same scope — the DML twin of the SELECT-path
 	// guard. An `INSERT INTO dst SELECT V FROM T1, T1.arr AS V, U AS V` reaches the
@@ -7705,4 +7715,49 @@ func (r *paginatingRows) env() *dst.Env {
 		return nil
 	}
 	return r.conn.sess.DB.Env()
+}
+
+// validateScanTables is validateTablesAndColumns' TABLE half, for the DML path.
+//
+// The SELECT path runs the full validation in runFromResolutionPostPasses; the
+// DML path never did, so a table that does not exist escaped every check when
+// it appeared as a SOURCE rather than as a target. `INSERT INTO "Customer"
+// SELECT id, name FROM customer` against a table declared `"Customer"` reported
+// SUCCESS with zero rows -- the same silent shape as the target-side defect and
+// one word away from it -- while the identical bare SELECT answered 42F01. A
+// subquery source was loud but wrong: `DELETE ... WHERE id IN (SELECT id FROM
+// customer)` gave 0AF00 "DML Cascades translation failed".
+//
+// TABLES ONLY, deliberately. The column half of that validation would also
+// change which SQLSTATE a DML statement reports for a bad COLUMN, and the
+// ordering of column-vs-table diagnostics on the DML path is a separate open
+// question with its own measurements (RFC-238 section 7e). Widening the fix to
+// carry that decision along is how one change becomes two.
+func validateScanTables(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
+	if op == nil || md == nil {
+		return nil
+	}
+	return validateScanTablesInner(op, md, collectCTENames(op))
+}
+
+func validateScanTablesInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]bool) error {
+	if op == nil {
+		return nil
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if !cteNames[strings.ToUpper(scan.Table)] && md.GetRecordType(scan.Table) == nil {
+			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
+		}
+	}
+	for _, child := range op.Children() {
+		if err := validateScanTablesInner(child, md, cteNames); err != nil {
+			return err
+		}
+	}
+	for _, sub := range subqueryPlans(op) {
+		if err := validateScanTablesInner(sub, md, cteNames); err != nil {
+			return err
+		}
+	}
+	return nil
 }

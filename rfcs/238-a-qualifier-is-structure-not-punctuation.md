@@ -581,9 +581,9 @@ which is where its table-locality comes from — it has no drop-list and no
 per-type catch.
 
 BOTH LOOPS, NOT JUST THE PRIMARY ONE. `buildMatchCandidates` continues into
-`c.md.GetAllIndexes()` (`cascades_generator.go:2848`) — every index in the
+`c.md.GetAllIndexes()` (`cascades_generator.go:2858`) — every index in the
 SCHEMA — and each resulting `metadataIndexDef` derives its row type through the
-same `PositionalTypeForRecordLayout` (`:3423`, `:3452`). So a colliding table
+same `PositionalTypeForRecordLayout` (`:3433`, `:3462`). So a colliding table
 that owns ANY secondary index reproduces the panic for a query that never names
 it, and the two-table schema below would not catch it, because neither table has
 an index. Java narrows this list too, from the same set:
@@ -623,10 +623,10 @@ AND THE NARROWING GOES WHERE THE CANDIDATES ARE BUILT — it does not have to mo
 earlier in the pipeline, which was the first objection to it. Java evaluates the
 property over the ROOT REFERENCE, and every production `newCascadesPlanner` site
 already holds one before it constructs the context:
-`cascades_generator.go:488` and `:1151`, and `scalar_subquery_planning.go:70`,
+`cascades_generator.go:488` and `:1161`, and `scalar_subquery_planning.go:70`,
 each build `ref`/`subRef` first and pass it to `PlanWithContext` on the next
 line. That is Java's `planPartial` shape (`CascadesPlanner.java:378-388`). So
-`buildCascadesPlanContext` (`cascades_generator.go:2736`) takes the reference and
+`buildCascadesPlanContext` (`cascades_generator.go:2746`) takes the reference and
 narrows there; the `sync.Once` defers only the BUILDING, not the reference.
 
 An empty result then yields an empty candidate set, which is what Java does too
@@ -762,15 +762,15 @@ and reading what actually reddened:
 ```
 values.NewRecordType                      type.go:768   panics
 executor.PositionalTypeForRecordLayout    query_result.go:277
-embedded.buildMatchCandidates             cascades_generator.go:2817
-embedded.GetMatchCandidates               cascades_generator.go:2766
+embedded.buildMatchCandidates             cascades_generator.go:2827
+embedded.GetMatchCandidates               cascades_generator.go:2776
 cascades.MatchLeafRule.OnMatch            rule_match_leaf.go:59
 ```
 
 `buildMatchCandidates` walks every record type in the metadata. Two guards skip
-a type outright — no primary key (`cascades_generator.go:2795`) and no key
-components (`:2799`) — and every type that survives both gets a positional type
-built from its descriptor. A third guard (`:2813`) does NOT skip: a type with no
+a type outright — no primary key (`cascades_generator.go:2805`) and no key
+components (`:2809`) — and every type that survives both gets a positional type
+built from its descriptor. A third guard (`:2823`) does NOT skip: a type with no
 descriptor still gets a candidate, flowing `UnknownType`, so it is the only one
 that reaches the end without a positional type. One unbuildable table therefore
 aborts the candidate set for all of them. The blast radius is schema-wide
@@ -840,7 +840,7 @@ WithoutChildren` compares its record-type list element by element and has no
 metadata to resolve with — nor should it: it is structural equality on a memo
 expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
 `buildMatchCandidates` passes `[]string{rt.Name}` (stored,
-`cascades_generator.go:2832`) and `cascades_translator.go:3032` passes
+`cascades_generator.go:2842`) and `cascades_translator.go:3032` passes
 `[]string{s.Table}` (SQL).
 
 The visible cost, same query shape over one schema, one per table:
@@ -998,7 +998,7 @@ VALIDATION DIVERGENCE, and every other path already said so. Java rejects —
 UNDEFINED_TABLE / "Unknown table RESTAURANT"
 (`CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3`). Go's SELECT path
 rejects. Go's `INSERT … VALUES` rejects, through `md.GetRecordType(insOp.Table)`
-(`cascades_generator.go:1064`). Only UPDATE and DELETE folded.
+(`cascades_generator.go:1074`). Only UPDATE and DELETE folded.
 
 So the DML target now resolves strictly, and the case arm leaves this section
 entirely. **Canonicalising it — which is what this section proposed one revision
@@ -1030,7 +1030,7 @@ correct response.
 
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
-places (`cascades_generator.go:2832`, `:3461`, `:3685`, `:3760`) and those are
+places (`cascades_generator.go:2842`, `:3471`, `:3695`, `:3770`) and those are
 cross-compared in `rule_aggregate_data_access.go:84,299`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
 plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
