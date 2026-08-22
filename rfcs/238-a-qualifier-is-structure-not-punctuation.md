@@ -581,9 +581,9 @@ which is where its table-locality comes from — it has no drop-list and no
 per-type catch.
 
 BOTH LOOPS, NOT JUST THE PRIMARY ONE. `buildMatchCandidates` continues into
-`c.md.GetAllIndexes()` (`cascades_generator.go:2840`) — every index in the
+`c.md.GetAllIndexes()` (`cascades_generator.go:2839`) — every index in the
 SCHEMA — and each resulting `metadataIndexDef` derives its row type through the
-same `PositionalTypeForRecordLayout` (`:3392`, `:3421`). So a colliding table
+same `PositionalTypeForRecordLayout` (`:3414`, `:3443`). So a colliding table
 that owns ANY secondary index reproduces the panic for a query that never names
 it, and the two-table schema below would not catch it, because neither table has
 an index. Java narrows this list too, from the same set:
@@ -623,10 +623,10 @@ AND THE NARROWING GOES WHERE THE CANDIDATES ARE BUILT — it does not have to mo
 earlier in the pipeline, which was the first objection to it. Java evaluates the
 property over the ROOT REFERENCE, and every production `newCascadesPlanner` site
 already holds one before it constructs the context:
-`cascades_generator.go:488` and `:1143`, and `scalar_subquery_planning.go:70`,
+`cascades_generator.go:488` and `:1142`, and `scalar_subquery_planning.go:70`,
 each build `ref`/`subRef` first and pass it to `PlanWithContext` on the next
 line. That is Java's `planPartial` shape (`CascadesPlanner.java:378-388`). So
-`buildCascadesPlanContext` (`cascades_generator.go:2728`) takes the reference and
+`buildCascadesPlanContext` (`cascades_generator.go:2727`) takes the reference and
 narrows there; the `sync.Once` defers only the BUILDING, not the reference.
 
 An empty result then yields an empty candidate set, which is what Java does too
@@ -762,15 +762,15 @@ and reading what actually reddened:
 ```
 values.NewRecordType                      type.go:768   panics
 executor.PositionalTypeForRecordLayout    query_result.go:277
-embedded.buildMatchCandidates             cascades_generator.go:2809
+embedded.buildMatchCandidates             cascades_generator.go:2808
 embedded.GetMatchCandidates               cascades_generator.go:2758
 cascades.MatchLeafRule.OnMatch            rule_match_leaf.go:59
 ```
 
 `buildMatchCandidates` walks every record type in the metadata. Two guards skip
-a type outright — no primary key (`cascades_generator.go:2787`) and no key
-components (`:2805`) — and every type that survives both gets a positional type
-built from its descriptor. A third guard (`:2805`) does NOT skip: a type with no
+a type outright — no primary key (`cascades_generator.go:2786`) and no key
+components (`:2790`) — and every type that survives both gets a positional type
+built from its descriptor. A third guard (`:2804`) does NOT skip: a type with no
 descriptor still gets a candidate, flowing `UnknownType`, so it is the only one
 that reaches the end without a positional type. One unbuildable table therefore
 aborts the candidate set for all of them. The blast radius is schema-wide
@@ -840,7 +840,7 @@ WithoutChildren` compares its record-type list element by element and has no
 metadata to resolve with — nor should it: it is structural equality on a memo
 expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
 `buildMatchCandidates` passes `[]string{rt.Name}` (stored,
-`cascades_generator.go:2824`) and `cascades_translator.go:3032` passes
+`cascades_generator.go:2823`) and `cascades_translator.go:3032` passes
 `[]string{s.Table}` (SQL).
 
 The visible cost, same query shape over one schema, one per table:
@@ -895,7 +895,7 @@ and that is not one option of two. Java never couples them:
 `QueryVisitor.java:836` sets `targetRecordType` from `getStorageName()` at
 construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
-`logical_predicate.go:6751` where `buildSelectScope` takes the bare table name
+`logical_predicate.go:6761` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
 that divergence while working around it. INSERT has no such coupling: `executor.go:4213`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
@@ -998,7 +998,7 @@ VALIDATION DIVERGENCE, and every other path already said so. Java rejects —
 UNDEFINED_TABLE / "Unknown table RESTAURANT"
 (`CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3`). Go's SELECT path
 rejects. Go's `INSERT … VALUES` rejects, through `md.GetRecordType(insOp.Table)`
-(`cascades_generator.go:1056`). Only UPDATE and DELETE folded.
+(`cascades_generator.go:1055`). Only UPDATE and DELETE folded.
 
 So the DML target now resolves strictly, and the case arm leaves this section
 entirely. **Canonicalising it — which is what this section proposed one revision
@@ -1030,7 +1030,7 @@ correct response.
 
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
-places (`cascades_generator.go:2824`, `:3453`, `:3677`, `:3752`) and those are
+places (`cascades_generator.go:2823`, `:3452`, `:3676`, `:3751`) and those are
 cross-compared in `rule_aggregate_data_access.go:84,299`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
 plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
@@ -1108,8 +1108,23 @@ function — `:3022`/`:3031` in the same builder, `:2817`/`:2826` both inside
 been silent for six of the seven.
 
 So neither shape is built. What actually works is the discipline the failures
-point at: when a commit edits a file, re-run the cites into THAT file, and do it
-by sweeping rather than by fixing the copies someone happened to name.
+point at, and it took THREE rounds to state completely because the first two
+versions of it were themselves broken by the commit that added them:
+
+  1. When a commit edits a file, re-run the cites into THAT file. The first
+     failure was fixing only the copies a reviewer had named.
+  2. SWEEP rather than patch — run the checker over the whole document, not
+     over the sentences you remember writing. The second failure was patching
+     the five cites in the report and missing seven more in the same file.
+  3. Compute the cites LAST, against the tree as it will be COMMITTED. The
+     third failure was the subtlest: the sweep was correct when run, and the
+     same commit then deleted one line from one of those files and inserted ten
+     into another, so every number it had just fixed was off by one. A cite is a
+     fact about a tree; computing it before the tree stops moving is computing
+     it about a tree that will not exist.
+
+The practical form of (3) is that the checker run is the LAST thing before
+`git commit`, with no edit between them.
 
 
 ### 7e. The target is validated after its columns are, and only UPDATE now escapes that
@@ -1131,7 +1146,7 @@ target through an exact `SemanticAnalyzer.getTable` before anything looks at a
 column.
 
 The UPDATE row is closed here, cheaply and with no blast radius: the SET-column
-check had its own `recordTypeCI` call (`logical_predicate.go:6719`) that folded
+check had its own `recordTypeCI` call (`logical_predicate.go:6729`) that folded
 case purely to find the descriptor, so making it strict leaves `rt` nil for an
 unresolvable target, the SET check declines, and the 42F01 is what answers.
 
