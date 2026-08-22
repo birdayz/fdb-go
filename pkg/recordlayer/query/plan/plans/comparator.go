@@ -86,8 +86,8 @@ func (p *RecordQueryComparatorPlan) AbortOnComparisonFailure() bool {
 	return p.abortOnComparisonFailure
 }
 
-// GetResultType returns the first child's result type, or UnknownType
-// if there are no children.
+// GetResultType returns the type of the plan's result value. There is no
+// childless case to answer for: the constructor rejects an empty child list.
 func (p *RecordQueryComparatorPlan) GetResultType() values.Type { return p.GetResultValue().Type() }
 
 // GetChildren returns the child plans, dereferenced through the quantifiers

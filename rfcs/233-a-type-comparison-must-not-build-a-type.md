@@ -63,8 +63,11 @@ Population: non-test sources under `pkg/`. Every command below is pasteable AS
 WRITTEN and carries that population itself — the previous draft printed bare
 patterns with no path, no `--include` and no test exclusion, which reproduce
 different numbers (`grep -ro '\.FlowedType()'` alone gives 392). Note the quoted
-glob: unquoted, fish does not expand `--include=*.go` and the command silently
-returns zero.
+glob. Unquoted, the result depends on the GLOB MODE, not the shell: where an
+unmatched wildcard is rejected (zsh, fish, bash under `failglob`) the command
+never runs -- loudly, on stderr -- and a stdout-only capture reports zero; under
+bash `nullglob` the filter is DELETED and grep runs unfiltered, which is a third
+answer again. Quote it, and settle any zero with a positive control.
 
 ```sh
 # 141 lines / 191 occurrences

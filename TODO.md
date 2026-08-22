@@ -14067,11 +14067,12 @@ None is speculative: each was re-verified against the tree before booking.
   because a shrinking count cannot be told from a darkening site) so the
   population stays counted while it stands.
 
-  A fifth divergence was found in passing and is NOT actioned here:
-  `RecordQueryFlatMapPlan.GetResultType()` (`plans/flat_map.go:86`) returns
-  `values.UnknownType` unconditionally, where Java derives it from the result
-  value (`RelationalExpression.java:195-196`). That is a planner-wide typing
-  change with its own blast radius; it is stated, not attempted.
+  A fifth divergence was found in passing and was NOT actioned here:
+  `RecordQueryFlatMapPlan.GetResultType()` returned `values.UnknownType`
+  unconditionally, where Java derives it from the result value
+  (`RelationalExpression.java:195-196`). CLOSED SINCE by RFC-232 -- flat_map.go
+  now returns `p.resultValue.Type()`; see CQ-97. Kept as the record of what was
+  found, not as a live divergence.
 
   **THE CQ-67 REOPEN TRIGGER DID NOT FIRE.** `NestedHitMustBeZero` stayed armed
   and green across every corpus run here. No conversion was made, so no reference
@@ -14160,15 +14161,40 @@ None is speculative: each was re-verified against the tree before booking.
   DIVERGENCES.md's read count by zero** — none of these values reaches the
   decline classifier. Book it for correctness, not for the residue.
 
-- [ ] **CQ-97 (MED, query-engine — needs its own RFC + Graefe ACK):
+- [x] **CQ-97 (MED, query-engine — needs its own RFC + Graefe ACK):
   `RecordQueryFlatMapPlan.GetResultType()` returns `values.UnknownType`
   unconditionally where Java derives it from the result value.** Found while
   refuting CQ-68 and explicitly not attempted there; it is a planner-wide typing
   change with its own blast radius, and stating it in a closing paragraph is how
   a live divergence becomes invisible.
+  
+  **DONE — closed by RFC-232; found still open during a #762 sweep.**
+  `plans/flat_map.go` `GetResultType()` returns `p.resultValue.Type()`, which is
+  the derivation from the result value this entry asked for. The text below is the
+  ORIGINAL finding, kept as the record of what was wrong.
 
-  **Go:** `plans/flat_map.go:86` returns the `UnknownType` singleton with no
-  reference to the plan's result value. **Java:**
+  **Clause 4 (the re-run count) was NOT done when this box was first ticked,
+  and is done here.** The entry itself demands a re-count, so the box could
+  not close on the derivation alone. Re-measured with the entry's own recipe:
+
+      grep -rn "\.GetResultType()" --include="*.go" pkg/ | grep -v _test | wc -l
+      -> 43
+
+  Booked at 33, re-measured at 50, and 43 today. The command is written out
+  rather than the number asserted, because that is the only form of this claim
+  anyone can check. NOTE for whoever re-runs it: keep `--include` QUOTED, and do
+  not port the diagnosis -- what decides it is the GLOB MODE, not the shell.
+  Where an unmatched wildcard is passed through literally (bash by default) grep
+  runs and the count is TRUE. Where it is REJECTED (zsh here, fish, and bash
+  under `failglob`) the command never runs at all: "no matches found" goes to
+  STDERR and a pipeline capturing only stdout sees nothing and reports 0. Do not
+  try to identify the shell either -- `echo $0` is empty under fish. Settle any
+  zero the way the rest of this repo does, with a positive control in the same
+  invocation.
+
+  **Go (AS FOUND; closed since by RFC-232):** `plans/flat_map.go` returned the
+  `UnknownType` singleton with no reference to the plan's result value.
+  **Java:**
   `RelationalExpression.java:195-196` derives the result type from the result
   value, so a `RecordQueryFlatMapPlan` states the row it actually flows.
 
@@ -16510,8 +16536,14 @@ None is speculative: each was re-verified against the tree before booking.
   Read Java first — `GraphExpansion` / `SelectExpression` construction for a
   derived table — before changing the Go translator.
 
-- [ ] **CQ-101 (query-engine): `RecordQueryLimitPlan` swallows the row its inner
+- [x] **CQ-101 (query-engine): `RecordQueryLimitPlan` swallows the row its inner
   now states, so a LIMIT above a projection re-hides what RFC-226 exposed.**
+  
+  **DONE — closed by RFC-232; found still open during a #762 sweep.** `plans/limit.go`
+  `GetResultType()` returns `p.GetResultValue().Type()`, so a LIMIT forwards the row its
+  inner states instead of answering the singleton. The entry stayed unchecked after the
+  fix landed elsewhere, which is how it came to schedule work that no longer existed.
+  The measurement below is the ORIGINAL finding, kept as the record of what was wrong.
   MEASURED at RFC-226 while pinning `distinctKeyColumns`:
 
   ```
@@ -20186,3 +20218,110 @@ DONE when: a metadata proto carrying an index over a synthetic record type
 round-trips through `RecordMetaDataFromProto` without error, pinned by a test
 that fails with the current reader, and the cross-engine conformance corpus has
 an entry that writes such metadata from Java and reads it from Go.
+## A gate for prose that restates a value an assertion already owns
+
+The instances two reviewers surfaced after #760 are fixed in that PR's
+follow-up, not booked here: the arity census now names `pinned` and
+`rfcPublishedPopulation` instead of repeating them,
+`field_name_decision_test.go` names `fieldDebtAuthorityTotal` instead of
+contradicting it, and `cardinality_bounds.go` no longer encodes an arm count in
+the word "twelfth". One reported instance was investigated and split: in
+`result_type_stub_census_test.go` the ORDINAL ("a thirteenth stub") is sound,
+anchored to a count the same file twice describes as closed, but the sentence
+carrying it asserted in the PRESENT TENSE that the callers pass UnknownType and
+the constructor defaults nil to it -- both false since RFC-232, and refuted by
+the `want = 0` assertion in the very function that comment heads. Checking the
+number and clearing it is what nearly hid that; the prose around a sound figure
+is where this class actually survives. Fixed in the same PR.
+
+What remains is enforcement, and the obvious formulation does not work.
+
+The writing rule itself is settled and already stated twice in-tree:
+`properties/collected_statistics.go:33` -- "The population is deliberately NOT
+written as a number here: an earlier revision said 'four', RFC-236 then added
+the fifth" -- followed by a grep recipe in place of the count.
+`plans/in_union.go:212` states the scoping half.
+
+The first gate proposed was: within census test files, every DIGIT in a comment
+must appear as a pinned value in the same file. Review showed that cannot
+enforce ownership, in both directions:
+
+- FALSE NEGATIVE: a stale count passes whenever any unrelated assertion in the
+  file happens to pin the same value. The real "25 escapes across 14
+  authorities" defect would have been masked by any unrelated 14.
+- FALSE POSITIVE: RFC and revision numbers (RFC-230, rev 6) fail without
+  restating any population.
+
+So value-equality is the wrong relation, and the repair is to invert what the
+gate does: require the comment to CITE, never to VERIFY. A comment that states
+a population must carry the identifier whose assertion owns it, or a grep
+recipe -- AND must not restate the figure itself. Both halves are load-bearing,
+and each closes a hole the other leaves open. Requiring only a citation still
+passes "14 authorities (fieldDebtAuthorityTotal)" after the constant moves to
+13: the citation is present and resolves, so a stale literal rides a valid
+pointer. Comparing literal against cited owner would catch that, but drags
+verification back in. Forbidding the literal removes the thing that can go
+stale, which is what `collected_statistics.go` already does in prose -- "the
+population is deliberately NOT written as a number here" -- so the gate is that
+sentence made mechanical. Nothing is compared, so the collision false negative
+disappears rather than being narrowed, and nothing is restated, so there is no
+literal left to drift.
+
+Two roles for a number have to stay separate, though. A line number inside a
+`file:line` reference is not a population claim, so the scan ignores it
+alongside RFC/revision numbers and dates -- a short list enumerated once. But
+`file:line` is NOT an acceptable citation FORM: this repo already holds that "a
+design trade defended by line numbers decays into an unfalsifiable claim"
+(the phrase is in `field_name_decision_test.go`), and a gate accepting one would bless the
+least durable pointer available. A citation must name an identifier or give a
+recipe -- both survive an edit above them; a line number does not. That is
+`collected_statistics.go:33` made mechanical rather than aspirational.
+
+One correction to the target, earned by a near-miss during review. Two
+reviewers checked the ORDINAL in `result_type_stub_census_test.go`, agreed it
+was frozen, and nearly closed the file -- while the sentence carrying it
+asserted in the present tense that every aggregate-index plan carries
+values.UnknownType, that the callers pass the singleton explicitly, and that the
+constructor defaults a nil type to it -- all three false since RFC-232. The digit
+was sound; the prose around it was not. So the gate's subject is the TENSE and
+OWNERSHIP of prose adjacent to a pinned figure, not the digit itself. A sound
+number is exactly the cover this class hides behind.
+
+The same round produced the other half of that lesson: the claim was fixed in
+one file and left standing in another, because no repo-wide grep for the
+superseded phrasing was run. A correction is not done until that grep returns
+zero across every file and the count is reported.
+
+WHAT THIS GATE CANNOT DO, written first because the positive claim kept
+outrunning it. Four things, all demonstrated during review rather than imagined:
+
+- It cannot see a stale claim carrying NO figure. The defect that produced this
+  entry was a sentence asserting two files "return the singleton on a branch" --
+  no number, no citation, simply false, and lifted from those files' own stale
+  doc comments. No digit, citation or literal rule fires on it.
+- It cannot check TENSE. An earlier draft here demanded a past-to-present verb
+  flip go red two sentences after conceding tense is not decidable, which is a
+  contradiction, not a specification.
+- Being digit-keyed, it is blind to populations written as WORDS. "Twelve plans
+  returned ..." heads the census file this entry is about, and this entry itself
+  described its own defect count in words until that was noticed.
+- It cannot tell whether a historical marker is WARRANTED. The marker is
+  author-asserted and the whole green side rests on it, so marking a live claim
+  historical immunises it. That is an escape hatch, not a check.
+
+So the gate is a mechanical FLOOR, not the mechanism. EVERY defect in this
+campaign was found by a reviewer reading prose against code, and none by any
+rule proposed here -- no count is given because it kept moving. What the floor
+buys is that the two shapes which ARE decidable stop recurring, and that is
+worth having precisely because they recurred repeatedly while everyone was
+watching for them.
+
+DONE when: the gate REDS on a census-file comment that states a population with
+no citation, and on one that restates the literal while carrying a valid
+citation -- the arm a citation-only rule would miss. It stays GREEN on an RFC
+number, a date, and a count inside an explicitly marked historical block. Each
+arm proven by mutation, with the mutation shown present and the build result
+read, not only the test result. Its scope sentence must say census files ONLY:
+the production comments this campaign corrected -- in executor.go and in
+fk_chain_cardinality.go -- sit outside it by construction, and claiming
+otherwise would be the same over-claim one level up.

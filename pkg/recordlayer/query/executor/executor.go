@@ -2993,11 +2993,13 @@ func planColumnNamesWithMD(p plans.RecordQueryPlan, md *recordlayer.RecordMetaDa
 			return streamingAggOutputNames(agg)
 		}
 		// A bare AGGREGATE-INDEX plan likewise defines its own output schema (group cols +
-		// the canonical aggregate name). Its GetResultType is UnknownType, so without this it
-		// would fall through to nil and a grouped aggregate-index UNION branch could not be
-		// position-remapped (RFC-081). OutputColumnNames returns exactly the keys the
-		// aggregateIndexCursor writes. A bare aggregate-index branch is always UNALIASED (an
-		// aliased SELECT tops with a Project), so there is no alias to carry here.
+		// the canonical aggregate name). Its GetResultType answered UnknownType when this
+		// branch was written, so the fallback reached nil and a grouped aggregate-index
+		// UNION branch could not be position-remapped (RFC-081). It forwards a stated type
+		// since RFC-232, and this branch stays for the reason below rather than that one:
+		// OutputColumnNames returns exactly the keys the aggregateIndexCursor writes. A bare
+		// aggregate-index branch is always UNALIASED (an aliased SELECT tops with a Project),
+		// so there is no alias to carry here.
 		if aggIdx, ok := p.(*plans.RecordQueryAggregateIndexPlan); ok {
 			return aggIdx.OutputColumnNames()
 		}

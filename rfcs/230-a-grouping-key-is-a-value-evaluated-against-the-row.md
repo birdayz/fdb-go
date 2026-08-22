@@ -2088,9 +2088,13 @@ years from now needs the `grep` and the corrected site; "X's citation was wrong"
 nothing they can check and quietly converts a technical record into a process one.
 
 **The one case where the mechanism outlives the correction.** One of §12's three slips came
-from a sweep that returned nothing and was read as proof of absence — under fish,
-`grep --include=*.go` with the glob **unquoted** fails to expand and matches zero files, so
-the command reports no hits for a symbol that is present 60 times. The corrected line number
+from a sweep that returned nothing and was read as proof of absence. With the glob
+**unquoted**, `grep --include=*.go` is decided by the GLOB MODE, not the shell name: where
+an unmatched wildcard is rejected (zsh here, fish, and bash under `failglob`) the command
+aborts BEFORE grep runs, while where it is passed through literally (bash by default) grep
+runs normally and the count is true. Under the aborting shells the command never executes, so a capture that
+reads only stdout sees nothing and reports no hits for a symbol present 60 times -- the
+failure is loud on stderr, and it is the capture that is silent. The corrected line number
 is worth one line; the rule behind it is worth keeping:
 
 > **A zero-hit sweep used as evidence of absence must first be shown to be a well-formed

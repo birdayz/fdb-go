@@ -94,11 +94,11 @@ func assertUnresolvedResultTypeCensus(w io.Writer) bool {
 	//	distinctKeyColumns                    resolved 70     UNRESOLVED 0
 	//
 	// BOTH READ RESOLVED, and so did the two that have now retired. That zero is
-	// the RFC-213 payoff arriving. That zero is the RFC's payoff arriving, and it is
-	// deliberately NOT asserted here: this census has no hard zero, because the
-	// unresolved reads ARE the defect and their count is a measurement rather
-	// than a contract. What is asserted is that the consumers are still reached,
-	// so a future zero cannot be confused with the instrument going dark.
+	// the RFC-213 payoff arriving, and it is deliberately NOT asserted here: this
+	// census has no hard zero, because the unresolved reads ARE the defect and
+	// their count is a measurement rather than a contract. What is asserted is
+	// that the consumers are still reached, so a future zero cannot be confused
+	// with the instrument going dark.
 	floors := &cascades.UnresolvedResultTypeFloors{MinReads: 48, MinSites: 2}
 	if f := flag.Lookup("test.run"); f != nil && f.Value.String() != "" {
 		fmt.Fprintf(w, "unresolved-result-type census: reached-consumers floors NOT checked "+
