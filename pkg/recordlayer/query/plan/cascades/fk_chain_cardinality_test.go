@@ -150,16 +150,28 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 // createsDuplicates() signal — a scalar index never fans out, so
 // ProducesDistinctRecords() must read true for the FK-chain cap to fire on
 // it, same as production.
-func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
-	t.Helper()
+// fkChainProbeFromRange is the single stamping site for the two FK-probe helpers
+// below. It is NOT the only place this file stamps an index plan -- other
+// fixtures build their own inline, and this does not reach them.
+// Both callers below route through it, so a signal added here reaches every
+// fixture. That is not decoration: omitting WithDistinctRecordsSignal makes
+// scanBindingOfLeaf's index arm fail closed, which silently moves an assertion's
+// exit to a guard above the thing it meant to test. A duplicated stamp chain
+// would let exactly that regress for the next signal anyone adds.
+func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange) plans.RecordQueryPlan {
 	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
-		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
+		[]*predicates.ComparisonRange{rng},
 		[]string{rt}, fkChainRowType(rt), false)).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithCommonPrimaryKey(fkChainIDPK()).
 		WithDistinctRecordsSignal(false)
+}
+
+func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
+	t.Helper()
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"))
 }
 
 // fkChainFKProbeAgainst is fkChainFKProbe for an outer whose layout is not in
@@ -178,14 +190,7 @@ func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.Rec
 	if !rng.Ok {
 		t.Fatalf("failed to build correlated eq range against %s", outerLayout.RecordName)
 	}
-	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
-		[]*predicates.ComparisonRange{rng.Range},
-		[]string{rt}, fkChainRowType(rt), false)).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
-		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey(fkChainIDPK()).
-		WithDistinctRecordsSignal(false)
+	return fkChainProbeFromRange(rt, idx, rng.Range)
 }
 
 // fkChainFanOutFKProbe is fkChainFKProbe but models a FAN-OUT index (one
@@ -1546,17 +1551,27 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	// isolate that line, so claiming this assertion "pins the frontier gate"
 	// would be unsupportable.
 	//
-	// What it DOES pin, measured rather than argued: it fires iff
-	// innerFullyBindsThread accepts. `return true` at the top of that function
-	// reddens this with the message below. It does NOT fire when the three
-	// layers above are stripped together -- tried, still green -- so those three
-	// are not an exhaustive account of why a nil-layout outer is refused, and
-	// this comment does not claim they are. The reach guard further up is what
-	// keeps even this much honest: without the probe's full stamp set,
-	// scanBindingOfLeaf rejects at the FIRST guard and none of it is reached.
+	// What it DOES pin is specific and realistic, and one token proves it:
+	// change :525 from planRowLayout(fm.GetOuter()) to
+	// fm.GetOuter().GetResultType() and this reddens. So the assertion holds the
+	// frontier and wantKeys to the PROVEN row layout rather than the DECLARED
+	// result type -- which is the whole reason planRowLayout exists, and the
+	// swap a future reader is most likely to make.
+	//
+	// Two things it does NOT establish. Stripping the layers above together
+	// leaves it green (tried), so they are not an exhaustive account of why a
+	// nil-layout outer is refused; a fourth is values.IdentityIn's own domain
+	// check, since the comparand is baked to rcLayout while the frontier is the
+	// unknown token. And describing this as firing exactly when that function
+	// rejects would be a tautology rather than a measurement: the assertion IS
+	// that call.
+	//
+	// The reach guard further up is what keeps any of this honest: without the
+	// probe's full stamp set, scanBindingOfLeaf rejects at the FIRST guard and
+	// none of it is reached.
 	if innerFullyBindsThread(viaRC, computePKThread(rcOuter)) {
-		t.Error("innerFullyBindsThread accepted an outer whose layout is nil: every " +
-			"path that used to fail closed on an unknown domain now admits it, so " +
-			"planRowLayout's unreachability claim is stale")
+		t.Error("innerFullyBindsThread accepted an outer with no PROVEN layout: either every " +
+			"path that failed closed on an unknown domain now admits it, or the frontier " +
+			"is being taken from the DECLARED result type instead of planRowLayout")
 	}
 }
