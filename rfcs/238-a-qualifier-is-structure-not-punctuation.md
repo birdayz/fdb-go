@@ -1127,41 +1127,95 @@ The practical form of (3) is that the checker run is the LAST thing before
 `git commit`, with no edit between them.
 
 
-### 7e. The target is validated after its columns are, and only UPDATE now escapes that
+### 7e. The target is validated after its columns are, and UPDATE is on both sides of it
 
 Making the DML target strict exposed an ORDERING that the fold had been hiding.
 The 42F01 guard runs on the BUILT logical operator, so anything that resolves
 columns during construction speaks first. Measured against
-`CREATE TABLE "Customer" (id BIGINT, name STRING, PRIMARY KEY (id))`:
+`CREATE TABLE "Customer" (id BIGINT, name STRING, PRIMARY KEY (id))`, FOUR rows,
+and the fourth is why the heading is not "only UPDATE escapes":
 
 ```
-UPDATE customer SET nosuchcol = 'z'     42F01   (after the fix below)
-DELETE FROM customer WHERE nosuchcol=1  42703   column "NOSUCHCOL" does not exist
-SELECT nosuchcol FROM customer          42703   column "NOSUCHCOL" does not exist
+UPDATE customer SET nosuchcol = 'z'          42F01   closed below
+UPDATE customer SET name='z' WHERE nosuchcol=1   42703   column "NOSUCHCOL" ...
+DELETE FROM customer WHERE nosuchcol = 1     42703   column "NOSUCHCOL" ...
+SELECT nosuchcol FROM customer               42703   column "NOSUCHCOL" ...
 ```
 
-Every one of those names a column of a table that does not exist. Java reports
-the TABLE in all three — its DML visitors and its analyzer both resolve the
-target through an exact `SemanticAnalyzer.getTable` before anything looks at a
-column.
+Every one names a column of a table that does not exist. Java reports the TABLE
+in all four — its DML visitors and its analyzer both resolve the target through
+an exact `SemanticAnalyzer.getTable` before anything looks at a column.
 
-The UPDATE row is closed here, cheaply and with no blast radius: the SET-column
-check had its own `recordTypeCI` call (`logical_predicate.go:6729`) that folded
-case purely to find the descriptor, so making it strict leaves `rt` nil for an
-unresolvable target, the SET check declines, and the 42F01 is what answers.
+UPDATE IS ON BOTH SIDES, BY CLAUSE, and that is the shape to carry away rather
+than "UPDATE is fixed". Its SET-column check had its own `recordTypeCI` call
+(`logical_predicate.go:6729`) that folded case purely to find a descriptor, so
+making it strict leaves `rt` nil for an unresolvable target, the SET check
+declines, and the 42F01 answers. Its WHERE clause does not go through that
+check at all.
 
-THE OTHER TWO ROWS SHARE ONE RESOLVER AND CANNOT BE CLOSED SEPARATELY.
+THE OTHER THREE ROWS SHARE ONE RESOLVER AND CANNOT BE CLOSED SEPARATELY.
 `buildWherePredicateForTableE` (`logical_predicate.go:130`) resolves its table
 through `semantic.Analyzer.ResolveTable` over `rlcatalog.Wrap(md)` — the SAME
-analyzer the SELECT path uses. Making it strict fixes the DELETE row and the
-SELECT row together, moves both toward Java, and changes the SQLSTATE of every
-existing query that names a bad column on a case-mismatched table. That is a
-decision about the SELECT diagnostic surface, not about DML, and it is not made
-here.
+analyzer the SELECT path uses, and the one UPDATE's WHERE reaches. Making it
+strict fixes the UPDATE-WHERE, DELETE-WHERE and SELECT rows together, moves all
+three toward Java, and changes the SQLSTATE of every existing query that names a
+bad column on a case-mismatched table. That is a decision about the SELECT
+diagnostic surface, not about DML, and it is not made here.
 
-All three rows are asserted at their measured values in
-`unquoted_dml_against_a_quoted_table.yaml`, the SELECT twin beside the DELETE
-one specifically so the pair cannot drift apart unnoticed: today they agree with
-each other and disagree with UPDATE, and any change has to come to that file and
-say which way it is making them agree.
+All four rows are asserted at their measured values in
+`unquoted_dml_against_a_quoted_table.yaml`, the SELECT twin sitting beside the
+DELETE one specifically so the pair cannot drift apart unnoticed. An earlier
+version of this section had three rows and said the two WHERE rows "agree with
+each other and disagree with UPDATE"; the fourth row was added to the yaml and
+the prose was never re-run, so it went on describing a population it no longer
+had. The yaml arm points back here, which is exactly how a reader would have
+landed on prose contradicting the arm that sent them.
+
+**Follow-on booked here, not implemented:** unify the two 42F01 wordings.
+`Unknown table %s` is what Java uses on the whole query path
+(`SemanticAnalyzer.java:249`, reached for sources and for all three DML targets
+at `QueryVisitor.java:753`, `:813`, `:867`); `table <X> does not exist` exists in
+Java only in the JDBC catalog API (`CatalogMetaData.java:207,319`). So Go's
+SELECT path is the divergent side and should change, not DML. It is deferred
+because everything this branch did was an ADDITIVE rejection, while unification
+re-words queries that currently PASS, across every corpus entry pinning the
+text — a different risk class.
+
+
+### 7f. The aggregate-index row type degrades silently, on two axes
+
+`RecordQueryAggregateIndexPlan.recordTypeName` feeds a metadata lookup that
+derives the plan's result-column types, and that lookup is NIL-TOLERANT. On a
+miss the descriptor stays nil and the types are invented: one derivation reports
+every GROUP BY column as `STRING` and the aggregate as `BIGINT`, the other
+reports GROUP BY columns as `BIGINT`. Plausible values, wrong types, no error —
+so the degraded type depends on which derivation ran, which is worse than either
+default alone.
+
+A draft comment at the field said no such lookup existed and used that to
+dismiss the §7c namespace question. Both halves were false, and the second is
+the point: this is the consumer MOST exposed to that question, not one immune
+to it.
+
+TWO WAYS TO REACH THE MISS, and they arm at different times:
+
+  - NAMESPACE. `recordTypeName` comes from the candidate's stored names at all
+    three construction sites, so both spellings resolve today —
+    `GetRecordType` maps SQL to storage through the escaping, and case
+    mismatches are now rejected before planning. This axis arms exactly when
+    §7c row 5 moves candidates into the SQL namespace.
+  - EMPTY ASSOCIATION. `md.RecordTypesForIndex` returns nothing for an index
+    associated with no record type and not universal, and nothing guards that:
+    the aggregate rule leaves `recordTypeName` EMPTY, and `GetRecordType("")`
+    misses. No namespace change is involved, so this axis is armed now for any
+    metadata carrying a detached aggregate index. SQL DDL always associates, so
+    it is not reachable through `CREATE INDEX`; metadata supplied through
+    `SetRecords` or loaded from a store need not be.
+
+The second axis is why this section exists separately from §7c row 5 rather
+than as a line inside it: closing row 5 does not close it, and a guard on the
+empty association is a smaller and independent change. Neither is implemented
+here — both are result-type behaviour in the aggregate-index path, and the
+field's own comment carries the same two axes so the two halves point at each
+other.
 

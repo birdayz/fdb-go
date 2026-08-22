@@ -419,11 +419,6 @@ func planPhysicalDMLWithMetadata(
 	// is in production: both raise 42F01 and they word it differently, so a
 	// harness that ran only the sweep reported the SELECT wording where production
 	// reports the target's.
-	// rejectDuplicateUnnestAlias too -- production runs it on the DML path and a
-	// harness that skips it plans a shape production refuses.
-	if err := rejectDuplicateUnnestAlias(logicalOp, md); err != nil {
-		return nil, err
-	}
 	var harnessTarget string
 	switch dop := logicalOp.(type) {
 	case *logical.LogicalDelete:
@@ -439,15 +434,30 @@ func planPhysicalDMLWithMetadata(
 	if err := validateScanTables(logicalOp, md); err != nil {
 		return nil, err
 	}
+	// LAST of the three, matching production's order. A first attempt put this
+	// first, directly beneath the comment arguing that the order of these guards
+	// is load-bearing -- read rather than measured.
+	if err := rejectDuplicateUnnestAlias(logicalOp, md); err != nil {
+		return nil, err
+	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 
-	// TranslateToCascadesWithSubqueries is the DML translator (planDML uses it,
-	// not the SELECT path's WithError). We drop the subquery plans: the corpus
-	// dump only pins the OUTER plan's shape, and executing an unbound-subquery
-	// plan is out of the picture (no store).
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	// TranslateToCascadesWithError, the same call planDML makes. The subquery
+	// plans are dropped -- the corpus dump pins the OUTER plan's shape and there
+	// is no store to execute an unbound subquery against -- but the ERROR is not.
+	//
+	// Discarding it made this harness blind to every translation SQLSTATE, which
+	// is a bigger divergence than any single missing guard: a statement production
+	// rejects with a specific code planned here as if nothing were wrong, and
+	// explain-differ blessed the result. That blindness is also what made a
+	// source-table sweep look load-bearing on this path when production had
+	// rejected the same SQL all along.
+	ref, _, transErr := query.TranslateToCascadesWithError(logicalOp, md)
+	if transErr != nil {
+		return nil, transErr
+	}
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}

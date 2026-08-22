@@ -7262,16 +7262,6 @@ func collectCTENamesInner(op logical.LogicalOperator, names map[string]bool) {
 	for _, ch := range op.Children() {
 		collectCTENamesInner(ch, names)
 	}
-	// Subquery plans hang off side fields rather than Children(), and a scalar
-	// subquery may define its OWN CTE. Any consumer that descends into those
-	// plans must see the CTE names declared inside them, or a perfectly good
-	// `WITH x AS (...) SELECT ... FROM x` reads as a reference to a table that
-	// does not exist. The asymmetry was live and cost three valid DML statements
-	// a 42F01 naming the CTE: validateScanTables descends into subquery plans and
-	// this did not.
-	for _, sub := range subqueryPlans(op) {
-		collectCTENamesInner(sub, names)
-	}
 }
 
 func hasAggregate(op logical.LogicalOperator) bool {
@@ -7755,7 +7745,15 @@ func (r *paginatingRows) env() *dst.Env {
 // form. Production rejects both through other checks. What the walk guards is
 // the HARNESS path: planPhysicalDMLWithMetadata is a hand-maintained copy of
 // planDML that explain-differ plans the whole corpus through, and there the
-// scalar-subquery source does reach it.
+// scalar-subquery source does reach it -- plan_shape.golden records the
+// resulting PLAN-ERROR in this function's own wording.
+//
+// THAT MAKES IT THE ODD ONE OUT AND THE NOTE IS DELIBERATE. Every other
+// harness-vs-production divergence here was closed by making the HARNESS mirror
+// production -- the target guard, this sweep, rejectDuplicateUnnestAlias. This
+// walk is the reverse: production carries it for a path only the harness
+// exercises. Someone will eventually read that as dead weight and simplify it
+// away, so the reason is written down rather than inferred.
 //
 // IT ALSO REJECTED THREE VALID STATEMENTS until collectCTENames was made
 // symmetric. A scalar subquery may define its own CTE, and that CTE hangs off
@@ -7792,8 +7790,20 @@ func validateScanTablesInner(op logical.LogicalOperator, md *recordlayer.RecordM
 			return err
 		}
 	}
+	// Each attached plan gets its OWN scope: the CTE names visible here, plus the
+	// ones that plan declares -- never the ones a SIBLING declares. Unioning every
+	// side plan's definitions into one map before descending was simpler and
+	// wrong: for `id = (WITH x AS (...) SELECT MAX(id) FROM x) AND v = (SELECT
+	// MAX(id) FROM x)` it made `X` visible to the second subquery, which is
+	// outside the CTE's scope, so an invalid reference was accepted. A CTE is
+	// lexically scoped and a flat name set cannot express that.
 	for _, sub := range subqueryPlans(op) {
-		if err := validateScanTablesInner(sub, md, cteNames); err != nil {
+		scoped := make(map[string]bool, len(cteNames))
+		for k, v := range cteNames {
+			scoped[k] = v
+		}
+		collectCTENamesInner(sub, scoped)
+		if err := validateScanTablesInner(sub, md, scoped); err != nil {
 			return err
 		}
 	}

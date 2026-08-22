@@ -210,6 +210,14 @@ tests:
   - query: UPDATE "Customer" SET name = 'z' WHERE id = (WITH x AS (SELECT id FROM "Customer" WHERE id = 99) SELECT MAX(id) FROM x)
     rowcount: 0
 
+  # A CTE IS LEXICALLY SCOPED AND A SIBLING SUBQUERY MUST NOT SEE IT. Collecting
+  # every attached plan's CTE names into one flat set before descending made `x`
+  # visible to the second subquery here, which accepted a reference that is out
+  # of scope. Each attached plan now gets the names visible at its own site plus
+  # the ones it declares, and nothing from a sibling.
+  - query: DELETE FROM "Customer" WHERE id = (WITH x AS (SELECT id FROM "Customer") SELECT MAX(id) FROM x) AND name = (SELECT MAX(name) FROM x)
+    error: "42F01"
+
   # The store is still untouched: every statement above either rejected or
   # matched nothing.
   - query: SELECT id, name FROM "Customer" ORDER BY id
