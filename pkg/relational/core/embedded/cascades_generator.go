@@ -998,6 +998,15 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 		dmlTarget = dop.Target
 	case *logical.LogicalUpdate:
 		dmlTarget = dop.Target
+	case *logical.LogicalInsert:
+		// INSERT belongs here too, and its absence was the worst of the three.
+		// INSERT ... VALUES has its own strict check further down, but
+		// INSERT ... SELECT had NO planning-time target check at all: the target
+		// is resolved lazily per row in the executor, so a source that produces
+		// rows raises a raw non-SQLSTATE `executor: INSERT target record type %q
+		// not found`, and a source that produces NONE never reaches the lookup
+		// and the statement reports SUCCESS against a table that does not exist.
+		dmlTarget = dop.Table
 	}
 	// STRICT resolution for a DML target -- GetRecordType, not the case-folding
 	// recordTypeCI. An unquoted `DELETE FROM customer` against a table declared

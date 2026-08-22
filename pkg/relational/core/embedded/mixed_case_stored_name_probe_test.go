@@ -96,12 +96,13 @@ func TestMixedCaseStoredNameAccessPaths(t *testing.T) {
 //
 // Production now rejects an unquoted DML target that does not resolve strictly
 // -- `DELETE FROM customer` against a table declared `"Customer"` is 42F01,
-// matching Java, this engine's SELECT path, and `INSERT ... VALUES`. NOT
-// `INSERT ... SELECT`, which is a separate defect: it returns a raw
-// `executor: INSERT target record type "CUSTOMER" not found` with no SQLSTATE
-// at all, so it is neither the old silent success nor the new clean rejection.
-// That
-// rejection is pinned end-to-end in
+// matching Java and this engine's SELECT path. INSERT is covered on both its
+// forms, and the SELECT form had been the worst of the three: its target was
+// resolved lazily per row in the executor, so a source producing rows raised a
+// raw SQLSTATE-less error while a source producing NONE never reached the
+// lookup and reported SUCCESS against a table that does not exist. Both forms
+// now go through the same planning-time guard. The rejection is pinned
+// end-to-end in
 // yamsql/testdata/unquoted_dml_against_a_quoted_table.yaml, and it is the
 // user-visible contract.
 //

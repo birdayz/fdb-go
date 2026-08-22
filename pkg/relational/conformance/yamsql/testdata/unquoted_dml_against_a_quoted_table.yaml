@@ -79,6 +79,15 @@ tests:
   - query: SELECT nosuchcol FROM customer
     error: "42703"
 
+  # UPDATE IS INCONSISTENT WITH ITSELF, and this arm is what says so. The SET
+  # check resolves strictly now, so a bad SET column on a bad table reports the
+  # TABLE; the WHERE clause goes through the shared analyzer and reports the
+  # COLUMN. Same statement kind, same bad table, two different answers
+  # depending on which clause carries the second error. §7e says why closing it
+  # moves SELECT too.
+  - query: UPDATE customer SET name = 'z' WHERE nosuchcol = 1
+    error: "42703"
+
   # And the control that keeps the arms above about the TABLE: on the table as
   # declared, a nonexistent column is a genuine 42703.
   - query: UPDATE "Customer" SET nosuchcol = 'z' WHERE id = 1
@@ -98,3 +107,37 @@ tests:
   - query: SELECT id, name FROM "Customer" ORDER BY id
     rows:
       - [2, 'beta']
+
+  # INSERT ... SELECT HAD NO PLANNING-TIME TARGET CHECK AT ALL, and the two
+  # arms differ only in whether the source produces rows -- which is what makes
+  # it worse than the DELETE/UPDATE case. The target is resolved lazily, per
+  # row, in the executor. A source with rows reached that lookup and raised a
+  # RAW error carrying no SQLSTATE; a source with none never reached it, and
+  # the statement reported SUCCESS against a table that does not exist.
+  - query: INSERT INTO customer SELECT id, name FROM "Customer"
+    error: "42F01"
+
+  # The empty-source arm. This is the one that reported success.
+  - query: INSERT INTO customer SELECT id, name FROM "Customer" WHERE id < 0
+    error: "42F01"
+
+  # INSERT ... VALUES is covered TWICE and that is worth knowing before anyone
+  # mutation-tests this file. It had its own strict check (the
+  # `md.GetRecordType(insOp.Table)` in the VALUES block) before the target guard
+  # above existed, and the guard now reaches it first -- so mutating EITHER one
+  # alone leaves this arm green, and only mutating BOTH reddens it. Measured:
+  # disabling the target guard reddens the two INSERT ... SELECT arms and not
+  # this one; disabling the VALUES check alone reddens nothing; disabling both
+  # reddens all three. Pinned so a consolidation of the two paths cannot quietly
+  # drop the survivor.
+  - query: INSERT INTO customer VALUES (9, 'nope')
+    error: "42F01"
+
+  # The quoted controls, so a regression that rejected ALL INSERTs fails here.
+  - query: INSERT INTO "Customer" VALUES (9, 'nine')
+    rowcount: 1
+
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [2, 'beta']
+      - [9, 'nine']
