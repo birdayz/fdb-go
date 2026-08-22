@@ -91,9 +91,7 @@ func TestMixedCaseStoredNameAccessPaths(t *testing.T) {
 	}
 }
 
-// AND THE SAME QUESTION ON THE DML PATH, because the SELECT answer does not
-// carry over and reading it as if it did is how this file nearly bounded
-// RFC-238 §7c to the wrong population.
+// AND THE SAME QUESTION ON THE DML PATH, where the answer is the opposite one.
 //
 // SELECT rejects an unquoted reference to a mixed-case stored name outright.
 // DML does not: `recordTypeCI` (logical_predicate.go:6553) resolves the target
@@ -137,31 +135,52 @@ func TestMixedCaseStoredNameDMLAccessPaths(t *testing.T) {
 	t.Logf("PROBE stored=Customer ref=customer     del: %s", bareDel)
 	t.Logf(`PROBE stored=Customer ref="Customer"   upd: %s`, quotedUpd)
 	t.Logf(`PROBE stored=Customer ref="Customer"   del: %s`, quotedDel)
+	// ASSERT THE WHOLE STRING, not two bits of it. An earlier version checked
+	// only "no ERROR" and "no [=]", and a mutation that made the DELETE target
+	// carry the RESOLVED name -- falsifying the first of the two defects §7c
+	// names -- left every assertion green. Two negatives constrain two bits;
+	// neither of them was the target spelling. Three of the six arms were not
+	// asserted at all.
+	for _, tc := range []struct{ name, got, want string }{
+		{
+			"upper/unquoted UPDATE", upperUpd,
+			"Update(CUSTOMER, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(CUSTOMER, [=])))",
+		},
+		{
+			"upper/unquoted DELETE", upperDel,
+			"Delete(CUSTOMER, Scan(CUSTOMER, [=]))",
+		},
 
-	// Control: the upper-case arm must reach the PK, or the probe measures
-	// nothing.
-	if !strings.Contains(upperDel, "[=]") {
-		t.Errorf("control lost PK pushdown on DELETE: %s", upperDel)
-	}
+		// THE FINDING, both halves visible in one string: the target reads
+		// CUSTOMER, which names no record type in this metadata, AND the scan
+		// under it lost the PK range the quoted arm gets. Either half moving is
+		// a change to RFC-238 section 7c's DML population -- read it before
+		// editing these.
+		{
+			"mixed/unquoted UPDATE", bareUpd,
+			"Update(CUSTOMER, [1 transforms], UnorderedPrimaryKeyDistinct(PredicatesFilter(Scan(CUSTOMER), [1 preds])))",
+		},
+		{
+			"mixed/unquoted DELETE", bareDel,
+			"Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))",
+		},
 
-	// THE FINDING. Unquoted DML against a mixed-case stored name is ACCEPTED
-	// (unlike SELECT, which rejects it) and then plans without the PK range the
-	// quoted form gets. If this ever starts rejecting, or starts matching, say
-	// so here -- RFC-238 §7c's statement of the affected population is derived
-	// from these two lines.
-	if strings.Contains(bareDel, "ERROR") {
-		t.Errorf("unquoted DML now REJECTS a mixed-case table (%s).\n"+
-			"That would make DML agree with SELECT and shrink §7c's population back\n"+
-			"to escaped names only -- update the RFC, do not just relax this.", bareDel)
-	}
-	if strings.Contains(bareDel, "[=]") {
-		t.Errorf("unquoted DML now reaches the PK on a mixed-case table (%s).\n"+
-			"The namespace mismatch is closed for case; §7c's population changes.", bareDel)
-	}
-
-	// Quoted, the spellings coincide and the access path is there -- the same
-	// contrast the SELECT probe shows.
-	if !strings.Contains(quotedDel, "[=]") {
-		t.Errorf("quoted mixed-case DML lost PK pushdown: %s", quotedDel)
+		// Quoted, the spellings coincide and everything is right.
+		{
+			"mixed/quoted UPDATE", quotedUpd,
+			"Update(Customer, [1 transforms], UnorderedPrimaryKeyDistinct(Scan(Customer, [=])))",
+		},
+		{
+			"mixed/quoted DELETE", quotedDel,
+			"Delete(Customer, Scan(Customer, [=]))",
+		},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s plan changed.\n got: %s\nwant: %s\n"+
+				"RFC-238 section 7c's DML population is derived from these six strings. If\n"+
+				"the target spelling moved, the first defect it names is closed; if the\n"+
+				"scan gained [=], the second is. Say which in the RFC before updating this.",
+				tc.name, tc.got, tc.want)
+		}
 	}
 }

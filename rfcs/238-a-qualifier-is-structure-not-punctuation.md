@@ -879,9 +879,10 @@ Translating only the scan leaf would ship a TWO-NAMESPACE PLAN TREE —
 `Scan(MY__1TABLE)` beneath `Delete(MY$TABLE)` — and the memo-identity argument
 below applies to the DML targets verbatim, because all three DML expressions compare
 that string in `EqualsWithoutChildren` -- it IS the structural key:
-`cascades/expressions/delete.go:84`, `insert.go:107`, `update.go:146`. The paths
-are given in full because `plans/` holds a `delete.go`, an `insert.go` and an
-`update.go` of its own. THE UPDATE TARGET IS NOT JUST A NAME -- IT IS A CORRELATION IDENTIFIER, and
+`cascades/expressions/delete.go:84`, `cascades/expressions/insert.go:107`,
+`cascades/expressions/update.go:146`. All three carry their directory because
+`plans/` holds a `delete.go`, an `insert.go` and an `update.go` of its own -- a
+bare basename names two files here, not one. THE UPDATE TARGET IS NOT JUST A NAME -- IT IS A CORRELATION IDENTIFIER, and
 that constrains how it may be translated. `executeUpdate` builds the target
 quantified-object value as
 `NewQuantifiedObjectValue(NamedCorrelationIdentifier(p.GetTargetRecordType()),
@@ -1053,9 +1054,10 @@ list. `rule_aggregate_data_access.go:299` is candidate-vs-candidate. And
 `typesAreSubset(scan.GetRecordTypes(), tf.GetRecordTypes())`, both operands from
 the same subtree, so re-spelling moves them together and the outcome cannot
 change. The rule is also starved: no query-side producer of
-`LogicalTypeFilterExpression` exists, which this section says itself three
-paragraphs above. A gate whose two operands share an origin is not a gate on
-this change.
+`LogicalTypeFilterExpression` exists, which this section already says where it
+states the decision -- "Go's type filter needs nothing: the translator never
+builds one". A gate whose two operands share an origin is not a gate on this
+change.
 
 **THE CONTINUATION SALT DOES MOVE, and saying it does not was wrong.**
 `PrimaryScanRule.OnMatch` builds the physical plan from the LOGICAL leaf's
