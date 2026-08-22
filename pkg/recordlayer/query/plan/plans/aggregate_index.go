@@ -32,20 +32,24 @@ import (
 //     the namespace one, which §7c's committed design FORBIDS (it translates on
 //     the query side precisely so the candidate side does not move, so this
 //     axis does not arm -- do not read the reference as licence to move it),
-//     and an EMPTY association,
-//     which needs no namespace change at all: RecordTypesForIndex returns
-//     nothing for an index that is neither universal nor associated, the
-//     aggregate rule then leaves this field empty, and GetRecordType("")
-//     misses. Every obvious route to that state is gated by the metadata
-//     builder; what survives is OVERWRITE-AFTER-REGISTRATION -- SetRecords
-//     called after AddIndex or AddMultiTypeIndex, over a descriptor that STILL
-//     DECLARES the type, replaces the RecordType and so drops its index slice
-//     while the flat registry keeps the entry. It matters here because this
-//     field carries whichever namespace the plan was built in (RFC-238 §7c),
-//     so a plan built with a SQL spelling against metadata keyed by the stored
-//     one misses and degrades exactly that way. A draft of this comment claimed
-//     no lookup existed; it does, and it is the consumer most exposed to the
-//     namespace question.
+//     and an EMPTY association, which needs no namespace change at all:
+//     RecordTypesForIndex returns nothing for an index that is neither
+//     universal nor associated, the aggregate rule then leaves this field
+//     empty, and GetRecordType("") misses. Every obvious route to that state is
+//     gated by the metadata builder; what survives is
+//     OVERWRITE-AFTER-REGISTRATION -- SetRecords called after AddIndex, or
+//     after AddMultiTypeIndex over two or more names, over a descriptor that
+//     STILL DECLARES the type: the setter replaces the RecordType and so drops
+//     its index slice while the flat registry keeps the entry. An empty-name
+//     AddMultiTypeIndex delegates to AddUniversalIndex and is NOT affected --
+//     that registry hangs off the builder, not off any RecordType. All three
+//     readings are pinned, whole-name so they stay greppable, by
+//     TestOverwriteAfterRegistrationOrphansTheIndexAssociation in
+//     pkg/recordlayer. It matters here because this field carries whichever
+//     namespace the plan was built in (RFC-238 §7c), so a plan built with a SQL
+//     spelling against metadata keyed by the stored one misses and degrades
+//     exactly that way. A draft of this comment claimed no lookup existed; it
+//     does, and it is the consumer most exposed to the namespace question.
 //
 //   - resultType: the rich Type of the aggregated result row.
 //

@@ -1104,14 +1104,25 @@ It was measured and it is the wrong instrument, twice over.
 
 **As a "does the cited line look like code" check: 1603 weak of 2955 cites
 repo-wide** -- every `file.go:NNN` in `rfcs/*.md` resolved against the tree and
-its target line classified blank / brace / comment / code. At that rate the heuristic is measuring citation STYLE — most of
-those are deliberate cites into doc comments, which is a legitimate thing to
-cite — not staleness. RFC-238's own count under it is 5, and all five are sound:
-`positional_row.go:7`, `colref.go:95`, `metadata.go:1330-1338`,
-`full_unordered_scan.go:110-118`, and `record_types_property.go:37-51`. That
-last is a CODE range that happens to end on a closing brace, not a doc-comment
-range — a distinction an earlier note here got wrong, and the reason "weak" is
-not a synonym for "stale".
+its target line classified blank / brace / comment / code. At that rate the
+heuristic is measuring citation STYLE — most of those are deliberate cites into
+doc comments, which is a legitimate thing to cite — not staleness. RFC-238's own
+count under it is SIX, measured over this document at the commit that adds §7f's
+overwrite arms: `positional_row.go:7`, `colref.go:95`, `metadata.go:1330-1338`,
+`metadata.go:1343-1345`, `full_unordered_scan.go:110-118`, and
+`record_types_property.go:37-51`. All six are sound, and the last two carry the
+reason "weak" is not a synonym for "stale": each is a CODE range that happens to
+END on a closing brace, not a doc-comment range — a distinction an earlier note
+here got wrong.
+
+That count read FIVE until it was re-run, and the miss is this section's own
+rule biting the sentence that states it. `metadata.go:1343-1345` and the
+sentence counting the population were added in the SAME commit (`968b53f49`), so
+the number was WRONG ON ARRIVAL rather than gone stale — the enumeration was
+written by listing the cites its author remembered, which is exactly the
+"describe what you just wrote" failure that (2) below is about. A population
+stated without re-running the instrument that produced it is a claim about a
+document nobody measured.
 
 **As a "does the cite still name its function" check: it catches 1 in 7.** Of
 the seven cites this branch corrected, only `derived_unnest.go:250` → `:287`
@@ -1237,14 +1248,33 @@ design this RFC commits to:
     `Build` refuses; metadata loaded from a store goes through the same builder;
     and no production path constructs a `RecordMetaData` directly.
 
-    WHAT SURVIVES IS OVERWRITE-AFTER-REGISTRATION, in either registration form.
-    `setRecordsWithUnionName` OVERWRITES `b.recordTypes[name]` with a fresh
-    `RecordType` whose index slice is nil, while the flat index registry keeps
-    its entry -- so registering an index against a type and then calling
-    `SetRecords` over a descriptor that STILL DECLARES that type discards the
-    association. No build error, `Build` succeeds, `RecordTypesForIndex` comes
-    back empty. It holds for `AddIndex` and for `AddMultiTypeIndex` alike, since
-    both hang the association off the `RecordType` the setter replaces.
+    WHAT SURVIVES IS OVERWRITE-AFTER-REGISTRATION, in either type-associating
+    registration form. `setRecordsWithUnionName` OVERWRITES
+    `b.recordTypes[name]` with a fresh `RecordType` whose index slice is nil,
+    while the flat index registry keeps its entry -- so registering an index
+    against a type and then calling `SetRecords` over a descriptor that STILL
+    DECLARES that type discards the association. No build error, `Build`
+    succeeds, `RecordTypesForIndex` comes back empty. It holds for `AddIndex`
+    and for `AddMultiTypeIndex` over two or more names, since both hang the
+    association off the `RecordType` the setter replaces. The arm it does NOT
+    hold for is `AddMultiTypeIndex` with an EMPTY name list, and that is not an
+    escape from the guard: that call delegates to `AddUniversalIndex`, whose
+    registry lives on the builder rather than on any `RecordType`, so the
+    overwrite cannot reach it and `RecordTypesForIndex` answers from the
+    universal list instead of coming back empty.
+
+    ALL THREE READINGS ARE PINNED, not merely described:
+    `TestOverwriteAfterRegistrationOrphansTheIndexAssociation`
+    (`pkg/recordlayer/index_association_overwrite_test.go`) drives both orphan
+    forms and the universal non-orphan, plus a control that fails if the
+    association is lost unconditionally — without which the two orphan arms
+    would pass against an implementation that never associates anything. The
+    universal arm was written expecting a field key and had to be rebuilt on
+    `EmptyKey()`: a universal index is validated against EVERY record type, and
+    the demo proto has no field common to all three, so the first version of
+    that arm failed at `Build` for a reason that had nothing to do with the
+    claim. When the booked guard lands, the two orphan arms are what must move,
+    and their failure messages say so rather than being deleted.
 
     Two drafts got this wrong in opposite directions and both are worth
     recording, because each is the reading a later engineer arrives at first.
