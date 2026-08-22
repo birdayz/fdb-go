@@ -948,7 +948,7 @@ objections described Java's shipped behaviour rather than a cost.**
     `RecordLayerTable.getName()`, and `RecordMetadataDeserializer.java:92-96`
     keys its builder map by the decoded name, so a decode collision routes two
     declarations through one builder there. Go documents the same misresolution
-    at `pkg/recordlayer/metadata.go:1430-1438`. The OBJECTION was about the plan tree, and confined there it fails. Outside
+    in the doc comment on `GetRecordType` (`pkg/recordlayer/metadata.go`). The OBJECTION was about the plan tree, and confined there it fails. Outside
     the memo it gains force rather than losing it -- so it is this REBUTTAL,
     not the objection, that must not be stated any wider.
 
@@ -1019,7 +1019,7 @@ resolver happened to match.
 THE TWO MECHANISMS ARE UNLIKE, and an earlier revision of this section stated a
 single rule over both — "a name a resolver matched loosely must be replaced by
 what it matched" — which is where the wrong prescription came from.
-`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go:1443-1445`):
+`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go`):
 `ToProtoBufCompliantName` is total and deterministic, the SQL name and the
 stored name are two spellings of ONE declaration, and its ambiguity is a
 declared-name collision rather than an iteration-order accident. Rewriting there
@@ -1128,15 +1128,21 @@ how four consecutive revisions shipped a wrong one.
 `TestRFC238WeakCitesAreTheOnesSection7dNames` pins the one thing worth pinning:
 the weak SET for this document, by name. WHAT THAT PINS IS THE SET AND NOTHING
 ELSE — every corpus figure above reproduces today but is asserted by no test. In
-THIS revision the set has SIX members. Four cite a doc comment on purpose:
-`positional_row.go:7`, `colref.go:95`, `full_unordered_scan.go:110-118` and
-`pkg/recordlayer/metadata.go:1430-1438`. Two are this section's own narrative
-naming cites it CORRECTED — `derived_unnest.go:250` and
-`cascades_generator.go:2826` — which read weak precisely because they name lines
-that have since moved, the thing the sentences around them say. The membership
-is not stable: one superseded `metadata.go` cite joined the set when a comment
-pushed `GetRecordType` down and left later when the file grew again. That is why
-the TEST is the authority and this list is a snapshot of it.
+THIS revision the set has FIVE members. Three cite a doc comment on purpose:
+`positional_row.go:7`, `colref.go:95` and `full_unordered_scan.go:110-118`. Two
+are this section's own narrative naming cites it CORRECTED —
+`derived_unnest.go:250` and `cascades_generator.go:2826` — which read weak
+precisely because they name lines that have since moved, the thing the sentences
+around them say.
+
+THE `metadata.go` CITES ARE GONE FROM THE SET, and how they left is the useful
+part. They were corrected SIX times in this one branch — every time a comment
+was added above `GetRecordType`, including twice by this section and once by the
+guard §7f describes and once by the association check in `Build`. A line number
+corrected six times is not drifting; it is the wrong anchor. Both now name the
+FUNCTION instead, which cannot drift, and the drift stopped. A cite earns a line
+number when the line is the thing being pointed at; when the target is "this
+function", the function's name is the cite.
 
 THE DISCIPLINE IS THE OTHER HALF, and it took three failures to state:
 
@@ -1187,16 +1193,13 @@ the six corrections examined by hand.** Only `derived_unnest.go:250` → `:287`
 crossed a declaration boundary. Four others drifted INSIDE one function —
 `:3022`/`:3031` in the same builder, `:2817`/`:2826` both inside
 `buildMatchCandidates`, `:4136`/`:4204` both inside the same rebase,
-`:924`/`:925` both in `derivedOutputColumns` — and the sixth,
-`pkg/recordlayer/metadata.go:1330-1338` → `:1343-1351` → `:1352-1360` →
-`:1360-1368` → `:1370-1378` → `:1430-1438`, moved FIVE times inside the DOC
-COMMENT above `GetRecordType`, pushed down each time by something added above
-it: twice by this section, once by the guard §7f describes, once by the round
-that corrected that guard's comment, and once by the association check in
-`Build`. The count in this sentence has been wrong at every revision that
-quoted it, which is the argument for the census test rather than for a sixth
-correction. A function-range gate is silent for that one too, so it would have
-fired for one of six.
+`:924`/`:925` both in `derivedOutputColumns` — and the sixth moved repeatedly
+inside the doc comment above `GetRecordType`, pushed down every time something
+was added above it, including twice by this section. Its successive line numbers
+are NOT listed here: each listing was itself a cite that drifted, and a sentence
+whose number was wrong at every revision that quoted it should not carry the
+number. That cite now names the FUNCTION and cannot drift again. A function-range
+gate is silent for all six, so it would have fired for one of them.
 
 THAT IS A SAMPLE, NOT THE BRANCH, and the branch figure is DELIBERATELY ABSENT.
 An earlier revision said "the seven cites this branch corrected", which was one
@@ -1307,11 +1310,13 @@ for different reasons, which is why they stay separate here:
     empty and `GetRecordType("")` misses.
 
     A revision of this bullet said every route ran through a SECOND `SetRecords`
-    call, and closed on that basis. Java does forbid the second call — both
-    `setRecords` overloads open with `if (recordsDescriptor != null) { throw new
-    MetaDataException("Records already set."); }`
-    (`RecordMetaDataBuilder.java:384`, `:423`, same guard on
-    `setLocalFileDescriptor` and `addDependency`) — Go permitted it, and porting
+    call, and closed on that basis. Java does forbid the second call: of its FOUR
+    `setRecords` overloads (`RecordMetaDataBuilder.java:371`, `:382`, `:410`,
+    `:421`) the two that do the work (`:384`, `:423`) open with
+    `if (recordsDescriptor != null) { throw new MetaDataException("Records
+    already set."); }` and the other two delegate to them.
+    `setLocalFileDescriptor` carries the same guard; `addDependency` carries a
+    similar one with a DIFFERENT message. Go permitted the call, and porting
     that guard is right on its own terms. But it is NOT the only route, and the
     claim that it was survived a full review round because nobody could
     enumerate what nobody had thought of.

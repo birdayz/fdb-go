@@ -301,9 +301,8 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 // The guard records a build error rather than throwing because a SETTER has no
 // error channel: it returns *RecordMetaDataBuilder for chaining, so it defers to
 // Build, which is what every other rejecting setter here does. That is the
-// checkable reason, and it is not "the package never panics" -- it does, at 12
-// sites across the 7 non-test files of this directory, one of them GetRecordType
-// below, which panics because
+// checkable reason, and it is not "the package never panics" -- it does, and
+// GetRecordType below is one example, which panics because
 // a GETTER has no builder to return and Java throws there too. The second
 // descriptor is NOT applied, so a caller that ignores the Build error still sees
 // the first descriptor rather than a half-merged one.
@@ -312,8 +311,8 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 // one is set, validating the union against the evolution validator and bumping
 // the meta-data version. Go has never had it, so refusing the second call
 // leaves no way to change a descriptor at all. That is a pre-existing gap, not
-// one this guard opened, and it is booked at the END of TODO.md with the Java
-// line numbers.
+// one this guard opened, and it is booked in TODO.md under "The metadata builder
+// diverges from Java in three places" with the Java line numbers.
 //
 // RFC-238 §7f carries the analysis. Pinned by TestSetRecordsRefusesASecondCall,
 // TestRefusedSetRecordsLeavesTheFirstDescriptorInPlace (which is the only arm
@@ -785,28 +784,52 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// still refused.
 	//
 	// Names are sorted so the reported index does not depend on map order.
-	universalNames := make(map[string]struct{}, len(b.universalIndexes))
+	// Compared by OBJECT, not by name. Reducing this to names lets a caller
+	// replace a live association slice with a DIFFERENT *Index carrying the
+	// same name: the name set still matches, Build still succeeds, and
+	// b.indexes["x"] and the record type then point at two different
+	// definitions of one index. The write path takes its definition from
+	// GetIndexesForRecordType and scans and planning take theirs from
+	// GetIndex, so one subspace gets written and read with different key
+	// expressions -- silent, and on the wire.
+	universalObjs := make(map[*Index]struct{}, len(b.universalIndexes))
 	for _, idx := range b.universalIndexes {
-		universalNames[idx.Name] = struct{}{}
+		universalObjs[idx] = struct{}{}
 	}
+	associatedObjs := make(map[*Index]struct{}, len(b.indexes))
 	associatedNames := make(map[string]struct{}, len(b.indexes))
 	for _, rt := range b.recordTypes {
 		for _, idx := range rt.indexes {
+			associatedObjs[idx] = struct{}{}
 			associatedNames[idx.Name] = struct{}{}
 		}
 		for _, idx := range rt.multiTypeIndexes {
+			associatedObjs[idx] = struct{}{}
 			associatedNames[idx.Name] = struct{}{}
 		}
 	}
 	orphaned := make([]string, 0, len(b.indexes))
-	for name := range b.indexes {
-		if _, ok := universalNames[name]; ok {
+	divergent := make([]string, 0, len(b.indexes))
+	for name, idx := range b.indexes {
+		if _, ok := universalObjs[idx]; ok {
 			continue
 		}
+		if _, ok := associatedObjs[idx]; ok {
+			continue
+		}
+		// The name IS associated but this object is not: two definitions.
 		if _, ok := associatedNames[name]; ok {
+			divergent = append(divergent, name)
 			continue
 		}
 		orphaned = append(orphaned, name)
+	}
+	if len(divergent) > 0 {
+		sort.Strings(divergent)
+		return nil, &MetaDataError{Message: fmt.Sprintf(
+			"index %q is registered as one object and associated as a different one; "+
+				"the write path and the read path would use different definitions",
+			divergent[0])}
 	}
 	if len(orphaned) > 0 {
 		sort.Strings(orphaned)
@@ -842,9 +865,27 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		typeKeySeen[dedup] = name
 	}
 
+	// DETACH THE BUILT METADATA FROM THE BUILDER, or the association invariant
+	// checked above expires the moment the builder is touched again.
+	//
+	// Copying only the MAP leaves the *RecordType pointers shared, so
+	// `md, _ := b.Build(); b.RemoveIndex("x")` strips x from the RecordType md
+	// holds while md.indexes keeps its own copied entry. md.ToProto() then emits
+	// x with an EMPTY RecordType list, and a reload reads that as UNIVERSAL --
+	// the index comes back maintained for every record type. The check in this
+	// function cannot see that: it runs once, and the mutation happens after.
+	//
+	// WHAT THIS DETACHES IS THE ASSOCIATIONS, and nothing more. The *Index
+	// objects are still shared with the builder, so mutating an index's OWN
+	// fields (its key expression, its subspace key) after Build still reaches
+	// the built metadata. That is a separate hazard, it is not fixed here, and
+	// it is booked in TODO.md rather than implied away by the word "detached".
 	types := make(map[string]*RecordType, len(b.recordTypes))
 	for k, v := range b.recordTypes {
-		types[k] = v
+		rt := *v
+		rt.indexes = append([]*Index(nil), v.indexes...)
+		rt.multiTypeIndexes = append([]*Index(nil), v.multiTypeIndexes...)
+		types[k] = &rt
 	}
 	indexes := make(map[string]*Index, len(b.indexes))
 	for k, v := range b.indexes {
@@ -1161,8 +1202,8 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		storeRecordVersions:     b.storeRecordVersions,
 		splitLongRecords:        b.splitLongRecords,
 		indexes:                 indexes,
-		universalIndexes:        b.universalIndexes,
-		formerIndexes:           b.formerIndexes,
+		universalIndexes:        append([]*Index(nil), b.universalIndexes...),
+		formerIndexes:           append([]*FormerIndex(nil), b.formerIndexes...),
 		unionDescriptor:         b.unionDescriptor,
 		fieldNumberToRecordType: fnToRT,
 		subspaceKeyCounter:      b.subspaceKeyCounter,

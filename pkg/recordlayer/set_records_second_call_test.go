@@ -7,20 +7,30 @@ import (
 	"fdb.dev/gen"
 )
 
-// A SECOND SetRecords IS REFUSED, and this is the pin on a whole family of
-// defects being UNREACHABLE rather than merely unobserved.
+// A SECOND SetRecords IS REFUSED, matching Java, which is ONE of several routes
+// to an orphaned index and not the whole family.
 //
-// Java forbids the second setter outright -- both `setRecords` overloads open
-// with `if (recordsDescriptor != null) throw new MetaDataException("Records
-// already set.")` -- and Go used to permit it. That one divergence was the only
-// route to an index registered in the flat registry and associated with no
-// record type: the second call replaced every RecordType with a fresh one whose
-// index slices were nil while `b.indexes` kept its entry. Build succeeded,
+// Java forbids the second setter: of its four `setRecords` overloads
+// (RecordMetaDataBuilder.java:371, :382, :410, :421) the two that do the work
+// (:384, :423) open with
+// `if (recordsDescriptor != null) throw new MetaDataException("Records already
+// set.")`, and the other two delegate to them. Go used to permit the call. The
+// second call replaced every RecordType the new descriptor ALSO declared with a
+// fresh one whose index slices were nil while `b.indexes` kept its entry, so an
+// index came back registered and associated with nothing: Build succeeded,
 // `RecordTypesForIndex` came back empty, `GetIndexesForRecordType` lost it, and
 // `ToProto` emitted the index with an EMPTY RecordType list -- which a reload
 // reads as UNIVERSAL, so the index returned either maintained for every record
 // type or, when its key is not valid on all of them, as metadata that will not
 // load at all.
+//
+// AN EARLIER VERSION OF THIS HEADER CALLED THAT "the only route". It was not:
+// the builder hands out live maps, so a record type can be deleted after its
+// index is registered, and an association slice can be replaced with a
+// different *Index of the same name. Those are refused by an invariant in Build
+// rather than by another guard here -- see TestBuildRefusesAnIndexNoRecordType
+// Claims and TestBuildRefusesAnIndexAssociatedAsADifferentObject -- because
+// enumerating routes is what produced the wrong claim in the first place.
 //
 // EVERY REGISTRATION SPELLING IS DRIVEN, and each carries its own control that
 // builds WITHOUT the second call. The control is what distinguishes "the guard
@@ -28,8 +38,13 @@ import (
 // place" -- with a single shared control over one spelling, a registration that
 // silently did nothing passed every other arm.
 //
-// If this test starts failing because the guard was relaxed, the family above
-// is re-armed. RFC-238 §7f carries the analysis.
+// NOTE ON WHAT THESE ARMS NOW DETECT: with the Build invariant in place, three
+// of the four spellings fail Build on the ORPHAN check before reaching the
+// "Records already set." message, because an unguarded second call orphans
+// their index. Only the universal spelling, which is exempt from that check,
+// still exercises the guard's own message. Both are detections of a missing
+// guard; they differ in which layer speaks first. RFC-238 §7f carries the
+// analysis.
 func TestSetRecordsRefusesASecondCall(t *testing.T) {
 	t.Parallel()
 
@@ -228,8 +243,13 @@ func TestUniversalIndexRoundTripsThroughAnEmptyRecordTypeList(t *testing.T) {
 
 // newDemoBuilder builds the three-type demo schema, runs one registration
 // spelling, and optionally makes the SECOND SetRecords call the guard refuses.
-// Primary keys are set once; the refused call cannot drop them because it does
-// not run.
+//
+// The primary keys are re-applied AFTER that second call, and the re-application
+// is deliberate even though the guard makes it a no-op today. Without it, a
+// mutation that removes the guard makes an unguarded second SetRecords replace
+// every RecordType, so Build fails on a MISSING PRIMARY KEY before it ever
+// reaches the state the arms are about -- and their assertions would then be
+// unreachable code describing something nothing produced.
 func newDemoBuilder(register func(*RecordMetaDataBuilder, *Index), idx *Index, secondSetRecords bool) *RecordMetaDataBuilder {
 	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 	setDemoPrimaryKeys(b)
@@ -322,5 +342,107 @@ func TestBuildRefusesAnIndexNoRecordTypeClaims(t *testing.T) {
 	if _, err := ub.Build(); err != nil {
 		t.Errorf("Build refused a UNIVERSAL index: %v — universal indexes belong to no "+
 			"record type by design, and the association check must exempt them", err)
+	}
+}
+
+// THE ASSOCIATION INVARIANT OUTLIVES THE CALL THAT ESTABLISHED IT.
+//
+// Build checks that every registered index is universal or claimed, but that
+// check runs ONCE. If the built metadata shares its RecordType pointers with
+// the builder — which it did — then any later builder mutation walks straight
+// through the invariant: RemoveIndex strips the association from the object md
+// holds, md.indexes keeps its own copied entry, and md.ToProto() emits the
+// index with an EMPTY RecordType list. A reload reads that as UNIVERSAL, so an
+// index declared for one record type comes back maintained for all of them.
+//
+// The wire assertion is the point of this test. Checking only
+// RecordTypesForIndex would pass on a metadata whose SERIALIZED form is already
+// wrong, and the serialized form is what Java reads.
+func TestBuiltMetadataIsDetachedFromTheBuilder(t *testing.T) {
+	t.Parallel()
+
+	idx := NewIndex("detach_idx", Field("price"))
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	setDemoPrimaryKeys(b)
+	b.AddIndex("Order", idx)
+	md, err := b.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := len(md.RecordTypesForIndex(idx)); got != 1 {
+		t.Fatalf("setup: RecordTypesForIndex = %d, want 1", got)
+	}
+
+	// The mutation. Legal on the builder, and nothing about it touches md.
+	b.RemoveIndex("detach_idx")
+
+	if got := len(md.RecordTypesForIndex(idx)); got != 1 {
+		t.Errorf("after b.RemoveIndex, md.RecordTypesForIndex = %d, want 1 — the built "+
+			"metadata still shares mutable state with the builder, so the association "+
+			"check in Build guarantees nothing once Build has returned", got)
+	}
+
+	proto, err := md.ToProto()
+	if err != nil {
+		t.Fatalf("ToProto: %v", err)
+	}
+	var seen bool
+	for _, ip := range proto.Indexes {
+		if ip.GetName() != "detach_idx" {
+			continue
+		}
+		seen = true
+		if len(ip.RecordType) != 1 || ip.RecordType[0] != "Order" {
+			t.Errorf("serialized RecordType list = %v, want [Order]. An EMPTY list here is "+
+				"Java's encoding for a UNIVERSAL index, so this metadata reloads with the "+
+				"index maintained for every record type — on both engines.", ip.RecordType)
+		}
+	}
+	if !seen {
+		t.Error("the index was not emitted at all")
+	}
+}
+
+// A SAME-NAME REPLACEMENT IS NOT AN ASSOCIATION. Comparing the registry to the
+// record types by NAME accepts a record type whose association slice holds a
+// DIFFERENT *Index carrying the same name — and then b.indexes["x"] and the
+// record type describe one index two ways. The write path takes its definition
+// from GetIndexesForRecordType, scans and planning take theirs from GetIndex,
+// so a single subspace is written and read under different key expressions.
+//
+// This is reachable for the same reason the orphan routes are: GetRecordTypes
+// hands out the live map, so the slice can be replaced in place.
+func TestBuildRefusesAnIndexAssociatedAsADifferentObject(t *testing.T) {
+	t.Parallel()
+
+	registered := NewIndex("divergent_idx", Field("price"))
+	b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+	setDemoPrimaryKeys(b)
+	b.AddIndex("Order", registered)
+
+	// The control: as registered, this builds.
+	if _, err := b.Build(); err != nil {
+		t.Fatalf("CONTROL Build: %v", err)
+	}
+
+	// Same NAME, different OBJECT, different key expression.
+	replacement := NewIndex("divergent_idx", Field("quantity"))
+	b.GetRecordTypes()["Order"].indexes = []*Index{replacement}
+
+	md, err := b.Build()
+	if err == nil {
+		t.Fatalf("Build SUCCEEDED with two definitions of %q.\n"+
+			"GetIndex gives the key expression %v and GetIndexesForRecordType gives %v; "+
+			"one subspace would be written under one and scanned under the other.",
+			"divergent_idx",
+			md.GetIndex("divergent_idx").RootExpression,
+			md.GetIndexesForRecordType("Order")[0].RootExpression)
+	}
+	if !strings.Contains(err.Error(), "divergent_idx") {
+		t.Errorf("Build failed with %q, which does not name the offending index", err)
+	}
+	if !strings.Contains(err.Error(), "different one") {
+		t.Errorf("Build failed with %q — it should distinguish a DIVERGENT association "+
+			"from a missing one, because the two have different causes and different fixes", err)
 	}
 }

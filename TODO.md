@@ -20171,20 +20171,31 @@ against its Java counterpart or switched.
 
 ## A scratch tree inside the worktree can turn a docscheck census into fiction
 
-`fallbackWalk`'s exclusion list (`pkg/docscheck/source_hygiene_test.go`) names
-build and VCS directories but nothing that covers an ad-hoc extract. During PR
-#761 a reviewer's `git archive` extract sat briefly at
-`<worktree>/scratchpad/<sha>/`, and `TestNoFirstMatchNameLookup` walked into it
-and failed on a path that had since been deleted. A second copy of the repo
-inside the worktree DOUBLES every basename, so a census that counts declarations
-or resolves cites by basename silently reports twice the population — the
-failure mode here was loud only because the directory vanished mid-run.
+A second copy of the repo inside the worktree DOUBLES every basename, so any
+census that counts declarations or resolves cites by basename silently reports
+twice the population. During PR #761 a `git archive` extract sat briefly at
+`<worktree>/scratchpad/<sha>/` and a docscheck walk failed on a path inside it
+that had since been deleted — loud only because the directory vanished mid-run.
+A copy that STAYS is the dangerous case, and it reads as a finding.
 
-DONE when: the census walks refuse a nested second copy of the repo (a directory
-containing its own `MODULE.bazel`/`go.mod` below the root is the cheap
-signal), and a unit pin drives that refusal rather than the corpus happening to
-be clean.
+PARTLY CLOSED. `pkg/docscheck/rfc_cite_resolution_test.go`'s
+`nestedRepoRootsUnder` refuses to build a cite index while any directory below
+the root carries its own `MODULE.bazel`, so the RFC-238 cite gates and
+`TestRFCCiteCensusRepoWide` cannot report totals about a doubled tree.
 
+WHAT REMAINS is every OTHER docscheck census. They reach the tree through
+`fallbackWalk` (`pkg/docscheck/fallback_walk_test.go`) when git enumeration is
+unavailable, and its `fallbackWalkSkippedTrees` list covers build output, VCS
+metadata, the vendored Java tree and sibling worktrees — but nothing that
+matches an ad-hoc extract. Note the walk that failed in #761 was NOT
+`fallbackWalk`: it rolled its own `filepath.Walk` with its own exclusion switch,
+so extending `fallbackWalkSkippedTrees` alone would not have prevented it. Both
+shapes need the guard.
+
+DONE when: every census walk refuses a nested second copy of the repo rather
+than only the cite gates, and a unit pin drives that refusal — construct a
+nested `MODULE.bazel` in a temp tree and assert the walk declines — rather than
+the corpus happening to be clean.
 ---
 
 ## Go refuses to load metadata Java loads fine: no synthetic-record-type arm in the proto reader

@@ -14,10 +14,10 @@ const rfc238Path = "rfcs/238-a-qualifier-is-structure-not-punctuation.md"
 
 // A CITE NAMING A BASENAME THE TREE HOLDS THREE OF IS NOT A CITE, and this is
 // the half of a cite gate that is worth building. RFC-238 §7d measures the
-// other half -- "does the cited line look like code" -- and rejects it: at
-// c053d85e5, 918 of 2066 resolved cites repo-wide read weak and 645 of those
-// land on a `//` line, so that check scores citation STYLE. Resolution is
-// different. An ambiguous or dangling cite is wrong under every style.
+// other half -- "does the cited line look like code" -- and rejects it: most
+// resolved cites that are not code land on a `//` line, so that check scores
+// citation STYLE. TestRFCCiteCensusRepoWide prints the figures. Resolution is
+// different: an ambiguous or dangling cite is wrong under every style.
 //
 // It is not hypothetical. §7d's own population was computed twice by a scratch
 // checker that indexed Go files by BASENAME, so `metadata.go:1343-1345`
@@ -132,7 +132,7 @@ func TestCiteProblemNamesEveryWayACiteCanBeUnusable(t *testing.T) {
 // A range counts as code when EITHER endpoint is code, which is the rule §7d
 // states. The scratch checker that preceded it classified each ENDPOINT
 // separately and reported every non-code one, which is what made
-// `pkg/recordlayer/metadata.go:1443-1445` and `record_types_property.go:37-51`
+// `record_types_property.go:37-51`
 // -- code ranges that CLOSE on a brace -- read weak. A draft of §7d then wrote
 // a sentence explaining those two, and the sentence was false for a third cite.
 func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
@@ -145,7 +145,6 @@ func TestRFC238WeakCitesAreTheOnesSection7dNames(t *testing.T) {
 		"colref.go:95",
 		"derived_unnest.go:250",
 		"full_unordered_scan.go:110-118",
-		"pkg/recordlayer/metadata.go:1430-1438",
 		"positional_row.go:7",
 	}
 
@@ -213,6 +212,12 @@ func classifyCiteLine(line string) string {
 // leading directory as it chooses to write.
 func goFileSuffixIndex(t *testing.T, root string) map[string][]string {
 	t.Helper()
+	if nested := nestedRepoRootsUnder(t, root); len(nested) > 0 {
+		t.Fatalf("a nested copy of the repository is present under the source tree at %v.\n"+
+			"Every basename it carries is duplicated, so every cite resolving by basename\n"+
+			"becomes AMBIGUOUS and this census would report totals about a tree that is not\n"+
+			"the source tree. Remove the copy (scratch extracts belong outside the worktree).", nested)
+	}
 	files := trackedGoFiles(t, root)
 	if len(files) < 1000 {
 		t.Fatalf("only %d tracked Go files enumerated; the scan lost the tree, and every cite "+
@@ -475,5 +480,117 @@ func TestRFCCiteCensusRepoWide(t *testing.T) {
 	if resolved < 1500 {
 		t.Fatalf("only %d cites resolved of %d; the Go file index is broken, which would "+
 			"make the dangling and ambiguous counts meaningless", resolved, len(all))
+	}
+}
+
+// nestedRepoRootsUnder reports directories below root that carry their own
+// MODULE.bazel — a second copy of this repository living inside the worktree.
+//
+// It matters here and not only in the abstract: a nested copy DOUBLES every
+// basename, so every duplicated path suffix becomes ambiguous and a census over
+// the result is fiction that looks like a finding. `git ls-files` excludes such
+// a copy, but the filesystem fallback used when git is unavailable does not, so
+// the guard belongs at the point of use rather than in the walk.
+//
+// The exclusions match the walk's own: build output, VCS metadata, the vendored
+// Java tree, and sibling worktrees.
+func nestedRepoRootsUnder(t *testing.T, root string) []string {
+	t.Helper()
+	var found []string
+	err := filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if fi.IsDir() {
+			n := fi.Name()
+			if n == ".git" || n == "fdb-record-layer" || n == "worktrees" ||
+				strings.HasPrefix(n, "bazel-") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if fi.Name() != "MODULE.bazel" {
+			return nil
+		}
+		if filepath.Dir(p) == root {
+			return nil // the repository's own
+		}
+		found = append(found, filepath.Dir(p))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s for nested repositories: %v", root, err)
+	}
+	sort.Strings(found)
+	return found
+}
+
+// classifyCiteLine's four classes, driven directly. The corpus exercises only
+// whichever classes it happens to contain, and `weak` — the figure §7d leans on
+// hardest — is entirely this function's output, so a classification regression
+// would otherwise move every census number while every test stayed green.
+func TestClassifyCiteLineCoversEveryClass(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ line, want string }{
+		{"", "blank"},
+		{"   \t ", "blank"},
+		{"}", "brace"},
+		{"\t}", "brace"},
+		{"{", "brace"},
+		{"})", "brace"},
+		{"},", "brace"},
+		{"// a comment", "comment"},
+		{"\t// indented comment", "comment"},
+		{"func f() {", "code"},
+		{"\treturn nil", "code"},
+		{"\tx := 1 // trailing comment is still code", "code"},
+	} {
+		if got := classifyCiteLine(tc.line); got != tc.want {
+			t.Errorf("classifyCiteLine(%q) = %q, want %q", tc.line, got, tc.want)
+		}
+	}
+}
+
+// nestedRepoRootsUnder, driven against a constructed tree. Its whole purpose is
+// to fire on a state the corpus must never be in, so the corpus can never
+// exercise it: without this arm the guard is a branch nobody has seen run, and
+// the census it protects would report a doubled population as a finding.
+func TestNestedRepoRootsUnderFindsASecondCopy(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "MODULE.bazel"), []byte("module(name='r')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The control: the repository's own MODULE.bazel must NOT count as nested,
+	// or the guard would refuse every tree including the real one.
+	if got := nestedRepoRootsUnder(t, root); len(got) != 0 {
+		t.Fatalf("the root's own MODULE.bazel was reported as nested: %v", got)
+	}
+
+	nested := filepath.Join(root, "scratchpad", "abc123")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "MODULE.bazel"), []byte("module(name='r')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := nestedRepoRootsUnder(t, root)
+	if len(got) != 1 || got[0] != nested {
+		t.Errorf("nestedRepoRootsUnder = %v, want exactly [%s]", got, nested)
+	}
+
+	// And an excluded tree does NOT count: a sibling worktree carries its own
+	// MODULE.bazel by construction and is not a copy inside this one.
+	wt := filepath.Join(root, "worktrees", "other")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "MODULE.bazel"), []byte("module(name='r')\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := nestedRepoRootsUnder(t, root); len(got) != 1 {
+		t.Errorf("nestedRepoRootsUnder = %v, want the excluded worktree to stay excluded "+
+			"(exactly one hit, the scratchpad copy)", got)
 	}
 }

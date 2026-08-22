@@ -39,10 +39,13 @@ import (
 //     the candidate side does not move; it does not arm, and the reference is
 //     not licence to move it. The EMPTY association -- RecordTypesForIndex
 //     returning nothing for an index that is neither universal nor associated,
-//     leaving this field empty so GetRecordType("") misses -- had exactly one
-//     route, a SECOND SetRecords call, and metadata.go now refuses that the way
-//     Java always has ("Records already set."). Pinned by
-//     TestSetRecordsRefusesASecondCall in pkg/recordlayer.
+//     leaving this field empty so GetRecordType("") misses -- is refused in
+//     Build, which requires every registered index to be universal or claimed
+//     by some record type. An earlier version of this paragraph said the state
+//     had exactly ONE route, a second SetRecords call; it had several, because
+//     the builder hands out live maps, and enumerating them is what went wrong.
+//     Pinned by TestBuildRefusesAnIndexNoRecordTypeClaims and
+//     TestBuiltMetadataIsDetachedFromTheBuilder in pkg/recordlayer.
 //
 //     WHAT THAT ROUTE COST IS NOT WHAT THIS COMMENT ANALYSES, which is worth
 //     knowing before reviving the analysis above. An orphaned index did not
