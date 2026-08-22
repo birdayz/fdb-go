@@ -213,6 +213,7 @@ go_test(
         "database_runctx_test.go",
         "database_test.go",
         "dedup_cursor_test.go",
+        "descriptor_resolver_test.go",
         "dst_nonce_seam_test.go",
         "dst_wiring_test.go",
         "edge_case_test.go",

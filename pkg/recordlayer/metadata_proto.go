@@ -916,22 +916,22 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 	// absolutize resolves tn as protobuf would from `scope`, which is the
 	// fully-qualified name of the DECLARING message plus a dot (or the package
 	// prefix at file level).
-	absolutize := func(f *descriptorpb.FieldDescriptorProto, scope string) {
-		tn := f.GetTypeName()
-		if tn == "" || tn[0] == '.' {
-			return
+	// resolveName returns the absolute form of a relative type reference as
+	// protoc would resolve it from `scope`, and reports whether it rewrote
+	// anything. Already-absolute and empty names are left alone.
+	resolveName := func(name, scope string) (string, bool) {
+		if name == "" || name[0] == '.' {
+			return name, false
 		}
 		// Protobuf resolves the FIRST COMPONENT outward, then requires the rest
 		// beneath it: `A.B` inside `.p.X` tries `.p.X.A` before `.p.A`.
-		first := tn
-		if i := strings.IndexByte(tn, '.'); i >= 0 {
-			first = tn[:i]
+		first := name
+		if i := strings.IndexByte(name, '.'); i >= 0 {
+			first = name[:i]
 		}
 		for s := scope; ; {
 			if declared[s+first] {
-				absolute := s + tn
-				f.TypeName = &absolute
-				return
+				return s + name, true
 			}
 			// Strip the innermost component and try the enclosing scope. `s`
 			// always ends in '.', so drop it before searching for the next.
@@ -948,15 +948,35 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 				// `com.apple.foundationdb.record.UUID` inside a message, in a
 				// file whose package is EMPTY, so the prefix is just "." and the
 				// old blanket rewrite happened to produce the correct absolute
-				// name. Leaving it alone made protodesc resolve it against the
+				// name. Leaving it alone made protodesc resolve against the
 				// enclosing message and fail with `cannot resolve type
 				// "T_UUID.com.apple.foundationdb.record.UUID"` -- twelve
 				// cross-engine SQL scenarios, caught by the conformance suite.
-				absolute := pkgPrefix + tn
-				f.TypeName = &absolute
-				return
+				return pkgPrefix + name, true
 			}
 			s = trimmed[:i+1]
+		}
+	}
+
+	// absolutize rewrites BOTH type references a field can carry.
+	//
+	// EXTENDEE IS NOT OPTIONAL HERE, and the reason is a consequence of the
+	// sentinel fix in descriptorResolver rather than of this function. While
+	// that resolver returned a non-sentinel error, protodesc aborted its walk at
+	// the first candidate, so an unabsolutized relative extendee was REJECTED --
+	// the same answer protoc and Java give. Returning the proper sentinel
+	// enables protodesc's walk, which retries the whole reference per scope, so
+	// the identical descriptor would now bind `A.B` to `.probe.A.B` where protoc
+	// resolves the first component to `Host.A` and refuses. Rewriting the
+	// extendee under the same first-component rule keeps the two engines
+	// agreeing; without it, one fix would have re-opened the divergence the
+	// other closed, one field over.
+	absolutize := func(f *descriptorpb.FieldDescriptorProto, scope string) {
+		if abs, ok := resolveName(f.GetTypeName(), scope); ok {
+			f.TypeName = &abs
+		}
+		if abs, ok := resolveName(f.GetExtendee(), scope); ok {
+			f.Extendee = &abs
 		}
 	}
 
