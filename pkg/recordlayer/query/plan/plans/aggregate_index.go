@@ -23,33 +23,38 @@ import (
 //     scan-range execution identity.
 //
 //     THAT LOOKUP IS NIL-TOLERANT AND ITS MISS IS SILENT, which is a live
-//     hazard rather than a nicety: on a miss the descriptor stays nil and every
-//     GROUP BY column is reported as STRING and the aggregate as BIGINT --
-//     plausible defaults, wrong types, no error. A SECOND consumer defaults
-//     differently: the multi-intersection derivation reports GROUP BY columns
-//     as BIGINT on the same miss, so the degraded type depends on which
-//     derivation ran. RFC-238 §7f carries the same two reachability axes --
-//     the namespace one, which §7c's committed design FORBIDS (it translates on
-//     the query side precisely so the candidate side does not move, so this
-//     axis does not arm -- do not read the reference as licence to move it),
-//     and an EMPTY association, which needs no namespace change at all:
-//     RecordTypesForIndex returns nothing for an index that is neither
-//     universal nor associated, the aggregate rule then leaves this field
-//     empty, and GetRecordType("") misses. Every obvious route to that state is
-//     gated by the metadata builder; what survives is
-//     OVERWRITE-AFTER-REGISTRATION -- SetRecords called after AddIndex, or
-//     after AddMultiTypeIndex over two or more names, over a descriptor that
-//     STILL DECLARES the type: the setter replaces the RecordType and so drops
-//     its index slice while the flat registry keeps the entry. An empty-name
-//     AddMultiTypeIndex delegates to AddUniversalIndex and is NOT affected --
-//     that registry hangs off the builder, not off any RecordType. All three
-//     readings are pinned, whole-name so they stay greppable, by
+//     hazard rather than a nicety: on a miss the descriptor stays nil, every
+//     GROUP BY column falls back to STRING, and an aggregate OVER A COLUMN
+//     falls back to BIGINT -- plausible defaults, wrong types, no error.
+//     COUNT(*) is BIGINT with or without the miss, so it is the one output the
+//     miss does not degrade. A SECOND consumer defaults differently: the
+//     multi-intersection derivation reports GROUP BY columns as BIGINT, and it
+//     reaches its miss only when EVERY child plan misses -- so the degraded
+//     type depends on which derivation ran, which is worse than either default
+//     alone.
+//
+//     RFC-238 §7f carries the same two reachability axes. The namespace one is
+//     FORBIDDEN by §7c's committed design, which translates on the QUERY side
+//     precisely so the candidate side does not move; it does not arm, and the
+//     reference is not licence to move it. The EMPTY association needs no
+//     namespace change at all: RecordTypesForIndex returns nothing for an index
+//     that is neither universal nor associated, the aggregate rule then leaves
+//     this field empty, and GetRecordType("") misses. Every obvious route to
+//     that state is gated by the metadata builder; what survives is
+//     OVERWRITE-AFTER-REGISTRATION -- SetRecords called after ANY
+//     type-associating registration (AddIndex; the ONE-name AddMultiTypeIndex,
+//     which returns AddIndex; or AddMultiTypeIndex over two or more names),
+//     over a descriptor that STILL DECLARES the type: the setter replaces the
+//     RecordType and so drops its index slices while the flat registry keeps
+//     the entry. A nil-or-empty-name AddMultiTypeIndex delegates instead to
+//     AddUniversalIndex and is NOT affected -- that registry hangs off the
+//     builder, not off any RecordType. All four readings are pinned by
 //     TestOverwriteAfterRegistrationOrphansTheIndexAssociation in
-//     pkg/recordlayer. It matters here because this field carries whichever
-//     namespace the plan was built in (RFC-238 §7c), so a plan built with a SQL
-//     spelling against metadata keyed by the stored one misses and degrades
-//     exactly that way. A draft of this comment claimed no lookup existed; it
-//     does, and it is the consumer most exposed to the namespace question.
+//     pkg/recordlayer, and metadata.go states the same route at the setter that
+//     causes it. It matters HERE because this field carries whichever namespace
+//     the plan was built in (RFC-238 §7c), so a plan built with a SQL spelling
+//     against metadata keyed by the stored one misses and degrades exactly that
+//     way.
 //
 //   - resultType: the rich Type of the aggregated result row.
 //

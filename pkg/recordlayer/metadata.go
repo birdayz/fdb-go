@@ -276,6 +276,19 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 	return b.setRecordsWithUnionName(fd, "UnionDescriptor")
 }
 
+// A SECOND CALL OVERWRITES, AND THE OVERWRITE DISCARDS INDEX ASSOCIATIONS.
+// Every union field builds a FRESH RecordType, whose index slices are nil, and
+// stores it over b.recordTypes[name]; the flat registry b.indexes keeps its
+// entry either way. So a type-associating registration (AddIndex; the one-name
+// AddMultiTypeIndex, which returns AddIndex; or AddMultiTypeIndex over two or
+// more names) followed by SetRecords over a descriptor that STILL DECLARES that
+// type leaves an index that is registered and associated with nothing: Build
+// succeeds, RecordTypesForIndex comes back empty, GetIndexesForRecordType loses
+// it. That is an index-maintenance hole as well as a plan-typing one.
+// AddUniversalIndex is unaffected because its registry hangs off the builder.
+// setRecordsWithoutUnion below overwrites the same way. Pinned by
+// TestOverwriteAfterRegistrationOrphansTheIndexAssociation; RFC-238 §7f carries
+// the analysis and the booked guard.
 func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
 	b.fileDescriptor = fd
 

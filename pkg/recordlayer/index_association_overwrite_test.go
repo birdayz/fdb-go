@@ -23,7 +23,7 @@ import (
 // registration forms reach the state, and which one does not.
 //
 // No guard is implemented yet -- these are the values the builder HAS. When the
-// booked §7f guard lands, the two orphan arms are what must move, and their
+// booked §7f guard lands, the three orphan arms are what must move, and their
 // failure messages say so.
 func TestOverwriteAfterRegistrationOrphansTheIndexAssociation(t *testing.T) {
 	t.Parallel()
@@ -54,7 +54,7 @@ func TestOverwriteAfterRegistrationOrphansTheIndexAssociation(t *testing.T) {
 
 		if got := len(md.RecordTypesForIndex(idx)); got != 1 {
 			t.Fatalf("RecordTypesForIndex on a normally-registered index = %d types, want 1.\n"+
-				"The two orphan arms below are only meaningful if the association\n"+
+				"The three orphan arms below are only meaningful if the association\n"+
 				"survives when nothing overwrites it; an implementation that lost it\n"+
 				"unconditionally would pass them.", got)
 		}
@@ -108,10 +108,36 @@ func TestOverwriteAfterRegistrationOrphansTheIndexAssociation(t *testing.T) {
 		}
 	})
 
+	t.Run("AddMultiTypeIndex with exactly one name orphans it", func(t *testing.T) {
+		t.Parallel()
+		idx := NewIndex("multi_one", Field("price"))
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		setPKs(b)
+		b.AddMultiTypeIndex([]string{"Order"}, idx)
+		b.SetRecords(gen.File_record_layer_demo_proto)
+		setPKs(b)
+		md := build(t, b)
+
+		// The one-name spelling RETURNS b.AddIndex(recordTypeNames[0], index),
+		// so this is the AddIndex arm wearing a different call, and it is driven
+		// anyway. A spelling left to be INFERRED from a delegation is a
+		// characterisation, and the two characterisations this route already had
+		// were both wrong; §7f now enumerates four spellings and this is the one
+		// a "two or more names" scoping had silently excluded.
+		if got := md.RecordTypesForIndex(idx); len(got) != 0 {
+			t.Errorf("RecordTypesForIndex = %d types, want 0.\n"+
+				"If AddMultiTypeIndex stops delegating single-name registration to\n"+
+				"AddIndex, this arm and the enumeration in RFC-238 §7f both move.", len(got))
+		}
+	})
+
 	t.Run("AddMultiTypeIndex with an empty name list does NOT orphan", func(t *testing.T) {
 		t.Parallel()
-		// EmptyKey, not a field: a universal index is validated against EVERY type,
-		// and this proto has no field common to all three.
+		// EmptyKey, not a field: a universal index is validated against EVERY
+		// record type. The first version of this arm used Field("id"), which only
+		// TypedRecord declares, so Build refused before the claim was reached --
+		// a fact about the KEY chosen, not about the proto, which does have a
+		// field on all three (price). EmptyKey drops the dependency entirely.
 		idx := NewIndex("multi_universal", EmptyKey())
 		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
 		setPKs(b)

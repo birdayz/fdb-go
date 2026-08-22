@@ -948,7 +948,7 @@ objections described Java's shipped behaviour rather than a cost.**
     `RecordLayerTable.getName()`, and `RecordMetadataDeserializer.java:92-96`
     keys its builder map by the decoded name, so a decode collision routes two
     declarations through one builder there. Go documents the same misresolution
-    at `metadata.go:1330-1338`. The OBJECTION was about the plan tree, and confined there it fails. Outside
+    at `pkg/recordlayer/metadata.go:1343-1351`. The OBJECTION was about the plan tree, and confined there it fails. Outside
     the memo it gains force rather than losing it -- so it is this REBUTTAL,
     not the objection, that must not be stated any wider.
 
@@ -1019,7 +1019,7 @@ resolver happened to match.
 THE TWO MECHANISMS ARE UNLIKE, and an earlier revision of this section stated a
 single rule over both — "a name a resolver matched loosely must be replaced by
 what it matched" — which is where the wrong prescription came from.
-`GetRecordType`'s retry is an ENCODING (`metadata.go:1343-1345`):
+`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go:1356-1358`):
 `ToProtoBufCompliantName` is total and deterministic, the SQL name and the
 stored name are two spellings of ONE declaration, and its ambiguity is a
 declared-name collision rather than an iteration-order accident. Rewriting there
@@ -1102,27 +1102,49 @@ commit edited the file it cited — once by the very comment block the section
 asked for. The obvious response is a gate over `file.go:NNN` cites in `rfcs/`.
 It was measured and it is the wrong instrument, twice over.
 
-**As a "does the cited line look like code" check: 1603 weak of 2955 cites
-repo-wide** -- every `file.go:NNN` in `rfcs/*.md` resolved against the tree and
-its target line classified blank / brace / comment / code. At that rate the
-heuristic is measuring citation STYLE — most of those are deliberate cites into
-doc comments, which is a legitimate thing to cite — not staleness. RFC-238's own
-count under it is SIX, measured over this document at the commit that adds §7f's
-overwrite arms: `positional_row.go:7`, `colref.go:95`, `metadata.go:1330-1338`,
-`metadata.go:1343-1345`, `full_unordered_scan.go:110-118`, and
-`record_types_property.go:37-51`. All six are sound, and the last two carry the
-reason "weak" is not a synonym for "stale": each is a CODE range that happens to
-END on a closing brace, not a doc-comment range — a distinction an earlier note
-here got wrong.
+**As a "does the cited line look like code" check: 918 weak of 2066 resolved
+cites repo-wide** -- every `file.go:NNN` in `rfcs/*.md` resolved against the
+tree and its target line classified blank / brace / comment / code, a RANGE
+counting as code when EITHER endpoint is. Of 2520 distinct cites, 341 are
+AMBIGUOUS (a bare basename the tree holds more than one of) and 113 resolve to
+nothing; the remaining 2066 split 1148 code / 644 comment / 193 brace / 81
+blank. At that rate the heuristic is measuring citation STYLE — 644 of the 918
+weak readings land on a `//` line, and citing a doc comment is a legitimate
+thing to do — not staleness. ("Deliberate" would be a characterisation; what
+was measured is where the line lands.)
 
-That count read FIVE until it was re-run, and the miss is this section's own
-rule biting the sentence that states it. `metadata.go:1343-1345` and the
-sentence counting the population were added in the SAME commit (`968b53f49`), so
-the number was WRONG ON ARRIVAL rather than gone stale — the enumeration was
-written by listing the cites its author remembered, which is exactly the
-"describe what you just wrote" failure that (2) below is about. A population
-stated without re-running the instrument that produced it is a claim about a
-document nobody measured.
+Over THIS document the same run reports 57 distinct cites, ZERO ambiguous, ZERO
+unresolved, and FIVE weak, all sound:
+
+  - FOUR are deliberate cites INTO doc comments: `positional_row.go:7`,
+    `colref.go:95`, `full_unordered_scan.go:110-118`, and
+    `pkg/recordlayer/metadata.go:1343-1351`.
+  - ONE, `derived_unnest.go:250`, is this section's own narrative naming of a
+    cite it CORRECTED to `:287`. It classifies as a brace because it names a
+    line that is now a brace — which is the thing the sentence around it says.
+
+THE COUNT TOOK FOUR ATTEMPTS AND THE INSTRUMENT TOOK TWO, and that is the part
+worth keeping. It first read FIVE, written by listing the cites its author
+remembered; the sixth cite and the sentence counting it landed in the SAME
+commit (`968b53f49`), so the number was wrong ON ARRIVAL rather than gone stale.
+The correction read SIX by silently dropping the `derived_unnest.go:250`
+narrative cite — an exclusion the stated definition does not make, which is the
+same defect one layer up and it arrived inside the edit fixing the first one.
+Both readings came from a scratch checker that indexed Go files by BASENAME and
+walked into `bazel-*` and the vendored Java tree, so it resolved `metadata.go`
+against whichever of three files it met first and classified a range by its
+FIRST line alone. That is what manufactured two "code range that ends on a
+closing brace" entries, and a draft then wrote a sentence explaining them —
+false for `full_unordered_scan.go:110-118`, which is nine consecutive comment
+lines. A measurement with a broken instrument does not fail; it produces a
+number to reason about.
+
+Two things changed as a result, and both are in the tree rather than in this
+paragraph. The instrument honours a path suffix carried by the cite and scores
+a range by either endpoint. And the two `metadata.go` cites here were qualified
+with their directory, because a cite naming a basename the tree holds three of
+is not a cite — that is the half of the gate idea that IS worth having, and
+`pkg/docscheck`'s `TestRFC238CitesResolveUniquely` now holds it at zero.
 
 **As a "does the cite still name its function" check: it catches 1 in 7.** Of
 the seven cites this branch corrected, only `derived_unnest.go:250` → `:287`
@@ -1235,7 +1257,7 @@ design this RFC commits to:
     and §7c rules that out in bold, translating on the QUERY side precisely so
     the candidate side does not move. A draft of this bullet cited §7c as the
     thing that arms it, which reads as licence to make the change §7c forbids.
-  - EMPTY ASSOCIATION, through ONE ordering and no other.
+  - EMPTY ASSOCIATION, through OVERWRITE-AFTER-REGISTRATION and no other route.
     `md.RecordTypesForIndex` returns nothing for an index that is neither
     universal nor associated, and nothing guards that: the aggregate rule leaves
     `recordTypeName` EMPTY and `GetRecordType("")` misses, with no namespace
@@ -1248,33 +1270,54 @@ design this RFC commits to:
     `Build` refuses; metadata loaded from a store goes through the same builder;
     and no production path constructs a `RecordMetaData` directly.
 
-    WHAT SURVIVES IS OVERWRITE-AFTER-REGISTRATION, in either type-associating
-    registration form. `setRecordsWithUnionName` OVERWRITES
-    `b.recordTypes[name]` with a fresh `RecordType` whose index slice is nil,
-    while the flat index registry keeps its entry -- so registering an index
-    against a type and then calling `SetRecords` over a descriptor that STILL
-    DECLARES that type discards the association. No build error, `Build`
-    succeeds, `RecordTypesForIndex` comes back empty. It holds for `AddIndex`
-    and for `AddMultiTypeIndex` over two or more names, since both hang the
-    association off the `RecordType` the setter replaces. The arm it does NOT
-    hold for is `AddMultiTypeIndex` with an EMPTY name list, and that is not an
-    escape from the guard: that call delegates to `AddUniversalIndex`, whose
-    registry lives on the builder rather than on any `RecordType`, so the
-    overwrite cannot reach it and `RecordTypesForIndex` answers from the
-    universal list instead of coming back empty.
+    WHAT SURVIVES IS OVERWRITE-AFTER-REGISTRATION.
+    `setRecordsWithUnionName` OVERWRITES `b.recordTypes[name]` with a fresh
+    `RecordType` whose index slices are nil, while the flat index registry keeps
+    its entry -- so registering an index against a type and then calling
+    `SetRecords` over a descriptor that STILL DECLARES that type discards the
+    association. No build error, `Build` succeeds, `RecordTypesForIndex` comes
+    back empty. `setRecordsWithoutUnion` overwrites identically, so the route is
+    not specific to the union path.
 
-    ALL THREE READINGS ARE PINNED, not merely described:
+    THE SPELLING THAT DOES NOT REACH IT, stated first because it is the one a
+    summary sentence keeps swallowing: `AddMultiTypeIndex` with a NIL OR EMPTY
+    name list delegates to `AddUniversalIndex`, whose registry lives on the
+    BUILDER rather than on any `RecordType`. The overwrite cannot reach it, and
+    `RecordTypesForIndex` answers from the universal list instead of coming back
+    empty.
+
+    The three spellings that DO reach it, enumerated rather than characterised,
+    because two successive characterisations were wrong:
+
+      - `AddIndex(name, idx)` appends to `rt.indexes`.
+      - `AddMultiTypeIndex([]string{name}, idx)` -- exactly ONE name -- returns
+        `b.AddIndex(recordTypeNames[0], index)`, so it is the line above wearing
+        a different call. Measured, not inferred from the delegation: it orphans
+        identically.
+      - `AddMultiTypeIndex(names, idx)` over TWO OR MORE names appends to
+        `rt.multiTypeIndexes`.
+
+    All three hang the association off the `RecordType` the setter replaces,
+    which is why the route is about the OVERWRITE and not about which
+    registration call was used. An earlier draft scoped it to "two or more
+    names": true of the code it described, and read by anyone holding the
+    one-name spelling as a statement that their shape is safe.
+
+    ALL FOUR READINGS ARE PINNED, not merely described:
     `TestOverwriteAfterRegistrationOrphansTheIndexAssociation`
-    (`pkg/recordlayer/index_association_overwrite_test.go`) drives both orphan
-    forms and the universal non-orphan, plus a control that fails if the
-    association is lost unconditionally — without which the two orphan arms
+    (`pkg/recordlayer/index_association_overwrite_test.go`) drives the three
+    orphan spellings and the universal non-orphan, plus a control that fails if
+    the association is lost unconditionally — without which every orphan arm
     would pass against an implementation that never associates anything. The
     universal arm was written expecting a field key and had to be rebuilt on
     `EmptyKey()`: a universal index is validated against EVERY record type, and
-    the demo proto has no field common to all three, so the first version of
-    that arm failed at `Build` for a reason that had nothing to do with the
-    claim. When the booked guard lands, the two orphan arms are what must move,
-    and their failure messages say so rather than being deleted.
+    the key first chosen -- `Field("id")` -- is declared only by `TypedRecord`,
+    so `Build` refused before the claim was reached. That is a fact about the
+    KEY, not about the proto, which does carry a field on all three (`price`);
+    an earlier version of this paragraph blamed the proto and was wrong.
+
+    When the booked guard lands, the three orphan arms are what must move, and
+    their failure messages say so rather than being deleted.
 
     Two drafts got this wrong in opposite directions and both are worth
     recording, because each is the reading a later engineer arrives at first.

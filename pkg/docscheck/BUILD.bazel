@@ -55,6 +55,7 @@ go_test(
         "receiver_write_census_test.go",
         "receiver_write_detector_test.go",
         "result_type_stub_census_test.go",
+        "rfc_cite_resolution_test.go",
         "rowdiff_sweep_budget_test.go",
         "rowvalue_map_expectation_test.go",
         "slot_order_derivation_test.go",
