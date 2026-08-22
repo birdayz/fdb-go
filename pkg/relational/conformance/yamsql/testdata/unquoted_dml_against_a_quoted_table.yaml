@@ -200,10 +200,12 @@ tests:
     error: "42F01"
 
   # AND THE SAME SHAPE WITH A CTE DEFINED INSIDE IT MUST STILL WORK. THESE TWO
-  # DO discriminate: mutation-verified, dropping collectCTENames' subquery walk
-  # reddens exactly this pair with `42F01 table "X" does not exist`. The walk
-  # descends into subquery plans, so the name collection must descend into the
-  # same ones or one sees a table where the other declared a CTE.
+  # DO discriminate: mutation-verified, dropping the per-plan CTE SCOPING in
+  # validateScanTablesInner reddens exactly this pair with `42F01 table "X" does
+  # not exist`. The walk descends into subquery plans, so it must carry the CTE
+  # names each plan declares. An earlier version of this note told the reader to
+  # make collectCTENames itself walk subqueries -- that was the retracted design,
+  # and following it re-arms the sibling leak the arm below pins.
   - query: DELETE FROM "Customer" WHERE id = (WITH x AS (SELECT id FROM "Customer" WHERE id = 99) SELECT MAX(id) FROM x)
     rowcount: 0
 

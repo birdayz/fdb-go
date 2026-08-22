@@ -1859,7 +1859,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === bug_hunt_probes.yaml#0 expect-error=0AF00
 sql:   UPDATE t SET n = (SELECT MAX(n) FROM t) WHERE id = 1
-plan:  <PLAN-ERROR: 0AF00: UPDATE assignment "N" has no resolved exact Value>
+plan:  <PLAN-ERROR: 0AF00: subqueries are not supported in UPDATE ... SET>
 === bug_hunt_probes.yaml#1
 sql:   SELECT n FROM t WHERE id = 1
 plan:  Project([_current.N#1], Scan(T, [=]))
@@ -15189,7 +15189,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_dml.yaml#0 expect-error=0AF00
 sql:   UPDATE t SET v = (SELECT n FROM config WHERE k = 'multiplier')
-plan:  <PLAN-ERROR: 0AF00: UPDATE assignment "V" has no resolved exact Value>
+plan:  <PLAN-ERROR: 0AF00: subqueries are not supported in UPDATE ... SET>
 === scalar_subquery_dml.yaml#1
 sql:   SELECT id, v FROM t ORDER BY id
 plan:  Project([_current.ID#0, _current.V#1], Scan(T))
@@ -15219,7 +15219,7 @@ shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === scalar_subquery_dml.yaml#6 expect-error=0AF00
 sql:   UPDATE t SET v = v + (SELECT n FROM config WHERE k = 'threshold')
-plan:  <PLAN-ERROR: 0AF00: UPDATE assignment "V" has no resolved exact Value>
+plan:  <PLAN-ERROR: 0AF00: subqueries are not supported in UPDATE ... SET>
 === scalar_subquery_dml.yaml#7
 sql:   SELECT id, v FROM t ORDER BY id
 plan:  Project([_current.ID#0, _current.V#1], Scan(T))

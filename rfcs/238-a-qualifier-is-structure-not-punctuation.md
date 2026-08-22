@@ -1204,13 +1204,21 @@ TWO WAYS TO REACH THE MISS, and they arm at different times:
     `GetRecordType` maps SQL to storage through the escaping, and case
     mismatches are now rejected before planning. This axis arms exactly when
     §7c row 5 moves candidates into the SQL namespace.
-  - EMPTY ASSOCIATION. `md.RecordTypesForIndex` returns nothing for an index
-    associated with no record type and not universal, and nothing guards that:
-    the aggregate rule leaves `recordTypeName` EMPTY, and `GetRecordType("")`
-    misses. No namespace change is involved, so this axis is armed now for any
-    metadata carrying a detached aggregate index. SQL DDL always associates, so
-    it is not reachable through `CREATE INDEX`; metadata supplied through
-    `SetRecords` or loaded from a store need not be.
+  - EMPTY ASSOCIATION, through ONE ordering and no other.
+    `md.RecordTypesForIndex` returns nothing for an index that is neither
+    universal nor associated, and nothing guards that: the aggregate rule leaves
+    `recordTypeName` EMPTY and `GetRecordType("")` misses, with no namespace
+    change involved.
+
+    Every obvious route to that state is gated, and a draft of this bullet said
+    "armed now for any metadata carrying a detached aggregate index", which is
+    false. `AddIndex` returns BEFORE registering when the record type is
+    unknown; `AddMultiTypeIndex` records a build error per unresolved name;
+    `Build` refuses; metadata loaded from a store goes through the same builder;
+    and no production path constructs a `RecordMetaData` directly. What survives
+    is `SetRecords` called AFTER `AddIndex`: it repopulates the record types,
+    appends no build error, and `Build` never checks that an index in the flat
+    registry still has a carrier. One ordering, no gate.
 
 The second axis is why this section exists separately from §7c row 5 rather
 than as a line inside it: closing row 5 does not close it, and a guard on the

@@ -7742,7 +7742,9 @@ func (r *paginatingRows) env() *dst.Env {
 // IT IS NOT LOAD-BEARING FOR ANY SQL-VISIBLE SHAPE TESTED. Removing it leaves
 // every arm of unquoted_dml_against_a_quoted_table.yaml green, including
 // `DELETE FROM t WHERE id = (SELECT MAX(id) FROM nosuchtable)` and the EXISTS
-// form. Production rejects both through other checks. What the walk guards is
+// form. Production rejects both -- translateScan raises ErrCodeUndefinedTable
+// for a scan with no catalog row type, and the EXISTS shape fails its own
+// check. What the walk guards is
 // the HARNESS path: planPhysicalDMLWithMetadata is a hand-maintained copy of
 // planDML that explain-differ plans the whole corpus through, and there the
 // scalar-subquery source does reach it -- plan_shape.golden records the
@@ -7755,12 +7757,16 @@ func (r *paginatingRows) env() *dst.Env {
 // exercises. Someone will eventually read that as dead weight and simplify it
 // away, so the reason is written down rather than inferred.
 //
-// IT ALSO REJECTED THREE VALID STATEMENTS until collectCTENames was made
-// symmetric. A scalar subquery may define its own CTE, and that CTE hangs off
-// the same side field this walk descends into, so a Children()-only name
-// collection arrived empty and the walk rejected the CTE's own scan with 42F01.
-// The two functions must descend into the same places or one sees a table where
-// the other declared a CTE; the yaml pins both directions.
+// IT ALSO REJECTED THREE VALID STATEMENTS until the CTE names were SCOPED. A
+// scalar subquery may define its own CTE on the same side field this walk
+// descends into, so descending with only the outer names rejected the CTE's own
+// scan with 42F01. The fix is per-plan scoping below -- NOT making
+// collectCTENames itself walk subqueries, which a first attempt did and which
+// leaked a CTE into a SIBLING subquery where it is out of scope. Within one
+// level the set is still flat, so a CTE is visible to every scan in that plan
+// regardless of lexical position: an over-accept, matching
+// validateTablesAndColumns, and the safe direction for a validator whose job is
+// rejection.
 //
 // A DML EXISTS SUBQUERY IS NOT WHY THIS EXISTS. `DELETE ... WHERE EXISTS
 // (SELECT 1 FROM nosuchtable)` answers 0AF00 from the unsupported-shape check
