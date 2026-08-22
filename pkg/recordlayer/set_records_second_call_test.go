@@ -1,6 +1,7 @@
 package recordlayer
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -291,8 +292,9 @@ func indexNamed(indexes []*Index, name string) bool {
 // an index against it reaches the same state with one SetRecords call and no
 // error at all. Java never had to defend this — it has no getRecordTypes on the
 // builder. Enumerating routes is how the previous claim went wrong, so the
-// property is now checked in Build, where a route nobody has thought of yet is
-// still refused.
+// property is checked in Build instead: the index registry and the record-type
+// associations must agree in BOTH directions. What that does NOT constrain is
+// an index's own fields, which stay shared with the builder after Build.
 func TestBuildRefusesAnIndexNoRecordTypeClaims(t *testing.T) {
 	t.Parallel()
 
@@ -445,4 +447,77 @@ func TestBuildRefusesAnIndexAssociatedAsADifferentObject(t *testing.T) {
 		t.Errorf("Build failed with %q — it should distinguish a DIVERGENT association "+
 			"from a missing one, because the two have different causes and different fixes", err)
 	}
+}
+
+// THE REGISTRY AND THE ASSOCIATIONS MUST BE A BIJECTION, and each half of that
+// is a defect the other half does not catch.
+//
+// The first version of this check compared NAMES and refused arm one below. It
+// was then changed to compare OBJECTS, which fixed a divergent-definition hole
+// and simultaneously REOPENED arm one: `Index.Name` is exported, so a caller
+// who renames the object it just registered leaves b.indexes keyed "alpha"
+// holding an index called "beta". buildIndexRecordTypeMap keys by idx.Name
+// while ToProto looks the list up by the MAP key, so the mismatch serializes as
+// an EMPTY RecordType list — which a reload reads as UNIVERSAL. Neither
+// comparison alone is sufficient; the invariant needs both directions.
+func TestBuildRequiresRegistryAndAssociationsToAgree(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a renamed index no longer matches its registry key", func(t *testing.T) {
+		t.Parallel()
+		idx := NewIndex("alpha", Field("price"))
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		setDemoPrimaryKeys(b)
+		b.AddIndex("Order", idx)
+
+		// Exported field, no accessor gymnastics: the caller still holds the
+		// object it passed in.
+		idx.Name = "beta"
+
+		md, err := b.Build()
+		if err == nil {
+			var serialized string
+			if p, perr := md.ToProto(); perr == nil {
+				for _, ip := range p.Indexes {
+					serialized += fmt.Sprintf(" name=%q RecordType=%v", ip.GetName(), ip.RecordType)
+				}
+			}
+			t.Fatalf("Build ACCEPTED an index whose Name no longer matches its registry key.\n"+
+				"Serialized as:%s — an EMPTY RecordType list is the UNIVERSAL encoding, so this "+
+				"metadata reloads with the index maintained for every record type.", serialized)
+		}
+		if !strings.Contains(err.Error(), "alpha") && !strings.Contains(err.Error(), "beta") {
+			t.Errorf("Build failed with %q, which names neither the registry key nor the index", err)
+		}
+	})
+
+	t.Run("a multi-type association replaced on one type only", func(t *testing.T) {
+		t.Parallel()
+		idx := NewIndex("mt_idx", Field("price"))
+		b := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		setDemoPrimaryKeys(b)
+		b.AddMultiTypeIndex([]string{"Order", "Customer"}, idx)
+
+		if _, err := b.Build(); err != nil {
+			t.Fatalf("CONTROL Build: %v", err)
+		}
+
+		// Exported spelling: element assignment through the accessor. The
+		// registered object is STILL associated via Customer, so a check that
+		// only walks registry->associations sees it and stops.
+		b.GetRecordTypes()["Order"].GetMultiTypeIndexes()[0] = NewIndex("mt_idx", Field("quantity"))
+
+		md, err := b.Build()
+		if err == nil {
+			t.Fatalf("Build ACCEPTED two definitions of %q reached through the sibling type.\n"+
+				"GetIndex gives %v and GetIndexesForRecordType(Order) gives %v; the write path "+
+				"takes the second and scans take the first, so one subspace is written and read "+
+				"under different key expressions.", "mt_idx",
+				md.GetIndex("mt_idx").RootExpression,
+				md.GetIndexesForRecordType("Order")[0].RootExpression)
+		}
+		if !strings.Contains(err.Error(), "mt_idx") {
+			t.Errorf("Build failed with %q, which does not name the offending index", err)
+		}
+	})
 }

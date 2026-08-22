@@ -1135,14 +1135,10 @@ are this section's own narrative naming cites it CORRECTED —
 precisely because they name lines that have since moved, the thing the sentences
 around them say.
 
-THE `metadata.go` CITES ARE GONE FROM THE SET, and how they left is the useful
-part. They were corrected SIX times in this one branch — every time a comment
-was added above `GetRecordType`, including twice by this section and once by the
-guard §7f describes and once by the association check in `Build`. A line number
-corrected six times is not drifting; it is the wrong anchor. Both now name the
-FUNCTION instead, which cannot drift, and the drift stopped. A cite earns a line
-number when the line is the thing being pointed at; when the target is "this
-function", the function's name is the cite.
+A cite earns a line number when the line is the thing being pointed at. When the
+target is "this function", the function's name is the cite and cannot drift —
+which is why the `metadata.go` cites, corrected six times in this one branch,
+name the function now and are no longer in the set above.
 
 THE DISCIPLINE IS THE OTHER HALF, and it took three failures to state:
 
@@ -1158,31 +1154,6 @@ THE DISCIPLINE IS THE OTHER HALF, and it took three failures to state:
 
 The practical form of (3) is that the checker run is the LAST thing before
 `git commit`, with no edit between them.
-
-AND THE MEASUREMENTS IN THIS SECTION WERE WRONG FOUR TIMES, which is the part
-worth keeping, because every one of them was wrong in a way the numbers
-themselves could not reveal. The population read FIVE, written by listing the
-cites its author remembered — and the sixth cite and the sentence counting it
-landed in the SAME commit, so it was wrong ON ARRIVAL rather than stale. The
-correction read SIX by silently dropping a narrative cite, an exclusion the
-stated definition did not make. Both came from a scratch checker with two
-faults of its own: it indexed Go files by BASENAME and walked into `bazel-*` and
-the vendored Java tree, so `metadata.go` resolved against whichever of three
-files it met first; and it classified each ENDPOINT of a range separately,
-reporting every non-code one, which is what made two code ranges that CLOSE on a
-brace read weak. A draft then explained those two, and a later draft blamed
-FIRST-line classification — the opposite of what happened, since under a
-first-line rule both read as code. The replacement instrument then had two
-further faults, found by review rather than by me: it counted a range whose
-START was in bounds and whose END was past EOF as resolved code (two such ranges
-exist), and it counted the empty string after a terminal newline as a line, so
-every newline-terminated file measured one line too long and one cite past EOF
-classified as "blank". Measured over the `98a5e8aa4` population, where the two
-faults were found: of the three-cite drop from `2066` to `2063` the end-bounds
-fix accounts for two and the newline fix for the third, and the whole of that
-population's `918 → 917` weak change is the newline fix. (The figures above are
-a different population, at `c053d85e5`, where 2066 is the RESOLVED count -- the
-collision is a coincidence and not the same number twice.)
 
 A measurement taken with a broken instrument does not fail. It produces a number
 to reason about, and each wrong explanation of that number survives until

@@ -687,8 +687,17 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 }
 
 // Build creates the final RecordMetaData.
-// Returns an error if any record type has no primary key set.
-// The record types map is copied to prevent the builder from mutating the built metadata.
+//
+// Returns an error if any record type has no primary key set, and refuses any
+// metadata whose index registry and record-type associations do not agree in
+// both directions -- see the bijection check below.
+//
+// Each record type is COPIED and its association slices cloned, so a later
+// builder mutation cannot reach the returned metadata. Copying only the MAP,
+// which is what this comment used to describe, left the *RecordType pointers
+// shared and was exactly how a post-Build RemoveIndex orphaned already-built
+// metadata. The index OBJECTS are still shared; the detach comment below
+// enumerates what that leaves open.
 func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Check for errors accumulated during builder method calls.
 	if len(b.buildErrors) > 0 {
@@ -772,64 +781,83 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// either maintained for every record type or as metadata that will not load
 	// at all. RFC-238 §7f carries the analysis.
 	//
-	// Refusing a second SetRecords closes the route Java closes, but it does
-	// NOT close the state, and an earlier revision of §7f claimed it did. This
-	// builder hands out LIVE maps -- GetRecordTypes returns b.recordTypes
-	// itself, and after Build both RecordTypes and GetAllIndexes are live too --
-	// so `AddIndex("T", idx)` followed by `delete(b.GetRecordTypes(), "T")`
-	// reaches the same state with one SetRecords call and no error. Java has no
-	// getRecordTypes on its builder at all, so it never had to defend this.
-	// Enumerating the routes is how the previous claim went wrong; this check
-	// makes the property structural, so a route nobody has thought of yet is
-	// still refused.
+	// THE REGISTRY AND THE ASSOCIATIONS MUST AGREE IN BOTH DIRECTIONS, and each
+	// direction catches a state the other does not.
 	//
-	// Names are sorted so the reported index does not depend on map order.
-	// Compared by OBJECT, not by name. Reducing this to names lets a caller
-	// replace a live association slice with a DIFFERENT *Index carrying the
-	// same name: the name set still matches, Build still succeeds, and
-	// b.indexes["x"] and the record type then point at two different
-	// definitions of one index. The write path takes its definition from
-	// GetIndexesForRecordType and scans and planning take theirs from
-	// GetIndex, so one subspace gets written and read with different key
-	// expressions -- silent, and on the wire.
+	// WHAT THIS DOES NOT CONSTRAIN, first: an index's OWN fields. Its key
+	// expression, subspace key and options stay shared with the builder after
+	// Build, so mutating them still reaches the built metadata. That hazard is
+	// open and booked in TODO.md under "Built metadata still shares its *Index
+	// objects with the builder".
+	//
+	// FORWARD -- every registered index is keyed by its own name, and is
+	// universal or claimed by some record type. The name half is not
+	// redundant: Index.Name is EXPORTED, so a caller can rename the object it
+	// registered, leaving b.indexes keyed "alpha" holding an index called
+	// "beta". buildIndexRecordTypeMap keys by idx.Name while ToProto looks the
+	// list up by the MAP key, so that mismatch serializes an EMPTY RecordType
+	// list -- the UNIVERSAL encoding. An earlier revision compared names only,
+	// caught this, and was then changed to compare objects only, which fixed
+	// the divergence below and re-armed this.
+	//
+	// BACKWARD -- every associated index is the object the registry holds under
+	// its name. Without this, an association can be replaced on ONE record type
+	// while the registered object stays reachable through a sibling type, so
+	// the forward walk finds it and stops: the write path then takes its
+	// definition from GetIndexesForRecordType and scans take theirs from
+	// GetIndex, and one subspace is written and read under different key
+	// expressions.
+	//
+	// Together the two directions are the bijection between b.indexes and the
+	// associations. Names are sorted so the reported index does not depend on
+	// map order.
 	universalObjs := make(map[*Index]struct{}, len(b.universalIndexes))
 	for _, idx := range b.universalIndexes {
 		universalObjs[idx] = struct{}{}
 	}
+
 	associatedObjs := make(map[*Index]struct{}, len(b.indexes))
-	associatedNames := make(map[string]struct{}, len(b.indexes))
+	mismatched := make([]string, 0, len(b.indexes))
 	for _, rt := range b.recordTypes {
-		for _, idx := range rt.indexes {
-			associatedObjs[idx] = struct{}{}
-			associatedNames[idx.Name] = struct{}{}
-		}
-		for _, idx := range rt.multiTypeIndexes {
-			associatedObjs[idx] = struct{}{}
-			associatedNames[idx.Name] = struct{}{}
+		for _, group := range [][]*Index{rt.indexes, rt.multiTypeIndexes} {
+			for _, idx := range group {
+				associatedObjs[idx] = struct{}{}
+				if reg, ok := b.indexes[idx.Name]; !ok || reg != idx {
+					mismatched = append(mismatched, idx.Name)
+				}
+			}
 		}
 	}
+
+	renamed := make([]string, 0, len(b.indexes))
 	orphaned := make([]string, 0, len(b.indexes))
-	divergent := make([]string, 0, len(b.indexes))
 	for name, idx := range b.indexes {
+		if idx.Name != name {
+			renamed = append(renamed, name)
+			continue
+		}
 		if _, ok := universalObjs[idx]; ok {
 			continue
 		}
 		if _, ok := associatedObjs[idx]; ok {
 			continue
 		}
-		// The name IS associated but this object is not: two definitions.
-		if _, ok := associatedNames[name]; ok {
-			divergent = append(divergent, name)
-			continue
-		}
 		orphaned = append(orphaned, name)
 	}
-	if len(divergent) > 0 {
-		sort.Strings(divergent)
+
+	if len(renamed) > 0 {
+		sort.Strings(renamed)
 		return nil, &MetaDataError{Message: fmt.Sprintf(
-			"index %q is registered as one object and associated as a different one; "+
+			"index registered under %q reports the name %q; the association would serialize "+
+				"as an empty record-type list, which reloads as a universal index",
+			renamed[0], b.indexes[renamed[0]].Name)}
+	}
+	if len(mismatched) > 0 {
+		sort.Strings(mismatched)
+		return nil, &MetaDataError{Message: fmt.Sprintf(
+			"index %q is associated as one object and registered as a different one; "+
 				"the write path and the read path would use different definitions",
-			divergent[0])}
+			mismatched[0])}
 	}
 	if len(orphaned) > 0 {
 		sort.Strings(orphaned)
@@ -875,11 +903,20 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// the index comes back maintained for every record type. The check in this
 	// function cannot see that: it runs once, and the mutation happens after.
 	//
-	// WHAT THIS DETACHES IS THE ASSOCIATIONS, and nothing more. The *Index
-	// objects are still shared with the builder, so mutating an index's OWN
-	// fields (its key expression, its subspace key) after Build still reaches
-	// the built metadata. That is a separate hazard, it is not fixed here, and
-	// it is booked in TODO.md rather than implied away by the word "detached".
+	// WHAT THIS DETACHES IS THE ASSOCIATIONS. What still crosses by reference,
+	// enumerated rather than characterised, because "detached" would otherwise
+	// imply more than is true:
+	//
+	//   - the *Index objects. Both maps hold the same pointers, so mutating an
+	//     index's OWN fields (key expression, subspace key, options) after Build
+	//     still reaches the built metadata, and a changed key expression is a
+	//     WIRE change. This is the one with a public mutation route.
+	//   - preserved, a struct of slices, and recordsSourceProto, a raw
+	//     *descriptorpb.FileDescriptorProto. Neither has a public mutation route
+	//     today, which is why they rank below *Index and not why they are absent.
+	//
+	// All three are open and booked in TODO.md under "Built metadata still
+	// shares its *Index objects with the builder".
 	types := make(map[string]*RecordType, len(b.recordTypes))
 	for k, v := range b.recordTypes {
 		rt := *v
