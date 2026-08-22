@@ -137,7 +137,12 @@ func relativeTypeNameMetaData(t *testing.T) *gen.MetaData {
 		Package: proto.String("probe"),
 		Syntax:  proto.String("proto2"),
 		MessageType: []*descriptorpb.DescriptorProto{
-			{Name: proto.String("Inner")},
+			{
+				Name: proto.String("Inner"),
+				ExtensionRange: []*descriptorpb.DescriptorProto_ExtensionRange{
+					{Start: proto.Int32(1000), End: proto.Int32(2000)},
+				},
+			},
 			{
 				Name: proto.String("Outer"),
 				Field: []*descriptorpb.FieldDescriptorProto{{
@@ -149,6 +154,22 @@ func relativeTypeNameMetaData(t *testing.T) *gen.MetaData {
 					// rewrites, and the only reason this dependency exists.
 					TypeName: proto.String("Inner"),
 				}},
+				// A MESSAGE-SCOPED EXTENSION, so this fixture reaches the THIRD
+				// write site. absolutizeFieldTypeNames gained one when it started
+				// visiting DescriptorProto.Extension, and for a lap afterwards
+				// this fixture declared none — so the input-immutability arm for
+				// that site was unprobed while the mirror functions above claimed
+				// to cover it. A mutation site added without a fixture that
+				// reaches it is an untested write, and this file's whole subject
+				// is writes reaching the caller's proto.
+				Extension: []*descriptorpb.FieldDescriptorProto{{
+					Name:     proto.String("ext_inner"),
+					Number:   proto.Int32(1001),
+					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					Extendee: proto.String(".probe.Inner"),
+					TypeName: proto.String("Inner"),
+				}},
 			},
 		},
 	}
@@ -156,25 +177,38 @@ func relativeTypeNameMetaData(t *testing.T) *gen.MetaData {
 	return p
 }
 
-// relativizeTypeNames rewrites `.pkg.Message` to `Message` on every
-// message-typed field, recursing into nested types, and does the same for
-// file-level extensions -- the two places absolutizeFieldTypeNames writes.
+// relativizeTypeNames rewrites `.pkg.Message` to `Message` in the THREE places
+// absolutizeFieldTypeNames writes: message fields (recursing through nested
+// types), message-scoped extensions, and file-level extensions.
+//
+// It was two until message-scoped extensions were added to the function it
+// mirrors, and this comment said "the two places" for a lap afterwards. A
+// mirror that lags its subject silently under-relativizes: a fixture growing an
+// extension inside a message would arrive already-absolute, absolutization
+// would be a no-op on it, and the arm covering it would pass without exercising
+// anything. Keep the two walks in step.
 func relativizeTypeNames(fd *descriptorpb.FileDescriptorProto) {
 	if fd == nil {
 		return
+	}
+	relativize := func(f *descriptorpb.FieldDescriptorProto) {
+		f.TypeName = proto.String(lastNameComponent(f.GetTypeName()))
 	}
 	var walk func(msgs []*descriptorpb.DescriptorProto)
 	walk = func(msgs []*descriptorpb.DescriptorProto) {
 		for _, m := range msgs {
 			for _, f := range m.Field {
-				f.TypeName = proto.String(lastNameComponent(f.GetTypeName()))
+				relativize(f)
+			}
+			for _, ext := range m.Extension {
+				relativize(ext)
 			}
 			walk(m.NestedType)
 		}
 	}
 	walk(fd.MessageType)
 	for _, ext := range fd.Extension {
-		ext.TypeName = proto.String(lastNameComponent(ext.GetTypeName()))
+		relativize(ext)
 	}
 }
 
@@ -191,8 +225,10 @@ func lastNameComponent(name string) string {
 }
 
 // countTypeNameShapes reports how many message-typed field names are relative
-// (no leading dot) versus absolute, across messages, nested types and
-// file-level extensions.
+// (no leading dot) versus absolute, across messages, nested types,
+// message-scoped extensions and file-level extensions -- the same four
+// positions relativizeTypeNames rewrites, so the guard counts what the fixture
+// actually built.
 func countTypeNameShapes(fd *descriptorpb.FileDescriptorProto) (relative, absolute int) {
 	if fd == nil {
 		return 0, 0
@@ -212,6 +248,9 @@ func countTypeNameShapes(fd *descriptorpb.FileDescriptorProto) (relative, absolu
 		for _, m := range msgs {
 			for _, f := range m.Field {
 				tally(f.GetTypeName())
+			}
+			for _, ext := range m.Extension {
+				tally(ext.GetTypeName())
 			}
 			walk(m.NestedType)
 		}

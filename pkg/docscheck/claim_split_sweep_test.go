@@ -270,6 +270,7 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	var (
 		scanned    int
 		controlHit int
+		javaSwept  int
 		offenders  []string
 		mdHits     []string
 	)
@@ -287,6 +288,9 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	// control. A true zero over the wrong population reads exactly like a clean
 	// tree. The Java conformance steps are prose-carrying source that cites Java
 	// line numbers and counts, so they belong in the corpus.
+	// The Go corpus is git-scoped; the Java corpus comes from the raw
+	// fallbackWalk, which has no git equivalent here. Both skip
+	// `.claude/worktrees/`, which is what keeps stale agent copies out.
 	corpus := trackedGoFiles(t, root)
 	javaFiles, javaErr := fallbackWalk(root, func(name string) bool {
 		return strings.HasSuffix(name, ".java")
@@ -294,9 +298,23 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	if javaErr != nil {
 		t.Fatalf("walking for .java sources: %v", javaErr)
 	}
-	if len(javaFiles) == 0 {
-		t.Fatal("no .java files found; the conformance server is Java and this sweep is supposed to " +
-			"cover it, so an empty Java corpus means the walk is broken rather than the tree clean")
+	// COUNT WHAT SURVIVES THE PREFIX FILTER, not what the walk returned. Today
+	// every .java file in the tree sits under conformance/, so the two numbers
+	// coincide -- incidentally, not structurally, and a floor resting on that
+	// coincidence would stop meaning anything the moment Java appeared anywhere
+	// else. This is the same distinction fallbackWalkSkippedTrees' own comment
+	// insists on for its zero.
+	javaInScope := 0
+	for _, rel := range javaFiles {
+		if inClaimSweepScope(rel) {
+			javaInScope++
+		}
+	}
+	if javaInScope == 0 {
+		t.Fatalf("the walk found %d .java file(s) but 0 inside pkg/, cmd/ or conformance/. The Java "+
+			"conformance steps are the population this sweep was blind to when a retired count "+
+			"survived there, so an empty in-scope Java corpus means the walk or the filter is "+
+			"broken rather than the tree clean", len(javaFiles))
 	}
 	corpus = append(corpus, javaFiles...)
 
@@ -305,11 +323,11 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 		case rel == selfPath:
 			selfSeen = true
 			continue
-		case !strings.HasPrefix(rel, "pkg/") && !strings.HasPrefix(rel, "cmd/") && !strings.HasPrefix(rel, "conformance/"):
+		case !inClaimSweepScope(rel):
 			continue
-		case strings.Contains(rel, "/parser/gen/"):
-			// Generated ANTLR output: megabytes of numeric tables, no prose.
-			continue
+		}
+		if strings.HasSuffix(rel, ".java") {
+			javaSwept++
 		}
 		b, readErr := os.ReadFile(filepath.Join(root, rel))
 		if readErr != nil {
@@ -342,6 +360,29 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	if controlHit == 0 {
 		t.Fatalf("positive control %q matched 0 of %d swept files; the sweep cannot be trusted to find anything", control, scanned)
 	}
+	// THE JAVA FLOOR THAT ACTUALLY MEANS SOMETHING: files that reached the read
+	// loop, not files the walk discovered. The two differ, and the difference is
+	// not academic — moving the Java sources to a directory outside the prefix
+	// filter leaves the walk finding all of them and the sweep reading NONE, and
+	// a discovery-side floor stays green while a live claim sits in one of them.
+	// The Go half contributes thousands of files, so `scanned` cannot notice.
+	// This is `selfSeen`'s pattern applied to the population that was blind.
+	if javaSwept == 0 {
+		t.Fatalf("the walk found %d .java file(s) and %d of them passed the scope filter, but ZERO "+
+			"were swept. Discovery is not coverage: the sweep is green over a population it never "+
+			"read, which is exactly how a retired count survived in a Java conformance step",
+			len(javaFiles), javaInScope)
+	}
+	// WHAT THIS FLOOR DOES AND DOES NOT CATCH. It fires when the Java population
+	// COLLAPSES — every .java file moving outside pkg/, cmd/ and conformance/,
+	// which is the shape that turns this whole sweep into a green over nothing.
+	// It does NOT fire when a SINGLE Java file lands outside those prefixes while
+	// the rest stay: `javaSwept` is still non-zero and that one file is simply
+	// not covered. That is a scope limit of the prefix filter, not a hole in the
+	// floor, and widening it means widening the filter rather than rewording
+	// this. Said out loud because "the sweep covers Java" would be the broader
+	// claim, and it is the broader claim that keeps being wrong here.
+
 	if !selfSeen {
 		t.Fatalf("this gate's own file (%s) was never offered to the sweep, so its self-exclusion is dead code. "+
 			"Either the file was renamed -- update selfPath -- or trackedGoFiles stopped returning it, which would mean "+
@@ -578,6 +619,20 @@ func TestWithdrawalExemptionIsScopedToTheStatement(t *testing.T) {
 			doc:  "The index count is 544. Elsewhere the tree has many call sites.",
 			want: 0,
 		},
+		{
+			// MIXED PUNCTUATION, which is what pins "nearest terminator of any
+			// kind" rather than "first kind that matches". Every other arm uses
+			// uniform punctuation, so a backward scan that preferred `.` over a
+			// closer `!` passed all of them -- and passed the whole package --
+			// while failing OPEN on this shape: the `.` after WITHDRAWN is
+			// FARTHER from the claim than the `!` after "prose", so preferring it
+			// drags the withdrawal into a window that should have ended one
+			// sentence earlier.
+			name: "the nearest boundary wins when the kinds are mixed",
+			doc: "The figure is WITHDRAWN. Some intervening prose! " +
+				"Anyway there are 545 call sites to convert.",
+			want: 1,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -588,4 +643,19 @@ func TestWithdrawalExemptionIsScopedToTheStatement(t *testing.T) {
 			}
 		})
 	}
+}
+
+// inClaimSweepScope reports whether a repo-relative path is one this sweep
+// reads. Extracted so the corpus FLOOR and the read LOOP cannot drift apart:
+// they were two separate expressions of the same predicate, and a floor that
+// counts a wider population than the loop reads is a floor that passes while
+// nothing is swept.
+func inClaimSweepScope(rel string) bool {
+	if strings.Contains(rel, "/parser/gen/") {
+		// Generated ANTLR output: megabytes of numeric tables, no prose.
+		return false
+	}
+	return strings.HasPrefix(rel, "pkg/") ||
+		strings.HasPrefix(rel, "cmd/") ||
+		strings.HasPrefix(rel, "conformance/")
 }

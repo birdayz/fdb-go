@@ -2386,7 +2386,10 @@ it reintroduces, one paragraph later, exactly the trap the partial-overlap
 bullet above was added to prevent:
 
 - A **raw index scan**, or a covering scan satisfied entirely from the entry,
-  shows the duplicate: the orphan sits alongside the correct entry.
+  shows the extra ENTRY: the orphan sits alongside the correct one. The ROW it
+  produces is not a clean duplicate, though — a covering row built from a
+  partial-overlap orphan fills the primary-key slots from the shifted tuple, so
+  it carries the wrong value in one and a NULL in another.
 - A **record-fetching scan** does not get that far. The orphan's derived primary
   key is empty (full overlap) or short and wrong (partial overlap), so it
   resolves to no record, and `ScanIndexRecords` raises `RecordCoreStorageError`
@@ -2416,11 +2419,22 @@ to gate on.
 `lastModifiedVersion`" is the right idea and is NOT sufficient on its own. Two
 earlier revisions of this section were wrong in different ways — the first said
 only that, the second added the surrounding steps but still described the bump
-in a form that is SILENTLY INERT. All five points below are required, and this
-recipe is the same one `cq90BumpIndexVersion` in
-`pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go` executes and
-`road-to-prod.md` documents; where they disagree with this section, they are
-right and this section is stale.
+in a form that is SILENTLY INERT.
+
+**Which of the five apply depends on your path**, and only steps 3 and 4 are
+universal. Step 2 is needed only when the metadata goes through
+`FDBMetaDataStore` — an in-process metadata provider runs no evolution validator
+at all. Step 1 applies wherever an old binary can still reach the store. Step 5
+applies wherever the rebuild is not inline.
+
+**On steps 3 and 4 this section defers to `cq90BumpIndexVersion`** in
+`pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go`, which
+calls itself THE production recipe, and to `road-to-prod.md`; where either
+disagrees with steps 3 or 4 here, they are right and this section is stale.
+They are NOT authorities on steps 1, 2 and 5 — `cq90BumpIndexVersion` mutates a
+proto in process, so it drains nothing, never invokes the validator and never
+runs `OnlineIndexer`. Reading it and finding no drain step is not evidence that
+step 1 is stale; it is a test exercising the bump, not the deployment.
 
 1. **Drain every old binary — readers included, not just writers.** Positions are
    derived at `Build`, so any old process that loads the bumped metadata
@@ -2440,9 +2454,15 @@ right and this section is stale.
    Build a validator with `SetAllowIndexRebuilds(true)` and install it via
    `SetEvolutionValidator` before `SaveRecordMetaData`.
 
-3. **Raise the index's `lastModifiedVersion` PAST the metadata version, and raise
-   the metadata version to match. Do not merely increment it.** This is the step
-   most likely to look done and not be. Rebuild selection is
+3. **Raise the AFFECTED index's `lastModifiedVersion` PAST the metadata version,
+   and raise the metadata version to match. Do not merely increment it.**
+
+   Affected means: registered multi-type (2+ record types) or universal, AND with
+   a key expression overlapping the primary key of a record type it covers.
+   Single-type indexes need nothing. (This definition sat in step 4 for one
+   revision, so the runbook told you to bump before telling you what to bump.)
+
+   This is the step most likely to look done and not be. Rebuild selection is
    `idx.LastModifiedVersion > version` in `GetIndexesToBuildSince`, where
    `version` is the STORE HEADER's metadata version. An index sitting at
    `lastModifiedVersion` 3 in a store whose header is at 10 is NOT selected by
@@ -2458,16 +2478,26 @@ right and this section is stale.
 4. **Bump ONE index at a time.** Every index named in `indexesToBuild` is
    EXCLUDED from the record-count sources that decide the rebuild policy, because
    an index being built holds no entries and would report 0 for a full store. The
-   whole-store count is resolved from a UNIVERSAL COUNT index — which is exactly
-   the class this bug affects. Bump a set containing it and the count degrades to
+   whole-store count is resolved from a UNIVERSAL COUNT index. Bump a set
+   containing it and the count degrades to
    `MaxInt64`, so EVERY index lands `DISABLED` regardless of how small the store
    is, including the small stores step 5 says will rebuild inline. (A store with
    a `RecordCountKey` is immune, because that source is not filtered by the
    exclusion set — do not rely on having one.)
 
-   Affected means: registered multi-type (2+ record types) or universal, AND with
-   a key expression overlapping the primary key of a record type it covers.
-   Single-type indexes need nothing.
+   Note the count index need NOT itself be affected by this bug for that to
+   happen — exclusion is by membership in `indexesToBuild`, not by affectedness.
+   An earlier revision said the count source was "exactly the class this bug
+   affects", which is wrong twice over: `snapshotTotalRecordCount` asks for
+   `GroupAll(EmptyKey())`, the UNGROUPED universal COUNT index, whose key
+   overlaps no primary key and which therefore was never trimmed. Only a
+   record-type-grouped COUNT against a record-type-prefixed primary key is in
+   the affected class. The instruction stands; the justification was borrowed
+   from the wrong criterion.
+
+   With more than one affected index, REPEAT steps 3 through 5 per index rather
+   than batching the bumps. Each round leaves the header at the previous round's
+   version, so the next round selects only the index bumped in it.
 
 5. **Run the rebuild to completion, and verify it RAN — `READABLE` alone does not
    prove that.** Opening with the new metadata consults
@@ -2492,6 +2522,7 @@ right and this section is stale.
    rebuild by something that distinguishes ran from never-ran — the index appears
    in `GetIndexesToBuildSince(oldHeaderVersion)` before the open, or
    `BuildIndex` reports a non-zero scanned count — not by the end state alone.
+
 **Why shipping it anyway is right.** Java assigns no positions to these indexes
 either, so it applies the same untrimmed decode to a trimmed entry and derives
 the same wrong primary key described above — its DECODE misreads rather than

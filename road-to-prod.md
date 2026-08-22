@@ -670,10 +670,14 @@ count degrades to `MaxInt64`, and every index lands DISABLED regardless of store
 store open `checkVersion` reconciles: at or below `MAX_RECORDS_FOR_REBUILD` (200) it rebuilds
 inline inside the open transaction; above it the index is left DISABLED — not scannable, so nothing
 can read stale answers from it — and an explicit `OnlineIndexer` run completes the migration and
-returns it to READABLE. **A real record count requires a COUNT index in the metadata**: without one
-`getRecordCountForRebuildPolicy` falls through to an emptiness probe and reports `MaxInt64` for any
-non-empty store, so the DISABLED + `OnlineIndexer` arm is the path a relational SQL schema takes **by
-default**. *Narrowed 2026-08-05:* "every relational SQL schema" overstated it. SQL can create a COUNT
+returns it to READABLE. **A real record count requires a COUNT index or a `RecordCountKey`**: with
+neither, `getRecordCountForRebuildPolicy` falls through to an emptiness probe and reports `MaxInt64`
+for any non-empty store, so the DISABLED + `OnlineIndexer` arm is the path a relational SQL schema
+takes **by default**. *Corrected:* this read "requires a COUNT index" and omitted the record-count
+key, which `snapshotRecordCountFromCountKey` (`store_builder.go`) reads directly — and, unlike the
+COUNT-index sources, without the `excluded` set, so it keeps working for the very index being
+rebuilt. That exception is load-bearing in the migration recipe in `DIVERGENCES.md`, which cites this
+page as authority. *Narrowed 2026-08-05:* "every relational SQL schema" overstated it. SQL can create a COUNT
 index explicitly (`CREATE INDEX … AS SELECT COUNT(*) … GROUP BY …`, `RelationalParser.g4:172` →
 `core/metadata/builder.go:1176`, pinned by `yamsql/testdata/aggregate_index_count_star.yaml:13`) and
 implicitly (the auto-emitted `__GROUP_COUNT` companion beside any grouped aggregate index,

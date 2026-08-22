@@ -203,7 +203,9 @@ func buildPriceKeyedMetaData(register func(*RecordMetaDataBuilder, *Index), inde
 // metadata objects, and after the upgrade both sides derive nil.
 //
 // THE REMEDY IS NOT RESTATED HERE. DIVERGENCES.md, "UPGRADING BREAKS EXISTING
-// DATA FOR THE AFFECTED INDEXES, SILENTLY", is the one copy. An earlier version
+// DATA FOR THE AFFECTED INDEXES, SILENTLY", is where it lives; that section in
+// turn defers to cq90BumpIndexVersion and road-to-prod.md for the bump itself,
+// so it is the entry point rather than the sole copy. An earlier version
 // of this header said "bump the affected index's lastModifiedVersion, which IS
 // persisted and does trigger a rebuild" -- which is the form that is SILENTLY
 // INERT whenever the store header's metadata version is already ahead of the
@@ -283,8 +285,13 @@ func TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey
 	// PARTIAL position vector — one component found in the index key, one not.
 	// A shape that produced [0,0] or nil would make the legacy entry a different
 	// tuple and this whole test a fiction.
-	oldPositions := buildPrimaryKeyComponentPositions(
-		Field("price"), Concat(Field("price"), Field("order_id")))
+	//
+	// Derived from the BUILT objects, not from a second spelling of the inputs.
+	// Re-typing `Field("price")` and the Concat here would tie the assertion to a
+	// copy of the fixture rather than to the fixture, so editing one and not the
+	// other would leave this passing about a shape the test no longer builds.
+	orderPK := md.GetRecordType("Order").PrimaryKey
+	oldPositions := buildPrimaryKeyComponentPositions(idx.RootExpression, orderPK)
 	if len(oldPositions) != 2 || oldPositions[0] != 0 || oldPositions[1] != -1 {
 		t.Fatalf("this overlap yields positions %v, want [0 -1]. The legacy entry shape below is "+
 			"derived from that vector, so if it has changed the fixture no longer reproduces what "+

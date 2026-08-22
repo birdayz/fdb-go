@@ -3,6 +3,7 @@ package recordlayer
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"fdb.dev/gen"
 	"fdb.dev/pkg/fdbgo/fdb/tuple"
@@ -848,46 +849,129 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 	absolutizeFieldTypeNames(fd)
 }
 
-// absolutizeFieldTypeNames rewrites relative FieldDescriptorProto.type_name to absolute. protodesc.NewFile resolves relative type_names against the enclosing message scope; Java's buildFrom searches outward.
+// absolutizeFieldTypeNames rewrites relative `type_name` values to absolute ones
+// for builders that retain a Java-shaped (relative-name) proto but need a
+// protodesc-buildable clone.
+//
+// IT RESOLVES BY LEXICAL SCOPE, and it has to. Protobuf resolves a relative name
+// by walking OUTWARD from the declaring scope and taking the first match, so a
+// field or extension declared inside `Host` that names `Inner` means
+// `Host.Inner` whenever `Host` declares one -- even if a top-level `Inner` also
+// exists. Rewriting every relative name to `.pkg.` + name ignores that and
+// silently REBINDS: measured, `probe.Host.Inner` became `probe.Inner`, a
+// different message with different fields, with no error from protodesc because
+// the result is a valid name for a real type. Pinned by
+// TestAbsolutizeFieldTypeNamesPreservesLexicalScope.
+//
+// A NAME THIS FILE DOES NOT DECLARE FALLS BACK TO THE PACKAGE PREFIX, which is
+// what this function did unconditionally before it learned about scope. Only
+// this file's own declarations are visible here, so a name binding into a
+// dependency cannot be resolved properly, and the prefix is the best available
+// answer. An earlier version of this rewrite left such names RELATIVE on the
+// reasoning that protodesc performs the same outward walk anyway; that is false
+// for the shape the relational DDL builder actually emits, and the cross-engine
+// suite failed twelve SQL scenarios on it. See the fallback for the detail.
+//
+// So the scope walk only ever CHANGES the answer where the file itself declares
+// a candidate -- exactly the shadowing case -- and is otherwise identical to the
+// blanket rewrite it replaced.
 func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 	pkg := fd.GetPackage()
-	prefix := "."
+	pkgPrefix := "."
 	if pkg != "" {
-		prefix = "." + pkg + "."
+		pkgPrefix = "." + pkg + "."
 	}
-	absolutize := func(f *descriptorpb.FieldDescriptorProto) {
-		tn := f.GetTypeName()
-		if tn != "" && tn[0] != '.' {
-			absolute := prefix + tn
-			f.TypeName = &absolute
+
+	// declared holds every fully-qualified type name this file declares, so a
+	// candidate scope can be tested rather than assumed.
+	declared := map[string]bool{}
+	var collect func(scope string, msgs []*descriptorpb.DescriptorProto, enums []*descriptorpb.EnumDescriptorProto)
+	collect = func(scope string, msgs []*descriptorpb.DescriptorProto, enums []*descriptorpb.EnumDescriptorProto) {
+		for _, e := range enums {
+			declared[scope+e.GetName()] = true
+		}
+		for _, m := range msgs {
+			full := scope + m.GetName()
+			declared[full] = true
+			collect(full+".", m.GetNestedType(), m.GetEnumType())
 		}
 	}
-	var visitMessage func(msg *descriptorpb.DescriptorProto)
-	visitMessage = func(msg *descriptorpb.DescriptorProto) {
+	collect(pkgPrefix, fd.GetMessageType(), fd.GetEnumType())
+
+	// absolutize resolves tn as protobuf would from `scope`, which is the
+	// fully-qualified name of the DECLARING message plus a dot (or the package
+	// prefix at file level).
+	absolutize := func(f *descriptorpb.FieldDescriptorProto, scope string) {
+		tn := f.GetTypeName()
+		if tn == "" || tn[0] == '.' {
+			return
+		}
+		// Protobuf resolves the FIRST COMPONENT outward, then requires the rest
+		// beneath it: `A.B` inside `.p.X` tries `.p.X.A` before `.p.A`.
+		first := tn
+		if i := strings.IndexByte(tn, '.'); i >= 0 {
+			first = tn[:i]
+		}
+		for s := scope; ; {
+			if declared[s+first] {
+				absolute := s + tn
+				f.TypeName = &absolute
+				return
+			}
+			// Strip the innermost component and try the enclosing scope. `s`
+			// always ends in '.', so drop it before searching for the next.
+			trimmed := strings.TrimSuffix(s, ".")
+			i := strings.LastIndexByte(trimmed, '.')
+			if i < 0 {
+				// NOTHING IN THIS FILE DECLARES IT, so it binds into a
+				// dependency and the package prefix is the best available
+				// answer -- which is what this function did unconditionally
+				// before it learned about scope.
+				//
+				// Leaving it RELATIVE here is not an option, and that is
+				// measured rather than assumed: the relational DDL builder emits
+				// `com.apple.foundationdb.record.UUID` inside a message, in a
+				// file whose package is EMPTY, so the prefix is just "." and the
+				// old blanket rewrite happened to produce the correct absolute
+				// name. Leaving it alone made protodesc resolve it against the
+				// enclosing message and fail with `cannot resolve type
+				// "T_UUID.com.apple.foundationdb.record.UUID"` -- twelve
+				// cross-engine SQL scenarios, caught by the conformance suite.
+				absolute := pkgPrefix + tn
+				f.TypeName = &absolute
+				return
+			}
+			s = trimmed[:i+1]
+		}
+	}
+
+	var visitMessage func(scope string, msg *descriptorpb.DescriptorProto)
+	visitMessage = func(scope string, msg *descriptorpb.DescriptorProto) {
+		inner := scope + msg.GetName() + "."
 		for _, f := range msg.GetField() {
-			absolutize(f)
+			absolutize(f, inner)
 		}
 		// MESSAGE-SCOPED EXTENSIONS: `DescriptorProto.Extension`, the `extend`
-		// block written INSIDE a message, which proto2 allows. This walk used to
-		// cover fields and nested types here and extensions only at FILE level,
-		// so a relative type name in this position reached the resolver as
-		// written. It survived because no fixture could express it: every other
-		// descriptor in the corpus is built from a compiled Go file via
+		// block written INSIDE a message, which proto2 allows. This walk covered
+		// fields and nested types here and extensions only at FILE level, so a
+		// relative type name in this position reached the resolver as written.
+		// It survived because no fixture could express it: every other descriptor
+		// in the corpus is built from a compiled Go file via
 		// protodesc.ToFileDescriptorProto, which emits absolute names, making
 		// absolutization a no-op on all of them.
 		for _, ext := range msg.GetExtension() {
-			absolutize(ext)
+			absolutize(ext, inner)
 		}
 		for _, nested := range msg.GetNestedType() {
-			visitMessage(nested)
+			visitMessage(inner, nested)
 		}
 	}
 	for _, m := range fd.GetMessageType() {
-		visitMessage(m)
+		visitMessage(pkgPrefix, m)
 	}
-	// Same for extensions at the file level.
+	// Same for extensions at the file level, whose scope is the package.
 	for _, ext := range fd.GetExtension() {
-		absolutize(ext)
+		absolutize(ext, pkgPrefix)
 	}
 }
 

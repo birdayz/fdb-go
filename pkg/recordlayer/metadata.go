@@ -1006,19 +1006,28 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	//
 	// THIS CHANGES EXISTING DATA. Positions are derived here and never
 	// persisted, so entries an older build wrote for a multi-type or universal
-	// index are trimmed while this one writes them whole. Reading one back does
-	// not error: a full overlap yields an EMPTY primary key and a partial
-	// overlap a SHORT, plausible, wrong one, and the old entries are never
-	// cleared, so an unremediated store returns duplicate rows. Nothing detects
-	// any of that automatically -- the affected indexes need a rebuild, and the
-	// procedure is more than a lastModifiedVersion bump.
+	// index are trimmed while this one writes them whole. The DECODE of such an
+	// entry does not error -- a full overlap yields an empty primary key, a
+	// partial overlap a short and plausible wrong one -- and the old entries are
+	// never cleared. Nothing detects any of that automatically; the affected
+	// indexes need a rebuild, and the procedure is considerably more than a
+	// lastModifiedVersion bump.
 	//
-	// The operator-facing version is DIVERGENCES.md, "UPGRADING BREAKS EXISTING
-	// DATA FOR THE AFFECTED INDEXES, SILENTLY", which names this file back. The
-	// read behaviour is pinned by:
+	// WHAT THAT LOOKS LIKE AT THE SCAN IS NOT DESCRIBED HERE. An earlier version
+	// of this comment finished the sentence with "so an unremediated store
+	// returns duplicate rows", which is true of the index ENTRIES and false of
+	// most rows, and it survived here after being refuted in DIVERGENCES.md
+	// because that fold swept for a different claim in the same commit. Two
+	// claims were refuted; one sweep was run. The scan-level symptoms live in
+	// the operator-facing copy and nowhere else.
+	//
+	// That copy is DIVERGENCES.md, "UPGRADING BREAKS EXISTING DATA FOR THE
+	// AFFECTED INDEXES, SILENTLY", which names this file back. The read
+	// behaviour is pinned by these two, each on its own line so that grep finds
+	// them -- wrapping a test name across a line break is exactly how a sweep
+	// comes back empty, which happened to this very comment:
 	//   TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey
-	// on its own line, because wrapping that name across a line break is exactly
-	// how a grep for it comes back empty -- which happened to this very comment.
+	//   TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey
 	for _, rt := range b.recordTypes {
 		for _, idx := range rt.indexes {
 			if idx.primaryKeyComponentPositions == nil {
