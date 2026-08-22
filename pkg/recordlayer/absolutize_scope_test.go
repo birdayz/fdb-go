@@ -238,11 +238,34 @@ func TestAbsolutizeFieldTypeNamesFallsBackForNamesTheFileDoesNotDeclare(t *testi
 	}
 
 	// The premise, asserted so this cannot pass because the walk happened to
-	// find something: the file declares no `com`.
+	// find something. It checks BOTH scopes the walk visits — `.T_UUID.com` and
+	// `.com` — and both kinds of declaration. An earlier version iterated
+	// `fd.MessageType` only, so a top-level ENUM named `com`, or a nested one
+	// inside T_UUID, would have moved this arm onto the walk branch with the
+	// assertion still passing: the fallback and the outermost walk iteration
+	// emit the identical string, so no value check can separate them and the
+	// premise is the ONLY thing establishing which branch ran.
 	for _, m := range fd.MessageType {
 		if m.GetName() == "com" {
-			t.Fatal("the fixture declares a top-level `com`, so the outward walk would resolve it " +
-				"and this arm would exercise the walk rather than the fallback")
+			t.Fatal("the fixture declares a top-level message `com`; the outward walk would resolve " +
+				"it and this arm would exercise the walk rather than the fallback")
+		}
+		for _, e := range m.EnumType {
+			if e.GetName() == "com" {
+				t.Fatalf("message %q declares a nested enum `com`; the walk would resolve it at that "+
+					"scope and this arm would no longer reach the fallback", m.GetName())
+			}
+		}
+		for _, n := range m.NestedType {
+			if n.GetName() == "com" {
+				t.Fatalf("message %q declares a nested message `com`; same problem", m.GetName())
+			}
+		}
+	}
+	for _, e := range fd.EnumType {
+		if e.GetName() == "com" {
+			t.Fatal("the fixture declares a top-level enum `com`; `declared` holds enums too, so the " +
+				"walk would resolve it and this arm would not reach the fallback")
 		}
 	}
 

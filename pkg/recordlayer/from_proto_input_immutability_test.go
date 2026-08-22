@@ -171,9 +171,14 @@ func relativeTypeNameMetaData(t *testing.T) *gen.MetaData {
 					Number: proto.Int32(1),
 					Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 					Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-					// Relative on purpose: this is the byte absolutization
-					// rewrites, and the only reason this dependency exists.
-					TypeName: proto.String("Inner"),
+					// ABSOLUTE, and overwritten to the same value below before
+					// relativizeTypeNames runs. An earlier revision wrote
+					// "Inner" here under a comment calling it "relative on
+					// purpose" -- dead, because line ~208 assigns this field
+					// before anything reads it. Setting it to garbage left the
+					// package green. That is the trap the comment twenty lines
+					// down was written to warn about, reintroduced beside it.
+					TypeName: proto.String(".probe.Inner"),
 				}},
 				// A MESSAGE-SCOPED EXTENSION, so this fixture reaches the THIRD
 				// write site. absolutizeFieldTypeNames gained one when it started

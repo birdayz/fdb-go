@@ -383,14 +383,18 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 			"read, which is exactly how a retired count survived in a Java conformance step",
 			len(javaFiles), javaInScope)
 	}
-	// WHAT THIS FLOOR DOES AND DOES NOT CATCH. It fires when the Java population
-	// COLLAPSES — every .java file moving outside pkg/, cmd/ and conformance/,
-	// which is the shape that turns this whole sweep into a green over nothing.
-	// It does NOT fire when a SINGLE Java file lands outside those prefixes while
-	// the rest stay: `javaSwept` is still non-zero and that one file is simply
-	// not covered. That is a scope limit of the prefix filter, not a hole in the
-	// floor, and widening it means widening the filter rather than rewording
-	// this. Said out loud because "the sweep covers Java" would be the broader
+	// WHAT NEITHER JAVA FLOOR CATCHES: a SINGLE Java file landing outside the
+	// prefixes while the rest stay. `javaInScope` and `javaSwept` are both still
+	// non-zero and that one file is simply not swept. That is a scope limit of
+	// the prefix filter, not a hole in either floor, and widening it means
+	// widening the filter rather than rewording this.
+	//
+	// (An earlier revision of THIS paragraph said the floor above "fires when the
+	// Java population COLLAPSES". It does not — that case is caught at
+	// `javaInScope` and execution never reaches here, which the block above now
+	// says. Correcting one of two copies is how a comment ends up contradicting
+	// its own correction ten lines apart, and it is the third time on this
+	// branch.) Said out loud because "the sweep covers Java" would be the broader
 	// claim, and it is the broader claim that keeps being wrong here.
 
 	if !selfSeen {

@@ -871,6 +871,30 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 // is what repaired them, and it is pinned by
 // TestAbsolutizeFieldTypeNamesFallsBackForNamesTheFileDoesNotDeclare.
 //
+// DO NOT DELETE THIS PASS. A review argued it should go: once
+// descriptorResolver returns the NotFound sentinel protodesc's walk works, and
+// over 307 protoc-accepted descriptors the rewrite produces a name protoc would
+// not choose in 123 of them -- so the rewrite looks strictly harmful. The
+// argument is careful and the conclusion is wrong.
+//
+// MEASURED by disabling this function outright and running the cross-engine
+// suite. A real stored schema template stops loading:
+//
+//	RFC-204 schema-template byte-goldens ... struct_uuid_vector
+//	  42F59: build file descriptor: protodesc.NewFile: proto: message field
+//	  "T.SV" cannot resolve type: unknown kind
+//
+// The sentinel fix does not cover this. The two changes repair different things
+// and both are required.
+//
+// AND A MINIMAL UNIT REPRODUCTION WAS ATTEMPTED AND FAILED, which is worth
+// knowing before anyone re-opens this. A hand-built descriptor with a relative
+// message-field type name builds FINE unrewritten -- with kind unset, and
+// through this package's own resolver, both. Whatever `struct_uuid_vector`
+// carries that matters is not captured by the obvious fixture, so the
+// cross-engine byte-golden is the pin, and a green unit probe is NOT evidence
+// that this pass is removable.
+//
 // WHY ABSOLUTIZE AT ALL, stated correctly because the first answer here was
 // wrong: NOT because protodesc fails to walk outward. It does walk, and an
 // earlier version of this comment blamed it for a failure caused by this
@@ -939,9 +963,12 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 			i := strings.LastIndexByte(trimmed, '.')
 			if i < 0 {
 				// NOTHING IN THIS FILE DECLARES IT, so it binds into a
-				// dependency and the package prefix is the best available
-				// answer -- which is what this function did unconditionally
-				// before it learned about scope.
+				// dependency and the package prefix is a BEST EFFORT -- which
+				// is what this function did unconditionally before it learned
+				// about scope. Not "the best available answer": see the
+				// best-effort paragraph on the function, which names the
+				// families where protoc chooses differently. This copy said
+				// best-available for a lap after that one was corrected.
 				//
 				// Leaving it RELATIVE here is not an option, and that is
 				// measured rather than assumed: the relational DDL builder emits
@@ -1107,7 +1134,14 @@ func (r *descriptorResolver) FindFileByPath(path string) (protoreflect.FileDescr
 		r.files[path] = fd
 		return fd, nil
 	}
-	return nil, fmt.Errorf("file not found: %s", path)
+	// The sentinel, for the same reason FindDescriptorByName returns it: protodesc
+	// compares this against protoregistry.NotFound with `==` (desc.go's import
+	// resolution), and a descriptive error is treated as fatal on a path that is
+	// otherwise willing to tolerate an unresolvable option import. Unreachable at
+	// proto2/proto3 today, and fixed anyway because it is the identical defect one
+	// function up -- leaving the pair inconsistent is how the next reader concludes
+	// the sentinel is optional here.
+	return nil, protoregistry.NotFound
 }
 
 func (r *descriptorResolver) FindDescriptorByName(name protoreflect.FullName) (protoreflect.Descriptor, error) {
