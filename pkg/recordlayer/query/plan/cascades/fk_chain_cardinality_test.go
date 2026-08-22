@@ -142,28 +142,29 @@ func fkChainPKProbe(t *testing.T, rt, outerRT string, outerAlias values.Correlat
 		WithKeyComponentTypes([]values.Type{values.NotNullLong})
 }
 
-// fkChainProbeFromRange stamps an FK-chain index probe. Exactly three helpers
-// route through it -- fkChainFKProbe, fkChainFKProbeAgainst and
-// fkChainFanOutFKProbe -- so a stamp added here reaches those three and no
+// fkChainProbeFromRange stamps an FK-chain index probe. Four helpers route
+// through it — fkChainFKProbe, fkChainFKProbeAgainst, fkChainFanOutFKProbe and
+// fkChainFKProbeRTPrefixed — so a stamp added here reaches those four and no
 // others. That matters because a missing stamp makes scanBindingOfLeaf's index
 // arm fail closed, and an assertion behind that guard then exits above the
-// thing it meant to test -- which happened here once, from a hand-rolled copy
-// of this chain. The reach guard in the nesting test now catches THAT specific
+// thing it meant to test — which happened here once, from a hand-rolled copy of
+// this chain. The reach guard in the nesting test catches THAT specific
 // omission loudly, so the residual risk is a DIFFERENT signal added later that
 // no guard checks; sharing the chain is what covers the ones nobody thought to
 // assert.
 //
-// Deliberately NOT a claim about the file: fkChainPKProbe and
-// fkChainFKProbeRTPrefixed build their own plans inline and nothing here
-// reaches them, as do several fixtures in the tests themselves.
-func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange, createsDuplicates bool) plans.RecordQueryPlan {
+// Deliberately NOT a claim about the file. fkChainPKProbe builds its own plan
+// and is a SCAN with a different stamp set, so it does not belong here. Eight
+// further index-plan fixtures are constructed inline in the tests themselves,
+// and nothing here reaches any of them.
+func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange, commonPK []values.Value, createsDuplicates bool) plans.RecordQueryPlan {
 	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
 		[]*predicates.ComparisonRange{rng},
 		[]string{rt}, fkChainRowType(rt), false)).
 		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
 		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
 		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey(fkChainIDPK()).
+		WithCommonPrimaryKey(commonPK).
 		WithDistinctRecordsSignal(createsDuplicates)
 }
 
@@ -178,7 +179,7 @@ func fkChainProbeFromRange(rt, idx string, rng *predicates.ComparisonRange, crea
 // production.
 func fkChainFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), false)
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), fkChainIDPK(), false)
 }
 
 // fkChainFKProbeAgainst is fkChainFKProbe for an outer whose layout is not in
@@ -198,7 +199,7 @@ func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.Rec
 	if !rng.Ok {
 		t.Fatalf("failed to build correlated eq range against %s", outerLayout.RecordName)
 	}
-	return fkChainProbeFromRange(rt, idx, rng.Range, false)
+	return fkChainProbeFromRange(rt, idx, rng.Range, fkChainIDPK(), false)
 }
 
 // fkChainFanOutFKProbe is fkChainFKProbe but models a FAN-OUT index (one
@@ -207,7 +208,7 @@ func fkChainFKProbeAgainst(t *testing.T, rt, idx string, outerLayout *values.Rec
 // than once per probe. See TestFKChainCardinalityCap_DeclinesOnFanOutIndex.
 func fkChainFanOutFKProbe(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), true)
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"), fkChainIDPK(), true)
 }
 
 // fkChainRTPrefixedPK models the primary key shape
@@ -233,14 +234,8 @@ func fkChainRTPrefixedPK() []values.Value {
 // fkChainRTPrefixedPK).
 func fkChainFKProbeRTPrefixed(t *testing.T, rt, idx, outerRT string, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
 	t.Helper()
-	return mustFKChain(plans.NewRecordQueryIndexPlan(idx,
-		[]*predicates.ComparisonRange{fkChainCorrelatedEq(t, outerRT, outerAlias, "ID")},
-		[]string{rt}, fkChainRowType(rt), false)).
-		WithKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithIndexMetadata([]string{"FK"}, []string{"ID"}, false).
-		WithPrimaryKeyComponentTypes([]values.Type{values.NotNullLong}).
-		WithCommonPrimaryKey(fkChainRTPrefixedPK()).
-		WithDistinctRecordsSignal(false)
+	return fkChainProbeFromRange(rt, idx, fkChainCorrelatedEq(t, outerRT, outerAlias, "ID"),
+		fkChainRTPrefixedPK(), false)
 }
 
 func fkChainFlat(outer, inner plans.RecordQueryPlan, outerAlias values.CorrelationIdentifier) plans.RecordQueryPlan {
@@ -1565,8 +1560,13 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	// instead of returning, wantKeys guard removed -- the three together redden
 	// this, and each PAIR leaves it green, so that triple is minimal. Encoded
 	// KEEP-THE-KEY, where the zero key is retained on !ok, the same three leave
-	// it green because a fourth consumer rejects: correlatedFieldIdentity in the
-	// bind loop, which reads the same unknown frontier. Both were measured. The
+	// it green — but NOT because correlatedFieldIdentity rejects. That was the
+	// first guess and it fails its own removal test: hand the bind loop a KNOWN
+	// frontier so cfi cannot decline, and this is still green, with control
+	// reaching the wantKeys lookup. The decisive blocker is the retained ZERO
+	// ColumnIdentity, which no resolved key can ever equal, so bound stays empty
+	// and the coverage check fails. cfi is only the first short-circuit. Both
+	// encodings were measured. The
 	// earlier version of this comment reported only the second and concluded the
 	// three were not the whole set, which is false under the first.
 	//
