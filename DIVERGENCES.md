@@ -2376,10 +2376,26 @@ the primary key the index key covers.** Do not go looking for only one of them:
 
 **And the old entries never go away on their own.** Post-upgrade, deleting or
 re-saving a record computes the UNTRIMMED index key and clears that; the old
-trimmed entry sits at a key nothing touches. An unremediated store therefore
-accumulates orphans — scans return duplicate rows (the orphan alongside the
-correct entry) and deletes silently fail to remove them. That is the symptom
-most likely to be noticed first, and it is not a separate bug.
+trimmed entry sits at a key nothing touches, so an unremediated store
+accumulates orphans and deletes silently fail to remove them.
+
+**What that LOOKS like depends on the scan, and it is usually not duplicates.**
+An earlier revision of this paragraph said "scans return duplicate rows"
+unconditionally, which is true of the index entries and false of most rows — and
+it reintroduces, one paragraph later, exactly the trap the partial-overlap
+bullet above was added to prevent:
+
+- A **raw index scan**, or a covering scan satisfied entirely from the entry,
+  shows the duplicate: the orphan sits alongside the correct entry.
+- A **record-fetching scan** does not get that far. The orphan's derived primary
+  key is empty (full overlap) or short and wrong (partial overlap), so it
+  resolves to no record, and `ScanIndexRecords` raises `RecordCoreStorageError`
+  rather than skipping it — Go matches Java's default `IndexOrphanBehavior.ERROR`
+  deliberately, so corruption surfaces loudly. A hard failure on a query that
+  used to work is the commoner first symptom.
+
+Watch for both. An operator told to look only for duplicate rows will read the
+storage errors as an unrelated fault.
 
 **Why no automatic guard fires.** `metadata_evolution_validator.go` compares two
 BUILT metadata objects. After the upgrade both sides derive nil positions, so
@@ -2397,43 +2413,78 @@ stores written by the same old binary could disagree. There is nothing coherent
 to gate on.
 
 **The remedy, in full, because the short version does not work.** "Bump
-`lastModifiedVersion`" is the right idea and is NOT sufficient on its own: an
-earlier revision of this section said only that, and it fails at the first step
-on any store using `FDBMetaDataStore` and silently under-delivers on any store
-with real data. All four steps are required.
+`lastModifiedVersion`" is the right idea and is NOT sufficient on its own. Two
+earlier revisions of this section were wrong in different ways — the first said
+only that, the second added the surrounding steps but still described the bump
+in a form that is SILENTLY INERT. All five points below are required, and this
+recipe is the same one `cq90BumpIndexVersion` in
+`pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go` executes and
+`road-to-prod.md` documents; where they disagree with this section, they are
+right and this section is stale.
 
-1. **Drain the old writers first.** Positions are derived at `Build`, so an old
-   binary that loads the bumped metadata recomputes the OLD positions and starts
-   writing trimmed entries again. Rebuilding while an old writer is live
-   reintroduces exactly what the rebuild removed. Stop them before step 2, not
-   after.
+1. **Drain every old binary — readers included, not just writers.** Positions are
+   derived at `Build`, so any old process that loads the bumped metadata
+   recomputes the OLD positions. An old WRITER starts producing trimmed entries
+   again, undoing the rebuild. An old READER is just as wrong and less obvious:
+   given a rebuilt untrimmed entry `(price, price, id)` and old positions
+   `[0, -1]`, `getEntryPrimaryKey` takes `entryKey[0]` for the first component
+   and then `entryKey[1]` for the trailing one, deriving `(price, price)` where
+   the true key is `(price, id)` — wrong data returned by a process that never
+   writes. Stop them all before step 2, or keep the affected indexes unavailable
+   to them.
 
 2. **Allow index rebuilds on the metadata store, or the save is refused.**
-   `NewFDBMetaDataStore` installs `DefaultMetaDataEvolutionValidator()`
-   (`metadata_store.go:29-33`), and that validator returns
-   `MetaDataEvolutionError` — "last modified version of index %q changed" — for
-   precisely this edit unless `allowIndexRebuilds` is set
-   (`metadata_evolution_validator.go:498-504`). Build a validator with
-   `SetAllowIndexRebuilds(true)` and install it via `SetEvolutionValidator`
-   before `SaveRecordMetaData`.
+   `NewFDBMetaDataStore` installs `DefaultMetaDataEvolutionValidator()`, and that
+   validator returns `MetaDataEvolutionError` — "last modified version of index
+   %q changed" — for precisely this edit unless `allowIndexRebuilds` is set.
+   Build a validator with `SetAllowIndexRebuilds(true)` and install it via
+   `SetEvolutionValidator` before `SaveRecordMetaData`.
 
-3. **Bump the affected indexes' `lastModifiedVersion` and the metadata
-   version.** Affected means: registered multi-type (2+ record types) or
-   universal, AND with a key expression overlapping the primary key of a record
-   type it covers. Single-type indexes need nothing.
+3. **Raise the index's `lastModifiedVersion` PAST the metadata version, and raise
+   the metadata version to match. Do not merely increment it.** This is the step
+   most likely to look done and not be. Rebuild selection is
+   `idx.LastModifiedVersion > version` in `GetIndexesToBuildSince`, where
+   `version` is the STORE HEADER's metadata version. An index sitting at
+   `lastModifiedVersion` 3 in a store whose header is at 10 is NOT selected by
+   bumping it to 4: `Build` accepts it, the validator accepts it,
+   `SaveRecordMetaData` succeeds — and the open advances the header anyway, so no
+   later open ever selects it either. The index is permanently skipped with no
+   error anywhere.
 
-4. **Run the rebuild to completion and CHECK THE STATE — the bump alone does not
-   rebuild a real store.** Opening with the new metadata consults
-   `DefaultIndexRebuildPolicy`, which returns `READABLE` (inline rebuild) only
-   for `recordCount <= 200` or an index on new record types, and `DISABLED`
-   otherwise (`store_builder.go:1123-1129`). A store whose count cannot be
-   derived reports `MAX_VALUE`, so it takes the `DISABLED` branch too. On any
-   store big enough to care about, the index therefore lands `DISABLED` — not
-   rebuilt, not readable, and quietly excluded from query plans — until an
-   `OnlineIndexer.BuildIndex` run finishes. Run it, then assert the index is
-   `READABLE`. Do not treat a successful `SaveRecordMetaData` as the end of the
-   procedure.
+   Leave `AddedVersion` ALONE. The evolution validator requires it unchanged, and
+   only `LastModifiedVersion` drives the rebuild, so bumping both makes the
+   evolution illegal for no gain.
 
+4. **Bump ONE index at a time.** Every index named in `indexesToBuild` is
+   EXCLUDED from the record-count sources that decide the rebuild policy, because
+   an index being built holds no entries and would report 0 for a full store. The
+   whole-store count is resolved from a UNIVERSAL COUNT index — which is exactly
+   the class this bug affects. Bump a set containing it and the count degrades to
+   `MaxInt64`, so EVERY index lands `DISABLED` regardless of how small the store
+   is, including the small stores step 5 says will rebuild inline. (A store with
+   a `RecordCountKey` is immune, because that source is not filtered by the
+   exclusion set — do not rely on having one.)
+
+   Affected means: registered multi-type (2+ record types) or universal, AND with
+   a key expression overlapping the primary key of a record type it covers.
+   Single-type indexes need nothing.
+
+5. **Run the rebuild to completion, and verify it RAN — `READABLE` alone does not
+   prove that.** Opening with the new metadata consults
+   `DefaultIndexRebuildPolicy`, which returns `READABLE` (inline rebuild) only for
+   `recordCount <= 200` or an index on new record types, and `DISABLED`
+   otherwise; a store whose count cannot be derived reports `MAX_VALUE` and takes
+   the `DISABLED` branch too. So on any store worth remediating the index lands
+   `DISABLED` — not rebuilt, not readable, quietly excluded from query plans —
+   until an `OnlineIndexer.BuildIndex` run finishes. That call handles
+   `DISABLED` → `WRITE_ONLY` → `READABLE` itself.
+
+   **The trap:** if step 3 was done wrong, the index was never selected, was never
+   touched, and is therefore STILL `READABLE` from before. Asserting `READABLE`
+   passes on exactly the failure this procedure exists to prevent. Verify the
+   rebuild by something that distinguishes ran from never-ran — the index appears
+   in `GetIndexesToBuildSince(oldHeaderVersion)` before the open, or
+   `BuildIndex` reports a non-zero scanned count — not by the end state alone.
 **Why shipping it anyway is right.** Java MISREADS the old entries — it does not
 fail on them, which is worse. Java assigns no positions to these indexes either,
 so it applies the same untrimmed decode to a trimmed entry and derives the same

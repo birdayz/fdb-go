@@ -423,14 +423,34 @@ func unwithdrawnCountClaims(flat string) []string {
 	return out
 }
 
+// sentenceTerminators are the boundaries withdrawalNear will stop at. `. ` alone
+// was not enough: prose that ends a sentence with `!` or `?` left NO boundary to
+// find, so the whole prefix stayed in the window and a live claim arbitrarily far
+// from a withdrawal was still exempted — failing OPEN, which is the direction
+// this whole exemption exists to close.
+//
+// NOT INCLUDED, and it cannot be: paragraph and Markdown-heading boundaries.
+// flattenClaimText collapses every run of whitespace to one space before this
+// runs, so newlines are gone by construction and a new paragraph is
+// indistinguishable from a new sentence. A live claim opening a paragraph
+// directly after a withdrawal is therefore still exempt. Closing that needs the
+// flattener to preserve structure, which is the opposite of what it exists to do.
+var sentenceTerminators = []string{". ", "! ", "? "}
+
 // withdrawalNear reports whether a withdrawal accompanies the match at
 // [matchStart, matchEnd): the sentence containing it, plus the one before it.
 func withdrawalNear(flat string, matchStart, matchEnd int) bool {
-	// Back up over two sentence boundaries; the flattened text uses ". " as the
-	// separator, and the claim regex already refuses to span one.
+	// Back up over two sentence boundaries, taking the LATEST terminator of any
+	// kind each time — the nearest boundary is the right one, so a `.` earlier in
+	// the text cannot win over a `!` closer to the match.
 	from := matchStart
 	for i := 0; i < 2; i++ {
-		prev := strings.LastIndex(flat[:from], ". ")
+		prev := -1
+		for _, term := range sentenceTerminators {
+			if p := strings.LastIndex(flat[:from], term); p > prev {
+				prev = p
+			}
+		}
 		if prev < 0 {
 			from = 0
 			break
@@ -438,8 +458,10 @@ func withdrawalNear(flat string, matchStart, matchEnd int) bool {
 		from = prev
 	}
 	to := len(flat)
-	if next := strings.Index(flat[matchEnd:], ". "); next >= 0 {
-		to = matchEnd + next
+	for _, term := range sentenceTerminators {
+		if next := strings.Index(flat[matchEnd:], term); next >= 0 && matchEnd+next < to {
+			to = matchEnd + next
+		}
 	}
 	window := flat[from:to]
 	return strings.Contains(window, "WITHDRAWN") || strings.Contains(window, "withdrawn")
@@ -498,6 +520,41 @@ func TestWithdrawalExemptionIsScopedToTheStatement(t *testing.T) {
 			name: "the natural phrasing with a 23-character gap is caught",
 			doc:  "There are 544 Scan/Rebuild/SetIndex call sites to convert.",
 			want: 1,
+		},
+		{
+			// `.` was the only terminator recognised, so prose ending in `!`
+			// offered no boundary to back up to, the whole prefix stayed in the
+			// window, and an arbitrarily distant live claim was exempted.
+			name: "a later live claim is not masked across an exclamation boundary",
+			doc: "THE EXACT FIGURE IS WITHDRAWN! It read 544 call sites and counted something else! " +
+				"Some intervening prose about the index registry! " +
+				"Anyway there are 545 call sites to convert.",
+			want: 1,
+		},
+		{
+			name: "a later live claim is not masked across a question boundary",
+			doc: "Was the figure WITHDRAWN? It was, and it read 544 call sites? " +
+				"Some intervening prose about the registry? " +
+				"Anyway there are 545 call sites to convert.",
+			want: 1,
+		},
+		{
+			// The withdrawal must still be honoured when the terminator is not a
+			// period, or the fix above would close the fail-open by making every
+			// exemption fail CLOSED instead -- which reads as green here and
+			// would redden the corpus sweep the moment a doc used `!`.
+			name: "a withdrawal one exclamation-sentence back still exempts",
+			doc:  "THE EXACT FIGURE IS WITHDRAWN! It read 544 call sites and counted something else.",
+			want: 0,
+		},
+		{
+			// THE SENTENCE-BOUNDARY GUARD in the claim regex itself, which a
+			// mutation to `(?s).{0,40}` showed was pinned by nothing. `[^.]`
+			// is what stops a bare number in one sentence pairing with a
+			// "call sites" in the next.
+			name: "a number and a later call-sites phrase in different sentences do not pair",
+			doc:  "The index count is 544. Elsewhere the tree has many call sites.",
+			want: 0,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
