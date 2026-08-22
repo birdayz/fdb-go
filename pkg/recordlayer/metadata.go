@@ -286,9 +286,18 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 // succeeds, RecordTypesForIndex comes back empty, GetIndexesForRecordType loses
 // it. That is an index-maintenance hole as well as a plan-typing one.
 // AddUniversalIndex is unaffected because its registry hangs off the builder.
-// setRecordsWithoutUnion below overwrites the same way. Pinned by
-// TestOverwriteAfterRegistrationOrphansTheIndexAssociation; RFC-238 §7f carries
-// the analysis and the booked guard.
+// setRecordsWithoutUnion below overwrites the same way.
+//
+// AND THE ORPHAN DOES NOT STAY ONE. ToProto walks the flat registry, so it
+// still emits the index -- with an EMPTY RecordType list, since that list comes
+// from the associations just discarded -- and a reload maps an empty list to
+// UNIVERSAL. The index comes back maintained for EVERY record type, which is a
+// widening rather than a loss. Java reads those bytes identically, so this is a
+// semantic defect on both engines, not a compatibility one.
+//
+// Pinned by TestOverwriteAfterRegistrationOrphansTheIndexAssociation and
+// TestOrphanedIndexRoundTripsAsUniversal; RFC-238 §7f carries the analysis and
+// the booked guard.
 func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
 	b.fileDescriptor = fd
 

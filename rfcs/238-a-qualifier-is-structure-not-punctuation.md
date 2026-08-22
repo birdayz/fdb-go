@@ -948,7 +948,7 @@ objections described Java's shipped behaviour rather than a cost.**
     `RecordLayerTable.getName()`, and `RecordMetadataDeserializer.java:92-96`
     keys its builder map by the decoded name, so a decode collision routes two
     declarations through one builder there. Go documents the same misresolution
-    at `pkg/recordlayer/metadata.go:1343-1351`. The OBJECTION was about the plan tree, and confined there it fails. Outside
+    at `pkg/recordlayer/metadata.go:1352-1360`. The OBJECTION was about the plan tree, and confined there it fails. Outside
     the memo it gains force rather than losing it -- so it is this REBUTTAL,
     not the objection, that must not be stated any wider.
 
@@ -1019,7 +1019,7 @@ resolver happened to match.
 THE TWO MECHANISMS ARE UNLIKE, and an earlier revision of this section stated a
 single rule over both — "a name a resolver matched loosely must be replaced by
 what it matched" — which is where the wrong prescription came from.
-`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go:1356-1358`):
+`GetRecordType`'s retry is an ENCODING (`pkg/recordlayer/metadata.go:1365-1367`):
 `ToProtoBufCompliantName` is total and deterministic, the SQL name and the
 stored name are two spellings of ONE declaration, and its ambiguity is a
 declared-name collision rather than an iteration-order accident. Rewriting there
@@ -1097,62 +1097,106 @@ correct, the contract `GetRecordType` already offers.
 
 ### 7d. Why there is no line-cite gate, recorded so it is not re-proposed
 
-This section's line cites drifted twice in three commits, both times because a
-commit edited the file it cited — once by the very comment block the section
-asked for. The obvious response is a gate over `file.go:NNN` cites in `rfcs/`.
-It was measured and it is the wrong instrument, twice over.
+This section's line cites have drifted in 11 of the branch's 60 commits, 51
+corrections in all, almost always because a commit edited the file it cited —
+once by the very comment block the section asked for. An earlier revision of
+this sentence said "twice in three commits", which was the count over the three
+commits its author had in view rather than over the branch. The obvious response
+is a gate over `file.go:NNN` cites in `rfcs/`. It was measured, and it is the
+wrong instrument twice over — and the measuring itself went wrong three times,
+which is recorded here because it is the more useful half.
 
-**As a "does the cited line look like code" check: 918 weak of 2066 resolved
-cites repo-wide** -- every `file.go:NNN` in `rfcs/*.md` resolved against the
-tree and its target line classified blank / brace / comment / code, a RANGE
-counting as code when EITHER endpoint is. Of 2520 distinct cites, 341 are
-AMBIGUOUS (a bare basename the tree holds more than one of) and 113 resolve to
-nothing; the remaining 2066 split 1148 code / 644 comment / 193 brace / 81
-blank. At that rate the heuristic is measuring citation STYLE — 644 of the 918
-weak readings land on a `//` line, and citing a doc comment is a legitimate
-thing to do — not staleness. ("Deliberate" would be a characterisation; what
-was measured is where the line lands.)
+**As a "does the cited line look like code" check: 917 weak of 2063 resolved
+cites repo-wide** (measured at `98a5e8aa4`) -- every `file.go:NNN` in
+`rfcs/*.md` resolved against the tree and its target line classified blank /
+brace / comment / code, a RANGE counting as code when EITHER endpoint is. Of
+2520 distinct cites, 341 are AMBIGUOUS (a bare basename the tree holds more than
+one of), 93 name a file that does not exist, and 23 name a line past EOF; the
+remaining 2063 split 1146 code / 644 comment / 193 brace / 80 blank. At that
+rate the heuristic is measuring citation STYLE — 644 of the 917 weak readings
+land on a `//` line, and citing a doc comment is a legitimate thing to do — not
+staleness.
 
-Over THIS document the same run reports 57 distinct cites, ZERO ambiguous, ZERO
-unresolved, and FIVE weak, all sound:
+Over THIS document the same run reports 60 distinct cites, ZERO ambiguous, ZERO
+dangling, ZERO past EOF, and SIX weak, all sound:
 
-  - FOUR are deliberate cites INTO doc comments: `positional_row.go:7`,
-    `colref.go:95`, `full_unordered_scan.go:110-118`, and
-    `pkg/recordlayer/metadata.go:1343-1351`.
-  - ONE, `derived_unnest.go:250`, is this section's own narrative naming of a
-    cite it CORRECTED to `:287`. It classifies as a brace because it names a
-    line that is now a brace — which is the thing the sentence around it says.
+  - FOUR land on a `//` line, and reading each: all four cite a doc comment on
+    purpose -- `positional_row.go:7`, `colref.go:95`,
+    `full_unordered_scan.go:110-118`, `pkg/recordlayer/metadata.go:1352-1360`.
+  - TWO are this section's own narrative naming cites it CORRECTED --
+    `derived_unnest.go:250` (now a brace) and `cascades_generator.go:2826` (now
+    a comment). They read weak because they name lines that have moved on, which
+    is the thing the sentences around them are saying.
 
-THE COUNT TOOK FOUR ATTEMPTS AND THE INSTRUMENT TOOK TWO, and that is the part
-worth keeping. It first read FIVE, written by listing the cites its author
+The second class is why this document's cite count keeps rising: writing about a
+corrected cite ADDS a cite, and it lands wherever the file has drifted to.
+Three of the sixty arrived in the paragraph below, which is measuring the
+corrections.
+
+THE COUNT TOOK THREE ATTEMPTS AND THE INSTRUMENT TOOK THREE, and that is the
+part worth keeping. It first read FIVE, written by listing the cites its author
 remembered; the sixth cite and the sentence counting it landed in the SAME
 commit (`968b53f49`), so the number was wrong ON ARRIVAL rather than gone stale.
 The correction read SIX by silently dropping the `derived_unnest.go:250`
 narrative cite — an exclusion the stated definition does not make, which is the
-same defect one layer up and it arrived inside the edit fixing the first one.
-Both readings came from a scratch checker that indexed Go files by BASENAME and
-walked into `bazel-*` and the vendored Java tree, so it resolved `metadata.go`
-against whichever of three files it met first and classified a range by its
-FIRST line alone. That is what manufactured two "code range that ends on a
-closing brace" entries, and a draft then wrote a sentence explaining them —
-false for `full_unordered_scan.go:110-118`, which is nine consecutive comment
-lines. A measurement with a broken instrument does not fail; it produces a
-number to reason about.
+same defect one layer up, arriving inside the edit that fixed the first one.
 
-Two things changed as a result, and both are in the tree rather than in this
-paragraph. The instrument honours a path suffix carried by the cite and scores
-a range by either endpoint. And the two `metadata.go` cites here were qualified
-with their directory, because a cite naming a basename the tree holds three of
-is not a cite — that is the half of the gate idea that IS worth having, and
-`pkg/docscheck`'s `TestRFC238CitesResolveUniquely` now holds it at zero.
+Both readings came from a scratch checker with two faults. It indexed Go files
+by BASENAME and walked into `bazel-*` and the vendored Java tree, so it resolved
+`metadata.go` against whichever of three files it met first — that is what made
+every repo-wide figure wrong. And it classified each ENDPOINT of a range
+separately, reporting every non-code one, which is what made
+`pkg/recordlayer/metadata.go:1365-1367` and `record_types_property.go:37-51` —
+code ranges that CLOSE on a brace — read weak. A draft then wrote a sentence
+explaining those two, and the sentence was false for a third cite. A later draft
+blamed FIRST-line classification, which is the opposite of what happened: under
+a first-line rule both of those read as code. A measurement with a broken
+instrument does not fail; it produces a number to reason about, and each wrong
+explanation of the number survives until someone re-runs the thing.
 
-**As a "does the cite still name its function" check: it catches 1 in 7.** Of
-the seven cites this branch corrected, only `derived_unnest.go:250` → `:287`
-crossed a declaration boundary. Every other one drifted INSIDE a single
+The third fault was in the replacement, found by review rather than by me: it
+counted a range whose START was in bounds and whose END was past EOF as resolved
+code. Two such ranges sit in `rfcs/*.md`, so `2066/1148` in the previous
+revision of this paragraph included them; with both endpoints checked the
+figures are `2063/1146`, and the past-EOF class is reported separately from the
+93 dangling rather than merged with them.
+
+Three things changed as a result, and all three are in the tree rather than in
+this paragraph. The instrument honours a path suffix carried by the cite, scores
+a range by either endpoint, and rejects a range with a dangling end. The two
+`metadata.go` cites here were qualified with their directory, because a cite
+naming a basename the tree holds three of is not a cite. And that half of the
+gate idea — resolution, not style — is now `pkg/docscheck`'s
+`TestRFC238CitesResolveUniquely`, holding ambiguous and dangling at zero for
+this document, with `TestRFC238WeakCitesAreTheOnesSection7dNames` pinning the
+weak SET by name so this enumeration cannot drift from the tree again.
+
+**As a "does the cite still name its function" check: it was silent for five of
+the six corrections examined by hand.** Only `derived_unnest.go:250` → `:287`
+crossed a declaration boundary. The other five drifted INSIDE a single
 function — `:3022`/`:3031` in the same builder, `:2817`/`:2826` both inside
 `buildMatchCandidates`, `:4136`/`:4204` both inside the same rebase,
-`:924`/`:925` both in `derivedOutputColumns`. A function-range gate would have
-been silent for six of the seven.
+`:924`/`:925` both in `derivedOutputColumns`, and
+`pkg/recordlayer/metadata.go:1330-1338` → `:1343-1351` → `:1352-1360`,
+shifted TWICE by comments added ABOVE the function it cites, both times within
+this section's own review cycle. A function-range gate would have fired for
+one of the six.
+
+THAT IS A SAMPLE, NOT THE BRANCH, and the difference is the point. An earlier
+revision said "the seven cites this branch corrected", which was one commit's
+count (`394ae5694`) written as if it were the branch's. Measured over
+`origin/master..HEAD`: **51 corrections across 11 of 60 commits**, counting a
+correction as a file cited at a new line where an old line for that file
+disappeared. A stricter hand-filtered rule gives 44 across 9. The number is
+genuinely rule-dependent — one file cited from several places produces several
+"corrections" for one edit — so the rule is stated with it rather than a bare
+figure being quoted. What is NOT rule-dependent is that it was never seven.
+
+The drift is also more repetitive than a per-commit count suggests:
+`cascades_generator.go:2826` alone moved four further times after the correction
+this section names (`:2840` → `:2839` → `:2848` → `:2858`), every move a
+whole-file shift with the cite staying inside the same function. That is the
+shape a function-range gate is blind to, and it is the dominant shape here.
 
 So neither shape is built. What actually works is the discipline the failures
 point at, and it took THREE rounds to state completely because the first two
@@ -1267,8 +1311,14 @@ design this RFC commits to:
     "armed now for any metadata carrying a detached aggregate index", which is
     false. `AddIndex` returns BEFORE registering when the record type is
     unknown; `AddMultiTypeIndex` records a build error per unresolved name;
-    `Build` refuses; metadata loaded from a store goes through the same builder;
-    and no production path constructs a `RecordMetaData` directly.
+    `Build` refuses; and no production path constructs a `RecordMetaData`
+    directly. The store-load path is gated too, though NOT by going "through the
+    same builder", which an earlier revision claimed: `RecordMetaDataFromProto`
+    fills a builder struct but bypasses `AddIndex`/`AddMultiTypeIndex` entirely,
+    writing `rt.indexes` and `rt.multiTypeIndexes` directly
+    (`pkg/recordlayer/metadata_proto.go:271`, `:280`). What gates it is its own
+    check: it errors on an index naming a record type the descriptor does not
+    declare.
 
     WHAT SURVIVES IS OVERWRITE-AFTER-REGISTRATION.
     `setRecordsWithUnionName` OVERWRITES `b.recordTypes[name]` with a fresh
@@ -1306,10 +1356,17 @@ design this RFC commits to:
     ALL FOUR READINGS ARE PINNED, not merely described:
     `TestOverwriteAfterRegistrationOrphansTheIndexAssociation`
     (`pkg/recordlayer/index_association_overwrite_test.go`) drives the three
-    orphan spellings and the universal non-orphan, plus a control that fails if
-    the association is lost unconditionally — without which every orphan arm
-    would pass against an implementation that never associates anything. The
-    universal arm was written expecting a field key and had to be rebuilt on
+    orphan spellings and the universal non-orphan, and EACH ARM CARRIES ITS OWN
+    CONTROL — the same registration function, built without the second
+    `SetRecords`, asserting the association EXISTS first. A single shared control
+    is not enough and that was the first version's defect: it exercised
+    `AddIndex`, so a spelling that silently associated NOTHING still satisfied
+    its own after-assertion, and the arm could not tell "orphaned by the
+    overwrite" from "never associated". Mutating the one-name branch to register
+    in the flat registry alone reddens exactly that arm's control and nothing
+    else.
+
+    The universal arm was written expecting a field key and had to be rebuilt on
     `EmptyKey()`: a universal index is validated against EVERY record type, and
     the key first chosen -- `Field("id")` -- is declared only by `TypedRecord`,
     so `Build` refused before the claim was reached. That is a fact about the
@@ -1318,6 +1375,25 @@ design this RFC commits to:
 
     When the booked guard lands, the three orphan arms are what must move, and
     their failure messages say so rather than being deleted.
+
+    AND THE ORPHAN DOES NOT STAY AN ORPHAN — this is the consequence that makes
+    the booked guard worth more than a result-type fix. `ToProto` walks the FLAT
+    registry, so the orphaned index IS emitted, with an EMPTY `RecordType` list
+    because that list is built from the associations the overwrite discarded.
+    Reload maps an empty list to UNIVERSAL. The state therefore does not merely
+    survive a serialization round trip, it WIDENS the index: one declared for a
+    single record type comes back maintained for every type.
+    `TestOrphanedIndexRoundTripsAsUniversal` measures exactly that —
+    `RecordTypesForIndex` 0 before, 3 after, and the index present in
+    `GetUniversalIndexes`.
+
+    Java reads those bytes the same way: its proto loop calls
+    `addMultiTypeIndex(recordTypeBuilders, …)` with an EMPTY list, which its
+    `addMultiTypeIndex` routes to `universalIndexes`. So the promotion is a
+    shared reading of one encoding rather than a Go divergence — which makes it
+    a semantic defect on both engines instead of a compatibility one. The cost
+    of the orphan is not a degraded result type; it is an index silently
+    maintained for records it was never declared for.
 
     Two drafts got this wrong in opposite directions and both are worth
     recording, because each is the reading a later engineer arrives at first.
