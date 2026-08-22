@@ -1237,17 +1237,22 @@ design this RFC commits to:
     `Build` refuses; metadata loaded from a store goes through the same builder;
     and no production path constructs a `RecordMetaData` directly.
 
-    ONE ORDERING SURVIVES, and it is not the one a second draft named. That
-    draft said `SetRecords` after `AddIndex` orphans because the second call
-    "repopulates the record types" -- it does not: the map is created once and
-    only inserted into, so a second call MERGES and a type the new descriptor
-    omits survives with its indexes intact. The real trigger is the opposite
-    shape. `setRecordsWithUnionName` OVERWRITES `b.recordTypes[name]` with a
-    fresh `RecordType` whose index slice is nil, so `AddIndex("T", idx)`
-    followed by a `SetRecords` whose descriptor STILL DECLARES `T` throws away
-    T's index slice while the flat registry keeps the entry. No build error,
-    `Build` succeeds, `RecordTypesForIndex` comes back empty. The danger is the
-    type SURVIVING the second call, not being dropped by it.
+    WHAT SURVIVES IS OVERWRITE-AFTER-REGISTRATION, in either registration form.
+    `setRecordsWithUnionName` OVERWRITES `b.recordTypes[name]` with a fresh
+    `RecordType` whose index slice is nil, while the flat index registry keeps
+    its entry -- so registering an index against a type and then calling
+    `SetRecords` over a descriptor that STILL DECLARES that type discards the
+    association. No build error, `Build` succeeds, `RecordTypesForIndex` comes
+    back empty. It holds for `AddIndex` and for `AddMultiTypeIndex` alike, since
+    both hang the association off the `RecordType` the setter replaces.
+
+    Two drafts got this wrong in opposite directions and both are worth
+    recording, because each is the reading a later engineer arrives at first.
+    One said `SetRecords` "repopulates" the record types -- it does not, the map
+    is created once and only inserted into, so a second call MERGES. The other
+    said the orphan comes from the second descriptor DROPPING the type -- also
+    wrong, and for the same reason: a dropped type keeps its old entry, indexes
+    intact. The danger is the type SURVIVING the second call.
 
     AND THE CONSEQUENCE IS WIDER THAN THIS SECTION. The same discard removes
     the index from `GetIndexesForRecordType`, so it is an index-maintenance hole

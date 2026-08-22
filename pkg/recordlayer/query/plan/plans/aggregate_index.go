@@ -37,9 +37,10 @@ import (
 //     nothing for an index that is neither universal nor associated, the
 //     aggregate rule then leaves this field empty, and GetRecordType("")
 //     misses. Every obvious route to that state is gated by the metadata
-//     builder; the one that is not is SetRecords called AFTER AddIndex over a
-//     descriptor that STILL DECLARES the type -- the overwrite drops the type's
-//     index slice while the flat registry keeps the entry. It matters here because this
+//     builder; what survives is OVERWRITE-AFTER-REGISTRATION -- SetRecords
+//     called after AddIndex or AddMultiTypeIndex, over a descriptor that STILL
+//     DECLARES the type, replaces the RecordType and so drops its index slice
+//     while the flat registry keeps the entry. It matters here because this
 //     field carries whichever namespace the plan was built in (RFC-238 §7c),
 //     so a plan built with a SQL spelling against metadata keyed by the stored
 //     one misses and degrades exactly that way. A draft of this comment claimed
