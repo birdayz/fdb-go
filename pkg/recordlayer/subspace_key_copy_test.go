@@ -107,9 +107,18 @@ func TestDeepCopySubspaceKeyIsolatesEveryMutableShape(t *testing.T) {
 }
 
 // The value-typed shapes, pinned so that "they copy with the struct" is a
-// checked statement rather than an assumption. If any of these ever grows a
-// pointer field, the arm above it in deepCopySubspaceKey stops being complete
-// and this test is where that surfaces.
+// checked statement rather than an assumption: each must come back through
+// deepCopySubspaceKey's `default` arm unchanged and still compare equal.
+//
+// WHAT THIS CANNOT DETECT, stated because an earlier version of this comment
+// claimed the opposite. If one of these types grows a POINTER field it stays
+// comparable, the `default` arm hands it straight back, both sides hold the
+// same pointer, and every arm below still passes -- the very regression the old
+// wording promised to surface. Only a non-comparable addition (a slice, map or
+// func field) shows up here, and then as a runtime panic on `!=` rather than as
+// the message written in the failure. The real guard against a type gaining
+// mutable state is the enumeration in deepCopySubspaceKey's doc comment being
+// re-derived from the decoder, not this table.
 func TestDeepCopySubspaceKeyPassesValueShapesThrough(t *testing.T) {
 	t.Parallel()
 

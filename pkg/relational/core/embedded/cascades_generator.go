@@ -3192,6 +3192,20 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 			actualSuffix = append(actualSuffix, column)
 		}
 	}
+	// THIS CROSS-CHECK NOW DECLINES A SHAPE IT USED TO ACCEPT, and the narrowing
+	// is deliberate rather than incidental. `actualSuffix` is derived from the
+	// physical positions and `nameTrimmed` from the column names; for a
+	// multi-type or universal index positions are always nil -- Java assigns
+	// them only to single-type indexes -- so `actualSuffix` is the FULL primary
+	// key while `nameTrimmed` still drops any column the index key names. The
+	// two then disagree in length and this returns `unknown`.
+	//
+	// That costs an ordering derivation for exactly one shape: a multi-type or
+	// universal index whose key overlaps a covered type's primary key. It is a
+	// lost optimisation, never a wrong answer, and it is the correct direction
+	// while the physical layout of those entries is the untrimmed one. Closing
+	// it means teaching this function that the trim is name-based for these
+	// indexes, which is a separate change with its own plan-shape review.
 	nameTrimmed := plans.TrimmedPKSuffix(d.IndexColumnNames(), pkCols)
 	if len(actualSuffix) != len(nameTrimmed) {
 		return unknown

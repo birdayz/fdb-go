@@ -20346,15 +20346,22 @@ otherwise would be the same over-claim one level up.
 ## `RecordMetaDataBuilder.Build` does six jobs in one frame
 
 Measured with `awk '/^func \(b \*RecordMetaDataBuilder\) Build\(\)/,/^}/'
-pkg/recordlayer/metadata.go | wc -l`: 675 lines at the commit that books this.
-Run per commit over the four preceding it the trend is **not** monotonic --
-658, 620, 644, 668, 675, i.e. -38, +24, +24, +7. An earlier revision of this
-entry said it "has GROWN in each of the last three commits"; one of them shrank
-it by 38 lines, and that sentence was written from the direction of the last two
-deltas rather than from the series. The true statement is narrower and still
-sufficient: every correctness fix in this area lands inside the same frame, and
-the one commit that shortened it did so by DELETING a divergent loop rather than
-by extracting anything.
+pkg/recordlayer/metadata.go | wc -l`. **Recompute it; do not trust a number
+written here.** The series over the commits that produced this entry is 658
+(`103eee9e6`), 620 (`0b3a33d6e`), 644 (`e1d95cb49`), 668 (`89452ec11`) -- and
+those are stable because each names a SHA. A fifth figure for "now" was written
+into this entry twice and was stale both times, the second time within the same
+working session that wrote it, because the edits folding a review round grew the
+function underneath the sentence describing it. That is the failure this repo
+calls a measurement with no stated population, and the fix is to state the
+command instead of its output.
+
+The trend is **not** monotonic: -38, +24, +24. An earlier revision said it "has
+GROWN in each of the last three commits"; one of them shrank it by 38 lines, and
+that sentence was written from the direction of the last two deltas rather than
+from the series. The narrower true statement is enough: every correctness fix in
+this area lands inside the same frame, and the one commit that shortened it did
+so by DELETING a divergent loop rather than by extracting anything.
 
 `Build` drains `buildErrors`, validates the registry/association invariant in
 **six** refused classes (`pkg/recordlayer/metadata.go:900-912` --

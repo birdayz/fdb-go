@@ -21,7 +21,7 @@ import (
 // The sibling composite-index suite covers a SINGLE-TYPE index whose key
 // overlaps the primary key, where both engines trim the redundant components.
 // That is one of three registration shapes and the only one Java trims: its
-// sole setPrimaryKeyComponentPositions call site
+// sole MAIN-SOURCE setPrimaryKeyComponentPositions call site
 // (RecordMetaDataBuilder.java:1466) iterates recordTypeBuilder.getIndexes(),
 // while addMultiTypeIndex routes zero record-type names to universalIndexes and
 // two-or-more to getMultiTypeIndexes(). Neither list is visited.

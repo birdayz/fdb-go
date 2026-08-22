@@ -960,8 +960,16 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// parity. (2) The suffix only continues a FULLY emitted index key —
 	// if the loop above stopped early the positions would not be
 	// contiguous and the suffix would claim an order the entries don't
-	// have. PK columns already in the index key are trimmed
-	// (Index.trimPrimaryKey), matching fullKey construction. (3) The last
+	// have. TrimmedPKSuffix drops PK columns already named in the index key,
+	// which is a claim about ORDERING and not about the stored entry: for a
+	// single-type index Index.TrimPrimaryKey drops those same columns from the
+	// bytes, but for a multi-type or universal index it does NOT -- those are
+	// never assigned primaryKeyComponentPositions, so their entries repeat the
+	// column. The suffix is right either way, because a column already fixed by
+	// an earlier position contributes nothing to sort order, so ordering by
+	// (indexKey…, a, b) equals ordering by (indexKey…, b). An earlier revision
+	// justified this by asserting the entry was trimmed, which was true only for
+	// the single-type case. (3) The last
 	// emitted coordinate must carry order through itself; a full part count is
 	// not sufficient, since a coordinate that claims only its OWN order can sit
 	// at the end of the key.

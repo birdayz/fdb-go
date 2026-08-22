@@ -14,7 +14,9 @@ import (
 // to one index more than Java does changes the bytes in FDB.
 //
 // Java assigns it at exactly one place -- RecordMetaDataBuilder.java:1465-1467,
-// the only setPrimaryKeyComponentPositions call site in the tree -- inside
+// its only setPrimaryKeyComponentPositions call site in MAIN sources (the Java
+// tree holds 8 more, all under src/test/, which is why "in the tree" was the
+// wrong scope for this claim) -- inside
 // `for (Index index : recordTypeBuilder.getIndexes())`. `getIndexes()` and
 // `getMultiTypeIndexes()` are separate lists (RecordTypeIndexesBuilder.java:
 // 43-44), and `addMultiTypeIndex` routes by arity: zero names to
@@ -179,4 +181,57 @@ func buildPriceKeyedMetaData(register func(*RecordMetaDataBuilder, *Index), inde
 	b.GetRecordType("TypedRecord").SetPrimaryKey(Field("price"))
 	register(b, NewIndex(indexName, Field("price")))
 	return b.Build()
+}
+
+// THE UPGRADE HAZARD, measured rather than reasoned about.
+//
+// positions are derived at every Build and never persisted -- `grep -rn
+// primary_key_component_positions` over Java's *.proto tree returns nothing
+// (positive control: `last_modified_version` returns hits) -- so an index whose
+// positions changed has no on-disk discriminator. Entries written by an older Go
+// for a multi-type or universal index are TRIMMED; this build writes them whole
+// and reads them with nil positions.
+//
+// What that does to a trimmed entry is the part worth pinning: it does not
+// error, it returns an EMPTY primary key. For an index whose key IS the primary
+// key, colSize equals the trimmed entry's length, so the `colSize < len` guard
+// is false and the empty tuple is returned. A scan over pre-upgrade data
+// therefore yields rows with no primary key rather than a failure, and the
+// metadata-evolution validator cannot see it either: it compares two BUILT
+// metadata objects, and after the upgrade both sides derive nil.
+//
+// The remedy is operational, not a version gate -- there is nothing on disk to
+// gate on, and the old format was itself nondeterministic for universal indexes.
+// Bump the affected index's lastModifiedVersion, which IS persisted and does
+// trigger a rebuild.
+func TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey(t *testing.T) {
+	t.Parallel()
+
+	// A universal index on `price` over record types keyed on `price`: exactly
+	// the shape whose entries an older Go trimmed.
+	md, err := buildPriceKeyedMetaData(
+		func(b *RecordMetaDataBuilder, idx *Index) { b.AddUniversalIndex(idx) }, "uni_idx")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	idx := md.GetIndex("uni_idx")
+	if idx.HasPrimaryKeyComponentPositions() {
+		t.Fatal("this build assigned positions to a universal index; the premise of this test is gone " +
+			"and the multi-type/universal fix has been reverted")
+	}
+
+	// What this build writes: (price, pk).
+	current := idx.getEntryPrimaryKey(tuple.Tuple{int64(100), int64(100)})
+	if len(current) != 1 || current[0] != int64(100) {
+		t.Fatalf("an entry written by THIS build reads back with primary key %v, want [100]", current)
+	}
+
+	// What an older Go wrote: (price) alone, the primary key trimmed away.
+	legacy := idx.getEntryPrimaryKey(tuple.Tuple{int64(100)})
+	if len(legacy) != 0 {
+		t.Fatalf("a pre-upgrade trimmed entry now reads back with primary key %v.\n"+
+			"That is BETTER than the empty tuple this pins, so the hazard has changed shape: "+
+			"re-read the migration paragraph in DIVERGENCES.md before relaxing anything, because "+
+			"it tells operators the failure is silent.", legacy)
+	}
 }

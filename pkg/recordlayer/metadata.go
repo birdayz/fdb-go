@@ -693,29 +693,41 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // metadata whose index registry and record-type associations do not agree in
 // both directions -- see the bijection check below.
 //
-// WHAT BUILD WRITES, first, because two successive revisions of this comment
-// claimed it wrote nothing and each was refuted by code twenty lines below it.
-// Build MUTATES the builder's own objects in three places:
+// WHAT BUILD WRITES INTO THE BUILDER'S OWN OBJECTS -- first, because two
+// successive revisions of this comment claimed it wrote nothing, and the
+// revision that fixed THAT over-claimed in the other direction by listing three
+// writes where there is one. Exactly one:
 //
-//   - `idx.primaryKeyComponentPositions` on every SINGLE-TYPE index, which is
-//     the point: Java sets positions on the objects the caller registered, and
-//     the scan call sites read them off those same objects.
-//   - `rt.explicitRecordTypeKey`, normalised in place.
-//   - `fi.SubspaceKey` on former indexes, deep-copied.
+//   - `idx.primaryKeyComponentPositions`, on every SINGLE-TYPE index, because
+//     `indexes[k] = v` shares the pointer. That is the point: Java sets
+//     positions on the objects the caller registered and the scan call sites
+//     read them off those same objects. (Multi-type and universal indexes are
+//     deliberately excluded -- see the loop.)
+//
+// `rt.explicitRecordTypeKey` and `fi.SubspaceKey` are NOT writes, which is easy
+// to misread because the assignments look like ones: both sites open with a
+// struct copy (`rt := *v`, `f := *fi`) and then assign the COPY. The builder's
+// RecordType and FormerIndex objects come out of Build unchanged. They belong
+// to the copied set below.
 //
 // WHAT STAYS SHARED with the builder after Build returns: the `*Index` objects
 // themselves, and therefore everything reachable through them -- `Options`
 // (a map, with the exported in-place mutators SetUnique and SetClearWhenZero),
 // `primaryKeyComponentPositions`, `Predicate`, `predicateProto`, `subspaceKey`,
-// and the KeyExpression graphs behind `RootExpression`. Also shared:
-// `fileDescriptor`, and the KeyExpression graphs behind each record type's
-// `PrimaryKey` and behind `recordCountKey`.
+// and the KeyExpression graphs behind `RootExpression`. Also shared, both
+// descriptors: `fileDescriptor` and `unionDescriptor`; and the KeyExpression
+// graphs behind each record type's `PrimaryKey` and behind `recordCountKey`.
 //
 // WHAT IS COPIED: every container Build owns directly -- the index registry
 // map, the universal and former index slices, each record type's index slices,
-// the `preserved` struct and its four slices, and `recordsSourceProto` (a
-// proto.Clone; note this is the RETAINED verbatim descriptor, not the shared
-// `fileDescriptor` named above).
+// the RecordType and FormerIndex structs themselves (with their `[]byte` and
+// subspace-key fields deep-copied), the `preserved` struct and all FIVE of its
+// slices (`unknown` included), and `recordsSourceProto` (a proto.Clone; note
+// this is the RETAINED verbatim descriptor, not the shared `fileDescriptor`
+// named above).
+//
+// WHAT IS DERIVED HERE and shared with nothing: `fieldNumberToRecordType` and
+// `ambiguousNames`, both computed from the metadata this Build assembled.
 //
 // Copying the containers keeps a later builder mutation from rewriting what
 // Build returned; sharing the objects is what callers depend on when they hand
@@ -991,6 +1003,16 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	//     built from identical metadata could disagree with each other.
 	//
 	// Both are pinned by TestPositionsAreAssignedOnlyToSingleTypeIndexes.
+	//
+	// THIS CHANGES EXISTING DATA. Positions are derived here and never
+	// persisted, so entries an older build wrote for a multi-type or universal
+	// index are trimmed while this one writes them whole -- and reading a
+	// trimmed entry with nil positions yields an EMPTY primary key rather than
+	// an error. Nothing detects that automatically; the affected indexes need a
+	// lastModifiedVersion bump to force a rebuild. DIVERGENCES.md, "UPGRADING
+	// BREAKS EXISTING DATA FOR THE AFFECTED INDEXES, SILENTLY", is the operator
+	// -facing version, and TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimary
+	// Key pins the read behaviour.
 	for _, rt := range b.recordTypes {
 		for _, idx := range rt.indexes {
 			if idx.primaryKeyComponentPositions == nil {
@@ -2102,6 +2124,32 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 // equivalence class — that's a harmless conflation here because any
 // metadata that mixes the two for the same logical subspace is
 // already malformed.
+func normalizeSubspaceKey(key any) any {
+	switch k := key.(type) {
+	case int:
+		return int64(k)
+	case int32:
+		return int64(k)
+	case int64:
+		return k
+	case []byte:
+		return string(k)
+	case tuple.Tuple:
+		// Nested tuples are produced by `fastDecodeTuple` when the
+		// proto-encoded subspace key carries an FDB nested-tuple type
+		// code. Like `[]byte`, a `tuple.Tuple` (= []any) is unhashable
+		// in Go and would panic on map insert. Java doesn't currently
+		// emit nested tuples as subspace keys, so this is preemptive
+		// hardening rather than a known-triggering case (the fuzz has
+		// run 16M+ iterations without finding one), but the cost is
+		// trivial and the alternative is a surprise panic if the input
+		// ever takes that shape.
+		return fmt.Sprintf("%v", k)
+	default:
+		return key
+	}
+}
+
 // deepCopySubspaceKey returns a subspace key that shares no mutable state with
 // its argument.
 //
@@ -2111,9 +2159,13 @@ func primaryKeyStartsWithRecordType(expr KeyExpression) bool {
 // "which shapes are reachable" is how the []byte-only version of this copy came
 // to describe itself as complete. The producers are `formerIndexFromProto`
 // (`fi.SubspaceKey = t[0]` off a decoded tuple) and `Index.SubspaceTupleKey`,
-// so the reachable set is what `fastDecodeTuple` can return for one element:
-// nil, []byte, string, int64, *big.Int, float32, float64, bool, tuple.UUID,
-// tuple.Versionstamp, and a nested tuple.Tuple.
+// so the reachable set is what `fastDecodeTuple` can return for one element,
+// which is TWELVE shapes: nil, []byte, string, int64, uint64, *big.Int,
+// float32, float64, bool, tuple.UUID, tuple.Versionstamp, and a nested
+// tuple.Tuple. (`uint64` is easy to miss and was: `fastDecodeInt` returns it
+// for a positive value that overflows int64. It is immutable, so the code below
+// is unaffected -- but an enumeration is offered because it is checkable, and
+// the conclusion surviving does not make the list true.)
 //
 // Of those, exactly three carry mutable state: []byte, *big.Int (which has
 // in-place mutators -- Set, SetBytes, Add), and tuple.Tuple, which is []any and
@@ -2148,32 +2200,6 @@ func deepCopySubspaceKey(key any) any {
 			dup[i] = deepCopySubspaceKey(elem)
 		}
 		return dup
-	default:
-		return key
-	}
-}
-
-func normalizeSubspaceKey(key any) any {
-	switch k := key.(type) {
-	case int:
-		return int64(k)
-	case int32:
-		return int64(k)
-	case int64:
-		return k
-	case []byte:
-		return string(k)
-	case tuple.Tuple:
-		// Nested tuples are produced by `fastDecodeTuple` when the
-		// proto-encoded subspace key carries an FDB nested-tuple type
-		// code. Like `[]byte`, a `tuple.Tuple` (= []any) is unhashable
-		// in Go and would panic on map insert. Java doesn't currently
-		// emit nested tuples as subspace keys, so this is preemptive
-		// hardening rather than a known-triggering case (the fuzz has
-		// run 16M+ iterations without finding one), but the cost is
-		// trivial and the alternative is a surprise panic if the input
-		// ever takes that shape.
-		return fmt.Sprintf("%v", k)
 	default:
 		return key
 	}

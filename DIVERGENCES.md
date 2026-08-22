@@ -2294,8 +2294,9 @@ divergence as the desired behaviour.
 `primaryKeyComponentPositions` decides whether an index entry carries the
 record's primary key whole or with the components already present in the index
 key removed (`Index.TrimPrimaryKey`). Java assigns it at exactly one place --
-`RecordMetaDataBuilder.java:1466`, the only `setPrimaryKeyComponentPositions`
-call site in the tree -- inside `for (Index index : recordTypeBuilder.getIndexes())`.
+`RecordMetaDataBuilder.java:1466`, its only `setPrimaryKeyComponentPositions`
+call site in MAIN sources (the Java tree holds 8 more, all under `src/test/`) --
+inside `for (Index index : recordTypeBuilder.getIndexes())`.
 `getIndexes()` and `getMultiTypeIndexes()` are separate fields
 (`RecordTypeIndexesBuilder.java:43-44`), and `addMultiTypeIndex` routes by arity:
 zero names to `universalIndexes`, exactly one to `getIndexes()`, two or more to
@@ -2334,3 +2335,44 @@ negative assertions honest) and by
 `TestUniversalIndexPositionsDoNotDependOnMapIterationOrder` (40 builds, record
 types deliberately given DIFFERENT primary keys, since with identical ones every
 choice agrees and the map order stops mattering).
+
+### UPGRADING BREAKS EXISTING DATA FOR THE AFFECTED INDEXES, SILENTLY
+
+Read this before deploying. It is not a code gap; it is an operational step the
+fix cannot perform for you.
+
+**Who is affected.** An index registered as multi-type (two or more record
+types) or universal, whose key expression overlaps the primary key of a record
+type it covers. Single-type indexes are untouched — their positions are
+unchanged.
+
+**What happens.** `primaryKeyComponentPositions` is derived at every `Build` and
+NEVER persisted: `grep -rn 'primary_key_component_positions'` over Java's
+`*.proto` tree returns nothing (positive control: `last_modified_version`
+returns hits). So there is no field on disk recording which layout an existing
+entry used. Entries written by an older Go for these indexes are TRIMMED; this
+build writes them whole and reads them with nil positions.
+
+Reading a trimmed entry does not error. `Index.getEntryPrimaryKey` returns
+`entryKey[colSize:]` when positions are nil, and for an index whose key IS the
+primary key the trimmed entry's length equals `colSize`, so the guard
+`colSize < len(entryKey)` is false and it returns an EMPTY tuple. A scan over
+pre-upgrade data yields rows whose primary key is empty. Pinned by
+`TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey`.
+
+**Why no automatic guard fires.** `metadata_evolution_validator.go` compares two
+BUILT metadata objects. After the upgrade both sides derive nil positions, so
+`!oldHas && !newHas` and the check passes. It is structurally incapable of
+seeing this, because the thing that changed was never in the metadata it
+compares.
+
+**The remedy, and why it is not a version gate.** A gate needs an on-disk
+discriminator and there is none; worse, the old format was not even a single
+format — for universal indexes it depended on Go map iteration order, so two
+stores written by the same old binary could disagree. There is nothing coherent
+to gate on. Bump `lastModifiedVersion` on each affected index, which IS
+persisted and does trigger a rebuild, and let the rebuild rewrite the entries.
+
+**Why shipping it anyway is right.** The old entries were already unreadable by
+Java, which is the whole point of the port. The choice is between data that
+disagrees with Java forever and one rebuild.

@@ -359,7 +359,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 		// JAVA ASSIGNS primaryKeyComponentPositions TO SINGLE-TYPE INDEXES ONLY.
 		//
 		// RecordMetaDataBuilder.java:1465-1467 is the sole call site of
-		// setPrimaryKeyComponentPositions in the whole Java tree, and it loops
+		// setPrimaryKeyComponentPositions in Java's MAIN sources, and it loops
 		// over `recordTypeBuilder.getIndexes()`. That list and
 		// `getMultiTypeIndexes()` are separate fields
 		// (RecordTypeIndexesBuilder.java:43-44), and `addMultiTypeIndex` routes

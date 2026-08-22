@@ -68,12 +68,34 @@ func TestRelativeTypeNameFixtureActuallyCarriesARelativeName(t *testing.T) {
 			"TestRecordMetaDataFromProtoDoesNotMutateItsInput would exercise no absolutization "+
 			"at all and pass no matter what the function does", absolute)
 	}
-	// The positive control: the descriptor must still have real content, so a
-	// fixture that lost its fields cannot satisfy the check above by emptiness.
-	if relative+absolute == 0 {
-		t.Fatal("the fixture descriptor declares no message-typed fields at all")
+	// (There is no `relative+absolute == 0` check here. An earlier revision had
+	// one, labelled a positive control; the check above already fatals unless
+	// `relative >= 1`, so the sum could never be zero and the assertion could
+	// never fire. A control that is unreachable is worse than no control,
+	// because it reads as coverage.)
+
+	// THE SECOND ARM, guarded separately because it was silently empty. The
+	// function clones md.Records AND every element of md.Dependencies; with no
+	// dependencies the second loop never runs and reverting it changes nothing.
+	if len(md.Dependencies) == 0 {
+		t.Fatal("the fixture carries no dependencies, so the dependency-clone loop in " +
+			"RecordMetaDataFromProto is never executed and TestRecordMetaDataFromProtoDoesNotMutateItsInput " +
+			"covers only the records descriptor")
 	}
-	t.Logf("fixture type names: %d relative, %d absolute", relative, absolute)
+	depRelative, depAbsolute := 0, 0
+	for _, d := range md.Dependencies {
+		r, a := countTypeNameShapes(d)
+		depRelative += r
+		depAbsolute += a
+	}
+	if depRelative == 0 {
+		t.Fatalf("the fixture's %d dependencies carry %d absolute and 0 relative type names, so "+
+			"absolutization is a no-op on all of them and the dependency arm is covered in name only",
+			len(md.Dependencies), depAbsolute)
+	}
+
+	t.Logf("fixture type names: records %d relative / %d absolute; %d dependencies, %d relative / %d absolute",
+		relative, absolute, len(md.Dependencies), depRelative, depAbsolute)
 }
 
 // relativeTypeNameMetaData returns a metadata proto whose records descriptor
@@ -102,6 +124,35 @@ func relativeTypeNameMetaData(t *testing.T) *gen.MetaData {
 		t.Fatalf("fixture ToProto: %v", err)
 	}
 	relativizeTypeNames(p.Records)
+
+	// A DEPENDENCY, because RecordMetaDataFromProto clones TWO things and only
+	// one of them was reachable. The demo descriptor's single import is
+	// record_metadata_options.proto, which defaultExcludedDependencies strips,
+	// so `p.Dependencies` came out EMPTY and the loop that clones each
+	// dependency never executed -- reverting it left this whole test green.
+	// That is the same untested-arm defect one level over from the one this file
+	// exists to close, so the fixture carries a dependency of its own.
+	dep := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("input_immutability_probe.proto"),
+		Package: proto.String("probe"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{
+			{Name: proto.String("Inner")},
+			{
+				Name: proto.String("Outer"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name:   proto.String("inner"),
+					Number: proto.Int32(1),
+					Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					// Relative on purpose: this is the byte absolutization
+					// rewrites, and the only reason this dependency exists.
+					TypeName: proto.String("Inner"),
+				}},
+			},
+		},
+	}
+	p.Dependencies = append(p.Dependencies, dep)
 	return p
 }
 

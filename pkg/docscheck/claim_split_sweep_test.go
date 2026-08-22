@@ -27,19 +27,22 @@ import (
 // than by this prose, because a gate whose sentence exceeds its code is the
 // exact failure the sweep exists to catch.
 //
-// WHAT IT DOES NOT SEE, first and enumerated, every entry observed by running it
-// (TestFlattenClaimTextDoesNotSeeTheseSplitShapes): a claim assembled at runtime
-// from a variable or format verb; a claim broken by an ESCAPED newline inside one
-// literal, where the separator is the two source characters `\` and `n` and not
-// whitespace at all; a count spelled in words instead of digits; a claim
-// straddling two files.
+// WHAT IT DOES NOT SEE, first and enumerated, at 5 arms every one of which was
+// observed by running it (TestFlattenClaimTextDoesNotSeeTheseSplitShapes): a
+// claim assembled at runtime from a variable or format verb; a claim broken by
+// an ESCAPED newline inside one literal, where the separator is the two source
+// characters `\` and `n` and not whitespace at all; a count spelled in words
+// instead of digits; a claim straddling two files; and a `//` comment sitting
+// in a concatenation join -- see goConcatSplit for why that last one cannot be
+// closed at the same time as comment wrapping.
 //
-// WHAT IT DOES SEE, at 9 arms (TestFlattenClaimTextCollapsesEverySplitShape):
+// WHAT IT DOES SEE, at 11 arms (TestFlattenClaimTextCollapsesEverySplitShape):
 // comment wrapping; adjacent-literal concatenation in all four quote pairings
 // -- interpreted/interpreted, raw/raw, and both mixed -- and, for the
 // interpreted pair only, both with and without whitespace around the `+`; a
-// concatenation appearing inside a wrapped comment; and a claim spanning the
-// middle join of three literals.
+// concatenation appearing inside a wrapped comment; a claim spanning the middle
+// join of three literals; and a block comment in the join, on one line or
+// spanning several.
 
 // goConcatSplit matches the join between two adjacent Go string literals,
 // including the degenerate `"a"+"b"` spelling with no surrounding space and the
@@ -47,7 +50,20 @@ import (
 // over-claim caught by re-reading the sentence above against the pattern: a
 // message assembled from raw literals is the same defect wearing a different
 // quote character.
-var goConcatSplit = regexp.MustCompile("[\"`]\\s*\\+\\s*[\"`]")
+//
+// It also crosses a BLOCK COMMENT sitting in the join: `"a" + /* why */ "b"` is
+// legal Go and puts non-whitespace between the literals, which a
+// whitespace-only pattern cannot span, so the claim stayed split and the sweep
+// stayed green.
+//
+// A `//` comment in the same position is NOT crossed, and that is a real limit
+// rather than an oversight -- the two requirements contradict each other under
+// any purely textual pass. Comment WRAPPING is closed by turning `//` into a
+// space and KEEPING the prose, which is what rejoins "544 call\n// sites";
+// closing `"544 call " + // why\n "sites"` needs that prose DELETED to
+// end-of-line instead. One flattener cannot do both, and real tokenization is
+// the only thing that can. Pinned in the NOT-covered table.
+var goConcatSplit = regexp.MustCompile("[\"`](?:\\s|/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/)*\\+(?:\\s|/\\*[^*]*\\*+(?:[^/*][^*]*\\*+)*/)*[\"`]")
 
 // flattenClaimText renders a source file as one line with both split shapes
 // closed up. Comment markers become spaces (so `https://x` flattens to
@@ -104,6 +120,14 @@ func TestFlattenClaimTextCollapsesEverySplitShape(t *testing.T) {
 		{
 			name: "mixed raw-then-interpreted literal",
 			src:  "panic(`because 544 call ` +\n\t\t\"sites scan with it\")\n",
+		},
+		{
+			name: "block comment sitting in the join",
+			src:  "panic(\"because 544 call \" + /* the count */ \"sites scan with it\")\n",
+		},
+		{
+			name: "block comment spanning lines in the join",
+			src:  "panic(\"because 544 call \" +\n\t\t/* why this\n\t\t   is here */ \"sites scan with it\")\n",
 		},
 	}
 
@@ -174,6 +198,14 @@ func TestFlattenClaimTextDoesNotSeeTheseSplitShapes(t *testing.T) {
 			src:  "// because 544 call\n", // the other half lives elsewhere
 			why:  "flattening is per-file by construction, so a claim straddling files is out of reach",
 		},
+		{
+			name: "line comment sitting in a concatenation join",
+			src:  "panic(\"because 544 call \" + // the count\n\t\t\"sites scan with it\")\n",
+			why: "closing this needs the comment's PROSE deleted to end-of-line, while closing comment " +
+				"WRAPPING needs that same prose kept — one textual pass cannot do both, so this shape " +
+				"is out of reach without real tokenization. The block-comment sibling IS covered, " +
+				"because deleting it is compatible with both",
+		},
 	}
 
 	for _, tc := range cases {
@@ -194,9 +226,20 @@ func TestFlattenClaimTextDoesNotSeeTheseSplitShapes(t *testing.T) {
 // textual occurrence of ScanIndex/RebuildIndex/SetIndex under pkg/ cmd/
 // conformance/, 544 the same with the generated ANTLR parser excluded -- and
 // neither counted the population the sentence around them claimed. They are
-// withdrawn in DIVERGENCES.md; this keeps them from drifting back in as a live
-// claim somewhere else.
-var withdrawnIndexCallSiteCount = regexp.MustCompile(`\b54[45]\b[^.]{0,20}?call sites`)
+// withdrawn in DIVERGENCES.md.
+//
+// WHERE THIS GATE LOOKS, precisely, because "keeps them from drifting back in
+// somewhere else" was a scope sentence considerably wider than the walk: Go
+// files under pkg/, cmd/ and conformance/ excluding /parser/gen/, plus the
+// canonical livingDocs set. NOT swept: shifts/, rfcs/, .claude/, root-level Go,
+// and any other tree. A count restated in an RFC is out of reach, and closing
+// that means widening the walk, not rewording this.
+//
+// The gap tolerance is 40 characters, not 20: "544 Scan/Rebuild/SetIndex call
+// sites" needs 26, so the earlier bound let the most natural phrasing of the
+// claim through. `[^.]` still stops the match at a sentence boundary so an
+// unrelated number two sentences away cannot pair with a later "call sites".
+var withdrawnIndexCallSiteCount = regexp.MustCompile(`\b54[45]\b[^.]{0,40}?call sites`)
 
 func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	t.Parallel()
@@ -291,20 +334,36 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 	// The prose side. TODO.md restated one of the figures for two revisions after
 	// DIVERGENCES.md had already qualified it, so the living docs are swept for
 	// the same claim shape as the sources.
-	for _, doc := range []string{"TODO.md", "README.md", "DIVERGENCES.md"} {
+	//
+	// livingDocs, NOT a private list. An earlier revision hardcoded three files,
+	// which left the count free to reappear in PRODUCTION_READINESS.md,
+	// CHANGELOG.md, RELEASE.md, docs/mt-saas.md or road-to-prod.md while this
+	// gate stayed green -- a scope sentence ("the living docs") broader than the
+	// set it walked. Reusing the canonical variable makes the two the same thing
+	// by construction, so a doc added to the project is swept without anyone
+	// editing this file.
+	for _, doc := range livingDocs {
 		b, err := os.ReadFile(filepath.Join(root, doc))
 		if err != nil {
 			continue
 		}
 		flat := flattenClaimText(string(b))
-		loc := withdrawnIndexCallSiteCount.FindStringIndex(flat)
-		if loc == nil {
+
+		// EVERY match, not the first. FindStringIndex returns only the earliest,
+		// so a document whose first mention is the legitimate withdrawal would
+		// pass its window check and mask every later, live restatement behind
+		// it -- and DIVERGENCES.md, the one file guaranteed to contain an
+		// allowed mention, is exactly where that masking would apply.
+		locs := withdrawnIndexCallSiteCount.FindAllStringIndex(flat, -1)
+		if len(locs) == 0 {
 			continue
 		}
 		mdHits = append(mdHits, doc)
-		window := flat[max(0, loc[0]-1200):min(len(flat), loc[1]+1200)]
-		if !strings.Contains(window, "WITHDRAWN") && !strings.Contains(window, "withdrawn") {
-			t.Errorf("%s states a withdrawn index-call-site count with no withdrawal in the surrounding 1200 chars:\n  …%s…", doc, window)
+		for _, loc := range locs {
+			window := flat[max(0, loc[0]-1200):min(len(flat), loc[1]+1200)]
+			if !strings.Contains(window, "WITHDRAWN") && !strings.Contains(window, "withdrawn") {
+				t.Errorf("%s states a withdrawn index-call-site count with no withdrawal in the surrounding 1200 chars:\n  …%s…", doc, window)
+			}
 		}
 	}
 	_ = mdHits // a doc may legitimately hold zero; the anchor below is what must hold.

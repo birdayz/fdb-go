@@ -21,7 +21,7 @@ var _ = Describe("IndexRegistrationMatrix", func() {
 		// wantPositions is whether Build assigns primaryKeyComponentPositions to
 		// an index registered this way, and so whether its entries carry a
 		// TRIMMED primary key. Only single-type registration does: Java's sole
-		// setPrimaryKeyComponentPositions call site
+		// MAIN-SOURCE setPrimaryKeyComponentPositions call site
 		// (RecordMetaDataBuilder.java:1465-1467) iterates
 		// `recordTypeBuilder.getIndexes()`, which `addMultiTypeIndex` feeds only
 		// when given exactly one record-type name.
