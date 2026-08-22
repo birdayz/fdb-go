@@ -27,7 +27,7 @@ import java.util.Map;
  * <p>The sibling CompositeIndexSteps covers a SINGLE-TYPE index whose key
  * overlaps the primary key, where Java trims the redundant components. That is
  * one of three registration shapes, and it is the only one Java trims:
- * setPrimaryKeyComponentPositions is called from a single site
+ * setPrimaryKeyComponentPositions is called from a single MAIN-SOURCE site
  * (RecordMetaDataBuilder:1466) iterating recordTypeBuilder.getIndexes(), and
  * addMultiTypeIndex routes zero names to universalIndexes and two-or-more to
  * getMultiTypeIndexes(), neither of which that loop visits.
@@ -154,9 +154,21 @@ class MultiTypeIndexSteps extends ConformanceBase {
         // getPrimaryKeyComponentPositions(), not hasPrimaryKeyComponentPositions():
         // the latter is package-private in Index, which is itself a small piece of
         // evidence that positions are an internal detail Java does not expect
-        // callers to reason about. The public getter returns null when unset, and
-        // hasPrimaryKeyComponentPositions() is documented as agreeing with exactly
-        // that (Index.java:519-525).
+        // callers to reason about.
+        //
+        // THE TWO PREDICATES ARE NOT EQUIVALENT IN GENERAL, and an earlier version
+        // of this comment claimed Index.java documented them as agreeing. It does
+        // not: hasPrimaryKeyComponentPositions() is
+        // `!= null && IntStream.of(...).anyMatch(i -> i >= 0)` (Index.java:525-527),
+        // strictly stronger than the null check, and the javadoc above it states
+        // only a one-way implication.
+        //
+        // The substitution is safe for a different and better reason: on the
+        // build() path the array cannot be all-negative, because
+        // buildPrimaryKeyComponentPositions returns NULL rather than such an array
+        // (RecordMetaDataBuilder.java:1509-1513, `if (anyMatch(p -> p >= 0)) return
+        // positions; else return null;`). So for metadata that came out of build()
+        // -- which is all this step ever sees -- the two cannot disagree.
         return metadata.getIndex(indexNameFor(indexKind)).getPrimaryKeyComponentPositions() != null;
     }
 }

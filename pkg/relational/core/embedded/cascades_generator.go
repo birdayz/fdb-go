@@ -3192,20 +3192,31 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 			actualSuffix = append(actualSuffix, column)
 		}
 	}
-	// THIS CROSS-CHECK NOW DECLINES A SHAPE IT USED TO ACCEPT, and the narrowing
-	// is deliberate rather than incidental. `actualSuffix` is derived from the
-	// physical positions and `nameTrimmed` from the column names; for a
-	// multi-type or universal index positions are always nil -- Java assigns
-	// them only to single-type indexes -- so `actualSuffix` is the FULL primary
-	// key while `nameTrimmed` still drops any column the index key names. The
-	// two then disagree in length and this returns `unknown`.
+	// THIS CROSS-CHECK NOW DECLINES A SHAPE IT USED TO ACCEPT. `actualSuffix` is
+	// derived from the physical positions and `nameTrimmed` from the column
+	// names; for a multi-type or universal index positions are always nil --
+	// Java assigns them only to single-type indexes -- so `actualSuffix` is the
+	// FULL primary key. WHEN THE INDEX KEY OVERLAPS THAT PRIMARY KEY,
+	// `nameTrimmed` drops the shared columns, the two lengths disagree, and this
+	// returns `unknown`. Without an overlap they agree and nothing changes; the
+	// affected shape is the overlap case alone.
 	//
-	// That costs an ordering derivation for exactly one shape: a multi-type or
-	// universal index whose key overlaps a covered type's primary key. It is a
-	// lost optimisation, never a wrong answer, and it is the correct direction
-	// while the physical layout of those entries is the untrimmed one. Closing
-	// it means teaching this function that the trim is name-based for these
-	// indexes, which is a separate change with its own plan-shape review.
+	// THE COST IS NOT PURELY A LOST OPTIMISATION, and an earlier revision of
+	// this comment said it was. `unknown` is `unknownPhysicalTypes`, i.e.
+	// `values.UnknownType` per column, and `values.TypeTerminatesOrderingClaim`
+	// answers FALSE for a type it cannot identify -- so a consumer that walks
+	// these types to decide where an ordering claim ends (rowdiff/ordering.go)
+	// does not stop at them. Returning `unknown` therefore widens a claim rather
+	// than narrowing it, for a FLOAT or DOUBLE primary-key column that a known
+	// type would have terminated on.
+	//
+	// That direction is the predicate's DOCUMENTED trade, not a defect
+	// introduced here: it is deliberately positive ("prove it is a float")
+	// because the alternative deletes sort elimination everywhere a layout is
+	// absent, including where the column is provably an integer. What this
+	// change does is route one more shape into that trade. Narrowing it means
+	// teaching this function that the trim is name-based for these indexes,
+	// which is a separate change with its own plan-shape review.
 	nameTrimmed := plans.TrimmedPKSuffix(d.IndexColumnNames(), pkCols)
 	if len(actualSuffix) != len(nameTrimmed) {
 		return unknown

@@ -18,8 +18,10 @@ import (
 // tree holds 8 more, all under src/test/, which is why "in the tree" was the
 // wrong scope for this claim) -- inside
 // `for (Index index : recordTypeBuilder.getIndexes())`. `getIndexes()` and
-// `getMultiTypeIndexes()` are separate lists (RecordTypeIndexesBuilder.java:
-// 43-44), and `addMultiTypeIndex` routes by arity: zero names to
+// `getMultiTypeIndexes()` are separate lists (RecordTypeIndexesBuilder.java:43
+// and :45 -- an earlier cite read ":43-44", a range whose second line is an
+// @Nonnull annotation and which excluded multiTypeIndexes, the field the whole
+// argument rests on). `addMultiTypeIndex` routes by arity: zero names to
 // `universalIndexes`, exactly one to `getIndexes()`, two or more to
 // `getMultiTypeIndexes()`. So single-type registration is the only route that
 // ends in a trimmed entry.

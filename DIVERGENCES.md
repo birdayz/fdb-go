@@ -2298,7 +2298,7 @@ key removed (`Index.TrimPrimaryKey`). Java assigns it at exactly one place --
 call site in MAIN sources (the Java tree holds 8 more, all under `src/test/`) --
 inside `for (Index index : recordTypeBuilder.getIndexes())`.
 `getIndexes()` and `getMultiTypeIndexes()` are separate fields
-(`RecordTypeIndexesBuilder.java:43-44`), and `addMultiTypeIndex` routes by arity:
+(`RecordTypeIndexesBuilder.java:43 and :45`), and `addMultiTypeIndex` routes by arity:
 zero names to `universalIndexes`, exactly one to `getIndexes()`, two or more to
 `getMultiTypeIndexes()`. So Java never assigns positions to a genuinely
 multi-type or to a universal index.
@@ -2341,6 +2341,11 @@ choice agrees and the map order stops mattering).
 Read this before deploying. It is not a code gap; it is an operational step the
 fix cannot perform for you.
 
+The code this describes is the positions loop in `RecordMetaDataBuilder.Build`
+(`pkg/recordlayer/metadata.go`), whose comment names this section back — neither
+half is findable from the other otherwise, and a pointer that only runs one way
+rots without anyone noticing.
+
 **Who is affected.** An index registered as multi-type (two or more record
 types) or universal, whose key expression overlaps the primary key of a record
 type it covers. Single-type indexes are untouched — their positions are
@@ -2353,12 +2358,28 @@ returns hits). So there is no field on disk recording which layout an existing
 entry used. Entries written by an older Go for these indexes are TRIMMED; this
 build writes them whole and reads them with nil positions.
 
-Reading a trimmed entry does not error. `Index.getEntryPrimaryKey` returns
-`entryKey[colSize:]` when positions are nil, and for an index whose key IS the
-primary key the trimmed entry's length equals `colSize`, so the guard
-`colSize < len(entryKey)` is false and it returns an EMPTY tuple. A scan over
-pre-upgrade data yields rows whose primary key is empty. Pinned by
-`TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey`.
+Reading a trimmed entry does not error, and **the symptom depends on how much of
+the primary key the index key covers.** Do not go looking for only one of them:
+
+- **Full overlap** (the index key IS the primary key). `Index.getEntryPrimaryKey`
+  returns `entryKey[colSize:]` when positions are nil, and here the trimmed
+  entry's length equals `colSize`, so `colSize < len(entryKey)` is false and it
+  returns an EMPTY tuple. Pinned by
+  `TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey`.
+- **Partial overlap**, which is the commoner shape and does NOT look broken.
+  Index key `(price)`, primary key `(price, id)`: the old positions were
+  `[0, -1]`, so the old entry is `(price, id)` — length 2. Read with nil
+  positions, `colSize = 1 < 2`, so it returns `entryKey[1:]` = `(id)`: a
+  one-element primary key where the real one has two. Non-empty, plausible and
+  wrong. An operator told to watch for empty primary keys concludes these stores
+  are unaffected.
+
+**And the old entries never go away on their own.** Post-upgrade, deleting or
+re-saving a record computes the UNTRIMMED index key and clears that; the old
+trimmed entry sits at a key nothing touches. An unremediated store therefore
+accumulates orphans — scans return duplicate rows (the orphan alongside the
+correct entry) and deletes silently fail to remove them. That is the symptom
+most likely to be noticed first, and it is not a separate bug.
 
 **Why no automatic guard fires.** `metadata_evolution_validator.go` compares two
 BUILT metadata objects. After the upgrade both sides derive nil positions, so
@@ -2366,13 +2387,56 @@ BUILT metadata objects. After the upgrade both sides derive nil positions, so
 seeing this, because the thing that changed was never in the metadata it
 compares.
 
-**The remedy, and why it is not a version gate.** A gate needs an on-disk
-discriminator and there is none; worse, the old format was not even a single
-format — for universal indexes it depended on Go map iteration order, so two
+**Why it is not a version gate.** A gate needs an on-disk discriminator and
+there is none; worse, the old format was not even a single format. BOTH the
+universal and the multi-type paths depended on Go map iteration order — the
+removed code guarded on `positions == nil` inside `for _, rt := range
+b.recordTypes`, a map, so for multi-type the first covered type yielding
+non-nil positions won, exactly as the first record type won for universal. Two
 stores written by the same old binary could disagree. There is nothing coherent
-to gate on. Bump `lastModifiedVersion` on each affected index, which IS
-persisted and does trigger a rebuild, and let the rebuild rewrite the entries.
+to gate on.
 
-**Why shipping it anyway is right.** The old entries were already unreadable by
-Java, which is the whole point of the port. The choice is between data that
-disagrees with Java forever and one rebuild.
+**The remedy, in full, because the short version does not work.** "Bump
+`lastModifiedVersion`" is the right idea and is NOT sufficient on its own: an
+earlier revision of this section said only that, and it fails at the first step
+on any store using `FDBMetaDataStore` and silently under-delivers on any store
+with real data. All four steps are required.
+
+1. **Drain the old writers first.** Positions are derived at `Build`, so an old
+   binary that loads the bumped metadata recomputes the OLD positions and starts
+   writing trimmed entries again. Rebuilding while an old writer is live
+   reintroduces exactly what the rebuild removed. Stop them before step 2, not
+   after.
+
+2. **Allow index rebuilds on the metadata store, or the save is refused.**
+   `NewFDBMetaDataStore` installs `DefaultMetaDataEvolutionValidator()`
+   (`metadata_store.go:29-33`), and that validator returns
+   `MetaDataEvolutionError` — "last modified version of index %q changed" — for
+   precisely this edit unless `allowIndexRebuilds` is set
+   (`metadata_evolution_validator.go:498-504`). Build a validator with
+   `SetAllowIndexRebuilds(true)` and install it via `SetEvolutionValidator`
+   before `SaveRecordMetaData`.
+
+3. **Bump the affected indexes' `lastModifiedVersion` and the metadata
+   version.** Affected means: registered multi-type (2+ record types) or
+   universal, AND with a key expression overlapping the primary key of a record
+   type it covers. Single-type indexes need nothing.
+
+4. **Run the rebuild to completion and CHECK THE STATE — the bump alone does not
+   rebuild a real store.** Opening with the new metadata consults
+   `DefaultIndexRebuildPolicy`, which returns `READABLE` (inline rebuild) only
+   for `recordCount <= 200` or an index on new record types, and `DISABLED`
+   otherwise (`store_builder.go:1123-1129`). A store whose count cannot be
+   derived reports `MAX_VALUE`, so it takes the `DISABLED` branch too. On any
+   store big enough to care about, the index therefore lands `DISABLED` — not
+   rebuilt, not readable, and quietly excluded from query plans — until an
+   `OnlineIndexer.BuildIndex` run finishes. Run it, then assert the index is
+   `READABLE`. Do not treat a successful `SaveRecordMetaData` as the end of the
+   procedure.
+
+**Why shipping it anyway is right.** Java MISREADS the old entries — it does not
+fail on them, which is worse. Java assigns no positions to these indexes either,
+so it applies the same untrimmed decode to a trimmed entry and derives the same
+wrong primary key described above. The old bytes were therefore never
+Java-compatible, which is the whole point of the port. The choice is between
+data that silently disagrees with Java forever and one rebuild.

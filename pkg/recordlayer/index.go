@@ -641,7 +641,16 @@ func (idx *Index) PrimaryKeyComponentPositions() []int {
 }
 
 // HasPrimaryKeyComponentPositions returns true if the index has computed PK component positions.
-// Matches Java's Index.hasPrimaryKeyComponentPositions().
+//
+// NOT SEMANTICALLY IDENTICAL to Java's Index.hasPrimaryKeyComponentPositions(),
+// which is `!= null && IntStream.of(...).anyMatch(i -> i >= 0)` -- this drops
+// the second conjunct, so the two disagree for a non-nil ALL-NEGATIVE array.
+// They agree on everything Build produces, because buildPrimaryKeyComponentPositions
+// returns nil rather than an all-negative array (in both engines), so the
+// divergent state is unreachable from the builder in production. It IS
+// constructible by hand, and metadata_evolution_validator_test.go does exactly
+// that -- so "matches Java" is true of the reachable states and false of the
+// predicate, which is why this says which.
 func (idx *Index) HasPrimaryKeyComponentPositions() bool {
 	return idx.primaryKeyComponentPositions != nil
 }

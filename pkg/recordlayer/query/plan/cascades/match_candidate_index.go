@@ -963,13 +963,17 @@ func (c *ValueIndexScanMatchCandidate) ComputeMatchedOrderingParts(
 	// have. TrimmedPKSuffix drops PK columns already named in the index key,
 	// which is a claim about ORDERING and not about the stored entry: for a
 	// single-type index Index.TrimPrimaryKey drops those same columns from the
-	// bytes, but for a multi-type or universal index it does NOT -- those are
-	// never assigned primaryKeyComponentPositions, so their entries repeat the
-	// column. The suffix is right either way, because a column already fixed by
-	// an earlier position contributes nothing to sort order, so ordering by
-	// (indexKey…, a, b) equals ordering by (indexKey…, b). An earlier revision
-	// justified this by asserting the entry was trimmed, which was true only for
-	// the single-type case. (3) The last
+	// bytes, but a universal index is never assigned
+	// primaryKeyComponentPositions, so its entries repeat the column. The suffix
+	// is right either way, because a column already fixed by an earlier position
+	// contributes nothing to sort order — ordering by (indexKey…, a, b) equals
+	// ordering by (indexKey…, b). An earlier revision justified this by
+	// asserting the entry was trimmed, which held only for the single-type case.
+	//
+	// A genuinely MULTI-TYPE index does not reach this reasoning at all:
+	// orderingKeyLayout fails closed when rowLayouts returns more than one, so
+	// no ordering parts are emitted for it. The untrimmed case that reaches here
+	// is a universal index over a single record type. (3) The last
 	// emitted coordinate must carry order through itself; a full part count is
 	// not sufficient, since a coordinate that claims only its OWN order can sit
 	// at the end of the key.

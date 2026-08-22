@@ -129,6 +129,13 @@ func TestDeepCopySubspaceKeyPassesValueShapesThrough(t *testing.T) {
 		{"nil", nil},
 		{"string", "abc"},
 		{"int64", int64(7)},
+		// uint64 and float32 are the two the decoder produces that an earlier
+		// version of this table omitted -- the same two that were missing from
+		// deepCopySubspaceKey's shape enumeration. A list of value shapes that
+		// does not cover every value shape the decoder emits is the same defect
+		// as the enumeration it is supposed to corroborate.
+		{"uint64", uint64(1) << 63},
+		{"float32", float32(1.5)},
 		{"float64", float64(1.5)},
 		{"bool", true},
 		{"tuple.UUID", tuple.UUID{1, 2, 3}},

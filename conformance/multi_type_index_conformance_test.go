@@ -41,13 +41,21 @@ import (
 //
 // WHICH ARM ACTUALLY CATCHES THE DIVERGENCE, measured by reintroducing it: the
 // "writes the same index entry bytes as Java" arm reddens for both index kinds,
-// and the "reads back what Java wrote" arm does NOT. That is not a defect in
-// the second arm, it is what it means: given bytes Java wrote, both engines
-// decode them alike even with Go's metadata carrying wrong positions, so the
-// read arm is guarding a different property -- a decoder that silently
-// compensates for its own encoder -- and it would be the only arm to fire if
-// that property ever broke. Stated here so nobody reads its green as coverage
-// of the write-side rule.
+// and the "reads back what Java wrote" arm does NOT. Stated here so nobody
+// reads the second arm's green as coverage of the write-side rule.
+//
+// AND THE READ ARM CANNOT BE MADE TO CARRY IT. An earlier version of this
+// header said the read arm guarded against "a decoder that compensates for its
+// own encoder" and would be the only arm to fire if that broke. That is false,
+// and structurally so: once both engines write byte-identical entries, both
+// arms hand Go's decoder the SAME bytes -- IndexEntry.Key is the raw tuple --
+// so no decoder change can redden one without the other, and under the very
+// scenario named (encoder trims, decoder compensates) the read arm is GREEN
+// while the write arm is RED.
+//
+// What the read arm does buy is narrower and real: JAVA created the store and
+// wrote the records. That exercises Java's store header, index maintenance and
+// key encoding against Go's reader, which the write arm never does.
 var _ = Describe("Multi-Type and Universal Index Entry Conformance", func() {
 	var (
 		ctx context.Context

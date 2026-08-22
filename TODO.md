@@ -20364,9 +20364,12 @@ this area lands inside the same frame, and the one commit that shortened it did
 so by DELETING a divergent loop rather than by extracting anything.
 
 `Build` drains `buildErrors`, validates the registry/association invariant in
-**six** refused classes (`pkg/recordlayer/metadata.go:900-912` --
-`alsoUniversal`, `renamed`, `renamedUniversal`, `unregistered`, `mismatched`,
-`orphaned`), computes `primaryKeyComponentPositions`, copies the containers,
+**six** refused classes -- `alsoUniversal`, `renamed`, `renamedUniversal`,
+`unregistered`, `mismatched`, `orphaned`, which is the slice literal in
+`pkg/recordlayer/metadata.go` whose first element is `alsoUniversal` (cited by
+SYMBOL, not by line: an earlier revision wrote `:900-912`, and edits made in the
+very commit that wrote it pushed the block to `:913-924`, so the range was stale
+before it was ever read) -- computes `primaryKeyComponentPositions`, copies the containers,
 validates subspace keys, precomputes union field numbers, and constructs the
 result. A seventh association class, the duplicate, is deliberately ACCEPTED
 because Java accepts it -- an earlier revision counted seven, which counts the

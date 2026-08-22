@@ -982,7 +982,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// SINGLE-TYPE INDEXES ONLY. Java's loop is over
 	// `recordTypeBuilder.getIndexes()` (RecordMetaDataBuilder.java:1465-1467),
 	// and `getIndexes()` / `getMultiTypeIndexes()` are two distinct lists
-	// (RecordTypeIndexesBuilder.java:43-44); universal indexes are in neither.
+	// (RecordTypeIndexesBuilder.java:43 and :45); universal indexes are in neither.
 	// So Java NEVER assigns positions to a multi-type or universal index, and
 	// its `Index.trimPrimaryKey` therefore returns those indexes' primary keys
 	// untrimmed.
@@ -1006,13 +1006,19 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	//
 	// THIS CHANGES EXISTING DATA. Positions are derived here and never
 	// persisted, so entries an older build wrote for a multi-type or universal
-	// index are trimmed while this one writes them whole -- and reading a
-	// trimmed entry with nil positions yields an EMPTY primary key rather than
-	// an error. Nothing detects that automatically; the affected indexes need a
-	// lastModifiedVersion bump to force a rebuild. DIVERGENCES.md, "UPGRADING
-	// BREAKS EXISTING DATA FOR THE AFFECTED INDEXES, SILENTLY", is the operator
-	// -facing version, and TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimary
-	// Key pins the read behaviour.
+	// index are trimmed while this one writes them whole. Reading one back does
+	// not error: a full overlap yields an EMPTY primary key and a partial
+	// overlap a SHORT, plausible, wrong one, and the old entries are never
+	// cleared, so an unremediated store returns duplicate rows. Nothing detects
+	// any of that automatically -- the affected indexes need a rebuild, and the
+	// procedure is more than a lastModifiedVersion bump.
+	//
+	// The operator-facing version is DIVERGENCES.md, "UPGRADING BREAKS EXISTING
+	// DATA FOR THE AFFECTED INDEXES, SILENTLY", which names this file back. The
+	// read behaviour is pinned by:
+	//   TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey
+	// on its own line, because wrapping that name across a line break is exactly
+	// how a grep for it comes back empty -- which happened to this very comment.
 	for _, rt := range b.recordTypes {
 		for _, idx := range rt.indexes {
 			if idx.primaryKeyComponentPositions == nil {

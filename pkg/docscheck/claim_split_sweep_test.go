@@ -236,7 +236,9 @@ func TestFlattenClaimTextDoesNotSeeTheseSplitShapes(t *testing.T) {
 // that means widening the walk, not rewording this.
 //
 // The gap tolerance is 40 characters, not 20: "544 Scan/Rebuild/SetIndex call
-// sites" needs 26, so the earlier bound let the most natural phrasing of the
+// sites" needs 23 -- the regex has already consumed the three digits before the
+// bounded gap begins, so counting them again gives 26 -- and the earlier bound
+// let the most natural phrasing of the
 // claim through. `[^.]` still stops the match at a sentence boundary so an
 // unrelated number two sentences away cannot pair with a later "call sites".
 var withdrawnIndexCallSiteCount = regexp.MustCompile(`\b54[45]\b[^.]{0,40}?call sites`)
@@ -348,22 +350,12 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 			continue
 		}
 		flat := flattenClaimText(string(b))
-
-		// EVERY match, not the first. FindStringIndex returns only the earliest,
-		// so a document whose first mention is the legitimate withdrawal would
-		// pass its window check and mask every later, live restatement behind
-		// it -- and DIVERGENCES.md, the one file guaranteed to contain an
-		// allowed mention, is exactly where that masking would apply.
-		locs := withdrawnIndexCallSiteCount.FindAllStringIndex(flat, -1)
-		if len(locs) == 0 {
-			continue
+		offenders := unwithdrawnCountClaims(flat)
+		if len(offenders) > 0 {
+			mdHits = append(mdHits, doc)
 		}
-		mdHits = append(mdHits, doc)
-		for _, loc := range locs {
-			window := flat[max(0, loc[0]-1200):min(len(flat), loc[1]+1200)]
-			if !strings.Contains(window, "WITHDRAWN") && !strings.Contains(window, "withdrawn") {
-				t.Errorf("%s states a withdrawn index-call-site count with no withdrawal in the surrounding 1200 chars:\n  …%s…", doc, window)
-			}
+		for _, o := range offenders {
+			t.Errorf("%s states a withdrawn index-call-site count as a live claim:\n  …%s…", doc, o)
 		}
 	}
 	_ = mdHits // a doc may legitimately hold zero; the anchor below is what must hold.
@@ -393,5 +385,128 @@ func TestWithdrawnIndexCallSiteCountsDoNotReappear(t *testing.T) {
 				"Reconcile the gate with the new expected state rather than deleting it: with the entry removed, a "+
 				"reappearing count is unexplained rather than merely stale, and the alarm direction has inverted.", anchor)
 		}
+	}
+}
+
+// unwithdrawnCountClaims returns an excerpt for every occurrence of a retired
+// figure that is stated as a LIVE claim, i.e. every match not accompanied by a
+// withdrawal.
+//
+// THE EXEMPTION IS SENTENCE-SCOPED, not window-scoped, and that is why this is
+// a function rather than three lines inline. An earlier revision granted the
+// exemption whenever "withdrawn" appeared within 1200 characters of the match,
+// which reproduced the very masking the same commit was fixing one level up:
+// switching from FindStringIndex to FindAllStringIndex made every match get
+// CHECKED, and a live restatement added anywhere near the withdrawal paragraph
+// still found "WITHDRAWN" in its own window and passed. Both halves had to move.
+//
+// A match is exempt only when withdrawal language sits in its own sentence or
+// the one immediately before it -- the real shape of the legitimate mention,
+// where a heading sentence carries "WITHDRAWN" and the mention follows. Anything
+// further away is a different statement.
+func unwithdrawnCountClaims(flat string) []string {
+	var out []string
+	for _, loc := range withdrawnIndexCallSiteCount.FindAllStringIndex(flat, -1) {
+		if withdrawalNear(flat, loc[0], loc[1]) {
+			continue
+		}
+		start := loc[0] - 120
+		if start < 0 {
+			start = 0
+		}
+		end := loc[1] + 120
+		if end > len(flat) {
+			end = len(flat)
+		}
+		out = append(out, flat[start:end])
+	}
+	return out
+}
+
+// withdrawalNear reports whether a withdrawal accompanies the match at
+// [matchStart, matchEnd): the sentence containing it, plus the one before it.
+func withdrawalNear(flat string, matchStart, matchEnd int) bool {
+	// Back up over two sentence boundaries; the flattened text uses ". " as the
+	// separator, and the claim regex already refuses to span one.
+	from := matchStart
+	for i := 0; i < 2; i++ {
+		prev := strings.LastIndex(flat[:from], ". ")
+		if prev < 0 {
+			from = 0
+			break
+		}
+		from = prev
+	}
+	to := len(flat)
+	if next := strings.Index(flat[matchEnd:], ". "); next >= 0 {
+		to = matchEnd + next
+	}
+	window := flat[from:to]
+	return strings.Contains(window, "WITHDRAWN") || strings.Contains(window, "withdrawn")
+}
+
+// EVERY ARM OF THE EXEMPTION, driven from fixtures rather than from whatever the
+// living docs happen to contain. That distinction is the whole reason this test
+// exists: as of this commit NO living doc and NO swept Go file matches the claim
+// regex at all, so the corpus sweep executes the exemption ZERO times. Without
+// this table the sentence-scoping, the all-matches loop and the widened gap are
+// all validated by an empty-population green -- in the file whose own header is
+// written against exactly that failure.
+func TestWithdrawalExemptionIsScopedToTheStatement(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		doc  string
+		want int
+	}{
+		{
+			name: "a live claim alone is flagged",
+			doc:  "The index API is wide. 544 call sites pass a pre-Build index. That is the scope.",
+			want: 1,
+		},
+		{
+			name: "a withdrawal in the same sentence exempts it",
+			doc:  "The figure of 544 call sites is WITHDRAWN as unscoped.",
+			want: 0,
+		},
+		{
+			name: "a withdrawal in the preceding sentence exempts it",
+			doc:  "THE EXACT FIGURE IS WITHDRAWN. It read 544 call sites and counted something else.",
+			want: 0,
+		},
+		{
+			// THE TWO-HIT CASE, which a 1200-character window let through: the
+			// withdrawal is real and nearby, and the second statement is a fresh
+			// live claim that must still be caught.
+			name: "a later live claim is not masked by an earlier withdrawal",
+			doc: "THE EXACT FIGURE IS WITHDRAWN. It read 544 call sites and counted something else. " +
+				"Some intervening prose about the index registry and its callers. " +
+				"Anyway there are 545 call sites to convert.",
+			want: 1,
+		},
+		{
+			name: "two live claims are both reported",
+			doc:  "There are 544 call sites here. And elsewhere 545 call sites remain.",
+			want: 2,
+		},
+		{
+			// The widened gap, pinned as its own arm. The regex has already
+			// consumed the three digits when the bounded gap begins, so this
+			// phrasing needs 23 characters of slack -- not the 26 an earlier
+			// comment claimed, which counted the digits twice.
+			name: "the natural phrasing with a 23-character gap is caught",
+			doc:  "There are 544 Scan/Rebuild/SetIndex call sites to convert.",
+			want: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := unwithdrawnCountClaims(flattenClaimText(tc.doc))
+			if len(got) != tc.want {
+				t.Fatalf("unwithdrawnCountClaims returned %d offender(s), want %d.\n  doc: %q\n  got: %q",
+					len(got), tc.want, tc.doc, got)
+			}
+		})
 	}
 }

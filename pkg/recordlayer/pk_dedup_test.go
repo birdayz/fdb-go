@@ -362,7 +362,7 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 		// setPrimaryKeyComponentPositions in Java's MAIN sources, and it loops
 		// over `recordTypeBuilder.getIndexes()`. That list and
 		// `getMultiTypeIndexes()` are separate fields
-		// (RecordTypeIndexesBuilder.java:43-44), and `addMultiTypeIndex` routes
+		// (RecordTypeIndexesBuilder.java:43 and :45), and `addMultiTypeIndex` routes
 		// by arity: 0 names to `universalIndexes`, exactly 1 to `getIndexes()`,
 		// 2+ to `getMultiTypeIndexes()`. So a genuinely multi-type index never
 		// receives positions, and Index.trimPrimaryKey returns its primary key
