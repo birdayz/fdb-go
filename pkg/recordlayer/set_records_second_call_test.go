@@ -657,8 +657,9 @@ func TestBuiltMetadataSharesIndexObjectsWithTheBuilder(t *testing.T) {
 	if md.GetIndex("shared_idx") != idx {
 		t.Fatal("the built metadata no longer holds the caller's *Index. If that is " +
 			"deliberate, this divergence is closed and this test should be DELETED — but " +
-			"check first that positions still reach the caller's object, because 544 call " +
-			"sites scan with it and only the JVM conformance suite catches the difference.")
+			"check first that positions still reach the caller's object, because the " +
+			"scan call sites use it and only the JVM conformance suite catches the " +
+			"difference.")
 	}
 
 	// The consequence, stated so nobody has to rediscover it: mutating the

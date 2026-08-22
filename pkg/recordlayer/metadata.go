@@ -692,7 +692,11 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 // metadata whose index registry and record-type associations do not agree in
 // both directions -- see the bijection check below.
 //
-// The returned metadata COPIES every container and shares the *Index objects.
+// The returned metadata COPIES every container it owns directly -- the index
+// registry, the universal and former index slices, the record-type slices and
+// the records descriptor -- and shares the *Index objects. It does NOT reach
+// inside those objects: the KeyExpression graphs behind RootExpression,
+// recordCountKey and PrimaryKey stay shared.
 // Copying the containers keeps a later builder mutation from rewriting what
 // Build returned; sharing the objects is what callers depend on when they hand
 // a pre-Build *Index to ScanIndex, RebuildIndex or SetIndex, and what keeps
@@ -1023,14 +1027,38 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	formerIndexes := make([]*FormerIndex, len(b.formerIndexes))
 	for i, fi := range b.formerIndexes {
 		f := *fi
-		// Same trap one field over: SubspaceKey is `any` and may hold []byte.
-		if raw, ok := fi.SubspaceKey.([]byte); ok && raw != nil {
-			dup := make([]byte, len(raw))
-			copy(dup, raw)
-			f.SubspaceKey = dup
+		// Same trap one field over: SubspaceKey is `any`. normalizeSubspaceKey
+		// documents both []byte and tuple.Tuple (= []any) as reachable for it, so
+		// both slice shapes are copied; anything else is a scalar and copies with
+		// the struct.
+		switch raw := fi.SubspaceKey.(type) {
+		case []byte:
+			if raw != nil {
+				dup := make([]byte, len(raw))
+				copy(dup, raw)
+				f.SubspaceKey = dup
+			}
+		case tuple.Tuple:
+			if raw != nil {
+				f.SubspaceKey = append(tuple.Tuple(nil), raw...)
+			}
 		}
 		formerIndexes[i] = &f
 	}
+	// preserved is a struct of slices, so it is copied for the same reason
+	// formerIndexes is: nothing mutates it in place TODAY, and that is luck
+	// rather than a property. Both proto boundaries already clone, so this costs
+	// nothing and removes the one remaining container Build shared silently.
+	preserved := b.preserved
+	preserved.joinedRecordTypes = append([]*gen.JoinedRecordType(nil), b.preserved.joinedRecordTypes...)
+	preserved.unnestedRecordTypes = append([]*gen.UnnestedRecordType(nil), b.preserved.unnestedRecordTypes...)
+	preserved.userDefinedFunctions = append([]*gen.PUserDefinedFunction(nil), b.preserved.userDefinedFunctions...)
+	preserved.views = append([]*gen.PView(nil), b.preserved.views...)
+	if b.preserved.unknown != nil {
+		preserved.unknown = make([]byte, len(b.preserved.unknown))
+		copy(preserved.unknown, b.preserved.unknown)
+	}
+
 	var recordsSourceProto *descriptorpb.FileDescriptorProto
 	if b.recordsSourceProto != nil {
 		recordsSourceProto = proto.Clone(b.recordsSourceProto).(*descriptorpb.FileDescriptorProto)
@@ -1325,7 +1353,7 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		fieldNumberToRecordType: fnToRT,
 		subspaceKeyCounter:      b.subspaceKeyCounter,
 		usesSubspaceKeyCounter:  b.counterBasedSubspaceKeys,
-		preserved:               b.preserved,
+		preserved:               preserved,
 	}
 
 	// Sliding-window (top-N vector) index validation. Runs on the assembled

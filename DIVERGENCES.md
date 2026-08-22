@@ -2164,20 +2164,59 @@ isolate anyway, because the KeyExpression graph exposes exported mutators
 (`DimensionsKeyExpression`'s fields, which bound `CanDeleteWhere` at runtime;
 `RecordTypeKeyExpression.Nest`; the live child slice from
 `CompositeKeyExpression.SubKeyExpressions`); and it splits "the caller's index"
-from "the metadata's index" across the 545 sites that pass a pre-`Build`
-`*Index` straight to `ScanIndex`, `RebuildIndex` or `SetIndex`
-(`grep -rn "ScanIndex(\|RebuildIndex(\|SetIndex(" --include='*.go' pkg/ cmd/
-conformance/ | wc -l` → 545). In `OnlineIndexer` that split degraded the
-containment check from "is the metadata's definition" to "shares a name with
-it". It also broke cross-engine conformance (`go: pk=[]` vs `java: pk=[1]`).
+from "the metadata's index" across several hundred sites that pass a pre-`Build`
+`*Index` straight to `ScanIndex`, `RebuildIndex` or `SetIndex`. In
+`OnlineIndexer` that split degraded the containment check from "is the
+metadata's definition" to "shares a name with it". It also broke cross-engine
+conformance (`go: pk=[]` vs `java: pk=[1]`).
+
+THE EXACT FIGURE IS WITHDRAWN, and how it broke is worth more than the number
+was. Two revisions of this branch carried 545 here and 544 in a test's failure
+message. That reads as one number copied wrong, and it was first "fixed" by
+deleting the second copy. It was not a copy at all: `grep -rn
+"ScanIndex(\|RebuildIndex(\|SetIndex(" --include='*.go' pkg/ cmd/ conformance/ |
+wc -l` gives 545, and the same command piped through `grep -vc 'parser/gen/'`
+gives 544. Both were measured, both were right, and the single site between them
+is `relational_parser.go:50302`'s `SetIndex(v IExpressionAtomContext)` — an
+ANTLR accessor with no `*Index` in it. Neither figure counts what the sentence
+above them claimed: the total also swallows 6 declarations (two of the others
+being `BenchmarkScanIndex` and `runGoScanIndex`, name substrings rather than
+calls), 2 comment lines, and every call passing an index NAME rather than an
+object. Reconciling two counts by deleting one is how a contaminated measurement
+survives — the answer was to ask why they differed.
 
 **The fix is encapsulation**, not copying: unexport those fields behind getters,
 the pattern already used on the same struct for `subspaceKey`/
 `SubspaceTupleKey()`. Then sharing is safe for the same reason it is safe in
-Java. Scope, with commands: `.RootExpression` 248 sites and `.Options` on index
-variables 191 (`grep -rn '\.RootExpression\b'` / `'idx\.Options\|ndex\.Options'`
-over `pkg/ cmd/ conformance/ --include='*.go'`); `.Name` is not countable by
-grep because many other types carry it. It is its own change.
+Java.
+
+SIZING IT NEEDS A TYPE-AWARE SEARCH, NOT GREP, and the numbers an earlier
+revision of this entry quoted are withdrawn rather than corrected. `.Name` and
+`.Options` are carried by many other types, so a textual count is contaminated
+in both directions: `grep -rn '\.RootExpression\b'` counts 248 READS and misses
+58 writes (`'RootExpression:'`); `'idx\.Options'` is case-sensitive and misses
+`vecIdx`, `mdIdx`, `spfIdx` and friends; and the call-site count for the verbs
+includes their own `func … SetIndex(` declarations, one of which is an ANTLR
+parser method with no `*Index` in sight. What is defensible is a floor — several
+hundred sites across `pkg/`, `cmd/` and `conformance/` — and that the exact
+work-list wants `go/types`, not a regex. Whoever takes it should produce that
+list first; treating a grep total as the scope is what made this paragraph wrong
+twice.
+
+**AND `Options` IS NOT CLOSED BY UNEXPORTING FIELDS**, which the paragraph above
+would otherwise imply. It is a `map[string]string` shared with the built
+metadata, and Go has two EXPORTED methods that mutate it in place:
+`Index.SetUnique` does `idx.Options[IndexOptionUnique] = "true"` and
+`Index.SetClearWhenZero` sets or `delete`s its key. So
+`md.GetIndex("x").SetUnique(true)` flips uniqueness on already-built metadata
+with no field assignment at all, and unexporting `Options` would leave both
+setters working exactly as before.
+
+Java has neither method — `grep -n "setOption\|options.put\|setUnique\|
+setClearWhenZero" Index.java` returns 0, positive control `grep -c "public "`
+returns 47 — and `Index.java:131` stores `ImmutableMap.copyOf(options)`, so even
+`getOptions().put(…)` throws. Closing this needs the setters to be build-time
+only (or gone), not just the fields hidden.
 
 Pinned by `TestBuiltMetadataSharesIndexObjectsWithTheBuilder`, which fails when
 the divergence closes. NOTE the pin covers `*Index` identity and `.Name` only —
@@ -2213,21 +2252,32 @@ Pinned by `TestPostBuildRemoveIndexLeavesUniversalIndexesIntact`.
 
 ---
 
-## Go snapshots a record type's index lists; Java shares them
+## Go snapshots a record type's index lists; Java shares everything
 
 Java's `RecordType` constructor assigns the builder's live lists
 (`RecordType.java:70-71`: `this.indexes = indexes;`), and `removeIndex` mutates
 them through `recordType.getIndexes().remove(index)`
-(`RecordMetaDataBuilder.java:1194-1195`). So in Java a post-`build()`
-`removeIndex` DOES strip the association from already-built metadata, whose
-`ToProto` then emits an empty record-type list that a reload reads as universal.
+(`RecordMetaDataBuilder.java:1194-1195`). It ALSO shares the index registry
+itself: `private final Map<String,Index> indexes` (`:119`) is passed uncopied at
+`:1459` and stored by reference (`RecordMetaData.java:155`), so
+`indexes.remove(name)` (`:1190`) removes the index from the built metadata's
+registry too, and `toProto` — which seeds from `indexes.entrySet()`
+(`RecordMetaData.java:664-665`) — never emits it.
 
-Go copies each record type's `indexes` and `multiTypeIndexes` slices
-(`metadata.go`), so its built metadata keeps the association. Java rebuilds the
-RecordType *wrapper* (`RecordMetaDataBuilder.java:1464`) but not the lists
-inside it; Go rebuilds both.
+So Java's post-`build()` `removeIndex` is a COHERENT removal: gone from the
+registry, gone from the record type, gone from the serialized form. An earlier
+revision of this entry said Java's built metadata "DOES lose the association"
+and left the reader to infer an empty record-type list that reloads as
+universal. The first half is right; the consequence was imported from a Go bug.
+Java has no such state.
 
-This is a deliberate Go-only difference in the direction of coherence, not a
-port, and it was previously described here as alignment — which it is not. Left
-as-is because the alternative is to reproduce a state that makes built metadata
-serialize wrongly; raise it upstream rather than matching it.
+Go COPIES both — the registry map and the record-type slices — so a post-`Build`
+`RemoveIndex` changes neither. That is a deliberate Go-only difference:
+snapshot-at-Build rather than Java's live view. It is not obviously worse, and
+it is not obviously better; what it is NOT is the port, and this entry
+previously claimed it was.
+
+Note the empty-record-type-list state that motivated so much of this work is
+reachable only by copying ONE of the two and sharing the other. Go did that
+briefly and it produced exactly that bug. Copy both or share both; the mixture
+is what breaks.

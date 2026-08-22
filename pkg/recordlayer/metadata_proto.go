@@ -206,18 +206,35 @@ func RecordMetaDataFromProto(md *gen.MetaData) (*RecordMetaData, error) {
 		return nil, &MetaDataError{Message: "nil metadata proto"}
 	}
 
-	// Retain the stored records proto VERBATIM before the rebuild: a re-save
-	// must emit the same bytes Java (or a previous Go) wrote, and
-	// rebuildFileDescriptor mutates its input (absolutizeFieldTypeNames
-	// rewrites relative type names in place), so the retained copy is cloned
-	// first and the rebuild operates on a second clone.
+	// Retain the stored records proto VERBATIM: a re-save must emit the same
+	// bytes Java (or a previous Go) wrote. It is cloned so that nothing the
+	// caller does later can disturb it; the rebuild below is given its own
+	// clones for the separate reason that it mutates what it is handed.
 	var recordsSource *descriptorpb.FileDescriptorProto
 	if md.Records != nil {
 		recordsSource = proto.Clone(md.Records).(*descriptorpb.FileDescriptorProto)
 	}
 
 	// 1. Rebuild file descriptor from proto
-	fd, err := rebuildFileDescriptor(md.Records, md.Dependencies)
+	// THE REBUILD MUTATES WHAT IT IS GIVEN, so it is handed CLONES.
+	//
+	// rebuildFileDescriptor opens with absolutizeFieldTypeNames over the records
+	// proto and every dependency, rewriting f.TypeName and ext.TypeName IN PLACE.
+	// The comment above claimed the rebuild already operated on a second clone; it
+	// did not -- it was handed md.Records and md.Dependencies directly, so this
+	// function mutated its CALLER's proto. That reached the wire:
+	// SaveRecordMetaData calls this and then marshals the same proto it passed in,
+	// so a descriptor carrying relative type names -- which the DDL builder emits
+	// -- was persisted absolutized.
+	rebuildRecords := md.Records
+	if md.Records != nil {
+		rebuildRecords = proto.Clone(md.Records).(*descriptorpb.FileDescriptorProto)
+	}
+	rebuildDeps := make([]*descriptorpb.FileDescriptorProto, len(md.Dependencies))
+	for i, dp := range md.Dependencies {
+		rebuildDeps[i] = proto.Clone(dp).(*descriptorpb.FileDescriptorProto)
+	}
+	fd, err := rebuildFileDescriptor(rebuildRecords, rebuildDeps)
 	if err != nil {
 		return nil, fmt.Errorf("rebuild file descriptor: %w", err)
 	}
