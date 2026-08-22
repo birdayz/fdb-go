@@ -1542,11 +1542,11 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	// rather than a limit of this fixture. frontier.IsKnown() is false exactly
 	// when the layout is not a *RecordType or has no fields; threadPKIdentity
 	// succeeds only when it IS a *RecordType with an in-range ordinal. The two
-	// are mutually exclusive, so a nil outerLayout is refused by AT LEAST the
-	// frontier check, threadPKIdentity and the empty-wantKeys return, and the
-	// frontier guard is strictly subsumed by the others. "At least" is exact:
-	// disabling those three together still leaves this green, so they are not
-	// the whole set and no count is asserted here.
+	// are mutually exclusive, so a nil outerLayout is refused by the frontier
+	// check, by threadPKIdentity and by the empty-wantKeys return, and the
+	// frontier guard is strictly subsumed by the other two. Those three are
+	// jointly sufficient and minimal -- measured, with the caveat in the
+	// encoding note below, which is the thing to read before re-measuring.
 	// Measured: disabling it alone leaves the whole suite green. No fixture can
 	// isolate that line, so claiming this assertion "pins the frontier gate"
 	// would be unsupportable.
@@ -1558,13 +1558,20 @@ func TestFKChainCardinalityCap_FlatMapDeclinePropagatesThroughNesting(t *testing
 	// result type -- which is the whole reason planRowLayout exists, and the
 	// swap a future reader is most likely to make.
 	//
-	// Two things it does NOT establish. Stripping the layers above together
-	// leaves it green (tried), so they are not an exhaustive account of why a
-	// nil-layout outer is refused; a fourth is values.IdentityIn's own domain
-	// check, since the comparand is baked to rcLayout while the frontier is the
-	// unknown token. And describing this as firing exactly when that function
-	// rejects would be a tautology rather than a measurement: the assertion IS
-	// that call.
+	// How many layers refuse a nil outerLayout depends on how the mutation is
+	// ENCODED, which is worth knowing before anyone re-measures this. Encoded
+	// FAIL-OPEN -- frontier guard removed, threadPKIdentity's !ok arm continuing
+	// instead of returning, wantKeys guard removed -- the three together redden
+	// this, and each PAIR leaves it green, so that triple is minimal. Encoded
+	// KEEP-THE-KEY, where the zero key is retained on !ok, the same three leave
+	// it green because a fourth consumer rejects: correlatedFieldIdentity in the
+	// bind loop, which reads the same unknown frontier. Both were measured. The
+	// earlier version of this comment reported only the second and concluded the
+	// three were not the whole set, which is false under the first.
+	//
+	// One thing it does NOT establish: describing this as firing exactly when
+	// that function rejects would be a tautology rather than a measurement --
+	// the assertion IS that call.
 	//
 	// The reach guard further up is what keeps any of this honest: without the
 	// probe's full stamp set, scanBindingOfLeaf rejects at the FIRST guard and
