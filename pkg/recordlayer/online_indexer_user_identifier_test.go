@@ -147,3 +147,59 @@ var _ = Describe("OnlineIndexer SetRecordTypes with a SQL identifier", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 })
+
+// AN UNRESOLVABLE PRESET RECORD TYPE IS REJECTED AT BUILD, because the
+// alternative is the worst outcome this file has: a built, READABLE, EMPTY
+// index.
+//
+// Both readers of oi.recordTypes resolve a name, and for a MISSPELLED one that
+// is now consistent. Neither ERRORED on a name that resolves to nothing, and
+// the failure chain from there is entirely silent: indexedRecordTypes drops it,
+// the empty set makes the range computation decline, the build falls back to a
+// full scan, the per-record predicate matches nothing, and the index is marked
+// readable anyway. Queries then answer from an index holding no entries.
+//
+// Java cannot express this -- IndexingCommon.fillTargetIndexers takes a
+// Collection<RecordType>, not names -- so it is a Go-only builder API that
+// failed OPEN on the write path.
+var _ = Describe("OnlineIndexer SetRecordTypes with an unresolvable name", func() {
+	It("refuses to build rather than producing an empty readable index", func() {
+		priceIdx := NewIndex("price_idx_unres", Field("price"))
+		builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+		builder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+		builder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+		builder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+		builder.AddIndex("Order", priceIdx)
+		md, err := builder.Build()
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = NewOnlineIndexerBuilder().
+			SetDatabase(sharedDB).
+			SetMetaData(md).
+			SetIndex(priceIdx).
+			SetRecordTypes("NoSuchType").
+			SetSubspace(specSubspace()).
+			Build()
+		Expect(err).To(HaveOccurred(),
+			"A preset record type naming nothing was ACCEPTED. Every step after this\n"+
+				"is silent: no records match, the scan finds nothing to index, and the\n"+
+				"index is marked readable regardless -- a built, empty index that queries\n"+
+				"answer from. If this is being relaxed, say what now stops that chain.")
+		Expect(err.Error()).To(ContainSubstring("record type"),
+			"the build now fails for a different reason, so this arm no longer pins the\n"+
+				"preset-record-type check it was written for")
+
+		// The control: a resolvable name still builds. Without it, a regression
+		// that refused EVERY preset record type would pass the arm above.
+		_, err = NewOnlineIndexerBuilder().
+			SetDatabase(sharedDB).
+			SetMetaData(md).
+			SetIndex(priceIdx).
+			SetRecordTypes("Order").
+			SetSubspace(specSubspace()).
+			Build()
+		Expect(err).NotTo(HaveOccurred(),
+			"a resolvable preset record type stopped building; the check above is now\n"+
+				"rejecting good configurations too")
+	})
+})

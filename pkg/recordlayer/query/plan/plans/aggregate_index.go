@@ -29,12 +29,17 @@ import (
 //     differently: the multi-intersection derivation reports GROUP BY columns
 //     as BIGINT on the same miss, so the degraded type depends on which
 //     derivation ran. RFC-238 §7f carries the same two reachability axes --
-//     the namespace one, which arms with §7c row 5, and an EMPTY association,
+//     the namespace one, which §7c's committed design FORBIDS (it translates on
+//     the query side precisely so the candidate side does not move, so this
+//     axis does not arm -- do not read the reference as licence to move it),
+//     and an EMPTY association,
 //     which needs no namespace change at all: RecordTypesForIndex returns
 //     nothing for an index that is neither universal nor associated, the
 //     aggregate rule then leaves this field empty, and GetRecordType("")
 //     misses. Every obvious route to that state is gated by the metadata
-//     builder; the one that is not is SetRecords called AFTER AddIndex. It matters here because this
+//     builder; the one that is not is SetRecords called AFTER AddIndex over a
+//     descriptor that STILL DECLARES the type -- the overwrite drops the type's
+//     index slice while the flat registry keeps the entry. It matters here because this
 //     field carries whichever namespace the plan was built in (RFC-238 §7c),
 //     so a plan built with a SQL spelling against metadata keyed by the stored
 //     one misses and degrades exactly that way. A draft of this comment claimed

@@ -564,6 +564,24 @@ func (b *OnlineIndexerBuilder) Build() (*OnlineIndexer, error) {
 		}
 	}
 
+	// And every PRESET RECORD TYPE, for the same reason and with a worse failure
+	// if it is skipped. Both readers of recordTypes resolve a name, and neither
+	// used to ERROR on one that resolves to nothing: indexedRecordTypes silently
+	// dropped it, the empty set made computeRecordsRange decline, the build fell
+	// back to a full scan, the per-record predicate matched nothing, and the index
+	// was then marked READABLE. A built, readable, EMPTY index that queries answer
+	// from -- the same disaster the resolution fix closed for a MISSPELLED name,
+	// reached instead through a name that names nothing at all.
+	//
+	// Java cannot reach this: IndexingCommon.fillTargetIndexers takes a
+	// Collection<RecordType>, so an unresolvable name is not expressible. This is
+	// a Go-only builder API, and it failed OPEN on the write path.
+	for _, name := range b.indexer.recordTypes {
+		if md.GetRecordType(name) == nil {
+			return nil, fmt.Errorf("online indexer: record type %q not contained within specified metadata", name)
+		}
+	}
+
 	// Sort target indexes by name so primary index selection is deterministic.
 	// Matches Java's OnlineIndexer.Builder.validateIndexSetting():
 	// targetIndexes.sort(Comparator.comparing(Index::getName))

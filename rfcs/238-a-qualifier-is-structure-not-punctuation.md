@@ -1046,9 +1046,23 @@ candidate does: `rule_aggregate_data_access.go:84` and `:831`,
 `BatchAExpressionRules`. Landing this turns aggregate matching, ordered-index
 matching, FK-probe matching and streaming aggregation ON for those tables in one
 step, so the plan diff at fix time is wider than the two scenarios and the
-golden will move in ways that are CORRECT rather than drift. A grouped query
-over an affected table with a covering index is the sentinel that last one
-needs.
+golden will move in ways that are CORRECT rather than drift.
+
+THAT PREDICTION IS NOW MEASURED FOR THE STREAMING-AGGREGATE GATE rather than
+reasoned about, because it is the sentence that would wave a wide golden diff
+through unexamined at fix time. One escaped table and one unescaped one, same
+covering index, same grouped query
+(`yamsql/testdata/escaped_table_grouped_aggregate.yaml`):
+
+```
+u         StreamingAgg(keys=[G], IndexScan(U_G, [*] COVERING))
+"AGG$T"   StreamingAgg(keys=[G], InMemorySort([G ASC], Scan(AGG$T)))
+```
+
+The escaped table does not merely lose an access path: it materialises an
+IN-MEMORY SORT where the index supplied the order. Same rows, and a plan whose
+cost is a different shape. Both are asserted at the values they HAVE, so the
+fix has to come to that file.
 
 Two NEAR MEMBERS are not members, and both were on an earlier version of this
 list. `rule_aggregate_data_access.go:299` is candidate-vs-candidate. And
@@ -1188,7 +1202,8 @@ text — a different risk class.
 derives the plan's result-column types, and that lookup is NIL-TOLERANT. On a
 miss the descriptor stays nil and the types are invented: one derivation reports
 every GROUP BY column as `STRING` and the aggregate as `BIGINT`, the other
-reports GROUP BY columns as `BIGINT`. Plausible values, wrong types, no error —
+reports GROUP BY columns as `BIGINT` (`cascades_generator.go:4256`, against the
+`STRING` default at `:4189`). Plausible values, wrong types, no error —
 so the degraded type depends on which derivation ran, which is worse than either
 default alone.
 
@@ -1197,13 +1212,18 @@ dismiss the §7c namespace question. Both halves were false, and the second is
 the point: this is the consumer MOST exposed to that question, not one immune
 to it.
 
-TWO WAYS TO REACH THE MISS, and they arm at different times:
+TWO WAYS TO REACH THE MISS ON PAPER, and only the second can happen under the
+design this RFC commits to:
 
-  - NAMESPACE. `recordTypeName` comes from the candidate's stored names at all
-    three construction sites, so both spellings resolve today —
-    `GetRecordType` maps SQL to storage through the escaping, and case
-    mismatches are now rejected before planning. This axis arms exactly when
-    §7c row 5 moves candidates into the SQL namespace.
+  - NAMESPACE — WHICH §7c'S COMMITTED DESIGN FORBIDS, so it does not arm and
+    is recorded only to keep the next reader from re-deriving it.
+    `recordTypeName` comes from the candidate's stored names at all three
+    construction sites, so both spellings resolve today: `GetRecordType` maps
+    SQL to storage through the escaping, and case mismatches are now rejected
+    before planning. It WOULD arm if candidates moved into the SQL namespace --
+    and §7c rules that out in bold, translating on the QUERY side precisely so
+    the candidate side does not move. A draft of this bullet cited §7c as the
+    thing that arms it, which reads as licence to make the change §7c forbids.
   - EMPTY ASSOCIATION, through ONE ordering and no other.
     `md.RecordTypesForIndex` returns nothing for an index that is neither
     universal nor associated, and nothing guards that: the aggregate rule leaves
@@ -1215,10 +1235,24 @@ TWO WAYS TO REACH THE MISS, and they arm at different times:
     false. `AddIndex` returns BEFORE registering when the record type is
     unknown; `AddMultiTypeIndex` records a build error per unresolved name;
     `Build` refuses; metadata loaded from a store goes through the same builder;
-    and no production path constructs a `RecordMetaData` directly. What survives
-    is `SetRecords` called AFTER `AddIndex`: it repopulates the record types,
-    appends no build error, and `Build` never checks that an index in the flat
-    registry still has a carrier. One ordering, no gate.
+    and no production path constructs a `RecordMetaData` directly.
+
+    ONE ORDERING SURVIVES, and it is not the one a second draft named. That
+    draft said `SetRecords` after `AddIndex` orphans because the second call
+    "repopulates the record types" -- it does not: the map is created once and
+    only inserted into, so a second call MERGES and a type the new descriptor
+    omits survives with its indexes intact. The real trigger is the opposite
+    shape. `setRecordsWithUnionName` OVERWRITES `b.recordTypes[name]` with a
+    fresh `RecordType` whose index slice is nil, so `AddIndex("T", idx)`
+    followed by a `SetRecords` whose descriptor STILL DECLARES `T` throws away
+    T's index slice while the flat registry keeps the entry. No build error,
+    `Build` succeeds, `RecordTypesForIndex` comes back empty. The danger is the
+    type SURVIVING the second call, not being dropped by it.
+
+    AND THE CONSEQUENCE IS WIDER THAN THIS SECTION. The same discard removes
+    the index from `GetIndexesForRecordType`, so it is an index-maintenance hole
+    before it is an aggregate row-type one -- a built index no record type
+    claims.
 
 The second axis is why this section exists separately from §7c row 5 rather
 than as a line inside it: closing row 5 does not close it, and a guard on the

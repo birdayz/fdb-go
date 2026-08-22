@@ -23,11 +23,11 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**362 scenarios · 2925 query/assertion cases** across 18 feature areas — 2560 supported, 114 unsupported-feature pins, 251 error-path pins.
+**363 scenarios · 2929 query/assertion cases** across 18 feature areas — 2564 supported, 114 unsupported-feature pins, 251 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 52 | 341 | 308 | 19 | 14 |
+| Aggregates & GROUP BY | 53 | 345 | 312 | 19 | 14 |
 | Joins | 64 | 303 | 288 | 2 | 13 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 35 | 298 | 261 | 11 | 26 |
-| **Total** | **362** | **2925** | **2560** | **114** | **251** |
+| **Total** | **363** | **2929** | **2564** | **114** | **251** |
 
 ## Aggregates & GROUP BY
 
@@ -82,6 +82,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `distinct_streaming_ordered` | 1 | 1 | 0 | 0 | SELECT DISTINCT over an index-ordered |
 | `dml_rowcount_java` | 12 | 11 | 0 | 1 | INSERT/UPDATE/DELETE row count semantics. |
 | `empty_result_aggregate` | 4 | 4 | 0 | 0 | Aggregates over empty result sets |
+| `escaped_table_grouped_aggregate` | 4 | 4 | 0 | 0 | RFC-238 §7c PREDICTS FIVE MATCHING GATES TURN ON when the escaped-name |
 | `go_extensions_group_by` | 5 | 5 | 0 | 0 | Go extensions: GROUP BY (Java rejects) |
 | `group_by_case` | 1 | 1 | 0 | 0 | GROUP BY with CASE expression |
 | `group_by_count_star` | 4 | 4 | 0 | 0 | GROUP BY with COUNT(*) edge cases |

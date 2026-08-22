@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=362 queries=2644 dml=172 non_query=109 plan_errors=288 unexpected_errors=4
+# files=363 queries=2648 dml=172 non_query=109 plan_errors=288 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -5900,6 +5900,33 @@ plan:  <PLAN-ERROR: 42F10: cte query has 1 column(s), however 3 aliases defined>
 === error_codes_java.yaml#9 expect-error=0A000
 sql:   SELECT SUM(MAX(val)) FROM t
 plan:  <PLAN-ERROR: 0A000: unsupported nested aggregate(s)>
+=== escaped_table_grouped_aggregate.yaml#0
+sql:   SELECT g, COUNT(*) FROM u GROUP BY g ORDER BY g
+plan:  Project([_current.G#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.G#1], IndexScan(U_G, [*] COVERING)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryCoveringIndexPlan
+=== escaped_table_grouped_aggregate.yaml#1
+sql:   SELECT g, COUNT(*) FROM "AGG$T" GROUP BY g ORDER BY g
+plan:  Project([_current.G#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(AGG$T))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
+=== escaped_table_grouped_aggregate.yaml#2
+sql:   SELECT g, MAX(v) FROM u GROUP BY g ORDER BY g
+plan:  Project([_current.G#0, _current.MAX(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(U))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
+=== escaped_table_grouped_aggregate.yaml#3
+sql:   SELECT g, MAX(v) FROM "AGG$T" GROUP BY g ORDER BY g
+plan:  Project([_current.G#0, _current.MAX(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(AGG$T))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
 === escaped_table_secondary_index.yaml#0
 sql:   SELECT id FROM "MY$TABLE" WHERE name = 'beta'
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(MY$TABLE), [1 preds]))
