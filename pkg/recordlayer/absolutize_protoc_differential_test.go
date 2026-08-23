@@ -2,6 +2,8 @@ package recordlayer
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -198,8 +200,8 @@ func mirrorSource(parts []string, pad string) string {
 }
 
 // depDescriptor and depSource are the dependency, in the two forms that must
-// agree. Any drift between them is caught at regeneration time by
-// crossCheckStructure.
+// agree. crossCheckStructure compares them at regeneration time -- see its own
+// comment for exactly which drifts it does and does not catch.
 func (c diffCase) depDescriptor() *descriptorpb.FileDescriptorProto {
 	fd := &descriptorpb.FileDescriptorProto{
 		Name:   proto.String(diffDepPath),
@@ -383,6 +385,7 @@ func readProtocGolden(t *testing.T) (golden map[string]string, accepted, rejecte
 
 	golden = map[string]string{}
 	headerAccepted, headerRejected := -1, -1
+	headerDigest := ""
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
 	for sc.Scan() {
@@ -393,6 +396,10 @@ func readProtocGolden(t *testing.T) (golden map[string]string, accepted, rejecte
 		}
 		if n, ok := strings.CutPrefix(line, "#rejected "); ok {
 			headerRejected, _ = strconv.Atoi(strings.TrimSpace(n))
+			continue
+		}
+		if d, ok := strings.CutPrefix(line, "#digest "); ok {
+			headerDigest = strings.TrimSpace(d)
 			continue
 		}
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -423,7 +430,55 @@ func readProtocGolden(t *testing.T) (golden map[string]string, accepted, rejecte
 			"-- the file has been edited without regenerating",
 			protocGoldenPath, headerAccepted, headerRejected, accepted, rejected)
 	}
+
+	// COUNTS ALONE ARE NOT ENOUGH, because they are editable in the same pass as
+	// the row. Flipping one accepted row to REJECTED and decrementing #accepted
+	// while incrementing #rejected is a three-line edit that satisfies every
+	// count check, both set-equality directions and the dimension floors -- and
+	// quietly removes a case from the comparison. The digest is over the DATA
+	// only, so it moves for any row edit whatever the headers say.
+	if headerDigest == "" {
+		t.Fatalf("%s carries no #digest line; regenerate it", protocGoldenPath)
+	}
+	if got := goldenDigest(golden); got != headerDigest {
+		t.Fatalf("%s digest mismatch: header %s, rows %s. A row was edited by hand -- regenerate "+
+			"rather than adjusting the counts, which are satisfiable by the same edit.",
+			protocGoldenPath, headerDigest, got)
+	}
+
+	// A MAGNITUDE FLOOR, because every other check here is shape-only and the
+	// counts are whatever the last regeneration produced. A change that made
+	// protoc reject most of the corpus would regenerate to a much smaller
+	// accepted set, keep every dimension non-empty, and pass everything above.
+	// The floor is what makes the population part of the claim; raise it when
+	// the corpus legitimately grows.
+	if accepted < minAcceptedCases {
+		t.Fatalf("%s carries only %d accepted cases, below the recorded floor of %d. Either the "+
+			"corpus shrank (a generator change making protoc reject cases it used to accept), or "+
+			"it legitimately grew smaller and this floor needs revising -- deliberately, not by "+
+			"regenerating past it.", protocGoldenPath, accepted, minAcceptedCases)
+	}
 	return golden, accepted, rejected
+}
+
+// minAcceptedCases is the floor for the accepted corpus, recorded from the
+// generation that produced the committed golden. See the magnitude check above
+// for why a floor is needed on top of the counts and the digest.
+const minAcceptedCases = 526
+
+// goldenDigest hashes the golden's DATA rows, independent of header counts and
+// of row order.
+func goldenDigest(golden map[string]string) string {
+	keys := make([]string, 0, len(golden))
+	for k := range golden {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	for _, k := range keys {
+		fmt.Fprintf(h, "%s\t%s\n", k, golden[k])
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // TestAbsolutizeAgreesWithProtoc replays the committed corpus.
@@ -633,8 +688,8 @@ func regenerateProtocGolden(t *testing.T) {
 			// the harness being broken and must stop generation rather than
 			// quietly reduce coverage.
 			text := string(out)
-			if !strings.Contains(text, diffMainPath+":") && !strings.Contains(text, diffDepPath+":") {
-				t.Fatalf("protoc failed on case %s without a source-level diagnostic, which means "+
+			if !hasSourceLevelError(text) {
+				t.Fatalf("protoc failed on case %s without a source-level ERROR, which means "+
 					"the invocation is broken rather than the descriptor rejected:\n%s\nerr: %v",
 					c.key(), text, err)
 			}
@@ -651,17 +706,23 @@ func regenerateProtocGolden(t *testing.T) {
 		if err := proto.Unmarshal(raw, &set); err != nil {
 			t.Fatalf("unmarshalling descriptor set: %v", err)
 		}
-		var compiled *descriptorpb.FileDescriptorProto
+		var compiled, compiledDep *descriptorpb.FileDescriptorProto
 		for _, fd := range set.File {
-			if fd.GetName() == diffMainPath {
+			switch fd.GetName() {
+			case diffMainPath:
 				compiled = fd
+			case diffDepPath:
+				compiledDep = fd
 			}
 		}
 		if compiled == nil {
 			t.Fatalf("protoc produced no descriptor for %s (case %s)", diffMainPath, c.key())
 		}
+		if compiledDep == nil {
+			t.Fatalf("protoc produced no descriptor for %s (case %s)", diffDepPath, c.key())
+		}
 
-		crossCheckStructure(t, c, compiled)
+		crossCheckStructure(t, c, compiled, compiledDep)
 
 		resolved := c.readPosition(compiled)
 		if resolved == "" || resolved[0] != '.' {
@@ -693,8 +754,18 @@ func regenerateProtocGolden(t *testing.T) {
 	fmt.Fprintf(&out, "# value = protoc's resolved name, or %s when protoc refused the descriptor.\n", rejectedMarker)
 	fmt.Fprintf(&out, "# Rejections are recorded, not omitted: a case with no entry is an error,\n")
 	fmt.Fprintf(&out, "# so a dropped line cannot masquerade as a shape protoc declined.\n")
+	// The protoc that produced this. Ground truth is only meaningful against a
+	// named compiler: `exec.LookPath` takes whatever is on PATH, so regenerating
+	// on another machine can silently rewrite the expectations under a different
+	// protoc without anything in the file changing to say so.
+	version := "unknown"
+	if v, err := exec.Command(protoc, "--version").Output(); err == nil {
+		version = strings.TrimSpace(string(v))
+	}
+	fmt.Fprintf(&out, "# generated by: %s\n", version)
 	fmt.Fprintf(&out, "#accepted %d\n", accepted)
 	fmt.Fprintf(&out, "#rejected %d\n", rejected)
+	fmt.Fprintf(&out, "#digest %s\n", goldenDigest(results))
 	for _, k := range keys {
 		fmt.Fprintf(&out, "%s\t%s\n", k, results[k])
 	}
@@ -708,6 +779,46 @@ func regenerateProtocGolden(t *testing.T) {
 	t.Logf("wrote %s: %d accepted, %d rejected by protoc", protocGoldenPath, accepted, rejected)
 }
 
+// hasSourceLevelError reports whether protoc's output carries a real
+// source-level diagnostic, as opposed to a warning or a harness failure.
+//
+// WARNINGS WEAR THE SAME SHAPE, which is what makes the naive check wrong. An
+// earlier version asked only whether the output mentioned `<file>:`, and protoc
+// emits `diffmain.proto:3:1: warning: Import diffdep.proto is unused.` whenever
+// the shadow satisfies the reference and the import goes unused -- true for
+// EVERY shadow=true case, half the corpus. Worse, that warning is printed
+// alongside a genuine harness failure, so the exact example the guard was
+// written for:
+//
+//	$ protoc -I . --descriptor_set_out=/nonexistent/out.pb diffmain.proto diffdep.proto
+//	diffmain.proto:3:1: warning: Import diffdep.proto is unused.
+//	/nonexistent/out.pb: No such file or directory
+//
+// satisfied it, and would have been recorded as a protoc rejection. Rejections
+// are skipped by the comparison, so the corpus would shrink in the direction
+// that still reads as success.
+//
+// A line is a rejection only if it NAMES one of the two source files AND is not
+// a warning.
+//
+// It matches on containment rather than prefix, because protoc reports the path
+// it was given: the generator passes `-I <absolute dir>`, so diagnostics arrive
+// as `/tmp/xxx/diffmain.proto:5:12: "Y" is not defined.` A prefix check silently
+// matches nothing there and turns every genuine rejection into a fatal
+// "invocation is broken" -- which is at least loud, unlike the failure this
+// function exists to prevent, but is still wrong. Both spellings are pinned.
+func hasSourceLevelError(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, ": warning:") {
+			continue
+		}
+		if strings.Contains(line, diffMainPath+":") || strings.Contains(line, diffDepPath+":") {
+			return true
+		}
+	}
+	return false
+}
+
 // crossCheckStructure catches DRIFT between the two renderings of a case.
 //
 // The test builds its input as a descriptor while the generator hands protoc
@@ -715,7 +826,27 @@ func regenerateProtocGolden(t *testing.T) {
 // same file. Nothing else would notice them parting: the expectation would
 // simply become a fact about a file the test never builds, and the differential
 // would keep reporting agreement about the wrong thing.
-func crossCheckStructure(t *testing.T, c diffCase, compiled *descriptorpb.FileDescriptorProto) {
+//
+// WHAT IT DOES NOT CATCH, listed first and from shapes actually run, because an
+// earlier version of this comment claimed "any drift between them" and that was
+// broader than the code by some distance:
+//
+//   - Field and extension NAMES and NUMBERS. readPosition indexes [0], so a
+//     renamed or renumbered field is invisible here.
+//   - Anything below the message tree in the DEPENDENCY beyond its type names --
+//     extension ranges, for instance, which both renderings hard-code
+//     separately.
+//   - Enum VALUES and service METHODS. Only the declaring names are compared.
+//
+// What it does catch: the package of both files, the full nested message tree of
+// both, their top-level enum and service names, and -- the one that actually
+// matters, since it is the thing under test -- that protoc resolved from the
+// same AS-WRITTEN name the descriptor carries at the probed position.
+func crossCheckStructure(
+	t *testing.T,
+	c diffCase,
+	compiled, compiledDep *descriptorpb.FileDescriptorProto,
+) {
 	t.Helper()
 
 	built := c.mainDescriptor()
@@ -742,5 +873,137 @@ func crossCheckStructure(t *testing.T, c diffCase, compiled *descriptorpb.FileDe
 		t.Fatalf("case %s: message trees differ.\n  protoc:  %v\n  builder: %v\n"+
 			"mainSource and mainDescriptor have drifted apart, so the golden would record "+
 			"protoc's answer for a file the test never builds", c.key(), got, want)
+	}
+
+	// THE DEPENDENCY, which went unchecked entirely. depSource() writes its
+	// messages as text while depDescriptor() builds them programmatically, so a
+	// rename or an added type in one alone would leave the golden recording
+	// protoc's answer for a different dependency than the test is handed --
+	// exactly the drift this function exists to refuse, on the file it was not
+	// looking at.
+	builtDep := c.depDescriptor()
+	if got, want := compiledDep.GetPackage(), builtDep.GetPackage(); got != want {
+		t.Fatalf("case %s: protoc compiled dependency package %q, the builder produced %q",
+			c.key(), got, want)
+	}
+	gotDep, wantDep := names(compiledDep), names(builtDep)
+	if strings.Join(gotDep, ",") != strings.Join(wantDep, ",") {
+		t.Fatalf("case %s: dependency message trees differ.\n  protoc:  %v\n  builder: %v\n"+
+			"depSource and depDescriptor have drifted apart", c.key(), gotDep, wantDep)
+	}
+
+	// Top-level enums and services, for both files: `names` walks messages only,
+	// so a declaration of either kind would otherwise be invisible.
+	flat := func(fd *descriptorpb.FileDescriptorProto) string {
+		var parts []string
+		for _, e := range fd.GetEnumType() {
+			parts = append(parts, "enum:"+e.GetName())
+		}
+		for _, s := range fd.GetService() {
+			parts = append(parts, "svc:"+s.GetName())
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, ",")
+	}
+	if a, b := flat(compiled), flat(built); a != b {
+		t.Fatalf("case %s: main enum/service declarations differ: protoc %q, builder %q", c.key(), a, b)
+	}
+	if a, b := flat(compiledDep), flat(builtDep); a != b {
+		t.Fatalf("case %s: dependency enum/service declarations differ: protoc %q, builder %q",
+			c.key(), a, b)
+	}
+
+	// THE PROBED POSITION ITSELF -- the one field the whole corpus is about.
+	// protoc resolved *something*; this asserts it resolved the same as-written
+	// name the descriptor carries, by relativizing protoc's answer back and
+	// requiring it to end with what was written. Without this, a source emitter
+	// that wrote a different name at the probe would still cross-check clean,
+	// because the message trees would be identical.
+	resolved := c.readPosition(compiled)
+	if !strings.HasSuffix(resolved, "."+c.asWritten) && !strings.HasSuffix(resolved, c.asWritten) {
+		t.Fatalf("case %s: protoc resolved the probed position to %q, which does not end in the "+
+			"as-written name %q -- mainSource wrote a different reference than mainDescriptor "+
+			"carries, so the golden would record an answer to a different question",
+			c.key(), resolved, c.asWritten)
+	}
+}
+
+// The REJECTION/FAILURE discriminator gets its own arms, because it decides
+// whether a case enters the comparison at all and it runs only during
+// regeneration -- so a full corpus run exercises it without ever asserting on
+// it. It was wrong for exactly that reason: unconditionally satisfied on the
+// half of the corpus that carries an unused-import warning.
+//
+// Every string below is real protoc 35.1 output, not a paraphrase.
+func TestSourceLevelErrorSeparatesRejectionFromHarnessFailure(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		text string
+		want bool
+	}{
+		{
+			name: "a genuine rejection",
+			text: "diffmain.proto:6:12: \"A\" is not a message type.\n",
+			want: true,
+		},
+		{
+			// THE SPELLING THE GENERATOR ACTUALLY SEES. It passes an absolute
+			// -I, so protoc reports an absolute path; a prefix match finds
+			// nothing here and calls every real rejection a broken invocation.
+			name: "a rejection reported with an absolute path",
+			text: "/home/u/.cache/gotmp/TestX123/001/diffmain.proto:5:12: \"Y\" is not defined.\n",
+			want: true,
+		},
+		{
+			name: "an absolute-path warning is still not a rejection",
+			text: "/home/u/.cache/gotmp/TestX123/001/diffmain.proto:3:1: warning: Import diffdep.proto is unused.\n",
+			want: false,
+		},
+		{
+			name: "a rejection in the dependency",
+			text: "diffdep.proto:3:1: Expected top-level statement.\n",
+			want: true,
+		},
+		{
+			name: "an unused-import warning alone is NOT a rejection",
+			text: "diffmain.proto:3:1: warning: Import diffdep.proto is unused.\n",
+			want: false,
+		},
+		{
+			// THE CASE THAT DEFEATED THE OLD CHECK. A harness failure that
+			// happens to be preceded by a warning naming the source file.
+			name: "unwritable output path, preceded by a warning",
+			text: "diffmain.proto:3:1: warning: Import diffdep.proto is unused.\n" +
+				"/nonexistent/out.pb: No such file or directory\n",
+			want: false,
+		},
+		{
+			name: "a bad flag names no source file",
+			text: "Unknown flag: --not-a-flag\n",
+			want: false,
+		},
+		{
+			name: "a warning and a real error together is still a rejection",
+			text: "diffmain.proto:3:1: warning: Import diffdep.proto is unused.\n" +
+				"diffmain.proto:6:12: \"A\" is not a message type.\n",
+			want: true,
+		},
+		{
+			name: "empty output is not a rejection",
+			text: "",
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := hasSourceLevelError(tc.text); got != tc.want {
+				t.Fatalf("hasSourceLevelError(%q) = %v, want %v.\n"+
+					"A false positive records a harness failure as a protoc rejection, and "+
+					"rejections are skipped by the comparison -- the corpus shrinks silently, in "+
+					"the direction that still reads as success.", tc.text, got, tc.want)
+			}
+		})
 	}
 }

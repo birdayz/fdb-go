@@ -1039,8 +1039,14 @@ func TestExtendeeSkipsAFieldShadowAsJavaDoes(t *testing.T) {
 //
 // Java cannot see `hidden`, so `X.Y` written in `main` climbs past `.p.q` and
 // binds `.p.X.Y`. Seed the whole closure instead and the walk stops at the
-// invisible service and answers `.p.q.X.Y` -- a name that also exists, so
-// nothing errors and the field silently points elsewhere.
+// invisible service and answers `.p.q.X.Y`.
+//
+// That answer FAILS LOUDLY rather than mis-binding quietly, which is worth
+// stating because the reverse is the natural guess: protodesc applies the same
+// visibility rule when resolving, so the over-exposed name points into the very
+// file whose invisibility caused the stop, and protodesc rejects it with
+// `cannot resolve type ... is not imported`. The divergence is therefore
+// metadata Java loads and Go refuses -- a parity bug, not data corruption.
 //
 // The PUBLIC control below is the half that makes this a measurement rather
 // than an assertion: flip the same import to `public` and the service becomes

@@ -973,15 +973,26 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 //     EMBEDDED descriptor set, a different field -- is 0 in 14/14, because
 //     `defaultExcludedDependencies` strips exactly those two.
 //
-//     Those two numbers are the ones to keep apart, because collapsing them is
-//     how this paragraph was wrong before: it read `deps=0` off the embedded set
-//     and concluded the records file imports nothing, hence that root and the
-//     package prefix coincide and this pass is a no-op here. The first half is
-//     right and the conclusion does not follow. A file that DECLARES two imports
-//     whose descriptors are absent from the stored set is precisely an
-//     INCOMPLETE dependency set -- the shape the global-registry seeding below
-//     exists for -- so this producer reaches the seeding too. `struct_uuid_vector`
-//     resolves `com.apple.foundationdb.record.UUID` only because of it.
+//     Those two numbers are the ones to keep apart: a file that DECLARES two
+//     imports whose descriptors are absent from the stored set is an INCOMPLETE
+//     dependency set, which is the shape the global-registry seeding below
+//     exists for, so the loop does EXECUTE for this producer.
+//
+//     It is not OBSERVABLE for it, though, and the difference matters. Every
+//     relative type_name across all 14 goldens is a bare name of a message
+//     declared in that same file, plus one compound `com.apple.foundationdb
+//     .record.UUID` in `struct_uuid_vector` -- and with no package on the file,
+//     a walk that stops at root and the root fallback both answer `"." + name`,
+//     so they are output-identical and the seeding changes nothing. Disabling it
+//     leaves every golden byte-identical; what reddens is
+//     TestAbsolutizeFieldTypeNamesSeesGloballyRegisteredImports, whose fixture
+//     is the PACKAGED-file-plus-bare-name shape this corpus does not contain.
+//
+//     So the seeding is load-bearing for the Java producer below, not for this
+//     one. An earlier revision of this paragraph claimed `struct_uuid_vector`
+//     resolved only because of it, which a mutation refutes -- the same
+//     carried-without-re-deriving-its-population error the rest of this comment
+//     was written to correct.
 //
 //   - Metadata Java writes, which is the whole reason the port exists. A user
 //     proto's package round-trips into stored metadata through
@@ -1116,20 +1127,44 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// a transitively-imported file that nobody re-exports is invisible to name
 	// resolution.
 	//
-	// Seeding the whole closure therefore over-exposes symbols. The damage is a
-	// silent WRONG BINDING rather than a loud error: an invisible file declaring
-	// `p.q.X` makes this walk stop at a scope Java never considers and answer
-	// `.p.q.X.Y`, where Java keeps climbing and answers `.p.X.Y`. Both names
-	// exist, so nothing fails -- the field just points somewhere else, which is
-	// the same failure mode the lexical-scope test at the top of this file
-	// exists for.
+	// Seeding the whole closure therefore over-exposes symbols: an invisible
+	// file declaring `p.q.X` makes this walk stop at a scope Java never
+	// considers and answer `.p.q.X.Y`, where Java climbs past and answers
+	// `.p.X.Y`.
 	//
-	// This applies to every symbol kind, not only services: messages and enums
+	// IT FAILS LOUDLY, and saying so precisely matters because the obvious
+	// guess is the opposite. Both names exist, so this looks like it should be
+	// a silent mis-binding -- but protodesc enforces the SAME visibility rule
+	// when it resolves, so the over-exposed name always points into the very
+	// file whose invisibility created the stop, and protodesc refuses it:
+	//
+	//	cannot resolve type: resolved "p.q.X.Y",
+	//	but "hidden.proto" is not imported
+	//
+	// Measured in both arrangements -- the hidden file outside the stored
+	// closure, and inside it behind a private import -- and no silent case
+	// appears to be constructible: for `.p.q.X.Y` to resolve at all, some
+	// VISIBLE file must seed the `.p.q.X` scope, and then the stop is
+	// legitimate and there is no divergence in the first place.
+	//
+	// So this is a real Java-parity divergence that manifests as metadata Java
+	// loads and Go rejects, which is why it was never observed in the field
+	// rather than why it was harmless.
+	//
+	// It applies to every symbol kind, not only services: messages and enums
 	// from a private transitive import were over-exposed the same way, and for
 	// longer.
-	for _, dep := range visibleDependencies(fd, deps) {
-		addDep(dep.GetPackage(), dep.GetMessageType(), dep.GetEnumType(), dep.GetService())
-	}
+	// One traversal, not two, because the visible set CROSSES the two sources.
+	// A direct import may be globally registered while the file it publicly
+	// re-exports is a stored dependency, or the reverse; walking the stored
+	// protos and the registry separately loses exactly those hand-offs.
+	walkVisibleImports(fd, deps,
+		func(dep *descriptorpb.FileDescriptorProto) {
+			addDep(dep.GetPackage(), dep.GetMessageType(), dep.GetEnumType(), dep.GetService())
+		},
+		func(gfd protoreflect.FileDescriptor) {
+			collectFromFileDescriptor(gfd, declared, addPackage)
+		})
 
 	// IMPORTS RESOLVED THROUGH THE GLOBAL REGISTRY, which `deps` does not carry.
 	// `defaultExcludedDependencies` strips the Apple record-layer protos from the
@@ -1143,14 +1178,8 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// prefix happens to be right for this one shape and wrong in general, a root
 	// lookup the other way round -- so the imports are resolved and collected
 	// properly instead. TestAbsolutizeFieldTypeNamesSeesGloballyRegisteredImports
-	// pins it.
-	for _, path := range fd.GetDependency() {
-		gfd, err := protoregistry.GlobalFiles.FindFileByPath(path)
-		if err != nil {
-			continue // not globally registered; `deps` covers the stored ones
-		}
-		collectFromFileDescriptor(gfd, declared, addPackage)
-	}
+	// pins it. Registry lookups happen inside walkVisibleImports above, which is
+	// what lets a globally-registered import re-export a stored one.
 
 	// resolveName returns the absolute form of a relative type reference as JAVA
 	// would resolve it from `scope`, and reports whether it rewrote anything.
@@ -1466,65 +1495,96 @@ func (r *descriptorResolver) FindDescriptorByName(name protoreflect.FullName) (p
 	return nil, protoregistry.NotFound
 }
 
-// visibleDependencies returns the subset of `pool` that `fd` may resolve names
-// against, in Java's sense: the files `fd` imports DIRECTLY, plus everything
-// reachable from those through `public_dependency` alone.
+// walkVisibleImports visits every file `fd` may resolve names against, in
+// Java's sense: the files `fd` imports DIRECTLY, plus everything reachable from
+// those through `public_dependency` alone.
 //
 // It mirrors Descriptors.java's DescriptorPool constructor, which adds each
 // direct dependency and then calls importPublicDependencies on it, recursing
-// only through public imports. A file reached solely by a private import of a
-// private import is not in that set and its symbols are not resolvable.
+// only through public imports (guarding recursion on set-add, as the `seen` map
+// does here). A file reached solely by a private import of a private import is
+// not in that set and its symbols are not resolvable.
 //
-// Files named by `fd.Dependency` but absent from `pool` are skipped rather than
-// treated as an error: stored metadata legitimately omits the descriptors
-// `defaultExcludedDependencies` strips, and those are recovered separately from
-// the global registry.
-func visibleDependencies(
+// ONE TRAVERSAL, TWO SOURCES, because the visible set crosses them. An import
+// may be a stored descriptor in `pool`, or absent from stored metadata and
+// recoverable only from the global registry -- `defaultExcludedDependencies`
+// strips the Apple record-layer protos, so `tuple_fields.proto` always arrives
+// the second way. Either kind may publicly re-export the other, so walking the
+// two sources in separate loops silently drops the hand-off: a globally
+// registered import that re-exports a stored one would have the stored file's
+// symbols go missing. `onStored` and `onGlobal` receive the two kinds.
+//
+// A path in neither source is skipped rather than treated as an error. That is
+// not laxity: `allowUnknownDependencies` exists in Java for the same reason, and
+// this is a pre-pass whose job is to seed a symbol table, not to validate the
+// descriptor. protodesc validates, and rejects what it cannot resolve.
+func walkVisibleImports(
 	fd *descriptorpb.FileDescriptorProto,
 	pool []*descriptorpb.FileDescriptorProto,
-) []*descriptorpb.FileDescriptorProto {
+	onStored func(*descriptorpb.FileDescriptorProto),
+	onGlobal func(protoreflect.FileDescriptor),
+) {
 	byPath := make(map[string]*descriptorpb.FileDescriptorProto, len(pool))
 	for _, d := range pool {
-		// First writer wins, matching the resolver's own preference for the
-		// earliest descriptor at a path.
-		if _, seen := byPath[d.GetName()]; !seen {
-			byPath[d.GetName()] = d
-		}
+		// LAST writer wins, because rebuildFileDescriptor's own `depMap` is
+		// built as `depMap[dp.GetName()] = dp` over this same slice and so keeps
+		// the last entry at a duplicated path. protobuf-java agrees: its
+		// FileDescriptor constructor fills nameToFileMap with HashMap.put in
+		// array order.
+		//
+		// The two must agree or the failure is severe and confusing: the name
+		// gets absolutized against one descriptor and then RESOLVED against a
+		// different one carrying a different package, so BOTH orderings fail to
+		// load -- the symbol table names a type the builder cannot supply.
+		// Preferring the first here was an invented policy whose comment
+		// asserted the opposite of what the resolver does.
+		byPath[d.GetName()] = d
 	}
 
-	var out []*descriptorpb.FileDescriptorProto
 	seen := map[string]bool{}
 
-	// addPublic walks the public re-export chain of an already-visible file.
-	var addPublic func(d *descriptorpb.FileDescriptorProto)
-	addPublic = func(d *descriptorpb.FileDescriptorProto) {
-		names := d.GetDependency()
-		for _, idx := range d.GetPublicDependency() {
-			// public_dependency holds INDICES into dependency, so a malformed
-			// descriptor must not panic the loader.
-			if idx < 0 || int(idx) >= len(names) {
+	var visit func(path string)
+	visit = func(path string) {
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+
+		if d, ok := byPath[path]; ok {
+			onStored(d)
+			names := d.GetDependency()
+			for _, idx := range d.GetPublicDependency() {
+				// public_dependency holds INDICES into dependency. Java's
+				// FileDescriptor constructor throws on an out-of-range one; this
+				// is a pre-pass, so it skips and lets protodesc produce the
+				// error ("invalid or duplicate public import index"), which it
+				// does for exactly these descriptors.
+				if idx < 0 || int(idx) >= len(names) {
+					continue
+				}
+				visit(names[idx])
+			}
+			return
+		}
+
+		gfd, err := protoregistry.GlobalFiles.FindFileByPath(path)
+		if err != nil {
+			return
+		}
+		onGlobal(gfd)
+		imports := gfd.Imports()
+		for i := 0; i < imports.Len(); i++ {
+			imp := imports.Get(i)
+			if !imp.IsPublic {
 				continue
 			}
-			next, ok := byPath[names[idx]]
-			if !ok || seen[next.GetName()] {
-				continue
-			}
-			seen[next.GetName()] = true
-			out = append(out, next)
-			addPublic(next)
+			visit(imp.Path())
 		}
 	}
 
 	for _, path := range fd.GetDependency() {
-		d, ok := byPath[path]
-		if !ok || seen[path] {
-			continue
-		}
-		seen[path] = true
-		out = append(out, d)
-		addPublic(d)
+		visit(path)
 	}
-	return out
 }
 
 // findInFile searches for a descriptor by name in a file, INCLUDING nested
