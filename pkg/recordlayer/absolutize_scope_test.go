@@ -1461,6 +1461,13 @@ func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 // secondLevelExpected against an algebraic restatement of its own body and was
 // incapable of failing for any fixture whatsoever.
 func buildSecondLevelFixture(n int) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
+	return buildSecondLevelFixtureOpts(n, true)
+}
+
+// buildSecondLevelFixtureOpts builds the same graph with the head diamond
+// optional. Only TestSecondLevelDiamondIsLoadBearing passes false; it is what
+// lets that arm measure what the diamond buys instead of asserting it.
+func buildSecondLevelFixtureOpts(n int, diamond bool) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
 	var pool []*descriptorpb.FileDescriptorProto
 	for i := range n {
 		b := &descriptorpb.FileDescriptorProto{
@@ -1489,7 +1496,7 @@ func buildSecondLevelFixture(n int) (*descriptorpb.FileDescriptorProto, []*descr
 		// A repeat produced INSIDE one walk survives union de-duplication
 		// and does not survive moving the callback, so the two land on
 		// different totals and the equality separates them.
-		if i == 0 && n > 2 {
+		if diamond && i == 0 && n > 2 {
 			b.Dependency = append(b.Dependency, fmt.Sprintf("cg_b_%d.proto", n-1))
 			b.PublicDependency = append(b.PublicDependency, 1)
 		}
@@ -1832,9 +1839,13 @@ func secondLevelUniqueLeaves(
 	return unique
 }
 
-// secondLevelSizes is the one place the driven sizes are written. Every arm
-// that touches this fixture reads it, so a size added for one cannot silently
-// leave the others measuring a different population.
+// secondLevelSizes is the one place the GUARD's driven sizes are written. Every
+// arm that drives the fixture at those sizes reads it, so a size added for one
+// cannot silently leave the others measuring a different population. Exactly
+// ONE arm deliberately does not read it: `grep -n "range []int{"` over this
+// file returns a single hit, TestSecondLevelPairsCollideBelowTheDrivenSizes,
+// which exists precisely to drive sizes BELOW these. This list's own value is
+// pinned by TestSecondLevelSizesArePinned.
 var secondLevelSizes = []int{50, 100, 200}
 
 // secondLevelShape names a recognised (visits, emissions) signature of the
@@ -1886,8 +1897,14 @@ func secondLevelExpected(n int) (visits, emissions int) {
 // THE PAIRS ARE NOT WRITTEN HERE. classifySecondLevelCounts obtains them by
 // replaying the variant over the fixture, which is what makes "an EXACT pair,
 // not a range" literally true of every arm and removes the last hand-typed pair
-// from the MATCHING. Other hand-typed constants remain -- cgUniqueLeaves,
-// secondLevelSizes, the tally and wantE-1 -- each pinned by an arm of its own.
+// from the MATCHING. Hand-typed constants remain elsewhere, and the ones
+// WITHOUT an independent witness are the reason for listing them at all:
+// cgUniqueLeaves is counted out of the built pool, and the 4/6/1 tally and
+// wantE-1 are asserted from measured pairs -- but secondLevelSizes has no arm
+// pinning its VALUE, and the diamond-repeat `+1` in secondLevelExpected has
+// none either. An edit removing the diamond and dropping that `+1` together is
+// self-consistent and passes every tie; TestSecondLevelDiamondIsLoadBearing is
+// what measures the cost, and it is the only thing standing behind that term.
 // It matters because a range predicate carrying a message that names
 // one cause is how this classifier twice told a real defect it was a
 // behaviour-preserving refactor, and how it then absorbed a genuinely distinct
@@ -2009,15 +2026,29 @@ func secondLevelDeclaredShape(v secondLevelVariant) (secondLevelShape, bool) {
 // WHAT EXACT-PAIR MATCHING DOES NOT BUY. It stops a RANGE arm from absorbing a
 // shape it does not describe, which is what the three `>=` predicates it
 // replaced did. It does NOT stop COINCIDENTAL equality, because shapes are not
-// in bijection with pairs: a production edit dropping the level-1 public
-// closure (`visible := fd.GetDependency()`) measures (2n+2, n+2) at every
-// driven size -- exactly slDedupMoved's pair -- and is therefore told that
-// onVisit moved, when nothing touched onVisit. That defect is caught, with the
-// right diagnosis, by TestAbsolutizeFieldTypeNamesIgnoresAPrivateTransitiveImport;
-// this classifier misnames it. Two counters cannot separate more shapes than
-// they have distinct values, and the honest statement of the guarantee is that
-// an unmodelled shape gets `unrecognised` UNLESS it happens to land on a
-// modelled pair.
+// in bijection with pairs -- two counters cannot separate more shapes than they
+// have distinct values.
+//
+// The sharp case, measured against production: resetting visibleFrom's `seen`
+// memo per entry of `directs` measures (n^2+2n+2, n^2+2) -- 2602/2502 at n=50,
+// byte-identical to slPerFile -- and is told "the single union traversal has
+// been replaced by a per-visible-file one", which is not what happened. The
+// union traversal is intact; the memo is broken. That one has NO arm that names
+// it correctly: all 28 TestAbsolutizeFieldTypeNames correctness arms pass under
+// it, and TestUnionSecondLevelMatchesPerFileSecondLevel fires only through its
+// vacuity guard, which also does not name the cause.
+//
+// A milder case, also measured: dropping the level-1 public closure
+// (`visible := fd.GetDependency()`) measures (2n+2, n+2), exactly
+// slDedupMoved's pair, and is told that onVisit moved when nothing touched
+// onVisit. That one IS caught with the right diagnosis, by
+// TestAbsolutizeFieldTypeNamesIgnoresAPrivateTransitiveImport -- which is why
+// it is the weaker example of the two and is listed second.
+//
+// So the honest statement of the guarantee: an unmodelled shape gets
+// `unrecognised` UNLESS it lands on a modelled pair, and when it lands it is
+// misnamed rather than missed. The guard still goes red either way; it is the
+// diagnosis that is wrong, which costs the reader time rather than correctness.
 func classifySecondLevelCounts(n, visits, emissions int) (secondLevelShape, string) {
 	if visits == 0 || emissions == 0 {
 		return secondLevelVacuous, "The level produced nothing at all, so every ceiling passes " +
@@ -2864,13 +2895,13 @@ func TestSecondLevelShapesArePairwiseDistinct(t *testing.T) {
 		// completion having tested nothing -- the empty-set green this file
 		// keeps having to design out. The expected count is DERIVED from the
 		// declared grouping so adding a variant does not strand it.
-		bySize := map[secondLevelShape]int{}
+		byShape := map[secondLevelShape]int{}
 		for _, v := range secondLevelVariants {
-			bySize[declared[v]]++
+			byShape[declared[v]]++
 		}
 		total := len(secondLevelVariants) * (len(secondLevelVariants) - 1) / 2
 		same := 0
-		for _, k := range bySize {
+		for _, k := range byShape {
 			same += k * (k - 1) / 2
 		}
 		wantCross := total - same
@@ -2897,7 +2928,9 @@ func TestSecondLevelShapesArePairwiseDistinct(t *testing.T) {
 		}
 		if cross != wantCross {
 			t.Fatalf("n=%d: compared %d differently-declared pairs, expected %d from the declared "+
-				"grouping; the loop is skipping comparisons it should make", n, cross, wantCross)
+				"grouping. Both sides derive from the same declared map, so this cannot fail on \n"+
+				"DATA -- it guards the skip predicate in the loop above against an edit that \n"+
+				"quietly stops comparing things", n, cross, wantCross)
 		}
 
 		// THE DOC BLOCK'S TALLY, pinned here so it cannot go stale the way its
@@ -2977,10 +3010,165 @@ func TestSecondLevelPairsCollideBelowTheDrivenSizes(t *testing.T) {
 			}
 		}
 		if crossShape == 0 {
-			t.Fatalf("n=%d: no two differently-declared variants collide any more, so the arm "+
-				"above could be stated generally -- widen secondLevelSizes or drop its scoping "+
-				"caveat rather than leaving a caveat nothing justifies", n)
+			t.Fatalf("n=%d: no two differently-declared variants collide AT THIS SIZE. That is a "+
+				"statement about n=%d alone -- other sizes here may still collide -- so replace "+
+				"this size with one that does. Only if NO small size collides any more is the "+
+				"distinctness arm.s scoping caveat what should go", n, n)
 		}
+	}
+}
+
+// THE DIAMOND IS LOAD-BEARING, and this arm measures what it buys rather than
+// asserting it in prose.
+//
+// It exists because the prose version was wrong within its own commit. A
+// paragraph at the fixture ties recorded that
+// removing the diamond and dropping the matching `+1` from the closed form
+// slipped past every arm but the classifier table -- "the ensemble holds there
+// by ONE arm". That measurement was taken against the PREVIOUS revision, and
+// the same commit that wrote it down had already made it false: the
+// declared-shape fix turned the distinctness arm into a second catcher. A
+// measurement carried across a change of the instrument it describes is not a
+// measurement, and prose is where that goes unnoticed.
+//
+// What the diamond does: B_0 re-exports the chain TAIL as well as its
+// successor, so the tail arrives TWICE inside a single closure walk. That
+// repeat survives union de-duplication and does not survive moving the onVisit
+// callback, which is the only thing separating a defect (repeat arrivals no
+// longer counted) from a behaviour-preserving refactor (union de-duplicated
+// before the walk). Remove it and those declared-distinct shapes land on one
+// pair.
+//
+// Direction, since it inverts: this arm fails when the diamond stops mattering.
+// If a future fixture separates those shapes some other way, this is the arm to
+// re-derive, not to delete.
+func TestSecondLevelDiamondIsLoadBearing(t *testing.T) {
+	t.Parallel()
+
+	type pair struct{ visits, emissions int }
+
+	for _, n := range secondLevelSizes {
+		main, pool := buildSecondLevelFixtureOpts(n, false)
+
+		byPair := map[pair][]secondLevelVariant{}
+		for _, v := range secondLevelVariants {
+			gv, ge := replaySecondLevel(main, pool, v)
+			byPair[pair{gv, ge}] = append(byPair[pair{gv, ge}], v)
+		}
+
+		collisions := 0
+		for p, vs := range byPair {
+			shapes := map[secondLevelShape]bool{}
+			for _, v := range vs {
+				s, ok := secondLevelDeclaredShape(v)
+				if !ok {
+					t.Fatalf("n=%d: variant %q has no signature", n, v)
+				}
+				shapes[s] = true
+			}
+			if len(shapes) > 1 {
+				collisions++
+				t.Logf("n=%d without the diamond: (%d, %d) shared by %v across %d declared shapes",
+					n, p.visits, p.emissions, vs, len(shapes))
+			}
+		}
+		if collisions == 0 {
+			t.Fatalf("n=%d: with the diamond removed, no two differently-declared variants "+
+				"collide -- so the diamond is no longer what separates them and the fixture "+
+				"comment explaining it is stale. Re-derive what does the separating; do not "+
+				"delete this arm", n)
+		}
+	}
+}
+
+// THE DRIVEN POPULATION IS ITSELF PINNED.
+//
+// secondLevelSizes had no arm asserting its VALUE -- every occurrence was a
+// `range` or a comment -- so collapsing it to one entry left this whole file
+// green. Measured: `[]int{7}` builds, runs 21 tests, reports zero failures, and
+// silently reduces the evidence to a single point. This file's premise is that
+// one point cannot tell a formula in n from a constant.
+//
+// The floor on n is not cosmetic either. The fixture's diamond is gated on
+// n > 2, and TestSecondLevelPairsCollideBelowTheDrivenSizes measures
+// declared-distinct shapes landing on one pair at n <= 2 -- so driving such a
+// size here would redden the distinctness arm for a property of the fixture
+// rather than a regression, which is the most expensive kind of false alarm.
+func TestSecondLevelSizesArePinned(t *testing.T) {
+	t.Parallel()
+
+	if len(secondLevelSizes) < 3 {
+		t.Fatalf("secondLevelSizes has %d entries (%v); fewer than three points cannot separate "+
+			"a formula in n from a constant, which is the premise every arm in this file rests "+
+			"on", len(secondLevelSizes), secondLevelSizes)
+	}
+	seen := map[int]bool{}
+	for _, n := range secondLevelSizes {
+		if seen[n] {
+			t.Fatalf("secondLevelSizes repeats %d (%v); a repeated size adds a run, not a point",
+				n, secondLevelSizes)
+		}
+		seen[n] = true
+		if n <= 2 {
+			t.Fatalf("secondLevelSizes contains %d (%v), at or below the range where "+
+				"declared-distinct shapes provably collide on one pair. Driving it would redden "+
+				"the distinctness arm for a property of the fixture rather than a regression",
+				n, secondLevelSizes)
+		}
+	}
+}
+
+// THE DIAGNOSES THEMSELVES, which nothing else looks at.
+//
+// The classifier arm asserts a signature's SHAPE and that its detail is
+// non-empty; it never compares the detail. So a detail pasted onto the wrong
+// row -- the likeliest edit here, since several are near-identical prose -- is
+// invisible, and the detail is the entire value of a failing run: the shape
+// names what happened, the detail says what to go and look at.
+//
+// Two properties, both derivable, so neither adds a copy to keep in sync:
+// variants that declare the SAME shape must carry the SAME detail (they are one
+// diagnosis reached two ways), and variants declaring DIFFERENT shapes must
+// carry different details (otherwise one of the two is describing the other's
+// cause).
+func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
+	t.Parallel()
+
+	detailFor := map[secondLevelShape]string{}
+	sourceFor := map[secondLevelShape]secondLevelVariant{}
+	for _, sig := range secondLevelSignatures {
+		if sig.shape != secondLevelPristine && sig.detail == "" {
+			t.Fatalf("%q declares shape %q with an empty diagnosis, so a run that measures its "+
+				"pair would name the shape and say nothing about it", sig.variant, sig.shape)
+		}
+		prev, seen := detailFor[sig.shape]
+		if seen && prev != sig.detail {
+			t.Fatalf("%q and %q both declare shape %q but carry DIFFERENT diagnoses. One shape is "+
+				"one conclusion; if these two really need different text they need different "+
+				"shapes", sourceFor[sig.shape], sig.variant, sig.shape)
+		}
+		detailFor[sig.shape] = sig.detail
+		sourceFor[sig.shape] = sig.variant
+	}
+
+	byDetail := map[string]secondLevelShape{}
+	for shape, detail := range detailFor {
+		if detail == "" {
+			continue
+		}
+		if other, dup := byDetail[detail]; dup {
+			t.Fatalf("shapes %q and %q carry the SAME diagnosis, so one of them is describing the "+
+				"other's cause and a failing run points the reader at the wrong code",
+				other, shape)
+		}
+		byDetail[detail] = shape
+	}
+
+	// The population, so a signature table emptied by an edit cannot pass this
+	// arm by having nothing to compare.
+	if len(detailFor) < 2 {
+		t.Fatalf("only %d distinct shapes carry diagnoses; with fewer than two there is nothing "+
+			"for either comparison above to separate", len(detailFor))
 	}
 }
 
@@ -3009,14 +3197,23 @@ func TestSecondLevelPairsCollideBelowTheDrivenSizes(t *testing.T) {
 //     no count-derived constant can pin it -- and placement is what the
 //     truncation arm keys on.
 //
-// WHAT THE FOUR TIES DO NOT CATCH, measured. An edit that removes the diamond
-// AND drops the matching `+1` from secondLevelExpected passes all four, passes
-// the guard at 151/301/601, and passes the distinctness arm -- because it is
-// self-consistent, and the closed form is documentation rather than an
-// independent witness. What it silently spends is the diamond's separating
-// power, and only the classifier table sees that, through the arms that then
-// collide. The ensemble holds there by ONE arm, which is worth knowing before
-// anyone concludes the table is redundant with this.
+// WHAT THE FOUR TIES DO NOT CATCH. An edit that removes the diamond AND drops
+// the matching `+1` from secondLevelExpected passes all four, and passes the
+// guard at 151/301/601, because it is self-consistent: the closed form is
+// documentation rather than an independent witness, and an author who edits
+// both has desynchronised nothing. What it silently spends is the diamond's
+// separating power.
+//
+// TWO other arms catch it -- the classifier table, and the distinctness arm --
+// and the count is written here rather than the arms' behaviour because this
+// paragraph has already been wrong once. Its first version said the ensemble
+// held "by ONE arm", a figure taken from a mutation run against the PREVIOUS
+// revision and copied in by the very commit that falsified it: the
+// declared-shape fix in that same commit is what made the distinctness arm a
+// second catcher. So the property itself is now pinned by
+// TestSecondLevelDiamondIsLoadBearing, which measures what removing the diamond
+// costs instead of describing it, and this paragraph is the pointer rather than
+// the evidence.
 func TestSecondLevelExpectedMatchesTheFixture(t *testing.T) {
 	t.Parallel()
 
