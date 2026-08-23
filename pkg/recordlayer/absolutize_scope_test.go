@@ -2,7 +2,7 @@ package recordlayer
 
 import (
 	"fmt"
-	"math"
+	"sort"
 	"testing"
 	"time"
 
@@ -1328,6 +1328,8 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // regression trips it, and the sizes are large enough that the small case is
 // comfortably measurable -- which the arm checks rather than assumes, since a
 // ratio of two unmeasurable numbers is noise wearing a decimal point.
+const superlinearBar = 25.0
+
 func TestAbsolutizeFieldTypeNamesIsNotSuperlinearInChainLength(t *testing.T) {
 	t.Parallel()
 
@@ -1375,37 +1377,50 @@ func TestAbsolutizeFieldTypeNamesIsNotSuperlinearInChainLength(t *testing.T) {
 
 	once(64) // warm the allocator so startup cost stays out of the ratio
 
-	// THE BEST *RATIO* OVER INTERLEAVED PAIRS, not the ratio of two
-	// independently-taken bests. The distinction is the whole reason this arm
-	// was flaky: taking best-of-N per size separately lets a GC pause or a
-	// co-scheduled test land inside the large-size window while the small-size
-	// window stays clean, which inflates the quotient even though neither
-	// measurement is individually anomalous. Measured at ~23% red on unmutated
-	// code, once as high as 6.4x against a 3.0 bar.
+	// THE MEDIAN OF INTERLEAVED PAIRED RATIOS. Two earlier statistics were both
+	// wrong, in opposite directions, and the reasons are worth keeping:
 	//
-	// Measuring the two sizes ADJACENTLY and keeping the smallest quotient
-	// makes a disturbance have to hit the large half of a pair and miss the
-	// small half of every other pair to survive. Taking the MINIMUM is also the
-	// conservative direction for a ceiling test: noise can only push a quotient
-	// up, so discarding the inflated pairs removes false alarms without hiding
-	// a real regression -- quadratic growth shows ~4x in every clean pair, not
-	// in one.
+	// Best-of-N per SIZE, taken independently, fails CLOSED. A GC pause landing
+	// in the large-size window inflates the quotient while the small-size window
+	// stays clean, and neither measurement is individually anomalous. Measured
+	// at ~23% red on unmutated code, once 6.4x against a 3.0 bar.
 	//
-	// THE SIZES ARE PART OF THE GUARD, not an arbitrary pick. At 250/500 fixed
-	// overhead dominated and clean quotients came in BELOW 1.0 -- a doubling
-	// apparently getting cheaper, which is proof the signal was buried. At
-	// 1000/2000 the true linear ~2.0 shows through. Raising n is the right
-	// response to instability here rather than raising the bar, because
-	// quadratic separation widens with n while noise does not.
+	// The MINIMUM of paired ratios fails OPEN, which is worse. Noise does not
+	// only push a quotient up: a disturbance in the DENOMINATOR pushes it down,
+	// and the small run is systematically the more exposed of the two because it
+	// follows the large run's allocations. One inflated `tS` can drag a genuinely
+	// quadratic ~4x under the bar and pass the regression.
 	//
-	// Measured at these sizes over 25 SEPARATE invocations (Ginkgo rejects
+	// The median rejects outliers in BOTH directions and needs no argument about
+	// which way noise happens to lean. Pairs are still measured adjacently so a
+	// disturbance tends to hit both halves of one pair rather than one half of
+	// many.
+	//
+	// AN 8x SPREAD, NOT A DOUBLING, and that is the load-bearing choice. A
+	// doubling separates linear (2x) from quadratic (4x) by a factor of two,
+	// and the measured run-to-run spread on this machine swallows it: sweeping
+	// base sizes 250..4000, clean medians wandered 1.97-2.91 with individual
+	// samples reaching 3.48, NON-MONOTONICALLY -- so the excess is variance,
+	// not asymptotics, and no amount of extra sampling shrinks it below the gap
+	// being measured. Two successive statistics failed against that: best-per-
+	// size (fails CLOSED, ~23% red on clean code) and best-of-paired-ratios
+	// (fails OPEN, one inflated denominator drags 4x under a 3.0 bar).
+	//
+	// Widening the spread fixes it structurally instead of statistically:
+	// across 500 -> 4000 linear predicts ~8 and quadratic ~64.
+	//
+	// Measured over 25 SEPARATE invocations -- Ginkgo rejects
 	// `go test -count=N>1` on this package, which silently defeats the obvious
-	// way to check a flake): 25/25 pass, quotients 1.27-2.45. The per-file form
-	// this replaced scores 3.8x. The 3.0 bar sits between with comparable
-	// margin on each side.
-	const small, large, pairs = 1000, 2000, 13
-	bestRatio := math.Inf(1)
-	var bestSmall, bestLarge time.Duration
+	// way to check a flake -- this arm reports 9.96-13.57, 25/25 pass, and the
+	// per-file form it replaced scores 71.7x. The bar at 25 sits ~1.8x above
+	// the worst clean sample and ~2.9x below the regression, so both margins
+	// are wide instead of balanced on a knife edge.
+	const small, large, pairs = 500, 4000, 9
+	type sample struct {
+		ratio        float64
+		small, large time.Duration
+	}
+	var samples []sample
 	for range pairs {
 		tS := once(small)
 		tL := once(large)
@@ -1414,22 +1429,30 @@ func TestAbsolutizeFieldTypeNamesIsNotSuperlinearInChainLength(t *testing.T) {
 		if tS < 20*time.Microsecond {
 			continue
 		}
-		if r := float64(tL) / float64(tS); r < bestRatio {
-			bestRatio, bestSmall, bestLarge = r, tS, tL
-		}
+		samples = append(samples, sample{float64(tL) / float64(tS), tS, tL})
 	}
-	if math.IsInf(bestRatio, 1) {
+	if len(samples) == 0 {
 		t.Fatalf("every %d-file measurement came in under 20µs, too short to compare against -- "+
 			"raise the sizes rather than reading a quotient off timings this small", small)
 	}
+	// A median over a handful of pairs is only meaningful if most of them
+	// survived the premise check; otherwise it is a median of two numbers.
+	if len(samples) < pairs/2+1 {
+		t.Fatalf("only %d of %d pairs produced a measurable %d-file timing, so the median is "+
+			"taken over too few samples to reject an outlier", len(samples), pairs, small)
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i].ratio < samples[j].ratio })
+	med := samples[len(samples)/2]
 
-	ratio, tSmall, tLarge := bestRatio, bestSmall, bestLarge
-	if ratio > 3.0 {
-		t.Fatalf("doubling the public-import chain from %d to %d multiplied the time by %.1fx "+
-			"(%v -> %v).\nThat is superlinear growth in a loader path: the second package level "+
-			"is re-walking each file's closure instead of taking one traversal over the union, "+
+	ratio, tSmall, tLarge := med.ratio, med.small, med.large
+	if ratio > superlinearBar {
+		t.Fatalf("growing the public-import chain %dx (%d -> %d files) multiplied the time by "+
+			"%.1fx, over the %.0fx bar (%v -> %v).\nLinear predicts ~%dx here and quadratic "+
+			"~%dx.\nThat is superlinear growth in a loader path: the second package level is "+
+			"re-walking each file's closure instead of taking one traversal over the union, "+
 			"which makes a valid descriptor graph a CPU exhaustion input.",
-			small, large, ratio, tSmall, tLarge)
+			large/small, small, large, ratio, superlinearBar, tSmall, tLarge,
+			large/small, (large/small)*(large/small))
 	}
 	t.Logf("chain %d -> %d: %v -> %v (%.2fx)", small, large, tSmall, tLarge, ratio)
 }

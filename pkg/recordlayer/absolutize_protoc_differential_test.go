@@ -949,6 +949,40 @@ func TestProbeLineFindsEveryPositionsStatement(t *testing.T) {
 	}
 }
 
+// SINGLENESS ENFORCEMENT NEEDS ITS OWN ARM, because every source the emitter
+// actually produces contains exactly one marker -- so reverting probeLine to
+// first-match-wins leaves every other test here green, and the differential
+// stays green too since crossCheckStructure runs only during regeneration. The
+// behaviour would be unpinned by construction.
+//
+// A future corpus shape with two matching lines would then have the check
+// silently inspect the first statement, which is the same wrong-line failure
+// the scoping was introduced to prevent.
+func TestProbeLineRefusesADuplicateMarker(t *testing.T) {
+	t.Parallel()
+
+	marker := probeFieldMarkers[posField]
+
+	single := "message Host {\n  optional X " + marker + "\n}\n"
+	if _, ok := probeLine(single, posField); !ok {
+		t.Fatalf("probeLine rejected a source with exactly one %q, so this arm's negative case "+
+			"below would prove nothing:\n%s", marker, single)
+	}
+
+	// Two lines carrying the marker. First-match-wins would return the first
+	// and report success; the contract is to refuse.
+	double := single[:len(single)-2] + "  optional Y " + marker + "\n}\n"
+	if n := strings.Count(double, marker); n != 2 {
+		t.Fatalf("the fixture carries %d markers, not 2, so it does not express the ambiguity "+
+			"this arm is named for:\n%s", n, double)
+	}
+	if line, ok := probeLine(double, posField); ok {
+		t.Fatalf("probeLine returned %q for a source with TWO matching lines. Returning the "+
+			"first silently checks the wrong statement -- exactly the failure the probe-line "+
+			"scoping exists to prevent.", strings.TrimSpace(line))
+	}
+}
+
 func TestProbeLineIsScopedToTheStatementUnderTest(t *testing.T) {
 	t.Parallel()
 
