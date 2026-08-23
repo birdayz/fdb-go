@@ -874,8 +874,16 @@ func hasSourceLevelError(text string) bool {
 //
 // A containment check alone reads that as a source rejection and records the
 // case REJECTED, which is precisely the silent-shrink this helper exists to
-// prevent, arriving through the helper itself. A real source diagnostic always
-// carries a position; an invocation failure never does.
+// prevent, arriving through the helper itself.
+//
+// The rule is a POSITIONAL line, not "every diagnostic has a position". protoc
+// emits genuine source-level errors without one -- `diffdep.proto: File not
+// found.` is such a line -- so the strict reading of this predicate is "at
+// least one positional non-warning line naming a source file". That is
+// sufficient because protoc pairs the position-free forms with a positional
+// line (measured: the `File not found.` pair returns true), and because the
+// failure direction is safe: a rejection misread as a harness failure aborts
+// generation loudly, where the reverse silently shrinks the corpus.
 func hasLineColumn(rest string) bool {
 	digits := func(s string) (int, bool) {
 		n := 0
@@ -891,6 +899,82 @@ func hasLineColumn(rest string) bool {
 	rest = rest[n+1:]
 	n, ok = digits(rest)
 	return ok && n < len(rest) && rest[n] == ':'
+}
+
+// The probe-line extraction gets its own arms, because the check that uses it
+// runs only during regeneration and would otherwise never be asserted on --
+// which is how its predecessor shipped satisfiable by an unrelated declaration.
+func TestProbeLineIsScopedToTheStatementUnderTest(t *testing.T) {
+	t.Parallel()
+
+	// A shadowed single-component case: mirrorSource emits `message X { ... }`,
+	// which is what defeated a whole-file search.
+	c := diffCase{mainPkg: "probe", depPkg: "", shadow: true, position: posField, asWritten: "X"}
+	src := c.mainSource()
+
+	if !strings.Contains(src, "message X {") {
+		t.Fatalf("fixture no longer emits a shadow declaration for `X`, so this arm cannot "+
+			"exercise the collision it exists for:\n%s", src)
+	}
+
+	line, ok := probeLine(src, posField)
+	if !ok {
+		t.Fatalf("probeLine found no statement for %q in:\n%s", posField, src)
+	}
+	if strings.Contains(line, "message ") {
+		t.Fatalf("probeLine returned the shadow declaration %q rather than the probe statement",
+			strings.TrimSpace(line))
+	}
+	if !strings.Contains(line, " X ") {
+		t.Fatalf("probe line %q does not carry the as-written name", strings.TrimSpace(line))
+	}
+
+	// THE DRIFT THE OLD CHECK MISSED: qualify the probe while the shadow keeps
+	// declaring the bare name. A whole-file search still succeeds; a probe-line
+	// search must not.
+	drifted := strings.Replace(src, "optional X f = 1;", "optional probe.X f = 1;", 1)
+	if drifted == src {
+		t.Fatal("the fixture's probe statement is not `optional X f = 1;` any more, so this arm " +
+			"is simulating a drift that cannot occur")
+	}
+	if !strings.Contains(drifted, " X ") {
+		t.Fatal("the drifted source no longer contains ` X ` anywhere, so it would be caught by " +
+			"a whole-file search too and this arm proves nothing about scoping")
+	}
+	driftedLine, ok := probeLine(drifted, posField)
+	if !ok {
+		t.Fatalf("probeLine found no statement in the drifted source:\n%s", drifted)
+	}
+	if strings.Contains(driftedLine, " X ") {
+		t.Fatalf("probe line %q still reads as carrying the bare name after the probe was "+
+			"qualified -- the check is not scoped to the statement under test",
+			strings.TrimSpace(driftedLine))
+	}
+}
+
+// probeFieldMarkers identifies each position's emitted statement by the field
+// name and number only that position writes. Keeping them distinct is what lets
+// the cross-check look at the probe statement rather than at the whole file.
+var probeFieldMarkers = map[diffPosition]string{
+	posField:           "f = 1;",
+	posMsgExtType:      "g = 1001;",
+	posFileExtType:     "i = 1002;",
+	posMsgExtExtendee:  "k = 1005;",
+	posFileExtExtendee: "j = 1006;",
+}
+
+// probeLine returns the single line of `src` carrying the probed reference.
+func probeLine(src string, pos diffPosition) (string, bool) {
+	marker, ok := probeFieldMarkers[pos]
+	if !ok {
+		return "", false
+	}
+	for _, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, marker) {
+			return line, true
+		}
+	}
+	return "", false
 }
 
 // crossCheckStructure catches DRIFT between the two renderings of a case.
@@ -996,15 +1080,28 @@ func crossCheckStructure(
 	// exactly the thing that changes how a shadow resolves, so the golden would
 	// be recording protoc's answer to a different question.
 	//
-	// The reference is emitted as a whole token surrounded by spaces in every
-	// position mainSource writes (`optional <name> f = 1;`, `extend <name> {`),
-	// so requiring that exact token is a comparison of spellings rather than of
-	// endings.
+	// SCOPED TO THE PROBE'S OWN LINE, not the whole file. A whole-file search is
+	// satisfiable by a DIFFERENT declaration: with shadow=true and a
+	// single-component name, mirrorSource already emits `message X { ... }`, so
+	// searching the file for ` X ` succeeds no matter what the probe says. The
+	// probe could drift from `optional X f` to `optional probe.X f` -- which is
+	// precisely the qualification that changes shadow resolution -- and
+	// regeneration would silently rewrite the golden from `.probe.Host.X` to
+	// `.probe.X` with this check green.
+	//
+	// The probe line is found by the field name unique to each position, so the
+	// assertion is about the statement under test and nothing else.
 	src := c.mainSource()
-	if !strings.Contains(src, " "+c.asWritten+" ") {
-		t.Fatalf("case %s: mainSource did not emit the as-written name %q as a whole token:\n%s\n"+
-			"mainSource and mainDescriptor disagree about the reference under test, so the "+
-			"golden would record an answer to a different question", c.key(), c.asWritten, src)
+	line, ok := probeLine(src, c.position)
+	if !ok {
+		t.Fatalf("case %s: mainSource emitted no statement for position %q:\n%s",
+			c.key(), c.position, src)
+	}
+	if !strings.Contains(line, " "+c.asWritten+" ") {
+		t.Fatalf("case %s: the probe statement is %q, which does not carry the as-written name "+
+			"%q as a whole token.\nmainSource and mainDescriptor disagree about the reference "+
+			"under test, so the golden would record an answer to a different question",
+			c.key(), strings.TrimSpace(line), c.asWritten)
 	}
 	// And protoc's answer must still be an absolute name ending in it, which
 	// catches the reverse drift (the source right, the descriptor's probed

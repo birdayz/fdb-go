@@ -1658,6 +1658,16 @@ func walkVisibleImports(
 	//
 	// so one visibleFrom over P yields the same set in O(n), and `seen` inside
 	// it keeps each file visited once.
+	//
+	// EQUALITY OF SETS, NOT OF CALL COUNTS, and the difference is load-bearing.
+	// The per-file form could reach the same file from several visible parents
+	// and call onPackageOnly once per arrival; the union form visits it once.
+	// Measured over randomized graphs, the two forms produce identical SETS
+	// while differing in call count on a minority of them. That is safe only
+	// because the sink is idempotent -- onPackageOnly is addPackage, which does
+	// `declared[full] = true` -- so a dropped repeat cannot change the result.
+	// A sink that counted, accumulated or logged would make this rewrite a
+	// behaviour change rather than an optimisation.
 	var union []string
 	for _, path := range visible {
 		if _, direct, _, ok := importsOf(path); ok {

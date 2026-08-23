@@ -1249,7 +1249,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 						TypeName: proto.String("X.Y"),
 					},
 					{
-						// The type-hiding probe: a bare name only `hidden`
+						// The type-hiding probe: a bare name only `hidden2`
 						// declares.
 						Name:     proto.String("g"),
 						Number:   proto.Int32(2),
@@ -1292,7 +1292,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 		// Its red state was a strict subset of the sibling arm's, so it
 		// discriminated nothing while its comment called it the control.
 		//
-		// The probe is instead a bare name only `hidden` declares, where the two
+		// The probe is instead a bare name only `hidden2` declares, where the two
 		// implementations produce DIFFERENT strings:
 		//
 		//	types hidden (correct): nothing declares it, root fallback -> ".OnlyInHidden"
@@ -1302,7 +1302,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 
 		got := main.MessageType[0].Field[1].GetTypeName()
 		if got == ".p.q.OnlyInHidden" {
-			t.Fatalf("type_name = %q -- `hidden`'s TYPES were seeded alongside its package. "+
+			t.Fatalf("type_name = %q -- `hidden2`'s TYPES were seeded alongside its package. "+
 				"Java puts H's messages in H's own pool, which this file never consults; only the "+
 				"PackageDescriptor reaches here through the importing dependency's pool.", got)
 		}
@@ -1476,5 +1476,84 @@ func TestAbsolutizeFieldTypeNamesDoesNotReachPackagesThreeLevelsOut(t *testing.T
 			"-- one hop -- so that package is invisible and the walk climbs to `.p.X.Y`. "+
 			"Answering `.p.q.X.Y` means the package exposure is recursing to arbitrary depth "+
 			"instead of stopping at two levels.", got, ".p.X.Y")
+	}
+}
+
+// THE SAME TWO-LEVEL RULE, THROUGH THE GLOBAL REGISTRY -- the half the stored
+// arms cannot see.
+//
+// walkVisibleImports resolves each import from one of two sources: the stored
+// descriptors, or protoregistry.GlobalFiles for the ones stored metadata omits.
+// Both branches must expose a privately-imported file's PACKAGE and withhold
+// its TYPES, and the sibling arms drive only the stored branch -- leaking types
+// through the global branch alone leaves the entire package green.
+//
+// That is the production-relevant half, not the exotic one:
+// `defaultExcludedDependencies` strips exactly the descriptors that then arrive
+// through the registry, so real stored metadata reaches this branch on every
+// load.
+//
+// The fixture uses `descriptor.proto`, which is globally registered by the
+// generated protobuf runtime and is the file the excluded-dependency path
+// actually hits. `main` sits in `google.protobuf` so that a leaked type would
+// land in a scope the walk VISITS -- the same placement rule the stored arms
+// turn on.
+func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *testing.T) {
+	t.Parallel()
+
+	const descriptorPath = "google/protobuf/descriptor.proto"
+
+	// The premise: the file must really be globally registered, or this arm
+	// exercises the registry branch in name only.
+	gfd, err := protoregistry.GlobalFiles.FindFileByPath(descriptorPath)
+	if err != nil {
+		t.Fatalf("%s is not in the global registry (%v), so this arm cannot reach the branch "+
+			"it is named for", descriptorPath, err)
+	}
+	if gfd.Messages().ByName("FileDescriptorProto") == nil {
+		t.Fatalf("%s no longer declares FileDescriptorProto, so the probe name is not one this "+
+			"file could leak", descriptorPath)
+	}
+
+	// A STORED bridge that privately imports the GLOBAL file. The import is
+	// private, so `descriptor.proto` is visible to `bridge` and not to `main`;
+	// only its package may cross.
+	bridge := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("globallevel2_bridge.proto"),
+		Package:    proto.String("gl2.bridge"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{descriptorPath},
+	}
+	main := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("globallevel2_main.proto"),
+		Package:    proto.String("google.protobuf"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{bridge.GetName()},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Local"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:   proto.String("f"),
+				Number: proto.Int32(1),
+				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				// Declared by descriptor.proto and by nothing visible here.
+				TypeName: proto.String("FileDescriptorProto"),
+			}},
+		}},
+	}
+
+	absolutizeFieldTypeNames(main, bridge)
+
+	got := main.MessageType[0].Field[0].GetTypeName()
+	if got == ".google.protobuf.FileDescriptorProto" {
+		t.Fatalf("type_name = %q -- the TYPES of a privately-imported, globally-registered file "+
+			"were seeded. Java puts them in that file's own pool, which this file never consults; "+
+			"only its PackageDescriptor crosses. The stored-descriptor arms cannot see this: "+
+			"leaking here alone leaves them green.", got)
+	}
+	if got != ".FileDescriptorProto" {
+		t.Fatalf("type_name = %q, want %q. Nothing visible to this file declares the name, so "+
+			"the walk must run out of scopes and the root fallback must answer.",
+			got, ".FileDescriptorProto")
 	}
 }
