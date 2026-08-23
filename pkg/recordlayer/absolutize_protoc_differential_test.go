@@ -940,10 +940,20 @@ func TestProbeLineFindsEveryPositionsStatement(t *testing.T) {
 			// The marker must be UNIQUE IN THE FILE, which is the property that
 			// makes first-match-wins safe. Distinctness across positions is not
 			// enough on its own.
+			// Counted in LINES, matching what probeLine actually scans. Counting
+			// OCCURRENCES agrees on today's emitter and would diverge the moment
+			// two landed on one line -- asserting the wrong quantity for the
+			// right reason.
 			marker := probeFieldMarkers[pos]
-			if n := strings.Count(src, marker); n != 1 {
-				t.Fatalf("marker %q appears %d times in the %q source, so probeLine's first "+
-					"match is not necessarily the probe statement:\n%s", marker, n, pos, src)
+			lines := 0
+			for _, l := range strings.Split(src, "\n") {
+				if strings.Contains(l, marker) {
+					lines++
+				}
+			}
+			if lines != 1 {
+				t.Fatalf("marker %q appears on %d lines of the %q source, so probeLine cannot "+
+					"identify the probe statement:\n%s", marker, lines, pos, src)
 			}
 		})
 	}
@@ -1185,7 +1195,8 @@ func crossCheckStructure(
 	src := c.mainSource()
 	line, ok := probeLine(src, c.position)
 	if !ok {
-		t.Fatalf("case %s: mainSource emitted no statement for position %q:\n%s",
+		t.Fatalf("case %s: probeLine found no UNIQUE statement for position %q -- either no line "+
+			"carries its marker, or MORE THAN ONE does and the singleness refusal fired:\n%s",
 			c.key(), c.position, src)
 	}
 	if !strings.Contains(line, " "+c.asWritten+" ") {
@@ -1283,8 +1294,10 @@ func TestSourceLevelErrorSeparatesRejectionFromHarnessFailure(t *testing.T) {
 		{
 			// ...and the pair protoc actually emits, which does. The safety of
 			// the predicate rests on this pairing, so it is pinned rather than
-			// asserted in prose: protoc never leaves the positionless form
-			// standing alone for a real rejection.
+			// asserted in prose. Stated at the strength it was measured at:
+			// across the protoc 35.1 failure modes probed here, a positionless
+			// source error always arrived alongside a positional line -- not
+			// "never" in the absolute, which nothing here establishes.
 			name: "the positionless error paired with its positional line",
 			text: "diffdep.proto: File not found.\n" +
 				"diffmain.proto:2:1: Import \"diffdep.proto\" was not found or had errors.\n",

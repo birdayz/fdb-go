@@ -1662,11 +1662,13 @@ func walkVisibleImports(
 	// EQUALITY OF SETS, NOT OF CALL COUNTS, and the difference is load-bearing.
 	// The per-file form could reach the same file from several visible parents
 	// and call onPackageOnly once per arrival; the union form visits it once.
-	// Measured by differencing the two forms over 4000 randomized graphs
-	// (diamonds, public-import cycles, self-imports, dangling paths, duplicate
-	// paths, out-of-range public indices), of which 1191 produced a non-empty
-	// second-level set so the comparison was not vacuous: 0 set mismatches, and
-	// 187 differing in CALL COUNT. That is safe only
+	// Differenced against the per-file form by
+	// TestUnionSecondLevelMatchesPerFileSecondLevel, over randomized graphs with
+	// cycles, self-imports, dangling paths and out-of-range public indices: 0
+	// set mismatches, and a minority differing in CALL COUNT. That test is the
+	// only thing in the tree that can check this -- the four hand-written
+	// correctness arms stay green under the per-file form -- so it is committed
+	// rather than quoted. That is safe only
 	// because the sink is idempotent -- onPackageOnly is addPackage, which does
 	// `declared[full] = true` -- so a dropped repeat cannot change the result.
 	// A sink that counted, accumulated or logged would make this rewrite a

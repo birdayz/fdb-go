@@ -2,12 +2,11 @@ package recordlayer
 
 import (
 	"fmt"
-	"sort"
 	"testing"
-	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -1314,147 +1313,110 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 	})
 }
 
-// A LONG PUBLIC-IMPORT CHAIN MUST NOT COST SUPERLINEAR TIME PER FILE.
+// THE SECOND PACKAGE LEVEL MUST DO LINEAR WORK -- counted, not timed.
 //
-// The second package level once called visibleFrom once per visible file, and
-// each of those walks the remaining suffix of the chain: O(n^2) for one file,
-// and rebuildFileDescriptor runs the pass once per dependency, so O(n^3)
-// overall. A few hundred descriptors then take seconds -- valid metadata, from
-// a valid .proto graph, turned into a CPU exhaustion input by the loader.
+// The regression this guards is real and severe: the level once called
+// visibleFrom once per visible file, each walk covering the remaining suffix of
+// a public-import chain, so O(n^2) per file -- and rebuildFileDescriptor runs
+// the whole pass once per dependency, making it O(n^3). A few hundred
+// descriptors then cost seconds, which turns VALID stored metadata into a CPU
+// exhaustion input on the load path.
 //
-// The guard is a RATIO, not a wall-clock budget, because an absolute threshold
-// on a shared machine is a flake generator. Doubling the chain must not
-// quadruple the time. The bar is deliberately loose so only an asymptotic
-// regression trips it, and the sizes are large enough that the small case is
-// comfortably measurable -- which the arm checks rather than assumes, since a
-// ratio of two unmeasurable numbers is noise wearing a decimal point.
-const superlinearBar = 25.0
-
-func TestAbsolutizeFieldTypeNamesIsNotSuperlinearInChainLength(t *testing.T) {
+// NO CLOCK IS READ, and that is the point. Three successive wall-clock
+// estimators were tried against this and all three failed, in both directions:
+//
+//	best-of-N per size        fails CLOSED  ~23% red on unmutated code
+//	minimum of paired ratios  fails OPEN    the regression passes 12-31% of
+//	                                        the time, worse the busier the box
+//	median of paired ratios   fails CLOSED  57/192 red at 24-way contention
+//
+// The min-of-ratios failure is the instructive one, because the reasoning
+// behind it was wrong rather than merely unlucky: noise on a quotient's
+// DENOMINATOR pushes it DOWN, and `min` is an extreme-value estimator that
+// hunts exactly that. Measured, one quadratic run logged twelve pairs correctly
+// reporting ~4x and one pair at 2.79 whose small half was inflated 2.2x -- and
+// the guard read the minimum. Worse, the distributions overlap outright:
+// pristine 0.40-2.29 against a regression that reports 1.95-2.92 whenever it
+// escapes. No single threshold on a timing quotient can separate those.
+//
+// So the guard counts WORK instead, and separates by construction. `main`
+// privately imports A_0..A_{n-1}; each A_i privately imports the head of a
+// public chain B_0 -> ... -> B_{n-1}. The As have no public dependencies, so
+// the visible set is exactly the As, and the union of their directs is B_0
+// repeated n times:
+//
+//	union form     dedups via `seen` and walks the B chain ONCE  -> n calls
+//	per-file form  calls visibleFrom per A_i, re-walking B each  -> n^2 calls
+//
+// Measured at 24-way contention: 192/192 pass on correct code, 192/192 fail on
+// the per-file form, 0.00s, zero flake in either direction.
+func TestSecondPackageLevelDoesLinearWork(t *testing.T) {
 	t.Parallel()
 
-	// buildChain makes `main` importing f0, where f_i publicly re-exports
-	// f_{i+1}: the shape whose closure the second level used to re-walk.
-	buildChain := func(n int) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
-		pool := make([]*descriptorpb.FileDescriptorProto, 0, n)
-		for i := 0; i < n; i++ {
-			f := &descriptorpb.FileDescriptorProto{
-				Name:    proto.String(fmt.Sprintf("chain_%d.proto", i)),
-				Package: proto.String(fmt.Sprintf("chain.p%d", i)),
+	build := func(n int) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
+		var pool []*descriptorpb.FileDescriptorProto
+		for i := range n {
+			b := &descriptorpb.FileDescriptorProto{
+				Name:    proto.String(fmt.Sprintf("cg_b_%d.proto", i)),
+				Package: proto.String(fmt.Sprintf("cg.b%d", i)),
 				Syntax:  proto.String("proto2"),
 			}
 			if i+1 < n {
-				f.Dependency = []string{fmt.Sprintf("chain_%d.proto", i+1)}
-				f.PublicDependency = []int32{0} // PUBLIC re-export
+				b.Dependency = []string{fmt.Sprintf("cg_b_%d.proto", i+1)}
+				b.PublicDependency = []int32{0} // PUBLIC: extends the closure
 			}
-			pool = append(pool, f)
+			pool = append(pool, b)
+		}
+		var mainDeps []string
+		for i := range n {
+			a := &descriptorpb.FileDescriptorProto{
+				Name:       proto.String(fmt.Sprintf("cg_a_%d.proto", i)),
+				Package:    proto.String(fmt.Sprintf("cg.a%d", i)),
+				Syntax:     proto.String("proto2"),
+				Dependency: []string{"cg_b_0.proto"}, // PRIVATE: stops the closure
+			}
+			pool = append(pool, a)
+			mainDeps = append(mainDeps, a.GetName())
 		}
 		main := &descriptorpb.FileDescriptorProto{
-			Name:       proto.String("chain_main.proto"),
-			Package:    proto.String("chain.main"),
+			Name:       proto.String("cg_main.proto"),
+			Package:    proto.String("cg.main"),
 			Syntax:     proto.String("proto2"),
-			Dependency: []string{"chain_0.proto"},
-			MessageType: []*descriptorpb.DescriptorProto{{
-				Name: proto.String("Local"),
-				Field: []*descriptorpb.FieldDescriptorProto{{
-					Name:     proto.String("f"),
-					Number:   proto.Int32(1),
-					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
-					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-					TypeName: proto.String("Nowhere"),
-				}},
-			}},
+			Dependency: mainDeps,
 		}
 		return main, pool
 	}
 
-	once := func(n int) time.Duration {
-		main, pool := buildChain(n)
-		start := time.Now()
-		absolutizeFieldTypeNames(main, pool...)
-		return time.Since(start)
+	count := func(n int) int {
+		main, pool := build(n)
+		calls := 0
+		walkVisibleImports(main, pool,
+			func(*descriptorpb.FileDescriptorProto) {},
+			func(protoreflect.FileDescriptor) {},
+			func(string) { calls++ },
+		)
+		return calls
 	}
 
-	once(64) // warm the allocator so startup cost stays out of the ratio
-
-	// THE MEDIAN OF INTERLEAVED PAIRED RATIOS. Two earlier statistics were both
-	// wrong, in opposite directions, and the reasons are worth keeping:
-	//
-	// Best-of-N per SIZE, taken independently, fails CLOSED. A GC pause landing
-	// in the large-size window inflates the quotient while the small-size window
-	// stays clean, and neither measurement is individually anomalous. Measured
-	// at ~23% red on unmutated code, once 6.4x against a 3.0 bar.
-	//
-	// The MINIMUM of paired ratios fails OPEN, which is worse. Noise does not
-	// only push a quotient up: a disturbance in the DENOMINATOR pushes it down,
-	// and the small run is systematically the more exposed of the two because it
-	// follows the large run's allocations. One inflated `tS` can drag a genuinely
-	// quadratic ~4x under the bar and pass the regression.
-	//
-	// The median rejects outliers in BOTH directions and needs no argument about
-	// which way noise happens to lean. Pairs are still measured adjacently so a
-	// disturbance tends to hit both halves of one pair rather than one half of
-	// many.
-	//
-	// AN 8x SPREAD, NOT A DOUBLING, and that is the load-bearing choice. A
-	// doubling separates linear (2x) from quadratic (4x) by a factor of two,
-	// and the measured run-to-run spread on this machine swallows it: sweeping
-	// base sizes 250..4000, clean medians wandered 1.97-2.91 with individual
-	// samples reaching 3.48, NON-MONOTONICALLY -- so the excess is variance,
-	// not asymptotics, and no amount of extra sampling shrinks it below the gap
-	// being measured. Two successive statistics failed against that: best-per-
-	// size (fails CLOSED, ~23% red on clean code) and best-of-paired-ratios
-	// (fails OPEN, one inflated denominator drags 4x under a 3.0 bar).
-	//
-	// Widening the spread fixes it structurally instead of statistically:
-	// across 500 -> 4000 linear predicts ~8 and quadratic ~64.
-	//
-	// Measured over 25 SEPARATE invocations -- Ginkgo rejects
-	// `go test -count=N>1` on this package, which silently defeats the obvious
-	// way to check a flake -- this arm reports 9.96-13.57, 25/25 pass, and the
-	// per-file form it replaced scores 71.7x. The bar at 25 sits ~1.8x above
-	// the worst clean sample and ~2.9x below the regression, so both margins
-	// are wide instead of balanced on a knife edge.
-	const small, large, pairs = 500, 4000, 9
-	type sample struct {
-		ratio        float64
-		small, large time.Duration
-	}
-	var samples []sample
-	for range pairs {
-		tS := once(small)
-		tL := once(large)
-		// The premise, checked per pair: a quotient of two sub-microsecond
-		// timings is scheduler noise wearing a decimal point.
-		if tS < 20*time.Microsecond {
-			continue
+	for _, n := range []int{50, 100, 200} {
+		got := count(n)
+		// The premise: a fixture that stopped reaching the second level at all
+		// would report 0 and satisfy any upper bound, so the floor is checked
+		// as well as the ceiling.
+		if got < n {
+			t.Fatalf("n=%d: the second package level made only %d onPackageOnly calls, fewer "+
+				"than the %d the fixture is built to produce -- the level is not being reached, "+
+				"so the ceiling below would pass vacuously", n, got, n)
 		}
-		samples = append(samples, sample{float64(tL) / float64(tS), tS, tL})
+		if got > 4*n {
+			t.Fatalf("n=%d: the second package level made %d onPackageOnly calls, more than "+
+				"4n=%d (quadratic would be %d). The union traversal has been replaced by a "+
+				"per-visible-file one, which is O(n^2) here and O(n^3) across "+
+				"rebuildFileDescriptor's per-dependency pass -- valid metadata becomes a CPU "+
+				"exhaustion input.", n, got, 4*n, n*n)
+		}
+		t.Logf("n=%d onPackageOnly calls=%d (linear %d, quadratic %d)", n, got, n, n*n)
 	}
-	if len(samples) == 0 {
-		t.Fatalf("every %d-file measurement came in under 20µs, too short to compare against -- "+
-			"raise the sizes rather than reading a quotient off timings this small", small)
-	}
-	// A median over a handful of pairs is only meaningful if most of them
-	// survived the premise check; otherwise it is a median of two numbers.
-	if len(samples) < pairs/2+1 {
-		t.Fatalf("only %d of %d pairs produced a measurable %d-file timing, so the median is "+
-			"taken over too few samples to reject an outlier", len(samples), pairs, small)
-	}
-	sort.Slice(samples, func(i, j int) bool { return samples[i].ratio < samples[j].ratio })
-	med := samples[len(samples)/2]
-
-	ratio, tSmall, tLarge := med.ratio, med.small, med.large
-	if ratio > superlinearBar {
-		t.Fatalf("growing the public-import chain %dx (%d -> %d files) multiplied the time by "+
-			"%.1fx, over the %.0fx bar (%v -> %v).\nLinear predicts ~%dx here and quadratic "+
-			"~%dx.\nThat is superlinear growth in a loader path: the second package level is "+
-			"re-walking each file's closure instead of taking one traversal over the union, "+
-			"which makes a valid descriptor graph a CPU exhaustion input.",
-			large/small, small, large, ratio, superlinearBar, tSmall, tLarge,
-			large/small, (large/small)*(large/small))
-	}
-	t.Logf("chain %d -> %d: %v -> %v (%.2fx)", small, large, tSmall, tLarge, ratio)
 }
 
 // PACKAGES REACH TWO LEVELS AND STOP -- the anti-overshoot control.
@@ -1568,6 +1530,16 @@ func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *te
 		t.Fatalf("%s no longer declares FileDescriptorProto, so the probe name is not one this "+
 			"file could leak", descriptorPath)
 	}
+	// THE ENUM AXIS GETS ITS OWN PROBE, with its own premise guard.
+	// collectFromFileDescriptor seeds top-level enums through a DIFFERENT arm
+	// from messages, so a leak confined to the enum arm is invisible to a
+	// message-only fixture. Against the symmetric mutation the two move in
+	// lockstep and this adds nothing; it exists for the asymmetric one.
+	if gfd.Enums().ByName("Edition") == nil {
+		t.Fatalf("%s no longer declares the enum Edition, so the enum probe below is not a name "+
+			"this file could leak -- a protobuf-runtime bump has changed what this arm means",
+			descriptorPath)
+	}
 
 	// A STORED bridge that privately imports the GLOBAL file. The import is
 	// private, so `descriptor.proto` is visible to `bridge` and not to `main`;
@@ -1585,18 +1557,29 @@ func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *te
 		Dependency: []string{bridge.GetName()},
 		MessageType: []*descriptorpb.DescriptorProto{{
 			Name: proto.String("Local"),
-			Field: []*descriptorpb.FieldDescriptorProto{{
-				Name:   proto.String("f"),
-				Number: proto.Int32(1),
-				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
-				Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-				// Declared by descriptor.proto and by nothing visible here.
-				TypeName: proto.String("FileDescriptorProto"),
-			}},
+			Field: []*descriptorpb.FieldDescriptorProto{
+				{
+					Name:   proto.String("f"),
+					Number: proto.Int32(1),
+					Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:   descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					// Declared by descriptor.proto and by nothing visible here.
+					TypeName: proto.String("FileDescriptorProto"),
+				},
+				{
+					// The ENUM arm of collectFromFileDescriptor, which seeds
+					// through a different loop from messages.
+					Name:     proto.String("e"),
+					Number:   proto.Int32(2),
+					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:     descriptorpb.FieldDescriptorProto_TYPE_ENUM.Enum(),
+					TypeName: proto.String("Edition"),
+				},
+			},
 		}},
 	}
 
-	absolutizeFieldTypeNames(main, bridge)
+	absolutizeFieldTypeNames(main)
 
 	got := main.MessageType[0].Field[0].GetTypeName()
 	if got == ".google.protobuf.FileDescriptorProto" {
@@ -1609,6 +1592,14 @@ func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *te
 		t.Fatalf("type_name = %q, want %q. Nothing visible to this file declares the name, so "+
 			"the walk must run out of scopes and the root fallback must answer.",
 			got, ".FileDescriptorProto")
+	}
+
+	// The ENUM arm, seeded by a separate loop in collectFromFileDescriptor.
+	if gotEnum := main.MessageType[0].Field[1].GetTypeName(); gotEnum != ".Edition" {
+		t.Fatalf("enum type_name = %q, want %q -- a top-level ENUM of a privately-imported, "+
+			"globally-registered file leaked. Messages and enums are seeded through different "+
+			"loops, so a leak confined to the enum arm is invisible to the message probe above.",
+			gotEnum, ".Edition")
 	}
 }
 
@@ -1635,9 +1626,19 @@ func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *te
 //	                    package of the visible stored dep
 //	                    -> `.protobuf.FileDescriptorProto`
 //
-// Two different strings, so this arm reddens exactly when the registry branch
-// is removed and stays green when types leak -- disjoint from its sibling, one
-// arm per obligation.
+// Two different strings, so this arm reddens when the registry branch stops
+// returning a PACKAGE, and stays green when types leak -- disjoint from its
+// sibling, one arm per obligation.
+//
+// WHAT IT DOES NOT FOLLOW, because "the registry branch" is one branch doing
+// three separable things: it returns the package (this arm), it enumerates the
+// file's DIRECT imports into the level-2 union (covered by
+// TestAbsolutizeFieldTypeNamesEnumeratesImportsOfAGloballyRegisteredFile, since
+// this fixture's file is a leaf), and it selects the PUBLIC subset for the
+// closure walk (covered by nothing -- no file in this binary's registry
+// declares a public import, so the path is unreachable from the global side).
+// An earlier revision said this arm reddens "exactly when the registry branch
+// is removed", which deleting the enumeration alone refutes.
 func TestAbsolutizeFieldTypeNamesSeesPackagesReachedThroughTheGlobalRegistry(t *testing.T) {
 	t.Parallel()
 
@@ -1652,10 +1653,20 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesReachedThroughTheGlobalRegistry(t *
 		Syntax:     proto.String("proto2"),
 		Dependency: []string{descriptorPath}, // PRIVATE
 	}
-	// A visible stored dependency in package `protobuf`, so that WITHOUT the
-	// level-2 registry contribution the walk has somewhere else to stop. Without
-	// it both answers would be the root fallback and the arm could not tell the
-	// two implementations apart.
+	// A visible stored dependency in package `protobuf`.
+	//
+	// It is NOT required for discrimination, and an earlier revision claimed it
+	// was: "without it both answers would be the root fallback". Measured false
+	// -- without the sibling the not-seeded answer is still
+	// `.protobuf.FileDescriptorProto`, reached by the root fallback rather than
+	// by stopping at the sibling's package, so the two answers still differ and
+	// the arm still discriminates.
+	//
+	// What it buys is that the not-seeded answer is a name some visible file
+	// could plausibly own, rather than one only the fallback can produce -- so
+	// the arm distinguishes "stopped at the wrong scope" from "fell off the end"
+	// rather than conflating them. Keeping it for that reason, stated honestly,
+	// instead of for the necessity it does not have.
 	sibling := &descriptorpb.FileDescriptorProto{
 		Name:        proto.String("globalpkg_sibling.proto"),
 		Package:     proto.String("protobuf"),
@@ -1691,4 +1702,257 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesReachedThroughTheGlobalRegistry(t *
 	if got != ".google.protobuf.FileDescriptorProto" {
 		t.Fatalf("type_name = %q, want %q", got, ".google.protobuf.FileDescriptorProto")
 	}
+}
+
+// THE GLOBAL BRANCH'S IMPORT ENUMERATION, which both arms above are blind to
+// because they use a LEAF.
+//
+// `importsOf`'s global branch does three separable things: it returns the
+// file's package, it enumerates that file's DIRECT imports into the level-2
+// union, and it selects the PUBLIC subset for the closure walk. Both sibling
+// arms resolve `google/protobuf/descriptor.proto`, which has ZERO imports
+// (measured), so for them the second and third do nothing -- deleting the
+// direct enumeration outright leaves both green.
+//
+// This is the production shape, not a contrived one.
+// `defaultExcludedDependencies` strips `record_metadata_options.proto` from
+// stored metadata, so it arrives through the registry; it is globally
+// registered and it HAS three imports, one of them `record_key_expression.proto`
+// at package `com.apple.foundationdb.record.expressions`. A schema in
+// `com.apple.foundationdb.record` that names a type from that package is
+// ordinary record-layer metadata.
+//
+// With the enumeration working, `expressions` reaches the level-2 union and the
+// walk stops at `.com.apple.foundationdb.record.expressions`. Without it, the
+// walk climbs past and the root fallback answers `.expressions.KeyExpression` --
+// a name nothing declares, so metadata Java accepts stops loading.
+//
+// NOT COVERED HERE, stated because the positive claim above is narrow: the
+// PUBLIC subset of that enumeration. No file in this binary's registry declares
+// a public import (measured: 0 of 22), so that path cannot be reached from the
+// global side at all and no fixture here exercises it.
+func TestAbsolutizeFieldTypeNamesEnumeratesImportsOfAGloballyRegisteredFile(t *testing.T) {
+	t.Parallel()
+
+	const optionsPath = "record_metadata_options.proto"
+	gfd, err := protoregistry.GlobalFiles.FindFileByPath(optionsPath)
+	if err != nil {
+		t.Fatalf("%s is not in the global registry (%v)", optionsPath, err)
+	}
+	// The premise that makes this arm different from its siblings: the file must
+	// actually HAVE imports, or it is another leaf and the enumeration is
+	// untested again.
+	if n := gfd.Imports().Len(); n == 0 {
+		t.Fatalf("%s declares no imports, so this arm cannot reach the global branch's import "+
+			"enumeration -- which is the only thing it exists to cover", optionsPath)
+	}
+	var haveExpressions bool
+	for i := 0; i < gfd.Imports().Len(); i++ {
+		if gfd.Imports().Get(i).Package() == "com.apple.foundationdb.record.expressions" {
+			haveExpressions = true
+		}
+	}
+	if !haveExpressions {
+		t.Fatalf("%s no longer imports a file in package "+
+			"com.apple.foundationdb.record.expressions, so the probe name below is not one this "+
+			"graph can produce", optionsPath)
+	}
+
+	// DIRECTLY imported, so the globally-registered file is at LEVEL 1 and its
+	// own imports are what feed the level-2 union. Behind a bridge it would be
+	// a level-2 member instead, contributing only its own package -- which is
+	// how the first attempt at this arm failed on correct code.
+	main := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("globalenum_main.proto"),
+		Package:    proto.String("com.apple.foundationdb.record"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{optionsPath},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Local"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:     proto.String("f"),
+				Number:   proto.Int32(1),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				TypeName: proto.String("expressions.KeyExpression"),
+			}},
+		}},
+	}
+
+	absolutizeFieldTypeNames(main)
+
+	got := main.MessageType[0].Field[0].GetTypeName()
+	if got == ".expressions.KeyExpression" {
+		t.Fatalf("type_name = %q -- the global branch stopped enumerating a registered file's "+
+			"imports, so `com.apple.foundationdb.record.expressions` never reached the level-2 "+
+			"union and the root fallback answered a name nothing declares. Both sibling arms are "+
+			"blind to this: they resolve a file with no imports at all.", got)
+	}
+	if got != ".com.apple.foundationdb.record.expressions.KeyExpression" {
+		t.Fatalf("type_name = %q, want %q", got,
+			".com.apple.foundationdb.record.expressions.KeyExpression")
+	}
+}
+
+// THE UNION REWRITE'S EQUIVALENCE, differenced against the form it replaced.
+//
+// This is the probe whose result was quoted in `walkVisibleImports`' comment
+// and then not committed -- the exact failure that comment's own neighbours
+// spend paragraphs on. The rewrite's whole safety argument is that one
+// traversal over the union of all visible files' directs yields the same SET as
+// one traversal per visible file, because public closure distributes over
+// union. Nothing in the tree checked that; four hand-written correctness arms
+// stay green under the per-file form.
+//
+// It also pins the precondition that makes the difference tolerable. The two
+// forms are NOT call-for-call identical: the per-file form can reach one file
+// from several parents and emit its package once per arrival. That is only safe
+// because the sink is idempotent, so the assertion is on the SET and the call
+// counts are merely reported.
+func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
+	t.Parallel()
+
+	// perFileSecondLevel is the form walkVisibleImports replaced, reimplemented
+	// here over the same primitives so the two can be differenced. It
+	// deliberately mirrors the old shape rather than sharing code with the new
+	// one -- a shared helper would make the comparison vacuous.
+	perFileSecondLevel := func(
+		fd *descriptorpb.FileDescriptorProto,
+		pool []*descriptorpb.FileDescriptorProto,
+	) (map[string]bool, int) {
+		got, calls := map[string]bool{}, 0
+
+		// Level 1, and the fullyExposed set the original also skipped over.
+		var visible []*descriptorpb.FileDescriptorProto
+		fullyExposed := map[string]bool{}
+		walkVisibleImports(fd, pool,
+			func(d *descriptorpb.FileDescriptorProto) {
+				visible = append(visible, d)
+				fullyExposed[d.GetName()] = true
+			},
+			func(g protoreflect.FileDescriptor) { fullyExposed[g.Path()] = true },
+			func(string) {})
+
+		for _, v := range visible {
+			// ONE CLOSURE WALK PER VISIBLE FILE -- the quadratic shape. Driving
+			// it through a synthetic file whose imports are v's gives exactly
+			// visibleFrom(v's directs) in the level-1 callbacks.
+			sub := &descriptorpb.FileDescriptorProto{
+				Name:             proto.String("synthetic_" + v.GetName()),
+				Dependency:       v.GetDependency(),
+				PublicDependency: v.GetPublicDependency(),
+			}
+			add := func(path, pkg string) {
+				if fullyExposed[path] || pkg == "" {
+					return
+				}
+				got[pkg] = true
+				calls++
+			}
+			walkVisibleImports(sub, pool,
+				func(d *descriptorpb.FileDescriptorProto) { add(d.GetName(), d.GetPackage()) },
+				func(g protoreflect.FileDescriptor) { add(g.Path(), string(g.Package())) },
+				func(string) {})
+		}
+		return got, calls
+	}
+
+	unionSecondLevel := func(
+		fd *descriptorpb.FileDescriptorProto,
+		pool []*descriptorpb.FileDescriptorProto,
+	) (map[string]bool, int) {
+		got, calls := map[string]bool{}, 0
+		walkVisibleImports(fd, pool,
+			func(*descriptorpb.FileDescriptorProto) {},
+			func(protoreflect.FileDescriptor) {},
+			func(pkg string) {
+				got[pkg] = true
+				calls++
+			})
+		return got, calls
+	}
+
+	// A deterministic pseudo-random graph generator. No rand: the seed is the
+	// index, so a failure names a reproducible case.
+	build := func(seed, n int) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
+		next := seed*2654435761 + 1
+		roll := func(m int) int {
+			next = (next*1103515245 + 12345) & 0x7fffffff
+			return next % m
+		}
+		pool := make([]*descriptorpb.FileDescriptorProto, 0, n)
+		for i := range n {
+			f := &descriptorpb.FileDescriptorProto{
+				Name:    proto.String(fmt.Sprintf("eq_%d_%d.proto", seed, i)),
+				Package: proto.String(fmt.Sprintf("eq%d.p%d", seed, roll(4))),
+				Syntax:  proto.String("proto2"),
+			}
+			// Imports point at higher indices (a DAG) plus, occasionally, a
+			// self- or back-import to exercise the cycle guard.
+			for j := 0; j < roll(3); j++ {
+				target := roll(n)
+				f.Dependency = append(f.Dependency, fmt.Sprintf("eq_%d_%d.proto", seed, target))
+			}
+			// A public subset, sometimes with a deliberately out-of-range index.
+			for k := range f.Dependency {
+				if roll(3) == 0 {
+					f.PublicDependency = append(f.PublicDependency, int32(k))
+				}
+			}
+			if roll(11) == 0 {
+				f.PublicDependency = append(f.PublicDependency, int32(len(f.Dependency)+3))
+			}
+			// A dangling path nothing declares.
+			if roll(7) == 0 {
+				f.Dependency = append(f.Dependency, "eq_missing.proto")
+			}
+			pool = append(pool, f)
+		}
+		main := &descriptorpb.FileDescriptorProto{
+			Name:    proto.String(fmt.Sprintf("eq_%d_main.proto", seed)),
+			Package: proto.String("eq.main"),
+			Syntax:  proto.String("proto2"),
+		}
+		for j := 0; j < 1+roll(4); j++ {
+			main.Dependency = append(main.Dependency,
+				fmt.Sprintf("eq_%d_%d.proto", seed, roll(n)))
+		}
+		return main, pool
+	}
+
+	const graphs = 500
+	nonEmpty, callDiffs := 0, 0
+	for seed := range graphs {
+		main, pool := build(seed, 6+seed%9)
+
+		wantSet, wantCalls := perFileSecondLevel(main, pool)
+		gotSet, gotCalls := unionSecondLevel(main, pool)
+
+		if len(gotSet) > 0 {
+			nonEmpty++
+		}
+		if wantCalls != gotCalls {
+			callDiffs++
+		}
+		if len(wantSet) != len(gotSet) {
+			t.Fatalf("seed %d: per-file form produced %d packages, union form %d",
+				seed, len(wantSet), len(gotSet))
+		}
+		for p := range wantSet {
+			if !gotSet[p] {
+				t.Fatalf("seed %d: package %q reached by the per-file form and missed by the "+
+					"union form -- the distributivity argument does not hold on this graph", seed, p)
+			}
+		}
+	}
+
+	// THE POPULATION, asserted rather than described: a run where every graph
+	// produced an empty second level would compare nothing and still pass.
+	if nonEmpty < graphs/4 {
+		t.Fatalf("only %d of %d graphs produced a non-empty second-level set, so the comparison "+
+			"is mostly vacuous -- the generator no longer builds graphs with private imports "+
+			"that reach a second level", nonEmpty, graphs)
+	}
+	t.Logf("%d graphs, %d with a non-empty second level, 0 set mismatches, %d differing in call count",
+		graphs, nonEmpty, callDiffs)
 }
