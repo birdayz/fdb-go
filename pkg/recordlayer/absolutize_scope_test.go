@@ -2046,6 +2046,60 @@ func secondLevelPackagelessLeaves(
 	return n
 }
 
+// THE WITNESS'S VISIBILITY RULE, DRIVEN DIRECTLY.
+//
+// secondLevelPackagelessLeaves counts a package-less leaf only when it is NOT
+// visible, because production skips a visible file at `fullyExposed[q]` one
+// line before it evaluates `pkg != ""`. That rule is the whole point of the
+// helper -- an earlier version tested directness instead and would have kept
+// reporting coverage after the leaf was made public, i.e. after its only route
+// to the guard had gone.
+//
+// The committed fixture cannot show the rule doing anything: its only
+// package-less file is private, and the only publicly re-exported file has a
+// package. So deleting the closure walk from the helper leaves every arm in
+// this file green, and this is the arm that notices.
+func TestSecondLevelPackagelessWitnessRequiresInvisibility(t *testing.T) {
+	t.Parallel()
+
+	build := func(public bool) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
+		leaf := &descriptorpb.FileDescriptorProto{
+			Name:   proto.String("w_leaf.proto"),
+			Syntax: proto.String("proto2"),
+			// No package: this is the file whose emission production guards.
+		}
+		a := &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("w_a.proto"),
+			Package:    proto.String("w.a"),
+			Syntax:     proto.String("proto2"),
+			Dependency: []string{"w_leaf.proto"},
+		}
+		if public {
+			a.PublicDependency = []int32{0}
+		}
+		main := &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("w_main.proto"),
+			Package:    proto.String("w.main"),
+			Syntax:     proto.String("proto2"),
+			Dependency: []string{"w_a.proto"},
+		}
+		return main, []*descriptorpb.FileDescriptorProto{a, leaf}
+	}
+
+	main, pool := build(false)
+	if got := secondLevelPackagelessLeaves(main, pool); got != 1 {
+		t.Fatalf("a PRIVATE package-less leaf must count: got %d, want 1. Production reaches "+
+			"the empty-package guard for exactly this shape", got)
+	}
+
+	main, pool = build(true)
+	if got := secondLevelPackagelessLeaves(main, pool); got != 0 {
+		t.Fatalf("a PUBLICLY re-exported package-less leaf must NOT count: got %d, want 0. It "+
+			"is fullyExposed, so production skips it BEFORE the empty-package guard -- counting "+
+			"it would report coverage of a branch the walk never reaches", got)
+	}
+}
+
 // secondLevelPublicShape counts, out of the built pool, the two quantities the
 // public re-export contributes: how many files reach the visible set ONLY by
 // being publicly re-exported by a direct, and how many non-visible files those
@@ -2928,19 +2982,28 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 		// rather than executions -- a roll or seed change could leave every
 		// boundary-bearing file unreachable while the counters stayed
 		// non-zero and the bounds check went untested.
+		//
+		// THEY IMPORT NOTHING, and that is load-bearing rather than tidy. The
+		// first version gave each a private import, which made these sentinels
+		// contribute second-level output and duplicate arrivals of their own --
+		// enough that `nonEmpty` and `callDiffs` below stayed healthy at
+		// 393/500 with the randomized generation switched off entirely, against
+		// 0/500 before they existed. A scaffold that keeps the corpus's own
+		// health counters green is a scaffold that has disabled them.
+		//
+		// Being empty costs nothing: with no dependencies, index 0 IS exactly
+		// len(Dependency), so the upper boundary is expressed by the smallest
+		// possible descriptor.
 		atFile := &descriptorpb.FileDescriptorProto{
-			Name:       proto.String(fmt.Sprintf("eq_%d_bound_at.proto", seed)),
-			Package:    proto.String(fmt.Sprintf("eq%d.boundat", seed)),
-			Syntax:     proto.String("proto2"),
-			Dependency: []string{fmt.Sprintf("eq_%d_0.proto", seed)},
+			Name:    proto.String(fmt.Sprintf("eq_%d_bound_at.proto", seed)),
+			Package: proto.String(fmt.Sprintf("eq%d.boundat", seed)),
+			Syntax:  proto.String("proto2"),
 		}
-		// Exactly len(Dependency): out of range by one, which `+3` never is.
 		atFile.PublicDependency = []int32{int32(len(atFile.Dependency))}
 		belowFile := &descriptorpb.FileDescriptorProto{
 			Name:             proto.String(fmt.Sprintf("eq_%d_bound_below.proto", seed)),
 			Package:          proto.String(fmt.Sprintf("eq%d.boundbelow", seed)),
 			Syntax:           proto.String("proto2"),
-			Dependency:       []string{fmt.Sprintf("eq_%d_0.proto", seed)},
 			PublicDependency: []int32{-1},
 		}
 		pool = append(pool, atFile, belowFile)
@@ -2965,15 +3028,33 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	for seed := range graphs {
 		main, pool := build(seed, 6+seed%9)
 
-		// Reachability of the two boundary files, measured rather than
-		// assumed: importsOf only evaluates an index on a file the walk
-		// actually visits, and main.Dependency is what the walk starts from.
+		// Reachability of the two boundary sentinels, and their boundary
+		// PROPERTY, both measured rather than assumed. Matching the name alone
+		// fails open twice over: a sentinel that went dangling, or whose index
+		// became valid, would leave the count at exactly `graphs` while the
+		// boundary it exists for went unexercised.
+		byName := make(map[string]*descriptorpb.FileDescriptorProto, len(pool))
+		for _, d := range pool {
+			byName[d.GetName()] = d
+		}
 		for _, dep := range main.GetDependency() {
+			d, ok := byName[dep]
+			if !ok {
+				continue
+			}
 			switch dep {
 			case fmt.Sprintf("eq_%d_bound_at.proto", seed):
-				atReached++
+				for _, idx := range d.GetPublicDependency() {
+					if int(idx) == len(d.GetDependency()) {
+						atReached++
+					}
+				}
 			case fmt.Sprintf("eq_%d_bound_below.proto", seed):
-				belowReached++
+				for _, idx := range d.GetPublicDependency() {
+					if idx < 0 {
+						belowReached++
+					}
+				}
 			}
 		}
 
