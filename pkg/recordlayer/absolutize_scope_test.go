@@ -1134,3 +1134,120 @@ func TestAbsolutizeFieldTypeNamesIgnoresAPrivateTransitiveImport(t *testing.T) {
 		}
 	})
 }
+
+// A PRIVATE IMPORT OF A VISIBLE DEPENDENCY CONTRIBUTES ITS PACKAGE BUT NOT ITS
+// TYPES -- the asymmetry that makes Java's rule two-level for packages and
+// one-level for types.
+//
+// Mechanism, from Descriptors.java: a DescriptorPool's `descriptorsByName`
+// holds its own file's symbols and, via addPackage over that pool's dependency
+// set, a PackageDescriptor for each of those files. findSymbol consults this
+// pool and then `dependency.pool.descriptorsByName` for each dependency -- one
+// level of indirection. So a dependency D that privately imports H hands F the
+// PACKAGE of H (it is in D's pool) while H's messages stay in H's own pool,
+// which F never consults.
+//
+// The fixture:
+//
+//	main (package p.q) --> dep (package p, declares .p.X.Y)
+//	main               --> bridge --private--> hidden (package p.q.X, message Y)
+//
+// `X.Y` written in `main`: the first-component lookup is AGGREGATES_ONLY, which
+// includes PackageDescriptor, so Java finds the package `.p.q.X` through
+// bridge's pool, requires `Y` beneath it, and REJECTS the descriptor. Miss that
+// package and the walk climbs to `.p.X.Y` and ACCEPTS -- Go loading metadata
+// Java refuses, which the conformance rule forbids outright.
+//
+// THE CONTROL is the second arm: the same graph with hidden's message moved so
+// that only its package is in play cannot distinguish "package seeded" from
+// "types seeded". So the arms assert opposite outcomes on the SAME graph, one
+// about the package reaching two levels and one about the types stopping at
+// one.
+func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t *testing.T) {
+	t.Parallel()
+
+	build := func() (main, dep, bridge, hidden *descriptorpb.FileDescriptorProto) {
+		hidden = &descriptorpb.FileDescriptorProto{
+			Name:    proto.String("pkgshadow_hidden.proto"),
+			Package: proto.String("p.q.X"),
+			Syntax:  proto.String("proto2"),
+			// A MESSAGE that must stay invisible, in a package that must not.
+			MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Y")}},
+		}
+		bridge = &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("pkgshadow_bridge.proto"),
+			Package:    proto.String("p.bridge"),
+			Syntax:     proto.String("proto2"),
+			Dependency: []string{hidden.GetName()}, // PRIVATE
+		}
+		dep = &descriptorpb.FileDescriptorProto{
+			Name:    proto.String("pkgshadow_dep.proto"),
+			Package: proto.String("p"),
+			Syntax:  proto.String("proto2"),
+			MessageType: []*descriptorpb.DescriptorProto{{
+				Name:       proto.String("X"),
+				NestedType: []*descriptorpb.DescriptorProto{{Name: proto.String("Y")}},
+			}},
+		}
+		main = &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("pkgshadow_main.proto"),
+			Package:    proto.String("p.q"),
+			Syntax:     proto.String("proto2"),
+			Dependency: []string{dep.GetName(), bridge.GetName()},
+			MessageType: []*descriptorpb.DescriptorProto{{
+				Name: proto.String("Local"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name:     proto.String("f"),
+					Number:   proto.Int32(1),
+					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					TypeName: proto.String("X.Y"),
+				}},
+			}},
+		}
+		return main, dep, bridge, hidden
+	}
+
+	t.Run("the package shadows", func(t *testing.T) {
+		t.Parallel()
+
+		main, dep, bridge, hidden := build()
+		absolutizeFieldTypeNames(main, dep, bridge, hidden)
+
+		if got := main.MessageType[0].Field[0].GetTypeName(); got != ".p.q.X.Y" {
+			t.Fatalf("type_name = %q, want %q.\n"+
+				"`hidden` is privately imported by `bridge`, so its PACKAGE `p.q.X` sits in "+
+				"bridge's pool and Java's AGGREGATES_ONLY first-component lookup finds it there. "+
+				"Answering `.p.X.Y` means the package shadow was dropped -- Go would then load a "+
+				"descriptor Java rejects.", got, ".p.q.X.Y")
+		}
+	})
+
+	t.Run("the types stay hidden", func(t *testing.T) {
+		t.Parallel()
+
+		// The discriminator: if `hidden`'s TYPES were seeded rather than only its
+		// package, `.p.q.X.Y` would be a resolvable message and protodesc would
+		// accept the rewritten descriptor. It must not -- Java rejects here, and
+		// the whole point of the package/type split is that the name resolves to
+		// a package with nothing beneath it.
+		main, dep, bridge, hidden := build()
+		absolutizeFieldTypeNames(main, dep, bridge, hidden)
+
+		files := &protoregistry.Files{}
+		for _, f := range []*descriptorpb.FileDescriptorProto{hidden, bridge, dep} {
+			fdesc, err := protodesc.NewFile(f, files)
+			if err != nil {
+				t.Fatalf("building %s: %v", f.GetName(), err)
+			}
+			if err := files.RegisterFile(fdesc); err != nil {
+				t.Fatalf("registering %s: %v", f.GetName(), err)
+			}
+		}
+		if _, err := protodesc.NewFile(main, files); err == nil {
+			t.Fatal("protodesc accepted `.p.q.X.Y`. Java rejects this descriptor: the first " +
+				"component resolves to a PACKAGE and there is no `Y` beneath it. Accepting means " +
+				"the private import's types leaked in alongside its package.")
+		}
+	})
+}

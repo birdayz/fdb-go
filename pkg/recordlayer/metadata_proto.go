@@ -1164,7 +1164,11 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 		},
 		func(gfd protoreflect.FileDescriptor) {
 			collectFromFileDescriptor(gfd, declared, addPackage)
-		})
+		},
+		// PACKAGE ONLY, no types: a visible dependency's own imports contribute
+		// their package descriptors to this file's resolution but not their
+		// symbols. See walkVisibleImports for why the two exposures differ.
+		addPackage)
 
 	// IMPORTS RESOLVED THROUGH THE GLOBAL REGISTRY, which `deps` does not carry.
 	// `defaultExcludedDependencies` strips the Apple record-layer protos from the
@@ -1496,23 +1500,42 @@ func (r *descriptorResolver) FindDescriptorByName(name protoreflect.FullName) (p
 }
 
 // walkVisibleImports visits every file `fd` may resolve names against, in
-// Java's sense: the files `fd` imports DIRECTLY, plus everything reachable from
-// those through `public_dependency` alone.
+// Java's sense, and reports each with the exposure Java gives it.
 //
-// It mirrors Descriptors.java's DescriptorPool constructor, which adds each
-// direct dependency and then calls importPublicDependencies on it, recursing
-// only through public imports (guarding recursion on set-add, as the `seen` map
-// does here). A file reached solely by a private import of a private import is
-// not in that set and its symbols are not resolvable.
+// TYPES REACH ONE LEVEL; PACKAGES REACH TWO. That asymmetry is not a quirk to
+// simplify away -- it falls out of how Descriptors.java searches, and getting it
+// wrong diverges in both directions.
+//
+// A pool's `descriptorsByName` holds its own file's symbols AND a
+// PackageDescriptor for every file in that pool's dependency set, because the
+// DescriptorPool constructor calls addPackage over that set and addPackage
+// writes into descriptorsByName. findSymbol then consults, in order, this
+// pool's descriptorsByName and then `dependency.pool.descriptorsByName` for each
+// dependency -- one level of pool indirection, no recursion.
+//
+// So for a file F whose visible set is V(F) = direct imports plus their
+// recursive `public_dependency` closure:
+//
+//	TYPES visible to F    = F's own  U  { D's own types      : D in V(F) }
+//	PACKAGES visible to F = packages(V(F))  U  { packages(V(D)) : D in V(F) }
+//
+// The second term of the package line is the one that is easy to miss: a
+// dependency D that PRIVATELY imports H contributes H's PACKAGE to F, while
+// H's messages, enums and services stay hidden. Seeding only V(F) drops that
+// package shadow, so a `p.q` file referencing `X.Y` with a visible `.p.X.Y`
+// climbs past `.p.q.X` and binds -- where Java stops at the package, requires
+// `Y` beneath it, and REJECTS. That is Go accepting metadata Java cannot load,
+// which is the direction the conformance rule forbids outright.
+//
+// `onPackageOnly` receives that second term. `onStored` and `onGlobal` receive
+// the full-exposure set.
 //
 // ONE TRAVERSAL, TWO SOURCES, because the visible set crosses them. An import
 // may be a stored descriptor in `pool`, or absent from stored metadata and
 // recoverable only from the global registry -- `defaultExcludedDependencies`
 // strips the Apple record-layer protos, so `tuple_fields.proto` always arrives
 // the second way. Either kind may publicly re-export the other, so walking the
-// two sources in separate loops silently drops the hand-off: a globally
-// registered import that re-exports a stored one would have the stored file's
-// symbols go missing. `onStored` and `onGlobal` receive the two kinds.
+// two sources separately silently drops the hand-off.
 //
 // A path in neither source is skipped rather than treated as an error. That is
 // not laxity: `allowUnknownDependencies` exists in Java for the same reason, and
@@ -1523,6 +1546,7 @@ func walkVisibleImports(
 	pool []*descriptorpb.FileDescriptorProto,
 	onStored func(*descriptorpb.FileDescriptorProto),
 	onGlobal func(protoreflect.FileDescriptor),
+	onPackageOnly func(pkg string),
 ) {
 	byPath := make(map[string]*descriptorpb.FileDescriptorProto, len(pool))
 	for _, d := range pool {
@@ -1541,49 +1565,94 @@ func walkVisibleImports(
 		byPath[d.GetName()] = d
 	}
 
-	seen := map[string]bool{}
-
-	var visit func(path string)
-	visit = func(path string) {
-		if seen[path] {
-			return
-		}
-		seen[path] = true
-
+	// importsOf reports a file's package, its DIRECT imports and the subset of
+	// those that are PUBLIC, from whichever source holds it.
+	importsOf := func(path string) (pkg string, direct, public []string, found bool) {
 		if d, ok := byPath[path]; ok {
-			onStored(d)
-			names := d.GetDependency()
+			direct = d.GetDependency()
 			for _, idx := range d.GetPublicDependency() {
 				// public_dependency holds INDICES into dependency. Java's
 				// FileDescriptor constructor throws on an out-of-range one; this
 				// is a pre-pass, so it skips and lets protodesc produce the
 				// error ("invalid or duplicate public import index"), which it
 				// does for exactly these descriptors.
-				if idx < 0 || int(idx) >= len(names) {
+				if idx < 0 || int(idx) >= len(direct) {
 					continue
 				}
-				visit(names[idx])
+				public = append(public, direct[idx])
 			}
-			return
+			return d.GetPackage(), direct, public, true
 		}
+		if g, err := protoregistry.GlobalFiles.FindFileByPath(path); err == nil {
+			imps := g.Imports()
+			for i := 0; i < imps.Len(); i++ {
+				imp := imps.Get(i)
+				direct = append(direct, imp.Path())
+				if imp.IsPublic {
+					public = append(public, imp.Path())
+				}
+			}
+			return string(g.Package()), direct, public, true
+		}
+		return "", nil, nil, false
+	}
 
-		gfd, err := protoregistry.GlobalFiles.FindFileByPath(path)
-		if err != nil {
-			return
-		}
-		onGlobal(gfd)
-		imports := gfd.Imports()
-		for i := 0; i < imports.Len(); i++ {
-			imp := imports.Get(i)
-			if !imp.IsPublic {
-				continue
+	// visibleFrom is V(): the given direct imports, plus everything reachable
+	// from them through public imports alone. Recursion is guarded on set-add,
+	// exactly as importPublicDependencies is.
+	visibleFrom := func(directs []string) []string {
+		seen := map[string]bool{}
+		var out []string
+		var visit func(p string)
+		visit = func(p string) {
+			if seen[p] {
+				return
 			}
-			visit(imp.Path())
+			seen[p] = true
+			out = append(out, p)
+			_, _, public, ok := importsOf(p)
+			if !ok {
+				return
+			}
+			for _, q := range public {
+				visit(q)
+			}
+		}
+		for _, p := range directs {
+			visit(p)
+		}
+		return out
+	}
+
+	visible := visibleFrom(fd.GetDependency())
+	fullyExposed := make(map[string]bool, len(visible))
+	for _, path := range visible {
+		fullyExposed[path] = true
+		if d, ok := byPath[path]; ok {
+			onStored(d)
+			continue
+		}
+		if g, err := protoregistry.GlobalFiles.FindFileByPath(path); err == nil {
+			onGlobal(g)
 		}
 	}
 
-	for _, path := range fd.GetDependency() {
-		visit(path)
+	// The second package level: for each visible file, the packages of ITS
+	// visible set. Files already fully exposed are skipped -- they contributed
+	// their package above, and re-adding it would be harmless but misleading.
+	for _, path := range visible {
+		_, direct, _, ok := importsOf(path)
+		if !ok {
+			continue
+		}
+		for _, q := range visibleFrom(direct) {
+			if fullyExposed[q] {
+				continue
+			}
+			if pkg, _, _, ok := importsOf(q); ok && pkg != "" {
+				onPackageOnly(pkg)
+			}
+		}
 	}
 }
 
