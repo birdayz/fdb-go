@@ -1318,9 +1318,9 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 //
 // WHAT THIS DOES NOT COVER, written first because the previous version of this
 // arm was named for a claim it did not enforce. It counts closure STEPS through
-// the onVisit seam. Of the ten non-pristine variants replaySecondLevel models
-// over this fixture, that quantity INFLATES for three, REDUCES for six, and is
-// UNCHANGED for one -- and the unchanged case is the load-bearing one, because
+// the onVisit seam. Of the eleven non-pristine variants replaySecondLevel
+// models over this fixture, that quantity INFLATES for four, REDUCES for six,
+// and is UNCHANGED for one -- the unchanged case being the load-bearing one, because
 // it is why emissions must be asserted alongside rather than instead. The
 // tally is pinned by TestSecondLevelShapesArePairwiseDistinct, so it cannot go
 // stale here the way its two predecessors did. It is not "work" in general:
@@ -1441,7 +1441,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 	t.Parallel()
 
-	for _, n := range []int{50, 100, 200} {
+	for _, n := range secondLevelSizes {
 		visits, emissions := measureSecondLevel(n)
 		shape, detail := classifySecondLevelCounts(n, visits, emissions)
 		if shape != secondLevelPristine {
@@ -1574,17 +1574,18 @@ func measureSecondLevel(n int) (visits, emissions int) {
 type secondLevelVariant string
 
 const (
-	slPristine      secondLevelVariant = "pristine"
-	slOnVisitHoist  secondLevelVariant = "onVisit hoisted out of the recursion"
-	slDedupMoved    secondLevelVariant = "onVisit moved after the dedup check"
-	slTruncateFirst secondLevelVariant = "union truncated to the FIRST visible file"
-	slTruncateLast  secondLevelVariant = "union truncated to the LAST visible file"
-	slUnionDedup    secondLevelVariant = "union de-duplicated before the walk"
-	slNoPublic      secondLevelVariant = "public-import recursion removed"
-	slPerFile       secondLevelVariant = "per-file closure walk"
-	slPerFileSink   secondLevelVariant = "per-file closure walk, de-duplicating at the sink"
-	slTraversalOnly secondLevelVariant = "traversal-only per-file union build"
-	slEmissionHoist secondLevelVariant = "emission loop re-run over an already-walked set"
+	slPristine       secondLevelVariant = "pristine"
+	slOnVisitHoist   secondLevelVariant = "onVisit hoisted out of the recursion"
+	slDedupMoved     secondLevelVariant = "onVisit moved after the dedup check"
+	slTruncateFirst  secondLevelVariant = "union truncated to the FIRST visible file"
+	slTruncateLast   secondLevelVariant = "union truncated to the LAST visible file"
+	slUnionDedup     secondLevelVariant = "union de-duplicated before the walk"
+	slNoPublic       secondLevelVariant = "public-import recursion removed"
+	slPerFile        secondLevelVariant = "per-file closure walk"
+	slPerFileSink    secondLevelVariant = "per-file closure walk, de-duplicating at the sink"
+	slTraversalOnly  secondLevelVariant = "traversal-only per-file union build"
+	slEmissionHoist  secondLevelVariant = "emission loop re-run over an already-walked set"
+	slEmissionRewalk secondLevelVariant = "emission loop re-run, re-walking the union each time"
 )
 
 // secondLevelVariants is every variant replaySecondLevel implements, in one
@@ -1592,7 +1593,7 @@ const (
 var secondLevelVariants = []secondLevelVariant{
 	slPristine, slOnVisitHoist, slDedupMoved, slTruncateFirst, slTruncateLast,
 	slUnionDedup, slNoPublic, slPerFile, slPerFileSink, slTraversalOnly,
-	slEmissionHoist,
+	slEmissionHoist, slEmissionRewalk,
 }
 
 // replaySecondLevel walks the REAL fixture under a named variant and returns
@@ -1774,6 +1775,19 @@ func replaySecondLevel(
 		union = deduped
 	}
 
+	if v == slEmissionRewalk {
+		// The NATURAL spelling of the emission-hoist edit. Production reads
+		// `for _, q := range visibleFrom(union)`, so wrapping THAT loop in a
+		// per-visible-file one re-walks the union every time. slEmissionHoist
+		// models the other spelling, which lifts the walk into a variable
+		// first and is a refactor plus a bug rather than just a bug.
+		for range visible {
+			for _, q := range visibleFrom(union) {
+				emit(q)
+			}
+		}
+		return visits, emissions
+	}
 	walked := visibleFrom(union)
 	if v == slEmissionHoist {
 		for range visible {
@@ -1838,6 +1852,7 @@ const (
 	secondLevelQuadSink    secondLevelShape = "per-file closure walk with a de-duplicating sink"
 	secondLevelQuadTravers secondLevelShape = "traversal-only per-file union build"
 	secondLevelQuadEmit    secondLevelShape = "emission loop re-run over an already-walked set"
+	secondLevelQuadRewalk  secondLevelShape = "emission loop re-run, re-walking the union each time"
 	secondLevelUnknown     secondLevelShape = "unrecognised"
 )
 
@@ -1870,8 +1885,10 @@ func secondLevelExpected(n int) (visits, emissions int) {
 //
 // THE PAIRS ARE NOT WRITTEN HERE. classifySecondLevelCounts obtains them by
 // replaying the variant over the fixture, which is what makes "an EXACT pair,
-// not a range" literally true of every arm and removes the last hand-typed
-// constant. It matters because a range predicate carrying a message that names
+// not a range" literally true of every arm and removes the last hand-typed pair
+// from the MATCHING. Other hand-typed constants remain -- cgUniqueLeaves,
+// secondLevelSizes, the tally and wantE-1 -- each pinned by an arm of its own.
+// It matters because a range predicate carrying a message that names
 // one cause is how this classifier twice told a real defect it was a
 // behaviour-preserving refactor, and how it then absorbed a genuinely distinct
 // seventh shape -- a per-file walk de-duplicating at the SINK -- into an arm
@@ -1952,6 +1969,34 @@ var secondLevelSignatures = []struct {
 			"pristine. The emission loop is re-running over an already-walked set. addPackage is " +
 			"idempotent, so no correctness arm can see this.",
 	},
+	{
+		slEmissionRewalk, secondLevelQuadRewalk,
+		"Emissions have gone quadratic and so has the closure walk, but not in the per-file " +
+			"pattern -- the emission loop is re-running over the union and re-walking it every " +
+			"time. This is the emission-hoist defect written the way it would actually be " +
+			"written: production's loop reads `for _, q := range visibleFrom(union)`, so " +
+			"wrapping THAT re-evaluates the walk, where lifting it into a variable first is a " +
+			"refactor plus a bug. addPackage is idempotent, so no correctness arm sees the " +
+			"duplicate emissions.",
+	},
+}
+
+// secondLevelDeclaredShape is the shape a variant is INTENDED to be diagnosed
+// as, read straight from the signature table.
+//
+// It exists so the distinctness check has something to compare that does not
+// come out of the classifier. Comparing two classifier answers cannot work:
+// the classifier is a pure function of the counts, so a collision hands it
+// identical inputs and it returns identical outputs, and the inequality that
+// was supposed to catch the collision is false precisely when the collision
+// happens.
+func secondLevelDeclaredShape(v secondLevelVariant) (secondLevelShape, bool) {
+	for _, sig := range secondLevelSignatures {
+		if sig.variant == v {
+			return sig.shape, true
+		}
+	}
+	return "", false
 }
 
 // classifySecondLevelCounts names the shape a measured pair belongs to.
@@ -1961,9 +2006,18 @@ var secondLevelSignatures = []struct {
 // sees `pristine` -- which is exactly why the arms need a table test rather
 // than the throwaway mutations that verified their predecessors.
 //
-// Matching is by EXACT measured pair. Everything it does not recognise is
-// reported as unrecognised rather than assigned to the nearest arm, because
-// assigning to the nearest arm is how a real defect gets told it is benign.
+// WHAT EXACT-PAIR MATCHING DOES NOT BUY. It stops a RANGE arm from absorbing a
+// shape it does not describe, which is what the three `>=` predicates it
+// replaced did. It does NOT stop COINCIDENTAL equality, because shapes are not
+// in bijection with pairs: a production edit dropping the level-1 public
+// closure (`visible := fd.GetDependency()`) measures (2n+2, n+2) at every
+// driven size -- exactly slDedupMoved's pair -- and is therefore told that
+// onVisit moved, when nothing touched onVisit. That defect is caught, with the
+// right diagnosis, by TestAbsolutizeFieldTypeNamesIgnoresAPrivateTransitiveImport;
+// this classifier misnames it. Two counters cannot separate more shapes than
+// they have distinct values, and the honest statement of the guarantee is that
+// an unmodelled shape gets `unrecognised` UNLESS it happens to land on a
+// modelled pair.
 func classifySecondLevelCounts(n, visits, emissions int) (secondLevelShape, string) {
 	if visits == 0 || emissions == 0 {
 		return secondLevelVacuous, "The level produced nothing at all, so every ceiling passes " +
@@ -2631,54 +2685,43 @@ func absolutizeRequiringReach(
 func TestSecondLevelClassifierNamesEveryShape(t *testing.T) {
 	t.Parallel()
 
-	rows := []struct {
-		variant secondLevelVariant
-		want    secondLevelShape
-	}{
-		{slPristine, secondLevelPristine},
-		{slOnVisitHoist, secondLevelDedupMoved},
-		{slDedupMoved, secondLevelDedupMoved},
-		{slTruncateFirst, secondLevelTruncated},
-		{slTruncateLast, secondLevelTruncated},
-		{slUnionDedup, secondLevelUnionDedup},
-		{slNoPublic, secondLevelNoPublic},
-		{slPerFile, secondLevelQuadWalk},
-		{slPerFileSink, secondLevelQuadSink},
-		{slTraversalOnly, secondLevelQuadTravers},
-		{slEmissionHoist, secondLevelQuadEmit},
-	}
-
-	// THE POPULATION, checked before the verdict. A variant that exists but is
-	// not driven here would be modelled, replayed by the classifier, and never
-	// asserted on -- the empty-set green this file keeps having to design out.
+	// DRIVEN FROM secondLevelSignatures, not from a second copy of it. An
+	// earlier version carried its own variant -> shape table alongside the
+	// signatures, which is two hand-written statements of one mapping and one
+	// more thing to leave stale.
+	//
+	// This is not circular. classifySecondLevelCounts returns the FIRST
+	// signature whose replayed pair matches, so a variant whose pair collides
+	// with an earlier signature's is handed that signature's shape and this
+	// fails -- which is exactly the misassignment the arm exists to catch.
 	covered := map[secondLevelVariant]bool{}
-	for _, r := range rows {
-		covered[r.variant] = true
+	for _, sig := range secondLevelSignatures {
+		covered[sig.variant] = true
 	}
 	for _, v := range secondLevelVariants {
 		if !covered[v] {
-			t.Fatalf("variant %q is modelled by replaySecondLevel and is in "+
-				"secondLevelVariants, but no row drives it, so nothing asserts what the "+
-				"classifier calls it", v)
+			t.Fatalf("variant %q is modelled by replaySecondLevel and listed in "+
+				"secondLevelVariants, but has no signature, so the classifier can never name "+
+				"it and nothing here asserts what it should be called", v)
 		}
 	}
-	if len(rows) != len(secondLevelVariants) {
-		t.Fatalf("%d rows against %d variants: a row names a variant that is not in "+
+	if len(secondLevelSignatures) != len(secondLevelVariants) {
+		t.Fatalf("%d signatures against %d variants: a signature names a variant that is not in "+
 			"secondLevelVariants, so the distinctness check does not see it",
-			len(rows), len(secondLevelVariants))
+			len(secondLevelSignatures), len(secondLevelVariants))
 	}
 
-	for _, tc := range rows {
+	for _, tc := range secondLevelSignatures {
 		t.Run(string(tc.variant), func(t *testing.T) {
 			t.Parallel()
 			for _, n := range secondLevelSizes {
 				main, pool := buildSecondLevelFixture(n)
 				v, e := replaySecondLevel(main, pool, tc.variant)
 				got, detail := classifySecondLevelCounts(n, v, e)
-				if got != tc.want {
+				if got != tc.shape {
 					t.Fatalf("n=%d: replaying %q over the fixture gives (visits=%d, emissions=%d), "+
 						"classified %q, want %q.\ndetail: %s",
-						n, tc.variant, v, e, got, tc.want, detail)
+						n, tc.variant, v, e, got, tc.shape, detail)
 				}
 				if got != secondLevelPristine && detail == "" {
 					t.Fatalf("n=%d: shape %q carries no explanation, so a failing run would name "+
@@ -2724,15 +2767,38 @@ func TestSecondLevelClassifierNamesTheUnreplayableShapes(t *testing.T) {
 
 // NO TWO SHAPES SHARE A PAIR, at the sizes actually driven.
 //
-// The table above shows each variant classifies as intended; it cannot show
-// that two variants are DISTINGUISHABLE, because a collision would simply make
-// both rows agree with each other. This differences them directly.
+// WHAT THIS DOES NOT ADD, first, because an earlier version of this comment got
+// it backwards and offered the mistake as the arm's whole justification. This
+// is NOT the only thing that catches a collision, and it is false that "a
+// collision makes both rows agree with each other rather than fail":
+// classifySecondLevelCounts returns the FIRST signature whose pair matches, so
+// on a collision the LATER variant's row in TestSecondLevelClassifierNamesEveryShape
+// is handed the earlier one's shape and fails. Measured twice, with a
+// benign-meets-defect collision planted in the fixture: that row failed both
+// times. Detection is already there.
 //
-// Stated at the driven sizes and not in general, deliberately: collisions do
-// exist below them -- slNoPublic meets slDedupMoved at n=1 and slTruncateFirst
-// at n=2 -- and an earlier version of this file claimed three sizes made a
-// collision impossible "by luck", which is a proof three points cannot give.
-// The guard here is the measurement, and its scope is {50, 100, 200}.
+// What this arm adds is DIAGNOSIS and SYMMETRY. The table's failure names one
+// row and the shape it got; this names both variants, the pair they share and
+// what each was declared to be, and it checks every unordered pair so the
+// report does not depend on signature order. It also carries the two things
+// nothing else does: the vacuity check on the comparison population, and the
+// inflate/reduce/unchanged tally the guard's doc block states.
+//
+// AGAINST THE DECLARED SHAPE, NEVER THE CLASSIFIER'S ANSWER. classify is a pure
+// function of (n, visits, emissions), so two variants that collide are handed
+// IDENTICAL arguments and necessarily get identical answers. The first version
+// of this test compared those answers to each other -- `pairOf[a] == pairOf[b]
+// && shapeOf[a] != shapeOf[b]` -- whose second half is false exactly when the
+// first is true. It could not fail for any fixture, any variant set or any
+// classifier, and it was written in the commit that removed a different guard
+// for that same defect. A pair whose two sides share a derivation cannot be
+// checked by comparing them to each other.
+//
+// Scoped to secondLevelSizes rather than stated generally, and the small-n
+// behaviour is PINNED by TestSecondLevelPairsCollideBelowTheDrivenSizes instead
+// of described here -- the described version named an n=2 collision that does
+// not exist. An earlier version still claimed three sizes made a collision
+// impossible "by luck", which is a proof three points cannot give.
 func TestSecondLevelShapesArePairwiseDistinct(t *testing.T) {
 	t.Parallel()
 
@@ -2742,22 +2808,57 @@ func TestSecondLevelShapesArePairwiseDistinct(t *testing.T) {
 		main, pool := buildSecondLevelFixture(n)
 
 		pairOf := map[secondLevelVariant]pair{}
-		shapeOf := map[secondLevelVariant]secondLevelShape{}
+		declared := map[secondLevelVariant]secondLevelShape{}
 		for _, v := range secondLevelVariants {
 			gv, ge := replaySecondLevel(main, pool, v)
 			pairOf[v] = pair{gv, ge}
-			shapeOf[v], _ = classifySecondLevelCounts(n, gv, ge)
+			s, ok := secondLevelDeclaredShape(v)
+			if !ok {
+				t.Fatalf("n=%d: variant %q has no signature, so nothing declares what it should "+
+					"be diagnosed as and the comparison below has nothing to compare", n, v)
+			}
+			declared[v] = s
 		}
 
+		// THE NON-VACUOUS COMPARISONS, counted before the verdict. If every
+		// variant declared the same shape, the loop below would run to
+		// completion having tested nothing -- the empty-set green this file
+		// keeps having to design out. The expected count is DERIVED from the
+		// declared grouping so adding a variant does not strand it.
+		bySize := map[secondLevelShape]int{}
+		for _, v := range secondLevelVariants {
+			bySize[declared[v]]++
+		}
+		total := len(secondLevelVariants) * (len(secondLevelVariants) - 1) / 2
+		same := 0
+		for _, k := range bySize {
+			same += k * (k - 1) / 2
+		}
+		wantCross := total - same
+		if wantCross == 0 {
+			t.Fatalf("n=%d: every variant declares the same shape, so no comparison below can "+
+				"fail and this arm proves nothing", n)
+		}
+
+		cross := 0
 		for i, a := range secondLevelVariants {
 			for _, b := range secondLevelVariants[i+1:] {
-				if pairOf[a] == pairOf[b] && shapeOf[a] != shapeOf[b] {
+				if declared[a] == declared[b] {
+					continue
+				}
+				cross++
+				if pairOf[a] == pairOf[b] {
 					t.Fatalf("n=%d: %q and %q both measure (visits=%d, emissions=%d) but are "+
-						"classified %q and %q. Two shapes the counters cannot separate means one "+
-						"of them will be diagnosed as the other",
-						n, a, b, pairOf[a].visits, pairOf[a].emissions, shapeOf[a], shapeOf[b])
+						"DECLARED %q and %q. classifySecondLevelCounts returns the FIRST "+
+						"signature matching a pair, so one of these will be diagnosed as the "+
+						"other and its message will name a cause that is not present",
+						n, a, b, pairOf[a].visits, pairOf[a].emissions, declared[a], declared[b])
 				}
 			}
+		}
+		if cross != wantCross {
+			t.Fatalf("n=%d: compared %d differently-declared pairs, expected %d from the declared "+
+				"grouping; the loop is skipping comparisons it should make", n, cross, wantCross)
 		}
 
 		// THE DOC BLOCK'S TALLY, pinned here so it cannot go stale the way its
@@ -2779,10 +2880,67 @@ func TestSecondLevelShapesArePairwiseDistinct(t *testing.T) {
 				unchanged++
 			}
 		}
-		if inflate != 3 || reduce != 6 || unchanged != 1 {
+		if inflate != 4 || reduce != 6 || unchanged != 1 {
 			t.Fatalf("n=%d: of the %d non-pristine variants the step count inflates for %d, "+
-				"reduces for %d and is unchanged for %d; the guard's doc block says 3/6/1 and "+
+				"reduces for %d and is unchanged for %d; the guard's doc block says 4/6/1 and "+
 				"must be re-counted", n, len(secondLevelVariants)-1, inflate, reduce, unchanged)
+		}
+	}
+}
+
+// COLLISIONS EXIST BELOW THE DRIVEN SIZES, which is why the arm above is scoped
+// rather than stated generally.
+//
+// Pinned rather than described, because the described version was wrong twice
+// over: it named slNoPublic meeting slTruncateFirst at n=2, and they measure
+// (6, 3) and (5, 3). This asserts the property that actually matters -- that
+// distinctness FAILS down there -- and logs the colliding groups it found, so
+// there is no transcribed number left to rot.
+//
+// The n=1 case is the stark one. The fixture's diamond is gated on n > 2 and
+// the chain has no successors, so almost every variant degenerates onto one
+// pair, slPristine included: a quadratic per-file walk classifies as `pristine`
+// at n=1.
+//
+// The direction of this guard is deliberate and inverts if the fixture changes.
+// It fails when NOTHING collides, because that would mean the scoping caveat on
+// the arm above had become unnecessary and should be dropped -- not that
+// something broke.
+func TestSecondLevelPairsCollideBelowTheDrivenSizes(t *testing.T) {
+	t.Parallel()
+
+	type pair struct{ visits, emissions int }
+
+	for _, n := range []int{1, 2} {
+		main, pool := buildSecondLevelFixture(n)
+
+		byPair := map[pair][]secondLevelVariant{}
+		for _, v := range secondLevelVariants {
+			gv, ge := replaySecondLevel(main, pool, v)
+			byPair[pair{gv, ge}] = append(byPair[pair{gv, ge}], v)
+		}
+
+		crossShape := 0
+		for p, vs := range byPair {
+			shapes := map[secondLevelShape]bool{}
+			for _, v := range vs {
+				s, ok := secondLevelDeclaredShape(v)
+				if !ok {
+					t.Fatalf("n=%d: variant %q has no signature, so this arm cannot tell whether "+
+						"its collisions cross a shape boundary", n, v)
+				}
+				shapes[s] = true
+			}
+			if len(shapes) > 1 {
+				crossShape++
+				t.Logf("n=%d: (%d, %d) shared by %d variants declaring %d distinct shapes: %v",
+					n, p.visits, p.emissions, len(vs), len(shapes), vs)
+			}
+		}
+		if crossShape == 0 {
+			t.Fatalf("n=%d: no two differently-declared variants collide any more, so the arm "+
+				"above could be stated generally -- widen secondLevelSizes or drop its scoping "+
+				"caveat rather than leaving a caveat nothing justifies", n)
 		}
 	}
 }
@@ -2811,6 +2969,15 @@ func TestSecondLevelShapesArePairwiseDistinct(t *testing.T) {
 //     about where those leaves SIT. Cardinality cannot express placement, so
 //     no count-derived constant can pin it -- and placement is what the
 //     truncation arm keys on.
+//
+// WHAT THE FOUR TIES DO NOT CATCH, measured. An edit that removes the diamond
+// AND drops the matching `+1` from secondLevelExpected passes all four, passes
+// the guard at 151/301/601, and passes the distinctness arm -- because it is
+// self-consistent, and the closed form is documentation rather than an
+// independent witness. What it silently spends is the diamond's separating
+// power, and only the classifier table sees that, through the arms that then
+// collide. The ensemble holds there by ONE arm, which is worth knowing before
+// anyone concludes the table is redundant with this.
 func TestSecondLevelExpectedMatchesTheFixture(t *testing.T) {
 	t.Parallel()
 
