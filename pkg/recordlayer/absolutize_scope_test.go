@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -1365,34 +1366,64 @@ func TestAbsolutizeFieldTypeNamesIsNotSuperlinearInChainLength(t *testing.T) {
 		return main, pool
 	}
 
-	// best-of-3 on each size: this runs alongside the rest of the suite, and a
-	// single sample is at the mercy of whatever else got scheduled.
-	run := func(n int) time.Duration {
-		best := time.Duration(1<<62 - 1)
-		for range 3 {
-			main, pool := buildChain(n)
-			start := time.Now()
-			absolutizeFieldTypeNames(main, pool...)
-			if d := time.Since(start); d < best {
-				best = d
-			}
+	once := func(n int) time.Duration {
+		main, pool := buildChain(n)
+		start := time.Now()
+		absolutizeFieldTypeNames(main, pool...)
+		return time.Since(start)
+	}
+
+	once(64) // warm the allocator so startup cost stays out of the ratio
+
+	// THE BEST *RATIO* OVER INTERLEAVED PAIRS, not the ratio of two
+	// independently-taken bests. The distinction is the whole reason this arm
+	// was flaky: taking best-of-N per size separately lets a GC pause or a
+	// co-scheduled test land inside the large-size window while the small-size
+	// window stays clean, which inflates the quotient even though neither
+	// measurement is individually anomalous. Measured at ~23% red on unmutated
+	// code, once as high as 6.4x against a 3.0 bar.
+	//
+	// Measuring the two sizes ADJACENTLY and keeping the smallest quotient
+	// makes a disturbance have to hit the large half of a pair and miss the
+	// small half of every other pair to survive. Taking the MINIMUM is also the
+	// conservative direction for a ceiling test: noise can only push a quotient
+	// up, so discarding the inflated pairs removes false alarms without hiding
+	// a real regression -- quadratic growth shows ~4x in every clean pair, not
+	// in one.
+	//
+	// THE SIZES ARE PART OF THE GUARD, not an arbitrary pick. At 250/500 fixed
+	// overhead dominated and clean quotients came in BELOW 1.0 -- a doubling
+	// apparently getting cheaper, which is proof the signal was buried. At
+	// 1000/2000 the true linear ~2.0 shows through. Raising n is the right
+	// response to instability here rather than raising the bar, because
+	// quadratic separation widens with n while noise does not.
+	//
+	// Measured at these sizes over 25 SEPARATE invocations (Ginkgo rejects
+	// `go test -count=N>1` on this package, which silently defeats the obvious
+	// way to check a flake): 25/25 pass, quotients 1.27-2.45. The per-file form
+	// this replaced scores 3.8x. The 3.0 bar sits between with comparable
+	// margin on each side.
+	const small, large, pairs = 1000, 2000, 13
+	bestRatio := math.Inf(1)
+	var bestSmall, bestLarge time.Duration
+	for range pairs {
+		tS := once(small)
+		tL := once(large)
+		// The premise, checked per pair: a quotient of two sub-microsecond
+		// timings is scheduler noise wearing a decimal point.
+		if tS < 20*time.Microsecond {
+			continue
 		}
-		return best
+		if r := float64(tL) / float64(tS); r < bestRatio {
+			bestRatio, bestSmall, bestLarge = r, tS, tL
+		}
+	}
+	if math.IsInf(bestRatio, 1) {
+		t.Fatalf("every %d-file measurement came in under 20µs, too short to compare against -- "+
+			"raise the sizes rather than reading a quotient off timings this small", small)
 	}
 
-	run(64) // warm the allocator so startup cost stays out of the ratio
-
-	const small, large = 250, 500
-	tSmall, tLarge := run(small), run(large)
-
-	// The premise. Without it a ratio of two sub-microsecond timings would be
-	// scheduler noise, and the arm would pass or fail at random.
-	if tSmall < 20*time.Microsecond {
-		t.Fatalf("the %d-file case took %v, too short to compare against -- raise the sizes "+
-			"rather than reading a ratio off timings this small", small, tSmall)
-	}
-
-	ratio := float64(tLarge) / float64(tSmall)
+	ratio, tSmall, tLarge := bestRatio, bestSmall, bestLarge
 	if ratio > 3.0 {
 		t.Fatalf("doubling the public-import chain from %d to %d multiplied the time by %.1fx "+
 			"(%v -> %v).\nThat is superlinear growth in a loader path: the second package level "+
@@ -1555,5 +1586,86 @@ func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *te
 		t.Fatalf("type_name = %q, want %q. Nothing visible to this file declares the name, so "+
 			"the walk must run out of scopes and the root fallback must answer.",
 			got, ".FileDescriptorProto")
+	}
+}
+
+// THE OTHER HALF OF THE SAME SENTENCE: the global branch must EXPOSE a private
+// import's package, not merely withhold its types.
+//
+// The sibling arm above pins the withhold half and is structurally blind to
+// this one -- deleting the registry resolution from `importsOf` outright leaves
+// it green, measured across the whole package. The reason is analytic, not
+// incidental: that fixture puts `main` in `google.protobuf`, so
+// `.google.protobuf` is already in `declared` from the file's own package and
+// the level-2 contribution cannot appear in any answer it asserts on. Its
+// premise guard checks the same registry the code checks, so it can never fail
+// while the code's lookup succeeds -- it establishes REGISTRATION, not
+// REACHABILITY.
+//
+// This fixture moves `main` up to package `google` so the contribution becomes
+// observable, and writes the probe COMPOUND:
+//
+//	level-2 seeded:     first component `protobuf` hits `.google.protobuf`
+//	                    (seeded from descriptor.proto through bridge)
+//	                    -> `.google.protobuf.FileDescriptorProto`
+//	not seeded:         the walk climbs past and stops at `.protobuf`, the
+//	                    package of the visible stored dep
+//	                    -> `.protobuf.FileDescriptorProto`
+//
+// Two different strings, so this arm reddens exactly when the registry branch
+// is removed and stays green when types leak -- disjoint from its sibling, one
+// arm per obligation.
+func TestAbsolutizeFieldTypeNamesSeesPackagesReachedThroughTheGlobalRegistry(t *testing.T) {
+	t.Parallel()
+
+	const descriptorPath = "google/protobuf/descriptor.proto"
+	if _, err := protoregistry.GlobalFiles.FindFileByPath(descriptorPath); err != nil {
+		t.Fatalf("%s is not in the global registry (%v)", descriptorPath, err)
+	}
+
+	bridge := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("globalpkg_bridge.proto"),
+		Package:    proto.String("gp.bridge"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{descriptorPath}, // PRIVATE
+	}
+	// A visible stored dependency in package `protobuf`, so that WITHOUT the
+	// level-2 registry contribution the walk has somewhere else to stop. Without
+	// it both answers would be the root fallback and the arm could not tell the
+	// two implementations apart.
+	sibling := &descriptorpb.FileDescriptorProto{
+		Name:        proto.String("globalpkg_sibling.proto"),
+		Package:     proto.String("protobuf"),
+		Syntax:      proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Marker")}},
+	}
+	main := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("globalpkg_main.proto"),
+		Package:    proto.String("google"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{bridge.GetName(), sibling.GetName()},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Local"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:     proto.String("f"),
+				Number:   proto.Int32(1),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				TypeName: proto.String("protobuf.FileDescriptorProto"),
+			}},
+		}},
+	}
+
+	absolutizeFieldTypeNames(main, bridge, sibling)
+
+	got := main.MessageType[0].Field[0].GetTypeName()
+	if got == ".protobuf.FileDescriptorProto" {
+		t.Fatalf("type_name = %q -- the level-2 PACKAGE contribution from a globally-registered "+
+			"private import is missing, so the walk climbed past `.google.protobuf` and stopped "+
+			"at the visible sibling's package instead. Java exposes that package through the "+
+			"importing dependency's pool.", got)
+	}
+	if got != ".google.protobuf.FileDescriptorProto" {
+		t.Fatalf("type_name = %q, want %q", got, ".google.protobuf.FileDescriptorProto")
 	}
 }

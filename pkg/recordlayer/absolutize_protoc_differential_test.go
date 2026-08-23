@@ -904,6 +904,51 @@ func hasLineColumn(rest string) bool {
 // The probe-line extraction gets its own arms, because the check that uses it
 // runs only during regeneration and would otherwise never be asserted on --
 // which is how its predecessor shipped satisfiable by an unrelated declaration.
+// EVERY POSITION, because crossCheckStructure runs only under
+// -update-protoc-golden and therefore asserts nothing during a normal suite
+// run. Driving one position leaves the other four markers unpinned: breaking
+// all four of them left the whole package green, measured. That is the same
+// never-asserted-on gap that let the predecessor ship inert.
+func TestProbeLineFindsEveryPositionsStatement(t *testing.T) {
+	t.Parallel()
+
+	for _, pos := range diffPositions {
+		t.Run(string(pos), func(t *testing.T) {
+			t.Parallel()
+
+			// Shadowed and single-component, the shape that defeats a
+			// whole-file search, exercised at every write position.
+			c := diffCase{mainPkg: "probe", depPkg: "", shadow: true, position: pos, asWritten: "X"}
+			src := c.mainSource()
+
+			line, ok := probeLine(src, pos)
+			if !ok {
+				t.Fatalf("probeLine found no statement for position %q. Its marker no longer "+
+					"matches what mainSource emits, so crossCheckStructure would abort every "+
+					"regeneration -- or, if the marker matched something else, silently check "+
+					"the wrong line.\n%s", pos, src)
+			}
+			if strings.Contains(line, "message ") {
+				t.Fatalf("probeLine returned the shadow declaration %q for position %q rather "+
+					"than the probe statement", strings.TrimSpace(line), pos)
+			}
+			if !strings.Contains(line, " X ") {
+				t.Fatalf("probe line %q for position %q does not carry the as-written name",
+					strings.TrimSpace(line), pos)
+			}
+
+			// The marker must be UNIQUE IN THE FILE, which is the property that
+			// makes first-match-wins safe. Distinctness across positions is not
+			// enough on its own.
+			marker := probeFieldMarkers[pos]
+			if n := strings.Count(src, marker); n != 1 {
+				t.Fatalf("marker %q appears %d times in the %q source, so probeLine's first "+
+					"match is not necessarily the probe statement:\n%s", marker, n, pos, src)
+			}
+		})
+	}
+}
+
 func TestProbeLineIsScopedToTheStatementUnderTest(t *testing.T) {
 	t.Parallel()
 
@@ -963,18 +1008,30 @@ var probeFieldMarkers = map[diffPosition]string{
 	posFileExtExtendee: "j = 1006;",
 }
 
-// probeLine returns the single line of `src` carrying the probed reference.
+// probeLine returns the single line of `src` carrying the probed reference, and
+// reports false if there is not exactly one.
+//
+// SINGLENESS IS ENFORCED, not assumed. An earlier version returned the first
+// match while its doc claimed "the single line" -- true of today's emitter
+// (measured: exactly one match per case across all 680) but a property of the
+// data rather than of the function. A second matching line would silently make
+// the caller check the wrong statement, which is precisely the class of defect
+// this whole check exists to close, so the function refuses instead.
 func probeLine(src string, pos diffPosition) (string, bool) {
 	marker, ok := probeFieldMarkers[pos]
 	if !ok {
 		return "", false
 	}
+	found, seen := "", 0
 	for _, line := range strings.Split(src, "\n") {
 		if strings.Contains(line, marker) {
-			return line, true
+			found, seen = line, seen+1
 		}
 	}
-	return "", false
+	if seen != 1 {
+		return "", false
+	}
+	return found, true
 }
 
 // crossCheckStructure catches DRIFT between the two renderings of a case.
@@ -1179,6 +1236,25 @@ func TestSourceLevelErrorSeparatesRejectionFromHarnessFailure(t *testing.T) {
 			name: "a file named with no line:column at all",
 			text: "diffmain.proto: some invocation-level complaint\n",
 			want: false,
+		},
+		{
+			// A GENUINE source-level error that carries NO position. This is
+			// why the predicate is "at least one positional line" rather than
+			// "every diagnostic has a position" -- the second claim is false,
+			// and this row is the counterexample.
+			name: "a positionless source error alone does not qualify",
+			text: "diffdep.proto: File not found.\n",
+			want: false,
+		},
+		{
+			// ...and the pair protoc actually emits, which does. The safety of
+			// the predicate rests on this pairing, so it is pinned rather than
+			// asserted in prose: protoc never leaves the positionless form
+			// standing alone for a real rejection.
+			name: "the positionless error paired with its positional line",
+			text: "diffdep.proto: File not found.\n" +
+				"diffmain.proto:2:1: Import \"diffdep.proto\" was not found or had errors.\n",
+			want: true,
 		},
 		{
 			name: "a warning and a real error together is still a rejection",

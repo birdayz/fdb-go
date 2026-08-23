@@ -1662,8 +1662,11 @@ func walkVisibleImports(
 	// EQUALITY OF SETS, NOT OF CALL COUNTS, and the difference is load-bearing.
 	// The per-file form could reach the same file from several visible parents
 	// and call onPackageOnly once per arrival; the union form visits it once.
-	// Measured over randomized graphs, the two forms produce identical SETS
-	// while differing in call count on a minority of them. That is safe only
+	// Measured by differencing the two forms over 4000 randomized graphs
+	// (diamonds, public-import cycles, self-imports, dangling paths, duplicate
+	// paths, out-of-range public indices), of which 1191 produced a non-empty
+	// second-level set so the comparison was not vacuous: 0 set mismatches, and
+	// 187 differing in CALL COUNT. That is safe only
 	// because the sink is idempotent -- onPackageOnly is addPackage, which does
 	// `declared[full] = true` -- so a dropped repeat cannot change the result.
 	// A sink that counted, accumulated or logged would make this rewrite a
