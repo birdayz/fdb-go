@@ -2677,57 +2677,96 @@ func absolutizeRequiringReach(
 // that let two earlier versions of this classifier ship telling a real defect
 // it was benign.
 //
-// Each row's pair is MEASURED by replaying the named variant over the committed
-// fixture. The previous version transcribed each pair as a closed form from a
-// throwaway mutation nobody could re-derive, and that is precisely what let a
-// fixture edit preserving the pristine counts re-point the truncation arm at a
-// shape it no longer described -- with every test in this file green.
+// Each variant's PAIR is measured by replaying it over the committed fixture.
+// Each variant's expected SHAPE is written out below instead, and the
+// duplication with secondLevelSignatures is the entire point of the arm.
+//
+// A previous commit deleted this map as "two hand-written statements of one
+// mapping" and drove the subtests from the signature table itself. That made
+// the comparison circular: classifySecondLevelCounts RETURNS sig.shape, so
+// checking it against sig.shape cannot see a wrong variant -> shape
+// ASSIGNMENT. Measured consequence -- declaring slEmissionRewalk as
+// secondLevelPristine left every test in this file green, and would then have
+// let the complexity guard receive a QUADRATIC pair (2n^2+3n, n^2+2n) and
+// report `pristine`. That is a fail-open on the one arm whose whole job is to
+// go red.
+//
+// So the map below is an ORACLE, not a copy. When it and the signature table
+// disagree, this arm is supposed to fail; reconciling them is the work, and
+// deleting one of them is how the check disappears.
 func TestSecondLevelClassifierNamesEveryShape(t *testing.T) {
 	t.Parallel()
 
-	// DRIVEN FROM secondLevelSignatures, not from a second copy of it. An
-	// earlier version carried its own variant -> shape table alongside the
-	// signatures, which is two hand-written statements of one mapping and one
-	// more thing to leave stale.
-	//
-	// This is not circular. classifySecondLevelCounts returns the FIRST
-	// signature whose replayed pair matches, so a variant whose pair collides
-	// with an earlier signature's is handed that signature's shape and this
-	// fails -- which is exactly the misassignment the arm exists to catch.
-	covered := map[secondLevelVariant]bool{}
-	for _, sig := range secondLevelSignatures {
-		covered[sig.variant] = true
-	}
-	for _, v := range secondLevelVariants {
-		if !covered[v] {
-			t.Fatalf("variant %q is modelled by replaySecondLevel and listed in "+
-				"secondLevelVariants, but has no signature, so the classifier can never name "+
-				"it and nothing here asserts what it should be called", v)
-		}
-	}
-	if len(secondLevelSignatures) != len(secondLevelVariants) {
-		t.Fatalf("%d signatures against %d variants: a signature names a variant that is not in "+
-			"secondLevelVariants, so the distinctness check does not see it",
-			len(secondLevelSignatures), len(secondLevelVariants))
+	want := map[secondLevelVariant]secondLevelShape{
+		slPristine:       secondLevelPristine,
+		slOnVisitHoist:   secondLevelDedupMoved,
+		slDedupMoved:     secondLevelDedupMoved,
+		slTruncateFirst:  secondLevelTruncated,
+		slTruncateLast:   secondLevelTruncated,
+		slUnionDedup:     secondLevelUnionDedup,
+		slNoPublic:       secondLevelNoPublic,
+		slPerFile:        secondLevelQuadWalk,
+		slPerFileSink:    secondLevelQuadSink,
+		slTraversalOnly:  secondLevelQuadTravers,
+		slEmissionHoist:  secondLevelQuadEmit,
+		slEmissionRewalk: secondLevelQuadRewalk,
 	}
 
-	for _, tc := range secondLevelSignatures {
-		t.Run(string(tc.variant), func(t *testing.T) {
+	// THE POPULATION, checked before any verdict. A variant modelled and
+	// replayed but never named here would be classified and never asserted on
+	// -- the empty-set green this file keeps having to design out.
+	for _, v := range secondLevelVariants {
+		if _, ok := want[v]; !ok {
+			t.Fatalf("variant %q is modelled by replaySecondLevel and listed in "+
+				"secondLevelVariants, but this oracle does not say what it should be called, so "+
+				"nothing asserts its classification", v)
+		}
+		if _, ok := secondLevelDeclaredShape(v); !ok {
+			t.Fatalf("variant %q has no signature, so the classifier can never name it", v)
+		}
+	}
+	if len(want) != len(secondLevelVariants) || len(secondLevelSignatures) != len(secondLevelVariants) {
+		t.Fatalf("%d oracle entries and %d signatures against %d variants: one of them names "+
+			"something secondLevelVariants does not, so the distinctness arm does not see it",
+			len(want), len(secondLevelSignatures), len(secondLevelVariants))
+	}
+
+	// ONLY THE PRISTINE VARIANT MAY CLAIM THE PRISTINE SHAPE, in either table.
+	// The guard's sole assertion is `shape == secondLevelPristine`, so any
+	// other variant wearing that shape converts the guard from a gate into a
+	// rubber stamp for exactly the pair that variant models.
+	for _, v := range secondLevelVariants {
+		if v == slPristine {
+			continue
+		}
+		if want[v] == secondLevelPristine {
+			t.Fatalf("the oracle declares %q as %q; the guard passes on that shape, so a run "+
+				"measuring this variant's pair would be waved through", v, secondLevelPristine)
+		}
+		if s, _ := secondLevelDeclaredShape(v); s == secondLevelPristine {
+			t.Fatalf("secondLevelSignatures declares %q as %q; the guard passes on that shape, so "+
+				"a run measuring this variant's pair would be waved through", v, secondLevelPristine)
+		}
+	}
+
+	for _, v := range secondLevelVariants {
+		t.Run(string(v), func(t *testing.T) {
 			t.Parallel()
 			for _, n := range secondLevelSizes {
 				main, pool := buildSecondLevelFixture(n)
-				v, e := replaySecondLevel(main, pool, tc.variant)
-				got, detail := classifySecondLevelCounts(n, v, e)
-				if got != tc.shape {
+				gv, ge := replaySecondLevel(main, pool, v)
+				got, detail := classifySecondLevelCounts(n, gv, ge)
+				if got != want[v] {
 					t.Fatalf("n=%d: replaying %q over the fixture gives (visits=%d, emissions=%d), "+
-						"classified %q, want %q.\ndetail: %s",
-						n, tc.variant, v, e, got, tc.shape, detail)
+						"classified %q, oracle says %q. Either a signature is assigned the wrong "+
+						"shape, or this variant's pair collides with an earlier signature's.\n"+
+						"detail: %s", n, v, gv, ge, got, want[v], detail)
 				}
 				if got != secondLevelPristine && detail == "" {
 					t.Fatalf("n=%d: shape %q carries no explanation, so a failing run would name "+
 						"the shape and say nothing about it", n, got)
 				}
-				t.Logf("n=%d %s -> (%d, %d) %s", n, tc.variant, v, e, got)
+				t.Logf("n=%d %s -> (%d, %d) %s", n, v, gv, ge, got)
 			}
 		})
 	}
