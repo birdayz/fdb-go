@@ -1313,7 +1313,25 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 	})
 }
 
-// THE SECOND PACKAGE LEVEL MUST DO LINEAR WORK -- counted, not timed.
+// THE SECOND PACKAGE LEVEL'S CLOSURE WALK MUST TAKE LINEAR STEPS -- counted,
+// not timed.
+//
+// WHAT THIS DOES NOT COVER, written first because the previous version of this
+// arm was named for a claim it did not enforce. It counts closure STEPS through
+// the onVisit seam. That is the quantity both known regression shapes inflate,
+// but it is not "work" in general:
+//
+//   - Cost inside a single step is invisible. A change making importsOf itself
+//     expensive keeps the step count at 3n-1 and passes here.
+//   - Allocation is invisible. The traversal-only regression allocates ~430x
+//     at n=800 while its step count is what this catches; the step count is the
+//     cheaper signal, not the direct one.
+//   - Work outside walkVisibleImports entirely -- the level-1 loop, the
+//     resolution walk, protodesc -- is out of scope for this arm.
+//
+// An earlier version of this arm counted onPackageOnly EMISSIONS and was named
+// for linear work regardless. That gap was real: a regression can traverse
+// quadratically and still emit linearly, because the final walk deduplicates.
 //
 // The regression this guards is real and severe: the level once called
 // visibleFrom once per visible file, each walk covering the remaining suffix of
@@ -1339,7 +1357,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // pristine 0.40-2.29 against a regression that reports 1.95-2.92 whenever it
 // escapes. No single threshold on a timing quotient can separate those.
 //
-// So the guard counts WORK instead, and separates by construction. `main`
+// So the guard counts closure STEPS instead, and separates by construction. `main`
 // privately imports A_0..A_{n-1}; each A_i privately imports the head of a
 // public chain B_0 -> ... -> B_{n-1}. The As have no public dependencies, so
 // the visible set is exactly the As, and the union of their directs is B_0
@@ -1350,7 +1368,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 //
 // Measured at 24-way contention: 192/192 pass on correct code, 192/192 fail on
 // the per-file form, 0.00s, zero flake in either direction.
-func TestSecondPackageLevelDoesLinearWork(t *testing.T) {
+func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 	t.Parallel()
 
 	build := func(n int) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
@@ -1425,17 +1443,36 @@ func TestSecondPackageLevelDoesLinearWork(t *testing.T) {
 				"is built to produce -- the walk is not running, so its ceiling is vacuous",
 				n, visits, n)
 		}
-		if visits > 4*n {
-			t.Fatalf("n=%d: the closure walk took %d steps, more than 4n=%d (quadratic would be "+
-				"~%d). The single union traversal has been replaced by a per-visible-file one, "+
-				"which is O(n^2) here and O(n^3) across rebuildFileDescriptor's per-dependency "+
-				"pass -- valid metadata becomes a CPU exhaustion input.", n, visits, 4*n, n*n)
+		// THE BAR, re-derived for VISITS rather than inherited from the
+		// emission-counting version it replaced. Pristine is exactly 3n-1 here
+		// (149/299/599 at n=50/100/200): one arrival per A, one per B, minus
+		// the shared head. The two regressions land at 51n and 102n (2550 and
+		// 5099 at n=50), so nothing sits near this boundary from either side.
+		//
+		// 6n therefore leaves the deterministic pristine value 2x of room --
+		// enough to absorb a benign change to the traversal without re-tuning,
+		// and still an order of magnitude below either regression. The earlier
+		// 4n was chosen when pristine was n, giving 4x; carrying it onto a
+		// quantity whose baseline is 3n silently cut that to 1.34x.
+		if visits > 6*n {
+			t.Fatalf("n=%d: the closure walk took %d steps, more than 6n=%d (pristine is 3n-1=%d; "+
+				"the per-file form is ~%d and the traversal-only form ~%d). The single union "+
+				"traversal has been replaced by a per-visible-file one, which is O(n^2) here and "+
+				"O(n^3) across rebuildFileDescriptor's per-dependency pass -- valid metadata "+
+				"becomes a CPU exhaustion input.", n, visits, 6*n, 3*n-1, n*n+n*n/2, n*n*2)
 		}
-		if emissions > 4*n {
-			t.Fatalf("n=%d: the second package level emitted %d packages, more than 4n=%d. The "+
-				"per-file form emits once per (visible file, reached file) pair.",
-				n, emissions, 4*n)
-		}
+		// THERE IS DELIBERATELY NO CEILING ON EMISSIONS. It would be provably
+		// redundant, not merely untriggered: onPackageOnly fires at most once
+		// per DISTINCT file reached, while onVisit fires on every arrival
+		// including repeats, so emissions <= visits by construction. No
+		// mutation can push emissions past a bound without pushing visits past
+		// it first, which means such a check could never have a unique detector
+		// -- it would be a second spelling of the line above, reading as
+		// coverage while adding none.
+		//
+		// The emissions FLOOR above is a different matter and does have one: a
+		// walk that ran but found every reached file already fullyExposed emits
+		// zero while visiting n.
 		t.Logf("n=%d visits=%d emissions=%d (linear %d, quadratic ~%d)", n, visits, emissions, n, n*n)
 	}
 }
