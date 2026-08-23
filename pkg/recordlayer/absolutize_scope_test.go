@@ -3093,10 +3093,22 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	// and the precondition would rest on nothing.
 	// BOTH MALFORMED-INDEX BOUNDARIES MUST BE REACHED, not merely generated.
 	//
-	// These two descriptors are the only thing in the tree that reaches
-	// production's `idx < 0 || int(idx) >= len(direct)`: with the corpus
-	// carrying only an out-of-range `+3`, relaxing `>=` to `>` leaves every arm
-	// in this file green, and so does deleting the `< 0` half.
+	// These two descriptors are NOT what makes production's
+	// `idx < 0 || int(idx) >= len(direct)` reachable, and the earlier claim
+	// that they were was measured false in both halves. The randomized switch
+	// above already emits an index of exactly len(Dependency) and one of -1,
+	// and already reaches them: with this pair removed from main's directs,
+	// relaxing `>=` to `>` still panics and so does deleting the `< 0` half.
+	// Instrumented over the corpus, the guard evaluates ~15k indices per run
+	// and only a minority come from this pair. The sentence that stood here
+	// described the corpus as carrying "only an out-of-range +3", which was
+	// true before the randomized boundary cases were added and restated in the
+	// present tense afterwards -- the same import-a-stale-measurement failure
+	// the not-covered list above is repenting of, one paragraph later.
+	//
+	// What this pair buys is DETERMINISM, which is what it is for: coverage of
+	// both boundaries becomes per-graph and structural instead of contingent on
+	// a roll schedule and a seed count that nothing pins.
 	//
 	// WHAT THIS COUNTS IS REACHABILITY, and the chain from there to execution
 	// is short but worth writing down: a path in main's directs is visited by
