@@ -435,15 +435,34 @@ func readProtocGolden(t *testing.T) (golden map[string]string, accepted, rejecte
 	// the row. Flipping one accepted row to REJECTED and decrementing #accepted
 	// while incrementing #rejected is a three-line edit that satisfies every
 	// count check, both set-equality directions and the dimension floors -- and
-	// quietly removes a case from the comparison. The digest is over the DATA
-	// only, so it moves for any row edit whatever the headers say.
+	// quietly removes a case from the comparison. The digest moves for any row
+	// edit, whatever the headers say, and closes that one.
+	//
+	// WHAT THE DIGEST IS NOT: tamper-proof. It detects DRIFT -- a row changed
+	// without regenerating -- and nothing more. Anyone editing the file can also
+	// recompute it, and a COUNT-CONSERVING SWAP walks past every guard here:
+	// turn one accepted row into REJECTED and one REJECTED row into a fabricated
+	// answer copied from Go's own output. Both counts are unchanged, so the
+	// floor and the headers hold; the digest is recomputed; set equality holds;
+	// every dimension floor holds. The forged row then "agrees" by construction
+	// and a real single-key divergence hides behind it -- demonstrated.
+	//
+	// There is no cryptographic answer available here: the file and the checker
+	// ship together, so any value the checker can compute, an editor can too.
+	// The actual defence is REGENERATION against protoc -- the command in this
+	// file's header -- and review of the resulting diff. These guards exist to
+	// make an accidental or lazy edit loud, not to stop a deliberate one.
+	//
+	// The failure below therefore does NOT print the computed digest. Printing
+	// it hands over the one value needed to complete the forgery, which is a
+	// strange thing for a tamper check to do even if it is only a drift check.
 	if headerDigest == "" {
 		t.Fatalf("%s carries no #digest line; regenerate it", protocGoldenPath)
 	}
-	if got := goldenDigest(golden); got != headerDigest {
-		t.Fatalf("%s digest mismatch: header %s, rows %s. A row was edited by hand -- regenerate "+
-			"rather than adjusting the counts, which are satisfiable by the same edit.",
-			protocGoldenPath, headerDigest, got)
+	if goldenDigest(golden) != headerDigest {
+		t.Fatalf("%s: the data rows do not match the recorded #digest. A row was edited by hand. "+
+			"Regenerate with the command in this file's header rather than adjusting the header "+
+			"values, which the same edit can satisfy.", protocGoldenPath)
 	}
 
 	// A MAGNITUDE FLOOR, because every other check here is shape-only and the
@@ -636,8 +655,16 @@ func TestProtocGoldenCoversEveryDimension(t *testing.T) {
 		}
 	}
 	if shadowed == 0 {
+		// NOT a first-component claim. `mirrorParts` mirrors the WHOLE written
+		// name, so on every case here the first-component rule and a
+		// whole-reference rule give the same answer -- measured: replacing the
+		// first-component split outright leaves this corpus at 526 accepted, 0
+		// divergences. What the shadowed cases establish is only that a
+		// shadowing declaration in the referring scope is exercised at all;
+		// TestAbsolutizeFieldTypeNamesResolvesTheFirstComponentOutward is what
+		// pins the rule, and it reddens under that mutation.
 		t.Error("no accepted case declares a shadowing type in the referring scope, so the " +
-			"first-component-outward rule is unmeasured here")
+			"corpus never exercises a reference that the referring scope could satisfy")
 	}
 }
 
@@ -736,6 +763,18 @@ func regenerateProtocGolden(t *testing.T) {
 	if accepted == 0 {
 		t.Fatalf("protoc accepted none of the %d cases; the corpus would assert nothing", len(cases))
 	}
+
+	// THE FLOOR APPLIES HERE TOO, BEFORE WRITING. The reader-side check runs on
+	// a normal run, and `-update-protoc-golden` returns before ever reaching it
+	// -- so a change that made protoc reject most of the corpus would regenerate
+	// a shrunken golden and report PASS, with the failure deferred to whoever
+	// ran the suite next. The guard belongs on the side that produces the file.
+	if accepted < minAcceptedCases {
+		t.Fatalf("regeneration produced only %d accepted cases, below the floor of %d. Something "+
+			"made protoc reject cases it used to accept -- fix that rather than lowering the "+
+			"floor, and if the shrink is intended, lower it deliberately in the same change.",
+			accepted, minAcceptedCases)
+	}
 	if len(results) != len(cases) {
 		t.Fatalf("recorded %d verdicts for %d enumerated cases -- every case must get one, or a "+
 			"missing entry becomes indistinguishable from a rejection", len(results), len(cases))
@@ -812,11 +851,46 @@ func hasSourceLevelError(text string) bool {
 		if strings.Contains(line, ": warning:") {
 			continue
 		}
-		if strings.Contains(line, diffMainPath+":") || strings.Contains(line, diffDepPath+":") {
-			return true
+		for _, f := range []string{diffMainPath, diffDepPath} {
+			i := strings.Index(line, f+":")
+			if i < 0 {
+				continue
+			}
+			if hasLineColumn(line[i+len(f)+1:]) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// hasLineColumn reports whether what follows a file name in a protoc diagnostic
+// begins with `<line>:<column>:`.
+//
+// NAMING THE FILE IS NOT ENOUGH. protoc reports invocation-level failures with
+// the file name too, and one of them is the missing-input case:
+//
+//	Could not make proto path relative: diffdep.proto: No such file or directory
+//
+// A containment check alone reads that as a source rejection and records the
+// case REJECTED, which is precisely the silent-shrink this helper exists to
+// prevent, arriving through the helper itself. A real source diagnostic always
+// carries a position; an invocation failure never does.
+func hasLineColumn(rest string) bool {
+	digits := func(s string) (int, bool) {
+		n := 0
+		for n < len(s) && s[n] >= '0' && s[n] <= '9' {
+			n++
+		}
+		return n, n > 0
+	}
+	n, ok := digits(rest)
+	if !ok || n >= len(rest) || rest[n] != ':' {
+		return false
+	}
+	rest = rest[n+1:]
+	n, ok = digits(rest)
+	return ok && n < len(rest) && rest[n] == ':'
 }
 
 // crossCheckStructure catches DRIFT between the two renderings of a case.
@@ -913,18 +987,31 @@ func crossCheckStructure(
 			c.key(), a, b)
 	}
 
-	// THE PROBED POSITION ITSELF -- the one field the whole corpus is about.
-	// protoc resolved *something*; this asserts it resolved the same as-written
-	// name the descriptor carries, by relativizing protoc's answer back and
-	// requiring it to end with what was written. Without this, a source emitter
-	// that wrote a different name at the probe would still cross-check clean,
-	// because the message trees would be identical.
-	resolved := c.readPosition(compiled)
-	if !strings.HasSuffix(resolved, "."+c.asWritten) && !strings.HasSuffix(resolved, c.asWritten) {
-		t.Fatalf("case %s: protoc resolved the probed position to %q, which does not end in the "+
-			"as-written name %q -- mainSource wrote a different reference than mainDescriptor "+
-			"carries, so the golden would record an answer to a different question",
-			c.key(), resolved, c.asWritten)
+	// THE PROBED SPELLING ITSELF -- the one field the whole corpus is about.
+	//
+	// Compared DIRECTLY against the emitted source, not inferred from protoc's
+	// resolved name. Inference cannot do this job: if the descriptor carries `X`
+	// while the source emits a qualified `probe.X`, protoc stores `.probe.X`,
+	// which ends in `X` and satisfies any suffix test -- while qualification is
+	// exactly the thing that changes how a shadow resolves, so the golden would
+	// be recording protoc's answer to a different question.
+	//
+	// The reference is emitted as a whole token surrounded by spaces in every
+	// position mainSource writes (`optional <name> f = 1;`, `extend <name> {`),
+	// so requiring that exact token is a comparison of spellings rather than of
+	// endings.
+	src := c.mainSource()
+	if !strings.Contains(src, " "+c.asWritten+" ") {
+		t.Fatalf("case %s: mainSource did not emit the as-written name %q as a whole token:\n%s\n"+
+			"mainSource and mainDescriptor disagree about the reference under test, so the "+
+			"golden would record an answer to a different question", c.key(), c.asWritten, src)
+	}
+	// And protoc's answer must still be an absolute name ending in it, which
+	// catches the reverse drift (the source right, the descriptor's probed
+	// position wrong).
+	if resolved := c.readPosition(compiled); !strings.HasSuffix(resolved, "."+c.asWritten) {
+		t.Fatalf("case %s: protoc resolved the probed position to %q, which does not end in "+
+			"%q", c.key(), resolved, c.asWritten)
 	}
 }
 
@@ -963,7 +1050,7 @@ func TestSourceLevelErrorSeparatesRejectionFromHarnessFailure(t *testing.T) {
 		},
 		{
 			name: "a rejection in the dependency",
-			text: "diffdep.proto:3:1: Expected top-level statement.\n",
+			text: "diffdep.proto:3:1: Expected top-level statement (e.g. \"message\").\n",
 			want: true,
 		},
 		{
@@ -982,6 +1069,18 @@ func TestSourceLevelErrorSeparatesRejectionFromHarnessFailure(t *testing.T) {
 		{
 			name: "a bad flag names no source file",
 			text: "Unknown flag: --not-a-flag\n",
+			want: false,
+		},
+		{
+			// NAMES THE FILE, CARRIES NO POSITION. protoc's missing-input
+			// failure, which a containment check alone reads as a rejection.
+			name: "a missing input is a harness failure, not a rejection",
+			text: "Could not make proto path relative: diffdep.proto: No such file or directory\n",
+			want: false,
+		},
+		{
+			name: "a file named with no line:column at all",
+			text: "diffmain.proto: some invocation-level complaint\n",
 			want: false,
 		},
 		{

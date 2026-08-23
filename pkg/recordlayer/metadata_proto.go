@@ -1009,9 +1009,11 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 //     AND whose import `defaultExcludedDependencies` strips.
 //
 // So the shapes below are Java's own protos rather than hypotheticals, and the
-// seeding is load-bearing for BOTH producers -- for Java's because a user proto
-// carries a package, and for this port's own because its records file imports
-// two descriptors the stored metadata deliberately omits. Pinned by
+// seeding is load-bearing for the JAVA producer -- a user proto carries a
+// package, which is what puts a scope on the walk's path to stop at. For this
+// port's own producer the loop executes and its output is unobservable, per the
+// measurement above; an earlier revision of this sentence claimed both, which
+// contradicted the paragraph directly above it. Pinned by
 // TestAbsolutizeFieldTypeNamesStopsAtAPackageScope and
 // TestAbsolutizeFieldTypeNamesResolvesIntoAnAncestorPackageDependency, which are
 // the only arms that separate a stopped walk from the fallback -- see their
@@ -1637,21 +1639,40 @@ func walkVisibleImports(
 		}
 	}
 
-	// The second package level: for each visible file, the packages of ITS
-	// visible set. Files already fully exposed are skipped -- they contributed
-	// their package above, and re-adding it would be harmless but misleading.
+	// The second package level: the packages of every visible file's OWN visible
+	// set.
+	//
+	// ONE TRAVERSAL OVER THE UNION, not one per visible file, and the difference
+	// is asymptotic rather than cosmetic. Written the obvious way -- call
+	// visibleFrom once per entry of `visible` -- each call walks the remaining
+	// suffix of a public-import chain, so a chain of n files costs O(n^2) here;
+	// and rebuildFileDescriptor runs this whole pass once per dependency, making
+	// the total O(n^3). A few hundred descriptors then take seconds, which turns
+	// VALID metadata into a CPU exhaustion input.
+	//
+	// The union form is exactly equivalent because public closure distributes
+	// over union: with P the directs of every visible file,
+	//
+	//	U_{p in visible} V(p) = U_p (directs(p) U pubclosure(directs(p)))
+	//	                      = P U pubclosure(P)
+	//
+	// so one visibleFrom over P yields the same set in O(n), and `seen` inside
+	// it keeps each file visited once.
+	var union []string
 	for _, path := range visible {
-		_, direct, _, ok := importsOf(path)
-		if !ok {
+		if _, direct, _, ok := importsOf(path); ok {
+			union = append(union, direct...)
+		}
+	}
+	for _, q := range visibleFrom(union) {
+		// Files already fully exposed contributed their package above. Skipping
+		// them is presentational -- addPackage is idempotent -- but it keeps
+		// this loop's output to the level it is responsible for.
+		if fullyExposed[q] {
 			continue
 		}
-		for _, q := range visibleFrom(direct) {
-			if fullyExposed[q] {
-				continue
-			}
-			if pkg, _, _, ok := importsOf(q); ok && pkg != "" {
-				onPackageOnly(pkg)
-			}
+		if pkg, _, _, ok := importsOf(q); ok && pkg != "" {
+			onPackageOnly(pkg)
 		}
 	}
 }

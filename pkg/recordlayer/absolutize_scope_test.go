@@ -1,7 +1,9 @@
 package recordlayer
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -1112,8 +1114,10 @@ func TestAbsolutizeFieldTypeNamesIgnoresAPrivateTransitiveImport(t *testing.T) {
 			t.Fatalf("type_name = %q, want %q.\n"+
 				"`.p.q.X.Y` is the answer when the walk is seeded from the whole transitive "+
 				"closure: it stops at service `p.q.X`, which arrives only through a PRIVATE "+
-				"import of a private import and which Java's DescriptorPool never sees. Both "+
-				"names resolve, so this binds the wrong message with no error.",
+				"import of a private import and which Java's DescriptorPool never sees. "+
+				"protodesc then REFUSES the descriptor (`cannot resolve type ... is not "+
+				"imported`), so this is metadata Java loads and Go rejects -- a parity bug that "+
+				"fails loudly, not a silent mis-binding.",
 				got, ".p.X.Y")
 		}
 	})
@@ -1158,15 +1162,38 @@ func TestAbsolutizeFieldTypeNamesIgnoresAPrivateTransitiveImport(t *testing.T) {
 // package and the walk climbs to `.p.X.Y` and ACCEPTS -- Go loading metadata
 // Java refuses, which the conformance rule forbids outright.
 //
-// THE CONTROL is the second arm: the same graph with hidden's message moved so
-// that only its package is in play cannot distinguish "package seeded" from
-// "types seeded". So the arms assert opposite outcomes on the SAME graph, one
-// about the package reaching two levels and one about the types stopping at
-// one.
+// THE TWO ARMS PROBE DIFFERENT FIELDS, and that is what makes them disjoint
+// rather than one arm written twice:
+//
+//	arm 1  `X.Y`          -> `.p.q.X.Y`     the PACKAGE must reach two levels
+//	arm 2  `OnlyInHidden` -> `.OnlyInHidden` the TYPES must stop at one
+//
+// Arm 2's probe is a bare name declared only by a second privately-imported
+// file, `hidden2`, which sits in main's OWN package. That placement is the
+// whole trick, and the first attempt got it wrong: a leaked type is only
+// observable if it lands in a scope the outward walk VISITS. The walk climbs
+// `.p.q.Local.` -> `.p.q.` -> `.p.` -> `.` and never descends into `.p.q.X.`,
+// so a probe placed in `hidden` (package p.q.X) was unreachable and stayed
+// green under the very mutation it was written to catch. `p.q` is on the path.
+//
+// Measured, each mutation proven present and proven to build:
+//
+//	drop the level-2 package seeding   arm 1 RED    arm 2 green
+//	also leak the private import types arm 1 green  arm 2 RED
+//	seed nothing at all                arm 1 RED    arm 2 green
+//
+// Arm 2 staying green on the last row is correct, not vacuous: with nothing
+// seeded the root fallback really is the right answer for that field.
+//
+// Arm 2 also asserts a NAME rather than the existence of an error. An earlier
+// version required protodesc to reject the built descriptor, which is true when
+// the code is correct, when the types leak, AND when nothing is seeded --
+// protodesc objects to IMPORT VISIBILITY, not to emptiness beneath the package,
+// so all three states produce an error and the arm discriminated nothing.
 func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t *testing.T) {
 	t.Parallel()
 
-	build := func() (main, dep, bridge, hidden *descriptorpb.FileDescriptorProto) {
+	build := func() (main, dep, bridge, hidden, hidden2 *descriptorpb.FileDescriptorProto) {
 		hidden = &descriptorpb.FileDescriptorProto{
 			Name:    proto.String("pkgshadow_hidden.proto"),
 			Package: proto.String("p.q.X"),
@@ -1174,11 +1201,28 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 			// A MESSAGE that must stay invisible, in a package that must not.
 			MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("Y")}},
 		}
+		// A SECOND hidden file, in main's OWN package, declaring a name nothing
+		// else declares.
+		//
+		// It is what makes the type-hiding arm discriminate, and the first
+		// attempt at that arm got this wrong: a leaked type must land in a scope
+		// the outward walk actually VISITS. The walk climbs ancestors of the
+		// declaring scope -- `.p.q.Local.`, `.p.q.`, `.p.`, `.` -- and never
+		// descends into `.p.q.X.`, so a type leaked from `hidden` (package
+		// p.q.X) is unreachable by a bare name and the probe stayed green under
+		// the very mutation it was written to catch. Package `p.q` is on the
+		// walk's path; `p.q.X` is not.
+		hidden2 = &descriptorpb.FileDescriptorProto{
+			Name:        proto.String("pkgshadow_hidden2.proto"),
+			Package:     proto.String("p.q"),
+			Syntax:      proto.String("proto2"),
+			MessageType: []*descriptorpb.DescriptorProto{{Name: proto.String("OnlyInHidden")}},
+		}
 		bridge = &descriptorpb.FileDescriptorProto{
 			Name:       proto.String("pkgshadow_bridge.proto"),
 			Package:    proto.String("p.bridge"),
 			Syntax:     proto.String("proto2"),
-			Dependency: []string{hidden.GetName()}, // PRIVATE
+			Dependency: []string{hidden.GetName(), hidden2.GetName()}, // both PRIVATE
 		}
 		dep = &descriptorpb.FileDescriptorProto{
 			Name:    proto.String("pkgshadow_dep.proto"),
@@ -1196,23 +1240,34 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 			Dependency: []string{dep.GetName(), bridge.GetName()},
 			MessageType: []*descriptorpb.DescriptorProto{{
 				Name: proto.String("Local"),
-				Field: []*descriptorpb.FieldDescriptorProto{{
-					Name:     proto.String("f"),
-					Number:   proto.Int32(1),
-					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
-					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
-					TypeName: proto.String("X.Y"),
-				}},
+				Field: []*descriptorpb.FieldDescriptorProto{
+					{
+						Name:     proto.String("f"),
+						Number:   proto.Int32(1),
+						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+						TypeName: proto.String("X.Y"),
+					},
+					{
+						// The type-hiding probe: a bare name only `hidden`
+						// declares.
+						Name:     proto.String("g"),
+						Number:   proto.Int32(2),
+						Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+						Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+						TypeName: proto.String("OnlyInHidden"),
+					},
+				},
 			}},
 		}
-		return main, dep, bridge, hidden
+		return main, dep, bridge, hidden, hidden2
 	}
 
 	t.Run("the package shadows", func(t *testing.T) {
 		t.Parallel()
 
-		main, dep, bridge, hidden := build()
-		absolutizeFieldTypeNames(main, dep, bridge, hidden)
+		main, dep, bridge, hidden, hidden2 := build()
+		absolutizeFieldTypeNames(main, dep, bridge, hidden, hidden2)
 
 		if got := main.MessageType[0].Field[0].GetTypeName(); got != ".p.q.X.Y" {
 			t.Fatalf("type_name = %q, want %q.\n"+
@@ -1226,28 +1281,200 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 	t.Run("the types stay hidden", func(t *testing.T) {
 		t.Parallel()
 
-		// The discriminator: if `hidden`'s TYPES were seeded rather than only its
-		// package, `.p.q.X.Y` would be a resolvable message and protodesc would
-		// accept the rewritten descriptor. It must not -- Java rejects here, and
-		// the whole point of the package/type split is that the name resolves to
-		// a package with nothing beneath it.
-		main, dep, bridge, hidden := build()
-		absolutizeFieldTypeNames(main, dep, bridge, hidden)
+		// ASSERTS A NAME, NOT THE EXISTENCE OF AN ERROR, and the distinction is
+		// the entire content of this arm.
+		//
+		// An earlier version built the descriptor and required protodesc to
+		// reject it. That was vacuous: protodesc's objection here is about
+		// IMPORT VISIBILITY, not about emptiness beneath the package, so it
+		// errors when the code is correct, when the types leak, AND when the
+		// seeding does nothing at all -- three states, one verdict. Measured.
+		// Its red state was a strict subset of the sibling arm's, so it
+		// discriminated nothing while its comment called it the control.
+		//
+		// The probe is instead a bare name only `hidden` declares, where the two
+		// implementations produce DIFFERENT strings:
+		//
+		//	types hidden (correct): nothing declares it, root fallback -> ".OnlyInHidden"
+		//	types leaked:           ".p.q.OnlyInHidden"
+		main, dep, bridge, hidden, hidden2 := build()
+		absolutizeFieldTypeNames(main, dep, bridge, hidden, hidden2)
 
-		files := &protoregistry.Files{}
-		for _, f := range []*descriptorpb.FileDescriptorProto{hidden, bridge, dep} {
-			fdesc, err := protodesc.NewFile(f, files)
-			if err != nil {
-				t.Fatalf("building %s: %v", f.GetName(), err)
-			}
-			if err := files.RegisterFile(fdesc); err != nil {
-				t.Fatalf("registering %s: %v", f.GetName(), err)
-			}
+		got := main.MessageType[0].Field[1].GetTypeName()
+		if got == ".p.q.OnlyInHidden" {
+			t.Fatalf("type_name = %q -- `hidden`'s TYPES were seeded alongside its package. "+
+				"Java puts H's messages in H's own pool, which this file never consults; only the "+
+				"PackageDescriptor reaches here through the importing dependency's pool.", got)
 		}
-		if _, err := protodesc.NewFile(main, files); err == nil {
-			t.Fatal("protodesc accepted `.p.q.X.Y`. Java rejects this descriptor: the first " +
-				"component resolves to a PACKAGE and there is no `Y` beneath it. Accepting means " +
-				"the private import's types leaked in alongside its package.")
+		if got != ".OnlyInHidden" {
+			t.Fatalf("type_name = %q, want %q. Nothing visible declares this name, so the walk "+
+				"must run out of scopes and the root fallback must answer.", got, ".OnlyInHidden")
 		}
 	})
+}
+
+// A LONG PUBLIC-IMPORT CHAIN MUST NOT COST SUPERLINEAR TIME PER FILE.
+//
+// The second package level once called visibleFrom once per visible file, and
+// each of those walks the remaining suffix of the chain: O(n^2) for one file,
+// and rebuildFileDescriptor runs the pass once per dependency, so O(n^3)
+// overall. A few hundred descriptors then take seconds -- valid metadata, from
+// a valid .proto graph, turned into a CPU exhaustion input by the loader.
+//
+// The guard is a RATIO, not a wall-clock budget, because an absolute threshold
+// on a shared machine is a flake generator. Doubling the chain must not
+// quadruple the time. The bar is deliberately loose so only an asymptotic
+// regression trips it, and the sizes are large enough that the small case is
+// comfortably measurable -- which the arm checks rather than assumes, since a
+// ratio of two unmeasurable numbers is noise wearing a decimal point.
+func TestAbsolutizeFieldTypeNamesIsNotSuperlinearInChainLength(t *testing.T) {
+	t.Parallel()
+
+	// buildChain makes `main` importing f0, where f_i publicly re-exports
+	// f_{i+1}: the shape whose closure the second level used to re-walk.
+	buildChain := func(n int) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
+		pool := make([]*descriptorpb.FileDescriptorProto, 0, n)
+		for i := 0; i < n; i++ {
+			f := &descriptorpb.FileDescriptorProto{
+				Name:    proto.String(fmt.Sprintf("chain_%d.proto", i)),
+				Package: proto.String(fmt.Sprintf("chain.p%d", i)),
+				Syntax:  proto.String("proto2"),
+			}
+			if i+1 < n {
+				f.Dependency = []string{fmt.Sprintf("chain_%d.proto", i+1)}
+				f.PublicDependency = []int32{0} // PUBLIC re-export
+			}
+			pool = append(pool, f)
+		}
+		main := &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("chain_main.proto"),
+			Package:    proto.String("chain.main"),
+			Syntax:     proto.String("proto2"),
+			Dependency: []string{"chain_0.proto"},
+			MessageType: []*descriptorpb.DescriptorProto{{
+				Name: proto.String("Local"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name:     proto.String("f"),
+					Number:   proto.Int32(1),
+					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					TypeName: proto.String("Nowhere"),
+				}},
+			}},
+		}
+		return main, pool
+	}
+
+	// best-of-3 on each size: this runs alongside the rest of the suite, and a
+	// single sample is at the mercy of whatever else got scheduled.
+	run := func(n int) time.Duration {
+		best := time.Duration(1<<62 - 1)
+		for range 3 {
+			main, pool := buildChain(n)
+			start := time.Now()
+			absolutizeFieldTypeNames(main, pool...)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+
+	run(64) // warm the allocator so startup cost stays out of the ratio
+
+	const small, large = 250, 500
+	tSmall, tLarge := run(small), run(large)
+
+	// The premise. Without it a ratio of two sub-microsecond timings would be
+	// scheduler noise, and the arm would pass or fail at random.
+	if tSmall < 20*time.Microsecond {
+		t.Fatalf("the %d-file case took %v, too short to compare against -- raise the sizes "+
+			"rather than reading a ratio off timings this small", small, tSmall)
+	}
+
+	ratio := float64(tLarge) / float64(tSmall)
+	if ratio > 3.0 {
+		t.Fatalf("doubling the public-import chain from %d to %d multiplied the time by %.1fx "+
+			"(%v -> %v).\nThat is superlinear growth in a loader path: the second package level "+
+			"is re-walking each file's closure instead of taking one traversal over the union, "+
+			"which makes a valid descriptor graph a CPU exhaustion input.",
+			small, large, ratio, tSmall, tLarge)
+	}
+	t.Logf("chain %d -> %d: %v -> %v (%.2fx)", small, large, tSmall, tLarge, ratio)
+}
+
+// PACKAGES REACH TWO LEVELS AND STOP -- the anti-overshoot control.
+//
+// The sibling test pins that a private import of a VISIBLE dependency
+// contributes its package. This pins the other side: a private import of a
+// PRIVATE import does not. Without it, "two levels" is asserted only from
+// below, and an implementation that recursed the package exposure to any depth
+// would satisfy every other arm in this file while diverging from Java on any
+// graph three hops deep.
+//
+// Java's reason is structural, not a depth limit: findSymbol reads this file's
+// pool and then each DEPENDENCY's pool -- one hop of indirection. A package
+// three levels out sits in a pool nobody in that chain consults.
+//
+//	main (p.q) --> bridge --private--> mid --private--> deep (package p.q.X)
+//
+// `deep`'s package is two hops from `bridge`, three from `main`. Java resolves
+// `X.Y` past `.p.q` and binds `.p.X.Y`; so must this. Verified against
+// protobuf-java 4.29.3 on exactly this shape.
+func TestAbsolutizeFieldTypeNamesDoesNotReachPackagesThreeLevelsOut(t *testing.T) {
+	t.Parallel()
+
+	deep := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("depth3_deep.proto"),
+		Package: proto.String("p.q.X"),
+		Syntax:  proto.String("proto2"),
+	}
+	mid := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("depth3_mid.proto"),
+		Package:    proto.String("p.mid"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{deep.GetName()}, // PRIVATE
+	}
+	bridge := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("depth3_bridge.proto"),
+		Package:    proto.String("p.bridge"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{mid.GetName()}, // PRIVATE
+	}
+	dep := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("depth3_dep.proto"),
+		Package: proto.String("p"),
+		Syntax:  proto.String("proto2"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name:       proto.String("X"),
+			NestedType: []*descriptorpb.DescriptorProto{{Name: proto.String("Y")}},
+		}},
+	}
+	main := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("depth3_main.proto"),
+		Package:    proto.String("p.q"),
+		Syntax:     proto.String("proto2"),
+		Dependency: []string{dep.GetName(), bridge.GetName()},
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("Local"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:     proto.String("f"),
+				Number:   proto.Int32(1),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+				TypeName: proto.String("X.Y"),
+			}},
+		}},
+	}
+
+	absolutizeFieldTypeNames(main, dep, bridge, mid, deep)
+
+	if got := main.MessageType[0].Field[0].GetTypeName(); got != ".p.X.Y" {
+		t.Fatalf("type_name = %q, want %q.\n"+
+			"`deep`'s package `p.q.X` is THREE hops from this file, reachable only through two "+
+			"private imports. Java's findSymbol consults each dependency's pool and stops there "+
+			"-- one hop -- so that package is invisible and the walk climbs to `.p.X.Y`. "+
+			"Answering `.p.q.X.Y` means the package exposure is recursing to arbitrary depth "+
+			"instead of stopping at two levels.", got, ".p.X.Y")
+	}
 }
