@@ -3098,26 +3098,39 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	// that they were was measured false in both halves. The randomized switch
 	// above already emits an index of exactly len(Dependency) and one of -1,
 	// and already reaches them: with this pair removed from main's directs,
-	// relaxing `>=` to `>` still panics and so does deleting the `< 0` half.
-	// Instrumented over the corpus, the guard evaluates ~15k indices per run
-	// and only a minority come from this pair. The sentence that stood here
+	// relaxing `>=` to `>` still panics -- `index out of range [2] with length
+	// 2`, which cannot be either sentinel since both carry no dependencies at
+	// all -- and so does deleting the `< 0` half. The sentence that stood here
 	// described the corpus as carrying "only an out-of-range +3", which was
 	// true before the randomized boundary cases were added and restated in the
 	// present tense afterwards -- the same import-a-stale-measurement failure
 	// the not-covered list above is repenting of, one paragraph later.
 	//
+	// It carried a share-of-evaluations figure too, and that was wrong in its
+	// own way: the pair is a minority of indices EVALUATED and a majority of
+	// those REJECTED, which is the population a bounds check exists for. No
+	// replacement figure is quoted. The counterfactual above is the claim worth
+	// making and it is reproducible; a ratio over an unnamed population is how
+	// this file keeps generating corrections.
+	//
 	// What this pair buys is DETERMINISM, which is what it is for: coverage of
 	// both boundaries becomes per-graph and structural instead of contingent on
 	// a roll schedule and a seed count that nothing pins.
 	//
-	// WHAT THIS COUNTS IS REACHABILITY, and the chain from there to execution
-	// is short but worth writing down: a path in main's directs is visited by
-	// visibleFrom, which calls importsOf on it, which is where the bounds check
-	// lives. So reachable-from-main entails the guard evaluating that file's
-	// indices. Counting at GENERATION time entailed nothing -- main takes 1-4
-	// of n pool files, so a randomly-placed boundary is usually never traversed,
-	// and a roll or seed change could have left every one of them unreachable
-	// while the counters stayed comfortably non-zero.
+	// WHAT THIS COUNTS IS REACHABILITY PLUS THE BOUNDARY PROPERTY, and the
+	// second half is not decoration. Being named in main's directs does NOT
+	// entail the guard evaluating anything: the bounds check lives only in the
+	// stored arm of importsOf, so a direct that is absent from `pool` falls
+	// through to the registry arm and returns not-found without evaluating an
+	// index at all. An earlier version counted name matches alone and was
+	// satisfied at 500/500 with both sentinels deleted from the pool -- the
+	// same defect as its predecessor one level up: that one counted
+	// GENERATION, this one counted DECLARATION, and neither counted execution.
+	//
+	// So each reached sentinel is resolved in `pool` and its index property
+	// checked. Resolved-in-pool AND named-in-directs does entail evaluation:
+	// visibleFrom visits every direct, and the first arrival at a path always
+	// reaches importsOf before `seen` can short-circuit it.
 	//
 	// It still does not observe production directly, and does not need to: if
 	// the guard is relaxed the corpus arm dies by PANIC inside the seed loop
