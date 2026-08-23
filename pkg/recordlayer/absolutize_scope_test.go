@@ -1327,7 +1327,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // stale here the way its two predecessors did. It is not "work" in general:
 //
 //   - Cost inside a single step is invisible. A change making importsOf itself
-//     expensive keeps the step count at 3n+2 and passes here.
+//     expensive keeps the step count at 3n+5 and passes here.
 //
 //   - Allocation is invisible. The traversal-only regression allocates ~430x
 //     at n=800 while its step count is what this catches; the step count is the
@@ -1353,7 +1353,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 //     |pool| = 2n rather than |visible| = n
 //
 //     For scale against what this arm DOES catch: at n=50 the per-file form's
-//     excess over pristine is 2450 closure steps (2602-152), so the first exemplar is
+//     excess over pristine is 2450 closure steps (2605-155), so the first exemplar is
 //     comparable and the second an order of magnitude larger. Neither is
 //     visible to either counter, and TotalAlloc is byte-identical between pristine
 //     and mutant for the first (an absolute figure is omitted deliberately: it moves
@@ -1362,21 +1362,31 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 //
 //   - CODE THIS FIXTURE NEVER EXECUTES, which is a different class from the
 //     three above and the easiest to miss, because the list otherwise reads as
-//     a partition of the function. THREE regions run ZERO times at every n,
-//     and this list has twice been written naming only the first two:
-//     every path here is a STORED descriptor, so the global-registry arm of
-//     importsOf and the onGlobal arm of the level-1 loop never execute; and
-//     no union entry is itself a visible file, so the `fullyExposed[q]` skip
-//     never fires either -- deleting that line outright leaves this arm at
-//     pristine 152/302/602 and PASSING. A fourth, weaker case: a
-//     public-index mis-resolution that is set-preserving on this graph is
-//     invisible here too. Correctness on all four is
-//     TestUnionSecondLevelMatchesPerFileSecondLevel's job, not this arm's. Measured consequence: replacing
-//     GlobalFiles.FindFileByPath with a linear RangeFiles scan -- unbounded
-//     per-lookup cost, the textbook "you don't need the index" simplification
-//     -- leaves this arm and every correctness arm green. The registry path is
-//     production-hot (tuple_fields.proto always arrives that way), so this is
-//     not a hypothetical region.
+//     a partition of the function. TWO regions run zero times at every n: every
+//     path here is a STORED descriptor, so the global-registry arm of importsOf
+//     and the onGlobal arm of the level-1 loop never execute.
+//
+//     THE DIRECTION OF THIS ENTRY HAS INVERTED ONCE, and the old text is worth
+//     keeping visible because it is what the entry is for. It used to name a
+//     THIRD region -- the emission loop's `fullyExposed[q]` skip -- on the
+//     grounds that no union entry was ever itself a visible file. That was true,
+//     and it was an ACCIDENT of the fixture rather than a property of the code:
+//     it also meant two real production defects measured byte-identical to
+//     pristine and passed this guard green. A_0's public re-export of cg_p
+//     removed the accident, so the skip now fires exactly once per walk, and
+//     deleting it measures (155, 54)/(305, 104)/(605, 204) -- `unrecognised`,
+//     RED. If a later fixture edit makes it dormant again, that is a
+//     REGRESSION in coverage, not a return to normal.
+//
+//     A weaker case remains: a public-index mis-resolution that is
+//     set-preserving on this graph is invisible here. Correctness on all of
+//     these is TestUnionSecondLevelMatchesPerFileSecondLevel's job, not this
+//     arm's. Measured consequence: replacing GlobalFiles.FindFileByPath with a
+//     linear RangeFiles scan -- unbounded per-lookup cost, the textbook "you
+//     don't need the index" simplification -- leaves this arm and every
+//     correctness arm green. The registry path is production-hot
+//     (tuple_fields.proto always arrives that way), so this is not a
+//     hypothetical region.
 //
 //   - Work outside walkVisibleImports entirely -- the resolution walk,
 //     protodesc -- is out of scope for this arm.
@@ -1417,15 +1427,17 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // pristine 0.40-2.29 against a regression that reports 1.95-2.92 whenever it
 // escapes. No single threshold on a timing quotient can separate those.
 //
-// So the guard counts closure STEPS instead, and separates by construction. `main`
-// privately imports A_0..A_{n-1}; each A_i privately imports the head of a
-// public chain B_0 -> ... -> B_{n-1}, and the FIRST and LAST A each import a
-// unique leaf. The As have no public dependencies, so the visible set is
-// exactly the As, and the union of their directs is B_0 repeated n times plus
-// those two leaves -- n+2 entries:
+// So the guard counts closure STEPS instead, and separates by construction.
+// `main` privately imports A_0..A_{n-1}; each A_i privately imports the head of
+// a public chain B_0 -> ... -> B_{n-1}; the FIRST and LAST A each import a
+// unique leaf; and A_0 alone PUBLICLY re-exports cg_p, which privately imports
+// cg_q. The visible set is therefore the As plus cg_p -- a strict superset of
+// main's directs, which is what lets this fixture tell `visible` from
+// `fd.GetDependency()` at all -- and the union of the visible files' directs is
+// B_0 repeated n times, the two leaves, cg_p and cg_q: n+4 entries.
 //
-//	union form     dedups via `seen`, walking the B chain once   -> 3n+2 visits
-//	per-file form  calls visibleFrom once per A_i, re-walking B  -> n^2+2n+2
+//	union form     dedups via `seen`, walking the B chain once   -> 3n+5 visits
+//	per-file form  calls visibleFrom once per A_i, re-walking B  -> n^2+2n+5
 //
 // CONTENTION CANNOT MOVE EITHER COUNT, which is a stronger statement than the
 // contention measurement that used to sit here. That figure -- 192/192 both
@@ -1436,8 +1448,8 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // It is not needed. Neither counter reads a clock, and neither depends on map
 // ITERATION order: `seen` and `fullyExposed` are consulted by lookup only, and
 // the traversal order comes from slices. Both values are therefore fixed by the
-// fixture, and repeated invocations return them identically -- 152/302/602 and
-// n+2, measured across six separate runs. A load figure would be describing a
+// fixture, and repeated invocations return them identically -- 155/305/605 and
+// n+3, measured across six separate runs. A load figure would be describing a
 // sensitivity the quantity does not have.
 func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 	t.Parallel()
@@ -1593,7 +1605,7 @@ func buildSecondLevelFixtureOpts(n int, diamond bool) (*descriptorpb.FileDescrip
 // a closure PER VISIBLE FILE and still feeds the union -- `union = append(
 // union, visibleFrom(direct)...)` -- traverses the B chain O(n^2) times and
 // yet emits only n packages. Measured: that mutation leaves an
-// emission-counting guard reporting exactly 50/100/200 and passing, which
+// emission-counting guard reporting exactly 53/103/203 and passing, which
 // is a gate inert on a shape inside its own claim.
 //
 // Counting closure steps sees both regressions, because both do the extra
@@ -1652,8 +1664,8 @@ var secondLevelVariants = []secondLevelVariant{
 //
 //   - ONCE, BY HAND: each non-pristine variant's pair was reproduced by
 //     applying the corresponding edit to metadata_proto.go and reading the
-//     guard -- for instance the sink-dedup form measured (2602, 52) and the
-//     hoisted-onVisit form (102, 52) at n=50, both matching the model. Nothing
+//     guard -- for instance the sink-dedup form measured (2605, 53) and the
+//     hoisted-onVisit form (104, 53) at n=50, both matching the model. Nothing
 //     re-checks those. A production refactor that changes what the
 //     corresponding edit would look like leaves them describing an edit nobody
 //     would now write, and no test will say so.
@@ -1803,7 +1815,7 @@ func replaySecondLevel(
 	case v == slUnionOverDirects:
 		// The visible set is a strict SUPERSET of the directs here, because
 		// A_0 re-exports cg_p publicly. Building the union over the directs
-		// therefore drops cg_p.s own imports.
+		// therefore drops cg_p's own imports.
 		for _, path := range main.GetDependency() {
 			union = append(union, directsOf(path)...)
 		}
@@ -1860,16 +1872,21 @@ func replaySecondLevel(
 
 // secondLevelUniqueLeaves counts the pool paths imported by EXACTLY ONE of
 // main's direct dependencies AND not themselves visible -- the quantity
-// cgUniqueLeaves names.
+// cgUniqueLeaves names -- and returns the set of directs that carry one.
 //
 // The visibility exclusion is not incidental. cg_p is imported by exactly one A
 // and is emphatically not a unique leaf: A_0 re-exports it PUBLICLY, so it
 // joins the visible set and the emission loop skips it. Counting it would make
 // cgUniqueLeaves disagree with the emissions the fixture actually produces.
+//
+// The carrier set exists because the COUNT cannot express PLACEMENT. Moving
+// cg_x inward to A_1 and cg_y inward to A_{n-2} leaves the count at 2 and
+// leaves both truncation deficits equal -- so a count check and a symmetry
+// check both pass while the FIRST-and-LAST claim they rest on has become false.
 func secondLevelUniqueLeaves(
 	main *descriptorpb.FileDescriptorProto,
 	pool []*descriptorpb.FileDescriptorProto,
-) int {
+) (count int, carriers map[string]bool) {
 	byPath := make(map[string]*descriptorpb.FileDescriptorProto, len(pool))
 	for _, d := range pool {
 		byPath[d.GetName()] = d
@@ -1899,23 +1916,88 @@ func secondLevelUniqueLeaves(
 		expose(dep)
 	}
 
-	importers := map[string]int{}
+	importers := map[string][]string{}
 	for _, dep := range main.GetDependency() {
 		d, ok := byPath[dep]
 		if !ok {
 			continue
 		}
 		for _, q := range d.GetDependency() {
-			importers[q]++
+			importers[q] = append(importers[q], dep)
 		}
 	}
-	unique := 0
-	for path, c := range importers {
-		if c == 1 && !visible[path] {
-			unique++
+	carriers = map[string]bool{}
+	for path, who := range importers {
+		if len(who) == 1 && !visible[path] {
+			count++
+			carriers[who[0]] = true
 		}
 	}
-	return unique
+	return count, carriers
+}
+
+// secondLevelPublicShape counts, out of the built pool, the two quantities the
+// public re-export contributes: how many files reach the visible set ONLY by
+// being publicly re-exported by a direct, and how many non-visible files those
+// re-exports privately import.
+//
+// It exists because cgPublicReexports and cgBehindPublic are both 1, which
+// makes them interchangeable to every arithmetic check in this file: swapping
+// them in secondLevelExpected leaves the closed form identical and the suite
+// green. Two hand-typed constants with the same value and no witness are one
+// constant wearing two names until something counts them separately.
+func secondLevelPublicShape(
+	main *descriptorpb.FileDescriptorProto,
+	pool []*descriptorpb.FileDescriptorProto,
+) (reexports, behind int) {
+	byPath := make(map[string]*descriptorpb.FileDescriptorProto, len(pool))
+	for _, d := range pool {
+		byPath[d.GetName()] = d
+	}
+	direct := map[string]bool{}
+	for _, dep := range main.GetDependency() {
+		direct[dep] = true
+	}
+
+	visible := map[string]bool{}
+	var expose func(path string)
+	expose = func(path string) {
+		if visible[path] {
+			return
+		}
+		visible[path] = true
+		d, ok := byPath[path]
+		if !ok {
+			return
+		}
+		deps := d.GetDependency()
+		for _, idx := range d.GetPublicDependency() {
+			if idx < 0 || int(idx) >= len(deps) {
+				continue
+			}
+			expose(deps[idx])
+		}
+	}
+	for _, dep := range main.GetDependency() {
+		expose(dep)
+	}
+
+	for path := range visible {
+		if direct[path] {
+			continue
+		}
+		reexports++
+		d, ok := byPath[path]
+		if !ok {
+			continue
+		}
+		for _, q := range d.GetDependency() {
+			if !visible[q] {
+				behind++
+			}
+		}
+	}
+	return reexports, behind
 }
 
 // secondLevelSizes is the one place the GUARD's driven sizes are written. Every
@@ -1987,12 +2069,13 @@ func secondLevelExpected(n int) (visits, emissions int) {
 // not a range" literally true of every arm and removes the last hand-typed pair
 // from the MATCHING. Hand-typed constants remain elsewhere, and the ones
 // WITHOUT an independent witness are the reason for listing them at all:
-// cgUniqueLeaves is counted out of the built pool, and the 4/6/1 tally and
-// wantE-1 are asserted from measured pairs -- but secondLevelSizes has no arm
-// pinning its VALUE, and the diamond-repeat `+1` in secondLevelExpected has
-// none either. An edit removing the diamond and dropping that `+1` together is
-// self-consistent and passes every tie; TestSecondLevelDiamondIsLoadBearing is
-// what measures the cost, and it is the only thing standing behind that term.
+// cgUniqueLeaves is counted out of the built pool, cgPublicReexports and
+// cgBehindPublic likewise, and the 4/7/2 tally and the truncation deficit are
+// asserted from measured pairs. secondLevelSizes has its own arm. What is left
+// WITHOUT a witness is the diamond-repeat `+1` in secondLevelExpected: an edit
+// removing the diamond and dropping that `+1` together is self-consistent and
+// passes every tie, and TestSecondLevelDiamondIsLoadBearing measuring what the
+// removal costs is the only thing standing behind that term.
 // It matters because a range predicate carrying a message that names
 // one cause is how this classifier twice told a real defect it was a
 // behaviour-preserving refactor, and how it then absorbed a genuinely distinct
@@ -2088,7 +2171,7 @@ var secondLevelSignatures = []struct {
 		slUnionOverDirects, secondLevelDirectsOnly,
 		"The second level's union is being accumulated over the file's DIRECT dependencies " +
 			"rather than over its visible set, so whatever a direct dependency re-exports " +
-			"publicly contributes nothing: the imports behind a public re-export is dropped " +
+			"publicly contributes nothing: the imports behind a public re-export are dropped " +
 			"from the level entirely. The two sets are equal on any graph with no public " +
 			"imports, which is why this needs a fixture that has one.",
 	},
@@ -2132,26 +2215,35 @@ func secondLevelDeclaredShape(v secondLevelVariant) (secondLevelShape, bool) {
 // in bijection with pairs -- two counters cannot separate more shapes than they
 // have distinct values.
 //
-// The sharp case, measured against production: resetting visibleFrom's `seen`
-// memo per entry of `directs` measures (n^2+2n+2, n^2+2) -- 2602/2502 at n=50,
-// byte-identical to slPerFile -- and is told "the single union traversal has
-// been replaced by a per-visible-file one", which is not what happened. The
-// union traversal is intact; the memo is broken. That one has NO arm that names
-// it correctly: all 28 TestAbsolutizeFieldTypeNames correctness arms pass under
-// it, and TestUnionSecondLevelMatchesPerFileSecondLevel fires only through its
-// vacuity guard, which also does not name the cause.
+// AND THE PRISTINE PAIR IS ONE OF THE MODELLED PAIRS, which is the case that
+// matters and the one an earlier version of this comment explicitly denied. It
+// claimed "the guard still goes red either way; it is the diagnosis that is
+// wrong, which costs the reader time rather than correctness." A shape landing
+// on PRISTINE is not misnamed, it is MISSED, and the guard goes GREEN. Three
+// real production defects did exactly that on the previous fixture -- building
+// the union over fd.GetDependency(), `continue` -> `break` on the fullyExposed
+// skip, and deleting that skip outright -- all measuring (152, 52) and passing.
+// cg_p and cg_q were added to close those three; the CLASS remains open, and
+// further fixture-inert mutations reaching the pristine pair have been measured
+// (a first-writer-wins byPath, a public-index bounds `break`, a dropped
+// `continue` after onStored). This guard counts two numbers; it is not a
+// correctness oracle, and the sentence that said otherwise was the most
+// expensive kind of wrong.
 //
-// A milder case, also measured: dropping the level-1 public closure
-// (`visible := fd.GetDependency()`) measures (2n+2, n+2), exactly
-// slDedupMoved's pair, and is told that onVisit moved when nothing touched
-// onVisit. That one IS caught with the right diagnosis, by
-// TestAbsolutizeFieldTypeNamesIgnoresAPrivateTransitiveImport -- which is why
-// it is the weaker example of the two and is listed second.
+// The misnaming case, by contrast, is cheap and survives: resetting
+// visibleFrom's `seen` memo per entry of `directs` measures (n^2+2n+5, n^2+3)
+// -- 2605/2503 at n=50, byte-identical to slPerFile -- and is told "the single
+// union traversal has been replaced by a per-visible-file one", which is not
+// what happened. The union traversal is intact; the memo is broken. That one
+// has no arm naming it correctly: the TestAbsolutizeFieldTypeNames correctness
+// arms all pass under it (28 `=== RUN` lines package-wide, 17 top-level funcs
+// in this file), and TestUnionSecondLevelMatchesPerFileSecondLevel fires only
+// through its vacuity guard, which also does not name the cause.
 //
-// So the honest statement of the guarantee: an unmodelled shape gets
-// `unrecognised` UNLESS it lands on a modelled pair, and when it lands it is
-// misnamed rather than missed. The guard still goes red either way; it is the
-// diagnosis that is wrong, which costs the reader time rather than correctness.
+// So the honest statement of the guarantee, in both directions: an unmodelled
+// shape lands on `unrecognised` unless it collides with a modelled pair; a
+// collision with a non-pristine pair is a wrong diagnosis on a red run; and a
+// collision with the PRISTINE pair is a green run on broken code.
 func classifySecondLevelCounts(n, visits, emissions int) (secondLevelShape, string) {
 	if visits == 0 || emissions == 0 {
 		return secondLevelVacuous, "The level produced nothing at all, so every ceiling passes " +
@@ -2684,8 +2776,19 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 					f.PublicDependency = append(f.PublicDependency, int32(k))
 				}
 			}
-			if roll(11) == 0 {
+			// Out-of-range public indices, INCLUDING BOTH BOUNDARIES.
+			//
+			// `+3` alone never produces `idx == len(direct)`, so relaxing the
+			// production bound from `>=` to `>` was an index-out-of-range with
+			// nothing pinning it: measured, every arm stayed green. `-1` is the
+			// same story for the `idx < 0` half.
+			switch roll(11) {
+			case 0:
 				f.PublicDependency = append(f.PublicDependency, int32(len(f.Dependency)+3))
+			case 1:
+				f.PublicDependency = append(f.PublicDependency, int32(len(f.Dependency)))
+			case 2:
+				f.PublicDependency = append(f.PublicDependency, -1)
 			}
 			// A dangling path nothing declares.
 			if roll(7) == 0 {
@@ -2821,7 +2924,7 @@ func absolutizeRequiringReach(
 // checking it against sig.shape cannot see a wrong variant -> shape
 // ASSIGNMENT. Measured consequence -- declaring slEmissionRewalk as
 // secondLevelPristine left every test in this file green, and would then have
-// let the complexity guard receive a QUADRATIC pair (2n^2+3n, n^2+2n) and
+// let the complexity guard receive a QUADRATIC pair ((n+1)(2n+5), (n+1)(n+3)) and
 // report `pristine`. That is a fail-open on the one arm whose whole job is to
 // go red.
 //
@@ -2851,7 +2954,7 @@ func TestSecondLevelClassifierNamesEveryShape(t *testing.T) {
 	// THE POPULATION, checked before any verdict, and checked as a SET in BOTH
 	// directions. Counting is not enough: replacing one entry of
 	// secondLevelVariants with a DUPLICATE of another keeps every length equal
-	// and every lookup successful, keeps the 4/6/1 tally unchanged -- and
+	// and every lookup successful, keeps the 4/7/2 tally unchanged -- and
 	// silently drops an arm that is then never exercised anywhere in this file.
 	// A cardinality check cannot see a set that lost a member and gained a
 	// repeat.
@@ -3146,7 +3249,7 @@ func TestSecondLevelPairsCollideBelowTheDrivenSizes(t *testing.T) {
 			t.Fatalf("n=%d: no two differently-declared variants collide AT THIS SIZE. That is a "+
 				"statement about n=%d alone -- other sizes here may still collide -- so replace "+
 				"this size with one that does. Only if NO small size collides any more is the "+
-				"distinctness arm.s scoping caveat what should go", n, n)
+				"distinctness arm's scoping caveat what should go", n, n)
 		}
 	}
 }
@@ -3255,7 +3358,7 @@ func TestSecondLevelDiamondIsLoadBearing(t *testing.T) {
 //
 // secondLevelSizes had no arm asserting its VALUE -- every occurrence was a
 // `range` or a comment -- so collapsing it to one entry left this whole file
-// green. Measured: `[]int{7}` builds, runs 21 tests, reports zero failures, and
+// green. Measured: `[]int{7}` builds, runs the whole file without a failure, and
 // silently reduces the evidence to a single point. This file's premise is that
 // one point cannot tell a formula in n from a constant.
 //
@@ -3356,7 +3459,7 @@ func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
 		secondLevelQuadTravers: "final walk then de-duplicates",
 		secondLevelQuadEmit:    "already-walked set",
 		secondLevelQuadRewalk:  "re-walking it every",
-		secondLevelDirectsOnly: "public re-export is dropped",
+		secondLevelDirectsOnly: "public re-export are dropped",
 		secondLevelEmitBreak:   "stops at the first already-exposed",
 	}
 	for shape, detail := range detailFor {
@@ -3416,10 +3519,11 @@ func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
 //   - the closed form equals what the MODEL counts, which is the only point at
 //     which replaySecondLevel is tied to walkVisibleImports at all;
 //   - cgUniqueLeaves equals the number of singly-imported leaves in the built
-//     pool, so the constant cannot drift from the graph in either direction;
-//   - each truncation direction loses EXACTLY ONE emission, which is a fact
-//     about where those leaves SIT. Cardinality cannot express placement, so
-//     no count-derived constant can pin it -- and placement is what the
+//   - each truncation direction loses the SAME number of emissions, derived as
+//     (cgUniqueLeaves-1) + cgBehindPublic, and the FIRST and LAST directs are
+//     each confirmed to carry a unique non-visible leaf. The count cannot say
+//     that and neither can symmetry alone: moving both leaves inward keeps the
+//     count and keeps the deficits equal, so the endpoints are inspected.
 //     truncation arm keys on.
 //
 // WHAT THE FOUR TIES DO NOT CATCH. An edit that removes the diamond AND drops
@@ -3460,38 +3564,61 @@ func TestSecondLevelExpectedMatchesTheFixture(t *testing.T) {
 				"production does not do", n, v, e, wantV, wantE)
 		}
 
-		if got := secondLevelUniqueLeaves(main, pool); got != cgUniqueLeaves {
+		// The public re-export's two quantities, counted SEPARATELY out of the
+		// pool. secondLevelExpected adds cgPublicReexports and cgBehindPublic
+		// together in the union term, so that term alone cannot tell them apart;
+		// emissions uses cgBehindPublic on its own, which is the asymmetry this
+		// ties each to a counted quantity. While both are 1 they remain
+		// numerically interchangeable and nothing here can separate them -- what
+		// this catches is a FIXTURE change that moves either count.
+		if re, behind := secondLevelPublicShape(main, pool); re != cgPublicReexports || behind != cgBehindPublic {
+			t.Fatalf("n=%d: the built pool has %d publicly re-exported non-direct file(s) and %d "+
+				"non-visible file(s) behind them; cgPublicReexports says %d and cgBehindPublic "+
+				"says %d. These two are equal in value and would otherwise be interchangeable",
+				n, re, behind, cgPublicReexports, cgBehindPublic)
+		}
+		got, carriers := secondLevelUniqueLeaves(main, pool)
+		if got != cgUniqueLeaves {
 			t.Fatalf("n=%d: the built pool has %d leaves imported by exactly one A; "+
 				"cgUniqueLeaves says %d", n, got, cgUniqueLeaves)
 		}
 
-		// PLACEMENT, not cardinality. The truncation arm keys on a truncation
-		// being distinguishable from the benign de-duplication, which holds
-		// only while a unique leaf sits on the FIRST visible file and another
-		// on the LAST. Both counterexamples that reached this file -- moving
-		// cg_y onto a middle A, and moving both leaves onto A_0 -- keep the
-		// count at cgUniqueLeaves and keep every other assertion green.
+		// PLACEMENT, checked directly against the built pool rather than
+		// inferred from any count.
 		//
-		// The invariant asserted is SYMMETRY of the deficit, derived rather
-		// than a fixed offset: with a unique leaf at each end, truncating in
-		// either direction costs the same number of emissions. Move a leaf
-		// inward and the two directions diverge, because one end still carries
-		// its leaf and the other does not.
-		deficit := map[secondLevelVariant]int{}
-		for _, dir := range []secondLevelVariant{slTruncateFirst, slTruncateLast} {
-			_, e := replaySecondLevel(main, pool, dir)
-			deficit[dir] = wantE - e
-			if deficit[dir] <= 0 {
-				t.Fatalf("n=%d: %s emits %d against pristine's %d -- a truncation that costs no "+
-					"emission cannot be told from the benign de-duplication one visit away",
-					n, dir, e, wantE)
+		// The truncation arm's diagnosis claims a unique leaf sits on the FIRST
+		// visible file and another on the LAST. A count cannot say that, and
+		// neither can a symmetry check: moving cg_x inward to A_1 and cg_y
+		// inward to A_{n-2} keeps the count at cgUniqueLeaves AND keeps both
+		// truncation deficits equal, so both pass while the claim is false.
+		// Symmetric drift is the case an equality test is structurally blind
+		// to, which is why the endpoints are inspected instead.
+		deps := main.GetDependency()
+		if len(deps) < 2 {
+			t.Fatalf("n=%d: the fixture has %d directs; the endpoint claim needs at least two",
+				n, len(deps))
+		}
+		for label, end := range map[string]string{"FIRST": deps[0], "LAST": deps[len(deps)-1]} {
+			if !carriers[end] {
+				t.Fatalf("n=%d: the %s visible file (%s) imports no unique non-visible leaf. The "+
+					"truncation diagnosis says a truncation loses one whichever end it keeps, and "+
+					"that is now false for this end -- a leaf has drifted inward", n, label, end)
 			}
 		}
-		if deficit[slTruncateFirst] != deficit[slTruncateLast] {
-			t.Fatalf("n=%d: truncating to the FIRST visible file costs %d emissions and to the "+
-				"LAST costs %d. The ends are no longer symmetric, so a unique leaf has moved "+
-				"inward and one truncation direction is now cheaper to mistake for something "+
-				"benign", n, deficit[slTruncateFirst], deficit[slTruncateLast])
+
+		// And the cost of a truncation, DERIVED. Keeping one end retains that
+		// end's leaf and loses the other (cgUniqueLeaves-1), and loses whatever
+		// sits behind the public re-export, since a single file's directs
+		// cannot reach it (cgBehindPublic).
+		wantDeficit := (cgUniqueLeaves - 1) + cgBehindPublic
+		for _, dir := range []secondLevelVariant{slTruncateFirst, slTruncateLast} {
+			_, e := replaySecondLevel(main, pool, dir)
+			if got := wantE - e; got != wantDeficit {
+				t.Fatalf("n=%d: %s emits %d against pristine's %d, a deficit of %d; the fixture's "+
+					"structure predicts %d = (cgUniqueLeaves-1) + cgBehindPublic. Re-derive from "+
+					"the fixture rather than adjusting this expectation",
+					n, dir, e, wantE, got, wantDeficit)
+			}
 		}
 	}
 }
