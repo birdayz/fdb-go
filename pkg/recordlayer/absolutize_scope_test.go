@@ -2751,6 +2751,10 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 
 	// A deterministic pseudo-random graph generator. No rand: the seed is the
 	// index, so a failure names a reproducible case.
+	// Boundary coverage, counted rather than assumed. Both malformed-index
+	// cases below are PRNG-selected, so a change to the roll schedule or the
+	// seed count can stop generating one of them while every arm stays green.
+	atBound, belowBound := 0, 0
 	build := func(seed, n int) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
 		next := seed*2654435761 + 1
 		roll := func(m int) int {
@@ -2776,23 +2780,32 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 					f.PublicDependency = append(f.PublicDependency, int32(k))
 				}
 			}
-			// Out-of-range public indices, INCLUDING BOTH BOUNDARIES.
+			// A dangling path nothing declares.
+			if roll(7) == 0 {
+				f.Dependency = append(f.Dependency, "eq_missing.proto")
+			}
+			// MALFORMED PUBLIC INDICES, BOTH BOUNDARIES, AND AFTER THE
+			// DEPENDENCY LIST IS FINAL.
 			//
 			// `+3` alone never produces `idx == len(direct)`, so relaxing the
 			// production bound from `>=` to `>` was an index-out-of-range with
 			// nothing pinning it: measured, every arm stayed green. `-1` is the
 			// same story for the `idx < 0` half.
+			//
+			// The ORDER is load-bearing and was wrong when this was first
+			// added: emitting `len(f.Dependency)` before the dangling append
+			// makes it a VALID index on any file that then gets one, so the
+			// upper boundary silently stopped being generated for exactly the
+			// files that took that branch.
 			switch roll(11) {
 			case 0:
 				f.PublicDependency = append(f.PublicDependency, int32(len(f.Dependency)+3))
 			case 1:
 				f.PublicDependency = append(f.PublicDependency, int32(len(f.Dependency)))
+				atBound++
 			case 2:
 				f.PublicDependency = append(f.PublicDependency, -1)
-			}
-			// A dangling path nothing declares.
-			if roll(7) == 0 {
-				f.Dependency = append(f.Dependency, "eq_missing.proto")
+				belowBound++
 			}
 			pool = append(pool, f)
 		}
@@ -2846,6 +2859,17 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	// generator stopped producing repeated arrivals, this test would still pass
 	// while quietly ceasing to demonstrate that the two forms differ at all --
 	// and the precondition would rest on nothing.
+	// BOTH MALFORMED-INDEX BOUNDARIES MUST HAVE BEEN GENERATED. These are the
+	// only thing pinning production's `idx < 0 || int(idx) >= len(direct)`:
+	// with the corpus carrying only an out-of-range `+3`, relaxing `>=` to
+	// `>` leaves every arm in this file green. A roll-schedule or seed-count
+	// change that stops generating either one would restore that hole in
+	// silence.
+	if atBound == 0 || belowBound == 0 {
+		t.Fatalf("over %d graphs the generator produced %d public indices at exactly "+
+			"len(Dependency) and %d below zero; both must be non-zero or production's bounds "+
+			"check is unpinned on that side", graphs, atBound, belowBound)
+	}
 	if callDiffs == 0 {
 		t.Fatalf("no graph produced a call-count difference between the two forms, so this test " +
 			"no longer evidences the divergence that makes sink idempotence load-bearing -- the " +
@@ -3513,36 +3537,44 @@ func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
 // diagnosed "behaviour-preserving" -- the exact defect the fixture edit before
 // it had been made to fix.
 //
-// Four ties now, and the last is the one that matters:
+// Five ties now, and the last is the one that matters:
 //
 //   - the closed form equals what PRODUCTION counts;
 //   - the closed form equals what the MODEL counts, which is the only point at
 //     which replaySecondLevel is tied to walkVisibleImports at all;
-//   - cgUniqueLeaves equals the number of singly-imported leaves in the built
+//   - cgUniqueLeaves equals the number of singly-imported non-visible leaves in
+//     the built pool, so the constant cannot drift from the graph in either
+//     direction;
+//   - cgPublicReexports and cgBehindPublic are counted SEPARATELY out of that
+//     same pool. secondLevelExpected adds them together in the union term, so
+//     that term alone cannot tell them apart; only counting them apart can.
+//     While both are 1 they stay numerically interchangeable and a swap of the
+//     two NAMES remains uncatchable -- what this ties is a fixture change
+//     moving either count;
 //   - each truncation direction loses the SAME number of emissions, derived as
 //     (cgUniqueLeaves-1) + cgBehindPublic, and the FIRST and LAST directs are
 //     each confirmed to carry a unique non-visible leaf. The count cannot say
 //     that and neither can symmetry alone: moving both leaves inward keeps the
-//     count and keeps the deficits equal, so the endpoints are inspected.
-//     truncation arm keys on.
+//     count and keeps the deficits equal, so the endpoints are inspected
+//     directly.
 //
-// WHAT THE FOUR TIES DO NOT CATCH. An edit that removes the diamond AND drops
-// the matching `+1` from secondLevelExpected passes all four, and passes the
-// guard at 151/301/601, because it is self-consistent: the closed form is
+// WHAT THE FIVE TIES DO NOT CATCH. An edit that removes the diamond AND drops
+// the matching `+1` from secondLevelExpected passes all five, and passes the
+// guard at 154/304/604, because it is self-consistent: the closed form is
 // documentation rather than an independent witness, and an author who edits
 // both has desynchronised nothing. What it silently spends is the diamond's
 // separating power.
 //
-// TWO other arms catch it -- the classifier table, and the distinctness arm --
-// and the count is written here rather than the arms' behaviour because this
-// paragraph has already been wrong once. Its first version said the ensemble
-// held "by ONE arm", a figure taken from a mutation run against the PREVIOUS
-// revision and copied in by the very commit that falsified it: the
-// declared-shape fix in that same commit is what made the distinctness arm a
-// second catcher. So the property itself is now pinned by
+// THREE other arms catch it -- the classifier table, the distinctness arm and
+// TestSecondLevelDiamondIsLoadBearing -- and this count is re-measured rather
+// than carried, because this paragraph has now been wrong twice. Its first
+// version said the ensemble held "by ONE arm", a figure taken from a mutation
+// run against the PREVIOUS revision and copied in by the very commit that
+// falsified it. Its second said TWO, correct when written and made stale by
+// the fixture change one commit later. The property itself is pinned by
 // TestSecondLevelDiamondIsLoadBearing, which measures what removing the diamond
-// costs instead of describing it, and this paragraph is the pointer rather than
-// the evidence.
+// costs instead of describing it; this paragraph is the pointer, and every
+// number in it is a fact about a fixture that has moved twice.
 func TestSecondLevelExpectedMatchesTheFixture(t *testing.T) {
 	t.Parallel()
 
