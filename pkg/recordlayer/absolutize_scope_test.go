@@ -3024,19 +3024,33 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 
 	const graphs = 500
 	nonEmpty, callDiffs := 0, 0
-	atReached, belowReached := 0, 0
+	atReached, belowReached, neutralGraphs := 0, 0, 0
 	for seed := range graphs {
 		main, pool := build(seed, 6+seed%9)
 
-		// Reachability of the two boundary sentinels, and their boundary
-		// PROPERTY, both measured rather than assumed. Matching the name alone
-		// fails open twice over: a sentinel that went dangling, or whose index
-		// became valid, would leave the count at exactly `graphs` while the
-		// boundary it exists for went unexercised.
+		// Reachability of the two boundary sentinels, their boundary PROPERTY,
+		// and their output NEUTRALITY -- all measured, and all counted ONCE PER
+		// GRAPH.
+		//
+		// Three fail-opens have been closed at this spot in as many rounds, and
+		// they form a ladder worth stating: the first counter counted files
+		// GENERATED, the second counted names DECLARED in main's directs, the
+		// third counted matching INDICES. Each was satisfiable without the
+		// boundary ever being exercised on some graph -- the last because two
+		// at-boundary entries on one seed and none on another still totals
+		// exactly `graphs`, and nothing else in this arm distinguishes them.
+		//
+		// Neutrality is here rather than at the construction site because that
+		// is where it fails open: give the sentinels back the private import
+		// they used to carry and `int32(len(Dependency))` simply follows, so
+		// the property check still passes while the scaffolds resume generating
+		// second-level output -- which is what let them prop up `nonEmpty` and
+		// `callDiffs` at 393/500 with the randomized generator switched off.
 		byName := make(map[string]*descriptorpb.FileDescriptorProto, len(pool))
 		for _, d := range pool {
 			byName[d.GetName()] = d
 		}
+		var atOK, belowOK, atNeutral, belowNeutral bool
 		for _, dep := range main.GetDependency() {
 			d, ok := byName[dep]
 			if !ok {
@@ -3044,18 +3058,29 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 			}
 			switch dep {
 			case fmt.Sprintf("eq_%d_bound_at.proto", seed):
+				atNeutral = len(d.GetDependency()) == 0
 				for _, idx := range d.GetPublicDependency() {
 					if int(idx) == len(d.GetDependency()) {
-						atReached++
+						atOK = true
 					}
 				}
 			case fmt.Sprintf("eq_%d_bound_below.proto", seed):
+				belowNeutral = len(d.GetDependency()) == 0
 				for _, idx := range d.GetPublicDependency() {
 					if idx < 0 {
-						belowReached++
+						belowOK = true
 					}
 				}
 			}
+		}
+		if atOK {
+			atReached++
+		}
+		if belowOK {
+			belowReached++
+		}
+		if atNeutral && belowNeutral {
+			neutralGraphs++
 		}
 
 		wantSet, wantCalls := perFileSecondLevel(main, pool)
@@ -3136,6 +3161,13 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	// the guard is relaxed the corpus arm dies by PANIC inside the seed loop
 	// and this assertion is never evaluated. The panic is the detector; this
 	// counter only keeps its precondition from evaporating.
+	if neutralGraphs != graphs {
+		t.Fatalf("over %d graphs both boundary sentinels were dependency-free in only %d. A "+
+			"sentinel that regains an import starts contributing second-level output of its own, "+
+			"which propped up the nonEmpty and callDiffs floors below at 393/500 with the "+
+			"randomized generator switched off entirely -- scaffolding holding up the very "+
+			"counters that watch for collapse", graphs, neutralGraphs)
+	}
 	if atReached != graphs || belowReached != graphs {
 		t.Fatalf("over %d graphs a file carrying a public index of exactly len(Dependency) was "+
 			"reachable from main in %d, and one carrying -1 in %d; both must be every graph or "+
