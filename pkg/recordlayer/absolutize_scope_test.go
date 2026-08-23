@@ -1322,7 +1322,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // but it is not "work" in general:
 //
 //   - Cost inside a single step is invisible. A change making importsOf itself
-//     expensive keeps the step count at 3n-1 and passes here.
+//     expensive keeps the step count at 3n and passes here.
 //
 //   - Allocation is invisible. The traversal-only regression allocates ~430x
 //     at n=800 while its step count is what this catches; the step count is the
@@ -1412,7 +1412,7 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 // It is not needed. Neither counter reads a clock, and neither depends on map
 // ITERATION order: `seen` and `fullyExposed` are consulted by lookup only, and
 // the traversal order comes from slices. Both values are therefore fixed by the
-// fixture, and repeated invocations return them identically -- 149/299/599 and
+// fixture, and repeated invocations return them identically -- 150/300/600 and
 // n, measured across six separate runs. A load figure would be describing a
 // sensitivity the quantity does not have.
 func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
@@ -1517,22 +1517,24 @@ func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 		// any n..6n band. The band would have reported the instrumentation
 		// working while it had been silently narrowed to distinct arrivals.
 		//
-		// So the arm pins the value. Pristine is 3n-1: one arrival per A, one
-		// per B, minus the shared head B_0 counted once by A_0 -- and n-1
-		// REPEATED arrivals at B_0 from A_1..A_{n-1}, which is precisely the
-		// pre-dedup behaviour under test. The known regressions land at n^2+n
-		// and 2n^2+2n-1; the dedup-moved variant at 2n. All four are distinct
-		// at every n, so one equality distinguishes them and the message can
-		// name which was observed. (Superseded by the measured table below; the
-		// diamond makes the two 2n causes distinct.)
+		// So the arm pins the value. Pristine is 3n: one arrival per A, one per
+		// B along the chain, plus the diamond's second arrival at the tail --
+		// and n-1 REPEATED arrivals at B_0 from A_1..A_{n-1}, which is the
+		// pre-dedup behaviour under test.
+		//
+		// Every total below was RE-MEASURED after the diamond was added. It
+		// shifted all of them: the per-file form went n^2+n -> n^2+2n and the
+		// traversal-only form 2n^2+2n-1 -> 2n^2+3n, because the extra edge adds
+		// one arrival to every closure. Changing a fixture invalidates every
+		// number derived from it, and these are the numbers a failure prints.
 		// FOUR SHAPES, FOUR DISTINCT TOTALS -- measured, not predicted. The
 		// diamond in the fixture is what buys the last separation; see buildChain.
 		//
 		//	3n     pristine
 		//	2n     onVisit moved after the dedup check     DEFECT
 		//	2n+1   `union` de-duplicated before the walk   benign refactor
-		//	n^2+n  per-file closure walk                   DEFECT
-		//	2n^2+2n-1 traversal-only per-file union build  DEFECT
+		//	n^2+2n     per-file closure walk                  DEFECT
+		//	2n^2+3n    traversal-only per-file union build    DEFECT
 		if want := 3 * n; visits != want {
 			switch {
 			case visits == 2*n:
@@ -1554,13 +1556,13 @@ func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 					"%d and the traversal-only form %d. The single union traversal has been "+
 					"replaced by a per-visible-file one, which is O(n^2) here and O(n^3) across "+
 					"rebuildFileDescriptor's per-dependency pass -- valid metadata becomes a CPU "+
-					"exhaustion input.", n, visits, want, n*n+n, 2*n*n+2*n-1)
+					"exhaustion input.", n, visits, want, n*n+2*n, 2*n*n+3*n)
 			default:
 				t.Fatalf("n=%d: the closure walk took %d steps, want exactly %d (3n). None of the "+
 					"four known shapes matches (%d per-file, %d traversal-only, %d dedup-moved, "+
 					"%d union-deduped), so the traversal has changed in some other way -- "+
 					"re-derive this expectation deliberately rather than widening it.",
-					n, visits, want, n*n+n, 2*n*n+2*n-1, 2*n, 2*n+1)
+					n, visits, want, n*n+2*n, 2*n*n+3*n, 2*n, 2*n+1)
 			}
 		}
 		// AN EMISSIONS CEILING TOO, and the reasoning that once deleted it was
@@ -1578,7 +1580,7 @@ func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 		//	walked := visibleFrom(union)
 		//	for range visible { for _, q := range walked { ...onPackageOnly... } }
 		//
-		// -- and visits stay at pristine 149/299/599 while emissions become
+		// -- and visits stay at pristine 150/300/600 while emissions become
 		// exactly n^2 (2500/10000/40000). One traversal, n^2 emissions. The
 		// whole package stays green, because addPackage is idempotent so no
 		// correctness arm can see it -- the same idempotence that hides the
