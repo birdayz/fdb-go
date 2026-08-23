@@ -1082,13 +1082,25 @@ func probeLine(src string, pos diffPosition) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	found, seen := "", 0
+	// OCCURRENCES, not lines. Counting matching LINES leaves the ambiguity this
+	// function exists to refuse: two statements sharing one physical line --
+	// valid protobuf across separate message scopes -- are one line and two
+	// markers, so a line count returns 1 and hands the caller a line carrying
+	// both. crossCheckStructure would then look for the as-written name in
+	// whichever it happened to find.
+	//
+	// The sibling test asserts the same property on the emitter's output, but
+	// that is the wrong place for it to live alone: the documented regeneration
+	// command filters to TestAbsolutizeAgreesWithProtoc, so a corpus change
+	// reaching crossCheckStructure never runs it. The refusal belongs here,
+	// where every caller gets it.
+	found, occurrences := "", 0
 	for _, line := range strings.Split(src, "\n") {
-		if strings.Contains(line, marker) {
-			found, seen = line, seen+1
+		if n := strings.Count(line, marker); n > 0 {
+			found, occurrences = line, occurrences+n
 		}
 	}
-	if seen != 1 {
+	if occurrences != 1 {
 		return "", false
 	}
 	return found, true
