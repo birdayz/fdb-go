@@ -1170,7 +1170,8 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 		// PACKAGE ONLY, no types: a visible dependency's own imports contribute
 		// their package descriptors to this file's resolution but not their
 		// symbols. See walkVisibleImports for why the two exposures differ.
-		addPackage)
+		addPackage,
+		nil) // no visit instrumentation in production
 
 	// IMPORTS RESOLVED THROUGH THE GLOBAL REGISTRY, which `deps` does not carry.
 	// `defaultExcludedDependencies` strips the Apple record-layer protos from the
@@ -1543,12 +1544,23 @@ func (r *descriptorResolver) FindDescriptorByName(name protoreflect.FullName) (p
 // not laxity: `allowUnknownDependencies` exists in Java for the same reason, and
 // this is a pre-pass whose job is to seed a symbol table, not to validate the
 // descriptor. protodesc validates, and rejects what it cannot resolve.
+// onVisit, when non-nil, is called once per closure-walk step. It is an
+// INSTRUMENTATION SEAM and production passes nil.
+//
+// It exists because the cost this function was rewritten to bound is not
+// observable from any of the other callbacks. The rewrite replaced one closure
+// walk per visible file with a single walk over the union of their imports; a
+// regression that restores the per-file walk while still feeding the union is
+// quadratic in TRAVERSAL and yet linear in `onPackageOnly` calls, because the
+// final walk deduplicates. Counting emissions therefore cannot see it -- so the
+// complexity guard counts visits instead, through here.
 func walkVisibleImports(
 	fd *descriptorpb.FileDescriptorProto,
 	pool []*descriptorpb.FileDescriptorProto,
 	onStored func(*descriptorpb.FileDescriptorProto),
 	onGlobal func(protoreflect.FileDescriptor),
 	onPackageOnly func(pkg string),
+	onVisit func(path string),
 ) {
 	byPath := make(map[string]*descriptorpb.FileDescriptorProto, len(pool))
 	for _, d := range pool {
@@ -1607,6 +1619,11 @@ func walkVisibleImports(
 		var out []string
 		var visit func(p string)
 		visit = func(p string) {
+			// Counted BEFORE the dedup check, because the work a quadratic form
+			// does is the repeated arrival, not the repeated insertion.
+			if onVisit != nil {
+				onVisit(p)
+			}
 			if seen[p] {
 				return
 			}

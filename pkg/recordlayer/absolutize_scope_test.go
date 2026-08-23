@@ -1387,35 +1387,56 @@ func TestSecondPackageLevelDoesLinearWork(t *testing.T) {
 		return main, pool
 	}
 
-	count := func(n int) int {
+	// VISITS, not package emissions, and the difference is the whole point.
+	//
+	// The final walk over the union deduplicates, so a regression that computes
+	// a closure PER VISIBLE FILE and still feeds the union -- `union = append(
+	// union, visibleFrom(direct)...)` -- traverses the B chain O(n^2) times and
+	// yet emits only n packages. Measured: that mutation leaves an
+	// emission-counting guard reporting exactly 50/100/200 and passing, which
+	// is a gate inert on a shape inside its own claim.
+	//
+	// Counting closure steps sees both regressions, because both do the extra
+	// walking whatever they do with the result.
+	count := func(n int) (visits, emissions int) {
 		main, pool := build(n)
-		calls := 0
 		walkVisibleImports(main, pool,
 			func(*descriptorpb.FileDescriptorProto) {},
 			func(protoreflect.FileDescriptor) {},
-			func(string) { calls++ },
+			func(string) { emissions++ },
+			func(string) { visits++ },
 		)
-		return calls
+		return visits, emissions
 	}
 
 	for _, n := range []int{50, 100, 200} {
-		got := count(n)
+		visits, emissions := count(n)
 		// The premise: a fixture that stopped reaching the second level at all
 		// would report 0 and satisfy any upper bound, so the floor is checked
-		// as well as the ceiling.
-		if got < n {
-			t.Fatalf("n=%d: the second package level made only %d onPackageOnly calls, fewer "+
-				"than the %d the fixture is built to produce -- the level is not being reached, "+
-				"so the ceiling below would pass vacuously", n, got, n)
+		// as well as the ceiling -- on BOTH quantities, since either collapsing
+		// to zero makes its ceiling vacuous.
+		if emissions < n {
+			t.Fatalf("n=%d: the second package level emitted only %d packages, fewer than the %d "+
+				"the fixture is built to produce -- the level is not being reached, so the "+
+				"ceilings below would pass vacuously", n, emissions, n)
 		}
-		if got > 4*n {
-			t.Fatalf("n=%d: the second package level made %d onPackageOnly calls, more than "+
-				"4n=%d (quadratic would be %d). The union traversal has been replaced by a "+
-				"per-visible-file one, which is O(n^2) here and O(n^3) across "+
-				"rebuildFileDescriptor's per-dependency pass -- valid metadata becomes a CPU "+
-				"exhaustion input.", n, got, 4*n, n*n)
+		if visits < n {
+			t.Fatalf("n=%d: the closure walk took only %d steps, fewer than the %d the fixture "+
+				"is built to produce -- the walk is not running, so its ceiling is vacuous",
+				n, visits, n)
 		}
-		t.Logf("n=%d onPackageOnly calls=%d (linear %d, quadratic %d)", n, got, n, n*n)
+		if visits > 4*n {
+			t.Fatalf("n=%d: the closure walk took %d steps, more than 4n=%d (quadratic would be "+
+				"~%d). The single union traversal has been replaced by a per-visible-file one, "+
+				"which is O(n^2) here and O(n^3) across rebuildFileDescriptor's per-dependency "+
+				"pass -- valid metadata becomes a CPU exhaustion input.", n, visits, 4*n, n*n)
+		}
+		if emissions > 4*n {
+			t.Fatalf("n=%d: the second package level emitted %d packages, more than 4n=%d. The "+
+				"per-file form emits once per (visible file, reached file) pair.",
+				n, emissions, 4*n)
+		}
+		t.Logf("n=%d visits=%d emissions=%d (linear %d, quadratic ~%d)", n, visits, emissions, n, n*n)
 	}
 }
 
@@ -1579,7 +1600,7 @@ func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *te
 		}},
 	}
 
-	absolutizeFieldTypeNames(main)
+	absolutizeFieldTypeNames(main, bridge)
 
 	got := main.MessageType[0].Field[0].GetTypeName()
 	if got == ".google.protobuf.FileDescriptorProto" {
@@ -1804,6 +1825,15 @@ func TestAbsolutizeFieldTypeNamesEnumeratesImportsOfAGloballyRegisteredFile(t *t
 // union. Nothing in the tree checked that; four hand-written correctness arms
 // stay green under the per-file form.
 //
+// SCOPE: STORED GRAPHS ONLY. The replica collects its visible set from the
+// `onStored` callback, so a globally-registered level-1 file would be left out
+// of its per-file loop while production enumerates that file's imports. The
+// generator emits only `eq_*.proto`, none of which is registered, so the two
+// agree here -- and the omission fails SAFE: a registered path would make the
+// replica report FEWER packages and redden on correct code, not hide a
+// divergence. The global side is covered instead by
+// TestAbsolutizeFieldTypeNamesEnumeratesImportsOfAGloballyRegisteredFile.
+//
 // It also pins the precondition that makes the difference tolerable. The two
 // forms are NOT call-for-call identical: the per-file form can reach one file
 // from several parents and emit its package once per arrival. That is only safe
@@ -1831,7 +1861,7 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 				fullyExposed[d.GetName()] = true
 			},
 			func(g protoreflect.FileDescriptor) { fullyExposed[g.Path()] = true },
-			func(string) {})
+			func(string) {}, nil)
 
 		for _, v := range visible {
 			// ONE CLOSURE WALK PER VISIBLE FILE -- the quadratic shape. Driving
@@ -1852,7 +1882,7 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 			walkVisibleImports(sub, pool,
 				func(d *descriptorpb.FileDescriptorProto) { add(d.GetName(), d.GetPackage()) },
 				func(g protoreflect.FileDescriptor) { add(g.Path(), string(g.Package())) },
-				func(string) {})
+				func(string) {}, nil)
 		}
 		return got, calls
 	}
@@ -1868,7 +1898,7 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 			func(pkg string) {
 				got[pkg] = true
 				calls++
-			})
+			}, nil)
 		return got, calls
 	}
 
@@ -1952,6 +1982,16 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 		t.Fatalf("only %d of %d graphs produced a non-empty second-level set, so the comparison "+
 			"is mostly vacuous -- the generator no longer builds graphs with private imports "+
 			"that reach a second level", nonEmpty, graphs)
+	}
+	// AND THE CALL-COUNT DIVERGENCE MUST ACTUALLY OCCUR. It is the evidence for
+	// the sink-idempotence precondition in walkVisibleImports' comment: if the
+	// generator stopped producing repeated arrivals, this test would still pass
+	// while quietly ceasing to demonstrate that the two forms differ at all --
+	// and the precondition would rest on nothing.
+	if callDiffs == 0 {
+		t.Fatalf("no graph produced a call-count difference between the two forms, so this test " +
+			"no longer evidences the divergence that makes sink idempotence load-bearing -- the " +
+			"generator has stopped building graphs that reach one file from several parents")
 	}
 	t.Logf("%d graphs, %d with a non-empty second level, 0 set mismatches, %d differing in call count",
 		graphs, nonEmpty, callDiffs)

@@ -937,13 +937,22 @@ func TestProbeLineFindsEveryPositionsStatement(t *testing.T) {
 					strings.TrimSpace(line), pos)
 			}
 
-			// The marker must be UNIQUE IN THE FILE, which is the property that
-			// makes first-match-wins safe. Distinctness across positions is not
-			// enough on its own.
-			// Counted in LINES, matching what probeLine actually scans. Counting
-			// OCCURRENCES agrees on today's emitter and would diverge the moment
-			// two landed on one line -- asserting the wrong quantity for the
-			// right reason.
+			// The marker must identify EXACTLY ONE statement, which is what lets
+			// probeLine refuse ambiguity rather than guess. (It does not do
+			// first-match-wins -- an earlier version did, and a superseded
+			// sentence here still said so two lines above the check that
+			// replaced it.) Distinctness across positions is not enough on its
+			// own.
+			//
+			// Counted BOTH ways. LINES is what probeLine scans, so that is the
+			// quantity its refusal turns on. OCCURRENCES is the stronger
+			// property and the one that actually keeps the scoping honest: two
+			// declarations sharing a physical line -- valid across separate
+			// message scopes -- would report one line, and probeLine would hand
+			// back a line carrying two statements for crossCheckStructure to
+			// find `asWritten` in the wrong one. They agree on today's emitter,
+			// so asserting only one of them is asserting the wrong quantity for
+			// the right reason.
 			marker := probeFieldMarkers[pos]
 			lines := 0
 			for _, l := range strings.Split(src, "\n") {
@@ -954,6 +963,13 @@ func TestProbeLineFindsEveryPositionsStatement(t *testing.T) {
 			if lines != 1 {
 				t.Fatalf("marker %q appears on %d lines of the %q source, so probeLine cannot "+
 					"identify the probe statement:\n%s", marker, lines, pos, src)
+			}
+			if occ := strings.Count(src, marker); occ != 1 {
+				t.Fatalf("marker %q occurs %d times in the %q source (on %d line(s)). Two "+
+					"statements sharing one physical line defeat the line-scoping without "+
+					"tripping the line count, and crossCheckStructure would then look for the "+
+					"as-written name in whichever of them it happens to find:\n%s",
+					marker, occ, pos, lines, src)
 			}
 		})
 	}
