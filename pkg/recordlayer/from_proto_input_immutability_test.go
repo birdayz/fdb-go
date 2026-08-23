@@ -116,6 +116,43 @@ func TestRelativeTypeNameFixtureActuallyCarriesARelativeName(t *testing.T) {
 			"TestRecordMetaDataFromProtoDoesNotMutateItsInput would not cover the third")
 	}
 
+	// THE EXTENDEE FIELD, guarded by position for the same reason and by the
+	// same argument the block above makes -- an argument that was written here
+	// and then not applied to the field being added in the same change.
+	//
+	// countTypeNameShapes was extended to TALLY extendees, which moves
+	// `depRelative` but is satisfied by plain type_names on their own. So the
+	// tally alone leaves the extendee dimension unasserted: removing it from
+	// countTypeNameShapes, or dropping the relativization that produces it,
+	// leaves this test green. A guard that counts without asserting is the
+	// mirror of the lag it was added to fix.
+	//
+	// `Extendee` is a distinct axis from the extension POSITIONS above: those
+	// are about WHERE a type reference is written, this is about WHICH FIELD of
+	// the descriptor holds it. `TypeName` and `Extendee` are separate writes in
+	// the production pass and diverged once already by being written at
+	// different times.
+	extendeeRelative := 0
+	countExtendees := func(exts []*descriptorpb.FieldDescriptorProto) {
+		for _, ext := range exts {
+			if e := ext.GetExtendee(); e != "" && e[0] != '.' {
+				extendeeRelative++
+			}
+		}
+	}
+	for _, d := range md.Dependencies {
+		countExtendees(d.GetExtension())
+		for _, m := range d.GetMessageType() {
+			countExtendees(m.GetExtension())
+		}
+	}
+	if extendeeRelative == 0 {
+		t.Fatal("no dependency declares an extension with a relative EXTENDEE. absolutizeFieldTypeNames " +
+			"writes both `TypeName` and `Extendee`, and a fixture carrying only relative type names " +
+			"exercises one of the two -- which is exactly how the Extendee write shipped with no arm " +
+			"able to see it")
+	}
+
 	t.Logf("fixture type names: records %d relative / %d absolute; %d dependencies, %d relative / %d absolute",
 		relative, absolute, len(md.Dependencies), depRelative, depAbsolute)
 }
