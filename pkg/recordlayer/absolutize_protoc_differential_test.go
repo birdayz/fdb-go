@@ -353,12 +353,24 @@ func (c diffCase) readPosition(fd *descriptorpb.FileDescriptorProto) string {
 	return ""
 }
 
-// readProtocGolden loads the committed expectations.
+// rejectedMarker is the recorded verdict for a case protoc refused to compile.
+//
+// Rejections are RECORDED rather than left absent, and that is the whole point.
+// An earlier version stored only the accepted cases and treated "no entry" as
+// "protoc rejected it" -- so deleting a data line, or adding a case to
+// buildDiffCases without regenerating, silently removed it from the comparison
+// while every test stayed green. A corpus that cannot tell "verified absent"
+// from "never recorded" is the empty-set false green wearing a data file.
+const rejectedMarker = "REJECTED"
+
+// readProtocGolden loads the committed expectations: EVERY enumerated case,
+// accepted ones mapped to protoc's resolved name and rejected ones to
+// rejectedMarker.
 //
 // A missing, empty or unparseable golden is a FATAL error, never a skip: an
 // absent corpus renders as "nothing disagreed", which is the empty-set false
 // green this file exists to prevent.
-func readProtocGolden(t *testing.T) (map[string]string, int) {
+func readProtocGolden(t *testing.T) (golden map[string]string, accepted, rejected int) {
 	t.Helper()
 
 	f, err := os.Open(protocGoldenPath)
@@ -369,14 +381,18 @@ func readProtocGolden(t *testing.T) (map[string]string, int) {
 	}
 	defer func() { _ = f.Close() }()
 
-	golden := map[string]string{}
-	rejected := 0
+	golden = map[string]string{}
+	headerAccepted, headerRejected := -1, -1
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
 	for sc.Scan() {
 		line := sc.Text()
+		if n, ok := strings.CutPrefix(line, "#accepted "); ok {
+			headerAccepted, _ = strconv.Atoi(strings.TrimSpace(n))
+			continue
+		}
 		if n, ok := strings.CutPrefix(line, "#rejected "); ok {
-			rejected, _ = strconv.Atoi(strings.TrimSpace(n))
+			headerRejected, _ = strconv.Atoi(strings.TrimSpace(n))
 			continue
 		}
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -386,12 +402,28 @@ func readProtocGolden(t *testing.T) (map[string]string, int) {
 		if !ok {
 			t.Fatalf("malformed golden line %q in %s", line, protocGoldenPath)
 		}
+		if _, dup := golden[key]; dup {
+			t.Fatalf("golden holds two entries for case %q", key)
+		}
 		golden[key] = resolved
+		if resolved == rejectedMarker {
+			rejected++
+		} else {
+			accepted++
+		}
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("reading %s: %v", protocGoldenPath, err)
 	}
-	return golden, rejected
+
+	// The header counts are a checksum on the rows, so a hand-edited golden
+	// cannot quietly disagree with its own summary.
+	if headerAccepted != accepted || headerRejected != rejected {
+		t.Fatalf("%s header says accepted=%d rejected=%d but the rows say accepted=%d rejected=%d "+
+			"-- the file has been edited without regenerating",
+			protocGoldenPath, headerAccepted, headerRejected, accepted, rejected)
+	}
+	return golden, accepted, rejected
 }
 
 // TestAbsolutizeAgreesWithProtoc replays the committed corpus.
@@ -408,16 +440,27 @@ func TestAbsolutizeAgreesWithProtoc(t *testing.T) {
 	}
 	t.Parallel()
 
-	golden, rejected := readProtocGolden(t)
+	golden, acceptedCount, rejected := readProtocGolden(t)
 	cases := buildDiffCases()
 
 	// POPULATION FIRST. Both sides going empty would make every assertion below
 	// vacuous while the test still reported green.
-	if len(golden) == 0 {
+	if acceptedCount == 0 {
 		t.Fatalf("%s carries no accepted cases, so this test asserts nothing", protocGoldenPath)
 	}
 	if len(cases) == 0 {
 		t.Fatal("buildDiffCases enumerated nothing, so there is nothing for the golden to match")
+	}
+
+	// THE TWO SIDES MUST BE THE SAME SET, in both directions. One direction
+	// alone is not enough: checking only for orphans misses a case the
+	// enumerator added, and checking only for missing entries misses one it
+	// dropped. Together they force the golden to be regenerated whenever
+	// buildDiffCases changes at all.
+	if len(golden) != len(cases) {
+		t.Fatalf("%s records %d cases but buildDiffCases enumerates %d. Regenerate:\n"+
+			"  go test ./pkg/recordlayer -run TestAbsolutizeAgreesWithProtoc -update-protoc-golden",
+			protocGoldenPath, len(golden), len(cases))
 	}
 
 	// Every golden entry must still be enumerated. Without this, narrowing
@@ -443,7 +486,13 @@ func TestAbsolutizeAgreesWithProtoc(t *testing.T) {
 	for _, c := range cases {
 		want, ok := golden[c.key()]
 		if !ok {
-			continue // protoc rejected this shape at generation time
+			t.Fatalf("case %s has no recorded verdict in %s. A case with no entry is NOT a "+
+				"rejection -- rejections are recorded explicitly -- so this is an unregenerated "+
+				"golden, and treating it as absent is how coverage disappears silently.",
+				c.key(), protocGoldenPath)
+		}
+		if want == rejectedMarker {
+			continue // protoc refused this shape; Go's answer is unconstrained
 		}
 		checked++
 
@@ -459,10 +508,10 @@ func TestAbsolutizeAgreesWithProtoc(t *testing.T) {
 		}
 	}
 
-	if checked != len(golden) {
-		t.Fatalf("compared %d cases against a golden holding %d -- enumeration and golden "+
-			"disagree about the corpus, so any agreement count is not about the whole of it",
-			checked, len(golden))
+	if checked != acceptedCount {
+		t.Fatalf("compared %d cases against a golden holding %d accepted -- enumeration and "+
+			"golden disagree, so any agreement count is not about the whole of it",
+			checked, acceptedCount)
 	}
 	if divergences > 0 {
 		t.Fatalf("%d of %d protoc-accepted cases resolve differently in Go (%d further cases "+
@@ -483,18 +532,25 @@ func TestAbsolutizeAgreesWithProtoc(t *testing.T) {
 func TestProtocGoldenCoversEveryDimension(t *testing.T) {
 	t.Parallel()
 
-	golden, _ := readProtocGolden(t)
-	if len(golden) == 0 {
+	golden, acceptedCount, _ := readProtocGolden(t)
+	if acceptedCount == 0 {
 		t.Fatalf("%s carries no accepted cases", protocGoldenPath)
 	}
 
 	positions := map[diffPosition]int{}
 	relationships := map[string]int{}
 	shadowed := 0
-	for key := range golden {
+	for key, verdict := range golden {
 		parts := strings.Split(key, "|")
 		if len(parts) != 5 {
 			t.Fatalf("malformed golden key %q", key)
+		}
+		// ACCEPTED cases only. A dimension present solely as rejections is not
+		// covered by the differential -- rejected cases are never compared --
+		// so counting them here would let a dimension look measured while
+		// contributing nothing to the agreement claim.
+		if verdict == rejectedMarker {
+			continue
 		}
 		mainPkg, depPkg := dashAsEmpty(parts[0]), dashAsEmpty(parts[1])
 		positions[diffPosition(parts[3])]++
@@ -548,8 +604,11 @@ func regenerateProtocGolden(t *testing.T) {
 	mainFile := filepath.Join(dir, diffMainPath)
 	setFile := filepath.Join(dir, "out.pb")
 
-	accepted := map[string]string{}
-	rejected := 0
+	// results holds EVERY enumerated case, accepted or rejected, so the golden
+	// records a verdict for each and a missing entry can be treated as an error
+	// rather than as a silent rejection.
+	results := map[string]string{}
+	accepted, rejected := 0, 0
 	for _, c := range cases {
 		if err := os.WriteFile(depFile, []byte(c.depSource()), 0o600); err != nil {
 			t.Fatalf("writing dep source: %v", err)
@@ -561,9 +620,25 @@ func regenerateProtocGolden(t *testing.T) {
 		cmd := exec.Command(protoc, "-I", dir, "--descriptor_set_out="+setFile,
 			diffMainPath, diffDepPath)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			// A protoc rejection is data, not a failure: it means the shape
-			// cannot come out of a .proto file and Go's answer is unconstrained.
-			_ = out
+			// A protoc REJECTION is data: the shape cannot come out of a .proto
+			// file, so Go's answer is unconstrained and the case is recorded as
+			// rejected.
+			//
+			// A protoc FAILURE is not data, and the two arrive identically as a
+			// non-zero exit. A bad flag, an unwritable output path or a missing
+			// input would otherwise be silently counted as "protoc rejected
+			// it", shrinking the corpus while the totals still looked large --
+			// so a rejection has to look like one. protoc reports a source-level
+			// rejection as `<file>:<line>:<col>: <message>`; anything else is
+			// the harness being broken and must stop generation rather than
+			// quietly reduce coverage.
+			text := string(out)
+			if !strings.Contains(text, diffMainPath+":") && !strings.Contains(text, diffDepPath+":") {
+				t.Fatalf("protoc failed on case %s without a source-level diagnostic, which means "+
+					"the invocation is broken rather than the descriptor rejected:\n%s\nerr: %v",
+					c.key(), text, err)
+			}
+			results[c.key()] = rejectedMarker
 			rejected++
 			continue
 		}
@@ -593,15 +668,20 @@ func regenerateProtocGolden(t *testing.T) {
 			t.Fatalf("protoc resolved case %s to %q, which is not an absolute name -- the probe "+
 				"is reading the wrong position", c.key(), resolved)
 		}
-		accepted[c.key()] = resolved
+		results[c.key()] = resolved
+		accepted++
 	}
 
-	if len(accepted) == 0 {
+	if accepted == 0 {
 		t.Fatalf("protoc accepted none of the %d cases; the corpus would assert nothing", len(cases))
 	}
+	if len(results) != len(cases) {
+		t.Fatalf("recorded %d verdicts for %d enumerated cases -- every case must get one, or a "+
+			"missing entry becomes indistinguishable from a rejection", len(results), len(cases))
+	}
 
-	keys := make([]string, 0, len(accepted))
-	for k := range accepted {
+	keys := make([]string, 0, len(results))
+	for k := range results {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -610,10 +690,13 @@ func regenerateProtocGolden(t *testing.T) {
 	fmt.Fprintf(&out, "# protoc resolution ground truth for absolutizeFieldTypeNames.\n")
 	fmt.Fprintf(&out, "# Regenerate: go test ./pkg/recordlayer -run TestAbsolutizeAgreesWithProtoc -update-protoc-golden\n")
 	fmt.Fprintf(&out, "# key = mainPkg|depPkg|shadow|position|asWritten   (- means unpackaged)\n")
-	fmt.Fprintf(&out, "#accepted %d\n", len(accepted))
+	fmt.Fprintf(&out, "# value = protoc's resolved name, or %s when protoc refused the descriptor.\n", rejectedMarker)
+	fmt.Fprintf(&out, "# Rejections are recorded, not omitted: a case with no entry is an error,\n")
+	fmt.Fprintf(&out, "# so a dropped line cannot masquerade as a shape protoc declined.\n")
+	fmt.Fprintf(&out, "#accepted %d\n", accepted)
 	fmt.Fprintf(&out, "#rejected %d\n", rejected)
 	for _, k := range keys {
-		fmt.Fprintf(&out, "%s\t%s\n", k, accepted[k])
+		fmt.Fprintf(&out, "%s\t%s\n", k, results[k])
 	}
 
 	if err := os.MkdirAll(filepath.Dir(protocGoldenPath), 0o755); err != nil {
@@ -622,7 +705,7 @@ func regenerateProtocGolden(t *testing.T) {
 	if err := os.WriteFile(protocGoldenPath, []byte(out.String()), 0o600); err != nil {
 		t.Fatalf("writing %s: %v", protocGoldenPath, err)
 	}
-	t.Logf("wrote %s: %d accepted, %d rejected by protoc", protocGoldenPath, len(accepted), rejected)
+	t.Logf("wrote %s: %d accepted, %d rejected by protoc", protocGoldenPath, accepted, rejected)
 }
 
 // crossCheckStructure catches DRIFT between the two renderings of a case.

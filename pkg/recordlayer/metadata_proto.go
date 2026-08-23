@@ -966,14 +966,31 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 // producer of two:
 //
 //   - Metadata this port writes. Go's SQL layer emits a `records` file with no
-//     package and no dependencies; all 14 committed schema-template goldens
-//     measure `pkg=""`, `deps=0`. There root and package prefix are the same
-//     string, the walk has nothing to stop at, and this pass is a no-op beyond
-//     the field/type collision above.
+//     package but with TWO declared imports. Measured over all 14 committed
+//     schema-template goldens: `records.package` is empty in 14/14,
+//     `records.dependency` is 2 in 14/14 (`tuple_fields.proto`,
+//     `record_metadata_options.proto`), and `MetaData.dependencies` -- the
+//     EMBEDDED descriptor set, a different field -- is 0 in 14/14, because
+//     `defaultExcludedDependencies` strips exactly those two.
+//
+//     Those two numbers are the ones to keep apart, because collapsing them is
+//     how this paragraph was wrong before: it read `deps=0` off the embedded set
+//     and concluded the records file imports nothing, hence that root and the
+//     package prefix coincide and this pass is a no-op here. The first half is
+//     right and the conclusion does not follow. A file that DECLARES two imports
+//     whose descriptors are absent from the stored set is precisely an
+//     INCOMPLETE dependency set -- the shape the global-registry seeding below
+//     exists for -- so this producer reaches the seeding too. `struct_uuid_vector`
+//     resolves `com.apple.foundationdb.record.UUID` only because of it.
+//
 //   - Metadata Java writes, which is the whole reason the port exists. A user
 //     proto's package round-trips into stored metadata through
-//     RecordMetaData.toProto(), and 79 of the 95 protos under
-//     fdb-record-layer-core/src/test/proto declare one.
+//     RecordMetaData.toProto(), and ALL 95 protos under
+//     fdb-record-layer-core/src/test/proto declare one -- 79 at the top level
+//     and 16 more under `evolution/`. (An earlier revision said "79 of 95",
+//     which paired a non-recursive file count with a recursive one and
+//     presented the two as a ratio. Both counts were real; the relationship
+//     between them was not.)
 //     `test_records_tuple_fields.proto` is this file's ancestor-package shape
 //     exactly: `package com.apple.foundationdb.record.testTupleFields`,
 //     importing `tuple_fields.proto` at `package com.apple.foundationdb.record`,
@@ -981,8 +998,10 @@ func AbsolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto) {
 //     AND whose import `defaultExcludedDependencies` strips.
 //
 // So the shapes below are Java's own protos rather than hypotheticals, and the
-// seeding is load-bearing for the second producer even though the first never
-// reaches it. Pinned by TestAbsolutizeFieldTypeNamesStopsAtAPackageScope and
+// seeding is load-bearing for BOTH producers -- for Java's because a user proto
+// carries a package, and for this port's own because its records file imports
+// two descriptors the stored metadata deliberately omits. Pinned by
+// TestAbsolutizeFieldTypeNamesStopsAtAPackageScope and
 // TestAbsolutizeFieldTypeNamesResolvesIntoAnAncestorPackageDependency, which are
 // the only arms that separate a stopped walk from the fallback -- see their
 // shared preamble for why the obvious fixtures cannot.
@@ -1001,11 +1020,15 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// with protoc:
 	//
 	//   - Dependency types. Without them a name binding into an import falls
-	//     through to the fallback, which prepends this file's own package. `UUID`
-	//     inside `package com.apple.foundationdb.record.testTupleFields` became
-	//     `.com.apple.foundationdb.record.testTupleFields.UUID` where protoc
-	//     walks out to `.com.apple.foundationdb.record.UUID`. That is Java's own
-	//     test_records_tuple_fields.proto.
+	//     through to the fallback, which answers a ROOT name: `UUID` inside
+	//     `package com.apple.foundationdb.record.testTupleFields` becomes
+	//     `.UUID` where protoc walks out to
+	//     `.com.apple.foundationdb.record.UUID`. That is Java's own
+	//     test_records_tuple_fields.proto. (An earlier fallback prepended this
+	//     file's own package instead, giving
+	//     `.com.apple.foundationdb.record.testTupleFields.UUID`. Both are wrong
+	//     here, which is the point: the fix is knowing the symbols, not picking
+	//     a better guess.)
 	//   - Packages. Java's first-part lookup consults package descriptors
 	//     (Descriptors.java's AGGREGATES_ONLY). Without them the walk can never
 	//     stop at a package scope, so `probe.Inner` inside package `probe`
@@ -1047,6 +1070,21 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// requires `Y` beneath it and REJECTS. Seeding messages, enums and packages
 	// but not services makes this walk continue outward and bind `.p.X.Y` --
 	// silently loading a descriptor Java refuses.
+	//
+	// AGAINST THE PINNED JAVA, WHICH MATTERS HERE because the rule changed.
+	// Measured from the protobuf-java jar MODULE.bazel pins (4.29.3):
+	// `isAggregate` is exactly four instanceof tests -- Descriptor, Enum,
+	// Package, Service -- and `lookupSymbol` contains no isType call at all, so
+	// a first-component hit is a hard stop whether or not the symbol is a type.
+	// protobuf 34.x ADDS a `filter != TYPES_ONLY || isType(result)` branch that
+	// keeps searching past a non-type hit; it sits after the compound-name
+	// guard, so it changes BARE names only.
+	//
+	// The two versions therefore disagree about a bare name that lands on a
+	// service, and this port follows the pin. Every shape the surrounding
+	// comments rest on is COMPOUND (`X.Y`, `probe.Inner`, `A.B`) and so is
+	// version-stable; do not "fix" the bare-name case against a newer Java
+	// without moving the pin first.
 	collectServices := func(scope string, svcs []*descriptorpb.ServiceDescriptorProto) {
 		for _, s := range svcs {
 			declared[scope+s.GetName()] = true
@@ -1069,7 +1107,27 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 		collectServices(depPrefix, svcs)
 	}
 
-	for _, dep := range deps {
+	// ONLY THE VISIBLE DEPENDENCIES, which is not the same as all of them.
+	//
+	// `deps` is whatever the caller had, and rebuildFileDescriptor hands over the
+	// entire TRANSITIVE closure from stored metadata. Java resolves against a
+	// narrower set: DescriptorPool's constructor seeds itself with the file's
+	// DIRECT dependencies and then recurses through `public_dependency` only, so
+	// a transitively-imported file that nobody re-exports is invisible to name
+	// resolution.
+	//
+	// Seeding the whole closure therefore over-exposes symbols. The damage is a
+	// silent WRONG BINDING rather than a loud error: an invisible file declaring
+	// `p.q.X` makes this walk stop at a scope Java never considers and answer
+	// `.p.q.X.Y`, where Java keeps climbing and answers `.p.X.Y`. Both names
+	// exist, so nothing fails -- the field just points somewhere else, which is
+	// the same failure mode the lexical-scope test at the top of this file
+	// exists for.
+	//
+	// This applies to every symbol kind, not only services: messages and enums
+	// from a private transitive import were over-exposed the same way, and for
+	// longer.
+	for _, dep := range visibleDependencies(fd, deps) {
 		addDep(dep.GetPackage(), dep.GetMessageType(), dep.GetEnumType(), dep.GetService())
 	}
 
@@ -1081,9 +1139,11 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// root fallback answers `.UUID`, which exists nowhere: metadata Java accepts
 	// stops loading.
 	//
-	// The package-prefix fallback this replaced happened to be right for that one
-	// shape and wrong for 1256 others. Neither is a substitute for knowing the
-	// symbols, so the imports are resolved and collected properly.
+	// No fallback rule is a substitute for knowing the symbols -- a package
+	// prefix happens to be right for this one shape and wrong in general, a root
+	// lookup the other way round -- so the imports are resolved and collected
+	// properly instead. TestAbsolutizeFieldTypeNamesSeesGloballyRegisteredImports
+	// pins it.
 	for _, path := range fd.GetDependency() {
 		gfd, err := protoregistry.GlobalFiles.FindFileByPath(path)
 		if err != nil {
@@ -1111,9 +1171,16 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 	// MEASURED divergence from protoc, in the extendee position: given a message
 	// `Host` with a FIELD named `A` and a top-level message `A`, `extend A`
 	// inside `Host` is REJECTED by protoc ("A" is not a message type) and
-	// ACCEPTED by protobuf-java, because protoc looks its extendee up with
-	// LOOKUP_ALL and so stops on the field. Go accepts, matching Java. Pinned by
+	// ACCEPTED by protobuf-java. Go accepts, matching Java. Pinned by
 	// TestExtendeeSkipsAFieldShadowAsJavaDoes.
+	//
+	// The mechanism, stated so it can be checked: protoc's CrossLinkField
+	// resolves `type_name` with an explicit LOOKUP_TYPES and `extendee` with
+	// LOOKUP_ALL -- but LOOKUP_ALL is the DEFAULT argument and is never written
+	// at the extendee call site, so grepping for it near that call finds
+	// nothing and appears to refute this. Read the default on the declaration
+	// of ResolveMode instead. protobuf-java has no such asymmetry: crossLink
+	// passes TYPES_ONLY on both axes, the same constant to the same overload.
 	//
 	// The converse case -- protodesc stopping on a field where BOTH protoc and
 	// Java skip it -- is the field/type collision documented above, and it is why
@@ -1143,15 +1210,17 @@ func absolutizeFieldTypeNames(fd *descriptorpb.FileDescriptorProto, deps ...*des
 				// fall-through after the scope loop) -- it does NOT prepend the
 				// file's own package, and neither does this.
 				//
-				// That distinction is the whole of the difference. A protoc
-				// differential over 3089 accepted descriptors put every single
-				// name divergence in this branch when it prepended `pkgPrefix`,
-				// and none in the walk above it; seeding the walk with dependency
-				// and package symbols and rooting this fallback takes it to 0.
 				// The package-prefix version was a Go invention with no Java
 				// counterpart, and it was FATAL rather than merely divergent for
 				// a cross-package extendee: `extend probe.Ext` inside package
 				// `probe` became `.probe.probe.Ext`, which exists nowhere.
+				//
+				// The committed differential cannot arbitrate root-vs-package --
+				// every case in it has a complete dependency set, so this branch
+				// is unreachable there and both spellings score 0. See its
+				// NOT-covered list. What decides it is Java, and the divergent
+				// shapes are pinned by
+				// TestAbsolutizeFieldTypeNamesFallsBackToRootNotToThePackage.
 				//
 				// Leaving the name RELATIVE is still not an option -- that is
 				// what the absolutization exists for, and the necessity case is
@@ -1239,8 +1308,10 @@ func rebuildFileDescriptor(
 ) (protoreflect.FileDescriptor, error) {
 	// The dependency set is passed so the resolver can see imported types and
 	// packages. Without it a name binding into an import falls through to the
-	// file's own package prefix, which is wrong for every cross-package
-	// reference and FATAL for a cross-package extendee.
+	// root fallback, which answers a bare `.Name` that nothing declares -- wrong
+	// for every cross-package reference, and FATAL for a cross-package extendee
+	// because the descriptor then stops loading rather than merely binding
+	// oddly.
 	absolutizeFieldTypeNames(recordsProto, depsProto...)
 	for _, dp := range depsProto {
 		// Each dependency is resolved against the whole set too: dependencies
@@ -1393,6 +1464,67 @@ func (r *descriptorResolver) FindDescriptorByName(name protoreflect.FullName) (p
 	// at all, and it was misdiagnosed once already as protodesc failing to walk
 	// outward. protodesc walks correctly; this resolver was stopping it.
 	return nil, protoregistry.NotFound
+}
+
+// visibleDependencies returns the subset of `pool` that `fd` may resolve names
+// against, in Java's sense: the files `fd` imports DIRECTLY, plus everything
+// reachable from those through `public_dependency` alone.
+//
+// It mirrors Descriptors.java's DescriptorPool constructor, which adds each
+// direct dependency and then calls importPublicDependencies on it, recursing
+// only through public imports. A file reached solely by a private import of a
+// private import is not in that set and its symbols are not resolvable.
+//
+// Files named by `fd.Dependency` but absent from `pool` are skipped rather than
+// treated as an error: stored metadata legitimately omits the descriptors
+// `defaultExcludedDependencies` strips, and those are recovered separately from
+// the global registry.
+func visibleDependencies(
+	fd *descriptorpb.FileDescriptorProto,
+	pool []*descriptorpb.FileDescriptorProto,
+) []*descriptorpb.FileDescriptorProto {
+	byPath := make(map[string]*descriptorpb.FileDescriptorProto, len(pool))
+	for _, d := range pool {
+		// First writer wins, matching the resolver's own preference for the
+		// earliest descriptor at a path.
+		if _, seen := byPath[d.GetName()]; !seen {
+			byPath[d.GetName()] = d
+		}
+	}
+
+	var out []*descriptorpb.FileDescriptorProto
+	seen := map[string]bool{}
+
+	// addPublic walks the public re-export chain of an already-visible file.
+	var addPublic func(d *descriptorpb.FileDescriptorProto)
+	addPublic = func(d *descriptorpb.FileDescriptorProto) {
+		names := d.GetDependency()
+		for _, idx := range d.GetPublicDependency() {
+			// public_dependency holds INDICES into dependency, so a malformed
+			// descriptor must not panic the loader.
+			if idx < 0 || int(idx) >= len(names) {
+				continue
+			}
+			next, ok := byPath[names[idx]]
+			if !ok || seen[next.GetName()] {
+				continue
+			}
+			seen[next.GetName()] = true
+			out = append(out, next)
+			addPublic(next)
+		}
+	}
+
+	for _, path := range fd.GetDependency() {
+		d, ok := byPath[path]
+		if !ok || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, d)
+		addPublic(d)
+	}
+	return out
 }
 
 // findInFile searches for a descriptor by name in a file, INCLUDING nested

@@ -470,8 +470,8 @@ func TestAbsolutizationIsRequiredWhenAFieldShadowsItsOwnType(t *testing.T) {
 // relative, protodesc bound it correctly, so the extendee rewrite -- correct in
 // itself -- routed it through a fallback that prepended the file's own package
 // and produced `.probe.probe.Ext`, which exists nowhere: a descriptor that
-// LOADED stopped loading. A protoc differential put this shape at 8 regressed
-// builds, every one of them here.
+// LOADED stopped loading -- a regression the differential of the day scored
+// entirely on this shape.
 //
 // IT PINS NEITHER THE WALK NOR THE FALLBACK, and saying so is the point of this
 // paragraph, because an earlier version claimed it pinned the walk.
@@ -548,10 +548,10 @@ func TestAbsolutizeFieldTypeNamesResolvesAPackageQualifiedNameInItsOwnPackage(t 
 // does a ROOT lookup at this point (Descriptors.java's lookupSymbol, after the
 // scope loop falls through); it never prepends the file's own package.
 //
-// That was a Go invention, and a protoc differential over 3089 accepted
-// descriptors put EVERY name divergence in this branch while it prepended the
-// package -- 1256 of them -- and none in the walk above it. Rooting it takes the
-// count to zero.
+// That was a Go invention with no Java counterpart. Note the committed protoc
+// differential cannot settle this: every case in it has a complete dependency
+// set, so this branch is unreachable there and both spellings score 0. Java is
+// the authority, and this arm is where the choice is pinned.
 //
 // The arm asserts the NAME rather than a successful build: the name is
 // unresolvable by construction, and that is correct. protoc rejects it too. What
@@ -591,8 +591,9 @@ func TestAbsolutizeFieldTypeNamesFallsBackToRootNotToThePackage(t *testing.T) {
 
 	if got := fd.MessageType[0].Field[0].GetTypeName(); got != ".elsewhere.Target" {
 		t.Fatalf("fallback produced %q, want %q.\n"+
-			"Prepending this file's package gives `.probe.elsewhere.Target`, which is the shape a "+
-			"protoc differential scored at 1256 divergences -- all of them in this branch.",
+			"Prepending this file's package gives `.probe.elsewhere.Target`. Java does a ROOT "+
+			"lookup here (Descriptors.java's lookupSymbol, after the scope loop falls through) "+
+			"and never prepends the file's own package, so that spelling is a Go invention.",
 			got, ".elsewhere.Target")
 	}
 }
@@ -610,8 +611,15 @@ func TestAbsolutizeFieldTypeNamesFallsBackToRootNotToThePackage(t *testing.T) {
 // it), and it is the case the root fallback gets wrong: with the symbol table
 // blind to global imports the walk runs out of scopes and answers `.UUID`,
 // which exists nowhere. The package-prefix fallback this replaced happened to
-// be right here and wrong on 1256 other shapes -- neither is a substitute for
-// knowing the symbols, which is why the imports are resolved and collected.
+// be right on this one shape and wrong in general; no fallback rule is a
+// substitute for knowing the symbols, which is why the imports are resolved and
+// collected instead of guessed at.
+//
+// This shape is also why the stored-metadata producer is NOT exempt: the
+// `records` file the SQL layer writes declares `tuple_fields.proto` and
+// `record_metadata_options.proto` as imports while the stored embedded
+// dependency set carries neither, which is an incomplete dependency set by
+// construction.
 func TestAbsolutizeFieldTypeNamesSeesGloballyRegisteredImports(t *testing.T) {
 	t.Parallel()
 
@@ -677,6 +685,12 @@ func TestAbsolutizeFieldTypeNamesTreatsAServiceAsAnAggregate(t *testing.T) {
 		Name:    proto.String("absolutize_svc.proto"),
 		Package: proto.String("p.q"),
 		Syntax:  proto.String("proto2"),
+		// The import must be DECLARED, not merely supplied. Only a file's direct
+		// (and recursively public) imports are visible to resolution, so a
+		// fixture that hands over a dependency without importing it measures a
+		// weaker shape than it claims -- and still passes here, because the
+		// expected answer comes from the service in this file.
+		Dependency: []string{dep.GetName()},
 		// A SERVICE named X, in the scope the walk visits first.
 		Service: []*descriptorpb.ServiceDescriptorProto{{Name: proto.String("X")}},
 		MessageType: []*descriptorpb.DescriptorProto{{
@@ -1005,4 +1019,112 @@ func TestExtendeeSkipsAFieldShadowAsJavaDoes(t *testing.T) {
 	if _, err := protodesc.NewFile(fd, nil); err != nil {
 		t.Fatalf("protodesc rejected a descriptor protobuf-java accepts: %v", err)
 	}
+}
+
+// A PRIVATE TRANSITIVE IMPORT IS INVISIBLE, and supplying it anyway must not
+// change resolution.
+//
+// This matters because `rebuildFileDescriptor` hands absolutizeFieldTypeNames
+// the ENTIRE transitive closure out of stored metadata, while Java resolves
+// against a narrower set: DescriptorPool's constructor takes the file's DIRECT
+// dependencies and recurses only through `public_dependency`. A file reached
+// solely by a private import of a private import is not in Java's pool.
+//
+// The fixture: `main` (package `p.q`) directly imports `dep`,
+// which declares `.p.X.Y`, and `bridge`, which PRIVATELY imports `hidden`,
+// which declares a service `p.q.X`:
+//
+//	main --> dep     (declares .p.X.Y)
+//	main --> bridge  --private--> hidden (declares service p.q.X)
+//
+// Java cannot see `hidden`, so `X.Y` written in `main` climbs past `.p.q` and
+// binds `.p.X.Y`. Seed the whole closure instead and the walk stops at the
+// invisible service and answers `.p.q.X.Y` -- a name that also exists, so
+// nothing errors and the field silently points elsewhere.
+//
+// The PUBLIC control below is the half that makes this a measurement rather
+// than an assertion: flip the same import to `public` and the service becomes
+// visible, so the answer must flip too. Without it, an implementation that
+// ignored dependencies altogether would pass the first arm.
+func TestAbsolutizeFieldTypeNamesIgnoresAPrivateTransitiveImport(t *testing.T) {
+	t.Parallel()
+
+	build := func(publicBridge bool) (main, dep, bridge, hidden *descriptorpb.FileDescriptorProto) {
+		hidden = &descriptorpb.FileDescriptorProto{
+			Name:    proto.String("absolutize_hidden.proto"),
+			Package: proto.String("p.q"),
+			Syntax:  proto.String("proto2"),
+			// The shadowing aggregate, reachable only through `bridge`.
+			Service: []*descriptorpb.ServiceDescriptorProto{{Name: proto.String("X")}},
+		}
+		bridge = &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("absolutize_bridge.proto"),
+			Package:    proto.String("p.bridge"),
+			Syntax:     proto.String("proto2"),
+			Dependency: []string{hidden.GetName()},
+		}
+		if publicBridge {
+			// Re-export it: index 0 of bridge's own Dependency list.
+			bridge.PublicDependency = []int32{0}
+		}
+		dep = &descriptorpb.FileDescriptorProto{
+			Name:    proto.String("absolutize_visible_dep.proto"),
+			Package: proto.String("p"),
+			Syntax:  proto.String("proto2"),
+			MessageType: []*descriptorpb.DescriptorProto{{
+				Name:       proto.String("X"),
+				NestedType: []*descriptorpb.DescriptorProto{{Name: proto.String("Y")}},
+			}},
+		}
+		main = &descriptorpb.FileDescriptorProto{
+			Name:       proto.String("absolutize_visibility_main.proto"),
+			Package:    proto.String("p.q"),
+			Syntax:     proto.String("proto2"),
+			Dependency: []string{dep.GetName(), bridge.GetName()},
+			MessageType: []*descriptorpb.DescriptorProto{{
+				Name: proto.String("Local"),
+				Field: []*descriptorpb.FieldDescriptorProto{{
+					Name:     proto.String("f"),
+					Number:   proto.Int32(1),
+					Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+					Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+					TypeName: proto.String("X.Y"),
+				}},
+			}},
+		}
+		return main, dep, bridge, hidden
+	}
+
+	t.Run("private import stays invisible", func(t *testing.T) {
+		t.Parallel()
+
+		main, dep, bridge, hidden := build(false)
+		// The whole closure is supplied, exactly as rebuildFileDescriptor does.
+		absolutizeFieldTypeNames(main, dep, bridge, hidden)
+
+		if got := main.MessageType[0].Field[0].GetTypeName(); got != ".p.X.Y" {
+			t.Fatalf("type_name = %q, want %q.\n"+
+				"`.p.q.X.Y` is the answer when the walk is seeded from the whole transitive "+
+				"closure: it stops at service `p.q.X`, which arrives only through a PRIVATE "+
+				"import of a private import and which Java's DescriptorPool never sees. Both "+
+				"names resolve, so this binds the wrong message with no error.",
+				got, ".p.X.Y")
+		}
+	})
+
+	t.Run("public re-export makes it visible", func(t *testing.T) {
+		t.Parallel()
+
+		main, dep, bridge, hidden := build(true)
+		absolutizeFieldTypeNames(main, dep, bridge, hidden)
+
+		if got := main.MessageType[0].Field[0].GetTypeName(); got != ".p.q.X.Y" {
+			t.Fatalf("type_name = %q, want %q.\n"+
+				"With `bridge` re-exporting `hidden` as a PUBLIC dependency, Java's pool does "+
+				"include it (importPublicDependencies recurses through exactly these), so the "+
+				"service shadows and the walk must stop at `.p.q.X`. Answering `.p.X.Y` here "+
+				"means public_dependency is not being followed at all.",
+				got, ".p.q.X.Y")
+		}
+	})
 }
