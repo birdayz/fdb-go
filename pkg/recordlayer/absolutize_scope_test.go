@@ -1323,21 +1323,38 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 //
 //   - Cost inside a single step is invisible. A change making importsOf itself
 //     expensive keeps the step count at 3n-1 and passes here.
+//
 //   - Allocation is invisible. The traversal-only regression allocates ~430x
 //     at n=800 while its step count is what this catches; the step count is the
 //     cheaper signal, not the direct one.
+//
 //   - WORK INSIDE walkVisibleImports THAT IS NOT A CLOSURE STEP. This is the
 //     sharp one, and an earlier version of this list implied the opposite by
-//     carving out only work OUTSIDE the function. The level-1 exposure loop,
-//     the union build and the level-2 emission loop all run here and none of
-//     them calls visit(). Measured: replacing the `fullyExposed` MAP LOOKUP in
-//     the emission loop with a linear scan of `visible` -- semantically
-//     identical, and the sort of "you built a map for one membership test"
-//     tidy-up that looks like an improvement -- costs exactly n^2
-//     comparisons (2500 at n=50,
-//     160000 at n=400) while visits stay 149/299/599/1199 and TotalAlloc stays
-//     byte-identical. Every arm passes. That shape is the same order and 96% of
-//     the magnitude of the per-file regression this arm does catch.
+//     carving out only work OUTSIDE the function. FOUR regions run here and
+//     none of them calls visit(): the `byPath` build, the level-1 exposure
+//     loop, the union build, and the level-2 emission loop. The list is
+//     enumerated rather than characterised because a characterisation cannot be
+//     checked, and an earlier version of it omitted `byPath` -- the largest
+//     member.
+//
+//     Two measured exemplars, both the same "you built a map for one membership
+//     test" tidy-up that reads as an improvement, both leaving visits and
+//     emissions at their exact pristine values and every arm green:
+//
+//     replacing the `fullyExposed` map lookup with a scan of `visible`
+//     -> n^2 comparisons (2500 at n=50, 160000 at n=400)
+//     replacing the `byPath` map with a last-writer-wins scan of `pool`
+//     -> ~10n^2 (25000 at n=50, 1600000 at n=400), because it scales with
+//     |pool| = 2n rather than |visible| = n
+//
+//     For scale against what this arm DOES catch: at n=50 the per-file form's
+//     excess over pristine is 2401 closure steps, so the first exemplar is
+//     comparable and the second an order of magnitude larger. Neither is
+//     visible to either counter, and TotalAlloc is byte-identical under the
+//     first (measured 19792/40016/81040/163792 on pristine and on the mutant
+//     alike), which is one of the reasons an allocation assertion is not the
+//     answer.
+//
 //   - Work outside walkVisibleImports entirely -- the resolution walk,
 //     protodesc -- is out of scope for this arm.
 //
@@ -1413,6 +1430,27 @@ func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 				b.Dependency = []string{fmt.Sprintf("cg_b_%d.proto", i+1)}
 				b.PublicDependency = []int32{0} // PUBLIC: extends the closure
 			}
+			// A DIAMOND AT THE HEAD, which is what makes the two causes of a 2n
+			// reading separable. B_0 re-exports the chain's TAIL as well as its
+			// successor, so the tail is reached TWICE inside a single closure
+			// walk.
+			//
+			// Without it the graph is a strict chain, every repeat arrival comes
+			// from a repeated UNION ENTRY, and two different changes collapse to
+			// the same count: moving onVisit after the dedup check (a defect --
+			// the counter stops seeing repeats) and de-duplicating `union`
+			// before the walk (a behaviour-preserving refactor, since
+			// visibleFrom already set-dedups). A guard that cannot tell those
+			// apart must either accuse or excuse, and both are wrong half the
+			// time.
+			//
+			// A repeat produced INSIDE one walk survives union de-duplication
+			// and does not survive moving the callback, so the two land on
+			// different totals and the equality separates them.
+			if i == 0 && n > 2 {
+				b.Dependency = append(b.Dependency, fmt.Sprintf("cg_b_%d.proto", n-1))
+				b.PublicDependency = append(b.PublicDependency, 1)
+			}
 			pool = append(pool, b)
 		}
 		var mainDeps []string
@@ -1485,14 +1523,32 @@ func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 		// pre-dedup behaviour under test. The known regressions land at n^2+n
 		// and 2n^2+2n-1; the dedup-moved variant at 2n. All four are distinct
 		// at every n, so one equality distinguishes them and the message can
-		// name which was observed.
-		if want := 3*n - 1; visits != want {
+		// name which was observed. (Superseded by the measured table below; the
+		// diamond makes the two 2n causes distinct.)
+		// FOUR SHAPES, FOUR DISTINCT TOTALS -- measured, not predicted. The
+		// diamond in the fixture is what buys the last separation; see buildChain.
+		//
+		//	3n     pristine
+		//	2n     onVisit moved after the dedup check     DEFECT
+		//	2n+1   `union` de-duplicated before the walk   benign refactor
+		//	n^2+n  per-file closure walk                   DEFECT
+		//	2n^2+2n-1 traversal-only per-file union build  DEFECT
+		if want := 3 * n; visits != want {
 			switch {
 			case visits == 2*n:
-				t.Fatalf("n=%d: the closure walk counted %d steps, exactly 2n. onVisit is being "+
-					"called AFTER the dedup check, so repeated arrivals are no longer counted -- "+
-					"the counter now measures distinct files and is blind to a traversal-only "+
-					"regression, which is the shape it exists to catch.", n, visits)
+				t.Fatalf("n=%d: the closure walk counted %d steps, exactly 2n -- distinct files "+
+					"rather than arrivals. onVisit is being called AFTER the dedup check, so "+
+					"repeated arrivals are no longer counted and the counter has gone blind to a "+
+					"traversal-only regression, which is the shape it exists to catch. (A "+
+					"de-duplicated `union` would read 2n+1 here, not 2n: the fixture's diamond "+
+					"produces one repeat INSIDE a single walk, which survives that refactor and "+
+					"does not survive this one.)", n, visits)
+			case visits == 2*n+1:
+				t.Fatalf("n=%d: the closure walk counted %d steps, exactly 2n+1. That is `union` "+
+					"de-duplicated before visibleFrom -- a BEHAVIOUR-PRESERVING refactor, since "+
+					"visibleFrom already set-dedups, and still linear. Nothing is broken; the "+
+					"expectation is simply stale. Re-derive it deliberately to %d rather than "+
+					"widening this check.", n, visits, 2*n+1)
 			case visits >= n*n:
 				t.Fatalf("n=%d: the closure walk took %d steps, want %d. The per-file form is "+
 					"%d and the traversal-only form %d. The single union traversal has been "+
@@ -1500,11 +1556,11 @@ func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 					"rebuildFileDescriptor's per-dependency pass -- valid metadata becomes a CPU "+
 					"exhaustion input.", n, visits, want, n*n+n, 2*n*n+2*n-1)
 			default:
-				t.Fatalf("n=%d: the closure walk took %d steps, want exactly %d (3n-1). Neither "+
-					"known regression shape (%d per-file, %d traversal-only) nor the "+
-					"dedup-moved variant (%d) matches, so the traversal has changed in some "+
-					"other way -- re-derive this expectation deliberately rather than widening "+
-					"it.", n, visits, want, n*n+n, 2*n*n+2*n-1, 2*n)
+				t.Fatalf("n=%d: the closure walk took %d steps, want exactly %d (3n). None of the "+
+					"four known shapes matches (%d per-file, %d traversal-only, %d dedup-moved, "+
+					"%d union-deduped), so the traversal has changed in some other way -- "+
+					"re-derive this expectation deliberately rather than widening it.",
+					n, visits, want, n*n+n, 2*n*n+2*n-1, 2*n, 2*n+1)
 			}
 		}
 		// AN EMISSIONS CEILING TOO, and the reasoning that once deleted it was
@@ -1530,9 +1586,14 @@ func TestSecondPackageLevelClosureWalkTakesLinearSteps(t *testing.T) {
 		//
 		// So the two quantities are independent under mutation even though one
 		// bounds the other today, and the ceiling has a unique detector after
-		// all. Pristine emissions are exactly n, so 6n gives the same 6x
-		// headroom the visits bar has; the per-file form sits at 50n and this
-		// shape at n^2/n = n times the bar.
+		// all.
+		//
+		// Pristine emissions are exactly n, so this bar allows a 6x increase
+		// before firing. (It is not "the same headroom as the visits bar" --
+		// there is no visits bar any more, that check is now an exact equality.)
+		// Both quadratic shapes are n times the bar rather than a constant
+		// factor over it: n^2 emissions against 6n is n/6, so the margin grows
+		// with n instead of needing re-tuning.
 		if emissions > 6*n {
 			t.Fatalf("n=%d: the second package level emitted %d packages, more than 6n=%d "+
 				"(pristine is exactly n=%d). Emissions have gone quadratic while the closure walk "+
@@ -1723,24 +1784,19 @@ func TestAbsolutizeFieldTypeNamesHidesTypesReachedThroughTheGlobalRegistry(t *te
 	// globally-registered file to actually appear in it. A dropped `bridge`, or
 	// a `main` that stops importing it, now fails HERE rather than passing
 	// silently downstream.
-	reached := false
-	walkVisibleImports(main, []*descriptorpb.FileDescriptorProto{bridge},
-		func(*descriptorpb.FileDescriptorProto) {},
-		func(g protoreflect.FileDescriptor) {},
-		func(string) {},
-		func(path string) {
-			if path == descriptorPath {
-				reached = true
-			}
-		})
-	if !reached {
-		t.Fatalf("the closure walk never reached %s, so every assertion below would be satisfied "+
-			"by the root fallback and this arm would pass without exercising the global level-2 "+
-			"branch at all. Check that `bridge` is still in the pool and that `main` still "+
-			"imports it.", descriptorPath)
-	}
-
-	absolutizeFieldTypeNames(main, bridge)
+	// ONE CALL SITE TAKES THE POOL, which is what actually ties the premise to
+	// the invocation. Two weaker forms were tried and both fail:
+	//
+	//   - an independent probe that supplies `bridge` itself proves nothing --
+	//     drop it from the real call and the probe still reports reachable;
+	//   - a shared `pool` variable spread into both is no better, because the
+	//     spread can be dropped from one of them. Measured: removing `pool...`
+	//     from the absolutize call alone leaves this arm GREEN.
+	//
+	// So the two are behind a single helper. There is now no way to give the
+	// walk a dependency the absolutization does not get, short of editing the
+	// helper itself -- which is a deliberate act rather than an over-broad sed.
+	absolutizeRequiringReach(t, main, descriptorPath, bridge)
 
 	got := main.MessageType[0].Field[0].GetTypeName()
 	if got == ".google.protobuf.FileDescriptorProto" {
@@ -2135,4 +2191,43 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	}
 	t.Logf("%d graphs, %d with a non-empty second level, 0 set mismatches, %d differing in call count",
 		graphs, nonEmpty, callDiffs)
+}
+
+// absolutizeRequiringReach runs absolutizeFieldTypeNames after proving that the
+// closure walk over the SAME inputs actually reaches `required`.
+//
+// It exists because the arms that probe the global level-2 branch all assert
+// names that the ROOT FALLBACK also produces -- so an arm which silently stops
+// reaching that branch keeps passing, which is exactly how one of them shipped
+// disarmed. The premise has to be checked against the same descriptors the call
+// receives, and it has to be impossible to feed one without the other; taking
+// the pool once, here, is what makes that structural rather than a convention
+// the next edit can break.
+func absolutizeRequiringReach(
+	t *testing.T,
+	fd *descriptorpb.FileDescriptorProto,
+	required string,
+	pool ...*descriptorpb.FileDescriptorProto,
+) {
+	t.Helper()
+
+	reached := false
+	walkVisibleImports(fd, pool,
+		func(*descriptorpb.FileDescriptorProto) {},
+		func(protoreflect.FileDescriptor) {},
+		func(string) {},
+		func(path string) {
+			if path == required {
+				reached = true
+			}
+		})
+	if !reached {
+		t.Fatalf("the closure walk over %s's %d supplied dependencies never reached %s, so every "+
+			"assertion that follows would be satisfied by the root fallback and the arm would "+
+			"pass without exercising the branch it is named for. Check that the bridging "+
+			"descriptor is still supplied and that %s still imports it.",
+			fd.GetName(), len(pool), required, fd.GetName())
+	}
+
+	absolutizeFieldTypeNames(fd, pool...)
 }

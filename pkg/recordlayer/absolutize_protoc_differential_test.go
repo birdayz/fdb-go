@@ -1007,6 +1007,33 @@ func TestProbeLineRefusesADuplicateMarker(t *testing.T) {
 			"first silently checks the wrong statement -- exactly the failure the probe-line "+
 			"scoping exists to prevent.", strings.TrimSpace(line))
 	}
+
+	// THE SAME-LINE CASE, which is the one the occurrence count exists for and
+	// the only one a line count cannot see. Two statements on one physical line
+	// are valid protobuf across separate message scopes; a line-counting
+	// implementation reports ONE match and hands back a line carrying both, so
+	// the arm above would stay green under exactly the revert this behaviour
+	// replaced.
+	sameLine := "message Host {\n  optional X " + marker + " optional Y " + marker + "\n}\n"
+	if got := strings.Count(sameLine, marker); got != 2 {
+		t.Fatalf("the same-line fixture carries %d markers, not 2:\n%s", got, sameLine)
+	}
+	lines := 0
+	for _, l := range strings.Split(sameLine, "\n") {
+		if strings.Contains(l, marker) {
+			lines++
+		}
+	}
+	if lines != 1 {
+		t.Fatalf("the same-line fixture spreads its markers over %d lines, so it does not "+
+			"express the case a LINE count would miss:\n%s", lines, sameLine)
+	}
+	if line, ok := probeLine(sameLine, posField); ok {
+		t.Fatalf("probeLine returned %q for a source with two markers on ONE line. A line count "+
+			"sees a single match here and returns the ambiguous line; crossCheckStructure would "+
+			"then look for the as-written name in whichever statement it happened to find.",
+			strings.TrimSpace(line))
+	}
 }
 
 func TestProbeLineIsScopedToTheStatementUnderTest(t *testing.T) {
