@@ -2,6 +2,7 @@ package recordlayer
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -1318,9 +1319,9 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 //
 // WHAT THIS DOES NOT COVER, written first because the previous version of this
 // arm was named for a claim it did not enforce. It counts closure STEPS through
-// the onVisit seam. Of the eleven non-pristine variants replaySecondLevel
-// models over this fixture, that quantity INFLATES for four, REDUCES for six,
-// and is UNCHANGED for one -- the unchanged case being the load-bearing one, because
+// the onVisit seam. Of the thirteen non-pristine variants replaySecondLevel
+// models over this fixture, that quantity INFLATES for four, REDUCES for seven,
+// and is UNCHANGED for two -- the unchanged cases being load-bearing, because
 // it is why emissions must be asserted alongside rather than instead. The
 // tally is pinned by TestSecondLevelShapesArePairwiseDistinct, so it cannot go
 // stale here the way its two predecessors did. It is not "work" in general:
@@ -1514,6 +1515,36 @@ func buildSecondLevelFixtureOpts(n int, diamond bool) (*descriptorpb.FileDescrip
 			Name:    proto.String("cg_y.proto"),
 			Package: proto.String("cg.y"),
 			Syntax:  proto.String("proto2"),
+		},
+		// A PUBLICLY re-exported file, and the private leaf behind it.
+		//
+		// Without these the fixture cannot express two real defects, because
+		// two distinct things are accidentally equal on it: `visible` equals
+		// `main.GetDependency()` exactly (no A has a public dependency, so the
+		// level-1 closure adds nothing), and no union entry is ever itself a
+		// visible file (so the emission loop's fullyExposed skip never fires).
+		//
+		// Both accidents let a REAL production defect land on the pristine pair
+		// and pass the guard green, which is the one direction that ships bugs:
+		//
+		//	union built over fd.GetDependency() instead of visible
+		//	`continue` -> `break` on the fullyExposed skip
+		//
+		// cg_p is publicly imported by A_0, so it joins `visible` without being
+		// one of main's directs AND appears in the union while already fully
+		// exposed. cg_q sits privately behind it, so the union differs
+		// depending on which set it was built from.
+		&descriptorpb.FileDescriptorProto{
+			Name:             proto.String("cg_p.proto"),
+			Package:          proto.String("cg.p"),
+			Syntax:           proto.String("proto2"),
+			Dependency:       []string{"cg_q.proto"}, // PRIVATE: reached only via cg_p
+			PublicDependency: nil,
+		},
+		&descriptorpb.FileDescriptorProto{
+			Name:    proto.String("cg_q.proto"),
+			Package: proto.String("cg.q"),
+			Syntax:  proto.String("proto2"),
 		})
 
 	var mainDeps []string
@@ -1524,7 +1555,7 @@ func buildSecondLevelFixtureOpts(n int, diamond bool) (*descriptorpb.FileDescrip
 			Syntax:     proto.String("proto2"),
 			Dependency: []string{"cg_b_0.proto"}, // PRIVATE: stops the closure
 		}
-		// BOTH ENDS carry a unique private import, not just one.
+		// BOTH ENDS carry a unique private import.
 		//
 		// One unique import separates a union truncated to the LAST visible
 		// file (which loses A_0's) from a de-duplicated one. It does not
@@ -1537,7 +1568,10 @@ func buildSecondLevelFixtureOpts(n int, diamond bool) (*descriptorpb.FileDescrip
 		// them and shows up in the emission count, whichever end it keeps.
 		switch i {
 		case 0:
-			a.Dependency = append(a.Dependency, "cg_x.proto")
+			a.Dependency = append(a.Dependency, "cg_x.proto", "cg_p.proto")
+			// PUBLIC, and it is the only public dependency any A has. This is
+			// what makes `visible` a strict superset of main's directs.
+			a.PublicDependency = []int32{2}
 		case n - 1:
 			a.Dependency = append(a.Dependency, "cg_y.proto")
 		}
@@ -1581,18 +1615,20 @@ func measureSecondLevel(n int) (visits, emissions int) {
 type secondLevelVariant string
 
 const (
-	slPristine       secondLevelVariant = "pristine"
-	slOnVisitHoist   secondLevelVariant = "onVisit hoisted out of the recursion"
-	slDedupMoved     secondLevelVariant = "onVisit moved after the dedup check"
-	slTruncateFirst  secondLevelVariant = "union truncated to the FIRST visible file"
-	slTruncateLast   secondLevelVariant = "union truncated to the LAST visible file"
-	slUnionDedup     secondLevelVariant = "union de-duplicated before the walk"
-	slNoPublic       secondLevelVariant = "public-import recursion removed"
-	slPerFile        secondLevelVariant = "per-file closure walk"
-	slPerFileSink    secondLevelVariant = "per-file closure walk, de-duplicating at the sink"
-	slTraversalOnly  secondLevelVariant = "traversal-only per-file union build"
-	slEmissionHoist  secondLevelVariant = "emission loop re-run over an already-walked set"
-	slEmissionRewalk secondLevelVariant = "emission loop re-run, re-walking the union each time"
+	slPristine         secondLevelVariant = "pristine"
+	slOnVisitHoist     secondLevelVariant = "onVisit hoisted out of the recursion"
+	slDedupMoved       secondLevelVariant = "onVisit moved after the dedup check"
+	slTruncateFirst    secondLevelVariant = "union truncated to the FIRST visible file"
+	slTruncateLast     secondLevelVariant = "union truncated to the LAST visible file"
+	slUnionDedup       secondLevelVariant = "union de-duplicated before the walk"
+	slNoPublic         secondLevelVariant = "public-import recursion removed"
+	slPerFile          secondLevelVariant = "per-file closure walk"
+	slPerFileSink      secondLevelVariant = "per-file closure walk, de-duplicating at the sink"
+	slTraversalOnly    secondLevelVariant = "traversal-only per-file union build"
+	slEmissionHoist    secondLevelVariant = "emission loop re-run over an already-walked set"
+	slEmissionRewalk   secondLevelVariant = "emission loop re-run, re-walking the union each time"
+	slUnionOverDirects secondLevelVariant = "union built over the directs instead of the visible set"
+	slEmitBreak        secondLevelVariant = "emission loop breaks on a fully-exposed entry"
 )
 
 // secondLevelVariants is every variant replaySecondLevel implements, in one
@@ -1600,7 +1636,7 @@ const (
 var secondLevelVariants = []secondLevelVariant{
 	slPristine, slOnVisitHoist, slDedupMoved, slTruncateFirst, slTruncateLast,
 	slUnionDedup, slNoPublic, slPerFile, slPerFileSink, slTraversalOnly,
-	slEmissionHoist, slEmissionRewalk,
+	slEmissionHoist, slEmissionRewalk, slUnionOverDirects, slEmitBreak,
 }
 
 // replaySecondLevel walks the REAL fixture under a named variant and returns
@@ -1764,6 +1800,13 @@ func replaySecondLevel(
 		union = directsOf(visible[0])
 	case v == slTruncateLast && len(visible) > 0:
 		union = directsOf(visible[len(visible)-1])
+	case v == slUnionOverDirects:
+		// The visible set is a strict SUPERSET of the directs here, because
+		// A_0 re-exports cg_p publicly. Building the union over the directs
+		// therefore drops cg_p.s own imports.
+		for _, path := range main.GetDependency() {
+			union = append(union, directsOf(path)...)
+		}
 	default:
 		for _, path := range visible {
 			union = append(union, directsOf(path)...)
@@ -1805,13 +1848,24 @@ func replaySecondLevel(
 		return visits, emissions
 	}
 	for _, q := range walked {
+		// `continue` -> `break`: the loop stops at the first already-exposed
+		// entry instead of skipping it, truncating the rest of the level.
+		if v == slEmitBreak && fullyExposed[q] {
+			break
+		}
 		emit(q)
 	}
 	return visits, emissions
 }
 
 // secondLevelUniqueLeaves counts the pool paths imported by EXACTLY ONE of
-// main's direct dependencies -- the quantity cgUniqueLeaves names.
+// main's direct dependencies AND not themselves visible -- the quantity
+// cgUniqueLeaves names.
+//
+// The visibility exclusion is not incidental. cg_p is imported by exactly one A
+// and is emphatically not a unique leaf: A_0 re-exports it PUBLICLY, so it
+// joins the visible set and the emission loop skips it. Counting it would make
+// cgUniqueLeaves disagree with the emissions the fixture actually produces.
 func secondLevelUniqueLeaves(
 	main *descriptorpb.FileDescriptorProto,
 	pool []*descriptorpb.FileDescriptorProto,
@@ -1820,6 +1874,31 @@ func secondLevelUniqueLeaves(
 	for _, d := range pool {
 		byPath[d.GetName()] = d
 	}
+	// The visible set, by the same rule production uses: the directs, plus
+	// everything reachable from them through PUBLIC imports alone.
+	visible := map[string]bool{}
+	var expose func(path string)
+	expose = func(path string) {
+		if visible[path] {
+			return
+		}
+		visible[path] = true
+		d, ok := byPath[path]
+		if !ok {
+			return
+		}
+		direct := d.GetDependency()
+		for _, idx := range d.GetPublicDependency() {
+			if idx < 0 || int(idx) >= len(direct) {
+				continue
+			}
+			expose(direct[idx])
+		}
+	}
+	for _, dep := range main.GetDependency() {
+		expose(dep)
+	}
+
 	importers := map[string]int{}
 	for _, dep := range main.GetDependency() {
 		d, ok := byPath[dep]
@@ -1831,8 +1910,8 @@ func secondLevelUniqueLeaves(
 		}
 	}
 	unique := 0
-	for _, c := range importers {
-		if c == 1 {
+	for path, c := range importers {
+		if c == 1 && !visible[path] {
 			unique++
 		}
 	}
@@ -1864,15 +1943,18 @@ const (
 	secondLevelQuadTravers secondLevelShape = "traversal-only per-file union build"
 	secondLevelQuadEmit    secondLevelShape = "emission loop re-run over an already-walked set"
 	secondLevelQuadRewalk  secondLevelShape = "emission loop re-run, re-walking the union each time"
+	secondLevelDirectsOnly secondLevelShape = "second level built over the directs, not the visible set"
+	secondLevelEmitBreak   secondLevelShape = "emission loop truncated at a fully-exposed entry"
 	secondLevelUnknown     secondLevelShape = "unrecognised"
 )
 
-// cgUniqueLeaves is the number of leaves imported by exactly one A.
-// TestSecondLevelExpectedMatchesTheFixture counts them out of the built pool
-// and fails if this disagrees, so it is a name for a fixture fact rather than
-// an independent knob -- the previous version was neither, and bumping it
-// moved no measurement at all.
-const cgUniqueLeaves = 2 // cg_x on A_0, cg_y on A_{n-1}
+// The fixture's named quantities. Each is checked against the built pool by
+// TestSecondLevelExpectedMatchesTheFixture, so none is an independent knob.
+const (
+	cgUniqueLeaves    = 2 // cg_x on A_0, cg_y on A_{n-1}
+	cgPublicReexports = 1 // cg_p, PUBLICLY re-exported by A_0
+	cgBehindPublic    = 1 // cg_q, privately imported by cg_p
+)
 
 // secondLevelExpected is the CLOSED FORM of the pristine pair, kept because it
 // is the only readable statement of why the numbers are what they are.
@@ -1881,13 +1963,19 @@ const cgUniqueLeaves = 2 // cg_x on A_0, cg_y on A_{n-1}
 // below ties it to what production counts AND to what the model counts, at
 // every driven size. Nothing reads it to make a decision.
 func secondLevelExpected(n int) (visits, emissions int) {
-	// Level 1 visits each A once. Level 2's union carries one entry per A --
-	// n of them, all naming B_0 -- plus the unique leaves; walking it then
-	// follows the chain's n-1 successors and the diamond's single repeat of
-	// the tail.
-	visits = n + (n + cgUniqueLeaves) + (n - 1) + 1
-	// One package per B in the chain, plus one per unique leaf.
-	emissions = n + cgUniqueLeaves
+	// Level 1 visits each A once and then follows A_0's PUBLIC re-export, so
+	// the visible set is the As plus cg_p.
+	level1 := n + cgPublicReexports
+	// Level 2's union carries one entry per A -- n of them, all naming B_0 --
+	// plus the unique leaves, plus cg_p from A_0's directs, plus cg_q from
+	// cg_p's. Walking it follows the chain's n-1 successors and the diamond's
+	// single repeat of the tail.
+	union := n + cgUniqueLeaves + cgPublicReexports + cgBehindPublic
+	visits = level1 + union + (n - 1) + 1
+	// One package per B in the chain, plus one per unique leaf, plus cg_q.
+	// cg_p contributes NOTHING: it is already fully exposed, so the emission
+	// loop skips it -- which is the only place that skip fires.
+	emissions = n + cgUniqueLeaves + cgBehindPublic
 	return visits, emissions
 }
 
@@ -1995,6 +2083,21 @@ var secondLevelSignatures = []struct {
 			"wrapping THAT re-evaluates the walk, where lifting it into a variable first is a " +
 			"refactor plus a bug. addPackage is idempotent, so no correctness arm sees the " +
 			"duplicate emissions.",
+	},
+	{
+		slUnionOverDirects, secondLevelDirectsOnly,
+		"The second level's union is being accumulated over the file's DIRECT dependencies " +
+			"rather than over its visible set, so whatever a direct dependency re-exports " +
+			"publicly contributes nothing: the imports behind a public re-export is dropped " +
+			"from the level entirely. The two sets are equal on any graph with no public " +
+			"imports, which is why this needs a fixture that has one.",
+	},
+	{
+		slEmitBreak, secondLevelEmitBreak,
+		"The emission loop stops at the first already-exposed entry instead of skipping it -- a " +
+			"`continue` that became a `break`. Everything after that entry in the walked order " +
+			"loses its package, so the level is truncated at an arbitrary point determined by " +
+			"traversal order rather than by anything semantic.",
 	},
 }
 
@@ -2729,24 +2832,37 @@ func TestSecondLevelClassifierNamesEveryShape(t *testing.T) {
 	t.Parallel()
 
 	want := map[secondLevelVariant]secondLevelShape{
-		slPristine:       secondLevelPristine,
-		slOnVisitHoist:   secondLevelDedupMoved,
-		slDedupMoved:     secondLevelDedupMoved,
-		slTruncateFirst:  secondLevelTruncated,
-		slTruncateLast:   secondLevelTruncated,
-		slUnionDedup:     secondLevelUnionDedup,
-		slNoPublic:       secondLevelNoPublic,
-		slPerFile:        secondLevelQuadWalk,
-		slPerFileSink:    secondLevelQuadSink,
-		slTraversalOnly:  secondLevelQuadTravers,
-		slEmissionHoist:  secondLevelQuadEmit,
-		slEmissionRewalk: secondLevelQuadRewalk,
+		slPristine:         secondLevelPristine,
+		slOnVisitHoist:     secondLevelDedupMoved,
+		slDedupMoved:       secondLevelDedupMoved,
+		slTruncateFirst:    secondLevelTruncated,
+		slTruncateLast:     secondLevelTruncated,
+		slUnionDedup:       secondLevelUnionDedup,
+		slNoPublic:         secondLevelNoPublic,
+		slPerFile:          secondLevelQuadWalk,
+		slPerFileSink:      secondLevelQuadSink,
+		slTraversalOnly:    secondLevelQuadTravers,
+		slEmissionHoist:    secondLevelQuadEmit,
+		slEmissionRewalk:   secondLevelQuadRewalk,
+		slUnionOverDirects: secondLevelDirectsOnly,
+		slEmitBreak:        secondLevelEmitBreak,
 	}
 
-	// THE POPULATION, checked before any verdict. A variant modelled and
-	// replayed but never named here would be classified and never asserted on
-	// -- the empty-set green this file keeps having to design out.
+	// THE POPULATION, checked before any verdict, and checked as a SET in BOTH
+	// directions. Counting is not enough: replacing one entry of
+	// secondLevelVariants with a DUPLICATE of another keeps every length equal
+	// and every lookup successful, keeps the 4/6/1 tally unchanged -- and
+	// silently drops an arm that is then never exercised anywhere in this file.
+	// A cardinality check cannot see a set that lost a member and gained a
+	// repeat.
+	seenVariant := map[secondLevelVariant]bool{}
 	for _, v := range secondLevelVariants {
+		if seenVariant[v] {
+			t.Fatalf("secondLevelVariants lists %q twice. A repeat keeps every length equal while "+
+				"some other variant has silently left the population and is now driven by "+
+				"nothing", v)
+		}
+		seenVariant[v] = true
 		if _, ok := want[v]; !ok {
 			t.Fatalf("variant %q is modelled by replaySecondLevel and listed in "+
 				"secondLevelVariants, but this oracle does not say what it should be called, so "+
@@ -2756,10 +2872,27 @@ func TestSecondLevelClassifierNamesEveryShape(t *testing.T) {
 			t.Fatalf("variant %q has no signature, so the classifier can never name it", v)
 		}
 	}
-	if len(want) != len(secondLevelVariants) || len(secondLevelSignatures) != len(secondLevelVariants) {
-		t.Fatalf("%d oracle entries and %d signatures against %d variants: one of them names "+
-			"something secondLevelVariants does not, so the distinctness arm does not see it",
-			len(want), len(secondLevelSignatures), len(secondLevelVariants))
+	for v := range want {
+		if !seenVariant[v] {
+			t.Fatalf("the oracle names %q, which is not in secondLevelVariants, so no arm drives "+
+				"it and the distinctness check never sees it", v)
+		}
+	}
+	seenSig := map[secondLevelVariant]bool{}
+	for _, sig := range secondLevelSignatures {
+		if seenSig[sig.variant] {
+			t.Fatalf("secondLevelSignatures carries two rows for %q; classify returns the first "+
+				"and the second is unreachable", sig.variant)
+		}
+		seenSig[sig.variant] = true
+		if !seenVariant[sig.variant] {
+			t.Fatalf("secondLevelSignatures names %q, which is not in secondLevelVariants, so no "+
+				"arm drives it", sig.variant)
+		}
+	}
+	if len(want) != len(secondLevelVariants) || len(seenSig) != len(secondLevelVariants) {
+		t.Fatalf("%d oracle entries and %d distinct signatures against %d variants",
+			len(want), len(seenSig), len(secondLevelVariants))
 	}
 
 	// ONLY THE PRISTINE VARIANT MAY CLAIM THE PRISTINE SHAPE, in either table.
@@ -2952,9 +3085,9 @@ func TestSecondLevelShapesArePairwiseDistinct(t *testing.T) {
 				unchanged++
 			}
 		}
-		if inflate != 4 || reduce != 6 || unchanged != 1 {
+		if inflate != 4 || reduce != 7 || unchanged != 2 {
 			t.Fatalf("n=%d: of the %d non-pristine variants the step count inflates for %d, "+
-				"reduces for %d and is unchanged for %d; the guard's doc block says 4/6/1 and "+
+				"reduces for %d and is unchanged for %d; the guard's doc block says 4/7/2 and "+
 				"must be re-counted", n, len(secondLevelVariants)-1, inflate, reduce, unchanged)
 		}
 	}
@@ -3047,37 +3180,74 @@ func TestSecondLevelDiamondIsLoadBearing(t *testing.T) {
 
 	type pair struct{ visits, emissions int }
 
+	// THE NAMED COLLISION, not "some collision". Accepting any cross-shape
+	// collision as evidence lets the diamond's actual contribution disappear
+	// while an unrelated pair happens to collide, and the arm still passes
+	// while its own comment has become false.
+	//
+	// What the diamond separates is specifically the benign union
+	// de-duplication from onVisit moving after the dedup check: those two
+	// differ only by the repeat the diamond produces INSIDE a single walk,
+	// which survives de-duplicating the union and does not survive moving the
+	// callback.
+	//
+	// slOnVisitHoist is NOT in that pair, and finding out why was this arm
+	// earning its keep. It has a SECOND, independent separator: hoisted
+	// counting counts once per entry of `directs` and so misses the level-1
+	// recursion into A_0's public re-export entirely. That is a property of
+	// cg_p rather than of the diamond, so it is asserted separately below --
+	// removing the public re-export must show up here, not silently.
+	const benign, defect, secondlySeparated = slUnionDedup, slDedupMoved, slOnVisitHoist
+
+	measure := func(main *descriptorpb.FileDescriptorProto, pool []*descriptorpb.FileDescriptorProto, v secondLevelVariant) pair {
+		gv, ge := replaySecondLevel(main, pool, v)
+		return pair{gv, ge}
+	}
+
 	for _, n := range secondLevelSizes {
-		main, pool := buildSecondLevelFixtureOpts(n, false)
+		onMain, onPool := buildSecondLevelFixtureOpts(n, true)
+		offMain, offPool := buildSecondLevelFixtureOpts(n, false)
 
-		byPair := map[pair][]secondLevelVariant{}
-		for _, v := range secondLevelVariants {
-			gv, ge := replaySecondLevel(main, pool, v)
-			byPair[pair{gv, ge}] = append(byPair[pair{gv, ge}], v)
+		if got, other := measure(onMain, onPool, benign), measure(onMain, onPool, defect); got == other {
+			t.Fatalf("n=%d: WITH the diamond, %q and %q both measure (visits=%d, emissions=%d). "+
+				"The diamond is supposed to be exactly what separates them, so either it is no "+
+				"longer doing so or the fixture has changed underneath this arm",
+				n, benign, defect, got.visits, got.emissions)
 		}
 
-		collisions := 0
-		for p, vs := range byPair {
-			shapes := map[secondLevelShape]bool{}
-			for _, v := range vs {
-				s, ok := secondLevelDeclaredShape(v)
-				if !ok {
-					t.Fatalf("n=%d: variant %q has no signature", n, v)
-				}
-				shapes[s] = true
-			}
-			if len(shapes) > 1 {
-				collisions++
-				t.Logf("n=%d without the diamond: (%d, %d) shared by %v across %d declared shapes",
-					n, p.visits, p.emissions, vs, len(shapes))
-			}
+		base, without := measure(offMain, offPool, benign), measure(offMain, offPool, defect)
+		if base != without {
+			t.Fatalf("n=%d: WITHOUT the diamond, %q measures (visits=%d, emissions=%d) and %q "+
+				"measures (visits=%d, emissions=%d) -- they no longer collide, so something "+
+				"OTHER than the diamond is now separating them. Find out what, and say so here; "+
+				"do not delete this arm",
+				n, benign, base.visits, base.emissions, defect, without.visits, without.emissions)
 		}
-		if collisions == 0 {
-			t.Fatalf("n=%d: with the diamond removed, no two differently-declared variants "+
-				"collide -- so the diamond is no longer what separates them and the fixture "+
-				"comment explaining it is stale. Re-derive what does the separating; do not "+
-				"delete this arm", n)
+
+		// The public re-export's independent contribution, pinned so that
+		// removing it reddens something.
+		if hoisted := measure(offMain, offPool, secondlySeparated); hoisted == base {
+			t.Fatalf("n=%d: WITHOUT the diamond, %q now collides with %q at (visits=%d, "+
+				"emissions=%d). It used to be separated by A_0's PUBLIC re-export, which hoisted "+
+				"counting misses at level 1 -- so that re-export has gone, or stopped mattering",
+				n, secondlySeparated, benign, base.visits, base.emissions)
 		}
+
+		sBenign, ok1 := secondLevelDeclaredShape(benign)
+		sDefect, ok2 := secondLevelDeclaredShape(defect)
+		if !ok1 || !ok2 {
+			t.Fatalf("n=%d: %q or %q has no signature", n, benign, defect)
+		}
+		if sBenign == sDefect {
+			t.Fatalf("n=%d: %q and %q now declare the same shape (%q), so their collision without "+
+				"the diamond would be harmless and this arm is measuring nothing",
+				n, benign, defect, sBenign)
+		}
+		t.Logf("n=%d: without the diamond %q and %q both measure (%d, %d) across declared shapes "+
+			"%q and %q; %q stays separate at (%d, %d)",
+			n, benign, defect, base.visits, base.emissions, sBenign, sDefect,
+			secondlySeparated, measure(offMain, offPool, secondlySeparated).visits,
+			measure(offMain, offPool, secondlySeparated).emissions)
 	}
 }
 
@@ -3164,6 +3334,61 @@ func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
 		byDetail[detail] = shape
 	}
 
+	// EACH DIAGNOSIS BOUND TO ITS OWN SHAPE, which uniqueness alone cannot do.
+	//
+	// The two comparisons above are about CARDINALITY: same shape means one
+	// diagnosis, different shapes mean different diagnoses. Both survive a
+	// straight SWAP of two shapes' texts -- every detail stays non-empty and
+	// every detail stays unique, while a failing run sends the reader to the
+	// opposite cause.
+	//
+	// So each shape names a phrase its diagnosis must contain, keyed by shape
+	// rather than by variant. These are deliberately the phrase that identifies
+	// the CAUSE, not a word from the shape's own name, so the check is not
+	// satisfied by echoing the label back.
+	mustMention := map[secondLevelShape]string{
+		secondLevelDedupMoved:  "dedup check",
+		secondLevelTruncated:   "TRUNCATED",
+		secondLevelUnionDedup:  "BEHAVIOUR-PRESERVING",
+		secondLevelNoPublic:    "public-import recursion in visibleFrom is gone",
+		secondLevelQuadWalk:    "single union traversal has been replaced",
+		secondLevelQuadSink:    "absorbed by the SINK",
+		secondLevelQuadTravers: "final walk then de-duplicates",
+		secondLevelQuadEmit:    "already-walked set",
+		secondLevelQuadRewalk:  "re-walking it every",
+		secondLevelDirectsOnly: "public re-export is dropped",
+		secondLevelEmitBreak:   "stops at the first already-exposed",
+	}
+	for shape, detail := range detailFor {
+		if shape == secondLevelPristine {
+			continue
+		}
+		phrase, ok := mustMention[shape]
+		if !ok {
+			t.Fatalf("shape %q has no required phrase, so its diagnosis is bound to it by nothing "+
+				"and could be swapped with another shape's undetected", shape)
+		}
+		if !strings.Contains(detail, phrase) {
+			t.Fatalf("the diagnosis carried for shape %q does not mention %q. Either the texts "+
+				"have been swapped between shapes -- which uniqueness alone cannot see -- or the "+
+				"diagnosis was reworded and this binding needs re-deriving from the new text",
+				shape, phrase)
+		}
+	}
+	// And the binding must not be satisfiable by more than one shape's text,
+	// or a swap could still pass.
+	for shape, phrase := range mustMention {
+		hits := 0
+		for other, detail := range detailFor {
+			if other != secondLevelPristine && strings.Contains(detail, phrase) {
+				hits++
+			}
+		}
+		if hits != 1 {
+			t.Fatalf("the phrase required of shape %q appears in %d diagnoses, not exactly one; "+
+				"a phrase two shapes share cannot tell them apart after a swap", shape, hits)
+		}
+	}
 	// The population, so a signature table emptied by an edit cannot pass this
 	// arm by having nothing to compare.
 	if len(detailFor) < 2 {
@@ -3240,14 +3465,33 @@ func TestSecondLevelExpectedMatchesTheFixture(t *testing.T) {
 				"cgUniqueLeaves says %d", n, got, cgUniqueLeaves)
 		}
 
+		// PLACEMENT, not cardinality. The truncation arm keys on a truncation
+		// being distinguishable from the benign de-duplication, which holds
+		// only while a unique leaf sits on the FIRST visible file and another
+		// on the LAST. Both counterexamples that reached this file -- moving
+		// cg_y onto a middle A, and moving both leaves onto A_0 -- keep the
+		// count at cgUniqueLeaves and keep every other assertion green.
+		//
+		// The invariant asserted is SYMMETRY of the deficit, derived rather
+		// than a fixed offset: with a unique leaf at each end, truncating in
+		// either direction costs the same number of emissions. Move a leaf
+		// inward and the two directions diverge, because one end still carries
+		// its leaf and the other does not.
+		deficit := map[secondLevelVariant]int{}
 		for _, dir := range []secondLevelVariant{slTruncateFirst, slTruncateLast} {
 			_, e := replaySecondLevel(main, pool, dir)
-			if e != wantE-1 {
-				t.Fatalf("n=%d: %s emits %d, want %d -- exactly one fewer than pristine. A unique "+
-					"leaf has moved off an END of the visible set, so a truncation in this "+
-					"direction no longer costs an emission and the classifier can no longer tell "+
-					"it from the benign de-duplication one visit away", n, dir, e, wantE-1)
+			deficit[dir] = wantE - e
+			if deficit[dir] <= 0 {
+				t.Fatalf("n=%d: %s emits %d against pristine's %d -- a truncation that costs no "+
+					"emission cannot be told from the benign de-duplication one visit away",
+					n, dir, e, wantE)
 			}
+		}
+		if deficit[slTruncateFirst] != deficit[slTruncateLast] {
+			t.Fatalf("n=%d: truncating to the FIRST visible file costs %d emissions and to the "+
+				"LAST costs %d. The ends are no longer symmetric, so a unique leaf has moved "+
+				"inward and one truncation direction is now cheaper to mistake for something "+
+				"benign", n, deficit[slTruncateFirst], deficit[slTruncateLast])
 		}
 	}
 }
