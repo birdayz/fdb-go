@@ -1362,32 +1362,43 @@ func TestAbsolutizeFieldTypeNamesSeesPackagesOfPrivateImportsButNotTheirTypes(t 
 //
 //   - CODE THIS FIXTURE NEVER EXECUTES, which is a different class from the
 //     three above and the easiest to miss, because the list otherwise reads as
-//     a partition of the function. FIVE arms take zero on this fixture at every
-//     n, and this list has twice been written naming only two of them.
+//     a partition of the function.
 //
-//     Two are structural: every path here is a STORED descriptor, so the
-//     global-registry arm of importsOf and the onGlobal arm of the level-1 loop
-//     never execute. Three are the not-found arms (`!ok` in the emission loop,
-//     in the union build, and inside visibleFrom), unreachable here because
-//     every path this fixture names is declared. Those three ARE exercised by
-//     TestUnionSecondLevelMatchesPerFileSecondLevel's corpus, which generates
-//     dangling paths -- 137, 19 and 175 reaches over 500 graphs -- so they are
-//     covered, just not by this arm.
+//     NO TOTAL IS CLAIMED HERE, deliberately, and that is the finding rather
+//     than a hedge. This list has been written asserting a count four times --
+//     two, two again, five, six -- and been wrong every time, because each
+//     version was written by describing the arms its author had just been
+//     looking at. A branch census over walkVisibleImports puts the real number
+//     higher than any of them. So what follows is a list of arms PROBED, by
+//     planting a panic in each and running the guard, and it is explicitly not
+//     a partition:
 //
-//     THE DIRECTION OF THIS ENTRY HAS INVERTED TWICE, and that history is the
-//     point of keeping it. It used to name the emission loop's `fullyExposed[q]`
-//     skip, on the grounds that no union entry was ever itself a visible file;
-//     and it silently omitted the `pkg != ""` guard sitting beside it, which no
-//     fixture file and no corpus graph reached at all. Both were ACCIDENTS of
-//     the fixture rather than properties of the code, and each let a real
-//     production defect measure byte-identical to pristine and pass this guard
-//     GREEN. cg_p closed the first, cg_n the second. Measured now, both deleting
-//     the skip and dropping the `pkg != ""` guard give (156, 54) at n=50 --
-//     `unrecognised`, RED. They collide with each other because each adds
-//     exactly one emission, cg_p's and cg_n's respectively; the guard separates
-//     both from pristine, which is all it is asked to do. If a later fixture
-//     edit makes either dormant again, that is a REGRESSION in coverage, not a
-//     return to normal.
+//     importsOf's global-registry arm         ZERO -- every path here is stored
+//     the level-1 loop's onGlobal arm         ZERO -- same reason
+//     importsOf's malformed-index skip        ZERO -- every index here is valid
+//     the emission loop's fullyExposed skip   REACHED, once per walk, via cg_p
+//     the emission loop's empty-package arm   REACHED, once per walk, via cg_n
+//
+//     The three not-found arms (`!ok` in the emission loop, in the union build,
+//     and inside visibleFrom) are also zero here, because every path this
+//     fixture names is declared. Those and the malformed-index skip are
+//     exercised by TestUnionSecondLevelMatchesPerFileSecondLevel's corpus
+//     instead -- the latter by the two boundary descriptors that corpus now
+//     places in every graph's directs. Their counts are not quoted: an earlier
+//     version quoted three, and the commit beside it changed the generator so
+//     that one of the three became zero, leaving a triple that described a tree
+//     already deleted.
+//
+//     THE LAST TWO ROWS EACH INVERTED ONCE, and that history is why this entry
+//     exists. Both used to read ZERO, and both were accidents of the fixture
+//     masquerading as properties of the code: each let a real production defect
+//     measure byte-identical to pristine and pass this guard GREEN. cg_p closed
+//     the first, cg_n the second. Measured now, deleting the skip and dropping
+//     the empty-package guard both give (156, 54) at n=50 -- `unrecognised`,
+//     RED. They collide with each other because each adds exactly one emission,
+//     cg_p's and cg_n's respectively; both are separated from pristine, which
+//     is all this guard is asked to do. If a later fixture edit returns either
+//     row to ZERO, that is a coverage REGRESSION, not a return to normal.
 //
 //     A weaker case remains: a public-index mis-resolution that is
 //     set-preserving on this graph is invisible here. Correctness on all of
@@ -1975,7 +1986,7 @@ func secondLevelUniqueLeaves(
 
 // secondLevelPackagelessLeaves counts the singly-imported non-visible leaves
 // that carry NO package -- the quantity cgPackagelessLeaves names, and the only
-// thing in this fixture that reaches the emission loop`s `pkg != ""` guard.
+// thing in this fixture that reaches the emission loop's `pkg != ""` guard.
 func secondLevelPackagelessLeaves(
 	main *descriptorpb.FileDescriptorProto,
 	pool []*descriptorpb.FileDescriptorProto,
@@ -1984,9 +1995,34 @@ func secondLevelPackagelessLeaves(
 	for _, d := range pool {
 		byPath[d.GetName()] = d
 	}
-	direct := map[string]bool{}
+	// VISIBILITY, not just directness, and the difference is the whole probe.
+	// Production skips a walked file at `fullyExposed[q]` BEFORE it evaluates
+	// `pkg != ""`, and fullyExposed holds the public-import closure rather than
+	// main.GetDependency(). Testing only directness would keep returning 1
+	// after cg_n became a public import of its A -- at which point production
+	// never reaches the guard and the assertion this feeds would stay green
+	// with its only probe gone.
+	visible := map[string]bool{}
+	var expose func(path string)
+	expose = func(path string) {
+		if visible[path] {
+			return
+		}
+		visible[path] = true
+		d, ok := byPath[path]
+		if !ok {
+			return
+		}
+		deps := d.GetDependency()
+		for _, idx := range d.GetPublicDependency() {
+			if idx < 0 || int(idx) >= len(deps) {
+				continue
+			}
+			expose(deps[idx])
+		}
+	}
 	for _, dep := range main.GetDependency() {
-		direct[dep] = true
+		expose(dep)
 	}
 	importers := map[string]int{}
 	for _, dep := range main.GetDependency() {
@@ -2000,7 +2036,7 @@ func secondLevelPackagelessLeaves(
 	}
 	n := 0
 	for path, c := range importers {
-		if c != 1 || direct[path] {
+		if c != 1 || visible[path] {
 			continue
 		}
 		if d, ok := byPath[path]; ok && d.GetPackage() == "" {
@@ -2132,9 +2168,7 @@ func secondLevelExpected(n int) (visits, emissions int) {
 	// One package per B in the chain, plus one per unique leaf, plus cg_q.
 	// TWO walked files contribute nothing and for DIFFERENT reasons: cg_p is
 	// already fully exposed, and cg_n has no package at all. The second is the
-	// only thing exercising the emission loop`s `pkg != ""` guard.
-	// cg_p contributes NOTHING: it is already fully exposed, so the emission
-	// loop skips it -- which is the only place that skip fires.
+	// only thing exercising the emission loop's `pkg != ""` guard.
 	emissions = n + cgUniqueLeaves + cgBehindPublic
 	return visits, emissions
 }
@@ -2300,7 +2334,7 @@ func secondLevelDeclaredShape(v secondLevelVariant) (secondLevelShape, bool) {
 // on PRISTINE is not misnamed, it is MISSED, and the guard goes GREEN. FOUR
 // real production defects did exactly that on earlier fixtures -- building the
 // union over fd.GetDependency(), `continue` -> `break` on the fullyExposed
-// skip, deleting that skip outright, and dropping the emission loop`s
+// skip, deleting that skip outright, and dropping the emission loop's
 // `pkg != ""` guard -- each measuring the pristine pair of its day and passing.
 // cg_p, cg_q and cg_n were added to close those four, one fixture accident at a
 // time, and each was found by attacking the SENTENCE rather than the code.
@@ -2832,10 +2866,6 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 
 	// A deterministic pseudo-random graph generator. No rand: the seed is the
 	// index, so a failure names a reproducible case.
-	// Boundary coverage, counted rather than assumed. Both malformed-index
-	// cases below are PRNG-selected, so a change to the roll schedule or the
-	// seed count can stop generating one of them while every arm stays green.
-	atBound, belowBound := 0, 0
 	build := func(seed, n int) (*descriptorpb.FileDescriptorProto, []*descriptorpb.FileDescriptorProto) {
 		next := seed*2654435761 + 1
 		roll := func(m int) int {
@@ -2883,13 +2913,37 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 				f.PublicDependency = append(f.PublicDependency, int32(len(f.Dependency)+3))
 			case 1:
 				f.PublicDependency = append(f.PublicDependency, int32(len(f.Dependency)))
-				atBound++
 			case 2:
 				f.PublicDependency = append(f.PublicDependency, -1)
-				belowBound++
 			}
 			pool = append(pool, f)
 		}
+		// DETERMINISTIC, REACHABLE boundary cases -- one pair per seed, both
+		// placed in main's directs so production's importsOf is called on them
+		// on every single graph.
+		//
+		// The randomized switch above is a coverage LOTTERY: main takes 1-4 of
+		// n pool files, so a boundary-bearing descriptor is usually never
+		// traversed. Counting those at GENERATION time counted candidates
+		// rather than executions -- a roll or seed change could leave every
+		// boundary-bearing file unreachable while the counters stayed
+		// non-zero and the bounds check went untested.
+		atFile := &descriptorpb.FileDescriptorProto{
+			Name:       proto.String(fmt.Sprintf("eq_%d_bound_at.proto", seed)),
+			Package:    proto.String(fmt.Sprintf("eq%d.boundat", seed)),
+			Syntax:     proto.String("proto2"),
+			Dependency: []string{fmt.Sprintf("eq_%d_0.proto", seed)},
+		}
+		// Exactly len(Dependency): out of range by one, which `+3` never is.
+		atFile.PublicDependency = []int32{int32(len(atFile.Dependency))}
+		belowFile := &descriptorpb.FileDescriptorProto{
+			Name:             proto.String(fmt.Sprintf("eq_%d_bound_below.proto", seed)),
+			Package:          proto.String(fmt.Sprintf("eq%d.boundbelow", seed)),
+			Syntax:           proto.String("proto2"),
+			Dependency:       []string{fmt.Sprintf("eq_%d_0.proto", seed)},
+			PublicDependency: []int32{-1},
+		}
+		pool = append(pool, atFile, belowFile)
 		main := &descriptorpb.FileDescriptorProto{
 			Name:    proto.String(fmt.Sprintf("eq_%d_main.proto", seed)),
 			Package: proto.String("eq.main"),
@@ -2899,13 +2953,29 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 			main.Dependency = append(main.Dependency,
 				fmt.Sprintf("eq_%d_%d.proto", seed, roll(n)))
 		}
+		// Both boundary files are ALWAYS direct dependencies, so importsOf
+		// evaluates their malformed indices on every graph.
+		main.Dependency = append(main.Dependency, atFile.GetName(), belowFile.GetName())
 		return main, pool
 	}
 
 	const graphs = 500
 	nonEmpty, callDiffs := 0, 0
+	atReached, belowReached := 0, 0
 	for seed := range graphs {
 		main, pool := build(seed, 6+seed%9)
+
+		// Reachability of the two boundary files, measured rather than
+		// assumed: importsOf only evaluates an index on a file the walk
+		// actually visits, and main.Dependency is what the walk starts from.
+		for _, dep := range main.GetDependency() {
+			switch dep {
+			case fmt.Sprintf("eq_%d_bound_at.proto", seed):
+				atReached++
+			case fmt.Sprintf("eq_%d_bound_below.proto", seed):
+				belowReached++
+			}
+		}
 
 		wantSet, wantCalls := perFileSecondLevel(main, pool)
 		gotSet, gotCalls := unionSecondLevel(main, pool)
@@ -2940,16 +3010,31 @@ func TestUnionSecondLevelMatchesPerFileSecondLevel(t *testing.T) {
 	// generator stopped producing repeated arrivals, this test would still pass
 	// while quietly ceasing to demonstrate that the two forms differ at all --
 	// and the precondition would rest on nothing.
-	// BOTH MALFORMED-INDEX BOUNDARIES MUST HAVE BEEN GENERATED. These are the
-	// only thing pinning production's `idx < 0 || int(idx) >= len(direct)`:
-	// with the corpus carrying only an out-of-range `+3`, relaxing `>=` to
-	// `>` leaves every arm in this file green. A roll-schedule or seed-count
-	// change that stops generating either one would restore that hole in
-	// silence.
-	if atBound == 0 || belowBound == 0 {
-		t.Fatalf("over %d graphs the generator produced %d public indices at exactly "+
-			"len(Dependency) and %d below zero; both must be non-zero or production's bounds "+
-			"check is unpinned on that side", graphs, atBound, belowBound)
+	// BOTH MALFORMED-INDEX BOUNDARIES MUST BE REACHED, not merely generated.
+	//
+	// These two descriptors are the only thing in the tree that reaches
+	// production's `idx < 0 || int(idx) >= len(direct)`: with the corpus
+	// carrying only an out-of-range `+3`, relaxing `>=` to `>` leaves every arm
+	// in this file green, and so does deleting the `< 0` half.
+	//
+	// WHAT THIS COUNTS IS REACHABILITY, and the chain from there to execution
+	// is short but worth writing down: a path in main's directs is visited by
+	// visibleFrom, which calls importsOf on it, which is where the bounds check
+	// lives. So reachable-from-main entails the guard evaluating that file's
+	// indices. Counting at GENERATION time entailed nothing -- main takes 1-4
+	// of n pool files, so a randomly-placed boundary is usually never traversed,
+	// and a roll or seed change could have left every one of them unreachable
+	// while the counters stayed comfortably non-zero.
+	//
+	// It still does not observe production directly, and does not need to: if
+	// the guard is relaxed the corpus arm dies by PANIC inside the seed loop
+	// and this assertion is never evaluated. The panic is the detector; this
+	// counter only keeps its precondition from evaporating.
+	if atReached != graphs || belowReached != graphs {
+		t.Fatalf("over %d graphs a file carrying a public index of exactly len(Dependency) was "+
+			"reachable from main in %d, and one carrying -1 in %d; both must be every graph or "+
+			"production's bounds check is unpinned on that side",
+			graphs, atReached, belowReached)
 	}
 	if callDiffs == 0 {
 		t.Fatalf("no graph produced a call-count difference between the two forms, so this test " +
@@ -3618,7 +3703,7 @@ func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
 // diagnosed "behaviour-preserving" -- the exact defect the fixture edit before
 // it had been made to fix.
 //
-// Five ties now, and the last is the one that matters:
+// Six ties now, and the last is the one that matters:
 //
 //   - the closed form equals what PRODUCTION counts;
 //   - the closed form equals what the MODEL counts, which is the only point at
@@ -3626,6 +3711,10 @@ func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
 //   - cgUniqueLeaves equals the number of singly-imported non-visible leaves in
 //     the built pool, so the constant cannot drift from the graph in either
 //     direction;
+//   - cgPackagelessLeaves equals the number of package-less, singly-imported,
+//     NON-VISIBLE leaves in that pool -- the only route this fixture has to
+//     the emission loop's empty-package guard, and checked with the same
+//     visibility rule production applies before reaching it;
 //   - cgPublicReexports and cgBehindPublic are counted SEPARATELY out of that
 //     same pool. secondLevelExpected adds them together in the union term, so
 //     that term alone cannot tell them apart; only counting them apart can.
@@ -3639,8 +3728,8 @@ func TestSecondLevelDetailsMatchTheirShapes(t *testing.T) {
 //     count and keeps the deficits equal, so the endpoints are inspected
 //     directly.
 //
-// WHAT THE FIVE TIES DO NOT CATCH. An edit that removes the diamond AND drops
-// the matching `+1` from secondLevelExpected passes all five, and passes the
+// WHAT THE SIX TIES DO NOT CATCH. An edit that removes the diamond AND drops
+// the matching `+1` from secondLevelExpected passes all six, and passes the
 // guard at 155/305/605, because it is self-consistent: the closed form is
 // documentation rather than an independent witness, and an author who edits
 // both has desynchronised nothing. What it silently spends is the diamond's
@@ -3663,6 +3752,26 @@ func TestSecondLevelExpectedMatchesTheFixture(t *testing.T) {
 		wantV, wantE := secondLevelExpected(n)
 		main, pool := buildSecondLevelFixture(n)
 
+		// The package-less leaf, counted out of the pool BEFORE the derived
+		// comparisons, because it is a structural fact about the fixture
+		// rather than a consequence of one.
+		//
+		// The count requires package-less AND singly-imported AND NOT VISIBLE,
+		// which is what production requires before it ever evaluates
+		// `pkg != ""`: a publicly re-exported file is fullyExposed and skipped
+		// one line earlier. Counting on directness alone -- the first version
+		// of this -- would keep returning 1 after the leaf was made public,
+		// i.e. after its only route to the guard had disappeared.
+		//
+		// cg_n is the only package-less file in the pool, so with it excluded
+		// nothing reaches that guard at all, and dropping the guard leaves the
+		// whole file green at the PRISTINE pair. Measured, before cg_n existed.
+		if pl := secondLevelPackagelessLeaves(main, pool); pl != cgPackagelessLeaves {
+			t.Fatalf("n=%d: the built pool has %d package-less singly-imported non-visible "+
+				"leaf/leaves; cgPackagelessLeaves says %d. With none, the emission loop's "+
+				"empty-package guard is unreached and removing it is a green fail-open",
+				n, pl, cgPackagelessLeaves)
+		}
 		if gotV, gotE := measureSecondLevel(n); gotV != wantV || gotE != wantE {
 			t.Fatalf("n=%d: production walked (visits=%d, emissions=%d); secondLevelExpected says "+
 				"(%d, %d). The fixture and the closed form have diverged -- re-derive the closed "+
@@ -3689,15 +3798,6 @@ func TestSecondLevelExpectedMatchesTheFixture(t *testing.T) {
 				"non-visible file(s) behind them; cgPublicReexports says %d and cgBehindPublic "+
 				"says %d. These two are equal in value and would otherwise be interchangeable",
 				n, re, behind, cgPublicReexports, cgBehindPublic)
-		}
-		// The package-less leaf, counted out of the pool. It is the only thing
-		// in this fixture that reaches the emission loop's `pkg != ""` guard,
-		// and without it dropping that guard leaves the whole file green at the
-		// PRISTINE pair -- measured, before cg_n existed.
-		if pl := secondLevelPackagelessLeaves(main, pool); pl != cgPackagelessLeaves {
-			t.Fatalf("n=%d: the built pool has %d package-less singly-imported leaf/leaves; "+
-				"cgPackagelessLeaves says %d. With none, the emission loop's pkg guard "+
-				"is unreached and removing it is a green fail-open", n, pl, cgPackagelessLeaves)
 		}
 		got, carriers := secondLevelUniqueLeaves(main, pool)
 		if got != cgUniqueLeaves {
