@@ -991,17 +991,49 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	// already errored above and takes precedence, and (b) a VALID qualifier (or none) has
 	// been stripped to the bare Target, which is checked here — so `DELETE FROM
 	// <session_schema>.missing` and `DELETE FROM missing` both get 42F01, while
-	// `DELETE FROM badschema.missing` keeps its 42F00. recordTypeCI
-	// resolves case-insensitively, matching the WHERE/SELECT analyzer.
+	// `DELETE FROM badschema.missing` keeps its 42F00.
 	var dmlTarget string
 	switch dop := logicalOp.(type) {
 	case *logical.LogicalDelete:
 		dmlTarget = dop.Target
 	case *logical.LogicalUpdate:
 		dmlTarget = dop.Target
+	case *logical.LogicalInsert:
+		// INSERT belongs here too, and its absence was the worst of the three.
+		// INSERT ... VALUES has its own strict check further down, but
+		// INSERT ... SELECT had NO planning-time target check at all: the target
+		// is resolved lazily per row in the executor, so a source that produces
+		// rows raises a raw non-SQLSTATE `executor: INSERT target record type %q
+		// not found`, and a source that produces NONE never reaches the lookup
+		// and the statement reports SUCCESS against a table that does not exist.
+		dmlTarget = dop.Table
 	}
-	if dmlTarget != "" && recordTypeCI(md, bareTableName(dmlTarget)) == nil {
+	// STRICT resolution for a DML target -- GetRecordType, not the case-folding
+	// recordTypeCI. An unquoted `DELETE FROM customer` against a table declared
+	// `"Customer"` is UNDEFINED, and every other path already says so: the SELECT
+	// path rejects it, INSERT ... VALUES rejects it (`md.GetRecordType(insOp.Table)`
+	// below), and Java rejects it -- `select * from restaurant` against a table
+	// declared `"Restaurant"` throws UNDEFINED_TABLE / "Unknown table RESTAURANT"
+	// (CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3).
+	//
+	// Folding here was worse than a validation divergence. It ACCEPTED the
+	// statement and then carried the SQL-normalised `CUSTOMER` into the plan,
+	// where no record type answers to it: the scan matched nothing and the DELETE
+	// reported success having removed no rows. Canonicalising the name instead
+	// would be worse still -- it would let an unquoted write mutate a table that
+	// can only be named with quotes.
+	if dmlTarget != "" && md.GetRecordType(bareTableName(dmlTarget)) == nil {
 		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(dmlTarget)))
+	}
+
+	// SOURCE tables too, and AFTER the target check so the target keeps its own
+	// wording. Both raise 42F01, but they say it differently -- "Unknown table X"
+	// here versus the SELECT path's `table "X" does not exist` -- and the
+	// cross-engine corpus pins the target one. Running the source sweep first
+	// silently re-worded every `DELETE FROM nosuchtable`, which the corpus caught
+	// as an error-wording divergence rather than as anything about sources.
+	if err := validateScanTables(logicalOp, md); err != nil {
+		return nil, err
 	}
 
 	// Reject a lateral unnest's AS/AT alias colliding with ANY other FROM-source
@@ -2794,6 +2826,15 @@ func (c *metadataPlanContext) buildMatchCandidates() []cascades.MatchCandidate {
 			// RecordMetaData.getPlannerType, RecordMetaData.java:732-739).
 			flowed = executor.PositionalTypeForRecordLayout(rt.Descriptor, c.md.IsStoreRecordVersions())
 		}
+		// rt.Name is the STORED protobuf name, and that is correct here: it is
+		// what Java's PrimaryScanMatchCandidate carries, it is injective by
+		// construction, and it flows into physical plans and the continuation
+		// salt. The DEFECT is on the other side -- cascades_translator.go builds
+		// the query's FullUnorderedScanExpression from the SQL table name, and
+		// FullUnorderedScanExpression.EqualsWithoutChildren compares the two
+		// lists as strings, so a table whose name escapes matches NO candidate
+		// and gets no access path at all. RFC-238 §7c decides the fix: the scan
+		// leaf translates once, here nothing changes.
 		primaryCandidate := cascades.NewPrimaryScanMatchCandidate(
 			nil,
 			aliases,
@@ -3151,6 +3192,31 @@ func (d *metadataIndexDef) IndexPrimaryKeyComponentTypes() []values.Type {
 			actualSuffix = append(actualSuffix, column)
 		}
 	}
+	// THIS CROSS-CHECK NOW DECLINES A SHAPE IT USED TO ACCEPT. `actualSuffix` is
+	// derived from the physical positions and `nameTrimmed` from the column
+	// names; for a multi-type or universal index positions are always nil --
+	// Java assigns them only to single-type indexes -- so `actualSuffix` is the
+	// FULL primary key. WHEN THE INDEX KEY OVERLAPS THAT PRIMARY KEY,
+	// `nameTrimmed` drops the shared columns, the two lengths disagree, and this
+	// returns `unknown`. Without an overlap they agree and nothing changes; the
+	// affected shape is the overlap case alone.
+	//
+	// THE COST IS NOT PURELY A LOST OPTIMISATION, and an earlier revision of
+	// this comment said it was. `unknown` is `unknownPhysicalTypes`, i.e.
+	// `values.UnknownType` per column, and `values.TypeTerminatesOrderingClaim`
+	// answers FALSE for a type it cannot identify -- so a consumer that walks
+	// these types to decide where an ordering claim ends (rowdiff/ordering.go)
+	// does not stop at them. Returning `unknown` therefore widens a claim rather
+	// than narrowing it, for a FLOAT or DOUBLE primary-key column that a known
+	// type would have terminated on.
+	//
+	// That direction is the predicate's DOCUMENTED trade, not a defect
+	// introduced here: it is deliberately positive ("prove it is a float")
+	// because the alternative deletes sort elimination everywhere a layout is
+	// absent, including where the column is provably an integer. What this
+	// change does is route one more shape into that trade. Narrowing it means
+	// teaching this function that the trim is name-based for these indexes,
+	// which is a separate change with its own plan-shape review.
 	nameTrimmed := plans.TrimmedPKSuffix(d.IndexColumnNames(), pkCols)
 	if len(actualSuffix) != len(nameTrimmed) {
 		return unknown
@@ -3626,14 +3692,26 @@ func tryAggregateIndexCandidate(idx *recordlayer.Index, md *recordlayer.RecordMe
 		}
 	}
 
+	// VERBATIM: these names arrive from the index's key expression, which
+	// carries the DESCRIPTOR's spelling, and they are looked up EXACTLY
+	// downstream. Folding them here is a silent decline, not an error — an
+	// aggregate index declared `AS SELECT SUM("Amount") FROM sales GROUP BY
+	// "Region"` was never chosen, because the query row declares `Region` and
+	// this offered `REGION`. Right rows, full scan plus an in-memory sort,
+	// nothing red.
+	//
+	// Name the exact consumer, because the obvious candidate is the wrong one:
+	// it is NOT AccessorNamePathMatchesNames (values/accessor_name_path.go),
+	// which folds the candidate and therefore matched fine. It is
+	// rule_aggregate_data_access.go's LookupFieldUnique on the aggregate
+	// operand, which bottoms out in RecordType.fieldNameScan's `f.Name == name`
+	// (values/type.go) — a byte comparison with no fold anywhere near it.
 	groupCols := make([]string, groupingCount)
-	for i := 0; i < groupingCount; i++ {
-		groupCols[i] = strings.ToUpper(allCols[i])
-	}
+	copy(groupCols, allCols[:groupingCount])
 
 	var aggColumn string
 	if groupedCount > 0 && groupingCount+groupedCount <= len(allCols) {
-		aggColumn = strings.ToUpper(allCols[groupingCount])
+		aggColumn = allCols[groupingCount]
 	}
 
 	rts := md.RecordTypesForIndex(idx)
@@ -4572,12 +4650,34 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// the schema there would publish the machinery's suffix as a
 					// column name.
 					//
-					// Bare leaf and upper-cased, to stay in the derivation's own
-					// spelling: an output name over a gated ordinal join is
-					// qualified (`C.NAME`) while the label is bare, and a quoted
-					// inner alias reaches the schema in its written case (`did`)
-					// where the column list reports `DID`.
-					cd.Label = strings.ToUpper(parseColRef(outputNames[i]).bare())
+					// Bare leaf, VERBATIM: an output name over a gated ordinal
+					// join is qualified (`C.NAME`) while the label is bare, so
+					// the qualifier comes off — but the leaf's own case is the
+					// authored one and stays. This is the site that made
+					// `SELECT "KeepCase"` report KEEPCASE while `SELECT *` over
+					// the same table reported KeepCase; Java reports KeepCase
+					// for both, measured.
+					//
+					// WHICH DOT IS THE QUALIFIER IS NOT A QUESTION THE STRING
+					// CAN ANSWER. A column DECLARED `"a.b"` round-trips the wire
+					// escape (`.`→`__2`, reversed by ToUserIdentifier) and
+					// arrives here spelled `a.b`, which the last-dot split read
+					// as qualifier `a` plus column `b` — a label for a column no
+					// engine calls that. Measured against a live JVM: Java
+					// reports `a.b`, and Go's own STAR expansion already
+					// reported `a.b`, so one path was wrong beside a sibling
+					// that was right.
+					//
+					// WHICH DOT IS THE QUALIFIER is answered by the SCHEMA, on
+					// TWO facts: the whole name stands only when it is a
+					// declared column AND the split's column half is not.
+					// The reference's own ALIAS would settle it outright and
+					// does not reach this boundary — every root correlation is
+					// re-anchored to `_current` by the time labels are derived,
+					// which was measured, not assumed. qualifierStrippedLabel
+					// carries that measurement, the shapes two schema facts
+					// still get wrong, and the answers that preceded them.
+					cd.Label = qualifierStrippedLabel(outputNames[i], descs)
 				}
 			} else if !aliasMinted {
 				cd.Label = outputNames[i]
@@ -4864,7 +4964,9 @@ func deriveProjectionColumnDef(
 	}
 	var label string
 	if alias != "" {
-		label = strings.ToUpper(alias)
+		// Verbatim: the alias arrives already normalized by the parse capture,
+		// so the only thing a second fold can do is rename `AS "x"` to X.
+		label = alias
 	} else if _, isField := values.AsFieldValue(v); !isField {
 		label = fmt.Sprintf("_%d", idx)
 	}
@@ -4909,7 +5011,10 @@ func deriveProjectionColumnDef(
 	// executeProjection stores values under both the original name
 	// and the alias, so the alias is a valid lookup key and gives
 	// CTE consumers the column name they reference.
-	colName := strings.ToUpper(name)
+	// VERBATIM: this is the DATUM KEY, and the row it indexes names its slots
+	// through values.OutputColumnName, which folds nothing. Folding here asked
+	// a verbatim-named row for a name it does not carry.
+	colName := name
 	if label != "" {
 		colName = label
 	}
@@ -4924,17 +5029,21 @@ func deriveProjectionColumnDef(
 	displayLabel := label
 	if label == "" {
 		if _, isField := values.AsFieldValue(v); isField && name != "" {
-			// The label is the bare LEAF of the column's NAME, derived above,
-			// never of fv.Field. The two happen to agree for a fused nested
-			// reference today — the mint names it after its leaf — and that
-			// agreement is exactly what must not be relied on: it did not hold
-			// when this arm was written (Field carried the struct ROOT, so
-			// `n.sk` and `n.co` both labelled `N`), and Field is one segment
-			// where the label is a function of the whole NAME, qualifier
-			// included. Java takes the leaf of the resolved identifier
-			// (Identifier.withoutQualifier, Identifier.java:101-106) applied by
-			// the top-level clearQualifier, which is SK and CO.
-			displayLabel = strings.ToUpper(parseColRef(name).bare())
+			// Java takes the leaf of the RESOLVED IDENTIFIER —
+			// Identifier.withoutQualifier, applied by the top-level
+			// clearQualifier — so `SELECT u.name` over a join reports NAME and
+			// a nested `n.sk` reports SK, not the struct root.
+			//
+			// The leaf is taken VERBATIM. A quoted DDL column keeps its case
+			// through the whole engine, and the result-set label is where the
+			// user sees it: `SELECT "KeepCase"` reports KeepCase, as Java does,
+			// where a fold here reported KEEPCASE.
+			//
+			// WHICH DOT IS THE QUALIFIER is answered by the SCHEMA, on two
+			// facts — see qualifierStrippedLabel, which also carries why the
+			// reference's own alias, the answer that would settle it outright,
+			// does not reach this boundary.
+			displayLabel = qualifierStrippedLabel(name, descs)
 		}
 	} else if aliasMinted {
 		// A MACHINERY-pinned alias — the duplicated-bare-leaf dedup pins the
@@ -5022,15 +5131,18 @@ func deriveProjectionColumnDef(
 // (explicit-alias==bare-leaf reading NULL, JOIN composite leaking a qualified
 // label) are impossible by construction.
 func foldedColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
-	name := strings.ToUpper(f.Name)
-	label := strings.ToUpper(parseColRef(f.Name).bare())
+	// VERBATIM on both: the RC field's name is the slot key the executor wrote,
+	// and the label is its bare leaf. A fold here renamed the column the user
+	// sees and asked a verbatim-named row for a key it does not carry.
+	name := f.Name
+	label := parseColRef(f.Name).bare()
 
 	// Resolve the column TYPE against the leg that defines it. Use the VALUE's
 	// reference name (qualified for a JOIN composite) so descriptorForColumn keys
 	// the right leg; fall back to the field Name for a non-FieldValue value.
 	typeRef := name
 	if _, ok := values.AsFieldValue(f.Value); ok {
-		typeRef = strings.ToUpper(values.ColumnNameValue(f.Value))
+		typeRef = values.ColumnNameValue(f.Value)
 	}
 	return columnDefFromRef(name, label, typeRef, f.Value, descs)
 }
@@ -5282,9 +5394,13 @@ func joinLegDerivationOrder(
 	return nlj.GetOuter(), nlj.GetInner(), outerAlias, innerAlias
 }
 
+// The field name is carried VERBATIM into both the datum key and the label.
+// f.Name comes off a RecordConstructorField that the seed builder already
+// named, so the two folds here were a second normalization of a name that had
+// one — the same conversion applied to every other output-naming site.
 func ordinalUnnestColumnDef(f values.RecordConstructorField, descs []protoreflect.MessageDescriptor) executor.ColumnDef {
-	name := strings.ToUpper(f.Name)
-	label := strings.ToUpper(parseColRef(f.Name).bare())
+	name := f.Name
+	label := parseColRef(f.Name).bare()
 	return columnDefFromRef(name, label, name, f.Value, descs)
 }
 
@@ -5899,7 +6015,14 @@ func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAli
 			// over a join yields bare column names (with duplicates), never
 			// U.NAME (verified against fdb-relational 4.11.1.0).
 			if qual.Label == "" {
-				qual.Label = strings.ToUpper(c.Name)
+				// VERBATIM. The label is the SQL name a user sees, and
+				// `c.Name` is already canonical from the parse boundary —
+				// folding it here reported KEEPCASE for a column declared
+				// `"KeepCase"` on the STAR-OVER-A-JOIN path alone, while the
+				// same column read explicitly, or starred over one table,
+				// reported KeepCase. The datum key below still folds: it is
+				// a key, not a name.
+				qual.Label = c.Name
 			}
 			qual.Name = firstAlias + "." + strings.ToUpper(c.Name)
 		}
@@ -5909,7 +6032,8 @@ func qualifyAndMergeColumns(firstCols, secondCols []executor.ColumnDef, firstAli
 		qual := c
 		if secondAlias != "" && !parseColRef(c.Name).isQualified() {
 			if qual.Label == "" {
-				qual.Label = strings.ToUpper(c.Name)
+				// VERBATIM, for the same reason as the first leg above.
+				qual.Label = c.Name
 			}
 			qual.Name = secondAlias + "." + strings.ToUpper(c.Name)
 		}
@@ -5958,7 +6082,11 @@ func buildAggColumns(
 		bare := parseColRef(name).bare()
 		label := ""
 		if !strings.EqualFold(name, bare) {
-			label = strings.ToUpper(bare)
+			// VERBATIM, like the aggregate half below and like
+			// AggregateKeyColumnName, which produced `name`. The comparison
+			// stays EqualFold because it asks a structural question — did the
+			// split remove a qualifier — not a naming one.
+			label = bare
 		}
 		// The TYPE resolves against ALL join-leaf descriptors, not just the
 		// first: a group key from a FAR join leg (`GROUP BY d.dname` over
@@ -5974,14 +6102,44 @@ func buildAggColumns(
 			}
 		}
 		cols = append(cols, executor.ColumnDef{
-			Name:     strings.ToUpper(name),
+			Name:     name,
 			Label:    label,
 			TypeName: typeName,
 			Nullable: nullable,
 		})
 	}
 	for _, a := range aggregates {
-		name := aggregateSpecName(a)
+		// THE AUTHORITY, not a third copy of it. This arm used to render the
+		// name itself (aggregateSpecName/aggOperandName), carrying its own
+		// space-strip and its own fold — the exact two repairs RFC-237 §8
+		// removed from expressions.AggregateResultColumnName, still standing
+		// here. Two copies of one naming rule is the shape that keeps
+		// producing wrong answers in this file's neighbourhood, so the copy is
+		// gone rather than corrected.
+		//
+		// Measured before the change, because "it looked wrong" is not a
+		// reason to touch a live path: suffixing every Name and Label out of
+		// deriveColumnsFromAggregation leaves the WHOLE yamsql corpus and all
+		// of //pkg/relational/sqldriver green, while the same mutation on
+		// deriveColumnsFromProjection reddens yamsql in seconds. Every
+		// aggregate plan the corpus produces carries a projection above it,
+		// and that projection owns the names:
+		//
+		//	$ grep -c '^plan:  StreamingAgg' …/plan_shape.golden
+		//	0                       # of 2769 lines that DID plan (the 2612 query
+		//	                        # count includes 271 plan errors, which emit no
+		//	                        # plan: line at all — so it is the wrong denominator)
+		//	$ grep -c StreamingAgg  …/plan_shape.golden
+		//	1115                    # the control: the node is everywhere, never at the root
+		//
+		// So this arm is UNREACHABLE FROM SQL AS PLANNED TODAY. That is the
+		// honest claim and it is narrower than the one that stood here, which
+		// asserted the executor "can still produce a bare StreamingAgg root"
+		// and had nothing behind it. The arm is kept because a dispatch that
+		// returns no columns is a worse failure than an unreached one, and it
+		// is made to agree with the authority so that if the planner ever does
+		// emit that root, it agrees.
+		name := expressions.AggregateResultColumnName(a)
 		// Aggregate result type stays first-leaf-resolved (unchanged): COUNT/AVG
 		// are operator-fixed and a SUM/MIN/MAX operand is overwhelmingly the
 		// aggregated leg's own column. Far-leg aggregate-operand typing is a
@@ -5997,46 +6155,15 @@ func buildAggColumns(
 		// Name stays the generated spelling: it is the datum lookup key the
 		// aggregate cursor writes (see the group-key comment above); Label is
 		// what Rows.Columns() surfaces.
-		label := ""
-		if a.Alias != "" {
-			label = strings.ToUpper(a.Alias)
-		}
+		label := a.Alias
 		cols = append(cols, executor.ColumnDef{
-			Name:     strings.ToUpper(name),
+			Name:     name,
 			Label:    label,
 			TypeName: typeName,
 			Nullable: api.ColumnNullable,
 		})
 	}
 	return cols
-}
-
-func aggregateSpecName(a expressions.AggregateSpec) string {
-	operand := aggOperandName(a)
-	switch a.Function {
-	case expressions.AggCount:
-		return "COUNT(" + operand + ")"
-	case expressions.AggSum:
-		return "SUM(" + operand + ")"
-	case expressions.AggAvg:
-		return "AVG(" + operand + ")"
-	case expressions.AggMin:
-		return "MIN(" + operand + ")"
-	case expressions.AggMax:
-		return "MAX(" + operand + ")"
-	default:
-		return "AGG(" + operand + ")"
-	}
-}
-
-func aggOperandName(a expressions.AggregateSpec) string {
-	if cv, ok := a.Operand.(*values.ConstantValue); ok && cv.Value == nil {
-		return "*"
-	}
-	if a.OperandName != "" {
-		return strings.ReplaceAll(a.OperandName, " ", "")
-	}
-	return values.ColumnNameValue(a.Operand)
 }
 
 // aggregateResultType derives the SQL type name of an aggregate's result
@@ -7250,7 +7377,7 @@ func referencesInformationSchema(ctx antlr.Tree) bool {
 		if tn := atom.TableName(); tn != nil {
 			if fid := tn.FullId(); fid != nil {
 				for _, uid := range fid.AllUid() {
-					if strings.EqualFold(functions.StripIdentifierQuotes(uid.GetText()), "INFORMATION_SCHEMA") {
+					if strings.EqualFold(functions.NormalizeIdentifier(uid.GetText()), "INFORMATION_SCHEMA") {
 						return true
 					}
 				}
@@ -7531,9 +7658,9 @@ func buildSchemaTemplateFromDDL(schemaDDL string) (*metadata.RecordLayerSchemaTe
 			continue
 		}
 		// Normalize the table name the same way execCreateSchemaTemplate and
-		// the column/index parsers do (StripIdentifierQuotes upper-cases
+		// the column/index parsers do (NormalizeIdentifier upper-cases
 		// unquoted identifiers), so index lookups by table name match.
-		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
+		tableName := functions.NormalizeIdentifier(td.Uid().GetText())
 		cols, pkCols, tdErr := parseTableDefinition(td, b)
 		if tdErr != nil {
 			return nil, fmt.Errorf("table %q: %w", tableName, tdErr)
@@ -7613,4 +7740,103 @@ func (r *paginatingRows) env() *dst.Env {
 		return nil
 	}
 	return r.conn.sess.DB.Env()
+}
+
+// validateScanTables is validateTablesAndColumns' TABLE half, for the DML path,
+// and it walks the same tree the original does -- Children() only.
+//
+// The SELECT path runs the full validation in runFromResolutionPostPasses; the
+// DML path never did, so a table that does not exist escaped every check when
+// it appeared as a SOURCE rather than as a target. `INSERT INTO "Customer"
+// SELECT id, name FROM customer` against a table declared `"Customer"` reported
+// SUCCESS with zero rows -- the same silent shape as the target-side defect and
+// one word away from it -- while the identical bare SELECT answered 42F01. A
+// subquery source was loud but wrong: `DELETE ... WHERE id IN (SELECT id FROM
+// customer)` gave 0AF00 "DML Cascades translation failed".
+//
+// TABLES ONLY, deliberately. The column half of that validation would also
+// change which SQLSTATE a DML statement reports for a bad COLUMN, and the
+// ordering of column-vs-table diagnostics on the DML path is a separate open
+// question with its own measurements (RFC-238 section 7e). Widening the fix to
+// carry that decision along is how one change becomes two.
+//
+// AND IT WALKS SUBQUERY PLANS AS WELL AS Children(), which the function it
+// halves does not. Three claims were made about that walk in three different
+// places and all three were wrong; these are the measurements.
+//
+// IT IS NOT LOAD-BEARING FOR ANY SQL-VISIBLE SHAPE TESTED. Removing it leaves
+// every arm of unquoted_dml_against_a_quoted_table.yaml green, including
+// `DELETE FROM t WHERE id = (SELECT MAX(id) FROM nosuchtable)` and the EXISTS
+// form. Production rejects both -- translateScan raises ErrCodeUndefinedTable
+// for a scan with no catalog row type, and the EXISTS shape fails its own
+// check. What the walk guards is
+// the HARNESS path: planPhysicalDMLWithMetadata is a hand-maintained copy of
+// planDML that explain-differ plans the whole corpus through, and there the
+// scalar-subquery source does reach it -- plan_shape.golden records the
+// resulting PLAN-ERROR in this function's own wording.
+//
+// THAT MAKES IT THE ODD ONE OUT AND THE NOTE IS DELIBERATE. Every other
+// harness-vs-production divergence here was closed by making the HARNESS mirror
+// production -- the target guard, this sweep, rejectDuplicateUnnestAlias. This
+// walk is the reverse: production carries it for a path only the harness
+// exercises. Someone will eventually read that as dead weight and simplify it
+// away, so the reason is written down rather than inferred.
+//
+// IT ALSO REJECTED THREE VALID STATEMENTS until the CTE names were SCOPED. A
+// scalar subquery may define its own CTE on the same side field this walk
+// descends into, so descending with only the outer names rejected the CTE's own
+// scan with 42F01. The fix is per-plan scoping below -- NOT making
+// collectCTENames itself walk subqueries, which a first attempt did and which
+// leaked a CTE into a SIBLING subquery where it is out of scope. Within one
+// level the set is still flat, so a CTE is visible to every scan in that plan
+// regardless of lexical position: an over-accept, matching
+// validateTablesAndColumns, and the safe direction for a validator whose job is
+// rejection.
+//
+// A DML EXISTS SUBQUERY IS NOT WHY THIS EXISTS. `DELETE ... WHERE EXISTS
+// (SELECT 1 FROM nosuchtable)` answers 0AF00 from the unsupported-shape check
+// with the walk or without it, and upgradeDMLWhereWithCatalog does INSTALL
+// EXISTS subqueries on its success path -- what it cannot install is one whose
+// inner build already failed. An earlier comment said it dropped them
+// unconditionally; that was wrong, and the conclusion it supported was right
+// for a different reason.
+func validateScanTables(op logical.LogicalOperator, md *recordlayer.RecordMetaData) error {
+	if op == nil || md == nil {
+		return nil
+	}
+	return validateScanTablesInner(op, md, collectCTENames(op))
+}
+
+func validateScanTablesInner(op logical.LogicalOperator, md *recordlayer.RecordMetaData, cteNames map[string]bool) error {
+	if op == nil {
+		return nil
+	}
+	if scan, ok := op.(*logical.LogicalScan); ok {
+		if !cteNames[strings.ToUpper(scan.Table)] && md.GetRecordType(scan.Table) == nil {
+			return api.NewErrorf(api.ErrCodeUndefinedTable, "table %q does not exist", scan.Table)
+		}
+	}
+	for _, child := range op.Children() {
+		if err := validateScanTablesInner(child, md, cteNames); err != nil {
+			return err
+		}
+	}
+	// Each attached plan gets its OWN scope: the CTE names visible here, plus the
+	// ones that plan declares -- never the ones a SIBLING declares. Unioning every
+	// side plan's definitions into one map before descending was simpler and
+	// wrong: for `id = (WITH x AS (...) SELECT MAX(id) FROM x) AND v = (SELECT
+	// MAX(id) FROM x)` it made `X` visible to the second subquery, which is
+	// outside the CTE's scope, so an invalid reference was accepted. A CTE is
+	// lexically scoped and a flat name set cannot express that.
+	for _, sub := range subqueryPlans(op) {
+		scoped := make(map[string]bool, len(cteNames))
+		for k, v := range cteNames {
+			scoped[k] = v
+		}
+		collectCTENamesInner(sub, scoped)
+		if err := validateScanTablesInner(sub, md, scoped); err != nil {
+			return err
+		}
+	}
+	return nil
 }

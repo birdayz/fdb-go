@@ -632,11 +632,26 @@ func (c AggregateCall) Ref() ColumnRef {
 	return ColumnRefFor(c.Bare, c.Qualifier, c.Qualified, c.Operand)
 }
 
-// CanonicalName renders the call in the canonical upper-case display form —
-// `FUNC(OPERAND)`, `FUNC(DISTINCT OPERAND)`, `COUNT(*)` — the alias-free
-// output-column name for an aggregate. Every consumer compares these keys
-// case-insensitively (upper-cased or via normalizeAggOutputName), so the
-// upper-case Func is safe even where the SQL wrote the function lower-case.
+// CanonicalName renders the call as `FUNC(OPERAND)`,
+// `FUNC(DISTINCT OPERAND)` or `COUNT(*)` — the alias-free output-column name
+// for an aggregate. The FUNC half is upper because it is written that way from
+// an enum, never folded from the SQL; the OPERAND half is whatever the producer
+// minted and is not touched here.
+//
+// CONSUMERS NO LONGER ALL FOLD, and this sentence used to say they did
+// ("case-insensitively, upper-cased or via normalizeAggOutputName"). Say
+// exactly which changed, because the first attempt at this correction
+// over-claimed in the other direction:
+//
+//   - normalizeAggOutputName and normalizeAggregateBindingName stopped
+//     upper-casing under RFC-237. They now strip whitespace only.
+//   - Some consumers still apply their OWN strings.ToUpper to this result —
+//     logical_predicate.go's aggTypes map is one, and it folds symmetrically on
+//     write and read, which is a consistent key rather than a naming decision.
+//
+// So the upper-case Func is safe because it is a LITERAL, not because a fold on
+// the far side would have rescued it. That distinction is load-bearing the
+// moment a consumer compares exactly, and several now do.
 func (c AggregateCall) CanonicalName() string {
 	if c.Star {
 		return c.Func + "(*)"

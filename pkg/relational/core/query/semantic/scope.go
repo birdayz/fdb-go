@@ -193,10 +193,148 @@ func (s *Scope) AddSource(src ScopeSource) error {
 	return nil
 }
 
-// matchingColumns returns EVERY column of tbl whose name matches id — Java's
-// per-attribute lookup, which appends one candidate per matching output
-// expression rather than stopping at the first (SemanticAnalyzer.java:417,
-// :422 then reject a list longer than one with AMBIGUOUS_COLUMN).
+// A resolution pass. Every level is resolved twice: STRICT first, and RELAXED
+// only if strict found nothing at that same level.
+//
+// THE SHAPE IS JAVA'S; THE DIMENSION IT RELAXES IS NOT, and the two must not
+// be conflated. `SemanticAnalyzer.resolveIdentifierMaybe`
+// (SemanticAnalyzer.java:427-438) runs `lookup(id, operators, true)` over ALL
+// operators of a fragment and, only when that yields nothing, the same lookup
+// with `false` over the SAME operators, before walking to the parent. That
+// two-pass, whole-level, strict-then-relaxed structure is exactly what is
+// implemented here.
+//
+// But Java's flag is `matchQualifiedOnly` (SemanticAnalyzer.java:444-446): it
+// relaxes whether the reference must be QUALIFIED, and both of its passes
+// compare through `Identifier.equals`, which is `String.equals` on the
+// normalized name (Identifier.java:155-157). JAVA NEVER RELAXES CASE, under
+// any option — `CASE_SENSITIVE_IDENTIFIERS` selects which branch of
+// normalizeString runs at the PARSE boundary and leaves the comparison exact
+// either way. So the relaxed pass below has no Java analogue and is not a
+// port; it is a Go-only read-side extension, argued on its own terms at
+// relaxedPass.
+//
+// The per-level placement is chosen for a reason that stands independently of
+// the citation: an inner scope's relaxed match beats an outer scope's exact
+// match, which is ordinary SQL shadowing. Letting an outer exact match win
+// would silently turn a local reference into a correlated one.
+type resolutionPass int
+
+const (
+	// strictPass compares identifier text exactly. This is Java's whole rule:
+	// SemanticAnalyzer.normalizeString (SemanticAnalyzer.java:146-153) folds an
+	// unquoted identifier UPPER and strips a quoted one verbatim at the PARSE
+	// boundary, and every catalog comparison downstream is `.equals`.
+	strictPass resolutionPass = iota
+	// relaxedPass additionally accepts a name that differs only by case.
+	//
+	// NOT COVERED, and each of these is deliberate:
+	//   - qualifiers and source aliases. They originate in SQL text or in the
+	//     catalog's own already-folded table index, never in a descriptor, so
+	//     there is nothing for a fold to repair.
+	//   - the quoting FLAG, beyond what EqualsIgnoreQuoting already ignores.
+	//   - `__2` / `__1` / `__0` escaping (dot, dollar, double-underscore —
+	//     ProtoUtils.java:39-41, mirrored in protoname.go). That is
+	//     un-escaped once, at the catalog boundary, by ToUserIdentifier.
+	//   - Unicode case folding beyond strings.EqualFold's simple folding.
+	//
+	// COVERED: column names, and struct-field names below them.
+	//
+	// THIS HAS NO JAVA ANALOGUE. It is a Go-only read-side extension, not a
+	// port, and saying so precisely matters because the surrounding structure
+	// IS a port and the two are easy to conflate.
+	//
+	// Java compares identifiers exactly, always: `Identifier.equals` is
+	// `String.equals` on the normalized name (Identifier.java:155-157), and
+	// `CASE_SENSITIVE_IDENTIFIERS` (Options.java:211) only chooses which
+	// branch of normalizeString runs at the PARSE boundary — setting it makes
+	// Java MORE case-sensitive, never less. There is no configuration in which
+	// Java resolves `foo` against a column called `Foo`; its own
+	// case-sensitivity.yamsql shows the mismatch answering UNDEFINED.
+	//
+	// It exists because the two engines have different POPULATIONS, not
+	// because Java's rule is wrong. Java's SQL surface is always DDL-fed, so a
+	// descriptor whose field names are not already the normalized SQL spelling
+	// is a corner case there. Here, wrapping a user's own hand-written .proto
+	// as a SQL catalog is a first-class entry point, so an unquoted
+	// `SELECT order_id` over a field literally named `order_id` has to keep
+	// working. The extension is read-side only and never reaches the wire,
+	// which is what the project's rule permits.
+	//
+	// Its cost is measured and pinned, not assumed: every `goOnly` arm of
+	// QuotedIdentifierCaseJavaProbe records Go answering where Java raises
+	// 42703. Deliberately not a count — the arms are a population that grows,
+	// and a number here is one nobody re-runs
+	// (`grep -c 'mode: goOnly'` on that file is the check).
+	relaxedPass
+)
+
+// matches reports whether a candidate name answers a reference under this pass.
+func (p resolutionPass) matches(have, want Identifier) bool {
+	if have.EqualsIgnoreQuoting(want) {
+		return true
+	}
+	return p == relaxedPass && strings.EqualFold(have.Name(), want.Name())
+}
+
+// lookupColumn resolves a single column of tbl under this pass.
+func (p resolutionPass) lookupColumn(tbl Table, id Identifier) (Column, bool) {
+	if col, ok := tbl.LookupColumn(id); ok {
+		return col, true
+	}
+	if p == strictPass {
+		return Column{}, false
+	}
+	for _, c := range tbl.Columns() {
+		if p.matches(c.Id, id) {
+			return c, true
+		}
+	}
+	return Column{}, false
+}
+
+// lookupStructField resolves a nested field of col under this pass.
+func (p resolutionPass) lookupStructField(col Column, id Identifier) (Column, int, bool) {
+	if f, ord, ok := col.LookupStructField(id); ok {
+		return f, ord, true
+	}
+	if p == strictPass {
+		return Column{}, 0, false
+	}
+	for i, f := range col.StructFields {
+		if p.matches(f.Id, id) {
+			return f, i, true
+		}
+	}
+	return Column{}, 0, false
+}
+
+// LookupColumnRelaxed asks ONE table whether it declares a column the given
+// reference could name: the exact spelling first, then a case-insensitive
+// match — the same two steps Scope's relaxed pass applies.
+//
+// It exists for the SINGLE-SOURCE questions that are not resolutions: "does
+// this leg still carry the column the outer reference named?", "does the CTE
+// body project this name?". Those have nothing to adjudicate across sources,
+// which is the whole reason Table.LookupColumn itself stays exact — a table
+// that relaxed on its own would let one source's loose match compete with
+// another source's exact one. Do NOT use this to resolve a reference; use the
+// Scope methods, which run the two passes level by level and count candidates.
+func LookupColumnRelaxed(tbl Table, id Identifier) (Column, bool) {
+	return relaxedPass.lookupColumn(tbl, id)
+}
+
+// matchingColumns returns EVERY column of tbl whose name matches id under the
+// pass — Java's per-attribute lookup, which appends one candidate per matching
+// output expression rather than stopping at the first
+// (SemanticAnalyzer.java:417, :422 then reject a list longer than one with
+// AMBIGUOUS_COLUMN).
+//
+// Counting rather than declining is what makes the relaxed pass safe: two
+// columns that differ only by case are two candidates for a folded reference,
+// so the reference is AMBIGUOUS (42702) and says so. Declining instead would
+// report 42703 — that the column does not exist — about a name that exists
+// twice.
 //
 // Base tables cannot repeat a column name, so this differs from
 // Table.LookupColumn only for the synthesised sources that CAN: a derived
@@ -204,15 +342,15 @@ func (s *Scope) AddSource(src ScopeSource) error {
 //
 // The fast path is deliberate — Columns() copies defensively, and the
 // overwhelming majority of lookups are against base tables.
-func matchingColumns(tbl Table, id Identifier) []Column {
-	first, ok := tbl.LookupColumn(id)
+func matchingColumns(tbl Table, id Identifier, pass resolutionPass) []Column {
+	first, ok := pass.lookupColumn(tbl, id)
 	if !ok {
 		return nil
 	}
 	var out []Column
 	seenFirst := false
 	for _, c := range tbl.Columns() {
-		if !c.Id.EqualsIgnoreQuoting(id) {
+		if !pass.matches(c.Id, id) {
 			continue
 		}
 		if !seenFirst {
@@ -239,33 +377,40 @@ func matchingColumns(tbl Table, id Identifier) []Column {
 // Mirrors Java's resolution: inner scopes shadow outer; within a
 // scope, ambiguity is a hard error.
 func (s *Scope) ResolveColumn(id Identifier) (Column, ScopeSource, error) {
-	// First pass at this level: collect matches. Ambiguity within
-	// one level is an error; we check before descending the parent
-	// chain.
+	// STRICT at this level, then RELAXED at this same level, then the parent.
+	// See resolutionPass for why the second pass belongs here and not after
+	// the whole chain.
 	var matches []struct {
 		col Column
 		src ScopeSource
 	}
-	for _, src := range s.sources {
-		// An UNQUALIFIED reference skips a source's hidden columns
-		// (SemanticAnalyzer.java:468) — the right-side USING copy stays
-		// addressable via its qualifier only.
-		if src.hidesColumn(id) {
-			continue
+	for _, pass := range [...]resolutionPass{strictPass, relaxedPass} {
+		for _, src := range s.sources {
+			// An UNQUALIFIED reference skips a source's hidden columns
+			// (SemanticAnalyzer.java:468) — the right-side USING copy stays
+			// addressable via its qualifier only. Hiding is decided the same
+			// way in both passes: a column hidden from the strict pass is not
+			// un-hidden by a fold.
+			if src.hidesColumn(id) {
+				continue
+			}
+			// EVERY matching attribute of the source counts, not the first.
+			// Java's lookup walks the operator's output expressions and appends
+			// each match into one list, so a source that emits the name TWICE
+			// (a derived body with a repeated star: `SELECT a.*, a.* FROM a`)
+			// contributes two candidates and the reference is ambiguous
+			// (SemanticAnalyzer.java:417,:422). A first-match lookup answered
+			// such a reference off column 0 instead — silently, since duplicate
+			// output names are legal to PRODUCE and only illegal to REFERENCE.
+			for _, c := range matchingColumns(src.Table, id, pass) {
+				matches = append(matches, struct {
+					col Column
+					src ScopeSource
+				}{c, src})
+			}
 		}
-		// EVERY matching attribute of the source counts, not the first.
-		// Java's lookup walks the operator's output expressions and appends
-		// each match into one list, so a source that emits the name TWICE
-		// (a derived body with a repeated star: `SELECT a.*, a.* FROM a`)
-		// contributes two candidates and the reference is ambiguous
-		// (SemanticAnalyzer.java:417,:422). A first-match lookup answered
-		// such a reference off column 0 instead — silently, since duplicate
-		// output names are legal to PRODUCE and only illegal to REFERENCE.
-		for _, c := range matchingColumns(src.Table, id) {
-			matches = append(matches, struct {
-				col Column
-				src ScopeSource
-			}{c, src})
+		if len(matches) > 0 {
+			break
 		}
 	}
 	// A SHADOWING source (a lateral array unnest binding, RFC-142) wins over
@@ -407,14 +552,14 @@ func (s *Scope) ResolveQualifiedColumnNested(qualifier, col Identifier) (Column,
 // An empty `rest` succeeds with no accessors: the reference addresses the
 // column itself, which is what makes the alias-qualified direct form
 // (`a.id`) and the descending form (`a.n.sk`) one rule instead of two.
-func descendStruct(col Column, rest []Identifier) ([]NestedAccessor, bool) {
+func descendStruct(col Column, rest []Identifier, pass resolutionPass) ([]NestedAccessor, bool) {
 	if len(rest) == 0 {
 		return nil, true
 	}
 	acc := make([]NestedAccessor, 0, len(rest))
 	cur := col
 	for _, seg := range rest {
-		field, ord, found := cur.LookupStructField(seg)
+		field, ord, found := pass.lookupStructField(cur, seg)
 		if !found {
 			return nil, false
 		}
@@ -469,39 +614,47 @@ func (s *Scope) ResolvePathNested(segs []Identifier) (Column, ScopeSource, []Nes
 			src       ScopeSource
 			accessors []NestedAccessor
 		}
-		for _, src := range cur.sources {
-			// Rule 5 (nested): segs[0] names a STRUCT column of this source.
-			// Checked for EVERY source, not only alias-matching ones, because
-			// the struct column is reached through the source's columns — the
-			// reference `home_address.city` carries no source qualifier at all.
-			if structCol, ok := src.Table.LookupColumn(qualifier); ok {
-				if acc, found := descendStruct(structCol, segs[1:]); found {
+		// STRICT then RELAXED at this level; only then the parent. The
+		// qualifier is compared exactly in BOTH passes — a source alias never
+		// comes from a descriptor, so a fold has nothing to repair there.
+		for _, pass := range [...]resolutionPass{strictPass, relaxedPass} {
+			for _, src := range cur.sources {
+				// Rule 5 (nested): segs[0] names a STRUCT column of this source.
+				// Checked for EVERY source, not only alias-matching ones, because
+				// the struct column is reached through the source's columns — the
+				// reference `home_address.city` carries no source qualifier at all.
+				if structCol, ok := pass.lookupColumn(src.Table, qualifier); ok {
+					if acc, found := descendStruct(structCol, segs[1:], pass); found {
+						matches = append(matches, struct {
+							col       Column
+							src       ScopeSource
+							accessors []NestedAccessor
+						}{structCol, src, acc})
+					}
+				}
+				if !src.matchesQualifier(qualifier) {
+					continue
+				}
+				if !aliasSeen {
+					aliasSeen = true
+					firstAliasTable = src.Table.Name()
+				}
+				// Per-attribute, exactly as the bare form: a source emitting the
+				// name twice makes `nested.id` ambiguous, not first-match.
+				for _, c := range matchingColumns(src.Table, segs[1], pass) {
+					acc, found := descendStruct(c, segs[2:], pass)
+					if !found {
+						continue
+					}
 					matches = append(matches, struct {
 						col       Column
 						src       ScopeSource
 						accessors []NestedAccessor
-					}{structCol, src, acc})
+					}{c, src, acc})
 				}
 			}
-			if !src.matchesQualifier(qualifier) {
-				continue
-			}
-			if !aliasSeen {
-				aliasSeen = true
-				firstAliasTable = src.Table.Name()
-			}
-			// Per-attribute, exactly as the bare form: a source emitting the
-			// name twice makes `nested.id` ambiguous, not first-match.
-			for _, c := range matchingColumns(src.Table, segs[1]) {
-				acc, found := descendStruct(c, segs[2:])
-				if !found {
-					continue
-				}
-				matches = append(matches, struct {
-					col       Column
-					src       ScopeSource
-					accessors []NestedAccessor
-				}{c, src, acc})
+			if len(matches) > 0 {
+				break
 			}
 		}
 		switch len(matches) {
@@ -564,24 +717,30 @@ func (s *Scope) ResolveSourceQualifiedPath(segs []Identifier) (Column, ScopeSour
 			src       ScopeSource
 			accessors []NestedAccessor
 		}
-		for _, src := range cur.sources {
-			if !src.matchesQualifier(qualifier) {
-				continue
-			}
-			if !aliasSeen {
-				aliasSeen = true
-				firstAliasTable = src.Table.Name()
-			}
-			for _, c := range matchingColumns(src.Table, segs[1]) {
-				accessors, found := descendStruct(c, segs[2:])
-				if !found {
+		// STRICT then RELAXED at this level, as in ResolvePathNested.
+		for _, pass := range [...]resolutionPass{strictPass, relaxedPass} {
+			for _, src := range cur.sources {
+				if !src.matchesQualifier(qualifier) {
 					continue
 				}
-				matches = append(matches, struct {
-					col       Column
-					src       ScopeSource
-					accessors []NestedAccessor
-				}{c, src, accessors})
+				if !aliasSeen {
+					aliasSeen = true
+					firstAliasTable = src.Table.Name()
+				}
+				for _, c := range matchingColumns(src.Table, segs[1], pass) {
+					accessors, found := descendStruct(c, segs[2:], pass)
+					if !found {
+						continue
+					}
+					matches = append(matches, struct {
+						col       Column
+						src       ScopeSource
+						accessors []NestedAccessor
+					}{c, src, accessors})
+				}
+			}
+			if len(matches) > 0 {
+				break
 			}
 		}
 		switch len(matches) {

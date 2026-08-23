@@ -211,15 +211,15 @@ func TestScalarSeed_InnerScalarTypeFlowsFromInner(t *testing.T) {
 	// inner leg's own derived column.
 	var want values.Type
 	for _, c := range tr.legColumns(innerOp) {
-		if c.Name == "PRICE" {
+		if c.Name == "price" {
 			want = c.FieldType
 		}
 	}
 	if want == nil {
-		t.Fatal("fixture drift: Order has no PRICE column to flow")
+		t.Fatal("fixture drift: Order has no price column to flow")
 	}
 	if innerType.Code() != want.Code() {
-		t.Errorf("inner scalar leg type code = %v, want %v (Order.PRICE's own type)",
+		t.Errorf("inner scalar leg type code = %v, want %v (Order.price's own type)",
 			innerType.Code(), want.Code())
 	}
 	// Nullability is independent of the flowed type and is always true here:

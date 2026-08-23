@@ -65,7 +65,7 @@ func NewUnquoted(raw string) Identifier {
 }
 
 // FromNormalized wraps a string that was ALREADY normalized by the parse
-// capture (functions.StripIdentifierQuotes: unquoted segments folded
+// capture (functions.NormalizeIdentifier: unquoted segments folded
 // UPPER, quoted segments verbatim with the quotes removed). Unlike
 // NewUnquoted it performs NO re-normalization — re-folding a captured
 // quoted-verbatim alias (`AS "q$1"` → captured `q$1`) would corrupt it to

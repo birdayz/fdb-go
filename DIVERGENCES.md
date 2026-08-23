@@ -2078,3 +2078,473 @@ sliding-window port that surfaced it.
 (A comment at `vector_index_maintainer.go` previously called the non-KeyWithValue
 root "a documented divergence" while nothing documented it. This entry is that
 documentation.)
+
+---
+
+## Identifier resolution: Go over-resolves case, Java compares exactly
+
+**Java's rule.** Identifiers are normalized ONCE, at the parse boundary
+(`SemanticAnalyzer.normalizeString`: quoted keeps its case, unquoted folds
+UPPER), and every comparison after that is exact — `Identifier.equals` is
+`String.equals` on the normalized name. There is NO configuration under which
+Java resolves `foo` against a column called `Foo`; `CASE_SENSITIVE_IDENTIFIERS`
+only selects which branch of `normalizeString` runs and makes Java *more*
+case-sensitive, never less.
+
+**Go's rule.** Presentation matches Java exactly (RFC-237). Lookup adds a
+SECOND PASS at each scope level: exact first, then an unambiguous
+case-insensitive match, then the parent. It counts candidates, so a folded
+reference matching two case-variants is 42702.
+
+**Measured against a live fdb-relational 4.12.11.0**, over
+`CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, …)`:
+
+| query | Java | Go |
+|---|---|---|
+| `SELECT "KeepCase"` | `[KeepCase][[42]]` | same |
+| `SELECT *` | `[ID KeepCase PLAIN]` | same |
+| `SELECT KeepCase` | 42703 | `[KeepCase][[42]]` |
+| `SELECT "KEEPCASE"` | 42703 | `[KeepCase][[42]]` |
+| `SELECT "keepcase"` | 42703 | `[KeepCase][[42]]` |
+| `SELECT "plain"` (unquoted DDL) | 42703 | `[PLAIN][[7]]` |
+
+and, reached through USING:
+
+```sql
+SELECT q1."id" FROM q1 JOIN q2 USING ("k") JOIN q3 USING ("K")
+java: Unknown reference K      go: [[1]]
+```
+
+Pinned as `goOnly` arms in `conformance/quoted_identifier_case_java_probe_test.go`
+and in `conformance/join_using_chain_java_probe_test.go`, so either engine
+moving reddens a test.
+
+**Why Go keeps it.** The populations differ, not the correctness. Java's SQL
+surface is always DDL-fed, so a descriptor whose field names are not already the
+normalized SQL spelling is a corner case. Here `rlcatalog.Wrap(md)` over a
+user's own hand-written `.proto` is a first-class entry point, and those
+descriptors carry lower/snake names — so `SELECT order_id` over a field
+literally called `order_id` has to keep working. Read-side only; never reaches
+the wire.
+
+**What closing it would actually take** — and this is the part that was
+recorded WRONG in two places before: not plumbing `CASE_SENSITIVE_IDENTIFIERS`
+(it would not help, see above) but **preserving the QUOTING BIT through
+`functions.NormalizeIdentifier` and `semantic.FromNormalized`**, which
+discard it today. `FromNormalized` hard-codes `wasQuoted: false` and is used
+~59 times on the reference path, so the engine cannot currently tell `"K"` from
+`K` at resolution time at all. Probed: gating the relaxed pass on
+`!want.WasQuoted()` is INERT for exactly that reason.
+
+---
+
+## Index fields are exported in Go and `private final` in Java
+
+**Java.** `Index` holds `private final` `name`, `type`, `rootExpression`,
+`options` and `predicate` (`Index.java:63-78`), exposed by getters only
+(`:294`, `:310`, `:329`). There is no `setName` and no `setRootExpression`.
+Because the fields cannot be rewritten, `RecordMetaDataBuilder.build` passes
+`indexes`, `universalIndexes` and `formerIndexes` DIRECTLY into
+`new RecordMetaData(...)` (`RecordMetaDataBuilder.java:1457-1459`) and shares
+them safely.
+
+**Go.** Those fields are exported. `Build` copies every CONTAINER but shares the
+`*Index` OBJECTS, so a caller that keeps the index it passed to `AddIndex` — the
+normal pattern, and one Java REQUIRES, since `build` sets
+`primaryKeyComponentPositions` on that very object (`:1466`) — can rewrite the
+built metadata afterwards. Each field is its own hazard: `RootExpression` reads
+existing entries under a new expression, `Type` dispatches to a different
+maintainer, `Predicate` filters by something the entries were never built with,
+`Name` desynchronises the registry key so `ToProto` emits an empty record-type
+list that reloads as universal.
+
+**Why the objects are shared and not copied.** Copying them was tried and
+reverted. Java shares, so it is a Go-only invention; a shallow copy does not
+isolate anyway, because the KeyExpression graph exposes exported mutators
+(`DimensionsKeyExpression`'s fields, which bound `CanDeleteWhere` at runtime;
+`RecordTypeKeyExpression.Nest`; the live child slice from
+`CompositeKeyExpression.SubKeyExpressions`); and it splits "the caller's index"
+from "the metadata's index" across several hundred sites that pass a pre-`Build`
+`*Index` straight to `ScanIndex`, `RebuildIndex` or `SetIndex`. In
+`OnlineIndexer` that split degraded the containment check from "is the
+metadata's definition" to "shares a name with it". It also broke cross-engine
+conformance (`go: pk=[]` vs `java: pk=[1]`).
+
+THE EXACT FIGURE IS WITHDRAWN, and how it broke is worth more than the number
+was. Two revisions of this branch carried 545 here and 544 in a test's failure
+message. That reads as one number copied wrong, and it was first "fixed" by
+deleting the second copy. It was not a copy at all: `grep -rn
+"ScanIndex(\|RebuildIndex(\|SetIndex(" --include='*.go' pkg/ cmd/ conformance/ |
+wc -l` gives 545, and the same command piped through `grep -vc 'parser/gen/'`
+gives 544. Both were measured, both were right, and the single site between them
+is `relational_parser.go:50302`'s `SetIndex(v IExpressionAtomContext)` — an
+ANTLR accessor with no `*Index` in it. Neither figure counts what the sentence
+above them claimed: the total also swallows 6 declarations (two of the others
+being `BenchmarkScanIndex` and `runGoScanIndex`, name substrings rather than
+calls), 2 comment lines, and every call passing an index NAME rather than an
+object. Reconciling two counts by deleting one is how a contaminated measurement
+survives — the answer was to ask why they differed.
+
+**The fix is encapsulation**, not copying: unexport those fields behind getters,
+the pattern already used on the same struct for `subspaceKey`/
+`SubspaceTupleKey()`. Then sharing is safe for the same reason it is safe in
+Java.
+
+SIZING IT NEEDS A TYPE-AWARE SEARCH, NOT GREP, and the numbers an earlier
+revision of this entry quoted are withdrawn rather than corrected. `.Name` and
+`.Options` are carried by many other types, so a textual count is contaminated
+in both directions: `grep -rn '\.RootExpression\b'` counts 248 READS and misses
+58 writes (`'RootExpression:'`); `'idx\.Options'` is case-sensitive and misses
+`vecIdx`, `mdIdx`, `spfIdx` and friends; and the call-site count for the verbs
+includes their own `func … SetIndex(` declarations, one of which is an ANTLR
+parser method with no `*Index` in sight. What is defensible is a floor — several
+hundred sites across `pkg/`, `cmd/` and `conformance/` — and that the exact
+work-list wants `go/types`, not a regex. Whoever takes it should produce that
+list first; treating a grep total as the scope is what made this paragraph wrong
+twice.
+
+**AND `Options` IS NOT CLOSED BY UNEXPORTING FIELDS**, which the paragraph above
+would otherwise imply. It is a `map[string]string` shared with the built
+metadata, and Go has two EXPORTED methods that mutate it in place:
+`Index.SetUnique` does `idx.Options[IndexOptionUnique] = "true"` and
+`Index.SetClearWhenZero` sets or `delete`s its key. So
+`md.GetIndex("x").SetUnique()` flips uniqueness on already-built metadata
+with no field assignment at all, and unexporting `Options` would leave both
+setters working exactly as before.
+
+Java has neither method — `grep -n "setOption\|options.put\|setUnique\|
+setClearWhenZero" Index.java` returns 0, positive control `grep -c "public "`
+returns 47 — and `Index.java:131` stores `ImmutableMap.copyOf(options)`, so even
+`getOptions().put(…)` throws. Closing this needs the setters to be build-time
+only (or gone), not just the fields hidden.
+
+Pinned by `TestBuiltMetadataSharesIndexObjectsWithTheBuilder`, which fails when
+the divergence closes. NOTE the pin covers `*Index` identity and `.Name` only —
+`Type`, `RootExpression`, `Options` and `Predicate` are named here but driven by
+no arm.
+
+---
+
+## `universalIndexes` is a Map in Java and a slice in Go
+
+Java's `RecordMetaDataBuilder.universalIndexes` is a `Map<String,Index>` and
+`removeIndex` does `universalIndexes.remove(name)`
+(`RecordMetaDataBuilder.java:1189-1198`) — a removal both the builder and any
+metadata sharing the map see cleanly. Go's is a `[]*Index` and
+`removeIndexFromSlice` compacts it IN PLACE (`result := indexes[:0]`,
+`metadata.go`), which rewrites the backing array.
+
+Go therefore COPIES the slice into the built metadata where Java shares the map.
+Sharing it reproduced a state Java cannot reach: after `Build` then
+`RemoveIndex`, `[uni_a uni_b]` became `[uni_b uni_b]` — the survivor duplicated,
+so its maintainer runs twice on every save and a COUNT/SUM aggregate takes a
+non-idempotent double atomic ADD, while the removed index stayed registered with
+no record types, the orphan state `Build` refuses at construction.
+
+The general rule, which "share what Java shares" does not capture: sharing is
+safe only when mutation is not in-place-destructive. Same field name, different
+container, different answer. `formerIndexes` is copied for the same reason even
+though it is append-only today — that is luck, not a property, and its elements
+are copied too because `FormerIndex.SubspaceKey` is `any` and may hold a
+`[]byte` whose backing array would otherwise be shared.
+
+Pinned by `TestPostBuildRemoveIndexLeavesUniversalIndexesIntact`.
+
+---
+
+## Go snapshots a record type's index lists; Java shares everything
+
+Java's `RecordType` constructor assigns the builder's live lists
+(`RecordType.java:70-71`: `this.indexes = indexes;`), and `removeIndex` mutates
+them through `recordType.getIndexes().remove(index)`
+(`RecordMetaDataBuilder.java:1194-1195`). It ALSO shares the index registry
+itself: `private final Map<String,Index> indexes` (`:119`) is passed uncopied at
+`:1459` and stored by reference (`RecordMetaData.java:155`), so
+`indexes.remove(name)` (`:1190`) removes the index from the built metadata's
+registry too, and `toProto` — which seeds from `indexes.entrySet()`
+(`RecordMetaData.java:664-665`) — never emits it.
+
+So Java's post-`build()` `removeIndex` is a COHERENT removal: gone from the
+registry, gone from the record type, gone from the serialized form. An earlier
+revision of this entry said Java's built metadata "DOES lose the association"
+and left the reader to infer an empty record-type list that reloads as
+universal. The first half is right; the consequence was imported from a Go bug.
+Java has no such state.
+
+Go COPIES both — the registry map and the record-type slices — so a post-`Build`
+`RemoveIndex` changes neither. That is a deliberate Go-only difference:
+snapshot-at-Build rather than Java's live view. It is not obviously worse, and
+it is not obviously better; what it is NOT is the port, and this entry
+previously claimed it was.
+
+Note the empty-record-type-list state that motivated so much of this work is
+reachable only by copying ONE of the two and sharing the other. Go did that
+briefly and it produced exactly that bug. Copy both or share both; the mixture
+is what breaks.
+
+---
+
+## FIXED: Go assigned primaryKeyComponentPositions to multi-type and universal indexes
+
+Kept as a record rather than deleted, because the shape is a template: a Go-only
+"improvement" over Java that changes index entry BYTES is a wire break wearing
+the costume of an optimisation, and the tests that shipped with it asserted the
+divergence as the desired behaviour.
+
+`primaryKeyComponentPositions` decides whether an index entry carries the
+record's primary key whole or with the components already present in the index
+key removed (`Index.TrimPrimaryKey`). Java assigns it at exactly one place --
+`RecordMetaDataBuilder.java:1466`, its only `setPrimaryKeyComponentPositions`
+call site in MAIN sources (the Java tree holds 8 more, all under `src/test/`) --
+inside `for (Index index : recordTypeBuilder.getIndexes())`.
+`getIndexes()` and `getMultiTypeIndexes()` are separate fields
+(`RecordTypeIndexesBuilder.java:43 and :45`), and `addMultiTypeIndex` routes by arity:
+zero names to `universalIndexes`, exactly one to `getIndexes()`, two or more to
+`getMultiTypeIndexes()`. So Java never assigns positions to a genuinely
+multi-type or to a universal index.
+
+Go assigned them to all three, and both halves reached the wire.
+
+**Against Java.** Two record types keyed on the same field, with a multi-type
+index on that field: Go computed positions `[0]`, `TrimPrimaryKey` returned an
+EMPTY tuple, and the entry key was `(price)` where Java writes `(price, pk)`.
+Different bytes in FDB for identical metadata.
+
+**Against itself, which is worse.** Universal indexes took "the first record
+type's primary key" by `break`ing out of a range over `b.recordTypes` -- a MAP.
+With record types whose primary keys differ, the choice varied per `Build`
+inside a single process: 40 builds of one metadata produced positions 33 times
+and nil 7 times. Two Go stores opened from the same metadata could write index
+entries that disagree with each other, and nothing about the metadata would
+explain why.
+
+The Go-side tests covering the shape asserted the divergence directly --
+"Multi-type index entries had full redundant PKs instead of trimmed PKs" was
+written up as the bug being fixed. The redundancy IS the format. That is why the
+divergence shipped green: the only coverage of the behaviour encoded it, and a
+single shared "PK is deduped" expectation was applied across all three
+registration arms in `index_registration_matrix_test.go`, so the one arm out of
+three that Java actually dedups made the other two look uniform rather than
+wrong. Its universal arm additionally `Skip`ped, on the true-but-irrelevant
+grounds that `order_id` is not a field of `Customer` -- a fact about the key that
+matrix picked, which left the arm whose behaviour was wrong unrun.
+
+Pinned by `TestPositionsAreAssignedOnlyToSingleTypeIndexes` (all four
+registration spellings, with the single-type arms as the control that keeps the
+negative assertions honest) and by
+`TestUniversalIndexPositionsDoNotDependOnMapIterationOrder` (40 builds, record
+types deliberately given DIFFERENT primary keys, since with identical ones every
+choice agrees and the map order stops mattering).
+
+### UPGRADING BREAKS EXISTING DATA FOR THE AFFECTED INDEXES, SILENTLY
+
+Read this before deploying. It is not a code gap; it is an operational step the
+fix cannot perform for you.
+
+The code this describes is the positions loop in `RecordMetaDataBuilder.Build`
+(`pkg/recordlayer/metadata.go`), whose comment names this section back — neither
+half is findable from the other otherwise, and a pointer that only runs one way
+rots without anyone noticing.
+
+**Who is affected.** An index registered as multi-type (two or more record
+types) or universal, whose key expression overlaps the primary key of a record
+type it covers. Single-type indexes are untouched — their positions are
+unchanged.
+
+**What happens.** `primaryKeyComponentPositions` is derived at every `Build` and
+NEVER persisted: `grep -rn 'primary_key_component_positions'` over Java's
+`*.proto` tree returns nothing (positive control: `last_modified_version`
+returns hits). So there is no field on disk recording which layout an existing
+entry used. Entries written by an older Go for these indexes are TRIMMED; this
+build writes them whole and reads them with nil positions.
+
+Reading a trimmed entry does not error, and **the symptom depends on how much of
+the primary key the index key covers.** Do not go looking for only one of them:
+
+- **Full overlap** (the index key IS the primary key). `Index.getEntryPrimaryKey`
+  returns `entryKey[colSize:]` when positions are nil, and here the trimmed
+  entry's length equals `colSize`, so `colSize < len(entryKey)` is false and it
+  returns an EMPTY tuple. Pinned by
+  `TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey`.
+- **Partial overlap**, which is the commoner shape and does NOT look broken.
+  Index key `(price)`, primary key `(price, id)`: the old positions were
+  `[0, -1]`, so the old entry is `(price, id)` — length 2. Read with nil
+  positions, `colSize = 1 < 2`, so it returns `entryKey[1:]` = `(id)`: a
+  one-element primary key where the real one has two. Non-empty, plausible and
+  wrong. An operator told to watch for empty primary keys concludes these stores
+  are unaffected. Pinned by
+  `TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey`.
+
+**And the old entries never go away on their own.** Post-upgrade, deleting or
+re-saving a record computes the UNTRIMMED index key and clears that; the old
+trimmed entry sits at a key nothing touches, so an unremediated store
+accumulates orphans and deletes silently fail to remove them.
+
+**What that LOOKS like depends on the scan, and it is usually not duplicates.**
+An earlier revision of this paragraph said "scans return duplicate rows"
+unconditionally, which is true of the index entries and false of most rows — and
+it reintroduces, one paragraph later, exactly the trap the partial-overlap
+bullet above was added to prevent:
+
+- A **raw index scan**, or a covering scan satisfied entirely from the entry,
+  shows the extra ENTRY: the orphan sits alongside the correct one. The ROW it
+  produces is not a clean duplicate, though — a covering row built from a
+  partial-overlap orphan fills the primary-key slots from the shifted tuple, so
+  it carries the wrong value in one and a NULL in another.
+- A **record-fetching scan** does not get that far. The orphan's derived primary
+  key is empty (full overlap) or short and wrong (partial overlap), so it
+  resolves to no record, and `ScanIndexRecords` raises `RecordCoreStorageError`
+  rather than skipping it — Go matches Java's default `IndexOrphanBehavior.ERROR`
+  deliberately, so corruption surfaces loudly. A hard failure on a query that
+  used to work is the commoner first symptom.
+
+Watch for both. An operator told to look only for duplicate rows will read the
+storage errors as an unrelated fault.
+
+**Why no automatic guard fires.** `metadata_evolution_validator.go` compares two
+BUILT metadata objects. After the upgrade both sides derive nil positions, so
+`!oldHas && !newHas` and the check passes. It is structurally incapable of
+seeing this, because the thing that changed was never in the metadata it
+compares.
+
+**Why it is not a version gate.** A gate needs an on-disk discriminator and
+there is none; worse, the old format was not even a single format. BOTH the
+universal and the multi-type paths depended on Go map iteration order — the
+removed code guarded on `positions == nil` inside `for _, rt := range
+b.recordTypes`, a map, so for multi-type the first covered type yielding
+non-nil positions won, exactly as the first record type won for universal. Two
+stores written by the same old binary could disagree. There is nothing coherent
+to gate on.
+
+**The remedy, in full, because the short version does not work.** "Bump
+`lastModifiedVersion`" is the right idea and is NOT sufficient on its own. Two
+earlier revisions of this section were wrong in different ways — the first said
+only that, the second added the surrounding steps but still described the bump
+in a form that is SILENTLY INERT.
+
+**Which of the five apply depends on your path**, and steps 3, 4 and 5 are
+universal. Step 2 is needed only when the metadata goes through
+`FDBMetaDataStore` — an in-process metadata provider runs no evolution validator
+at all. Step 1 applies wherever an old binary can still reach the store.
+
+Step 5 is universal even though only PART of it is conditional, and getting that
+backwards is how the whole procedure silently fails. An earlier revision said
+step 5 "applies wherever the rebuild is not inline", which contradicts the trap
+step 5 exists to describe: on the inline path (`recordCount <= 200`) the rebuild
+runs during the open, so nothing prompts you to check — and a wrongly bumped
+index was never selected, was never touched, and is sitting there `READABLE` and
+stale looking exactly like a success. It is the `OnlineIndexer` RUN that is
+conditional on the rebuild not being inline. The VERIFICATION is not conditional
+on anything, and it is the only thing that distinguishes a migration that ran
+from one that did nothing.
+
+**On steps 3 and 4 this section defers to `cq90BumpIndexVersion`** in
+`pkg/relational/sqldriver/cardinality_stale_key_rebuild_fdb_test.go`, which
+calls itself THE production recipe, and to `road-to-prod.md`; where either
+disagrees with steps 3 or 4 here, they are right and this section is stale.
+They are NOT authorities on steps 1, 2 and 5 — `cq90BumpIndexVersion` mutates a
+proto in process, so it drains nothing, never invokes the validator and never
+runs `OnlineIndexer`. Reading it and finding no drain step is not evidence that
+step 1 is stale; it is a test exercising the bump, not the deployment.
+
+1. **Drain every old binary — readers included, not just writers.** Positions are
+   derived at `Build`, so any old process that loads the bumped metadata
+   recomputes the OLD positions. An old WRITER starts producing trimmed entries
+   again, undoing the rebuild. An old READER is just as wrong and less obvious:
+   given a rebuilt untrimmed entry `(price, price, id)` and old positions
+   `[0, -1]`, `getEntryPrimaryKey` takes `entryKey[0]` for the first component
+   and then `entryKey[1]` for the trailing one, deriving `(price, price)` where
+   the true key is `(price, id)` — wrong data returned by a process that never
+   writes. Stop them all before step 2, or keep the affected indexes unavailable
+   to them.
+
+2. **Allow index rebuilds on the metadata store, or the save is refused.**
+   `NewFDBMetaDataStore` installs `DefaultMetaDataEvolutionValidator()`, and that
+   validator returns `MetaDataEvolutionError` — "last modified version of index
+   %q changed" — for precisely this edit unless `allowIndexRebuilds` is set.
+   Build a validator with `SetAllowIndexRebuilds(true)` and install it via
+   `SetEvolutionValidator` before `SaveRecordMetaData`.
+
+3. **Raise the AFFECTED index's `lastModifiedVersion` PAST the metadata version,
+   and raise the metadata version to match. Do not merely increment it.**
+
+   Affected means: registered multi-type (2+ record types) or universal, AND with
+   a key expression overlapping the primary key of a record type it covers.
+   Single-type indexes need nothing. (This definition sat in step 4 for one
+   revision, so the runbook told you to bump before telling you what to bump.)
+
+   This is the step most likely to look done and not be. Rebuild selection is
+   `idx.LastModifiedVersion > version` in `GetIndexesToBuildSince`, where
+   `version` is the STORE HEADER's metadata version. An index sitting at
+   `lastModifiedVersion` 3 in a store whose header is at 10 is NOT selected by
+   bumping it to 4: `Build` accepts it, the validator accepts it,
+   `SaveRecordMetaData` succeeds — and the open advances the header anyway, so no
+   later open ever selects it either. The index is permanently skipped with no
+   error anywhere.
+
+   Leave `AddedVersion` ALONE. The evolution validator requires it unchanged, and
+   only `LastModifiedVersion` drives the rebuild, so bumping both makes the
+   evolution illegal for no gain.
+
+4. **Bump ONE index at a time.** Every index named in `indexesToBuild` is
+   EXCLUDED from the record-count sources that decide the rebuild policy, because
+   an index being built holds no entries and would report 0 for a full store. The
+   whole-store count is resolved from a UNIVERSAL COUNT index. Bump a set
+   containing it and the count degrades to
+   `MaxInt64`, so EVERY index lands `DISABLED` regardless of how small the store
+   is, including the small stores step 5 says will rebuild inline. (A store with
+   a `RecordCountKey` is immune, because that source is not filtered by the
+   exclusion set — do not rely on having one.)
+
+   Note the count index need NOT itself be affected by this bug for that to
+   happen — exclusion is by membership in `indexesToBuild`, not by affectedness.
+   An earlier revision said the count source was "exactly the class this bug
+   affects", and a later one over-corrected by calling the selected index
+   UNGROUPED. Both are wrong. `snapshotTotalRecordCount` REQUESTS
+   `GroupAll(EmptyKey())`, but the request is not the index: `isGroupPrefix`
+   accepts an operand whose grouping is a PREFIX of the index's, and an empty
+   grouping prefixes every grouping, so a universal COUNT index grouped by
+   anything is selectable and the aggregate rolls up every group. What is true
+   is narrower: the count source need not be in the affected class at all,
+   because exclusion is by membership in `indexesToBuild` and nothing else. The
+   instruction stands on that alone, and neither claim about the index's shape
+   was needed to support it.
+
+   With more than one affected index, REPEAT steps 3 through 5 per index rather
+   than batching the bumps. Each round leaves the header at the previous round's
+   version, so the next round selects only the index bumped in it.
+
+5. **Run the rebuild to completion, and verify it RAN — `READABLE` alone does not
+   prove that.** Opening with the new metadata consults
+   `DefaultIndexRebuildPolicy`, which returns `READABLE` (inline rebuild) only for
+   `recordCount <= 200` or an index on new record types, and `DISABLED`
+   otherwise; a store whose count cannot be derived reports `MAX_VALUE` and takes
+   the `DISABLED` branch too. So on any store worth remediating the index lands
+   `DISABLED` — not rebuilt, not readable, quietly excluded from query plans —
+   until an `OnlineIndexer.BuildIndex` run finishes. That call handles
+   `DISABLED` → `WRITE_ONLY` → `READABLE` itself.
+
+   That paragraph describes the DEFAULT policy. An application that installs
+   `WriteOnlyIfTooLargePolicy` lands `WRITE_ONLY` rather than `DISABLED` on the
+   same stores, and one that sets `SetSkipPossiblyRebuild(true)` gets no
+   transition at all, because the store never calls `checkPossiblyRebuild`. The
+   procedure survives both — the rebuild still has to be run and completed — but
+   the state you observe partway through will not match the wording above.
+
+   **The trap:** if step 3 was done wrong, the index was never selected, was never
+   touched, and is therefore STILL `READABLE` from before. Asserting `READABLE`
+   passes on exactly the failure this procedure exists to prevent. Verify the
+   rebuild by something that distinguishes ran from never-ran — the index appears
+   in `GetIndexesToBuildSince(oldHeaderVersion)` before the open, or
+   `BuildIndex` reports a non-zero scanned count — not by the end state alone.
+
+**Why shipping it anyway is right.** Java assigns no positions to these indexes
+either, so it applies the same untrimmed decode to a trimmed entry and derives
+the same wrong primary key described above — its DECODE misreads rather than
+errors, exactly as Go's does. (Its scan does not necessarily stay quiet: Java's
+default `IndexOrphanBehavior` is `ERROR` too, so a record-fetching scan on the
+derived key fails there in the same way. "Java does not fail on them" was a
+claim about the decode stated at the scan level, which is the same slip the
+duplicate-rows paragraph above corrects.) The old bytes were therefore never
+Java-compatible, which is the whole point of the port. The choice is between
+data that disagrees with Java forever and one rebuild.

@@ -351,7 +351,7 @@ func expandFanOutField(
 		// later execute a scan over another.
 		return nil, false
 	}
-	path := appendPath(state.prefix, strings.ToUpper(physicalFieldName))
+	path := appendPath(state.prefix, physicalFieldName)
 
 	switch field.GetFanType() {
 	case gen.Field_SCALAR, gen.Field_CONCATENATE:
@@ -488,14 +488,14 @@ func expandFanOutNesting(
 		childState := state
 		childState.prefix = appendPath(
 			state.prefix,
-			strings.ToUpper(parent.GetFieldName()),
+			parent.GetFieldName(),
 		)
 		return expandFanOutKeyExpression(nesting.Child, childState)
 
 	case gen.Field_FAN_OUT:
 		collectionPath := appendPath(
 			state.prefix,
-			strings.ToUpper(parent.GetFieldName()),
+			parent.GetFieldName(),
 		)
 		collection, collectionType := fanOutFieldPathValue(
 			state.baseAlias,
@@ -614,7 +614,7 @@ func fanOutFieldPathValue(
 	}
 	requests := make([]values.FieldRequest, len(path))
 	for i, segment := range path {
-		requests[i], err = values.FieldByName(strings.ToUpper(segment))
+		requests[i], err = values.FieldByName(segment)
 		if err != nil {
 			return nil, nil
 		}

@@ -9,15 +9,27 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// renameRecordTypesTo rebuilds md with each record type named by a key of
-// rename stored under its value. It exists because no checked-in proto has an
-// ESCAPED record-type name, and the arms under test only fire for one -- a
-// fixture that cannot express the condition leaves them undriven while green.
+// renameRecordTypesTo rebuilds the shared test metadata with each record type
+// named by a key of rename stored under its value. It exists because no
+// checked-in proto has an ESCAPED record-type name, and the arms under test
+// only fire for one -- a fixture that cannot express the condition leaves them
+// undriven while green.
 func renameRecordTypesTo(t *testing.T, rename map[string]string) *RecordMetaData {
 	t.Helper()
-	p, err := testMetaData(t).ToProto()
+	md, err := renameRecordTypes(testMetaData(t), rename)
 	if err != nil {
-		t.Fatalf("to proto: %v", err)
+		t.Fatalf("rename record types: %v", err)
+	}
+	return md
+}
+
+// renameRecordTypes is renameRecordTypesTo's error-returning core, so a Ginkgo
+// spec -- which cannot produce the *testing.T the wrapper wants -- can build the
+// same fixture over metadata of its own choosing.
+func renameRecordTypes(src *RecordMetaData, rename map[string]string) (*RecordMetaData, error) {
+	p, err := src.ToProto()
+	if err != nil {
+		return nil, err
 	}
 	p.JoinedRecordTypes = nil
 	for _, msg := range p.GetRecords().GetMessageType() {
@@ -57,11 +69,23 @@ func renameRecordTypesTo(t *testing.T, rename map[string]string) *RecordMetaData
 			}
 		}
 	}
+	// Indexes reference their record types BY NAME in a parallel list, so a
+	// rename that stops here produces metadata that will not build at all --
+	// "unknown record type %q referenced by index %q" -- the moment the renamed
+	// type owns one. Silent for every caller whose fixture has no index, which
+	// is why it went unnoticed.
+	for _, idx := range p.GetIndexes() {
+		for i, name := range idx.RecordType {
+			if to, ok := rename[name]; ok {
+				idx.RecordType[i] = to
+			}
+		}
+	}
 	md, err := RecordMetaDataFromProto(p)
 	if err != nil {
-		t.Fatalf("from proto: %v", err)
+		return nil, err
 	}
-	return md
+	return md, nil
 }
 
 // TestGetRecordTypeResolvesAUserIdentifier pins the escape fallback in

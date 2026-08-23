@@ -11,7 +11,7 @@ package query
 //	site                 sqldriver corpus                 translator corpus
 //	recursiveRemap       retired/no traffic               retired/no traffic
 //	existsSortSplit      AGREED 44, everything else 0     5 calls, FIXTURE traffic only
-//	derivedUnnestSource  bare 13, everything else 0       4 calls, FIXTURE traffic only
+//	derivedUnnestSource  carried 15, everything else 0    5 calls, FIXTURE traffic only
 //
 // The right-hand column's last two entries are THIS FILE. Stating them as "the
 // site is reached" would be circular — the pins below are what reaches it — so
@@ -163,25 +163,31 @@ func TestQualRecWiring_SortKeySourceValueDoesNotRecoverFromText(t *testing.T) {
 }
 
 // TestQualRecWiring_DerivedUnnestSourceCountsEveryArm pins the classification at
-// the site whose dotted population is the thinnest in the family: ONE production
-// call, on one corpus.
+// the site that CONVERTED: classifyDerivedUnnestArray now decides from the
+// parse-tree triple and only falls back to the split when a slot has none.
 //
-// That one call is the embedded corpus's `TD.ARR`
-// (TestDerivedUnnest_QualifiedPassthrough), and it AGREES. It arrived after this
-// file did, and it is why the header's "empty on every corpus" reading is gone:
-// the dotted arm is live, it is just barely so. DIVERGED and MANUFACTURED remain
-// unreached by production anywhere.
+// THE ARMS INVERTED WITH THAT CONVERSION, which is the whole reason this file
+// is worth reading rather than skimming. While the site split unconditionally,
+// a PRESENT triple produced AGREED (split and triple concur) or DIVERGED (they
+// do not) — and DIVERGED was the misread the workstream was about. Now a
+// present triple produces CARRIED, because nothing was sliced: the triple
+// answered. AGREED and DIVERGED are unreachable through a present triple, and
+// asserting them would pin a classification the code can no longer make.
 //
-// SCOPE, stated because it is narrower than the two pins above and the
-// difference matters. This exercises the CLASSIFIER
-// (recordDerivedUnnestSplit), not the call from classifyDerivedUnnestArray:
-// reaching that call needs a translator with live metadata and a derived-table
-// body, and the real-FDB corpus already drives it 13 times, so the call-site
-// wiring is what the corpus floor guards. What the corpora cannot guard is the
-// BUCKETING: all 13 sqldriver calls are bare, and the embedded corpus's 8 add
-// exactly one non-bare call. DIVERGED and MANUFACTURED are unreached by
-// production anywhere, and an inverted comparison there would be invisible in
-// every report.
+// So the arms below are the CURRENT partition, and each says what it would mean
+// for the class to move:
+//
+//   - CARRIED for any present triple, qualified or not;
+//   - MANUFACTURED for an ABSENT triple over a dotted name — the fallback, and
+//     the only surviving splitting arm;
+//   - bare for a name with no dot, which needs no decision at all.
+//
+// SCOPE, stated because it is narrower than the two pins above. This exercises
+// the CLASSIFIER (recordDerivedUnnestSplit), not the call from
+// classifyDerivedUnnestArray: reaching that call needs a translator with live
+// metadata and a derived-table body, and the real-FDB corpus drives it, so the
+// call-site wiring is what the corpus floor guards. What a corpus cannot guard
+// is the BUCKETING, because production reaches only some of these classes.
 func TestQualRecWiring_DerivedUnnestSourceCountsEveryArm(t *testing.T) {
 	t.Parallel()
 
@@ -193,54 +199,69 @@ func TestQualRecWiring_DerivedUnnestSourceCountsEveryArm(t *testing.T) {
 		why   string
 	}{
 		{
-			name: "AGREED",
+			name: "CARRIED qualified",
 			proj: &logical.LogicalProject{
 				Projections:    []string{"T.ARR"},
 				ProjectionRefs: []logical.ColumnRef{{Present: true, Bare: "ARR", Qualifier: "T", Qualified: true}},
 			},
 			src:   "T.ARR",
-			class: values.QualRecAgreed,
-			why: "the slot's parse-tree triple states qualifier T and the split recovered " +
-				"T. CONVERSION-READY: the split is redundant over this shape and " +
-				"replacing it with the triple is provably behaviour-preserving. The " +
-				"embedded corpus's `TD.ARR` is the one production instance of it, which " +
-				"is a population of ONE and not a conversion warrant",
+			class: values.QualRecCarried,
+			why: "the slot's triple states qualifier T and the site now uses it. This " +
+				"USED to record AGREED — the split independently recovering T — and " +
+				"recording that today would report a slice that never happened",
 		},
 		{
-			name: "DIVERGED",
+			name: "CARRIED one delimited segment containing a dot",
 			proj: &logical.LogicalProject{
 				Projections:    []string{"T.ARR"},
 				ProjectionRefs: []logical.ColumnRef{{Present: true, Bare: "T.ARR", Qualifier: "", Qualified: false}},
 			},
 			src:   "T.ARR",
-			class: values.QualRecDiverged,
-			why: "the triple says ONE segment — a delimited `\"T.ARR\"` — and the split " +
-				"manufactured a qualifier T out of it. This is the exact misread the " +
-				"whole workstream is about, and it must be reachable for the hard zero " +
-				"to mean anything",
+			class: values.QualRecCarried,
+			why: "the shape the conversion was FOR: one delimited `\"T.ARR\"`, which the " +
+				"split read as qualifier T over column ARR and bound the wrong column " +
+				"for. It recorded DIVERGED then. Recording DIVERGED now would hard-fail " +
+				"a census-enabled run over a decision the site no longer takes",
 		},
 		{
-			name: "MANUFACTURED",
+			name: "MANUFACTURED — the surviving splitting arm",
 			proj: &logical.LogicalProject{
 				Projections:    []string{"T.ARR"},
 				ProjectionRefs: nil,
 			},
 			src:   "T.ARR",
 			class: values.QualRecManufactured,
-			why: "no triple captured for the slot. An ABSENT ColumnRef means UNKNOWN, " +
-				"never UNQUALIFIED — the triple's own contract — so it must bucket as " +
+			why: "no triple captured for the slot, so the split runs and this is the ONE " +
+				"arm that still slices. An ABSENT ColumnRef means UNKNOWN, never " +
+				"UNQUALIFIED — the triple's own contract — so it buckets as " +
 				"no-counterparty and never as a disagreement",
 		},
 		{
-			name: "bare",
+			name: "CARRIED undotted",
 			proj: &logical.LogicalProject{
 				Projections:    []string{"ARR"},
 				ProjectionRefs: []logical.ColumnRef{{Present: true, Bare: "ARR"}},
 			},
 			src:   "ARR",
+			class: values.QualRecCarried,
+			why: "a present triple with no dot. It recorded `bare` while the site split " +
+				"unconditionally; CARRIED is right now, and the distinction is not " +
+				"cosmetic — `bare` counts toward splitPopulation and CARRIED does not",
+		},
+		{
+			name: "bare — absent triple, no dot",
+			proj: &logical.LogicalProject{
+				Projections:    []string{"ARR"},
+				ProjectionRefs: nil,
+			},
+			src:   "ARR",
 			class: values.QualRecBare,
-			why: "no dot; this is nearly the site's entire production population — all 13 " +
-				"sqldriver calls and 7 of the embedded corpus's 8",
+			why: "THE ARM THE PRESENT-TRIPLE ROW ABOVE STOPPED COVERING. Turning that " +
+				"row's fixture Present flipped it to CARRIED and left QualRecBare " +
+				"unreached by this test — and the corpora reach only CARRIED and the " +
+				"dotted MANUFACTURED fallback, so bare classification could break with " +
+				"everything green. Absent triple AND no dot is the one input that still " +
+				"produces it",
 		},
 	}
 

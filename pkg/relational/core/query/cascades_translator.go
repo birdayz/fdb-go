@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"fdb.dev/pkg/recordlayer"
+	"fdb.dev/pkg/recordlayer/protoname"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -810,7 +811,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 					ft = vt
 				}
 			}
-			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: i}
+			fields[i] = values.Field{Name: name, FieldType: ft, Ordinal: i}
 		}
 		return fields
 	case *logical.LogicalUnnest:
@@ -858,7 +859,7 @@ func (t *cascadesTranslator) legColumns(op logical.LogicalOperator) []values.Fie
 			// decline the whole join.
 			fields := make([]values.Field, len(o.ColumnAliases))
 			for i, name := range o.ColumnAliases {
-				fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: values.UnknownType, Ordinal: i}
+				fields[i] = values.Field{Name: name, FieldType: values.UnknownType, Ordinal: i}
 			}
 			bodyFields := t.derivedOutputColumns(o.Body)
 			if len(bodyFields) == 0 {
@@ -941,7 +942,7 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				// ingress rather than guessed.
 				fieldType = o.ProjectedValues[i].Type()
 			}
-			fields[i] = values.Field{Name: strings.ToUpper(name), FieldType: fieldType, Ordinal: i}
+			fields[i] = values.Field{Name: name, FieldType: fieldType, Ordinal: i}
 		}
 		return fields
 	case *logical.LogicalAggregate:
@@ -982,7 +983,11 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 			renamed := make([]values.Field, len(cols))
 			copy(renamed, cols)
 			for i := range renamed {
-				renamed[i].Name = strings.ToUpper(o.ColumnAliases[i])
+				// Verbatim, and this is the SAME rule cteBoundRowType applies
+				// to the same alias list. Two sites doing one job must not
+				// spell it two ways: a fold here republished the CTE's columns
+				// under names the row it wraps does not carry.
+				renamed[i].Name = o.ColumnAliases[i]
 			}
 			return renamed
 		}
@@ -1175,8 +1180,11 @@ func aggregateNamesStableForUnion(a *logical.LogicalAggregate) bool {
 }
 
 // aggregateOutputColumns returns a LogicalAggregate's output column schema:
-// the GROUP BY keys (bare column names, upper-cased) followed by each
-// aggregate's output name (alias when present, else the aggregate text).
+// the GROUP BY keys (bare column names, VERBATIM) followed by each
+// aggregate's output name (alias when present, else the aggregate text, also
+// verbatim). "upper-cased" is what this said while the body below folded; the
+// body stopped, and leaving the sentence would have been the same two-claims-
+// in-one-file failure the fold itself was.
 // Mirrors extractOutputColumns(LogicalAggregate). Phase D: group keys
 // carry the INPUT leg's flowed type for the keyed column; aggregate
 // calls carry Java's result type (values.JavaAggregateResultCode over
@@ -1205,6 +1213,12 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 			// match that is itself UnknownType still counts as seen — a
 			// later typed duplicate must not overwrite it (the name stays
 			// indeterminate).
+			// The conflict test is CODE-ONLY, which leaves one gap worth
+			// naming rather than discovering: two DELIMITED columns differing
+			// only in case and sharing a type code resolve silently here, where
+			// Java raises AMBIGUOUS_COLUMN. Not a wrong type — the two do share
+			// it — but a missing rejection, and the fold on the line above is
+			// what lets them meet at all.
 			if matched && found.Code() != c.FieldType.Code() {
 				return values.UnknownType
 			}
@@ -1222,7 +1236,12 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 		if k.Bare != "" {
 			kt = typeOf(k.Bare)
 		}
-		fields = append(fields, values.Field{Name: strings.ToUpper(k.Display), FieldType: kt, Ordinal: len(fields)})
+		// VERBATIM, like every other output-naming authority. This function is
+		// what legColumns and derivedOutputColumns delegate to for an aggregate
+		// leg, so a fold here makes their verbatim contract false for exactly
+		// one arm — and it folded the ALIAS sixty lines below a comment saying
+		// an alias must not be folded. Two claims about one alias in one file.
+		fields = append(fields, values.Field{Name: k.Display, FieldType: kt, Ordinal: len(fields)})
 	}
 	for i, call := range a.Calls {
 		name := call.CanonicalName()
@@ -1247,7 +1266,7 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 			// simplifications.
 			ft = values.NewPrimitiveType(code, true)
 		}
-		fields = append(fields, values.Field{Name: strings.ToUpper(name), FieldType: ft, Ordinal: len(fields)})
+		fields = append(fields, values.Field{Name: name, FieldType: ft, Ordinal: len(fields)})
 	}
 	if len(fields) == 0 {
 		return nil
@@ -1255,14 +1274,20 @@ func (t *cascadesTranslator) aggregateOutputColumns(a *logical.LogicalAggregate)
 	return fields
 }
 
-// normalizeAggOutputName folds a reference / output name to the whitespace- and
-// case-insensitive key the SELECT-list-over-GROUP-BY ordinal match compares on: a
-// projection references an aggregate by its canonical text (`SUM(UNITS * PRICE)`,
-// spaces intact from the parse tree) while the naming authority renders the
-// operand space-stripped (`SUM(UNITS*PRICE)`) — the two must match on the same
-// normalized key or the ordinal bake silently misses.
+// normalizeAggOutputName folds a reference / output name to the
+// WHITESPACE-insensitive key the SELECT-list-over-GROUP-BY ordinal match
+// compares on: a projection references an aggregate by its canonical text
+// (`SUM(UNITS * PRICE)`, spaces intact from the parse tree) while the naming
+// authority renders the operand space-stripped (`SUM(UNITS*PRICE)`) — the two
+// must match on the same normalized key or the ordinal bake silently misses.
+//
+// It is no longer CASE-insensitive, and the old doc said it was. The fold went
+// with RFC-237: both sides now carry the operand's declared spelling, so a
+// case-insensitive key would conflate two aggregates that differ only in a
+// case-sensitive token — the collision `COUNT(CASE WHEN s='x' …)` and `…'X'…`
+// produce, which is a wrong ANSWER rather than a wrong name.
 func normalizeAggOutputName(s string) string {
-	return strings.ReplaceAll(strings.ToUpper(s), " ", "")
+	return strings.ReplaceAll(s, " ", "")
 }
 
 // bindPostAggregateValue resolves a structural logical draft against the real
@@ -1410,7 +1435,7 @@ func aggregateValueOutputName(av *values.AggregateValue) string {
 	}
 	operand := "*"
 	if av.Operand != nil {
-		operand = strings.ToUpper(values.ColumnNameValue(av.Operand))
+		operand = values.ColumnNameValue(av.Operand)
 		operand = strings.ReplaceAll(operand, " ", "")
 		if len(operand) > 2 && operand[0] == '(' && operand[len(operand)-1] == ')' {
 			operand = operand[1 : len(operand)-1]
@@ -1798,10 +1823,18 @@ func (t *cascadesTranslator) unnestArrayElementType(outerTable string, fieldSegm
 	return arrayFieldFromDescriptor(rt.Descriptor.Fields(), fieldSegments)
 }
 
-// protoFieldLookup resolves a field by SQL identifier (case-insensitive —
-// proto names are lower/snake, SQL upper).
+// protoFieldLookup resolves a field by SQL identifier: EXACT spelling first,
+// then an unqualified case-insensitive scan.
+//
+// The exact pass has to come first, and it is not an optimization. A quoted
+// identifier keeps its case, so `"aB"` must reach the field literally named
+// `aB` even when a sibling `Ab` exists; a fold-first lookup answers whichever
+// of the two the descriptor happens to list first. The case-insensitive scan
+// behind it is the same read-side extension rlcatalog documents: a hand-written
+// .proto never went through DDL normalization, so its names are lower/snake
+// while an unquoted SQL reference arrives folded upper.
 func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflect.FieldDescriptor {
-	if fd := fs.ByName(protoreflect.Name(strings.ToLower(name))); fd != nil {
+	if fd := fs.ByName(protoreflect.Name(name)); fd != nil {
 		return fd
 	}
 	for i := 0; i < fs.Len(); i++ {
@@ -1809,7 +1842,65 @@ func protoFieldLookup(fs protoreflect.FieldDescriptors, name string) protoreflec
 			return f
 		}
 	}
-	return nil
+	// THE ARGUMENT IS A SQL NAME AND THE DESCRIPTOR HOLDS STORAGE NAMES, so a
+	// name DDL had to escape is invisible to both attempts above. A column
+	// declared `"a.b"` is stored as `a__2b`; it comes back through
+	// ToUserIdentifier everywhere a user sees it, and arrives here spelled
+	// `a.b`, which is neither an exact nor a case-insensitive match for
+	// anything.
+	//
+	// DECODE THE STORAGE NAMES, DO NOT ENCODE THE QUERY NAME. The escaping is
+	// documented NON-INJECTIVE, so encoding the query name and fold-comparing
+	// the result accepts fields the identifier does not name: storage
+	// `___1__2foo` decodes to the SQL name `_$.foo`, while a quoted
+	// `t."___1.FOO"` encodes to `___1__2FOO`, which EqualFolds it. The unnest
+	// path treats a semantic miss as an untyped fallback rather than an
+	// undefined column, so it would explode an unrelated field. Decoding has no
+	// such collision — ToUserIdentifier is the mapping every consumer already
+	// uses to answer "what is this column called".
+	//
+	// TWO PASSES, NOT ONE, and the split is the same strict-then-relaxed rule
+	// as the unescaped attempts above. Deciding ambiguity inside a single pass
+	// makes the answer depend on DESCRIPTOR ORDER: over `a__2b`, `A__2b`,
+	// `A__2B` a lookup of `A.B` meets two folded candidates and declines before
+	// ever reaching the exact one. An exact answer is never made ambiguous by
+	// case variants existing, whatever order they are listed in.
+	//
+	// AMBIGUITY DECLINES IN BOTH PASSES, and the exact one needs it just as much
+	// as the folded one — a first draft checked only the folded pass, which
+	// reads as though decoding were injective. It is not: `foo___0bar` and
+	// `foo__0_bar` BOTH decode to `foo___bar`, so a descriptor can hold two
+	// fields answering exactly to one SQL identifier. Returning the first is a
+	// bind decided by descriptor order, which is not a property of the query,
+	// and the unnest path would then classify or explode whichever came first.
+	//
+	// So each pass scans to completion before it answers.
+	var exact protoreflect.FieldDescriptor
+	for i := 0; i < fs.Len(); i++ {
+		f := fs.Get(i)
+		if protoname.ToUserIdentifier(string(f.Name())) != name {
+			continue
+		}
+		if exact != nil {
+			return nil // two fields decode to this exact name; decline
+		}
+		exact = f
+	}
+	if exact != nil {
+		return exact
+	}
+	var folded protoreflect.FieldDescriptor
+	for i := 0; i < fs.Len(); i++ {
+		f := fs.Get(i)
+		if !strings.EqualFold(protoname.ToUserIdentifier(string(f.Name())), name) {
+			continue
+		}
+		if folded != nil {
+			return nil // ambiguous under folding; decline rather than guess
+		}
+		folded = f
+	}
+	return folded
 }
 
 // arrayFieldFromDescriptor classifies a lateral unnest's array field by
@@ -1849,7 +1940,10 @@ func arrayFieldFromDescriptor(fields protoreflect.FieldDescriptors, fieldSegment
 	if !ok {
 		return values.UnknownType, "", false, true
 	}
-	return arrayFieldElementType(inner), strings.ToUpper(string(fd.Name())), true, true
+	// The column name is the SLOT name the row layout carries for this field,
+	// so it must be minted by the same authority the layout uses. Folding it
+	// here made it miss for any descriptor whose names are not already upper.
+	return arrayFieldElementType(inner), values.FieldNameForProtoField(fd), true, true
 }
 
 // containsLateralUnnest reports whether a logical sub-plan contains a
@@ -2925,6 +3019,15 @@ func (t *cascadesTranslator) translateScan(s *logical.LogicalScan) expressions.R
 			"scan %q has no exact catalog row type", s.Table))
 		return nil
 	}
+	// s.Table is the SQL identifier, and passing it here is the OPEN HALF of
+	// RFC-238 §7c. buildMatchCandidates registers every match candidate under
+	// the STORED protobuf name, and FullUnorderedScanExpression.
+	// EqualsWithoutChildren compares the two record-type lists as strings, so a
+	// table whose name escapes (`MY$TABLE` stored as `MY__1TABLE`) matches no
+	// candidate: no primary-key pushdown, no index access path, ever. Java
+	// translates HERE -- LogicalOperator.generateTableAccess builds its scan
+	// from getAllTableStorageNames -- and that is the decided fix. Pinned, at
+	// the wrong value on purpose, by the two escaped-name yamsql scenarios.
 	scan, err := expressions.NewFullUnorderedScanExpression(
 		[]string{s.Table}, values.NewRecordType("", false, cols))
 	if err != nil {
@@ -5130,9 +5233,13 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			// translator. The EXISTS fold has no separate slot metadata.
 			return nil
 		}
-		name := strings.ToUpper(col)
+		// Verbatim, like every other output-name authority: `SELECT "id" AS
+		// "x", EXISTS(…) AS "e"` reported X and E here while the plain
+		// projection beside it reported x and e, because this arm mints the
+		// FlatMap's result type on its own.
+		name := col
 		if i < len(p.Aliases) && p.Aliases[i] != "" {
-			name = strings.ToUpper(p.Aliases[i])
+			name = p.Aliases[i]
 		} else if _, isField := values.AsFieldValue(v); !isField {
 			// An UNALIASED COMPUTED (non-field) expression — `id + 1`, `COUNT(*)`,
 			// CASE, etc. The normal projection path names it with the GENERATED
@@ -5324,7 +5431,7 @@ func (t *cascadesTranslator) translateProjectOverExistsFilter(
 			// Reuse the original SELECT-list alias (""==unaliased) so the cleanup's
 			// label derivation matches the non-hidden-sort path exactly.
 			if i < len(p.Aliases) {
-				projAliases[i] = strings.ToUpper(p.Aliases[i])
+				projAliases[i] = p.Aliases[i]
 			}
 			// The alias is reused, so its PROVENANCE is reused with it —
 			// truncated to the same outputCount. Copying the name without the
@@ -5478,16 +5585,21 @@ func sortKeyQualifierIdentity(k logical.SortKey) (string, bool) {
 	return "", false
 }
 
-// sortKeyFieldRef returns the RAW (possibly-qualified) upper-cased field reference
-// a column sort key names — `T1.ID`, `COL1` — or "" when the key is a computed
+// sortKeyFieldRef returns the RAW (possibly-qualified) field reference a column
+// sort key names — `T1.ID`, `COL1` — or "" when the key is a computed
 // expression. Unlike sortKeyName it does NOT strip the qualifier, so callers can
 // (a) build the source-column VALUE the key references for value-based output
 // membership, and (b) name an appended hidden field by the qualified provenance
 // (collision-free with an output alias — RFC-141 R4 P2b).
+//
+// VERBATIM: use (b) MINTS A FIELD NAME, so this is an output-naming authority
+// wearing a reference's clothes, and it took its inputs from the same
+// ColumnNameValue rendering and SortKey.Expr text that every neighbouring
+// authority stopped folding.
 func sortKeyFieldRef(k logical.SortKey) string {
 	if fv, ok := values.AsFieldValue(k.Value); ok {
 		// A composite leg reference (FieldValue{col, QOV(leg)}) — render LEG.COL.
-		return strings.ToUpper(values.ColumnNameValue(fv))
+		return values.ColumnNameValue(fv)
 	}
 	if k.Value != nil {
 		// Non-field Value (computed expression) — not a nameable column.
@@ -5505,7 +5617,7 @@ func sortKeyFieldRef(k logical.SortKey) string {
 			return ""
 		}
 	}
-	return strings.ToUpper(field)
+	return field
 }
 
 // sortKeySourceValue returns the SOURCE-COLUMN value a column sort key references
@@ -6660,10 +6772,17 @@ func governingProjection(expr expressions.RelationalExpression, seen map[*expres
 	return nil
 }
 
-// projectionOutputColumnNames returns the UPPER-cased output-column names a projection emits
-// — the alias when present, else the derived name of the projected Value (values.
-// OutputColumnName, the same authority the physical projection uses). These are the names a
-// name-model group key resolves against.
+// projectionOutputColumnNames returns the output-column names a projection emits,
+// VERBATIM — the alias when present, else the derived name of the projected Value
+// (values.OutputColumnName, the same authority the physical projection uses).
+// These are the names a name-model group key resolves against.
+//
+// "UPPER-cased" is what this said, and it was never this function's decision to
+// make: it returns GetOutputNames() unchanged, and that method's own doc says
+// "the exact… slot names". The sentence mattered because it is the `cols` side
+// of nameResolvesInColumns four lines below — a reader trusting it would
+// conclude that folding the KEY alone was symmetric, which is precisely the
+// mistake that gate shipped.
 func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) []string {
 	return proj.GetOutputNames()
 }
@@ -6671,7 +6790,15 @@ func projectionOutputColumnNames(proj *expressions.LogicalProjectionExpression) 
 // expressionOutputColumns derives the OUTPUT column names, in ordinal order, of
 // a translated expression's row — the plan-time layout authority baked
 // consumer references resolve flat references against (Java's
-// FieldValue.ofFieldName against childValue.getResultType()). Coverage:
+// FieldValue.ofFieldName against childValue.getResultType()).
+//
+// Names are VERBATIM. Two arms below folded, and a review pointed out that the
+// fold was INERT — the sole consumer reads len() and never the names. That is a
+// reason to convert it rather than to leave it: an inert fold under a doc
+// promising name resolution is a fold that becomes live the first time someone
+// takes the doc at its word.
+//
+// Coverage:
 //   - LogicalProjectionExpression: the projection's output names
 //     (values.OutputColumnName — the same authority the executor's posNames
 //     derivation reads, so the baked ordinal and the emitted slot agree).
@@ -6699,7 +6826,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 			if rc, isRC := e.GetResultValue().(*values.RecordConstructorValue); isRC {
 				names := make([]string, len(rc.Fields))
 				for i, f := range rc.Fields {
-					names[i] = strings.ToUpper(f.Name)
+					names[i] = f.Name
 				}
 				return names
 			}
@@ -6760,7 +6887,7 @@ func expressionOutputColumns(expr expressions.RelationalExpression) []string {
 			if rt, isRT := e.GetFlowedType().(*values.RecordType); isRT && len(rt.Fields) > 0 {
 				names := make([]string, len(rt.Fields))
 				for i, f := range rt.Fields {
-					names[i] = strings.ToUpper(f.Name)
+					names[i] = f.Name
 				}
 				return names
 			}
@@ -6783,16 +6910,58 @@ func projectionRefAt(p *logical.LogicalProject, i int) logical.ColumnRef {
 	return p.ProjectionRefs[i]
 }
 
-// nameResolvesInColumns reports whether the group-key name resolves (exact, case-insensitive)
+// nameResolvesInColumns reports whether the group-key name resolves EXACTLY
 // against the input row's output columns.
+//
+// THE RULE IS "A GATE FOLDS EXACTLY AS THE READ IT GUARDS FOLDS", and getting
+// that wrong in either direction is a bug this function has now had both ways.
+// The read it guards is fieldRequestByName (values/field_value.go), which is
+// `fields[i].name == request.name` — byte-exact. So this must be byte-exact
+// too:
+//
+//   - It used to fold ONE side, `strings.ToUpper(key)` against a raw `cols`.
+//     That worked only while every output name was already upper. A projection
+//     publishes its columns verbatim now, so a `Region` key missed a `Region`
+//     column and hard-refused with `no exact output-slot binding` — a query
+//     Java answers. Loud, not a wrong answer, which is why it went unseen.
+//   - Folding BOTH sides fixes that case and buys a worse one: it is strictly
+//     WIDER than the guarded read, so a `REGION` key over a `Region` column is
+//     admitted here and then MISSES down there. A gate that admits what its
+//     read refuses moves the failure somewhere less legible.
+//
+// "It is a presence gate, so it may fold" was the argument for EqualFold, and
+// it is the wrong invariant twice over. The question is not what KIND of
+// predicate this is but which read it stands in front of — and this is not a
+// lookup at all, it is a FAIL-CLOSED REFUSAL (see the caller): loosening it
+// does not make a query resolve, it moves the query out of a loud refusal into
+// the name-model fallback, which is only safe if that fallback folds the same
+// way. Nothing established that.
+//
+// AGREEING WITH THAT READ TAKES MORE THAN BYTE-EXACTNESS, which is the part a
+// previous revision of this comment got wrong while congratulating itself on
+// the rest. fieldRequestByName COUNTS matches and refuses `>1` with
+// FieldAmbiguousName. A first-match bool therefore answers "resolves" for a row
+// carrying the name TWICE, and the read below then refuses it — the same
+// "admits what its read refuses" failure the fold produced, surviving at
+// exactness. So this counts too, and resolves only on exactly one.
+//
+// The duplicate is reachable, and NOT because of folding: a projection may
+// legitimately publish two slots with one name (the aggregate's native row
+// documents exactly that, leaving SQL de-duplication to the projection above).
+// An earlier note here framed multiplicity as something the verbatim conversion
+// unmasked; it was always there, and only the case-differing pair was new.
+//
+// Every arm is pinned in TestNameResolvesInColumns. It had no test at all when
+// it was loosened, which is how a one-line change to a gate became two
+// regressions in two directions.
 func nameResolvesInColumns(key string, cols []string) bool {
-	k := strings.ToUpper(key)
+	matches := 0
 	for _, c := range cols {
-		if c == k {
-			return true
+		if c == key {
+			matches++
 		}
 	}
-	return false
+	return matches == 1
 }
 
 func (t *cascadesTranslator) translateSort(s *logical.LogicalSort) expressions.RelationalExpression {
@@ -7463,8 +7632,7 @@ func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
 	// Source-anchored correlated-scalar-subquery join seed (RFC-077 7.6).
 	//
 	// The inner is a scalar SUBQUERY exposing exactly ONE value. The projection
-	// reads it as the QUALIFIED name <innerAlias>.<scalarCol> — replaceScalarSubqueryRef
-	// builds that field name (upper(innerAlias)+"."+upper(scalarCol)) — and the inner
+	// reads it as the QUALIFIED name <innerAlias>.<scalarCol> — and the inner
 	// quantifier's row carries the scalar under the key scalarCol (the runtime
 	// mergeRows PREFIXES every inner key with innerAlias, dots and all, so
 	// <innerAlias>.<scalarCol> resolves iff the inner key == scalarCol; it does).
@@ -7480,7 +7648,14 @@ func (t *cascadesTranslator) translateSingleSourceCorrelatedScalarJoin(
 	// Untranslatable when the outer columns are not derivable (only the catalog-free
 	// nil-md path — production always passes md): the opaque-seed fallback was RETIRED
 	// in RFC-077 7.6, so there is no result value to flow.
-	scalarCol := strings.ToUpper(csq.ScalarCol)
+	// VERBATIM: this NAMES the ordinal seed's inner-leg column, so it is the
+	// spelling the correlated subquery's result column reports. Folding it made
+	// `(SELECT SUM(x."Amount") …)` label itself SUM(X.AMOUNT) for a column
+	// declared `Amount` — the same defect as the aggregate mint, one boundary
+	// out. The other ToUpper on this field (logical_predicate.go's `want`,
+	// clustered_outer_scalar's innerKey) sit in front of EqualFold comparisons,
+	// where they decide nothing; this one decides a name.
+	scalarCol := csq.ScalarCol
 	outerCols := t.legColumns(outerPlan)
 	if outerCols == nil || outerAlias == "" || scalarCol == "" || csq.InnerAlias == "" {
 		return nil, nil, nil
@@ -8310,7 +8485,23 @@ func (t *cascadesTranslator) translateAggregate(a *logical.LogicalAggregate) exp
 			}
 		}
 		if i < len(a.Aliases) && a.Aliases[i] != "" {
-			spec.Alias = strings.ToUpper(a.Aliases[i])
+			// VERBATIM. The alias reached the logical layer through
+			// functions.NormalizeIdentifier at the parse boundary, so folding
+			// it here is the same second normalization this whole family of
+			// defects is.
+			//
+			// Say what the removal of that fold rests on, because it is NOT a
+			// corpus observation. Instrumented over the 2593-query corpus this
+			// branch is taken THREE times, and all three carry a canonical
+			// aggregate name that is already upper (`COUNT(*)`,
+			// `MAX(E2.SALARY)`, `SUM(ORDERS.QTY)`) — so the fold was a no-op
+			// everywhere it ran, and no query shape could be built that drove
+			// it with a delimited spelling. What IS pinned is the authority
+			// downstream: GroupByOutputColumnNames publishes an alias verbatim
+			// (expressions.TestGroupByOutputColumnNames_AliasIsVerbatim), so a
+			// fold reintroduced anywhere on the way to it is a fold that
+			// authority will faithfully report.
+			spec.Alias = a.Aliases[i]
 		}
 		// PLAN-TIME numeric-operand gate (Java NumericAggregationValue.encapsulate).
 		// Java looks the aggregate up in an operator map keyed by (function, operand
@@ -9803,7 +9994,7 @@ func (t *cascadesTranslator) recursiveCTECommonResultRow(
 	fields := make([]values.Field, len(outCols))
 	for i := range fields {
 		fields[i] = values.Field{
-			Name:      strings.ToUpper(outCols[i]),
+			Name:      outCols[i],
 			Ordinal:   i,
 			FieldType: seed.Fields[i].FieldType,
 		}
@@ -10095,34 +10286,59 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	// not the seed's source PARENT. The temp table (which the self-reference scans)
 	// must therefore be keyed by UP for the join predicate to match. Both legs are
 	// normalized to emit these names; nothing renames the temp table afterwards.
-	seedSrc := extractOuterProjectionColumns(seedBranches[0])
-	seedOut := make([]string, len(seedSrc))
-	for i, n := range extractOutputProjectionNames(seedBranches[0]) {
-		seedOut[i] = strings.ToUpper(n)
-	}
-	// A projection-less seed (`SELECT * FROM t`) exposes no projection columns,
+	// VERBATIM. extractOutputProjectionNames returns names already normalized
+	// at the parse capture, so a fold here would be a second normalization — and
+	// this list is what the TempTableInsert arm of expressionOutputColumns
+	// publishes as the CTE's output schema, keying the temp table the
+	// self-reference scans.
+	//
+	// It is live through the NO-ALIAS path only: with an explicit column-alias
+	// list OF MATCHING LENGTH, `outCols` below takes the aliases and seedOut
+	// never reaches the key. The length condition is load-bearing and is not a
+	// technicality: an alias list of the wrong arity leaves seedOut in place,
+	// which is how the width disagreement gets reported against the seed's own
+	// labels rather than against a list that does not describe it.
+	seedOut := append([]string(nil), extractOutputProjectionNames(seedBranches[0])...)
+	// A projection-less seed (`SELECT * FROM t`) exposes no projection names,
 	// which silently DROPPED an explicit CTE column-alias list
 	// (`WITH RECURSIVE cte(a, b) AS (SELECT * FROM t UNION ALL …)`): the alias
 	// gate below never length-matched, the temp table stayed keyed by the base
 	// columns, and a recursive reference to `a` was a silent NULL under the name
-	// model / a loud OrdinalResolutionError under the ordinal model (a gap in
-	// alias-list handling that predates the ordinal model). Derive the seed
-	// schema from the operator's output — table columns for a scan
-	// (derivedOutputColumns) — so the alias list applies and the seed normalizes
-	// onto it.
-	if len(seedSrc) == 0 && len(c.ColumnAliases) > 0 {
-		if fields := t.derivedOutputColumns(seedBranches[0]); len(fields) > 0 {
-			seedSrc = make([]string, len(fields))
-			seedOut = make([]string, len(fields))
-			for i, f := range fields {
-				seedSrc[i] = f.Name
-				seedOut[i] = f.Name
-			}
+	// model / a loud OrdinalResolutionError under the ordinal model. It also
+	// failed the plain no-alias form outright — `WITH RECURSIVE d AS
+	// (SELECT * FROM t1 …)`, standard SQL, got `seed width 2 disagrees with 0
+	// output columns` while its alias-list twin planned.
+	//
+	// THE SEED'S OUTPUT LABELS ARE A PROPERTY, and the repo already derives it.
+	// Two earlier attempts here asked a downstream question instead and both
+	// were wrong in the same direction — they read the join leg's DATUM KEYS
+	// (`legColumns`, which qualifies `T1.ID` so `rowSlotForLegColumn` can tell
+	// two legs' `K` apart at runtime) as if they were SQL labels, and then
+	// tried to tell the two apart after the fact:
+	//
+	//   - first by testing whether a derived name CONTAINS A DOT, which cannot
+	//     work: a column can genuinely be named `a.b`, and one declared that way
+	//     round-trips the wire escape (`.`→`__2`, reversed by ToUserIdentifier)
+	//     so it comes back dotted from a plain scan;
+	//   - then by testing whether the seed RESOLVES THROUGH A JOIN, which is
+	//     structural rather than textual but still a guess about where the datum
+	//     keys come from — and it vetoed the explicit-alias path too, so
+	//     `WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM a, b UNION ALL …)`
+	//     stopped planning although it plans at this branch's base.
+	//
+	// ExactLogicalOutputLabels is the answer both were approximating: it walks
+	// the same structure as the exact result type and simply does not add the
+	// qualifier, so no consumer has to recover a label from a rendered key. Its
+	// own doc states the rule — "removed STRUCTURALLY, by not adding it, never
+	// by slicing at a dot".
+	if len(extractOuterProjectionColumns(seedBranches[0])) == 0 {
+		if labels, err := ExactLogicalOutputLabels(seedBranches[0], t.md, nil); err == nil && len(labels) > 0 {
+			seedOut = labels
 		}
 	}
 	outCols := seedOut
 	if len(c.ColumnAliases) > 0 && len(c.ColumnAliases) == len(outCols) {
-		outCols = c.ColumnAliases // already upper-cased
+		outCols = c.ColumnAliases // normalized once, at the parse capture
 	}
 
 	// Derive the exact positional row shared by every iteration BEFORE creating
@@ -10160,7 +10376,7 @@ func (t *cascadesTranslator) translateRecursiveCTE(c *logical.LogicalCTE) expres
 	seedFields := make([]values.Field, len(outCols))
 	for i := range outCols {
 		seedFields[i] = values.Field{
-			Name:      strings.ToUpper(outCols[i]),
+			Name:      outCols[i],
 			FieldType: seedType.Fields[i].FieldType,
 			Ordinal:   i,
 		}

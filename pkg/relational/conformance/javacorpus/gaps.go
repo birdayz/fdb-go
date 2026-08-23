@@ -298,6 +298,42 @@ var engineGaps = []EngineGap{
 	// Pin the exact statement because this file has thirty PartiQL AT shapes.
 	{"array-join-at.yamsql", SkipGapMultipleLateralUnnests, `"SELECT T2.\"id\", \"at1\", \"val1\", \"at2\", \"val2\" FROM T2, T2.\"arr1\" AS \"val1\" AT \"at1\", T2.\"arr2\" AS \"val2\" AT \"at2\"": 0AF00: multiple lateral array unnests in one FROM clause are not yet supported`, "RFC-142"},
 
+	// GO IS CORRECT AND JAVA IS NOT, and the corpus file says so in place:
+	// `# TODO Issue #4170: This should return [].` On a NULLABLE indexed
+	// column Java maps `«indexed» = NULL` to an IS-NULL index range instead of
+	// constant-folding the comparison to UNKNOWN, so it returns the row whose
+	// value is NULL.
+	//
+	// The block has FOUR `= NULL` arms and only this one expects a row. Two are
+	// NON-indexed (`tab1`, `tab1_nn`) and expect []; the fourth is
+	// `tab1_indexed_nn` — INDEXED but NOT NULL, so it has no null index entry
+	// and expects [] for a different reason. That fourth arm is the
+	// discriminating variable of the whole finding, which is why it is named
+	// here rather than counted as a third "non-indexed twin".
+	//
+	// Go answers [] for the two that run before this one. It is NOT claimed for
+	// the fourth: this arm aborts the block, so the arms after it never execute
+	// and there is no output to describe.
+	//
+	// Go's [] comes from the executor's scan-range binder, which makes an
+	// equality against a NULL comparand an EMPTY range — SQL three-valued
+	// logic, and the property the null-rejecting ordering proof rests on.
+	// Matching Java here would mean breaking 3VL on the index path.
+	//
+	// This file was invisible until the identifier change (RFC-237) made its
+	// nested quoted index DDL — `CARDINALITY("struct"."int_arr")` — build: the
+	// whole file was skipped as unsupported-DDL:struct-index with queries=0, so
+	// its other 29 queries had never executed either.
+	//
+	// COST OF BOOKING IT FILE-LEVEL, stated because the runner has no
+	// per-query override: the block's last query is the ONLY one exercising
+	// `tab2_index`, the nested quoted struct index this change unblocked, and
+	// it sits two arms after this one — so it does not run. That shape is
+	// covered Go-side instead by `nested_struct_index_never_matches_gap.yaml`,
+	// which asserts on the PLAN — and asserts the WRONG one, because that index
+	// is built and never matched. Its file name says so.
+	{"arrays-cardinality.yamsql", SkipConformanceJavaPlannerBug, `line 187: "SELECT \"id\" FROM \"tab1_indexed\" WHERE CARDINALITY(\"int_arr\") = NULL": result does not contain all expected rows, expected 1 row(s), got 0 row(s)`, "Issue #4170"},
+
 	// NULL into a NOT NULL ARRAY column: Go raises the clean 23502 at plan
 	// time (the type-nullability gate, ExpressionVisitor:1067 semantics
 	// applied to the literal), where Java lets the NULL reach message

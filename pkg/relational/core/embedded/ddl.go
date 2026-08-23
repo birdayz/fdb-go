@@ -91,7 +91,7 @@ func (c *EmbeddedConnection) execCreateSchema(ctx context.Context, s *antlrgen.C
 	// upper case (Java's visitUid normalization) — `create schema /db/test`
 	// creates TEST, which is how a `schema=TEST` connection then finds it.
 	// The database PATH is not an identifier and stays verbatim.
-	schemaName = functions.StripIdentifierQuotes(schemaName)
+	schemaName = functions.NormalizeIdentifier(schemaName)
 	if err := c.checkDDLDatabaseScope("CREATE SCHEMA", dbPath); err != nil {
 		return 0, err
 	}
@@ -116,7 +116,7 @@ func (c *EmbeddedConnection) execDropSchema(ctx context.Context, s *antlrgen.Dro
 	}
 	// Same identifier normalization as execCreateSchema: DROP SCHEMA
 	// /db/test drops TEST.
-	schemaName = functions.StripIdentifierQuotes(schemaName)
+	schemaName = functions.NormalizeIdentifier(schemaName)
 	if dbPath == "" {
 		return 0, api.NewErrorf(api.ErrCodeUnknownDatabase,
 			"invalid database identifier in %q", schemaText)
@@ -187,7 +187,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 		if td == nil {
 			continue
 		}
-		tableName := functions.StripIdentifierQuotes(td.Uid().GetText())
+		tableName := functions.NormalizeIdentifier(td.Uid().GetText())
 		cols, pkCols, err := parseTableDefinition(td, b)
 		if err != nil {
 			// Propagate a specific *api.Error (e.g. 42701 duplicate column, 42703 PK over an
@@ -238,7 +238,7 @@ func (c *EmbeddedConnection) execCreateSchemaTemplate(ctx context.Context, s *an
 }
 
 // trimIdentifierQuotes removes surrounding double/back quotes VERBATIM,
-// without the case fold StripIdentifierQuotes applies to unquoted names.
+// without the case fold NormalizeIdentifier applies to unquoted names.
 // Template names historically keep their raw unquoted spelling (a template
 // created as `create schema template foo` is stored "foo"); a QUOTED name
 // must not keep its quote characters — they would leak into the persisted
@@ -266,7 +266,7 @@ func registerStructDefinitions(clauses []antlrgen.ITemplateClauseContext, b *met
 		if sd == nil {
 			continue
 		}
-		structName := functions.StripIdentifierQuotes(sd.Uid().GetText())
+		structName := functions.NormalizeIdentifier(sd.Uid().GetText())
 		cols, err := parseColumnDefinitions(sd.AllColumnDefinition(), b)
 		if err != nil {
 			var apiErr *api.Error
@@ -349,7 +349,7 @@ func rejectIndexOrderClause(specs []antlrgen.IIndexColumnSpecContext, kind, inde
 		}
 		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
 			"%s %q: per-column ordering (ASC/DESC/NULLS) on column %q is not yet supported",
-			kind, indexName, functions.StripIdentifierQuotes(sc.GetColumnName().GetText()))
+			kind, indexName, functions.NormalizeIdentifier(sc.GetColumnName().GetText()))
 	}
 	return nil
 }
@@ -361,13 +361,13 @@ func rejectIndexOrderClause(specs []antlrgen.IIndexColumnSpecContext, kind, inde
 // INCLUDE is unsupported, and the dimension count is derived from the
 // indexed column's VECTOR type (in metadata.Builder.AddVectorIndex).
 func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *metadata.Builder) error {
-	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+	indexName := functions.NormalizeIdentifier(def.GetIndexName().GetText())
 	if err := rejectReservedIndexName(indexName); err != nil {
 		return err
 	}
 	// Match the sibling IndexOnSourceDefinition path, which registers and
 	// looks up the table by the raw (unnormalized) source text.
-	tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
+	tableName := functions.NormalizeIdentifier(def.GetSource().GetText())
 
 	if def.IncludeClause() != nil {
 		return api.NewErrorf(api.ErrCodeUnsupportedOperation,
@@ -381,7 +381,7 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 			return err
 		}
 		for _, spec := range cl.AllIndexColumnSpec() {
-			vecCols = append(vecCols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
+			vecCols = append(vecCols, functions.NormalizeIdentifier(spec.GetColumnName().GetText()))
 		}
 	}
 	if len(vecCols) != 1 {
@@ -397,7 +397,7 @@ func parseVectorIndexDefinition(def *antlrgen.VectorIndexDefinitionContext, b *m
 			return err
 		}
 		for _, spec := range pc.AllIndexColumnSpec() {
-			partitionCols = append(partitionCols, functions.StripIdentifierQuotes(spec.GetColumnName().GetText()))
+			partitionCols = append(partitionCols, functions.NormalizeIdentifier(spec.GetColumnName().GetText()))
 		}
 	}
 
@@ -515,7 +515,7 @@ func vectorMetricName(m antlrgen.IHnswMetricContext) (string, error) {
 // value/aggregate split is the generator's (RFC-202 D1, the internal branch
 // at MaterializedViewIndexGenerator.java:187).
 func parseAsSelectIndexDefinition(def *antlrgen.IndexAsSelectDefinitionContext, b *metadata.Builder) error {
-	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+	indexName := functions.NormalizeIdentifier(def.GetIndexName().GetText())
 	if err := rejectReservedIndexName(indexName); err != nil {
 		return err
 	}
@@ -636,7 +636,7 @@ func parseColumnDefinitions(colDefs []antlrgen.IColumnDefinitionContext, b *meta
 	foldedSeen := make(map[string]string)
 
 	for i, colDef := range colDefs {
-		colName := functions.StripIdentifierQuotes(colDef.Uid().GetText())
+		colName := functions.NormalizeIdentifier(colDef.Uid().GetText())
 		// Reject a duplicate column name with a clean 42701 here, before the proto
 		// descriptor build would surface a leaky internal error (XX000
 		// "protodesc.NewFile: descriptor already declared").
@@ -727,7 +727,7 @@ func parseTableDefinition(td antlrgen.ITableDefinitionContext, b *metadata.Build
 			uids := fullID.AllUid()
 			segments := make([]string, len(uids))
 			for i, u := range uids {
-				segments[i] = functions.StripIdentifierQuotes(u.GetText())
+				segments[i] = functions.NormalizeIdentifier(u.GetText())
 			}
 			if len(segments) == 0 {
 				continue
@@ -765,7 +765,7 @@ func parseColumnType(ct antlrgen.IColumnTypeContext, nullable bool, b *metadata.
 			return nil, api.NewErrorf(api.ErrCodeUnsupportedOperation,
 				"unsupported column type: %s", ct.GetText())
 		}
-		typeName := functions.StripIdentifierQuotes(custom.GetText())
+		typeName := functions.NormalizeIdentifier(custom.GetText())
 		if found, ok := b.FindType(typeName); ok {
 			return found.WithNullable(nullable), nil
 		}

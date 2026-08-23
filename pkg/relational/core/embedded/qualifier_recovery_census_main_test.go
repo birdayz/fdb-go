@@ -103,8 +103,23 @@ var embeddedQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		values.QualRecSiteDisplayLabelStrip:   4,
 	},
 	Split: [6]int{
-		values.QualRecSiteExistsSortSplit:     3,
-		values.QualRecSiteDerivedUnnestSource: 4,
+		values.QualRecSiteExistsSortSplit: 3,
+		// derivedUnnestSource: 0, and the DIRECTION OF THIS GUARD JUST
+		// INVERTED. It was 4 while classifyDerivedUnnestArray split
+		// unconditionally; the site now decides from the parse-tree triple and
+		// splits only for a slot that has none, and every call this corpus
+		// makes carries one. So a positive floor is unsatisfiable and the
+		// alarm is GROWTH: a non-zero here means a slot arrived without a
+		// triple, which is a finding about the CAPTURE and not about this
+		// site.
+		//
+		// It stays a Split DECLARATION rather than moving to the retired list
+		// below, and the distinction is the same one that list draws: the
+		// splitting arm is NOT gone from the tree — it is the documented
+		// fallback for an absent triple, and the query-package wiring pin
+		// drives it directly. What is empty is this corpus's population, which
+		// is a claim about this suite and may be dropped by a filter.
+		values.QualRecSiteDerivedUnnestSource: 0,
 		values.QualRecSiteProjQualVsScan:      2,
 		values.QualRecSiteDisplayLabelStrip:   4,
 	},

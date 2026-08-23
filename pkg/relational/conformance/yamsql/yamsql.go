@@ -73,8 +73,9 @@ type Test struct {
 	// rows under the wrong column names passes — the exact shape of the
 	// scalar-aggregate and LIMIT-through-projection alias bugs, one of
 	// which was a live Go-vs-Java divergence (RFC-082 select_count_alias).
-	// Comparison is case-insensitive: the engines agree on identity, not on
-	// display case.
+	// Comparison is CASE-SENSITIVE (diffColumns): display case is part of
+	// what the engines agree on, so a folding comparison could not see the
+	// one property a quoted-identifier `columns:` assertion is written to pin.
 	Columns []string `yaml:"columns"`
 
 	// PlanContains, if set, runs EXPLAIN on the query and asserts that

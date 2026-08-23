@@ -310,7 +310,7 @@ func TestBuildLogicalPlanWithCatalog_WhereWalked(t *testing.T) {
 	// (rlcatalog is case-insensitive); ExplainValue renders literals
 	// unquoted via valueLiteralString.
 	got := op.Explain("")
-	if want := "Filter(ORDER.PRICE#2 > 5)\n  Scan(ORDER)"; got != want {
+	if want := "Filter(ORDER.price#2 > 5)\n  Scan(ORDER)"; got != want {
 		t.Fatalf("Explain: got %q, want %q", got, want)
 	}
 }
@@ -506,7 +506,7 @@ func TestBuildLogicalPlanWithCatalog_WhereAnd(t *testing.T) {
 		t.Fatal("expected Predicate on AND shape")
 	}
 	got := filter.Predicate.Explain()
-	if want := "(ORDER.PRICE#2 > 5 AND ORDER.ORDER_ID#0 = 1)"; got != want {
+	if want := "(ORDER.price#2 > 5 AND ORDER.order_id#0 = 1)"; got != want {
 		t.Fatalf("Predicate.Explain: got %q, want %q", got, want)
 	}
 }
@@ -589,8 +589,8 @@ func TestBuildLogicalPlanWithCatalog_RHSArithmeticFolded(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate non-nil")
 	}
-	if got := filter.Predicate.Explain(); got != "ORDER.PRICE#2 = 3" {
-		t.Fatalf("Predicate.Explain: got %q, want ORDER.PRICE#2 = 3", got)
+	if got := filter.Predicate.Explain(); got != "ORDER.price#2 = 3" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER.price#2 = 3", got)
 	}
 }
 
@@ -667,8 +667,8 @@ func TestBuildLogicalPlanWithCatalog_DeleteWhere(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate on DELETE WHERE")
 	}
-	if got := filter.Predicate.Explain(); got != "ORDER.PRICE#2 > 5" {
-		t.Fatalf("Predicate.Explain: got %q, want ORDER.PRICE#2 > 5", got)
+	if got := filter.Predicate.Explain(); got != "ORDER.price#2 > 5" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER.price#2 > 5", got)
 	}
 }
 
@@ -703,8 +703,8 @@ func TestBuildLogicalPlanWithCatalog_UpdateWhere(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatal("expected Predicate on UPDATE WHERE")
 	}
-	if got := filter.Predicate.Explain(); got != "ORDER.ORDER_ID#0 = 1" {
-		t.Fatalf("Predicate.Explain: got %q, want ORDER.ORDER_ID#0 = 1", got)
+	if got := filter.Predicate.Explain(); got != "ORDER.order_id#0 = 1" {
+		t.Fatalf("Predicate.Explain: got %q, want ORDER.order_id#0 = 1", got)
 	}
 }
 
@@ -1089,11 +1089,11 @@ func TestBuildLogicalPlanWithCatalog_InsertSelectJoin(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatalf("expected resolved Predicate on JOIN-WHERE, PredicateText=%q", filter.PredicateText)
 	}
-	if got := filter.Predicate.Explain(); !(strings.Contains(got, "PRICE") && strings.Contains(got, "> 5")) {
+	if got := filter.Predicate.Explain(); !(strings.Contains(got, "price") && strings.Contains(got, "> 5")) {
 		// The resolved predicate renders the column baked + qualified (e.g.
-		// "O.PRICE#2 > 5") — the predicate still resolves; the display
+		// "O.price#2 > 5") — the predicate still resolves; the display
 		// carries the plan-time ordinal + source qualifier.
-		t.Fatalf("expected a resolved PRICE > 5 predicate, got %q", got)
+		t.Fatalf("expected a resolved price > 5 predicate, got %q", got)
 	}
 }
 
@@ -1196,8 +1196,8 @@ func TestBuildLogicalPlanWithCatalog_JoinQualifiedColumn(t *testing.T) {
 	if filter.Predicate == nil {
 		t.Fatalf("expected Predicate on JOIN shape; PredicateText=%q", filter.PredicateText)
 	}
-	if got := filter.Predicate.Explain(); !(strings.Contains(got, "PRICE") && strings.Contains(got, "> 5")) {
-		t.Fatalf("expected a resolved PRICE > 5 JOIN predicate, got %q", got)
+	if got := filter.Predicate.Explain(); !(strings.Contains(got, "price") && strings.Contains(got, "> 5")) {
+		t.Fatalf("expected a resolved price > 5 JOIN predicate, got %q", got)
 	}
 }
 
@@ -1224,8 +1224,8 @@ func TestBuildLogicalPlanWithCatalog_JoinUniqueBareColumn(t *testing.T) {
 	if filter == nil || filter.Predicate == nil {
 		t.Fatalf("expected resolved Predicate on JOIN with bare-column WHERE")
 	}
-	if got := filter.Predicate.Explain(); !strings.Contains(got, "QUANTITY") {
-		t.Fatalf("expected QUANTITY in resolved predicate, got %q", got)
+	if got := filter.Predicate.Explain(); !strings.Contains(got, "quantity") {
+		t.Fatalf("expected quantity in resolved predicate, got %q", got)
 	}
 }
 
@@ -1285,11 +1285,11 @@ func TestBuildLogicalPlanWithCatalog_ThreeWayJoin(t *testing.T) {
 	}
 	got := filter.Predicate.Explain()
 	// Both branches of the AND should resolve.
-	if !(strings.Contains(got, "PRICE") && strings.Contains(got, "> 5")) {
-		t.Errorf("expected PRICE > 5, got %q", got)
+	if !(strings.Contains(got, "price") && strings.Contains(got, "> 5")) {
+		t.Errorf("expected price > 5, got %q", got)
 	}
-	if !(strings.Contains(got, "ID") && strings.Contains(got, "> 0")) {
-		t.Errorf("expected ID > 0 (from TypedRecord.id), got %q", got)
+	if !(strings.Contains(got, "id") && strings.Contains(got, "> 0")) {
+		t.Errorf("expected id > 0 (from TypedRecord.id), got %q", got)
 	}
 }
 
@@ -1361,9 +1361,9 @@ func TestDerivedJoinBodyNullability_IsDerivedFromTheJoinAlgebra(t *testing.T) {
 	if !ok {
 		t.Fatal("the INNER control body did not derive at all — nothing below is comparable")
 	}
-	tags, found := columnNamed(innerSrc.Table.Columns(), "TAGS")
+	tags, found := columnNamed(innerSrc.Table.Columns(), "tags")
 	if !found {
-		t.Fatalf("fixture: Order must contribute a TAGS column, got %v",
+		t.Fatalf("fixture: Order must contribute a tags column, got %v",
 			columnNames(innerSrc.Table.Columns()))
 	}
 	if tags.Nullable {
@@ -1410,9 +1410,9 @@ func TestDerivedJoinBodyNullability_IsDerivedFromTheJoinAlgebra(t *testing.T) {
 			if !derived {
 				t.Fatalf("the body did not derive — the case tests nothing")
 			}
-			got, ok := columnNamed(src.Table.Columns(), "TAGS")
+			got, ok := columnNamed(src.Table.Columns(), "tags")
 			if !ok {
-				t.Fatalf("no TAGS column in %v", columnNames(src.Table.Columns()))
+				t.Fatalf("no tags column in %v", columnNames(src.Table.Columns()))
 			}
 			if got.Nullable != tc.wantTagsNullable {
 				t.Fatalf("D.TAGS nullable=%v, want %v — %s.\n"+

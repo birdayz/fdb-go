@@ -132,7 +132,15 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 			} else if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
 				name = name[dot+1:]
 			}
-			fields[i] = values.Field{Name: strings.ToUpper(name), Ordinal: i, FieldType: fieldType}
+			// VERBATIM. Every branch above produced a name that was already
+			// normalized at the parse boundary — an alias, a reference's bare
+			// segment, or a rendering built from those — so re-folding here
+			// only destroys the one spelling that carries information: a
+			// QUOTED identifier's case. `AS "x"` emitted a column named X,
+			// which is a name no reference to it can spell, and the row this
+			// projection flows then disagreed by case with the scope that
+			// resolves against it.
+			fields[i] = values.Field{Name: name, Ordinal: i, FieldType: fieldType}
 		}
 		return &values.RecordType{Fields: fields}, nil
 	case *logical.LogicalAggregate:
@@ -141,8 +149,11 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 			if key.Value == nil || key.Value.Type() == nil {
 				return nil, fmt.Errorf("aggregate group key %d has no exact value", i)
 			}
+			// VERBATIM: this is the aggregate's exact result TYPE, the same
+			// authority aggregateOutputColumns publishes, and a fold here would
+			// put two spellings of one row in two places.
 			fields = append(fields, values.Field{
-				Name: strings.ToUpper(key.Display), Ordinal: len(fields), FieldType: key.Value.Type(),
+				Name: key.Display, Ordinal: len(fields), FieldType: key.Value.Type(),
 			})
 		}
 		for i, call := range typed.Calls {
@@ -151,7 +162,7 @@ func exactLogicalResultType(op logical.LogicalOperator, md *recordlayer.RecordMe
 				return nil, typeErr
 			}
 			fields = append(fields, values.Field{
-				Name: strings.ToUpper(call.CanonicalName()), Ordinal: len(fields), FieldType: fieldType,
+				Name: call.CanonicalName(), Ordinal: len(fields), FieldType: fieldType,
 			})
 		}
 		return &values.RecordType{Fields: fields}, nil
@@ -385,7 +396,11 @@ func legLabelsForType(op logical.LogicalOperator, typ values.Type) ([]string, er
 	if record, ok := typ.(*values.RecordType); ok {
 		labels := make([]string, len(record.Fields))
 		for i, field := range record.Fields {
-			labels[i] = strings.ToUpper(field.Name)
+			// The row's own field names, VERBATIM. These labels are published
+			// as a derived source's columns, and a reference resolves against
+			// them; folding here registered a column under a name the row
+			// flowing beneath it does not carry.
+			labels[i] = field.Name
 		}
 		return labels, nil
 	}
@@ -407,7 +422,8 @@ func rowLabels(typ values.Type, op logical.LogicalOperator) ([]string, error) {
 	}
 	labels := make([]string, len(record.Fields))
 	for i, field := range record.Fields {
-		labels[i] = strings.ToUpper(field.Name)
+		// Verbatim, for the same reason as legLabelsForType above it.
+		labels[i] = field.Name
 	}
 	return labels, nil
 }
@@ -434,7 +450,10 @@ func cteBoundRowType(bodyRow values.Type, cte *logical.LogicalCTE) (values.Type,
 	}
 	fields := append([]values.Field(nil), record.Fields...)
 	for i := range fields {
-		fields[i].Name = strings.ToUpper(cte.ColumnAliases[i])
+		// A CTE column alias arrives already normalized by the parse capture,
+		// so it is applied verbatim — `WITH c("x") AS (…)` names the column x,
+		// and a fold here would make `c."x"` unable to name it.
+		fields[i].Name = cte.ColumnAliases[i]
 		fields[i].Ordinal = i
 	}
 	return &values.RecordType{
@@ -594,7 +613,12 @@ func logicalLegFields(op logical.LogicalOperator, typ values.Type) ([]values.Fie
 	if record, ok := typ.(*values.RecordType); ok {
 		fields := make([]values.Field, len(record.Fields))
 		for i, field := range record.Fields {
-			name := strings.ToUpper(field.Name)
+			// The COLUMN half is verbatim; only the ALIAS half is folded, and
+			// only because a source alias never comes from a descriptor. A
+			// merged leg key must spell its column the way the leg's own row
+			// spells it, or the join result type disagrees with the leg it
+			// concatenates.
+			name := field.Name
 			if alias != "" && !strings.Contains(name, ".") {
 				name = alias + "." + name
 			}

@@ -79,13 +79,19 @@ func TestFDB_RowVersionBareStar_MixedSourcesAndQuotedAliases(t *testing.T) {
 		// reason its alias is, and the first fix here preserved the alias while
 		// still re-folding the columns — leaving the defect half-present.
 		// `t5.arr AS "x"` resolved its alias verbatim and then asked for `x.X`.
+		//
+		// THESE TWO NOW REPORT THE AUTHORED SPELLING, and that is the change:
+		// the star's projection resolved the quoted name once the rewrite kept
+		// the alias, but the LABEL it published was still folded, so the user
+		// saw DID and X for columns called did and x. Nothing folds an output
+		// name any more, so the reported label is the one the query wrote.
 		{
 			"quoted_derived_column", `SELECT * FROM t3, (SELECT id AS "did" FROM t4) d`,
-			[]string{"ID", "A", "DID"},
+			[]string{"ID", "A", "did"},
 		},
 		{
 			"quoted_unnest_alias", `SELECT * FROM t5, t5.arr AS "x"`,
-			[]string{"ID", "ARR", "X"},
+			[]string{"ID", "ARR", "x"},
 		},
 		{
 			"unquoted_derived_column", `SELECT * FROM t3, (SELECT id AS did FROM t4) d`,

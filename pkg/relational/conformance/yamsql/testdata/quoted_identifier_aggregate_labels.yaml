@@ -1,0 +1,161 @@
+# quoted_identifier_aggregate_labels.yaml
+#
+# THE AGGREGATE RESULT-SET LABEL, on the two plan shapes that do NOT put a
+# projection above the aggregate and therefore derive their column names from a
+# different authority than every other scenario here: the AGGREGATE INDEX plan
+# and the bare streaming aggregate.
+#
+# Why this file exists at all: across the whole corpus only six scenarios carry
+# a `columns:` assertion, and NONE of them was on an aggregate-index query. The
+# label axis on this path had no coverage, which is not the same as the path
+# having no defects — a query with the right rows under the wrong column names
+# passes every row assertion ever written.
+name: quoted_identifier_aggregate_labels
+# Quoted mixed-case columns, so a fold anywhere on the way to a label is
+# visible. `plain` is declared UNQUOTED and is the control: it really is named
+# PLAIN, so an upper label for it is correct rather than a fold.
+schema_template: |
+  CREATE TABLE sales (
+    id BIGINT,
+    "Region" STRING,
+    "Amount" BIGINT,
+    plain BIGINT,
+    PRIMARY KEY (id)
+  )
+  CREATE INDEX sum_by_region AS SELECT SUM("Amount") FROM sales GROUP BY "Region"
+setup:
+  - INSERT INTO sales VALUES (1, 'US', 100, 1)
+  - INSERT INTO sales VALUES (2, 'US', 200, 2)
+  - INSERT INTO sales VALUES (3, 'EU', 300, 3)
+tests:
+  # The aggregate-INDEX shape. plan_contains is not decoration: if the planner
+  # ever stops choosing the index this arm silently starts measuring the
+  # ordinary streaming path, which has a different naming authority.
+  - query: SELECT "Region", SUM("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
+    plan_contains: AggregateIndex
+    columns: ["Region", "SUM(Amount)"]
+    rows:
+      - ["EU", 300]
+      - ["US", 300]
+  # The bare SCALAR aggregate — no grouping, so nothing above it to re-name the
+  # column.
+  - query: SELECT SUM("Amount") FROM sales
+    columns: ["SUM(Amount)"]
+    rows:
+      - [600]
+  # The unquoted control on the same table and the same shape. `plain` folded at
+  # DDL time, so `SUM(PLAIN)` is the column's real name and not a fold — without
+  # this arm an upper label above could not be told apart from a fold that
+  # happened to be right.
+  - query: SELECT SUM(plain) FROM sales
+    columns: ["SUM(PLAIN)"]
+    rows:
+      - [6]
+  # A quoted ALIAS on the scalar shape. The alias is the output name and must
+  # reach the label verbatim.
+  - query: SELECT SUM("Amount") AS "total" FROM sales
+    columns: ["total"]
+    rows:
+      - [600]
+  # Grouped, no index available for MAX — the ordinary streaming-aggregate
+  # shape, both authorities in one row.
+  - query: SELECT "Region", MAX("Amount") FROM sales GROUP BY "Region" ORDER BY "Region"
+    columns: ["Region", "MAX(Amount)"]
+    rows:
+      - ["EU", 300]
+      - ["US", 200]
+  # THE CORRELATED SCALAR SUBQUERY IS A SECOND ROUTE to an aggregate name, and
+  # it had its own fold: canonicalAggName upper-folded a rendering whose field
+  # names are already the declared ones, so this shape labelled SUM(X.AMOUNT)
+  # while the GROUP BY/HAVING route above labelled SUM(Amount) — two routes to
+  # one name, disagreeing, which is the whole defect class one layer over.
+  - query: SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE x."Region" = s."Region") AS "per_region" FROM sales s ORDER BY s.id
+    columns: ["ID", "per_region"]
+    rows:
+      - [1, 300]
+      - [2, 300]
+      - [3, 300]
+  # The UNALIASED twin, which is the one that actually exposes the derived name
+  # — the alias above would mask any fold behind it.
+  - query: SELECT s.id, (SELECT SUM(x."Amount") FROM sales x WHERE x."Region" = s."Region") FROM sales s ORDER BY s.id
+    columns: ["ID", "SUM(X.Amount)"]
+    rows:
+      - [1, 300]
+      - [2, 300]
+      - [3, 300]
+  # The unquoted control for the same shape. `plain` folded at DDL time, so the
+  # upper label is the column's real name — without this arm the verbatim claim
+  # above could not be told from a fold that happened to be right.
+  - query: SELECT s.id, (SELECT SUM(x.plain) FROM sales x WHERE x."Region" = s."Region") FROM sales s ORDER BY s.id
+    columns: ["ID", "SUM(X.PLAIN)"]
+    rows:
+      - [1, 3]
+      - [2, 3]
+      - [3, 3]
+  # THE EXECUTOR'S ROW MUST SPELL THE ALIAS THE PLAN DECLARES. The aggregate
+  # cursor names its emitted positional slots independently of
+  # GroupByOutputColumnNames — two copies of one naming rule — and it folded
+  # while the plan authority published verbatim. A derived table is what makes
+  # the disagreement observable: its projection binds `tot` BY NAME against the
+  # row the cursor emitted, so a row spelling it TOT is a row the reference
+  # cannot find.
+  - query: SELECT d."Region", d."tot" FROM (SELECT "Region", SUM("Amount") AS "tot" FROM sales GROUP BY "Region") d ORDER BY d."Region"
+    columns: ["Region", "tot"]
+    rows:
+      - ["EU", 300]
+      - ["US", 300]
+  # A STRING LITERAL IS DATA, NOT A NAME. The aggregate's output-column name is
+  # derived from its argument's token stream, and the mint upper-cases every
+  # token that is not a delimited identifier — which swept the literal up with
+  # the keywords, so `COUNT(CASE WHEN "Region" = 'us' …)` published itself under
+  # the same name as the `'US'` one. Two aggregates that count different things,
+  # one name. These two arms pin the labels apart and the isolated values.
+  - query: SELECT COUNT(CASE WHEN "Region" = 'us' THEN 1 END) FROM sales
+    columns: ["COUNT(CASEWHENRegion='us'THEN1END)"]
+    rows:
+      - [0]
+  - query: SELECT COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
+    columns: ["COUNT(CASEWHENRegion='US'THEN1END)"]
+    rows:
+      - [2]
+  # Two aggregates over literals differing by more than case, in ONE query, as
+  # the control: the pair mechanism works, so a failure of the case-only pair is
+  # about identity and not about having two aggregates.
+  - query: SELECT COUNT(CASE WHEN "Region" = 'EU' THEN 1 END), COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
+    rows:
+      - [1, 2]
+  # The same case-only pair OUTSIDE an aggregate answers correctly, which is
+  # what localises the open defect below to the aggregate ordinal bind rather
+  # than to CASE or to string comparison.
+  - query: SELECT id, CASE WHEN "Region" = 'us' THEN 1 END, CASE WHEN "Region" = 'US' THEN 1 END FROM sales ORDER BY id
+    rows:
+      - [1, null, 1]
+      - [2, null, 1]
+      - [3, null, null]
+  # TWO DERIVED ALIASES CARRYING APOSTROPHES, each exposing a column alias that
+  # carries one. This is the SQL-level pin for a regression that a unit row over
+  # the name-splitting helper could not express: that row bypasses identifier
+  # normalization, alias provenance, join planning and result metadata, so it
+  # asserted the helper's behaviour rather than the behaviour a user sees.
+  # Treating an apostrophe as a string-literal delimiter hid the qualifier dot
+  # between `Q'` and `Z'`, and these labels came back as `Q'.Z'` / `R'.Z'`.
+  - query: SELECT "Q'"."Z'", "R'"."Z'" FROM (SELECT "Amount" AS "Z'" FROM sales WHERE id = 1) "Q'", (SELECT "Amount" AS "Z'" FROM sales WHERE id = 2) "R'"
+    columns: ["Z'", "Z'"]
+    rows:
+      - [100, 200]
+  # A derived column whose generated name CONTAINS A STRING LITERAL, re-projected
+  # through a derived table. The label was predicted to come back as the fragment
+  # `AMOUNTEND)` once parseColRef stopped treating quotes as literal delimiters;
+  # measured, it does not — the full name survives, and the same
+  # string splits identically under this algorithm and the one it replaced.
+  #
+  # Note what this row does NOT do, since it sits beside the limits it looks
+  # like it should exercise: it carries no dot AFTER the literal's paren, so
+  # both algorithms split at the same place and it drives neither KNOWN LIMIT.
+  # ("Unqualified" was the first way of saying that and is wrong — the name is
+  # qualified, `d.`; the operative property is where the dot sits relative to
+  # the literal.) It pins the label, nothing more.
+  - query: SELECT * FROM (SELECT COUNT(CASE WHEN "Region" = ')' THEN "Amount" END) FROM sales) d
+    columns: ["COUNT(CASEWHENRegion=')'THENAmountEND)"]
+    rows:
+      - [0]

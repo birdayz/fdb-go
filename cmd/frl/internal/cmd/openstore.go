@@ -105,7 +105,7 @@ func (f *storeAddressFlags) resolve() (*storeTarget, error) {
 		// The schema is an SQL identifier: unquoted names fold to upper
 		// case (the same rule CREATE SCHEMA applies), so `--schema main`
 		// finds the schema `create schema /db/main` created (MAIN).
-		schema:          functions.StripIdentifierQuotes(f.schema),
+		schema:          functions.NormalizeIdentifier(f.schema),
 		clusterFileFlag: f.clusterFile,
 	}
 	if f.keyspaceTuple != "" {

@@ -40,7 +40,7 @@ func TestVectorDDL_PartitionedIndexShape(t *testing.T) {
 		t.Fatalf("root expression is %T, want *KeyWithValueExpression", idx.RootExpression)
 	}
 	// key part = partition prefix (zone, bookshelf); value part = embedding.
-	// SQL identifiers normalize to upper-case (StripIdentifierQuotes).
+	// SQL identifiers normalize to upper-case (NormalizeIdentifier).
 	if got := kwv.SplitPoint(); got != 2 {
 		t.Errorf("split point = %d, want 2 (partition columns)", got)
 	}

@@ -542,17 +542,18 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				//
 				// WHAT THIS ARM THEN FOUND, one layer down and pre-existing:
 				// Java treats `"K"` and `"k"` as different columns and reports
-				// `Unknown reference K`, while Go's catalog lookup folds them
-				// together and finds TWO owners. That is `rlcatalog`'s
-				// case-insensitive `LookupColumn`, not this resolver — the key
+				// `Unknown reference K`, while Go reaches one from the other
+				// and finds TWO owners. That is not this resolver — the key
 				// derivation above is quote-aware and identical on both sides
 				// of the comparison.
 				//
-				// Pinned with both engines' text, and booked in TODO.md under
-				// "Quoted identifiers are folded by the catalog's column
-				// lookup". Not fixed here: it changes identifier equality for
-				// every column reference in the engine, which is not something
-				// to slip into a USING change.
+				// It is the scope's case-insensitive SECOND PASS, which is a
+				// deliberate read-side extension (RFC-237 §3.4): Go does not
+				// plumb Java's CASE_SENSITIVE_IDENTIFIERS option, and wrapping a
+				// hand-written .proto as a SQL catalog — where field names never
+				// went through DDL normalization — is a first-class entry point
+				// here. Pinned with both engines' text. Closing it means
+				// plumbing the option, not deleting the pass.
 				// A CHAINED quoted USING where the owner is NOT the prior right
 				// leg. `q3` has no `"k"`, so the second USING's owner must be
 				// `q1` — which only works if the column multiset carries the
@@ -561,16 +562,22 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				// quoted, the lookup would miss, the join would decline, and
 				// the positional predicate would ask q3 for a column it does
 				// not have.
-				// PINNED: the catalog folds, so q3's unquoted `K` answers a
-				// lookup for `"k"` and becomes a second owner. Java keeps them
-				// distinct and finds one. Same booked cause as the arm below —
-				// see TODO.md, "Quoted identifiers are folded by the catalog's
-				// column lookup".
+				// REPAIRED, and it is asserted as plain AGREEMENT now rather
+				// than as a pinned divergence — a strictly stronger check,
+				// since a pin only fails when the named substring moves.
+				//
+				// Go reported `Ambiguous reference K` here. The cause was the
+				// ownership search relaxing PER SOURCE: q1 declares `"k"` and
+				// q3 declares unquoted `K`, so a case-insensitive lookup found
+				// both and `usingOwnerOf` — which counts owners ACROSS sources
+				// — called it ambiguous. Exactly the shape RFC-237 §3.2 says
+				// must not exist, in a second adjudicator that had not been
+				// converted. It now runs every source STRICT and re-runs
+				// relaxed only when strict found no owner, so q1's exact `"k"`
+				// wins outright.
 				name: "chained quoted USING resolving to the far-left source",
 				sql: `SELECT q1."id" FROM q1 JOIN q3 USING ("id") ` +
 					`JOIN q2 USING ("k") ORDER BY q1."id"`,
-				javaSays: "[[1]]",
-				goSays:   "42702",
 			},
 			{
 				// THE SAME CHAIN WITH AN INTERVENING SOURCE THAT HAS NO `k` AT
@@ -589,6 +596,22 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 					`JOIN q2 USING ("k") ORDER BY q1."id"`,
 			},
 			{
+				// THE DIVERGENCE GOT WIDER HERE, and that is recorded rather
+				// than smoothed over. Before RFC-237 both engines REFUSED this
+				// — Java `Unknown reference K`, Go 42702 — so no wrong rows
+				// shipped either way. Go now ANSWERS: q1 and q2 both declare
+				// `"k"`, an earlier USING hides q2's right copy, and the
+				// scope's case-insensitive pass reaches the surviving `"k"`
+				// from the reference `"K"`.
+				//
+				// It is the same read-side extension the QuotedIdentifierCase
+				// probe measures (RFC-237 §3.4), reached through USING. Closing
+				// it is NOT plumbing CASE_SENSITIVE_IDENTIFIERS — Java keeps a
+				// quoted name verbatim in both modes, so no setting makes `"K"`
+				// reach `"k"`. It is preserving the QUOTING BIT through
+				// NormalizeIdentifier/FromNormalized, which discards it
+				// today; §3.3 records the probe showing a WasQuoted() gate is
+				// inert for exactly that reason.
 				name: "a quoted USING must not hide the unquoted column",
 				sql: `SELECT q1."id" FROM q1 JOIN q2 USING ("k") ` +
 					`JOIN q3 USING ("K") ORDER BY q1."id"`,
@@ -596,27 +619,42 @@ var _ = Describe("JoinUsingQuotedIdentifierJavaProbe", func() {
 				goSays:   "[[1]]",
 			},
 			{
-				// A DERIVED right leg with quoted columns — A PRE-EXISTING
-				// DIVERGENCE, and the measurement is what established that.
+				// The USING spelling of the arm above — same cause, kept because
+				// it is the shape a user is most likely to write, and because
+				// it is what a review first reported as a USING bug.
 				//
-				// A review reported this as caused by the USING retarget
-				// upper-casing the column name. Half right: it DID, and that is
-				// fixed — the lookup is quote-aware now. But bypassing
-				// retargetUsingJoins entirely leaves this query failing exactly
-				// the same way, so the retarget is not what refuses it.
+				// It is not one: the ON form fails identically, and bypassing
+				// `retargetUsingJoins` entirely changes nothing. The report was
+				// half right — the retarget DID fold the column name, which is
+				// fixed — but that was never what refuses the query.
+				// THE SAME QUERY WITH NO `USING` AT ALL, which is what said the
+				// fault was never in USING resolution: an explicit ON naming
+				// the same quoted column failed identically, so the subject is
+				// a quoted reference into a DERIVED source's row.
 				//
-				// What refuses it is downstream: the derived source's projection
-				// keeps the quoted lower-case names while the edge is declared
-				// with folded upper-case ones, and the executor layout rejects
-				// the mismatch. Java answers the query. Pinned with both sides'
-				// text so a repair reddens; booked in TODO.md under "A derived
-				// table's quoted column names do not survive to the executor
-				// layout".
+				// BOTH OF THESE WERE PINNED DIVERGENCES AND BOTH ARE REPAIRED.
+				// Go answered `executor.layout` here because three identifier
+				// models coexisted and disagreed: the record catalog PRESENTED
+				// folded names, a derived table's StaticTable presented names
+				// as built and matched exactly, and reference resolution
+				// preserved a quoted name while folding an unquoted one — so
+				// D's scope said RECORD(id,k) while the row that flowed said
+				// RECORD(ID,K).
+				//
+				// There is one model now (RFC-237): a name is normalized once,
+				// at the parse boundary, and carried verbatim after it. These
+				// two shapes are therefore asserted as plain AGREEMENT rather
+				// than as pinned disagreement, which is a strictly stronger
+				// check — a pin only fails when the named substring moves,
+				// while agreement fails on any difference at all.
+				name: "quoted column into a derived source, plain ON join",
+				sql: `SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d ` +
+					`ON q1."k" = d."k" ORDER BY q1."id"`,
+			},
+			{
 				name: "quoted USING against a derived right leg",
 				sql: `SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d USING ("k") ` +
 					`ORDER BY q1."id"`,
-				javaSays: "[[1]]",
-				goSays:   "executor.layout",
 			},
 		}
 

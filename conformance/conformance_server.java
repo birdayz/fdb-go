@@ -28,6 +28,7 @@ class ConformanceServer {
         new SplitSteps(),
         new IndexSteps(),
         new CompositeIndexSteps(),
+        new MultiTypeIndexSteps(),
         new ScanSteps(),
         new ContinuationSteps(),
         new CountSteps(),

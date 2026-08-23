@@ -7,12 +7,26 @@ import (
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
 )
 
-// StripIdentifierQuotes normalizes an identifier's raw parse text to
-// its canonical lookup form: quoted identifiers are stripped of their
-// surrounding `"` or backticks and otherwise preserved case-for-case;
-// unquoted identifiers are folded to upper case. Mirrors Java's
-// SemanticAnalyzer.normalizeString (case-sensitive=false default).
-func StripIdentifierQuotes(s string) string {
+// NormalizeIdentifier normalizes an identifier's raw parse text to its
+// canonical lookup form: a quoted identifier is stripped of its surrounding `"`
+// or backticks and otherwise preserved case-for-case; an unquoted one is folded
+// to UPPER. Mirrors Java's SemanticAnalyzer.normalizeString
+// (case-sensitive=false default).
+//
+// IT IS NOT IDEMPOTENT, and must be applied exactly ONCE, at the parse
+// boundary. Applying it twice silently destroys every quoted identifier while
+// being invisible for every unquoted one, because folding twice is folding
+// once.
+//
+// It used to be called StripIdentifierQuotes, and that name is why this needs
+// saying: all three CTE column-alias captures wrote
+// `StripIdentifierQuotes(FullIdToName(fid))` — and FullIdToName already applies
+// it per segment. So `"x"` became `x` became `X`, and `WITH c("x")` published a
+// column no reference could name. Every site that CONSUMED the alias was
+// faithful; the corruption was upstream of all of them, spelled as a function
+// whose name promised a no-op. Renamed so the double application reads as
+// obviously wrong at the call site rather than as a defensive strip.
+func NormalizeIdentifier(s string) string {
 	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '`' && s[len(s)-1] == '`')) {
 		return s[1 : len(s)-1]
 	}
@@ -27,7 +41,7 @@ func FullIdToName(fid antlrgen.IFullIdContext) string {
 	uids := fid.AllUid()
 	parts := make([]string, len(uids))
 	for i, u := range uids {
-		parts[i] = StripIdentifierQuotes(u.GetText())
+		parts[i] = NormalizeIdentifier(u.GetText())
 	}
 	return strings.Join(parts, ".")
 }

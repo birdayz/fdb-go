@@ -113,7 +113,7 @@ func aggGroupedFixture(t testing.TB) ([]QueryResult, []values.Value, []expressio
 		{
 			Function:    expressions.AggSum,
 			Operand:     mustTestFieldOrdinal(t, root, 0),
-			OperandName: "amount",
+			OperandName: "AMOUNT",
 		},
 	}
 	return rows, groupKeys, aggs
@@ -142,8 +142,8 @@ func TestAggregateCursor_GroupBreakContinuation_ResumesRemainingGroups(t *testin
 		t.Fatalf("expected group A row, got no-next (%v)", r1.GetNoNextReason())
 	}
 	m1, _ := rowMapOK(r1.GetValue())
-	if m1["DEPT"] != "A" || m1["SUM(AMOUNT)"] != int64(30) {
-		t.Fatalf("group A row = %v, want DEPT=A SUM=30", m1)
+	if m1["dept"] != "A" || m1["SUM(AMOUNT)"] != int64(30) {
+		t.Fatalf("group A row = %v, want dept=A SUM=30", m1)
 	}
 	// Its continuation = the LAST row accepted into A (index 1) → list pos 2.
 	inner1 := decodeAggRowContinuation(t, r1.GetContinuation(), len(aggs))
@@ -171,7 +171,7 @@ func TestAggregateCursor_GroupBreakContinuation_ResumesRemainingGroups(t *testin
 			break
 		}
 		m, _ := rowMapOK(r.GetValue())
-		got = append(got, fmt.Sprintf("%v=%v", m["DEPT"], m["SUM(AMOUNT)"]))
+		got = append(got, fmt.Sprintf("%v=%v", m["dept"], m["SUM(AMOUNT)"]))
 	}
 	want := "[B=70 C=50]"
 	if fmt.Sprint(got) != want {

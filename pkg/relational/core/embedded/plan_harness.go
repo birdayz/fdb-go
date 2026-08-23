@@ -346,8 +346,29 @@ func planPhysicalDMLForTest(
 	if err != nil {
 		return nil, fmt.Errorf("schema DDL: %w", err)
 	}
-	md := tmpl.Underlying()
+	return planPhysicalDMLWithMetadata(sql, tmpl.Underlying(), stats, reach)
+}
 
+// PlanPhysicalDMLWithMetadata is PlanPhysicalDMLForTest against PRE-BUILT
+// metadata, the DML counterpart of PlanQueryWithMetadata. DDL upper-cases every
+// unquoted identifier, so a record type whose STORED name is mixed-case or
+// otherwise not what DDL would produce cannot be expressed through the DDL form
+// at all -- and that shape is exactly what the identifier-namespace probes need
+// to measure.
+func PlanPhysicalDMLWithMetadata(
+	sql string,
+	md *recordlayer.RecordMetaData,
+	stats properties.StatisticsProvider,
+) (plans.RecordQueryPlan, error) {
+	return planPhysicalDMLWithMetadata(sql, md, stats, nil)
+}
+
+func planPhysicalDMLWithMetadata(
+	sql string,
+	md *recordlayer.RecordMetaData,
+	stats properties.StatisticsProvider,
+	reach *cascades.ReachabilityCollector,
+) (plans.RecordQueryPlan, error) {
 	root, err := parser.Parse(sql)
 	if err != nil {
 		return nil, fmt.Errorf("parse SQL: %w", err)
@@ -374,6 +395,20 @@ func planPhysicalDMLForTest(
 	case dml.DeleteStatement() != nil:
 		logicalOp, err = buildLogicalPlanForDeleteWithCatalog(dml.DeleteStatement(), md, defaultEmbeddedSchema)
 	case dml.UpdateStatement() != nil:
+		// Production's two UPDATE parse-tree rejections run BEFORE the builder, so
+		// a harness that skips them builds a plan for SQL production never accepts
+		// -- and the golden then records a failure message production does not
+		// emit. That is not a missing rejection, it is a wrong answer pinned as
+		// truth: three corpus entries recorded a builder-stage error where
+		// production rejects at the parse tree with a different message entirely.
+		if updateHasDefaultAssignment(dml.UpdateStatement()) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"DEFAULT is not supported in UPDATE ... SET")
+		}
+		if updateHasSubqueryAssignment(dml.UpdateStatement()) {
+			return nil, api.NewError(api.ErrCodeUnsupportedQuery,
+				"subqueries are not supported in UPDATE ... SET")
+		}
 		logicalOp, err = buildLogicalPlanForUpdateWithCatalog(dml.UpdateStatement(), md, defaultEmbeddedSchema)
 	default:
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML harness handles only DELETE and UPDATE")
@@ -390,15 +425,60 @@ func planPhysicalDMLForTest(
 	if err := resolveQualifiedTableNames(logicalOp, defaultEmbeddedSchema); err != nil {
 		return nil, err
 	}
+	// Mirror planDML's TARGET guard and source sweep, in that order. This harness
+	// is a hand-maintained copy of that function and explain-differ plans the
+	// whole corpus through it, so a check living only in production is a check the
+	// golden cannot see -- which is how the DML path came to be missing the SELECT
+	// path's validation at all. The ORDER is load-bearing for the same reason it
+	// is in production: both raise 42F01 and they word it differently, so a
+	// harness that ran only the sweep reported the SELECT wording where production
+	// reports the target's.
+	var harnessTarget string
+	switch dop := logicalOp.(type) {
+	case *logical.LogicalDelete:
+		harnessTarget = dop.Target
+	case *logical.LogicalUpdate:
+		harnessTarget = dop.Target
+	case *logical.LogicalInsert:
+		harnessTarget = dop.Table
+	}
+	if harnessTarget != "" && md.GetRecordType(bareTableName(harnessTarget)) == nil {
+		return nil, api.NewErrorf(api.ErrCodeUndefinedTable, "Unknown table %s", strings.ToUpper(bareTableName(harnessTarget)))
+	}
+	if err := validateScanTables(logicalOp, md); err != nil {
+		return nil, err
+	}
+	// LAST of the three, matching production's order. A first attempt put this
+	// first, directly beneath the comment arguing that the order of these guards
+	// is load-bearing -- read rather than measured.
+	if err := rejectDuplicateUnnestAlias(logicalOp, md); err != nil {
+		return nil, err
+	}
 	if fn := query.FindUnsupportedFunction(logicalOp); fn != "" {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "Unsupported operator "+fn)
 	}
 
-	// TranslateToCascadesWithSubqueries is the DML translator (planDML uses it,
-	// not the SELECT path's WithError). We drop the subquery plans: the corpus
-	// dump only pins the OUTER plan's shape, and executing an unbound-subquery
-	// plan is out of the picture (no store).
-	ref, _ := query.TranslateToCascadesWithSubqueries(logicalOp, md)
+	// TranslateToCascadesWithError, the same call planDML makes. The subquery
+	// plans are dropped -- the corpus dump pins the OUTER plan's shape and there
+	// is no store to execute an unbound subquery against -- but the ERROR is not.
+	//
+	// Discarding it made this harness blind to every translation SQLSTATE, which
+	// is a bigger divergence than any single missing guard: a statement production
+	// rejects with a specific code planned here as if nothing were wrong, and
+	// explain-differ blessed the result.
+	//
+	// IT DOES NOT KILL THE SOURCE-TABLE SWEEP, though two earlier versions of this
+	// comment got the reason wrong in opposite directions. Translation DOES
+	// validate table existence -- translateScan raises ErrCodeUndefinedTable for a
+	// scan whose table has no catalog row type. What escapes is narrower: this
+	// harness DROPS the attached subquery plans, so a bad table reachable only
+	// through one of those is never translated here however faithfully the error
+	// is surfaced. That is the gap the sweep covers, and it is why the sweep is
+	// load-bearing on this path -- see its own doc.
+	ref, _, transErr := query.TranslateToCascadesWithError(logicalOp, md)
+	if transErr != nil {
+		return nil, transErr
+	}
 	if ref == nil {
 		return nil, api.NewError(api.ErrCodeUnsupportedQuery, "DML Cascades translation failed")
 	}

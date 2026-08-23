@@ -355,13 +355,31 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 		})
 	})
 
-	Describe("multi-type index PK dedup", func() {
-		// Regression test: Build() previously skipped rt.multiTypeIndexes
-		// when computing primaryKeyComponentPositions. Multi-type index
-		// entries had full redundant PKs instead of trimmed PKs.
-		It("computes primaryKeyComponentPositions for multi-type indexes", func() {
-			// Create a multi-type index on (order_id, price) spanning Order+Customer.
-			// order_id overlaps with Order's PK — should be deduped at position 0.
+	Describe("multi-type indexes do NOT dedup the primary key", func() {
+		// JAVA ASSIGNS primaryKeyComponentPositions TO SINGLE-TYPE INDEXES ONLY.
+		//
+		// RecordMetaDataBuilder.java:1465-1467 is the sole call site of
+		// setPrimaryKeyComponentPositions in Java's MAIN sources, and it loops
+		// over `recordTypeBuilder.getIndexes()`. That list and
+		// `getMultiTypeIndexes()` are separate fields
+		// (RecordTypeIndexesBuilder.java:43 and :45), and `addMultiTypeIndex` routes
+		// by arity: 0 names to `universalIndexes`, exactly 1 to `getIndexes()`,
+		// 2+ to `getMultiTypeIndexes()`. So a genuinely multi-type index never
+		// receives positions, and Index.trimPrimaryKey returns its primary key
+		// whole.
+		//
+		// These two specs asserted the OPPOSITE, as the deliberate outcome of a
+		// change that read Java's untrimmed entry as a Go bug ("full redundant
+		// PKs instead of trimmed PKs"). The redundancy IS the format. Go wrote
+		// `(order_id, price)` where Java writes `(order_id, price, order_id)`,
+		// so the two engines produced different index entry keys for identical
+		// metadata -- a wire divergence in the one place the port cannot have
+		// one, and it shipped green because the only tests covering the shape
+		// were these, which encoded it.
+		It("does not compute primaryKeyComponentPositions for a multi-type index", func() {
+			// A multi-type index on (order_id, price) spanning Order+Customer.
+			// order_id overlaps Order's PK, so positions WOULD be computed if
+			// this index were single-type. It is not, so they are not.
 			compositeIdx := NewIndex("multi_order_id_price", Concat(Field("order_id"), Field("price")))
 
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -372,20 +390,34 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 			md, err := builder.Build()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify primaryKeyComponentPositions was computed.
 			idx := md.GetIndex("multi_order_id_price")
 			Expect(idx).NotTo(BeNil())
-			Expect(idx.HasPrimaryKeyComponentPositions()).To(BeTrue(),
-				"multi-type index should have primaryKeyComponentPositions computed")
+			Expect(idx.HasPrimaryKeyComponentPositions()).To(BeFalse(),
+				"a multi-type index must have no primaryKeyComponentPositions: Java's only "+
+					"call site iterates getIndexes(), never getMultiTypeIndexes()")
+
+			// The control that makes the assertion above mean something: the
+			// SAME key on the SAME record type, registered single-type, DOES get
+			// positions. Without it, a Build that stopped computing positions
+			// entirely would satisfy the check.
+			ctlIdx := NewIndex("single_order_id_price", Concat(Field("order_id"), Field("price")))
+			ctlBuilder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
+			ctlBuilder.GetRecordType("Order").SetPrimaryKey(Field("order_id"))
+			ctlBuilder.GetRecordType("Customer").SetPrimaryKey(Field("customer_id"))
+			ctlBuilder.GetRecordType("TypedRecord").SetPrimaryKey(Field("id"))
+			ctlBuilder.AddIndex("Order", ctlIdx)
+			ctlMD, err := ctlBuilder.Build()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ctlMD.GetIndex("single_order_id_price").HasPrimaryKeyComponentPositions()).To(BeTrue(),
+				"CONTROL: a single-type index on the same key must still get positions")
 		})
 
-		It("multi-type index entry has trimmed PK via dedup", func() {
+		It("writes the full primary key into a multi-type index entry", func() {
 			ks := specSubspace()
 
-			// Index on (order_id, price) with PK = order_id.
-			// order_id at position 0 in index key matches PK → dedup.
-			// Without the fix: index entry key = [order_id, price, order_id] (redundant)
-			// With the fix:    index entry key = [order_id, price] (trimmed)
+			// Index on (order_id, price), Order's PK = order_id. Java appends
+			// the untrimmed PK, so the entry key is 3 elements and order_id
+			// appears twice.
 			compositeIdx := NewIndex("multi_oid_price", Concat(Field("order_id"), Field("price")))
 
 			builder := NewRecordMetaDataBuilder().SetRecords(gen.File_record_layer_demo_proto)
@@ -412,11 +444,14 @@ var _ = Describe("PrimaryKeyComponentDeduplication", func() {
 				Expect(entries).To(HaveLen(1))
 
 				entry := entries[0]
-				// With PK dedup: key = [42, 999], PK reconstructed to [42]
-				// Without dedup: key = [42, 999, 42], PK = last element = [42]
-				// The entry key length tells us if dedup happened.
-				Expect(entry.Key).To(HaveLen(2),
-					"index entry key should be [order_id, price] (2 elements, PK deduped), got %v", entry.Key)
+				// The whole tuple is asserted, not just its length. PrimaryKey()
+				// reads the trailing element and so returns [42] under BOTH the
+				// trimmed and untrimmed layouts -- it cannot tell them apart,
+				// which is why the length-only version of this spec passed while
+				// the entry bytes were wrong.
+				Expect(entry.Key).To(Equal(tuple.Tuple{int64(42), int64(999), int64(42)}),
+					"a multi-type index entry carries the FULL primary key, so order_id appears "+
+						"twice: once from the index key and once from the untrimmed PK")
 				Expect(entry.PrimaryKey()).To(Equal(tuple.Tuple{int64(42)}))
 
 				return nil, nil

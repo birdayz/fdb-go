@@ -953,7 +953,7 @@ func buildDerivedTableSourceFromTerm(
 		if bareName == "" {
 			bareName = col.name
 		}
-		innerCol, found := innerTbl.LookupColumn(semantic.FromNormalized(bareName))
+		innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 		if !found {
 			return semantic.ScopeSource{}, false
 		}
@@ -2257,7 +2257,7 @@ func buildCTEColumnSource(
 			if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 				outName = innerSQ.projAliases[i]
 			}
-			innerCol, found := innerTbl.LookupColumn(semantic.FromNormalized(bareName))
+			innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 			if !found {
 				return semantic.ScopeSource{}, false, nil
 			}
@@ -2645,58 +2645,6 @@ func cteBodyReadsResolvable(sq *selectQuery, emitted map[string]bool) bool {
 	return true
 }
 
-// cteBodyAliasQuoted returns, per SELECT element of a plain (non-star,
-// non-aggregate) CTE body, whether its AS-alias was written QUOTED — aligned
-// 1:1 with projCols for the bodies the projection path handles (star bodies
-// return nil projCols, aggregate bodies branch to buildDerivedTableSourceFromAgg
-// earlier — each guarded on its own path). Typed parse-tree read of the leading
-// quote char on the raw Uid text, never a GetText string-match.
-func cteBodyAliasQuoted(body *antlrgen.QueryTermDefaultContext) []bool {
-	st, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
-	if !ok || st.SelectElements() == nil {
-		return nil
-	}
-	elems := st.SelectElements().AllSelectElement()
-	out := make([]bool, len(elems))
-	for i, elem := range elems {
-		if e, isExpr := elem.(*antlrgen.SelectExpressionElementContext); isExpr && e.Uid() != nil {
-			out[i] = strings.HasPrefix(e.Uid().GetText(), `"`)
-		}
-	}
-	return out
-}
-
-// cteBodyAllAliasesCaseSafe reports whether every QUOTED alias in a plain SELECT
-// body is case-safe — equals its uppercase fold. It is the case-sensitivity half
-// of the ON-only schema's complete-or-decline gate for the AGGREGATE path, whose
-// extracted output names (aggCols[].outName / countStarAlias) are already
-// StripIdentifierQuotes'd — quote-stripped, so the quoted flag is lost and a
-// case-sensitive `AS "x"` can no longer be told from an unquoted `AS x` (both
-// yield "x"; only the quoted one mis-resolves, since execution folds unquoted
-// keys anyway). Reads the leading-quote off each Uid terminal (typed, not a
-// GetText feature-match). An unquoted alias folds consistently → safe.
-func cteBodyAllAliasesCaseSafe(body *antlrgen.QueryTermDefaultContext) bool {
-	st, ok := body.QueryTerm().(*antlrgen.SimpleTableContext)
-	if !ok || st.SelectElements() == nil {
-		return true
-	}
-	for _, elem := range st.SelectElements().AllSelectElement() {
-		e, isExpr := elem.(*antlrgen.SelectExpressionElementContext)
-		if !isExpr || e.Uid() == nil {
-			continue
-		}
-		raw := e.Uid().GetText()
-		if !strings.HasPrefix(raw, `"`) {
-			continue // unquoted → folds consistently through execution, case-safe
-		}
-		name := functions.StripIdentifierQuotes(raw)
-		if name != strings.ToUpper(name) {
-			return false // quoted case-sensitive: runtime key uppercased, unnamable
-		}
-	}
-	return true
-}
-
 func buildCTEOnOnlySource(
 	cteName string,
 	cteQuery antlrgen.IQueryContext,
@@ -2779,22 +2727,22 @@ func buildCTEOnOnlySource(
 		return semantic.ScopeSource{}, false
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
-		// COMPLETE-SCHEMA-OR-DECLINE applies here too: buildDerivedTableSourceFromAgg
-		// folds every output via NewUnquoted with NO validation, so a quoted
-		// case-sensitive alias or a duplicate output name would silently
-		// mis-resolve an enclosing ON ref (wrong-case resolves; dup first-matches)
-		// — review-caught. Decline the whole source on either obstruction, keyed
-		// by the RUNTIME-emitted (uppercased) name, exactly like the projection
-		// path below. The dup check consumes aggOutputCols — the SAME visible-only
-		// authority buildDerivedTableSourceFromAgg builds from — so it counts
-		// exactly the names installed (a hidden HAVING aggregate is neither
-		// advertised nor counted).
-		if !cteBodyAllAliasesCaseSafe(body) {
-			return semantic.ScopeSource{}, false
-		}
+		// COMPLETE-SCHEMA-OR-DECLINE applies here too: a DUPLICATE output name
+		// would silently mis-resolve an enclosing ON ref by first-matching one
+		// of the two. Decline the whole source on that obstruction, exactly
+		// like the projection path below. The dup check consumes aggOutputCols
+		// — the SAME visible-only authority buildDerivedTableSourceFromAgg
+		// builds from — so it counts exactly the names installed (a hidden
+		// HAVING aggregate is neither advertised nor counted).
+		//
+		// The CASE-SENSITIVITY obstruction that used to sit beside it is
+		// RETIRED with the fold it was built on: an output name is now emitted
+		// verbatim, so a quoted `AS "x"` is nameable and only a genuine
+		// repetition is ambiguous. The count is keyed verbatim for the same
+		// reason — `AS "x"` and `AS "X"` are two columns, not one collision.
 		aggSeen := make(map[string]int)
 		for _, c := range aggOutputCols(innerSQ, md) {
-			aggSeen[strings.ToUpper(c.name)]++
+			aggSeen[c.name]++
 		}
 		for _, n := range aggSeen {
 			if n > 1 {
@@ -2829,7 +2777,6 @@ func buildCTEOnOnlySource(
 	// keep unique columns AND make the bad name resolve ambiguous via a
 	// per-source poison marker in the resolver — is a booked conformance slice;
 	// until then a body with ANY obstruction declines wholesale, correct-or-loud.)
-	aliasQuoted := cteBodyAliasQuoted(body)
 	names := make([]string, 0, len(innerSQ.projCols))
 	seen := make(map[string]int, len(innerSQ.projCols))
 	for i, col := range innerSQ.projCols {
@@ -2845,10 +2792,8 @@ func buildCTEOnOnlySource(
 		// computed item by its explain rendering — both decline (no bare key
 		// on the runtime row).
 		outName := ""
-		quoted := false
 		if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 			outName = innerSQ.projAliases[i]
-			quoted = i < len(aliasQuoted) && aliasQuoted[i]
 		} else {
 			isComputed := i < len(innerSQ.projExprs) && innerSQ.projExprs[i] != nil
 			if !isComputed && !col.qualified && col.bare != "" {
@@ -2858,12 +2803,18 @@ func buildCTEOnOnlySource(
 		if outName == "" {
 			return semantic.ScopeSource{}, false
 		}
-		runtimeName := strings.ToUpper(outName)
-		if quoted && outName != runtimeName { // obstruction (1): case-sensitive
-			return semantic.ScopeSource{}, false
-		}
-		seen[runtimeName]++
-		names = append(names, runtimeName)
+		// The runtime name is the output name VERBATIM. Obstruction (1) — a
+		// quoted alias whose fold differs from itself — is RETIRED: it existed
+		// because execution keyed its output slots upper-cased, so `AS "x"`
+		// emitted X and no reference could name it. Nothing folds an output
+		// name any more, so `AS "x"` emits x and `C."x"` resolves; the gate
+		// would now decline a source that works.
+		//
+		// Obstruction (2) survives, and its counting changes with it: two
+		// aliases that differ only by case are two DISTINCT columns now, not
+		// one ambiguous name, so the count is keyed verbatim.
+		seen[outName]++
+		names = append(names, outName)
 	}
 	for _, n := range seen {
 		if n > 1 { // obstruction (2): duplicate runtime name
@@ -5209,6 +5160,15 @@ func aggregateCallDraftValue(call logical.AggregateCall, operand values.Value) v
 	return &values.AggregateValue{Op: op, Operand: operand}
 }
 
+// aggregateNativeOutputName is the name at one ordinal of the aggregate's
+// native output row: a group key first (by its resolved Value, else its Bare,
+// else its Display), then a call by its CanonicalName.
+//
+// VERBATIM on every arm. Those are the same three inputs — key.Bare,
+// key.Display, CanonicalName() — that the translator's aggregateOutputColumns
+// publishes, and the two must spell one row the same way. The output reaches
+// SortKey.Expr and the explain name, so a fold here renames a column the
+// authority named otherwise.
 func aggregateNativeOutputName(agg *logical.LogicalAggregate, ordinal int) string {
 	if agg == nil || ordinal < 0 {
 		return ""
@@ -5219,15 +5179,15 @@ func aggregateNativeOutputName(agg *logical.LogicalAggregate, ordinal int) strin
 			return aggregateGroupKeyOutputName(key.Value)
 		}
 		if key.Bare != "" {
-			return strings.ToUpper(key.Bare)
+			return key.Bare
 		}
-		return strings.ToUpper(key.Display)
+		return key.Display
 	}
 	callIdx := ordinal - len(agg.GroupKeys)
 	if callIdx < 0 || callIdx >= len(agg.Calls) {
 		return ""
 	}
-	return strings.ToUpper(agg.Calls[callIdx].CanonicalName())
+	return agg.Calls[callIdx].CanonicalName()
 }
 
 // unsafeScalarFunctionName returns the name of the first scalar function in v
@@ -5288,7 +5248,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		// dotted operand refs the ordinal frontier cannot resolve.
 		arg := ac.aggArg
 		if arg == "" && ac.aggExpr != nil {
-			arg = canonicalTextOf(ac.aggExpr)
+			arg = aggOperandCanonicalText(ac.aggExpr)
 		}
 		if arg == "" {
 			arg = "*"
@@ -6029,7 +5989,7 @@ func fieldValueMatchesAggregateGroupKey(candidate, key values.Value, agg *logica
 }
 
 func normalizeAggregateBindingName(s string) string {
-	return strings.ReplaceAll(strings.ToUpper(s), " ", "")
+	return strings.ReplaceAll(s, " ", "")
 }
 
 // canonicalAggName is the single canonicaliser for an aggregate's result-row
@@ -6039,7 +5999,7 @@ func normalizeAggregateBindingName(s string) string {
 // drift. funcSymbol is the aggregate function symbol (e.g. "SUM", "COUNT", or
 // the count-star op's "COUNT(*)"); operand is the (already-resolved) argument
 // Value, or nil for a no-operand aggregate. The form mirrors what the executor's
-// aggResultName produces: FN(<uppercased ExplainValue, spaces stripped, one
+// aggResultName produces: FN(<ExplainValue verbatim, spaces stripped, one
 // outer-paren pair stripped>), with COUNT(*)/no-operand => "FN(*)".
 func canonicalAggName(funcSymbol string, operand values.Value) string {
 	fn := strings.ToUpper(funcSymbol)
@@ -6048,7 +6008,17 @@ func canonicalAggName(funcSymbol string, operand values.Value) string {
 	}
 	inner := "*"
 	if operand != nil {
-		inner = strings.ToUpper(values.ColumnNameValue(operand))
+		// VERBATIM. ColumnNameValue already renders each field by the name it
+		// declares, so an upper-fold here only destroys one: a correlated
+		// scalar subquery `(SELECT SUM(i."Amount") …)` labelled its column
+		// SUM(I.AMOUNT) while the very same aggregate reached through GROUP
+		// BY/HAVING labelled SUM(Amount). Two routes to one name, disagreeing.
+		//
+		// The whitespace strip STAYS and is not the same kind of edit: it
+		// normalizes the RENDERING's spacing (`(A * B)` -> `(A*B)`), which both
+		// sides of every comparison here derive from ColumnNameValue, so it is
+		// symmetric and touches no identifier.
+		inner = values.ColumnNameValue(operand)
 		inner = strings.ReplaceAll(inner, " ", "")
 		if len(inner) > 2 && inner[0] == '(' && inner[len(inner)-1] == ')' {
 			inner = inner[1 : len(inner)-1]
@@ -6743,10 +6713,20 @@ func buildLogicalPlanForUpdateWithCatalog(
 	tableName = resolved
 	bare := bareTableName(tableName)
 
-	// Resolve the target type case-insensitively for the SET-column check below. (Missing
-	// target tables are rejected with 42F01 in planDML after resolveQualifiedTableNames;
-	// rt stays nil here for a missing/qualified target and the SET check is then skipped.)
-	rt := recordTypeCI(md, bare)
+	// Resolve the target type STRICTLY, the same way planDML's 42F01 guard does.
+	// (Missing target tables are rejected with 42F01 in planDML after
+	// resolveQualifiedTableNames; rt stays nil here for a missing/qualified target
+	// and the SET check below is then skipped.)
+	//
+	// It folded case once, and the ORDER of the two checks made that visible as a
+	// wrong error rather than a lax one: this runs during logical construction,
+	// planDML's guard runs afterwards on the built op, so `UPDATE customer SET
+	// nosuchcol = 'z'` against a table declared `"Customer"` reported
+	// `42703 column "NOSUCHCOL" not found in table "CUSTOMER"` -- diagnosing a
+	// column of a table that does not exist -- instead of 42F01. Strict here means
+	// rt is nil for that target and the SET check declines, leaving the 42F01 to
+	// be the answer.
+	rt := md.GetRecordType(bare)
 
 	// Validate each SET target column exists in the table, mirroring INSERT's
 	// build-time check (insert_cascades.go). Without this, an UPDATE that assigns a
@@ -7267,7 +7247,13 @@ func buildLogicalPlanForQueryWithCTECatalog(
 				aliases := aliasList.AllFullId()
 				names := make([]string, len(aliases))
 				for j, fid := range aliases {
-					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+					// NormalizeIdentifier ALREADY applied SQL identifier
+					// semantics — an unquoted alias came back folded UPPER and a
+					// quoted one verbatim — so a second fold here can only
+					// destroy `WITH c("x")`. This is the CAPTURE, which is why
+					// it is fixed here rather than at the three sites that
+					// APPLY the list: they can only publish what this stored.
+					names[j] = functions.FullIdToName(fid)
 				}
 				cte.ColumnAliases = names
 			}
@@ -7444,7 +7430,13 @@ func buildLogicalPlanForQueryWithCatalog(
 				aliases := aliasList.AllFullId()
 				names := make([]string, len(aliases))
 				for j, fid := range aliases {
-					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+					// NormalizeIdentifier ALREADY applied SQL identifier
+					// semantics — an unquoted alias came back folded UPPER and a
+					// quoted one verbatim — so a second fold here can only
+					// destroy `WITH c("x")`. This is the CAPTURE, which is why
+					// it is fixed here rather than at the three sites that
+					// APPLY the list: they can only publish what this stored.
+					names[j] = functions.FullIdToName(fid)
 				}
 				cte.ColumnAliases = names
 			}
@@ -8189,7 +8181,27 @@ func exactCTEDefinitionRecordType(
 			return nil, false
 		}
 		for i, alias := range cte.ColumnAliases {
-			fields[i].Name = strings.ToUpper(alias)
+			// VERBATIM — the THIRD site applying this same alias list, beside
+			// cteBoundRowType and cascades_translator's derivedOutputColumns.
+			// A CTE column alias arrives already normalized by the parse
+			// capture, so the fold could only destroy `WITH c("x")`, and it
+			// did: the other two published `x` while this one published `X`,
+			// which the executor reported as
+			// `edge lookup C: read as RECORD(x), declared RECORD(X)` on
+			// `WITH c("x") AS (…) SELECT * FROM c WHERE c."x" > 5`.
+			//
+			// cteBoundRowType's own comment says the three agree by
+			// construction. That sentence is only true while all three spell
+			// the alias the same way.
+			//
+			// This site being verbatim was necessary and not sufficient: the
+			// alias was arriving here ALREADY folded, from a DOUBLE STRIP at
+			// the parse capture (`NormalizeIdentifier(FullIdToName(fid))`,
+			// where FullIdToName already strips, so the outer call saw an
+			// unquoted `x` and upper-cased it). Four sites APPLY this list and
+			// one CAPTURES it; every application was correct and every one was
+			// handed X.
+			fields[i].Name = alias
 			fields[i].Ordinal = i
 		}
 	default:
@@ -8509,7 +8521,12 @@ func cteSortQualifierMatchesScan(qualifier string, scan *logical.LogicalScan) bo
 // keyed by in the aggregate's result row — the exact mirror of the executor's
 // aggKeyName (executor.go): a FieldValue group key flows under its bare Field
 // name (`V`), every other (computed) group key under its ExplainValue. The
-// uppercase form matches the key the executor writes and the sort cursor reads.
+// name is carried VERBATIM, which is what makes "mirror" true: aggKeyName
+// delegates to expressions.AggregateKeyColumnName, and that authority stopped
+// folding under RFC-237. Two of the three arms here kept folding while the
+// nested arm did not, so this function disagreed with its declared authority on
+// two shapes out of three — under a doc sentence asserting they agree, which is
+// the failure class rather than a typo.
 // Load-bearing for a lateral-unnest SHADOWING group key, whose resolved Value is
 // a QUALIFIED FieldValue(QOV(V), V): its bare field name `V` (not the explain
 // `V.V`) is the aggregate output column. RFC-142.
@@ -8523,9 +8540,9 @@ func aggregateGroupKeyOutputName(gkv values.Value) string {
 		return path
 	}
 	if fv, ok := values.AsFieldValue(gkv); ok {
-		return strings.ToUpper(fv.DisplayName())
+		return fv.DisplayName()
 	}
-	return strings.ToUpper(values.ColumnNameValue(gkv))
+	return values.ColumnNameValue(gkv)
 }
 
 func findSort(op logical.LogicalOperator) *logical.LogicalSort {
@@ -10043,25 +10060,42 @@ func (p *existsSubqueryPlanner) tryBuildCorrelatedPrimaryUnnest(
 	var owner *semantic.ScopeSource
 	var col semantic.Column
 	aliasSeen := false
-	for i := range p.outerScopes {
-		src := &p.outerScopes[i]
-		if !src.Alias.EqualsIgnoreQuoting(ownerID) {
-			continue
-		}
-		aliasSeen = true
-		if src.Table == nil {
-			continue
-		}
-		candidateColumn, found := src.Table.LookupColumn(fieldID)
-		if !found {
-			continue
+	// STRICT over every alias-matching source, then RELAXED over every one —
+	// never a mix. This loop COUNTS owners across sources and raises 42702 on
+	// two, so relaxing per source would let a case-insensitive match at one
+	// compete with an exact match at another and make a reference with exactly
+	// one right answer ambiguous. Same rule, same reason, as
+	// Scope.ResolveColumn and usingOwnerOf.
+	for _, relaxed := range [...]bool{false, true} {
+		for i := range p.outerScopes {
+			src := &p.outerScopes[i]
+			if !src.Alias.EqualsIgnoreQuoting(ownerID) {
+				continue
+			}
+			aliasSeen = true
+			if src.Table == nil {
+				continue
+			}
+			var candidateColumn semantic.Column
+			var found bool
+			if relaxed {
+				candidateColumn, found = semantic.LookupColumnRelaxed(src.Table, fieldID)
+			} else {
+				candidateColumn, found = src.Table.LookupColumn(fieldID)
+			}
+			if !found {
+				continue
+			}
+			if owner != nil {
+				return nil, true, api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"correlated array source %q is ambiguous", strings.Join(sq.sourceSegments, "."))
+			}
+			owner = src
+			col = candidateColumn
 		}
 		if owner != nil {
-			return nil, true, api.NewErrorf(api.ErrCodeAmbiguousColumn,
-				"correlated array source %q is ambiguous", strings.Join(sq.sourceSegments, "."))
+			break
 		}
-		owner = src
-		col = candidateColumn
 	}
 	if owner == nil {
 		if aliasSeen {
@@ -11892,7 +11926,7 @@ func (p *existsSubqueryPlanner) subqueryReferencesOuterColumn(body antlr.Tree) b
 			segments := make([]semantic.Identifier, 0, len(uids))
 			for _, uid := range uids {
 				segments = append(segments,
-					semantic.FromNormalized(functions.StripIdentifierQuotes(uid.GetText())))
+					semantic.FromNormalized(functions.NormalizeIdentifier(uid.GetText())))
 			}
 			if _, _, _, err := outerScope.ResolvePathNested(segments); err == nil {
 				found = true
@@ -12188,7 +12222,14 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			if bareArg == "" {
 				bareArg = "*"
 			}
-			name := strings.ToUpper(fn) + "(" + strings.ToUpper(bareArg) + ")"
+			// bareArg is VERBATIM: it reached here through
+			// functions.NormalizeIdentifier at the parse boundary, so it already
+			// IS the column's name. The function symbol is folded because a
+			// function name is a different namespace with its own rule; the
+			// operand is not. `name` and the call's Operand below must move
+			// together — `name` is the alias this slot is published under and
+			// CanonicalName() recomposes Func + "(" + Operand + ")".
+			name := strings.ToUpper(fn) + "(" + bareArg + ")"
 			// Resolve the operand first so we can recognise COUNT(<non-null
 			// constant>) — e.g. COUNT(1) — which is exactly COUNT(*): it counts
 			// every row, so it can safely share the COUNT(*) slot rather than
@@ -12274,7 +12315,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedScalar(q antlrgen.IQueryContext) 
 			}
 			aggCalls = append(aggCalls, logical.AggregateCall{
 				Func:       strings.ToUpper(fn),
-				Operand:    strings.ToUpper(bareArg),
+				Operand:    bareArg,
 				Star:       bareArg == "*",
 				BareColumn: e == nil && arg != "",
 			})

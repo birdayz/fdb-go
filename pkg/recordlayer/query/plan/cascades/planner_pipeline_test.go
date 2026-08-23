@@ -473,7 +473,7 @@ func TestPipeline_StreamingAgg(t *testing.T) {
 	groupBy := pipelineGroupBy(scanQ,
 		[]values.Value{pipelineField(scanQ, "A")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "CNT"},
 		})
 	plan := planPipeline(t, groupBy, idx("idx_a", "A"))
 	t.Logf("plan: %s", plan)
@@ -492,7 +492,7 @@ func TestPipeline_AggregateIndex(t *testing.T) {
 	groupBy := pipelineGroupBy(scanQ,
 		[]values.Value{pipelineField(scanQ, "STATUS")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "CNT"},
 		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
@@ -585,7 +585,7 @@ func TestPipeline_AggregateIndex_WithStats(t *testing.T) {
 	groupBy := pipelineGroupBy(scanQ,
 		[]values.Value{pipelineField(scanQ, "STATUS")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "CNT"},
 		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
@@ -666,7 +666,7 @@ func TestPipeline_AggregateIndex_WithRegularIndex(t *testing.T) {
 	groupBy := pipelineGroupBy(scanQ,
 		[]values.Value{pipelineField(scanQ, "STATUS")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "CNT"},
 		})
 
 	aggCand := NewAggregateIndexMatchCandidate(
@@ -751,7 +751,7 @@ func TestPipeline_StreamingAggNoIndex(t *testing.T) {
 	groupBy := pipelineGroupBy(scanQ,
 		[]values.Value{pipelineField(scanQ, "A")},
 		[]expressions.AggregateSpec{
-			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "cnt"},
+			{Function: expressions.AggCount, Operand: pipelineLongLiteral(1), Alias: "CNT"},
 		})
 	// No indexes — streaming aggregation is the only implementation.
 	plan := planPipeline(t, groupBy)

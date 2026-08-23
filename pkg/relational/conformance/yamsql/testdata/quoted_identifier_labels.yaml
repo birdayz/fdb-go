@@ -1,0 +1,470 @@
+# quoted_identifier_labels.yaml
+#
+# THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one
+# authority whose agreement with Java is directly observable without reading a
+# plan. Measured against a live fdb-relational by
+# QuotedIdentifierCaseJavaProbe (conformance/quoted_identifier_case_java_probe_test.go):
+# Java reports `KeepCase` for both the star expansion and the explicit
+# projection of a quoted mixed-case DDL column.
+#
+# Go used to report KEEPCASE for both, and star expansion was fixed first,
+# which is exactly why this scenario asserts BOTH: two label authorities
+# agreeing with each other is not the same as either agreeing with Java, and
+# for one round they did not.
+name: quoted_identifier_labels
+# The DDL is the JVM probe's, VERBATIM — unquoted table and `id`, one quoted
+# mixed-case column, one unquoted control — so a disagreement between this
+# scenario and the probe is a disagreement about the ENGINE and not about the
+# schema. An earlier draft quoted `"id"` and the primary key, which changed the
+# plan shape and made this pass while the probe still reported KEEPCASE.
+schema_template: |
+  CREATE TABLE QCASE (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))
+  CREATE TABLE QARR (id BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
+  CREATE TABLE q1 ("id" BIGINT, PRIMARY KEY ("id"))
+  CREATE TABLE dott ("a.b" BIGINT, plain BIGINT, PRIMARY KEY ("a.b"))
+  CREATE TABLE xprobe (id BIGINT, "TOTAL" BIGINT, "X.TOTAL" BIGINT, PRIMARY KEY (id))
+  CREATE TABLE sprobe (id BIGINT, PRIMARY KEY (id))
+  CREATE TABLE dottarr (id BIGINT, "a.b" BIGINT ARRAY, b BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO QCASE VALUES (1, 42, 7)
+  - INSERT INTO QARR VALUES (1, [10, 20])
+  - INSERT INTO q1 VALUES (1), (2)
+  - INSERT INTO dott VALUES (1, 9)
+  - INSERT INTO xprobe VALUES (1, 10, 99)
+  - INSERT INTO sprobe VALUES (1)
+  - INSERT INTO dottarr VALUES (1, [10, 20], 7)
+tests:
+  # The explicit projection of the quoted column.
+  - query: SELECT "KeepCase" FROM QCASE WHERE id = 1
+    columns: ["KeepCase"]
+    rows:
+      - [42]
+  # Star expansion over the same row. `plain` was declared UNQUOTED, so the DDL
+  # folded it at creation and it is stored PLAIN — that column is the control
+  # that says the agreement above is not just everything being lower-case.
+  - query: SELECT * FROM QCASE WHERE id = 1
+    columns: ["ID", "KeepCase", "PLAIN"]
+    rows:
+      - [1, 42, 7]
+  # An explicit quoted ALIAS keeps its case too — the alias is normalized once,
+  # by the parse capture, and no later authority may fold it.
+  - query: SELECT "KeepCase" AS "kept" FROM QCASE WHERE id = 1
+    columns: ["kept"]
+    rows:
+      - [42]
+  # An UNQUOTED alias folds UPPER at the parse boundary, and that fold is the
+  # only one in the language.
+  - query: SELECT "KeepCase" AS kept FROM QCASE WHERE id = 1
+    columns: ["KEPT"]
+    rows:
+      - [42]
+  # A LATERAL UNNEST binding, which is worth its own arm because two dozen
+  # sites still upper-fold `u.Alias` / `u.AtAlias`.
+  #
+  # This was written expecting V and MEASURED as v. Those folds key the
+  # binding's internal SLOT and QUALIFIER role — the leg maps, the ordinal
+  # seed's field names, the cluster gates — and they are consistent with each
+  # other; the user-visible LABEL comes from the projection's naming authority,
+  # which no longer folds. So the alias's two roles are already separated, and
+  # the arm pins the separation rather than a divergence.
+  - query: SELECT "v" FROM QARR, QARR.arr AS "v" ORDER BY "v"
+    columns: ["v"]
+    rows:
+      - [10]
+      - [20]
+  # A DERIVED source with a quoted lower-case column, which IS covered: the
+  # projection names the slot and the scope reads the same name.
+  - query: SELECT * FROM (SELECT "id" FROM q1 WHERE "id" = 1) x
+    columns: ["id"]
+    rows:
+      - [1]
+  # A CTE with no column list, whose columns come from its body's own quoted
+  # names — the control for the arms below it.
+  - query: WITH c AS (SELECT "id" FROM q1) SELECT * FROM c
+    unordered: true
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH c AS (SELECT "id" FROM q1) SELECT c."id" FROM c WHERE c."id" > 1
+    columns: ["id"]
+    rows:
+      - [2]
+  # A CTE COLUMN LIST with a quoted lower-case name.
+  #
+  # The alias was captured as `StripIdentifierQuotes(FullIdToName(fid))`, and
+  # FullIdToName ALREADY strips — so the outer call saw an unquoted `x` and
+  # folded it. A DOUBLE STRIP, which is invisible for every unquoted alias
+  # (folding twice is folding once) and destroys every quoted one.
+  #
+  # It survived four other fixes on this same alias list because each of those
+  # sites APPLIES the list and this one CAPTURES it: every application was
+  # correct and every one of them was handed X. That is why the arms below
+  # come in three shapes — the label, the qualified read, and the predicate —
+  # since the capture reaches each through a different authority and only the
+  # third one reached the executor.
+  - query: WITH c("x") AS (SELECT "id" FROM q1) SELECT * FROM c
+    unordered: true
+    columns: ["x"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH c("x") AS (SELECT "id" FROM q1) SELECT c."x" FROM c
+    unordered: true
+    columns: ["x"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH c("x") AS (SELECT "id" FROM q1) SELECT * FROM c WHERE c."x" > 1
+    columns: ["x"]
+    rows:
+      - [2]
+  # And the UNQUOTED alias still folds, because that fold is the parse
+  # boundary's and is the only one in the language.
+  - query: WITH c(x) AS (SELECT "id" FROM q1) SELECT * FROM c WHERE c.x > 1
+    columns: ["X"]
+    rows:
+      - [2]
+  # A RECURSIVE CTE's column list, which was latent ONLY because the capture
+  # folded: with the capture fixed, the recursive output-row builders became
+  # the disagreeing half and the same `edge lookup R: read as RECORD(n),
+  # declared RECORD(N)` appeared one layer down. A guard whose expected value
+  # inverts when a neighbouring fold is removed.
+  #
+  # THE SEED IS A COLUMN READ, NOT AN INTEGER LITERAL, and that is deliberate:
+  # a literal-seeded recursive CTE has a separate NULLABILITY defect
+  # (`RECORD(N:INT)` vs `RECORD(N:INT?)`) that fails the same way and would be
+  # mistaken for this one in either direction. The unquoted control below is
+  # what separates them — it must stay green while the quoted arm is fixed.
+  - query: WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
+    unordered: true
+    columns: ["n"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
+    unordered: true
+    columns: ["N"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # BARE `UNION` — the DISTINCT arm, and a WRONG-ANSWER path the UNION ALL pair
+  # above cannot see.
+  #
+  # The dedup keyer binds each canonical output column to the row's layout by
+  # EXACT name (`FieldIndexUnique`), and both it and the column list it is
+  # given were upper-folded. For a quoted lower-case alias the row declares `n`
+  # and the key asked for `N`, so every column bound ABSENT, every row keyed as
+  # all-NULL, and DISTINCT collapsed the whole result to one row: `[1]` instead
+  # of `[1,2,3]`. No error — just missing rows.
+  #
+  # The unquoted control below is what makes it a CASE bug rather than a
+  # recursion or dedup bug: same query, same dedup path, all three rows.
+  - query: WITH RECURSIVE r("n") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r."n" + 1 FROM r WHERE r."n" < 3) SELECT * FROM r
+    unordered: true
+    columns: ["n"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: WITH RECURSIVE r(n) AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION SELECT r.n + 1 FROM r WHERE r.n < 3) SELECT * FROM r
+    unordered: true
+    columns: ["N"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # A quoted alias on a projection that also carries an EXISTS. The FlatMap
+  # this builds mints its result type in its OWN arm, not through the plain
+  # projection's naming authority, and that arm folded: the query reported
+  # X and E while the arms above it reported x and e.
+  #
+  # The plan assertion is not decoration — it is what says the arm is still
+  # exercising the FlatMap path. If a later change lowers EXISTS some other
+  # way, the labels could agree for a reason that has nothing to do with the
+  # authority under test.
+  - query: SELECT "id" AS "x", EXISTS (SELECT 1 FROM qcase WHERE qcase.id = q1."id") AS "e" FROM q1 WHERE "id" = 1
+    plan_contains: "FlatMap"
+    columns: ["x", "e"]
+    rows:
+      - [1, true]
+  # THE AGGREGATE LABEL WAS THE LAST AUTHORITY STILL FOLDING, and the shape
+  # that shows it is one row carrying both: the GROUP BY key reported
+  # `KeepCase` while the aggregate over the same table reported `SUM(PLAIN)`
+  # for a column named `plain`… and `SUM(KEEPCASE)` for one named `KeepCase`.
+  # Two naming authorities over one table disagreeing about what its columns
+  # are called, in a single result set.
+  #
+  # The operand segment is minted once now (aggOperandCanonicalText): every
+  # token upper-cased — which is what the old blanket fold did, and is why the
+  # unquoted twins below are unchanged — except a delimited identifier, which
+  # contributes its inner text verbatim.
+  - query: SELECT SUM("KeepCase") FROM QCASE
+    columns: ["SUM(KeepCase)"]
+    rows:
+      - [42]
+  # The unquoted twin. `plain` folded at DDL time, so the column really is
+  # named PLAIN and the label is upper for a reason, not by a fold.
+  - query: SELECT SUM(plain) FROM QCASE
+    columns: ["SUM(PLAIN)"]
+    rows:
+      - [7]
+  # The AGREEMENT arm, and the one this whole fix is measured by: an unquoted
+  # identifier and its upper-folded quoted twin are the same name, so the two
+  # spellings must be indistinguishable downstream. `SUM("PLAIN")` used to
+  # report `SUM("PLAIN")` — quotes and all — in a result-set column label.
+  - query: SELECT SUM("PLAIN") FROM QCASE
+    columns: ["SUM(PLAIN)"]
+    rows:
+      - [7]
+  # A COMPOUND operand, which is the arm the old code got wrong twice over:
+  # the raw source slice carried the quotes in, and the repair that stripped
+  # its whitespace also upper-folded the quoted half back out.
+  - query: SELECT SUM("KeepCase" * plain) FROM QCASE
+    columns: ["SUM(KeepCase*PLAIN)"]
+    rows:
+      - [294]
+  # A QUOTED ALIAS on an aggregate. The alias reaches the logical layer already
+  # normalized, and was then folded a second time on the way to the spec.
+  - query: SELECT SUM(plain) AS "total" FROM QCASE
+    columns: ["total"]
+    rows:
+      - [7]
+  # Both authorities in ONE row: the group key and the aggregate label must
+  # agree about the same table's columns. This is the shape that made the
+  # disagreement visible, so it is the shape that pins it.
+  - query: SELECT "KeepCase", SUM(plain) FROM QCASE GROUP BY "KeepCase"
+    columns: ["KeepCase", "SUM(PLAIN)"]
+    rows:
+      - [42, 7]
+  # An explicit CTE column-alias list OVERRIDES the seed-derived output names
+  # entirely, so these two arms pin the ALIAS path and — measured, not assumed —
+  # they do NOT drive the seed-derived one: with the fold restored they both
+  # still pass. TWO alias-free arms below drive it, one per site — the
+  # explicitly-projecting one and the star-seed one — and this sentence said
+  # "the arm" for as long as there was one of them, which is the copy a reader
+  # reaches FIRST and so the one that misinforms hardest. They are kept because
+  # the alias path is its own authority worth pinning, and each comment says
+  # which path it covers so none is credited with coverage it does not have.
+  - query: WITH RECURSIVE d("Node") AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["Node"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # The explicitly-projected twin of the same alias list.
+  - query: WITH RECURSIVE d("Node") AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."Node" + 1 FROM d WHERE d."Node" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["Node"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # NO column-alias list, so the CTE's output names come from the SEED's own
+  # projection rather than from an alias override. The temp table the
+  # self-reference scans is keyed by that name.
+  #
+  # THIS ARM PINS ONE OF TWO SITES that decide it, and saying otherwise is how
+  # the previous wording was wrong: measured by folding each site separately,
+  # this arm — whose seed PROJECTS explicitly — reddens when
+  # extractOutputProjectionNames folds, and does NOT move when the star-seed
+  # derivation below it folds. The star-seed arm further down is the sentinel
+  # for that one. Neither covers both.
+  #
+  # A retracted claim also lived here and is deleted rather than reworded: that
+  # the arity validator exempts recursive CTEs, so a mismatched alias list
+  # reaches the seed-derived path. It does not — `WITH RECURSIVE d(a) AS
+  # (SELECT * FROM t1 …)` is rejected 42F10 by the semantic-layer checks, which
+  # do not exempt recursion. The Go comment at the site records that; this copy
+  # was left behind because the grep for it was never run.
+  - query: WITH RECURSIVE d AS (SELECT "id" FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # A PROJECTION-LESS SEED WITH NO ALIAS LIST — plain standard SQL, and it
+  # failed outright with `recursive CTE seed width N disagrees with 0 output
+  # columns`. The seed-schema derivation that handles `SELECT *` was gated on an
+  # alias list being present, so the star form worked with `d(a, b)` and with
+  # the columns written out, and only this shape fell through to nothing.
+  #
+  # Found by a probe run to DISPROVE a comment's claim about which branch was
+  # reachable — the claim was wrong and so was the gate beside it.
+  - query: WITH RECURSIVE d AS (SELECT * FROM q1 WHERE "id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # A TWO-COLUMN star seed and a DERIVED-TABLE star seed. The arm above pins the
+  # one-column case, which is the easiest of the shapes the gate removal newly
+  # admits — and a single easy arm had twice been credited with covering more
+  # than it does, which is why the wider two are here as well.
+  - query: WITH RECURSIVE d AS (SELECT * FROM QCASE WHERE id = 1 UNION ALL SELECT d.id + 1, d."KeepCase", d.plain FROM d WHERE d.id < 3) SELECT d.id FROM d ORDER BY d.id
+    columns: ["ID"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT "id" FROM q1) x WHERE x."id" = 1 UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3) SELECT * FROM d
+    unordered: true
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # A JOIN SEED WITH AN EXPLICIT COLUMN-ALIAS LIST. This is ordinary SQL and it
+  # planned at this branch's base; two intermediate commits broke it, both by
+  # reading the join leg's DATUM KEYS (`A.K`, which exist so the executor's row
+  # map can tell two legs' `K` apart) as if they were SQL labels and then trying
+  # to detect the difference downstream — first by testing for a dot in the
+  # name, then by testing whether the seed resolved through a join. The second
+  # test vetoed this shape along with the one it was aimed at.
+  #
+  # Deriving the labels as a PROPERTY (ExactLogicalOutputLabels, which simply
+  # never adds the qualifier) removes the question. The rows are the point: four
+  # bare labels arrive, the alias list length-matches them, and the recursion
+  # reads its own output columns.
+  - query: WITH RECURSIVE d(w, x, y, z) AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d.w + 1, d.x, d.y, d.z FROM d WHERE d.w < 3) SELECT d.w FROM d ORDER BY d.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # The same seed with a MISMATCHED recursive arm — four columns against one.
+  # That is invalid UNION arity and has never planned, but for a year it said so
+  # in the language of naming (`seed width 4 disagrees with 0 output columns`),
+  # because the label derivation declined and left the output list empty. It now
+  # reports the arity directly. The arm is here for the MESSAGE, which the
+  # explaindiff golden pins; a corpus row can only assert the SQLSTATE.
+  - query: WITH RECURSIVE d AS (SELECT * FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT d."id" FROM d) SELECT * FROM d
+    error_code: "0AF00"
+  # A DELIMITED COLUMN NAME CONTAINING A DOT, star-seeded. This is the shape an
+  # intermediate commit wrongly declined: it tested whether a derived field name
+  # contains a dot, because a join leg synthesizes `T1.ID` — but a dot
+  # round-trips the wire escape (`.` -> `__2`, reversed on the way back), so an
+  # ordinary base-table column declared `"a.b"` comes back dotted from a plain
+  # scan and the string test could not tell the two apart. It planned before
+  # that test and stopped after, which makes it a regression rather than a
+  # hypothetical. Nothing slices at a dot now — the qualifier is removed by not
+  # being added — and this plans again.
+  # NOTE the LABEL: `a.b`, the whole declared name. It used to be `b`, because
+  # the label split at the last depth-0 dot and a delimited name carrying its
+  # own dot is indistinguishable from a qualified reference once the quotes are
+  # gone. Measured against a live JVM, Java reports `a.b` — and Go's own STAR
+  # expansion already did, so one label path was wrong beside a sibling that was
+  # right. The schema settles it now: a name that is IN FULL a declared column
+  # has no qualifier to remove.
+  - query: WITH RECURSIVE d AS (SELECT * FROM dott WHERE "a.b" = 1 UNION ALL SELECT d."a.b" + 1, d.plain FROM d WHERE d."a.b" < 3) SELECT d."a.b" FROM d ORDER BY d."a.b"
+    columns: ["a.b"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # The same dotted column WITHOUT recursion — the control that says the arm
+  # above is about the seed derivation and not about dotted columns in general.
+  - query: SELECT "a.b" FROM dott
+    columns: ["a.b"]
+    rows:
+      - [1]
+  # THE SEED'S LABELS COME FROM A PROPERTY, so these arms drive the property's
+  # arms rather than a walk's. An earlier version of this block pinned three
+  # "routes a gate does not follow"; the gate is gone, and two of those three
+  # drove neither route they named.
+  #
+  # A DERIVED TABLE over a join. The derived table's own projection publishes
+  # bare labels, so this needs nothing special — and it is worth a row because
+  # it was one edit away from being filed as an unreachable shape. It plans.
+  - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id", QCASE.id AS oid FROM q1, QCASE WHERE q1."id" = 1) x UNION ALL SELECT d."id" + 1, d.oid FROM d WHERE d."id" < 3) SELECT d."id" FROM d ORDER BY d."id"
+    columns: ["id"]
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  # A UNION of joins under that derived table, with the two branches aliased
+  # DIFFERENTLY so the union arm is observable from outside the package: SQL
+  # publishes the FIRST branch's names, so `d.aa` resolves...
+  - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.aa + 1, d.bb FROM d WHERE d.aa < 3) SELECT d.aa FROM d ORDER BY d.aa
+    columns: ["AA"]
+    rows:
+      - [1]
+      - [2]
+      - [2]
+      - [3]
+      - [3]
+  # ...and `d.cc` does not. Without this second half the arm above passes on a
+  # merged branch-name row just as happily.
+  - query: WITH RECURSIVE d AS (SELECT * FROM (SELECT q1."id" AS aa, QCASE.id AS bb FROM q1, QCASE WHERE q1."id" = 1 UNION ALL SELECT q1."id" AS cc, QCASE.id AS dd FROM q1, QCASE WHERE q1."id" = 2) x UNION ALL SELECT d.cc + 1, d.dd FROM d WHERE d.cc < 3) SELECT d.cc FROM d ORDER BY d.cc
+    error_code: "42703"
+  # THE CORRELATED HALF OF THE PAIR THAT PROVES NO RULE OVER THE FLAT NAME CAN
+  # BE RIGHT. `xprobe` declares BOTH `"TOTAL"` and `"X.TOTAL"`, so this read of
+  # `x."TOTAL"` renders as the seven characters `X.TOTAL` at the label boundary
+  # — identical to `SELECT "X.TOTAL" FROM xprobe`, which reads a DIFFERENT
+  # column and wants a different label. The information that separates them was
+  # discarded upstream, where the qualifier stopped being structure and became
+  # punctuation; RFC-238 carries it as structure instead.
+  #
+  # ONLY THIS HALF IS HERE, and that is the point. This corpus is
+  # Java-authoritative, so an arm asserting a label Java does not report would
+  # convert a known divergence into a passing conformance case and credit it in
+  # the generated ledgers. The other half — where Go says `TOTAL` and Java says
+  # `X.TOTAL` — is measured on BOTH engines in
+  # conformance/dotted_and_recursive_seed_java_probe_test.go, which is where a
+  # divergence belongs. This arm is correct today and is here so a fix for that
+  # one cannot pay for itself by breaking this one: they are one decision.
+  - query: SELECT s.id, (SELECT x."TOTAL" FROM xprobe x WHERE x.id = s.id) FROM sprobe s
+    columns: ["ID", "TOTAL"]
+    rows:
+      - [1, 10]
+  # A STAR OVER A JOIN — the dimension this scenario did not have. It asserts a
+  # star over a SINGLE table, and a projection through a join, and never both at
+  # once, so a label authority that only fires when a star's columns are merged
+  # across two legs shipped green through a change that removed fourteen folds.
+  # This is the fifteenth: qualifyAndMergeColumns folded a label that was
+  # already canonical, and `SELECT * FROM QCASE q, q1` reported KEEPCASE where
+  # `SELECT "KeepCase"` and `SELECT q."KeepCase"` both reported KeepCase.
+  #
+  # The two controls are the point. `PLAIN` was declared unquoted so it folds at
+  # CREATE time and reads upper on every path — it says the arm is not simply
+  # "everything is lower". And `id` from q1 is declared quoted-lower, so it
+  # would read `ID` under the fold and `id` without it.
+  - query: SELECT * FROM QCASE q, q1 WHERE q.id = 1 ORDER BY q1."id"
+    columns: ["ID", "KeepCase", "PLAIN", "id"]
+    rows:
+      - [1, 42, 7, 1]
+      - [1, 42, 7, 2]
+  # AN UNNEST OF A DELIMITED DOTTED ARRAY COLUMN THROUGH A DERIVED TABLE, and
+  # the arm exists because the path that resolves it used to bind THE WRONG
+  # COLUMN, silently and schema-dependently.
+  #
+  # `dottarr` declares `"a.b" BIGINT ARRAY` beside a scalar `b`, and the body's
+  # scan is aliased `a`. Three sites each recovered a qualifier from the flat
+  # rendering `a.b`: the derived output name was published as `b`; the array
+  # classifier manufactured qualifier `a`, matched it against the scan alias,
+  # and took the SIBLING `b` as the array source; and the descriptor lookup was
+  # handed the SQL name where the proto stores `a__2b`.
+  #
+  # The middle one is what makes this an arm rather than a diagnostic note. With
+  # `b` scalar it reported `42F10 … only on a column of repeated type` — about a
+  # column the query never mentions — and with `b` declared an ARRAY it PLANNED,
+  # over that wrong column. A query whose outcome flips when an unrelated column
+  # changes type is a misbind.
+  #
+  # The ROWS are the proof: 10 and 20 are `"a.b"`'s elements. `b` holds 7, so a
+  # regression to the sibling cannot produce this answer under any reading.
+  - query: SELECT x FROM (SELECT "a.b" AS z FROM dottarr AS a) d, d.z AS x ORDER BY x
+    columns: ["X"]
+    rows:
+      - [10]
+      - [20]
+  # The scalar control: unnesting `b` itself is a type error, and it must stay
+  # one. It is what says the arm above is about resolving the RIGHT column and
+  # not about the type check having been loosened.
+  - query: SELECT x FROM (SELECT b AS z FROM dottarr) d, d.z AS x
+    error_code: "42F10"

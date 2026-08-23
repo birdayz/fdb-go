@@ -1,0 +1,53 @@
+# quoted_identifier_columns.yaml
+#
+# A QUOTED identifier keeps its case; an unquoted one folds to upper. Every
+# arm here is about whether the engine holds that rule consistently from
+# the SQL text through to the executor's row layout.
+#
+# The shapes below were measured against a live fdb-relational before
+# being written: see JoinUsingQuotedIdentifierJavaProbe in
+# conformance/join_using_chain_java_probe_test.go for the JVM side.
+name: quoted_identifier_columns
+schema_template: |
+  CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+  CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+setup:
+  - INSERT INTO q1 VALUES (1, 10), (2, 20)
+  - INSERT INTO q2 VALUES (1, 10), (2, 99)
+tests:
+  # A quoted column selected straight from a base table.
+  - query: SELECT q1."id", q1."k" FROM q1 ORDER BY q1."id"
+    rows:
+      - [1, 10]
+      - [2, 20]
+  # A derived table projecting quoted columns, selected by name.
+  - query: SELECT d."k" FROM (SELECT "id", "k" FROM q2) d ORDER BY d."k"
+    rows:
+      - [10]
+      - [99]
+  # A quoted USING against two base tables.
+  - query: SELECT q1."id" FROM q1 JOIN q2 USING ("k") ORDER BY q1."id"
+    rows:
+      - [1]
+  - query: SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d ON q1."k" = d."k" ORDER BY q1."id"
+    rows:
+      - [1]
+  # THE FOLDED COLLISION THE RELAXED PASS MUST NOT RESOLVE. `"kA"` and `"Ka"`
+  # are distinct quoted columns of one derived source that fold to the same
+  # name, and the reference `"ka"` matches NEITHER exactly. The scope's second
+  # pass therefore finds TWO candidates at that level, and a reference with two
+  # answers is AMBIGUOUS — it must say so rather than first-match one of them.
+  #
+  # A draft of this arm used `d."k"` against columns `"k"` and `"K"`, which
+  # proves nothing: `"k"` matches one of them EXACTLY, so the strict pass
+  # answers and the relaxed pass is never consulted. A collision test has to
+  # make the exact match fail first.
+  - query: SELECT d."ka" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d
+    error_code: "42702"
+  # And each authored spelling still reaches its OWN column exactly, so the
+  # arm above is about the collision and not about the columns being
+  # unreachable.
+  - query: SELECT d."kA" FROM (SELECT "k" AS "kA", "id" AS "Ka" FROM q2) d ORDER BY d."kA"
+    rows:
+      - [10]
+      - [99]

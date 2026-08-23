@@ -108,11 +108,21 @@ func TestAggregateResultColumnName_OperandNameDataWinsOverTheValue(t *testing.T)
 		Operand:     qualifiedOperand("T", "V"),
 		OperandName: "PRICE * QTY",
 	}
-	if got, want := expressions.AggregateResultColumnName(spec), "SUM(PRICE*QTY)"; got != want {
+	//
+	// The expected value INVERTED when the space-strip moved. It used to be
+	// `SUM(PRICE*QTY)`, because this authority repaired the text it was handed.
+	// The repair is gone — the operand is canonicalised once, at the mint
+	// (embedded.aggOperandCanonicalText), and arrives here space-free — so the
+	// spaced input above now exercises the STRONGER form of the same claim: the
+	// text is not consulted, not repaired, and not re-derived. It is carried.
+	if got, want := expressions.AggregateResultColumnName(spec), "SUM(PRICE * QTY)"; got != want {
 		t.Fatalf("AggregateResultColumnName = %q, want %q.\n\n"+
 			"The captured parse text is the name-as-data channel (Java's "+
 			"Column.of(Optional<String>, value), Column.java:81-82). It is the "+
-			"authority; the operand Value is not consulted while it is present.",
+			"authority; the operand Value is not consulted while it is present, "+
+			"and neither is it edited on the way out — a repair applied to a name "+
+			"is a second normalization, which is how a column the user declared "+
+			"as `qty` came to report itself as `QTY`.",
 			got, want)
 	}
 }

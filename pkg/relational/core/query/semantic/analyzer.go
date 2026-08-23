@@ -63,11 +63,17 @@ func (a *Analyzer) ResolveTable(name QualifiedName) (Table, error) {
 // table. Mirrors the simple case of Java's resolveIdentifier —
 // qualifier resolution (`t.col` → column on aliased table) comes
 // later with the FROM-clause scope machinery.
+//
+// One table, so there is nothing to adjudicate across sources and the lookup
+// is the relaxed one: exact spelling first, then case-insensitive. That is
+// what the scope would answer for the same reference against the same single
+// source, and an entry point that answered differently would be a second
+// resolution rule.
 func (a *Analyzer) ResolveColumn(table Table, id Identifier) (Column, error) {
 	if table == nil {
 		return Column{}, &ColumnNotFoundError{Id: id}
 	}
-	c, ok := table.LookupColumn(id)
+	c, ok := LookupColumnRelaxed(table, id)
 	if !ok {
 		return Column{}, &ColumnNotFoundError{TableName: table.Name(), Id: id}
 	}

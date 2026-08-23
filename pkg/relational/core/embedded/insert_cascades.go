@@ -67,7 +67,7 @@ func (c *EmbeddedConnection) buildInsertValuesArray(
 	var explicitCols []string
 	if colCtx := ins.UidListWithNestingsInParens(); colCtx != nil {
 		for _, uw := range colCtx.UidListWithNestings().AllUidWithNestings() {
-			explicitCols = append(explicitCols, functions.StripIdentifierQuotes(uw.Uid().GetText()))
+			explicitCols = append(explicitCols, functions.NormalizeIdentifier(uw.Uid().GetText()))
 		}
 	}
 	cols := explicitCols
@@ -369,7 +369,7 @@ func parseStructLiteral(
 			// Java asserts a provided name equals the target field's name
 			// (ExpressionVisitor.java:1002-1003) rather than letting the
 			// literal rename the target's field.
-			given := functions.StripIdentifierQuotes(ewon.Uid().GetText())
+			given := functions.NormalizeIdentifier(ewon.Uid().GetText())
 			if !strings.EqualFold(given, name) {
 				return nil, api.NewErrorf(api.ErrCodeCannotConvertType,
 					"field %q cannot be assigned to target field %q", given, name)

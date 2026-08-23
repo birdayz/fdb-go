@@ -110,7 +110,7 @@ func collectSelectNames(simpleTable *antlrgen.SimpleTableContext) (cols []string
 		case *antlrgen.SelectExpressionElementContext:
 			alias := ""
 			if e.Uid() != nil {
-				alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+				alias = functions.NormalizeIdentifier(e.Uid().GetText())
 			}
 			// Try plain column name first.
 			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")
@@ -375,7 +375,13 @@ func (v *PlanVisitor) VisitQuery(q antlrgen.IQueryContext) (logical.LogicalOpera
 				aliases := aliasList.AllFullId()
 				names := make([]string, len(aliases))
 				for j, fid := range aliases {
-					names[j] = strings.ToUpper(functions.StripIdentifierQuotes(functions.FullIdToName(fid)))
+					// NormalizeIdentifier ALREADY applied SQL identifier
+					// semantics — an unquoted alias came back folded UPPER and a
+					// quoted one verbatim — so a second fold here can only
+					// destroy `WITH c("x")`. This is the CAPTURE, which is why
+					// it is fixed here rather than at the three sites that
+					// APPLY the list: they can only publish what this stored.
+					names[j] = functions.FullIdToName(fid)
 				}
 				cte.ColumnAliases = names
 			}
@@ -2263,7 +2269,7 @@ func (v *PlanVisitor) visitFinalProjection(op logical.LogicalOperator, simpleTab
 		case *antlrgen.SelectExpressionElementContext:
 			alias := ""
 			if e.Uid() != nil {
-				alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+				alias = functions.NormalizeIdentifier(e.Uid().GetText())
 			}
 			// Try plain column name first.
 			colName, nameErr := columnNameFromExpr(e.Expression(), "SELECT expression")

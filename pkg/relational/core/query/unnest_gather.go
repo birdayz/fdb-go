@@ -161,11 +161,11 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	// NAME-addressed (the proto descent resolves by field name); the
 	// classifier has already validated every intermediate as a singular
 	// record field.
-	rootField := strings.ToUpper(fieldName)
+	rootField := fieldName
 	if len(u.Segments) > 2 {
-		rootField = strings.ToUpper(u.Segments[1])
+		rootField = u.Segments[1]
 	}
-	arrIdx, found := ownerWindow.leafTyp.FieldIndexUnique(rootField)
+	arrIdx, found := seedFieldIndex(ownerWindow.leafTyp, rootField)
 	if !found {
 		return nil
 	}
@@ -177,18 +177,8 @@ func (t *cascadesTranslator) translateGatheredUnnestCluster(
 	if err != nil {
 		return nil
 	}
-	suffix := make([]values.FieldRequest, 0, len(u.Segments)-2)
-	if len(u.Segments) > 2 {
-		for _, seg := range u.Segments[2:] {
-			request, requestErr := values.FieldByName(strings.ToUpper(seg))
-			if requestErr != nil {
-				return nil
-			}
-			suffix = append(suffix, request)
-		}
-	}
-	collection, err := values.ResolveOrdinalSeedAccess(ownerQOV, ownerWindow.leafOffset+arrIdx, suffix)
-	if err != nil {
+	collection := resolveSeedCollection(ownerQOV, ownerWindow.leafOffset+arrIdx, u.Segments[2:])
+	if collection == nil {
 		return nil
 	}
 	wantArray := values.NewArrayType(collection.Type().IsNullable(), elementType)

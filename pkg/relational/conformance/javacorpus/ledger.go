@@ -201,6 +201,20 @@ const (
 	// widening of the shared surface, tracked because the conformance
 	// principle governs that surface in both directions.
 	SkipConformanceGoAccepts SkipClass = "conformance:go-accepts-what-java-rejects"
+	// SkipConformanceJavaPlannerBug is a query BOTH engines answer, where the
+	// corpus records JAVA's answer and Java's answer is wrong — a bug the
+	// corpus file itself flags with a TODO and an upstream issue number.
+	//
+	// It is deliberately NOT SkipConformanceGoAccepts: Java does not reject
+	// these, it answers them incorrectly. And it is not an `engine-gap:*`,
+	// because nothing is missing on the Go side. Conflating either way would
+	// make the ledger's own classes stop meaning what they say — the count of
+	// go-accepts-what-java-rejects is read as a measure of surface widening.
+	//
+	// Reproducing an upstream planner bug is not what wire compatibility asks
+	// for, and the fix would cost real correctness elsewhere, so these stay
+	// booked rather than closed.
+	SkipConformanceJavaPlannerBug SkipClass = "conformance:java-planner-bug"
 	// SkipGapResultMetadata is a `resultMetadata:` assertion the engine fails
 	// because the result-set metadata pipeline truncates a column's type to
 	// one flat string (CQ-74).
@@ -263,6 +277,7 @@ func AllSkipClasses() []SkipClass {
 		SkipGapPlannerDeclines,
 		SkipGapErrorClass,
 		SkipConformanceGoAccepts,
+		SkipConformanceJavaPlannerBug,
 		SkipGapResultMetadata,
 		SkipGapSerializationOptions,
 		SkipGapMultipleLateralUnnests,

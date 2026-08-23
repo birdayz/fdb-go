@@ -100,19 +100,19 @@ func TestTableColumns_FromMetadata(t *testing.T) {
 			t.Errorf("column %q: TypeCode %v, want %v", col, pt.TypeCode, want)
 		}
 	}
-	primitive("ORDER_ID", values.TypeCodeLong)
-	primitive("PRICE", values.TypeCodeInt)
-	primitive("VECTOR_DATA", values.TypeCodeBytes)
-	flower, flowerOK := byName["FLOWER"].(*values.RecordType)
+	primitive("order_id", values.TypeCodeLong)
+	primitive("price", values.TypeCodeInt)
+	primitive("vector_data", values.TypeCodeBytes)
+	flower, flowerOK := byName["flower"].(*values.RecordType)
 	if !flowerOK || !flower.IsNullable() || len(flower.Fields) != 2 ||
-		flower.Fields[0].Name != "TYPE" || flower.Fields[0].FieldType.Code() != values.TypeCodeString ||
-		flower.Fields[1].Name != "COLOR" || flower.Fields[1].FieldType.Code() != values.TypeCodeEnum {
-		t.Errorf("FLOWER (message): got %v, want exact nullable TYPE/COLOR record", byName["FLOWER"])
+		flower.Fields[0].Name != "type" || flower.Fields[0].FieldType.Code() != values.TypeCodeString ||
+		flower.Fields[1].Name != "color" || flower.Fields[1].FieldType.Code() != values.TypeCodeEnum {
+		t.Errorf("flower (message): got %v, want exact nullable type/color record", byName["flower"])
 	}
-	tags, tagsOK := byName["TAGS"].(*values.ArrayType)
+	tags, tagsOK := byName["tags"].(*values.ArrayType)
 	if !tagsOK || tags.IsNullable() || tags.ElementType == nil ||
 		!tags.ElementType.Equals(values.NotNullString) {
-		t.Errorf("TAGS (repeated): got %v, want ARRAY<STRING NOT NULL> NOT NULL", byName["TAGS"])
+		t.Errorf("tags (repeated): got %v, want ARRAY<STRING NOT NULL> NOT NULL", byName["tags"])
 	}
 
 	// nil md and unknown table fall back to nil (no typing source).
@@ -179,9 +179,9 @@ func TestLegColumns_NamingConsistentWithAnchoredRecord(t *testing.T) {
 		return m
 	}
 
-	// (1) Scan → bare metadata columns (upper-cased).
+	// (1) Scan → bare metadata columns, spelled as the descriptor declares them.
 	scanCols := names(tr.legColumns(logical.NewScan("Order", "O")))
-	for _, c := range []string{"ORDER_ID", "PRICE", "QUANTITY"} {
+	for _, c := range []string{"order_id", "price", "quantity"} {
 		if !scanCols[c] {
 			t.Errorf("scan leg missing bare column %q; got %v", c, scanCols)
 		}

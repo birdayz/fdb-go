@@ -231,9 +231,12 @@ func TestUnknownValueIndexCandidateDoesNotReachDataAccess(t *testing.T) {
 	}
 }
 
-// TestPlanContext_FromIndexDefs_UpperCaseColumnNames verifies that the
-// PlanContextBuilder uppercases column names for SQL-standard matching.
-func TestPlanContext_FromIndexDefs_UpperCaseColumnNames(t *testing.T) {
+// TestPlanContext_FromIndexDefs_KeepsColumnNameCase verifies that the
+// PlanContextBuilder carries index column names through with their case
+// intact. They are PHYSICAL names, matched by exact spelling against a base
+// type built from the same descriptor, so the builder has no normalization to
+// apply — and folding them declines the candidate silently.
+func TestPlanContext_FromIndexDefs_KeepsColumnNameCase(t *testing.T) {
 	t.Parallel()
 
 	stub := stubDef{
@@ -248,8 +251,8 @@ func TestPlanContext_FromIndexDefs_UpperCaseColumnNames(t *testing.T) {
 		t.Fatalf("expected 1 candidate, got %d", len(cands))
 	}
 	cols := cands[0].GetColumnNames()
-	if cols[0] != "STATUS" || cols[1] != "AMOUNT" {
-		t.Fatalf("column names not uppercased: %v", cols)
+	if len(cols) != 2 || cols[0] != "status" || cols[1] != "Amount" {
+		t.Fatalf("column names=%v, want [status Amount] verbatim", cols)
 	}
 }
 

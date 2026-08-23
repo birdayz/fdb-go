@@ -444,7 +444,7 @@ func extractAggFunc(e *antlrgen.SelectExpressionElementContext) (funcName, argCo
 	// wins over the reconstructed default ("SUM(v)") as the output column
 	// name.
 	if e.Uid() != nil {
-		outName = functions.StripIdentifierQuotes(e.Uid().GetText())
+		outName = functions.NormalizeIdentifier(e.Uid().GetText())
 	}
 	return fn, arg, aExpr, outName, isDistinct, argQual, argBare, argQualifier, argSegs, true
 }
@@ -485,13 +485,13 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 				// segment.
 				uids := fid.AllUid()
 				argQualified = len(uids) > 1
-				argBare = functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+				argBare = functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
 				// EVERY segment is carried, not just the leading ones joined:
 				// an aggregate over a struct descent (`COUNT(a.n.sk)`) needs the
 				// boundaries, and the joined form asks for a source "A.N".
 				argSegs = make([]string, len(uids))
 				for qi, u := range uids {
-					argSegs[qi] = functions.StripIdentifierQuotes(u.GetText())
+					argSegs[qi] = functions.NormalizeIdentifier(u.GetText())
 				}
 				if argQualified {
 					argQualifier = strings.Join(argSegs[:len(uids)-1], ".")
@@ -546,7 +546,7 @@ func extractAwfFields(awf *antlrgen.AggregateWindowedFunctionContext) (funcName,
 	}
 	display := argCol
 	if display == "" && argExpr != nil {
-		display = canonicalTextOf(argExpr)
+		display = aggOperandCanonicalText(argExpr)
 	}
 	switch {
 	case display == "":
@@ -607,14 +607,14 @@ func splitColumnRef(expr antlrgen.IExpressionContext) (bare, qualifier string, q
 	uids := atom.FullColumnName().FullId().AllUid()
 	parts := make([]string, len(uids))
 	for i, u := range uids {
-		// StripIdentifierQuotes folds unquoted segments and preserves
+		// NormalizeIdentifier folds unquoted segments and preserves
 		// quoted ones — the SQL binding semantics — but DISCARDS the
 		// per-segment quoted flag, so downstream cannot tell `"ID"`
 		// (quoted upper) from `id` (folded). Both bind the same column
 		// today; the flag must be carried (semantic.Identifier per
 		// segment) no later than WS-N Phase D, where case-faithful
 		// registrations make the distinction observable.
-		parts[i] = functions.StripIdentifierQuotes(u.GetText())
+		parts[i] = functions.NormalizeIdentifier(u.GetText())
 	}
 	if len(parts) == 0 {
 		return "", "", false, nil
@@ -682,7 +682,7 @@ func selectExprToColumnName(e *antlrgen.SelectExpressionElementContext) (string,
 	}
 	alias := ""
 	if e.Uid() != nil {
-		alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+		alias = functions.NormalizeIdentifier(e.Uid().GetText())
 	}
 	return colName, alias, nil
 }
@@ -897,7 +897,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					return nil, api.NewError(api.ErrCodeUnsupportedOperation,
 						"SELECT <qualifier>.* missing qualifier")
 				}
-				qual := functions.StripIdentifierQuotes(e.Uid().GetText())
+				qual := functions.NormalizeIdentifier(e.Uid().GetText())
 				if len(elems) == 1 {
 					projQualifier = qual
 				} else {
@@ -910,7 +910,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				if checkCountStar(e) && len(elems) == 1 {
 					countStar = true
 					if e.Uid() != nil {
-						countStarAlias = functions.StripIdentifierQuotes(e.Uid().GetText())
+						countStarAlias = functions.NormalizeIdentifier(e.Uid().GetText())
 					}
 				} else if fn, argCol, argExpr, alias, isDistinct, argQual, argBare, argQualifier, argSegs, isAgg := extractAggFunc(e); isAgg {
 					if containsNestedAggregateInSelectElement(e, argExpr) {
@@ -935,7 +935,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 						// for anonymous-computed slots.
 						alias = ""
 						if e.Uid() != nil {
-							alias = functions.StripIdentifierQuotes(e.Uid().GetText())
+							alias = functions.NormalizeIdentifier(e.Uid().GetText())
 						}
 						if alias != "" {
 							colName = alias
@@ -1258,7 +1258,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 		for _, item := range groupByCtx.AllGroupByItem() {
 			aliasName := ""
 			if item.Uid() != nil {
-				aliasName = functions.StripIdentifierQuotes(item.Uid().GetText())
+				aliasName = functions.NormalizeIdentifier(item.Uid().GetText())
 				// SQL identifiers are case-insensitive, so `GROUP BY
 				// col1 AS x, col2 AS X` must error 42702 even though
 				// the two aliases differ only in case. groupByAliases
@@ -1919,7 +1919,7 @@ func harvestBareColumnRefsOutsideSubqueries(expr antlrgen.IExpressionContext) []
 		}
 		if c, ok := n.(*antlrgen.FullColumnNameExpressionAtomContext); ok {
 			uids := c.FullColumnName().FullId().AllUid()
-			bare := functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+			bare := functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
 			if !seen[bare] {
 				seen[bare] = true
 				bares = append(bares, bare)
@@ -2194,7 +2194,7 @@ func atAliasOf(item *antlrgen.AtomTableItemContext) string {
 	if item == nil || item.GetAtAlias() == nil {
 		return ""
 	}
-	return functions.StripIdentifierQuotes(item.GetAtAlias().GetText())
+	return functions.NormalizeIdentifier(item.GetAtAlias().GetText())
 }
 
 // visibleFromAliases returns the set (upper-cased) of FROM-source aliases
@@ -2489,7 +2489,7 @@ func uidSegments(tableName antlrgen.ITableNameContext) []string {
 	uids := tableName.FullId().AllUid()
 	parts := make([]string, len(uids))
 	for i, u := range uids {
-		parts[i] = functions.StripIdentifierQuotes(u.GetText())
+		parts[i] = functions.NormalizeIdentifier(u.GetText())
 	}
 	return parts
 }
@@ -2615,7 +2615,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 			alias := tblName
 			// Use GetAlias() so implicit aliases (`FROM a, b alias`) parse.
 			if item.GetAlias() != nil {
-				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+				alias = functions.NormalizeIdentifier(item.GetAlias().GetText())
 			}
 			extraCrossJoins = append(extraCrossJoins, joinClause{
 				tableName: tblName,
@@ -2629,7 +2629,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 		case *antlrgen.SubqueryTableItemContext:
 			alias := ""
 			if item.GetAlias() != nil {
-				alias = functions.StripIdentifierQuotes(item.GetAlias().GetText())
+				alias = functions.NormalizeIdentifier(item.GetAlias().GetText())
 			}
 			if alias == "" {
 				return nil, api.NewError(api.ErrCodeUnsupportedOperation,
@@ -2663,7 +2663,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	if subItem, isSub := srcBase.TableSourceItem().(*antlrgen.SubqueryTableItemContext); isSub {
 		alias := ""
 		if subItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
+			alias = functions.NormalizeIdentifier(subItem.GetAlias().GetText())
 		}
 		if alias == "" {
 			return nil, api.NewError(api.ErrCodeUnsupportedOperation, "derived table in FROM must have an alias")
@@ -2744,7 +2744,7 @@ func parseFromSource(simpleTable *antlrgen.SimpleTableContext) (*fromSource, err
 	// test's header, and re-running it is a reader's job, not the test's.)
 	leftAlias := ""
 	if atomItem.GetAlias() != nil {
-		leftAlias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
+		leftAlias = functions.NormalizeIdentifier(atomItem.GetAlias().GetText())
 	}
 	if leftAlias == "" {
 		leftAlias = strings.Join(parts, ".")
@@ -2800,7 +2800,7 @@ func parseJoinClauses(srcBase *antlrgen.TableSourceBaseContext, leftAlias string
 		// hides them (star expansion + unqualified resolution).
 		for _, u := range joins[i].usingUids.AllUid() {
 			joins[i].usingHiddenCols = append(joins[i].usingHiddenCols,
-				strings.ToUpper(functions.StripIdentifierQuotes(u.GetText())))
+				strings.ToUpper(functions.NormalizeIdentifier(u.GetText())))
 			joins[i].usingColTexts = append(joins[i].usingColTexts, u.GetText())
 		}
 		joins[i].onExpr = synth
@@ -2832,7 +2832,7 @@ func synthesizeUsingOnExpr(uidList antlrgen.IUidListContext, leftAlias, rightAli
 	if len(uids) == 0 {
 		return nil, api.NewErrorf(api.ErrCodeSyntaxError, "JOIN ... USING requires at least one column")
 	}
-	// The alias values are NORMALIZED (StripIdentifierQuotes: unquoted folded
+	// The alias values are NORMALIZED (NormalizeIdentifier: unquoted folded
 	// UPPER, quoted verbatim with quotes removed). Splicing one back into SQL
 	// text bare would re-normalize it — a quoted-DDL alias `"e"` (stored `e`)
 	// would fold to `E` and resolve nothing (join-tests-outer.yamsql's USING
@@ -2917,7 +2917,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		// `JOIN Customer c` are picked up. Mirrors the FROM-clause
 		// path in semantic.BuildScopeFromFromClause.
 		if atomItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
+			alias = functions.NormalizeIdentifier(atomItem.GetAlias().GetText())
 		}
 		onExpr, usingUids := joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
 		return joinClause{tableName: tblName, joinType: joinTypeInner, alias: alias, onExpr: onExpr, usingUids: usingUids, segments: parts}, nil
@@ -2953,7 +2953,7 @@ func extractJoinClause(jp antlrgen.IJoinPartContext) (joinClause, error) {
 		alias := tblName
 		// Same implicit-alias note as InnerJoin.
 		if atomItem.GetAlias() != nil {
-			alias = functions.StripIdentifierQuotes(atomItem.GetAlias().GetText())
+			alias = functions.NormalizeIdentifier(atomItem.GetAlias().GetText())
 		}
 		onExpr, usingUids := joinOnOrUsing(j.Expression(), j.USING(), j.UidList())
 		return joinClause{tableName: tblName, joinType: jt, alias: alias, onExpr: onExpr, usingUids: usingUids, segments: parts}, nil
@@ -2986,7 +2986,7 @@ func joinOnOrUsing(onCtx antlrgen.IExpressionContext, using antlr.TerminalNode, 
 func joinClauseForSubquerySource(subItem *antlrgen.SubqueryTableItemContext, jt joinType) (joinClause, error) {
 	alias := ""
 	if subItem.GetAlias() != nil {
-		alias = functions.StripIdentifierQuotes(subItem.GetAlias().GetText())
+		alias = functions.NormalizeIdentifier(subItem.GetAlias().GetText())
 	}
 	if alias == "" {
 		return joinClause{}, api.NewError(api.ErrCodeUnsupportedOperation,
@@ -3081,7 +3081,7 @@ func cteNamePredicate(cteScopes map[string]semantic.ScopeSource) func(string) bo
 		return nil
 	}
 	return func(name string) bool {
-		_, ok := cteScopes[strings.ToUpper(functions.StripIdentifierQuotes(name))]
+		_, ok := cteScopes[strings.ToUpper(functions.NormalizeIdentifier(name))]
 		return ok
 	}
 }
@@ -3129,7 +3129,7 @@ type usingSource struct {
 // owner, so the caller walks past the ambiguity and reports whatever the NEXT
 // USING column turns up: the wrong fault, on the wrong column. This is the
 // same defect the right-hand check was repaired for, on the left.
-func (s usingSource) owns(colText string) int {
+func (s usingSource) owns(colText string, pass usingResolutionPass) int {
 	if s.cols == nil {
 		// Nothing describes this source — a name that did not resolve, or a
 		// derived schema that could not be derived. The caller's resolvable
@@ -3140,24 +3140,48 @@ func (s usingSource) owns(colText string) int {
 	}
 	// RESOLVED THROUGH THE SOURCE'S OWN NAMESPACE, then counted in it.
 	//
-	// The two table implementations do not agree on how they present a column
-	// name, and neither is wrong. `recordTypeTable` folds — it documents that
-	// "the COLUMN itself presents the FOLDED identifier everywhere", keeping
-	// plan-time and runtime in one namespace — while a derived source's
-	// `StaticTable` presents the projection's names as built. So there is no
-	// single spelling this resolver can fold or preserve its way to: folding
-	// lost derived sources, preserving lost base ones, and each attempt fixed
-	// one table kind by breaking the other.
+	// Both table implementations now present a column under the spelling it
+	// was declared with, so the two agree — but this still must not spell the
+	// key itself. `counts` is keyed by whatever identifier the SOURCE hands
+	// back, and hiding decrements that same key; deriving the key here a
+	// second way is how the two halves come to disagree.
 	//
-	// Asking the source to resolve the name, and then counting under the
-	// identifier IT returns, works for both — and keeps hiding coherent,
-	// because the decrement lands on that same key.
-	col, ok := s.cols.LookupColumn(semantic.NewUnquoted(colText))
+	// The PASS is the caller's, and that is the whole point. Asking each
+	// source to relax on its own lets a case-insensitive match at one source
+	// compete with an EXACT match at another, and `usingOwnerOf` counts owners
+	// ACROSS sources — so a reference with exactly one right answer comes back
+	// 42702. Measured: `q1 JOIN q3 USING ("id") JOIN q2 USING ("k")` over a q1
+	// declaring `"k"` and a q3 declaring unquoted `K` answers `[[1]]` on Java
+	// and reported Ambiguous reference K here. The caller runs every source
+	// strict first and only re-runs relaxed when strict found NO owner, which
+	// is the same shape Scope.ResolveColumn uses and for the same reason.
+	col, ok := s.resolve(colText, pass)
 	if !ok {
 		return 0
 	}
 	return s.counts[col.Id.Name()]
 }
+
+// resolve is the source's column lookup under one pass — exact, or exact then
+// case-insensitive. Shared by ownership and by hiding so the two cannot derive
+// the counts key differently.
+func (s usingSource) resolve(colText string, pass usingResolutionPass) (semantic.Column, bool) {
+	id := semantic.NewUnquoted(colText)
+	if pass == usingStrictPass {
+		return s.cols.LookupColumn(id)
+	}
+	return semantic.LookupColumnRelaxed(s.cols, id)
+}
+
+// usingResolutionPass mirrors semantic's strict/relaxed split for the USING
+// resolver, which does its own cross-source adjudication and therefore needs
+// its own two passes rather than a per-source relaxation.
+type usingResolutionPass int
+
+const (
+	usingStrictPass usingResolutionPass = iota
+	usingRelaxedPass
+)
 
 // usingHideKey is the counts key a source uses for `colText`, or "" when the
 // source does not resolve the name at all. Hiding decrements THIS key, so it
@@ -3166,7 +3190,12 @@ func (s usingSource) usingHideKey(colText string) string {
 	if s.cols == nil {
 		return ""
 	}
-	col, ok := s.cols.LookupColumn(semantic.NewUnquoted(colText))
+	// Hiding is not adjudicated across sources — it decrements ONE source's
+	// own count — so it takes the relaxed lookup directly. It must agree with
+	// whichever pass ownership resolved under, and it does: a strict match is
+	// also a relaxed match, and the key is the identifier the SOURCE returns
+	// either way.
+	col, ok := s.resolve(colText, usingRelaxedPass)
 	if !ok {
 		return ""
 	}
@@ -3195,30 +3224,41 @@ func (s usingSource) usingHideKey(colText string) string {
 // putting two row-versioned sources in scope before a USING names it — is
 // AMBIGUOUS in both. Two owners really is two owners here.
 func usingOwnerOf(colText string, sources []usingSource) (string, error) {
-	var owners []string
-	for _, s := range sources {
-		// COUNTED per source, not tested. One source exporting the name twice
-		// is ambiguous by itself, and collapsing that to a single owner walks
-		// past the ambiguity to report whatever the NEXT USING column turns up
-		// — the wrong fault on the wrong column. Java stops on the first
-		// attribute.
-		switch n := s.owns(colText); {
-		case n == 0:
-			continue
-		case n > 1:
+	// STRICT over every source, then RELAXED over every source — never a mix.
+	//
+	// This resolver adjudicates ACROSS sources, so it needs the two passes for
+	// the same reason Scope.ResolveColumn does: a per-source relaxation lets a
+	// case-insensitive match at one source compete with an exact match at
+	// another and turns a reference with one right answer into 42702. That was
+	// live and measured — see usingSource.owns.
+	for _, pass := range [...]usingResolutionPass{usingStrictPass, usingRelaxedPass} {
+		var owners []string
+		for _, s := range sources {
+			// COUNTED per source, not tested. One source exporting the name
+			// twice is ambiguous by itself, and collapsing that to a single
+			// owner walks past the ambiguity to report whatever the NEXT USING
+			// column turns up — the wrong fault on the wrong column. Java stops
+			// on the first attribute.
+			switch n := s.owns(colText, pass); {
+			case n == 0:
+				continue
+			case n > 1:
+				return "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
+					"Ambiguous reference %s", usingColumnKey(colText).Name())
+			}
+			owners = append(owners, s.alias)
+		}
+		switch len(owners) {
+		case 1:
+			return owners[0], nil
+		case 0:
+			continue // this pass found nothing; try the next
+		default:
 			return "", api.NewErrorf(api.ErrCodeAmbiguousColumn,
 				"Ambiguous reference %s", usingColumnKey(colText).Name())
 		}
-		owners = append(owners, s.alias)
 	}
-	switch len(owners) {
-	case 1:
-		return owners[0], nil
-	case 0:
-		return "", nil
-	default:
-		return "", api.NewErrorf(api.ErrCodeAmbiguousColumn, "Ambiguous reference %s", usingColumnKey(colText).Name())
-	}
+	return "", nil
 }
 
 // retargetUsingJoins re-qualifies each `USING (cols)` join's synthesized ON
@@ -3309,7 +3349,7 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 			return s
 		}
 		if cteScopes != nil {
-			if src, ok := cteScopes[strings.ToUpper(functions.StripIdentifierQuotes(table))]; ok {
+			if src, ok := cteScopes[strings.ToUpper(functions.NormalizeIdentifier(table))]; ok {
 				s.cols = src.Table
 			}
 		}
@@ -3408,7 +3448,12 @@ func retargetUsingJoins(primaryTable, primaryAlias string, primaryIsBase bool,
 				// `Ambiguous reference ID`; a first-match check passed `id` and
 				// went on to report a LATER column's absence instead, which is
 				// both the wrong fault and the wrong column.
-				switch n := rightLeg.owns(colText); {
+				//
+				// RELAXED, unconditionally, because this is a SINGLE-source
+				// existence question — does this right leg export the column —
+				// with nothing to adjudicate against. The two-pass shape above
+				// exists only where owners are counted across sources.
+				switch n := rightLeg.owns(colText, usingRelaxedPass); {
 				case n == 0:
 					return api.NewErrorf(api.ErrCodeUndefinedColumn,
 						"column %q does not exist", col)
@@ -3553,5 +3598,5 @@ func columnCounts(cols semantic.Table) map[string]int {
 // user's quoting back at them, matching the spelling every other error in this
 // layer uses.
 func usingColumnKey(colText string) semantic.Identifier {
-	return semantic.FromNormalized(strings.ToUpper(functions.StripIdentifierQuotes(colText)))
+	return semantic.FromNormalized(strings.ToUpper(functions.NormalizeIdentifier(colText)))
 }

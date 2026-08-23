@@ -158,7 +158,7 @@ func TestIntegration_DisabledBuildBinder_BakedInner(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (only Alice's price matches an order)", len(results))
 	}
 	datum, isMap := rowMapOK(results[0])
-	if !isMap || datum["CUSTOMER_ID"] != int64(1) {
+	if !isMap || datum["customer_id"] != int64(1) {
 		t.Fatalf("row = %v, want the outer row for customer 1", results[0].Positional)
 	}
 	// The identity output IS the bare Customer row (no leg windows), so the
@@ -166,7 +166,7 @@ func TestIntegration_DisabledBuildBinder_BakedInner(t *testing.T) {
 	// this pin previously used resolved only through the deleted
 	// unique-leaf-strip heuristic; a qualified read over a window-less row is
 	// not a real runtime form.)
-	if v := rowVal(results[0], "NAME"); v != "Alice" {
+	if v := rowVal(results[0], "name"); v != "Alice" {
 		t.Fatalf("NAME = %v, want Alice (the bare Customer row)", v)
 	}
 	// The identity pass-through: the outer's positional row survives the boundary.
@@ -197,7 +197,7 @@ func TestIntegration_ProbeNegative_LazyInner(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (only Alice's price matches an order)", len(results))
 	}
 	datum, isMap := rowMapOK(results[0])
-	if !isMap || datum["CUSTOMER_ID"] != int64(1) {
+	if !isMap || datum["customer_id"] != int64(1) {
 		t.Fatalf("row = %v, want the outer row for customer 1", results[0].Positional)
 	}
 	assertCustomerPositional(t, results[0], int64(1), "Alice")

@@ -23,29 +23,29 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**354 scenarios · 2827 query/assertion cases** across 18 feature areas — 2484 supported, 110 unsupported-feature pins, 233 error-path pins.
+**363 scenarios · 2929 query/assertion cases** across 18 feature areas — 2564 supported, 114 unsupported-feature pins, 251 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
-| Aggregates & GROUP BY | 51 | 326 | 293 | 19 | 14 |
+| Aggregates & GROUP BY | 53 | 345 | 312 | 19 | 14 |
 | Joins | 64 | 303 | 288 | 2 | 13 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
-| DML (INSERT / UPDATE / DELETE) | 25 | 210 | 192 | 1 | 17 |
+| DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 4 | 32 |
 | Ordering & pagination | 16 | 122 | 118 | 0 | 4 |
 | Scalar functions & expressions | 34 | 381 | 328 | 21 | 32 |
 | Predicates & WHERE | 12 | 104 | 102 | 0 | 2 |
 | Column resolution & aliasing | 7 | 59 | 30 | 0 | 29 |
 | NULL handling | 5 | 27 | 24 | 3 | 0 |
 | NULL handling & boolean logic | 2 | 48 | 48 | 0 | 0 |
-| Index usage | 11 | 176 | 173 | 0 | 3 |
+| Index usage | 14 | 182 | 179 | 0 | 3 |
 | Types | 13 | 148 | 127 | 4 | 17 |
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 32 | 249 | 216 | 10 | 23 |
-| **Total** | **354** | **2827** | **2484** | **110** | **233** |
+| Other | 35 | 298 | 261 | 11 | 26 |
+| **Total** | **363** | **2929** | **2564** | **114** | **251** |
 
 ## Aggregates & GROUP BY
 
@@ -82,6 +82,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `distinct_streaming_ordered` | 1 | 1 | 0 | 0 | SELECT DISTINCT over an index-ordered |
 | `dml_rowcount_java` | 12 | 11 | 0 | 1 | INSERT/UPDATE/DELETE row count semantics. |
 | `empty_result_aggregate` | 4 | 4 | 0 | 0 | Aggregates over empty result sets |
+| `escaped_table_grouped_aggregate` | 4 | 4 | 0 | 0 | RFC-238 §7c PREDICTS FIVE MATCHING GATES TURN ON when the escaped-name |
 | `go_extensions_group_by` | 5 | 5 | 0 | 0 | Go extensions: GROUP BY (Java rejects) |
 | `group_by_case` | 1 | 1 | 0 | 0 | GROUP BY with CASE expression |
 | `group_by_count_star` | 4 | 4 | 0 | 0 | GROUP BY with COUNT(*) edge cases |
@@ -98,6 +99,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `limit_aggregate` | 3 | 3 | 0 | 0 | LIMIT with GROUP BY aggregates |
 | `nested_aggregate_rejection` | 4 | 2 | 2 | 0 | Java's SemanticAnalyzer.validateGroupByAggregates rejects nested |
 | `order_by_aggregate` | 3 | 3 | 0 | 0 | ORDER BY aggregate expressions |
+| `quoted_identifier_aggregate_labels` | 15 | 15 | 0 | 0 | THE AGGREGATE RESULT-SET LABEL, on the two plan shapes that do NOT put a |
 | `select_count_where` | 5 | 5 | 0 | 0 | COUNT with various WHERE predicates |
 | `select_distinct` | 7 | 7 | 0 | 0 | SELECT DISTINCT pins the dedup semantics. |
 | `select_distinct_null` | 1 | 1 | 0 | 0 | SELECT DISTINCT with NULL values |
@@ -279,6 +281,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `insert_select_transform` | 2 | 2 | 0 | 0 | INSERT ... |
 | `insert_values_expr` | 27 | 22 | 1 | 4 | INSERT INTO t VALUES with expressions (arithmetic, CASE, CAST, etc). |
 | `multi_insert_delete` | 6 | 6 | 0 | 0 | Multiple INSERT/DELETE/UPDATE operations |
+| `unquoted_dml_against_a_quoted_table` | 28 | 10 | 3 | 15 | AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME. |
 | `update_case_when` | 10 | 9 | 0 | 1 | UPDATE SET col = CASE ... |
 | `update_comprehensive` | 8 | 8 | 0 | 0 | Comprehensive UPDATE patterns |
 | `update_computed_multi` | 5 | 5 | 0 | 0 | Verifies multi-column UPDATE with self-referencing SET expressions. |
@@ -400,10 +403,13 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `composite_secondary_index_prefix_pushdown` | 11 | 11 | 0 | 0 | Pure-prefix pushdown on composite secondary indexes: when WHERE |
 | `covering_index_java` | 7 | 7 | 0 | 0 | Covering index optimization. |
 | `covering_index_pushdown` | 26 | 26 | 0 | 0 | Covering-index pushdown: when every column the SELECT reads from each |
+| `escaped_table_secondary_index` | 2 | 2 | 0 | 0 | A TABLE WHOSE NAME ESCAPES COULD NOT BE GIVEN A SECONDARY INDEX AT ALL. |
 | `index_range_and_or` | 10 | 10 | 0 | 0 | Port of Java standard-tests.yamsql — AND/OR range predicates with index. |
 | `index_range_predicates_java` | 10 | 10 | 0 | 0 | Index scan with range predicates |
 | `index_scan_direction` | 8 | 8 | 0 | 0 | Index scan direction tests |
 | `multi_column_index_java` | 7 | 7 | 0 | 0 | Multi-column (composite) index patterns. |
+| `nested_struct_index_never_matches_gap` | 1 | 1 | 0 | 0 | THIS FILE IS A GAP MARKER, NOT COVERAGE. |
+| `quoted_identifier_index_bridge` | 3 | 3 | 0 | 0 | THE INDEX MUST STILL MATCH WHEN THE COLUMN NAME IS NOT UPPER. |
 | `rfc202_generated_index_plans` | 7 | 7 | 0 | 0 | RFC-202 gate (d): the generator's index |
 | `secondary_index_pushdown` | 80 | 80 | 0 | 0 | Secondary-index pushdown: `SELECT ... |
 | `unique_index_violation` | 5 | 3 | 0 | 2 | Tests that unique index constraints are enforced. |
@@ -474,6 +480,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `information_schema` | 5 | 4 | 0 | 1 | INFORMATION_SCHEMA.* system-table queries. |
 | `int_float_lanes` | 6 | 4 | 0 | 2 | 32-bit arithmetic lanes end-to-end |
 | `integer_range` | 12 | 5 | 0 | 7 | INTEGER (32-bit) column range enforcement. |
+| `intermingle_escaped_table_name` | 3 | 3 | 0 | 0 | THE ONE SQL SHAPE THAT REACHES THE SLOW TYPE-SCAN PATH WITH A NAME THAT NEEDS |
 | `java_alignment_probes` | 14 | 14 | 0 | 0 | Probes derived from Java's yamsql test suite to verify Go matches |
 | `min_max_string` | 3 | 0 | 3 | 0 | MIN/MAX on string columns is REJECTED |
 | `mixed_agg_nonagg` | 4 | 4 | 0 | 0 | Mixed aggregate and non-aggregate expressions |
@@ -484,6 +491,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `nested_projection_column_name` | 8 | 8 | 0 | 0 | a nested projection's OUTPUT NAME |
 | `output_column_naming` | 8 | 8 | 0 | 0 | a query's OUTPUT COLUMN NAMES are part of its |
 | `parse_channel_pins` | 6 | 6 | 0 | 0 | dotted display names survive the parser→IR |
+| `quoted_identifier_columns` | 6 | 5 | 0 | 1 | A QUOTED identifier keeps its case; an unquoted one folds to upper. |
+| `quoted_identifier_labels` | 40 | 37 | 1 | 2 | THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one |
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |

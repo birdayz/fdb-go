@@ -6,6 +6,7 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"fdb.dev/pkg/recordlayer"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/functions"
@@ -54,7 +55,7 @@ func parseOnSourceColSpec(spec antlrgen.IIndexColumnSpecContext) (onSourceIndexe
 			"unexpected index column spec node %T", spec)
 	}
 	col := onSourceIndexedColumn{
-		name: functions.StripIdentifierQuotes(sc.GetColumnName().GetText()),
+		name: functions.NormalizeIdentifier(sc.GetColumnName().GetText()),
 	}
 	oc := sc.OrderClause()
 	if oc == nil {
@@ -76,11 +77,11 @@ func parseOnSourceColSpec(spec antlrgen.IIndexColumnSpecContext) (onSourceIndexe
 // build the metadata registered so far, parse key and INCLUDE columns, and
 // run the OnSourceIndexGenerator port below.
 func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, b *metadata.Builder) error {
-	indexName := functions.StripIdentifierQuotes(def.GetIndexName().GetText())
+	indexName := functions.NormalizeIdentifier(def.GetIndexName().GetText())
 	if err := rejectReservedIndexName(indexName); err != nil {
 		return err
 	}
-	tableName := functions.StripIdentifierQuotes(def.GetSource().GetText())
+	tableName := functions.NormalizeIdentifier(def.GetSource().GetText())
 	unique := def.UNIQUE() != nil
 	// OPTIONS(LEGACY_EXTREMUM_EVER) — Java reads it as a presence flag
 	// (DdlVisitor.java:233-234). It can only matter to an aggregate arm, which
@@ -121,7 +122,7 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 	if inc, ok := def.IncludeClause().(*antlrgen.IncludeClauseContext); ok {
 		if ul := inc.UidList(); ul != nil {
 			for _, uid := range ul.AllUid() {
-				name := functions.StripIdentifierQuotes(uid.GetText())
+				name := functions.NormalizeIdentifier(uid.GetText())
 				if !keySet[name] {
 					valueCols = append(valueCols, name)
 				}
@@ -141,7 +142,29 @@ func parseOnSourceIndexDefinition(def *antlrgen.IndexOnSourceDefinitionContext, 
 		return api.NewErrorf(api.ErrCodeInternalError,
 			"index %q: schema template built without metadata", indexName)
 	}
-	rt := md.RecordTypes()[tableName]
+	// GetRecordType, not a raw map index. The map is keyed by the STORED
+	// protobuf name; tableName is the SQL identifier off the parse tree, and for
+	// a quoted name carrying '$', '.' or "__" the two differ. A raw lookup
+	// therefore reported `CREATE INDEX ... ON "MY$TABLE"` as referencing an
+	// unknown table -- an escaped table could not be given a secondary index at
+	// all. GetRecordType applies the escaping on a miss, which is the one place
+	// that translation lives.
+	//
+	// ONLY FOR A SINGLE SEGMENT, decided on the PARSE TREE and not by looking
+	// for a dot in the text. tableName comes from GetText(), which concatenates
+	// a multi-segment FullId into `S.T` -- indistinguishable from a table
+	// declared as the quoted identifier `"S.T"`, whose storage name is S__2T.
+	// Escaping the flattened form would then resolve a SCHEMA-QUALIFIED
+	// reference onto that unrelated table and attach the index, and any UNIQUE
+	// constraint with it, to the wrong record type. A qualified source keeps the
+	// raw lookup, which misses and reports the table as unknown -- the behaviour
+	// it has always had.
+	var rt *recordlayer.RecordType
+	if fid, ok := def.GetSource().(*antlrgen.FullIdContext); ok && len(fid.AllUid()) > 1 {
+		rt = md.RecordTypes()[tableName]
+	} else {
+		rt = md.GetRecordType(tableName)
+	}
 	if rt == nil || rt.Descriptor == nil {
 		return api.NewErrorf(api.ErrCodeInvalidSchemaTemplate,
 			"index %q references unknown table %q", indexName, tableName)

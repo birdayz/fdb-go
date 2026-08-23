@@ -216,6 +216,62 @@ func TestUnnestBakedRootCollection_MultiSegment(t *testing.T) {
 	}
 }
 
+// TestUnnestBakedRootCollection_SuffixTakesTheRowsSpelling pins the fused
+// SUFFIX against the case gap the fixture above cannot express: there both the
+// segment and the nested field are spelled ARR, so any rule at all resolves it.
+//
+// The real shape does not agree. A path segment arrives normalized at the parse
+// boundary — `d.n.arr` folds to ARR — while the nested record it descends is
+// named by whichever authority built it, and a base table's is the DESCRIPTOR,
+// which for a hand-written .proto spells the field `arr`. The descent matches
+// names EXACTLY, so a request carrying the SEGMENT's spelling finds nothing and
+// the whole unnest declines to ordinalize; the request has to carry the FIELD's
+// spelling instead.
+//
+// The assertion is on the leaf accessor's name and not only on "it resolved":
+// the name is the evidence that the request was minted from the row rather than
+// from the reference.
+func TestUnnestBakedRootCollection_SuffixTakesTheRowsSpelling(t *testing.T) {
+	t.Parallel()
+	tr := newGateTranslator(t)
+
+	elementType := values.NotNullLong
+	// The nested record carries the descriptor's spelling; the OUTER column
+	// keeps the exact spelling so this pin isolates the SUFFIX step — a
+	// mismatch at the root would decline before the suffix is ever built.
+	nestedType := &values.RecordType{Fields: []values.Field{
+		{Name: "arr", Ordinal: 0, FieldType: values.NewArrayType(true, elementType)},
+	}}
+	sourceType := &values.RecordType{Fields: []values.Field{
+		{Name: "N", Ordinal: 0, FieldType: nestedType},
+	}}
+	outer := &logical.LogicalProject{
+		Input:           scan("Customer", "src"),
+		Projections:     []string{"N"},
+		ProjectedValues: []values.Value{exactTestField(t, exactTestQOV(t, "SRC", sourceType), 0)},
+	}
+	u := &logical.LogicalUnnest{Segments: []string{"D", "N", "ARR"}, Alias: "X"}
+	outerCorr := values.NamedCorrelationIdentifier("D")
+
+	coll := tr.unnestBakedRootCollection(outer, outerCorr, u, "ARR", elementType, 1, -1)
+	if coll == nil {
+		t.Fatal("a folded segment over a descriptor-spelled nested field must still bake the fused collection, got nil (declined)")
+	}
+	fv, ok := values.AsFieldValue(coll)
+	if !ok {
+		t.Fatalf("baked collection = %T, want an admitted exact FieldValue", coll)
+	}
+	if got := fv.Path().Len(); got != 2 {
+		t.Fatalf("baked collection has %d accessors, want 2 (ofOrdinal root + exact suffix)", got)
+	}
+	leaf, leafOK := fv.Path().Accessor(1)
+	leafName, named := leaf.DisplayName()
+	if !leafOK || !named || leafName != "arr" || leaf.Ordinal() != 0 {
+		t.Fatalf("suffix accessor = {%q, %d}, want {\"arr\", 0} — the ROW's spelling, not the segment's",
+			leafName, leaf.Ordinal())
+	}
+}
+
 // TestUnnestBakedRootCollection_DeclineUntranslatable pins the bake's
 // DECLINE: a catalog-free outer has no derivable leg type, so the bake returns
 // nil and the caller keeps the name-model builder (which owns the name-keyed

@@ -32,7 +32,13 @@ func (t *cascadesTranslator) ordinalLegType(op logical.LogicalOperator) *values.
 	}
 	fields := make([]values.Field, len(cols))
 	for i, c := range cols {
-		fields[i] = values.Field{Name: strings.ToUpper(c.Name), FieldType: c.FieldType, Ordinal: i}
+		// Verbatim. This type is compared as an EXACT type against the row the
+		// executor binds, which names its slots from the descriptor; a fold
+		// here made the two disagree by case for any table whose columns are
+		// not already upper, and the disagreement surfaces as a runtime
+		// "quantified lookup: read as … declared …" rather than as a plan-time
+		// decline.
+		fields[i] = values.Field{Name: c.Name, FieldType: c.FieldType, Ordinal: i}
 	}
 	// RecordName = the underlying SCAN TABLE (when the leg is a table scan
 	// through transparent wrappers): the ordinal counterpart of the name

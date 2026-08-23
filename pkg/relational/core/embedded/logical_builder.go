@@ -68,7 +68,7 @@ func logicalAggregateCalls(
 		}
 		arg := ac.aggArg
 		if arg == "" && ac.aggExpr != nil {
-			arg = canonicalTextOf(ac.aggExpr)
+			arg = aggOperandCanonicalText(ac.aggExpr)
 		}
 		if arg == "" {
 			arg = "*"
@@ -107,7 +107,7 @@ func aggregateProjectionItem(ac aggSelectCol, strip func(string) string) (name, 
 	case ac.aggFunc != "":
 		arg := ac.aggArg
 		if arg == "" && ac.aggExpr != nil {
-			arg = canonicalTextOf(ac.aggExpr)
+			arg = aggOperandCanonicalText(ac.aggExpr)
 		}
 		if arg == "" {
 			arg = "*"
@@ -812,12 +812,79 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 	return op
 }
 
+// aggOperandCanonicalText renders an aggregate's non-bare-column argument into
+// the operand segment of that aggregate's public output-column name
+// (`SUM(<here>)`). It is the SOLE mint for that segment.
+//
+// It exists because canonicalTextOf is the wrong tool for a NAME. That helper
+// returns the raw source slice, which carries the user's spelling — quotes,
+// case and whitespace — and the two repairs applied downstream then destroyed
+// the one part of the spelling that is load-bearing. `SUM("qty" * "price")`
+// against a table whose columns really are named `qty` and `price` labelled the
+// column `SUM("QTY"*"PRICE")`: quotes around names that contain none, and the
+// case of both columns folded away. The same query's GROUP BY key labelled
+// `qty`, verbatim, in the same row — two naming authorities over one table
+// disagreeing about what its columns are called.
+//
+// So the operand is rendered ONCE, here, at the parse boundary. Every token is
+// upper-cased — which is exactly what the downstream fold did, and is why an
+// unquoted operand's label does not move — EXCEPT a delimited identifier, which
+// contributes its inner text verbatim and without its quotes, because that text
+// IS the name. Whitespace is dropped, matching the space-strip this replaces.
+//
+// Both properties matter and only together: upper-casing alone would keep the
+// quotes, and stripping the quotes alone would still fold `"qty"` to `QTY`.
+func aggOperandCanonicalText(ctx antlr.Tree) string {
+	if ctx == nil {
+		return ""
+	}
+	var b strings.Builder
+	var walk func(t antlr.Tree)
+	walk = func(t antlr.Tree) {
+		if tn, ok := t.(antlr.TerminalNode); ok {
+			sym := tn.GetSymbol()
+			if sym == nil || sym.GetTokenType() == antlr.TokenEOF {
+				return
+			}
+			switch sym.GetTokenType() {
+			case antlrgen.RelationalParserDOUBLE_QUOTE_ID:
+				// NormalizeIdentifier on a delimited token is the strip; it
+				// cannot fold, because the token still carries its quotes.
+				b.WriteString(functions.NormalizeIdentifier(sym.GetText()))
+				return
+			case antlrgen.RelationalParserSTRING_LITERAL:
+				// A STRING LITERAL IS DATA, NOT A NAME, and folding it here
+				// collided two aggregates that compute different things:
+				// `COUNT(CASE WHEN s='x' …)` and `COUNT(CASE WHEN s='X' …)`
+				// both rendered COUNT(CASEWHENS='X'THEN1END), and the executor
+				// keys its group slots BY THAT NAME (aggResultName), so one
+				// wrote over the other. That collision is an old known hazard
+				// at the previous naming site; this mint reintroduced it at the
+				// new one, which is what an "upper-case everything else" rule
+				// buys if `everything else` is never enumerated.
+				b.WriteString(sym.GetText())
+				return
+			}
+			b.WriteString(strings.ToUpper(sym.GetText()))
+			return
+		}
+		for i := 0; i < t.GetChildCount(); i++ {
+			walk(t.GetChild(i))
+		}
+	}
+	walk(ctx)
+	return b.String()
+}
+
 // canonicalTextOf renders an antlr context as source text. When
 // possible (ctx is a ParserRuleContext with resolvable token
 // positions), returns the ORIGINAL source text with whitespace
 // intact — `WHERE id > 5` stays as `id > 5`, not `id>5`. Falls back
 // to `GetText()` (token concatenation, whitespace stripped) when
 // the context doesn't expose its token range.
+//
+// NOT for anything that becomes a user-visible NAME — see
+// aggOperandCanonicalText for why the raw slice is the wrong input to a label.
 //
 // Until Phase 4.0 ports real QueryPredicates this is the surface
 // LogicalFilter.PredicateText etc. carry into the Explain tree.
@@ -883,7 +950,7 @@ func buildLogicalPlanForInsert(ins antlrgen.IInsertStatementContext) logical.Log
 				if uw == nil || uw.Uid() == nil {
 					continue
 				}
-				cols = append(cols, functions.StripIdentifierQuotes(uw.Uid().GetText()))
+				cols = append(cols, functions.NormalizeIdentifier(uw.Uid().GetText()))
 			}
 		}
 	}
@@ -930,7 +997,7 @@ func buildLogicalPlanForUpdate(upd antlrgen.IUpdateStatementContext) logical.Log
 		// FullId segment per the parse tree, never a dot split of the
 		// rendering (a delimited identifier may contain a literal dot).
 		uids := el.FullColumnName().FullId().AllUid()
-		col := functions.StripIdentifierQuotes(uids[len(uids)-1].GetText())
+		col := functions.NormalizeIdentifier(uids[len(uids)-1].GetText())
 		sets = append(sets, logical.Assignment{
 			Column: col,
 			Expr:   strings.TrimSpace(canonicalTextOf(el.Expression())),

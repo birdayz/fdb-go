@@ -110,13 +110,26 @@ func TestLogicalProjection_AliasesAreSemanticIdentity(t *testing.T) {
 	readA := testFieldAt("A", 0, values.NotNullLong)
 
 	aliased := mustExpression(NewLogicalProjectionExpressionWithAliases(
-		[]values.Value{readA}, []string{"output_alias"}, q))
+		[]values.Value{readA}, []string{"OUTPUT_ALIAS"}, q))
 
 	aliasedTwin := mustExpression(NewLogicalProjectionExpressionWithAliases(
 		[]values.Value{readA}, []string{"OUTPUT_ALIAS"}, q))
 
 	renamed := mustExpression(NewLogicalProjectionExpressionWithAliases(
 		[]values.Value{readA}, []string{"OTHER_ALIAS"}, q))
+
+	// TWO SPELLINGS OF AN ALIAS ARE TWO ALIASES. This arm used to pass
+	// `output_alias` and `OUTPUT_ALIAS` and require them EQUAL, because the
+	// output-name authority folded and both minted OUTPUT_ALIAS. It does not
+	// fold any more: an alias arrives already normalized by the parse capture,
+	// so a case difference surviving to this layer means the two came from
+	// DIFFERENT quoted aliases and name different columns. The direction of
+	// the guard inverts with the expected value.
+	caseTwin := mustExpression(NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{readA}, []string{"output_alias"}, q))
+	if aliased.EqualsWithoutChildren(caseTwin, EmptyAliasMap()) {
+		t.Fatal(`AS "output_alias" and AS "OUTPUT_ALIAS" name different columns and must not be one identity`)
+	}
 
 	if !aliased.EqualsWithoutChildren(aliasedTwin, EmptyAliasMap()) {
 		t.Fatal("aliases producing the same executor-visible output name reported unequal")

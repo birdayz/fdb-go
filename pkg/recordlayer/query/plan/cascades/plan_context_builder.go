@@ -1,8 +1,6 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/gen"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -153,9 +151,16 @@ type IndexDefWithOpaqueFilter interface {
 }
 
 // NewPlanContextFromIndexDefs builds a PlanContext with one
-// ValueIndexScanMatchCandidate per index definition. Column names
-// are upper-cased for SQL-convention case-insensitive matching
-// (FieldValue.Field is upper-cased by the SQL resolver).
+// ValueIndexScanMatchCandidate per index definition.
+//
+// Column names pass through VERBATIM. They are PHYSICAL names — the index
+// definition names proto fields — and the candidate's expansion resolves them
+// by exact name against a base type whose slots are named by
+// values.FieldNameForProtoField, i.e. by the same descriptor. Folding either
+// side breaks that identity for every metadata whose descriptor names are not
+// already upper, and it breaks it SILENTLY: the field request misses,
+// expandValueIndex returns nil, the candidate declines, and the planner
+// full-scans a query whose rows are still correct.
 func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 	candidates := make([]MatchCandidate, 0, len(defs))
 	for _, def := range defs {
@@ -176,21 +181,11 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		if len(cols) == 0 {
 			continue
 		}
-		upperCols := make([]string, len(cols))
-		for i, c := range cols {
-			upperCols[i] = strings.ToUpper(c)
-		}
 		aliases := make([]values.CorrelationIdentifier, len(cols))
 		for i := range cols {
 			aliases[i] = values.UniqueCorrelationIdentifier()
 		}
-		var upperPK []string
-		if pkCols := def.IndexPrimaryKeyColumns(); len(pkCols) > 0 {
-			upperPK = make([]string, len(pkCols))
-			for i, c := range pkCols {
-				upperPK[i] = strings.ToUpper(c)
-			}
-		}
+		pkCols := def.IndexPrimaryKeyColumns()
 		// Carry per-column function tags (e.g. CARDINALITY) when the def
 		// provides them, so a function-keyed column matches by its Value, not
 		// a bare field name.
@@ -224,12 +219,12 @@ func NewPlanContextFromIndexDefs(defs []IndexDef) PlanContext {
 		candidate := NewValueIndexScanMatchCandidateWithFunctions(
 			def.IndexName(),
 			def.IndexRecordTypes(),
-			upperCols,
+			cols,
 			columnFns,
 			aliases,
 			flowed,
 			def.IndexIsUnique(),
-			upperPK,
+			pkCols,
 			createsDuplicatesSignal,
 		).WithCommonPrimaryKey(commonPK)
 		if typed, ok := def.(IndexDefWithKeyComponentTypes); ok {

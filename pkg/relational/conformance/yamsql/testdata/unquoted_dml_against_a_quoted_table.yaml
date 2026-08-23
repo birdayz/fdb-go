@@ -1,0 +1,228 @@
+# unquoted_dml_against_a_quoted_table.yaml
+#
+# AN UNQUOTED DML TARGET MUST NOT REACH A TABLE THAT ONLY QUOTES CAN NAME.
+#
+# `CREATE TABLE "Customer"` stores the record type as `Customer`. An unquoted
+# `DELETE FROM customer` normalises to `CUSTOMER`, which is a different name.
+# Java rejects that outright -- `select * from restaurant` against a table
+# declared `"Restaurant"` throws UNDEFINED_TABLE / "Unknown table RESTAURANT"
+# (CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3) -- and so did
+# every Go path except DML, which resolved its target through a CASE-FOLDING
+# helper.
+#
+# THE FOLD DID NOT MAKE THE STATEMENT WORK; IT MADE IT LIE. Validation passed,
+# and the plan then carried the SQL-normalised `CUSTOMER` as its delete target
+# and as the type it read -- a name no record type in that metadata answers to.
+# Nothing was read, nothing was removed, and the statement reported success. The
+# same shape on UPDATE modified nothing. The plan itself is not asserted here
+# because after the fix these statements do not plan at all; it is recorded in
+# RFC-238 and measured in mixed_case_stored_name_probe_test.go, which reaches
+# the translator with validation bypassed.
+#
+# CANONICALISING THE NAME WOULD HAVE BEEN WORSE, which is why this file asserts
+# a rejection rather than a row count. Rewriting `CUSTOMER` to the stored
+# `Customer` would let an unquoted write mutate a table that can only be named
+# with quotes -- silently doing the wrong thing instead of silently doing
+# nothing. Strict resolution is what Java does and what the SELECT and
+# INSERT ... VALUES paths here already did.
+#
+# The quoted arms are the control: the same statements, spelled the way the
+# table was declared, must work. Without them a regression that rejected ALL
+# DML would pass this file.
+name: unquoted_dml_against_a_quoted_table
+schema_template: |
+  CREATE TABLE "Customer" (id BIGINT, name STRING, PRIMARY KEY (id))
+  CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO "Customer" VALUES (1, 'alpha'), (2, 'beta')
+tests:
+  # The control: quoted, the spellings coincide and everything works.
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+
+  # SELECT already rejected this, and must keep doing so -- it is the arm that
+  # says the DML behaviour below is agreement rather than a new divergence.
+  - query: SELECT id FROM customer
+    error: "42F01"
+
+  # THE FIX. Before it this returned success having deleted nothing.
+  - query: DELETE FROM customer WHERE id = 1
+    error: "42F01"
+
+  # And the same for UPDATE, which had the identical shape.
+  - query: UPDATE customer SET name = 'zzz' WHERE id = 1
+    error: "42F01"
+
+  # A NONEXISTENT COLUMN ON THE SAME NONEXISTENT TABLE MUST STILL SAY 42F01.
+  # The SET-column check runs during logical construction, BEFORE the target
+  # guard runs on the built op, so while it resolved its table case-insensitively
+  # this reported `42703 column "NOSUCHCOL" not found in table "CUSTOMER"` --
+  # diagnosing a column of a table that does not exist. The table is the first
+  # thing wrong and must be the thing reported.
+  - query: UPDATE customer SET nosuchcol = 'z' WHERE id = 1
+    error: "42F01"
+
+  # THE WHERE SIDE STILL ANSWERS 42703, AND THAT IS AGREEMENT, NOT AN OVERSIGHT.
+  # The WHERE-column resolver runs during logical construction and folds case,
+  # so it names the column before the target guard runs on the built operator.
+  # SELECT does exactly the same thing with the same spelling, so changing this
+  # one alone would make DML disagree with SELECT to fix a diagnostic ordering
+  # neither of them gets right. Asserted at the value it HAS, so that a change
+  # to either path has to come here and say which way the two are being made to
+  # agree.
+  - query: DELETE FROM customer WHERE nosuchcol = 1
+    error: "42703"
+
+  # The SELECT twin, which is what makes the arm above agreement rather than a
+  # DML-only wart. If these two ever diverge, that is the finding.
+  - query: SELECT nosuchcol FROM customer
+    error: "42703"
+
+  # UPDATE IS INCONSISTENT WITH ITSELF, and this arm is what says so. The SET
+  # check resolves strictly now, so a bad SET column on a bad table reports the
+  # TABLE; the WHERE clause goes through the shared analyzer and reports the
+  # COLUMN. Same statement kind, same bad table, two different answers
+  # depending on which clause carries the second error. §7e says why closing it
+  # moves SELECT too.
+  - query: UPDATE customer SET name = 'z' WHERE nosuchcol = 1
+    error: "42703"
+
+  # And the control that keeps the arms above about the TABLE: on the table as
+  # declared, a nonexistent column is a genuine 42703.
+  - query: UPDATE "Customer" SET nosuchcol = 'z' WHERE id = 1
+    error: "42703"
+
+  # The rows are still here. A rejection that had partially applied would show
+  # up as a changed row rather than as an error.
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [1, 'alpha']
+      - [2, 'beta']
+
+  # The quoted DML controls: same statements, declared spelling, must work.
+  - query: DELETE FROM "Customer" WHERE id = 1
+    rowcount: 1
+
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [2, 'beta']
+
+  # INSERT ... SELECT HAD NO PLANNING-TIME TARGET CHECK AT ALL, and the two
+  # arms differ only in whether the source produces rows -- which is what makes
+  # it worse than the DELETE/UPDATE case. The target is resolved lazily, per
+  # row, in the executor. A source with rows reached that lookup and raised a
+  # RAW error carrying no SQLSTATE; a source with none never reached it, and
+  # the statement reported SUCCESS against a table that does not exist.
+  - query: INSERT INTO customer SELECT id, name FROM "Customer"
+    error: "42F01"
+
+  # The empty-source arm. This is the one that reported success.
+  - query: INSERT INTO customer SELECT id, name FROM "Customer" WHERE id < 0
+    error: "42F01"
+
+  # INSERT ... VALUES is covered TWICE and that is worth knowing before anyone
+  # mutation-tests this file. It had its own strict check (the
+  # `md.GetRecordType(insOp.Table)` in the VALUES block) before the target guard
+  # above existed, and the guard now reaches it first -- so mutating EITHER one
+  # alone leaves this arm green, and only mutating BOTH reddens it. Measured:
+  # disabling the target guard reddens the two INSERT ... SELECT arms and not
+  # this one; disabling the VALUES check alone reddens nothing; disabling both
+  # reddens all three.
+  #
+  # THE VALUES CHECK MUST NOT BE DELETED AS THE REDUNDANT ONE. Its `rt` is
+  # consumed two lines later as `rt.Descriptor` by buildInsertValuesArray, so
+  # its nil branch is a precondition of a USE, not a duplicate validator. The
+  # guard is what makes the ERROR clean; that check is what makes the code
+  # after it safe.
+  - query: INSERT INTO customer VALUES (9, 'nope')
+    error: "42F01"
+
+  # The quoted controls, so a regression that rejected ALL INSERTs fails here.
+  - query: INSERT INTO "Customer" VALUES (9, 'nine')
+    rowcount: 1
+
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [2, 'beta']
+      - [9, 'nine']
+
+  # THE SOURCE SIDE, which is the same defect one word over and was live after
+  # the target side was closed. `INSERT INTO "Customer" SELECT ... FROM customer`
+  # reported SUCCESS with zero rows against a source table that does not exist,
+  # while the identical bare SELECT answered 42F01: the DML path never ran the
+  # table validation the SELECT path runs, so only the TARGET was ever checked.
+  - query: INSERT INTO "Customer" SELECT id + 100, name FROM customer
+    error: "42F01"
+
+  # A SUBQUERY SOURCE IS 0AF00 EITHER WAY, and the pair below is what says that
+  # is an unsupported SHAPE rather than a naming failure. `DELETE ... WHERE id
+  # IN (SELECT ...)` does not plan on this path at all -- the quoted arm, whose
+  # every name is spelled exactly as declared, fails identically. Asserting only
+  # the unquoted one would have read as "the source check does not reach
+  # subqueries", which is a different and wrong conclusion.
+  #
+  # If either arm ever moves, they must move TOGETHER unless the shape became
+  # supported, in which case the unquoted one becomes 42F01 and the quoted one
+  # succeeds.
+  - query: DELETE FROM "Customer" WHERE id IN (SELECT id FROM customer)
+    error: "0AF00"
+
+  - query: DELETE FROM "Customer" WHERE id IN (SELECT id FROM "Customer" WHERE id = 9)
+    error: "0AF00"
+
+  # A BAD TABLE INSIDE A DML EXISTS IS 0AF00, not 42F01, and that is the
+  # unsupported-shape check answering rather than any table validation. An
+  # earlier version of this comment claimed the arm was reachable only through
+  # validateScanTables' subquery walk and would succeed without it -- measured
+  # false, it is 0AF00 with the walk and without it. EXISTS IS a supported DML
+  # predicate shape when its body builds; what fails here is the body.
+  - query: DELETE FROM "Customer" WHERE EXISTS (SELECT 1 FROM nosuchtable)
+    error: "0AF00"
+
+  # The store is untouched by any of the rejected statements above.
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [2, 'beta']
+      - [9, 'nine']
+
+  # A SCALAR SUBQUERY SOURCE OVER A MISSING TABLE, rejected. These two arms do
+  # NOT discriminate the subqueryPlans walk in validateScanTables -- measured,
+  # removing that walk leaves both green, because production rejects them
+  # through other checks. They pin the user-visible contract, and the walk's
+  # own job is on the harness path the golden goes through. Do not cite these
+  # as evidence for that walk.
+  - query: DELETE FROM t WHERE id = (SELECT MAX(id) FROM nosuchtable)
+    error: "42F01"
+
+  - query: UPDATE t SET v = 1 WHERE id = (SELECT MAX(id) FROM nosuchtable)
+    error: "42F01"
+
+  # AND THE SAME SHAPE WITH A CTE DEFINED INSIDE IT MUST STILL WORK. THESE TWO
+  # DO discriminate: mutation-verified, dropping the per-plan CTE SCOPING in
+  # validateScanTablesInner reddens exactly this pair with `42F01 table "X" does
+  # not exist`. The walk descends into subquery plans, so it must carry the CTE
+  # names each plan declares. An earlier version of this note told the reader to
+  # make collectCTENames itself walk subqueries -- that was the retracted design,
+  # and following it re-arms the sibling leak the arm below pins.
+  - query: DELETE FROM "Customer" WHERE id = (WITH x AS (SELECT id FROM "Customer" WHERE id = 99) SELECT MAX(id) FROM x)
+    rowcount: 0
+
+  - query: UPDATE "Customer" SET name = 'z' WHERE id = (WITH x AS (SELECT id FROM "Customer" WHERE id = 99) SELECT MAX(id) FROM x)
+    rowcount: 0
+
+  # A CTE IS LEXICALLY SCOPED AND A SIBLING SUBQUERY MUST NOT SEE IT. Collecting
+  # every attached plan's CTE names into one flat set before descending made `x`
+  # visible to the second subquery here, which accepted a reference that is out
+  # of scope. Each attached plan now gets the names visible at its own site plus
+  # the ones it declares, and nothing from a sibling.
+  - query: DELETE FROM "Customer" WHERE id = (WITH x AS (SELECT id FROM "Customer") SELECT MAX(id) FROM x) AND name = (SELECT MAX(name) FROM x)
+    error: "42F01"
+
+  # The store is still untouched: every statement above either rejected or
+  # matched nothing.
+  - query: SELECT id, name FROM "Customer" ORDER BY id
+    rows:
+      - [2, 'beta']
+      - [9, 'nine']

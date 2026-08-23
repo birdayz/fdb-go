@@ -1317,8 +1317,12 @@ func callFuncName(fun ast.Expr) string {
 // deliberately not here: building a FieldValue from a name is what the values
 // package is for, and flagging it would flag the correct code.
 // `normalizeAggOutputName` is in the list for the same reason and is not an
-// exception to it: it IS two entries of this list composed —
-// `strings.ReplaceAll(strings.ToUpper(s), " ", "")` (cascades_translator.go).
+// exception to it: it is a whitespace strip, `strings.ReplaceAll(s, " ", "")`
+// (cascades_translator.go), which passes the leaf name through unchanged in
+// every way that matters for identity. It used to be
+// `strings.ReplaceAll(strings.ToUpper(s), " ", "")` — two entries of this list
+// composed — and RFC-237 removed the fold; the launderer classification is
+// unaffected, because a strict SUBSET of what it laundered still qualifies.
 // Naming a project helper here rather than only generic `strings` functions is
 // what the matcher already supports (callFuncName resolves a bare Ident), and
 // it was added on measurement, not on principle: without it the group-by output

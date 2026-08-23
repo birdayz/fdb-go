@@ -40,10 +40,37 @@ func (f AggregateFunction) String() string {
 
 // AggregateSpec describes one aggregate column in a GroupBy.
 type AggregateSpec struct {
-	Function    AggregateFunction
-	Operand     values.Value
-	Alias       string
-	OperandName string // canonical operand text for result-map keying (e.g. "PRICE*QTY")
+	Function AggregateFunction
+	Operand  values.Value
+	Alias    string
+	// OperandName is the canonical operand text for result-map keying (e.g.
+	// "PRICE*QTY").
+	//
+	// PRODUCER CONTRACT — it must arrive ALREADY CANONICAL, because
+	// AggregateResultColumnName carries it verbatim and repairs nothing.
+	// Canonical means the operand's TOKENS, concatenated with no whitespace
+	// BETWEEN them, each token upper-cased EXCEPT:
+	//
+	//   - a delimited identifier, which contributes its declared spelling
+	//     unquoted — INCLUDING any space inside it, so `"two words"` stays
+	//     `two words` and the name legitimately contains a space;
+	//   - a STRING LITERAL, which is data rather than a name, and folding it
+	//     collides two aggregates that count different things.
+	//
+	// The earlier wording here said "whitespace already removed", which the two
+	// exception clauses directly below it contradict: inter-token whitespace is
+	// dropped, whitespace INSIDE a token is content and is kept.
+	//
+	// Nothing validates this, and the reason is worth stating rather than
+	// leaving as an omission: the canonical form is produced from an ANTLR token
+	// stream at the parse boundary (embedded.aggOperandCanonicalText and the two
+	// name mints in logical_predicate.go), and a checker here would have to
+	// re-derive that from a flat string it cannot re-tokenize — the same reason
+	// parseColRef cannot see a dot inside a delimited identifier. The guard is
+	// therefore the OUTPUT side — group_by_naming_verbatim_test.go pins that this
+	// field is published unedited, so a producer that folds shows up as a folded
+	// column name rather than as nothing.
+	OperandName string
 	// OperandIntType is the operand's STATIC integer width at plan time, used by
 	// the SUM/AVG accumulator to pick int32 vs int64 overflow semantics — Java's
 	// NumericAggregationValue selects SUM_I (Math.addExact on int, int32 overflow,
@@ -228,14 +255,20 @@ func numericAggregateType(typ values.Type) bool {
 // each declaring an `n`, a bare `N.SK` would re-create one level up exactly the
 // collapse this function exists to prevent. `Child == nil` is the common case,
 // not the rule.
+// The name is taken VERBATIM, and the nested arm above already was. A grouping
+// key names a column that exists elsewhere — in the source row it reads and in
+// the projection that references the group — and a fold here made this the one
+// authority that spelled it differently. That was invisible while every
+// descriptor name was upper-folded on the way in, and it is a
+// reference-misses-its-own-column bug the moment one is not.
 func AggregateKeyColumnName(k values.Value) string {
 	if path, nested := values.NestedResolvedPath(k); nested {
 		return path
 	}
 	if fv, ok := values.AsFieldValue(k); ok {
-		return strings.ToUpper(fv.DisplayName())
+		return fv.DisplayName()
 	}
-	return strings.ToUpper(values.ColumnNameValue(k))
+	return values.ColumnNameValue(k)
 }
 
 // AggregateResultColumnName is the canonical output-column name for one aggregate
@@ -261,41 +294,59 @@ func AggregateKeyColumnName(k values.Value) string {
 // and `SUM(u.v)` both spell `SUM(V)` and collapse in the last-wins aggregate
 // output-ordinal map (groupByOutputOrdinals). ColumnNameValue is the one
 // rendering every output-naming site must use, and it keeps them apart.
+// OperandName arrives ALREADY canonical — upper-cased except for delimited
+// identifiers, whitespace already dropped (embedded.aggOperandCanonicalText, the
+// sole mint). It is therefore used VERBATIM here. The two repairs that used to
+// sit at this site, a space-strip and an upper-fold over the whole composed
+// name, were the reason `SUM("qty")` on a column genuinely named `qty` reported
+// itself as `SUM(QTY)` while the same row's GROUP BY key reported `qty`. A
+// repair applied to a name is a second normalization, and a second
+// normalization is what this whole family of defects is.
 func AggregateResultColumnName(agg AggregateSpec) string {
 	opName := "?"
 	if agg.OperandName != "" {
-		opName = strings.ReplaceAll(agg.OperandName, " ", "")
+		opName = agg.OperandName
 	} else if agg.Operand != nil {
 		if c, isConst := agg.Operand.(*values.ConstantValue); isConst {
 			if c.Value == nil {
 				opName = "*"
 			} else {
-				opName = c.Name()
+				// A constant's rendered name is not a user identifier — it is
+				// this package's own word for "a literal sat here". So it is
+				// upper-cased, and that is not the fold this file removed: the
+				// rule at the mint is "upper-case what is not a delimited
+				// identifier", and a minted placeholder is squarely on the
+				// upper side of it. The line below is the one that must not
+				// fold, because ColumnNameValue renders real field names.
+				opName = strings.ToUpper(c.Name())
 			}
 		} else {
 			opName = values.ColumnNameValue(agg.Operand)
 		}
 	}
+	// The function symbol is written upper-case as a LITERAL, so no fold is
+	// needed to make it upper — and none may be applied, because a fold here
+	// reaches the operand too.
 	switch agg.Function {
 	case AggCount:
-		return strings.ToUpper(fmt.Sprintf("COUNT(%s)", opName))
+		return fmt.Sprintf("COUNT(%s)", opName)
 	case AggSum:
-		return strings.ToUpper(fmt.Sprintf("SUM(%s)", opName))
+		return fmt.Sprintf("SUM(%s)", opName)
 	case AggMin:
-		return strings.ToUpper(fmt.Sprintf("MIN(%s)", opName))
+		return fmt.Sprintf("MIN(%s)", opName)
 	case AggMax:
-		return strings.ToUpper(fmt.Sprintf("MAX(%s)", opName))
+		return fmt.Sprintf("MAX(%s)", opName)
 	case AggAvg:
-		return strings.ToUpper(fmt.Sprintf("AVG(%s)", opName))
+		return fmt.Sprintf("AVG(%s)", opName)
 	default:
-		return strings.ToUpper(fmt.Sprintf("AGG(%s)", opName))
+		return fmt.Sprintf("AGG(%s)", opName)
 	}
 }
 
 // GroupByOutputColumnNames is THE single naming authority for a streaming
 // aggregate's output ROW: grouping keys (in GROUP BY order) then aggregates (in
-// aggregate order), each aggregate ALIAS-preferring (upper alias, else the
-// canonical AggregateResultColumnName). The order — [groupKeys..., aggregates...]
+// aggregate order), each aggregate ALIAS-preferring (the alias verbatim, else
+// the canonical AggregateResultColumnName). The order — [groupKeys..., aggregates...]
 // — is the ordinal order the executor's aggregateCursor emits and the translator
 // bakes downstream references against. Returns an empty slice when there are no
 // output columns.
@@ -306,7 +357,7 @@ func GroupByOutputColumnNames(groupingKeys []values.Value, aggregates []Aggregat
 	}
 	for _, a := range aggregates {
 		if a.Alias != "" {
-			names = append(names, strings.ToUpper(a.Alias))
+			names = append(names, a.Alias)
 		} else {
 			names = append(names, AggregateResultColumnName(a))
 		}

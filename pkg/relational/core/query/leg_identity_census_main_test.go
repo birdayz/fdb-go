@@ -73,8 +73,11 @@ func TestMain(m *testing.M) {
 // memo may explore a rule once or many times for one query), so a floor at the
 // measured value would fail on exploration order. The floor detects COLLAPSE —
 // the shapes stopping, a recorder being routed around — not drift.
-// Measured over this corpus after recursive remapping was retired:
-// existsSortSplit 5, derivedUnnestSource 4.
+// Measured over this corpus after recursive remapping was retired, AT THE ARM
+// COUNTS THAT PRODUCED THEM: existsSortSplit 5, derivedUnnestSource 5 (3
+// CARRIED, 1 MANUFACTURED, 1 bare). derivedUnnestSource was 4 until the bare
+// arm was restored, and the number stated here did not move with it — which is
+// why the arm breakdown is part of the measurement now and not a summary of it.
 //
 // THE PROVENANCE OF EACH FLOOR IS NOT THE SAME, and reading them as one kind of
 // number is how a floor comes to guarantee something it does not:
@@ -87,8 +90,10 @@ func TestMain(m *testing.M) {
 //   - existsSortSplit's and derivedUnnestSource's populations here are FIXTURE
 //     traffic, driven entirely by qualifier_recovery_wiring_test.go. Their
 //     floors say THE PINS STILL RUN — nothing more. Production coverage of
-//     these two sites lives in the sqldriver corpus (44 and 13 calls), and it
-//     is that corpus's floors that carry it.
+//     these two sites lives in the sqldriver corpus (44 AGREED at existsSortSplit,
+//     15 CARRIED at derivedUnnestSource), and it is that corpus's floors that
+//     carry it. The second figure was 13 bare before classifyDerivedUnnestArray
+//     read the parse-tree triple.
 //
 // They are declared rather than omitted because the split floor is checked in
 // the STALE direction: a site whose split population went non-zero cannot keep a
@@ -109,7 +114,30 @@ var translatorQualifierRecoveryFloors = values.QualifierRecoveryFloors{
 		values.QualRecSiteDerivedUnnestSource: 2,
 	},
 	Split: [6]int{
-		values.QualRecSiteExistsSortSplit:     2,
+		values.QualRecSiteExistsSortSplit: 2,
+		// This package's population at this site is the wiring pin, and the
+		// SCOPE IS WRITTEN INTO THE CLAIM because it went stale once already:
+		// AT 5 ARMS — 3 CARRIED, 1 MANUFACTURED, 1 bare — splitPopulation is
+		// MANUFACTURED + bare = 2. Read off the census, not computed from the
+		// arm list.
+		//
+		// It was 1 for exactly one commit, set when the pin had 4 arms and
+		// stated as "three of its four record CARRIED and one MANUFACTURED".
+		// Restoring the bare arm made that 5/2 and the floor was not moved. Note
+		// which half of the sentence broke: "three CARRIED" stayed accidentally
+		// TRUE across the change, so the only clause that could have flagged the
+		// staleness is the one that survived.
+		//
+		// A floor one below the population is worse than a wrong number. The
+		// bare arm exists BECAUSE bare classification could break with
+		// everything green; a floor of 1 would let that arm be deleted and still
+		// pass.
+		//
+		// The floor stopped measuring "does the site split" when
+		// classifyDerivedUnnestArray converted to the parse-tree triple. It
+		// measures "does the FALLBACK still exist and get exercised", which is
+		// what keeps it from rotting untested while every real caller carries
+		// segments.
 		values.QualRecSiteDerivedUnnestSource: 2,
 	},
 }
@@ -161,8 +189,12 @@ var translatorQualifierRecoveryRetiredSplit = func() (r [6]bool) {
 //	    second caller's wiring is pinned too.
 //	derivedUnnestSource "T.ARR" vs identity "<unqualified>"
 //	    a projection slot whose triple states ONE segment — the delimited
-//	    `"T.ARR"` — against a split that manufactured the qualifier T. The
-//	    canonical misread this whole workstream is about.
+//	    `"T.ARR"`. It USED to reach this witness as DIVERGED, the split having
+//	    manufactured the qualifier T against it — the canonical misread this
+//	    workstream is about. classifyDerivedUnnestArray reads the triple now, so
+//	    the same witness arrives as CARRIED: the spelling is unchanged and the
+//	    class inverted, which is why the entry is still needed and its
+//	    description could not be left as-is.
 //
 // The residual, stated rather than smoothed: a REAL divergence spelled exactly
 // like one of these would be absorbed, because witnesses dedup by spelling. That

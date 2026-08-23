@@ -4261,7 +4261,8 @@ suites are the correctness authority (the §5 dual-window is already retired —
     genuine dup-name class for the (a) poison-marker. Build (a) against the POST-uppercasing identifier model
     or it encodes a workaround for a bug (b) removes. The gate covers BOTH the projection path (Q55) AND the
     AGGREGATE path (Q56 — buildDerivedTableSourceFromAgg, folded via NewUnquoted with its output names
-    already StripIdentifierQuotes'd, so the quoted flag is re-read off the Uid via cteBodyAllAliasesCaseSafe;
+    already normalized, so the quoted flag was re-read off the Uid via cteBodyAllAliasesCaseSafe — STALE
+    as of RFC-237: that helper is deleted and the capture keeps its spelling, so there is no flag to re-read;
     both the schema build and the dup gate consume the visible-only aggOutputCols authority so a hidden
     HAVING/ORDER-BY aggregate is neither advertised nor false-counted). (c) NEW (Graefe, pre-existing,
     general-read surface — NOT ON-only, NOT the rebind class): a WITHIN-SOURCE duplicate aggregate/projection
@@ -4272,7 +4273,26 @@ suites are the correctness authority (the §5 dual-window is already retired —
     output-naming-authority / poison-marker family (resolver-level per-attribute 42702), booked here not
     fixed. (Distinct from the wrong-case-accept on those same paths, which is value-correct — the (b)
     uppercasing divergence — not a silent-wrong.) (d) NEW (Graefe ruling, LATENT executor silent-wrong, part
-    of the (b) read-surface uppercasing family): aggResultName (pkg/recordlayer/query/executor/executor.go
+    of the (b) read-surface uppercasing family):
+
+    **SUPERSEDED IN BOTH DIRECTIONS BY RFC-237 §8/§10 — read this before the text below.**
+    (i) The MECHANISM described here is GONE: `aggResultName` no longer ToUppers,
+    the naming authority carries its operand verbatim, and the operand mint now
+    keeps a STRING LITERAL out of the fold, so `COUNT(CASE WHEN s='x' …)` and
+    `…'X'…` publish two distinct names. Measured, both directions.
+    (ii) The SEVERITY was wrong: this is NOT latent. The claim below that grouped
+    CASE aggregation "does not compute in this engine" is false for the scalar
+    form — it computes, and it computes WRONG. With both names now distinct the
+    pair still returns `[2, 2]` where `[0, 2]` is correct, because the projection's
+    ordinal bind matches aggregates by a RENDERING (`COUNT(CASE(WHEN(predicate),
+    [1]))`) in which the predicate is opaque, so the two are indistinguishable to
+    it. Localised: the same pair outside an aggregate answers correctly, and a
+    pair whose literals differ by more than case answers correctly. Reproducer
+    and controls are pinned in `quoted_identifier_aggregate_labels.yaml`; the
+    open half is booked at the end of this file.
+
+    Original text, kept because its reasoning about WHY a folded slot key is
+    dangerous is still the right reasoning: aggResultName (pkg/recordlayer/query/executor/executor.go
     ~:2490) ToUppers the aggregate group-result slot key (`strings.ToUpper("SUM(%s)")` etc.), and
     finalizeGroup (streaming_cursors.go ~:349) writes each value under that folded key — so two aggregates
     differing only in a CASE-SENSITIVE token (a string literal: `COUNT(CASE WHEN s='x' …)` vs `…'X'…`)
@@ -7306,9 +7326,27 @@ it is the folklore case the watch-list contract exists to catch (road-to-prod.md
 Measured on both engines (`conformance/quoted_identifier_case_java_probe_test.go`), for
 `CREATE TABLE qcase (id BIGINT, "KeepCase" BIGINT, plain BIGINT, PRIMARY KEY (id))`:
 
+**HALF OF THIS ENTRY IS NOW STALE — read the corrections before the tables.**
+RFC-237 landed and moved two of the facts below:
+
+1. The label column in the table is FIXED. Go reported `KEEPCASE` for
+   `SELECT "KeepCase"`; it now reports `KeepCase`, agreeing with Java, and the
+   JVM probe asserts the agreement rather than the divergence.
+2. "Where it lives" below names `rlcatalog.recordTypeTable.LookupColumn`'s
+   `foldedIndex` and `StripIdentifierQuotes`. Neither exists: `LookupColumn` is
+   exact, the relaxed pass moved to the SCOPE (`semantic/scope.go`), and the
+   function is `NormalizeIdentifier`. The over-determination argument the
+   entry rests on was measured against that old shape.
+
+What SURVIVES is the divergence itself — Go still resolves spellings Java
+rejects — and its current framing, with the current mechanism and the current
+remediation, is in `DIVERGENCES.md` ("Identifier resolution: Go over-resolves
+case, Java compares exactly") plus RFC-237 §3.3. Read those; this entry is kept
+for the measurement history, not as a description of today's code.
+
 | reference | Java | Go |
 |---|---|---|
-| `SELECT "KeepCase"` | ACCEPT, label `KeepCase`, 42 | ACCEPT, label `KEEPCASE`, 42 |
+| `SELECT "KeepCase"` | ACCEPT, label `KeepCase`, 42 | ACCEPT, label `KeepCase`, 42 (was `KEEPCASE`; RFC-237) |
 | `SELECT KeepCase` | REJECT 42703 | ACCEPT 42 |
 | `SELECT "KEEPCASE"` | REJECT 42703 | ACCEPT 42 |
 | `SELECT "keepcase"` | REJECT 42703 | ACCEPT 42 |
@@ -15966,9 +16004,15 @@ None is speculative: each was re-verified against the tree before booking.
     `logical_predicate.go:10329` (inner- vs outer-scoping of a projection field),
     `cascades_generator.go:6376` (a projected column's qualifier matched against
     the scan's name/alias), and `:4476` (the display label, guarded by the
-    PARENTHESIS HEURISTIC at `colref.go:41-47` — `isPlainQualifiedColumnReference`
-    rejects on `()` because "parentheses identify the rendered aggregate/function
-    label at issue", which is a heuristic over a rendering, not a parse).
+    PARENTHESIS HEURISTIC — at the time of writing `colref.go:41-47`,
+    `isPlainQualifiedColumnReference`, which rejects on `()` because
+    "parentheses identify the rendered aggregate/function label at issue", a
+    heuristic over a rendering rather than a parse. STALE AS WRITTEN: that
+    function no longer exists. RFC-237 moved the parenthesis awareness INTO
+    `parseColRef` itself, which now matches paren pairs and splits at the last
+    depth-0 dot — so the concern is unchanged (it is still a heuristic over a
+    flat rendering, with two stated limits pinned in `colref_split_test.go`) but
+    the named site is gone.
   - `cascades_translator.go:5016` `splitQualifier` — the EXISTS fold's LAST-dot
     split. Its own doc concedes the deeper case: `A.B.C` is treated as qualifier
     `A.B`, column `C`.
@@ -16045,7 +16089,9 @@ None is speculative: each was re-verified against the tree before booking.
   - the display-label PARENTHESIS HEURISTIC (`isPlainQualifiedColumnReference`,
     `colref.go`) reads 0 over 750 SQL-corpus calls. It FIRES here, on the
     aggregate label `MAX(E.SALARY)` — without the guard that label's display name
-    is stripped to `SALARY)`.
+    is stripped to `SALARY)`. STALE NAME: the function is gone as of RFC-237,
+    which folded the same protection into `parseColRef`. The `SALARY)` failure
+    it describes is real and is the `AMOUNT)` defect that RFC-237 §10 fixed.
 
     **What the census did NOT do is refute a deletion, and the first writing of
     this bullet claimed it did.** Deleting the guard was already impossible:
@@ -19363,89 +19409,6 @@ The divergence is PINNED, not merely described: the probe arm asserts BOTH
 engines' current wording, so it fails if Go is repaired or if either side
 moves to a third answer.
 
-## A derived table's quoted column names do not survive to the executor layout
-
-Quoted identifiers keep their case; unquoted ones fold to upper. A derived
-table whose projection names quoted lower-case columns keeps them
-lower-case, while the edge it feeds is declared with the folded upper-case
-form, and the executor rejects the mismatch:
-
-    CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
-    CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
-
-    SELECT q1."id" FROM q1 JOIN (SELECT "id", "k" FROM q2) d USING ("k")
-                                                        ORDER BY q1."id"
-
-    java: [[1]]
-    go  : resolution error 11 at executor.layout: edge lookup D:
-          read as RECORD(id:LONG?,k:LONG?),
-          declared RECORD(ID:LONG?,K:LONG?)
-
-GO REFUSES A QUERY JAVA ANSWERS, which is the direction that always
-matters.
-
-IT IS PRE-EXISTING, and that was established rather than assumed. A review
-reported it as caused by the USING retarget folding the column name to
-upper — which it did do, and which is fixed: the ownership lookup is now
-quote-aware (`semantic.NewUnquoted` on the raw column text rather than a
-blanket `strings.ToUpper`). But bypassing `retargetUsingJoins` entirely
-leaves this query failing in exactly the same way, so the retarget is not
-what refuses it. The fault is downstream of name resolution, in how a
-derived source's row type is declared versus how it is read.
-
-Pinned, both sides asserted verbatim, in
-`conformance/join_using_chain_java_probe_test.go`
-(`JoinUsingQuotedIdentifierJavaProbe`) so a repair reddens the pin rather
-than passing silently.
-
-THE WORK: make a derived source's declared row type agree with its
-projection's identifier casing — one normalisation, applied at both ends.
-The base-table arm in the same probe is the control: quoted USING against
-two base tables already works, so the folding is specific to the derived
-path.
-
-## Quoted identifiers are folded by the catalog's column lookup
-
-`semantic.Identifier` models SQL's rule correctly — an unquoted name folds
-to upper, a quoted one keeps its case, and `EqualsIgnoreQuoting` compares
-by normalized text. But the catalog's `LookupColumn` resolves
-case-insensitively, so a table exposing a quoted lower-case `"k"` answers
-a lookup for `"K"`, and the two become the same column.
-
-Java does not. Measured
-(`conformance/join_using_chain_java_probe_test.go`,
-`JoinUsingQuotedIdentifierJavaProbe`, arm "a quoted USING must not hide
-the unquoted column"):
-
-    CREATE TABLE q1 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
-    CREATE TABLE q2 ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
-    CREATE TABLE q3 ("id" BIGINT,  K  BIGINT, PRIMARY KEY ("id"))
-
-    SELECT q1."id" FROM q1 JOIN q2 USING ("k")
-                           JOIN q3 USING ("K") ORDER BY q1."id"
-
-    java: Unknown reference K   — no left source exposes "K"
-    go  : 42702 Ambiguous reference K — both q1."k" and q2."k" matched
-
-Both engines refuse, so no wrong rows ship; they disagree about WHY, and
-the underlying disagreement is about identifier equality rather than about
-USING.
-
-IT IS NOT THE USING RESOLVER. `retargetUsingJoins` derives its ownership
-key and its hidden-copy key identically, both quote-aware
-(`semantic.NewUnquoted` on the column text as written), so the two cannot
-disagree with each other. The folding happens inside the catalog lookup
-they both call.
-
-THE WORK: decide whether the catalog's column lookup should honour the
-quoting flag. It is deliberately case-insensitive today and a great deal
-depends on that, so this is an identifier-equality change affecting every
-column reference in the engine — not something to fold into a USING fix.
-Java is the reference and Java distinguishes them.
-
-Pinned rather than described: the probe arm asserts BOTH engines' current
-wording, so a repair reddens it instead of passing silently.
-
 ---
 
 ## CQ-88 / RFC-236 — planner statistics: COLLECTED offline, read DEFENSIVELY
@@ -19581,6 +19544,380 @@ collected statistic reaches only queries planned after it.
 
 Full design, including the measurements that killed the two rejected designs:
 RFC-236.
+
+## Three identifier models coexist, and quoted names fall between them — CLOSED
+
+**CLOSED by RFC-237** (`rfcs/237-a-name-is-normalized-once-at-the-parse-boundary.md`).
+There is ONE model now: a name is normalized once, at the parse boundary
+(quoted keeps its case, unquoted folds UPPER), and carried VERBATIM everywhere
+after it; lookup is EXACT at a scope level, with an unambiguous case-insensitive
+second pass at that same level before falling to the parent.
+
+What that turned into, against the two measurements this entry was written
+around:
+
+- `SELECT q1."id" FROM q1 JOIN (SELECT "id","k" FROM q2) d ON q1."k" = d."k"`
+  answers `[[1]]`, matching Java. Pinned in
+  `quoted_identifier_columns.yaml` and as plain AGREEMENT (not as a pinned
+  divergence) in `JoinUsingQuotedIdentifierJavaProbe`.
+- `SELECT *` over a mixed-case quoted DDL column reports `[ID KeepCase PLAIN]`
+  — byte-identical to Java, where Go reported `[ID KEEPCASE PLAIN]`. So does
+  the explicit projection of that column. Pinned in
+  `QuotedIdentifierCaseJavaProbe` and, for a fast harness, in
+  `quoted_identifier_labels.yaml`.
+
+The four ruled-out attempts recorded here were all correct as refutations and
+all incomplete for the same reason: each moved ONE authority. The change that
+worked moved every authority at once, which is why it needed the RFC.
+
+TWO THINGS THIS DID **NOT** CLOSE, both real and both deliberately out of
+scope, with their evidence:
+
+1. **`values.AccessorNamePath` folds both sides of a plan-rule identity
+   comparison** (`accessor_name_path.go:67,84,302`). It is self-consistent, so
+   it is not a disagreement — but it equates two genuinely distinct quoted
+   columns `"a"` and `"A"` inside rules like `PushFilterThroughGroupBy`, which
+   can push a predicate onto the wrong column. Different mechanism (identity
+   comparison, not naming), its own census and ratchet. Needs its own RFC.
+
+2. **Go still over-resolves relative to Java**, by design: `SELECT KeepCase`,
+   `SELECT "KEEPCASE"` and `SELECT "keepcase"` all answer against a column
+   declared `"KeepCase"`, where Java raises 42703. Measured, and pinned as
+   `goOnly` arms in `QuotedIdentifierCaseJavaProbe`.
+
+   **ONE SHAPE MOVED FURTHER FROM JAVA, and that is the honest half of this
+   entry.** The old "catalog folds" entry's own reproducer —
+
+       SELECT q1."id" FROM q1 JOIN q2 USING ("k") JOIN q3 USING ("K")
+
+   — had BOTH engines refusing: Java `Unknown reference K`, Go 42702. Go now
+   ANSWERS `[[1]]`. No wrong rows shipped before and correct rows ship now, but
+   the disagreement widened from "both refuse, differently" to "Go answers what
+   Java rejects". Pinned with both engines' text in
+   `JoinUsingQuotedIdentifierJavaProbe`, arm "a quoted USING must not hide the
+   unquoted column". Deleting master's entry was right — its named mechanism
+   (`rlcatalog`'s folded `LookupColumn`) is gone — but the divergence it
+   measured is not, so it lives here.
+
+   **AND THE REMEDIATION IT RECORDED WAS WRONG.** "Plumb
+   `CASE_SENSITIVE_IDENTIFIERS`" does not close it:
+   `SemanticAnalyzer.normalizeString` keeps a QUOTED string verbatim in *both*
+   modes, so no Java setting makes `"K"` reach `"k"`. The real work is
+   preserving the QUOTING BIT through `NormalizeIdentifier` /
+   `semantic.FromNormalized`, which discard it — `FromNormalized` hard-codes
+   `wasQuoted: false` and is used ~59 times on the reference path. Probed: a
+   `!want.WasQuoted()` gate on the relaxed pass is INERT, because there is no
+   flag left to gate on. RFC-237 §3.3.
+
+---
+
+---
+
+## A nested-struct CARDINALITY index is BUILT but never MATCHED
+
+`CREATE INDEX … AS SELECT CARDINALITY("struct"."int_arr")` now builds — that is
+what RFC-237 unblocked, and it is what took `arrays-cardinality.yamsql` from 0
+to 29 executed corpus queries. The index is created and maintained. The planner
+never matches it:
+
+```
+SELECT "id" FROM qnest WHERE CARDINALITY("struct"."int_arr") = 1
+go   : Project([_current.id#0], PredicatesFilter(Scan(QNEST), [1 preds]))
+java : ISCAN(tab2_index [EQUALS promote(@c21 AS INT)])
+```
+
+The FLAT twin — `CARDINALITY("int_arr")` over a top-level array — matches
+correctly and is pinned green in the same scenario, so this is specific to the
+NESTED struct path, not to CARDINALITY and not to quoted identifiers.
+
+**Rows are correct either way**, which is the whole difficulty: a declining
+candidate full-scans and filters to exactly the right answer, so no row
+assertion anywhere can see it. Pinned instead at the FULL SCAN in
+`nested_struct_index_never_matches_gap.yaml` — a file whose NAME says it is a
+gap marker rather than coverage, so the deliberately-wrong assertion inside it
+cannot be misread as "nested struct indexes work". Closing the gap REDDENS that
+arm; the redness is the handoff. When it lands, delete that file and add the
+`plan_contains: IndexScan(...)` arm to `quoted_identifier_index_bridge.yaml`.
+
+The Java corpus cannot cover it: the only corpus query exercising the index
+sits two arms after `CARDINALITY("int_arr") = NULL`, which aborts its block
+(booked separately as `conformance:java-planner-bug`).
+
+Cascades matching change — needs its own RFC and the Graefe gate.
+
+---
+
+## An identifier-agreement harness: perturb the QUERY, oracle on the edge check
+
+RFC-237 closed a defect class by censusing `strings.ToUpper` call sites. That
+instrument is the wrong one, and the evidence is the shape of what it missed
+rather than the count:
+
+- **`usingSource.owns` had no fold to find.** The census cleared the file, and
+  the defect was then INTRODUCED by the fix — a relaxed lookup dropped into a
+  cross-source adjudicator. A census of folds cannot see a defect whose
+  signature is "correct call, wrong adjudication level".
+- **the EXISTS/FlatMap projection arm was a fold and the census still missed
+  it**, because the census was scoped to the files already being edited.
+- **the CTE double-normalize had no `ToUpper` at the call site at all.** It was
+  `StripIdentifierQuotes(FullIdToName(fid))`, where the inner call already
+  normalizes. No sweep for a fold can find a fold spelled as a no-op.
+
+Three reviewers found three disjoint live sites in one change. That is not
+review working; it is a population that was never bounded.
+
+**THE RIGHT INSTRUMENT** turns "did I find every fold?" — unanswerable — into
+"does any authority disagree?", which is checkable. Two design constraints,
+both established the expensive way and neither obvious:
+
+1. **It must perturb QUERY identifiers, not only DDL ones.** The first sketch
+   of this harness was "run the corpus with every DDL identifier quoted and
+   case-shifted". That exercises descriptor → catalog → projection, and it
+   would have been BLIND to the double-normalize: `WITH c("x")` is a SQL-TEXT
+   construct that no amount of schema perturbation generates. Perturbing query
+   identifiers is a materially different and less well-defined instrument, and
+   that difficulty is the point rather than a reason to skip it.
+2. **The oracle is the executor's own consistency check, not just labels.**
+   `edge lookup X: read as RECORD(…), declared RECORD(…)` is what actually
+   fired on three of these — it compares two naming authorities at runtime and
+   is the only thing positioned to notice when they disagree. Label comparison
+   catches the rest. Assert BOTH: the check never fires, and every reported
+   label matches the authored spelling verbatim.
+
+**BUILT, RUN, AND CLEAN — under RFC-237 §8, not deferred.** The reasoning
+above for deferring it ("it will surface an unknown number of further
+disagreements") was the deferral: an unknown number is a reason to go and
+count, not a reason to schedule. Counted, it was **31, all one class**, and
+fixing them was smaller than this write-up.
+
+`TestIdentifierAgreementOverCorpus`
+(`pkg/relational/conformance/explaindiff/identifier_agreement_test.go`) is the
+gate. Constraint 1 above held and is what the built version does: it perturbs
+QUERY identifiers off `UidContext` nodes, never DDL and never SQL text.
+
+Constraint 2 did NOT survive contact, and the correction matters more than the
+original claim. The `edge lookup` oracle needs EXECUTION, and a plan-text
+comparison turned out to be both cheaper and strictly earlier — it caught all
+31 without FDB, without rows, and without a running store. What the built gate
+cannot see is written out in RFC-237 §8.2, measured by mutation rather than
+asserted; the headline is that a perturbation of unquoted → quoted-UPPER is
+blind to a FOLD, because those two spellings are exactly the pair a fold cannot
+tell apart. That axis is covered by the yamsql `columns:` arms and the unit
+pins, and the three instruments do not subsume one another.
+
+---
+
+## An aggregate is bound to its output slot by a RENDERING that cannot tell two aggregates apart
+
+**LIVE WRONG ANSWER, reproducer below, found while closing RFC-237 §10.** Not
+the same defect as the folded slot key that entry (d) above describes — that one
+is fixed. This is what was underneath it.
+
+```sql
+-- sales rows: ('US'), ('US'), ('EU')
+SELECT COUNT(CASE WHEN "Region" = 'us' THEN 1 END),
+       COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
+-- returns [2, 2].  Correct is [0, 2].
+```
+
+Each aggregate is CORRECT in isolation (`'us'` alone → 0, `'US'` alone → 2), and
+the plan is correct: two distinct `AggregateSpec`s, distinct operand pointers,
+distinct `OperandName`s, distinct projection ordinals `#0` and `#1`.
+
+Two controls localise it, and both are pinned in
+`quoted_identifier_aggregate_labels.yaml` so the localisation cannot rot:
+
+- **Not CASE, and not string comparison.** The same case-only pair OUTSIDE an
+  aggregate — `SELECT CASE WHEN "Region"='us' …, CASE WHEN "Region"='US' …` —
+  returns the right rows.
+- **Not "two aggregates".** A pair whose literals differ by more than case —
+  `'EU'` and `'US'` — returns `[1, 2]`.
+
+**Root cause, as far as it is traced.** The post-aggregate projection binds each
+reference to an aggregate ORDINAL by matching a rendered name
+(`aggregateValueOutputName` → `aggregateOrdinalFor`, cascades_translator.go).
+For a CASE operand that rendering is `COUNT(CASE(WHEN(predicate), [1]))` — the
+predicate renders OPAQUELY — so both aggregates produce the identical key and
+the match cannot separate them. Removing every fold from that path (done, both
+`normalizeAggOutputName` and `aggregateValueOutputName`) does not help, because
+the two keys were never distinguished by CASE in the first place; they are
+distinguished by nothing.
+
+This is precisely the failure `AggregateResultColumnName`'s own doc warns about
+— "two columns sharing a leaf name treated as one" — inside a naming authority.
+A NAME cannot be the identity here. The bind has to be structural: match the
+operand VALUE, which is already distinct and already carried on the spec.
+
+**Why it is booked rather than fixed in RFC-237's PR:** it is a different root
+cause in a different layer (the Cascades ordinal bind, not identifier
+normalization), the fix changes matching from name-based to value-based, and
+that needs its own RFC and the query-engine gate. Every artifact needed to start
+is here: the reproducer, both controls, the two functions, and the reason the
+obvious fold-removal is not the fix.
+
+---
+
+## The FDB testcontainer cluster stalls under concurrent CI load, on master too
+
+**Not this branch, and not a flake to wave away.** Both reds carry the identical
+signature:
+
+```
+XX000: open catalog store: failed to read store info: context deadline exceeded
+```
+
+- PR CI's race lane: two `sqldriver` tests, on a runner shared with another
+  branch's CI.
+- **master's Nightly RowDiff**: TEN consecutive seeds, at exactly 60-second
+  intervals, tripping the sweep's own `ROWDIFF_CLUSTER_DEAD` guard — which
+  states the case better than this entry could: "That is not a flaky seed, it is
+  the cluster gone … which is how this sweep once consumed a CI runner for
+  4h21m."
+
+`TestFDB_MetamorphicPagingAtScale` under `-race` PASSES locally (1766s, green,
+same commit) on a machine not running a second CI concurrently. So the evidence
+points at the shared runner, not at the branch.
+
+What is NOT established, and is the actual work: whether the CONTAINER dies or
+whether the pure-Go client wedges against a healthy cluster. The second would be
+our bug — "C++ is the spec for the FDB client". The 60-second cadence is the
+sharpest clue and is unexplained: no `WithTimeout` on the sqldriver query path
+carries that value, and the client's own `DefaultRPCTimeout` is 5s with a
+GRV/read fallback that retries other replicas rather than surfacing a bare
+`context.DeadlineExceeded`. Note also that `OnError` cannot classify a bare
+`context.DeadlineExceeded` (`errors.As(err, &fdbErr)` fails, transaction.go), so
+whatever produces one ends the transaction instead of retrying — correct for a
+caller's cancellation, wrong for an internal RPC deadline, and the two are the
+same value.
+
+**master's Nightly RowDiff is also red for a SECOND, unrelated reason** — a real
+engine defect with a seed: `seed 3495589`, three variants, `resolution error 46
+at qov.binding: exact QOV "q$…" (RECORD<ID,A,B,C,S,F,D,E>) has no declared
+runtime binding`. Reproduce with `ROWDIFF_SEED_START=3495589 ROWDIFF_SEEDS=1`.
+
+---
+
+## Two measured Java divergences on the recursive-CTE path
+
+Both are pinned by `conformance/dotted_and_recursive_seed_java_probe_test.go`,
+which measures them against a live JVM rather than asserting them. Run it with
+`bazelisk test //conformance:conformance_test --test_arg="--ginkgo.focus=DottedAndRecursiveSeedJavaProbe" --test_arg="--ginkgo.v"`
+and read the per-shape lines; the probe asserts CURRENT behaviour on BOTH
+engines, so it goes red when either one moves, in either direction.
+
+**A recursive CTE alongside a plain one is a MISSING CAPABILITY, not a shared
+rejection.** Java plans it and returns rows:
+
+```sql
+WITH RECURSIVE s AS (SELECT "id" FROM Q1),
+     d AS (SELECT * FROM s UNION ALL SELECT d."id" + 1 FROM d WHERE d."id" < 3)
+SELECT * FROM d
+```
+
+Java answers `[id]` with `[1] [2] [2] [3] [3]`; Go rejects `0A000: condition is
+not met!` from `plan_visitor.go`, and does so whether or not the sibling's body
+contains a join. This is the one to do first of the two — it is a capability
+gap, and a corpus row asserting the `0A000` would be blessing it.
+
+**The arity SQLSTATE disagrees.** For a four-column seed against a one-column
+recursive term Java rejects `42F10 Invalid column position number: 1`, where Go
+now reports `0AF00: recursive CTE branches have no exact common result row:
+recursive branch 0 has width 1, want 4`. Go's message is the more informative
+of the two and the SQLSTATE is the divergence; the fix is to reach Java's arity
+validator before the branch-row derivation, not to reword the message. Until
+then the corpus row for that shape pins the SQLSTATE only, and the explaindiff
+golden carries the exact message.
+
+## The rowdiff QOV binding failure has a three-clause minimal shape
+
+`ROWDIFF_SEED_START=3495589 ROWDIFF_SEEDS=1` reproduces on master; the sweep is
+red on it. All three of the seed's failing variants differ only in their SELECT
+list and fail identically with
+
+```
+resolution error 46 at qov.binding: exact QOV "q$NN" (T_RD row type) has no
+declared runtime binding
+```
+
+Minimized against a 6-row `t_rd` with indexes on `a` and `d` (one run, all ten
+shapes measured, harness preserved at
+`scratchpad/qov_probe_test.go.txt` in the session that took it — reconstruct it
+from this table, which is the part that matters):
+
+| shape | result |
+| --- | --- |
+| `LEFT JOIN … WHERE r.a IN (1, 1)` | **ERR** |
+| the same with no `ORDER BY` | **ERR** |
+| the same ordering only the preserved side | **ERR** |
+| `… WHERE r.a IN (1)` | OK |
+| `… WHERE r.a IN (1, 2)` | OK |
+| `… WHERE r.a = 1` | OK |
+| `INNER JOIN … WHERE r.a IN (1, 1)` | OK |
+| `LEFT JOIN … WHERE l.a IN (1, 1)` (preserved side) | OK |
+| `LEFT JOIN … WHERE r.c IN (1, 1)` (`c` is NOT indexed) | OK |
+| `LEFT JOIN …` with no `WHERE` | OK |
+
+So the trigger is the conjunction of three things and no fewer: an OUTER join, a
+DUPLICATE-valued `IN` list, and an INDEXED column of the NULL-PADDED side.
+Neither the `ORDER BY` nor the projection participates. The failing QOV is a
+planner-MINTED `q$N` over the whole `T_RD` row, which is the same class as
+`pkg/relational/sqldriver/outer_join_nested_field_binding_fdb_test.go` — "the
+leg was bound under a DIFFERENT exact QOV than the one the projection holds" —
+with the mint coming from the duplicate-`IN` plan rather than from a nested
+field read.
+
+## Two mechanisms build the join-leg datum keys and they disagree by case
+
+`legColumns` (cascades_translator.go) folds the COLUMN half of a leg key to
+UPPER; `logicalLegFields` (logical_result_type.go) keeps it verbatim and its
+comment says why — "only the ALIAS half is folded, and only because a source
+alias never comes from a descriptor". So a leg column declared `"KeepCase"` is
+`C.KEEPCASE` on one route and `C.KeepCase` on the other, and a proto field
+`customer_id` is `C.CUSTOMER_ID` against `C.customer_id`.
+
+Pinned by `pkg/relational/core/query/leg_column_key_case_divergence_test.go`,
+which asserts both spellings so the gap can neither widen nor silently close.
+
+Measured, so the size of the decision is known rather than guessed: removing the
+fold moves zero rows of the 2627-query plan-shape golden, and twelve targeted
+shapes reaching a leg key by different routes (three-way join, CTE and derived
+table over a join star, UNNEST beside one, grouped and scalar aggregates over a
+quoted mixed-case leg column, correlated scalar subquery, alias-list recursive
+CTE) plan byte-identically either way.
+
+**That zero is a PLANNING measurement and nothing more.** The plan-shape golden
+is generated through `embedded.PlanPhysicalForTest`, which never runs the
+executor. A reading that it is MASKING — that `rowSlotForLegColumn`'s
+`EqualFold` comparators hide the disagreement — was written here and is refuted
+by a standing gate: `AssertLegColumnProvenanceCensus` fails the build if that
+reader receives any call, because the exact-ordinal seed retired its only
+driver. Those comparators are in code that does not run.
+
+What the zero establishes is that no planned shape depends on a leg key's case.
+The divergence is a latent producer disagreement, which is an argument for
+collapsing the producers and not for chasing a runtime symptom that does not
+exist.
+
+**The work is not "pick a spelling" — that framing is wrong, and the reason is
+that the folding line does TWO JOBS.** `tableColumns` names a scan's columns
+through `ToUserIdentifier`, which un-escapes and does NOT fold, so for a
+hand-authored proto field `order_id` the fold is descriptor-to-SQL
+NORMALIZATION. For a DDL-declared `"KeepCase"`, already canonical from the
+parse boundary, the same line is RE-normalization. That is why removing it
+reddens `TestLegColumns_NestedNoSpuriousKeys` (whose `order_id` is the
+normalization job) while keeping it breaks the RFC-237 invariant.
+
+**Collapse the two producers instead**, and that is only one end of it: the
+qualifier is carried as a RENDERED STRING and re-parsed downstream, which is the
+mechanism behind this divergence, the `a.b` label, `colref.go`'s two KNOWN
+LIMITs and the deleted `seedResolvesThroughJoin` alike. RFC-238 carries the
+design, the ordered steps and the acceptance criteria that make the collapse
+checkable; this entry is one of its symptoms and closes when it lands.
+
+`TestLegColumns_NamingConsistentWithAnchoredRecord` also reddens on any change
+here and is NOT evidence: it builds its expectation with `strings.ToUpper(c.Name)`
+itself, mirroring the implementation, so it asserts nothing about which spelling
+is right.
 
 ---
 
@@ -19766,6 +20103,135 @@ of the container rather than from the shape of an error string.
 
 ---
 
+## The metadata builder diverges from Java in three places, found while closing RFC-238 §7f
+
+These are one subsystem and should land as one PR. All three were surfaced by
+review during PR #761 and verified against the Java source at tag 4.12.11.0;
+none is caused by that PR, and none is blocked on anything.
+
+**1. `updateRecords()` is not ported, so a descriptor cannot be evolved at all.**
+`SetRecords` now refuses a second call, matching Java
+(`RecordMetaDataBuilder.java:384`, `:423`). Java's sanctioned way to change a
+descriptor afterwards is `updateRecords(FileDescriptor)` /
+`updateRecords(FileDescriptor, boolean processExtensionOptions)`
+(`RecordMetaDataBuilder.java:451`, `:476`), plus
+`FDBMetaDataStore.updateRecords` / `updateRecordsAsync`. It validates the new
+descriptor, runs the evolution validator over the union
+(`evolutionValidator.validateUnion`), bumps the meta-data version, adds new
+record types and updates existing message descriptors via
+`updateUnionFieldsAndRecordTypes`, sets `sinceVersion` on the new types and
+their indexes, and finally swaps `recordsDescriptor`/`unionDescriptor`. Go has
+none of it. The gap PREDATES the guard — Go never had `updateRecords` — but the
+guard removes the broken approximation a caller could previously stumble into,
+so the gap is now the only story.
+
+**2. `primaryKeyComponentPositions` is computed for indexes Java never computes
+it for, and nondeterministically.** Java's `build()` sets it only from
+`recordTypeBuilder.getIndexes()` — single-type indexes
+(`RecordMetaDataBuilder.java:1461-1468`); `addMultiTypeIndex` with >=2 types
+puts the index on `getMultiTypeIndexes()` (`:1167-1178`) and `addUniversalIndex`
+into `universalIndexes` (`:1184`), neither of which that loop reads, so both
+keep `null` and `Index.trimPrimaryKey` is a no-op — Java writes
+`valueKey + FULL primary key`. Go's `metadata.go` Build computes positions for
+`rt.indexes`, `rt.multiTypeIndexes` AND `b.universalIndexes`, and for the
+universal case draws the primary key from `for _, rt := range types { …; break }`
+over a MAP, so the value is nondeterministic across builds of identical
+metadata. WIRE IMPACT: for a multi-type index whose key contains a PK field
+(two types keyed on `id` with a shared index on `(id, ts)`), Go writes
+`[id, ts]` where Java writes `[id, ts, id]`. `RecordMetaDataFromProto` ends in
+`builder.Build()`, so Go does this to metadata JAVA wrote. `pk_dedup_test.go`
+documents the change as a bugfix ("full redundant PKs"), i.e. Go matched Java
+and was "fixed" into the divergence. No conformance test uses a multi-type index
+at all (`grep -rln AddMultiTypeIndex conformance/` → 0; control `AddIndex` → 5+
+files), which is the dimension that let it ship green. The fix inverts two
+`pk_dedup_test.go` arms and dissolves the lone `Skip` in
+`index_registration_matrix_test.go:37`, whose universal arm becomes a
+no-positions assertion instead of being skipped.
+
+**3. `GetIndexesForRecordType` may be the wrong accessor at several call sites.**
+It returns `rt.indexes + rt.multiTypeIndexes`. Java's `RecordType.getIndexes()`
+is single-type only and `getAllIndexes()` adds multi-type AND universal
+(`RecordType.java:90`, `:101`, `:118-124`); Go has the single-type analog as
+`RecordType.GetIndexes()`. `IndexFunctionHelper.indexesForRecordTypes` returns
+`getIndexes()` alone for ONE record type name — "the indexes that apply to
+exactly the given types, no more, no less" (`IndexFunctionHelper.java:178-189`)
+— so Go's `record_function.go:78` offers a BROADER candidate set than Java. The
+save path composes `GetIndexesForRecordType` + `GetUniversalIndexes` explicitly
+(`store.go:1079`) and is fine; the other non-test callers were not audited
+against Java one by one. Audit all of them, then pick the Java-matching
+accessor per site.
+
+DONE when: `updateRecords` is ported with evolution-validator coverage;
+`primaryKeyComponentPositions` is computed only where Java computes it, pinned
+by a Go↔Java conformance pair for a multi-type index whose key overlaps a
+primary key; and every `GetIndexesForRecordType` call site is either confirmed
+against its Java counterpart or switched.
+
+---
+
+## A scratch tree inside the worktree can turn a docscheck census into fiction
+
+A second copy of the repo inside the worktree DOUBLES every basename, so any
+census that counts declarations or resolves cites by basename silently reports
+twice the population. During PR #761 a `git archive` extract sat briefly at
+`<worktree>/scratchpad/<sha>/` and a docscheck walk failed on a path inside it
+that had since been deleted — loud only because the directory vanished mid-run.
+A copy that STAYS is the dangerous case, and it reads as a finding.
+
+PARTLY CLOSED. `pkg/docscheck/rfc_cite_resolution_test.go`'s
+`nestedRepoRootsUnder` refuses to build a cite index while any directory below
+the root carries its own `MODULE.bazel`, so the RFC-238 cite gates and
+`TestRFCCiteCensusRepoWide` cannot report totals about a doubled tree.
+
+WHAT REMAINS is every OTHER docscheck census. They reach the tree through
+`fallbackWalk` (`pkg/docscheck/fallback_walk_test.go`) when git enumeration is
+unavailable, and its `fallbackWalkSkippedTrees` list covers build output, VCS
+metadata, the vendored Java tree and sibling worktrees — but nothing that
+matches an ad-hoc extract. Note the walk that failed in #761 was NOT
+`fallbackWalk`: it rolled its own `filepath.Walk` with its own exclusion switch,
+so extending `fallbackWalkSkippedTrees` alone would not have prevented it. Both
+shapes need the guard.
+
+DONE when: every census walk refuses a nested second copy of the repo rather
+than only the cite gates, and a unit pin drives that refusal — construct a
+nested `MODULE.bazel` in a temp tree and assert the walk declines — rather than
+the corpus happening to be clean.
+---
+
+## Go refuses to load metadata Java loads fine: no synthetic-record-type arm in the proto reader
+
+WIRE-COMPAT HARD LINE, pre-existing, found while reviewing RFC-238 §7f.
+
+Java's proto loader walks each index's `getRecordTypeList()` and sorts every
+name into one of THREE buckets
+(`RecordMetaDataBuilder.java:183-215`): a record type, a SYNTHETIC record type
+(joined or unnested), or unknown — and only the third throws. When the names
+resolve to synthetic types it attaches the index to the synthetic builder
+(`syntheticRecordTypeBuilder.getIndexes().add(index)`, `:204`) instead of
+calling `addMultiTypeIndex`.
+
+Go's `RecordMetaDataFromProto` (`pkg/recordlayer/metadata_proto.go`) has only
+two buckets. A name that is not in `builder.recordTypes` is an error:
+
+    unknown record type %q referenced by index %q
+
+So any metadata Java wrote that carries an index over a joined or unnested
+record type is REJECTED by Go on load. That is the wire-compat line this port
+exists to hold — Go and Java share a cluster and must read each other's
+metadata — and it fails in the direction that is hardest to notice, because a
+Go-only deployment never produces such metadata and so never sees it.
+
+Related, same file, same reader: synthetic record types are not built at all on
+the Go side, so even with the arm added the index would need a synthetic type to
+attach to. Check whether `pkg/recordlayer` models them before sizing this.
+
+DONE when: a metadata proto carrying an index over a synthetic record type
+round-trips through `RecordMetaDataFromProto` without error, pinned by a test
+that fails with the current reader, and the cross-engine conformance corpus has
+an entry that writes such metadata from Java and reads it from Go.
+
+---
+
 ## A gate for prose that restates a value an assertion already owns
 
 The instances two reviewers surfaced after #760 are fixed in that PR's
@@ -19873,3 +20339,56 @@ read, not only the test result. Its scope sentence must say census files ONLY:
 the production comments this campaign corrected -- in executor.go and in
 fk_chain_cardinality.go -- sit outside it by construction, and claiming
 otherwise would be the same over-claim one level up.
+
+
+---
+
+## `RecordMetaDataBuilder.Build` does six jobs in one frame
+
+Measured with `awk '/^func \(b \*RecordMetaDataBuilder\) Build\(\)/,/^}/'
+pkg/recordlayer/metadata.go | wc -l`. **Recompute it; do not trust a number
+written here.** The series over the commits that produced this entry is 658
+(`103eee9e6`), 620 (`0b3a33d6e`), 644 (`e1d95cb49`), 668 (`89452ec11`) -- and
+those are stable because each names a SHA. A fifth figure for "now" was written
+into this entry twice and was stale both times, the second time within the same
+working session that wrote it, because the edits folding a review round grew the
+function underneath the sentence describing it. That is the failure this repo
+calls a measurement with no stated population, and the fix is to state the
+command instead of its output.
+
+The trend is **not** monotonic: -38, +24, +24. An earlier revision said it "has
+GROWN in each of the last three commits"; one of them shrank it by 38 lines, and
+that sentence was written from the direction of the last two deltas rather than
+from the series. The narrower true statement is enough: every correctness fix in
+this area lands inside the same frame, and the one commit that shortened it did
+so by DELETING a divergent loop rather than by extracting anything.
+
+`Build` drains `buildErrors`, validates the registry/association invariant in
+**six** refused classes -- `alsoUniversal`, `renamed`, `renamedUniversal`,
+`unregistered`, `mismatched`, `orphaned`, which is the slice literal in
+`pkg/recordlayer/metadata.go` whose first element is `alsoUniversal` (cited by
+SYMBOL, not by line: an earlier revision wrote `:900-912`, and edits made in the
+very commit that wrote it pushed the block to `:913-924`, so the range was stale
+before it was ever read) -- computes `primaryKeyComponentPositions`, copies the containers,
+validates subspace keys, precomputes union field numbers, and constructs the
+result. A seventh association class, the duplicate, is deliberately ACCEPTED
+because Java accepts it -- an earlier revision counted seven, which counts the
+one case that is not validated.
+
+The concrete cost is not length, it is that an ORDERING DEPENDENCY between two
+of those jobs is invisible. Positions must be computed BEFORE the containers are
+copied, because Java sets them on the objects the caller registered and the scan
+call sites read positions off those same objects; getting that backwards
+produced `go: pk=[]` against `java: pk=[1]` and was caught only by the
+cross-engine conformance suite. Today a comment inside `Build` is the only thing
+holding it, and that comment names this entry so the two halves point at each
+other. As two calls in a short frame it would be obvious.
+
+Two seams lift out cleanly, both self-contained: the registry/association census
+and the positions-plus-copy step. `validateIndexBijection()` and `detachFrom(b)`
+were the names proposed in review.
+
+DONE when: `Build` reads as an ordered list of named steps, the
+positions-before-copy dependency is expressed by call order rather than by a
+comment, and the extraction changes no behaviour — same tests, uncached, before
+and after.

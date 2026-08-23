@@ -95,7 +95,7 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 	}
 	sortByPK := func(inner plans.RecordQueryPlan) plans.RecordQueryPlan {
 		return mustExecutorConstruct(plans.NewRecordQueryInMemorySortPlan(inner, []plans.SortKey{{
-			Field:      "ORDER_ID",
+			Field:      "order_id",
 			ValueExpr:  mustTestFieldOrdinal(t, inner.GetResultValue(), 0),
 			NullsFirst: true,
 		}}))
@@ -136,7 +136,7 @@ func TestFDB_InMemorySortRowsRead_RFC184(t *testing.T) {
 				if len(rows) != 1 {
 					t.Fatalf("plan returned %d rows, want 1", len(rows))
 				}
-				id, _ := rowMap(rows[0])["ORDER_ID"].(int64)
+				id, _ := rowMap(rows[0])["order_id"].(int64)
 				got = id
 				return nil, nil
 			})

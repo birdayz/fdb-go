@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
 
 	"fdb.dev/gen"
@@ -276,7 +277,53 @@ func (b *RecordMetaDataBuilder) SetRecords(fd protoreflect.FileDescriptor) *Reco
 	return b.setRecordsWithUnionName(fd, "UnionDescriptor")
 }
 
+// A SECOND CALL IS REFUSED, WHICH IS WHY THE ORPHAN ROUTE BELOW IS CLOSED.
+// Java's two setRecords overloads both open with
+//
+//	if (recordsDescriptor != null) { throw new MetaDataException("Records already set."); }
+//
+// (RecordMetaDataBuilder.java:384, :423; setLocalFileDescriptor and
+// addDependency carry the same guard), so a second setter call is not something
+// Java tolerates and then repairs downstream — it is not reachable at all. Go
+// permitted it, and that divergence is one route to an orphaned index: the
+// overwrite replaced every RecordType the SECOND descriptor also declares with a
+// fresh one whose index slices are nil -- a type present only in the first
+// survived, indexes intact -- while the flat registry b.indexes kept its entry,
+// leaving an index registered and associated with nothing. It is not the only
+// route, which is why Build now checks the property directly; see the
+// association check there. Build succeeded, RecordTypesForIndex came back empty,
+// GetIndexesForRecordType lost it, and ToProto then emitted it with an EMPTY
+// RecordType list — which a reload reads as UNIVERSAL, because that is Java's
+// intended encoding for a universal index. So the index came back either
+// maintained for every record type (a silent widening, when its key is valid on
+// all of them) or unloadable (when it is not: Build validates a universal index
+// against every type and refuses).
+//
+// The guard records a build error rather than throwing because a SETTER has no
+// error channel: it returns *RecordMetaDataBuilder for chaining, so it defers to
+// Build, which is what every other rejecting setter here does. That is the
+// checkable reason, and it is not "the package never panics" -- it does, and
+// GetRecordType below is one example, which panics because
+// a GETTER has no builder to return and Java throws there too. The second
+// descriptor is NOT applied, so a caller that ignores the Build error still sees
+// the first descriptor rather than a half-merged one.
+// JAVA HAS AN ESCAPE HATCH THIS PACKAGE DOES NOT: updateRecords
+// (RecordMetaDataBuilder.java:451, :476) evolves a descriptor after the first
+// one is set, validating the union against the evolution validator and bumping
+// the meta-data version. Go has never had it, so refusing the second call
+// leaves no way to change a descriptor at all. That is a pre-existing gap, not
+// one this guard opened, and it is booked in TODO.md under "The metadata builder
+// diverges from Java in three places" with the Java line numbers.
+//
+// RFC-238 §7f carries the analysis. Pinned by TestSetRecordsRefusesASecondCall,
+// TestRefusedSetRecordsLeavesTheFirstDescriptorInPlace (which is the only arm
+// that catches a guard written one line lower) and
+// TestUniversalIndexRoundTripsThroughAnEmptyRecordTypeList.
 func (b *RecordMetaDataBuilder) setRecordsWithUnionName(fd protoreflect.FileDescriptor, unionName string) *RecordMetaDataBuilder {
+	if b.fileDescriptor != nil {
+		b.buildErrors = append(b.buildErrors, &MetaDataError{Message: "Records already set."})
+		return b
+	}
 	b.fileDescriptor = fd
 
 	// Find the named union message to map fields to record types.
@@ -641,8 +688,54 @@ func (b *RecordMetaDataBuilder) GetRecordType(name string) *RecordTypeBuilder {
 }
 
 // Build creates the final RecordMetaData.
-// Returns an error if any record type has no primary key set.
-// The record types map is copied to prevent the builder from mutating the built metadata.
+//
+// Returns an error if any record type has no primary key set, and refuses any
+// metadata whose index registry and record-type associations do not agree in
+// both directions -- see the bijection check below.
+//
+// WHAT BUILD WRITES INTO THE BUILDER'S OWN OBJECTS -- first, because two
+// successive revisions of this comment claimed it wrote nothing, and the
+// revision that fixed THAT over-claimed in the other direction by listing three
+// writes where there is one. Exactly one:
+//
+//   - `idx.primaryKeyComponentPositions`, on every SINGLE-TYPE index, because
+//     `indexes[k] = v` shares the pointer. That is the point: Java sets
+//     positions on the objects the caller registered and the scan call sites
+//     read them off those same objects. (Multi-type and universal indexes are
+//     deliberately excluded -- see the loop.)
+//
+// `rt.explicitRecordTypeKey` and `fi.SubspaceKey` are NOT writes, which is easy
+// to misread because the assignments look like ones: both sites open with a
+// struct copy (`rt := *v`, `f := *fi`) and then assign the COPY. The builder's
+// RecordType and FormerIndex objects come out of Build unchanged. They belong
+// to the copied set below.
+//
+// WHAT STAYS SHARED with the builder after Build returns: the `*Index` objects
+// themselves, and therefore everything reachable through them -- `Options`
+// (a map, with the exported in-place mutators SetUnique and SetClearWhenZero),
+// `primaryKeyComponentPositions`, `Predicate`, `predicateProto`, `subspaceKey`,
+// and the KeyExpression graphs behind `RootExpression`. Also shared, both
+// descriptors: `fileDescriptor` and `unionDescriptor`; and the KeyExpression
+// graphs behind each record type's `PrimaryKey` and behind `recordCountKey`.
+//
+// WHAT IS COPIED: every container Build owns directly -- the index registry
+// map, the universal and former index slices, each record type's index slices,
+// the RecordType and FormerIndex structs themselves (with their `[]byte` and
+// subspace-key fields deep-copied), the `preserved` struct and all FIVE of its
+// slices (`unknown` included), and `recordsSourceProto` (a proto.Clone; note
+// this is the RETAINED verbatim descriptor, not the shared `fileDescriptor`
+// named above).
+//
+// WHAT IS DERIVED HERE and shared with nothing: `fieldNumberToRecordType` and
+// `ambiguousNames`, both computed from the metadata this Build assembled.
+//
+// Copying the containers keeps a later builder mutation from rewriting what
+// Build returned; sharing the objects is what callers depend on when they hand
+// a pre-Build *Index to ScanIndex, RebuildIndex or SetIndex, and what keeps
+// OnlineIndexer's containment check an identity check rather than a name check.
+// The objects therefore stay mutable through their exported fields and through
+// those two setters, which is a divergence from Java's `private final` plus
+// `ImmutableMap.copyOf`: DIVERGENCES.md has the analysis and the fix.
 func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// Check for errors accumulated during builder method calls.
 	if len(b.buildErrors) > 0 {
@@ -715,6 +808,128 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		}
 	}
 
+	// EVERY REGISTERED INDEX IS UNIVERSAL OR ASSOCIATED, checked here rather
+	// than argued about at the call sites that could break it.
+	//
+	// An index in b.indexes that no record type claims and that is not
+	// universal is an ORPHAN: RecordTypesForIndex returns nothing for it,
+	// GetIndexesForRecordType loses it, the aggregate-index plan derives its
+	// result columns from a nil descriptor, and ToProto emits it with an EMPTY
+	// RecordType list -- which a reload reads as UNIVERSAL, so it returns
+	// either maintained for every record type or as metadata that will not load
+	// at all. RFC-238 §7f carries the analysis.
+	//
+	// THE REGISTRY AND THE ASSOCIATIONS MUST AGREE, and "agree" has more parts
+	// than it looks. Each class below is a state that serializes wrong or is
+	// maintained wrong, and each was reached through the exported API.
+	//
+	// UNIVERSAL AND ASSOCIATED ARE MUTUALLY EXCLUSIVE. One proto field carries
+	// coverage: an empty recordType list means universal, a non-empty one names
+	// types. An index that is both serializes as the non-empty form, so a
+	// reload DROPS it from universalIndexes -- coverage narrows on the wire --
+	// and in memory the store maintains it twice, which for COUNT/SUM is a
+	// double atomic ADD and those are not idempotent. Java reaches neither
+	// state: addUniversalIndex and addMultiTypeIndex write to disjoint places.
+	//
+	// A DUPLICATE ASSOCIATION IS ACCEPTED, because Java accepts it. Its
+	// addMultiTypeIndex appends per name with no dedup, MetaDataValidator has no
+	// duplicate check, and loadFromProto preserves a repeated record-type name,
+	// so metadata Java WROTE would fail to open here if this refused it -- and
+	// refusing metadata Java writes is the one line this port may not cross. The
+	// resulting double maintenance (each copy maintained separately on write,
+	// which for COUNT/SUM is a non-idempotent double atomic ADD) is therefore a
+	// shared behaviour, booked rather than unilaterally diverged from. An
+	// earlier revision of this check refused it.
+	//
+	// THE REGISTRY KEY IS THE INDEX'S OWN NAME. Index.Name is exported, so a
+	// caller can rename the object it registered. buildIndexRecordTypeMap keys
+	// by idx.Name while ToProto looks the list up by the MAP key, so for a
+	// type-specific index the mismatch serializes an empty recordType list --
+	// the universal encoding. For a universal index the empty list is already
+	// correct; the harm there is that the registry key and the name disagree,
+	// so GetIndex(oldKey) answers with an index calling itself something else
+	// and the reload rekeys it. Different harms, different messages.
+	//
+	// AND EVERY ASSOCIATION IS THE REGISTERED OBJECT. Registered as a DIFFERENT
+	// object means write and read paths hold two definitions of one index;
+	// registered as NOTHING means it is maintained on write, never scanned,
+	// never serialized, and never subspace-key-checked. Also different.
+	universalObjs := make(map[*Index]struct{}, len(b.universalIndexes))
+	for _, idx := range b.universalIndexes {
+		universalObjs[idx] = struct{}{}
+	}
+
+	associatedObjs := make(map[*Index]struct{}, len(b.indexes))
+	var alsoUniversal, unregistered, mismatched []string
+	for _, rt := range b.recordTypes {
+		claimed := make(map[*Index]struct{}, len(rt.indexes)+len(rt.multiTypeIndexes))
+		for _, group := range [][]*Index{rt.indexes, rt.multiTypeIndexes} {
+			for _, idx := range group {
+				if _, dup := claimed[idx]; dup {
+					// Accepted: Java accepts it. See above.
+					continue
+				}
+				claimed[idx] = struct{}{}
+				associatedObjs[idx] = struct{}{}
+				if _, uni := universalObjs[idx]; uni {
+					alsoUniversal = append(alsoUniversal, idx.Name)
+					continue
+				}
+				switch reg, ok := b.indexes[idx.Name]; {
+				case !ok:
+					unregistered = append(unregistered, idx.Name)
+				case reg != idx:
+					mismatched = append(mismatched, idx.Name)
+				}
+			}
+		}
+	}
+
+	var renamed, renamedUniversal, orphaned []string
+	for name, idx := range b.indexes {
+		if idx.Name != name {
+			if _, uni := universalObjs[idx]; uni {
+				renamedUniversal = append(renamedUniversal, name)
+			} else {
+				renamed = append(renamed, name)
+			}
+			continue
+		}
+		if _, ok := universalObjs[idx]; ok {
+			continue
+		}
+		if _, ok := associatedObjs[idx]; ok {
+			continue
+		}
+		orphaned = append(orphaned, name)
+	}
+
+	// Reported one at a time, first by sorted name, so the message does not
+	// depend on map order.
+	for _, bad := range []struct {
+		names  []string
+		format string
+	}{
+		{alsoUniversal, "index %q is universal AND associated with a record type; " +
+			"the record-type list encodes one or the other, so this narrows to type-specific " +
+			"on reload while being maintained twice in memory"},
+		{renamed, "index registered under %q reports a different name; the association " +
+			"would serialize as an empty record-type list, which reloads as a universal index"},
+		{renamedUniversal, "universal index registered under %q reports a different name; " +
+			"the registry key and the index name would disagree across a reload"},
+		{unregistered, "index %q is associated with a record type but is not registered; " +
+			"it is maintained on write, never scanned, and never serialized"},
+		{mismatched, "index %q is associated as one object and registered as a different one; " +
+			"the write path and the read path would use different definitions"},
+		{orphaned, "index %q is registered but associated with no record type and is not universal"},
+	} {
+		if len(bad.names) == 0 {
+			continue
+		}
+		sort.Strings(bad.names)
+		return nil, &MetaDataError{Message: fmt.Sprintf(bad.format, bad.names[0])}
+	}
+
 	// Validate no duplicate record type keys.
 	// Matches Java's MetaDataValidator which checks for duplicate type keys.
 	//
@@ -742,13 +957,180 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 		typeKeySeen[dedup] = name
 	}
 
+	// Compute primaryKeyComponentPositions ON THE BUILDER'S OBJECTS, and before
+	// the containers are copied below.
+	//
+	// The order is load-bearing and only the cross-engine conformance suite
+	// proved it. Java sets these positions on the very Index objects the caller
+	// registered (RecordMetaDataBuilder.build calls
+	// index.setPrimaryKeyComponentPositions), and callers rely on that: the
+	// composite-index conformance store keeps the *Index it passed to AddIndex
+	// and hands that same object to ScanIndex. A revision that copied the index
+	// OBJECTS and computed positions afterwards left the caller's object with
+	// nil positions while the metadata wrote entries with the primary key
+	// DEDUPED, so the scan decoded `pk=[]` where Java produced `pk=[1]` -- a
+	// wire-visible disagreement from a change that looked purely in-memory.
+	// The object copy is gone, so the two are one pointer again and the hazard
+	// is latent rather than live; the order still matters the moment anyone
+	// reintroduces a copy, which is why it is stated rather than assumed.
+	//
+	// A COMMENT IS THE ONLY THING HOLDING THIS. Expressing it as call order
+	// instead is what the TODO.md entry "RecordMetaDataBuilder.Build does six
+	// jobs in one frame" is for; that entry names this site, and this names it
+	// back, so neither half can rot alone.
+	//
+	// SINGLE-TYPE INDEXES ONLY. Java's loop is over
+	// `recordTypeBuilder.getIndexes()` (RecordMetaDataBuilder.java:1465-1467),
+	// and `getIndexes()` / `getMultiTypeIndexes()` are two distinct lists
+	// (RecordTypeIndexesBuilder.java:43 and :45); universal indexes are in neither.
+	// So Java NEVER assigns positions to a multi-type or universal index, and
+	// its `Index.trimPrimaryKey` therefore returns those indexes' primary keys
+	// untrimmed.
+	//
+	// Go used to assign them to all three, and that reached the wire in both
+	// directions:
+	//
+	//   - Multi-type. Two record types keyed on the same field, with a
+	//     multi-type index on that field, gave positions [0] and trimmed the
+	//     primary key to NOTHING -- Go wrote `(price)` where Java writes
+	//     `(price, pk)`. Different index entry keys for the same metadata.
+	//   - Universal. The old code took "the first record type's primary key",
+	//     by `break`ing out of a range over `b.recordTypes`, which is a MAP.
+	//     With record types whose primary keys differ, the chosen type -- and
+	//     so the entry key -- varied per Build within a single process: 40
+	//     builds of one metadata produced positions [0] 33 times and nil 7
+	//     times. That is worse than a Java divergence, because two Go stores
+	//     built from identical metadata could disagree with each other.
+	//
+	// Both are pinned by TestPositionsAreAssignedOnlyToSingleTypeIndexes.
+	//
+	// THIS CHANGES EXISTING DATA. Positions are derived here and never
+	// persisted, so entries an older build wrote for a multi-type or universal
+	// index are trimmed while this one writes them whole. The DECODE of such an
+	// entry does not error -- a full overlap yields an empty primary key, a
+	// partial overlap a short and plausible wrong one -- and the old entries are
+	// never cleared. Nothing detects any of that automatically; the affected
+	// indexes need a rebuild, and the procedure is considerably more than a
+	// lastModifiedVersion bump.
+	//
+	// WHAT THAT LOOKS LIKE AT THE SCAN IS NOT DESCRIBED HERE. An earlier version
+	// of this comment finished the sentence with "so an unremediated store
+	// returns duplicate rows", which is true of the index ENTRIES and false of
+	// most rows, and it survived here after being refuted in DIVERGENCES.md
+	// because that fold swept for a different claim in the same commit. Two
+	// claims were refuted; one sweep was run. The scan-level symptoms live in
+	// the operator-facing copy and nowhere else.
+	//
+	// That copy is DIVERGENCES.md, "UPGRADING BREAKS EXISTING DATA FOR THE
+	// AFFECTED INDEXES, SILENTLY", which names this file back. The read
+	// behaviour is pinned by these two, each on its own line so that grep finds
+	// them -- wrapping a test name across a line break is exactly how a sweep
+	// comes back empty, which happened to this very comment:
+	//   TestPreUpgradeTrimmedEntryReadsBackWithAnEmptyPrimaryKey
+	//   TestPreUpgradeTrimmedEntryWithAPartialOverlapReadsBackAShortWrongPrimaryKey
+	for _, rt := range b.recordTypes {
+		for _, idx := range rt.indexes {
+			if idx.primaryKeyComponentPositions == nil {
+				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
+			}
+		}
+	}
+
+	// WHICH CONTAINERS ARE COPIED, AND WHY IT IS NOT "THE ONES JAVA COPIES".
+	//
+	// Java shares every index container with its builder, so the obvious rule
+	// is "share what Java shares". That rule is wrong here, and checking it at
+	// the level of WHICH FIELDS are passed rather than WHAT KIND OF CONTAINER
+	// is what made it look right: sharing is safe only when mutation is not
+	// in-place-destructive. Java's universalIndexes is a Map<String,Index> and
+	// removeIndex does a map removal, which both sides see cleanly. Go's is a
+	// SLICE and removeIndexFromSlice compacts it in place (`indexes[:0]`), so
+	// sharing the backing array means a post-Build RemoveIndex rewrites the
+	// built metadata's slice under it -- leaving one universal index DUPLICATED
+	// (store.go iterates GetUniversalIndexes on every save, so its maintainer
+	// runs twice, and for COUNT/SUM a double atomic ADD is not idempotent) and
+	// another ORPHANED, which is the very class the validation above refuses.
+	//
+	// So the containers are copied and the OBJECTS are shared. The pointer
+	// identity is what the call sites depend on when they hand a pre-Build
+	// *Index to ScanIndex, RebuildIndex or SetIndex, and it is what keeps
+	// OnlineIndexer's containment check an identity check rather than a name
+	// check. Copying the containers costs nothing and changes none of that.
+	//
+	// formerIndexes is copied for the same reason even though it is append-only
+	// today: it is correct by luck, one in-place mutation away from identical
+	// breakage, and the luck is not written down anywhere.
+	//
+	// The record-type slices are copied too, and that one IS a Go-only
+	// divergence rather than alignment. Java shares BOTH halves: the RecordType
+	// constructor assigns the builder's live lists (RecordType.java:70-71), and
+	// the registry map itself is stored by reference (RecordMetaData.java:155),
+	// so `indexes.remove(name)` takes the index out of the built metadata's
+	// registry too and `toProto` -- which seeds from `indexes.entrySet()`
+	// (RecordMetaData.java:664-665) -- never emits it. Java's post-build
+	// removeIndex is therefore a COHERENT removal, not a lossy one.
+	//
+	// COPY BOTH OR SHARE BOTH; THE MIXTURE IS WHAT BREAKS. Copying the registry
+	// while sharing the record-type slices is exactly the state that produces
+	// an index registered under a name no record type claims, whose ToProto
+	// emits an EMPTY record-type list that a reload reads as UNIVERSAL. This
+	// branch built that state once and spent three commits on it. Go now copies
+	// both, so it is coherent in the other direction: a snapshot at Build
+	// rather than Java's live view. Neither is obviously better; what this is
+	// NOT is a port, and it must not drift into a mixture. DIVERGENCES.md
+	// ("Go snapshots a record type's index lists; Java shares everything") has
+	// the full analysis.
 	types := make(map[string]*RecordType, len(b.recordTypes))
 	for k, v := range b.recordTypes {
-		types[k] = v
+		rt := *v
+		rt.indexes = append([]*Index(nil), v.indexes...)
+		rt.multiTypeIndexes = append([]*Index(nil), v.multiTypeIndexes...)
+		// A []byte record-type key shares its backing array through the struct
+		// copy, and that array is the type's on-disk PREFIX: mutating it after
+		// the duplicate-key check has passed moves every record of that type,
+		// or collides it with another. Java stores an immutable ByteString.
+		// make+copy, never append([]byte(nil), …), which returns NIL for an
+		// empty input -- nil is how this field spells "absent", so an
+		// empty-bytes key would stop serializing and the type would fall back
+		// to its union field number. TestRecordTypeKey_EmptyBytesSurvives
+		// ProtoRoundTrip pins that and has already caught this exact idiom here.
+		if raw, ok := v.explicitRecordTypeKey.([]byte); ok && raw != nil {
+			dup := make([]byte, len(raw))
+			copy(dup, raw)
+			rt.explicitRecordTypeKey = dup
+		}
+		types[k] = &rt
 	}
 	indexes := make(map[string]*Index, len(b.indexes))
 	for k, v := range b.indexes {
 		indexes[k] = v
+	}
+	universalIndexes := append([]*Index(nil), b.universalIndexes...)
+	formerIndexes := make([]*FormerIndex, len(b.formerIndexes))
+	for i, fi := range b.formerIndexes {
+		f := *fi
+		// Same trap one field over: SubspaceKey is `any`, so `f := *fi` copies
+		// the interface header and shares whatever it points at.
+		f.SubspaceKey = deepCopySubspaceKey(fi.SubspaceKey)
+		formerIndexes[i] = &f
+	}
+	// preserved is a struct of slices, so it is copied for the same reason
+	// formerIndexes is: nothing mutates it in place TODAY, and that is luck
+	// rather than a property. Both proto boundaries already clone, so this costs
+	// nothing and removes the one remaining container Build shared silently.
+	preserved := b.preserved
+	preserved.joinedRecordTypes = append([]*gen.JoinedRecordType(nil), b.preserved.joinedRecordTypes...)
+	preserved.unnestedRecordTypes = append([]*gen.UnnestedRecordType(nil), b.preserved.unnestedRecordTypes...)
+	preserved.userDefinedFunctions = append([]*gen.PUserDefinedFunction(nil), b.preserved.userDefinedFunctions...)
+	preserved.views = append([]*gen.PView(nil), b.preserved.views...)
+	if b.preserved.unknown != nil {
+		preserved.unknown = make([]byte, len(b.preserved.unknown))
+		copy(preserved.unknown, b.preserved.unknown)
+	}
+
+	var recordsSourceProto *descriptorpb.FileDescriptorProto
+	if b.recordsSourceProto != nil {
+		recordsSourceProto = proto.Clone(b.recordsSourceProto).(*descriptorpb.FileDescriptorProto)
 	}
 
 	// Validate no duplicate subspace keys among current indexes.
@@ -1005,33 +1387,6 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	// RecordTypeKeyExpression resolves the key from the record's own type at
 	// evaluation time, exactly as Java's does, which needs no binding at all.
 
-	// Compute primaryKeyComponentPositions for each index.
-	// For each record type that has this index, compute the overlap between
-	// the index key expression and the primary key. If a primary key component
-	// already appears in the index key, it is deduplicated from the index entry.
-	// Matches Java's RecordMetaDataBuilder which calls buildPrimaryKeyComponentPositions().
-	for _, rt := range types {
-		for _, idx := range rt.indexes {
-			if idx.primaryKeyComponentPositions == nil {
-				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
-			}
-		}
-		for _, idx := range rt.multiTypeIndexes {
-			if idx.primaryKeyComponentPositions == nil {
-				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
-			}
-		}
-	}
-	// Universal indexes: use the first record type's primary key (they should all match)
-	for _, idx := range b.universalIndexes {
-		if idx.primaryKeyComponentPositions == nil {
-			for _, rt := range types {
-				idx.primaryKeyComponentPositions = buildPrimaryKeyComponentPositions(idx.RootExpression, rt.PrimaryKey)
-				break
-			}
-		}
-	}
-
 	// Pre-compute union field numbers and message factories for direct wire
 	// format encoding/decoding (skips UnionDescriptor allocation entirely).
 	fnToRT := make(map[protowire.Number]*RecordType, len(types))
@@ -1055,19 +1410,19 @@ func (b *RecordMetaDataBuilder) Build() (*RecordMetaData, error) {
 	md := &RecordMetaData{
 		recordTypes:             types,
 		fileDescriptor:          b.fileDescriptor,
-		recordsSourceProto:      b.recordsSourceProto,
+		recordsSourceProto:      recordsSourceProto,
 		version:                 b.version,
 		recordCountKey:          b.recordCountKey,
 		storeRecordVersions:     b.storeRecordVersions,
 		splitLongRecords:        b.splitLongRecords,
 		indexes:                 indexes,
-		universalIndexes:        b.universalIndexes,
-		formerIndexes:           b.formerIndexes,
+		universalIndexes:        universalIndexes,
+		formerIndexes:           formerIndexes,
 		unionDescriptor:         b.unionDescriptor,
 		fieldNumberToRecordType: fnToRT,
 		subspaceKeyCounter:      b.subspaceKeyCounter,
 		usesSubspaceKeyCounter:  b.counterBasedSubspaceKeys,
-		preserved:               b.preserved,
+		preserved:               preserved,
 	}
 
 	// Sliding-window (top-N vector) index validation. Runs on the assembled
@@ -1554,8 +1909,14 @@ func (m *RecordMetaData) UsesSubspaceKeyCounter() bool {
 // including both single-type and multi-type indexes.
 // Does NOT include universal indexes — use GetUniversalIndexes() for those.
 // Matches Java's RecordType.getAllIndexes().
+//
+// Resolves through GetRecordType rather than indexing the map, so a caller
+// holding the SQL identifier for a type stored under its escaped protobuf name
+// gets that type's indexes instead of nil. A raw lookup here returns "this type
+// has no indexes", which is a silent wrong answer wherever the result feeds an
+// index-selection decision.
 func (m *RecordMetaData) GetIndexesForRecordType(name string) []*Index {
-	rt := m.recordTypes[name]
+	rt := m.GetRecordType(name)
 	if rt == nil {
 		return nil
 	}
@@ -1799,6 +2160,61 @@ func normalizeSubspaceKey(key any) any {
 		// trivial and the alternative is a surprise panic if the input
 		// ever takes that shape.
 		return fmt.Sprintf("%v", k)
+	default:
+		return key
+	}
+}
+
+// deepCopySubspaceKey returns a subspace key that shares no mutable state with
+// its argument.
+//
+// THE SHAPES ARE TAKEN FROM THE DECODER, NOT FROM normalizeSubspaceKey. That
+// function is a normaliser for map-key hashing and its `default` arm returns
+// the key untouched, so it bounds nothing -- reading it as the authority on
+// "which shapes are reachable" is how the []byte-only version of this copy came
+// to describe itself as complete. The producers are `formerIndexFromProto`
+// (`fi.SubspaceKey = t[0]` off a decoded tuple) and `Index.SubspaceTupleKey`,
+// so the reachable set is what `fastDecodeTuple` can return for one element,
+// which is TWELVE shapes: nil, []byte, string, int64, uint64, *big.Int,
+// float32, float64, bool, tuple.UUID, tuple.Versionstamp, and a nested
+// tuple.Tuple. (`uint64` is easy to miss and was: `fastDecodeInt` returns it
+// for a positive value that overflows int64. It is immutable, so the code below
+// is unaffected -- but an enumeration is offered because it is checkable, and
+// the conclusion surviving does not make the list true.)
+//
+// Of those, exactly three carry mutable state: []byte, *big.Int (which has
+// in-place mutators -- Set, SetBytes, Add), and tuple.Tuple, which is []any and
+// so needs recursion rather than a one-level copy. UUID is [16]byte and
+// Versionstamp is [10]byte plus a uint16 -- both pure values that copy with the
+// struct.
+//
+// NOT COVERED: `Index.SetSubspaceKey` takes `any` and will accept a type no
+// decoder produces. A caller-supplied pointer type therefore stays shared, and
+// nothing here can fix that without reflection; it is bounded instead by the
+// key having to survive tuple encoding to reach FDB at all.
+func deepCopySubspaceKey(key any) any {
+	switch k := key.(type) {
+	case []byte:
+		if k == nil {
+			return key
+		}
+		dup := make([]byte, len(k))
+		copy(dup, k)
+		return dup
+	case *big.Int:
+		if k == nil {
+			return key
+		}
+		return new(big.Int).Set(k)
+	case tuple.Tuple:
+		if k == nil {
+			return key
+		}
+		dup := make(tuple.Tuple, len(k))
+		for i, elem := range k {
+			dup[i] = deepCopySubspaceKey(elem)
+		}
+		return dup
 	default:
 		return key
 	}

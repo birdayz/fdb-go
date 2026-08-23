@@ -7,7 +7,7 @@ import (
 
 // A `JOIN … USING (col)` desugars into a synthesized ON expression whose
 // terms qualify the columns by the two source aliases. Those aliases are
-// stored NORMALIZED (StripIdentifierQuotes: unquoted folded UPPER, quoted
+// stored NORMALIZED (NormalizeIdentifier: unquoted folded UPPER, quoted
 // verbatim), so splicing them into SQL text bare re-normalizes them: a
 // quoted-DDL alias `"e"` (stored `e`) folded to `E` and the synthesized ON
 // failed with `no FROM source aliased as E` — join-tests-outer.yamsql's

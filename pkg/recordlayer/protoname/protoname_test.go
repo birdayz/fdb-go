@@ -250,3 +250,47 @@ func TestSafeDecoderOverToleratesRepeats(t *testing.T) {
 		t.Errorf("a real collision must fall back to stored names, got %q", got)
 	}
 }
+
+// DECODING COLLIDES, and the witness has to be chosen against the rule that
+// derives the name -- which is the mistake this test exists to prevent.
+//
+// RFC-238 §7c argues that a decoded (SQL) spelling cannot serve as a memo
+// identity because two distinct stored names can present one. An earlier draft
+// of that argument paired a proto message named `A__1B` with a DDL table
+// declared `"A__1B"`, and it is wrong: the proto decodes to `A$B` while the DDL
+// table stores `A__01B` and decodes to `A__1B`, so the two never meet. The
+// argument survives, but only on a pair that actually collides.
+//
+// Both directions are pinned here because the docs cite both: protoname's own
+// package comment cites `__0_`/`___0`, and §7c cites `X__0__1Y`/`X____1Y`.
+func TestDecodeCollisionWitnesses(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct{ a, b, want string }{
+		// Cited by ToUserIdentifier's doc comment.
+		{"__0_", "___0", "___"},
+		// Cited by RFC-238 §7c. The scan replaces `__1` before `__0`, so the
+		// first loses its `__0` to `__` while the second keeps the two
+		// underscores it started with.
+		{"X__0__1Y", "X____1Y", "X__$Y"},
+	} {
+		gotA, gotB := ToUserIdentifier(c.a), ToUserIdentifier(c.b)
+		if gotA != c.want || gotB != c.want {
+			t.Errorf("%q and %q must BOTH decode to %q; got %q and %q.\n"+
+				"If the escaping changed, the non-injectivity argument in RFC-238 §7c\n"+
+				"and the collision note on ToUserIdentifier both need a new witness --\n"+
+				"they are load-bearing, not illustrative.", c.a, c.b, c.want, gotA, gotB)
+		}
+		if c.a == c.b {
+			t.Errorf("witness pair %q is not a pair", c.a)
+		}
+	}
+
+	// THE NON-WITNESS, kept so the corrected example cannot quietly revert to
+	// the wrong one. These decode APART, which is why they prove nothing about
+	// memo identity.
+	if a, b := ToUserIdentifier("A__1B"), ToUserIdentifier("A__01B"); a == b {
+		t.Errorf("A__1B and A__01B now decode alike (%q); RFC-238 §7c rejects this pair\n"+
+			"as a non-witness on exactly that ground and would need rewriting.", a)
+	}
+}

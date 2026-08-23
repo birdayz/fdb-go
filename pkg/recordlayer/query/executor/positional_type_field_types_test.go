@@ -66,14 +66,14 @@ func TestPositionalTypeForDescriptorCarriesDeclaredFieldTypes(t *testing.T) {
 		name string
 		code values.TypeCode
 	}{
-		{"ID", values.TypeCodeLong},
-		{"N32", values.TypeCodeInt},
-		{"D", values.TypeCodeDouble},
-		{"E", values.TypeCodeFloat},
-		{"S", values.TypeCodeString},
-		{"B", values.TypeCodeBytes},
-		{"FLAG", values.TypeCodeBoolean},
-		{"DS", values.TypeCodeArray},
+		{"id", values.TypeCodeLong},
+		{"n32", values.TypeCodeInt},
+		{"d", values.TypeCodeDouble},
+		{"e", values.TypeCodeFloat},
+		{"s", values.TypeCodeString},
+		{"b", values.TypeCodeBytes},
+		{"flag", values.TypeCodeBoolean},
+		{"ds", values.TypeCodeArray},
 	}
 	if len(rt.Fields) != len(want) {
 		t.Fatalf("layout has %d fields, want %d: %s", len(rt.Fields), len(want), rt.String())

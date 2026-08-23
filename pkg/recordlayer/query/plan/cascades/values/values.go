@@ -1648,7 +1648,9 @@ func NestedResolvedPath(v Value) (string, bool) {
 	if !ok || fv.Resolved == nil || len(fv.Resolved.Accessors) <= 1 {
 		return "", false
 	}
-	return strings.ToUpper(ColumnNameValue(fv)), true
+	// Verbatim, like every other naming authority: a nested path is built from
+	// the accessors' own Field text, and those come from the descriptor.
+	return ColumnNameValue(fv), true
 }
 
 // ProjectionColumnName is the projection output-column NAMING CONTRACT: the
@@ -1689,7 +1691,11 @@ func ProjectionColumnName(v Value) string {
 	if fv, ok := v.(*fieldValue); ok {
 		return fv.Field
 	}
-	return strings.ToUpper(ColumnNameValue(v))
+	// Verbatim, like the two arms above it. A computed column's name is a
+	// RENDERING of the expression, and both the writer of the slot and every
+	// re-reader derive it from this one function — so folding buys nothing and
+	// costs the case of any quoted identifier the expression mentions.
+	return ColumnNameValue(v)
 }
 
 // OutputColumnName is the projection OUTPUT-name authority: the name that keys
@@ -1704,7 +1710,11 @@ func ProjectionColumnName(v Value) string {
 // valid SQL, no fallback by design). Both sites delegate here.
 func OutputColumnName(v Value, alias string) string {
 	if alias != "" {
-		return strings.ToUpper(alias)
+		// The alias is taken VERBATIM. It reaches here already normalized by
+		// the parse capture — unquoted folded UPPER, quoted kept as authored —
+		// so a second fold can only destroy the quoted case, and `AS "x"` then
+		// names the slot X, which is a name no reference to it can spell.
+		return alias
 	}
 	return ProjectionColumnName(v)
 }
@@ -1727,13 +1737,19 @@ func OutputColumnName(v Value, alias string) string {
 // a last-dot split would tear that name in half.
 func DisplayColumnName(v Value, alias string) string {
 	if alias != "" {
-		return strings.ToUpper(alias)
+		return alias
 	}
 	if field, ok := v.(*fieldValue); ok && field.Resolved != nil &&
 		len(field.Resolved.Accessors) > 0 {
 		leaf := field.Resolved.Accessors[len(field.Resolved.Accessors)-1].Field
 		if leaf != "" {
-			return strings.ToUpper(leaf)
+			// VERBATIM. The accessor's Field is the name the referenced column
+			// declares; folding it here published a derived table's column
+			// under a spelling its own source does not have, which is a
+			// disagreement between the scope and the plan about one row —
+			// reported at runtime as `edge lookup D: read as RECORD(id,k),
+			// declared RECORD(ID,K)` on valid SQL.
+			return leaf
 		}
 	}
 	return ProjectionColumnName(v)

@@ -160,15 +160,15 @@ func TestProtoToPositional_ShadowsMap(t *testing.T) {
 		t.Fatalf("protoToPositional shadow mismatch on field %q", bad)
 	}
 	// A set field occupies its schema slot.
-	if v, ok := getByName(row, "VAL_STRING"); !ok || v != "alice" {
+	if v, ok := getByName(row, "val_string"); !ok || v != "alice" {
 		t.Fatalf("VAL_STRING = (%v,%v), want (alice,true)", v, ok)
 	}
 	// An unset field is NULL, present as a nil slot (not absent) — the positional
 	// row is dense over the schema, unlike the sparse map.
-	if v, ok := getByName(row, "VAL_INT32"); !ok || v != nil {
+	if v, ok := getByName(row, "val_int32"); !ok || v != nil {
 		t.Fatalf("unset VAL_INT32 = (%v,%v), want (nil,true)", v, ok)
 	}
-	if _, present := m["VAL_INT32"]; present {
+	if _, present := m["val_int32"]; present {
 		t.Fatal("protoToMap should omit the unset VAL_INT32 key (sparse map)")
 	}
 }
@@ -193,7 +193,7 @@ func TestProtoToPositional_EmptyRepeatedIsEmptyArray(t *testing.T) {
 	// Never set -> zero elements -> nothing on the wire.
 	msg := &gen.Order{OrderId: proto.Int64(1)}
 	row := protoToPositional(msg)
-	v, ok := getByName(row, "TAGS")
+	v, ok := getByName(row, "tags")
 	if !ok {
 		t.Fatal("TAGS not in the positional row")
 	}
@@ -209,10 +209,10 @@ func TestProtoToPositional_EmptyRepeatedIsEmptyArray(t *testing.T) {
 	// field that is genuinely unset is still NULL — the repeated-first branch
 	// must not flatten real absence.
 	pop := protoToPositional(&gen.Order{OrderId: proto.Int64(2), Tags: []string{"a", "b"}})
-	if v, ok := getByName(pop, "TAGS"); !ok || !reflect.DeepEqual(v, []any{"a", "b"}) {
+	if v, ok := getByName(pop, "tags"); !ok || !reflect.DeepEqual(v, []any{"a", "b"}) {
 		t.Fatalf("populated TAGS = (%#v,%v), want ([a b],true)", v, ok)
 	}
-	if v, ok := getByName(row, "PRICE"); !ok || v != nil {
+	if v, ok := getByName(row, "price"); !ok || v != nil {
 		t.Fatalf("unset singular PRICE = (%#v,%v), want (nil,true)", v, ok)
 	}
 	// The name-keyed oracle agrees on every field, empty array included.

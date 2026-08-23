@@ -1041,7 +1041,7 @@ func TestProjectionPlan_AliasesAreSemanticIdentity(t *testing.T) {
 	}
 	aliased := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
-			[]values.Value{readA}, []string{"output_alias"}, stub("Inner"))
+			[]values.Value{readA}, []string{"OUTPUT_ALIAS"}, stub("Inner"))
 	})
 	aliasedTwin := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
 		return NewRecordQueryProjectionPlanWithAliases(
@@ -1051,6 +1051,18 @@ func TestProjectionPlan_AliasesAreSemanticIdentity(t *testing.T) {
 		return NewRecordQueryProjectionPlanWithAliases(
 			[]values.Value{readB}, []string{"OTHER_ALIAS"}, stub("Inner"))
 	})
+
+	// TWO SPELLINGS OF AN ALIAS ARE TWO ALIASES — the plan-side twin of the
+	// same inversion in TestLogicalProjection_AliasesAreSemanticIdentity. The
+	// output-name authority no longer folds, so a surviving case difference
+	// came from two different QUOTED aliases and names two different columns.
+	caseTwin := mustChecked(t, func() (*RecordQueryProjectionPlan, error) {
+		return NewRecordQueryProjectionPlanWithAliases(
+			[]values.Value{readB}, []string{"output_alias"}, stub("Inner"))
+	})
+	if aliased.EqualsPlanWithoutChildren(caseTwin) {
+		t.Fatal(`AS "output_alias" and AS "OUTPUT_ALIAS" name different columns and must not be one plan identity`)
+	}
 
 	if !aliased.EqualsPlanWithoutChildren(aliasedTwin) {
 		t.Fatal("aliases producing the same executor-visible output name reported unequal")

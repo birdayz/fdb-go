@@ -1,0 +1,53 @@
+# escaped_table_grouped_aggregate.yaml
+#
+# RFC-238 §7c PREDICTS FIVE MATCHING GATES TURN ON when the escaped-name
+# divergence is fixed, and licenses the resulting plan movement as "CORRECT
+# rather than drift". That sentence is the one that would wave a wide golden
+# diff through unexamined at fix time, so the shape it predicts about is
+# measured here rather than only argued about.
+#
+# The shape is the one the streaming-aggregate and aggregate-data-access gates
+# need: an escaped table, a covering index over the grouping column, and a
+# grouped query. `u` is the same query over an UNESCAPED table, and the pair is
+# the whole point — a difference between them is the divergence, and a plan
+# that is poor for BOTH is something else entirely.
+#
+# Recorded at the values they HAVE. If the escaped arm ever gains the access
+# path the unescaped one has, that is §7c landing, and this file is one of the
+# places that must move with it.
+name: escaped_table_grouped_aggregate
+schema_template: |
+  CREATE TABLE "AGG$T" (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE u (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX agg_g ON "AGG$T" (g)
+  CREATE INDEX u_g ON u (g)
+setup:
+  - INSERT INTO "AGG$T" VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
+  - INSERT INTO u VALUES (1, 10, 100), (2, 10, 200), (3, 20, 300)
+tests:
+  # The unescaped control: whatever access path this schema affords, `u` gets
+  # it.
+  - query: SELECT g, COUNT(*) FROM u GROUP BY g ORDER BY g
+    plan_contains: "StreamingAgg(keys=[_current.G#1], IndexScan(U_G, [*] COVERING))"
+    rows:
+      - [10, 2]
+      - [20, 1]
+
+  # The escaped table, same query. Rows must match the control — the divergence
+  # §7c is about costs an access path, never an answer.
+  - query: SELECT g, COUNT(*) FROM "AGG$T" GROUP BY g ORDER BY g
+    plan_contains: "StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(AGG$T)))"
+    rows:
+      - [10, 2]
+      - [20, 1]
+
+  # And a grouped MAX, which reaches a different gate than COUNT does.
+  - query: SELECT g, MAX(v) FROM u GROUP BY g ORDER BY g
+    rows:
+      - [10, 200]
+      - [20, 300]
+
+  - query: SELECT g, MAX(v) FROM "AGG$T" GROUP BY g ORDER BY g
+    rows:
+      - [10, 200]
+      - [20, 300]

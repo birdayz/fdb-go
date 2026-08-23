@@ -1617,8 +1617,25 @@ func executeTypeFilter(
 	if err != nil {
 		return nil, err
 	}
+	// Key the set on the RESOLVED name. The predicate below compares against
+	// FDBStoredRecord.RecordType.Name, which is the STORED spelling, while
+	// GetRecordTypes() is only as normalised as whoever built the plan made it:
+	// RecordQueryScanPlan carries the SQL table name straight from the
+	// translator, so the same accessor means different namespaces on two plan
+	// types. A raw comparison then filters out every row and returns zero,
+	// which is the silent shape -- no error, an empty result that reads as "no
+	// records of this type". Resolving here is the same one-line rule
+	// ScanRecordsByType applies, and it leaves an unresolvable name matching
+	// nothing, exactly as before.
 	allowed := make(map[string]bool, len(p.GetRecordTypes()))
+	md := store.GetRecordMetaData()
 	for _, rt := range p.GetRecordTypes() {
+		if md != nil {
+			if resolved := md.GetRecordType(rt); resolved != nil {
+				allowed[resolved.Name] = true
+				continue
+			}
+		}
 		allowed[rt] = true
 	}
 
@@ -4059,12 +4076,16 @@ func isNumeric(v any) bool {
 // aggResultName derives the canonical group-result slot key for an aggregate,
 // delegating to the single naming authority (expressions.AggregateResultColumnName)
 // so the executor's emitted slot name and the translator's baked ordinal derive
-// from ONE rule. It ToUppers the rendered name, which FOLDS two aggregates that
-// differ only in a case-sensitive token (e.g. a string literal: `COUNT(CASE WHEN
-// s='x' …)` vs `…'X'…`) into ONE slot — finalizeGroup then writes both under the
-// same key. Currently a LATENT silent-wrong (grouped CASE aggregation does not
-// compute in this engine), not a live one; part of the read-surface uppercasing
-// family booked in TODO.md.
+// from ONE rule.
+//
+// IT NO LONGER FOLDS, and the collision this comment used to describe is gone
+// with the fold. The old text said the authority ToUppers its rendered name,
+// so two aggregates differing only in a case-sensitive token (a string literal:
+// `COUNT(CASE WHEN s='x' …)` vs `…'X'…`) collapsed into ONE slot and
+// finalizeGroup wrote both under the same key — a latent silent-wrong, since
+// grouped CASE aggregation does not compute in this engine. The authority is
+// verbatim now (RFC-237 §8), so those two aggregates key apart and the latent
+// collision is closed rather than still pending.
 func aggResultName(agg expressions.AggregateSpec) string {
 	return expressions.AggregateResultColumnName(agg)
 }
@@ -5994,18 +6015,25 @@ func executeInMemorySort(
 
 // recursiveUnionOutputColumns returns the OUTPUT column names of a recursive
 // union leg by walking to its outermost projection plan and reading each slot's
-// alias (or the projection column name when unaliased), upper-cased. Returns nil
+// alias (or the projection column name when unaliased), VERBATIM. Returns nil
 // when no single-child path reaches a projection (e.g. a SELECT * seed), so the
 // caller falls back to the first row's layout. Used to restrict UNION DISTINCT
 // dedup to the CTE's real output columns (cteDedupKeyer), ignoring inert extra
 // columns the temp-table normalization may carry.
+//
+// Two things it must not do, and it did both. It upper-folded, which made the
+// dedup key ask a verbatim-named row for a name it does not carry — see
+// cteDedupKeyer for the wrong answer that produced. And it wrote the folded
+// names back into the slice `GetOutputNames()` handed out, mutating the PLAN's
+// own output schema from an executor helper: a defensive copy is not a
+// tidiness preference here, it is the difference between reading a plan and
+// rewriting one.
 func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 	for cur := p; cur != nil; {
 		if proj, ok := cur.(*plans.RecordQueryProjectionPlan); ok {
-			out := proj.GetOutputNames()
-			for i := range out {
-				out[i] = strings.ToUpper(out[i])
-			}
+			names := proj.GetOutputNames()
+			out := make([]string, len(names))
+			copy(out, names)
 			return out
 		}
 		children := cur.GetChildren()
@@ -6028,16 +6056,26 @@ func recursiveUnionOutputColumns(p plans.RecordQueryPlan) []string {
 // Go extension: Java's recursive union has
 // no DISTINCT arm (RecordQueryRecursiveLevelUnionPlan is UNION ALL only).
 type cteDedupKeyer struct {
-	cols []string // canonical output columns, UPPER-cased
+	// cols are the canonical output columns VERBATIM — the spelling the plan
+	// declares, not a folded copy of it.
+	//
+	// This folded, and the failure was a WRONG ANSWER rather than an error. The
+	// bind below is `FieldIndexUnique`, an EXACT name lookup against the row's
+	// own layout: for a recursive CTE whose alias list is quoted lower-case the
+	// row declares `n` while the folded key asked for `N`, so every column bound
+	// dedupOrdAbsent, every row keyed as all-NULL, and UNION DISTINCT collapsed
+	// the entire result to one row. `WITH RECURSIVE r("n") AS (seed UNION …)`
+	// returned [1] where [1,2,3] was correct; the unquoted `r(n)` control
+	// returned all three, which is what makes it a case bug rather than a
+	// recursion bug.
+	cols []string
 	ords map[*values.RecordType][]int
 }
 
 func newCTEDedupKeyer(cols []string) *cteDedupKeyer {
-	upper := make([]string, len(cols))
-	for i, c := range cols {
-		upper[i] = strings.ToUpper(c)
-	}
-	return &cteDedupKeyer{cols: upper, ords: make(map[*values.RecordType][]int)}
+	canonical := make([]string, len(cols))
+	copy(canonical, cols)
+	return &cteDedupKeyer{cols: canonical, ords: make(map[*values.RecordType][]int)}
 }
 
 // dedupOrdAbsent and dedupOrdAmbiguous are the two NON-ordinal outcomes of

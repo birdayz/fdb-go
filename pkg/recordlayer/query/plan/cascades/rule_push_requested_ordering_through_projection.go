@@ -1,12 +1,9 @@
 package cascades
 
 import (
-	"strings"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PushRequestedOrderingThroughProjectionRule is a PLANNING-phase
@@ -58,25 +55,18 @@ func (r *PushRequestedOrderingThroughProjectionRule) OnMatch(call *Implementatio
 		return
 	}
 
-	// Build the projection's result value as a RecordConstructorValue.
-	// Each field maps an output alias to its projected expression.
-	projValues := proj.GetProjectedValues()
-	aliases := proj.GetAliases()
-	fields := make([]values.RecordConstructorField, len(projValues))
-	for i, v := range projValues {
-		name := ""
-		if i < len(aliases) {
-			name = aliases[i]
-		}
-		if name == "" {
-			name = values.ExplainValue(v)
-		}
-		fields[i] = values.RecordConstructorField{
-			Name:  strings.ToUpper(name),
-			Value: v,
-		}
-	}
-	resultValue := values.NewRecordConstructorValue(fields...)
+	// The projection's OWN result value, not a second construction of it.
+	//
+	// This rule used to rebuild the RecordConstructorValue from the projected
+	// values and aliases, with its own naming rule — upper-folded, and
+	// ExplainValue for an unaliased slot. Both halves disagreed with the
+	// projection's actual naming authority (OutputColumnName, which folds
+	// nothing and renders an unaliased slot ordinal-free), so the requested
+	// ordering was translated through a record whose field names did not
+	// match the ones the reference names. It dropped and the ordering was
+	// never pushed. Asking the expression for the row it produces is the
+	// only construction that cannot drift from it.
+	resultValue := proj.GetResultValue()
 
 	// The alias is the quantifier alias between the projection and its
 	// parent — the projection's inner quantifier.
