@@ -245,6 +245,59 @@ jobs:
           ORACLE=$(realpath bazel-bin/cmd/fdb-diff-oracle/diff-oracle)
           DIFF_ORACLE_BIN="$ORACLE" ${{ steps.go-sdk.outputs.go-bin }} test -run='TestDiff|^Fuzz' -v -count=1 ./cmd/fdb-diff-oracle/
 
+  frl-go-install:
+    name: go install lane (cmd/frl, GOWORK=off)
+    runs-on: hetzner-fdb-vm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cmd/frl/go.mod
+          cache: false
+
+      # The lane for the ONE build configuration no other job here exercises:
+      # what `go install fdb.dev/cmd/frl@latest` actually compiles.
+      #
+      # cmd/frl is a nested Go module. Every other lane builds it through the
+      # workspace -- go.work for `go build`, the source tree for Bazel -- and the
+      # workspace resolves fdb.dev to the checkout, so the `fdb.dev` REQUIREMENT
+      # in cmd/frl/go.mod is never consulted. Users get the opposite: go.work
+      # does not ship, replace directives are rejected in module mode, and the
+      # pin is the only thing that decides which library their binary is built
+      # against. That single unexercised requirement is the whole install path
+      # for anyone without this repo checked out.
+      #
+      # Left unwatched it went stale for 15 days and `go install
+      # fdb.dev/cmd/frl@latest` did not compile for any of them -- ten undefined
+      # symbols, master green the entire time, because nothing in CI ever built
+      # this configuration. It was invisible rather than unnoticed: the release
+      # workflow does build GOWORK=off and would have caught it, but it is
+      # tag-triggered and no tag existed, so the check that was supposed to cover
+      # this ran zero times. A gate that never runs reports nothing, which reads
+      # exactly like a gate that found nothing.
+      #
+      # frl-pin-bump.yml keeps the pin fresh; this makes a stale one LOUD, which
+      # is the half that was missing -- the bot's PR sat open and unmerged for
+      # those 15 days precisely because nothing was red.
+      #
+      # A PR that teaches cmd/frl to use a symbol newer than the pin fails here,
+      # and that is the correct verdict, not a false positive: such a change
+      # breaks `go install ...@latest` the moment it merges. Land the pkg/ side
+      # first, let the pin bump, then land the cmd/frl side.
+      - name: Build cmd/frl the way `go install` builds it
+        working-directory: cmd/frl
+        env:
+          GOWORK: "off"
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          echo "fdb.dev pin: $(go list -m -f '{{.Version}}' fdb.dev)"
+          go build -trimpath ./...
+          go vet ./...
+
   govulncheck:
     name: Vulnerability scan
     runs-on: hetzner-fdb-vm

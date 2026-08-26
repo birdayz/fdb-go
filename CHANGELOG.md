@@ -10,10 +10,23 @@ shared-cluster hard line — see `RELEASE.md`). Every entry's **Compatibility** 
 questions a user upgrading between two refs needs: wire format, SQL behaviour, FDB client option
 semantics, and required dependency versions.
 
-This changelog starts **2026-06-20**; earlier history is in `git log`. There are **no tagged
-releases yet** — cutting the first `v0.x` tag is the maintainer's decision (`RELEASE.md` §Versioning).
+This changelog starts **2026-06-20**; earlier history is in `git log`. The first tagged release is
+**v0.1.0** (2026-08-26). The `frl` CLI ships from a parallel nested-module tag, `cmd/frl/v0.1.0` —
+that form is what makes `go install fdb.dev/cmd/frl@vX.Y.Z` resolve the same build the release
+assets carry (`RELEASE.md` §Versioning).
 
 ## [Unreleased]
+
+### Compatibility
+- **Wire format:** unchanged since v0.1.0 — records, indexes, versions, continuations, and split
+  records remain byte-identical to Java `fdb-record-layer-core` 4.12.11.0.
+- **SQL behaviour:** unchanged since v0.1.0.
+- **FDB client option semantics:** unchanged since v0.1.0; the honored / `UnsupportedOptionError` /
+  safe-no-op classification in `pkg/fdbgo/fdb/OPTIONS.md` still holds against `libfdb_c` 7.3.77.
+- **Required versions:** Java `fdb-record-layer-core` **4.12.11.0**, FDB C++ client **7.3.77**, Go
+  **1.26.x** (the `MODULE.bazel` / `go.mod` pins; the CI doc-guard enforces docs match them).
+
+## [v0.1.0] - 2026-08-26
 
 ### Added
 - **Record-layer metrics exporter** (`pkg/recordlayer/rlmetrics`): `StoreTimer` (the port of Java's

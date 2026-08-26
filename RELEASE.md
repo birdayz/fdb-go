@@ -26,9 +26,9 @@ asserts a version other than those pins.
 
 - The **latest tagged minor** is supported; security and correctness fixes land there.
 - Older minors are best-effort only until `v1`.
-- **Until the first tag is cut, the only supported ref is the latest `master`** — pin a commit and
-  run the conformance + cross-engine differential + binding-stress suites against your workload
-  before relying on it (consistent with `SECURITY.md`).
+- The first tag is **v0.1.0** (2026-08-26), so `v0.1.0` is the supported ref; `master` remains
+  supported as the development ref. Pre-1.0 the Go API can still move under you between minors —
+  pin a version and read `CHANGELOG.md` before upgrading (consistent with `SECURITY.md`).
 - Security fixes follow `SECURITY.md` (private report → fix on the latest minor / `master` → disclose).
 
 ## Cutting a release (checklist)

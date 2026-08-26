@@ -34,10 +34,9 @@ This project is **pre-1.0 and not yet declared production-ready** (see
 
 ## Supported versions
 
-See **`RELEASE.md`** for the full versioning & support-window policy. In short: there are no
-tagged releases yet, so until the first tag is cut **only the latest `master` is supported** — pin
-a commit and run the conformance + differential + stress suites against it before relying on it.
-Security fixes land on the latest supported ref.
+See **`RELEASE.md`** for the full versioning & support-window policy. In short: the latest tagged
+minor is supported — currently **v0.1.0** — and `master` is supported as the development ref.
+Older minors are best-effort until `v1`. Security fixes land on the latest supported ref.
 
 ## Dependencies
 
