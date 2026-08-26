@@ -79,19 +79,15 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 cleanup() { [ -n "$WORK_DIR" ] && rm -rf "$WORK_DIR"; }
 
-# fetch <url> <dest-file>; fetch_stdout <url>
+# fetch <url> <dest-file>. Everything this script downloads lands in a file,
+# including the release-list JSON: a to-stdout variant can only be consumed
+# through a pipe, and a pipe's exit status hides the fetch's (see
+# resolve_version).
 fetch() {
     if have curl; then
         curl -fsSL --retry 3 --connect-timeout 15 -o "$2" "$1"
     else
         wget -q -O "$2" "$1"
-    fi
-}
-fetch_stdout() {
-    if have curl; then
-        curl -fsSL --retry 3 --connect-timeout 15 "$1"
-    else
-        wget -q -O - "$1"
     fi
 }
 
@@ -147,24 +143,66 @@ detect_platform() {
 
 resolve_version() {
     [ "$VERSION" != "latest" ] && return 0
+
+    # Three outcomes have to stay TELLABLE APART, because they have three
+    # different fixes: the query never got an answer, the query was answered and
+    # the project has published nothing at all, and the query was answered with
+    # releases that are not this CLI's.
+    #
+    # Piping the fetch straight into grep collapses all three. A pipeline's exit
+    # status is its LAST command's, so `curl | grep | sed | head` reports head's
+    # 0 no matter how the fetch went, and every outcome arrives here identically:
+    # as an empty VERSION. Whatever single message that emptiness then printed
+    # was a guess, and for the whole period this repository had no releases it
+    # guessed wrong -- it blamed rate-limiting and prescribed FRL_VERSION=v0.1.0,
+    # a tag that did not exist, so following the advice produced a 404 and a
+    # second wrong diagnosis on top of the first.
+    #
+    # So: fetch to a file, check the fetch on its own, then classify the body.
+    releases="$WORK_DIR/releases.json"
+    if ! fetch "$API_URL/releases?per_page=100" "$releases"; then
+        die "could not reach the GitHub release API at $API_URL.
+       Offline, behind a proxy, or rate-limited (60 requests/hour unauthenticated)?
+       Retry, or skip the lookup by pinning a version:
+         FRL_VERSION=vX.Y.Z sh install.sh
+       Releases: $REPO_URL/releases
+       Or build from source: go install fdb.dev/cmd/frl@latest"
+    fi
+
     # Newest stable cmd/frl/v* release. The API returns releases newest-first;
     # take the first stable-looking tag (the [0-9.]* pattern stops at the
     # hyphen in -rc/-beta prereleases, so those never match).
-    VERSION=$(fetch_stdout "$API_URL/releases?per_page=100" 2>/dev/null |
-        grep -o '"tag_name"[^,]*' |
+    tags=$(grep -o '"tag_name"[^,]*' "$releases")
+    VERSION=$(printf '%s\n' "$tags" |
         sed -n 's|.*"'"$TAG_PREFIX"'\(v[0-9][0-9.]*\)".*|\1|p' |
         head -n1)
-    [ -n "$VERSION" ] || die "could not find a frl release at $API_URL.
-       If you're rate-limited or offline, pin one: FRL_VERSION=v0.1.0
-       Releases: $REPO_URL/releases. Or build from source: go install fdb.dev/cmd/frl@latest"
+
+    if [ -z "$VERSION" ]; then
+        if [ -z "$tags" ]; then
+            die "$REPO_URL has published no releases, so there is no binary to install.
+       The release list was fetched successfully and is empty -- this is not a
+       network or rate-limit problem, and no FRL_VERSION pin will help.
+       Build from source instead (same binary, needs the Go toolchain):
+         go install fdb.dev/cmd/frl@latest"
+        fi
+        die "$REPO_URL has releases, but none tagged ${TAG_PREFIX}vX.Y.Z --
+       the frl CLI has not been released from this repository yet.
+       Build from source instead: go install fdb.dev/cmd/frl@latest"
+    fi
     info "latest release: frl $VERSION"
+}
+
+# make_workdir runs before resolve_version, which needs somewhere to land the
+# release-list response: reading that body is what lets an empty list and a
+# failed request be reported as the different things they are.
+make_workdir() {
+    WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/frl-install.XXXXXX") || die "mktemp failed"
+    trap cleanup EXIT
+    trap 'exit 130' INT TERM
 }
 
 download_and_verify() {
     ASSET="frl_${VERSION}_${OS}_${ARCH}.tar.gz"
-    WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/frl-install.XXXXXX") || die "mktemp failed"
-    trap cleanup EXIT
-    trap 'exit 130' INT TERM
 
     # GitHub accepts the slashed tag raw in download URLs; fall back to the
     # %2F-encoded form just in case.
@@ -273,6 +311,7 @@ main() {
     have tar || die "need tar"
     [ "$UNINSTALL" = 1 ] && uninstall
     detect_platform
+    make_workdir
     resolve_version
     download_and_verify
     install_binary
