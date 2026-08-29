@@ -214,6 +214,8 @@ go_test(
         "select_result_mint_census_test.go",
         "semantic_hasher_identity_test.go",
         "simplifier_value_test.go",
+        "simplify_coalesce_carrier_test.go",
+        "simplify_semantics_fuzz_test.go",
         "source_relative_baked_test.go",
         "statement_clock_dependency_test.go",
         "swallow_axis_test.go",
