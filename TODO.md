@@ -20484,3 +20484,64 @@ DONE when: `Build` reads as an ordered list of named steps, the
 positions-before-copy dependency is expressed by call order rather than by a
 comment, and the extraction changes no behaviour — same tests, uncached, before
 and after.
+
+---
+
+## The CNF normalizer wired into the planner treats NOT as a leaf; Java's does not
+
+- [ ] Unify Go's two normal-form implementations on the exact Java port, so
+  `NormalizePredicatesRule` normalizes through a `NOT` over a connective.
+
+Java's `BooleanPredicateNormalizer` has ONE `isInNormalForm` — a `NOT` over
+anything that is not a variable is NOT in normal form
+(`BooleanPredicateNormalizer.java:284-289`) — and ONE
+`toNormalized(predicate, negate)` carrying a negate flag down through AND/OR,
+which is De Morgan. Both `normalize` and `normalizeAndSimplify`, and both CNF
+and DNF modes, route through them.
+
+Go split that into two implementations that disagree:
+
+| file | normal-form test / conversion | NOT over a connective |
+|---|---|---|
+| `normalize_dnf_exact.go` | `isInDNFStrict` + `toDNFNegated` | pushed (matches Java) |
+| `rule_normalize_predicates.go` | `isInCNF` / `isInDNF` + `toCNFNormalized` / `toDNFNormalized` | treated as a LEAF |
+
+`isLeafPredicate` (`rule_normalize_predicates.go:168-175`) returns true for a
+`NotPredicate`, so `AND(NOT(AND(a, b)), c)` reads as already-CNF and
+`normalizeCNF` declines. `NormalizePredicatesRule` — registered in the default
+pipeline at `default_rules.go:148` and `:178`, and a port of the Java rule that
+calls `normalizeAndSimplify` in CNF mode — therefore leaves the `NOT` standing
+where Java produces `(NOT a OR NOT b) AND c`.
+
+REACHABLE, not latent. The SQL resolver builds a plain `NotPredicate`
+(`expr.ResolveNot`, `pkg/relational/core/query/expr/expr.go:1874-1879`) and
+applies no De Morgan of its own, so the `NOT` arrives at the planner intact.
+`WHERE NOT (cat = 'A' OR cat = 'B')` is already in the corpus
+(`pkg/relational/conformance/yamsql/testdata/complex_where_java.yaml:62`).
+
+The consequence is plan quality, not wrong rows: the CNF shape is what
+`PredicateToLogicalUnionRule` needs to split a disjunction across index
+accesses, so a negated conjunction stays one opaque residual over a scan in Go
+and becomes independently matchable conjuncts in Java.
+
+MEASURED AND PINNED, so this entry cannot rot into an unverifiable claim:
+`TestNormalForm_NotOverConnective_TwoImplementationsDisagree`
+(`pkg/recordlayer/query/plan/cascades/normal_form_not_handling_test.go`) asserts
+the current disagreement on one input and asserts that the exact port pushes the
+same `NOT` through. It FAILS when this item is done, holding the whole
+measurement, and its doc comment points back here.
+
+Nothing has to be invented: the correct algorithm already exists in-tree as the
+DNF exact port. The work is generalizing it over Java's `Mode` (major/minor =
+AND/OR or OR/AND) and retiring the lax pair, which is the "no parallel
+pipelines" rule applied to one file.
+
+GATED, and that is why this is filed rather than fixed: closing it changes the
+planner's canonical predicate shape for every query containing a `NOT` over a
+connective — plans, goldens, the explaindiff corpus — which is a query-engine
+change and needs an RFC plus a Graefe ACK before merge.
+
+DONE when: one normal-form test and one negate-carrying conversion serve CNF and
+DNF and both entry points; `normalizeCNF` returns `(NOT a OR NOT b) AND c` for
+the input above; the pin test is replaced by that assertion; and the plan-shape
+diff has had its review lap.
