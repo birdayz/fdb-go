@@ -222,6 +222,7 @@ go_library(
 go_test(
     name = "cascades_test",
     srcs = [
+        "absorption_tiebreak_test.go",
         "abstract_data_access_rule_test.go",
         "aggregate_column_identity_test.go",
         "aggregate_group_existence_test.go",
@@ -1126,6 +1127,7 @@ go_test(
         "normal_form_not_handling_test.go",
         "normal_form_semantics_fuzz_test.go",
         "normal_form_writepath_baseline_test.go",
+        "absorption_tiebreak_test.go",
     ],
     deps = [
         "//gen",

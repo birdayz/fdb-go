@@ -267,9 +267,18 @@ func applyAbsorption(clauses [][]predicates.QueryPredicate) [][]predicates.Query
 			if i == j {
 				continue
 			}
-			// ci is absorbed if cj is a subset of ci (and ci is strictly larger,
-			// or same size with i > j to break ties).
-			if len(ci) > len(cj) || (len(ci) == len(cj) && i > j) {
+			// ci is absorbed if cj is a subset of ci and ci is strictly
+			// larger — or the two are the same size, where the tie-break
+			// decides which of two IDENTICAL clauses survives (equal size
+			// plus containsAll means equal sets, so this arm can mean
+			// nothing else).
+			//
+			// The tie-break is `i < j`, Java's (:461), and it is not
+			// arbitrary: it decides the surviving clause's POSITION, and
+			// position is the emitted child order. On `[A, X, A]`, `i < j`
+			// drops the first A and yields `[X, A]`; `i > j` drops the last
+			// and yields `[A, X]`. Go had the second.
+			if len(ci) > len(cj) || (len(ci) == len(cj) && i < j) {
 				if predicateSliceContainsAll(ci, cj) {
 					absorbed = true
 					break
