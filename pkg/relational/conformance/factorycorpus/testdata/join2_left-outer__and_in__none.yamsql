@@ -388,3 +388,567 @@ test_block:
           - {R_ID: 2, L_ID: 16, L_B: 0}
           - {R_ID: 10, L_ID: 16, L_B: 0}
           - {R_ID: 16, L_ID: 16, L_B: 0}
+#
+# scenario: fc_0001900190_q2_p0
+# generator: rowdiff-gen/2
+# seed: 1900190
+# query-index: 2
+# projection: 0
+# date: 2026-08-13
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=join2.left-outer;idx=A,A+B,C,S;proj=n16;where=and(in.in,in.in);order=none
+# plan-shape: 7d50b9e802a7cab2
+# dedup-key: acd0ced5e2dad3c8
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1900190 -seeds 1 -date 2026-08-13 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_ab ON T_RD (a, b) CREATE INDEX idx_s ON T_RD (s)
+---
+setup:
+  connect: 4
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 3, 0, 9, ' a', NULL, NULL, -16777216.0), (2, 9, 5, 4, ' a', TRUE, 6.0, 4.0), (3, 3, 5, 0, 'beta', FALSE, 7.0, 0.10000000149011612), (4, 4611686018427387904, 5, -1, 'beta', FALSE, 0.0, 8.0), (5, 1, 9, NULL, 'alpha', FALSE, 0.1, 9.0), (6, 7, 8, 0, 'b ', TRUE, 7.0, 3.0), (7, 4611686018427387904, 1, NULL, 'b ', TRUE, 3.0, 5.0), (8, 9, 8, 6, 'b ', FALSE, 4.0, NULL), (9, 9, 3, 7, NULL, TRUE, 7.0, NULL), (10, 8, 7, 6, '', FALSE, 1.0, NULL), (11, 9, 0, 4, 'gamma', FALSE, 1.0, 5.0), (12, 9, 1, 2, 'b ', TRUE, 9007199254740992.0, 3.0), (13, NULL, 4, 0, 'epsilon', TRUE, 3.0, 1.0), (14, 4, 1, 2, ' c ', FALSE, 0.0, 2.0), (15, NULL, 2, NULL, '', FALSE, -9007199254740992.0, NULL), (16, -1, 3, 0, NULL, TRUE, 4.0, 2.0), (17, 8, -1, NULL, ' a', TRUE, NULL, 2.0), (18, 6, 3, 3, 'epsilon', TRUE, 8.0, 8.0), (19, NULL, 2, 4, 'epsilon', NULL, 1.0, 0.0), (20, 2, 3, 3, 'beta', NULL, 0.1, 1.0), (21, NULL, 3, 2, 'delta', TRUE, 1.0, 1.0), (22, 2, -1, 6, 'b ', TRUE, NULL, 5.0), (23, NULL, 4611686018427387904, 9, NULL, TRUE, 2.0, -16777216.0)
+---
+test_block:
+  name: "fc_0001900190_q2_p0"
+  preset: single_repetition_ordered
+  connect: 4
+  tests:
+    - - query: |-
+          SELECT l.id AS l_id, l.a AS l_a, l.b AS l_b, l.c AS l_c, l.s AS l_s, l.f AS l_f, l.d AS l_d, l.e AS l_e, r.id AS r_id, r.a AS r_a, r.b AS r_b, r.c AS r_c, r.s AS r_s, r.f AS r_f, r.d AS r_d, r.e AS r_e FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a
+      - unorderedResult:
+          - {L_ID: 1, L_A: 3, L_B: 0, L_C: 9, L_S: " a", L_F: !null '', L_D: !null '', L_E: !f -1.6777216e+07, R_ID: 5, R_A: 1, R_B: 9, R_C: !null '', R_S: "alpha", R_F: false, R_D: 0.1, R_E: !f 9.0}
+          - {L_ID: 2, L_A: 9, L_B: 5, L_C: 4, L_S: " a", L_F: true, L_D: 6.0, L_E: !f 4.0, R_ID: 22, R_A: 2, R_B: -1, R_C: 6, R_S: "b ", R_F: true, R_D: !null '', R_E: !f 5.0}
+          - {L_ID: 2, L_A: 9, L_B: 5, L_C: 4, L_S: " a", L_F: true, L_D: 6.0, L_E: !f 4.0, R_ID: 20, R_A: 2, R_B: 3, R_C: 3, R_S: "beta", R_F: !null '', R_D: 0.1, R_E: !f 1.0}
+          - {L_ID: 3, L_A: 3, L_B: 5, L_C: 0, L_S: "beta", L_F: false, L_D: 7.0, L_E: !f 0.1, R_ID: 1, R_A: 3, R_B: 0, R_C: 9, R_S: " a", R_F: !null '', R_D: !null '', R_E: !f -1.6777216e+07}
+          - {L_ID: 3, L_A: 3, L_B: 5, L_C: 0, L_S: "beta", L_F: false, L_D: 7.0, L_E: !f 0.1, R_ID: 3, R_A: 3, R_B: 5, R_C: 0, R_S: "beta", R_F: false, R_D: 7.0, R_E: !f 0.1}
+          - {L_ID: 4, L_A: 4611686018427387904, L_B: 5, L_C: -1, L_S: "beta", L_F: false, L_D: 0.0, L_E: !f 8.0, R_ID: 14, R_A: 4, R_B: 1, R_C: 2, R_S: " c ", R_F: false, R_D: 0.0, R_E: !f 2.0}
+          - {L_ID: 5, L_A: 1, L_B: 9, L_C: !null '', L_S: "alpha", L_F: false, L_D: 0.1, L_E: !f 9.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 6, L_A: 7, L_B: 8, L_C: 0, L_S: "b ", L_F: true, L_D: 7.0, L_E: !f 3.0, R_ID: 18, R_A: 6, R_B: 3, R_C: 3, R_S: "epsilon", R_F: true, R_D: 8.0, R_E: !f 8.0}
+          - {L_ID: 7, L_A: 4611686018427387904, L_B: 1, L_C: !null '', L_S: "b ", L_F: true, L_D: 3.0, L_E: !f 5.0, R_ID: 6, R_A: 7, R_B: 8, R_C: 0, R_S: "b ", R_F: true, R_D: 7.0, R_E: !f 3.0}
+          - {L_ID: 8, L_A: 9, L_B: 8, L_C: 6, L_S: "b ", L_F: false, L_D: 4.0, L_E: !null '', R_ID: 17, R_A: 8, R_B: -1, R_C: !null '', R_S: " a", R_F: true, R_D: !null '', R_E: !f 2.0}
+          - {L_ID: 8, L_A: 9, L_B: 8, L_C: 6, L_S: "b ", L_F: false, L_D: 4.0, L_E: !null '', R_ID: 10, R_A: 8, R_B: 7, R_C: 6, R_S: "", R_F: false, R_D: 1.0, R_E: !null ''}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 11, R_A: 9, R_B: 0, R_C: 4, R_S: "gamma", R_F: false, R_D: 1.0, R_E: !f 5.0}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 12, R_A: 9, R_B: 1, R_C: 2, R_S: "b ", R_F: true, R_D: 9.007199254740992e+15, R_E: !f 3.0}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 9, R_A: 9, R_B: 3, R_C: 7, R_S: !null '', R_F: true, R_D: 7.0, R_E: !null ''}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 2, R_A: 9, R_B: 5, R_C: 4, R_S: " a", R_F: true, R_D: 6.0, R_E: !f 4.0}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 8, R_A: 9, R_B: 8, R_C: 6, R_S: "b ", R_F: false, R_D: 4.0, R_E: !null ''}
+          - {L_ID: 10, L_A: 8, L_B: 7, L_C: 6, L_S: "", L_F: false, L_D: 1.0, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 11, L_A: 9, L_B: 0, L_C: 4, L_S: "gamma", L_F: false, L_D: 1.0, L_E: !f 5.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 12, L_A: 9, L_B: 1, L_C: 2, L_S: "b ", L_F: true, L_D: 9.007199254740992e+15, L_E: !f 3.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 13, L_A: !null '', L_B: 4, L_C: 0, L_S: "epsilon", L_F: true, L_D: 3.0, L_E: !f 1.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 14, L_A: 4, L_B: 1, L_C: 2, L_S: " c ", L_F: false, L_D: 0.0, L_E: !f 2.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 15, L_A: !null '', L_B: 2, L_C: !null '', L_S: "", L_F: false, L_D: -9.007199254740992e+15, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 16, L_A: -1, L_B: 3, L_C: 0, L_S: !null '', L_F: true, L_D: 4.0, L_E: !f 2.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 17, L_A: 8, L_B: -1, L_C: !null '', L_S: " a", L_F: true, L_D: !null '', L_E: !f 2.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 18, L_A: 6, L_B: 3, L_C: 3, L_S: "epsilon", L_F: true, L_D: 8.0, L_E: !f 8.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 19, L_A: !null '', L_B: 2, L_C: 4, L_S: "epsilon", L_F: !null '', L_D: 1.0, L_E: !f 0.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 20, L_A: 2, L_B: 3, L_C: 3, L_S: "beta", L_F: !null '', L_D: 0.1, L_E: !f 1.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 21, L_A: !null '', L_B: 3, L_C: 2, L_S: "delta", L_F: true, L_D: 1.0, L_E: !f 1.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 22, L_A: 2, L_B: -1, L_C: 6, L_S: "b ", L_F: true, L_D: !null '', L_E: !f 5.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 23, L_A: !null '', L_B: 4611686018427387904, L_C: 9, L_S: !null '', L_F: true, L_D: 2.0, L_E: !f -1.6777216e+07, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+    - - query: |-
+          SELECT l.id AS l_id, l.a AS l_a, l.b AS l_b, l.c AS l_c, l.s AS l_s, l.f AS l_f, l.d AS l_d, l.e AS l_e, r.id AS r_id, r.a AS r_a, r.b AS r_b, r.c AS r_c, r.s AS r_s, r.f AS r_f, r.d AS r_d, r.e AS r_e FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3)))
+      - unorderedResult:
+          - {L_ID: 2, L_A: 9, L_B: 5, L_C: 4, L_S: " a", L_F: true, L_D: 6.0, L_E: !f 4.0, R_ID: 20, R_A: 2, R_B: 3, R_C: 3, R_S: "beta", R_F: !null '', R_D: 0.1, R_E: !f 1.0}
+    - - query: |-
+          SELECT l.id AS l_id, l.a AS l_a, l.b AS l_b, l.c AS l_c, l.s AS l_s, l.f AS l_f, l.d AS l_d, l.e AS l_e, r.id AS r_id, r.a AS r_a, r.b AS r_b, r.c AS r_c, r.s AS r_s, r.f AS r_f, r.d AS r_d, r.e AS r_e FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE NOT ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3)))
+      - unorderedResult:
+          - {L_ID: 2, L_A: 9, L_B: 5, L_C: 4, L_S: " a", L_F: true, L_D: 6.0, L_E: !f 4.0, R_ID: 22, R_A: 2, R_B: -1, R_C: 6, R_S: "b ", R_F: true, R_D: !null '', R_E: !f 5.0}
+          - {L_ID: 3, L_A: 3, L_B: 5, L_C: 0, L_S: "beta", L_F: false, L_D: 7.0, L_E: !f 0.1, R_ID: 1, R_A: 3, R_B: 0, R_C: 9, R_S: " a", R_F: !null '', R_D: !null '', R_E: !f -1.6777216e+07}
+          - {L_ID: 3, L_A: 3, L_B: 5, L_C: 0, L_S: "beta", L_F: false, L_D: 7.0, L_E: !f 0.1, R_ID: 3, R_A: 3, R_B: 5, R_C: 0, R_S: "beta", R_F: false, R_D: 7.0, R_E: !f 0.1}
+          - {L_ID: 4, L_A: 4611686018427387904, L_B: 5, L_C: -1, L_S: "beta", L_F: false, L_D: 0.0, L_E: !f 8.0, R_ID: 14, R_A: 4, R_B: 1, R_C: 2, R_S: " c ", R_F: false, R_D: 0.0, R_E: !f 2.0}
+          - {L_ID: 6, L_A: 7, L_B: 8, L_C: 0, L_S: "b ", L_F: true, L_D: 7.0, L_E: !f 3.0, R_ID: 18, R_A: 6, R_B: 3, R_C: 3, R_S: "epsilon", R_F: true, R_D: 8.0, R_E: !f 8.0}
+          - {L_ID: 7, L_A: 4611686018427387904, L_B: 1, L_C: !null '', L_S: "b ", L_F: true, L_D: 3.0, L_E: !f 5.0, R_ID: 6, R_A: 7, R_B: 8, R_C: 0, R_S: "b ", R_F: true, R_D: 7.0, R_E: !f 3.0}
+          - {L_ID: 8, L_A: 9, L_B: 8, L_C: 6, L_S: "b ", L_F: false, L_D: 4.0, L_E: !null '', R_ID: 10, R_A: 8, R_B: 7, R_C: 6, R_S: "", R_F: false, R_D: 1.0, R_E: !null ''}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 11, R_A: 9, R_B: 0, R_C: 4, R_S: "gamma", R_F: false, R_D: 1.0, R_E: !f 5.0}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 12, R_A: 9, R_B: 1, R_C: 2, R_S: "b ", R_F: true, R_D: 9.007199254740992e+15, R_E: !f 3.0}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 9, R_A: 9, R_B: 3, R_C: 7, R_S: !null '', R_F: true, R_D: 7.0, R_E: !null ''}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 2, R_A: 9, R_B: 5, R_C: 4, R_S: " a", R_F: true, R_D: 6.0, R_E: !f 4.0}
+          - {L_ID: 9, L_A: 9, L_B: 3, L_C: 7, L_S: !null '', L_F: true, L_D: 7.0, L_E: !null '', R_ID: 8, R_A: 9, R_B: 8, R_C: 6, R_S: "b ", R_F: false, R_D: 4.0, R_E: !null ''}
+    - - query: |-
+          SELECT l.id AS l_id, l.a AS l_a, l.b AS l_b, l.c AS l_c, l.s AS l_s, l.f AS l_f, l.d AS l_d, l.e AS l_e, r.id AS r_id, r.a AS r_a, r.b AS r_b, r.c AS r_c, r.s AS r_s, r.f AS r_f, r.d AS r_d, r.e AS r_e FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3))) IS NULL
+      - unorderedResult:
+          - {L_ID: 1, L_A: 3, L_B: 0, L_C: 9, L_S: " a", L_F: !null '', L_D: !null '', L_E: !f -1.6777216e+07, R_ID: 5, R_A: 1, R_B: 9, R_C: !null '', R_S: "alpha", R_F: false, R_D: 0.1, R_E: !f 9.0}
+          - {L_ID: 5, L_A: 1, L_B: 9, L_C: !null '', L_S: "alpha", L_F: false, L_D: 0.1, L_E: !f 9.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 8, L_A: 9, L_B: 8, L_C: 6, L_S: "b ", L_F: false, L_D: 4.0, L_E: !null '', R_ID: 17, R_A: 8, R_B: -1, R_C: !null '', R_S: " a", R_F: true, R_D: !null '', R_E: !f 2.0}
+          - {L_ID: 10, L_A: 8, L_B: 7, L_C: 6, L_S: "", L_F: false, L_D: 1.0, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 11, L_A: 9, L_B: 0, L_C: 4, L_S: "gamma", L_F: false, L_D: 1.0, L_E: !f 5.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 12, L_A: 9, L_B: 1, L_C: 2, L_S: "b ", L_F: true, L_D: 9.007199254740992e+15, L_E: !f 3.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 13, L_A: !null '', L_B: 4, L_C: 0, L_S: "epsilon", L_F: true, L_D: 3.0, L_E: !f 1.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 14, L_A: 4, L_B: 1, L_C: 2, L_S: " c ", L_F: false, L_D: 0.0, L_E: !f 2.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 15, L_A: !null '', L_B: 2, L_C: !null '', L_S: "", L_F: false, L_D: -9.007199254740992e+15, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 16, L_A: -1, L_B: 3, L_C: 0, L_S: !null '', L_F: true, L_D: 4.0, L_E: !f 2.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 17, L_A: 8, L_B: -1, L_C: !null '', L_S: " a", L_F: true, L_D: !null '', L_E: !f 2.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 18, L_A: 6, L_B: 3, L_C: 3, L_S: "epsilon", L_F: true, L_D: 8.0, L_E: !f 8.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 19, L_A: !null '', L_B: 2, L_C: 4, L_S: "epsilon", L_F: !null '', L_D: 1.0, L_E: !f 0.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 20, L_A: 2, L_B: 3, L_C: 3, L_S: "beta", L_F: !null '', L_D: 0.1, L_E: !f 1.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 21, L_A: !null '', L_B: 3, L_C: 2, L_S: "delta", L_F: true, L_D: 1.0, L_E: !f 1.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 22, L_A: 2, L_B: -1, L_C: 6, L_S: "b ", L_F: true, L_D: !null '', L_E: !f 5.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 23, L_A: !null '', L_B: 4611686018427387904, L_C: 9, L_S: !null '', L_F: true, L_D: 2.0, L_E: !f -1.6777216e+07, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+#
+# scenario: fc_0001900190_q2_p1
+# generator: rowdiff-gen/2
+# seed: 1900190
+# query-index: 2
+# projection: 1
+# date: 2026-08-13
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=join2.left-outer;idx=A,A+B,C,S;proj=n2;where=and(in.in,in.in);order=none
+# plan-shape: 7d50b9e802a7cab2
+# dedup-key: 9f586426d5f8bfd3
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1900190 -seeds 1 -date 2026-08-13 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_ab ON T_RD (a, b) CREATE INDEX idx_s ON T_RD (s)
+---
+setup:
+  connect: 5
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 3, 0, 9, ' a', NULL, NULL, -16777216.0), (2, 9, 5, 4, ' a', TRUE, 6.0, 4.0), (3, 3, 5, 0, 'beta', FALSE, 7.0, 0.10000000149011612), (4, 4611686018427387904, 5, -1, 'beta', FALSE, 0.0, 8.0), (5, 1, 9, NULL, 'alpha', FALSE, 0.1, 9.0), (6, 7, 8, 0, 'b ', TRUE, 7.0, 3.0), (7, 4611686018427387904, 1, NULL, 'b ', TRUE, 3.0, 5.0), (8, 9, 8, 6, 'b ', FALSE, 4.0, NULL), (9, 9, 3, 7, NULL, TRUE, 7.0, NULL), (10, 8, 7, 6, '', FALSE, 1.0, NULL), (11, 9, 0, 4, 'gamma', FALSE, 1.0, 5.0), (12, 9, 1, 2, 'b ', TRUE, 9007199254740992.0, 3.0), (13, NULL, 4, 0, 'epsilon', TRUE, 3.0, 1.0), (14, 4, 1, 2, ' c ', FALSE, 0.0, 2.0), (15, NULL, 2, NULL, '', FALSE, -9007199254740992.0, NULL), (16, -1, 3, 0, NULL, TRUE, 4.0, 2.0), (17, 8, -1, NULL, ' a', TRUE, NULL, 2.0), (18, 6, 3, 3, 'epsilon', TRUE, 8.0, 8.0), (19, NULL, 2, 4, 'epsilon', NULL, 1.0, 0.0), (20, 2, 3, 3, 'beta', NULL, 0.1, 1.0), (21, NULL, 3, 2, 'delta', TRUE, 1.0, 1.0), (22, 2, -1, 6, 'b ', TRUE, NULL, 5.0), (23, NULL, 4611686018427387904, 9, NULL, TRUE, 2.0, -16777216.0)
+---
+test_block:
+  name: "fc_0001900190_q2_p1"
+  preset: single_repetition_ordered
+  connect: 5
+  tests:
+    - - query: |-
+          SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a
+      - unorderedResult:
+          - {L_ID: 1, R_ID: 5}
+          - {L_ID: 2, R_ID: 22}
+          - {L_ID: 2, R_ID: 20}
+          - {L_ID: 3, R_ID: 1}
+          - {L_ID: 3, R_ID: 3}
+          - {L_ID: 4, R_ID: 14}
+          - {L_ID: 5, R_ID: !null ''}
+          - {L_ID: 6, R_ID: 18}
+          - {L_ID: 7, R_ID: 6}
+          - {L_ID: 8, R_ID: 17}
+          - {L_ID: 8, R_ID: 10}
+          - {L_ID: 9, R_ID: 11}
+          - {L_ID: 9, R_ID: 12}
+          - {L_ID: 9, R_ID: 9}
+          - {L_ID: 9, R_ID: 2}
+          - {L_ID: 9, R_ID: 8}
+          - {L_ID: 10, R_ID: !null ''}
+          - {L_ID: 11, R_ID: !null ''}
+          - {L_ID: 12, R_ID: !null ''}
+          - {L_ID: 13, R_ID: !null ''}
+          - {L_ID: 14, R_ID: !null ''}
+          - {L_ID: 15, R_ID: !null ''}
+          - {L_ID: 16, R_ID: !null ''}
+          - {L_ID: 17, R_ID: !null ''}
+          - {L_ID: 18, R_ID: !null ''}
+          - {L_ID: 19, R_ID: !null ''}
+          - {L_ID: 20, R_ID: !null ''}
+          - {L_ID: 21, R_ID: !null ''}
+          - {L_ID: 22, R_ID: !null ''}
+          - {L_ID: 23, R_ID: !null ''}
+    - - query: |-
+          SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3)))
+      - unorderedResult:
+          - {L_ID: 2, R_ID: 20}
+    - - query: |-
+          SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE NOT ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3)))
+      - unorderedResult:
+          - {L_ID: 2, R_ID: 22}
+          - {L_ID: 3, R_ID: 1}
+          - {L_ID: 3, R_ID: 3}
+          - {L_ID: 4, R_ID: 14}
+          - {L_ID: 6, R_ID: 18}
+          - {L_ID: 7, R_ID: 6}
+          - {L_ID: 8, R_ID: 10}
+          - {L_ID: 9, R_ID: 11}
+          - {L_ID: 9, R_ID: 12}
+          - {L_ID: 9, R_ID: 9}
+          - {L_ID: 9, R_ID: 2}
+          - {L_ID: 9, R_ID: 8}
+    - - query: |-
+          SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3))) IS NULL
+      - unorderedResult:
+          - {L_ID: 1, R_ID: 5}
+          - {L_ID: 5, R_ID: !null ''}
+          - {L_ID: 8, R_ID: 17}
+          - {L_ID: 10, R_ID: !null ''}
+          - {L_ID: 11, R_ID: !null ''}
+          - {L_ID: 12, R_ID: !null ''}
+          - {L_ID: 13, R_ID: !null ''}
+          - {L_ID: 14, R_ID: !null ''}
+          - {L_ID: 15, R_ID: !null ''}
+          - {L_ID: 16, R_ID: !null ''}
+          - {L_ID: 17, R_ID: !null ''}
+          - {L_ID: 18, R_ID: !null ''}
+          - {L_ID: 19, R_ID: !null ''}
+          - {L_ID: 20, R_ID: !null ''}
+          - {L_ID: 21, R_ID: !null ''}
+          - {L_ID: 22, R_ID: !null ''}
+          - {L_ID: 23, R_ID: !null ''}
+#
+# scenario: fc_0001900190_q2_p2
+# generator: rowdiff-gen/2
+# seed: 1900190
+# query-index: 2
+# projection: 2
+# date: 2026-08-13
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=join2.left-outer;idx=A,A+B,C,S;proj=n3;where=and(in.in,in.in);order=none
+# plan-shape: 7d50b9e802a7cab2
+# dedup-key: e002923da0356037
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1900190 -seeds 1 -date 2026-08-13 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_c ON T_RD (c) CREATE INDEX idx_a ON T_RD (a) CREATE INDEX idx_ab ON T_RD (a, b) CREATE INDEX idx_s ON T_RD (s)
+---
+setup:
+  connect: 6
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, 3, 0, 9, ' a', NULL, NULL, -16777216.0), (2, 9, 5, 4, ' a', TRUE, 6.0, 4.0), (3, 3, 5, 0, 'beta', FALSE, 7.0, 0.10000000149011612), (4, 4611686018427387904, 5, -1, 'beta', FALSE, 0.0, 8.0), (5, 1, 9, NULL, 'alpha', FALSE, 0.1, 9.0), (6, 7, 8, 0, 'b ', TRUE, 7.0, 3.0), (7, 4611686018427387904, 1, NULL, 'b ', TRUE, 3.0, 5.0), (8, 9, 8, 6, 'b ', FALSE, 4.0, NULL), (9, 9, 3, 7, NULL, TRUE, 7.0, NULL), (10, 8, 7, 6, '', FALSE, 1.0, NULL), (11, 9, 0, 4, 'gamma', FALSE, 1.0, 5.0), (12, 9, 1, 2, 'b ', TRUE, 9007199254740992.0, 3.0), (13, NULL, 4, 0, 'epsilon', TRUE, 3.0, 1.0), (14, 4, 1, 2, ' c ', FALSE, 0.0, 2.0), (15, NULL, 2, NULL, '', FALSE, -9007199254740992.0, NULL), (16, -1, 3, 0, NULL, TRUE, 4.0, 2.0), (17, 8, -1, NULL, ' a', TRUE, NULL, 2.0), (18, 6, 3, 3, 'epsilon', TRUE, 8.0, 8.0), (19, NULL, 2, 4, 'epsilon', NULL, 1.0, 0.0), (20, 2, 3, 3, 'beta', NULL, 0.1, 1.0), (21, NULL, 3, 2, 'delta', TRUE, 1.0, 1.0), (22, 2, -1, 6, 'b ', TRUE, NULL, 5.0), (23, NULL, 4611686018427387904, 9, NULL, TRUE, 2.0, -16777216.0)
+---
+test_block:
+  name: "fc_0001900190_q2_p2"
+  preset: single_repetition_ordered
+  connect: 6
+  tests:
+    - - query: |-
+          SELECT r.id AS r_id, l.id AS l_id, l.b AS l_b FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a
+      - unorderedResult:
+          - {R_ID: 5, L_ID: 1, L_B: 0}
+          - {R_ID: 22, L_ID: 2, L_B: 5}
+          - {R_ID: 20, L_ID: 2, L_B: 5}
+          - {R_ID: 1, L_ID: 3, L_B: 5}
+          - {R_ID: 3, L_ID: 3, L_B: 5}
+          - {R_ID: 14, L_ID: 4, L_B: 5}
+          - {R_ID: !null '', L_ID: 5, L_B: 9}
+          - {R_ID: 18, L_ID: 6, L_B: 8}
+          - {R_ID: 6, L_ID: 7, L_B: 1}
+          - {R_ID: 17, L_ID: 8, L_B: 8}
+          - {R_ID: 10, L_ID: 8, L_B: 8}
+          - {R_ID: 11, L_ID: 9, L_B: 3}
+          - {R_ID: 12, L_ID: 9, L_B: 3}
+          - {R_ID: 9, L_ID: 9, L_B: 3}
+          - {R_ID: 2, L_ID: 9, L_B: 3}
+          - {R_ID: 8, L_ID: 9, L_B: 3}
+          - {R_ID: !null '', L_ID: 10, L_B: 7}
+          - {R_ID: !null '', L_ID: 11, L_B: 0}
+          - {R_ID: !null '', L_ID: 12, L_B: 1}
+          - {R_ID: !null '', L_ID: 13, L_B: 4}
+          - {R_ID: !null '', L_ID: 14, L_B: 1}
+          - {R_ID: !null '', L_ID: 15, L_B: 2}
+          - {R_ID: !null '', L_ID: 16, L_B: 3}
+          - {R_ID: !null '', L_ID: 17, L_B: -1}
+          - {R_ID: !null '', L_ID: 18, L_B: 3}
+          - {R_ID: !null '', L_ID: 19, L_B: 2}
+          - {R_ID: !null '', L_ID: 20, L_B: 3}
+          - {R_ID: !null '', L_ID: 21, L_B: 3}
+          - {R_ID: !null '', L_ID: 22, L_B: -1}
+          - {R_ID: !null '', L_ID: 23, L_B: 4611686018427387904}
+    - - query: |-
+          SELECT r.id AS r_id, l.id AS l_id, l.b AS l_b FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3)))
+      - unorderedResult:
+          - {R_ID: 20, L_ID: 2, L_B: 5}
+    - - query: |-
+          SELECT r.id AS r_id, l.id AS l_id, l.b AS l_b FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE NOT ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3)))
+      - unorderedResult:
+          - {R_ID: 22, L_ID: 2, L_B: 5}
+          - {R_ID: 1, L_ID: 3, L_B: 5}
+          - {R_ID: 3, L_ID: 3, L_B: 5}
+          - {R_ID: 14, L_ID: 4, L_B: 5}
+          - {R_ID: 18, L_ID: 6, L_B: 8}
+          - {R_ID: 6, L_ID: 7, L_B: 1}
+          - {R_ID: 10, L_ID: 8, L_B: 8}
+          - {R_ID: 11, L_ID: 9, L_B: 3}
+          - {R_ID: 12, L_ID: 9, L_B: 3}
+          - {R_ID: 9, L_ID: 9, L_B: 3}
+          - {R_ID: 2, L_ID: 9, L_B: 3}
+          - {R_ID: 8, L_ID: 9, L_B: 3}
+    - - query: |-
+          SELECT r.id AS r_id, l.id AS l_id, l.b AS l_b FROM t_rd AS l LEFT JOIN t_rd AS r ON l.id = r.a WHERE ((r.d IN (0.1, 1.0)) AND (r.c IN (3, 11, 3))) IS NULL
+      - unorderedResult:
+          - {R_ID: 5, L_ID: 1, L_B: 0}
+          - {R_ID: !null '', L_ID: 5, L_B: 9}
+          - {R_ID: 17, L_ID: 8, L_B: 8}
+          - {R_ID: !null '', L_ID: 10, L_B: 7}
+          - {R_ID: !null '', L_ID: 11, L_B: 0}
+          - {R_ID: !null '', L_ID: 12, L_B: 1}
+          - {R_ID: !null '', L_ID: 13, L_B: 4}
+          - {R_ID: !null '', L_ID: 14, L_B: 1}
+          - {R_ID: !null '', L_ID: 15, L_B: 2}
+          - {R_ID: !null '', L_ID: 16, L_B: 3}
+          - {R_ID: !null '', L_ID: 17, L_B: -1}
+          - {R_ID: !null '', L_ID: 18, L_B: 3}
+          - {R_ID: !null '', L_ID: 19, L_B: 2}
+          - {R_ID: !null '', L_ID: 20, L_B: 3}
+          - {R_ID: !null '', L_ID: 21, L_B: 3}
+          - {R_ID: !null '', L_ID: 22, L_B: -1}
+          - {R_ID: !null '', L_ID: 23, L_B: 4611686018427387904}
+#
+# scenario: fc_0001908108_q2_p0
+# generator: rowdiff-gen/2
+# seed: 1908108
+# query-index: 2
+# projection: 0
+# date: 2026-08-15
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=join2.left-outer;idx=A+B,D;proj=n16;where=and(in.in,in.in);order=asc+asc
+# plan-shape: d0a8309c42d4081e
+# dedup-key: 84a58caa475cc892
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1908108 -seeds 1 -date 2026-08-15 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)
+---
+setup:
+  connect: 7
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, -1, 2, ' c ', TRUE, 9.0, NULL), (2, 4, 7, 4611686018427387904, 'delta', TRUE, 9.0, 5.0), (3, 5, 0, 9, 'epsilon', NULL, 7.0, NULL), (4, 1, 2, 7, 'b ', TRUE, NULL, NULL), (5, 3, 8, -1, 'delta', FALSE, 4.0, 7.0), (6, -1, 9, 5, NULL, TRUE, NULL, 5.0), (7, 1, 3, NULL, 'delta', TRUE, 9007199254740992.0, NULL), (8, 1, 4, NULL, 'beta', FALSE, 0.1, NULL), (9, 9, 2, 5, 'b ', TRUE, 6.0, NULL), (10, 0, 8, NULL, NULL, FALSE, 8.0, -16777216.0), (11, -1, 0, NULL, '', TRUE, 3.0, -16777216.0), (12, 6, 2, 2, 'b ', NULL, 9007199254740992.0, 0.0), (13, 9, 2, 2, 'alpha', TRUE, 5.0, 0.0), (14, 3, 9, 6, ' a', TRUE, 1.0, 16777216.0), (15, 9, 2, 1, ' c ', NULL, 6.0, 9.0), (16, 3, 7, 6, '', TRUE, 2.0, 6.0), (17, 9, 4, 9, 'epsilon', FALSE, 2.0, NULL), (18, 0, 2, 4, 'b ', TRUE, 5.0, 6.0), (19, NULL, 3, NULL, 'delta', FALSE, 6.0, NULL), (20, 4611686018427387904, 2, 8, 'alpha', FALSE, 3.0, 9.0), (21, 1, 4611686018427387904, 4, 'alpha', FALSE, 6.0, 16777216.0), (22, NULL, 2, 8, 'epsilon', NULL, NULL, 0.0), (23, 4, -1, 6, NULL, FALSE, NULL, 0.0), (24, NULL, 8, 3, 'delta', NULL, 4.0, NULL)
+---
+test_block:
+  name: "fc_0001908108_q2_p0"
+  preset: single_repetition_ordered
+  connect: 7
+  tests:
+    - - query: |-
+          SELECT l.id AS l_id, l.a AS l_a, l.b AS l_b, l.c AS l_c, l.s AS l_s, l.f AS l_f, l.d AS l_d, l.e AS l_e, r.id AS r_id, r.a AS r_a, r.b AS r_b, r.c AS r_c, r.s AS r_s, r.f AS r_f, r.d AS r_d, r.e AS r_e FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id ORDER BY l.id, r.id
+      - result:
+          - {L_ID: 1, L_A: !null '', L_B: -1, L_C: 2, L_S: " c ", L_F: true, L_D: 9.0, L_E: !null '', R_ID: 2, R_A: 4, R_B: 7, R_C: 4611686018427387904, R_S: "delta", R_F: true, R_D: 9.0, R_E: !f 5.0}
+          - {L_ID: 2, L_A: 4, L_B: 7, L_C: 4611686018427387904, L_S: "delta", L_F: true, L_D: 9.0, L_E: !f 5.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 3, L_A: 5, L_B: 0, L_C: 9, L_S: "epsilon", L_F: !null '', L_D: 7.0, L_E: !null '', R_ID: 9, R_A: 9, R_B: 2, R_C: 5, R_S: "b ", R_F: true, R_D: 6.0, R_E: !null ''}
+          - {L_ID: 4, L_A: 1, L_B: 2, L_C: 7, L_S: "b ", L_F: true, L_D: !null '', L_E: !null '', R_ID: 7, R_A: 1, R_B: 3, R_C: !null '', R_S: "delta", R_F: true, R_D: 9.007199254740992e+15, R_E: !null ''}
+          - {L_ID: 5, L_A: 3, L_B: 8, L_C: -1, L_S: "delta", L_F: false, L_D: 4.0, L_E: !f 7.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 6, L_A: -1, L_B: 9, L_C: 5, L_S: !null '', L_F: true, L_D: !null '', L_E: !f 5.0, R_ID: 5, R_A: 3, R_B: 8, R_C: -1, R_S: "delta", R_F: false, R_D: 4.0, R_E: !f 7.0}
+          - {L_ID: 7, L_A: 1, L_B: 3, L_C: !null '', L_S: "delta", L_F: true, L_D: 9.007199254740992e+15, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 8, L_A: 1, L_B: 4, L_C: !null '', L_S: "beta", L_F: false, L_D: 0.1, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 9, L_A: 9, L_B: 2, L_C: 5, L_S: "b ", L_F: true, L_D: 6.0, L_E: !null '', R_ID: 5, R_A: 3, R_B: 8, R_C: -1, R_S: "delta", R_F: false, R_D: 4.0, R_E: !f 7.0}
+          - {L_ID: 10, L_A: 0, L_B: 8, L_C: !null '', L_S: !null '', L_F: false, L_D: 8.0, L_E: !f -1.6777216e+07, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 11, L_A: -1, L_B: 0, L_C: !null '', L_S: "", L_F: true, L_D: 3.0, L_E: !f -1.6777216e+07, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 12, L_A: 6, L_B: 2, L_C: 2, L_S: "b ", L_F: !null '', L_D: 9.007199254740992e+15, L_E: !f 0.0, R_ID: 2, R_A: 4, R_B: 7, R_C: 4611686018427387904, R_S: "delta", R_F: true, R_D: 9.0, R_E: !f 5.0}
+          - {L_ID: 13, L_A: 9, L_B: 2, L_C: 2, L_S: "alpha", L_F: true, L_D: 5.0, L_E: !f 0.0, R_ID: 2, R_A: 4, R_B: 7, R_C: 4611686018427387904, R_S: "delta", R_F: true, R_D: 9.0, R_E: !f 5.0}
+          - {L_ID: 14, L_A: 3, L_B: 9, L_C: 6, L_S: " a", L_F: true, L_D: 1.0, L_E: !f 1.6777216e+07, R_ID: 6, R_A: -1, R_B: 9, R_C: 5, R_S: !null '', R_F: true, R_D: !null '', R_E: !f 5.0}
+          - {L_ID: 15, L_A: 9, L_B: 2, L_C: 1, L_S: " c ", L_F: !null '', L_D: 6.0, L_E: !f 9.0, R_ID: 1, R_A: !null '', R_B: -1, R_C: 2, R_S: " c ", R_F: true, R_D: 9.0, R_E: !null ''}
+          - {L_ID: 16, L_A: 3, L_B: 7, L_C: 6, L_S: "", L_F: true, L_D: 2.0, L_E: !f 6.0, R_ID: 6, R_A: -1, R_B: 9, R_C: 5, R_S: !null '', R_F: true, R_D: !null '', R_E: !f 5.0}
+          - {L_ID: 17, L_A: 9, L_B: 4, L_C: 9, L_S: "epsilon", L_F: false, L_D: 2.0, L_E: !null '', R_ID: 9, R_A: 9, R_B: 2, R_C: 5, R_S: "b ", R_F: true, R_D: 6.0, R_E: !null ''}
+          - {L_ID: 18, L_A: 0, L_B: 2, L_C: 4, L_S: "b ", L_F: true, L_D: 5.0, L_E: !f 6.0, R_ID: 4, R_A: 1, R_B: 2, R_C: 7, R_S: "b ", R_F: true, R_D: !null '', R_E: !null ''}
+          - {L_ID: 19, L_A: !null '', L_B: 3, L_C: !null '', L_S: "delta", L_F: false, L_D: 6.0, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 20, L_A: 4611686018427387904, L_B: 2, L_C: 8, L_S: "alpha", L_F: false, L_D: 3.0, L_E: !f 9.0, R_ID: 8, R_A: 1, R_B: 4, R_C: !null '', R_S: "beta", R_F: false, R_D: 0.1, R_E: !null ''}
+          - {L_ID: 21, L_A: 1, L_B: 4611686018427387904, L_C: 4, L_S: "alpha", L_F: false, L_D: 6.0, L_E: !f 1.6777216e+07, R_ID: 4, R_A: 1, R_B: 2, R_C: 7, R_S: "b ", R_F: true, R_D: !null '', R_E: !null ''}
+          - {L_ID: 22, L_A: !null '', L_B: 2, L_C: 8, L_S: "epsilon", L_F: !null '', L_D: !null '', L_E: !f 0.0, R_ID: 8, R_A: 1, R_B: 4, R_C: !null '', R_S: "beta", R_F: false, R_D: 0.1, R_E: !null ''}
+          - {L_ID: 23, L_A: 4, L_B: -1, L_C: 6, L_S: !null '', L_F: false, L_D: !null '', L_E: !f 0.0, R_ID: 6, R_A: -1, R_B: 9, R_C: 5, R_S: !null '', R_F: true, R_D: !null '', R_E: !f 5.0}
+          - {L_ID: 24, L_A: !null '', L_B: 8, L_C: 3, L_S: "delta", L_F: !null '', L_D: 4.0, L_E: !null '', R_ID: 3, R_A: 5, R_B: 0, R_C: 9, R_S: "epsilon", R_F: !null '', R_D: 7.0, R_E: !null ''}
+    - - query: |-
+          SELECT l.id AS l_id, l.a AS l_a, l.b AS l_b, l.c AS l_c, l.s AS l_s, l.f AS l_f, l.d AS l_d, l.e AS l_e, r.id AS r_id, r.a AS r_a, r.b AS r_b, r.c AS r_c, r.s AS r_s, r.f AS r_f, r.d AS r_d, r.e AS r_e FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) ORDER BY l.id, r.id
+      - result: []
+    - - query: |-
+          SELECT l.id AS l_id, l.a AS l_a, l.b AS l_b, l.c AS l_c, l.s AS l_s, l.f AS l_f, l.d AS l_d, l.e AS l_e, r.id AS r_id, r.a AS r_a, r.b AS r_b, r.c AS r_c, r.s AS r_s, r.f AS r_f, r.d AS r_d, r.e AS r_e FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE NOT ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) ORDER BY l.id, r.id
+      - result:
+          - {L_ID: 1, L_A: !null '', L_B: -1, L_C: 2, L_S: " c ", L_F: true, L_D: 9.0, L_E: !null '', R_ID: 2, R_A: 4, R_B: 7, R_C: 4611686018427387904, R_S: "delta", R_F: true, R_D: 9.0, R_E: !f 5.0}
+          - {L_ID: 2, L_A: 4, L_B: 7, L_C: 4611686018427387904, L_S: "delta", L_F: true, L_D: 9.0, L_E: !f 5.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 3, L_A: 5, L_B: 0, L_C: 9, L_S: "epsilon", L_F: !null '', L_D: 7.0, L_E: !null '', R_ID: 9, R_A: 9, R_B: 2, R_C: 5, R_S: "b ", R_F: true, R_D: 6.0, R_E: !null ''}
+          - {L_ID: 4, L_A: 1, L_B: 2, L_C: 7, L_S: "b ", L_F: true, L_D: !null '', L_E: !null '', R_ID: 7, R_A: 1, R_B: 3, R_C: !null '', R_S: "delta", R_F: true, R_D: 9.007199254740992e+15, R_E: !null ''}
+          - {L_ID: 5, L_A: 3, L_B: 8, L_C: -1, L_S: "delta", L_F: false, L_D: 4.0, L_E: !f 7.0, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 6, L_A: -1, L_B: 9, L_C: 5, L_S: !null '', L_F: true, L_D: !null '', L_E: !f 5.0, R_ID: 5, R_A: 3, R_B: 8, R_C: -1, R_S: "delta", R_F: false, R_D: 4.0, R_E: !f 7.0}
+          - {L_ID: 7, L_A: 1, L_B: 3, L_C: !null '', L_S: "delta", L_F: true, L_D: 9.007199254740992e+15, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 8, L_A: 1, L_B: 4, L_C: !null '', L_S: "beta", L_F: false, L_D: 0.1, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 9, L_A: 9, L_B: 2, L_C: 5, L_S: "b ", L_F: true, L_D: 6.0, L_E: !null '', R_ID: 5, R_A: 3, R_B: 8, R_C: -1, R_S: "delta", R_F: false, R_D: 4.0, R_E: !f 7.0}
+          - {L_ID: 10, L_A: 0, L_B: 8, L_C: !null '', L_S: !null '', L_F: false, L_D: 8.0, L_E: !f -1.6777216e+07, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 11, L_A: -1, L_B: 0, L_C: !null '', L_S: "", L_F: true, L_D: 3.0, L_E: !f -1.6777216e+07, R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 12, L_A: 6, L_B: 2, L_C: 2, L_S: "b ", L_F: !null '', L_D: 9.007199254740992e+15, L_E: !f 0.0, R_ID: 2, R_A: 4, R_B: 7, R_C: 4611686018427387904, R_S: "delta", R_F: true, R_D: 9.0, R_E: !f 5.0}
+          - {L_ID: 13, L_A: 9, L_B: 2, L_C: 2, L_S: "alpha", L_F: true, L_D: 5.0, L_E: !f 0.0, R_ID: 2, R_A: 4, R_B: 7, R_C: 4611686018427387904, R_S: "delta", R_F: true, R_D: 9.0, R_E: !f 5.0}
+          - {L_ID: 14, L_A: 3, L_B: 9, L_C: 6, L_S: " a", L_F: true, L_D: 1.0, L_E: !f 1.6777216e+07, R_ID: 6, R_A: -1, R_B: 9, R_C: 5, R_S: !null '', R_F: true, R_D: !null '', R_E: !f 5.0}
+          - {L_ID: 15, L_A: 9, L_B: 2, L_C: 1, L_S: " c ", L_F: !null '', L_D: 6.0, L_E: !f 9.0, R_ID: 1, R_A: !null '', R_B: -1, R_C: 2, R_S: " c ", R_F: true, R_D: 9.0, R_E: !null ''}
+          - {L_ID: 16, L_A: 3, L_B: 7, L_C: 6, L_S: "", L_F: true, L_D: 2.0, L_E: !f 6.0, R_ID: 6, R_A: -1, R_B: 9, R_C: 5, R_S: !null '', R_F: true, R_D: !null '', R_E: !f 5.0}
+          - {L_ID: 17, L_A: 9, L_B: 4, L_C: 9, L_S: "epsilon", L_F: false, L_D: 2.0, L_E: !null '', R_ID: 9, R_A: 9, R_B: 2, R_C: 5, R_S: "b ", R_F: true, R_D: 6.0, R_E: !null ''}
+          - {L_ID: 18, L_A: 0, L_B: 2, L_C: 4, L_S: "b ", L_F: true, L_D: 5.0, L_E: !f 6.0, R_ID: 4, R_A: 1, R_B: 2, R_C: 7, R_S: "b ", R_F: true, R_D: !null '', R_E: !null ''}
+          - {L_ID: 19, L_A: !null '', L_B: 3, L_C: !null '', L_S: "delta", L_F: false, L_D: 6.0, L_E: !null '', R_ID: !null '', R_A: !null '', R_B: !null '', R_C: !null '', R_S: !null '', R_F: !null '', R_D: !null '', R_E: !null ''}
+          - {L_ID: 20, L_A: 4611686018427387904, L_B: 2, L_C: 8, L_S: "alpha", L_F: false, L_D: 3.0, L_E: !f 9.0, R_ID: 8, R_A: 1, R_B: 4, R_C: !null '', R_S: "beta", R_F: false, R_D: 0.1, R_E: !null ''}
+          - {L_ID: 21, L_A: 1, L_B: 4611686018427387904, L_C: 4, L_S: "alpha", L_F: false, L_D: 6.0, L_E: !f 1.6777216e+07, R_ID: 4, R_A: 1, R_B: 2, R_C: 7, R_S: "b ", R_F: true, R_D: !null '', R_E: !null ''}
+          - {L_ID: 23, L_A: 4, L_B: -1, L_C: 6, L_S: !null '', L_F: false, L_D: !null '', L_E: !f 0.0, R_ID: 6, R_A: -1, R_B: 9, R_C: 5, R_S: !null '', R_F: true, R_D: !null '', R_E: !f 5.0}
+          - {L_ID: 24, L_A: !null '', L_B: 8, L_C: 3, L_S: "delta", L_F: !null '', L_D: 4.0, L_E: !null '', R_ID: 3, R_A: 5, R_B: 0, R_C: 9, R_S: "epsilon", R_F: !null '', R_D: 7.0, R_E: !null ''}
+    - - query: |-
+          SELECT l.id AS l_id, l.a AS l_a, l.b AS l_b, l.c AS l_c, l.s AS l_s, l.f AS l_f, l.d AS l_d, l.e AS l_e, r.id AS r_id, r.a AS r_a, r.b AS r_b, r.c AS r_c, r.s AS r_s, r.f AS r_f, r.d AS r_d, r.e AS r_e FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) IS NULL ORDER BY l.id, r.id
+      - result:
+          - {L_ID: 22, L_A: !null '', L_B: 2, L_C: 8, L_S: "epsilon", L_F: !null '', L_D: !null '', L_E: !f 0.0, R_ID: 8, R_A: 1, R_B: 4, R_C: !null '', R_S: "beta", R_F: false, R_D: 0.1, R_E: !null ''}
+#
+# scenario: fc_0001908108_q2_p1
+# generator: rowdiff-gen/2
+# seed: 1908108
+# query-index: 2
+# projection: 1
+# date: 2026-08-15
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=join2.left-outer;idx=A+B,D;proj=n2;where=and(in.in,in.in);order=asc+asc
+# plan-shape: d0a8309c42d4081e
+# dedup-key: fca4b3d2ebd73fa0
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1908108 -seeds 1 -date 2026-08-15 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)
+---
+setup:
+  connect: 8
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, -1, 2, ' c ', TRUE, 9.0, NULL), (2, 4, 7, 4611686018427387904, 'delta', TRUE, 9.0, 5.0), (3, 5, 0, 9, 'epsilon', NULL, 7.0, NULL), (4, 1, 2, 7, 'b ', TRUE, NULL, NULL), (5, 3, 8, -1, 'delta', FALSE, 4.0, 7.0), (6, -1, 9, 5, NULL, TRUE, NULL, 5.0), (7, 1, 3, NULL, 'delta', TRUE, 9007199254740992.0, NULL), (8, 1, 4, NULL, 'beta', FALSE, 0.1, NULL), (9, 9, 2, 5, 'b ', TRUE, 6.0, NULL), (10, 0, 8, NULL, NULL, FALSE, 8.0, -16777216.0), (11, -1, 0, NULL, '', TRUE, 3.0, -16777216.0), (12, 6, 2, 2, 'b ', NULL, 9007199254740992.0, 0.0), (13, 9, 2, 2, 'alpha', TRUE, 5.0, 0.0), (14, 3, 9, 6, ' a', TRUE, 1.0, 16777216.0), (15, 9, 2, 1, ' c ', NULL, 6.0, 9.0), (16, 3, 7, 6, '', TRUE, 2.0, 6.0), (17, 9, 4, 9, 'epsilon', FALSE, 2.0, NULL), (18, 0, 2, 4, 'b ', TRUE, 5.0, 6.0), (19, NULL, 3, NULL, 'delta', FALSE, 6.0, NULL), (20, 4611686018427387904, 2, 8, 'alpha', FALSE, 3.0, 9.0), (21, 1, 4611686018427387904, 4, 'alpha', FALSE, 6.0, 16777216.0), (22, NULL, 2, 8, 'epsilon', NULL, NULL, 0.0), (23, 4, -1, 6, NULL, FALSE, NULL, 0.0), (24, NULL, 8, 3, 'delta', NULL, 4.0, NULL)
+---
+test_block:
+  name: "fc_0001908108_q2_p1"
+  preset: single_repetition_ordered
+  connect: 8
+  tests:
+    - - query: |-
+          SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id ORDER BY l.id, r.id
+      - result:
+          - {L_ID: 1, R_ID: 2}
+          - {L_ID: 2, R_ID: !null ''}
+          - {L_ID: 3, R_ID: 9}
+          - {L_ID: 4, R_ID: 7}
+          - {L_ID: 5, R_ID: !null ''}
+          - {L_ID: 6, R_ID: 5}
+          - {L_ID: 7, R_ID: !null ''}
+          - {L_ID: 8, R_ID: !null ''}
+          - {L_ID: 9, R_ID: 5}
+          - {L_ID: 10, R_ID: !null ''}
+          - {L_ID: 11, R_ID: !null ''}
+          - {L_ID: 12, R_ID: 2}
+          - {L_ID: 13, R_ID: 2}
+          - {L_ID: 14, R_ID: 6}
+          - {L_ID: 15, R_ID: 1}
+          - {L_ID: 16, R_ID: 6}
+          - {L_ID: 17, R_ID: 9}
+          - {L_ID: 18, R_ID: 4}
+          - {L_ID: 19, R_ID: !null ''}
+          - {L_ID: 20, R_ID: 8}
+          - {L_ID: 21, R_ID: 4}
+          - {L_ID: 22, R_ID: 8}
+          - {L_ID: 23, R_ID: 6}
+          - {L_ID: 24, R_ID: 3}
+    - - query: |-
+          SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) ORDER BY l.id, r.id
+      - result: []
+    - - query: |-
+          SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE NOT ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) ORDER BY l.id, r.id
+      - result:
+          - {L_ID: 1, R_ID: 2}
+          - {L_ID: 2, R_ID: !null ''}
+          - {L_ID: 3, R_ID: 9}
+          - {L_ID: 4, R_ID: 7}
+          - {L_ID: 5, R_ID: !null ''}
+          - {L_ID: 6, R_ID: 5}
+          - {L_ID: 7, R_ID: !null ''}
+          - {L_ID: 8, R_ID: !null ''}
+          - {L_ID: 9, R_ID: 5}
+          - {L_ID: 10, R_ID: !null ''}
+          - {L_ID: 11, R_ID: !null ''}
+          - {L_ID: 12, R_ID: 2}
+          - {L_ID: 13, R_ID: 2}
+          - {L_ID: 14, R_ID: 6}
+          - {L_ID: 15, R_ID: 1}
+          - {L_ID: 16, R_ID: 6}
+          - {L_ID: 17, R_ID: 9}
+          - {L_ID: 18, R_ID: 4}
+          - {L_ID: 19, R_ID: !null ''}
+          - {L_ID: 20, R_ID: 8}
+          - {L_ID: 21, R_ID: 4}
+          - {L_ID: 23, R_ID: 6}
+          - {L_ID: 24, R_ID: 3}
+    - - query: |-
+          SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) IS NULL ORDER BY l.id, r.id
+      - result:
+          - {L_ID: 22, R_ID: 8}
+#
+# scenario: fc_0001908108_q2_p2
+# generator: rowdiff-gen/2
+# seed: 1908108
+# query-index: 2
+# projection: 2
+# date: 2026-08-15
+# blessing: metamorphic
+# oracles: tlp,second-plan
+# feature-vector: shape=join2.left-outer;idx=A+B,D;proj=n3;where=and(in.in,in.in);order=asc+asc
+# plan-shape: d0a8309c42d4081e
+# dedup-key: b1b9066d81932674
+# reproduce: bazelisk run //cmd/factory-run -- -seed-start 1908108 -seeds 1 -date 2026-08-15 -out <dir>
+---
+schema_template: |-
+  CREATE TABLE T_RD (id BIGINT, a BIGINT, b BIGINT, c BIGINT, s STRING, f BOOLEAN, d DOUBLE, e FLOAT, PRIMARY KEY (id)) CREATE INDEX idx_d ON T_RD (d) CREATE INDEX idx_ab ON T_RD (a, b)
+---
+setup:
+  connect: 9
+  steps:
+    - query: |-
+        INSERT INTO T_RD VALUES (1, NULL, -1, 2, ' c ', TRUE, 9.0, NULL), (2, 4, 7, 4611686018427387904, 'delta', TRUE, 9.0, 5.0), (3, 5, 0, 9, 'epsilon', NULL, 7.0, NULL), (4, 1, 2, 7, 'b ', TRUE, NULL, NULL), (5, 3, 8, -1, 'delta', FALSE, 4.0, 7.0), (6, -1, 9, 5, NULL, TRUE, NULL, 5.0), (7, 1, 3, NULL, 'delta', TRUE, 9007199254740992.0, NULL), (8, 1, 4, NULL, 'beta', FALSE, 0.1, NULL), (9, 9, 2, 5, 'b ', TRUE, 6.0, NULL), (10, 0, 8, NULL, NULL, FALSE, 8.0, -16777216.0), (11, -1, 0, NULL, '', TRUE, 3.0, -16777216.0), (12, 6, 2, 2, 'b ', NULL, 9007199254740992.0, 0.0), (13, 9, 2, 2, 'alpha', TRUE, 5.0, 0.0), (14, 3, 9, 6, ' a', TRUE, 1.0, 16777216.0), (15, 9, 2, 1, ' c ', NULL, 6.0, 9.0), (16, 3, 7, 6, '', TRUE, 2.0, 6.0), (17, 9, 4, 9, 'epsilon', FALSE, 2.0, NULL), (18, 0, 2, 4, 'b ', TRUE, 5.0, 6.0), (19, NULL, 3, NULL, 'delta', FALSE, 6.0, NULL), (20, 4611686018427387904, 2, 8, 'alpha', FALSE, 3.0, 9.0), (21, 1, 4611686018427387904, 4, 'alpha', FALSE, 6.0, 16777216.0), (22, NULL, 2, 8, 'epsilon', NULL, NULL, 0.0), (23, 4, -1, 6, NULL, FALSE, NULL, 0.0), (24, NULL, 8, 3, 'delta', NULL, 4.0, NULL)
+---
+test_block:
+  name: "fc_0001908108_q2_p2"
+  preset: single_repetition_ordered
+  connect: 9
+  tests:
+    - - query: |-
+          SELECT r.id AS r_id, l.id AS l_id, l.b AS l_b FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id ORDER BY l.id, r.id
+      - result:
+          - {R_ID: 2, L_ID: 1, L_B: -1}
+          - {R_ID: !null '', L_ID: 2, L_B: 7}
+          - {R_ID: 9, L_ID: 3, L_B: 0}
+          - {R_ID: 7, L_ID: 4, L_B: 2}
+          - {R_ID: !null '', L_ID: 5, L_B: 8}
+          - {R_ID: 5, L_ID: 6, L_B: 9}
+          - {R_ID: !null '', L_ID: 7, L_B: 3}
+          - {R_ID: !null '', L_ID: 8, L_B: 4}
+          - {R_ID: 5, L_ID: 9, L_B: 2}
+          - {R_ID: !null '', L_ID: 10, L_B: 8}
+          - {R_ID: !null '', L_ID: 11, L_B: 0}
+          - {R_ID: 2, L_ID: 12, L_B: 2}
+          - {R_ID: 2, L_ID: 13, L_B: 2}
+          - {R_ID: 6, L_ID: 14, L_B: 9}
+          - {R_ID: 1, L_ID: 15, L_B: 2}
+          - {R_ID: 6, L_ID: 16, L_B: 7}
+          - {R_ID: 9, L_ID: 17, L_B: 4}
+          - {R_ID: 4, L_ID: 18, L_B: 2}
+          - {R_ID: !null '', L_ID: 19, L_B: 3}
+          - {R_ID: 8, L_ID: 20, L_B: 2}
+          - {R_ID: 4, L_ID: 21, L_B: 4611686018427387904}
+          - {R_ID: 8, L_ID: 22, L_B: 2}
+          - {R_ID: 6, L_ID: 23, L_B: -1}
+          - {R_ID: 3, L_ID: 24, L_B: 8}
+    - - query: |-
+          SELECT r.id AS r_id, l.id AS l_id, l.b AS l_b FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) ORDER BY l.id, r.id
+      - result: []
+    - - query: |-
+          SELECT r.id AS r_id, l.id AS l_id, l.b AS l_b FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE NOT ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) ORDER BY l.id, r.id
+      - result:
+          - {R_ID: 2, L_ID: 1, L_B: -1}
+          - {R_ID: !null '', L_ID: 2, L_B: 7}
+          - {R_ID: 9, L_ID: 3, L_B: 0}
+          - {R_ID: 7, L_ID: 4, L_B: 2}
+          - {R_ID: !null '', L_ID: 5, L_B: 8}
+          - {R_ID: 5, L_ID: 6, L_B: 9}
+          - {R_ID: !null '', L_ID: 7, L_B: 3}
+          - {R_ID: !null '', L_ID: 8, L_B: 4}
+          - {R_ID: 5, L_ID: 9, L_B: 2}
+          - {R_ID: !null '', L_ID: 10, L_B: 8}
+          - {R_ID: !null '', L_ID: 11, L_B: 0}
+          - {R_ID: 2, L_ID: 12, L_B: 2}
+          - {R_ID: 2, L_ID: 13, L_B: 2}
+          - {R_ID: 6, L_ID: 14, L_B: 9}
+          - {R_ID: 1, L_ID: 15, L_B: 2}
+          - {R_ID: 6, L_ID: 16, L_B: 7}
+          - {R_ID: 9, L_ID: 17, L_B: 4}
+          - {R_ID: 4, L_ID: 18, L_B: 2}
+          - {R_ID: !null '', L_ID: 19, L_B: 3}
+          - {R_ID: 8, L_ID: 20, L_B: 2}
+          - {R_ID: 4, L_ID: 21, L_B: 4611686018427387904}
+          - {R_ID: 6, L_ID: 23, L_B: -1}
+          - {R_ID: 3, L_ID: 24, L_B: 8}
+    - - query: |-
+          SELECT r.id AS r_id, l.id AS l_id, l.b AS l_b FROM t_rd AS l LEFT JOIN t_rd AS r ON l.c = r.id WHERE ((l.a IN (2, 8)) AND (l.d IN (0.1, 0.1, 0.1, 0.1))) IS NULL ORDER BY l.id, r.id
+      - result:
+          - {R_ID: 8, L_ID: 22, L_B: 2}
