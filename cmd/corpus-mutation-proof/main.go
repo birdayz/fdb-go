@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"regexp"
@@ -55,7 +56,35 @@ type result struct {
 	ranScenarios      int
 	failedAll         []string
 	failedKept        []string
+	failedRandom      []string
 	err               string
+}
+
+// randomSample draws a deterministic same-size sample from all scenario names,
+// as the CONTROL the pruning claim needs.
+//
+// "The pruned corpus still detects it" is not evidence that the SELECTION is
+// good — for a mutation 51% of scenarios detect, any 20% sample detects it too,
+// and the result would look identical for a pruner that picked at random. What
+// the token-based selection has to beat is this baseline, and it can only be
+// seen to beat it on NARROW mutations, where the detecting scenarios are few
+// enough that a blind sample can miss them.
+//
+// Seeded so the control is reproducible: a control that moves between runs
+// cannot be compared against anything.
+func randomSample(all []string, n int, seed int64) map[string]bool {
+	pool := append([]string(nil), all...)
+	sort.Strings(pool)
+	r := rand.New(rand.NewSource(seed))
+	r.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+	if n > len(pool) {
+		n = len(pool)
+	}
+	out := make(map[string]bool, n)
+	for _, s := range pool[:n] {
+		out[s] = true
+	}
+	return out
 }
 
 func main() {
@@ -64,6 +93,8 @@ func main() {
 		keepFile = flag.String("keep-list", "", "scenario names retained by factory-prune (required)")
 		target   = flag.String("target", "//pkg/relational/conformance/factorycorpus/full:full_test", "corpus test target")
 		only     = flag.String("only", "", "run just this mutation by name")
+		allFile  = flag.String("all-list", "", "every scenario name in the corpus; enables the random-sample control")
+		ctlSeed  = flag.Int64("control-seed", 1, "seed for the random-sample control")
 	)
 	flag.Parse()
 	if *mutFile == "" || *keepFile == "" {
@@ -87,13 +118,40 @@ func main() {
 	}
 	fmt.Printf("keep list: %d scenarios\n", len(keep))
 
+	// The random-sample control, same size as the keep list. Without it a
+	// "pruned detects it" row cannot be read: for a broad mutation any sample
+	// of that size detects it, so the table would look identical for a pruner
+	// that selected at random.
+	control := map[string]bool{}
+	if *allFile != "" {
+		allSet, err := loadKeep(*allFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load all-list: %v\n", err)
+			os.Exit(1)
+		}
+		all := make([]string, 0, len(allSet))
+		for n := range allSet {
+			all = append(all, n)
+		}
+		if len(all) <= len(keep) {
+			fmt.Fprintf(os.Stderr, "all-list (%d) is not larger than the keep list (%d) — the control "+
+				"would be the whole corpus and could never discriminate\n", len(all), len(keep))
+			os.Exit(1)
+		}
+		control = randomSample(all, len(keep), *ctlSeed)
+		fmt.Printf("random control: %d of %d scenarios (seed %d)\n", len(control), len(all), *ctlSeed)
+	} else {
+		fmt.Println("random control: DISABLED (-all-list not given) — a 'pruned detects it' verdict " +
+			"below shows only that the subset is not catastrophic, NOT that the selection beats chance")
+	}
+
 	var results []result
 	for _, m := range muts {
 		if *only != "" && m.Name != *only {
 			continue
 		}
 		fmt.Printf("\n=== mutation %s ===\n", m.Name)
-		results = append(results, run(m, keep, *target))
+		results = append(results, run(m, keep, control, *target))
 	}
 	if len(results) == 0 {
 		fmt.Fprintln(os.Stderr, "no mutations ran — the -only filter matched nothing")
@@ -102,7 +160,7 @@ func main() {
 	report(results)
 }
 
-func run(m Mutation, keep map[string]bool, target string) result {
+func run(m Mutation, keep, control map[string]bool, target string) result {
 	r := result{Mutation: m}
 	orig, err := os.ReadFile(m.File)
 	if err != nil {
@@ -157,9 +215,12 @@ func run(m Mutation, keep map[string]bool, target string) result {
 		if keep[n] {
 			r.failedKept = append(r.failedKept, n)
 		}
+		if control[n] {
+			r.failedRandom = append(r.failedRandom, n)
+		}
 	}
-	fmt.Printf("  scenarios run: %d, failed: %d (of which kept by prune: %d)\n",
-		r.ranScenarios, len(r.failedAll), len(r.failedKept))
+	fmt.Printf("  scenarios run: %d, failed: %d (kept by prune: %d, in random control: %d)\n",
+		r.ranScenarios, len(r.failedAll), len(r.failedKept), len(r.failedRandom))
 	return r
 }
 
@@ -200,15 +261,20 @@ func parseFailures(out string) []string {
 
 func report(rs []result) {
 	fmt.Println("\n================ MUTATION DETECTION ================")
-	fmt.Printf("%-28s %-9s %8s %8s  %s\n", "mutation", "landed", "full", "pruned", "verdict")
-	var lost, clean, broken int
+	fmt.Printf("%-28s %-7s %7s %7s %7s %7s  %s\n",
+		"mutation", "landed", "full", "%full", "pruned", "random", "verdict")
+	var lost, clean, broken, discriminating int
 	for _, r := range rs {
 		if r.err != "" {
-			fmt.Printf("%-28s %-9s %8s %8s  ERROR: %s\n", r.Name, "-", "-", "-", r.err)
+			fmt.Printf("%-28s %-7s %7s %7s %7s %7s  ERROR: %s\n", r.Name, "-", "-", "-", "-", "-", r.err)
 			broken++
 			continue
 		}
 		landed := fmt.Sprintf("%d->%d", r.occurrencesBefore, r.occurrencesAfter)
+		pctFull := 0.0
+		if r.ranScenarios > 0 {
+			pctFull = 100 * float64(len(r.failedAll)) / float64(r.ranScenarios)
+		}
 		verdict := "both detect"
 		switch {
 		case len(r.failedAll) == 0:
@@ -220,11 +286,25 @@ func report(rs []result) {
 			lost++
 		default:
 			clean++
+			if len(r.failedRandom) == 0 {
+				verdict = "prune detects, RANDOM MISSES (selection beats chance)"
+				discriminating++
+			} else if pctFull > 5 {
+				verdict = "both detect (BROAD — random also catches it, so this row does not test the selection)"
+			}
 		}
-		fmt.Printf("%-28s %-9s %8d %8d  %s\n", r.Name, landed, len(r.failedAll), len(r.failedKept), verdict)
+		fmt.Printf("%-28s %-7s %7d %6.1f%% %7d %7d  %s\n",
+			r.Name, landed, len(r.failedAll), pctFull, len(r.failedKept), len(r.failedRandom), verdict)
 	}
 	fmt.Println("---------------------------------------------------")
 	fmt.Printf("both detect: %d   prune loses: %d   harness errors: %d\n", clean, lost, broken)
+	fmt.Printf("rows where the selection BEAT the random control: %d\n", discriminating)
+	if discriminating == 0 {
+		fmt.Println("NOTE: no row discriminated. Every mutation here is broad enough that a same-size")
+		fmt.Println("      RANDOM subset catches it too, so these results show the pruned corpus is not")
+		fmt.Println("      catastrophic -- they do NOT show the token-based selection is doing any work.")
+		fmt.Println("      Add a NARROW mutation (one only a handful of scenarios reach) to test that.")
+	}
 	if broken > 0 {
 		fmt.Println("NOTE: a harness error is NOT a passing result — those mutations proved nothing.")
 	}

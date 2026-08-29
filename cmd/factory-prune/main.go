@@ -34,6 +34,43 @@
 // re-marshals each family file through factorycorpus.MarshalFamily, the same
 // writer the factory uses, so a pruned file is byte-identical in form to a
 // generated one.
+//
+// MEASURED, AND THE MEASUREMENT DOES NOT SUPPORT THE ELABORATE PART.
+//
+// cmd/corpus-mutation-proof ran five engine mutations against the full corpus
+// and intersected each failure set with this tool's keep list AND with a
+// same-size (1698) seeded RANDOM sample. Detecting scenarios, kept vs random:
+//
+//	like-inverted          212 of 8150 ( 2.6%)    55 kept, 49 random
+//	sort-nulls-placement   675 of 8150 ( 8.3%)    96 kept, 148 random
+//	sort-direction        4178 of 8150 (51.3%)   861 kept, 894 random
+//	is-null-inverted      8150 of 8150 (100.0%) 1698 kept, 1698 random
+//	is-not-null-inverted  1161 of 8150 (14.2%)  249 kept, 243 random
+//
+// Nothing was lost by pruning — but the random control detected every one too,
+// and on sort-nulls-placement it did BETTER (148 vs 96). ZERO rows
+// discriminated. So what these results establish is that keeping ~20% of the
+// corpus costs no detection power for these defect classes; they do NOT
+// establish that the token-based selection is doing any work. A random 20%
+// sample performed the same.
+//
+// That is a real negative result about THIS tool and it is recorded here
+// rather than in a commit message, because the next person to read the set
+// cover above will otherwise assume it was justified by measurement.
+//
+// Why no row discriminated, and what would: a random p-fraction sample misses a
+// mutation reached by N scenarios with probability (1-p)^N, which at p=0.2 is
+// already ~0 by N=30. The narrowest mutation here is reached by 212. The
+// narrowest predicate family in the whole corpus is `case` at 213 scenarios, so
+// no single-family mutation can get into the regime where selection beats
+// chance. Discriminating would need a defect reachable by a HANDFUL of
+// scenarios — the corpus has exactly 2 singleton plan shapes, and a mutation
+// only those reach is what would test the cover's actual guarantee.
+//
+// The guarantee itself is still worth having and is cheap: set cover gives a
+// WORST-CASE bound (every token survives by construction) that a random sample
+// gives only in expectation. Keep it for that reason — not because it has been
+// shown to detect more.
 package main
 
 import (
