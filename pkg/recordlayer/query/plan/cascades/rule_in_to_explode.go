@@ -163,20 +163,44 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	// Single-element IN → simple equality.
+	//
+	// The inner quantifier is REUSED, not re-minted. This rewrite changes only
+	// the predicate list; the expression it yields is an alternative in the
+	// SAME memo group as `f`, and a LogicalFilterExpression's result value is a
+	// QOV over its inner quantifier's alias. Minting a fresh quantifier here
+	// therefore published an alternative whose RESULT CORRELATION differed from
+	// the group's other members, so a correlation held from OUTSIDE the group
+	// resolved against an alias this alternative does not carry, and the
+	// executor failed with `exact QOV "q$N" ... has no declared runtime
+	// binding`. Planning succeeded; only execution failed, which is why a
+	// plan-only probe of every affected shape comes back clean.
+	//
+	// The shapes that reached it, enumerated rather than characterised, since
+	// the characterisation is what was wrong before: over the 24-arm cross of
+	// LEFT/RIGHT/INNER x predicate on the left/right relation x indexed/
+	// unindexed column x duplicate/distinct IN list, exactly three failed —
+	// LEFT with an indexed column, RIGHT with an indexed column, and RIGHT with
+	// an UNINDEXED one, all reading the join clause's RIGHT-HAND relation with
+	// a duplicate IN list. NOT the null-padded side: under RIGHT JOIN that
+	// relation is the PRESERVED one. NOT always indexed either. See
+	// TestFDB_QOVBindingMinimalShape.
+	//
+	// The multi-element path below is free to mint quantifiers precisely
+	// because it does NOT yield them bare: it wraps them in a SelectExpression
+	// whose own result value re-exports the inner filter, so the new aliases
+	// stay encapsulated. FilterDropTruePredicatesRule is the closer analogue to
+	// this branch — same inner, rewritten predicates — and it likewise reuses
+	// f.GetInner().
+	//
+	// The predicates already reference f.GetInner()'s alias, so no rebase is
+	// needed either; the rebase existed only to follow the mint.
 	if len(list) == 1 {
 		eqCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, list[0])
 		eqPred := predicates.NewComparisonPredicate(inPred.Operand, eqCmp)
 		newPreds := make([]predicates.QueryPredicate, 0, len(otherPreds)+1)
 		newPreds = append(newPreds, eqPred)
 		newPreds = append(newPreds, otherPreds...)
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
-		newPreds, err = rebaseInExplodePredicates(
-			newPreds, f.GetInner().GetAlias(), innerQ.GetAlias())
-		if err != nil {
-			call.Fail(err)
-			return
-		}
-		filter, err := expressions.NewLogicalFilterExpression(newPreds, innerQ)
+		filter, err := expressions.NewLogicalFilterExpression(newPreds, f.GetInner())
 		if err != nil {
 			call.Fail(err)
 			return

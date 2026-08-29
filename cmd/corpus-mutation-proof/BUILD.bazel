@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "corpus-mutation-proof_lib",
+    srcs = ["main.go"],
+    importpath = "fdb.dev/cmd/corpus-mutation-proof",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "corpus-mutation-proof",
+    embed = [":corpus-mutation-proof_lib"],
+    visibility = ["//visibility:public"],
+)
