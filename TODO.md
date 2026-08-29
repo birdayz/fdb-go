@@ -15114,8 +15114,9 @@ None is speculative: each was re-verified against the tree before booking.
   item is booked is how an item stays unbooked.
   DONE = the setting is flipped and one `frl-pin-bump` run opens a PR.
 
-- [ ] **CQ-78 (MED/M, driver + executor) — RFC-203 is merged as a DESIGN; its
-  implementation is booked nowhere.** · M · query-engine review gate
+- [ ] **CQ-78 (L, driver + executor + plan serialization) — RFC-203 is merged as
+  a DESIGN and RFC-232 corrects its page boundary; implementation is booked
+  here.** · L · query-engine review gate
   `rfcs/203-sql-continuation-envelope.md` merged in `f5c2c7f0e` (#554) and was
   commissioned explicitly for CQ-69.2's continuation half — but CQ-69.2 never
   mentions RFC-203, and the implementation has no item. MEASURED at
@@ -15125,9 +15126,21 @@ None is speculative: each was re-verified against the tree before booking.
   is unreachable from SQL.
   **Booked 2026-08-01** by the B6 pass, same failure mode as CQ-77: a merged RFC
   reads as progress, and nothing pointed at the work it commissioned.
-  DONE = `EXECUTE CONTINUATION` plans and executes end-to-end, plan transport
-  under `GO_V0` round-trips, per-page `MAX_ROWS` is honoured, and a yamsql
-  scenario exercises it (per "NO FAKE CHECKBOXES": the RFC existing is not done).
+  RFC-232 is the proposed amendment for the execution contract: one SQL
+  execution is one FDB page, ordinary `database/sql` cannot report clean EOF at
+  a non-terminal boundary, and continuation-aware callers receive the token on
+  the result object rather than from mutable connection-global state. It also
+  books the state RFC-203 missed: DISTINCT scratch, scalar subplans, recursive-
+  CTE depth, exhaustive serialization/state censuses, incarnation-bound scope,
+  and bounded persistent-read-only decoding.
+  DONE = every RFC-232 gate is green: `EXECUTE CONTINUATION` plans and executes
+  end-to-end, `GO_V1` plan bundles round-trip self-contained state, one execution
+  invokes one data-plan page callback (one `DB.Run` in auto-commit, one direct
+  call in an explicit transaction) and publishes one successful attempt,
+  per-page `MAX_ROWS` is honoured, generic `database/sql` fails loudly instead
+  of truncating, explicit-transaction tokens cannot escape their transaction,
+  and yamsql/ForceContinuations exercise the public path
+  (per "NO FAKE CHECKBOXES": the RFC existing is not done).
 
 - [ ] **CQ-79 (MED, RFC-197) — CQ-53's surviving producer mint is owned by no
   item.** · S/M · query-engine review gate

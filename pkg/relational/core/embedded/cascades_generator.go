@@ -1395,12 +1395,13 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 
 		indexDependencies: p.indexDependencies,
 
-		maxRows:        optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
-		maxResultBytes: c.maxResultBytes,
-		cols:           cols,
-		tx:             c.activeTx,
-		isUpdate:       p.IsUpdate(),
-		dryRun:         p.dryRun,
+		maxRows:          optInt64(c.Options(), api.OptMaxRows, math.MaxInt32),
+		maxResultBytes:   c.maxResultBytes,
+		cols:             cols,
+		tx:               c.activeTx,
+		isUpdate:         p.IsUpdate(),
+		dryRun:           p.dryRun,
+		explicitPageMode: c.explicitPageMode,
 		// The statement-stable CURRENT_TIMESTAMP-family instant is stamped
 		// ONCE here, while the statement is in flight (the driver entry
 		// point's session-clock stamp is still live). It must be captured on
@@ -1442,6 +1443,23 @@ func (p *cascadesPlan) Execute(ctx context.Context) (query.Result, error) {
 		// so the error has to reach it. A statement killed here by a scan
 		// limit still reports what it consumed — the counters were charged
 		// per attempt on the way out, not at a success-only checkpoint.
+		pr.statsErr = err
+		pr.Close()
+		return query.Result{}, err
+	}
+
+	// RFC-232 migration safety: an explicit-page read is allowed exactly one
+	// data-page callback. At this implementation stage GO_V1 cannot yet carry
+	// the physical plan, bindings, scope, and executor side state required to
+	// resume that page safely. Reject a non-terminal page BEFORE returning the
+	// buffered Rows instead of either exposing unusable inner-cursor bytes or
+	// silently following them into a second FDB transaction/read version.
+	//
+	// DML is deliberately outside this migration gate. Its existing countAll
+	// drain remains unchanged until RFC-232's separate atomic-DML work lands.
+	if err := pr.nonTerminalExplicitPageError(); err != nil {
+		pr.buf = nil // the successful page was never published to the caller
+		pr.bufPos = 0
 		pr.statsErr = err
 		pr.Close()
 		return query.Result{}, err
@@ -1544,6 +1562,12 @@ type paginatingRows struct {
 	// never leak to a subsequent plain DML on the same (pooled) connection.
 	dryRun bool
 
+	// explicitPageMode is captured from the connection when Execute starts. A
+	// read in this mode may invoke fetchPage once; a non-terminal first page is
+	// rejected before Rows publication until GO_V1 continuation minting exists.
+	// DML deliberately retains the legacy drain during this migration slice.
+	explicitPageMode bool
+
 	// statementTime is the statement-stable CURRENT_TIMESTAMP-family
 	// instant, captured once in Execute while the statement's session-clock
 	// stamp is live. Every fetchPage (including lazy pages fetched from
@@ -1568,8 +1592,13 @@ type paginatingRows struct {
 	bufPos       int
 	continuation []byte
 	exhausted    bool
-	closed       bool
-	fetchErr     error
+	// pageReason is the terminal NoNextReason of the successfully committed
+	// page. It advances atomically with exhausted and continuation: a failed
+	// auto-commit attempt must not publish its reason any more than its cursor
+	// position. SourceExhausted is the zero value.
+	pageReason recordlayer.NoNextReason
+	closed     bool
+	fetchErr   error
 
 	// tx is the explicit transaction that was open when Execute ran, or nil in
 	// auto-commit mode. EVERY page of EVERY statement kind executes on it —
@@ -1785,6 +1814,15 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 		return nil, r.fetchErr
 	}
 
+	// Defensive enforcement for every construction path: explicit-page reads
+	// never enter the legacy auto-follow loop below. Execute currently catches
+	// this condition before publishing Rows; keeping the invariant here prevents
+	// a future caller or refactor from reintroducing a hidden second page.
+	if err := r.nonTerminalExplicitPageError(); err != nil {
+		r.fetchErr = err
+		return nil, err
+	}
+
 	// Fetch pages until we have rows or the source is truly exhausted.
 	// Blocking operators (aggregate, sort) may produce 0 result rows per
 	// page while accumulating — they only emit after the inner scan is
@@ -1805,6 +1843,44 @@ func (r *paginatingRows) nextRow() ([]driver.Value, error) {
 	row := r.buf[r.bufPos]
 	r.bufPos++
 	return row, nil
+}
+
+// nonTerminalExplicitPageError returns the capability error that terminates an
+// opt-in explicit-page read after its first non-terminal data page. nil means
+// the legacy auto-follow path, a terminal read, or DML, all of which retain
+// their existing behavior in this migration slice.
+func (r *paginatingRows) nonTerminalExplicitPageError() error {
+	if !r.explicitPageMode || r.isUpdate || r.exhausted {
+		return nil
+	}
+	reason, err := continuationReasonForNoNext(r.pageReason)
+	if err != nil {
+		return err
+	}
+	if reason == api.ContinuationCursorAfterLast {
+		return api.NewError(api.ErrCodeInternalError,
+			"non-terminal SQL page reported source exhaustion")
+	}
+	return api.NewError(api.ErrCodeUnsupportedOperation,
+		"unprotected plan continuations are disabled")
+}
+
+// continuationReasonForNoNext maps the record-cursor stop reason to Java's SQL
+// continuation reason. The mapping is useful before a token can be minted: it
+// makes the safety failure precise and pins the reason that a later GO_V1
+// carrier must encode. Unknown reasons fail closed.
+func continuationReasonForNoNext(reason recordlayer.NoNextReason) (api.ContinuationReason, error) {
+	switch reason {
+	case recordlayer.SourceExhausted:
+		return api.ContinuationCursorAfterLast, nil
+	case recordlayer.ReturnLimitReached:
+		return api.ContinuationQueryExecutionLimitReached, nil
+	case recordlayer.ByteLimitReached, recordlayer.TimeLimitReached, recordlayer.ScanLimitReached:
+		return api.ContinuationTransactionLimitReached, nil
+	default:
+		return 0, api.NewErrorf(api.ErrCodeInternalError,
+			"unknown record cursor page stop reason %d", reason)
+	}
 }
 
 // optInt64 reads an option as an int64, accepting either an int or an
@@ -2090,6 +2166,7 @@ func (r *paginatingRows) fetchPage() error {
 	// does need clearing on the FAILURE path — see the error branch below.
 	var pageExhausted bool
 	var pageCont []byte
+	var pageReason recordlayer.NoNextReason
 
 	// The statement-wide ExecuteState carries one more piece of PAGE POSITION,
 	// and it lives too deep in the executor to stage as an outcome: the
@@ -2244,7 +2321,8 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, translateExecErrorCtx(r.ctx, err)
 		}
 
-		exhausted, contBytes, classifyErr := pageContinuationState(rs.GetContinuation(), rs.GetNoNextReason())
+		noNextReason := rs.GetNoNextReason()
+		exhausted, contBytes, classifyErr := pageContinuationState(rs.GetContinuation(), noNextReason)
 		if classifyErr != nil {
 			return nil, classifyErr
 		}
@@ -2260,10 +2338,10 @@ func (r *paginatingRows) fetchPage() error {
 			return nil, api.NewError(api.ErrCodeExecutionLimitReached,
 				"query cannot progress under the configured per-page resource limits (a page produced no rows and no continuation advance); raise the scan/row limits")
 		}
-		// Staged, NOT published: pageExhausted/pageCont are locals that the
+		// Staged, NOT published: pageExhausted/pageCont/pageReason are locals that the
 		// caller copies onto r only after the transaction succeeded. See the
 		// comment above the declarations.
-		pageExhausted, pageCont = exhausted, contBytes
+		pageExhausted, pageCont, pageReason = exhausted, contBytes, noNextReason
 		return nil, nil
 	})
 
@@ -2290,6 +2368,7 @@ func (r *paginatingRows) fetchPage() error {
 	// move — this is the assignment that must not happen anywhere else.
 	r.exhausted = pageExhausted
 	r.continuation = pageCont
+	r.pageReason = pageReason
 	// Retiring scratch entries is statement-scoped state moving, so it belongs
 	// HERE with the position and nowhere earlier. Inside the closure it would
 	// run on an attempt whose transaction can still fail: the retry re-executes

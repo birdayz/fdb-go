@@ -31,7 +31,12 @@ go_library(
     ],
     importpath = "fdb.dev/pkg/relational/api",
     visibility = ["//visibility:public"],
-    deps = ["@org_uber_go_mock//gomock"],
+    deps = [
+        "//gen",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_uber_go_mock//gomock",
+    ],
 )
 
 go_test(
@@ -39,6 +44,7 @@ go_test(
     srcs = [
         "array_struct_test.go",
         "connection_test.go",
+        "continuation_boundary_test.go",
         "database_metadata_test.go",
         "datatype_bench_test.go",
         "datatype_test.go",
@@ -52,4 +58,9 @@ go_test(
         "transaction_time_limit_error_test.go",
     ],
     embed = [":api"],
+    deps = [
+        "//gen",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+    ],
 )

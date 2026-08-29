@@ -6,6 +6,15 @@ retirement, the record-layer layering, and the gate discipline — explicitly
 endorsed. The central mechanism was ruled on by the coordinator and is folded
 here.
 
+**Proposed amendment:** RFC-232 replaces this revision's transparent
+auto-commit rollover (§4.2/G12) and connection-global continuation seam (§4.4),
+and corrects the plan-transport assumptions for DISTINCT scratch, scalar
+subqueries, recursive-CTE state, serialization/state censuses, scope, and
+untrusted plan decoding. If RFC-232 is accepted, its `GO_V1` modes and
+one-execution/one-page contract control wherever the two documents differ; the
+Java `ContinuationProto`, per-execution `MAX_ROWS`, and
+`EXECUTE CONTINUATION` decisions in this document remain in force.
+
 **Decision in one sentence:** adopt Java's `ContinuationProto` verbatim, **carry
 Go's own serialized physical plan in `compiled_statement.plan` under
 `plan_serialization_mode = "GO_V0"`**, execute `EXECUTE CONTINUATION` by
