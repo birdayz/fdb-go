@@ -316,6 +316,7 @@ go_test(
         "merge_slot_typing_census_test.go",
         "nested_leg_window_rebase_test.go",
         "normal_form_not_handling_test.go",
+        "normal_form_semantics_fuzz_test.go",
         "normalize_size_overflow_test.go",
         "not_comparison_coverage_test.go",
         "null_rejecting_conjuncts_test.go",
@@ -1122,6 +1123,7 @@ go_test(
         "not_comparison_coverage_test.go",
         "predicate_simplify_semantics_fuzz_test.go",
         "normal_form_not_handling_test.go",
+        "normal_form_semantics_fuzz_test.go",
     ],
     deps = [
         "//gen",
