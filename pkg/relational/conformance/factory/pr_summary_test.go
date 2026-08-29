@@ -200,3 +200,46 @@ func TestOneLineKeepsTheTableIntact(t *testing.T) {
 		t.Errorf("oneLine dropped content instead of flattening it: %q", got)
 	}
 }
+
+// TestSummarySurfacesEngineErrorsOnTheFunnel pins the one skip class that is a
+// statement about the ENGINE rather than about the batch.
+//
+// The generator emits only shapes it believes are supported, so a query the
+// engine refuses to execute is a defect signal. execute.go correctly declines
+// to BLESS it — freezing a rejection would pin a limitation as intended
+// behaviour — but it then files it in SkipsByReason beside `degenerate
+// partition`, where nothing triages it and `findings | 0` reads as a clean
+// batch. "Do not bless" and "do not report" are different decisions.
+//
+// The defect that motivated this is concrete: the QOV-binding bug fixed in
+// InComparisonToExplodeRule was an EXECUTION error on a fully TLP-eligible
+// query — a WHERE, no aggregate, union, derived table, LIMIT, OFFSET or
+// DISTINCT — so the factory's own eligible space reaches it. A batch that drew
+// that seed would have counted it here and reported nothing.
+func TestSummarySurfacesEngineErrorsOnTheFunnel(t *testing.T) {
+	t.Parallel()
+	m := realisticManifest(40)
+	m.SkipsByReason["engine error"] = 7
+	m.SkipsByReason["plan-error"] = 2
+
+	md := m.SummaryMarkdown("")
+	if !strings.Contains(md, "| engine errors") {
+		t.Fatal("the funnel table must carry an `engine errors` row; without it the class stays " +
+			"buried in the skip ledger and a batch with live engine failures reports findings | 0")
+	}
+	if !strings.Contains(md, "| 9 |") {
+		t.Errorf("engine errors must SUM the `engine error` and `plan-error` classes (7+2=9); got:\n%s",
+			md)
+	}
+
+	// The zero case must still render, or the row disappears exactly when a
+	// reader would use its absence as evidence there were none.
+	clean := realisticManifest(40)
+	delete(clean.SkipsByReason, "engine error")
+	delete(clean.SkipsByReason, "plan-error")
+	cleanMD := clean.SummaryMarkdown("")
+	if !strings.Contains(cleanMD, "| engine errors") {
+		t.Error("the engine-errors row must render at zero too — a row that vanishes when the count " +
+			"is 0 makes 'no row' and 'not measured' identical to a reader")
+	}
+}
