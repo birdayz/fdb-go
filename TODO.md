@@ -20560,3 +20560,71 @@ DONE when: one normal-form test and one negate-carrying conversion serve CNF and
 DNF and both entry points; `normalizeCNF` returns `(NOT a OR NOT b) AND c` for
 the input above; the pin test is replaced by that assertion; and the plan-shape
 diff has had its review lap.
+
+---
+
+## Doc comments naming a different function than the one they document
+
+- [ ] Fix the 23 remaining SUBJECT-class mismatches, and decide whether the
+  detector becomes a `pkg/docscheck` gate.
+
+`pkg/docscheck`'s citation gates — `TestEveryAuthorityDocTestCitationResolves`,
+`TestTodoTestCitationDriftIsReported` — scan MARKDOWN authority docs and
+test-filter flags. They do not scan GO SOURCE COMMENTS, which assert what the
+tree contains far more often than the Markdown does.
+
+A detector for the unambiguous class (godoc convention: `// TestFoo does X`
+directly above `func TestFoo`, so a leading name that differs is always a
+defect) found **40**. The script is
+`scratchpad/mismatched_doc.sh` in this shift's scratchpad; it walks up the
+contiguous comment block above every `func Test|Fuzz|Benchmark` and compares the
+block's first cited name against the function's.
+
+FIXED so far (17): the 16 PREFIX cases, where the cited name is a strict prefix
+of the function's — a disambiguating suffix was added
+(`TestEmptyKeyValue` -> `TestEmptyKeyValue_Limits`) and the body still describes
+the test, so a name-only rewrite is correct. Plus one misplaced block, below.
+
+REMAINING (23), which need READING, and must not be fixed mechanically. A
+name-only rewrite there gives a wrong body a matching name and turns a
+grep-detectable defect into an invisible one — measured: rewriting all 40
+produced exactly that on `winner_lookup_test.go:353`, where the body describes
+`ImplementFilterRule` and the function is
+`TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical`. Three sub-classes:
+
+1. SYNONYM RENAME — body still fits, name-only fix is safe after confirming it.
+   `TestFDB_EmptyTableOperations` -> `TestFDB_EmptyTableOps`,
+   `TestFDB_InsertThenUpdateThenVerify` -> `TestFDB_CRUDCycle`,
+   `TestFDB_SumWithWhereAndGroupBy` -> `TestFDB_SumFilteredGrouped`,
+   `TestFDB_JoinCountGroupByWithHaving` -> `TestFDB_JoinCountGroupByHaving`,
+   `TestFDB_SelectWithAlias` -> `TestFDB_SelectWithColumnAlias`,
+   `TestFDB_JoinSumGroupByWithOrderBySum` -> `TestFDB_JoinSumGroupOrderSum`,
+   `TestFDB_OrderByMultipleWithLimit` -> `TestFDB_OrderByThreeColumnsLimit`.
+
+2. OPPOSITE OR DIFFERENT CLAIM — the prose asserts something the body does not,
+   which is the severe class. Same shape as the two already fixed
+   (`rule_ordered_index_scan_test.go`, where the comment said a DESC sort is NOT
+   satisfied above a function asserting `IsReverse()`).
+   `TestRebaseLegRefsToBox_DeclinesANestedDescent` on
+   `...FusesAnExactNestedDescent`;
+   `TestComputePrimaryKey_IndexScanIsNilPendingStructuralPK` on
+   `...IndexScanStructuralPK`;
+   `TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain` on
+   `...AcrossExactLayouts`;
+   `TestDefaultFolder_PartialFoldComposesViaSimplify` on
+   `...PartialFoldDoesNotReturnOk`;
+   `TestShuffleIsCollectionsShuffle` on `TestShuffleIsDeterministic`;
+   `TestSatisfiesRequestedOrdering_AdmitsQualifiedRequestAgainstLocalCandidate`
+   on `...AdmitsRequestAgainstSameExactRoot`.
+
+3. MISPLACED BLOCK — a doc block separated from its function by a later
+   insertion, so godoc attaches it to the wrong one. `values_java_inspired_test.go`
+   was this and is FIXED: `TestArithmeticValue_OverflowPanics`'s block had been
+   stranded above `TestArithmeticValue_DivMinWrapsLikeJava` while
+   `OverflowPanics` itself carried none. Others in the 23 may be this rather
+   than a rename; the tell is that the cited name resolves elsewhere in the same
+   file.
+
+DONE when: the detector reports zero, every fix was made by reading the function
+rather than by pattern, and either the detector is a docscheck gate at a zero
+floor or there is a recorded reason it cannot be.

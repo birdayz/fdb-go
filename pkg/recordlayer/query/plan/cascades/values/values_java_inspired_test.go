@@ -75,13 +75,6 @@ func TestArithmeticValue_BinaryOps_Parameterised(t *testing.T) {
 	}
 }
 
-// TestArithmeticValue_OverflowPanics pins that integer overflow returns
-// ArithmeticOverflowError on the error channel (matching Java's
-// Math.addExact throwing ArithmeticException). The executor maps it to 22003.
-// DIV is deliberately absent: Java's DIV_LL/DIV_II are UNCHECKED casts
-// (`(long)l / (long)r`, ArithmeticValue.java:464/469) — the JVM wraps
-// MinLong/-1 with no exception, so Go wraps too
-// (TestArithmeticValue_DivMinWrapsLikeJava).
 // TestArithmeticValue_DivMinWrapsLikeJava pins DIV_LL parity: MinInt64/-1
 // WRAPS to MinInt64 (Java's unchecked JVM long division), where Go's
 // native `/` would panic — the wrap is explicit in the long lane.
@@ -99,6 +92,13 @@ func TestArithmeticValue_DivMinWrapsLikeJava(t *testing.T) {
 	}
 }
 
+// TestArithmeticValue_OverflowPanics pins that integer overflow returns
+// ArithmeticOverflowError on the error channel (matching Java's
+// Math.addExact throwing ArithmeticException). The executor maps it to 22003.
+// DIV is deliberately absent: Java's DIV_LL/DIV_II are UNCHECKED casts
+// (`(long)l / (long)r`, ArithmeticValue.java:464/469) — the JVM wraps
+// MinLong/-1 with no exception, so Go wraps too
+// (TestArithmeticValue_DivMinWrapsLikeJava).
 func TestArithmeticValue_OverflowPanics(t *testing.T) {
 	t.Parallel()
 	// Statically LONG — these rows pin the LONG lane's Math.*Exact

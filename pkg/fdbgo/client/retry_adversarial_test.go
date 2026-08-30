@@ -106,7 +106,7 @@ func TestOnError_NotCommitted_NoSelfConflicting(t *testing.T) {
 	}
 }
 
-// TestOnError_NonRetryable verifies that non-retryable errors pass through.
+// TestOnError_NonRetryablePassthrough verifies that non-retryable errors pass through.
 func TestOnError_NonRetryablePassthrough(t *testing.T) {
 	t.Parallel()
 
@@ -268,7 +268,7 @@ func codeToString(code int) string {
 	}
 }
 
-// TestIntersectConflictRanges verifies the conflict range intersection logic
+// TestIntersectConflictRanges_Adversarial verifies the conflict range intersection logic
 // used by commitDummyTransaction. Matches C++ intersects() in NativeAPI.actor.cpp.
 func TestIntersectConflictRanges_Adversarial(t *testing.T) {
 	t.Parallel()

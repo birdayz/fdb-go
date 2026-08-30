@@ -89,7 +89,7 @@ func TestConcurrentRYW_SameTransaction(t *testing.T) {
 	}
 }
 
-// TestConcurrentTransactions runs many independent transactions in parallel,
+// TestConcurrentTransactions_Stress runs many independent transactions in parallel,
 // each doing read-modify-write on a shared counter. Verifies the final count
 // is correct (all increments landed via FDB's conflict detection + retry).
 func TestConcurrentTransactions_Stress(t *testing.T) {

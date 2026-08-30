@@ -142,7 +142,7 @@ func TestFDB_CorrelatedScalarSubqueryNoIndex(t *testing.T) {
 	})
 }
 
-// TestFDB_CorrelatedScalarSubquery verifies that correlated scalar
+// TestFDB_CorrelatedScalarSubqueryError verifies that correlated scalar
 // subqueries referencing outer tables execute correctly via FlatMap
 // when an index exists on the correlation column (IndexScan path).
 func TestFDB_CorrelatedScalarSubqueryError(t *testing.T) {

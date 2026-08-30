@@ -18352,7 +18352,7 @@ func TestFDB_DeleteOldAndLowValue(t *testing.T) {
 	})
 }
 
-// TestFDB_CountWithGroupByHavingCount — COUNT+HAVING with equality
+// TestFDB_CountWithGroupByHavingCountEq — COUNT+HAVING with equality
 func TestFDB_CountWithGroupByHavingCountEq(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18470,7 +18470,7 @@ func TestFDB_NullOrderingSortBehavior(t *testing.T) {
 	})
 }
 
-// TestFDB_GroupByMultipleAggregates — COUNT+SUM+MIN+MAX in single query
+// TestFDB_GroupByMultipleAggregatesAll — COUNT+SUM+MIN+MAX in single query
 func TestFDB_GroupByMultipleAggregatesAll(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18627,7 +18627,7 @@ func TestFDB_InsertMultipleBatchesThenDelete(t *testing.T) {
 	})
 }
 
-// TestFDB_CaseWhenInSelect — CASE WHEN expressions in SELECT projection
+// TestFDB_CaseWhenInSelectProjection — CASE WHEN expressions in SELECT projection
 func TestFDB_CaseWhenInSelectProjection(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18719,7 +18719,7 @@ func TestFDB_UpdateArithmeticAllRows(t *testing.T) {
 	})
 }
 
-// TestFDB_GroupByBooleanColumn — GROUP BY on boolean values
+// TestFDB_GroupByBooleanColumnAgg — GROUP BY on boolean values
 func TestFDB_GroupByBooleanColumnAgg(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19348,7 +19348,7 @@ func TestFDB_JoinCountGroupByHaving(t *testing.T) {
 	})
 }
 
-// TestFDB_LimitZero — LIMIT 0 returns no rows
+// TestFDB_LimitZeroReturnsNothing — LIMIT 0 returns no rows
 func TestFDB_LimitZeroReturnsNothing(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19486,7 +19486,7 @@ func TestFDB_WhereMultipleInPredicates(t *testing.T) {
 	})
 }
 
-// TestFDB_GroupByOrderByCountDesc — GROUP BY with ORDER BY COUNT DESC
+// TestFDB_GroupByOrderByCountDescLimit — GROUP BY with ORDER BY COUNT DESC
 func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
