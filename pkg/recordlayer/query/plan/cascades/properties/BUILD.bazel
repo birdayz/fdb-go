@@ -42,6 +42,7 @@ go_test(
         "cardinality_proof_statistics_free_test.go",
         "cardinality_test.go",
         "collected_statistics_names_test.go",
+        "coordinate_bound_claim_laws_test.go",
         "cost_formulas_test.go",
         "cost_test.go",
         "derivations_property_test.go",
