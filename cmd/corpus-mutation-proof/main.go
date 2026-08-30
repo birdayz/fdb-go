@@ -1,11 +1,17 @@
 // Command corpus-mutation-proof measures what a corpus actually DETECTS,
 // rather than what it covers.
 //
-// It exists to settle one question that a coverage number cannot: if
-// cmd/factory-prune drops 79% of the committed factory corpus, does the
-// remaining 21% still catch every bug the whole corpus caught? Line coverage
-// answers "was this code executed", which is not the same claim — a scenario
-// can execute a line and assert nothing that depends on it.
+// It exists to settle one question that a coverage number cannot: if a subset
+// of the committed factory corpus is kept, does it still catch every bug the
+// whole corpus caught? Line coverage answers "was this code executed", which is
+// not the same claim — a scenario can execute a line and assert nothing that
+// depends on it.
+//
+// The keep list is any newline-separated set of scenario names, so the tool is
+// independent of how that set was chosen. That independence is the finding it
+// produced: a greedy set cover over coverage tokens detected no more than a
+// same-size RANDOM sample on any mutation tried, including one reached by only
+// 2.6% of scenarios. The selection tool was deleted; the measurement stands.
 //
 // METHOD. For each mutation: patch one engine source file, PROVE the patch
 // landed, build, run the FULL corpus once, and record which scenarios failed.
@@ -90,7 +96,7 @@ func randomSample(all []string, n int, seed int64) map[string]bool {
 func main() {
 	var (
 		mutFile  = flag.String("mutations", "", "JSON file describing the mutations (required)")
-		keepFile = flag.String("keep-list", "", "scenario names retained by factory-prune (required)")
+		keepFile = flag.String("keep-list", "", "newline-separated scenario names forming the subset under test (required)")
 		target   = flag.String("target", "//pkg/relational/conformance/factorycorpus/full:full_test", "corpus test target")
 		only     = flag.String("only", "", "run just this mutation by name")
 		allFile  = flag.String("all-list", "", "every scenario name in the corpus; enables the random-sample control")
