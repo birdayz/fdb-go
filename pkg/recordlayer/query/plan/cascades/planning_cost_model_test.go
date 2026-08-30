@@ -210,7 +210,7 @@ func TestPlanningCostModel_CNFSizeForOrPredicates(t *testing.T) {
 		[]expressions.Quantifier{innerQ})
 
 	if !PlanningCostModelLess(orFilter, andFilter) {
-		t.Error("OR(A,B) [cnfSize=1] should be preferred over AND(A,B) [cnfSize=2]")
+		t.Error("OR(A,B) [normalFormSize CNF=1] should be preferred over AND(A,B) [normalFormSize CNF=2]")
 	}
 
 	// OR(AND(A,B), AND(C,D)) has CNF size 4 (2×2 cross-product).
@@ -229,7 +229,7 @@ func TestPlanningCostModel_CNFSizeForOrPredicates(t *testing.T) {
 		[]expressions.Quantifier{innerQ})
 
 	if !PlanningCostModelLess(simpleFilter, complexFilter) {
-		t.Error("AND(A,B,C) [cnfSize=3] should be preferred over OR(AND(A,B),AND(C,D)) [cnfSize=4]")
+		t.Error("AND(A,B,C) [normalFormSize CNF=3] should be preferred over OR(AND(A,B),AND(C,D)) [normalFormSize CNF=4]")
 	}
 }
 
