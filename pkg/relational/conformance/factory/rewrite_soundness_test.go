@@ -127,9 +127,52 @@ func TestRewriteSoundness(t *testing.T) {
 		t.Error("in-to-or-chain applied to a NULL-bearing IN list; it must decline")
 	}
 
+	// eq-to-degenerate-range must DECLINE on a boolean, and this is a TYPE
+	// soundness question rather than a value one. `f = TRUE` is legal SQL;
+	// `f BETWEEN TRUE AND TRUE` is not, because BETWEEN is an ORDERING
+	// comparison and this engine does not order booleans — it answers 42804,
+	// correctly. Equality is defined on every comparable type and BETWEEN only
+	// on ordered ones, so "a point and a degenerate range denote the same set"
+	// holds for the VALUES while failing on the TYPES.
+	//
+	// Unguarded, this produced 72 findings in 40 seeds, every one of them the
+	// oracle emitting SQL the engine was right to reject.
+	eqLit := func(col string, lit any) *rowdiff.BoolNode {
+		return &rowdiff.BoolNode{Leaf: &rowdiff.Pred{
+			Col: col, Op: predicates.ComparisonEquals, Lit: lit,
+		}}
+	}
+	if _, ok := applyByName(t, "eq-to-degenerate-range", eqLit("f", true)); ok {
+		t.Error("eq-to-degenerate-range applied to a BOOLEAN equality; BETWEEN is an ordering " +
+			"comparison and this engine rejects it on booleans with 42804, so the rewrite must decline")
+	}
+	if got, ok := applyByName(t, "eq-to-degenerate-range", eqLit("b", int64(5))); !ok {
+		t.Error("eq-to-degenerate-range declined an ordered-type equality; it must apply there or " +
+			"the rewrite covers nothing")
+	} else if !strings.Contains(got, "BETWEEN 5 AND 5") {
+		t.Errorf("eq-to-degenerate-range rendered %q, want a degenerate range with equal endpoints", got)
+	}
+
+	// Commutativity must actually REORDER, or it compares a query to itself and
+	// agrees for free. AND/OR commute in Kleene logic exactly as in two-valued
+	// logic, so no NULL guard is needed — this is the one rewrite whose
+	// soundness needs no argument, which makes "did it change anything" the
+	// only thing worth asserting.
+	twoKids := &rowdiff.BoolNode{And: true, Kids: []*rowdiff.BoolNode{
+		eqLit("b", int64(1)), eqLit("c", int64(2)),
+	}}
+	got, ok := applyByName(t, "commute-connectives", twoKids)
+	if !ok {
+		t.Fatal("commute-connectives declined a two-child AND")
+	}
+	if strings.Index(got, "c = 2") > strings.Index(got, "b = 1") {
+		t.Errorf("commute-connectives rendered %q without reordering; an unchanged rewrite "+
+			"compares a query to itself and agrees vacuously", got)
+	}
+
 	// Double negation must be a no-op on the ANSWER, so it must at least still
 	// mention the original predicate rather than dropping it.
-	if got, ok := applyByName(t, "double-negation", between("b", int64(7), int64(10), false)); !ok || !strings.Contains(got, "BETWEEN") {
-		t.Errorf("double-negation rendered %q, want the original predicate preserved", got)
+	if dn, ok := applyByName(t, "double-negation", between("b", int64(7), int64(10), false)); !ok || !strings.Contains(dn, "BETWEEN") {
+		t.Errorf("double-negation rendered %q, want the original predicate preserved", dn)
 	}
 }

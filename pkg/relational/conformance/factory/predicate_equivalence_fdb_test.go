@@ -176,6 +176,73 @@ var rewrites = []rewrite{
 		},
 	},
 	{
+		// Commutativity. AND and OR commute in Kleene three-valued logic
+		// exactly as they do in two-valued logic — UNKNOWN is absorbed
+		// symmetrically — so this is sound with no NULL guard, which is why it
+		// is worth having: it is the one rewrite whose soundness needs no
+		// argument at all.
+		//
+		// What it exercises is conjunct ORDER, which the planner is free to use
+		// when choosing which predicate becomes a sargable index range and
+		// which stays a residual filter. Two orderings that pick different
+		// access paths must still return the same rows.
+		name: "commute-connectives",
+		apply: func(root *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
+			return walk(cloneNode(root), func(n *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
+				if len(n.Kids) < 2 {
+					return nil, false
+				}
+				out := &rowdiff.BoolNode{And: n.And, Not: n.Not}
+				for i := len(n.Kids) - 1; i >= 0; i-- {
+					out.Kids = append(out.Kids, n.Kids[i])
+				}
+				return out, true
+			})
+		},
+	},
+	{
+		// `x = c` and `x BETWEEN c AND c` denote the same set, including for a
+		// NULL x (both UNKNOWN). They reach it differently: equality is a point
+		// probe, BETWEEN builds a degenerate range whose endpoints coincide, so
+		// this exercises range construction at its boundary — the case where lo
+		// and hi are equal and both inclusive.
+		//
+		// Restricted to equality on a LITERAL. A column-vs-column equality
+		// (RhsCol) has no literal endpoint to duplicate, and IS NULL is not an
+		// ordering comparison at all.
+		//
+		// BOOLEANS ARE EXCLUDED, and the engine taught me that rather than the
+		// other way round. `f = TRUE` is legal; `f BETWEEN TRUE AND TRUE` is
+		// not, because BETWEEN is an ORDERING comparison and this engine does
+		// not order booleans — it answers `42804: The operands of a comparison
+		// operator are not compatible`, which is correct. The first version of
+		// this rewrite produced 72 findings in 40 seeds, every one of them the
+		// oracle emitting SQL the engine was right to reject.
+		//
+		// The general shape of the mistake: `=` is defined on every comparable
+		// type, BETWEEN only on ordered ones, so "equality and a degenerate
+		// range denote the same set" holds for the VALUES and not for the
+		// TYPES. An equivalence has to be sound over the type system too.
+		name: "eq-to-degenerate-range",
+		apply: func(root *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
+			return walk(cloneNode(root), func(n *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
+				if n.Leaf == nil || n.Not || n.Leaf.IsBetween ||
+					n.Leaf.Op != predicates.ComparisonEquals ||
+					n.Leaf.RhsCol != "" || n.Leaf.Lit == nil || n.Leaf.Negated {
+					return nil, false
+				}
+				if _, isBool := n.Leaf.Lit.(bool); isBool {
+					return nil, false
+				}
+				b := *n.Leaf
+				b.IsBetween = true
+				b.BetweenHi = n.Leaf.Lit
+				b.Op = predicates.ComparisonGreaterThanEq
+				return &rowdiff.BoolNode{Leaf: &b}, true
+			})
+		},
+	},
+	{
 		name: "double-negation",
 		apply: func(root *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
 			c := cloneNode(root)
