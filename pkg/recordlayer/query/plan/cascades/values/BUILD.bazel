@@ -170,6 +170,7 @@ go_test(
         "leg_identity_census_test.go",
         "legacy_field_value_fixtures_test.go",
         "like_match_test.go",
+        "maximum_type_laws_test.go",
         "name_split_census_test.go",
         "null_extended_phase_root_test.go",
         "ordering_claim_test.go",
