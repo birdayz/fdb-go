@@ -186,39 +186,37 @@ func intersectTwo(a, b Compensation) Compensation {
 	if _, ok := b.(impossibleCompensation); ok {
 		return a
 	}
-	// A leg that applies NO FILTERING is absorbing for the intersection: it
-	// already selects exactly its rows, so the intersection needs no filtering
-	// residual of its own. Primary-key distinct is a cardinality obligation
-	// rather than a filter, so it is NOT absorbed — it combines with OR, and a
-	// leg that needs it cannot lose it merely because another leg has no filter
-	// or result residual.
+	// A leg with NOTHING TO APPLY is absorbing for the intersection: it already
+	// selects exactly its rows, so the intersection needs no residual of its
+	// own. Primary-key distinct is a cardinality obligation rather than a
+	// residual, so it is NOT absorbed — it combines with OR, and a leg that
+	// needs it cannot lose it because another leg has no residual.
 	//
-	// The test is IsNeededForFiltering, not IsNeeded, and the difference is what
-	// makes the fold well defined. "Some leg filters exactly" is a property of
-	// the whole intersection, but IntersectCompensations is a LEFT fold, so it
-	// survives only if the accumulator keeps it. Absorbing on !IsNeeded stopped
-	// at the first leg carrying an obligation: NoCompensation ∩ pkDistinct
-	// yields a PK-distinct-only compensation, which IsNeeded reports as needed,
-	// so the next leg went through the full Intersect and its residual came back
-	// — while the same three legs in another order kept absorbing. That made the
-	// fold order-dependent, and the orders disagreed about whether compensation
-	// was needed at all. A PK-distinct-only compensation reports
-	// IsNeededForFiltering false, so it stays absorbing and the property
-	// survives to the end of the fold.
-	// The test is Java's isNeeded() MINUS the Go-only primary-key-distinct term,
-	// not IsNeededForFiltering alone. IsNeededForFiltering excludes the RESULT
-	// compensation as well as the obligation (compensation.go's IsFinalNeeded is
-	// exactly that result function), so absorbing on it alone swallows a leg
+	// The test is the pair Java's WithSelectCompensation.intersect uses at its
+	// own absorbing point — `!intersectedChildCompensation.isNeededForFiltering()
+	// && !newResultResultCompensationFunction.isNeeded() &&
+	// combinedPredicateMap.isEmpty()` (Compensation.java:771-774) — and not
+	// Java's `!isNeeded()` from the default intersect (Compensation.java:369),
+	// which Go cannot spell here. Go's IsNeeded carries requiresPrimaryKeyDistinct,
+	// a term Java has no equivalent for, and including it stops the fold
+	// absorbing after one step: NoCompensation ∩ pkDistinct yields a
+	// PK-distinct-only compensation, IsNeeded reports it needed, the next leg
+	// goes through the full Intersect and its residual comes back — while the
+	// same three legs in another order keep absorbing.
+	//
+	// !IsNeededForFiltering() ALONE is not enough either, and that half is the
+	// one a reader is likely to write. IsNeededForFiltering excludes the RESULT
+	// compensation as well as the obligation, so on its own it swallows a leg
 	// whose predicates are fully matched but whose result value must be
 	// re-projected: primaryKeyDistinctOnlyCompensation rebuilds with
-	// NoResultCompensation, IsFinalNeeded goes true to false, applyFinal is
+	// NoResultCompensation, IsFinalNeeded goes true to false, ApplyFinal is
 	// skipped, and the intersection emits the index's flowed shape instead of
 	// the query's projection. Wrong columns, not a lost optimization.
 	//
-	// Java guards both halves in the same place —
-	// `!intersectedChildCompensation.isNeededForFiltering() &&
-	// !newResultResultCompensationFunction.isNeeded() &&
-	// combinedPredicateMap.isEmpty()` (Compensation.java:771-774).
+	// A CHILD's result compensation is deliberately not part of this test.
+	// Nothing can apply one — ApplyFinal reads its own function and does not
+	// recurse — which is why IsNeeded stopped counting it too. See IsNeeded and
+	// TestForMatchCompensation_AChildsResultCompensationIsUnreachable.
 	if (!a.IsNeededForFiltering() && !a.IsFinalNeeded()) ||
 		(!b.IsNeededForFiltering() && !b.IsFinalNeeded()) {
 		return unionPrimaryKeyDistinctObligations(a, b)
@@ -281,7 +279,7 @@ func unionPrimaryKeyDistinctObligations(a, b Compensation) Compensation {
 		aFM.impossible || bFM.impossible,
 		NoCompensation,
 		EmptyPredicateCompensationMap(),
-		unionQuantifiers(aFM.matchedQuantifiers, bFM.matchedQuantifiers),
+		unionQuantifiersOrdered(aFM.matchedQuantifiers, bFM.matchedQuantifiers),
 		nil,
 		unionAliasSets(aFM.compensatedAliases, bFM.compensatedAliases),
 		NoResultCompensation(),
@@ -290,22 +288,8 @@ func unionPrimaryKeyDistinctObligations(a, b Compensation) Compensation {
 	)
 }
 
-// unionQuantifiers is a stable, deduplicated union by alias — stable because
-// the compensation it feeds is produced inside a fold whose result must not
-// depend on leg order.
-func unionQuantifiers(a, b []expressions.Quantifier) []expressions.Quantifier {
-	seen := make(map[values.CorrelationIdentifier]struct{}, len(a)+len(b))
-	out := make([]expressions.Quantifier, 0, len(a)+len(b))
-	for _, q := range append(append([]expressions.Quantifier{}, a...), b...) {
-		if _, dup := seen[q.GetAlias()]; dup {
-			continue
-		}
-		seen[q.GetAlias()] = struct{}{}
-		out = append(out, q)
-	}
-	return out
-}
-
+// unionAliasSets is the set union of two compensated-alias sets, allocating a
+// fresh map so neither operand is mutated.
 func unionAliasSets(
 	a, b map[values.CorrelationIdentifier]struct{},
 ) map[values.CorrelationIdentifier]struct{} {
@@ -721,14 +705,41 @@ func NewForMatchCompensationWithPrimaryKeyDistinct(
 	return c
 }
 
-// IsNeeded reports whether this compensation must be applied. Mirrors
-// Java's WithSelectCompensation.isNeeded() default method.
+// IsNeeded reports whether applying this compensation would do anything —
+// exactly the union of the two halves that get applied: isPreFinalNeeded, which
+// is what ApplyAllNeeded runs through Apply, and IsFinalNeeded, which is what it
+// runs through ApplyFinal.
+//
+// This is Java's WithSelectCompensation.isNeeded()
+// (Compensation.java:528-533) with ONE term narrowed, and the narrowing is
+// deliberate: Java recurses with getChildCompensation().isNeeded(), which
+// includes the CHILD's result compensation, and a child's result compensation
+// can never be applied. ForMatch.applyFinal — in both engines
+// (Compensation.java:1051-1074, ApplyFinal below) — reads only its OWN
+// resultCompensationFunction and never recurses; only Apply recurses, and only
+// for the pre-final half. So a compensation whose sole need is a child's result
+// function reports "needed" in Java while applying nothing.
+//
+// That is not a cosmetic wart. It made the intersection and union folds
+// ORDER-DEPENDENT over exactly that shape: such a leg collapses to
+// NoCompensation in one grouping and survives as a needed compensation in
+// another, so IsNeeded — which intersector_primary_key.go and
+// abstract_data_access_rule.go both branch on — answered differently for the
+// same set of legs. Adding that shape to the compensation corpus reddens the
+// order-independence laws against the Java-literal spelling; run them to see by
+// how much, and read the count against the corpus size the test logs rather than
+// against a number recorded here.
+//
+// Recursing with the child's PRE-FINAL need instead drops the unreachable term
+// and nothing else: the child's primary-key-distinct obligation and its
+// filtering residual both still count, which
+// TestForMatchCompensation_NestedPrimaryKeyDistinct pins by applying a nested
+// cardinality-only child and requiring the Unique to appear.
+// TestForMatchCompensation_AChildsResultCompensationIsUnreachable pins the
+// reachability fact the narrowing rests on — teach ApplyFinal to recurse and it
+// reddens, which is the signal that this must widen again.
 func (c *ForMatchCompensation) IsNeeded() bool {
-	return c.childCompensation.IsNeeded() ||
-		len(c.GetUnmatchedForEachQuantifiers()) > 0 ||
-		!c.predicateCompensationMap.IsEmpty() ||
-		c.resultCompensationFn.IsNeeded() ||
-		c.requiresPrimaryKeyDistinct
+	return c.isPreFinalNeeded() || c.IsFinalNeeded()
 }
 
 // IsImpossible reports whether this compensation is infeasible.
@@ -1505,14 +1516,7 @@ func (c *ForMatchCompensation) Union(other *ForMatchCompensation) Compensation {
 		return unionedChild
 	}
 
-	// Merge compensated aliases.
-	mergedAliases := make(map[values.CorrelationIdentifier]struct{})
-	for k, v := range c.compensatedAliases {
-		mergedAliases[k] = v
-	}
-	for k, v := range other.compensatedAliases {
-		mergedAliases[k] = v
-	}
+	mergedAliases := unionAliasSets(c.compensatedAliases, other.compensatedAliases)
 
 	return DerivedCompensationWithPrimaryKeyDistinct(
 		unionedChild,

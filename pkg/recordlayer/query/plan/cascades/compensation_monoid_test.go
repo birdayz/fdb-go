@@ -24,11 +24,19 @@ import (
 // (IsNeeded, IsImpossible, CanBeDeferred, the constructors). Nothing exercises
 // the combinators as an algebra.
 
-// compensationCorpus is a spread of shapes the folds actually meet: the two
-// identities, a plain residual compensation, one that is impossible-by-child,
-// and one carrying a primary-key-distinct obligation — the last because
-// intersectTwo has a dedicated arm for it (primaryKeyDistinctOnlyCompensation)
-// that fires only when the OTHER side is not needed.
+// compensationCorpus is the population every law below is a statement about, so
+// its membership is the scope of those laws and each entry is here because some
+// arm of the folds can only be reached by that shape. In order: the two
+// identities; a plain residual compensation; one impossible-by-child; one
+// carrying a primary-key-distinct obligation, for intersectTwo's dedicated arm
+// (primaryKeyDistinctOnlyCompensation) that fires only when the OTHER side is
+// not needed; one needing only its OWN result compensation; and one needing only
+// its CHILD's.
+//
+// The last two were each added after a defect the corpus could not see, and each
+// found one immediately. Growth is the expected direction here: a shape absent
+// from this list is an arm the laws do not cover, whatever they otherwise
+// report.
 func compensationCorpus(t *testing.T) []Compensation {
 	t.Helper()
 	ref := expressions.InitialOf(nil)
@@ -65,6 +73,23 @@ func compensationCorpus(t *testing.T) []Compensation {
 		aliases, NewResultCompensationFunction(true), EmptyGroupByMappings(),
 	)
 
+	// A leg needing nothing AT THIS LEVEL whose CHILD needs a result
+	// compensation. Distinct from resultOnly, and the distinction is the whole
+	// point: IsNeededForFiltering recurses on the child's FILTERING need, so
+	// this leg reports false for both IsNeededForFiltering and IsFinalNeeded
+	// while still owing a re-projection one level down.
+	//
+	// It is not a contrived shape. NewForMatchCompensation's base-alias
+	// invariant names it explicitly — "a compensation needed only for a CHILD's
+	// final shape, where this level never builds a base quantifier" — as a case
+	// it must NOT fail closed, and partial_match.go passes a child partial
+	// match's compensation straight through as childCompensation.
+	nestedResultOnly := NewForMatchCompensation(
+		false, resultOnly, EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{q1}, nil,
+		aliases, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
 	return []Compensation{
 		NoCompensation,
 		ImpossibleCompensation,
@@ -72,6 +97,90 @@ func compensationCorpus(t *testing.T) []Compensation {
 		impossibleChild,
 		pkDistinct,
 		resultOnly,
+		nestedResultOnly,
+	}
+}
+
+// TestForMatchCompensation_AChildsResultCompensationIsUnreachable is the
+// negative result IsNeeded's narrowing rests on, pinned so that undoing the
+// premise re-arms the bug.
+//
+// IsNeeded now recurses with the child's PRE-FINAL need rather than the child's
+// full IsNeeded, dropping the child's result compensation from the answer. That
+// is only sound because a child's result compensation can never be applied:
+// ApplyFinal reads its OWN resultCompensationFn and does not recurse, and
+// ApplyAllNeeded's only recursion into a child is through Apply, which is the
+// pre-final half. Java is the same (Compensation.java:1051-1074).
+//
+// So this test does not assert the narrowing — it asserts the FACT. Teach
+// ApplyFinal to recurse and this reddens, which is the signal that IsNeeded must
+// widen again or the child's projection will be silently dropped.
+func TestForMatchCompensation_AChildsResultCompensationIsUnreachable(t *testing.T) {
+	t.Parallel()
+
+	base := compensationNamedForEachQuantifier(t, "unreachable_final_base")
+	child := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base}, nil, aliasesOf(base),
+		ResultCompensationOfValue(mustCompensationQOV(t, base.GetAlias(), compensationRFC232RowType())),
+		EmptyGroupByMappings(),
+	)
+	parent := NewForMatchCompensation(
+		false, child, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+
+	// The premise: the child really does have an APPLIABLE result compensation.
+	// Without this the parent applies nothing for a trivial reason and every
+	// check below passes for the wrong one.
+	if !child.IsFinalNeeded() {
+		t.Fatal("the child's result compensation is not needed — the fixture no longer " +
+			"builds the shape this test is about")
+	}
+	scan := mustCompensationScan(t)
+	appliedChild, ok := child.ApplyFinal(scan, nil)
+	if !ok || appliedChild == scan {
+		t.Fatalf("the child's own ApplyFinal must rewrite the expression (ok=%v, changed=%v); "+
+			"if it cannot, the parent applying nothing says nothing about reachability",
+			ok, appliedChild != scan)
+	}
+
+	// The fact. The parent owes nothing of its own, and the child's result
+	// compensation is out of reach from here.
+	appliedParent, ok := parent.ApplyAllNeeded(scan, nil)
+	if !ok {
+		t.Fatal("applying a parent that needs nothing must succeed")
+	}
+	if appliedParent != scan {
+		t.Error("ApplyAllNeeded now REACHES a child's result compensation. That is the " +
+			"premise IsNeeded's narrowing rests on: it stops counting a child's result " +
+			"function precisely because nothing can apply it. Widen IsNeeded back, or the " +
+			"child's projection is dropped while the fold reports nothing to do.")
+	}
+	if parent.IsNeeded() {
+		t.Error("a compensation whose only need is an unreachable child result function " +
+			"must report NOT needed — reporting needed is what made the intersection and " +
+			"union folds order-dependent over this shape")
+	}
+
+	// Control, and it is the one that stops this becoming a licence to drop
+	// every nested need: a child's PRIMARY-KEY-DISTINCT obligation IS reachable
+	// through Apply, so it must still count.
+	// TestForMatchCompensation_NestedPrimaryKeyDistinct applies one end to end;
+	// here it is enough that the parent reports it.
+	pkChild := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{base}, nil, aliasesOf(base),
+		NoResultCompensation(), EmptyGroupByMappings(), true,
+	)
+	pkParent := NewForMatchCompensation(
+		false, pkChild, EmptyPredicateCompensationMap(),
+		nil, nil, nil, NoResultCompensation(), EmptyGroupByMappings(),
+	)
+	if !pkParent.IsNeeded() {
+		t.Error("a nested primary-key-distinct obligation IS applied through Apply and must " +
+			"still make the parent needed — the narrowing drops the child's RESULT term and " +
+			"nothing else")
 	}
 }
 

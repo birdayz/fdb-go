@@ -20806,16 +20806,35 @@ if the accumulator does; after one step it was gone, the next leg went through
 the full `Intersect`, and its residual came back — while the same legs in
 another order kept absorbing.
 
-Two changes, each measured:
+Three changes, each measured:
 
-- `intersectTwo` absorbs on `IsNeededForFiltering` rather than `IsNeeded`. A
-  PK-distinct-only compensation reports no filtering need, so it stays absorbing
-  and the property survives the fold. Reverting this one predicate reddens the
-  laws. (Violation counts are deliberately not quoted here: they are a function
-  of the corpus size, which the test logs. A "151" recorded against the
-  five-shape corpus was both miscounted — it omitted the commutativity subtest —
-  and then invalidated by a sixth shape being added, which moved the same
-  mutation to 233. Run the test.)
+- `intersectTwo` absorbs on `!IsNeededForFiltering() && !IsFinalNeeded()`, the
+  pair Java's `WithSelectCompensation.intersect` uses at its own absorbing point
+  (`Compensation.java:771-774`), rather than on `IsNeeded`. A PK-distinct-only
+  compensation reports neither, so it stays absorbing and the property survives
+  the fold. `IsNeededForFiltering` ALONE is not the test and an earlier draft of
+  this line said it was: it excludes the RESULT compensation too, so on its own
+  it swallows a leg whose predicates are fully matched but whose result value
+  must be re-projected — wrong columns, not a lost optimization. Reverting the
+  predicate reddens the laws. (Violation counts are deliberately not quoted here:
+  they are a function of the corpus size, which the test logs. A "151" recorded
+  against the five-shape corpus was both miscounted — it omitted the
+  commutativity subtest — and then invalidated by a sixth shape being added,
+  which moved the same mutation to 233. Run the test.)
+- `ForMatchCompensation.IsNeeded` recurses with the child's PRE-FINAL need
+  instead of the child's full `IsNeeded`. Java counts the child's RESULT
+  compensation (`Compensation.java:528-533`) and nothing can ever apply one:
+  `ForMatch.applyFinal` reads its own function and does not recurse, in both
+  engines. So Java reports "needed" for a compensation that applies nothing, and
+  that shape made both folds order-dependent — it collapses to `NoCompensation`
+  in one grouping and survives as needed in another, while
+  `intersector_primary_key.go` and `abstract_data_access_rule.go` both branch on
+  `IsNeeded`. A seventh corpus shape exposes it: 30 law violations against the
+  Java-literal spelling. The narrowing drops the child's result term and nothing
+  else — a nested primary-key-distinct obligation still counts, and still
+  applies. This is a DELIBERATE divergence from Java, argued at the call site,
+  and the reachability fact it rests on is pinned by
+  `TestForMatchCompensation_AChildsResultCompensationIsUnreachable`.
 - The absorbing arm reduces BOTH operands and keeps the union of their
   obligations, via `unionPrimaryKeyDistinctObligations`. Discarding either
   side's obligation reddens the laws. The helper also unions the two sides'
