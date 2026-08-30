@@ -40,14 +40,19 @@ import (
 // so read it.
 const normalFormWritePathFile = "testdata/normal_form_writepath_baseline.txt"
 
-// normalFormWritePathBound caps the recorded normal-form clause count so the
-// golden stays readable. An unbounded first attempt produced a 2.1 MB file,
-// which is a golden nobody reviews — one entry alone rendered 648 KB, because
-// the eager cross product is exponential in the input.
+// normalFormWritePathBound caps the recorded normal form's NODE COUNT — what
+// predicates.PredicateSize returns, which counts every predicate in the tree,
+// not its clauses. The distinction matters because the clause count is what the
+// normalizer's own size guard uses, and confusing the two is how this file
+// would start claiming to bound something it does not.
 //
-// Entries above the bound are recorded by SHAPE (clause and atom counts) rather
-// than dropped, so an explosive input still contributes a check: its structure
-// is pinned even where its text is not.
+// The bound exists so the golden stays readable. An unbounded first attempt
+// produced a 2.1 MB file, which is a golden nobody reviews — one entry alone
+// rendered 648 KB, because the eager cross product is exponential in the input.
+//
+// Entries above the bound are recorded by SHAPE (their node count) rather than
+// dropped, so an explosive input still contributes a check: its size is pinned
+// even where its text is not.
 const normalFormWritePathBound = 24
 
 func normalFormWritePathCorpus() []predicates.QueryPredicate {
@@ -160,7 +165,16 @@ func TestNormalFormWritePath_IsUnchanged(t *testing.T) {
 		t.Fatalf("read golden %s: %v (regenerate with NORMAL_FORM_WRITEPATH_UPDATE=1)", path, err)
 	}
 	want := string(wantBytes)
-	if entries := strings.Count(want, "in="); entries != len(corpus) {
+	// Counted at LINE START. An unanchored "in=" also matches inside a
+	// predicate's rendered text, so the entry count would drift with the corpus
+	// CONTENT rather than with its SIZE, which is the thing being checked.
+	entries := 0
+	for _, line := range strings.Split(want, "\n") {
+		if strings.HasPrefix(line, "in=") {
+			entries++
+		}
+	}
+	if entries != len(corpus) {
 		t.Fatalf("golden has %d entries, corpus has %d — the corpus changed shape; "+
 			"regenerate deliberately and read the diff", entries, len(corpus))
 	}

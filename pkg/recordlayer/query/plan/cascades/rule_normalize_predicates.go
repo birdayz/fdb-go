@@ -9,8 +9,13 @@ import (
 // NormalizePredicatesRule converts the predicates of a SelectExpression
 // into conjunctive normal form (CNF) — AND of ORs. The normalised
 // predicates are set as the new predicate list on a freshly yielded
-// SelectExpression (quantifiers are rebuilt with new aliases pointing
-// at the same References).
+// SelectExpression carrying the SAME quantifier values, passed through
+// verbatim (OnMatch's sel.GetQuantifiers()).
+//
+// That verbatim pass-through is load-bearing, not incidental, and this comment
+// used to say the opposite — "quantifiers are rebuilt with new aliases". It is
+// what makes Reference.Insert's pointer-identity fast path hit on a re-fire,
+// which is half of why this rule needs no memory of what it has already seen.
 //
 // Ports Java's NormalizePredicatesRule which is the precursor to
 // PredicateToLogicalUnionRule. The CNF form makes each OR clause
@@ -40,10 +45,19 @@ import (
 // stable").
 //
 // Declining is only half of why the set was unnecessary; the other half is that
-// a re-fire must COST nothing rather than accumulate a duplicate member.
-// Reference.Insert dedups on EqualsWithoutChildren plus sameChildReferences
-// (expressions/reference.go:654) with a SemanticEquals fallback for the
-// fresh-Reference case — the Go analogue of Java's memo dedup, and what the set
+// a re-fire must COST nothing rather than accumulate a duplicate member. Two
+// mechanisms, in order:
+//
+//   - Reference.Insert dedups on EqualsWithoutChildren plus sameChildReferences
+//     (expressions/reference.go:654), with a SemanticEquals fallback below it
+//     for the fresh-Reference case. The pointer-identity tier is the one that
+//     hits here, and only because OnMatch passes sel.GetQuantifiers() verbatim.
+//   - A deduped yield then schedules NOTHING: unified_tasks.go:492's
+//     `if !inserted[i] { continue }` skips the follow-on exploration task. That
+//     is where the cost actually goes to zero; the dedup alone would still
+//     re-walk.
+//
+// Together they are the Go analogue of Java's memo dedup, which is what the set
 // was standing in for.
 type NormalizePredicatesRule struct {
 	matcher matching.BindingMatcher

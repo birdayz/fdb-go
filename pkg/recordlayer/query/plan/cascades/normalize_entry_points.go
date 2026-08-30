@@ -17,10 +17,36 @@ import (
 // (:117) — the limit the default normalizer instances carry.
 const NormalizerDefaultSizeLimit = 1_000_000
 
-// cnfSizeLimit is the same constant under the name the CNF rule reads it by.
-// Java's NormalizePredicatesRule takes it from the planner configuration's
-// complexity threshold, whose default IS DEFAULT_SIZE_LIMIT.
-const cnfSizeLimit = 1_000_000
+// cnfSizeLimit is the limit the CNF planner rule gates on, and it is NOT
+// NormalizerDefaultSizeLimit. It was, and that was a 333x divergence.
+//
+// Java's NormalizePredicatesRule does not use the default normalizer. It calls
+// BooleanPredicateNormalizer.forConfiguration(Mode.CNF, plannerConfiguration)
+// (NormalizePredicatesRule.java:75-77), and forConfiguration (:175-180) returns
+// the default instance ONLY when getComplexityThreshold() happens to equal
+// DEFAULT_SIZE_LIMIT — otherwise it builds a normalizer limited to the
+// threshold. The default threshold is not DEFAULT_SIZE_LIMIT:
+// RecordQueryPlannerConfiguration.getComplexityThreshold (:154-156) falls back
+// to RecordQueryPlanner.DEFAULT_COMPLEXITY_THRESHOLD, which is 3000
+// (RecordQueryPlanner.java:150). That fallback is the whole reason
+// forConfiguration has a branch at all.
+//
+// So Java gates CNF normalization at 3000 clauses and Go gated at 1,000,000.
+// The direction matters: the limit exists to refuse a distribution whose cost
+// is exponential, and the estimate counts CLAUSES while the cost is in ATOMS
+// (see FuzzNormalForm_PreservesSemantics for the measurement — about 3.5 KiB
+// per clause). At 3000 that is single-digit MiB; at 1,000,000 it is gigabytes.
+//
+// Go has no planner complexity-threshold configuration to read this from — a
+// quoted repo-wide grep for ComplexityThreshold over non-test Go sources
+// returns nothing — so the Java DEFAULT is inlined here rather than plumbed. If
+// that configuration lands, this constant is where it connects.
+//
+// NormalizerDefaultSizeLimit stays 1,000,000 and stays the WRITE path's limit:
+// the index-predicate producer reaches the normalizer through
+// getDefaultInstanceForDnf (MaterializedViewIndexGenerator.java:675), not
+// through a planner configuration, so it really does get DEFAULT_SIZE_LIMIT.
+const cnfSizeLimit = 3000
 
 // normalFormSizeSaturated is the value a normal-form size computation reports
 // when it overflows int64. Java uses Math.addExact/Math.multiplyExact

@@ -44,8 +44,7 @@ func TestJavaOracle_Atomic(t *testing.T) {
 func TestJavaOracle_Flatten(t *testing.T) {
 	t.Parallel()
 	p := javaOracleLeaves(t)
-	and, or, not := predicates.NewAnd, predicates.NewOr, predicates.NewNot
-	_ = not
+	and, or := predicates.NewAnd, predicates.NewOr
 
 	for _, assert := range []func(*testing.T, predicates.QueryPredicate, predicates.QueryPredicate){assertDNF, assertCNF} {
 		assert(t, and(p[1], p[2], p[3]), and(and(p[1], p[2]), p[3]))
@@ -190,6 +189,114 @@ func javaOracleLeaves(t *testing.T) [8]predicates.QueryPredicate {
 	for i := 1; i <= 7; i++ {
 		out[i] = predicates.NewComparisonPredicate(field,
 			predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i)))
+	}
+	return out
+}
+
+// TestJavaOracle_Redundant is BooleanPredicateNormalizerTest.redundant
+// (:180-186), and it is the ONLY case in Java's suite that exercises the
+// absorption law — RFC-240 commit A changed absorption's tie-break and had no
+// Java-side case covering it until now.
+//
+// `and(P1, or(and(P2, P3), and(P2, P4, P3)))` distributes to
+// `or(and(P1,P2,P3), and(P1,P2,P4,P3))`, and the second clause is a superset of
+// the first, so absorption removes it and the answer collapses to
+// `and(P1, P2, P3)`.
+func TestJavaOracle_Redundant(t *testing.T) {
+	t.Parallel()
+	p := javaOracleLeaves(t)
+	and, or := predicates.NewAnd, predicates.NewOr
+
+	assertDNF(t, and(p[1], p[2], p[3]),
+		and(p[1], or(and(p[2], p[3]), and(p[2], p[4], p[3]))))
+}
+
+// TestJavaOracle_ComplexRoundTripThreeWay is the second half of Java's
+// complexRoundTrip (:166-178), which the first port stopped short of — and the
+// tell was that javaOracleLeaves builds P6 and P7 and nothing used them.
+//
+// It round-trips a three-way disjunction of conjunctions through CNF and back,
+// asserting the DNF is reached from the original, from its CNF, and from its
+// own expected form. Java asserts all three because a normalizer can be right
+// on the first and wrong on a re-entry.
+func TestJavaOracle_ComplexRoundTripThreeWay(t *testing.T) {
+	t.Parallel()
+	p := javaOracleLeaves(t)
+	and, or := predicates.NewAnd, predicates.NewOr
+
+	original := and(p[1], or(and(p[2], p[3]), and(p[4], p[5]), and(p[6], p[7])))
+	expectedDNF := or(and(p[1], p[2], p[3]), and(p[1], p[4], p[5]), and(p[1], p[6], p[7]))
+
+	assertDNF(t, expectedDNF, original)
+
+	// original -> cnf -> dnf
+	cnfOfOriginal := normalizeOrSelf(func(q predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
+		return normalizeCNF(q, cnfSizeLimit)
+	}, original)
+	assertDNF(t, expectedDNF, cnfOfOriginal)
+
+	// expected dnf -> cnf -> dnf
+	cnfOfExpected := normalizeOrSelf(func(q predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
+		return normalizeCNF(q, cnfSizeLimit)
+	}, expectedDNF)
+	assertDNF(t, expectedDNF, cnfOfExpected)
+}
+
+// TestJavaOracle_SizeIsExactNotJustOverTheLimit ports the assertion at
+// BooleanPredicateNormalizerTest.java:249, which pins the normalized size to an
+// EXACT value — 2^62 for 62 two-way ORs — rather than merely "above the limit".
+//
+// The distinction is the point. A saturating multiply that clamped too early,
+// or a sum where a product belongs, still lands above any limit and still
+// refuses the predicate; only the exact value shows the arithmetic is the
+// arithmetic. Go's other overflow test asserts the refusal; this one asserts
+// the number.
+func TestJavaOracle_SizeIsExactNotJustOverTheLimit(t *testing.T) {
+	t.Parallel()
+	root, err := values.NewQuantifiedObjectValue(
+		values.NamedCorrelationIdentifier("java_oracle_size"), predicateSemanticsRowType())
+	if err != nil {
+		t.Fatalf("construct QOV: %v", err)
+	}
+	field, err := values.ResolveFieldOrdinals(root, []int{0})
+	if err != nil {
+		t.Fatalf("resolve field: %v", err)
+	}
+
+	conjuncts := make([]predicates.QueryPredicate, 0, 62)
+	for i := 0; i < 62; i++ {
+		disjuncts := make([]predicates.QueryPredicate, 0, 2)
+		for j := 0; j < 2; j++ {
+			disjuncts = append(disjuncts, predicates.NewComparisonPredicate(field,
+				predicates.NewLiteralComparison(predicates.ComparisonEquals, int64(i*100+j))))
+		}
+		conjuncts = append(conjuncts, predicates.NewOr(disjuncts...))
+	}
+	cnf := predicates.NewAnd(conjuncts...)
+
+	// Java: assertEquals(4611686018427387904L, normalizer.getNormalizedSize(cnf))
+	const want = int64(4611686018427387904) // 2^62
+	if got := normalFormSize(cnf, false, normalFormDNF); got != want {
+		t.Fatalf("normalFormSize(62 two-way ORs, DNF) = %d, want exactly %d (2^62).\n"+
+			"An over-the-limit answer is not enough here: a saturation that clamps "+
+			"early, or a sum where a product belongs, also lands above every limit.",
+			got, want)
+	}
+	// And it still refuses, which is the behaviour the size feeds.
+	if _, changed := NormalizeDNFWithoutSimplification(cnf, NormalizerDefaultSizeLimit); changed {
+		t.Fatal("a 2^62-clause normal form was not declined")
+	}
+}
+
+// normalizeOrSelf is Java's `.orElse(given)` — a declined normalization yields
+// the input unchanged.
+func normalizeOrSelf(
+	normalize func(predicates.QueryPredicate) (predicates.QueryPredicate, bool),
+	given predicates.QueryPredicate,
+) predicates.QueryPredicate {
+	out, changed := normalize(given)
+	if !changed {
+		return given
 	}
 	return out
 }

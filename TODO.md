@@ -20489,8 +20489,23 @@ and after.
 
 ## The CNF normalizer wired into the planner treats NOT as a leaf; Java's does not
 
-- [ ] Unify Go's two normal-form implementations on the exact Java port, so
+- [x] Unify Go's two normal-form implementations on the exact Java port, so
   `NormalizePredicatesRule` normalizes through a `NOT` over a connective.
+  DONE — RFC-240, five commits: the RFC plus a write-path golden captured before
+  the rewrite, the absorption tie-break, the cost sites moved to the negate-aware
+  metric, the strict normal form itself, and the deletion of the rule's state
+  map. `normalizeCNF(AND(NOT(AND(a,b)), c))` now returns
+  `(NOT a OR NOT b) AND c`. Verified against Java's own
+  `BooleanPredicateNormalizerTest` cases, ported.
+
+  Two things found while doing it that the entry below did not anticipate.
+  First, the cost model was reading the SAME quantity through the negate-blind
+  walk: Java's `NormalizedResidualPredicateProperty.countNormalizedConjuncts` is
+  `getMetrics(p).getNormalFormFullSize()`, so `designated_final.go` and
+  `planning_cost_model.go` were a mis-port, not an independent proxy — the
+  RFC's first draft proposed freezing that number under a new name and both
+  review gates rejected it. Second, the rule carried an unbounded identity-keyed
+  set standing in for a termination property Java gets from the algebra.
 
 Java's `BooleanPredicateNormalizer` has ONE `isInNormalForm` — a `NOT` over
 anything that is not a variable is NOT in normal form

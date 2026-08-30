@@ -378,7 +378,7 @@ explicit sort-count, NLJ-predicate, and statistics-cost rungs. Criterion-by-crit
 |---|---|---|---|
 | 1. Physical beats non-physical | `instanceof RecordQueryPlan` | `isPhysical` | Aligned |
 | 2. Max data access cardinality | CardinalitiesProperty gate + comparison — index arm has TWO criteria: PK-bound-by-equalities, falling through to unique-index | Data-access cardinality gate — implements the uniqueness criterion only | **Deliberate divergence — Go's sargable surface excludes the PK, so Java's criterion 1 has no constructible input (see below)** |
-| 3. Residual predicate count | NormalizedResidualPredicateProperty (CNF size) | `countResidualPredicates` using `cnfSize()` | Aligned |
+| 3. Residual predicate count | NormalizedResidualPredicateProperty (`getMetrics(p).getNormalFormFullSize()`) | `countResidualPredicates` using `normalFormSize(p, false, normalFormCNF)` | Aligned (RFC-240 — was NOT aligned: the old `cnfSize` recursed through a NOT without swapping the major/minor roles, so `NOT(a OR b)` counted 1 where Java counts 2) |
 | 4. Data access count | count(Scan, Index, Covering) | `scanCount + indexScanCount + coveringIndexCount` | Aligned |
 | 5. Recursive CTE DFS > level | flipFlop(compareRecursiveCte) | `compareRecursiveCTE` | Aligned |
 | 6. IN-plan SARG penalty | flipFlop(compareInOperator) — evaluates the LEFT argument only and returns a PRESENT tie for a SARGed in-plan | `compareInPlan` ranks BOTH sides on the penalty | **Deliberate divergence — Java's rung is not antisymmetric (see below)** |
@@ -746,7 +746,7 @@ Go has **no such correctness problem**: Go's outer join is a `SelectExpression{j
 | ReferencesAndDependenciesProperty | `references_and_dependencies_property.go` | Aligned |
 | UsedTypesProperty | `used_types_property.go` | Aligned |
 | ComparisonsProperty | `comparisons_property.go` + `collectSargedAliases()` inline in cost model | Aligned |
-| NormalizedResidualPredicateProperty | `countResidualPredicates()` + `cnfSize()` inline in cost model | Aligned (inline) |
+| NormalizedResidualPredicateProperty | `countResidualPredicates()` + `normalFormSize(..., normalFormCNF)` inline in cost model | Aligned (inline) — RFC-240 replaced the negate-blind `cnfSize` |
 | ExpressionDepthProperty | `expressionDepth()` inline in cost model | Aligned (inline) |
 | TypeFilterCountProperty | `walkExpressionTree()` counter inline in cost model | Aligned (inline) |
 | UnmatchedFieldsCountProperty | `walkExpressionTree()` counter inline in cost model | Aligned (inline) |
