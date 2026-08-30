@@ -10,11 +10,18 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/conformance/rowdiff"
 	"fdb.dev/pkg/relational/core/embedded"
 )
+
+// plandivProgressEvery is how often the plan-diversity sweep reports, in SEEDS.
+// Lower than the shape hunts' case interval because a plan-diversity seed is
+// far more expensive: it creates a database, pins one connection per
+// perturbation, and plans every query 17 times.
+const plandivProgressEvery = 50
 
 // perturbation is one planner/executor configuration the hunter runs a query
 // under. None of them may change the ANSWER — only the plan or the paging — so
@@ -184,8 +191,25 @@ func TestFDB_PlanDiversityHunt(t *testing.T) {
 	count := envInt("HUNT_SEEDS", 40)
 	workers := envInt("HUNT_WORKERS", 4)
 
+	// Budget and progress reporting, for the same reasons runShapeHuntGen has
+	// them — and this hunt is the reason to say "the same reasons" out loud.
+	//
+	// Both fixes were made there first and NOT carried here, so this harness
+	// kept the seed-count bound that had already been shown to end in a panic.
+	// It then did exactly that: 60 minutes, killed by the Go test timeout, with
+	// no summary line and no progress trail, so the run yielded nothing at all
+	// about the range it walked. The Oracle-M sweeps that hit their budgets the
+	// same hour each ended PASS with their coverage stated.
+	//
+	// One defect, two copies, one of them fixed. Carrying the fix is the whole
+	// lesson.
+	began := time.Now()
+	budget := huntBudget()
+	deadline := began.Add(budget)
+
 	var mu sync.Mutex
 	total := newHuntStats()
+	var walked, seen int
 
 	seeds := make(chan uint64)
 	var wg sync.WaitGroup
@@ -197,15 +221,30 @@ func TestFDB_PlanDiversityHunt(t *testing.T) {
 				r := huntSeed(t, seed, w)
 				mu.Lock()
 				total.fold(r)
+				seen++
+				if seen%plandivProgressEvery == 0 {
+					el := time.Since(began)
+					fmt.Printf("HUNT progress seeds=%d queries=%d moved=%d executed=%d findings=%d "+
+						"elapsed=%s rate=%.2f seeds/s\n",
+						seen, total.queries, total.moved, total.executed, len(total.findings),
+						el.Round(time.Second), float64(seen)/el.Seconds())
+				}
 				mu.Unlock()
 			}
 		}(w)
 	}
 	for s := start; s < start+count; s++ {
+		if time.Now().After(deadline) {
+			fmt.Printf("HUNT BUDGET EXHAUSTED after %s: walked %d of %d seeds. NORMAL end — the seed "+
+				"count is an upper bound and the clock sizes the run.\n", budget, walked, count)
+			break
+		}
 		seeds <- uint64(s)
+		walked++
 	}
 	close(seeds)
 	wg.Wait()
+	fmt.Printf("HUNT walked=%d of %d seeds in %s\n", walked, count, time.Since(began).Round(time.Second))
 
 	fmt.Printf("HUNT seeds=%d..%d queries=%d planned=%d moved=%d executed=%d empty-skips=%d base-errs=%d count-only=%d findings=%d\n",
 		start, start+count-1, total.queries, total.planned, total.moved,
