@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +53,41 @@ type rewrite struct {
 	name string
 	// apply returns the rewritten tree and whether it applied at all.
 	apply func(*rowdiff.BoolNode) (*rowdiff.BoolNode, bool)
+	// mustRender are substrings the RENDERED predicate must contain for the
+	// rewrite to be trusted. Empty means no check.
+	//
+	// This exists because building the tree correctly is NOT the same as
+	// emitting the intended SQL, and the gap is silent. eq-to-degenerate-range
+	// sets IsBetween on the leaf AND leaves Op as >=, expecting the renderer to
+	// honour IsBetween. It does — for a PLAIN leaf. For a leaf carrying a CAST
+	// the renderer takes a different path and emits the Op instead, so
+	//
+	//	CAST(b AS STRING) = '0'
+	//
+	// became
+	//
+	//	CAST(b AS STRING) >= '0'
+	//
+	// which is strictly WEAKER, matched more rows, and was reported as an
+	// engine cardinality bug. The tree was right; the SQL was not.
+	//
+	// Verifying the RENDERING rather than denylisting leaf kinds is deliberate:
+	// a denylist of "cast, function, arithmetic…" goes stale the moment the
+	// generator grows a new leaf kind, and it fails OPEN when it does. Asking
+	// the emitted string whether it is the shape intended cannot go stale.
+	mustRender []string
+}
+
+// renderedAsIntended reports whether the rewrite's emitted SQL carries the
+// shape it declared. A rewrite that builds the right tree and renders another
+// form is not the predicate under test.
+func renderedAsIntended(rw rewrite, rendered string) bool {
+	for _, want := range rw.mustRender {
+		if !strings.Contains(rendered, want) {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneNode(n *rowdiff.BoolNode) *rowdiff.BoolNode {
@@ -90,7 +126,8 @@ func walk(n *rowdiff.BoolNode, f func(*rowdiff.BoolNode) (*rowdiff.BoolNode, boo
 
 var rewrites = []rewrite{
 	{
-		name: "between-to-conjunction",
+		name:       "between-to-conjunction",
+		mustRender: []string{">="},
 		apply: func(root *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
 			return walk(cloneNode(root), func(n *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
 				if n.Leaf == nil || !n.Leaf.IsBetween || n.Not {
@@ -223,7 +260,8 @@ var rewrites = []rewrite{
 		// type, BETWEEN only on ordered ones, so "equality and a degenerate
 		// range denote the same set" holds for the VALUES and not for the
 		// TYPES. An equivalence has to be sound over the type system too.
-		name: "eq-to-degenerate-range",
+		name:       "eq-to-degenerate-range",
+		mustRender: []string{"BETWEEN"},
 		apply: func(root *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
 			return walk(cloneNode(root), func(n *rowdiff.BoolNode) (*rowdiff.BoolNode, bool) {
 				if n.Leaf == nil || n.Not || n.Leaf.IsBetween ||
@@ -271,13 +309,14 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 	deadline := began.Add(huntBudget())
 
 	var (
-		mu       sync.Mutex
-		findings []string
-		compared int
-		applied  = map[string]int{}
-		skipped  int
-		walked   int
-		done     int
+		mu         sync.Mutex
+		findings   []string
+		compared   int
+		applied    = map[string]int{}
+		skipped    int
+		walked     int
+		done       int
+		unrendered int
 	)
 
 	seeds := make(chan uint64)
@@ -306,6 +345,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 				findings = append(findings, r.findings...)
 				compared += r.compared
 				skipped += r.skipped
+				unrendered += r.unrendered
 				for k, v := range r.applied {
 					applied[k] += v
 				}
@@ -336,8 +376,8 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 	close(seeds)
 	wg.Wait()
 
-	fmt.Printf("EQUIV seeds=%d..%d walked=%d compared=%d skipped=%d findings=%d elapsed=%s\n",
-		start, start+count-1, walked, compared, skipped, len(findings),
+	fmt.Printf("EQUIV seeds=%d..%d walked=%d compared=%d skipped=%d unrendered=%d findings=%d elapsed=%s\n",
+		start, start+count-1, walked, compared, skipped, unrendered, len(findings),
 		time.Since(began).Round(time.Second))
 	var keys []string
 	for k := range applied {
@@ -370,6 +410,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 type equivResult struct {
 	findings          []string
 	compared, skipped int
+	unrendered        int
 	applied           map[string]int
 }
 
@@ -427,6 +468,14 @@ func equivSeed(ctx context.Context, t *testing.T, setupDB *sql.DB, dbPath string
 					continue
 				}
 				sqlText := rowdiff.PredicateSQL(nn)
+				// The rewrite must have EMITTED the shape it claims, not merely
+				// built a tree for it. A rewrite whose rendering silently took
+				// another path is not the predicate under test, and comparing
+				// it accuses the engine of the oracle's own error.
+				if !renderedAsIntended(rw, sqlText) {
+					res.unrendered++
+					continue
+				}
 				alt := q
 				override := "(" + sqlText + ")"
 				alt.WhereOverride = &override
