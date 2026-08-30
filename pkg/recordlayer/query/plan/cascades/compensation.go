@@ -1103,6 +1103,20 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 		intersectedChild = intersectTwo(c.childCompensation, other.childCompensation)
 	}
 	if intersectedChild.IsImpossible() || !intersectedChild.CanBeDeferred() {
+		// KNOWN DEFECT, open: this discards the requiresPrimaryKeyDistinct just
+		// computed above. That would be harmless if impossible propagated, but
+		// intersectTwo treats ImpossibleCompensation as the intersection IDENTITY
+		// (impossible ∩ X = X, matching Java's reduce from impossibleCompensation),
+		// so this result is ABSORBED by the fold instead of poisoning it — and the
+		// cardinality obligation is gone. Losing it returns duplicate rows.
+		//
+		// It makes IntersectCompensations order-dependent: the same three legs
+		// fold to "needed", "impossible" or "not needed" depending on their order.
+		// Every one of the 96 measured disagreements involves this Go-only field;
+		// Compensation.java has no equivalent, so this is an extension meeting a
+		// ported identity rather than a mis-port. See the IntersectCompensations
+		// entry in TODO.md, and TestIntersectCompensations_OrderDependenceReproducer
+		// which pins the three answers.
 		return ImpossibleCompensation
 	}
 

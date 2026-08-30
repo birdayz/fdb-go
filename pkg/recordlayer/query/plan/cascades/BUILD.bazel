@@ -239,6 +239,7 @@ go_test(
         "comparison_simplify_test.go",
         "compensation_determinism_test.go",
         "compensation_fuzz_test.go",
+        "compensation_monoid_test.go",
         "compensation_test.go",
         "correlated_intersection_guard_test.go",
         "cost_fuzz_test.go",
@@ -1136,6 +1137,7 @@ go_test(
         "normal_form_java_oracle_test.go",
         "normalize_entry_points.go",
         "match_info_merge_ranges_test.go",
+        "compensation_monoid_test.go",
     ],
     deps = [
         "//gen",

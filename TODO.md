@@ -20736,3 +20736,68 @@ comparisons instead of 2.
   ACK on the RFC, then implement, then the impl lap. The shape-only port (change
   the struct, keep every caller failing closed when residuals are non-empty) is
   NOT worth landing alone — it ships the API churn without the plans.
+
+---
+
+## IntersectCompensations is order-dependent, and a Go-only field is why
+
+STOP-level, needs the query-engine gate. This is compensation algebra, and the
+fix requires deciding how a Go-only obligation should interact with a ported
+identity element — a design call, not a mechanical port. Recording it with the
+measurements and a live reproducer rather than guessing at the semantics.
+
+**The defect.** `IntersectCompensations` is a LEFT fold: `result =
+ImpossibleCompensation; for each leg { result = intersectTwo(result, leg) }`.
+Three legs therefore fold as `((I·a)·b)·c`, and reordering them folds
+differently unless `intersectTwo` is associative. It is commutative and NOT
+associative, so the result depends on the order the planner enumerated the
+intersection legs.
+
+The same three legs give three incompatible answers:
+
+| leg order | result |
+|---|---|
+| `[NoCompensation, plain, pkDistinct]` | needed, possible, not-for-filtering |
+| `[NoCompensation, pkDistinct, plain]` | needed, **IMPOSSIBLE**, for-filtering |
+| `[plain, pkDistinct, NoCompensation]` | **NOT NEEDED** |
+
+"impossible" discards a usable intersection. "not needed" drops the
+primary-key-distinct obligation, which is a cardinality correction — losing it
+returns DUPLICATE ROWS. `intersectTwo`'s own comment states the invariant being
+violated: a leg that needs it "cannot lose it merely because the other leg has
+no filter or result residual".
+
+**Measured scope.** Over a five-shape corpus there are 96 disagreeing
+permutation pairs, and EVERY ONE involves `requiresPrimaryKeyDistinct`. Zero
+triples disagree without it. That field is a **Go-only extension** —
+`Compensation.java` has no equivalent — so Java's fold is unaffected and this is
+not a mis-port. It is an extension interacting badly with a ported identity.
+
+**Mechanism.** `ForMatchCompensation.Intersect` ORs the flag
+(compensation.go:1087), then returns the bare `ImpossibleCompensation` singleton
+when the intersected child is impossible (compensation.go:1105), discarding it.
+That would be harmless if impossible propagated — but `intersectTwo` treats
+Impossible as the intersection IDENTITY (`impossible ∩ X = X`, matching Java's
+`reduce(impossibleCompensation, Compensation::intersect)`), so the impossible
+result is ABSORBED rather than poisoning the fold, and the obligation is simply
+gone. The singleton is fieldless, so it cannot carry the obligation across the
+identity arm.
+
+**Reachability.** `requiresPrimaryKeyDistinct` is set in production by
+`PartialMatchImpl.GetCompensation` (partial_match.go:379), and
+`intersector_primary_key.go:657` and `:1149` fold one compensation per
+intersection leg. A 3+-leg intersection where one leg carries the obligation and
+another needs no compensation reaches this.
+
+**Pinned meanwhile.** `compensation_monoid_test.go` holds the laws that DO pass
+— both folds commutative, union associative and permutation-independent, each
+fold's documented identity, and the union-only propagation of impossible — plus
+`TestIntersectCompensations_OrderDependenceReproducer`, which asserts the three
+broken answers explicitly. It fails the moment the fold becomes
+order-independent, and its message says to delete it and drop the
+UnionCompensations-only guard on the associativity and permutation subtests.
+
+- [ ] Decide the semantics: should a primary-key-distinct obligation survive an
+  impossible intersection result, and if so what carries it across an identity
+  element that is a fieldless singleton? Then implement, with the Graefe +
+  Torvalds ACK on both the RFC and the implementation.
