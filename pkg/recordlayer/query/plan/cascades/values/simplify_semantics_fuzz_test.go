@@ -1,11 +1,13 @@
 package values
 
 import (
-	"flag"
+	"bytes"
 	"fmt"
 	"math"
 	"sync/atomic"
 	"testing"
+
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/internal/fuzzfloor"
 )
 
 // valueSimplifySeedScripts is the deterministic corpus FuzzSimplifyValue_PreservesSemantics
@@ -28,34 +30,30 @@ var valueSimplifySeedScripts = [][]byte{
 	{0x40, 0x00, 0x50, 0x02, 0x21, 0x22},
 }
 
-// valueDifferentialTypedSkips is how many (seed, row) pairs the seed corpus
-// legitimately leaves unasserted, so the coverage floor below can be EXACT
-// rather than a fraction that hides a drift of two.
+// valueDifferentialTypedSkips is how many rows EACH seed legitimately leaves
+// unasserted, indexed in step with valueSimplifySeedScripts, so the coverage
+// floor is exact per seed rather than a total that any distribution can satisfy.
 //
-// All three are one seed: {0x70, 0x02, 0x00, 0x01} builds
-// `A * (C + A)` with C the BOOLEAN column, and adding a bool to an int64 errors
-// on the three rows where C is non-NULL — on the NULL rows the add yields NULL
-// and evaluates cleanly. The builder is free to pair a boolean column with an
-// arithmetic operator, so this is an ill-typed tree no producer would emit; the
-// differential deliberately does not assert on a row whose ORIGINAL evaluation
-// errored, because a rewrite is allowed to prune an erroring subtree.
+// Per seed rather than a single number because the attribution is the part that
+// can rot. A total of "3 skips" is equally satisfied by three skips on the seed
+// that genuinely has them and by three that migrated to a different seed, and
+// the prose below — which names the tree and the reason — would then be quietly
+// false while the count still matched.
 //
-// If the builder is ever taught to type its operands, the skips go to zero and
-// the comparison count rises to the full product — which still clears this
-// floor, because a floor is a minimum. The direction that fails is the one worth
-// failing: fewer comparisons than today.
-const valueDifferentialTypedSkips = 3
-
-// activelyFuzzing reports whether `go test -fuzz` selected a target for active
-// fuzzing, which changes WHERE the fuzz body runs: the coordinator hands every
-// input — the seed corpus included — to worker SUBPROCESSES, so a counter
-// incremented inside the body never moves in the process that runs f.Cleanup.
-// A coverage floor is therefore a statement about the seed-corpus run only, and
-// enforcing it under -fuzz fails a healthy run at zero.
-func activelyFuzzing() bool {
-	f := flag.Lookup("test.fuzz")
-	return f != nil && f.Value.String() != ""
-}
+// Only seed 3 skips anything. It builds `A * (C + A)` with C the BOOLEAN column,
+// and adding a bool to an int64 errors on the three rows where C is non-NULL; on
+// the NULL rows the add yields NULL and evaluates cleanly. The builder is free to
+// pair a boolean column with an arithmetic operator, so that is an ill-typed tree
+// no producer would emit, and the differential deliberately does not assert on a
+// row whose ORIGINAL evaluation errored, because a rewrite is allowed to prune an
+// erroring subtree.
+//
+// The floor is an EQUALITY, so this fails in both directions: fewer comparisons
+// means the differential went quiet, and MORE means the builder changed and this
+// table now describes a corpus that no longer exists. Teaching the builder to
+// type its operands is the change that makes seed 3 a zero, and it must edit
+// this line rather than pass silently.
+var valueDifferentialTypedSkips = []int{0, 0, 0, 3, 0, 0}
 
 // FuzzSimplifyValue_PreservesSemantics is the SEMANTICS differential for
 // SimplifyValue: for a randomly shaped tree over four nullable columns, and for
@@ -115,11 +113,23 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 	// counters stay at zero in the process that runs this cleanup: the coordinator
 	// evaluates even the seeds in worker SUBPROCESSES, so its own counters never
 	// move. Measured — an 8s -fuzz run at 31797 execs reported "produced 0 usable
-	// trees from 6 seeds" and failed a completely healthy run. Hence the gate: the
-	// population this floor describes only exists when fuzzing is off.
-	var comparedRows, builtTrees atomic.Int64
+	// trees from 6 seeds" and failed a completely healthy run. See
+	// fuzzfloor.SuppressedFor, which suppresses the floor only for the target
+	// actually being fuzzed: asking merely whether -fuzz is set silences the
+	// floors of every OTHER target in the package, whose seeds the coordinator
+	// did run in-process.
+	//
+	// PER SEED, not in aggregate, and here that is what makes the ill-typed skips
+	// CHECKABLE rather than prose. An aggregate of 33 is equally satisfied by
+	// three skips on the seed that genuinely has them and by three skips that
+	// migrated somewhere else; per-seed expectations pin the attribution, so
+	// valueDifferentialTypedSkips stops being an unverifiable claim about which
+	// seed is ill-typed.
+	var builtTrees atomic.Int64
+	comparedBySeed := make([]atomic.Int64, len(valueSimplifySeedScripts))
+
 	f.Cleanup(func() {
-		if activelyFuzzing() {
+		if fuzzfloor.SuppressedFor("FuzzSimplifyValue_PreservesSemantics") {
 			return
 		}
 		if builtTrees.Load() < int64(len(valueSimplifySeedScripts)) {
@@ -127,10 +137,16 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 				"building, and every assertion in this differential ran on nothing",
 				builtTrees.Load(), len(valueSimplifySeedScripts))
 		}
-		if want := int64(len(valueSimplifySeedScripts)*len(rows)) - valueDifferentialTypedSkips; comparedRows.Load() < want {
-			f.Errorf("compared %d (tree, row) pairs, want %d — rows are being skipped by the "+
-				"wantErr escape beyond the %d known ill-typed ones, so this target is asking "+
-				"less than it looks", comparedRows.Load(), want, valueDifferentialTypedSkips)
+		for i := range comparedBySeed {
+			want := int64(len(rows)) - int64(valueDifferentialTypedSkips[i])
+			if got := comparedBySeed[i].Load(); got != want {
+				f.Errorf("seed %d (%#x) compared %d of %d rows, want %d — it is declared to "+
+					"skip %d ill-typed row(s) and skipped %d. Either the builder now emits a "+
+					"different tree for this seed, or a skip migrated here from another seed; "+
+					"an aggregate floor cannot tell those apart.",
+					i, valueSimplifySeedScripts[i], got, len(rows), want,
+					valueDifferentialTypedSkips[i], int64(len(rows))-got)
+			}
 		}
 	})
 
@@ -144,6 +160,14 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 			return
 		}
 		builtTrees.Add(1)
+
+		seedIdx := -1
+		for i, s := range valueSimplifySeedScripts {
+			if bytes.Equal(s, script) {
+				seedIdx = i
+				break
+			}
+		}
 
 		simplified := SimplifyValue(tree)
 		if simplified == nil {
@@ -177,7 +201,9 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 				t.Fatalf("row %d: original evaluated cleanly to %#v but simplified errored: %v\n  original:   %s\n  simplified: %s",
 					i, want, gotErr, ExplainValue(tree), ExplainValue(simplified))
 			}
-			comparedRows.Add(1)
+			if seedIdx >= 0 {
+				comparedBySeed[seedIdx].Add(1)
+			}
 			if !sameEvaluated(want, got) {
 				t.Fatalf("row %d: simplification changed the answer: want %#v (%T), got %#v (%T)\n  original:   %s\n  simplified: %s",
 					i, want, want, got, got, ExplainValue(tree), ExplainValue(simplified))

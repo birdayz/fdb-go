@@ -161,7 +161,7 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 // reads exactly like a checked one.
 //
 // Folding flowedType in, to close that divergence, REGRESSES THE PLANNER.
-// Measured: it reddens TestPlanShapeGolden by 13731 lines and breaks three memo
+// Measured at 0bf01a4fe: it reddens TestPlanShapeGolden by 13731 lines and breaks three memo
 // tests (TestDesignatedFinal_GenerationInvalidation,
 // TestDesignatedFinal_NoCacheInUnfinalizedWindow,
 // TestOptimizeGroup_RewritingCoherence), all of them selecting a

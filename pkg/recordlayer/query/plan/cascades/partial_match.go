@@ -350,7 +350,14 @@ func (p *PartialMatchImpl) compensate(
 	matchedQs := p.GetMatchedQuantifiers()
 	requiresPrimaryKeyDistinct := mi.RequiresPrimaryKeyDistinct()
 
-	isCompensationNeeded := childCompensation.IsNeeded() ||
+	// The child term is its PRE-FINAL need, matching ForMatchCompensation.IsNeeded
+	// rather than Java's isNeeded. A child's result compensation cannot be
+	// applied — ApplyFinal reads its own function and does not recurse — so
+	// counting it here builds a ForMatchCompensation that immediately reports
+	// IsNeeded() == false. That is not a wrong answer (applying it was already a
+	// no-op) but it leaves two predicates over the same question disagreeing by
+	// construction, which is how the next reader picks the wrong one.
+	isCompensationNeeded := compensationIsPreFinalNeeded(childCompensation) ||
 		len(unmatchedQs) > 0 ||
 		isAnyCompensationFunctionNeeded ||
 		cr.ResultCompensationFn.IsNeeded() ||

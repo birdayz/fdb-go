@@ -20838,9 +20838,16 @@ Three changes, each measured:
 - The absorbing arm reduces BOTH operands and keeps the union of their
   obligations, via `unionPrimaryKeyDistinctObligations`. Discarding either
   side's obligation reddens the laws. The helper also unions the two sides'
-  MATCHED QUANTIFIERS, as Java does (`Compensation.java:781-782`) — that half is
-  not covered by the laws, whose shape comparison is five booleans and cannot
-  observe a quantifier set, and it is stated rather than presented as measured.
+  MATCHED QUANTIFIERS, as Java does (`Compensation.java:781-782`), and unions
+  the COMPENSATED ALIASES, which Java does NOT — Java takes one side under an
+  invariant it declines to check (`Compensation.java:800`, "both compensated
+  aliases must be identical, but too expensive to check"), so the union is a
+  deliberate widening of an unverified assertion. Neither half is covered by the
+  laws, whose shape comparison is five booleans and can observe neither a
+  quantifier set nor an alias set, and both are stated rather than presented as
+  measured. The arm's CHILD slot recurses, so nested obligations survive the
+  fold; rebuilding with `NoCompensation` there keeps the top obligation and
+  drops every nested one, which returns duplicate rows.
 
 `ForMatchCompensation.Intersect` also no longer returns the bare
 `ImpossibleCompensation` singleton when it holds an obligation, since the

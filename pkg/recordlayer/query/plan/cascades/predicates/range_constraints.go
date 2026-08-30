@@ -119,8 +119,15 @@ func (r *RangeConstraints) GetCorrelatedTo() map[values.CorrelationIdentifier]st
 // which returns a range plus the comparisons that did not fit — so a rejected
 // merge has nowhere to put the conjunct, and the previous `if merged.Ok`
 // silently dropped it: `x = 5 AND x > 7` came back as `x = 5`, a WEAKER range
-// than the input, with no signal. A caller filtering on that returns rows the
-// constraints excluded.
+// than the input, with no signal. A caller filtering on that would return rows
+// the constraints excluded.
+//
+// LATENT, and said so deliberately: this function has no non-test callers today,
+// so no query was returning those rows. It is fixed rather than filed because
+// the shape is one line and the next caller inherits the honest signature —
+// but the sentence above is a description of what the defect WOULD do, not a
+// report of production breakage, and the difference matters for anyone reading
+// this while triaging a real one.
 //
 // Reporting the failure is the honest conversion while the residual list is
 // missing; see the ComparisonRange.MergeResult entry in TODO.md for the port

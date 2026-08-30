@@ -83,10 +83,18 @@ func TestComparisonIdentityFoldsEveryField(t *testing.T) {
 				"A field nobody classified is how two TEXT_CONTAINS predicates differing "+
 				"only in tokenizer came to compare equal.", name)
 		}
-		if _, driven := comparisonFieldMutators[name]; !driven && !excluded {
-			t.Errorf("Comparison.%s has no mutator in comparisonFieldMutators, so "+
-				"TestComparisonIdentity_DiscriminatesEveryField never varies it and cannot "+
-				"prove it is folded.", name)
+		// EVERY field needs a mutator, excluded ones included. Exempting them
+		// looks harmless and is the hole: proving a field is NOT folded needs a
+		// mutation just as much as proving one IS, and without it an entry in
+		// comparisonIdentityExcludedFields is an unfalsifiable claim. The
+		// plan-layer gate in plans/plan_comparison_identity_drift_test.go drives
+		// its excluded fields for exactly this reason.
+		if _, driven := comparisonFieldMutators[name]; !driven {
+			t.Errorf("Comparison.%s has no mutator in comparisonFieldMutators. A FOLDED "+
+				"field without one is never varied by "+
+				"TestComparisonIdentity_DiscriminatesEveryField, so nothing proves it is "+
+				"folded; an EXCLUDED one without a mutator makes its exclusion "+
+				"unfalsifiable.", name)
 		}
 	}
 
@@ -156,6 +164,61 @@ func TestComparisonIdentity_DiscriminatesEveryField(t *testing.T) {
 	if checked != len(comparisonIdentityFields) {
 		t.Errorf("discriminated %d fields but %d are declared identity-bearing — the two "+
 			"tables have drifted apart", checked, len(comparisonIdentityFields))
+	}
+}
+
+// TestComparisonIdentity_ExcludedFieldsAreInvisibleHere is the counterpart to
+// TestComparisonIdentity_DiscriminatesEveryField, and it is the half that rots
+// silently.
+//
+// comparisonIdentityExcludedFields lets a field be classified as carrying no
+// identity, with a reason. Nothing checked that claim: the classification gate
+// accepted the entry, the discrimination test skipped the field, and the reason
+// written beside it could become false with everything green. The plan-layer
+// gate does this properly and this one did not, which is the same
+// fixed-in-one-layer-only shape as the original defect.
+//
+// The map is EMPTY today, so the loop below runs zero times — and a test whose
+// body never executes is the dominant false positive in this codebase. Hence the
+// explicit guard at the end: it fails the moment the map becomes non-empty
+// WITHOUT this test having been re-read, so the dormant gate cannot go live
+// unexamined.
+func TestComparisonIdentity_ExcludedFieldsAreInvisibleHere(t *testing.T) {
+	t.Parallel()
+
+	base := baselineComparison()
+	checked := 0
+	for name := range comparisonIdentityExcludedFields {
+		mut, ok := comparisonFieldMutators[name]
+		if !ok {
+			t.Errorf("no mutator for excluded field %s, so its exclusion is unproven", name)
+			continue
+		}
+		other := baselineComparison()
+		mut(&other)
+		a := NewComparisonPredicate(values.LiteralValue("col"), base)
+		b := NewComparisonPredicate(values.LiteralValue("col"), other)
+		if !StructurallyEqual(a, b) {
+			t.Errorf("Comparison.%s is listed in comparisonIdentityExcludedFields but "+
+				"comparisonIdentityEqual now discriminates on it. Move the entry to "+
+				"comparisonIdentityFields — the reason recorded beside it no longer "+
+				"describes this code.", name)
+		}
+		if StructuralHash(a) != StructuralHash(b) {
+			t.Errorf("Comparison.%s is listed as excluded but writeComparisonIdentity folds "+
+				"it — the two sides of this fold have drifted apart", name)
+		}
+		checked++
+	}
+	if checked != len(comparisonIdentityExcludedFields) {
+		t.Fatalf("checked %d excluded fields, want %d", checked,
+			len(comparisonIdentityExcludedFields))
+	}
+	if checked != 0 {
+		t.Fatalf("comparisonIdentityExcludedFields now has %d entr(y/ies). That is allowed, "+
+			"but this test was written against an EMPTY map and its loop had never executed "+
+			"— read it before trusting the green it just produced, then update this guard to "+
+			"the new count.", checked)
 	}
 }
 

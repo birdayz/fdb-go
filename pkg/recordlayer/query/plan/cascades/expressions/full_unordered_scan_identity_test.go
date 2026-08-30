@@ -103,7 +103,9 @@ func TestFullUnorderedScan_RefusesAPlaceholderFlowedType(t *testing.T) {
 // (Objects.hash(recordTypes, flowedType), FullUnorderedScanExpression.java:150),
 // so this is not the "names-only scan hash" an earlier comment claimed it was
 // matching. Folding flowedType in to align reddens TestPlanShapeGolden by 13731
-// lines and breaks three memo tests, all selecting a LogicalSortExpression where
+// lines — measured at tree 0bf01a4fe, and a golden-line count is a fact about
+// ONE tree, so re-measure rather than quote it — and breaks three memo tests,
+// all selecting a LogicalSortExpression where
 // a plain scan should win: scan identity is the base of every query tree, so
 // changing which scans share a bucket changes group membership and winner
 // selection.
@@ -126,7 +128,7 @@ func TestFullUnorderedScan_HashIsNamesOnlyDivergingFromJava(t *testing.T) {
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Error("two scans differing only in flowed type now hash APART. That closes the " +
 			"documented divergence from Java, and it is not free: it changes scan memo " +
-			"bucketing, which moved TestPlanShapeGolden by 13731 lines and flipped three " +
+			"bucketing, which at tree 0bf01a4fe moved TestPlanShapeGolden by 13731 lines and flipped three " +
 			"memo tests to a LogicalSortExpression winner. Update the golden and those " +
 			"tests deliberately, or restore the names-only hash.")
 	}

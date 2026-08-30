@@ -90,6 +90,17 @@ func compensationCorpus(t *testing.T) []Compensation {
 		aliases, NoResultCompensation(), EmptyGroupByMappings(),
 	)
 
+	// A TWO-LEVEL primary-key-distinct chain. One level is not enough to see the
+	// absorbing arm's child slot: with a single level the nested position is
+	// NoCompensation either way, so dropping it is invisible. This is the shape
+	// that caught the arm rebuilding with a NoCompensation child and discarding
+	// both operands' nested obligations.
+	nestedPkDistinct := NewForMatchCompensationWithPrimaryKeyDistinct(
+		false, pkDistinct, EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{q1}, nil,
+		aliases, NoResultCompensation(), EmptyGroupByMappings(), true,
+	)
+
 	return []Compensation{
 		NoCompensation,
 		ImpossibleCompensation,
@@ -98,6 +109,75 @@ func compensationCorpus(t *testing.T) []Compensation {
 		pkDistinct,
 		resultOnly,
 		nestedResultOnly,
+		nestedPkDistinct,
+	}
+}
+
+// primaryKeyDistinctChainDepth counts the primary-key-distinct obligations along
+// a compensation chain. Depth, not presence: the defect this measures kept the
+// TOP obligation and dropped the nested one, so a boolean cannot see it.
+func primaryKeyDistinctChainDepth(c Compensation) int {
+	depth := 0
+	for {
+		forMatch, ok := c.(*ForMatchCompensation)
+		if !ok {
+			return depth
+		}
+		if forMatch.requiresPrimaryKeyDistinct {
+			depth++
+		}
+		c = forMatch.childCompensation
+	}
+}
+
+// TestIntersectCompensations_KeepsNestedPrimaryKeyDistinctObligations pins the
+// child slot of intersectTwo's absorbing arm.
+//
+// That arm reduces both operands to their cardinality obligations and unions
+// them. It rebuilt with NoCompensation in the child position, which keeps the
+// TOP obligation and silently discards every nested one — and a nested
+// primary-key-distinct obligation is reachable: Apply recurses through the
+// chain, which is why IsNeeded counts it (see IsNeeded's doc, and
+// TestForMatchCompensation_NestedPrimaryKeyDistinct, which applies one end to
+// end and requires the Unique to appear).
+//
+// Losing a primary-key-distinct obligation returns DUPLICATE ROWS. Nothing else
+// in this file could see it: every other corpus shape is at most one level deep,
+// where the nested position is NoCompensation either way.
+func TestIntersectCompensations_KeepsNestedPrimaryKeyDistinctObligations(t *testing.T) {
+	t.Parallel()
+
+	corpus := compensationCorpus(t)
+	deep := corpus[len(corpus)-1]
+	if got := primaryKeyDistinctChainDepth(deep); got != 2 {
+		t.Fatalf("the deep corpus shape has a chain of depth %d, want 2 — it no longer "+
+			"nests and every check below is vacuous", got)
+	}
+	shallow := corpus[4]
+	if got := primaryKeyDistinctChainDepth(shallow); got != 1 {
+		t.Fatalf("the shallow corpus shape has depth %d, want 1", got)
+	}
+
+	// The fold must not shorten the chain, in either leg order.
+	for _, legs := range [][]Compensation{{deep, shallow}, {shallow, deep}} {
+		got := IntersectCompensations(legs)
+		if got.IsImpossible() {
+			t.Fatal("intersecting two cardinality-only legs must not be impossible")
+		}
+		if depth := primaryKeyDistinctChainDepth(got); depth < 2 {
+			t.Errorf("folding a depth-2 obligation chain with a depth-1 one produced depth "+
+				"%d — a nested primary-key-distinct obligation was dropped, and losing one "+
+				"returns duplicate rows", depth)
+		}
+	}
+
+	// Control: the arm still REDUCES. A leg carrying filtering residuals must
+	// come back carrying only its obligations, or this test would pass equally
+	// well against an arm that had stopped absorbing at all.
+	reduced := IntersectCompensations([]Compensation{deep, corpus[2]})
+	if reduced.IsNeededForFiltering() {
+		t.Error("the absorbing arm must strip the other leg's filtering residual; it is " +
+			"absorbing precisely because that leg selects exactly its rows")
 	}
 }
 

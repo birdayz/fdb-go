@@ -1,10 +1,12 @@
 package cascades
 
 import (
+	"bytes"
 	"fmt"
 	"sync/atomic"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/internal/fuzzfloor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
@@ -67,10 +69,19 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 	// or an evaluator that started erroring on every row, would leave this target
 	// reporting the same green it reports when the simplifier agrees. Count what
 	// was actually compared, and floor it over the seed corpus; see
-	// activelyFuzzing for why the floor cannot be enforced under -fuzz.
-	var builtPredicates, comparedRows atomic.Int64
+	// fuzzfloor.SuppressedFor for why the floor is suppressed only for the target
+	// actually being fuzzed and not whenever anything is.
+	//
+	// PER SEED, not in aggregate. A single total is satisfiable by the wrong
+	// distribution — one seed going dark while another gains rows leaves the sum
+	// sitting exactly on its floor — and this differential has no
+	// declined-transform escape, so per-seed equality is exactly achievable:
+	// every seed is compared against every rule set against every row.
+	var builtPredicates atomic.Int64
+	comparedBySeed := make([]atomic.Int64, len(predicateSimplifySeedScripts))
+
 	f.Cleanup(func() {
-		if activelyFuzzing() {
+		if fuzzfloor.SuppressedFor("FuzzSimplifyPredicate_PreservesSemantics") {
 			return
 		}
 		if builtPredicates.Load() < int64(len(predicateSimplifySeedScripts)) {
@@ -78,16 +89,13 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 				"building, and every assertion in this differential ran on nothing",
 				builtPredicates.Load(), len(predicateSimplifySeedScripts))
 		}
-		// EXACT, not a fraction. Unlike the normal-form differential next door this
-		// one has no declined-transform escape — Simplify always returns a
-		// predicate and it is always compared — so a healthy run compares every
-		// seed against every rule set against every row (measured: 5 x 2 x 6 = 60).
-		// Anything less means rows started erroring on the ORIGINAL side, which is
-		// how this target would go quiet without any visible change.
-		if want := int64(len(predicateSimplifySeedScripts) * len(ruleSets) * len(rows)); comparedRows.Load() < want {
-			f.Errorf("compared %d (rule set, row) pairs, want %d — rows are being skipped by "+
-				"the wantErr escape, so this target is asking less than it looks",
-				comparedRows.Load(), want)
+		for i := range comparedBySeed {
+			if got, want := comparedBySeed[i].Load(), int64(len(ruleSets)*len(rows)); got != want {
+				f.Errorf("seed %d (%#x) compared %d (rule set, row) pairs, want %d — rows are "+
+					"being skipped by the wantErr escape, so this seed is asking less than it "+
+					"looks. An aggregate floor would have hidden it behind the others.",
+					i, predicateSimplifySeedScripts[i], got, want)
+			}
 		}
 	})
 
@@ -101,6 +109,14 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 			return
 		}
 		builtPredicates.Add(1)
+
+		seedIdx := -1
+		for i, s := range predicateSimplifySeedScripts {
+			if bytes.Equal(s, script) {
+				seedIdx = i
+				break
+			}
+		}
 
 		for _, rs := range ruleSets {
 			simplified, err := Simplify(pred, rs.rules)
@@ -121,7 +137,9 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 					t.Fatalf("%s row %d: original evaluated cleanly to %s but simplified errored: %v\n  original:   %s\n  simplified: %s",
 						rs.name, i, triName(want), gotErr, pred.Explain(), simplified.Explain())
 				}
-				comparedRows.Add(1)
+				if seedIdx >= 0 {
+					comparedBySeed[seedIdx].Add(1)
+				}
 				if triName(want) != triName(got) {
 					t.Fatalf("%s row %d: simplification changed the truth value: want %s, got %s\n  original:   %s\n  simplified: %s",
 						rs.name, i, triName(want), triName(got), pred.Explain(), simplified.Explain())

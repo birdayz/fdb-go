@@ -290,6 +290,7 @@ go_test(
     deps = [
         "//pkg/fdbgo/fdb/tuple",
         "//pkg/recordlayer/protoname",
+        "//pkg/recordlayer/query/plan/cascades/internal/fuzzfloor",
         "//pkg/recordlayer/vectorcodec",
         "@com_github_stretchr_testify//require",
         "@org_golang_google_protobuf//proto",

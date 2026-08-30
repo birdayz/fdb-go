@@ -1,10 +1,11 @@
 package cascades
 
 import (
-	"flag"
+	"bytes"
 	"sync/atomic"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/internal/fuzzfloor"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 )
 
@@ -61,17 +62,6 @@ var normalFormTransformingSeedScripts = [][]byte{
 var normalFormSeedScripts = append(
 	append([][]byte(nil), normalFormIdentitySeedScripts...),
 	normalFormTransformingSeedScripts...)
-
-// activelyFuzzing reports whether `go test -fuzz` selected a target for active
-// fuzzing, which changes WHERE a fuzz body runs: the coordinator hands every
-// input — the seed corpus included — to worker SUBPROCESSES, so a counter
-// incremented inside the body never moves in the process that runs f.Cleanup.
-// A coverage floor is therefore a statement about the seed-corpus run only, and
-// enforcing it under -fuzz fails a healthy run at zero.
-func activelyFuzzing() bool {
-	f := flag.Lookup("test.fuzz")
-	return f != nil && f.Value.String() != ""
-}
 
 // FuzzNormalForm_PreservesSemantics is the semantics differential for the three
 // normal-form entry points — the CNF one is the ONLY predicate rewrite in this
@@ -168,10 +158,23 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 	//
 	// The floors below therefore count the transforms that ACTUALLY RAN and the
 	// rows actually compared. They describe the seed-corpus run and nothing else
-	// — see activelyFuzzing for why a floor cannot be enforced under -fuzz.
-	var builtPredicates, transformsApplied, comparedRows atomic.Int64
+	// — see fuzzfloor.SuppressedFor for why a floor cannot be enforced against
+	// the target being fuzzed, and why "is anything being fuzzed" is the wrong
+	// question to ask.
+	//
+	// They count PER SEED, not in aggregate, and that is not fussiness. A single
+	// total over 12 seeds against a floor of 6x3 is satisfiable by the wrong 18:
+	// an identity seed that started transforming would MASK a transforming seed
+	// that went dark, and the sum would sit exactly on its floor while half the
+	// shapes this corpus was built for stopped being exercised. Per-seed
+	// equality cannot be satisfied by a substitution.
+	var builtPredicates atomic.Int64
+	transformsBySeed := make([]atomic.Int64, len(normalFormTransformingSeedScripts))
+	comparedBySeed := make([]atomic.Int64, len(normalFormTransformingSeedScripts))
+	var identityTransforms atomic.Int64
+
 	f.Cleanup(func() {
-		if activelyFuzzing() {
+		if fuzzfloor.SuppressedFor("FuzzNormalForm_PreservesSemantics") {
 			return
 		}
 		if builtPredicates.Load() < int64(len(normalFormSeedScripts)) {
@@ -179,23 +182,29 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 				"building, and every assertion in this differential ran on nothing",
 				builtPredicates.Load(), len(normalFormSeedScripts))
 		}
-		if want := int64(len(normalFormTransformingSeedScripts) * len(transforms)); transformsApplied.Load() < want {
-			f.Errorf("only %d of %d transform runs actually rewrote anything (want >= %d, one "+
-				"per transform per transforming seed) — the size bound or the "+
-				"declined-transform escape is swallowing the corpus, and a differential that "+
-				"never transforms agrees by not asking",
-				transformsApplied.Load(), int64(len(normalFormSeedScripts)*len(transforms)), want)
+		// Every transforming seed must drive EVERY transform. Exact, per seed.
+		for i := range transformsBySeed {
+			if got, want := transformsBySeed[i].Load(), int64(len(transforms)); got != want {
+				f.Errorf("transforming seed %d (%#x) drove %d of %d transforms — it has gone "+
+					"quiet, and the shape it was chosen for is no longer exercised. An "+
+					"aggregate floor would have hidden this behind the other seeds.",
+					i, normalFormTransformingSeedScripts[i], got, want)
+			}
+			if got, want := comparedBySeed[i].Load(), int64(len(transforms)*len(rows)); got != want {
+				f.Errorf("transforming seed %d compared %d (transform, row) pairs, want %d — "+
+					"rows are being skipped by the wantErr escape, so this seed is asking "+
+					"less than it looks", i, got, want)
+			}
 		}
-		// EXACT, not a fraction: every transforming seed drives every transform
-		// over every row, and no row's ORIGINAL evaluation errors today, so the
-		// product is what a healthy run produces (measured: 6 x 3 x 6 = 108). A
-		// row starting to error would drop below it, which is the alarm — an
-		// erroring original is how a differential goes quiet without any transform
-		// declining.
-		if want := int64(len(normalFormTransformingSeedScripts) * len(transforms) * len(rows)); comparedRows.Load() < want {
-			f.Errorf("compared %d (transform, row) pairs, want %d — rows are being skipped by "+
-				"the wantErr escape, so the differential is asking less than it looks",
-				comparedRows.Load(), want)
+		// The identity seeds are watched for GROWTH, not collapse: zero is their
+		// steady state, and a non-zero here means a normalizer started rewriting
+		// an already-normal predicate. That is a real finding rather than a
+		// broken gate, but it must not be allowed to silently satisfy the floors
+		// above, which is exactly what an aggregate count would let it do.
+		if got := identityTransforms.Load(); got != 0 {
+			f.Errorf("%d transform runs rewrote an IDENTITY seed, which normalizes to itself. "+
+				"Either a normalizer changed behaviour, or a seed moved between the two "+
+				"slices. Reconcile the slices; do not relax this to >= 0.", got)
 		}
 	})
 
@@ -209,6 +218,24 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 			return
 		}
 		builtPredicates.Add(1)
+
+		// Which seed is this? Under -fuzz a generated input matches neither
+		// slice and is counted in neither, which is correct: the floors are
+		// suppressed for this target then anyway.
+		seedIdx := -1
+		for i, s := range normalFormTransformingSeedScripts {
+			if bytes.Equal(s, script) {
+				seedIdx = i
+				break
+			}
+		}
+		isIdentitySeed := false
+		for _, s := range normalFormIdentitySeedScripts {
+			if bytes.Equal(s, script) {
+				isIdentitySeed = true
+				break
+			}
+		}
 
 		for _, tr := range transforms {
 			if tr.estimate(pred) > normalFormFuzzSizeBound {
@@ -224,7 +251,12 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 				// identity preserves semantics.
 				continue
 			}
-			transformsApplied.Add(1)
+			switch {
+			case seedIdx >= 0:
+				transformsBySeed[seedIdx].Add(1)
+			case isIdentitySeed:
+				identityTransforms.Add(1)
+			}
 
 			for i, row := range rows {
 				want, wantErr := evalPredicateSafely(pred, row)
@@ -236,7 +268,9 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 					t.Fatalf("%s row %d: original evaluated cleanly to %s but the normal form errored: %v\n  in:  %s\n  out: %s",
 						tr.name, i, triName(want), gotErr, pred.Explain(), out.Explain())
 				}
-				comparedRows.Add(1)
+				if seedIdx >= 0 {
+					comparedBySeed[seedIdx].Add(1)
+				}
 				if triName(want) != triName(got) {
 					t.Fatalf("%s row %d: normalization changed the truth value: want %s, got %s\n  in:  %s\n  out: %s",
 						tr.name, i, triName(want), triName(got), pred.Explain(), out.Explain())

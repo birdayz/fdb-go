@@ -192,12 +192,22 @@ func intersectTwo(a, b Compensation) Compensation {
 	// residual, so it is NOT absorbed — it combines with OR, and a leg that
 	// needs it cannot lose it because another leg has no residual.
 	//
-	// The test is the pair Java's WithSelectCompensation.intersect uses at its
-	// own absorbing point — `!intersectedChildCompensation.isNeededForFiltering()
-	// && !newResultResultCompensationFunction.isNeeded() &&
-	// combinedPredicateMap.isEmpty()` (Compensation.java:771-774) — and not
-	// Java's `!isNeeded()` from the default intersect (Compensation.java:369),
-	// which Go cannot spell here. Go's IsNeeded carries requiresPrimaryKeyDistinct,
+	// The test is the pair of TERMS Java's WithSelectCompensation.intersect
+	// checks at its own absorbing point (Compensation.java:771-774), not that
+	// check transplanted: Java evaluates
+	// `!intersectedChildCompensation.isNeededForFiltering() &&
+	// !newResultResultCompensationFunction.isNeeded() &&
+	// combinedPredicateMap.isEmpty()` on the COMBINED result, AFTER intersecting,
+	// while this evaluates two of those terms PER OPERAND at dispatch and drops
+	// the predicate-map term (IsNeededForFiltering already folds map emptiness
+	// per operand). Neither the position nor the operands match; what carries
+	// over is which two properties decide, and Java's own applyAllNeeded gates on
+	// exactly those two (Compensation.java:220-229), which is why they are the
+	// right pair at either position.
+	//
+	// What it is NOT is Java's `!isNeeded()` from the default intersect
+	// (Compensation.java:369), which Go cannot spell here.
+	// Go's IsNeeded carries requiresPrimaryKeyDistinct,
 	// a term Java has no equivalent for, and including it stops the fold
 	// absorbing after one step: NoCompensation ∩ pkDistinct yields a
 	// PK-distinct-only compensation, IsNeeded reports it needed, the next leg
@@ -232,10 +242,24 @@ func intersectTwo(a, b Compensation) Compensation {
 }
 
 // unionPrimaryKeyDistinctObligations is the result of intersecting two
-// compensations when at least one of them applies no filtering. The filtering
-// and result residuals of BOTH sides are dropped — the non-filtering leg
-// already selects exactly its rows — and what survives is the union of their
-// cardinality obligations.
+// compensations when at least ONE of them has nothing to apply. Both sides'
+// filtering and result residuals are dropped and what survives is the union of
+// their cardinality obligations.
+//
+// Only ONE leg is known to select exactly its rows, and the OTHER leg's residual
+// is dropped anyway — that asymmetry is the whole content of this function and
+// it is worth stating plainly rather than implying both were checked. It is what
+// intersection means: a row must survive every leg, so a leg that filters
+// nothing already selects the rows the intersection may return, and any further
+// residual is redundant. Java's default intersect is the same shape
+// (Compensation.java:369, `!isNeeded() || !other.isNeeded()` → noCompensation),
+// dropping the residual of a leg it never examined.
+//
+// So this does NOT close the "wrong columns" case in general.
+// intersectTwo(NoCompensation, resultOnly) still drops resultOnly's projection,
+// and that is Java-conformant. What the IsFinalNeeded conjunct in intersectTwo's
+// guard fixes is narrower: a leg is no longer treated as absorbing BECAUSE OF
+// its own unapplied result function.
 //
 // NEITHER side's obligation may be discarded. Making this read only one
 // operand's obligation reddens the order-independence laws in
@@ -266,18 +290,37 @@ func unionPrimaryKeyDistinctObligations(a, b Compensation) Compensation {
 	// contribute at most one foreach quantifier"), and MatchedForEachAliasMaybe
 	// later rebuilds on exactly that set.
 	//
-	// The order-independence laws cannot see this: shapeOf is five booleans and
-	// has no way to observe the quantifier set. So the union is here because
-	// Java does it and the downstream reader needs it, NOT because a test
-	// caught it — stated plainly rather than left to look measured.
+	// The COMPENSATED ALIASES are a different case and the citation above does
+	// not cover them. Java takes ONE side (Compensation.java:800:
+	// `getCompensatedAliases(), // both compensated aliases must be identical,
+	// but too expensive to check`) — an asserted invariant it declines to
+	// verify. Unioning is a deliberate WIDENING of that assertion: where Java
+	// would be wrong if the sets ever differed, this is merely redundant, and
+	// nothing here can afford to assume an unchecked invariant holds.
+	//
+	// Neither half is covered by the order-independence laws: shapeOf is five
+	// booleans and can observe neither a quantifier set nor an alias set. Both
+	// are here because of what Java does and what the downstream reader needs,
+	// NOT because a test caught them — stated plainly rather than left to look
+	// measured.
 	aFM, aOk := aOnly.(*ForMatchCompensation)
 	bFM, bOk := bOnly.(*ForMatchCompensation)
 	if !aOk || !bOk {
 		return aOnly
 	}
+	// The CHILD slot carries the two operands' NESTED obligations, combined by
+	// the same rule one level down. Passing NoCompensation here instead drops
+	// them, and a nested primary-key-distinct obligation IS applied — Apply
+	// recurses through the chain, which is exactly why IsNeeded still counts it.
+	// Measured before the recursion was added: a two-level chain intersected
+	// with a one-level one came back at depth 1 with a noCompensation child.
+	//
+	// Recursion terminates because primaryKeyDistinctOnlyCompensation has
+	// already reduced both sides, so each step strictly shortens the chain and
+	// the non-ForMatch base case returns immediately.
 	return NewForMatchCompensationWithPrimaryKeyDistinct(
 		aFM.impossible || bFM.impossible,
-		NoCompensation,
+		unionPrimaryKeyDistinctObligations(aFM.childCompensation, bFM.childCompensation),
 		EmptyPredicateCompensationMap(),
 		unionQuantifiersOrdered(aFM.matchedQuantifiers, bFM.matchedQuantifiers),
 		nil,
@@ -705,20 +748,31 @@ func NewForMatchCompensationWithPrimaryKeyDistinct(
 	return c
 }
 
-// IsNeeded reports whether applying this compensation would do anything —
-// exactly the union of the two halves that get applied: isPreFinalNeeded, which
-// is what ApplyAllNeeded runs through Apply, and IsFinalNeeded, which is what it
-// runs through ApplyFinal.
+// IsNeeded reports whether applying this compensation would do anything, and it
+// is DEFINED as ApplyAllNeeded's own two gates disjoined: isPreFinalNeeded,
+// which is what ApplyAllNeeded runs through Apply, and IsFinalNeeded, which is
+// what it runs through ApplyFinal.
 //
-// This is Java's WithSelectCompensation.isNeeded()
-// (Compensation.java:528-533) with ONE term narrowed, and the narrowing is
-// deliberate: Java recurses with getChildCompensation().isNeeded(), which
-// includes the CHILD's result compensation, and a child's result compensation
-// can never be applied. ForMatch.applyFinal — in both engines
-// (Compensation.java:1051-1074, ApplyFinal below) — reads only its OWN
-// resultCompensationFunction and never recurses; only Apply recurses, and only
-// for the pre-final half. So a compensation whose sole need is a child's result
-// function reports "needed" in Java while applying nothing.
+// That identity is the argument for this definition, and it is structural rather
+// than empirical: if IsNeeded is false then BOTH gates are false, so
+// ApplyAllNeeded is provably the identity function on its input. Every consumer
+// branches the same way on it — abstract_data_access_rule.go:580 and
+// intersector_primary_key.go:1153 both read "false → emit the expression as is,
+// true → ApplyAllNeeded" — so a compensation this reports false for is one those
+// call sites would have passed through unchanged anyway. The definition is
+// output-identical at every consumer; it just stops the predicate lying.
+//
+// What it stops lying about is Java's WithSelectCompensation.isNeeded()
+// (Compensation.java:528-533), which this narrows in ONE term, deliberately.
+// Java recurses with getChildCompensation().isNeeded(), counting the CHILD's
+// result compensation — and a child's result compensation can never be applied.
+// ForMatch.applyFinal, in both engines (Compensation.java:1051-1074, ApplyFinal
+// below), reads only its OWN resultCompensationFunction and never recurses; the
+// only recursion into a child is Apply's, which is the pre-final half. Java's
+// own applyAllNeededCompensations (Compensation.java:220-229) gates on
+// isNeededForFiltering/isFinalNeeded and never on isNeeded, so Java too can act
+// only on what these two gates say. A compensation whose sole need is a child's
+// result function therefore reports "needed" in Java while applying nothing.
 //
 // That is not a cosmetic wart. It made the intersection and union folds
 // ORDER-DEPENDENT over exactly that shape: such a leg collapses to
