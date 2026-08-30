@@ -16,6 +16,33 @@ import (
 // progressEvery is how often a sweep prints a progress line, in CASES.
 const progressEvery = 500
 
+// requireSweepOptIn skips a SWEEP unless its seed count was set explicitly.
+//
+// The three hunts in this package are exploratory instruments, not gates. They
+// walk seed ranges looking for disagreements; a clean run says "nothing found
+// in this range", which is not a property of the commit under test. Running
+// them in `just test` spends an FDB container and minutes of an `exclusive`
+// target on every build, for a signal nobody reads at that moment.
+//
+// The repo already has this distinction: `just test` is
+// `bazelisk test //... --test_tag_filters=-stress`, and pkg/relational/
+// sqldriver/stress carries the tag. Tagging THIS target would also drop the
+// deterministic gates that share it — the eligibility census, the rule
+// registry check, the rewrite-soundness table, the benign-error allowlist, and
+// the QOV/arity regression pins — all of which are fast and must keep running.
+// So the opt-in is per-test rather than per-target.
+//
+// The skip is LOUD and names the variable, because a silently skipped sweep is
+// indistinguishable from one that ran and found nothing, which is the failure
+// this whole package spent a session cataloguing.
+func requireSweepOptIn(t *testing.T, envVar string) {
+	t.Helper()
+	if os.Getenv(envVar) == "" {
+		t.Skipf("sweep not requested: set %s to run it (exploratory hunt, not a gate — "+
+			"a clean sweep is a statement about a seed range, not about this commit)", envVar)
+	}
+}
+
 // huntBudget is the wall-clock a sweep gives itself before stopping cleanly and
 // reporting what it actually covered. HUNT_BUDGET overrides it.
 //
@@ -90,6 +117,7 @@ func classifyExcluded(q rowdiff.Query) []string {
 // the density on the least-covered surface than an unfiltered sweep does.
 func TestFDB_ExcludedShapeHunt(t *testing.T) {
 	t.Parallel()
+	requireSweepOptIn(t, "EXCL_SEEDS")
 	byClass := runShapeHunt(t, "EXCL", true,
 		uint64(envInt("EXCL_SEED_START", 1)), uint64(envInt("EXCL_SEEDS", 40)), envInt("EXCL_WORKERS", 4))
 
@@ -128,6 +156,7 @@ func TestFDB_ExcludedShapeHunt(t *testing.T) {
 // an interactive instrument.
 func TestFDB_FullShapeHunt(t *testing.T) {
 	t.Parallel()
+	requireSweepOptIn(t, "FULL_SEEDS")
 	byClass := runShapeHunt(t, "FULLSHAPE", false,
 		uint64(envInt("FULL_SEED_START", 1)), uint64(envInt("FULL_SEEDS", 25)), envInt("FULL_WORKERS", 4))
 
@@ -161,6 +190,7 @@ func TestFDB_FullShapeHunt(t *testing.T) {
 // Same oracle and same harness as the flat sweeps — only the generator differs.
 func TestFDB_NestedShapeHunt(t *testing.T) {
 	t.Parallel()
+	requireSweepOptIn(t, "NEST_SEEDS")
 	byClass := runShapeHuntGen(t, "NESTED", false, rowdiff.GenerateNested,
 		uint64(envInt("NEST_SEED_START", 1)), uint64(envInt("NEST_SEEDS", 25)), envInt("NEST_WORKERS", 4))
 

@@ -184,6 +184,7 @@ func (s *huntStats) fold(o huntStats) {
 // rows == an engine bug.
 func TestFDB_PlanDiversityHunt(t *testing.T) {
 	t.Parallel()
+	requireSweepOptIn(t, "HUNT_SEEDS")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}

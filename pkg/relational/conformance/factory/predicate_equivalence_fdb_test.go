@@ -298,6 +298,7 @@ var rewrites = []rewrite{
 // rows.
 func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 	t.Parallel()
+	requireSweepOptIn(t, "EQUIV_SEEDS")
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
 	}
