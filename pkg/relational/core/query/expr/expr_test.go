@@ -577,6 +577,27 @@ func TestResolver_ResolveLike(t *testing.T) {
 	if _, err := r.ResolveLike(id, intPat); err == nil {
 		t.Fatal("expected error for non-string pattern")
 	}
+
+	// A NULL pattern is rejected by the same `lit.(string)` check, and it is
+	// named here rather than left to the int case because it is the one that
+	// keeps a Go/Java divergence UNREACHABLE.
+	//
+	// At runtime the two engines disagree about `x LIKE NULL`: Go's
+	// Comparison.EvalAgainst returns UNKNOWN (the SQL-standard answer) while
+	// Java's Comparisons.compareLike null-guards only the VALUE and then throws
+	// "Illegal pattern value type: null" on a non-String pattern
+	// (Comparisons.java:288-299). Nothing reaches that disagreement today
+	// because ResolveLike refuses the plan first — so THIS rejection is the
+	// thing holding it, and relaxing it re-arms the divergence rather than
+	// merely widening what SQL accepts.
+	nullPat, err := r.ResolveConstant(nil)
+	if err != nil {
+		t.Fatalf("resolve NULL constant: %v", err)
+	}
+	if _, err := r.ResolveLike(id, nullPat); err == nil {
+		t.Fatal("expected error for a NULL LIKE pattern — this rejection is what " +
+			"keeps Go's UNKNOWN and Java's throw from ever disagreeing on a live query")
+	}
 }
 
 func TestResolver_ResolveStartsWith(t *testing.T) {

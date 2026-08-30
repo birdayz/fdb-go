@@ -247,29 +247,34 @@ func TestPartitionRedundancyProofSeparatesSameSlotDifferentLayouts(t *testing.T)
 	}
 }
 
-// TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain asserts the property
+// TestOrderingComparatorsAreTransitiveAcrossExactLayouts asserts the property
 // type dispatch exists to buy, on the exact triple that used to break it.
 //
 // The retired dispatch asked whether both operands HAPPENED TO STATE an identity:
 // identity decided when both did, and otherwise the pair fell through to the
 // domain-blind structural comparison. That is not an equivalence relation. All
-// three values below bake ordinal path [0]:
+// three values below bake ordinal path [0], and — unlike an earlier revision of
+// this test, which the comment here still described — ALL THREE STATE an
+// identity, asserted below before the triple is used:
 //
-//	A = [0] in layout D1          states an identity
-//	B = [0] in layout D2          states an identity
-//	U = [0], layout UNKNOWN       states none
+//	A  = [0] in layout D1
+//	B  = [0] in layout D2
+//	A' = an independent [0] in layout D1
 //
-// Identity separates A from B. Under availability dispatch U fell through and
-// compared EQUAL to both, so U≡A and U≡B with A≢B. A comparator that is not
+// Identity separates A from B while equating A with A'. The transitivity that
+// matters is therefore over a triple where every pair is decided by identity
+// rather than one where a non-stating operand falls through — the fall-through
+// case is now unreachable here, which is the point: a comparator that is not
 // transitive makes every set built through it depend on INSERTION ORDER —
 // including adjustedIntersectionOrdering's `seen` dedup, which decides the
 // intersection's comparison keys and their bindings. Order-dependent comparison
 // keys are a nondeterministic plan.
 //
-// Type dispatch closes it by declining U instead of bridging it: both operands
-// *FieldValue means SameOrderingColumn decides and the decision is FINAL. The
-// decline costs nothing in production — over the corpus neither comparator ever
-// sees a FieldValue pair with a non-stating operand, and
+// Type dispatch closes it by declining a non-stating operand instead of
+// bridging it: both operands *FieldValue means SameOrderingColumn decides and
+// the decision is FINAL. The decline costs nothing in production — over the
+// corpus neither comparator ever sees a FieldValue pair with a non-stating
+// operand, and
 // pkg/relational/conformance/explaindiff's ordering-census test keeps that
 // residual pinned at ZERO.
 //

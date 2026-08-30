@@ -163,8 +163,8 @@ func TestAggregateCandidateDeclinedByRawIndexShortcuts(t *testing.T) {
 	})
 }
 
-// TestAggregateCandidateScanPlanNeedsAggregateWrapper pins WHY the gates above
-// matter: AggregateIndexMatchCandidate.ToScanPlan returns a bare
+// TestAggregateCandidateToScanPlanIsARawFetchingIndexPlan pins WHY the gates
+// above matter: AggregateIndexMatchCandidate.ToScanPlan returns a bare
 // RecordQueryIndexPlan — the same record-fetching plan a value index produces.
 // It is safe only because its one legitimate caller,
 // AggregateDataAccessRule, immediately wraps it in a

@@ -22,6 +22,7 @@ go_test(
         "copy_method_rebuild_detector_test.go",
         "copy_method_rebuild_test.go",
         "delete_where_bound_census_test.go",
+        "doc_comment_names_its_function_test.go",
         "docs_consistency_test.go",
         "dst_seam_gate_test.go",
         "duec_wallclock_gate_scope_test.go",
@@ -52,6 +53,7 @@ go_test(
         "pr_check_gate_test.go",
         "precommit_codegen_globs_test.go",
         "precommit_hook_message_test.go",
+        "predicate_memo_hash_census_test.go",
         "qualifier_recovery_gate_test.go",
         "race_lane_scope_test.go",
         "receiver_write_census_test.go",
@@ -80,6 +82,7 @@ go_test(
     # them under Bazel (the same files `go test` reads from the repo tree). RFC-131.
     data = [
         "//cmd/frl/internal/cmd:cmd_sources",
+        "//pkg/recordlayer/query/plan/cascades/predicates:predicates_sources",
         "//:CHANGELOG.md",
         "//:DIVERGENCES.md",
         "//:MODULE.bazel",

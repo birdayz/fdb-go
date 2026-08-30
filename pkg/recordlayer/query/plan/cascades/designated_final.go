@@ -235,6 +235,14 @@ func (s *designationScope) exprCount(e expressions.RelationalExpression, filter 
 // physical filter/NLJ nodes alike, so the tier is live on the all-logical
 // REWRITING memo — the pre-RFC-186 physical-only descent counted nothing
 // there.
+//
+// The count comes from the NORMALIZER's size function, because that is what
+// Java's property returns: countNormalizedConjuncts
+// (NormalizedResidualPredicateProperty.java:81-90) is
+// `getDefaultInstanceForCnf().getMetrics(p).getNormalFormFullSize()`. It read a
+// negate-blind walk until RFC-240, which under-counted every predicate with a
+// NOT over a connective — `NOT(a OR b)` counted 1 where Java counts 2, because
+// the negated Or is sized as a major and its children SUM.
 func (s *designationScope) residualConjuncts(e expressions.RelationalExpression, visiting map[*expressions.Reference]bool) int {
 	if e == nil {
 		return 0
@@ -242,7 +250,7 @@ func (s *designationScope) residualConjuncts(e expressions.RelationalExpression,
 	count := 0
 	if wp, ok := e.(expressions.RelationalExpressionWithPredicates); ok {
 		for _, p := range wp.GetPredicates() {
-			count += int(cnfSize(p))
+			count += int(normalFormSize(p, false, normalFormCNF))
 		}
 	}
 	for _, q := range e.GetQuantifiers() {

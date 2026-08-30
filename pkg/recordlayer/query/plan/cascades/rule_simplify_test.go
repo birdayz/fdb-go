@@ -803,9 +803,9 @@ func TestNotComparisonRewrite_NegatesEquals(t *testing.T) {
 	}
 }
 
-// NOT(x IS NULL) → x IS NOT NULL.
-// NOT(IS NULL) is NOT invertible in Java — invertComparisonType
-// rejects unary operators. The rule should decline.
+// NOT(x IS NULL) is NOT invertible — Java's invertComparisonType opens with
+// `if (type.isUnary()) return null;`, so the rule declines even though
+// IS NOT NULL is plainly the negation. The rule must leave the NOT in place.
 func TestNotComparisonRewrite_IsNullDeclines(t *testing.T) {
 	t.Parallel()
 	rule := NewNotComparisonRewriteRule()

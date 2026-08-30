@@ -348,8 +348,18 @@ func TestProjectionRule_WrapsWinnerNotFirst(t *testing.T) {
 	t.Logf("ProjectionRule yielded %d plans", len(yielded))
 }
 
-// TestFilterRule_UsesWinnerPerOrdering verifies that the ImplementFilterRule
-// yields one FilterPlan per requested ordering when constraints are available.
+// TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical pins that a
+// reference holding physical members answers all three lookups even with no
+// winners stamped: findPhysicalPlan, findPhysicalExpr, and
+// getWinnerForOrdering under both PreserveOrdering and a nil ordering.
+//
+// The nil return from getWinnerForOrdering is the bug this guards — the
+// assertion says so in its own message.
+//
+// The comment that used to sit here belonged to TestFilterRule_UsesWinnerPerOrdering
+// and had been stranded above this function by a later insertion, so godoc
+// attached the filter rule's documentation to the winner lookup while the
+// filter test carried none.
 func TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical(t *testing.T) {
 	t.Parallel()
 
@@ -393,6 +403,8 @@ func TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical(t *testing.T) {
 	}
 }
 
+// TestFilterRule_UsesWinnerPerOrdering verifies that the ImplementFilterRule
+// yields one FilterPlan per requested ordering when constraints are available.
 func TestFilterRule_UsesWinnerPerOrdering(t *testing.T) {
 	t.Parallel()
 

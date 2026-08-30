@@ -54,22 +54,6 @@ func interningBaselineQuantifier(
 		values.NamedCorrelationIdentifier(name), expressions.InitialOf(scan))
 }
 
-// TestPartitionSelect_ChainInterningBaseline is the RFC-077 7.5 task-count gate.
-// It pins the join-re-enumeration task count for 3- and 4-table chains so the
-// retirement of the synthetic stable merge alias (now a per-Memo deterministic
-// alias, Memo.NextMergeAlias, interned alias-aware by Reference.Insert/InsertFinal)
-// — and any future memo-interning touch — is held to a tight tolerance. The old
-// content-stable merge alias was load-bearing for interning: an alias that differs
-// per merge occurrence WITHOUT alias-aware Insert/InsertFinal DOUBLES the 4-chain
-// count (29915 → 60044) while plandiff stays byte-identical. These pinned numbers
-// are the only thing that catches such a sub-product-sharing miss; a bare "must
-// not regress" is a vibe.
-//
-// Baseline provenance (master, with the old mergeQuantifierAlias): 3-chain 8999,
-// 4-chain 29915. Post-change (uniqueId + alias-aware Insert/InsertFinal): 3-chain
-// 8999 (EXACT), 4-chain 30593 (+2.3%, identical merge-branch hit count 42) — the
-// alias-aware interning reproduces the stable sub-product sharing; the small
-// 4-way residual is bounded (NOT super-linear) and far from the +100% naive blowup.
 // TestSelectExpression_InternsAliasAware_GatedToMergeSelects pins the gate that
 // confines alias-aware Reference.Insert/InsertFinal dedup to merge re-enumeration
 // selects (RFC-077 7.5). A first cut made the alias-aware tier UNCONDITIONAL,

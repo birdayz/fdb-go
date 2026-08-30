@@ -95,7 +95,7 @@ func FuzzParseGetKeyServerLocationsReply(f *testing.F) {
 	})
 }
 
-// FuzzParseGetReadVersionReply drives whole GRV reply payloads through the
+// FuzzParseGetReadVersionReplyTagThrottle drives whole GRV reply payloads through the
 // wire decoder and the tag-throttle conversion. The tag throttle map is decoded
 // by the generated wire layer as a vector of objects, so the hostile-input
 // surface is the reply decode itself — a byte-level parser for this field no

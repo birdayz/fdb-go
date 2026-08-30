@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "fuzzfloor",
+    srcs = ["fuzzfloor.go"],
+    importpath = "fdb.dev/pkg/recordlayer/query/plan/cascades/internal/fuzzfloor",
+    visibility = ["//pkg/recordlayer/query/plan/cascades:__subpackages__"],
+)
+
+go_test(
+    name = "fuzzfloor_test",
+    srcs = ["fuzzfloor_test.go"],
+    embed = [":fuzzfloor"],
+)

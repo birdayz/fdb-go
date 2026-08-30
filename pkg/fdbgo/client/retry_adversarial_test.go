@@ -106,7 +106,7 @@ func TestOnError_NotCommitted_NoSelfConflicting(t *testing.T) {
 	}
 }
 
-// TestOnError_NonRetryable verifies that non-retryable errors pass through.
+// TestOnError_NonRetryablePassthrough verifies that non-retryable errors pass through.
 func TestOnError_NonRetryablePassthrough(t *testing.T) {
 	t.Parallel()
 
@@ -169,7 +169,7 @@ func TestOnError_RetryCount(t *testing.T) {
 	}
 }
 
-// TestOnError_ResourceConstrainedBackoff verifies that resource-constrained
+// TestOnError_ResourceConstrainedErrors verifies that resource-constrained
 // errors (hot_shard, range_locked, proxy_memory_limit, grv_proxy_memory_limit)
 // use the higher backoff cap (30s) instead of the normal 1s.
 func TestOnError_ResourceConstrainedErrors(t *testing.T) {
@@ -268,7 +268,7 @@ func codeToString(code int) string {
 	}
 }
 
-// TestIntersectConflictRanges verifies the conflict range intersection logic
+// TestIntersectConflictRanges_Adversarial verifies the conflict range intersection logic
 // used by commitDummyTransaction. Matches C++ intersects() in NativeAPI.actor.cpp.
 func TestIntersectConflictRanges_Adversarial(t *testing.T) {
 	t.Parallel()

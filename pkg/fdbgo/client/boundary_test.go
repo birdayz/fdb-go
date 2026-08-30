@@ -157,7 +157,7 @@ func TestGetRange_Limit1(t *testing.T) {
 	})
 }
 
-// TestGetRange_EmptyRange verifies that scanning an empty range returns
+// TestGetRange_EmptyRangeBoundary verifies that scanning an empty range returns
 // 0 results and more=false.
 func TestGetRange_EmptyRangeBoundary(t *testing.T) {
 	t.Parallel()

@@ -142,9 +142,6 @@ func TestSplitKeySuffix_EmptyReturnsError(t *testing.T) {
 	}
 }
 
-// TestTupleSkipNestedInNested is a targeted regression test for the bug where
-// tupleSkip would stop at the inner nested tuple's 0x00 terminator instead of
-// the outer one, causing the outer tuple to be measured as too short.
 // TestTupleSkipNestedWithBytesPayload pins the bug where tupleSkip on a nested
 // tuple stopped at the first inner element's *terminator* 0x00 (e.g. a bytes
 // element's trailing 0x00) instead of parsing element-by-element. HNSW stores
@@ -196,6 +193,9 @@ func TestTupleSkipNestedWithBytesPayload(t *testing.T) {
 	}
 }
 
+// TestTupleSkipNestedInNested is a targeted regression test for the bug where
+// tupleSkip would stop at the inner nested tuple's 0x00 terminator instead of
+// the outer one, causing the outer tuple to be measured as too short.
 func TestTupleSkipNestedInNested(t *testing.T) {
 	t.Parallel()
 	// Pack: (nested(nested(1), 2), 99)

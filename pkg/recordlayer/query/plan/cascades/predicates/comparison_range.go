@@ -193,6 +193,34 @@ func (r *ComparisonRange) Merge(c *Comparison) MergeResult {
 	return MergeResult{Ok: false, Residual: c}
 }
 
+// isScanRangeEqualityType reports whether a comparison binds an EXACT KEY in a
+// scan range rather than an ordered bound. It corresponds to the EQUALITY arm of
+// Java's ScanComparisons.getComparisonType, and DELIBERATELY DIFFERS FROM IT IN
+// BOTH DIRECTIONS. Do not "align" it without reading why.
+//
+// Java's arm is {EQUALS, IS_NULL, DISTANCE_RANK_EQUALS}.
+//
+// DISTANCE_RANK_EQUALS is omitted here, and adding it is an ACTIVE REGRESSION,
+// not a missing port. Java's scan machinery consumes vector comparisons through
+// this classification; Go does not — a DistanceRank comparison is lowered to a
+// RecordQueryVectorIndexPlan, and bindScanComparisonsToRangeSet binds TUPLE keys
+// with no vector handling at all. So a DistanceRank comparison arriving in a
+// ComparisonRange is malformed by construction, and the inequality
+// classification is what makes the binder reject it as a malformed tail.
+//
+// Measured: classify it as an equality and the binder stops rejecting it. With a
+// type-compatible operand (int64 against a LONG key) bindScanComparisonsToRangeSet
+// returns a nil error AND a live materializer — a vector distance-rank bound as
+// an ordinary exact tuple key, silently. With a float operand the rejection
+// survives only incidentally, as a comparand-type error rather than a shape one.
+// TestBindScanComparisonsToRangeSet_RejectsMalformedTailBeforeProjection in
+// pkg/recordlayer/query/executor is what catches this; its skip list mirrors the
+// set below, so the two must be changed together or not at all.
+//
+// NOT_DISTINCT_FROM is added here and is NOT a Java case — Java's switch has no
+// arm for it, so it falls to `default: NONE`. Sound because a null-safe equality
+// seeks one exact key: the value's, or the null key when the operand is null.
+// See Merge's IS NULL comment.
 func isScanRangeEqualityType(comparisonType ComparisonType) bool {
 	switch comparisonType {
 	case ComparisonEquals, ComparisonIsNull, ComparisonNotDistinctFrom:

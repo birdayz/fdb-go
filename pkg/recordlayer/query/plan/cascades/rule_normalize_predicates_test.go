@@ -130,8 +130,8 @@ func TestNormalizeDNF_AbsorptionRemovesRedundantClauses(t *testing.T) {
 		case *predicates.AndPredicate:
 			// valid DNF child
 		default:
-			if !isLeafPredicate(child) {
-				t.Errorf("OR child %d is neither leaf nor AND: %T", i, child)
+			if !normalFormVariableOrNot(child) {
+				t.Errorf("OR child %d is neither a variable-or-NOT nor an AND: %T", i, child)
 			}
 		}
 	}

@@ -103,24 +103,33 @@ func (e *FullUnorderedScanExpression) GetCorrelatedToWithoutChildren() map[value
 	return map[values.CorrelationIdentifier]struct{}{}
 }
 
-// EqualsWithoutChildren compares record-type sets + flowed Type.
+// EqualsWithoutChildren compares record-type sets + flowed Type, and it is what
+// rule_match_leaf.go's matchLeafWithCandidate calls to decide whether a query
+// scan is subsumed by a candidate scan. Every index access path in the planner
+// depends on that comparison returning true for the right pairs.
 //
-// The flowed type is NON-DISCRIMINATING when either side is UnknownType. Java
-// holds this invariant structurally: both the query scan
-// (RelationalExpression.fromRecordQuery) and the candidate scan
-// (ExpansionVisitor.createBaseRef) flow Type.AnyRecord — a constant TOP type —
-// so its flowedType.equals term is always AnyRecord==AnyRecord and never
-// discriminates; the concrete record type rides a TypeFilter ABOVE the scan,
-// never on the leaf. recordTypes NAMES are the sole discriminator.
+// WHAT MAKES IT RETURN TRUE is the exact channel's identity excluding the
+// record NAME. The query scan is built over values.NewRecordType("", cols) —
+// unnamed, from the SQL columns (cascades_translator.go) — while the candidate
+// scan is built "over the candidate's exact row" (index_expansion.go), whose
+// record type carries the table's name. Those two only compare equal because
+// exactType's canonical form omits the name: it is "provenance, not shape, and
+// Java's Type.Record/Type.Enum equals+hashCode exclude it too" (exact_type.go).
+// Adding the name back there would make every leaf match fail and remove index
+// access wholesale, which is why the dependency is stated here rather than left
+// to be rediscovered from the far end.
+// TestFullUnorderedScan_MatchesAcrossRecordNames pins it.
 //
-// Go's UnknownType is the analog of Java's AnyRecord. The QUERY scan leaf is
-// typed directly (so FieldValue.resolveOrdinal can resolve a column
-// against it) while candidate scans keep UnknownType. Wildcarding UnknownType
-// here restores Java's names-only match — top subsumes concrete, the direction
-// scan-leaf subsumption (rule_match_leaf.go) needs. Two CONCRETE types still
-// compare structurally, so query-side memo dedup of two scans over one table is
-// preserved. HashCodeWithoutChildren stays names-only (below) so typed and
-// untyped scans over the same types share a bucket and can meet here.
+// There is NO UnknownType wildcard, and an earlier version of this comment
+// described one at length: that the flowed type is "non-discriminating when
+// either side is UnknownType", that candidate scans "keep UnknownType", and
+// that wildcarding it is what scan-leaf subsumption needs. All three are false.
+// values.ExactTypesEqual is a strict canonical-bytes comparison with no
+// wildcard arm; candidate scans carry the candidate's exact base type; and an
+// UnknownType scan cannot be constructed at all, because
+// NewFullUnorderedScanExpression snapshots through snapshotExpressionResultType,
+// which refuses a placeholder. Structural typing on both sides replaced the
+// wildcard; the prose describing it stayed.
 func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpression, _ *AliasMap) bool {
 	o, ok := other.(*FullUnorderedScanExpression)
 	if !ok {
@@ -140,12 +149,44 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 	return true
 }
 
-// HashCodeWithoutChildren mixes a class-discriminating constant with
-// the canonical record-type list. It MUST NOT mix flowedType — matching
-// Java's names-only scan hash. EqualsWithoutChildren treats a UnknownType
-// flowedType as a wildcard, so a typed query scan and an
-// UnknownType candidate scan over the same record types must hash IDENTICALLY
-// or they land in different memo buckets and the wildcard match never fires.
+// HashCodeWithoutChildren mixes a class-discriminating constant with the
+// canonical record-type list, and deliberately does NOT mix flowedType. This
+// DIVERGES FROM JAVA, which hashes Objects.hash(recordTypes, flowedType)
+// (FullUnorderedScanExpression.java:150). Do not "align" it; that was tried.
+//
+// An earlier version of this comment claimed the omission was "matching Java's
+// names-only scan hash". Java's scan hash is not names-only, so that was a false
+// Java citation introduced by the very commit that removed a different one —
+// worth recording, because an unchecked claim about the reference implementation
+// reads exactly like a checked one.
+//
+// Folding flowedType in, to close that divergence, REGRESSES THE PLANNER.
+// Measured at 0bf01a4fe: it reddens TestPlanShapeGolden by 13731 lines and breaks three memo
+// tests (TestDesignatedFinal_GenerationInvalidation,
+// TestDesignatedFinal_NoCacheInUnfinalizedWindow,
+// TestOptimizeGroup_RewritingCoherence), all of them selecting a
+// LogicalSortExpression where a plain scan should win. Scan identity is the base
+// of every query tree, so changing which scans share a memo bucket changes group
+// membership and therefore winner selection.
+//
+// The omission is SAFE on its own terms, which is why it is kept rather than
+// merely tolerated: a hash folding FEWER fields than equality only ever collides
+// unequal expressions and never scatters equal ones, so the equal-implies-
+// same-hash invariant the memo needs is untouched. EqualsWithoutChildren still
+// compares the flowed type, so nothing is conflated — the two just bucket
+// together.
+//
+// An earlier version of this comment justified the exclusion differently — that
+// EqualsWithoutChildren treats an UnknownType flowedType as a wildcard, so a
+// typed query scan and an UnknownType candidate scan had to share a bucket or
+// the wildcard match would never fire. Both halves of that are false.
+// ExactTypesEqual is a strict canonical-bytes comparison with no wildcard arm,
+// and an UnknownType scan cannot be built at all: NewFullUnorderedScanExpression
+// snapshots through snapshotExpressionResultType, which refuses a placeholder
+// type ("placeholder type is not exact"), and that constructor is the only
+// writer of the field. TestFullUnorderedScan_RefusesAPlaceholderFlowedType pins
+// the refusal, so if it is ever relaxed this reasoning gets revisited rather
+// than silently inherited.
 func (e *FullUnorderedScanExpression) HashCodeWithoutChildren() uint64 {
 	h := fnv.New64a()
 	h.Write([]byte("scan|"))

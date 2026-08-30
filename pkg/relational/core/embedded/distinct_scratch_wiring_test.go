@@ -21,17 +21,6 @@ import (
 	"fdb.dev/pkg/relational/api"
 )
 
-// TestPagedDistinctWithLimitReturnsEveryRow pins a shape NOTHING in the suite
-// covered: DISTINCT under a SQL LIMIT while the statement pages.
-//
-// It exists because a scratch sweep keyed on "what the surviving continuation
-// names" silently broke exactly this query — `SELECT DISTINCT v FROM t LIMIT 3`
-// under a scanned-rows limit returned 2 rows and then failed with "seen-set 1
-// ... does not hold", because enclosing continuation objects cache their own
-// bytes and never call down into the distinct's, so the live entry went
-// unmarked and was collected. Every other DISTINCT test stayed green. The
-// LIMIT is load-bearing: it is what puts an operator above the DISTINCT that
-// serializes a child continuation per row.
 // TestExhaustedDistinctStatementLeavesNoScratchState is the STATEMENT-LEVEL
 // wiring pin: after a SELECT DISTINCT runs to exhaustion through the real
 // driver, the statement's scratch holds nothing.
@@ -95,6 +84,17 @@ func TestExhaustedDistinctStatementLeavesNoScratchState(t *testing.T) {
 	}
 }
 
+// TestPagedDistinctWithLimitReturnsEveryRow pins a shape NOTHING in the suite
+// covered: DISTINCT under a SQL LIMIT while the statement pages.
+//
+// It exists because a scratch sweep keyed on "what the surviving continuation
+// names" silently broke exactly this query — `SELECT DISTINCT v FROM t LIMIT 3`
+// under a scanned-rows limit returned 2 rows and then failed with "seen-set 1
+// ... does not hold", because enclosing continuation objects cache their own
+// bytes and never call down into the distinct's, so the live entry went
+// unmarked and was collected. Every other DISTINCT test stayed green. The
+// LIMIT is load-bearing: it is what puts an operator above the DISTINCT that
+// serializes a child continuation per row.
 func TestPagedDistinctWithLimitReturnsEveryRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

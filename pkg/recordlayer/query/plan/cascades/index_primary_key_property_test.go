@@ -7,23 +7,19 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
-// TestComputePrimaryKey_IndexScanIsNilPendingStructuralPK pins the SAFE state
-// of RFC-188 finding 10 M5: computePrimaryKey returns nil for an index scan.
-//
-// M5 originally returned FieldValues over the index's PK COLUMN NAMES so a
-// union/intersection could dedup by PK — but a by-name PK wrongly equates record
-// types whose PK expressions differ yet share field names (Field("ID") vs
-// Concat(RecordTypeKey(), Field("ID")) both flatten to ["ID"]), which would let
-// ImplementDistinctUnionRule dedup two legs that must both survive (dropped
-// rows). Java translates getCommonPrimaryKey() STRUCTURALLY. Until that
-// structural port lands, the property returns nil — the safe under-report
-// (disables the optimization, never wrong dedup). This test guards that nil so a
-// by-name PK is never reintroduced without the structural fix.
 // TestComputePrimaryKey_IndexScanStructuralPK pins RFC-189 B3: an index scan's
 // PrimaryKeyProperty is the STRUCTURAL common PK stamped from the match candidate
 // (never the by-name columns, which conflate). An unstamped plan abstains (nil);
 // a stamped plan surfaces its structural PK; and the union anti-conflation
 // prevents dropped rows.
+//
+// A stale block used to sit above this one describing RFC-188 M5, where the
+// property returned nil for every index scan as the safe under-report. RFC-189
+// B3 replaced that with the structural PK below, and the block was left glued
+// here with no blank line — so godoc rendered "the property returns nil" as
+// this test's own documentation, asserting current behaviour the code had
+// already stopped having. It named a test that no longer exists, which is how
+// it was found.
 func TestComputePrimaryKey_IndexScanStructuralPK(t *testing.T) {
 	t.Parallel()
 

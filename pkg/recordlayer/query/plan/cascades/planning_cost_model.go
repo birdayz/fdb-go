@@ -765,7 +765,7 @@ func countClassifiedResidualPredicates(
 		}
 		total := 0
 		for _, predicate := range carrier.GetPredicates() {
-			total += int(cnfSize(predicate))
+			total += int(normalFormSize(predicate, false, normalFormCNF))
 		}
 		return total
 	default:

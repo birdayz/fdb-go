@@ -20484,3 +20484,378 @@ DONE when: `Build` reads as an ordered list of named steps, the
 positions-before-copy dependency is expressed by call order rather than by a
 comment, and the extraction changes no behaviour — same tests, uncached, before
 and after.
+
+---
+
+## The CNF normalizer wired into the planner treats NOT as a leaf; Java's does not
+
+- [x] Unify Go's two normal-form implementations on the exact Java port, so
+  `NormalizePredicatesRule` normalizes through a `NOT` over a connective.
+  DONE — RFC-240, five commits: the RFC plus a write-path golden captured before
+  the rewrite, the absorption tie-break, the cost sites moved to the negate-aware
+  metric, the strict normal form itself, and the deletion of the rule's state
+  map. `normalizeCNF(AND(NOT(AND(a,b)), c))` now returns
+  `(NOT a OR NOT b) AND c`. Verified against Java's own
+  `BooleanPredicateNormalizerTest` cases, ported.
+
+  Two things found while doing it that the entry below did not anticipate.
+  First, the cost model was reading the SAME quantity through the negate-blind
+  walk: Java's `NormalizedResidualPredicateProperty.countNormalizedConjuncts` is
+  `getMetrics(p).getNormalFormFullSize()`, so `designated_final.go` and
+  `planning_cost_model.go` were a mis-port, not an independent proxy — the
+  RFC's first draft proposed freezing that number under a new name and both
+  review gates rejected it. Second, the rule carried an unbounded identity-keyed
+  set standing in for a termination property Java gets from the algebra.
+
+Java's `BooleanPredicateNormalizer` has ONE `isInNormalForm` — a `NOT` over
+anything that is not a variable is NOT in normal form
+(`BooleanPredicateNormalizer.java:284-289`) — and ONE
+`toNormalized(predicate, negate)` carrying a negate flag down through AND/OR,
+which is De Morgan. Both `normalize` and `normalizeAndSimplify`, and both CNF
+and DNF modes, route through them.
+
+Go split that into two implementations that disagree:
+
+| file | normal-form test / conversion | NOT over a connective |
+|---|---|---|
+| `normalize_dnf_exact.go` | `isInDNFStrict` + `toDNFNegated` | pushed (matches Java) |
+| `rule_normalize_predicates.go` | `isInCNF` / `isInDNF` + `toCNFNormalized` / `toDNFNormalized` | treated as a LEAF |
+
+`isLeafPredicate` (`rule_normalize_predicates.go:168-175`) returns true for a
+`NotPredicate`, so `AND(NOT(AND(a, b)), c)` reads as already-CNF and
+`normalizeCNF` declines. `NormalizePredicatesRule` — registered in the default
+pipeline at `default_rules.go:148` and `:178`, and a port of the Java rule that
+calls `normalizeAndSimplify` in CNF mode — therefore leaves the `NOT` standing
+where Java produces `(NOT a OR NOT b) AND c`.
+
+REACHABLE, not latent. The SQL resolver builds a plain `NotPredicate`
+(`expr.ResolveNot`, `pkg/relational/core/query/expr/expr.go:1874-1879`) and
+applies no De Morgan of its own, so the `NOT` arrives at the planner intact.
+`WHERE NOT (cat = 'A' OR cat = 'B')` is already in the corpus
+(`pkg/relational/conformance/yamsql/testdata/complex_where_java.yaml:62`).
+
+The consequence is plan quality, not wrong rows: the CNF shape is what
+`PredicateToLogicalUnionRule` needs to split a disjunction across index
+accesses, so a negated conjunction stays one opaque residual over a scan in Go
+and becomes independently matchable conjuncts in Java.
+
+MEASURED AND PINNED, so this entry cannot rot into an unverifiable claim:
+`TestNormalForm_NotOverConnective_TwoImplementationsDisagree`
+(`pkg/recordlayer/query/plan/cascades/normal_form_not_handling_test.go`) asserts
+the current disagreement on one input and asserts that the exact port pushes the
+same `NOT` through. It FAILS when this item is done, holding the whole
+measurement, and its doc comment points back here.
+
+Nothing has to be invented: the correct algorithm already exists in-tree as the
+DNF exact port. The work is generalizing it over Java's `Mode` (major/minor =
+AND/OR or OR/AND) and retiring the lax pair, which is the "no parallel
+pipelines" rule applied to one file.
+
+GATED, and that is why this is filed rather than fixed: closing it changes the
+planner's canonical predicate shape for every query containing a `NOT` over a
+connective — plans, goldens, the explaindiff corpus — which is a query-engine
+change and needs an RFC plus a Graefe ACK before merge.
+
+DONE when: one normal-form test and one negate-carrying conversion serve CNF and
+DNF and both entry points; `normalizeCNF` returns `(NOT a OR NOT b) AND c` for
+the input above; the pin test is replaced by that assertion; and the plan-shape
+diff has had its review lap.
+
+---
+
+## Doc comments naming a different function than the one they document
+
+- [x] Fix the 23 remaining SUBJECT-class mismatches. DONE — the detector reports
+  ZERO across the tree, and that zero is mutation-verified: introducing one
+  mismatch makes it report exactly that one. All 40 are fixed, each by reading
+  the function rather than by pattern.
+- [x] The detector is now a `pkg/docscheck` gate. DONE —
+  `TestDocCommentNamesItsOwnFunction` in
+  `pkg/docscheck/doc_comment_names_its_function_test.go`, reading 6260 documented
+  of 13284 scanned test functions with 0 citations wrong. It got its own file
+  rather than joining the citation-gate file: those gates share an extraction
+  pipeline over Markdown text, and this one shares nothing with them but the
+  inventory helper.
+
+  The shell walk did not survive the port, and shouldn't have. It compared the
+  first cited name in a contiguous comment BLOCK; the gate uses `go/ast`, so
+  godoc's own attachment rule decides what documents what — which is the rule the
+  MISPLACED-BLOCK class was violating in the first place.
+
+  Three things the port changed, each because a test caught it rather than
+  because it was designed in:
+
+  - The first cut matched `^(Test|Fuzz|Benchmark)[A-Za-z0-9_]*`, which reads the
+    English words "Test that…" and "Benchmark for…" as citations. Seven false
+    positives. The `[A-Z_]` continuation is what separates a name from a word.
+  - It read `Doc.List[0].Text` and trimmed `//` by hand, which is silently blind
+    to a `/* */` doc block. Zero such docs exist today across the 2239 test files
+    that declare a test function — so the blindness would never have surfaced.
+    `Doc.Text()` handles both spellings.
+  - Two hand-predicted expectations in the fixture test were both off by one
+    (`scanned` 6 vs 5, `documented` 5 vs 4), and a documented "known false
+    positive" about subtest names was simply false: the name truncates at the
+    slash and resolves to the parent test, which on its own function is a match.
+
+  Four arms, four mutations, each proven to have landed before its verdict was
+  read: misattributed fires (line 220 arm), phantom fires (line 226 arm),
+  killing comment attachment trips the DOCUMENTED floor — without which that
+  mutation reports "0 citations wrong" and passes green — and emptying the scan
+  set trips the SCANNED floor. A fifth mutation, reverting the marker stripping,
+  reddens the block-comment arm of `TestScanFileForDocNames_WalkExclusions`.
+
+  The gate's scope sentence lists what it does NOT check FIRST, from shapes
+  driven against the code: a comment that never names its function, a function
+  with no comment, a name appearing anywhere but first, a method or non-test
+  declaration, and every line after the first.
+
+`pkg/docscheck`'s citation gates — `TestEveryAuthorityDocTestCitationResolves`,
+`TestTodoTestCitationDriftIsReported` — scan MARKDOWN authority docs and
+test-filter flags. They do not scan GO SOURCE COMMENTS, which assert what the
+tree contains far more often than the Markdown does.
+
+A detector for the unambiguous class (godoc convention: `// TestFoo does X`
+directly above `func TestFoo`, so a leading name that differs is always a
+defect) found **40**. The script is
+`scratchpad/mismatched_doc.sh` in this shift's scratchpad; it walks up the
+contiguous comment block above every `func Test|Fuzz|Benchmark` and compares the
+block's first cited name against the function's.
+
+FIXED so far (17): the 16 PREFIX cases, where the cited name is a strict prefix
+of the function's — a disambiguating suffix was added
+(`TestEmptyKeyValue` -> `TestEmptyKeyValue_Limits`) and the body still describes
+the test, so a name-only rewrite is correct. Plus one misplaced block, below.
+
+REMAINING (23), which need READING, and must not be fixed mechanically. A
+name-only rewrite there gives a wrong body a matching name and turns a
+grep-detectable defect into an invisible one — measured: rewriting all 40
+produced exactly that on `winner_lookup_test.go:353`, where the body describes
+`ImplementFilterRule` and the function is
+`TestGetWinnerForOrdering_PreserveOnRefWithMultiplePhysical`. Three sub-classes:
+
+1. SYNONYM RENAME — body still fits, name-only fix is safe after confirming it.
+   `TestFDB_EmptyTableOperations` -> `TestFDB_EmptyTableOps`,
+   `TestFDB_InsertThenUpdateThenVerify` -> `TestFDB_CRUDCycle`,
+   `TestFDB_SumWithWhereAndGroupBy` -> `TestFDB_SumFilteredGrouped`,
+   `TestFDB_JoinCountGroupByWithHaving` -> `TestFDB_JoinCountGroupByHaving`,
+   `TestFDB_SelectWithAlias` -> `TestFDB_SelectWithColumnAlias`,
+   `TestFDB_JoinSumGroupByWithOrderBySum` -> `TestFDB_JoinSumGroupOrderSum`,
+   `TestFDB_OrderByMultipleWithLimit` -> `TestFDB_OrderByThreeColumnsLimit`.
+
+2. OPPOSITE OR DIFFERENT CLAIM — the prose asserts something the body does not,
+   which is the severe class. Same shape as the two already fixed
+   (`rule_ordered_index_scan_test.go`, where the comment said a DESC sort is NOT
+   satisfied above a function asserting `IsReverse()`).
+   `TestRebaseLegRefsToBox_DeclinesANestedDescent` on
+   `...FusesAnExactNestedDescent`;
+   `TestComputePrimaryKey_IndexScanIsNilPendingStructuralPK` on
+   `...IndexScanStructuralPK`;
+   `TestOrderingComparatorsAreTransitiveAcrossTheUnknownDomain` on
+   `...AcrossExactLayouts`;
+   `TestDefaultFolder_PartialFoldComposesViaSimplify` on
+   `...PartialFoldDoesNotReturnOk`;
+   `TestShuffleIsCollectionsShuffle` on `TestShuffleIsDeterministic`;
+   `TestSatisfiesRequestedOrdering_AdmitsQualifiedRequestAgainstLocalCandidate`
+   on `...AdmitsRequestAgainstSameExactRoot`.
+
+3. MISPLACED BLOCK — a doc block separated from its function by a later
+   insertion, so godoc attaches it to the wrong one. `values_java_inspired_test.go`
+   was this and is FIXED: `TestArithmeticValue_OverflowPanics`'s block had been
+   stranded above `TestArithmeticValue_DivMinWrapsLikeJava` while
+   `OverflowPanics` itself carried none. Others in the 23 may be this rather
+   than a rename; the tell is that the cited name resolves elsewhere in the same
+   file.
+
+DONE when: the detector reports zero, every fix was made by reading the function
+rather than by pattern, and either the detector is a docscheck gate at a zero
+floor or there is a recorded reason it cannot be.
+
+---
+
+## ComparisonRange.MergeResult drops Java's residual LIST, so callers fail closed
+
+STOP-level, needs the query-engine gate: this is an architectural change to the
+matching infrastructure, so it needs an RFC with a Graefe + Torvalds ACK before
+implementation, not a drive-by fix. Recording it here with the measurements in
+hand rather than starting the port unreviewed.
+
+**The divergence.** Java's `ComparisonRange.merge(Comparison)` is TOTAL — it
+never fails. Its `MergeResult` carries a range plus a residual LIST, and the rule
+is that equality always wins and nothing is ever dropped:
+
+| case | Java | Go |
+|---|---|---|
+| NONE-type (NOT_EQUALS, IN, LIKE, TEXT_*, IS_DISTINCT_FROM) | residual, range untouched | pushed into the range as an INEQUALITY |
+| Equality + INEQUALITY | keeps the equality range, residualises the inequality | `Ok=false`, `Range=nil` |
+| Equality + EQUALITY (different) | keeps the range, residualises the incoming | `Ok=false`, `Range=nil` |
+| Inequality + INEQUALITY (duplicate) | dedups (`inequalityComparisons.contains`) | appends the duplicate |
+| Inequality + EQUALITY | becomes Equality(new), old inequalities residual | `Ok=false`, `Range=nil` |
+
+Go's `predicates.MergeResult` has `Ok bool` and a SINGLE `Residual`, and no
+caller in the tree reads `Residual` at all — so the residual channel exists in
+name only. Callers therefore fail closed where Java pushes the equality down and
+keeps the rest as a filter — with ONE exception this entry originally got wrong.
+`AsComparisonRange` SKIPPED the rejected conjunct instead of failing, so
+`x = 5 AND x > 7` converted to `x = 5`: weaker than its input, silently. Fixed —
+it now returns `(nil, false)` — but the sweeping "every caller fails closed" was
+false as written, and the review that caught it was reading the code rather than
+this entry. `mergeComparisonRanges` states the gap in
+its own comment: "equality/inequality is not representable by ComparisonRange
+without a residual." That is the standing admission that the residual list is
+the real answer.
+
+**Consequence.** `tryMergeParameterBindings` turns a rejection into a LOST
+MATCH: where two child branches bind the same parameter alias with an equality
+and an inequality, the index candidate Java would keep — an equality seek plus a
+residual filter — is not produced at all. Wrong plans, never wrong rows; the
+rejected predicate is not silently dropped on any live path.
+
+**Reachability, measured, not assumed.** Instrumented all three arms of
+`Merge` and ran 10940 tests (cascades + relational/core + plan/plans, `-count=1
+-v`, stderr captured to a file because `go test` swallows it for passing
+packages):
+
+- 202 hits on the Empty arm. The only NONE-type to reach it was
+  TEXT_CONTAINS_ALL, 3 times, all from the `textRange` helper in
+  `f21_comparand_identity_test.go` deliberately building a text range — no
+  planner path.
+- 19 hits on the non-empty arms, every one from `ComparisonRange`'s own unit
+  tests plus `TestNullRejectedByScanRange_*`.
+
+So all five divergences are LATENT today. That is a reason to fix them before
+something reaches them, not a reason to leave them: the arms are untested
+precisely because nothing exercises them.
+
+**Pinned meanwhile.** `mergeComparisonRanges` had NO test of any kind. It now
+has `match_info_merge_ranges_test.go`: the agreeing arms, plus
+`TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava`, which pins the
+three rejecting arms and says in its failure message that closing the divergence
+means REPLACING it with an assertion that the equality survives and the rest
+comes back as a residual — never deleting it. The dedup claim in that file is
+mutation-verified: disabling the dedup loop makes the overlapping union report 3
+comparisons instead of 2.
+
+- [ ] Write the RFC for porting Java's total `MergeResult` (range + residual
+  list) and threading residuals through `PredicateMapping`/`MatchInfo` so a
+  partial match can carry them as filter predicates. Get the Graefe + Torvalds
+  ACK on the RFC, then implement, then the impl lap. The shape-only port (change
+  the struct, keep every caller failing closed when residuals are non-empty) is
+  NOT worth landing alone — it ships the API churn without the plans.
+
+---
+
+## IntersectCompensations was order-dependent, and a Go-only field was why — FIXED
+
+Was STOP-level: the fix turned on how a Go-only obligation should interact with
+a ported identity element, which is a design call rather than a mechanical port.
+The decision and its measurements are recorded under FIXED below. The analysis
+above is kept as written, because the first hypothesis it records was incomplete
+and the way it was incomplete is the useful part.
+
+**The defect.** `IntersectCompensations` is a LEFT fold: `result =
+ImpossibleCompensation; for each leg { result = intersectTwo(result, leg) }`.
+Three legs therefore fold as `((I·a)·b)·c`, and reordering them folds
+differently unless `intersectTwo` is associative. It is commutative and NOT
+associative, so the result depends on the order the planner enumerated the
+intersection legs.
+
+The same three legs give three incompatible answers:
+
+| leg order | result |
+|---|---|
+| `[NoCompensation, plain, pkDistinct]` | needed, possible, not-for-filtering |
+| `[NoCompensation, pkDistinct, plain]` | needed, **IMPOSSIBLE**, for-filtering |
+| `[plain, pkDistinct, NoCompensation]` | **NOT NEEDED** |
+
+"impossible" discards a usable intersection. "not needed" drops the
+primary-key-distinct obligation, which is a cardinality correction — losing it
+returns DUPLICATE ROWS. `intersectTwo`'s own comment states the invariant being
+violated: a leg that needs it "cannot lose it merely because the other leg has
+no filter or result residual".
+
+**Measured scope** (at the five-shape corpus this was taken over; the corpus has
+since grown to six and the figure moves with it). There were 96 disagreeing
+permutation pairs, and EVERY ONE involves `requiresPrimaryKeyDistinct`. Zero
+triples disagree without it. That field is a **Go-only extension** —
+`Compensation.java` has no equivalent — so Java's fold is unaffected and this is
+not a mis-port. It is an extension interacting badly with a ported identity.
+
+**Mechanism.** `ForMatchCompensation.Intersect` ORs the flag
+(compensation.go:1087), then returns the bare `ImpossibleCompensation` singleton
+when the intersected child is impossible (compensation.go:1105), discarding it.
+That would be harmless if impossible propagated — but `intersectTwo` treats
+Impossible as the intersection IDENTITY (`impossible ∩ X = X`, matching Java's
+`reduce(impossibleCompensation, Compensation::intersect)`), so the impossible
+result is ABSORBED rather than poisoning the fold, and the obligation is simply
+gone. The singleton is fieldless, so it cannot carry the obligation across the
+identity arm.
+
+**Reachability.** `requiresPrimaryKeyDistinct` is set in production by
+`PartialMatchImpl.GetCompensation` (partial_match.go:379), and
+`intersector_primary_key.go:657` and `:1149` fold one compensation per
+intersection leg. A 3+-leg intersection where one leg carries the obligation and
+another needs no compensation reaches this.
+
+**FIXED.** The root cause was not the discarded flag on the impossible path —
+that was one loss of two, and fixing it alone left the reproducer green. The
+fold's absorbing arm tested `IsNeeded`, and a primary-key-distinct obligation
+makes a compensation "needed", so `NoCompensation ∩ pkDistinct` produced a
+PK-distinct-only compensation that was NO LONGER ABSORBING. "Some leg filters
+exactly" is a property of the whole intersection, but a LEFT fold only keeps it
+if the accumulator does; after one step it was gone, the next leg went through
+the full `Intersect`, and its residual came back — while the same legs in
+another order kept absorbing.
+
+Three changes, each measured:
+
+- `intersectTwo` absorbs on `!IsNeededForFiltering() && !IsFinalNeeded()`, the
+  pair Java's `WithSelectCompensation.intersect` uses at its own absorbing point
+  (`Compensation.java:771-774`), rather than on `IsNeeded`. A PK-distinct-only
+  compensation reports neither, so it stays absorbing and the property survives
+  the fold. `IsNeededForFiltering` ALONE is not the test and an earlier draft of
+  this line said it was: it excludes the RESULT compensation too, so on its own
+  it swallows a leg whose predicates are fully matched but whose result value
+  must be re-projected — wrong columns, not a lost optimization. Reverting the
+  predicate reddens the laws. (Violation counts are deliberately not quoted here:
+  they are a function of the corpus size, which the test logs. A "151" recorded
+  against the five-shape corpus was both miscounted — it omitted the
+  commutativity subtest — and then invalidated by a sixth shape being added,
+  which moved the same mutation to 233. Run the test.)
+- `ForMatchCompensation.IsNeeded` recurses with the child's PRE-FINAL need
+  instead of the child's full `IsNeeded`. Java counts the child's RESULT
+  compensation (`Compensation.java:528-533`) and nothing can ever apply one:
+  `ForMatch.applyFinal` reads its own function and does not recurse, in both
+  engines. So Java reports "needed" for a compensation that applies nothing, and
+  that shape made both folds order-dependent — it collapses to `NoCompensation`
+  in one grouping and survives as needed in another, while
+  `intersector_primary_key.go` and `abstract_data_access_rule.go` both branch on
+  `IsNeeded`. A seventh corpus shape exposes it: 30 law violations against the
+  Java-literal spelling. The narrowing drops the child's result term and nothing
+  else — a nested primary-key-distinct obligation still counts, and still
+  applies. This is a DELIBERATE divergence from Java, argued at the call site,
+  and the reachability fact it rests on is pinned by
+  `TestForMatchCompensation_AChildsResultCompensationIsUnreachable`.
+- The absorbing arm reduces BOTH operands and keeps the union of their
+  obligations, via `unionPrimaryKeyDistinctObligations`. Discarding either
+  side's obligation reddens the laws. The helper also unions the two sides'
+  MATCHED QUANTIFIERS, as Java does (`Compensation.java:781-782`), and unions
+  the COMPENSATED ALIASES, which Java does NOT — Java takes one side under an
+  invariant it declines to check (`Compensation.java:801`, "both compensated
+  aliases must be identical, but too expensive to check"), so the union is a
+  deliberate widening of an unverified assertion. Neither half is covered by the
+  laws, whose shape comparison is five booleans and can observe neither a
+  quantifier set nor an alias set, and both are stated rather than presented as
+  measured. The arm's CHILD slot recurses, so nested obligations survive the
+  fold; rebuilding with `NoCompensation` there keeps the top obligation and
+  drops every nested one, which returns duplicate rows.
+
+`ForMatchCompensation.Intersect` also no longer returns the bare
+`ImpossibleCompensation` singleton when it holds an obligation, since the
+singleton is fieldless and the identity arm would absorb the obligation with it.
+
+Both folds now satisfy every law in `compensation_monoid_test.go`: commutative,
+associative, permutation-independent over three legs, each with its documented
+identity, and impossible propagating through union only. The reproducer that
+pinned the broken answers is deleted, as its own failure message instructed, and
+the UnionCompensations-only guard on the associativity and permutation subtests
+is removed so both folds are held to them.

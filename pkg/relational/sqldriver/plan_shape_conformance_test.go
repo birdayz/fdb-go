@@ -18352,7 +18352,7 @@ func TestFDB_DeleteOldAndLowValue(t *testing.T) {
 	})
 }
 
-// TestFDB_CountWithGroupByHavingCount — COUNT+HAVING with equality
+// TestFDB_CountWithGroupByHavingCountEq — COUNT+HAVING with equality
 func TestFDB_CountWithGroupByHavingCountEq(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18470,7 +18470,7 @@ func TestFDB_NullOrderingSortBehavior(t *testing.T) {
 	})
 }
 
-// TestFDB_GroupByMultipleAggregates — COUNT+SUM+MIN+MAX in single query
+// TestFDB_GroupByMultipleAggregatesAll — COUNT+SUM+MIN+MAX in single query
 func TestFDB_GroupByMultipleAggregatesAll(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18627,7 +18627,7 @@ func TestFDB_InsertMultipleBatchesThenDelete(t *testing.T) {
 	})
 }
 
-// TestFDB_CaseWhenInSelect — CASE WHEN expressions in SELECT projection
+// TestFDB_CaseWhenInSelectProjection — CASE WHEN expressions in SELECT projection
 func TestFDB_CaseWhenInSelectProjection(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18719,7 +18719,7 @@ func TestFDB_UpdateArithmeticAllRows(t *testing.T) {
 	})
 }
 
-// TestFDB_GroupByBooleanColumn — GROUP BY on boolean values
+// TestFDB_GroupByBooleanColumnAgg — GROUP BY on boolean values
 func TestFDB_GroupByBooleanColumnAgg(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18789,7 +18789,7 @@ func TestFDB_CTEReferencedTwice(t *testing.T) {
 	})
 }
 
-// TestFDB_SelectWithAlias — column alias in SELECT
+// TestFDB_SelectWithColumnAlias — column alias in SELECT
 func TestFDB_SelectWithColumnAlias(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18970,7 +18970,7 @@ func TestFDB_JoinWithWhereOnBothTables(t *testing.T) {
 	})
 }
 
-// TestFDB_EmptyTableOperations — operations on empty table
+// TestFDB_EmptyTableOps — operations on empty table
 func TestFDB_EmptyTableOps(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19153,7 +19153,7 @@ func TestFDB_UnionAllThreeBranches(t *testing.T) {
 	})
 }
 
-// TestFDB_InsertThenUpdateThenVerify — full CRUD cycle
+// TestFDB_CRUDCycle — full CRUD cycle (insert, update, verify)
 func TestFDB_CRUDCycle(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19218,7 +19218,7 @@ func TestFDB_CRUDCycle(t *testing.T) {
 	})
 }
 
-// TestFDB_SumWithWhereAndGroupBy — SUM filtered by WHERE then grouped
+// TestFDB_SumFilteredGrouped — SUM filtered by WHERE then grouped
 func TestFDB_SumFilteredGrouped(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19306,7 +19306,7 @@ func TestFDB_DeleteThenInsertSameKey(t *testing.T) {
 	})
 }
 
-// TestFDB_JoinCountGroupByWithHaving — JOIN + GROUP BY + HAVING COUNT
+// TestFDB_JoinCountGroupByHaving — JOIN + GROUP BY + HAVING COUNT
 func TestFDB_JoinCountGroupByHaving(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19348,7 +19348,7 @@ func TestFDB_JoinCountGroupByHaving(t *testing.T) {
 	})
 }
 
-// TestFDB_LimitZero — LIMIT 0 returns no rows
+// TestFDB_LimitZeroReturnsNothing — LIMIT 0 returns no rows
 func TestFDB_LimitZeroReturnsNothing(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19422,7 +19422,7 @@ func TestFDB_CoalesceThreeColumnFallback(t *testing.T) {
 	})
 }
 
-// TestFDB_OrderByMultipleWithLimit — ORDER BY 3 columns with LIMIT
+// TestFDB_OrderByThreeColumnsLimit — ORDER BY 3 columns with LIMIT
 func TestFDB_OrderByThreeColumnsLimit(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19486,7 +19486,7 @@ func TestFDB_WhereMultipleInPredicates(t *testing.T) {
 	})
 }
 
-// TestFDB_GroupByOrderByCountDesc — GROUP BY with ORDER BY COUNT DESC
+// TestFDB_GroupByOrderByCountDescLimit — GROUP BY with ORDER BY COUNT DESC
 func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19524,7 +19524,7 @@ func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 	})
 }
 
-// TestFDB_JoinSumGroupByWithOrderBySum — JOIN + SUM + GROUP BY + ORDER BY SUM
+// TestFDB_JoinSumGroupOrderSum — JOIN + SUM + GROUP BY + ORDER BY SUM
 func TestFDB_JoinSumGroupOrderSum(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

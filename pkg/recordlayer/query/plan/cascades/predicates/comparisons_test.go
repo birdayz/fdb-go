@@ -374,28 +374,85 @@ func TestComparison_Eval_Like_TypeMismatch(t *testing.T) {
 	}
 }
 
-// STARTS_WITH: string-prefix comparison. Degrades to UNKNOWN on
-// non-string operands (matches numeric type-mismatch behavior).
+// TestComparisonType_IsEquality is a COMPLETE census: every ComparisonType,
+// with the answer taken from Java's `Comparisons.Type` enum declaration rather
+// than from what Go currently returns. The exhaustiveness guard below is the
+// point — the previous version of this test listed 9 of the 24 types, and the
+// one wrong answer in the tree (IN) was inside those 9, blessed as correct.
+// Fifteen types had no pin at all, including every TEXT_CONTAINS_* and both
+// DISTANCE_RANK bounds.
+//
+// Java's true set is exactly the eight types declared with a leading `true`
+// constructor argument: EQUALS, IS_NULL, TEXT_CONTAINS_ALL,
+// TEXT_CONTAINS_ALL_WITHIN, TEXT_CONTAINS_ANY, TEXT_CONTAINS_PHRASE,
+// NOT_DISTINCT_FROM, DISTANCE_RANK_EQUALS. Everything else takes the no-arg
+// constructor, which chains to `this(false)`.
 func TestComparisonType_IsEquality(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		t    ComparisonType
-		want bool
-	}{
-		{ComparisonEquals, true},
-		{ComparisonIn, true},
-		{ComparisonIsNull, true},
-		{ComparisonNotDistinctFrom, true},
-		{ComparisonNotEquals, false},
-		{ComparisonLessThan, false},
-		{ComparisonGreaterThanEq, false},
-		{ComparisonStartsWith, false},
-		{ComparisonIsDistinctFrom, false},
+	// Keyed by type so a missing entry is a compile-visible hole rather than a
+	// silently short list.
+	want := map[ComparisonType]bool{
+		ComparisonEquals:                   true,
+		ComparisonIsNull:                   true,
+		ComparisonNotDistinctFrom:          true,
+		ComparisonTextContainsAll:          true,
+		ComparisonTextContainsAllWithin:    true,
+		ComparisonTextContainsAny:          true,
+		ComparisonTextContainsPhrase:       true,
+		ComparisonDistanceRankEquals:       true,
+		ComparisonNotEquals:                false,
+		ComparisonLessThan:                 false,
+		ComparisonLessThanOrEq:             false,
+		ComparisonGreaterThan:              false,
+		ComparisonGreaterThanEq:            false,
+		ComparisonIsNotNull:                false,
+		ComparisonStartsWith:               false,
+		ComparisonIsDistinctFrom:           false,
+		ComparisonLike:                     false,
+		ComparisonSort:                     false,
+		ComparisonTextContainsPrefix:       false,
+		ComparisonTextContainsAllPrefixes:  false,
+		ComparisonTextContainsAnyPrefix:    false,
+		ComparisonDistanceRankLessThan:     false,
+		ComparisonDistanceRankLessThanOrEq: false,
+		// IN reads like an equality and Java says it is not: `IN,` takes the
+		// no-arg constructor. `x IN (1,2,3)` is a DISJUNCTION of equalities, so a
+		// caller acting on a true here binds one point-lookup key where three are
+		// needed. Go returned true until this census was written, with the old
+		// nine-row table pinning it.
+		ComparisonIn: false,
 	}
-	for _, tc := range cases {
-		if got := tc.t.IsEquality(); got != tc.want {
-			t.Fatalf("%s: got %v, want %v", tc.t.Symbol(), got, tc.want)
+
+	// Exhaustiveness. Without this the table can silently fall behind the enum,
+	// which is exactly how fifteen types came to have no pin. ComparisonEquals is
+	// the first constant (iota) and ComparisonDistanceRankLessThanOrEq the last;
+	// a type added in between lands in the loop and fails here until it is
+	// classified against the Java enum.
+	for c := ComparisonEquals; c <= ComparisonDistanceRankLessThanOrEq; c++ {
+		if _, listed := want[c]; !listed {
+			t.Errorf("ComparisonType %d (%s) is not in the census — classify it against "+
+				"Java's Comparisons.Type declaration before adding it", int(c), c.Symbol())
 		}
+	}
+	if len(want) != int(ComparisonDistanceRankLessThanOrEq)+1 {
+		t.Fatalf("census holds %d types, enum spans %d — the guard above cannot see a type "+
+			"declared outside the iota run", len(want), int(ComparisonDistanceRankLessThanOrEq)+1)
+	}
+
+	trueCount := 0
+	for c, w := range want {
+		if got := c.IsEquality(); got != w {
+			t.Errorf("%s.IsEquality() = %v, want %v (Java's Comparisons.Type)", c.Symbol(), got, w)
+		}
+		if w {
+			trueCount++
+		}
+	}
+	// The size of Java's true set, asserted directly. A change that flipped every
+	// answer the same way would satisfy every row above by construction; this is
+	// the check that does not move with the code under test.
+	if trueCount != 8 {
+		t.Errorf("census marks %d types as equality, Java declares exactly 8", trueCount)
 	}
 }
 
@@ -445,6 +502,8 @@ func TestComparisonType_Negate(t *testing.T) {
 	}
 }
 
+// STARTS_WITH: string-prefix comparison. Degrades to UNKNOWN on
+// non-string operands (matches numeric type-mismatch behavior).
 func TestComparison_Eval_StartsWith(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

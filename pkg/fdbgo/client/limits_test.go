@@ -88,7 +88,7 @@ func TestLargeKey_NearLimit(t *testing.T) {
 	})
 }
 
-// TestEmptyKeyValue tests writing and reading empty key/value combinations.
+// TestEmptyKeyValue_Limits tests writing and reading empty key/value combinations.
 func TestEmptyKeyValue_Limits(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -122,7 +122,7 @@ func TestEmptyKeyValue_Limits(t *testing.T) {
 	})
 }
 
-// TestTransactionSizeLimit verifies that exceeding a client-side transaction
+// TestTransactionSizeLimit_Commit verifies that exceeding a client-side transaction
 // size limit produces error 2101 (transaction_too_large) on commit.
 // Uses SetSizeLimit to configure the limit (FDB's default is 10MB but our
 // client only checks when sizeLimit > 0).
@@ -158,7 +158,7 @@ func TestTransactionSizeLimit_Commit(t *testing.T) {
 	}
 }
 
-// TestGetNonExistentKey verifies that Get on a non-existent key returns nil.
+// TestGetNonExistentKey_Limits verifies that Get on a non-existent key returns nil.
 func TestGetNonExistentKey_Limits(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -176,7 +176,7 @@ func TestGetNonExistentKey_Limits(t *testing.T) {
 	}
 }
 
-// TestGetRangeEmpty verifies that GetRange on an empty range returns empty.
+// TestGetRangeEmpty_Limits verifies that GetRange on an empty range returns empty.
 func TestGetRangeEmpty_Limits(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

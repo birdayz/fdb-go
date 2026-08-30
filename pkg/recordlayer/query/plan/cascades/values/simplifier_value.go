@@ -339,33 +339,135 @@ func simplifyCoalesce(v Value) Value {
 		} else {
 			onlyNulls = false
 			if seenOnlyConstantsSoFar {
-				// Java inserts PromoteValue children before building
-				// COALESCE, so returning the winning constant preserves the
-				// common result carrier. Go records the common type on the
-				// ScalarFunctionValue instead; apply its carrier conversion
-				// here before this rule removes the function wrapper.
-				if constant, isConstant := child.(*ConstantValue); isConstant {
-					return &ConstantValue{
-						Value: coerceNumericResult(constant.Value, sf.Type()),
-						Typ:   sf.Typ,
-					}
+				replacement, replaceable := coalesceReplacementFor(child, sf)
+				if !replaceable {
+					return v
 				}
-				return child
+				return replacement
 			}
 		}
 		newArgs = append(newArgs, child)
 	}
 
 	if onlyNulls {
+		// A NULL result needs no carrier: ScalarFunctionValue.Evaluate
+		// returns before coerceNumericResult when the result is nil, so a
+		// NullValue reproduces the removed node exactly.
 		return &NullValue{Typ: sf.Typ}
 	}
 	if !yieldsNew {
 		return v
 	}
 	if len(newArgs) == 1 {
-		return newArgs[0]
+		// The degenerate exit removes the node just as the winning-constant
+		// exit above does, and owes the same debt. It is the exit where a
+		// RUNTIME value survives: len(newArgs) == 1 together with yieldsNew
+		// implies the survivor is a cannotFoldCoalesce child (a null skipped
+		// here requires removeRedundantNulls, which only a non-constant child
+		// sets, and that child was appended), so anything to be restored has
+		// to be a node in the tree rather than arithmetic on a literal.
+		replacement, replaceable := coalesceReplacementFor(newArgs[0], sf)
+		if !replaceable {
+			return v
+		}
+		return replacement
 	}
 	return &ScalarFunctionValue{FuncName: sf.FuncName, Args: newArgs, Typ: sf.Typ}
+}
+
+// coalesceReplacementFor returns the value that may stand in for a COALESCE
+// node, or replaceable=false to decline the simplification and leave the node
+// alone.
+//
+// A COALESCE node owes its parent TWO things, and dropping the node drops both
+// unless they are put back:
+//
+//   - its declared TYPE, which parents dispatch on. CastValue.Evaluate reads
+//     `c.Child.Type()` to pick a cast rule, and Java's cast table admits
+//     INT->BOOLEAN while rejecting LONG->BOOLEAN. So
+//     `CAST(COALESCE(int_column, CAST(NULL AS BIGINT)) AS BOOLEAN)` is LONG at
+//     the cast and correctly refuses; reduced to the bare INT column it started
+//     answering, which is Go accepting a cast Java rejects.
+//   - its result CARRIER. ScalarFunctionValue.Evaluate post-processes with
+//     coerceNumericResult(result, declaredType), so a DOUBLE-declared COALESCE
+//     hands back a float64. `COALESCE(long_column, CAST(NULL AS DOUBLE))`
+//     reduced to the bare column handed back an int64 — the same number on a
+//     carrier the declared type says it does not have.
+//
+// Java owes neither, and the reason is where the conversion lives: Java wraps
+// every VariadicFunctionValue child in a PromoteValue to the common type at
+// construction, so EvaluateConstantCoalesceRule yielding a child yields the
+// promotion with it. Go records the common type on the function node instead.
+//
+// PromoteValue pays both debts at once, and not merely by resembling the right
+// node: its Type() IS the target, and for every non-UUID target its Evaluate IS
+// coerceNumericResult(child, target) — the same function on the same argument
+// that the removed node applied.
+//
+// The UUID target is where that identity stops holding, and it is REACHABLE
+// rather than theoretical: MaximumType(STRING, UUID) is UUID, so
+// `COALESCE(string_column, uuid_column)` declares UUID over a STRING survivor,
+// and there PromoteValue parses the string into a neutral [16]byte where
+// coerceNumericResult passes it through. Substituting a different conversion is
+// not this rule's call to make, so it declines and the COALESCE stands — which
+// costs a simplification and can never cost an answer.
+//
+// A CONSTANT winner takes the conversion statically instead: folding it now is
+// strictly better than leaving a Promote over a literal for a later pass, and
+// it carries the declared type on the folded literal, so it owes nothing
+// further.
+func coalesceReplacementFor(winner Value, sf *ScalarFunctionValue) (Value, bool) {
+	declared := sf.Type()
+	if constant, isConstant := winner.(*ConstantValue); isConstant {
+		return &ConstantValue{
+			Value: coerceNumericResult(constant.Value, declared),
+			Typ:   sf.Typ,
+		}, true
+	}
+	if sameDeclaredType(winner.Type(), declared) && !carrierConvertingType(declared) {
+		// Nothing to restore: the survivor already presents the node's type,
+		// and the node's own post-processing was the identity.
+		return winner, true
+	}
+	if IsUuid(declared) {
+		return nil, false
+	}
+	return NewPromoteValue(winner, declared), true
+}
+
+// sameDeclaredType compares two types on every axis EXCEPT nullability.
+//
+// Nullability is excluded because ScalarFunctionValue.Type() forces it on
+// (`WithNullability(s.Typ, true)`) whatever the arguments were, so a NOT NULL
+// survivor under a nullable-forced declaration differs on that axis alone and
+// on no other. Wrapping for that difference would add a node whose only effect
+// is to re-assert a nullability the parent already treats as nullable.
+func sameDeclaredType(a, b Type) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return WithNullability(a, true).Equals(WithNullability(b, true))
+}
+
+// carrierConvertingType reports whether coerceNumericResult is anything other
+// than the identity for this type — that is, whether a value reaching it can
+// come out on a different Go carrier than it went in on.
+//
+// It is a statement ABOUT coerceNumericResult, so it is stated here beside it
+// and pinned by TestCarrierConvertingTypeMatchesCoerceNumericResult, which
+// drives every TypeCode through both and fails if the two ever disagree. The
+// alternative — a caller restating "DOUBLE and FLOAT" inline — is a copy that
+// nothing makes track the switch it is copying.
+func carrierConvertingType(t Type) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Code() {
+	case TypeCodeDouble, TypeCodeFloat:
+		return true
+	default:
+		return false
+	}
 }
 
 // cannotFoldCoalesce mirrors Java's EvaluateConstantCoalesceRule.cannotFold:

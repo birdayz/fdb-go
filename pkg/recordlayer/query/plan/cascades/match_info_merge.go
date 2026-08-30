@@ -214,6 +214,21 @@ func mergeComparisonRanges(
 		// The exact-equality case returned above. Any remaining equality pair
 		// is conflicting, and equality/inequality is not representable by
 		// ComparisonRange without a residual.
+		//
+		// Java does not have to reject here. Its ComparisonRange.merge is TOTAL:
+		// MergeResult carries a range plus a residual LIST, so an equality always
+		// wins the range and whatever cannot be pushed down comes back as a filter
+		// predicate. Go's MergeResult carries `Ok bool` and a single `Residual`
+		// that no caller reads, so this rejection propagates through
+		// tryMergeParameterBindings as a LOST MATCH — the index candidate Java
+		// keeps (equality seek + residual filter) is never produced. Wrong plan,
+		// never wrong rows.
+		//
+		// Closing that is an architectural change to the matching infrastructure;
+		// see the ComparisonRange.MergeResult entry in TODO.md for the measured
+		// reachability and the full Java-vs-Go table. The three rejecting arms are
+		// pinned in TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava,
+		// whose failure message says what to REPLACE it with once they are closed.
 		return nil, false
 	}
 

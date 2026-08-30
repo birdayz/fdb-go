@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "predicates",
     srcs = [
+        "comparison_identity.go",
         "comparison_range.go",
         "comparisons.go",
         "compatible_type_evolution_predicate.go",
@@ -38,6 +39,8 @@ go_library(
 go_test(
     name = "predicates_test",
     srcs = [
+        "comparison_algebra_test.go",
+        "comparison_identity_test.go",
         "comparison_range_test.go",
         "comparisons_array_test.go",
         "comparisons_correlation_test.go",
@@ -46,6 +49,7 @@ go_test(
         "distance_rank_transform_test.go",
         "eval_must_test.go",
         "existential_value_predicate_test.go",
+        "explain_fallback_identity_test.go",
         "fuzz_test.go",
         "leaf_query_predicate_test.go",
         "new_predicates_test.go",
@@ -53,8 +57,10 @@ go_test(
         "predicates_equivalence_test.go",
         "predicates_test.go",
         "predrow_test.go",
+        "range_constraints_rebuild_test.go",
         "rebase_fail_closed_test.go",
         "rebase_test.go",
+        "scan_range_classification_test.go",
         "semantic_equals_test.go",
         "semantic_hash_invariant_test.go",
         "simplifier_predicate_values_test.go",
@@ -66,4 +72,15 @@ go_test(
     ],
     embed = [":predicates"],
     deps = ["//pkg/recordlayer/query/plan/cascades/values"],
+)
+
+# keep: staged as `data` for //pkg/docscheck's memo-hash census, which asks a
+# SOURCE question — "does any type here define HashCodeWithoutChildren" — that Go
+# cannot answer at runtime, since an interface's implementations are not
+# enumerable. Without these files staged the census reads an absent directory;
+# its file-count floor is what turns that into a failure instead of a pass.
+filegroup(
+    name = "predicates_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
 )

@@ -433,15 +433,32 @@ func newOrPredicateMatcher() *predicateMatcher[*predicates.OrPredicate] {
 
 // --- NotComparisonRewriteRule --------------------------------------
 
-// NotComparisonRewriteRule pushes a NOT past a ComparisonPredicate
-// whose comparison type has a direct negation: `NOT(x = 5)` →
-// `x <> 5`, `NOT(x IS NULL)` → `x IS NOT NULL`. Leaves
-// `NOT(x IN (...))` and `NOT(x STARTS_WITH 'pre')` alone — those
-// have no direct-negation comparison type.
+// NotComparisonRewriteRule pushes a NOT past a ComparisonPredicate whose
+// comparison type ComparisonType.Negate inverts. Ports Java's
+// NotOverComparisonRule, which is that same table plus this same decline
+// (NotOverComparisonRule.java:71-73 returns on a null inversion).
 //
-// Mirrors Java's predicate-simplification passes that push NOT down
-// to leaves so downstream index-pushdown rules see a canonical
-// leaf-level predicate and don't have to also handle NOT wrappers.
+// What it does NOT rewrite is the half worth stating, because each of these
+// looks like it should and does not — measured by running every one of them
+// through Simplify, and pinned by TestNotComparisonRewrite_CoverageIsJavasTable:
+//
+//	NOT (x IS NULL)                 stays a NotPredicate
+//	NOT (x IS NOT NULL)             stays a NotPredicate
+//	NOT (x <> 5)                    stays a NotPredicate
+//	NOT (x IS DISTINCT FROM 5)      stays a NotPredicate
+//	NOT (x IS NOT DISTINCT FROM 5)  stays a NotPredicate
+//	NOT (x IN (...)), NOT (x STARTS_WITH 'p')   stay NotPredicates
+//
+// The two unary null tests are the trap: each IS the other's negation, and Java
+// still refuses them — `invertComparisonType` opens with
+// `if (type.isUnary()) return null;`. A reader who assumes otherwise goes
+// looking for an `IS NOT NULL` leaf in a plan that has a `NOT` wrapper.
+//
+// What it DOES rewrite is the five Java inverts: `NOT(x = 5)` -> `x <> 5`, and
+// the four ordering comparisons to their complements.
+//
+// The point of pushing a NOT to a leaf at all is that downstream index-pushdown
+// rules then see a canonical leaf comparison rather than a NOT wrapper.
 type NotComparisonRewriteRule struct {
 	matcher matching.BindingMatcher
 }

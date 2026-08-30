@@ -307,7 +307,7 @@ func TestDecodeBytesTagRejectsMalformed(t *testing.T) {
 	}
 }
 
-// TestShuffleIsCollectionsShuffle pins that the non-ordered modes reorder at
+// TestShuffleIsDeterministic pins that the non-ordered modes reorder at
 // all, and do so reproducibly from the seed. Java's default seed is the wall
 // clock, which cannot be reproduced; a stable seed is the only rerunnable
 // choice and this is what keeps it stable.

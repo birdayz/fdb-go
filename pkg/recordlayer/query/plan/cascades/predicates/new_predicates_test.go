@@ -176,9 +176,49 @@ func TestRangeConstraints_AsComparisonRange(t *testing.T) {
 	t.Parallel()
 	c := NewLiteralComparison(ComparisonEquals, int64(42))
 	rc := NewRangeConstraints([]Comparison{c}, nil)
-	cr := rc.AsComparisonRange()
+	cr, ok := rc.AsComparisonRange()
+	if !ok {
+		t.Fatal("a single equality must convert")
+	}
 	if !cr.IsEquality() {
 		t.Fatal("AsComparisonRange should produce equality range")
+	}
+}
+
+// TestRangeConstraints_AsComparisonRangeRefusesToWeaken pins the reason
+// AsComparisonRange reports failure rather than returning a range.
+//
+// Go's MergeResult carries no residual list, so a rejected merge has nowhere to
+// put the conjunct. The loop used to skip it: `x = 5 AND x > 7` came back as
+// `x = 5` — a WEAKER range than the input, with no signal — and a caller
+// filtering on that returns rows the constraints excluded.
+func TestRangeConstraints_AsComparisonRangeRefusesToWeaken(t *testing.T) {
+	t.Parallel()
+
+	rc := NewRangeConstraints([]Comparison{
+		NewLiteralComparison(ComparisonEquals, int64(5)),
+		NewLiteralComparison(ComparisonGreaterThan, int64(7)),
+	}, nil)
+
+	cr, ok := rc.AsComparisonRange()
+	if ok {
+		t.Fatalf("an equality and an inequality on one column cannot be one ComparisonRange, "+
+			"but the conversion reported success with %v — the second conjunct has been "+
+			"dropped and the range is weaker than the constraints it came from", cr)
+	}
+	if cr != nil {
+		t.Error("a refused conversion must return a nil range, so a caller ignoring ok " +
+			"cannot silently use a partial one")
+	}
+
+	// Control: constraints that DO fit still convert, so the refusal above is
+	// about inexpressibility rather than the conversion refusing everything.
+	fits := NewRangeConstraints([]Comparison{
+		NewLiteralComparison(ComparisonGreaterThan, int64(1)),
+		NewLiteralComparison(ComparisonLessThan, int64(9)),
+	}, nil)
+	if converted, ok := fits.AsComparisonRange(); !ok || !converted.IsInequality() {
+		t.Fatalf("two compatible inequalities must convert to one inequality range, ok=%v", ok)
 	}
 }
 

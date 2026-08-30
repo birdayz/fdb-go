@@ -292,9 +292,36 @@ func (p *RecordQueryAggregateIndexPlan) structuralKey() *structuralKey {
 	// different plans; leaving it out would let the memo intern the filtering
 	// scan and the unfiltered one into a single expression and serve whichever
 	// arrived first.
+	//
+	// groupCols and aggColumn are folded for the same reason, and were not.
+	// They are what the executor's aggregateIndexCursor uses to map index entries
+	// onto result rows, so plans differing only in them emit DIFFERENT ROWS from
+	// one identity. GetPhysicalGroupingPrefixCount() covers only their ARITY — it
+	// returns len(groupCols) when the count is not independently known — which is
+	// why differing arity already separated while same-arity different NAMES
+	// collapsed.
+	//
+	// Today's three planner call sites derive both from the match candidate, so
+	// two plans over one index agree on them and the collapse is not reachable
+	// from SQL. WithGroupColumns is a public builder that enforces nothing, the
+	// fold costs two string parts, and the failure mode is serving a different
+	// grouping's rows — so this is guarded rather than argued.
+	//
+	// Three fields stay out, each for its own reason, none of them oversight:
+	// resultValue is a QuantifiedObjectValue whose correlation id is unique per
+	// instance on newPlanExprBaseForType's ERASED-record branch, where folding it
+	// would make every such plan unique and defeat interning (an exact record
+	// type takes the layout branch and gets a deterministic carrier, so the
+	// hazard is branch-specific rather than universal); groupColLayout is derived
+	// from the index's record type (see its field comment — folding it would key
+	// the memo on a type token); resultType is computed by
+	// aggregateIndexOutputType from groupCols, the aggregate function and the
+	// index's key component types, every one of which is already folded here.
 	return newStructuralKey().
 		Str(p.recordTypeName).
 		Str(p.aggregateFunction).
+		Str(p.aggColumn).
+		Strs(p.groupCols).
 		Int(p.GetPhysicalGroupingPrefixCount()).
 		Bool(p.liveGroupsOnly).
 		Sub(p.indexPlan.structuralKey())

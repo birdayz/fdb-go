@@ -20,16 +20,13 @@ func StructurallyEqual(a, b QueryPredicate) bool {
 		if !ok {
 			return false
 		}
-		if ap.Comparison.Type != bp.Comparison.Type {
-			return false
-		}
-		if ap.Comparison.Escape != bp.Comparison.Escape {
-			return false
-		}
 		if !values.ValuesStructurallyEqual(ap.Operand, bp.Operand) {
 			return false
 		}
-		return values.ValuesStructurallyEqual(ap.Comparison.Operand, bp.Comparison.Operand)
+		// Every identity-bearing field of the Comparison, not just Type/Escape/
+		// Operand: two TEXT_CONTAINS_ALL predicates differing only in tokenizer
+		// read different index data and must not compare equal.
+		return comparisonIdentityEqual(ap.Comparison, bp.Comparison)
 	case *ValuePredicate:
 		bp, ok := b.(*ValuePredicate)
 		if !ok {
@@ -47,7 +44,7 @@ func StructurallyEqual(a, b QueryPredicate) bool {
 		if !ok {
 			return false
 		}
-		if ap.Comparison.Type != bp.Comparison.Type {
+		if !comparisonIdentityEqual(ap.Comparison, bp.Comparison) {
 			return false
 		}
 		return values.ValuesStructurallyEqual(ap.Value, bp.Value)

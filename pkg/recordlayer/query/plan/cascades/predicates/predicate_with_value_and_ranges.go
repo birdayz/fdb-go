@@ -1,8 +1,6 @@
 package predicates
 
 import (
-	"fmt"
-	"hash/fnv"
 	"strings"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
@@ -95,7 +93,22 @@ func (p *PredicateWithValueAndRanges) Explain() string {
 			if j > 0 {
 				sb.WriteString(" AND ")
 			}
-			sb.WriteString(fmt.Sprintf("%s %v", c.Type.Symbol(), c.Operand))
+			// ExplainValue, not %v. A Value is an interface over pointer
+			// structs, and fmt renders a NESTED pointer field as a hex
+			// ADDRESS — so `%v` on a comparison operand made this rendering
+			// allocation-dependent. That is not cosmetic here: both
+			// StructurallyEqual and writeSemanticHash fall through to their
+			// default arm for this type and fold Explain(), each documenting it
+			// as a stable structural discriminator. Measured before the fix:
+			// two independently built but structurally identical predicates
+			// over a field reference rendered
+			//   "1 IN {> &{A LONG NULL 0x3df9bb6a0450 0x3df9bb6a04b0 ...}}"
+			// with different addresses, and compared unequal and hashed apart
+			// under BOTH mechanisms. Two identical sargables would not share a
+			// memo bucket, and the hash would differ across processes.
+			sb.WriteString(c.Type.Symbol())
+			sb.WriteString(" ")
+			sb.WriteString(values.ExplainValue(c.Operand))
 		}
 		if len(comps) == 0 {
 			sb.WriteString("*")
@@ -119,14 +132,5 @@ func (p *PredicateWithValueAndRanges) IsCompileTime() bool {
 func (p *PredicateWithValueAndRanges) Children() []QueryPredicate { return nil }
 
 func (p *PredicateWithValueAndRanges) Eval(_ any) (TriBool, error) { return TriUnknown, nil }
-
-func (p *PredicateWithValueAndRanges) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("predwithvalueandranges|"))
-	if p.value != nil {
-		h.Write([]byte(values.ExplainValue(p.value)))
-	}
-	return h.Sum64()
-}
 
 var _ QueryPredicate = (*PredicateWithValueAndRanges)(nil)

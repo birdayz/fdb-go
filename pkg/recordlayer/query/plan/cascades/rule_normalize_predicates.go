@@ -9,8 +9,13 @@ import (
 // NormalizePredicatesRule converts the predicates of a SelectExpression
 // into conjunctive normal form (CNF) — AND of ORs. The normalised
 // predicates are set as the new predicate list on a freshly yielded
-// SelectExpression (quantifiers are rebuilt with new aliases pointing
-// at the same References).
+// SelectExpression carrying the SAME quantifier values, passed through
+// verbatim (OnMatch's sel.GetQuantifiers()).
+//
+// That verbatim pass-through is load-bearing, not incidental, and this comment
+// used to say the opposite — "quantifiers are rebuilt with new aliases". It is
+// what makes Reference.Insert's pointer-identity fast path hit on a re-fire,
+// which is half of why this rule needs no memory of what it has already seen.
 //
 // Ports Java's NormalizePredicatesRule which is the precursor to
 // PredicateToLogicalUnionRule. The CNF form makes each OR clause
@@ -30,15 +35,37 @@ import (
 //
 // Mirrors Java's BooleanPredicateNormalizer in CNF mode with a
 // default size limit of 1,000,000.
+// TERMINATION is algebraic, not bookkept. The rule used to carry an
+// identity-keyed set of SelectExpressions it had already fired on; Java has no
+// counterpart, because its termination falls out of isInNormalForm accepting
+// the rule's OWN output, so a re-fire returns Optional.empty(). RFC-240's
+// strict normal-form test gives Go the same property —
+// TestNormalizeCNF_IsStableOnItsOwnOutput is that assertion, and it is Java's
+// (BooleanPredicateNormalizerTest.java:262-267, "Normalized form should be
+// stable").
+//
+// Declining is only half of why the set was unnecessary; the other half is that
+// a re-fire must COST nothing rather than accumulate a duplicate member. Two
+// mechanisms, in order:
+//
+//   - Reference.Insert dedups on EqualsWithoutChildren plus sameChildReferences
+//     (expressions/reference.go:654), with a SemanticEquals fallback below it
+//     for the fresh-Reference case. The pointer-identity tier is the one that
+//     hits here, and only because OnMatch passes sel.GetQuantifiers() verbatim.
+//   - A deduped yield then schedules NOTHING: unified_tasks.go:492's
+//     `if !inserted[i] { continue }` skips the follow-on exploration task. That
+//     is where the cost actually goes to zero; the dedup alone would still
+//     re-walk.
+//
+// Together they are the Go analogue of Java's memo dedup, which is what the set
+// was standing in for.
 type NormalizePredicatesRule struct {
-	matcher    matching.BindingMatcher
-	normalized map[*expressions.SelectExpression]struct{}
+	matcher matching.BindingMatcher
 }
 
 func NewNormalizePredicatesRule() *NormalizePredicatesRule {
 	return &NormalizePredicatesRule{
-		matcher:    NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates"),
-		normalized: make(map[*expressions.SelectExpression]struct{}),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates"),
 	}
 }
 
@@ -48,10 +75,6 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 	preds := sel.GetPredicates()
 	if len(preds) == 0 {
-		return
-	}
-
-	if _, seen := r.normalized[sel]; seen {
 		return
 	}
 
@@ -84,162 +107,7 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 		call.Fail(err)
 		return
 	}
-	r.normalized[sel] = struct{}{}
-	r.normalized[result] = struct{}{}
 	call.Yield(result)
-}
-
-// cnfSizeLimit is the maximum number of terms in the outer AND of the
-// CNF before the normalizer gives up. Mirrors Java's
-// BooleanPredicateNormalizer.DEFAULT_SIZE_LIMIT.
-const cnfSizeLimit = 1_000_000
-
-// normalizeCNF converts a predicate to conjunctive normal form (CNF).
-// Returns (result, true) if a transformation was applied, or
-// (original, false) if the predicate is already in CNF or the
-// normalised form would exceed sizeLimit.
-//
-// CNF: the outer connective is AND, each child is either a leaf or an
-// OR of leaves. The transformation distributes OR over AND:
-//
-//	A OR (B AND C) -> (A OR B) AND (A OR C)
-//
-// The implementation uses the list-of-lists intermediate form from
-// Java's BooleanPredicateNormalizer: a list (to be AND'd) of lists
-// (to be OR'd).
-func normalizeCNF(pred predicates.QueryPredicate, sizeLimit int) (predicates.QueryPredicate, bool) {
-	if isInCNF(pred) {
-		return pred, false
-	}
-	size := cnfSize(pred)
-	if size > int64(sizeLimit) {
-		return pred, false
-	}
-
-	normalized := toCNFNormalized(pred)
-	absorbed := applyAbsorption(normalized)
-
-	// Reconstruct: AND of ORs.
-	andChildren := make([]predicates.QueryPredicate, 0, len(absorbed))
-	for _, orList := range absorbed {
-		andChildren = append(andChildren, buildOr(orList))
-	}
-	result := buildAnd(andChildren)
-	return result, true
-}
-
-// isInCNF checks whether a predicate is already in conjunctive normal
-// form. CNF means: the top is an AND (or a leaf), each AND-child is
-// an OR of leaves (or a leaf). "Leaf" means not AND or OR.
-func isInCNF(pred predicates.QueryPredicate) bool {
-	if isLeafPredicate(pred) {
-		return true
-	}
-	switch p := pred.(type) {
-	case *predicates.AndPredicate:
-		for _, child := range p.SubPredicates {
-			if isLeafPredicate(child) {
-				continue
-			}
-			or, ok := child.(*predicates.OrPredicate)
-			if !ok {
-				return false
-			}
-			for _, orChild := range or.SubPredicates {
-				if !isLeafPredicate(orChild) {
-					return false
-				}
-			}
-		}
-		return true
-	case *predicates.OrPredicate:
-		for _, child := range p.SubPredicates {
-			if !isLeafPredicate(child) {
-				return false
-			}
-		}
-		return true
-	default:
-		return true
-	}
-}
-
-// isLeafPredicate returns true for predicates that are not AND/OR.
-func isLeafPredicate(pred predicates.QueryPredicate) bool {
-	switch pred.(type) {
-	case *predicates.AndPredicate, *predicates.OrPredicate:
-		return false
-	default:
-		return true
-	}
-}
-
-// cnfSize estimates the size of the CNF form. Size is the number of
-// terms in the outer AND. For an OR of N AND-children with sizes
-// s1..sN, the CNF size is s1 * s2 * ... * sN (cross-product).
-// For an AND, it's the sum of children's sizes.
-func cnfSize(pred predicates.QueryPredicate) int64 {
-	switch p := pred.(type) {
-	case *predicates.AndPredicate:
-		var sum int64
-		for _, child := range p.SubPredicates {
-			sum = saturatingAddSize(sum, cnfSize(child))
-		}
-		return sum
-	case *predicates.OrPredicate:
-		var product int64 = 1
-		for _, child := range p.SubPredicates {
-			product = saturatingMulSize(product, cnfSize(child))
-		}
-		return product
-	case *predicates.NotPredicate:
-		return cnfSize(p.Child)
-	default:
-		return 1
-	}
-}
-
-// toCNFNormalized converts a predicate to the list-of-lists form
-// for CNF: list (AND) of lists (OR) of leaf predicates.
-func toCNFNormalized(pred predicates.QueryPredicate) [][]predicates.QueryPredicate {
-	switch p := pred.(type) {
-	case *predicates.AndPredicate:
-		// AND flattens: AND(A, B) -> concat of normalised children.
-		var result [][]predicates.QueryPredicate
-		for _, child := range p.SubPredicates {
-			result = append(result, toCNFNormalized(child)...)
-		}
-		return result
-	case *predicates.OrPredicate:
-		// OR distributes: cross-product of children's CNF forms.
-		return orToCNF(p.SubPredicates)
-	default:
-		// Leaf or NOT: single-element outer, single-element inner.
-		return [][]predicates.QueryPredicate{{pred}}
-	}
-}
-
-// orToCNF computes the cross-product distribution of OR-children's
-// CNF forms. OR(A AND B, C) with CNF(A AND B) = [[A],[B]] and
-// CNF(C) = [[C]] produces [[A,C],[B,C]].
-func orToCNF(children []predicates.QueryPredicate) [][]predicates.QueryPredicate {
-	// Start with a single empty clause.
-	cross := [][]predicates.QueryPredicate{{}}
-
-	for _, child := range children {
-		childNorm := toCNFNormalized(child)
-		var newCross [][]predicates.QueryPredicate
-		for _, right := range childNorm {
-			for _, left := range cross {
-				combined := make([]predicates.QueryPredicate, 0, len(left)+len(right))
-				combined = append(combined, left...)
-				combined = append(combined, right...)
-				newCross = append(newCross, combined)
-			}
-		}
-		cross = newCross
-	}
-	return cross
 }
 
 // applyAbsorption implements the absorption law on the CNF
@@ -267,9 +135,18 @@ func applyAbsorption(clauses [][]predicates.QueryPredicate) [][]predicates.Query
 			if i == j {
 				continue
 			}
-			// ci is absorbed if cj is a subset of ci (and ci is strictly larger,
-			// or same size with i > j to break ties).
-			if len(ci) > len(cj) || (len(ci) == len(cj) && i > j) {
+			// ci is absorbed if cj is a subset of ci and ci is strictly
+			// larger — or the two are the same size, where the tie-break
+			// decides which of two IDENTICAL clauses survives (equal size
+			// plus containsAll means equal sets, so this arm can mean
+			// nothing else).
+			//
+			// The tie-break is `i < j`, Java's (:461), and it is not
+			// arbitrary: it decides the surviving clause's POSITION, and
+			// position is the emitted child order. On `[A, X, A]`, `i < j`
+			// drops the first A and yields `[X, A]`; `i > j` drops the last
+			// and yields `[A, X]`. Go had the second.
+			if len(ci) > len(cj) || (len(ci) == len(cj) && i < j) {
 				if predicateSliceContainsAll(ci, cj) {
 					absorbed = true
 					break
@@ -344,127 +221,6 @@ func buildOr(preds []predicates.QueryPredicate) predicates.QueryPredicate {
 	default:
 		return &predicates.OrPredicate{SubPredicates: preds}
 	}
-}
-
-// NormalizeDNF converts a predicate to disjunctive normal form (DNF).
-// Returns (result, true) if a transformation was applied, or
-// (original, false) if the predicate is already in DNF or the
-// normalised form would exceed sizeLimit.
-//
-// DNF: the outer connective is OR, each child is either a leaf or an
-// AND of leaves. The transformation distributes AND over OR:
-//
-//	A AND (B OR C) -> (A AND B) OR (A AND C)
-//
-// Mirrors Java's BooleanPredicateNormalizer with Mode.DNF.
-func NormalizeDNF(pred predicates.QueryPredicate, sizeLimit int) (predicates.QueryPredicate, bool) {
-	if isInDNF(pred) {
-		return pred, false
-	}
-	size := dnfSize(pred)
-	if size > int64(sizeLimit) {
-		return pred, false
-	}
-
-	normalized := toDNFNormalized(pred)
-	absorbed := applyAbsorption(normalized)
-
-	orChildren := make([]predicates.QueryPredicate, 0, len(absorbed))
-	for _, andList := range absorbed {
-		orChildren = append(orChildren, buildAnd(andList))
-	}
-	result := buildOr(orChildren)
-	return result, true
-}
-
-func isInDNF(pred predicates.QueryPredicate) bool {
-	if isLeafPredicate(pred) {
-		return true
-	}
-	switch p := pred.(type) {
-	case *predicates.OrPredicate:
-		for _, child := range p.SubPredicates {
-			if isLeafPredicate(child) {
-				continue
-			}
-			and, ok := child.(*predicates.AndPredicate)
-			if !ok {
-				return false
-			}
-			for _, andChild := range and.SubPredicates {
-				if !isLeafPredicate(andChild) {
-					return false
-				}
-			}
-		}
-		return true
-	case *predicates.AndPredicate:
-		for _, child := range p.SubPredicates {
-			if !isLeafPredicate(child) {
-				return false
-			}
-		}
-		return true
-	default:
-		return true
-	}
-}
-
-// dnfSize estimates the size of the DNF form. For an AND of OR-children
-// with sizes s1..sN, the DNF size is s1 * s2 * ... * sN (cross-product).
-// For an OR, it's the sum of children's sizes.
-func dnfSize(pred predicates.QueryPredicate) int64 {
-	switch p := pred.(type) {
-	case *predicates.OrPredicate:
-		var sum int64
-		for _, child := range p.SubPredicates {
-			sum = saturatingAddSize(sum, dnfSize(child))
-		}
-		return sum
-	case *predicates.AndPredicate:
-		var product int64 = 1
-		for _, child := range p.SubPredicates {
-			product = saturatingMulSize(product, dnfSize(child))
-		}
-		return product
-	case *predicates.NotPredicate:
-		return dnfSize(p.Child)
-	default:
-		return 1
-	}
-}
-
-func toDNFNormalized(pred predicates.QueryPredicate) [][]predicates.QueryPredicate {
-	switch p := pred.(type) {
-	case *predicates.OrPredicate:
-		var result [][]predicates.QueryPredicate
-		for _, child := range p.SubPredicates {
-			result = append(result, toDNFNormalized(child)...)
-		}
-		return result
-	case *predicates.AndPredicate:
-		return andToDNF(p.SubPredicates)
-	default:
-		return [][]predicates.QueryPredicate{{pred}}
-	}
-}
-
-func andToDNF(children []predicates.QueryPredicate) [][]predicates.QueryPredicate {
-	cross := [][]predicates.QueryPredicate{{}}
-	for _, child := range children {
-		childNorm := toDNFNormalized(child)
-		var newCross [][]predicates.QueryPredicate
-		for _, right := range childNorm {
-			for _, left := range cross {
-				combined := make([]predicates.QueryPredicate, 0, len(left)+len(right))
-				combined = append(combined, left...)
-				combined = append(combined, right...)
-				newCross = append(newCross, combined)
-			}
-		}
-		cross = newCross
-	}
-	return cross
 }
 
 // andConjuncts extracts the top-level AND children from a predicate.

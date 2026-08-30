@@ -106,9 +106,16 @@ func (c ComparisonType) IsUnary() bool {
 // `Comparisons.Type.isEquality()` — useful for index-pushdown
 // decisions (equality predicates can use point-lookups; inequality
 // needs ranges).
+//
+// IN is deliberately NOT an equality, matching Java's `IN,` — declared with the
+// no-arg constructor, which chains to `this(false)`. It reads like one, and that
+// is the trap: `x IN (1,2,3)` is a DISJUNCTION of equalities, so a caller acting
+// on a true here would bind a single point-lookup key for a predicate that needs
+// three. Java agrees twice over — `ScanComparisons.getComparisonType(IN)` falls
+// to the `default: NONE` arm, so IN is not a scan bound at all.
 func (c ComparisonType) IsEquality() bool {
 	switch c {
-	case ComparisonEquals, ComparisonIn, ComparisonIsNull, ComparisonNotDistinctFrom,
+	case ComparisonEquals, ComparisonIsNull, ComparisonNotDistinctFrom,
 		ComparisonTextContainsAll, ComparisonTextContainsAllWithin,
 		ComparisonTextContainsAny, ComparisonTextContainsPhrase,
 		ComparisonDistanceRankEquals:
@@ -117,19 +124,35 @@ func (c ComparisonType) IsEquality() bool {
 	return false
 }
 
-// Negate returns the comparison type whose truth table is the logical
-// negation of this one, plus a flag indicating whether a negation is
-// known. `!(a = b)` → `a <> b`, `!(a IS NULL)` → `a IS NOT NULL`,
-// etc. Used by the NOT-over-Comparison rewrite rules when pushing
-// NOTs down past a leaf comparison.
+// Negate returns the comparison type whose truth table is the logical negation
+// of this one, plus a flag indicating whether a negation is known. Used by the
+// NOT-over-Comparison rewrite rule when pushing a NOT down past a leaf
+// comparison.
 //
-// IN / STARTS_WITH have no direct negation operator — the caller
-// should wrap in NotPredicate.
-// Negate returns the logical negation of the comparison operator, matching
-// Java's Comparisons.invertComparisonType(). Only binary inequality/equality
-// operators are invertible. Unary operators (IS_NULL, IS_NOT_NULL),
-// NOT_EQUALS, and DISTINCT variants return (c, false) — Java explicitly
-// rejects these.
+// It is Java's Comparisons.invertComparisonType (Comparisons.java:705-723) and
+// nothing more, which means the DECLINES are the interesting half and they are
+// enumerated rather than characterised:
+//
+//	EQUALS                 -> NOT_EQUALS       inverted
+//	LESS_THAN              -> GREATER_THAN_OR_EQUALS
+//	LESS_THAN_OR_EQUALS    -> GREATER_THAN
+//	GREATER_THAN           -> LESS_THAN_OR_EQUALS
+//	GREATER_THAN_OR_EQUALS -> LESS_THAN
+//
+// Everything else declines, and four of those declines are worth naming because
+// a negation plainly EXISTS for them and is still not returned:
+//
+//   - IS NULL / IS NOT NULL. Java's first line is `if (type.isUnary()) return
+//     null;`, so the unary null tests are refused before the switch is reached
+//     — even though each is the other's exact negation.
+//   - NOT_EQUALS. EQUALS inverts to it and it does not invert back; Java's
+//     switch simply has no NOT_EQUALS arm.
+//   - IS DISTINCT FROM / IS NOT DISTINCT FROM, likewise absent from the switch.
+//
+// These are not oversights to be closed here. This function is a 1:1 port and
+// its result feeds a rewrite that changes what the planner's downstream rules
+// see; widening it beyond Java would make Go's canonical predicate shape differ
+// from Java's for the same query.
 func (c ComparisonType) Negate() (ComparisonType, bool) {
 	switch c {
 	case ComparisonEquals:
