@@ -298,6 +298,7 @@ go_test(
         "main_test.go",
         "match_candidate_index_test.go",
         "match_info_constant_pullup_test.go",
+        "match_info_merge_ranges_test.go",
         "match_info_merge_test.go",
         "match_info_test.go",
         "match_max_match_map_test.go",
@@ -1134,6 +1135,7 @@ go_test(
         "normal_form_size_test.go",
         "normal_form_java_oracle_test.go",
         "normalize_entry_points.go",
+        "match_info_merge_ranges_test.go",
     ],
     deps = [
         "//gen",

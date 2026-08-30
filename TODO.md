@@ -20669,3 +20669,70 @@ produced exactly that on `winner_lookup_test.go:353`, where the body describes
 DONE when: the detector reports zero, every fix was made by reading the function
 rather than by pattern, and either the detector is a docscheck gate at a zero
 floor or there is a recorded reason it cannot be.
+
+---
+
+## ComparisonRange.MergeResult drops Java's residual LIST, so every caller fails closed
+
+STOP-level, needs the query-engine gate: this is an architectural change to the
+matching infrastructure, so it needs an RFC with a Graefe + Torvalds ACK before
+implementation, not a drive-by fix. Recording it here with the measurements in
+hand rather than starting the port unreviewed.
+
+**The divergence.** Java's `ComparisonRange.merge(Comparison)` is TOTAL — it
+never fails. Its `MergeResult` carries a range plus a residual LIST, and the rule
+is that equality always wins and nothing is ever dropped:
+
+| case | Java | Go |
+|---|---|---|
+| NONE-type (NOT_EQUALS, IN, LIKE, TEXT_*, IS_DISTINCT_FROM) | residual, range untouched | pushed into the range as an INEQUALITY |
+| Equality + INEQUALITY | keeps the equality range, residualises the inequality | `Ok=false`, `Range=nil` |
+| Equality + EQUALITY (different) | keeps the range, residualises the incoming | `Ok=false`, `Range=nil` |
+| Inequality + INEQUALITY (duplicate) | dedups (`inequalityComparisons.contains`) | appends the duplicate |
+| Inequality + EQUALITY | becomes Equality(new), old inequalities residual | `Ok=false`, `Range=nil` |
+
+Go's `predicates.MergeResult` has `Ok bool` and a SINGLE `Residual`, and no
+caller in the tree reads `Residual` at all — so the residual channel exists in
+name only. Every caller therefore fails closed where Java pushes the equality
+down and keeps the rest as a filter. `mergeComparisonRanges` states the gap in
+its own comment: "equality/inequality is not representable by ComparisonRange
+without a residual." That is the standing admission that the residual list is
+the real answer.
+
+**Consequence.** `tryMergeParameterBindings` turns a rejection into a LOST
+MATCH: where two child branches bind the same parameter alias with an equality
+and an inequality, the index candidate Java would keep — an equality seek plus a
+residual filter — is not produced at all. Wrong plans, never wrong rows; the
+rejected predicate is not silently dropped on any live path.
+
+**Reachability, measured, not assumed.** Instrumented all three arms of
+`Merge` and ran 10940 tests (cascades + relational/core + plan/plans, `-count=1
+-v`, stderr captured to a file because `go test` swallows it for passing
+packages):
+
+- 202 hits on the Empty arm. The only NONE-type to reach it was
+  TEXT_CONTAINS_ALL, 3 times, all from the `textRange` helper in
+  `f21_comparand_identity_test.go` deliberately building a text range — no
+  planner path.
+- 19 hits on the non-empty arms, every one from `ComparisonRange`'s own unit
+  tests plus `TestNullRejectedByScanRange_*`.
+
+So all five divergences are LATENT today. That is a reason to fix them before
+something reaches them, not a reason to leave them: the arms are untested
+precisely because nothing exercises them.
+
+**Pinned meanwhile.** `mergeComparisonRanges` had NO test of any kind. It now
+has `match_info_merge_ranges_test.go`: the agreeing arms, plus
+`TestMergeComparisonRanges_EqualityInequalityRejectsUnlikeJava`, which pins the
+three rejecting arms and says in its failure message that closing the divergence
+means REPLACING it with an assertion that the equality survives and the rest
+comes back as a residual — never deleting it. The dedup claim in that file is
+mutation-verified: disabling the dedup loop makes the overlapping union report 3
+comparisons instead of 2.
+
+- [ ] Write the RFC for porting Java's total `MergeResult` (range + residual
+  list) and threading residuals through `PredicateMapping`/`MatchInfo` so a
+  partial match can carry them as filter predicates. Get the Graefe + Torvalds
+  ACK on the RFC, then implement, then the impl lap. The shape-only port (change
+  the struct, keep every caller failing closed when residuals are non-empty) is
+  NOT worth landing alone — it ships the API churn without the plans.
