@@ -324,7 +324,15 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
-			defer wg.Done()
+			// DRAIN on every exit path -- see the same guard in
+			// excluded_shape_hunt_fdb_test.go. A worker returning early on a
+			// setup failure stops reading `seeds`; if all of them do, the
+			// producer blocks until the Go test timeout kills the run.
+			defer func() {
+				for range seeds {
+				}
+				wg.Done()
+			}()
 			ctx := context.Background()
 			setupDB, err := sql.Open("fdbsql", "fdbsql:///__SYS?cluster_file="+clusterFilePath+"&schema=CATALOG")
 			if err != nil {
@@ -428,6 +436,14 @@ func equivSeed(ctx context.Context, t *testing.T, setupDB *sql.DB, dbPath string
 		fmt.Sprintf("CREATE SCHEMA %s/%s WITH TEMPLATE %s", dbPath, schema, tmpl),
 	} {
 		if _, err := setupDB.ExecContext(ctx, stmt); err != nil {
+			// Setup failures were SILENT here: equivSeed took a *testing.T
+			// and never used it, so a seed whose schema never got created
+			// returned an empty result and vanished into the totals. A hunt
+			// where every seed failed setup would have reported
+			// `compared=0 findings=0` and passed its own vacuity floor only
+			// by luck. huntSeed in the plan-diversity harness reports these;
+			// this one did not.
+			t.Errorf("seed %d: setup %q: %v", seed, stmt, err)
 			return res
 		}
 	}
@@ -436,15 +452,18 @@ func equivSeed(ctx context.Context, t *testing.T, setupDB *sql.DB, dbPath string
 
 	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql://%s?cluster_file=%s&schema=%s", dbPath, clusterFilePath, schema))
 	if err != nil {
+		t.Errorf("seed %d: open: %v", seed, err)
 		return res
 	}
 	defer db.Close()
 	conn, err := db.Conn(ctx)
 	if err != nil {
+		t.Errorf("seed %d: conn: %v", seed, err)
 		return res
 	}
 	defer conn.Close() //nolint:errcheck
 	if _, err := conn.ExecContext(ctx, c.InsertSQL()); err != nil {
+		t.Errorf("seed %d: insert: %v", seed, err)
 		return res
 	}
 

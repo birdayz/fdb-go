@@ -139,7 +139,21 @@ func TestFDB_QOVBindingMinimalShape(t *testing.T) {
 					q := fmt.Sprintf(
 						"SELECT l.id AS l_id, r.id AS r_id FROM t_rd AS l %s JOIN t_rd AS r ON l.id = r.a WHERE %s.%s IN %s",
 						join, alias, col, inList(col, dup))
-					matrix = append(matrix, arm{join, alias, col, dup, isQOVBindingError(qovExec(ctx, conn, q))})
+					// A NON-QOV error must not be read as "this arm is clean".
+					//
+					// isQOVBindingError answers false for every error that is
+					// not the binding failure, so folding the result straight
+					// into the matrix made a type error, a syntax error or an
+					// infrastructure failure indistinguishable from a query
+					// that ran and returned rows. Twenty-four arms could fail
+					// for unrelated reasons and this matrix would report a
+					// clean engine.
+					err := qovExec(ctx, conn, q)
+					if err != nil && !isQOVBindingError(err) {
+						t.Errorf("%s JOIN, %s.%s, dup=%v: failed for a DIFFERENT reason, so this arm "+
+							"proves nothing about the QOV defect: %v", join, alias, col, dup, err)
+					}
+					matrix = append(matrix, arm{join, alias, col, dup, isQOVBindingError(err)})
 				}
 			}
 		}

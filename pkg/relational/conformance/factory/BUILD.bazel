@@ -64,6 +64,33 @@ go_test(
     # so it needs the corpus the sibling package owns.
     data = ["//pkg/relational/conformance/factorycorpus:testdata"],
     embed = [":factory"],
+    # keep: the hunts read their seed range, worker count and wall-clock budget
+    # from the environment, and Bazel does NOT pass the ambient environment into
+    # a test. Without declaring them here, every `HUNT_BUDGET=… bazelisk test`
+    # instruction in those files is silently ignored and the hunt runs its
+    # 25-to-40-seed default — a green that answers a question nobody asked.
+    #
+    # Declared empty so the default still applies when the operator passes
+    # nothing; `--test_env=NAME=value` then overrides. gazelle preserves this
+    # block because of the `keep` directive above.
+    env = {
+        "HUNT_BUDGET": "",
+        "HUNT_SEED_START": "",
+        "HUNT_SEEDS": "",
+        "HUNT_WORKERS": "",
+        "EXCL_SEED_START": "",
+        "EXCL_SEEDS": "",
+        "EXCL_WORKERS": "",
+        "FULL_SEED_START": "",
+        "FULL_SEEDS": "",
+        "FULL_WORKERS": "",
+        "NEST_SEED_START": "",
+        "NEST_SEEDS": "",
+        "NEST_WORKERS": "",
+        "EQUIV_SEED_START": "",
+        "EQUIV_SEEDS": "",
+        "EQUIV_WORKERS": "",
+    },
     tags = [
         "exclusive",
         "resources:memory:3300",

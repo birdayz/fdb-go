@@ -45,6 +45,18 @@ var wantIneligible = map[string]int{
 }
 
 // allIneligible reports EVERY reason a query is TLP-ineligible.
+//
+// IT IS A DESCRIPTION, NOT THE DECISION. tlpEligible (candidate.go) is the
+// production filter and the only thing that decides what the corpus can hold;
+// this function exists solely to break its verdict into named classes, because
+// tlpEligible returns one bool and "52.3% refused" is not actionable without
+// knowing which 52.3%.
+//
+// The two are tied together by an assertion in the census loop below, and that
+// tie is the whole point. Without it this is a hand-copied replica: deleting
+// the `q.Union != nil` arm from the PRODUCTION filter left the census GREEN,
+// so the "mutation-verified" claim made for this test had verified the test's
+// own copy of the rule. A census that pins a replica pins nothing.
 func allIneligible(q rowdiff.Query) []string {
 	var out []string
 	if q.Where == nil {
@@ -79,10 +91,35 @@ func TestEligibilityCensus(t *testing.T) {
 		c := rowdiff.Generate(seed)
 		for _, q := range c.Queries {
 			total++
-			cls := allIneligible(q)
-			if len(cls) == 0 {
+			// THE PRODUCTION FILTER decides. tlpEligible is what
+			// factory.Candidates actually calls, so it is what this census
+			// must count — anything else measures a copy.
+			elig := tlpEligible(q)
+			if elig {
 				eligible++
 			}
+			cls := allIneligible(q)
+			// And the class breakdown must AGREE with it. This is what makes
+			// the breakdown a description of the real filter rather than a
+			// second implementation of it: mutate tlpEligible and this fires
+			// on the first query where the two disagree.
+			if elig != (len(cls) == 0) {
+				t.Fatalf("query %d: tlpEligible=%v but the class breakdown says %v — the census's "+
+					"named classes have drifted from the production filter, so every count below "+
+					"describes a replica", total, elig, cls)
+			}
+			// WHAT THIS TIE CANNOT CATCH, stated because discovering it later
+			// would look like the tie failing. It detects a mutation only where
+			// the mutated arm is the SOLE reason some query is ineligible.
+			// Removing `q.Union != nil` from tlpEligible leaves this test green:
+			// over seeds 1..4000 every union query the generator emits is
+			// already ineligible for another reason (it carries no WHERE, or an
+			// aggregate), so the arm is never the deciding one and deleting it
+			// changes no verdict. Removing `q.Distinct` DOES fire, immediately.
+			//
+			// That is a fact about the generator's shape mix, not a hole in the
+			// tie — but it means "mutation-verified" for this test is a claim
+			// about the arms that are reachable, and `union` is not one of them.
 			for _, r := range cls {
 				reasons[r]++
 			}

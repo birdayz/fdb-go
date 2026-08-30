@@ -273,16 +273,43 @@ func TestFDB_PlanDiversityHunt(t *testing.T) {
 	if total.queries == 0 {
 		t.Fatal("HUNT VACUOUS: zero queries generated")
 	}
-	if total.moved == 0 {
-		t.Fatal("HUNT VACUOUS: no perturbation ever changed a plan — the option is not reaching the planner")
+	// `moved` and `executed` CANNOT reach zero and so cannot be floors.
+	//
+	// The three alwaysExecute levers increment both unconditionally, once per
+	// query, without any plan having moved — so `total.moved` gains +3 per
+	// query no matter what the planner does. A floor at zero on a counter that
+	// is structurally non-zero is a guard that cannot fire, which is the same
+	// defect this file already fixed once in the shape hunts.
+	//
+	// The quantity actually worth flooring is whether the DISABLED-RULE
+	// PERTURBATIONS moved any plan. If OptDisabledPlannerRules stopped reaching
+	// the planner, every rule arm would silently agree with the baseline and
+	// the old floors would still pass.
+	ruleMoved := 0
+	for _, p := range portfolio {
+		if !p.alwaysExecute {
+			ruleMoved += total.movedBy[p.name]
+		}
 	}
-	if total.executed == 0 {
-		t.Fatal("HUNT VACUOUS: no perturbed plan was ever executed")
+	if ruleMoved == 0 {
+		t.Fatal("HUNT VACUOUS: no RULE perturbation ever changed a plan — OptDisabledPlannerRules is " +
+			"not reaching the planner, so every rule arm's agreement is vacuous")
 	}
 	// The continuation oracle is alwaysExecute, so its silence can only mean
-	// "never ran". Floor it independently of the plan perturbations.
+	// "never ran". Floored separately for that reason.
 	if total.movedBy["exec:scan-rows-1"] == 0 {
 		t.Fatal("HUNT VACUOUS: the forced-continuation oracle executed zero queries")
+	}
+	// Planning errors were counted and never asserted — ten lines below a
+	// comment arguing that filing EXECUTION errors in a counter is a defect.
+	// A perturbation that can no longer plan anything is the planner-side twin
+	// of that, so it gets the same treatment: an allowlisted class is expected,
+	// anything else is reported.
+	for name, n := range total.planErrs {
+		if n > 0 && total.movedBy[name] == 0 {
+			t.Errorf("HUNT: perturbation %q failed to PLAN %d times and never once moved a plan — "+
+				"it contributes no oracle at all, so its silence is not agreement", name, n)
+		}
 	}
 	if len(total.findings) > 0 {
 		t.Fatalf("HUNT: %d findings", len(total.findings))

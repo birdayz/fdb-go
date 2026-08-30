@@ -218,7 +218,18 @@ func runShapeHuntGen(
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
-			defer wg.Done()
+			// DRAIN on every exit path. A worker that returns early on a
+			// setup failure stops reading `seeds`, and if every worker does
+			// so the producer blocks on an unbuffered send until the Go test
+			// timeout kills the process -- which is precisely the
+			// panic-instead-of-report ending the wall-clock budget was added
+			// to eliminate. Draining turns a dead worker into a fast, honest
+			// `walked=N` report instead of a hang.
+			defer func() {
+				for range seeds {
+				}
+				wg.Done()
+			}()
 			setupDB, err := sql.Open("fdbsql", "fdbsql:///__SYS?cluster_file="+clusterFilePath+"&schema=CATALOG")
 			if err != nil {
 				t.Errorf("worker %d: open sys: %v", w, err)
