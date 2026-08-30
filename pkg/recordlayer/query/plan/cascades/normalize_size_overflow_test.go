@@ -189,20 +189,62 @@ func TestNormalizeCNF_GateIsJavasComplexityThreshold(t *testing.T) {
 			size, cnfSizeLimit)
 	}
 
-	// And the SAME predicate at the OLD limit still normalizes. This is the
-	// assertion that makes the pair meaningful: on its own, "declines at
-	// cnfSizeLimit" would keep passing if the gate were lowered to 1, and
-	// "normalizes at 1,000,000" would keep passing if it were raised. Together
-	// they bracket the fixture and fail the moment cnfSizeLimit leaves the
-	// window.
+	// The SAME predicate normalizes when the limit is raised — which shows the
+	// decline above is attributable to the LIMIT rather than to the shape.
 	//
-	// An earlier draft asserted the WRITE path here instead and was wrong for a
-	// reason worth keeping: this predicate is an OR of ANDs, which is ALREADY
-	// in DNF, so NormalizeDNFWithoutSimplification declines it on SHAPE and
-	// never consults its limit at all. A decline that proves nothing about the
-	// limit reads exactly like one that does.
+	// It constrains nothing about cnfSizeLimit, because it passes a different
+	// constant. Saying otherwise is what the previous revision of this comment
+	// did, and it was measured false: with only these two assertions, gates of
+	// 1 and of 4095 both pass. The LOW direction is the one that matters —
+	// a gate too low declines predicates Java normalizes, which is RFC-240's
+	// original defect wearing the other hat — so the low end is closed by the
+	// second fixture below, against cnfSizeLimit itself.
+	//
+	// An earlier draft asserted the WRITE path here and was wrong for a reason
+	// worth keeping: this predicate is an OR of ANDs, ALREADY in DNF, so
+	// NormalizeDNFWithoutSimplification declines it on SHAPE and never consults
+	// its limit. A decline that proves nothing about the limit reads exactly
+	// like one that does.
 	if _, changed := normalizeCNF(p, NormalizerDefaultSizeLimit); !changed {
 		t.Fatalf("the fixture does not normalize even at %d, so the decline above "+
 			"is not attributable to the gate's value", NormalizerDefaultSizeLimit)
+	}
+
+	// THE LOW END, closed against cnfSizeLimit itself. An OR of FIVE four-way
+	// ANDs has CNF size 4^5 = 1024, under the gate, and must normalize.
+	small := make([]predicates.QueryPredicate, 0, 5)
+	for i := 0; i < 5; i++ {
+		small = append(small, predicates.NewAnd(
+			pred(string(rune('a'+i))+"0"), pred(string(rune('a'+i))+"1"),
+			pred(string(rune('a'+i))+"2"), pred(string(rune('a'+i))+"3")))
+	}
+	sp := predicates.NewOr(small...)
+	smallSize := normalFormSize(sp, false, normalFormCNF)
+	if smallSize != 1024 {
+		t.Fatalf("low-end fixture drifted: CNF size is %d, want 1024", smallSize)
+	}
+	if smallSize >= int64(cnfSizeLimit) {
+		t.Fatalf("low-end fixture is inert: CNF size %d is at or above the gate %d",
+			smallSize, cnfSizeLimit)
+	}
+	if _, changed := normalizeCNF(sp, cnfSizeLimit); !changed {
+		t.Fatalf("normalizeCNF declined a %d-clause CNF at a gate of %d — the gate is "+
+			"too LOW, which makes Go refuse a normalization Java performs",
+			smallSize, cnfSizeLimit)
+	}
+
+	// What the two fixtures actually constrain, stated as the arithmetic rather
+	// than as a claim: the high one requires cnfSizeLimit < 4096, the low one
+	// requires cnfSizeLimit >= 1024. That is a bracket of [1024, 4095] — real,
+	// but not a pin. The exact value is pinned separately, below, because a
+	// bracket is not what Java says.
+	if cnfSizeLimit != 3000 {
+		t.Fatalf("cnfSizeLimit is %d, want 3000 — Java's "+
+			"RecordQueryPlanner.DEFAULT_COMPLEXITY_THRESHOLD (:150), which "+
+			"RecordQueryPlannerConfiguration.getComplexityThreshold (:154-156) falls "+
+			"back to and NormalizePredicatesRule reads through forConfiguration "+
+			"(:75-77). The fixtures above only bracket it to [1024, 4095]; this is "+
+			"the assertion that says which value in that range is Java's.",
+			cnfSizeLimit)
 	}
 }
