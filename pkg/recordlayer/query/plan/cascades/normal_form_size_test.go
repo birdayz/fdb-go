@@ -141,6 +141,9 @@ func TestNormalFormVariable_MatchesTheConcreteTypes(t *testing.T) {
 		{predicates.NewPredicateWithValueAndRanges(root, nil), true},
 		{predicates.NewDatabaseObjectDependenciesPredicate(nil), true},
 		{predicates.NewCompatibleTypeEvolutionPredicate(nil), true},
+		{predicates.MustNewExistentialValuePredicate(root, predicates.Comparison{
+			Type: predicates.ComparisonIsNotNull,
+		}), true},
 	}
 
 	for _, tc := range cases {
@@ -167,14 +170,26 @@ func TestNormalFormVariable_MatchesTheConcreteTypes(t *testing.T) {
 		}
 	}
 
-	// Population guard: the list must cover every concrete implementation that
-	// can reach the normalizer, or it passes on a shrinking population.
+	// Population guard, stated against the ACTUAL population rather than a
+	// round number. The eleven concrete QueryPredicate implementations in
+	// pkg/.../cascades/predicates are: And, Or, Not, ComparisonPredicate,
+	// ConstantPredicate, ValuePredicate, Placeholder,
+	// PredicateWithValueAndRanges, DatabaseObjectDependenciesPredicate,
+	// CompatibleTypeEvolutionPredicate and ExistentialValuePredicate — every
+	// one of which is above.
+	//
+	// The floor was 10 against a list of 10 while the comment claimed "every
+	// concrete implementation", which was a scope sentence exceeding its
+	// coverage by exactly one type — in the test written to close a
+	// scope-sentence finding. ExistentialValuePredicate was the missing one.
+	const concretePredicateTypes = 11
 	seen := map[reflect.Type]struct{}{}
 	for _, tc := range cases {
 		seen[reflect.TypeOf(tc.pred)] = struct{}{}
 	}
-	if len(seen) < 10 {
-		t.Fatalf("only %d distinct predicate types exercised — the enumeration "+
-			"stopped covering the package", len(seen))
+	if len(seen) != concretePredicateTypes {
+		t.Fatalf("exercised %d distinct predicate types, expected %d — a type was "+
+			"added to or removed from the predicates package and this enumeration "+
+			"no longer covers it", len(seen), concretePredicateTypes)
 	}
 }

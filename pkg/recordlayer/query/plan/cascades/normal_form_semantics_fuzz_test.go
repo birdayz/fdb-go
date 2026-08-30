@@ -142,8 +142,14 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 // it is derived from: ~3.5 KiB per clause, so this keeps the worst case near
 // a megabyte and out of the OOM that made the unbounded version flake.
 //
-// It is deliberately far below the production cnfSizeLimit (1,000,000). A
-// differential is a semantics instrument; the clause count at which
+// It is deliberately below the production gates — 10x under cnfSizeLimit
+// (3000, Java's DEFAULT_COMPLEXITY_THRESHOLD) and far under
+// NormalizerDefaultSizeLimit (1,000,000, the write path's). The ratio is
+// written against BOTH because they are no longer the same number, and this
+// comment said "the production cnfSizeLimit (1,000,000)" after one of them
+// moved.
+//
+// A differential is a semantics instrument; the clause count at which
 // normalization becomes expensive is a different question, asked in a different
 // place.
 const normalFormFuzzSizeBound = 300
