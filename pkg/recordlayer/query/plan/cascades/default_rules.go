@@ -455,6 +455,13 @@ func MatchingRules() []ExpressionRule {
 //
 // One registry entry per rule TYPE; the actual rule instances in
 // DefaultExpressionRules() are fresh per-call (rules are stateless).
+//
+// "Stateless" is load-bearing and was false until RFC-240:
+// NormalizePredicatesRule carried an identity-keyed set of expressions it had
+// already fired on, which made it per-planner state that only grew. Its
+// termination is algebraic now, as Java's is. A rule that needs to remember
+// what it has seen is a rule whose decline condition is not expressible from
+// the expression tree, and that is the thing to fix rather than to store.
 func init() {
 	registerDefaultRules()
 	registerBatchARules()

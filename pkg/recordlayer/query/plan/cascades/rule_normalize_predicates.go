@@ -30,15 +30,28 @@ import (
 //
 // Mirrors Java's BooleanPredicateNormalizer in CNF mode with a
 // default size limit of 1,000,000.
+// TERMINATION is algebraic, not bookkept. The rule used to carry an
+// identity-keyed set of SelectExpressions it had already fired on; Java has no
+// counterpart, because its termination falls out of isInNormalForm accepting
+// the rule's OWN output, so a re-fire returns Optional.empty(). RFC-240's
+// strict normal-form test gives Go the same property —
+// TestNormalizeCNF_IsStableOnItsOwnOutput is that assertion, and it is Java's
+// (BooleanPredicateNormalizerTest.java:262-267, "Normalized form should be
+// stable").
+//
+// Declining is only half of why the set was unnecessary; the other half is that
+// a re-fire must COST nothing rather than accumulate a duplicate member.
+// Reference.Insert dedups on EqualsWithoutChildren plus sameChildReferences
+// (expressions/reference.go:654) with a SemanticEquals fallback for the
+// fresh-Reference case — the Go analogue of Java's memo dedup, and what the set
+// was standing in for.
 type NormalizePredicatesRule struct {
-	matcher    matching.BindingMatcher
-	normalized map[*expressions.SelectExpression]struct{}
+	matcher matching.BindingMatcher
 }
 
 func NewNormalizePredicatesRule() *NormalizePredicatesRule {
 	return &NormalizePredicatesRule{
-		matcher:    NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates"),
-		normalized: make(map[*expressions.SelectExpression]struct{}),
+		matcher: NewExpressionMatcher[*expressions.SelectExpression]("normalize_predicates"),
 	}
 }
 
@@ -48,10 +61,6 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 	sel := matching.Get[*expressions.SelectExpression](call.Bindings, r.matcher)
 	preds := sel.GetPredicates()
 	if len(preds) == 0 {
-		return
-	}
-
-	if _, seen := r.normalized[sel]; seen {
 		return
 	}
 
@@ -84,8 +93,6 @@ func (r *NormalizePredicatesRule) OnMatch(call *ExpressionRuleCall) {
 		call.Fail(err)
 		return
 	}
-	r.normalized[sel] = struct{}{}
-	r.normalized[result] = struct{}{}
 	call.Yield(result)
 }
 

@@ -116,3 +116,61 @@ func normalFormNotHandlingLeaves(t *testing.T) (eqA, eqB, gtA predicates.QueryPr
 		predicates.NewComparisonPredicate(a,
 			predicates.NewLiteralComparison(predicates.ComparisonGreaterThan, int64(0)))
 }
+
+// TestNormalizePredicatesRule_DeclinesOnItsOwnOutput is the RULE-level form of
+// the stability property, and it is what replaced the identity-keyed set the
+// rule used to carry (RFC-240 §9).
+//
+// TestNormalizeCNF_IsStableOnItsOwnOutput asserts it of the FUNCTION. That is
+// necessary and not sufficient: the rule wraps the function in a conjunction of
+// the select's predicate list and then re-splits the result with andConjuncts,
+// and a round trip through that wrapper is where a shape could come back
+// different. This drives the rule's own decline condition over the round trip.
+//
+// Without it, deleting the set would rest on an argument rather than a
+// measurement, and the failure mode of a wrong argument here is a planner that
+// does not terminate.
+func TestNormalizePredicatesRule_DeclinesOnItsOwnOutput(t *testing.T) {
+	t.Parallel()
+
+	eqA, eqB, gtA := normalFormNotHandlingLeaves(t)
+	for _, input := range []predicates.QueryPredicate{
+		predicates.NewAnd(predicates.NewNot(predicates.NewAnd(eqA, eqB)), gtA),
+		predicates.NewNot(predicates.NewOr(eqA, eqB)),
+		predicates.NewOr(predicates.NewAnd(eqA, eqB), predicates.NewAnd(eqB, gtA)),
+		// A NOT over an OR of an AND: normalizes to TWO conjuncts
+		// ((NOT a OR NOT b) AND NOT c), which is what exercises the
+		// andConjuncts split-and-rejoin rather than the single-conjunct
+		// shortcut. An earlier fourth fixture here was already in CNF and the
+		// inert-fixture guard below caught it.
+		predicates.NewNot(predicates.NewOr(predicates.NewAnd(eqA, eqB), gtA)),
+	} {
+		normalized, changed := normalizeCNF(input, cnfSizeLimit)
+		if !changed {
+			t.Fatalf("fixture is inert: %s was already in CNF", input.Explain())
+		}
+		if len(andConjuncts(normalized)) < 2 && len(input.Children()) > 1 {
+			t.Logf("note: %s normalized to a single conjunct", input.Explain())
+		}
+
+		// The rule's own round trip: split into conjuncts, re-conjunct, and ask
+		// whether normalization would fire a second time.
+		conjuncts := andConjuncts(normalized)
+		if len(conjuncts) == 0 {
+			t.Fatalf("andConjuncts emptied %s", normalized.Explain())
+		}
+		var reconjuncted predicates.QueryPredicate
+		if len(conjuncts) == 1 {
+			reconjuncted = conjuncts[0]
+		} else {
+			reconjuncted = &predicates.AndPredicate{SubPredicates: conjuncts}
+		}
+		if _, changedAgain := normalizeCNF(reconjuncted, cnfSizeLimit); changedAgain {
+			t.Fatalf("the rule would fire again on its own output.\n"+
+				"  input:        %s\n  normalized:   %s\n  reconjuncted: %s\n"+
+				"NormalizePredicatesRule no longer keeps a set of expressions it has "+
+				"already visited; it relies on this decline instead.",
+				input.Explain(), normalized.Explain(), reconjuncted.Explain())
+		}
+	}
+}
