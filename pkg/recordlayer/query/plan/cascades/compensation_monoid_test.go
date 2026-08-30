@@ -112,15 +112,6 @@ func TestCompensationFolds_AreOrderIndependent(t *testing.T) {
 			}
 		})
 
-		// Associativity is asserted for UNION only. IntersectCompensations is
-		// NOT associative today — see
-		// TestIntersectCompensations_OrderDependenceReproducer below, which pins
-		// the exact disagreement. Asserting it here would be a failing test; the
-		// reproducer states the same fact in a form that stays green while the
-		// defect is open and fails the moment it is fixed.
-		if fold.name != "UnionCompensations" {
-			continue
-		}
 		t.Run(fold.name+" is associative", func(t *testing.T) {
 			t.Parallel()
 			triples := 0
@@ -165,75 +156,6 @@ func TestCompensationFolds_AreOrderIndependent(t *testing.T) {
 				t.Fatalf("checked %d permutations, want %d", checked, want)
 			}
 		})
-	}
-}
-
-// TestIntersectCompensations_OrderDependenceReproducer pins an OPEN DEFECT.
-//
-// IntersectCompensations is a LEFT fold, so three legs fold as ((I·a)·b)·c and
-// a reordering folds differently unless the operation is associative. It is
-// commutative (checked above) and NOT associative, so the fold's result depends
-// on the order the planner enumerated the intersection legs.
-//
-// Three orders of the same three legs give three incompatible answers:
-//
-//	[NoCompensation, plain, pkDistinct] -> needed, possible, not-for-filtering
-//	[NoCompensation, pkDistinct, plain] -> needed, IMPOSSIBLE, for-filtering
-//	[plain, pkDistinct, NoCompensation] -> NOT NEEDED
-//
-// "impossible" discards a usable intersection; "not needed" drops the
-// primary-key-distinct obligation, which is a cardinality correction — losing
-// it returns duplicate rows. intersectTwo's own comment states the invariant
-// being violated: a leg that needs it "cannot lose it merely because the other
-// leg has no filter or result residual".
-//
-// MEASURED SCOPE: over the five-shape corpus there are 96 disagreeing
-// permutation pairs, and EVERY ONE involves requiresPrimaryKeyDistinct — zero
-// triples disagree without it. That field is a Go-only extension;
-// Compensation.java has no equivalent, so Java's fold is unaffected. The
-// mechanism is the interaction: ForMatchCompensation.Intersect ORs the flag,
-// then returns the bare ImpossibleCompensation singleton when the intersected
-// child is impossible, discarding it — and intersectTwo treats Impossible as
-// the intersection IDENTITY (Java reduces from impossibleCompensation), so that
-// result is absorbed rather than poisoning the fold, and the obligation is gone.
-//
-// Reachable: requiresPrimaryKeyDistinct is set by PartialMatchImpl.GetCompensation,
-// and intersector_primary_key.go folds one compensation per intersection leg.
-//
-// WHEN FIXED, DELETE THIS TEST and drop the UnionCompensations-only guard on
-// the associativity and permutation subtests above, so both folds are held to
-// the laws. This asserts the broken behaviour on purpose, so that the defect is
-// visible in CI rather than latent, and so the fix cannot land silently.
-func TestIntersectCompensations_OrderDependenceReproducer(t *testing.T) {
-	t.Parallel()
-
-	corpus := compensationCorpus(t)
-	noComp, plain, pkDistinct := corpus[0], corpus[2], corpus[4]
-
-	first := shapeOf(IntersectCompensations([]Compensation{noComp, plain, pkDistinct}))
-	second := shapeOf(IntersectCompensations([]Compensation{noComp, pkDistinct, plain}))
-	third := shapeOf(IntersectCompensations([]Compensation{plain, pkDistinct, noComp}))
-
-	if first == second && second == third {
-		t.Fatal("IntersectCompensations now folds these three legs identically in every " +
-			"order. That is the FIX: delete this test and remove the UnionCompensations-only " +
-			"guard on the associativity and permutation subtests above.")
-	}
-
-	// Pin the three specific answers, so a partial change that shuffles the
-	// disagreement without removing it does not read as progress.
-	if first.impossible || !first.needed || first.forFiltering {
-		t.Errorf("[NoCompensation, plain, pkDistinct] = %+v; the reproducer expected a "+
-			"needed, possible, non-filtering compensation", first)
-	}
-	if !second.impossible {
-		t.Errorf("[NoCompensation, pkDistinct, plain] = %+v; the reproducer expected "+
-			"IMPOSSIBLE — a usable intersection discarded", second)
-	}
-	if third.needed {
-		t.Errorf("[plain, pkDistinct, NoCompensation] = %+v; the reproducer expected NOT "+
-			"NEEDED — the primary-key-distinct obligation dropped, which returns duplicate rows",
-			third)
 	}
 }
 

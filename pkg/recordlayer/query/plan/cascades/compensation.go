@@ -186,15 +186,27 @@ func intersectTwo(a, b Compensation) Compensation {
 	if _, ok := b.(impossibleCompensation); ok {
 		return a
 	}
-	// Ordinary residual compensation treats NoCompensation as absorbing.
-	// Primary-key distinct is a cardinality obligation, however, and combines
-	// with OR: a leg that needs it cannot lose it merely because the other leg
-	// has no filter or result residual.
-	if !a.IsNeeded() {
-		return primaryKeyDistinctOnlyCompensation(b)
-	}
-	if !b.IsNeeded() {
-		return primaryKeyDistinctOnlyCompensation(a)
+	// A leg that applies NO FILTERING is absorbing for the intersection: it
+	// already selects exactly its rows, so the intersection needs no filtering
+	// residual of its own. Primary-key distinct is a cardinality obligation
+	// rather than a filter, so it is NOT absorbed — it combines with OR, and a
+	// leg that needs it cannot lose it merely because another leg has no filter
+	// or result residual.
+	//
+	// The test is IsNeededForFiltering, not IsNeeded, and the difference is what
+	// makes the fold well defined. "Some leg filters exactly" is a property of
+	// the whole intersection, but IntersectCompensations is a LEFT fold, so it
+	// survives only if the accumulator keeps it. Absorbing on !IsNeeded stopped
+	// at the first leg carrying an obligation: NoCompensation ∩ pkDistinct
+	// yields a PK-distinct-only compensation, which IsNeeded reports as needed,
+	// so the next leg went through the full Intersect and its residual came back
+	// — while the same three legs in another order kept absorbing. That made the
+	// fold order-dependent, and the orders disagreed about whether compensation
+	// was needed at all. A PK-distinct-only compensation reports
+	// IsNeededForFiltering false, so it stays absorbing and the property
+	// survives to the end of the fold.
+	if !a.IsNeededForFiltering() || !b.IsNeededForFiltering() {
+		return unionPrimaryKeyDistinctObligations(a, b)
 	}
 	// Both are ForMatchCompensation — delegate to the full algorithm.
 	aFM, aOk := a.(*ForMatchCompensation)
@@ -204,6 +216,32 @@ func intersectTwo(a, b Compensation) Compensation {
 	}
 	// Fallback: can't intersect non-ForMatch compensations.
 	return ImpossibleCompensation
+}
+
+// unionPrimaryKeyDistinctObligations is the result of intersecting two
+// compensations when at least one of them applies no filtering. The filtering
+// and result residuals of BOTH sides are dropped — the non-filtering leg
+// already selects exactly its rows — and what survives is the union of their
+// cardinality obligations.
+//
+// NEITHER side's obligation may be discarded, and that half is measured: making
+// this read only the right operand's obligation reddens the order-independence
+// laws with 151 violations. Which of two equivalent representatives is returned
+// does NOT matter — mutating that choice changes nothing the laws can see,
+// since both state the same obligation.
+func unionPrimaryKeyDistinctObligations(a, b Compensation) Compensation {
+	aOnly := primaryKeyDistinctOnlyCompensation(a)
+	bOnly := primaryKeyDistinctOnlyCompensation(b)
+	if !aOnly.IsNeeded() {
+		return bOnly
+	}
+	if !bOnly.IsNeeded() {
+		return aOnly
+	}
+	// Both carry an obligation. They are the same obligation — dedup by primary
+	// key — so either representative states it; taking the left keeps the
+	// result's matched quantifiers stable under the fold.
+	return aOnly
 }
 
 // primaryKeyDistinctOnlyCompensation strips filtering and result residuals
@@ -1103,21 +1141,40 @@ func (c *ForMatchCompensation) Intersect(other *ForMatchCompensation) Compensati
 		intersectedChild = intersectTwo(c.childCompensation, other.childCompensation)
 	}
 	if intersectedChild.IsImpossible() || !intersectedChild.CanBeDeferred() {
-		// KNOWN DEFECT, open: this discards the requiresPrimaryKeyDistinct just
-		// computed above. That would be harmless if impossible propagated, but
-		// intersectTwo treats ImpossibleCompensation as the intersection IDENTITY
-		// (impossible ∩ X = X, matching Java's reduce from impossibleCompensation),
-		// so this result is ABSORBED by the fold instead of poisoning it — and the
-		// cardinality obligation is gone. Losing it returns duplicate rows.
+		if !requiresPrimaryKeyDistinct {
+			return ImpossibleCompensation
+		}
+		// Returning the bare ImpossibleCompensation singleton here would discard
+		// the requiresPrimaryKeyDistinct just computed, and that loss is not
+		// recoverable: intersectTwo treats the singleton as the intersection
+		// IDENTITY (impossible ∩ X = X, matching Java's reduce from
+		// impossibleCompensation), so it is ABSORBED by the fold rather than
+		// poisoning it, taking the obligation with it.
 		//
-		// It makes IntersectCompensations order-dependent: the same three legs
-		// fold to "needed", "impossible" or "not needed" depending on their order.
-		// Every one of the 96 measured disagreements involves this Go-only field;
-		// Compensation.java has no equivalent, so this is an extension meeting a
-		// ported identity rather than a mis-port. See the IntersectCompensations
-		// entry in TODO.md, and TestIntersectCompensations_OrderDependenceReproducer
-		// which pins the three answers.
-		return ImpossibleCompensation
+		// The two are different KINDS of need, which is why one may be dropped
+		// here and the other may not. A filtering residual is satisfiable by any
+		// single leg — that is what licenses the identity — whereas a
+		// primary-key-distinct obligation is a CARDINALITY correction that no
+		// other leg supplies, and intersecting two streams does not deduplicate
+		// them. IsNeededForFiltering already draws exactly this line: it excludes
+		// requiresPrimaryKeyDistinct while IsNeeded includes it.
+		//
+		// So the filtering half is reported impossible, as before, and the
+		// obligation rides along on a compensation that carries nothing else.
+		// Phase 1 above deliberately does not inherit either side's aggregate
+		// impossible flag and recomputes it from what survives, so this value
+		// composes with a further leg without wrongly poisoning it.
+		return NewForMatchCompensationWithPrimaryKeyDistinct(
+			true,
+			NoCompensation,
+			EmptyPredicateCompensationMap(),
+			c.matchedQuantifiers,
+			nil,
+			c.compensatedAliases,
+			NoResultCompensation(),
+			EmptyGroupByMappings(),
+			true,
+		)
 	}
 
 	// Phase 3: Merge GroupByMappings.

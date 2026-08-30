@@ -20739,12 +20739,13 @@ comparisons instead of 2.
 
 ---
 
-## IntersectCompensations is order-dependent, and a Go-only field is why
+## IntersectCompensations was order-dependent, and a Go-only field was why — FIXED
 
-STOP-level, needs the query-engine gate. This is compensation algebra, and the
-fix requires deciding how a Go-only obligation should interact with a ported
-identity element — a design call, not a mechanical port. Recording it with the
-measurements and a live reproducer rather than guessing at the semantics.
+Was STOP-level: the fix turned on how a Go-only obligation should interact with
+a ported identity element, which is a design call rather than a mechanical port.
+The decision and its measurements are recorded under FIXED below. The analysis
+above is kept as written, because the first hypothesis it records was incomplete
+and the way it was incomplete is the useful part.
 
 **The defect.** `IntersectCompensations` is a LEFT fold: `result =
 ImpossibleCompensation; for each leg { result = intersectTwo(result, leg) }`.
@@ -20789,15 +20790,34 @@ identity arm.
 intersection leg. A 3+-leg intersection where one leg carries the obligation and
 another needs no compensation reaches this.
 
-**Pinned meanwhile.** `compensation_monoid_test.go` holds the laws that DO pass
-— both folds commutative, union associative and permutation-independent, each
-fold's documented identity, and the union-only propagation of impossible — plus
-`TestIntersectCompensations_OrderDependenceReproducer`, which asserts the three
-broken answers explicitly. It fails the moment the fold becomes
-order-independent, and its message says to delete it and drop the
-UnionCompensations-only guard on the associativity and permutation subtests.
+**FIXED.** The root cause was not the discarded flag on the impossible path —
+that was one loss of two, and fixing it alone left the reproducer green. The
+fold's absorbing arm tested `IsNeeded`, and a primary-key-distinct obligation
+makes a compensation "needed", so `NoCompensation ∩ pkDistinct` produced a
+PK-distinct-only compensation that was NO LONGER ABSORBING. "Some leg filters
+exactly" is a property of the whole intersection, but a LEFT fold only keeps it
+if the accumulator does; after one step it was gone, the next leg went through
+the full `Intersect`, and its residual came back — while the same legs in
+another order kept absorbing.
 
-- [ ] Decide the semantics: should a primary-key-distinct obligation survive an
-  impossible intersection result, and if so what carries it across an identity
-  element that is a fieldless singleton? Then implement, with the Graefe +
-  Torvalds ACK on both the RFC and the implementation.
+Two changes, each measured:
+
+- `intersectTwo` absorbs on `IsNeededForFiltering` rather than `IsNeeded`. A
+  PK-distinct-only compensation reports no filtering need, so it stays absorbing
+  and the property survives the fold. Reverting this one predicate reddens the
+  laws with 120 violations.
+- The absorbing arm reduces BOTH operands and keeps the union of their
+  obligations, via `unionPrimaryKeyDistinctObligations`. Discarding either
+  side's obligation reddens with 151 violations. Which of two equivalent
+  representatives is returned does not matter and is not claimed to.
+
+`ForMatchCompensation.Intersect` also no longer returns the bare
+`ImpossibleCompensation` singleton when it holds an obligation, since the
+singleton is fieldless and the identity arm would absorb the obligation with it.
+
+Both folds now satisfy every law in `compensation_monoid_test.go`: commutative,
+associative, permutation-independent over three legs, each with its documented
+identity, and impossible propagating through union only. The reproducer that
+pinned the broken answers is deleted, as its own failure message instructed, and
+the UnionCompensations-only guard on the associativity and permutation subtests
+is removed so both folds are held to them.
