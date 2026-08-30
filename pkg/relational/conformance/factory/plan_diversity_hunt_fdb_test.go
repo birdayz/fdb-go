@@ -375,9 +375,7 @@ func huntSeed(t *testing.T, seed uint64, worker int) huntStats {
 				res.skipEmpty++
 				continue
 			}
-			ordered := len(q.OrderBy) > 0
-			unstable := unstableSubset(q)
-			if unstable {
+			if unstableSubset(q) {
 				res.countOnly++
 			}
 			for i, p := range portfolio {
@@ -393,12 +391,12 @@ func huntSeed(t *testing.T, seed uint64, worker int) huntStats {
 					}
 					res.moved++
 					res.movedBy[p.name]++
-					runAndCompare(ctx, conns[i], p, sqlText, ddl, basePlan, altPlan, baseRows, ordered, unstable, seed, &res)
+					runAndCompare(ctx, conns[i], p, sqlText, ddl, basePlan, altPlan, baseRows, q, seed, &res)
 					continue
 				}
 				res.moved++
 				res.movedBy[p.name]++
-				runAndCompare(ctx, conns[i], p, sqlText, ddl, basePlan, basePlan, baseRows, ordered, unstable, seed, &res)
+				runAndCompare(ctx, conns[i], p, sqlText, ddl, basePlan, basePlan, baseRows, q, seed, &res)
 			}
 		}
 	}
@@ -406,7 +404,7 @@ func huntSeed(t *testing.T, seed uint64, worker int) huntStats {
 }
 
 func runAndCompare(ctx context.Context, conn *sql.Conn, p perturbation, sqlText, ddl, basePlan, altPlan string,
-	baseRows [][]any, ordered, unstable bool, seed uint64, res *huntStats,
+	baseRows [][]any, q rowdiff.Query, seed uint64, res *huntStats,
 ) {
 	altRows, err := rowsOf(ctx, conn, sqlText)
 	if err != nil {
@@ -436,17 +434,18 @@ func runAndCompare(ctx context.Context, conn *sql.Conn, p perturbation, sqlText,
 		return
 	}
 	res.executed++
-	d := diffRows(ordered, baseRows, altRows)
-	if unstable {
-		d = countOnlyDiff(baseRows, altRows)
-	}
+	// Routed through the SHARED comparison so the ordered / multiset /
+	// count-only choice has exactly one implementation. This site is where the
+	// rule was first got right; the equivalence hunt then got it wrong
+	// independently, which is what made a shared function worth having.
+	d := compareResults(q, baseRows, altRows)
 	if d == "" {
 		return
 	}
 	res.findingsBy[p.name]++
 	res.findings = append(res.findings, fmt.Sprintf(
-		"seed=%d perturbation=%s ordered=%v\n    diff: %s\n    SQL:  %s\n    DDL:  %s\n    base plan: %s\n    alt  plan: %s",
-		seed, p.name, ordered, d, sqlText, ddl, basePlan, altPlan))
+		"seed=%d perturbation=%s ordered=%v unstable-subset=%v\n    diff: %s\n    SQL:  %s\n    DDL:  %s\n    base plan: %s\n    alt  plan: %s",
+		seed, p.name, len(q.OrderBy) > 0, unstableSubset(q), d, sqlText, ddl, basePlan, altPlan))
 }
 
 func explainConn(ctx context.Context, c *sql.Conn, q string) (string, error) {
@@ -578,6 +577,30 @@ func benignPerturbationError(err error) bool {
 // wrong-window class this repo has already shipped once.
 func unstableSubset(q rowdiff.Query) bool {
 	return (q.Limit > 0 || q.Offset > 0) && len(q.OrderBy) == 0
+}
+
+// compareResults is THE row comparison for every hunt that puts two renderings
+// of one query side by side. It exists as one function because the rule it
+// encodes has now been got wrong in three separate harnesses.
+//
+// The rule: `LIMIT n` without a total ORDER BY leaves the row SET unspecified,
+// so only the CARDINALITY may be compared. Everything else compares as a
+// sequence when the query is ordered and as a multiset when it is not.
+//
+// Each harness originally grew its own version. The plan-diversity hunt learned
+// it after 70 false findings; the predicate-equivalence hunt was then written
+// with `ordered && !unstableSubset(q)`, which correctly drops to a MULTISET
+// compare but still demands the same rows — and a LIMIT without ORDER BY may
+// legitimately return a different subset of the same size. That produced 7 more
+// false findings, on a correct engine, from a harness whose author had already
+// fixed the identical bug elsewhere.
+//
+// One function, called by all of them, so the fourth harness cannot repeat it.
+func compareResults(q rowdiff.Query, base, alt [][]any) string {
+	if unstableSubset(q) {
+		return countOnlyDiff(base, alt)
+	}
+	return diffRows(len(q.OrderBy) > 0, base, alt)
 }
 
 // countOnlyDiff compares just the cardinality, for queries whose row identity

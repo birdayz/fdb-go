@@ -354,7 +354,6 @@ func equivSeed(ctx context.Context, t *testing.T, setupDB *sql.DB, dbPath string
 				res.skipped++
 				continue
 			}
-			ordered := len(q.OrderBy) > 0
 			for _, rw := range rewrites {
 				nn, ok := rw.apply(q.Where)
 				if !ok {
@@ -378,7 +377,7 @@ func equivSeed(ctx context.Context, t *testing.T, setupDB *sql.DB, dbPath string
 				}
 				res.compared++
 				res.applied[rw.name]++
-				if d := diffRows(ordered && !unstableSubset(q), baseRows, altRows); d != "" {
+				if d := compareResults(q, baseRows, altRows); d != "" {
 					res.findings = append(res.findings, fmt.Sprintf(
 						"seed=%d rewrite=%s: %s\n    original:  %s\n    rewritten: %s\n    DDL: %s",
 						seed, rw.name, d, baseSQL, altSQL, ddl))
