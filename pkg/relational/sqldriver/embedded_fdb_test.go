@@ -8081,8 +8081,18 @@ func TestFDB_NotOfUnknownIsUnknown(t *testing.T) {
 	// the bare form (precedence is fine).
 	g.Expect(db.QueryRowContext(ctx, `SELECT COUNT(*) FROM T WHERE n BETWEEN NULL AND 999`).Scan(&c)).To(gomega.Succeed())
 	g.Expect(c).To(gomega.Equal(int64(0)), "BETWEEN NULL AND x must be UNKNOWN")
-	// Grammar does not allow NULL as a LIKE pattern — the semantic path is
-	// covered in evalLikePredicateTri by NULL input returning triNull.
+	// A NULL LIKE pattern never reaches evaluation: expr.ResolveLike refuses it
+	// at PLAN time, because the pattern must resolve to a Go string
+	// (`lit.(string)`). That is the resolver, not the grammar — this comment
+	// used to say "Grammar does not allow" and to cite an evalLikePredicateTri
+	// that does not exist anywhere in the tree, which sent a reader to two
+	// wrong places at once.
+	//
+	// The rejection is pinned by TestResolver_ResolveLike in
+	// pkg/relational/core/query/expr, which also records WHY it matters: Go's
+	// runtime answer for `x LIKE NULL` is UNKNOWN while Java's compareLike
+	// throws, and the plan-time refusal is what keeps those from ever
+	// disagreeing on a live query.
 
 	// Java conformance: Java's ExpressionVisitor rewrites
 	// NOT BETWEEN as `x < lo OR x > hi`, so NULL in one bound short-circuits

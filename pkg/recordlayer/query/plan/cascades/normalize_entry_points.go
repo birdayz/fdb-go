@@ -37,10 +37,14 @@ const NormalizerDefaultSizeLimit = 1_000_000
 // (see FuzzNormalForm_PreservesSemantics for the measurement — about 3.5 KiB
 // per clause). At 3000 that is single-digit MiB; at 1,000,000 it is gigabytes.
 //
-// Go has no planner complexity-threshold configuration to read this from — a
-// quoted repo-wide grep for ComplexityThreshold over non-test Go sources
-// returns nothing — so the Java DEFAULT is inlined here rather than plumbed. If
-// that configuration lands, this constant is where it connects.
+// Go has no planner complexity-threshold configuration to read this from, so
+// the Java DEFAULT is inlined here rather than plumbed. If that configuration
+// lands, this constant is where it connects.
+//
+// The claim is checkable as NO NON-COMMENT HITS, not as zero hits: a quoted
+// repo-wide grep for ComplexityThreshold over Go sources matches the three
+// lines of this very comment. Writing the claim falsified its own naive form,
+// which is why it is stated against the population that can actually go stale.
 //
 // NormalizerDefaultSizeLimit stays 1,000,000 and stays the WRITE path's limit:
 // the index-predicate producer reaches the normalizer through
