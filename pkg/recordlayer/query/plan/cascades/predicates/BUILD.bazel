@@ -58,6 +58,7 @@ go_test(
         "predrow_test.go",
         "rebase_fail_closed_test.go",
         "rebase_test.go",
+        "scan_range_classification_test.go",
         "semantic_equals_test.go",
         "semantic_hash_invariant_test.go",
         "simplifier_predicate_values_test.go",
