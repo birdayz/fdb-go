@@ -51,6 +51,19 @@ func compensationCorpus(t *testing.T) []Compensation {
 		[]expressions.Quantifier{q1}, nil,
 		aliases, NoResultCompensation(), EmptyGroupByMappings(), true,
 	)
+	// A leg needing ONLY a result compensation: predicates fully matched, no
+	// unmatched ForEach, but the result value must be re-projected. This is the
+	// shape whose ABSENCE let a regression through — every other entry here has
+	// IsNeededForFiltering true or IsFinalNeeded false, so none could catch an
+	// absorbing rule that swallowed the result function. It is also the
+	// canonical intersection case rather than an exotic one: two covering
+	// indexes intersected, where the pulled-up value is not the bare
+	// QuantifiedObjectValue.
+	resultOnly := NewForMatchCompensation(
+		false, NoCompensation, EmptyPredicateCompensationMap(),
+		[]expressions.Quantifier{q1}, nil,
+		aliases, NewResultCompensationFunction(true), EmptyGroupByMappings(),
+	)
 
 	return []Compensation{
 		NoCompensation,
@@ -58,6 +71,7 @@ func compensationCorpus(t *testing.T) []Compensation {
 		plain,
 		impossibleChild,
 		pkDistinct,
+		resultOnly,
 	}
 }
 
@@ -83,6 +97,14 @@ func TestCompensationFolds_AreOrderIndependent(t *testing.T) {
 	t.Parallel()
 
 	corpus := compensationCorpus(t)
+	// The population every count below is a function of. Mutation figures for
+	// this file are quoted nowhere in prose precisely because they move with
+	// this number: a "151 violations" written against a five-shape corpus was
+	// stale the moment a sixth was added, and had been wrong before that. Anyone
+	// verifying a mutation reads the count from the run, against this size.
+	t.Logf("compensation corpus: %d shapes — %d pairs, %d triples, %d permutation checks",
+		len(corpus), len(corpus)*len(corpus), len(corpus)*len(corpus)*len(corpus),
+		len(corpus)*len(corpus)*len(corpus)*5)
 
 	for _, fold := range []struct {
 		name string

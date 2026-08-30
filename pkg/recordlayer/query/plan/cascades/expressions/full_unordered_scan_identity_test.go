@@ -95,13 +95,24 @@ func TestFullUnorderedScan_RefusesAPlaceholderFlowedType(t *testing.T) {
 	}
 }
 
-// TestFullUnorderedScan_EqualityIsStricterThanTheHash pins the asymmetry
-// between the two methods, in the safe direction. Equality compares the flowed
-// type; the hash is names-only, matching Java's scan hash. A hash folding fewer
-// fields than equality yields collisions between unequal expressions, which the
-// memo handles. The reverse — equal expressions hashing apart — is what breaks
-// it, and is checked in both tests above.
-func TestFullUnorderedScan_EqualityIsStricterThanTheHash(t *testing.T) {
+// TestFullUnorderedScan_HashIsNamesOnlyDivergingFromJava pins a DELIBERATE
+// divergence, so that closing it is a visible test change rather than a quiet
+// one — because closing it regresses the planner.
+//
+// Equality compares the flowed type; the hash does not. Java hashes both
+// (Objects.hash(recordTypes, flowedType), FullUnorderedScanExpression.java:150),
+// so this is not the "names-only scan hash" an earlier comment claimed it was
+// matching. Folding flowedType in to align reddens TestPlanShapeGolden by 13731
+// lines and breaks three memo tests, all selecting a LogicalSortExpression where
+// a plain scan should win: scan identity is the base of every query tree, so
+// changing which scans share a bucket changes group membership and winner
+// selection.
+//
+// The divergence is safe in the only direction that matters — an under-hash
+// collides unequal expressions and never scatters equal ones — which is why it
+// stays. If it is ever closed deliberately, this test and the golden move
+// together.
+func TestFullUnorderedScan_HashIsNamesOnlyDivergingFromJava(t *testing.T) {
 	t.Parallel()
 
 	a := scanIdentityExpr(t, values.NewRecordType("", false, scanIdentityFields()))
@@ -113,8 +124,20 @@ func TestFullUnorderedScan_EqualityIsStricterThanTheHash(t *testing.T) {
 			"documented to compare the flowed type, so the hash claim below is untestable")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
-		t.Error("two scans differing only in flowed type hashed APART. Not unsafe, but it " +
-			"contradicts the documented names-only hash and Java's scan hash — update the " +
-			"comment if the rule changed on purpose.")
+		t.Error("two scans differing only in flowed type now hash APART. That closes the " +
+			"documented divergence from Java, and it is not free: it changes scan memo " +
+			"bucketing, which moved TestPlanShapeGolden by 13731 lines and flipped three " +
+			"memo tests to a LogicalSortExpression winner. Update the golden and those " +
+			"tests deliberately, or restore the names-only hash.")
+	}
+
+	// The direction that would actually break the memo: equal expressions must
+	// share a bucket.
+	c := scanIdentityExpr(t, values.NewRecordType("", false, scanIdentityFields()))
+	if !a.EqualsWithoutChildren(c, nil) {
+		t.Fatal("two identically-built scans must be equal, or the check below is vacuous")
+	}
+	if a.HashCodeWithoutChildren() != c.HashCodeWithoutChildren() {
+		t.Error("two EQUAL scans hashed apart — a hash-first lookup misses the equal member")
 	}
 }

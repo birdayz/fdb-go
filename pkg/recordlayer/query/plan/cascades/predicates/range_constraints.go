@@ -110,18 +110,31 @@ func (r *RangeConstraints) GetCorrelatedTo() map[values.CorrelationIdentifier]st
 	return r.correlations
 }
 
-// AsComparisonRange converts this RangeConstraints to a ComparisonRange
-// by merging all comparisons. This is for backward compatibility with
-// existing matching infrastructure that uses ComparisonRange.
-func (r *RangeConstraints) AsComparisonRange() *ComparisonRange {
+// AsComparisonRange converts this RangeConstraints to a ComparisonRange by
+// merging all comparisons. This is for backward compatibility with existing
+// matching infrastructure that uses ComparisonRange.
+//
+// It returns false when the constraints cannot be expressed as ONE
+// ComparisonRange. Go's MergeResult carries no residual list — unlike Java's,
+// which returns a range plus the comparisons that did not fit — so a rejected
+// merge has nowhere to put the conjunct, and the previous `if merged.Ok`
+// silently dropped it: `x = 5 AND x > 7` came back as `x = 5`, a WEAKER range
+// than the input, with no signal. A caller filtering on that returns rows the
+// constraints excluded.
+//
+// Reporting the failure is the honest conversion while the residual list is
+// missing; see the ComparisonRange.MergeResult entry in TODO.md for the port
+// that would let the leftover comparisons be carried instead of refused.
+func (r *RangeConstraints) AsComparisonRange() (*ComparisonRange, bool) {
 	result := EmptyComparisonRange()
 	for _, c := range r.GetComparisons() {
 		merged := result.Merge(&c)
-		if merged.Ok {
-			result = merged.Range
+		if !merged.Ok {
+			return nil, false
 		}
+		result = merged.Range
 	}
-	return result
+	return result, true
 }
 
 // RangeConstraintsBuilder builds a RangeConstraints incrementally.

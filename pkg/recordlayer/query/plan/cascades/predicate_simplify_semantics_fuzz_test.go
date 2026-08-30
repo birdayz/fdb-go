@@ -2,11 +2,26 @@ package cascades
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
+
+// predicateSimplifySeedScripts is the deterministic corpus
+// FuzzSimplifyPredicate_PreservesSemantics runs on every `go test` with no -fuzz
+// flag. It is the population that target's coverage floor is written against,
+// which is why it is a named slice rather than inline f.Add calls: a floor
+// written as a literal stops describing the corpus the first time a seed is
+// added.
+var predicateSimplifySeedScripts = [][]byte{
+	{0x00},
+	{0x10, 0x01, 0x02, 0x20, 0x03},
+	{0x21, 0x00, 0x11, 0x30, 0x04},
+	{0x32, 0x05, 0x00, 0x12, 0x22},
+	{0x40, 0x01, 0x41, 0x02, 0x03, 0x04},
+}
 
 // FuzzSimplifyPredicate_PreservesSemantics is the SEMANTICS differential for the
 // QueryPredicate rule driver: for a randomly shaped boolean tree over four
@@ -33,11 +48,9 @@ import (
 // subtree that would have errored. The simplified side erroring where the
 // original did not IS asserted.
 func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
-	f.Add([]byte{0x00})
-	f.Add([]byte{0x10, 0x01, 0x02, 0x20, 0x03})
-	f.Add([]byte{0x21, 0x00, 0x11, 0x30, 0x04})
-	f.Add([]byte{0x32, 0x05, 0x00, 0x12, 0x22})
-	f.Add([]byte{0x40, 0x01, 0x41, 0x02, 0x03, 0x04})
+	for _, seed := range predicateSimplifySeedScripts {
+		f.Add(seed)
+	}
 
 	rows := predicateSemanticsRows()
 	ruleSets := []struct {
@@ -48,6 +61,36 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 		{name: "normalization", rules: NormalizationRules()},
 	}
 
+	// The assertions sit behind three escapes — an empty script, a builder
+	// returning nil, and a row whose ORIGINAL evaluation errored — each a bare
+	// `continue`/`return`. A builder that stopped producing usable predicates,
+	// or an evaluator that started erroring on every row, would leave this target
+	// reporting the same green it reports when the simplifier agrees. Count what
+	// was actually compared, and floor it over the seed corpus; see
+	// activelyFuzzing for why the floor cannot be enforced under -fuzz.
+	var builtPredicates, comparedRows atomic.Int64
+	f.Cleanup(func() {
+		if activelyFuzzing() {
+			return
+		}
+		if builtPredicates.Load() < int64(len(predicateSimplifySeedScripts)) {
+			f.Errorf("the builder produced %d usable predicates from %d seeds — it has stopped "+
+				"building, and every assertion in this differential ran on nothing",
+				builtPredicates.Load(), len(predicateSimplifySeedScripts))
+		}
+		// EXACT, not a fraction. Unlike the normal-form differential next door this
+		// one has no declined-transform escape — Simplify always returns a
+		// predicate and it is always compared — so a healthy run compares every
+		// seed against every rule set against every row (measured: 5 x 2 x 6 = 60).
+		// Anything less means rows started erroring on the ORIGINAL side, which is
+		// how this target would go quiet without any visible change.
+		if want := int64(len(predicateSimplifySeedScripts) * len(ruleSets) * len(rows)); comparedRows.Load() < want {
+			f.Errorf("compared %d (rule set, row) pairs, want %d — rows are being skipped by "+
+				"the wantErr escape, so this target is asking less than it looks",
+				comparedRows.Load(), want)
+		}
+	})
+
 	f.Fuzz(func(t *testing.T, script []byte) {
 		if len(script) == 0 {
 			return
@@ -57,6 +100,7 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 		if pred == nil {
 			return
 		}
+		builtPredicates.Add(1)
 
 		for _, rs := range ruleSets {
 			simplified, err := Simplify(pred, rs.rules)
@@ -77,6 +121,7 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 					t.Fatalf("%s row %d: original evaluated cleanly to %s but simplified errored: %v\n  original:   %s\n  simplified: %s",
 						rs.name, i, triName(want), gotErr, pred.Explain(), simplified.Explain())
 				}
+				comparedRows.Add(1)
 				if triName(want) != triName(got) {
 					t.Fatalf("%s row %d: simplification changed the truth value: want %s, got %s\n  original:   %s\n  simplified: %s",
 						rs.name, i, triName(want), triName(got), pred.Explain(), simplified.Explain())

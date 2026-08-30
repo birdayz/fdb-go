@@ -152,6 +152,45 @@ func TestTopologicalOrderPermutations_EnumeratesExactlyTheValidOrders(t *testing
 		t.Fatalf("covered %d dependency relations, want %d — the enumeration changed shape",
 			totalRelations, 1+2+8+64+1024)
 	}
+	// Both implementations must actually be reached. complexIterable routes on
+	// dependency density (depRatio > 0.5) to two SEPARATE algorithms, so a sweep
+	// sitting on one side of that threshold would leave the other unchecked while
+	// looking exhaustive. The split was measured once by instrumenting the branch
+	// — 1014 Kahn, 84 backtrack, 1 singleton — and a measurement taken once and
+	// written into prose is a measurement that stops being true quietly. This
+	// recomputes the routing predicate over the same sweep so the claim is
+	// re-derived on every run rather than remembered.
+	kahn, backtrack, singleton := 0, 0, 0
+	for size := 1; size <= 5; size++ {
+		pairCount := size * (size - 1) / 2
+		for mask := 0; mask < 1<<pairCount; mask++ {
+			if size <= 1 {
+				singleton++
+				continue
+			}
+			edges := 0
+			for bit := 0; bit < pairCount; bit++ {
+				if mask&(1<<bit) != 0 {
+					edges++
+				}
+			}
+			if float64(edges)/float64(size) > 0.5 {
+				kahn++
+				continue
+			}
+			backtrack++
+		}
+	}
+	if kahn+backtrack+singleton != totalRelations {
+		t.Fatalf("routing census covers %d relations, sweep covered %d",
+			kahn+backtrack+singleton, totalRelations)
+	}
+	if kahn == 0 || backtrack == 0 {
+		t.Fatalf("the sweep reaches only one iterator (kahn=%d backtrack=%d) — the other "+
+			"algorithm is unchecked and this test only looks exhaustive", kahn, backtrack)
+	}
+	t.Logf("iterator routing over this sweep: kahn=%d backtrack=%d singleton=%d",
+		kahn, backtrack, singleton)
 	// The vacuity guard: every assertion above is over the orders actually
 	// emitted, so an enumerator returning nothing would leave the per-key loops
 	// empty. Only the cardinality check would fire, and only where want is

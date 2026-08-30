@@ -20672,7 +20672,7 @@ floor or there is a recorded reason it cannot be.
 
 ---
 
-## ComparisonRange.MergeResult drops Java's residual LIST, so every caller fails closed
+## ComparisonRange.MergeResult drops Java's residual LIST, so callers fail closed
 
 STOP-level, needs the query-engine gate: this is an architectural change to the
 matching infrastructure, so it needs an RFC with a Graefe + Torvalds ACK before
@@ -20693,8 +20693,13 @@ is that equality always wins and nothing is ever dropped:
 
 Go's `predicates.MergeResult` has `Ok bool` and a SINGLE `Residual`, and no
 caller in the tree reads `Residual` at all — so the residual channel exists in
-name only. Every caller therefore fails closed where Java pushes the equality
-down and keeps the rest as a filter. `mergeComparisonRanges` states the gap in
+name only. Callers therefore fail closed where Java pushes the equality down and
+keeps the rest as a filter — with ONE exception this entry originally got wrong.
+`AsComparisonRange` SKIPPED the rejected conjunct instead of failing, so
+`x = 5 AND x > 7` converted to `x = 5`: weaker than its input, silently. Fixed —
+it now returns `(nil, false)` — but the sweeping "every caller fails closed" was
+false as written, and the review that caught it was reading the code rather than
+this entry. `mergeComparisonRanges` states the gap in
 its own comment: "equality/inequality is not representable by ComparisonRange
 without a residual." That is the standing admission that the residual list is
 the real answer.
@@ -20768,7 +20773,8 @@ returns DUPLICATE ROWS. `intersectTwo`'s own comment states the invariant being
 violated: a leg that needs it "cannot lose it merely because the other leg has
 no filter or result residual".
 
-**Measured scope.** Over a five-shape corpus there are 96 disagreeing
+**Measured scope** (at the five-shape corpus this was taken over; the corpus has
+since grown to six and the figure moves with it). There were 96 disagreeing
 permutation pairs, and EVERY ONE involves `requiresPrimaryKeyDistinct`. Zero
 triples disagree without it. That field is a **Go-only extension** —
 `Compensation.java` has no equivalent — so Java's fold is unaffected and this is
@@ -20805,11 +20811,17 @@ Two changes, each measured:
 - `intersectTwo` absorbs on `IsNeededForFiltering` rather than `IsNeeded`. A
   PK-distinct-only compensation reports no filtering need, so it stays absorbing
   and the property survives the fold. Reverting this one predicate reddens the
-  laws with 120 violations.
+  laws. (Violation counts are deliberately not quoted here: they are a function
+  of the corpus size, which the test logs. A "151" recorded against the
+  five-shape corpus was both miscounted — it omitted the commutativity subtest —
+  and then invalidated by a sixth shape being added, which moved the same
+  mutation to 233. Run the test.)
 - The absorbing arm reduces BOTH operands and keeps the union of their
   obligations, via `unionPrimaryKeyDistinctObligations`. Discarding either
-  side's obligation reddens with 151 violations. Which of two equivalent
-  representatives is returned does not matter and is not claimed to.
+  side's obligation reddens the laws. The helper also unions the two sides'
+  MATCHED QUANTIFIERS, as Java does (`Compensation.java:781-782`) — that half is
+  not covered by the laws, whose shape comparison is five booleans and cannot
+  observe a quantifier set, and it is stated rather than presented as measured.
 
 `ForMatchCompensation.Intersect` also no longer returns the bare
 `ImpossibleCompensation` singleton when it holds an obligation, since the

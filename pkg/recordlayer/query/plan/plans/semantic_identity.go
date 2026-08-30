@@ -92,6 +92,51 @@ func comparisonRangeEqual(a, b *predicates.ComparisonRange) bool {
 	}
 }
 
+// planComparisonIdentityFields and planComparisonIdentityExcludedFields are the
+// two halves of a classification of every predicates.Comparison field, checked
+// against the struct by reflection in
+// TestPlanComparisonIdentity_ClassifiesEveryField.
+//
+// This is the SECOND fold of Comparison in the tree. The first —
+// predicates.comparisonIdentityEqual — folds all eleven fields and has its own
+// reflection gate. This one folds eight, deliberately, and the three it omits
+// are omitted for an architectural reason rather than an oversight. That is
+// exactly the configuration in which a new Comparison field goes unnoticed: the
+// predicates gate fails and gets fixed, this fold stays silent because nothing
+// here counts fields, and the plan layer then treats two scans reading different
+// data as one memo identity.
+//
+// The original defect was of that shape — the eleven-field fix landed in the
+// plans layer and never reached the predicates layer. Both layers now count.
+var planComparisonIdentityFields = map[string]string{
+	"Type":              "the operator itself — which key range the scan reads",
+	"Operand":           "the comparand; IndexScan([= 5]) and IndexScan([= 7]) read different keys",
+	"Escape":            "LIKE's escape character changes which strings match",
+	"ParameterName":     "Java's ParameterComparison carries the binding here rather than in Operand",
+	"TextTokenizerName": "different tokenizers read different index data",
+	"TextAnalyzerName":  "as above, the analyzer half",
+	"TextMaxDistance":   "TEXT_CONTAINS_ALL_WITHIN's window",
+	"TextStrictPrefix":  "changes which prefixes match",
+}
+
+// The three DistanceRank comparand fields. Their identity is not dropped — it is
+// carried one level up, by RecordQueryVectorIndexPlan.EqualsWithoutChildren,
+// which compares queryVector via ValuesStructurallyEqual plus efSearch and
+// isReturningVectors (pinned by TestRecordQueryVectorIndexPlan_QueryVectorIdentity).
+//
+// The exclusion is sound only because a DistanceRank comparison cannot reach
+// this helper: it is never carried in a ComparisonRange, since
+// isScanRangeEqualityType classifies it as an inequality precisely so the scan
+// binder rejects it as a malformed tail. That guard is what makes these three
+// unreachable here, and it is pinned by
+// TestBindScanComparisonsToRangeSet_RejectsMalformedTailBeforeProjection. If it
+// is ever relaxed, these three move into the folded set.
+var planComparisonIdentityExcludedFields = map[string]string{
+	"QueryVector":        "folded by RecordQueryVectorIndexPlan, and unreachable in a ComparisonRange",
+	"EfSearch":           "as above",
+	"IsReturningVectors": "as above",
+}
+
 // comparisonEqual compares two comparisons in the dimensions that define an
 // index/scan key range: operator type, LIKE escape, parameter binding, the
 // text-search comparand fields, and the comparand operand (semantic,

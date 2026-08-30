@@ -112,6 +112,7 @@ go_test(
         "physical_equality_planner_test.go",
         "physical_key_component_types_test.go",
         "pk_scan_ordering_test.go",
+        "plan_comparison_identity_drift_test.go",
         "plan_expression_memo_participation_test.go",
         "plan_hash_test.go",
         "plan_structural_hash_memo_census_test.go",
@@ -261,6 +262,7 @@ go_test(
         "plan_structural_hash_memo_census_test.go",
         "aggregate_index_cost_test.go",
         "aggregate_index_identity_test.go",
+        "plan_comparison_identity_drift_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

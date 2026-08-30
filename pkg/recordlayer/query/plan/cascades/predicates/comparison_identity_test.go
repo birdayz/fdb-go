@@ -70,14 +70,20 @@ func TestComparisonIdentityFoldsEveryField(t *testing.T) {
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		name := typ.Field(i).Name
-		if _, folded := comparisonIdentityFields[name]; !folded {
-			t.Errorf("Comparison.%s is not in comparisonIdentityFields. Either fold it into "+
-				"comparisonIdentityEqual AND writeComparisonIdentity and add it there with a "+
-				"reason, or if it genuinely carries no identity, say so in that map — a field "+
-				"nobody classified is how two TEXT_CONTAINS predicates differing only in "+
-				"tokenizer came to compare equal.", name)
+		_, folded := comparisonIdentityFields[name]
+		_, excluded := comparisonIdentityExcludedFields[name]
+		if folded && excluded {
+			t.Errorf("Comparison.%s is listed as BOTH folded and excluded", name)
 		}
-		if _, driven := comparisonFieldMutators[name]; !driven {
+		if !folded && !excluded {
+			t.Errorf("Comparison.%s is classified nowhere. Either fold it into "+
+				"comparisonIdentityEqual AND writeComparisonIdentity and add it to "+
+				"comparisonIdentityFields with a reason, or — if it genuinely carries no "+
+				"identity — record it in comparisonIdentityExcludedFields with the reason. "+
+				"A field nobody classified is how two TEXT_CONTAINS predicates differing "+
+				"only in tokenizer came to compare equal.", name)
+		}
+		if _, driven := comparisonFieldMutators[name]; !driven && !excluded {
 			t.Errorf("Comparison.%s has no mutator in comparisonFieldMutators, so "+
 				"TestComparisonIdentity_DiscriminatesEveryField never varies it and cannot "+
 				"prove it is folded.", name)
@@ -98,6 +104,12 @@ func TestComparisonIdentityFoldsEveryField(t *testing.T) {
 	for name := range comparisonFieldMutators {
 		if !fields[name] {
 			t.Errorf("comparisonFieldMutators names %q, which Comparison no longer has", name)
+		}
+	}
+	for name := range comparisonIdentityExcludedFields {
+		if !fields[name] {
+			t.Errorf("comparisonIdentityExcludedFields names %q, which Comparison no longer has",
+				name)
 		}
 	}
 }
@@ -182,5 +194,53 @@ func TestComparisonIdentity_PointerFieldsCompareByValue(t *testing.T) {
 	}
 	if comparisonIdentityEqual(withRet(&f1), withRet(&tru)) {
 		t.Error("IsReturningVectors false must differ from true")
+	}
+}
+
+// TestStructurallyEqual_ExistentialArmFoldsTheWholeComparison covers an arm that
+// was changed and then had no test: StructurallyEqual's ExistentialValuePredicate
+// case folds the full comparison identity rather than only Comparison.Type.
+//
+// Reverting it to type-only leaves every package green, which is the whole
+// reason this exists. The arm is DEFENSIVE, not load-bearing:
+// ExistentialValuePredicate.Comparison is documented as always IS NOT NULL, and
+// tracing the five production construction sites confirms it — one mints
+// Comparison{Type: ComparisonIsNotNull} and the other four propagate an existing
+// comparison through transforms that rewrite Operand and QueryVector while
+// leaving Type alone. So no production input can distinguish the two spellings.
+//
+// A test can, because MustNewExistentialValuePredicate accepts any Comparison
+// and asserts only the QuantifiedObjectValue precondition. That makes the
+// invariant a convention rather than a guarantee, and this pins what the arm
+// does if the convention ever lapses.
+func TestStructurallyEqual_ExistentialArmFoldsTheWholeComparison(t *testing.T) {
+	t.Parallel()
+
+	qov := mustQOV(t, values.NamedCorrelationIdentifier("q"))
+	mk := func(c Comparison) *ExistentialValuePredicate {
+		return MustNewExistentialValuePredicate(qov, c)
+	}
+
+	canonical := mk(Comparison{Type: ComparisonIsNotNull})
+	if !StructurallyEqual(canonical, mk(Comparison{Type: ComparisonIsNotNull})) {
+		t.Fatal("two canonical existential predicates must be equal, or every check below " +
+			"passes for the wrong reason")
+	}
+
+	// Same Type, differing in a field the type-only spelling could not see.
+	tagged := mk(Comparison{Type: ComparisonIsNotNull, ParameterName: "p"})
+	if StructurallyEqual(canonical, tagged) {
+		t.Error("existential predicates differing in Comparison.ParameterName compared " +
+			"EQUAL — the arm is folding only Comparison.Type again, and the two would " +
+			"share one memo identity")
+	}
+	if StructuralHash(canonical) == StructuralHash(tagged) {
+		t.Error("...and they hash identically, so the hash arm regressed with it")
+	}
+
+	// Control: a differing Type must still separate, so the assertions above are
+	// about the widened fold rather than about equality having broken entirely.
+	if StructurallyEqual(canonical, mk(Comparison{Type: ComparisonIsNull})) {
+		t.Error("existential predicates differing in Comparison.Type must not be equal")
 	}
 }

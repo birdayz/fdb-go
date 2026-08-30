@@ -1,10 +1,61 @@
 package values
 
 import (
+	"flag"
 	"fmt"
 	"math"
+	"sync/atomic"
 	"testing"
 )
+
+// valueSimplifySeedScripts is the deterministic corpus FuzzSimplifyValue_PreservesSemantics
+// runs on every `go test`, with no -fuzz flag. It is the population that
+// target's coverage floor is written against, which is why it is a named slice
+// rather than inline f.Add calls — a floor written as a literal stops describing
+// the corpus the first time a seed is added.
+//
+// The scripts are byte programs for treeBuilder, so what each one BUILDS is not
+// readable from the bytes and is not claimed here; the floor is what pins the
+// corpus, by counting what it actually compares. The one shape worth naming is
+// the fourth, because it is the exception the floor has to account for — see
+// valueDifferentialTypedSkips.
+var valueSimplifySeedScripts = [][]byte{
+	{0x00},
+	{0x10, 0x00, 0x01, 0x20, 0x02},
+	{0x50, 0x03, 0x00, 0x21, 0x60},
+	{0x70, 0x02, 0x00, 0x01},
+	{0x30, 0x01, 0x00, 0x30, 0x02, 0x00},
+	{0x40, 0x00, 0x50, 0x02, 0x21, 0x22},
+}
+
+// valueDifferentialTypedSkips is how many (seed, row) pairs the seed corpus
+// legitimately leaves unasserted, so the coverage floor below can be EXACT
+// rather than a fraction that hides a drift of two.
+//
+// All three are one seed: {0x70, 0x02, 0x00, 0x01} builds
+// `A * (C + A)` with C the BOOLEAN column, and adding a bool to an int64 errors
+// on the three rows where C is non-NULL — on the NULL rows the add yields NULL
+// and evaluates cleanly. The builder is free to pair a boolean column with an
+// arithmetic operator, so this is an ill-typed tree no producer would emit; the
+// differential deliberately does not assert on a row whose ORIGINAL evaluation
+// errored, because a rewrite is allowed to prune an erroring subtree.
+//
+// If the builder is ever taught to type its operands, the skips go to zero and
+// the comparison count rises to the full product — which still clears this
+// floor, because a floor is a minimum. The direction that fails is the one worth
+// failing: fewer comparisons than today.
+const valueDifferentialTypedSkips = 3
+
+// activelyFuzzing reports whether `go test -fuzz` selected a target for active
+// fuzzing, which changes WHERE the fuzz body runs: the coordinator hands every
+// input — the seed corpus included — to worker SUBPROCESSES, so a counter
+// incremented inside the body never moves in the process that runs f.Cleanup.
+// A coverage floor is therefore a statement about the seed-corpus run only, and
+// enforcing it under -fuzz fails a healthy run at zero.
+func activelyFuzzing() bool {
+	f := flag.Lookup("test.fuzz")
+	return f != nil && f.Value.String() != ""
+}
 
 // FuzzSimplifyValue_PreservesSemantics is the SEMANTICS differential for
 // SimplifyValue: for a randomly shaped tree over four nullable columns, and for
@@ -42,16 +93,46 @@ import (
 // NaNs are the same answer for this question; signed zeros are kept DISTINCT
 // for the same reason the carrier is.
 func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
-	// Seeds: a bare column, an arithmetic mix, a coalesce chain, a record
-	// constructor projection, and a cast chain over a column.
-	f.Add([]byte{0x00})
-	f.Add([]byte{0x10, 0x00, 0x01, 0x20, 0x02})
-	f.Add([]byte{0x50, 0x03, 0x00, 0x21, 0x60})
-	f.Add([]byte{0x70, 0x02, 0x00, 0x01})
-	f.Add([]byte{0x30, 0x01, 0x00, 0x30, 0x02, 0x00})
-	f.Add([]byte{0x40, 0x00, 0x50, 0x02, 0x21, 0x22})
+	for _, seed := range valueSimplifySeedScripts {
+		f.Add(seed)
+	}
 
 	rows := simplifySemanticsRows()
+
+	// Every assertion below sits behind three escapes — an empty script, a
+	// builder that returns nil, and a row whose ORIGINAL evaluation errored. All
+	// three are `continue`/`return`, so a generator that stopped producing usable
+	// trees, or an evaluator that started erroring on every row, would leave this
+	// target passing having compared NOTHING. That is the dominant false positive
+	// for a differential: it reports the same green whether it agreed or never
+	// asked.
+	//
+	// So count what was actually compared and floor it. The floor is over the SEED
+	// CORPUS, which runs on every `go test` with no -fuzz flag, and the seeds are
+	// fixed — so this is a deterministic population, not a fuzzing-budget one.
+	//
+	// It covers the seed-corpus run and NOTHING ELSE. Under `go test -fuzz` these
+	// counters stay at zero in the process that runs this cleanup: the coordinator
+	// evaluates even the seeds in worker SUBPROCESSES, so its own counters never
+	// move. Measured — an 8s -fuzz run at 31797 execs reported "produced 0 usable
+	// trees from 6 seeds" and failed a completely healthy run. Hence the gate: the
+	// population this floor describes only exists when fuzzing is off.
+	var comparedRows, builtTrees atomic.Int64
+	f.Cleanup(func() {
+		if activelyFuzzing() {
+			return
+		}
+		if builtTrees.Load() < int64(len(valueSimplifySeedScripts)) {
+			f.Errorf("the builder produced %d usable trees from %d seeds — it has stopped "+
+				"building, and every assertion in this differential ran on nothing",
+				builtTrees.Load(), len(valueSimplifySeedScripts))
+		}
+		if want := int64(len(valueSimplifySeedScripts)*len(rows)) - valueDifferentialTypedSkips; comparedRows.Load() < want {
+			f.Errorf("compared %d (tree, row) pairs, want %d — rows are being skipped by the "+
+				"wantErr escape beyond the %d known ill-typed ones, so this target is asking "+
+				"less than it looks", comparedRows.Load(), want, valueDifferentialTypedSkips)
+		}
+	})
 
 	f.Fuzz(func(t *testing.T, script []byte) {
 		if len(script) == 0 {
@@ -62,6 +143,7 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 		if tree == nil {
 			return
 		}
+		builtTrees.Add(1)
 
 		simplified := SimplifyValue(tree)
 		if simplified == nil {
@@ -95,6 +177,7 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 				t.Fatalf("row %d: original evaluated cleanly to %#v but simplified errored: %v\n  original:   %s\n  simplified: %s",
 					i, want, gotErr, ExplainValue(tree), ExplainValue(simplified))
 			}
+			comparedRows.Add(1)
 			if !sameEvaluated(want, got) {
 				t.Fatalf("row %d: simplification changed the answer: want %#v (%T), got %#v (%T)\n  original:   %s\n  simplified: %s",
 					i, want, want, got, got, ExplainValue(tree), ExplainValue(simplified))

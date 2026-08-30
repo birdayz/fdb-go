@@ -150,14 +150,31 @@ func (e *FullUnorderedScanExpression) EqualsWithoutChildren(other RelationalExpr
 }
 
 // HashCodeWithoutChildren mixes a class-discriminating constant with the
-// canonical record-type list, and deliberately does NOT mix flowedType —
-// matching Java's names-only scan hash.
+// canonical record-type list, and deliberately does NOT mix flowedType. This
+// DIVERGES FROM JAVA, which hashes Objects.hash(recordTypes, flowedType)
+// (FullUnorderedScanExpression.java:150). Do not "align" it; that was tried.
 //
-// The asymmetry with EqualsWithoutChildren, which DOES compare flowedType, is
-// safe in the only direction that matters: a hash folding fewer fields than
-// equality produces collisions between unequal expressions, never two equal
-// expressions in different buckets. The equal-implies-same-hash invariant the
-// memo needs is untouched.
+// An earlier version of this comment claimed the omission was "matching Java's
+// names-only scan hash". Java's scan hash is not names-only, so that was a false
+// Java citation introduced by the very commit that removed a different one —
+// worth recording, because an unchecked claim about the reference implementation
+// reads exactly like a checked one.
+//
+// Folding flowedType in, to close that divergence, REGRESSES THE PLANNER.
+// Measured: it reddens TestPlanShapeGolden by 13731 lines and breaks three memo
+// tests (TestDesignatedFinal_GenerationInvalidation,
+// TestDesignatedFinal_NoCacheInUnfinalizedWindow,
+// TestOptimizeGroup_RewritingCoherence), all of them selecting a
+// LogicalSortExpression where a plain scan should win. Scan identity is the base
+// of every query tree, so changing which scans share a memo bucket changes group
+// membership and therefore winner selection.
+//
+// The omission is SAFE on its own terms, which is why it is kept rather than
+// merely tolerated: a hash folding FEWER fields than equality only ever collides
+// unequal expressions and never scatters equal ones, so the equal-implies-
+// same-hash invariant the memo needs is untouched. EqualsWithoutChildren still
+// compares the flowed type, so nothing is conflated — the two just bucket
+// together.
 //
 // An earlier version of this comment justified the exclusion differently — that
 // EqualsWithoutChildren treats an UnknownType flowedType as a wildcard, so a

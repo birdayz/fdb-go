@@ -35,6 +35,20 @@ var comparisonIdentityFields = map[string]string{
 	"IsReturningVectors": "changes the shape of what the comparison yields",
 }
 
+// comparisonIdentityExcludedFields is the other half of the classification: a
+// Comparison field that deliberately carries NO identity, with the reason.
+//
+// It exists because the gate's failure message offered exactly this escape —
+// "if it genuinely carries no identity, say so in that map" — while the map it
+// pointed at could only express INCLUSION. A gate that asks for a decision it
+// cannot record forces the next reader to either fold a field that should not
+// be folded or edit the gate, and the second is how a gate quietly loses a
+// field.
+//
+// Empty today: every field of Comparison is identity-bearing. Kept rather than
+// omitted so the decision has somewhere to go the first time one is not.
+var comparisonIdentityExcludedFields = map[string]string{}
+
 // comparisonIdentityEqual reports whether two Comparisons denote the same
 // comparison. Every field in comparisonIdentityFields is folded; adding a field
 // to Comparison without adding it here fails

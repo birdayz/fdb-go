@@ -205,7 +205,22 @@ func intersectTwo(a, b Compensation) Compensation {
 	// was needed at all. A PK-distinct-only compensation reports
 	// IsNeededForFiltering false, so it stays absorbing and the property
 	// survives to the end of the fold.
-	if !a.IsNeededForFiltering() || !b.IsNeededForFiltering() {
+	// The test is Java's isNeeded() MINUS the Go-only primary-key-distinct term,
+	// not IsNeededForFiltering alone. IsNeededForFiltering excludes the RESULT
+	// compensation as well as the obligation (compensation.go's IsFinalNeeded is
+	// exactly that result function), so absorbing on it alone swallows a leg
+	// whose predicates are fully matched but whose result value must be
+	// re-projected: primaryKeyDistinctOnlyCompensation rebuilds with
+	// NoResultCompensation, IsFinalNeeded goes true to false, applyFinal is
+	// skipped, and the intersection emits the index's flowed shape instead of
+	// the query's projection. Wrong columns, not a lost optimization.
+	//
+	// Java guards both halves in the same place —
+	// `!intersectedChildCompensation.isNeededForFiltering() &&
+	// !newResultResultCompensationFunction.isNeeded() &&
+	// combinedPredicateMap.isEmpty()` (Compensation.java:771-774).
+	if (!a.IsNeededForFiltering() && !a.IsFinalNeeded()) ||
+		(!b.IsNeededForFiltering() && !b.IsFinalNeeded()) {
 		return unionPrimaryKeyDistinctObligations(a, b)
 	}
 	// Both are ForMatchCompensation — delegate to the full algorithm.
@@ -224,11 +239,19 @@ func intersectTwo(a, b Compensation) Compensation {
 // already selects exactly its rows — and what survives is the union of their
 // cardinality obligations.
 //
-// NEITHER side's obligation may be discarded, and that half is measured: making
-// this read only the right operand's obligation reddens the order-independence
-// laws with 151 violations. Which of two equivalent representatives is returned
-// does NOT matter — mutating that choice changes nothing the laws can see,
-// since both state the same obligation.
+// NEITHER side's obligation may be discarded. Making this read only one
+// operand's obligation reddens the order-independence laws in
+// compensation_monoid_test.go — run it to see by how much, and note that the
+// count is a function of the corpus size the test logs, not a constant. An
+// earlier version of this comment carried a bare "151 violations" that was
+// already wrong when written (it omitted the commutativity subtest) and was
+// then invalidated again by a corpus shape being added. A number stated as
+// prose against a corpus that grows cannot stay true, so the test reports it.
+//
+// The quantifier union below is NOT covered by those laws — see the note at the
+// merge itself. An earlier version of this comment said the choice of
+// representative "does not matter", which was true of everything the laws can
+// observe and false of the quantifier set they cannot.
 func unionPrimaryKeyDistinctObligations(a, b Compensation) Compensation {
 	aOnly := primaryKeyDistinctOnlyCompensation(a)
 	bOnly := primaryKeyDistinctOnlyCompensation(b)
@@ -238,10 +261,62 @@ func unionPrimaryKeyDistinctObligations(a, b Compensation) Compensation {
 	if !bOnly.IsNeeded() {
 		return aOnly
 	}
-	// Both carry an obligation. They are the same obligation — dedup by primary
-	// key — so either representative states it; taking the left keeps the
-	// result's matched quantifiers stable under the fold.
-	return aOnly
+	// Both carry an obligation. It is the same obligation either way — dedup by
+	// primary key — but the two sides' MATCHED QUANTIFIERS are not
+	// interchangeable, and returning one representative silently drops the
+	// other's. Java unions them (Compensation.java:781-782, "each side can only
+	// contribute at most one foreach quantifier"), and MatchedForEachAliasMaybe
+	// later rebuilds on exactly that set.
+	//
+	// The order-independence laws cannot see this: shapeOf is five booleans and
+	// has no way to observe the quantifier set. So the union is here because
+	// Java does it and the downstream reader needs it, NOT because a test
+	// caught it — stated plainly rather than left to look measured.
+	aFM, aOk := aOnly.(*ForMatchCompensation)
+	bFM, bOk := bOnly.(*ForMatchCompensation)
+	if !aOk || !bOk {
+		return aOnly
+	}
+	return NewForMatchCompensationWithPrimaryKeyDistinct(
+		aFM.impossible || bFM.impossible,
+		NoCompensation,
+		EmptyPredicateCompensationMap(),
+		unionQuantifiers(aFM.matchedQuantifiers, bFM.matchedQuantifiers),
+		nil,
+		unionAliasSets(aFM.compensatedAliases, bFM.compensatedAliases),
+		NoResultCompensation(),
+		EmptyGroupByMappings(),
+		true,
+	)
+}
+
+// unionQuantifiers is a stable, deduplicated union by alias — stable because
+// the compensation it feeds is produced inside a fold whose result must not
+// depend on leg order.
+func unionQuantifiers(a, b []expressions.Quantifier) []expressions.Quantifier {
+	seen := make(map[values.CorrelationIdentifier]struct{}, len(a)+len(b))
+	out := make([]expressions.Quantifier, 0, len(a)+len(b))
+	for _, q := range append(append([]expressions.Quantifier{}, a...), b...) {
+		if _, dup := seen[q.GetAlias()]; dup {
+			continue
+		}
+		seen[q.GetAlias()] = struct{}{}
+		out = append(out, q)
+	}
+	return out
+}
+
+func unionAliasSets(
+	a, b map[values.CorrelationIdentifier]struct{},
+) map[values.CorrelationIdentifier]struct{} {
+	out := make(map[values.CorrelationIdentifier]struct{}, len(a)+len(b))
+	for k := range a {
+		out[k] = struct{}{}
+	}
+	for k := range b {
+		out[k] = struct{}{}
+	}
+	return out
 }
 
 // primaryKeyDistinctOnlyCompensation strips filtering and result residuals
