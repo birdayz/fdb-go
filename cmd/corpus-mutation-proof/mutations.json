@@ -1,0 +1,37 @@
+[
+  {
+    "name": "like-inverted",
+    "why": "NARROW: inverts LIKE's verdict. Only scenarios whose predicate uses cmp.like reach it -- 236 of 8150 by feature vector -- so a same-size random subset can plausibly miss it. This is the row that tests the SELECTION rather than the subset size",
+    "file": "pkg/recordlayer/query/plan/cascades/predicates/comparisons.go",
+    "from": "\t\tif likeMatch(ps, ls, c.Escape) {\n\t\t\treturn TriTrue, nil\n\t\t}\n\t\treturn TriFalse, nil",
+    "to": "\t\tif likeMatch(ps, ls, c.Escape) {\n\t\t\treturn TriFalse, nil\n\t\t}\n\t\treturn TriTrue, nil"
+  },
+  {
+    "name": "sort-nulls-placement",
+    "why": "BROAD: inverts NULLS FIRST/LAST in the executor's in-memory sort; changes row ORDER only, so a multiset-only assertion is blind to it",
+    "file": "pkg/recordlayer/query/executor/executor.go",
+    "from": "\t\t\t\t\tif k.NullsFirst {\n\t\t\t\t\t\treturn iNil\n\t\t\t\t\t}\n\t\t\t\t\treturn jNil",
+    "to": "\t\t\t\t\tif k.NullsFirst {\n\t\t\t\t\t\treturn jNil\n\t\t\t\t\t}\n\t\t\t\t\treturn iNil"
+  },
+  {
+    "name": "sort-direction",
+    "why": "BROAD: inverts ASC/DESC in the executor's in-memory sort; the broadest ordering defect available",
+    "file": "pkg/recordlayer/query/executor/executor.go",
+    "from": "\t\t\t\tif k.Desc {\n\t\t\t\t\treturn cmp > 0\n\t\t\t\t}\n\t\t\t\treturn cmp < 0",
+    "to": "\t\t\t\tif k.Desc {\n\t\t\t\t\treturn cmp < 0\n\t\t\t\t}\n\t\t\t\treturn cmp > 0"
+  },
+  {
+    "name": "is-null-inverted",
+    "why": "BROAD: IS NULL returns FALSE for NULL and TRUE otherwise; changes which rows QUALIFY",
+    "file": "pkg/recordlayer/query/plan/cascades/predicates/comparisons.go",
+    "from": "\tcase ComparisonIsNull:\n\t\tif left == nil {\n\t\t\treturn TriTrue, nil\n\t\t}\n\t\treturn TriFalse, nil",
+    "to": "\tcase ComparisonIsNull:\n\t\tif left == nil {\n\t\t\treturn TriFalse, nil\n\t\t}\n\t\treturn TriTrue, nil"
+  },
+  {
+    "name": "is-not-null-inverted",
+    "why": "BROAD: the IS NOT NULL twin of the above; a corpus can cover one spelling and not the other",
+    "file": "pkg/recordlayer/query/plan/cascades/predicates/comparisons.go",
+    "from": "\tcase ComparisonIsNotNull:\n\t\tif left == nil {\n\t\t\treturn TriFalse, nil\n\t\t}\n\t\treturn TriTrue, nil",
+    "to": "\tcase ComparisonIsNotNull:\n\t\tif left == nil {\n\t\t\treturn TriTrue, nil\n\t\t}\n\t\treturn TriFalse, nil"
+  }
+]

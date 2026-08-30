@@ -36,8 +36,11 @@ go_test(
         "collision_test.go",
         "corpus_shared_test.go",
         "determinism_test.go",
+        "eligibility_census_test.go",
+        "excluded_shape_hunt_fdb_test.go",
         "explain_alias_fdb_test.go",
         "export_test.go",
+        "in_collapse_arity_test.go",
         "inapplicable_test.go",
         "nest_tag_test.go",
         "nested_axis_classify_test.go",
@@ -46,21 +49,56 @@ go_test(
         "nested_outer_multileg_fdb_test.go",
         "oracle_detectors_test.go",
         "pipeline_test.go",
+        "plan_diversity_hunt_fdb_test.go",
         "pr_summary_test.go",
+        "predicate_equivalence_fdb_test.go",
+        "qov_binding_shape_test.go",
+        "rewrite_soundness_test.go",
+        "rule_inventory_test.go",
         "second_plan_fdb_test.go",
         "sweep_derivation_test.go",
         "tlp_render_test.go",
+        "unstable_subset_test.go",
     ],
     # keep: the determinism gate regenerates every COMMITTED file from its seed,
     # so it needs the corpus the sibling package owns.
     data = ["//pkg/relational/conformance/factorycorpus:testdata"],
     embed = [":factory"],
+    # keep: the hunts read their seed range, worker count and wall-clock budget
+    # from the environment, and Bazel does NOT pass the ambient environment into
+    # a test. Without declaring them here, every `HUNT_BUDGET=… bazelisk test`
+    # instruction in those files is silently ignored and the hunt runs its
+    # 25-to-40-seed default — a green that answers a question nobody asked.
+    #
+    # Declared empty so the default still applies when the operator passes
+    # nothing; `--test_env=NAME=value` then overrides. gazelle preserves this
+    # block because of the `keep` directive above.
+    env = {
+        "HUNT_BUDGET": "",
+        "HUNT_SEED_START": "",
+        "HUNT_SEEDS": "",
+        "HUNT_WORKERS": "",
+        "EXCL_SEED_START": "",
+        "EXCL_SEEDS": "",
+        "EXCL_WORKERS": "",
+        "FULL_SEED_START": "",
+        "FULL_SEEDS": "",
+        "FULL_WORKERS": "",
+        "NEST_SEED_START": "",
+        "NEST_SEEDS": "",
+        "NEST_WORKERS": "",
+        "EQUIV_SEED_START": "",
+        "EQUIV_SEEDS": "",
+        "EQUIV_WORKERS": "",
+    },
     tags = [
         "exclusive",
         "resources:memory:3300",
     ],
     deps = [
+        "//pkg/recordlayer/query/plan/cascades",
         "//pkg/recordlayer/query/plan/cascades/predicates",
+        "//pkg/relational/api",
         "//pkg/relational/conformance/explaindiff",
         "//pkg/relational/conformance/factorycorpus",
         "//pkg/relational/conformance/rowdiff",

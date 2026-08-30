@@ -77,6 +77,27 @@ func (m Manifest) SummaryMarkdown(runURL string) string {
 	// a statement about the engine rather than about the batch.
 	fmt.Fprintf(&b, "| name collisions | %d |\n", m.NameCollisions)
 	fmt.Fprintf(&b, "| findings | %d |\n", m.Findings)
+	// Engine errors are lifted OUT of the skip ledger and onto the funnel,
+	// beside `findings`, because they are the one skip class that is a
+	// statement about the ENGINE rather than about the batch.
+	//
+	// The generator emits only shapes it believes are supported, so a query the
+	// engine refuses to execute is a defect signal. It is correctly not
+	// BLESSED — freezing a rejection would pin a limitation as intended
+	// behaviour — but "do not bless" and "do not report" are different
+	// decisions, and collapsing them puts the signal in a counter beside
+	// `degenerate partition`, where nothing triages it and `findings | 0` reads
+	// as a clean batch.
+	//
+	// Concretely: the QOV-binding defect fixed in InComparisonToExplodeRule was
+	// an EXECUTION error on a query that is fully TLP-eligible (a WHERE, no
+	// aggregate, union, derived table, LIMIT, OFFSET or DISTINCT), so the
+	// factory could have generated it. Had a batch drawn that seed it would
+	// have been counted here and reported nothing. Measured over the 11 batches
+	// of PR #745 — seeds 1896000..1947999, ~24000 candidates — this class is
+	// ZERO, so surfacing it costs no noise and is a rare signal made loud.
+	fmt.Fprintf(&b, "| engine errors (not findings — see below) | %d |\n",
+		m.SkipsByReason["engine error"]+m.SkipsByReason["plan-error"])
 
 	writeCountLedger(&b, "Skips by reason", m.SkipsByReason)
 	writeCountLedger(&b, "Blessings", m.Blessings)

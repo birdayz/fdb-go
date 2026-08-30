@@ -19828,9 +19828,66 @@ validator before the branch-row derivation, not to reword the message. Until
 then the corpus row for that shape pins the SQLSTATE only, and the explaindiff
 golden carries the exact message.
 
-## The rowdiff QOV binding failure has a three-clause minimal shape
+## The rowdiff QOV binding failure — FIXED
 
-`ROWDIFF_SEED_START=3495589 ROWDIFF_SEEDS=1` reproduces on master; the sweep is
+**Root cause: `InComparisonToExplodeRule`'s single-element collapse re-minted
+the inner quantifier.** The collapse (`col IN (v)` → `col = v`, reached whenever
+the IN list DEDUPLICATES to one value) built a fresh `ForEachQuantifier` over
+the inner reference and rebased the predicates onto its new alias. The
+expression it yielded is an alternative in the SAME memo group as the original
+filter, and a `LogicalFilterExpression`'s result value is a QOV over its inner
+quantifier's alias — so that alternative published a DIFFERENT result
+correlation from the group's other members. Any correlation held from outside
+the group then resolved against an alias the chosen alternative does not carry,
+and the executor failed to bind it.
+
+The multi-element path in the same rule mints quantifiers safely because it does
+not yield them bare: it wraps them in a `SelectExpression` whose own result
+value re-exports the inner filter, keeping the new aliases encapsulated.
+`FilterDropTruePredicatesRule` is the closer analogue to the collapse branch —
+same inner, rewritten predicates — and it already reused `f.GetInner()`. The fix
+makes the collapse do the same; the rebase went with the mint, since the
+predicates already carry the original alias.
+
+Localized by disabling one rule at a time on the failing query: of 15
+candidates, only `InComparisonToExplodeRule` made it run clean.
+
+It is an EXECUTION failure, not a planning one — the message comes from
+`quantifiedObjectValue.Evaluate` (`values.go:5426`). Planning every affected
+shape through `embedded.PlanQueryForTest` returns no error at all, so a
+plan-only probe reports "cannot reproduce" against the live defect.
+
+Verified against the independent Oracle M reference, not merely by the absence
+of an error: seed 88001928 went from `comparisons=21 mismatch=1 mismatchRows=3`
+to `comparisons=24 mismatch=0` — the three previously-failing queries now
+execute AND return the reference rows.
+
+Pinned by `TestFDB_QOVBindingMinimalShape`
+(`pkg/relational/conformance/factory/qov_binding_shape_test.go`), which drives a
+24-arm cross and now requires ZERO arms to error. Note the guard's direction is
+INVERTED from the one it was born with: while the defect was live it floored the
+count at 3 and watched for the shape moving; zero is now the steady state, so
+the alarm is GROWTH — any arm erroring means the mint came back. Reverting the
+fix reddens exactly the three arms below, which is how the guard was verified.
+
+### The shape it had while live (kept so a future non-zero is readable)
+
+The original entry below recorded the trigger as "an OUTER join, a
+DUPLICATE-valued `IN` list, and an INDEXED column of the NULL-PADDED side",
+measured over LEFT JOIN only. Re-measured over the full 24-arm cross that was
+**wrong on two of its three clauses**: the discriminator is the join clause's
+RIGHT-HAND relation whichever side that is (under `RIGHT JOIN` it is the
+PRESERVED side and still failed), and the index is load-bearing only for `LEFT
+JOIN` — `RIGHT … r.s IN ('b ','b ')` failed with no index on `s` at all. The
+three failing arms were `LEFT r.c dup`, `RIGHT r.c dup`, `RIGHT r.s dup`.
+
+The IN-list arity was narrower still: only a list of exactly TWO identical
+elements failed. `IN (7)`, `IN (7,7,7)`, `IN (7,1,7)` and `IN (7,7) AND r.id > 0`
+all ran clean, on fresh connections and in both list orders.
+
+### Original entry (superseded, kept for provenance)
+
+`ROWDIFF_SEED_START=3495589 ROWDIFF_SEEDS=1` reproduced on master; the sweep was
 red on it. All three of the seed's failing variants differ only in their SELECT
 list and fail identically with
 
@@ -19857,8 +19914,43 @@ from this table, which is the part that matters):
 | `LEFT JOIN … WHERE r.c IN (1, 1)` (`c` is NOT indexed) | OK |
 | `LEFT JOIN …` with no `WHERE` | OK |
 
-So the trigger is the conjunction of three things and no fewer: an OUTER join, a
-DUPLICATE-valued `IN` list, and an INDEXED column of the NULL-PADDED side.
+**The shape above is SUPERSEDED — it was measured over LEFT JOIN only, and two
+of its three clauses are wrong.** A rowdiff sweep of seeds 88000001..88002326
+hit the same defect at seed 88001928 (`ROWDIFF_SEED_START=88001928
+ROWDIFF_SEEDS=1` reproduces it standalone in ~5s) on a RIGHT JOIN whose
+predicate reads the PRESERVED side — an arm the table above records as OK.
+
+Re-measured over the full 24-arm cross (LEFT/RIGHT/INNER x predicate on `l`/`r`
+x indexed/unindexed column x duplicate/distinct `IN`), exactly 3 arms fail:
+
+| arm | result |
+| --- | --- |
+| `LEFT  … WHERE r.c IN (7, 7)` (`c` indexed) | **ERR** |
+| `RIGHT … WHERE r.c IN (7, 7)` (`c` indexed) | **ERR** |
+| `RIGHT … WHERE r.s IN ('b ','b ')` (`s` NOT indexed) | **ERR** |
+| every `INNER` arm | OK |
+| every arm whose `IN` list is DISTINCT | OK |
+| every arm whose predicate reads `l` | OK |
+| `LEFT  … WHERE r.s IN ('b ','b ')` (`s` NOT indexed) | OK |
+
+Corrected reading:
+
+- **Not the NULL-PADDED side.** It is the join clause's RIGHT-HAND relation
+  `r`, whichever side that is. Under `RIGHT JOIN` `r` is PRESERVED and still
+  fails; under `LEFT JOIN` the preserved `l` is clean. Every `l.*` arm runs, in
+  all three join types.
+- **Not always an INDEXED column.** `RIGHT … r.s IN ('b ','b ')` fails with no
+  index on `s`. The index is load-bearing only for `LEFT JOIN`.
+- The two surviving clauses hold: OUTER-ness and the DUPLICATE `IN` value.
+
+Pinned by `TestFDB_QOVBindingMinimalShape` in
+`pkg/relational/conformance/factory/qov_binding_shape_test.go`, which drives all
+24 arms and asserts the count, so this description cannot drift from the code
+again. Note it is an EXECUTION failure, not a planning one — the message comes
+from `quantifiedObjectValue.Evaluate` (`values.go:5426`), and planning every arm
+through `embedded.PlanQueryForTest` returns no error at all, so a plan-only
+probe passes against the live defect.
+
 Neither the `ORDER BY` nor the projection participates. The failing QOV is a
 planner-MINTED `q$N` over the whole `T_RD` row, which is the same class as
 `pkg/relational/sqldriver/outer_join_nested_field_binding_fdb_test.go` — "the

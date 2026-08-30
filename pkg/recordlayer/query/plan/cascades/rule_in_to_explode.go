@@ -163,20 +163,44 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	}
 
 	// Single-element IN → simple equality.
+	//
+	// The inner quantifier is REUSED, not re-minted. This rewrite changes only
+	// the predicate list; the expression it yields is an alternative in the
+	// SAME memo group as `f`, and a LogicalFilterExpression's result value is a
+	// QOV over its inner quantifier's alias. Minting a fresh quantifier here
+	// therefore published an alternative whose RESULT CORRELATION differed from
+	// the group's other members, so a correlation held from OUTSIDE the group
+	// resolved against an alias this alternative does not carry, and the
+	// executor failed with `exact QOV "q$N" ... has no declared runtime
+	// binding`. Planning succeeded; only execution failed, which is why a
+	// plan-only probe of every affected shape comes back clean.
+	//
+	// The shapes that reached it, enumerated rather than characterised, since
+	// the characterisation is what was wrong before: over the 24-arm cross of
+	// LEFT/RIGHT/INNER x predicate on the left/right relation x indexed/
+	// unindexed column x duplicate/distinct IN list, exactly three failed —
+	// LEFT with an indexed column, RIGHT with an indexed column, and RIGHT with
+	// an UNINDEXED one, all reading the join clause's RIGHT-HAND relation with
+	// a duplicate IN list. NOT the null-padded side: under RIGHT JOIN that
+	// relation is the PRESERVED one. NOT always indexed either. See
+	// TestFDB_QOVBindingMinimalShape.
+	//
+	// The multi-element path below is free to mint quantifiers precisely
+	// because it does NOT yield them bare: it wraps them in a SelectExpression
+	// whose own result value re-exports the inner filter, so the new aliases
+	// stay encapsulated. FilterDropTruePredicatesRule is the closer analogue to
+	// this branch — same inner, rewritten predicates — and it likewise reuses
+	// f.GetInner().
+	//
+	// The predicates already reference f.GetInner()'s alias, so no rebase is
+	// needed either; the rebase existed only to follow the mint.
 	if len(list) == 1 {
 		eqCmp := predicates.NewLiteralComparison(predicates.ComparisonEquals, list[0])
 		eqPred := predicates.NewComparisonPredicate(inPred.Operand, eqCmp)
 		newPreds := make([]predicates.QueryPredicate, 0, len(otherPreds)+1)
 		newPreds = append(newPreds, eqPred)
 		newPreds = append(newPreds, otherPreds...)
-		innerQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
-		newPreds, err = rebaseInExplodePredicates(
-			newPreds, f.GetInner().GetAlias(), innerQ.GetAlias())
-		if err != nil {
-			call.Fail(err)
-			return
-		}
-		filter, err := expressions.NewLogicalFilterExpression(newPreds, innerQ)
+		filter, err := expressions.NewLogicalFilterExpression(newPreds, f.GetInner())
 		if err != nil {
 			call.Fail(err)
 			return
@@ -226,14 +250,43 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	innerPreds = append(innerPreds, eqPred)
 	innerPreds = append(innerPreds, otherPreds...)
 
-	innerScanQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
-	innerPreds, err = rebaseInExplodePredicates(
-		innerPreds, f.GetInner().GetAlias(), innerScanQ.GetAlias())
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	innerFilter, err := expressions.NewLogicalFilterExpression(innerPreds, innerScanQ)
+	// The BOUND inner quantifier is reused, not re-memoized.
+	//
+	// Reference.Get() returns the FIRST member only — it is the convenience
+	// accessor for single-member references, and explored multi-member
+	// references are meant to be iterated with Members/AllMembers. So
+	// `MemoizeExpression(innerRef.Get())` published a COPY of the inner group
+	// holding exactly one of its alternatives and dropped every other one the
+	// inner had accumulated.
+	//
+	// That is not a wrong answer — it is a silently NARROWED SEARCH SPACE, and
+	// the corpus recorded the consequence without anyone reading it: restoring
+	// the alternatives moves 18 plan-shape headers across 5 committed *_in__*
+	// family files, which means those scenarios had been blessing plans WORSE
+	// than the ones the planner can now reach. Rows are unchanged. The
+	// transition is carried by a retirement ledger under
+	// factorycorpus/retirements/.
+	//
+	// The vendored-corpus golden moves by exactly ONE query, and it shows the
+	// shape of the improvement:
+	//
+	//	Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, *] COVERING)))
+	//	Fetch(InJoin(PredicatesFilter(IndexScan(...COVERING)), binding))
+	//
+	// The IN list now drives an index probe instead of sitting as a residual
+	// filter. Note for anyone re-running that gate: its failure prints a
+	// POSITIONAL line count ("10126 line(s) differ"), which one inserted line
+	// inflates to most of the file. Diff the regenerated golden before believing
+	// the number.
+	//
+	// Java does not do this: InComparisonToExplodeRule re-adds the bound inner
+	// quantifiers verbatim (transformedQuantifiers.addAll(bindings.getAll(
+	// innerQuantifierMatcher))) and mints exactly one quantifier, over the
+	// ExplodeExpression. Reusing f.GetInner() is that behaviour.
+	//
+	// The rebase went with the mint: the predicates already carry
+	// f.GetInner()'s alias, so source == target made it a no-op copy.
+	innerFilter, err := expressions.NewLogicalFilterExpression(innerPreds, f.GetInner())
 	if err != nil {
 		call.Fail(err)
 		return
@@ -259,32 +312,6 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	call.Yield(selectExpr)
-}
-
-func rebaseInExplodePredicates(
-	input []predicates.QueryPredicate,
-	source, target values.CorrelationIdentifier,
-) ([]predicates.QueryPredicate, error) {
-	if source == target {
-		return append([]predicates.QueryPredicate(nil), input...), nil
-	}
-	aliases, err := values.NewAliasMap([]values.AliasPair{{Source: source, Target: target}})
-	if err != nil {
-		return nil, err
-	}
-	result := make([]predicates.QueryPredicate, len(input))
-	for i, predicate := range input {
-		result[i], err = predicates.TransformEmbeddedValuesChecked(
-			predicate,
-			func(value values.Value) (values.Value, error) {
-				return values.RebaseValueChecked(value, aliases)
-			},
-		)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return result, nil
 }
 
 // exactInExplodeElementType chooses the exact type carried by each explode
