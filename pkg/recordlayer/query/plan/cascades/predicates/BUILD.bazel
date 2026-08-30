@@ -56,6 +56,7 @@ go_test(
         "predicates_equivalence_test.go",
         "predicates_test.go",
         "predrow_test.go",
+        "range_constraints_rebuild_test.go",
         "rebase_fail_closed_test.go",
         "rebase_test.go",
         "scan_range_classification_test.go",

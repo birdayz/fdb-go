@@ -1,6 +1,8 @@
 package predicates
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -341,13 +343,38 @@ func transformRangeConstraintsChecked(
 ) (*RangeConstraints, error) {
 	changed := false
 	builder := NewRangeConstraintsBuilder()
+	// AddComparisonMaybe returns false when canBeUsedInScanPrefix rejects the
+	// comparison, and the builder then holds nothing for it. Discarding that
+	// bool DROPS THE PREDICATE: the rebuilt constraints are weaker than the ones
+	// handed in, silently, and a filter built from them returns rows the
+	// original excluded. Measured before this check existed — a constraint set
+	// of {> 1, != 5} came back holding only the `>`, with a nil error.
+	//
+	// It is unreachable from production today: the only construction path is
+	// this builder, which applies the same gate on the way in, and
+	// transformComparisonChecked rewrites Operand and QueryVector while leaving
+	// Type alone, so a comparison that entered can always re-enter. That makes
+	// this an assertion rather than a live fix — but the drop is a wrong-answer
+	// failure with no signal, the function already returns an error, and its
+	// name already promises the check.
+	add := func(kind string, translated Comparison) error {
+		if builder.AddComparisonMaybe(translated) {
+			return nil
+		}
+		return fmt.Errorf(
+			"transformRangeConstraintsChecked: %s comparison %s cannot bound a scan prefix "+
+				"after translation, and rebuilding without it would silently weaken the range",
+			kind, translated.Type.Symbol())
+	}
 	for _, comparison := range ranges.GetCompilableComparisons() {
 		translated, comparisonChanged, err := transformComparisonChecked(comparison, transform)
 		if err != nil {
 			return nil, err
 		}
 		changed = changed || comparisonChanged
-		builder.AddComparisonMaybe(translated)
+		if err := add("compilable", translated); err != nil {
+			return nil, err
+		}
 	}
 	for _, comparison := range ranges.GetDeferredRanges() {
 		translated, comparisonChanged, err := transformComparisonChecked(comparison, transform)
@@ -355,7 +382,9 @@ func transformRangeConstraintsChecked(
 			return nil, err
 		}
 		changed = changed || comparisonChanged
-		builder.AddComparisonMaybe(translated)
+		if err := add("deferred", translated); err != nil {
+			return nil, err
+		}
 	}
 	if !changed {
 		return ranges, nil
@@ -395,20 +424,23 @@ func transformComparison(cmp Comparison, transform func(values.Value) values.Val
 // a compile-time one). Blindly preserving the old compilable/deferred split
 // matched only Java's builder-failure fallback (review catch).
 func transformRangeConstraints(rc *RangeConstraints, transform func(values.Value) values.Value) (*RangeConstraints, bool) {
-	changed := false
-	b := NewRangeConstraintsBuilder()
-	for _, c := range rc.GetCompilableComparisons() {
-		nc, cChanged := transformComparison(c, transform)
-		changed = changed || cChanged
-		b.AddComparisonMaybe(nc)
-	}
-	for _, c := range rc.GetDeferredRanges() {
-		nc, cChanged := transformComparison(c, transform)
-		changed = changed || cChanged
-		b.AddComparisonMaybe(nc)
-	}
-	if !changed {
+	// Delegates rather than repeating the rebuild loop. The two copies were
+	// identical apart from the error channel, and BOTH discarded
+	// AddComparisonMaybe's bool — which is the signal that the builder held
+	// nothing for that comparison, so the rebuilt range is weaker than the one
+	// handed in. One loop, one gate, so the halves cannot drift.
+	//
+	// This spine has no error channel by design (it is the pointer-stable
+	// non-fallible twin), so a rejection returns the ORIGINAL constraints and
+	// "unchanged". That preserves the predicate instead of silently weakening
+	// it: leaving a value un-rebased surfaces downstream as a loud unbaked-ref
+	// failure, while dropping a conjunct returns rows the original excluded and
+	// says nothing. Unreachable either way today — see the checked twin.
+	out, err := transformRangeConstraintsChecked(rc, func(v values.Value) (values.Value, error) {
+		return transform(v), nil
+	})
+	if err != nil {
 		return rc, false
 	}
-	return b.Build(), true
+	return out, out != rc
 }
