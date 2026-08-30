@@ -1,0 +1,43 @@
+{
+  "format_version": 2,
+  "rfc": "201",
+  "date": "2026-08-30",
+  "reason": "InComparisonToExplodeRule's multi-element path built its inner filter's quantifier with MemoizeExpression(innerRef.Get()). Reference.Get() returns the FIRST member only -- it is the accessor for single-member references, and explored multi-member references are meant to be iterated with Members/AllMembers -- so the rule republished a COPY of the inner group holding one alternative and discarded every other alternative the inner had accumulated. Java does not do this: its InComparisonToExplodeRule re-adds the bound inner quantifiers verbatim (transformedQuantifiers.addAll(bindings.getAll(innerQuantifierMatcher))) and mints exactly one quantifier, over the ExplodeExpression. The fix reuses the bound f.GetInner(), which is that behaviour, and drops the accompanying rebase because the predicates already carry that alias (source == target made it a no-op copy). WHAT MOVED: restoring the discarded alternatives lets the planner reach plans it could not previously see, so the plan-shape hash and the dedup key derived from it move for 18 of 8150 scenarios across 5 *_in__* family files. Those scenarios had been blessing plans WORSE than the engine can produce, for as long as the defect existed. The vendored-corpus plan-shape golden moves by exactly ONE query in the same direction and it is worth recording which, because it shows the shape of the improvement: Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, *] COVERING))) becomes Fetch(InJoin(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, *] COVERING)), binding)) -- the IN list now drives an index probe instead of sitting as a residual filter. ROWS ARE UNCHANGED, checked twice: factory-rebless-plan-shapes recomputes the candidate, all four renderings, the schema, the setup and the frozen rows and ERRORS on any difference in them rather than absorbing it, and TestFDB_FactoryCorpusFull executes the whole re-blessed corpus against a real cluster. Found by a predicate-equivalence hunt added in the same branch; the multi-element occurrence was identified by Graefe reviewing the fix to the single-element collapse, a separate quantifier-minting defect in the same rule.",
+  "base_commit": "d80385dcd5eac95a88185f5b9b0d920039b8baa8",
+  "before_census_sha256": "8145e3ff6b19f86b48148b78c16547a08924fd9fff2ffa558a260f660201e39e",
+  "after_census_sha256": "f880f87f07f5e7282714360f9bde0ba98e746d08565098c597cb8aa294e950e0",
+  "before_tree_sha256": "5ed5876a0ce70b0a343a4dbe8fb7eb54fa23dc5c4d67100b1c1a6b12faca2ead",
+  "after_tree_sha256": "e9475d69742b9a53d053938b81d808c403b23b43e5626f273f3c4505c06cab4a",
+  "changes": [
+    {
+      "name": "join2_inner__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "26a99b5bb531e539aa8729a4c216ebf27e6158a8cc0be1123c523eceeca1fa6a",
+      "new_sha256": "d3f140e67c3abc2cedbab12cc7232f98e476cf40c12df6fb9217a5956e402f41"
+    },
+    {
+      "name": "join3_comma__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "471ea243c5243ba9b2f14783572b353c429990e1d5d4d441405e6a7d53ef4bea",
+      "new_sha256": "4fbc0eaa19319bba9a017484c74ec5bb79afd09f34bbdcdaf7eb0b39f5d8ab98"
+    },
+    {
+      "name": "join3_inner__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "84fb12ca98a65db43f37a16682977931483a8bbaff52d1cd8497b0b278a866b6",
+      "new_sha256": "7fd5b0260535c6c8b903bff1e4a4c3558fd2cecd10b0913986bc97611a83633d"
+    },
+    {
+      "name": "join3_inner__and_in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "45e44133676902a32c3dd81161a9f31681c0eb6e65602f89553bf5510be80ea9",
+      "new_sha256": "eeb6dc8bdced84d177b361fc6eed28c76c23d9a6a1851a5d7a5ab5bec080114e"
+    },
+    {
+      "name": "single__and_cmp-in__none.yamsql",
+      "disposition": "replaced",
+      "old_sha256": "e7950ab6f042c494e7c99210a596d3ef2be6f57c94fa9ec21f56df47a3933759",
+      "new_sha256": "b577ce172bd73e97c82259c3832eb4cae35a86fb17066f9fea7abaab879157bf"
+    }
+  ]
+}

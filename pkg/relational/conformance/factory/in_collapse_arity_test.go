@@ -105,7 +105,7 @@ func TestFDB_InCollapseArityAllRun(t *testing.T) {
 			} else if err != nil {
 				status = "other-err: " + err.Error()
 			}
-			fmt.Printf("INARITY %-4s %-28s %s\n", label, p, status)
+			t.Logf("INARITY %-4s %-28s %s\n", label, p, status)
 			if isQOVBindingError(err) {
 				t.Errorf("%s: %q raised the QOV binding error — InComparisonToExplodeRule's "+
 					"single-element collapse must reuse f.GetInner() instead of minting a fresh "+

@@ -306,7 +306,7 @@ func runShapeHuntGen(
 					// hard way — a 67-minute run of this test produced not one
 					// line of output while it worked.
 					for _, m := range r.Mismatches {
-						fmt.Printf("%s MISMATCH seed=%d scanLimit=%d\n%s\n", tag, seed, scanLimit, m.String())
+						t.Logf("%s MISMATCH seed=%d scanLimit=%d\n%s\n", tag, seed, scanLimit, m.String())
 					}
 					// Every 500 cases, with elapsed and rate. The interval is
 					// tuned for a LOCAL grind, where the operator is sizing the
@@ -316,7 +316,7 @@ func runShapeHuntGen(
 					// the range you picked will finish.
 					if cases%progressEvery == 0 {
 						el := time.Since(began)
-						fmt.Printf("%s progress cases=%d executed=%d mismatches=%d elapsed=%s rate=%.1f seeds/s\n",
+						t.Logf("%s progress cases=%d executed=%d mismatches=%d elapsed=%s rate=%.1f seeds/s\n",
 							tag, cases, executed, len(mismatches)+len(r.Mismatches),
 							el.Round(time.Second), float64(cases)/2/el.Seconds())
 					}
@@ -339,7 +339,7 @@ func runShapeHuntGen(
 	var walked uint64
 	for s := start; s < start+count; s++ {
 		if time.Now().After(deadline) {
-			fmt.Printf("%s BUDGET EXHAUSTED after %s: walked %d of %d seeds. This is a NORMAL end, "+
+			t.Logf("%s BUDGET EXHAUSTED after %s: walked %d of %d seeds. This is a NORMAL end, "+
 				"not a failure — the seed count is an upper bound and the clock is what sizes the run. "+
 				"Coverage below is what was actually swept.\n",
 				tag, budget, walked, count)
@@ -351,16 +351,16 @@ func runShapeHuntGen(
 	close(seeds)
 	wg.Wait()
 
-	fmt.Printf("%s seeds=%d..%d walked=%d cases=%d executed=%d infra-errs=%d mismatches=%d\n",
+	t.Logf("%s seeds=%d..%d walked=%d cases=%d executed=%d infra-errs=%d mismatches=%d\n",
 		tag, start, start+count-1, walked, cases, executed, infraErrs, len(mismatches))
 	var keys []string
 	for k := range byClass {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	fmt.Printf("%s --- query classes swept ---\n", tag)
+	t.Logf("%s --- query classes swept ---\n", tag)
 	for _, k := range keys {
-		fmt.Printf("%s   %-16s %6d\n", tag, k, byClass[k])
+		t.Logf("%s   %-16s %6d\n", tag, k, byClass[k])
 	}
 
 	// Vacuity guards. A hunt over an empty population reports the same green
@@ -380,10 +380,10 @@ func runShapeHuntGen(
 			t.Fatalf("%s VACUOUS: arm scanLimit=%d executed zero queries", tag, arm)
 		}
 	}
-	fmt.Printf("%s arms: unpaged=%d paged(scanLimit=2)=%d\n", tag, byArm[0], byArm[2])
+	t.Logf("%s arms: unpaged=%d paged(scanLimit=2)=%d\n", tag, byArm[0], byArm[2])
 
 	for i, m := range mismatches {
-		fmt.Printf("%s MISMATCH %d:\n%s\n", tag, i, m.String())
+		t.Logf("%s MISMATCH %d:\n%s\n", tag, i, m.String())
 	}
 	if len(mismatches) > 0 {
 		t.Fatalf("%s: %d Oracle-M mismatches", tag, len(mismatches))

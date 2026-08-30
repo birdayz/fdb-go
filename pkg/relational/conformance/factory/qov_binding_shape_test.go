@@ -158,7 +158,7 @@ func TestFDB_QOVBindingMinimalShape(t *testing.T) {
 			}
 		}
 	}
-	fmt.Println("QOV --- full matrix (join / predicate alias / column / duplicate IN) ---")
+	t.Log("QOV --- full matrix (join / predicate alias / column / duplicate IN) ---")
 	for _, a := range matrix {
 		idx := "indexed"
 		if a.col == "s" {
@@ -168,7 +168,7 @@ func TestFDB_QOVBindingMinimalShape(t *testing.T) {
 		if a.gotErr {
 			status = "QOV-ERROR"
 		}
-		fmt.Printf("QOV   %-5s %s.%s %-9s dup=%-5v  %s\n", a.join, a.alias, a.col, idx, a.dupIn, status)
+		t.Logf("QOV   %-5s %s.%s %-9s dup=%-5v  %s\n", a.join, a.alias, a.col, idx, a.dupIn, status)
 	}
 	// ZERO arms may error. The alarm direction here is deliberately the
 	// opposite of the one this probe was born with.

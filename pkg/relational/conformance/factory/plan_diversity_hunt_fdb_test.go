@@ -224,7 +224,7 @@ func TestFDB_PlanDiversityHunt(t *testing.T) {
 				seen++
 				if seen%plandivProgressEvery == 0 {
 					el := time.Since(began)
-					fmt.Printf("HUNT progress seeds=%d queries=%d moved=%d executed=%d findings=%d "+
+					t.Logf("HUNT progress seeds=%d queries=%d moved=%d executed=%d findings=%d "+
 						"elapsed=%s rate=%.2f seeds/s\n",
 						seen, total.queries, total.moved, total.executed, len(total.findings),
 						el.Round(time.Second), float64(seen)/el.Seconds())
@@ -235,7 +235,7 @@ func TestFDB_PlanDiversityHunt(t *testing.T) {
 	}
 	for s := start; s < start+count; s++ {
 		if time.Now().After(deadline) {
-			fmt.Printf("HUNT BUDGET EXHAUSTED after %s: walked %d of %d seeds. NORMAL end — the seed "+
+			t.Logf("HUNT BUDGET EXHAUSTED after %s: walked %d of %d seeds. NORMAL end — the seed "+
 				"count is an upper bound and the clock sizes the run.\n", budget, walked, count)
 			break
 		}
@@ -244,27 +244,27 @@ func TestFDB_PlanDiversityHunt(t *testing.T) {
 	}
 	close(seeds)
 	wg.Wait()
-	fmt.Printf("HUNT walked=%d of %d seeds in %s\n", walked, count, time.Since(began).Round(time.Second))
+	t.Logf("HUNT walked=%d of %d seeds in %s\n", walked, count, time.Since(began).Round(time.Second))
 
-	fmt.Printf("HUNT seeds=%d..%d queries=%d planned=%d moved=%d executed=%d empty-skips=%d base-errs=%d count-only=%d findings=%d\n",
+	t.Logf("HUNT seeds=%d..%d queries=%d planned=%d moved=%d executed=%d empty-skips=%d base-errs=%d count-only=%d findings=%d\n",
 		start, start+count-1, total.queries, total.planned, total.moved,
 		total.executed, total.skipEmpty, total.baseErr, total.countOnly, len(total.findings))
-	fmt.Println("HUNT --- plan moved / always-executed, by perturbation ---")
-	dumpCounts("HUNT", total.movedBy)
-	fmt.Println("HUNT --- planning errors by perturbation ---")
-	dumpCounts("HUNT", total.planErrs)
-	fmt.Println("HUNT --- execution errors by perturbation ---")
-	dumpCounts("HUNT", total.execErrs)
+	t.Log("HUNT --- plan moved / always-executed, by perturbation ---")
+	dumpCounts(t, "HUNT", total.movedBy)
+	t.Log("HUNT --- planning errors by perturbation ---")
+	dumpCounts(t, "HUNT", total.planErrs)
+	t.Log("HUNT --- execution errors by perturbation ---")
+	dumpCounts(t, "HUNT", total.execErrs)
 	for k, v := range total.execErrSamples {
 		for _, s := range v {
-			fmt.Printf("HUNT EXECERR %s: %s\n", k, s)
+			t.Logf("HUNT EXECERR %s: %s\n", k, s)
 		}
 	}
-	fmt.Println("HUNT --- findings by perturbation ---")
-	dumpCounts("HUNT", total.findingsBy)
+	t.Log("HUNT --- findings by perturbation ---")
+	dumpCounts(t, "HUNT", total.findingsBy)
 
 	for _, f := range total.findings {
-		fmt.Println("HUNT FINDING " + f)
+		t.Log("HUNT FINDING " + f)
 	}
 
 	// Vacuity guards. A hunt that planned nothing, moved no plan, or executed
@@ -294,6 +294,22 @@ func TestFDB_PlanDiversityHunt(t *testing.T) {
 	if ruleMoved == 0 {
 		t.Fatal("HUNT VACUOUS: no RULE perturbation ever changed a plan — OptDisabledPlannerRules is " +
 			"not reaching the planner, so every rule arm's agreement is vacuous")
+	}
+	// Moving a plan is not the same as COMPARING one. A rule arm can move a
+	// plan and then have every execution die into res.execErrs, and the arm's
+	// silence still reads as agreement — the floor above would pass. So the
+	// rule arms must also have produced comparisons: ruleMoved counts plans
+	// that differed, and this requires that at least some of them ran.
+	ruleExecuted := 0
+	for _, p := range portfolio {
+		if !p.alwaysExecute {
+			ruleExecuted += total.movedBy[p.name] - total.execErrs[p.name]
+		}
+	}
+	if ruleExecuted <= 0 {
+		t.Fatalf("HUNT VACUOUS: rule perturbations moved %d plans but none of them was successfully "+
+			"EXECUTED (%d execution errors) — nothing was compared, so the run proves nothing",
+			ruleMoved, len(total.execErrs))
 	}
 	// The continuation oracle is alwaysExecute, so its silence can only mean
 	// "never ran". Floored separately for that reason.
@@ -664,7 +680,8 @@ func diffRows(ordered bool, a, b [][]any) string {
 	return ""
 }
 
-func dumpCounts(tag string, m map[string]int) {
+func dumpCounts(t *testing.T, tag string, m map[string]int) {
+	t.Helper()
 	type kv struct {
 		k string
 		v int
@@ -675,6 +692,6 @@ func dumpCounts(tag string, m map[string]int) {
 	}
 	sort.Slice(xs, func(i, j int) bool { return xs[i].v > xs[j].v })
 	for _, e := range xs {
-		fmt.Printf("%s   %-36s %6d\n", tag, e.k, e.v)
+		t.Logf("%s   %-36s %6d\n", tag, e.k, e.v)
 	}
 }

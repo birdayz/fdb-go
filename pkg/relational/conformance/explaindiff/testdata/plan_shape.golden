@@ -7783,12 +7783,13 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryScanPlan
 === in_list_pushdown.yaml#34
 sql:   SELECT id, region, plan FROM tp WHERE region = 'us' AND plan IN ('pro', 'free') ORDER BY id
-plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], InMemorySort([_current.ID#0 ASC], Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), [1 preds]))))
+plan:  Project([_current.ID#0, _current.REGION#1, _current.PLAN#2], InMemorySort([_current.ID#0 ASC], Fetch(InJoin(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, *] COVERING), [1 preds]), binding))))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryInMemorySortPlan
 shape:     RecordQueryFetchFromPartialRecordPlan
-shape:       RecordQueryPredicatesFilterPlan
-shape:         RecordQueryCoveringIndexPlan
+shape:       RecordQueryInJoinPlan
+shape:         RecordQueryPredicatesFilterPlan
+shape:           RecordQueryCoveringIndexPlan
 === in_list_pushdown.yaml#35
 sql:   SELECT id FROM tp WHERE plan = 'pro' AND region IN ('us', 'eu') ORDER BY id
 plan:  Project([_current.ID#0], PredicatesFilter(Scan(TP), [1 preds]))

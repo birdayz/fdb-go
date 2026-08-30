@@ -366,7 +366,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 				done++
 				if done%equivProgressEvery == 0 {
 					el := time.Since(began)
-					fmt.Printf("EQUIV progress seeds=%d compared=%d findings=%d elapsed=%s rate=%.2f seeds/s\n",
+					t.Logf("EQUIV progress seeds=%d compared=%d findings=%d elapsed=%s rate=%.2f seeds/s\n",
 						done, compared, len(findings), el.Round(time.Second), float64(done)/el.Seconds())
 				}
 				mu.Unlock()
@@ -375,7 +375,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 	}
 	for s := start; s < start+count; s++ {
 		if time.Now().After(deadline) {
-			fmt.Printf("EQUIV BUDGET EXHAUSTED: walked %d of %d seeds. NORMAL end.\n", walked, count)
+			t.Logf("EQUIV BUDGET EXHAUSTED: walked %d of %d seeds. NORMAL end.\n", walked, count)
 			break
 		}
 		seeds <- s
@@ -384,7 +384,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 	close(seeds)
 	wg.Wait()
 
-	fmt.Printf("EQUIV seeds=%d..%d walked=%d compared=%d skipped=%d unrendered=%d findings=%d elapsed=%s\n",
+	t.Logf("EQUIV seeds=%d..%d walked=%d compared=%d skipped=%d unrendered=%d findings=%d elapsed=%s\n",
 		start, start+count-1, walked, compared, skipped, unrendered, len(findings),
 		time.Since(began).Round(time.Second))
 	var keys []string
@@ -393,7 +393,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		fmt.Printf("EQUIV   rewrite %-24s applied %d\n", k, applied[k])
+		t.Logf("EQUIV   rewrite %-24s applied %d\n", k, applied[k])
 	}
 
 	// Every rewrite must have APPLIED at least once, or its silence says
@@ -408,7 +408,7 @@ func TestFDB_PredicateEquivalenceHunt(t *testing.T) {
 		}
 	}
 	for _, f := range findings {
-		fmt.Println("EQUIV FINDING " + f)
+		t.Log("EQUIV FINDING " + f)
 	}
 	if len(findings) > 0 {
 		t.Fatalf("EQUIV: %d predicate-equivalence findings", len(findings))

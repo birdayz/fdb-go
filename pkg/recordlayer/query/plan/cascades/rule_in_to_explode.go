@@ -250,14 +250,43 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 	innerPreds = append(innerPreds, eqPred)
 	innerPreds = append(innerPreds, otherPreds...)
 
-	innerScanQ := expressions.ForEachQuantifier(call.MemoizeExpression(innerRef.Get()))
-	innerPreds, err = rebaseInExplodePredicates(
-		innerPreds, f.GetInner().GetAlias(), innerScanQ.GetAlias())
-	if err != nil {
-		call.Fail(err)
-		return
-	}
-	innerFilter, err := expressions.NewLogicalFilterExpression(innerPreds, innerScanQ)
+	// The BOUND inner quantifier is reused, not re-memoized.
+	//
+	// Reference.Get() returns the FIRST member only — it is the convenience
+	// accessor for single-member references, and explored multi-member
+	// references are meant to be iterated with Members/AllMembers. So
+	// `MemoizeExpression(innerRef.Get())` published a COPY of the inner group
+	// holding exactly one of its alternatives and dropped every other one the
+	// inner had accumulated.
+	//
+	// That is not a wrong answer — it is a silently NARROWED SEARCH SPACE, and
+	// the corpus recorded the consequence without anyone reading it: restoring
+	// the alternatives moves 18 plan-shape headers across 5 committed *_in__*
+	// family files, which means those scenarios had been blessing plans WORSE
+	// than the ones the planner can now reach. Rows are unchanged. The
+	// transition is carried by a retirement ledger under
+	// factorycorpus/retirements/.
+	//
+	// The vendored-corpus golden moves by exactly ONE query, and it shows the
+	// shape of the improvement:
+	//
+	//	Fetch(PredicatesFilter(IndexScan(IDX_REGION_PLAN, [=, *] COVERING)))
+	//	Fetch(InJoin(PredicatesFilter(IndexScan(...COVERING)), binding))
+	//
+	// The IN list now drives an index probe instead of sitting as a residual
+	// filter. Note for anyone re-running that gate: its failure prints a
+	// POSITIONAL line count ("10126 line(s) differ"), which one inserted line
+	// inflates to most of the file. Diff the regenerated golden before believing
+	// the number.
+	//
+	// Java does not do this: InComparisonToExplodeRule re-adds the bound inner
+	// quantifiers verbatim (transformedQuantifiers.addAll(bindings.getAll(
+	// innerQuantifierMatcher))) and mints exactly one quantifier, over the
+	// ExplodeExpression. Reusing f.GetInner() is that behaviour.
+	//
+	// The rebase went with the mint: the predicates already carry
+	// f.GetInner()'s alias, so source == target made it a no-op copy.
+	innerFilter, err := expressions.NewLogicalFilterExpression(innerPreds, f.GetInner())
 	if err != nil {
 		call.Fail(err)
 		return
@@ -283,32 +312,6 @@ func (r *InComparisonToExplodeRule) OnMatch(call *ExpressionRuleCall) {
 		return
 	}
 	call.Yield(selectExpr)
-}
-
-func rebaseInExplodePredicates(
-	input []predicates.QueryPredicate,
-	source, target values.CorrelationIdentifier,
-) ([]predicates.QueryPredicate, error) {
-	if source == target {
-		return append([]predicates.QueryPredicate(nil), input...), nil
-	}
-	aliases, err := values.NewAliasMap([]values.AliasPair{{Source: source, Target: target}})
-	if err != nil {
-		return nil, err
-	}
-	result := make([]predicates.QueryPredicate, len(input))
-	for i, predicate := range input {
-		result[i], err = predicates.TransformEmbeddedValuesChecked(
-			predicate,
-			func(value values.Value) (values.Value, error) {
-				return values.RebaseValueChecked(value, aliases)
-			},
-		)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return result, nil
 }
 
 // exactInExplodeElementType chooses the exact type carried by each explode
