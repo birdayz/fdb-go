@@ -30,21 +30,29 @@ import (
 // SIZE BOUND, and why it is not the production one. Normalization builds its
 // cross-product eagerly, and the size guard counts CLAUSES, not atoms — so the
 // clause count is a poor proxy for memory. Measured on a tree this builder
-// produces: 43 predicate nodes, cnfSize estimate 19683 (1.9% of the 1,000,000
-// production limit), and normalizeCNF then takes 2.9s and allocates 349 MiB.
-// That is Java-aligned rather than a Go defect — Java's minorToNormalized
-// builds the same eager cross-product and its getNormalizedSize likewise
-// returns the major count (BooleanPredicateNormalizer.java:336-361, 509-543;
-// Java even computes normalFormMaximumNumMinors, the clause WIDTH, and does not
-// gate on it either) — but it will OOM a fuzz worker, which is how a
-// differential becomes a flake.
+// produces: 43 predicate nodes, normalFormSize CNF 19683 — 1.9% of the
+// 1,000,000 production limit — and normalizeCNF then takes 638ms and allocates
+// 67 MiB, about 3.5 KiB per clause.
 //
-// So the fuzzed inputs are bounded by the same estimate the transform uses,
-// at a threshold picked from that measurement rather than by feel: 349 MiB over
-// 19683 clauses is ~18 KiB per clause, so normalFormFuzzSizeBound keeps the
-// worst case in single-digit MiB. Semantics, not stress, is what this target
-// measures; the transform still runs, and the pinned blow-up above is what says
-// where the stress question lives.
+// That is Java-aligned rather than a Go defect: Java's minorToNormalized builds
+// the same eager cross-product and its getNormalizedSize likewise returns the
+// major count (BooleanPredicateNormalizer.java:336-361, 509-543; Java even
+// computes normalFormMaximumNumMinors, the clause WIDTH, and does not gate on
+// it either). But it will OOM a fuzz worker, which is how a differential
+// becomes a flake, so the fuzzed inputs are bounded by the same estimate the
+// transform uses — normalFormFuzzSizeBound, which at 3.5 KiB per clause keeps
+// the worst case near a megabyte.
+//
+// The 638ms/67 MiB figures are RE-DERIVED, not carried: the same input measured
+// 2.9s and 349 MiB before RFC-240 unified the two normalizers. The ported
+// minorToNormalized preallocates each cross-product generation
+// (make(..., 0, len(cross)*len(alternatives))) where the retired orToCNF grew
+// it by append, which is where the ~5x went. The estimate is unchanged at 19683
+// because this input carries no NOT over a connective, so the negate-aware
+// metric and the negate-blind one agree on it.
+//
+// Semantics, not stress, is what this target measures; the transform still
+// runs, and the measurement above is what says where the stress question lives.
 func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 	f.Add([]byte{0x00})
 	f.Add([]byte{0x10, 0x01, 0x02, 0x20, 0x03})
@@ -64,21 +72,21 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 	}{
 		{
 			name:     "cnf",
-			estimate: cnfSize,
+			estimate: func(p predicates.QueryPredicate) int64 { return normalFormSize(p, false, normalFormCNF) },
 			fn: func(p predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
 				return normalizeCNF(p, cnfSizeLimit)
 			},
 		},
 		{
 			name:     "dnf",
-			estimate: dnfSize,
+			estimate: func(p predicates.QueryPredicate) int64 { return normalFormSize(p, false, normalFormDNF) },
 			fn: func(p predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
 				return NormalizeDNF(p, cnfSizeLimit)
 			},
 		},
 		{
 			name:     "dnf-exact",
-			estimate: func(p predicates.QueryPredicate) int64 { return dnfSizeNegated(p, false) },
+			estimate: func(p predicates.QueryPredicate) int64 { return normalFormSize(p, false, normalFormDNF) },
 			fn: func(p predicates.QueryPredicate) (predicates.QueryPredicate, bool) {
 				return NormalizeDNFWithoutSimplification(p, NormalizerDefaultSizeLimit)
 			},
@@ -131,8 +139,8 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 
 // normalFormFuzzSizeBound caps the normal-form CLAUSE COUNT this differential
 // will drive a transform to. See the target's doc comment for the measurement
-// it is derived from: ~18 KiB per clause, so this keeps the worst case in
-// single-digit MiB and out of the OOM that made the unbounded version flake.
+// it is derived from: ~3.5 KiB per clause, so this keeps the worst case near
+// a megabyte and out of the OOM that made the unbounded version flake.
 //
 // It is deliberately far below the production cnfSizeLimit (1,000,000). A
 // differential is a semantics instrument; the clause count at which

@@ -211,10 +211,14 @@ func TestFDB_ChainedUnnestFilterPlacement(t *testing.T) {
 			[]string{"Y=3", "Y=4", "Y=5", "Y=6", "Y=9"}, "")
 		// NOT(AND) mixing outer + inner → not scan-pushable → the positional bake places its
 		// outer-col ref (ofOrdinal over the outer QOV's type) and it resolves at the inner Explode.
-		// Safe at any level because NormalizePredicatesRule does NOT De Morgan it (DeMorganRule is
-		// absent from the default rules; normalizeCNF treats a NotPredicate as an OPAQUE leaf), so no
-		// pure-outer clause is extracted to push. T4(10) y≤2 → {1,2}; T4(20),T4(3) (ID≠10) → all →
-		// {4,5,6}∪{3,9}. → {1,2,3,4,5,6,9}.
+		//
+		// NormalizePredicatesRule DOES De Morgan this now (RFC-240; it used to treat a
+		// NotPredicate as an opaque leaf and decline). The row set is unchanged, and the
+		// reason is arithmetic rather than luck: NOT(outer AND inner) normalizes to the
+		// single CNF clause (NOT outer OR NOT inner), and one clause mixing both sources
+		// still yields no PURE-OUTER conjunct to extract and push. De Morgan changes which
+		// conjuncts exist, not whether this one splits.
+		// T4(10) y≤2 → {1,2}; T4(20),T4(3) (ID≠10) → all → {4,5,6}∪{3,9}. → {1,2,3,4,5,6,9}.
 		wantSet(t, `SELECT "Y" FROM T4, T4."SARR" AS "X", "X"."SUB" AS "Y" WHERE NOT (T4."ID" = 10 AND "Y" > 2)`,
 			[]string{"Y=1", "Y=2", "Y=3", "Y=4", "Y=5", "Y=6", "Y=9"}, "")
 		// Three-conjunct AND: T4.ID=10 AND y>1 AND y<3 → {2}.

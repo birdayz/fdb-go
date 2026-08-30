@@ -276,8 +276,10 @@ func (r *PredicateToLogicalUnionRule) OnMatch(call *ExpressionRuleCall) {
 // [A AND C, A AND D, B AND C, B AND D].
 //
 // Each term is either a single predicate (if only one factor) or an
-// AndPredicate of the combined children. This is the dual of orToCNF
-// in rule_normalize_predicates.go.
+// AndPredicate of the combined children. This is the dual of the CNF cross
+// product in minorToNormalized (normal_form.go), which RFC-240 unified;
+// this one stays separate because it consumes already-extracted OR factors
+// rather than walking a predicate tree.
 func orsToDNFTerms(ors []*predicates.OrPredicate) []predicates.QueryPredicate {
 	// Start with a single empty conjunction.
 	cross := [][]predicates.QueryPredicate{{}}

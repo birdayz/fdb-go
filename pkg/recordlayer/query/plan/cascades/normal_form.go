@@ -66,6 +66,22 @@ func (m normalFormMode) isMinor(p predicates.QueryPredicate) bool {
 	return ok
 }
 
+// majorWithChildren builds the outer connective — Java's Mode.majorWithChildren.
+func (m normalFormMode) majorWithChildren(children []predicates.QueryPredicate) predicates.QueryPredicate {
+	if m == normalFormCNF {
+		return buildAnd(children)
+	}
+	return buildOr(children)
+}
+
+// minorWithChildren builds the inner connective — Java's Mode.minorWithChildren.
+func (m normalFormMode) minorWithChildren(children []predicates.QueryPredicate) predicates.QueryPredicate {
+	if m == normalFormCNF {
+		return buildOr(children)
+	}
+	return buildAnd(children)
+}
+
 // connectiveChildren returns the sub-predicates of an AND or OR, or nil for
 // anything else. One accessor rather than a type switch repeated at each of the
 // three walks below, which is how two of them would eventually disagree.
@@ -78,6 +94,91 @@ func connectiveChildren(p predicates.QueryPredicate) []predicates.QueryPredicate
 	default:
 		return nil
 	}
+}
+
+// normalFormVariable is Java's isNormalFormVariable (:490-492): anything that
+// is not a boolean connective.
+//
+// Java's test is `isAtomic() || instanceof LeafQueryPredicate`. Go's structural
+// test is the exact equivalent for every predicate Go can build — among the
+// non-test QueryPredicate implementations, only And/Or/Not return a non-empty
+// Children() — and TestNormalFormVariable_MatchesTheConcreteTypes pins that
+// rather than leaving it asserted.
+//
+// It is MODE-INDEPENDENT, as Java's is: neither half of the question consults
+// which connective is outer.
+//
+// One divergence, in the FAILURE direction and recorded here because it is
+// silent: Java's isInNormalForm throws "unknown boolean expression" (:292) for
+// a predicate that is neither variable, connective, nor NOT. Go answers
+// "variable" instead. The sets coincide today so nothing differs; if a
+// connective-shaped predicate is ever added without an arm here, Java would
+// raise and Go will quietly treat it as an atom.
+func normalFormVariable(p predicates.QueryPredicate) bool {
+	switch p.(type) {
+	case *predicates.AndPredicate, *predicates.OrPredicate, *predicates.NotPredicate:
+		return false
+	default:
+		return true
+	}
+}
+
+// normalFormVariableOrNot is Java's isNormalFormVariableOrNotPredicate
+// (:494-504): a variable, or a NOT over a variable. Static in Java and
+// mode-independent here for the same reason.
+func normalFormVariableOrNot(p predicates.QueryPredicate) bool {
+	if normalFormVariable(p) {
+		return true
+	}
+	if n, ok := p.(*predicates.NotPredicate); ok {
+		return normalFormVariable(n.Child)
+	}
+	return false
+}
+
+// isInNormalForm is Java's isInNormalForm (:255-293): a major of
+// variables-or-NOTs and minors-of-variables-or-NOTs; a bare minor of
+// variables-or-NOTs; a bare variable-or-NOT.
+//
+// A NOT over anything that is NOT a variable is not in normal form. That single
+// line is the whole of RFC-240's read-side defect: Go's retired isInCNF
+// treated every NotPredicate as a leaf, so `AND(NOT(AND(a,b)), c)` reported
+// already-normalized and the planner's normalization rule declined a predicate
+// Java rewrites to `(NOT a OR NOT b) AND c`.
+func isInNormalForm(p predicates.QueryPredicate, mode normalFormMode) bool {
+	if p == nil {
+		return true
+	}
+	if normalFormVariableOrNot(p) {
+		return true
+	}
+	if mode.isMajor(p) {
+		for _, child := range connectiveChildren(p) {
+			if normalFormVariableOrNot(child) {
+				continue
+			}
+			if !mode.isMinor(child) {
+				return false
+			}
+			for _, grandChild := range connectiveChildren(child) {
+				if !normalFormVariableOrNot(grandChild) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	if mode.isMinor(p) {
+		for _, child := range connectiveChildren(p) {
+			if !normalFormVariableOrNot(child) {
+				return false
+			}
+		}
+		return true
+	}
+	// A NOT over a non-variable — normalFormVariableOrNot already declined it.
+	// Java reaches its throw here for anything else; see normalFormVariable.
+	return false
 }
 
 // normalFormSize is Java's getMetrics (:319-334) — the number of MAJORS the
@@ -133,4 +234,71 @@ func normalFormSizeProduct(children []predicates.QueryPredicate, negate bool, mo
 		product = saturatingMulSize(product, normalFormSize(c, negate, mode))
 	}
 	return product
+}
+
+// toNormalized is Java's toNormalized (:370-384): the major-of-minor
+// list-of-lists, carrying the negate flag through the same role swap
+// normalFormSize uses. A NOT recurses with the flag flipped; a negated variable
+// is wrapped in NOT.
+//
+// Java opens with `if (!predicate.isAtomic())`, which suppresses descent into
+// an atomic subtree. Go has no atomicity, so the dispatch is unconditional —
+// see this file's header for where that has to change if atomicity lands.
+func toNormalized(p predicates.QueryPredicate, negate bool, mode normalFormMode) [][]predicates.QueryPredicate {
+	if n, ok := p.(*predicates.NotPredicate); ok {
+		return toNormalized(n.Child, !negate, mode)
+	}
+	children := connectiveChildren(p)
+	switch {
+	case mode.isMinor(p):
+		if negate {
+			return majorToNormalized(children, true, mode)
+		}
+		return minorToNormalized(children, false, mode)
+	case mode.isMajor(p):
+		if negate {
+			return minorToNormalized(children, true, mode)
+		}
+		return majorToNormalized(children, false, mode)
+	default:
+		if negate {
+			return [][]predicates.QueryPredicate{{predicates.NewNot(p)}}
+		}
+		return [][]predicates.QueryPredicate{{p}}
+	}
+}
+
+// majorToNormalized is Java's majorToNormalized (:391-396): flatten every
+// child's normalized majors.
+func majorToNormalized(children []predicates.QueryPredicate, negate bool, mode normalFormMode) [][]predicates.QueryPredicate {
+	var result [][]predicates.QueryPredicate
+	for _, c := range children {
+		result = append(result, toNormalized(c, negate, mode)...)
+	}
+	return result
+}
+
+// minorToNormalized is Java's minorToNormalized (:404-424): the cross product,
+// combining one alternative from each child.
+//
+// The iteration order — each new child alternative (right) appended to every
+// element of the cross product so far (left) — matches Java's flatMap, so the
+// emitted clause order agrees. That is not cosmetic on the DNF path: its output
+// becomes stored index predicate bytes.
+func minorToNormalized(children []predicates.QueryPredicate, negate bool, mode normalFormMode) [][]predicates.QueryPredicate {
+	cross := [][]predicates.QueryPredicate{{}}
+	for _, child := range children {
+		alternatives := toNormalized(child, negate, mode)
+		newCross := make([][]predicates.QueryPredicate, 0, len(cross)*len(alternatives))
+		for _, right := range alternatives {
+			for _, left := range cross {
+				combined := make([]predicates.QueryPredicate, 0, len(left)+len(right))
+				combined = append(combined, left...)
+				combined = append(combined, right...)
+				newCross = append(newCross, combined)
+			}
+		}
+		cross = newCross
+	}
+	return cross
 }

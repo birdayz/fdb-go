@@ -48,24 +48,28 @@ func TestNormalFormSize_OverflowSaturatesNotWraps(t *testing.T) {
 	for _, groups := range []int{31, 32, 33, 64} {
 		p := andOfFourWayOrs(groups)
 
-		if got := dnfSizeNegated(p, false); got <= int64(NormalizerDefaultSizeLimit) {
-			t.Errorf("dnfSizeNegated(AND of %d four-way ORs) = %d; true size is 4^%d, "+
+		if got := normalFormSize(p, false, normalFormDNF); got <= int64(NormalizerDefaultSizeLimit) {
+			t.Errorf("normalFormSize(AND of %d four-way ORs, DNF) = %d; true size is 4^%d, "+
 				"which must report ABOVE the limit %d (int64 overflow must saturate, not wrap)",
 				groups, got, groups, NormalizerDefaultSizeLimit)
 		}
-		if got := dnfSize(p); got <= int64(cnfSizeLimit) {
-			t.Errorf("dnfSize(AND of %d four-way ORs) = %d; true size is 4^%d, "+
-				"which must report ABOVE the limit %d", groups, got, groups, cnfSizeLimit)
-		}
+		// There used to be a second assertion here, on the OTHER of Go's two
+		// DNF size functions over this same input — the two implementations had
+		// to be checked to agree. RFC-240 left one function, so the second
+		// assertion became a duplicate of the first and is gone rather than
+		// repointed. Repointing it at the CNF mode instead was tried and is
+		// WRONG: an AND of ORs is a major of minors in CNF, so its CNF size is
+		// the SUM (31, 32, 33, 64) and not a product — the mirrored input
+		// below is what exercises the CNF direction.
 
-		// The CNF direction has the mirrored shape: an OR of four-way ANDs.
+		// The CNF direction needs the mirrored shape: an OR of four-way ANDs.
 		conj := make([]predicates.QueryPredicate, 0, groups)
 		for i := 0; i < groups; i++ {
 			conj = append(conj, predicates.NewAnd(
 				pred("x0"), pred("x1"), pred("x2"), pred("x3")))
 		}
-		if got := cnfSize(predicates.NewOr(conj...)); got <= int64(cnfSizeLimit) {
-			t.Errorf("cnfSize(OR of %d four-way ANDs) = %d; true size is 4^%d, "+
+		if got := normalFormSize(predicates.NewOr(conj...), false, normalFormCNF); got <= int64(cnfSizeLimit) {
+			t.Errorf("normalFormSize(OR of %d four-way ANDs, CNF) = %d; true size is 4^%d, "+
 				"which must report ABOVE the limit %d", groups, got, groups, cnfSizeLimit)
 		}
 	}
