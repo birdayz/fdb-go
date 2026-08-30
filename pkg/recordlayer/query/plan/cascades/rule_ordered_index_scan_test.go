@@ -120,8 +120,16 @@ func TestOrderedIndexScan_SortKeyMismatch(t *testing.T) {
 	}
 }
 
-// TestOrderedIndexScan_DescSortNotSatisfied verifies that Sort(STATUS DESC)
-// does NOT match a forward index scan on STATUS.
+// TestOrderedIndexScan_DescSortProducesReverseIndexScan verifies that
+// Sort(STATUS DESC) over an index on STATUS yields exactly one plan, and that
+// it is a REVERSE index scan.
+//
+// The comment here used to say the opposite — that a DESC sort "does NOT match
+// a forward index scan" — under a name from before reverse scans were
+// implemented. It named a function that no longer exists and described a
+// behaviour the body below contradicts, which is worse than no comment: a
+// reader asking whether DESC is satisfiable would have got "no" from the prose
+// and "yes, reversed" from the assertions.
 func TestOrderedIndexScan_DescSortProducesReverseIndexScan(t *testing.T) {
 	t.Parallel()
 

@@ -1264,16 +1264,6 @@ func vecDiskBackedDB(t *testing.T) *recordlayer.FDBDatabase {
 	return recordlayer.NewFDBDatabase(dbConn)
 }
 
-// TestVectorIngestScaling measures whether ingestion scales horizontally across
-// independent shard graphs. Each shard is its own subspace (its own HNSW graph,
-// per-tx per-prefix write lock, own shared cache), so concurrent shard builders
-// run on separate transactions that don't contend or FDB-conflict. It builds the
-// same shards sequentially then concurrently and reports the speedup — the answer
-// to "the single-writer lock serializes one graph; shard to use all cores."
-//
-//	VECTOR_INGEST=1 [VECTOR_BENCH_SHARDS=8 VECTOR_BENCH_SIZE=3000] \
-//	  go test ./pkg/recordlayer/bench -run TestVectorIngestScaling -v -timeout 30m
-//
 // TestVectorIngestSweep measures how ingestion throughput scales with the number
 // of concurrent shard builders. Each shard is an independent HNSW graph (its own
 // subspace, per-tx per-prefix write lock, own shared cache), so concurrent
