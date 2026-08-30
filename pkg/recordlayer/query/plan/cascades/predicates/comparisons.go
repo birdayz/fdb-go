@@ -106,9 +106,16 @@ func (c ComparisonType) IsUnary() bool {
 // `Comparisons.Type.isEquality()` — useful for index-pushdown
 // decisions (equality predicates can use point-lookups; inequality
 // needs ranges).
+//
+// IN is deliberately NOT an equality, matching Java's `IN,` — declared with the
+// no-arg constructor, which chains to `this(false)`. It reads like one, and that
+// is the trap: `x IN (1,2,3)` is a DISJUNCTION of equalities, so a caller acting
+// on a true here would bind a single point-lookup key for a predicate that needs
+// three. Java agrees twice over — `ScanComparisons.getComparisonType(IN)` falls
+// to the `default: NONE` arm, so IN is not a scan bound at all.
 func (c ComparisonType) IsEquality() bool {
 	switch c {
-	case ComparisonEquals, ComparisonIn, ComparisonIsNull, ComparisonNotDistinctFrom,
+	case ComparisonEquals, ComparisonIsNull, ComparisonNotDistinctFrom,
 		ComparisonTextContainsAll, ComparisonTextContainsAllWithin,
 		ComparisonTextContainsAny, ComparisonTextContainsPhrase,
 		ComparisonDistanceRankEquals:
