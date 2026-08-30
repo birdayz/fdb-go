@@ -162,9 +162,24 @@ func TestCoveringPlan_StructuralKeyFoldsCoveringColumns(t *testing.T) {
 
 // TestCoveringPlan_IdenticalPlansStillDedup is the control for the three tests
 // above: folding MORE into identity is only correct if genuinely identical
-// plans still compare equal. Without this, a structuralKey that folded a
-// per-instance value (an address, a fresh correlation id) would pass every
-// inequality assertion above while destroying memo dedup entirely.
+// plans still compare equal. Without this, a structuralKey that folded a value
+// that genuinely varies per instance would pass every inequality assertion
+// above while destroying memo dedup entirely.
+//
+// It does NOT catch resultValue specifically, which an earlier version of this
+// comment and of the failure message below both claimed. Measured by mutation:
+// adding StructVal(p.resultValue) — the ALIAS-SENSITIVE fold, the strictest one
+// available — to this type's structuralKey leaves this test GREEN. The reason
+// is that resultValue's per-instance uniqueness comes from
+// newPlanExprBaseForType's ERASED-record branch, which mints a
+// UniqueCorrelationIdentifier; this fixture's index plan has an exact record
+// type, so it takes the layout branch and gets a DETERMINISTIC carrier that two
+// separately-built plans share.
+//
+// So the guard is real for anything that varies per instance, and resultValue's
+// exclusion rests on a branch no fixture here constructs. Stated rather than
+// closed because manufacturing an erased-type covering fixture to guard an
+// exclusion nothing currently threatens would be the more expensive half.
 func TestCoveringPlan_IdenticalPlansStillDedup(t *testing.T) {
 	t.Parallel()
 
@@ -178,9 +193,10 @@ func TestCoveringPlan_IdenticalPlansStillDedup(t *testing.T) {
 
 	if !a.EqualsPlanWithoutChildren(b) {
 		t.Fatal("two structurally identical covering plans compared UNEQUAL — " +
-			"structuralKey is folding a per-instance value (the stable resultValue " +
-			"carries a unique correlation id and must stay excluded). The memo " +
-			"would never dedup a covering scan.")
+			"structuralKey has started folding something that varies per instance, so " +
+			"the memo would never dedup a covering scan. Note this fixture cannot " +
+			"implicate resultValue: see the comment above for why folding it leaves " +
+			"this test green.")
 	}
 	if a.HashCodeWithoutChildren() != b.HashCodeWithoutChildren() {
 		t.Fatal("two structurally identical covering plans hashed UNEQUAL")
