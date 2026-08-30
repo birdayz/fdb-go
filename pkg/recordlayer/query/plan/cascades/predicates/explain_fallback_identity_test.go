@@ -119,57 +119,6 @@ func TestExplainFallback_IsAllocationIndependent(t *testing.T) {
 	}
 }
 
-// TestQueryPredicates_DoNotDefineHashCodeWithoutChildren keeps a deleted
-// mechanism deleted.
-//
-// Two predicate types carried a HashCodeWithoutChildren method. Nothing called
-// them and no interface required them — but the NAME is the memo hash at the two
-// layers above (expressions.RelationalExpression and plans.RecordQueryPlan both
-// declare it), so a reader would reasonably wire one up. Both were wrong:
-// PredicateWithValueAndRanges folded only its value and ignored its RANGES, and
-// ExistentialValuePredicate folded a constant, so every existential predicate
-// hashed identically.
-//
-// The predicates package has exactly two identity mechanisms — StructurallyEqual
-// / StructuralHash, and SemanticEqualsUnderAliasMap / SemanticHashCode — and a
-// third spelling that is dead and wrong is the configuration that produced the
-// original Comparison bug: a fold fixed in one place and missed in another.
-func TestQueryPredicates_DoNotDefineHashCodeWithoutChildren(t *testing.T) {
-	t.Parallel()
-
-	type memoHasher interface{ HashCodeWithoutChildren() uint64 }
-
-	qov, err := values.NewQuantifiedObjectValue(
-		values.NamedCorrelationIdentifier("q"),
-		values.NewRecordType("R", false, []values.Field{
-			{Name: "A", FieldType: values.NullableLong, Ordinal: 0},
-		}))
-	if err != nil {
-		t.Fatalf("building the QOV: %v", err)
-	}
-
-	candidates := map[string]QueryPredicate{
-		"PredicateWithValueAndRanges": sargableOverFieldRef(t),
-		"ExistentialValuePredicate": MustNewExistentialValuePredicate(
-			qov, Comparison{Type: ComparisonIsNotNull}),
-		"ComparisonPredicate": NewComparisonPredicate(
-			values.LiteralValue("c"), Comparison{Type: ComparisonEquals}),
-		"ConstantPredicate": NewConstantPredicate(TriTrue),
-	}
-	if len(candidates) == 0 {
-		t.Fatal("no candidates — this test would pass over nothing")
-	}
-	for name, p := range candidates {
-		if _, ok := p.(memoHasher); ok {
-			t.Errorf("%s defines HashCodeWithoutChildren. That name is the MEMO HASH at the "+
-				"expression and plan layers, and this package's identity mechanisms are "+
-				"StructuralHash and SemanticHashCode — a third spelling here will be wired "+
-				"up by mistake. Fold the field set into one of the existing two instead.",
-				name)
-		}
-	}
-}
-
 // TestConstantPredicate_IdentityRestsOnTheTriBoolSingletons pins a negative
 // result: writeStructuralHash folds ConstantPredicate.Value with %v, and TriBool
 // is *bool, so that IS a heap address in the hash — and it is nonetheless

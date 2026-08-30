@@ -73,3 +73,14 @@ go_test(
     embed = [":predicates"],
     deps = ["//pkg/recordlayer/query/plan/cascades/values"],
 )
+
+# keep: staged as `data` for //pkg/docscheck's memo-hash census, which asks a
+# SOURCE question — "does any type here define HashCodeWithoutChildren" — that Go
+# cannot answer at runtime, since an interface's implementations are not
+# enumerable. Without these files staged the census reads an absent directory;
+# its file-count floor is what turns that into a failure instead of a pass.
+filegroup(
+    name = "predicates_sources",
+    srcs = glob(["*.go"]),
+    visibility = ["//visibility:public"],
+)

@@ -1691,6 +1691,15 @@ func DerivedCompensationWithPrimaryKeyDistinct(
 	// (Compensation.java:528-539). Both are ported as written. Aligning the two
 	// would be a silent parity break, so it is stated here rather than left to
 	// look like an oversight.
+	//
+	// And the difference is safe in a specific direction, which is the part that
+	// makes it harmless rather than merely faithful. The two terms serve
+	// different roles — this is a CONSTRUCTION guard, IsNeeded is a question
+	// about what will be applied — and the guard's term is the SUPERSET:
+	// GetUnmatchedForEachQuantifiers filters unmatchedQuantifiers by kind, so
+	// every quantifier that can make IsNeeded true also satisfies this guard.
+	// The asymmetry can only make the guard more permissive; it can never mark
+	// a genuinely-needed compensation impossible.
 	if !impossible &&
 		len(unmatchedQuantifiers) == 0 &&
 		predicateCompensationMap.IsEmpty() &&
