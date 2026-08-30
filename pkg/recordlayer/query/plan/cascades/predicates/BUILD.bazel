@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "predicates",
     srcs = [
+        "comparison_identity.go",
         "comparison_range.go",
         "comparisons.go",
         "compatible_type_evolution_predicate.go",
@@ -39,6 +40,7 @@ go_test(
     name = "predicates_test",
     srcs = [
         "comparison_algebra_test.go",
+        "comparison_identity_test.go",
         "comparison_range_test.go",
         "comparisons_array_test.go",
         "comparisons_correlation_test.go",

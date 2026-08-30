@@ -32,17 +32,18 @@ func writeStructuralHash(h io.Writer, p QueryPredicate) {
 	writeU64 := func(u uint64) { _, _ = io.WriteString(h, strconv.FormatUint(u, 16)+":") }
 	switch t := p.(type) {
 	case *ComparisonPredicate:
-		_, _ = fmt.Fprintf(h, "cmp:%v:%v:", t.Comparison.Type, t.Comparison.Escape)
+		_, _ = io.WriteString(h, "cmp:")
 		writeU64(values.SemanticHashCode(t.Operand))
-		writeU64(values.SemanticHashCode(t.Comparison.Operand))
+		writeComparisonIdentity(h, t.Comparison)
 	case *ValuePredicate:
 		_, _ = io.WriteString(h, "vp:")
 		writeU64(values.SemanticHashCode(t.Value))
 	case *ConstantPredicate:
 		_, _ = fmt.Fprintf(h, "cp:%v", t.Value)
 	case *ExistentialValuePredicate:
-		_, _ = fmt.Fprintf(h, "evp:%v:", t.Comparison.Type)
+		_, _ = io.WriteString(h, "evp:")
 		writeU64(values.SemanticHashCode(t.Value))
+		writeComparisonIdentity(h, t.Comparison)
 	case *Placeholder:
 		_, _ = fmt.Fprintf(h, "ph:%v:", t.ParameterAlias)
 		writeU64(values.SemanticHashCode(t.Value))
