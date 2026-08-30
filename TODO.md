@@ -20569,10 +20569,45 @@ diff has had its review lap.
   ZERO across the tree, and that zero is mutation-verified: introducing one
   mismatch makes it report exactly that one. All 40 are fixed, each by reading
   the function rather than by pattern.
-- [ ] Decide whether the detector becomes a `pkg/docscheck` gate at a zero floor.
-  The tree is at zero now, so the floor is settable; what remains is choosing
-  where it lives and whether the comment-block walk belongs in the existing
-  citation-gate file.
+- [x] The detector is now a `pkg/docscheck` gate. DONE —
+  `TestDocCommentNamesItsOwnFunction` in
+  `pkg/docscheck/doc_comment_names_its_function_test.go`, reading 6260 documented
+  of 13284 scanned test functions with 0 citations wrong. It got its own file
+  rather than joining the citation-gate file: those gates share an extraction
+  pipeline over Markdown text, and this one shares nothing with them but the
+  inventory helper.
+
+  The shell walk did not survive the port, and shouldn't have. It compared the
+  first cited name in a contiguous comment BLOCK; the gate uses `go/ast`, so
+  godoc's own attachment rule decides what documents what — which is the rule the
+  MISPLACED-BLOCK class was violating in the first place.
+
+  Three things the port changed, each because a test caught it rather than
+  because it was designed in:
+
+  - The first cut matched `^(Test|Fuzz|Benchmark)[A-Za-z0-9_]*`, which reads the
+    English words "Test that…" and "Benchmark for…" as citations. Seven false
+    positives. The `[A-Z_]` continuation is what separates a name from a word.
+  - It read `Doc.List[0].Text` and trimmed `//` by hand, which is silently blind
+    to a `/* */` doc block. Zero such docs exist today across the 2239 test files
+    that declare a test function — so the blindness would never have surfaced.
+    `Doc.Text()` handles both spellings.
+  - Two hand-predicted expectations in the fixture test were both off by one
+    (`scanned` 6 vs 5, `documented` 5 vs 4), and a documented "known false
+    positive" about subtest names was simply false: the name truncates at the
+    slash and resolves to the parent test, which on its own function is a match.
+
+  Four arms, four mutations, each proven to have landed before its verdict was
+  read: misattributed fires (line 220 arm), phantom fires (line 226 arm),
+  killing comment attachment trips the DOCUMENTED floor — without which that
+  mutation reports "0 citations wrong" and passes green — and emptying the scan
+  set trips the SCANNED floor. A fifth mutation, reverting the marker stripping,
+  reddens the block-comment arm of `TestScanFileForDocNames_WalkExclusions`.
+
+  The gate's scope sentence lists what it does NOT check FIRST, from shapes
+  driven against the code: a comment that never names its function, a function
+  with no comment, a name appearing anywhere but first, a method or non-test
+  declaration, and every line after the first.
 
 `pkg/docscheck`'s citation gates — `TestEveryAuthorityDocTestCitationResolves`,
 `TestTodoTestCitationDriftIsReported` — scan MARKDOWN authority docs and

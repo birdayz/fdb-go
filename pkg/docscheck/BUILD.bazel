@@ -22,6 +22,7 @@ go_test(
         "copy_method_rebuild_detector_test.go",
         "copy_method_rebuild_test.go",
         "delete_where_bound_census_test.go",
+        "doc_comment_names_its_function_test.go",
         "docs_consistency_test.go",
         "dst_seam_gate_test.go",
         "duec_wallclock_gate_scope_test.go",
