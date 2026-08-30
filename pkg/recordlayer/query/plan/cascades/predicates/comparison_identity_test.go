@@ -186,12 +186,48 @@ func TestComparisonIdentity_DiscriminatesEveryField(t *testing.T) {
 func TestComparisonIdentity_ExcludedFieldsAreInvisibleHere(t *testing.T) {
 	t.Parallel()
 
+	// The real map, which is empty today — so this call alone proves nothing.
+	if got := checkExcludedFieldsInvisible(comparisonIdentityExcludedFields); len(got) != 0 {
+		for _, msg := range got {
+			t.Error(msg)
+		}
+	}
+
+	// The arm itself, driven from an INJECTED map, because a loop that never
+	// executes is not a passing check. Escape is a folded field, so declaring it
+	// excluded is a lie the check must catch; if it does not, the check is
+	// broken and the real call above is worthless.
+	if got := checkExcludedFieldsInvisible(map[string]string{
+		"Escape": "deliberately wrong: Escape IS folded",
+	}); len(got) == 0 {
+		t.Error("the invisibility check accepted a FOLDED field as excluded. It cannot " +
+			"detect a wrong exclusion, so its clean report on the real map means nothing.")
+	}
+
+	// And the other direction: a field the fold genuinely ignores must be
+	// accepted. Nothing in Comparison qualifies, so this drives the check
+	// against a name it has no mutator for, which is its other failure arm.
+	if got := checkExcludedFieldsInvisible(map[string]string{
+		"NoSuchField": "not a field at all",
+	}); len(got) == 0 {
+		t.Error("the invisibility check accepted an entry it has no mutator for — an " +
+			"exclusion it cannot probe must be reported, not passed over")
+	}
+}
+
+// checkExcludedFieldsInvisible is the body of the exclusion gate, taking the map
+// as a parameter and RETURNING its complaints instead of failing, so the arm can
+// be driven from a test rather than lying dormant until the real map first gains
+// an entry. Returning messages rather than touching *testing.T is what lets the
+// caller assert that a wrong exclusion IS caught.
+func checkExcludedFieldsInvisible(excluded map[string]string) []string {
+	var problems []string
 	base := baselineComparison()
-	checked := 0
-	for name := range comparisonIdentityExcludedFields {
+	for name := range excluded {
 		mut, ok := comparisonFieldMutators[name]
 		if !ok {
-			t.Errorf("no mutator for excluded field %s, so its exclusion is unproven", name)
+			problems = append(problems,
+				"no mutator for excluded field "+name+", so its exclusion is unproven")
 			continue
 		}
 		other := baselineComparison()
@@ -199,27 +235,17 @@ func TestComparisonIdentity_ExcludedFieldsAreInvisibleHere(t *testing.T) {
 		a := NewComparisonPredicate(values.LiteralValue("col"), base)
 		b := NewComparisonPredicate(values.LiteralValue("col"), other)
 		if !StructurallyEqual(a, b) {
-			t.Errorf("Comparison.%s is listed in comparisonIdentityExcludedFields but "+
-				"comparisonIdentityEqual now discriminates on it. Move the entry to "+
+			problems = append(problems, "Comparison."+name+" is listed as excluded but "+
+				"comparisonIdentityEqual discriminates on it. Move the entry to "+
 				"comparisonIdentityFields — the reason recorded beside it no longer "+
-				"describes this code.", name)
+				"describes this code.")
 		}
 		if StructuralHash(a) != StructuralHash(b) {
-			t.Errorf("Comparison.%s is listed as excluded but writeComparisonIdentity folds "+
-				"it — the two sides of this fold have drifted apart", name)
+			problems = append(problems, "Comparison."+name+" is listed as excluded but "+
+				"writeComparisonIdentity folds it — the two sides of this fold have drifted")
 		}
-		checked++
 	}
-	if checked != len(comparisonIdentityExcludedFields) {
-		t.Fatalf("checked %d excluded fields, want %d", checked,
-			len(comparisonIdentityExcludedFields))
-	}
-	if checked != 0 {
-		t.Fatalf("comparisonIdentityExcludedFields now has %d entr(y/ies). That is allowed, "+
-			"but this test was written against an EMPTY map and its loop had never executed "+
-			"— read it before trusting the green it just produced, then update this guard to "+
-			"the new count.", checked)
-	}
+	return problems
 }
 
 // TestComparisonIdentity_PointerFieldsCompareByValue pins the three-state

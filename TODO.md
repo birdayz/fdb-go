@@ -20840,7 +20840,7 @@ Three changes, each measured:
   side's obligation reddens the laws. The helper also unions the two sides'
   MATCHED QUANTIFIERS, as Java does (`Compensation.java:781-782`), and unions
   the COMPENSATED ALIASES, which Java does NOT — Java takes one side under an
-  invariant it declines to check (`Compensation.java:800`, "both compensated
+  invariant it declines to check (`Compensation.java:801`, "both compensated
   aliases must be identical, but too expensive to check"), so the union is a
   deliberate widening of an unverified assertion. Neither half is covered by the
   laws, whose shape comparison is five booleans and can observe neither a

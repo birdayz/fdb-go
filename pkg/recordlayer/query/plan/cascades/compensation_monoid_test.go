@@ -174,7 +174,17 @@ func TestIntersectCompensations_KeepsNestedPrimaryKeyDistinctObligations(t *test
 	// Control: the arm still REDUCES. A leg carrying filtering residuals must
 	// come back carrying only its obligations, or this test would pass equally
 	// well against an arm that had stopped absorbing at all.
-	reduced := IntersectCompensations([]Compensation{deep, corpus[2]})
+	//
+	// The control's own premise is guarded, because it is taken by INDEX: insert
+	// a shape at position 2 and the assertion below goes true for a trivial
+	// reason while still reading as a control.
+	filtering := corpus[2]
+	if !filtering.IsNeededForFiltering() {
+		t.Fatalf("corpus[2] no longer carries a filtering residual (%v) — the control below "+
+			"would assert that a non-filtering leg comes back non-filtering, which is "+
+			"vacuous. Point it at a shape that filters.", filtering)
+	}
+	reduced := IntersectCompensations([]Compensation{deep, filtering})
 	if reduced.IsNeededForFiltering() {
 		t.Error("the absorbing arm must strip the other leg's filtering residual; it is " +
 			"absorbing precisely because that leg selects exactly its rows")

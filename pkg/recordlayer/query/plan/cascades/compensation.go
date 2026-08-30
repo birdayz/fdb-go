@@ -291,7 +291,7 @@ func unionPrimaryKeyDistinctObligations(a, b Compensation) Compensation {
 	// later rebuilds on exactly that set.
 	//
 	// The COMPENSATED ALIASES are a different case and the citation above does
-	// not cover them. Java takes ONE side (Compensation.java:800:
+	// not cover them. Java takes ONE side (Compensation.java:801:
 	// `getCompensatedAliases(), // both compensated aliases must be identical,
 	// but too expensive to check`) — an asserted invariant it declines to
 	// verify. Unioning is a deliberate WIDENING of that assertion: where Java
@@ -1682,6 +1682,15 @@ func DerivedCompensationWithPrimaryKeyDistinct(
 	// an impossible compensation instead of panicking — matches the
 	// "never panic in library code" principle while preserving the
 	// invariant semantics (an impossible compensation is never applied).
+	//
+	// The quantifier term below is ALL unmatched quantifiers, while IsNeeded and
+	// IsNeededForFiltering count only the unmatched FOREACH ones. That reads like
+	// a Go inconsistency and is not: Java's Verify uses
+	// `!unmatchedQuantifiers.isEmpty()` (Compensation.java:435-436) while its
+	// isNeeded family uses `getUnmatchedForEachQuantifiers()`
+	// (Compensation.java:528-539). Both are ported as written. Aligning the two
+	// would be a silent parity break, so it is stated here rather than left to
+	// look like an oversight.
 	if !impossible &&
 		len(unmatchedQuantifiers) == 0 &&
 		predicateCompensationMap.IsEmpty() &&

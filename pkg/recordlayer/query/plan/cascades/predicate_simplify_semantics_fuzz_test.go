@@ -79,6 +79,7 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 	// every seed is compared against every rule set against every row.
 	var builtPredicates atomic.Int64
 	comparedBySeed := make([]atomic.Int64, len(predicateSimplifySeedScripts))
+	seenBySeed := make([]atomic.Int64, len(predicateSimplifySeedScripts))
 
 	f.Cleanup(func() {
 		if fuzzfloor.SuppressedFor("FuzzSimplifyPredicate_PreservesSemantics") {
@@ -88,6 +89,16 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 			f.Errorf("the builder produced %d usable predicates from %d seeds — it has stopped "+
 				"building, and every assertion in this differential ran on nothing",
 				builtPredicates.Load(), len(predicateSimplifySeedScripts))
+		}
+		// See the same guard in the value differential: seed identity is byte
+		// equality, and a testdata/fuzz/ corpus file identical to a listed seed
+		// would double every row count below.
+		for i := range seenBySeed {
+			if got := seenBySeed[i].Load(); got != 1 {
+				f.Errorf("seed %d (%#x) was evaluated %d times, want exactly 1 — the per-seed "+
+					"counts below are multiples and mean nothing",
+					i, predicateSimplifySeedScripts[i], got)
+			}
 		}
 		for i := range comparedBySeed {
 			if got, want := comparedBySeed[i].Load(), int64(len(ruleSets)*len(rows)); got != want {
@@ -114,6 +125,7 @@ func FuzzSimplifyPredicate_PreservesSemantics(f *testing.F) {
 		for i, s := range predicateSimplifySeedScripts {
 			if bytes.Equal(s, script) {
 				seedIdx = i
+				seenBySeed[i].Add(1)
 				break
 			}
 		}

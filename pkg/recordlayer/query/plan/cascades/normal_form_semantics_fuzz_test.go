@@ -171,6 +171,7 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 	var builtPredicates atomic.Int64
 	transformsBySeed := make([]atomic.Int64, len(normalFormTransformingSeedScripts))
 	comparedBySeed := make([]atomic.Int64, len(normalFormTransformingSeedScripts))
+	seenBySeed := make([]atomic.Int64, len(normalFormTransformingSeedScripts))
 	var identityTransforms atomic.Int64
 
 	f.Cleanup(func() {
@@ -181,6 +182,19 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 			f.Errorf("the builder produced %d usable predicates from %d seeds — it has stopped "+
 				"building, and every assertion in this differential ran on nothing",
 				builtPredicates.Load(), len(normalFormSeedScripts))
+		}
+		// Seed identity is byte equality against the slice, and `go test` also
+		// feeds this target anything under testdata/fuzz/<Target>/. No such
+		// directory exists for it today, but a minimized crasher byte-identical
+		// to a listed seed would be counted twice and make every per-seed
+		// equality below fail for a reason unrelated to what it checks.
+		for i := range seenBySeed {
+			if got := seenBySeed[i].Load(); got != 1 {
+				f.Errorf("transforming seed %d (%#x) was evaluated %d times, want exactly 1 — "+
+					"a corpus file under testdata/fuzz/ duplicates a listed seed, so the "+
+					"per-seed counts below are multiples and mean nothing",
+					i, normalFormTransformingSeedScripts[i], got)
+			}
 		}
 		// Every transforming seed must drive EVERY transform. Exact, per seed.
 		for i := range transformsBySeed {
@@ -226,6 +240,7 @@ func FuzzNormalForm_PreservesSemantics(f *testing.F) {
 		for i, s := range normalFormTransformingSeedScripts {
 			if bytes.Equal(s, script) {
 				seedIdx = i
+				seenBySeed[i].Add(1)
 				break
 			}
 		}

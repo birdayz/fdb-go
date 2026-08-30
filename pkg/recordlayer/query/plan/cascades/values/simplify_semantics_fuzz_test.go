@@ -127,6 +127,7 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 	// seed is ill-typed.
 	var builtTrees atomic.Int64
 	comparedBySeed := make([]atomic.Int64, len(valueSimplifySeedScripts))
+	seenBySeed := make([]atomic.Int64, len(valueSimplifySeedScripts))
 
 	f.Cleanup(func() {
 		if fuzzfloor.SuppressedFor("FuzzSimplifyValue_PreservesSemantics") {
@@ -136,6 +137,21 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 			f.Errorf("the builder produced %d usable trees from %d seeds — it has stopped "+
 				"building, and every assertion in this differential ran on nothing",
 				builtTrees.Load(), len(valueSimplifySeedScripts))
+		}
+		// Seed identity is byte equality against the slice above, and `go test`
+		// also feeds this target anything in testdata/fuzz/<Target>/. There is
+		// no such directory for this target today, but a minimized crasher that
+		// happened to be byte-identical to a listed seed would be counted twice
+		// and the row equality below would fail for a reason that has nothing to
+		// do with what it is checking. Count the sightings so the failure names
+		// the real cause.
+		for i := range seenBySeed {
+			if got := seenBySeed[i].Load(); got != 1 {
+				f.Errorf("seed %d (%#x) was evaluated %d times, want exactly 1 — a corpus "+
+					"file under testdata/fuzz/ is byte-identical to a listed seed, so the "+
+					"per-seed row counts below are multiples and mean nothing",
+					i, valueSimplifySeedScripts[i], got)
+			}
 		}
 		for i := range comparedBySeed {
 			want := int64(len(rows)) - int64(valueDifferentialTypedSkips[i])
@@ -165,6 +181,7 @@ func FuzzSimplifyValue_PreservesSemantics(f *testing.F) {
 		for i, s := range valueSimplifySeedScripts {
 			if bytes.Equal(s, script) {
 				seedIdx = i
+				seenBySeed[i].Add(1)
 				break
 			}
 		}
