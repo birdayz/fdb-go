@@ -127,6 +127,12 @@ func (a *AliasMap) ContainsTarget(target values.CorrelationIdentifier) bool {
 // mapped to different targets) panic — callers must ensure compatibility
 // by other means (typically dependency analysis).
 //
+// This is a MERGE, Java's combine(). It is NOT the same operation as
+// cascades.AliasMap.Compose, which carries the identical method name on an
+// identically-named type and performs FUNCTION COMPOSITION instead: given A→B
+// here and B→C there, that one yields A→C while this one yields both bindings.
+// Reaching for the wrong one compiles and does something else entirely.
+//
 // Java's equivalent throws if a binding would break the bijection. We
 // match that strict contract; rules that need a "best-effort" merge
 // should layer their own conflict policy.

@@ -243,6 +243,30 @@ func (m *AliasMap) Derived(additions *AliasMap) *AliasMap {
 // Compose creates a new AliasMap where each source maps to the
 // target of the target in `other`. If this maps A→B and other maps
 // B→C, the result maps A→C.
+//
+// NOT THE SAME OPERATION as expressions.AliasMap.Compose, despite the identical
+// method name on an identically-named type. That one is a MERGE — "layers
+// another AliasMap on top of this one", panicking on a conflicting binding,
+// which is Java's combine(). This one is FUNCTION COMPOSITION. Reaching for the
+// wrong one compiles and does something else entirely, so the difference is
+// stated at both sites.
+//
+// The result's domain is THIS map's domain, and lookups fall back to identity
+// (GetTarget returns its argument when unmapped). Those two together make
+// composition NON-ASSOCIATIVE: with m={A→B}, n={}, p={B→E},
+//
+//	(m∘n)∘p = {A→E}   because m∘n is {A→B} and p then rewrites B
+//	m∘(n∘p) = {A→B}   because n∘p is {} — it kept n's domain and dropped p
+//
+// They agree whenever the intermediate is inside n's domain. Measured, and
+// pinned by TestAliasMapCompose_IsNotAssociative.
+//
+// Unreachable today: `git grep 'Compose('` finds no production caller of either
+// AliasMap.Compose — every call site is a test. If one is ever added and chains
+// three maps, the grouping has to be chosen deliberately, or Compose has to
+// start carrying `other`'s mappings for sources outside this map's domain,
+// which is what would make it the identity-extended composition and therefore
+// associative.
 func (m *AliasMap) Compose(other *AliasMap) *AliasMap {
 	b := NewAliasMapBuilder()
 	for source, intermediate := range m.forward {
