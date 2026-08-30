@@ -20565,8 +20565,14 @@ diff has had its review lap.
 
 ## Doc comments naming a different function than the one they document
 
-- [ ] Fix the 23 remaining SUBJECT-class mismatches, and decide whether the
-  detector becomes a `pkg/docscheck` gate.
+- [x] Fix the 23 remaining SUBJECT-class mismatches. DONE — the detector reports
+  ZERO across the tree, and that zero is mutation-verified: introducing one
+  mismatch makes it report exactly that one. All 40 are fixed, each by reading
+  the function rather than by pattern.
+- [ ] Decide whether the detector becomes a `pkg/docscheck` gate at a zero floor.
+  The tree is at zero now, so the floor is settable; what remains is choosing
+  where it lives and whether the comment-block walk belongs in the existing
+  citation-gate file.
 
 `pkg/docscheck`'s citation gates — `TestEveryAuthorityDocTestCitationResolves`,
 `TestTodoTestCitationDriftIsReported` — scan MARKDOWN authority docs and

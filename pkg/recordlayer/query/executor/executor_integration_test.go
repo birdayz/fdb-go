@@ -2468,8 +2468,6 @@ func TestIntegration_Aggregation_NoGroupBy(t *testing.T) {
 	}
 }
 
-// TestIntegration_FilterSortProjection_Pipeline tests the full pipeline:
-// scan → filter → sort → project → limit (all plan types chained).
 // TestIntegration_IndexScan_Reverse tests reverse-order index scan.
 func TestIntegration_IndexScan_Reverse(t *testing.T) {
 	t.Parallel()
@@ -2888,6 +2886,8 @@ func TestIntegration_Aggregation_GroupBy_MultiFunc(t *testing.T) {
 	}
 }
 
+// TestIntegration_FilterSortProjection_Pipeline tests the full pipeline:
+// scan → filter → sort → project → limit (all plan types chained).
 func TestIntegration_FilterSortProjection_Pipeline(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

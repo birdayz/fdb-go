@@ -300,9 +300,11 @@ func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 	}
 }
 
-// TestRebaseLegRefsToBox_DeclinesANestedDescent pins the FIFTH legRef consumer,
-// which is MASKED: its caller pre-filters on SourceRelativeBaked at the top of
-// the walk, so a nested descent never reaches the legRef call below it.
+// TestRebaseLegRefsToBoxFusesAnExactNestedDescent pins the FIFTH legRef
+// consumer. Its caller used to pre-filter on SourceRelativeBaked at the top of
+// the walk, so a nested descent never reached the legRef call below it; the
+// guard has since been widened and the descent is now fused rather than
+// declined — see the end of this comment.
 //
 // THIS IS A DELIBERATE NARROWNESS, NOT AN OVERSIGHT, and the pin exists because
 // the two are indistinguishable from the outside. The walk resolves ONE name
@@ -320,13 +322,21 @@ func TestClassifyLegConjunct_SeesANestedBoxLegDescent(t *testing.T) {
 //   - even with the root resolved correctly, the address reaches the enclosing
 //     STRUCT and the descent is still dropped.
 //
-// WHAT RE-ARMS IF THIS GOES GREEN THE OTHER WAY: widening the guard to legRef's
-// own predicate (RootIsLegRelativeUnpinned) without ALSO doing both of the
-// above. Widening needs the root derived from Accessors[0] (legRefRootInWindow
-// is that resolver) AND the fuse of Accessors[1:]. Doing only the fuse is the
-// wrong-slot read; doing only the root derivation drops the descent. If you
-// widen it, this pin must be REPLACED by one asserting the fused two-step
-// address, not deleted — a deleted pin is how the halfway state ships.
+// WHAT THIS ASSERTS NOW: the widening happened, and this is the replacement the
+// retired pin demanded. The guard reaches legRef's own predicate, the root is
+// derived from Accessors[0] via legRefRootInWindow, and Accessors[1:] are fused
+// — so the address is the two-step one and the descent survives.
+//
+// The comment that stood here documented
+// TestRebaseLegRefsToBox_DeclinesANestedDescent, the pin from BEFORE that
+// widening, and it ended by instructing that the pin "must be REPLACED by one
+// asserting the fused two-step address, not deleted — a deleted pin is how the
+// halfway state ships." The replacement is this function; the instruction was
+// followed and the doc was not, which is how it came to describe a decline
+// above a test named for a fuse.
+//
+// WHAT RE-ARMS: doing only ONE half again. Only the fuse is the wrong-slot
+// read; only the root derivation drops the descent.
 func TestRebaseLegRefsToBoxFusesAnExactNestedDescent(t *testing.T) {
 	t.Parallel()
 

@@ -733,12 +733,6 @@ func TestCancel_StateVisibleWhenWatchCancelled(t *testing.T) {
 	}
 }
 
-// TestOnError_TerminalAbortCancelsWatches pins that a non-retryable (terminal-abort) OnError cancels
-// in-flight watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
-// a watch registered in a Transact whose txn then fails non-retryably keeps polling and holds its
-// slot until the key changes, starving future watches under a low MAX_WATCHES. The retry path
-// already cancels via reset(); this covers the abort path. Revert-proof: drop the defer and the ctx
-// stays live after OnError.
 // TestOnError_CallerCancelOutranksTxnTimeout pins that when a retryable FDB error reaches OnError
 // with BOTH the txn SetTimeout deadline AND the caller ctx expired, the caller's own cancellation
 // wins over the txn timeout (mapTimeout precedence) — a TransactCtx caller gets context.Canceled,
@@ -756,6 +750,12 @@ func TestOnError_CallerCancelOutranksTxnTimeout(t *testing.T) {
 	}
 }
 
+// TestOnError_TerminalAbortCancelsWatches pins that a non-retryable (terminal-abort) OnError cancels
+// in-flight watch contexts, so their polls drain and release the outstanding-watch slots. Without it,
+// a watch registered in a Transact whose txn then fails non-retryably keeps polling and holds its
+// slot until the key changes, starving future watches under a low MAX_WATCHES. The retry path
+// already cancels via reset(); this covers the abort path. Revert-proof: drop the defer and the ctx
+// stays live after OnError.
 func TestOnError_TerminalAbortCancelsWatches(t *testing.T) {
 	t.Parallel()
 	tx := newTestTx()

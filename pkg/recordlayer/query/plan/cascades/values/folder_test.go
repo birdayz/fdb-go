@@ -68,12 +68,15 @@ func TestDefaultFolder_ParameterValueDeclines(t *testing.T) {
 	}
 }
 
-// TestDefaultFolder_PartialFoldComposesViaSimplify pins the
-// integration with SimplifyValue: an Arithmetic node `name + (1+2)`
-// simplifies to `name + 3` — the inner constant node folds even
-// though the outer node remains non-constant. The Folder's contract
-// only returns ok=true on FULLY-folded results, but verifying that
-// SimplifyValue ran requires inspecting the simplified tree directly.
+// TestDefaultFolder_PartialFoldDoesNotReturnOk pins the Folder's contract:
+// ok=true means FULLY folded, so `name + (1+2)` — whose inner node folds while
+// the outer stays non-constant — returns ok=false.
+//
+// What it deliberately does NOT check is that SimplifyValue ran at all. The
+// comment here used to lead with that claim ("pins the integration with
+// SimplifyValue: `name + (1+2)` simplifies to `name + 3`") while the body only
+// asserts the boolean; seeing the partial fold would mean inspecting the
+// returned tree, which this test does not do.
 func TestDefaultFolder_PartialFoldDoesNotReturnOk(t *testing.T) {
 	t.Parallel()
 	f := DefaultFolder()

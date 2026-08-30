@@ -18789,7 +18789,7 @@ func TestFDB_CTEReferencedTwice(t *testing.T) {
 	})
 }
 
-// TestFDB_SelectWithAlias — column alias in SELECT
+// TestFDB_SelectWithColumnAlias — column alias in SELECT
 func TestFDB_SelectWithColumnAlias(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -18970,7 +18970,7 @@ func TestFDB_JoinWithWhereOnBothTables(t *testing.T) {
 	})
 }
 
-// TestFDB_EmptyTableOperations — operations on empty table
+// TestFDB_EmptyTableOps — operations on empty table
 func TestFDB_EmptyTableOps(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19153,7 +19153,7 @@ func TestFDB_UnionAllThreeBranches(t *testing.T) {
 	})
 }
 
-// TestFDB_InsertThenUpdateThenVerify — full CRUD cycle
+// TestFDB_CRUDCycle — full CRUD cycle (insert, update, verify)
 func TestFDB_CRUDCycle(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19218,7 +19218,7 @@ func TestFDB_CRUDCycle(t *testing.T) {
 	})
 }
 
-// TestFDB_SumWithWhereAndGroupBy — SUM filtered by WHERE then grouped
+// TestFDB_SumFilteredGrouped — SUM filtered by WHERE then grouped
 func TestFDB_SumFilteredGrouped(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19306,7 +19306,7 @@ func TestFDB_DeleteThenInsertSameKey(t *testing.T) {
 	})
 }
 
-// TestFDB_JoinCountGroupByWithHaving — JOIN + GROUP BY + HAVING COUNT
+// TestFDB_JoinCountGroupByHaving — JOIN + GROUP BY + HAVING COUNT
 func TestFDB_JoinCountGroupByHaving(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19422,7 +19422,7 @@ func TestFDB_CoalesceThreeColumnFallback(t *testing.T) {
 	})
 }
 
-// TestFDB_OrderByMultipleWithLimit — ORDER BY 3 columns with LIMIT
+// TestFDB_OrderByThreeColumnsLimit — ORDER BY 3 columns with LIMIT
 func TestFDB_OrderByThreeColumnsLimit(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -19524,7 +19524,7 @@ func TestFDB_GroupByOrderByCountDescLimit(t *testing.T) {
 	})
 }
 
-// TestFDB_JoinSumGroupByWithOrderBySum — JOIN + SUM + GROUP BY + ORDER BY SUM
+// TestFDB_JoinSumGroupOrderSum — JOIN + SUM + GROUP BY + ORDER BY SUM
 func TestFDB_JoinSumGroupOrderSum(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {

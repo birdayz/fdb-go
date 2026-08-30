@@ -169,7 +169,7 @@ func TestOnError_RetryCount(t *testing.T) {
 	}
 }
 
-// TestOnError_ResourceConstrainedBackoff verifies that resource-constrained
+// TestOnError_ResourceConstrainedErrors verifies that resource-constrained
 // errors (hot_shard, range_locked, proxy_memory_limit, grv_proxy_memory_limit)
 // use the higher backoff cap (30s) instead of the normal 1s.
 func TestOnError_ResourceConstrainedErrors(t *testing.T) {

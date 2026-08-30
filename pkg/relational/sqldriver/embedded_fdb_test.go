@@ -7713,7 +7713,7 @@ func TestFDB_SubqueryInNullRowRejected(t *testing.T) {
 	expectInSubqueryRejected(`SELECT COUNT(*) FROM T WHERE n NOT IN (SELECT v FROM U)`)
 }
 
-// TestFDB_CountDistinctTypeCollision proves COUNT(DISTINCT col) doesn't
+// TestFDB_CountDistinctTypeTaggedKey proves COUNT(DISTINCT col) does not
 // collapse values that differ only by concrete type. The pre-fix
 // fmt.Sprintf("%v", v) key made integer 5 and string '5' share a key;
 // type-tagged "%T\x00%v" keeps them apart. Exercised here only for the

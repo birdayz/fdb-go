@@ -1318,7 +1318,7 @@ func TestSatisfiesRequestedOrdering_DeclinesAValueWithoutColumnIdentity(t *testi
 	}
 }
 
-// TestSatisfiesRequestedOrdering_AdmitsQualifiedRequestAgainstLocalCandidate
+// TestSatisfiesRequestedOrdering_AdmitsRequestAgainstSameExactRoot
 // pins the exact-root contract: two independently resolved reads through the
 // same quantified object and ordinal denote one ordering column.
 func TestSatisfiesRequestedOrdering_AdmitsRequestAgainstSameExactRoot(t *testing.T) {

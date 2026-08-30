@@ -82,10 +82,16 @@ func TestIsOrdered_Convenience(t *testing.T) {
 	}
 }
 
-// TestEstimateOrdering_DMLInheritsInner pins that DML operations
-// (Insert / Update / Delete) inherit ordering from their inner.
-// Important because DML is row-pass-through — if the inner is a
-// sorted scan, the DML output can be assumed sorted too.
+// TestEstimateOrdering_InsertInheritsInner pins that an Insert inherits
+// ordering from its inner. DML is row-pass-through, so a sorted inner means a
+// sorted output.
+//
+// SCOPE, because the comment here used to claim more than the file delivers: it
+// said "(Insert / Update / Delete)" under a single combined name. Insert is
+// this test and Delete is TestEstimateOrdering_DeleteInheritsInner; UPDATE has
+// no test, though EstimateOrdering gives it the same inheritFromInner arm. That
+// is a real one-arm gap, stated rather than papered over by a comment that
+// counts three.
 func TestEstimateOrdering_InsertInheritsInner(t *testing.T) {
 	t.Parallel()
 	scan := mustFullUnorderedScanExpression(t, []string{"Source"}, propertyTestFlowedType())

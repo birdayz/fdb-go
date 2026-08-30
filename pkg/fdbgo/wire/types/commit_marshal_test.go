@@ -6,12 +6,6 @@ import (
 	"testing"
 )
 
-// TestCommitTransactionRequestMarshalFooter verifies that MarshalFDB produces
-// valid FDB FlatBuffers footers for various CommitTransactionRequest inputs.
-//
-// Background: binding tester seed 6 crashes FDB because our MarshalFDB
-// produces a 200-byte message with footer fileID=0x2 rootOffset=65535
-// instead of the correct fileID=93948. This is a buffer size calculation bug.
 // TestCommitTransactionRequestRoundtrip traces through MarshalFDB output
 // byte by byte to find where the marshal and reader disagree.
 func TestCommitTransactionRequestRoundtrip(t *testing.T) {
@@ -172,6 +166,12 @@ func TestCrashFrame92Candidates(t *testing.T) {
 	}
 }
 
+// TestCommitTransactionRequestMarshalFooter verifies that MarshalFDB produces
+// valid FDB FlatBuffers footers for various CommitTransactionRequest inputs.
+//
+// Background: binding tester seed 6 crashes FDB because our MarshalFDB
+// produces a 200-byte message with footer fileID=0x2 rootOffset=65535
+// instead of the correct fileID=93948. This is a buffer size calculation bug.
 func TestCommitTransactionRequestMarshalFooter(t *testing.T) {
 	cases := []struct {
 		name string
