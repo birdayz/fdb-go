@@ -49,6 +49,7 @@ go_test(
         "distance_rank_transform_test.go",
         "eval_must_test.go",
         "existential_value_predicate_test.go",
+        "explain_fallback_identity_test.go",
         "fuzz_test.go",
         "leaf_query_predicate_test.go",
         "new_predicates_test.go",

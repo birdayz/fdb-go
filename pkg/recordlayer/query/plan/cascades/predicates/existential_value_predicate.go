@@ -1,8 +1,6 @@
 package predicates
 
 import (
-	"hash/fnv"
-
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
@@ -110,15 +108,6 @@ func (p *ExistentialValuePredicate) GetCorrelatedTo() map[values.CorrelationIden
 		out[k] = struct{}{}
 	}
 	return out
-}
-
-// HashCodeWithoutChildren hashes the predicate kind. The operand alias is
-// EXCLUDED (alias-invariant), consistent with the alias-invariant
-// SemanticHashCode for the carried QuantifiedObjectValue.
-func (p *ExistentialValuePredicate) HashCodeWithoutChildren() uint64 {
-	h := fnv.New64a()
-	h.Write([]byte("existential|"))
-	return h.Sum64()
 }
 
 // Explain renders the SQL-ish form.
