@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"testing"
@@ -14,6 +15,34 @@ import (
 
 // progressEvery is how often a sweep prints a progress line, in CASES.
 const progressEvery = 500
+
+// huntBudget is the wall-clock a sweep gives itself before stopping cleanly and
+// reporting what it actually covered. HUNT_BUDGET overrides it.
+//
+// A seed COUNT is the wrong bound for a sweep and this was learned by paying
+// for it twice. Both times the range was sized from a throughput measured on an
+// idle box; both times other work was running by the time it mattered. The
+// first run spent 1h57m and died on the Go test timeout having printed nothing
+// at all. The second, after the progress fix, still died at 90 minutes — but at
+// 2000 of 9000 seeds, so the number that mattered (what got swept) was
+// recoverable from the log rather than from the exit status.
+//
+// A budget makes the seed count an UPPER bound, which is what it always was in
+// practice, and makes the run's own report the authority on coverage. It also
+// removes the failure mode where a panic-on-timeout is indistinguishable in the
+// exit code from a sweep that found a real defect.
+//
+// This is the same shape as the nightly's ROWDIFF_BUDGET, which was dismissed
+// here as "the nightly's semantics" before two timeouts demonstrated it is
+// simply how a long sweep has to end.
+func huntBudget() time.Duration {
+	if v := os.Getenv("HUNT_BUDGET"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return 20 * time.Minute
+}
 
 // classifyExcluded names why the factory's TLP eligibility filter refuses a
 // query, or "" when it would be accepted. Multi-label: a query can be refused
@@ -294,14 +323,25 @@ func runShapeHuntGen(
 			}
 		}(w)
 	}
+	budget := huntBudget()
+	deadline := began.Add(budget)
+	var walked uint64
 	for s := start; s < start+count; s++ {
+		if time.Now().After(deadline) {
+			fmt.Printf("%s BUDGET EXHAUSTED after %s: walked %d of %d seeds. This is a NORMAL end, "+
+				"not a failure — the seed count is an upper bound and the clock is what sizes the run. "+
+				"Coverage below is what was actually swept.\n",
+				tag, budget, walked, count)
+			break
+		}
 		seeds <- s
+		walked++
 	}
 	close(seeds)
 	wg.Wait()
 
-	fmt.Printf("%s seeds=%d..%d cases=%d executed=%d infra-errs=%d mismatches=%d\n",
-		tag, start, start+count-1, cases, executed, infraErrs, len(mismatches))
+	fmt.Printf("%s seeds=%d..%d walked=%d cases=%d executed=%d infra-errs=%d mismatches=%d\n",
+		tag, start, start+count-1, walked, cases, executed, infraErrs, len(mismatches))
 	var keys []string
 	for k := range byClass {
 		keys = append(keys, k)

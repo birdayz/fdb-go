@@ -1,6 +1,7 @@
 package factory_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -117,5 +118,52 @@ func TestCountOnlyDiffStillDetects(t *testing.T) {
 	}
 	if want := "base=2 alt=1"; !strings.Contains(d, want) {
 		t.Errorf("finding text = %q, want it to name the counts (%q)", d, want)
+	}
+}
+
+// The benign-error allowlist decides whether an execution failure under a
+// perturbation is REPORTED AS A BUG or silently counted, so it gets a unit pin
+// rather than relying on whatever a sweep happens to provoke.
+//
+// It is an allowlist and not a denylist on purpose: a denylist fails OPEN, so
+// the first unfamiliar error class would be tolerated without anyone deciding
+// to tolerate it. This test drives both verdicts, because a table that only
+// ever asserts one is satisfied by a constant function — and a constant `true`
+// here restores exactly the blindness the allowlist was added to remove.
+func TestBenignPerturbationErrorAllowlist(t *testing.T) {
+	t.Parallel()
+
+	benign := []struct{ name, msg string }{
+		{"scanned-rows budget", "54F01: leaf cursor scan limit exceeded: scan limit reached: scanned-records limit exceeded"},
+		{"planner starved by a disabled rule", "0AF00: Cascades planner could not plan query"},
+	}
+	defects := []struct{ name, msg string }{
+		{
+			name: "the QOV binding failure this session fixed",
+			msg:  `resolution error 46 at qov.binding: exact QOV "q$2265" (RECORD) has no declared runtime binding`,
+		},
+		{"an internal assertion", "internal error: unreachable branch in plan extraction"},
+		{"a type resolution failure", "42804: argument of WHERE must be type boolean"},
+		{"an unknown class", "some error nobody has classified yet"},
+	}
+
+	for _, c := range benign {
+		if !benignPerturbationError(errors.New(c.msg)) {
+			t.Errorf("%s: want BENIGN (an expected consequence of the perturbation), got reported "+
+				"as a finding — this would make every forced-paging sweep red", c.name)
+		}
+	}
+	for _, c := range defects {
+		if benignPerturbationError(errors.New(c.msg)) {
+			t.Errorf("%s: want REPORTED, got silently tolerated. The allowlist must not grow to "+
+				"cover defect classes; %q is how a real engine failure becomes a counter nobody reads",
+				c.name, c.msg)
+		}
+	}
+	if !benignPerturbationError(nil) {
+		t.Error("nil must be benign")
+	}
+	if len(benign) == 0 || len(defects) == 0 {
+		t.Fatal("both verdicts must be exercised; a single-verdict table passes against a constant")
 	}
 }

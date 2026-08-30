@@ -372,14 +372,28 @@ func runAndCompare(ctx context.Context, conn *sql.Conn, p perturbation, sqlText,
 	altRows, err := rowsOf(ctx, conn, sqlText)
 	if err != nil {
 		res.execErrs[p.name]++
-		// An error under a perturbation on a query the baseline answered fine
-		// is itself a candidate finding, so the message is sampled rather than
-		// only counted — a bare count cannot distinguish an expected
-		// limit-exceeded from a crash.
 		if len(res.execErrSamples[p.name]) < 3 {
 			res.execErrSamples[p.name] = append(res.execErrSamples[p.name],
 				fmt.Sprintf("seed=%d %v | SQL: %s", seed, err, sqlText))
 		}
+		// An error under a perturbation, on a query the BASELINE answered fine,
+		// is a finding unless it is one of the resource limits the perturbation
+		// legitimately provokes. Counting all of them and reporting none is the
+		// same defect the factory has: `engine error` there is a skip class
+		// nothing triages, which is why 25 batches could report findings 0.
+		//
+		// The QOV-binding defect fixed in InComparisonToExplodeRule was exactly
+		// this shape — an execution failure, not a wrong row — so a hunt that
+		// files execution errors in a counter is blind to the one real engine
+		// bug this session has found.
+		if benignPerturbationError(err) {
+			return
+		}
+		res.findingsBy[p.name]++
+		res.findings = append(res.findings, fmt.Sprintf(
+			"seed=%d perturbation=%s EXECUTION ERROR on a query the baseline answered\n"+
+				"    err:  %v\n    SQL:  %s\n    DDL:  %s\n    base plan: %s\n    alt  plan: %s",
+			seed, p.name, err, sqlText, ddl, basePlan, altPlan))
 		return
 	}
 	res.executed++
@@ -469,6 +483,40 @@ func rowKey(r []any) string {
 		}
 	}
 	return strings.Join(parts, "|")
+}
+
+// benignPerturbationError reports whether an execution failure under a
+// perturbation is an expected consequence of the perturbation rather than a
+// defect.
+//
+// The list is deliberately an ALLOWLIST of specific resource limits, not a
+// denylist of known-bad classes. A denylist fails open: the first unfamiliar
+// error class would be silently tolerated, which is the failure this whole
+// change exists to remove.
+//
+// Both entries are earned, not guessed. `exec:scan-rows-*` pins a scanned-rows
+// limit of 1-3, and some plans genuinely cannot make progress inside that
+// budget and surface 54F01 instead of resuming — measured at 26 occurrences per
+// arm over seeds 1..25, all on RIGHT JOIN shapes. Disabling an implementation
+// rule can leave the planner with no way to build a plan at all, which is a
+// statement about the rule set and not about correctness.
+func benignPerturbationError(err error) bool {
+	if err == nil {
+		return true
+	}
+	msg := err.Error()
+	for _, benign := range []string{
+		// Scanned-rows / scanned-bytes budget exhausted under a forced-paging arm.
+		"scan limit reached",
+		"scanned-records limit exceeded",
+		// The rule set left after a disable cannot produce any plan.
+		"Cascades planner could not plan query",
+	} {
+		if strings.Contains(msg, benign) {
+			return true
+		}
+	}
+	return false
 }
 
 // unstableSubset reports whether the query's RESULT SET — not merely its row
