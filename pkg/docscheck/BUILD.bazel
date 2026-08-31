@@ -90,6 +90,10 @@ go_test(
         "//:README.md",
         "//:RELEASE.md",
         "//:TODO.md",
+        # keep: the completed half of the old TODO.md. TestStatusPageCrossReferencesResolve
+        # resolves a status-page CQ reference against the open list AND this archive; an
+        # unstaged archive makes every completed reference read as a phantom.
+        "//shifts:2026-08-31-todo-completed-archive.md",
         # keep: the GitHub Actions workflows, read by the nightly-window gate and
         # by TestRowdiffSweepBudgetBoundsTheTimeout (which checks that every
         # rowdiff sweep's in-test ROWDIFF_BUDGET fires before its Bazel

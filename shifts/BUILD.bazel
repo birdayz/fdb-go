@@ -1,0 +1,7 @@
+# The completed-TODO archive is exported as data for //pkg/docscheck:docscheck_test.
+# TestStatusPageCrossReferencesResolve resolves a status-page `CQ-N` reference against
+# the open list AND this archive, so a completed item the page still names stays
+# findable. Under Bazel a test sees only its declared inputs, so without this export
+# the archive is simply absent from the runfiles tree and the gate reports every
+# completed reference as a phantom.
+exports_files(["2026-08-31-todo-completed-archive.md"])

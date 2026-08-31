@@ -28,6 +28,11 @@ import (
 // todoLineAnchor matches a `TODO.md:1234` style citation on the status page.
 var todoLineAnchor = regexp.MustCompile(`TODO\.md:\d+`)
 
+// todoCompletedArchive holds the entries that were in TODO.md and are done. It is
+// history, never a work list, but it is where a completed item's ID lives after the
+// split — so the "findable" half of this gate reads it alongside the open list.
+const todoCompletedArchive = "shifts/2026-08-31-todo-completed-archive.md"
+
 // statusPageItemRef matches a CQ-item reference in the status page's prose.
 var statusPageItemRef = regexp.MustCompile(`\bCQ-(\d+)\b`)
 
@@ -43,6 +48,14 @@ func TestStatusPageCrossReferencesResolve(t *testing.T) {
 	root := repoRoot(t)
 	page := readDoc(t, root, productionStatusAuthority)
 	todo := readDoc(t, root, "TODO.md")
+	// The list is split: TODO.md carries open work, the archive carries the entries
+	// that are done. FINDABILITY is checked against both halves, for the reason the
+	// comment below gives — a completed item the page still names must stay findable,
+	// and after the split that means findable in either half. Measured when the split
+	// landed: CQ-47, CQ-80, CQ-81, CQ-83 and CQ-90 are cited by the page and live only
+	// in the archive, so searching the open half alone reddens on all five. The FORMAT
+	// check below stays on the open list, where the convention it pins is still in use.
+	findable := todo + "\n" + readDoc(t, root, todoCompletedArchive)
 
 	// (1) No line anchors. This is a FORM rule and it is deliberately absolute:
 	// an anchor that happens to be correct today is still a citation whose
@@ -78,16 +91,16 @@ func TestStatusPageCrossReferencesResolve(t *testing.T) {
 			continue
 		}
 		seen[id] = true
-		if !regexp.MustCompile(`\b` + id + `\b`).MatchString(todo) {
+		if !regexp.MustCompile(`\b` + id + `\b`).MatchString(findable) {
 			missing = append(missing, id)
 		}
 	}
 	sort.Strings(missing)
 	for _, id := range missing {
-		t.Errorf("%s cites %s, which appears NOWHERE in TODO.md. Either the item was renamed "+
-			"and the page still quotes the old ID, or the reference is a typo — both are a "+
-			"status page pointing an adopter at work that cannot be found",
-			productionStatusAuthority, id)
+		t.Errorf("%s cites %s, which appears NOWHERE in TODO.md or in %s. Either the item was "+
+			"renamed and the page still quotes the old ID, or the reference is a typo — both are "+
+			"a status page pointing an adopter at work that cannot be found",
+			productionStatusAuthority, id, todoCompletedArchive)
 	}
 }
 
