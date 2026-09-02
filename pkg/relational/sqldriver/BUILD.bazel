@@ -103,6 +103,7 @@ go_test(
         "aggregate_index_sum_probe_test.go",
         "aggregate_index_vacated_group_fdb_test.go",
         "aggregate_null_semantics_probe_test.go",
+        "aggregate_operand_literal_case_fdb_test.go",
         "aggregate_operand_width_fdb_test.go",
         "aggregate_output_slot_recorded_fdb_test.go",
         "aggregate_over_join_ordinal_fdb_test.go",

@@ -1535,7 +1535,7 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 			}
 		}
 	}
-	aggCalls, hasDistinct := logicalAggregateCalls(cls.aggCols, cls.countStar, strip)
+	aggCalls, callToAggCol, hasDistinct := logicalAggregateCalls(cls.aggCols, cls.countStar, strip)
 	outputAggCols := visibleAggregateOutputColumns(cls.aggCols, cls.countStar, cls.countStarAlias)
 	// Every aggregate's internal ABI is canonical and alias-free:
 	// [group keys..., aggregate calls...]. SQL aliases belong exclusively to
@@ -1544,6 +1544,8 @@ func (v *PlanVisitor) visitSelectGroupBy(op logical.LogicalOperator, cls *select
 	// GroupByExpression equality/hash.
 	aggAliases := make([]string, len(aggCalls))
 	aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, cls.havingExpr != nil)
+	aggOp.CallToAggCol = callToAggCol
+	aggOp.CallToAggColLen = len(cls.aggCols)
 	aggOp.HasDistinctAggregate = hasDistinct
 	aggOp.OutputSlots = buildAggregateOutputSlots(keys, outputAggCols, strip)
 	op = aggOp

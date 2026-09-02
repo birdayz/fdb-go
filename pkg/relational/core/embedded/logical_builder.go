@@ -56,13 +56,19 @@ func logicalAggregateCalls(
 	aggCols []aggSelectCol,
 	countStar bool,
 	strip func(string) string,
-) ([]logical.AggregateCall, bool) {
+) ([]logical.AggregateCall, []int, bool) {
 	calls := make([]logical.AggregateCall, 0, len(aggCols)+1)
+	// callToAggCol stays PARALLEL to calls: every append below appends to both,
+	// and every `continue` skips both. Letting them drift is the same class of
+	// silent misbinding RFC-241 removed, so the two appends are deliberately
+	// adjacent at each site rather than factored apart.
+	callToAggCol := make([]int, 0, len(aggCols)+1)
 	hasDistinct := false
 	if countStar {
 		calls = append(calls, logical.AggregateCall{Func: "COUNT", Operand: "*", Star: true})
+		callToAggCol = append(callToAggCol, -1) // synthesized: no parsed column
 	}
-	for _, ac := range aggCols {
+	for aggColIdx, ac := range aggCols {
 		if ac.aggFunc == "" {
 			continue
 		}
@@ -92,8 +98,9 @@ func logicalAggregateCalls(
 		}
 		hasDistinct = hasDistinct || call.Distinct
 		calls = append(calls, call)
+		callToAggCol = append(callToAggCol, aggColIdx)
 	}
-	return calls, hasDistinct
+	return calls, callToAggCol, hasDistinct
 }
 
 func aggregateProjectionItem(ac aggSelectCol, strip func(string) string) (name, alias string, expr antlrgen.IExpressionContext) {
@@ -646,10 +653,12 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				keys[i] = stripGroupKeyLeadingSegment(keys[i], stripped)
 			}
 		}
-		aggCalls, hasDistinct := logicalAggregateCalls(sq.aggCols, sq.countStar, strip)
+		aggCalls, callToAggCol, hasDistinct := logicalAggregateCalls(sq.aggCols, sq.countStar, strip)
 		outputAggCols := visibleAggregateOutputColumns(sq.aggCols, sq.countStar, sq.countStarAlias)
 		aggAliases := make([]string, len(aggCalls))
 		aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, sq.havingExpr != nil)
+		aggOp.CallToAggCol = callToAggCol
+		aggOp.CallToAggColLen = len(sq.aggCols)
 		aggOp.HasDistinctAggregate = hasDistinct
 		aggOp.OutputSlots = buildAggregateOutputSlots(keys, outputAggCols, strip)
 		op = aggOp

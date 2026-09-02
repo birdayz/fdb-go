@@ -6453,6 +6453,60 @@ Documented at the contract itself (`RecordMetaData.AmbiguousDeclaredNames`,
 `pkg/recordlayer/metadata.go`), which points back here.
 
 
+### [ ] Resolve an aggregate's operand AT the producer, and delete the second pass
+
+RFC-241 stops `upgradeAggregateOperands` from matching an aggregate column to its
+`agg.Calls` entry by folded rendered TEXT — a string literal's case decided the match, two
+calls collided, and the second write clobbered the first, returning wrong rows. It replaces
+that with a side table (`callToAggCol`) returned by `logicalAggregateCalls`, so the producer
+hands over the correspondence it already knew instead of having it reconstructed downstream.
+
+**That is a correct fix and it is not the shape Java has.** Java binds the operand AT
+CONSTRUCTION: `ExpressionVisitor.visitAggregateWindowedFunction`
+(`fdb-relational-core/.../visitors/ExpressionVisitor.java:352-362`) builds the argument with
+`visitFunctionArg(...)` and passes the resulting `Expression` straight into
+`resolveFunction(functionName, expression)`. There is no later pass, so there is nothing to
+correlate and the collision class cannot exist. This repo already has one producer with that
+shape — `logical_predicate.go:12211`'s `addAgg` closure resolves `opVal` in place and
+`:12405` assigns the operands directly — so the target is a port of a local precedent, not an
+invention.
+
+**What blocks it, measured.** `logicalAggregateCalls` has two callers that do NOT agree on
+what is in scope, and a shared producer can only do what BOTH callers permit:
+
+- `plan_visitor.go:1538` CAN build a resolver, and does, 34 lines above at `:1504`
+  (`buildSelectScope(selectQueryFromClassification(cls, fs), v.md, v.schemaName, v.cteScopes)`).
+- `logical_builder.go:649` CANNOT: it sits in `buildSelectShell(op, sq, stripPrefix)`
+  (`:628`), whose signature carries no `md`, no `schemaName` and no `cteScopes`.
+
+So the work is threading catalog context into `buildSelectShell` — a signature change through
+the second SQL builder — and only then moving resolution into the producer. Its two non-test
+callers, `logical_builder.go:543` and `logical_predicate.go:8620`, both need the threading;
+sizing this from the one call site nearest the aggregate code would under-count it.
+
+**Why this is worth doing rather than living with the side table.** The side table is a
+correspondence carried alongside the calls; once the operand is resolved at construction there
+is no correspondence to carry, and RFC-241's table plus the whole
+`upgradeAggregateOperands` operand loop DELETE. The side table was chosen partly because it
+makes this a deletion rather than a rewrite.
+
+Related debt this would collapse, none of which is a copy of the RFC-241 defect (RFC-237
+de-folded both normalizers, and both binders' structural arms consume `AggregateOperands`, so
+fixing the operands fixes what they see): `normalizeAggregateBindingName`
+(`logical_predicate.go:5991`) and `normalizeAggOutputName` (`cascades_translator.go:1289`) have
+byte-identical bodies; `canonicalAggName` (`:6004`) and `aggregateValueOutputName` (`:1437`)
+are near-identical renderers; `aggregateCallOutputSlot` (`:5788`) and
+`aggregateValueNativeOrdinal` (`:1401`) are one algorithm written twice and DIVERGING —
+collect-all-then-`matches[0]` versus first-match.
+
+Query-engine change: needs its own RFC and the Graefe + Torvalds gate before implementation.
+
+DONE when: `logicalAggregateCalls` emits calls whose operand Value is already resolved,
+`upgradeAggregateOperands`' operand loop and RFC-241's `callToAggCol` table are both deleted,
+and the RFC-241 census floors are removed with them rather than left pointing at code that no
+longer exists.
+
+
 
 ---
 

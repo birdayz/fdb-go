@@ -5217,10 +5217,119 @@ func cascadesSafeScalarFunction(name string) bool {
 	return values.IsCascadesSafeScalarFunction(name)
 }
 
+// aggCallOperandSpellings recomputes the operand spellings for one parsed
+// aggregate column, exactly as the operand-resolution loop does. Two entries
+// and no more: the argument as parsed, and the argument with its LEADING
+// segment removed, because the producer strips a same-source qualifier when it
+// names the slot (`COUNT(a.n.sk)` is named "N.SK" while the parsed arg reads
+// "A.N.SK"). Every suffix is NOT the rule — that manufactures spellings nothing
+// produces and lets `SUM(a.n.sk)` and `SUM(b.m.sk)` collide on the bare leaf.
+func aggCallOperandSpellings(ac aggSelectCol) []string {
+	arg := ac.aggArg
+	if arg == "" && ac.aggExpr != nil {
+		arg = aggOperandCanonicalText(ac.aggExpr)
+	}
+	if arg == "" {
+		arg = "*"
+	}
+	spellings := []string{arg}
+	if segs := ac.aggArgSegs; len(segs) > 1 {
+		spellings = append(spellings, strings.Join(segs[1:], "."))
+	} else if ac.aggArgQualified && ac.aggArgBare != "" {
+		spellings = append(spellings, ac.aggArgBare)
+	}
+	return spellings
+}
+
+// validateAggCallProvenance refuses a recorded call-to-column correspondence
+// that no longer describes the columns in hand.
+//
+// The correspondence is recorded by the producer and consumed here, and the two
+// are separated by the whole of logical building — so the table is only as good
+// as the assumption that `aggCols` did not move underneath it. Rather than
+// forbid from the outside every code shape that could move it (a list keyed on
+// an identifier cannot see a write that never names it — a whole-struct
+// assignment replaces the slice header while mentioning nothing), this asserts
+// the correspondence still holds where it is about to be USED.
+//
+// The operand comparison is EXACT and must stay exact. A case-insensitive one
+// is the RFC-241 defect itself, and putting it back here would reintroduce that
+// defect inside the guard against it.
+//
+// It is a checksum on a structural bind, not a selector: the recorded index
+// decides which call a column feeds, and this only refuses. Both sides derive
+// the operand text through the same renderer, which is what makes the check
+// sound rather than vacuous: a change to that renderer moves both sides and the
+// check keeps passing — correctly, since re-rendering does not invalidate the
+// correspondence — while a change to `aggCols` moves one side only, which is
+// precisely the event being watched.
+//
+// Blind in exactly one case, by subsumption rather than by hope: two columns
+// sharing function, DISTINCT-ness and canonical operand text. The bind is then
+// interchangeable, because the resolved Value is identical either way.
+func validateAggCallProvenance(agg *logical.LogicalAggregate, aggCols []aggSelectCol) error {
+	if agg.CallToAggCol == nil {
+		// Built by a producer that resolves its own operands (the correlated
+		// scalar-subquery path) and never needs this pass. Nothing to check.
+		return nil
+	}
+	if len(agg.CallToAggCol) != len(agg.Calls) {
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"aggregate call provenance is %d entries for %d calls",
+			len(agg.CallToAggCol), len(agg.Calls))
+	}
+	if agg.CallToAggColLen != len(aggCols) {
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"aggregate columns moved between lowering and operand resolution: "+
+				"recorded %d, have %d", agg.CallToAggColLen, len(aggCols))
+	}
+	for i, aggColIdx := range agg.CallToAggCol {
+		if aggColIdx < 0 {
+			continue // synthesized COUNT(*): no parsed column, no operand
+		}
+		if aggColIdx >= len(aggCols) {
+			return api.NewErrorf(api.ErrCodeInternalError,
+				"aggregate call %d names parsed column %d of %d",
+				i, aggColIdx, len(aggCols))
+		}
+		ac, call := aggCols[aggColIdx], agg.Calls[i]
+		if call.Func != strings.ToUpper(ac.aggFunc) || call.Distinct != ac.aggDistinct {
+			return api.NewErrorf(api.ErrCodeInternalError,
+				"aggregate call %d (%s, distinct=%v) no longer matches parsed column %d (%s, distinct=%v)",
+				i, call.Func, call.Distinct, aggColIdx, strings.ToUpper(ac.aggFunc), ac.aggDistinct)
+		}
+		matched := false
+		for _, sp := range aggCallOperandSpellings(ac) {
+			if sp != "" && call.Operand == sp {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return api.NewErrorf(api.ErrCodeInternalError,
+				"aggregate call %d operand %q is not a spelling of parsed column %d",
+				i, call.Operand, aggColIdx)
+		}
+	}
+	return nil
+}
+
 func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *recordlayer.RecordMetaData, schemaName string, cteScopes map[string]semantic.ScopeSource) error {
 	agg := findAggregate(op)
 	if agg == nil {
 		return nil
+	}
+	// The side table is parse-time provenance and this is its only consumer, so
+	// it stops existing when this function returns — however it returns. The
+	// resolver-nil path below is the one that matters: it leaves a POPULATED
+	// table on a live aggregate that nothing validated, which is exactly the
+	// state a later reader would most reasonably trust.
+	defer func() {
+		agg.CallToAggCol = nil
+		agg.CallToAggColLen = 0
+	}()
+	if err := validateAggCallProvenance(agg, sq.aggCols); err != nil {
+		return err
 	}
 	resolver := buildProjectionResolverWithCTEScopes(sq, md, schemaName, cteScopes)
 	if resolver == nil {
@@ -5230,7 +5339,7 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		return nil
 	}
 	operands := make([]values.Value, len(agg.Calls))
-	for _, ac := range sq.aggCols {
+	for aggColIdx, ac := range sq.aggCols {
 		// A PLAIN-column aggregate arg (`MIN(pid)`, `MIN(c2.pid)`) carries
 		// aggArg only — the parser's resolveArg captures no aggExpr for a bare
 		// FullColumnName. It must STILL resolve here: the translator's
@@ -5241,63 +5350,21 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 		if ac.aggFunc == "" || (ac.aggExpr == nil && ac.aggArg == "") {
 			continue
 		}
-		// Collect EVERY matching aggregate slot — a HAVING that repeats a
-		// SELECT-list aggregate (`SELECT SUM(x) … HAVING SUM(x) > k`) creates a
-		// SECOND slot with the same call shape; leaving it unresolved makes
-		// the translator fall back to the lazy bare-column read, whose flat
-		// dotted operand refs the ordinal frontier cannot resolve.
-		arg := ac.aggArg
-		if arg == "" && ac.aggExpr != nil {
-			arg = aggOperandCanonicalText(ac.aggExpr)
-		}
-		if arg == "" {
-			arg = "*"
-		}
-		// The aggregate slot may carry the BARE column while the parsed arg
-		// is qualified (`MIN(PID)` vs aggArg `C.PID`) — the main builder
-		// strips a same-source qualifier when naming the slot. Match the
-		// bare form too so the resolved-operand path engages for it.
-		// TWO candidate spellings, and exactly two: the reference as parsed, and
-		// the reference with its LEADING segment removed.
+		// A HAVING that repeats a SELECT-list aggregate
+		// (`SELECT SUM(x) … HAVING SUM(x) > k`) can create a SECOND slot with
+		// the same call shape, so a column may feed several calls; leaving any
+		// of them unresolved makes the translator fall back to the lazy
+		// bare-column read, whose flat dotted operand refs the ordinal frontier
+		// cannot resolve.
 		//
-		// The second exists for one reason — the builder strips the SOURCE
-		// qualifier when naming the slot. A three-segment argument
-		// (`COUNT(a.n.sk)`) is named "N.SK" there while the parsed arg reads
-		// "A.N.SK", so matching only the whole spelling missed it, the operand
-		// stayed unresolved, and the translator fell back to a lazy
-		// FieldValue{"N.SK"} no runtime row can answer.
-		//
-		// EVERY suffix is NOT the rule, and briefly was. Dropping one leading
-		// segment is what the slot naming does; dropping more manufactures
-		// spellings nothing produces. The difference is a collision class: over
-		// two sources, `SUM(a.n.sk)` and `SUM(b.m.sk)` are different columns
-		// whose all-suffix sets SHARE the bare leaf "SK", so a slot named "SK"
-		// could be claimed by either. Measured latent today — the slot names
-		// carry enough qualification that no live shape mis-binds
-		// (TestFDB_AggregateOperandSuffixDoesNotCollideOnASharedLeaf) — but the
-		// binding here is algebraic and must not rest on a spelling that wide.
-		//
-		// At TWO segments this is exactly the pair it replaces: the whole
-		// spelling plus the bare leaf, which for `c.pid` is ["C.PID", "PID"].
-		spellings := []string{arg}
-		if segs := ac.aggArgSegs; len(segs) > 1 {
-			spellings = append(spellings, strings.Join(segs[1:], "."))
-		} else if ac.aggArgQualified && ac.aggArgBare != "" {
-			spellings = append(spellings, ac.aggArgBare)
-		}
-		wantFunc := strings.ToUpper(ac.aggFunc)
-		var idxs []int
-		for i, call := range agg.Calls {
-			if call.Func != wantFunc || call.Distinct != ac.aggDistinct {
-				continue
-			}
-			for _, sp := range spellings {
-				if sp != "" && strings.EqualFold(call.Operand, sp) {
-					idxs = append(idxs, i)
-					break
-				}
-			}
-		}
+		// Which calls this column produced is a fact the producer RECORDED, not
+		// one to be reconstructed from a rendering. Reconstructing it by folding
+		// the operand text is the RFC-241 defect: that text carries identifiers
+		// and string literals alike, and a fold matched `…'us'…` against
+		// `…'US'…`, so both columns wrote both slots and the second clobbered
+		// the first. `spellings` survives only to VALIDATE the recorded index
+		// (see validateAggCallProvenance), never to choose one.
+		idxs := agg.CallsFromAggCol(aggColIdx)
 		if len(idxs) == 0 {
 			continue
 		}
