@@ -5217,14 +5217,22 @@ func cascadesSafeScalarFunction(name string) bool {
 	return values.IsCascadesSafeScalarFunction(name)
 }
 
-// aggCallOperandSpellings recomputes the operand spellings for one parsed
-// aggregate column, exactly as the operand-resolution loop does. Two entries
-// and no more: the argument as parsed, and the argument with its LEADING
-// segment removed, because the producer strips a same-source qualifier when it
-// names the slot (`COUNT(a.n.sk)` is named "N.SK" while the parsed arg reads
-// "A.N.SK"). Every suffix is NOT the rule — that manufactures spellings nothing
-// produces and lets `SUM(a.n.sk)` and `SUM(b.m.sk)` collide on the bare leaf.
-func aggCallOperandSpellings(ac aggSelectCol) []string {
+// aggColOperandText recomputes one parsed aggregate column's operand text, by
+// the same derivation the producer uses before it applies its qualifier strip.
+// It is the value `AggCallProvenance.Operand` was recorded from, so the two
+// agree exactly whenever the column has not moved.
+//
+// ONE SPELLING, NOT TWO, and the second was not merely redundant — it was a
+// hole. An earlier draft also offered the argument with its LEADING segment
+// removed, carried over from the pre-RFC-241 matcher where it accommodated the
+// producer's strip. Once the comparison moved to the PRE-strip text that
+// accommodation has nothing to do: the recorded value is derived by these exact
+// lines, so it matches this spelling by construction, and a second spelling can
+// therefore only ever match when the first does NOT — i.e. precisely when the
+// column HAS changed, which is the event being watched. Concretely, a call
+// recorded as `X` validated clean against a column now rendering `A.X`. Widening
+// a checksum with an alternative that only fires on corruption inverts it.
+func aggColOperandText(ac aggSelectCol) string {
 	arg := ac.aggArg
 	if arg == "" && ac.aggExpr != nil {
 		arg = aggOperandCanonicalText(ac.aggExpr)
@@ -5232,13 +5240,7 @@ func aggCallOperandSpellings(ac aggSelectCol) []string {
 	if arg == "" {
 		arg = "*"
 	}
-	spellings := []string{arg}
-	if segs := ac.aggArgSegs; len(segs) > 1 {
-		spellings = append(spellings, strings.Join(segs[1:], "."))
-	} else if ac.aggArgQualified && ac.aggArgBare != "" {
-		spellings = append(spellings, ac.aggArgBare)
-	}
-	return spellings
+	return arg
 }
 
 // validateAggCallProvenance refuses a recorded call-to-column correspondence
@@ -5268,47 +5270,55 @@ func aggCallOperandSpellings(ac aggSelectCol) []string {
 // sharing function, DISTINCT-ness and canonical operand text. The bind is then
 // interchangeable, because the resolved Value is identical either way.
 func validateAggCallProvenance(agg *logical.LogicalAggregate, aggCols []aggSelectCol) error {
-	if agg.CallToAggCol == nil {
+	if !agg.HasCallProvenance {
 		// Built by a producer that resolves its own operands (the correlated
 		// scalar-subquery path) and never needs this pass. Nothing to check.
+		//
+		// Tested on the FLAG, not on the slice being nil: this pass nils the
+		// slice when it is done with it, so nil alone would mean both "never
+		// recorded" and "already consumed" — and the second would resolve
+		// nothing, silently.
 		return nil
 	}
-	if len(agg.CallToAggCol) != len(agg.Calls) {
+	if agg.CallProvenance == nil {
+		return api.NewErrorf(api.ErrCodeInternalError,
+			"aggregate call provenance was recorded and has already been consumed; "+
+				"operand resolution ran twice on one aggregate")
+	}
+	if len(agg.CallProvenance) != len(agg.Calls) {
 		return api.NewErrorf(api.ErrCodeInternalError,
 			"aggregate call provenance is %d entries for %d calls",
-			len(agg.CallToAggCol), len(agg.Calls))
+			len(agg.CallProvenance), len(agg.Calls))
 	}
-	if agg.CallToAggColLen != len(aggCols) {
+	if agg.CallProvenanceCols != len(aggCols) {
 		return api.NewErrorf(api.ErrCodeInternalError,
 			"aggregate columns moved between lowering and operand resolution: "+
-				"recorded %d, have %d", agg.CallToAggColLen, len(aggCols))
+				"recorded %d, have %d", agg.CallProvenanceCols, len(aggCols))
 	}
-	for i, aggColIdx := range agg.CallToAggCol {
-		if aggColIdx < 0 {
+	for i, prov := range agg.CallProvenance {
+		if prov.AggColIdx < 0 {
 			continue // synthesized COUNT(*): no parsed column, no operand
 		}
-		if aggColIdx >= len(aggCols) {
+		if prov.AggColIdx >= len(aggCols) {
 			return api.NewErrorf(api.ErrCodeInternalError,
 				"aggregate call %d names parsed column %d of %d",
-				i, aggColIdx, len(aggCols))
+				i, prov.AggColIdx, len(aggCols))
 		}
-		ac, call := aggCols[aggColIdx], agg.Calls[i]
+		ac, call := aggCols[prov.AggColIdx], agg.Calls[i]
 		if call.Func != strings.ToUpper(ac.aggFunc) || call.Distinct != ac.aggDistinct {
 			return api.NewErrorf(api.ErrCodeInternalError,
 				"aggregate call %d (%s, distinct=%v) no longer matches parsed column %d (%s, distinct=%v)",
-				i, call.Func, call.Distinct, aggColIdx, strings.ToUpper(ac.aggFunc), ac.aggDistinct)
+				i, call.Func, call.Distinct, prov.AggColIdx, strings.ToUpper(ac.aggFunc), ac.aggDistinct)
 		}
-		matched := false
-		for _, sp := range aggCallOperandSpellings(ac) {
-			if sp != "" && call.Operand == sp {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		// Compared on the PRE-STRIP text recorded by the producer, never on
+		// call.Operand: the producer applies a qualifier strip this side cannot
+		// reproduce, so comparing the stripped form against a recomputed
+		// unstripped one rejects valid queries — `SUM(d.a + d.b)` over a derived
+		// table renders `D.A+D.B`, stores `A+D.B`, and matches no spelling.
+		if want := aggColOperandText(ac); prov.Operand != want {
 			return api.NewErrorf(api.ErrCodeInternalError,
-				"aggregate call %d operand %q is not a spelling of parsed column %d",
-				i, call.Operand, aggColIdx)
+				"aggregate call %d recorded operand %q but parsed column %d now renders %q",
+				i, prov.Operand, prov.AggColIdx, want)
 		}
 	}
 	return nil
@@ -5325,8 +5335,8 @@ func upgradeAggregateOperands(op logical.LogicalOperator, sq *selectQuery, md *r
 	// table on a live aggregate that nothing validated, which is exactly the
 	// state a later reader would most reasonably trust.
 	defer func() {
-		agg.CallToAggCol = nil
-		agg.CallToAggColLen = 0
+		agg.CallProvenance = nil
+		agg.CallProvenanceCols = 0
 	}()
 	if err := validateAggCallProvenance(agg, sq.aggCols); err != nil {
 		return err

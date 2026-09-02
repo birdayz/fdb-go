@@ -56,29 +56,31 @@ func logicalAggregateCalls(
 	aggCols []aggSelectCol,
 	countStar bool,
 	strip func(string) string,
-) ([]logical.AggregateCall, []int, bool) {
+) ([]logical.AggregateCall, []logical.AggCallProvenance, bool) {
 	calls := make([]logical.AggregateCall, 0, len(aggCols)+1)
-	// callToAggCol stays PARALLEL to calls: every append below appends to both,
+	// provenance stays PARALLEL to calls: every append below appends to both,
 	// and every `continue` skips both. Letting them drift is the same class of
 	// silent misbinding RFC-241 removed, so the two appends are deliberately
 	// adjacent at each site rather than factored apart.
-	callToAggCol := make([]int, 0, len(aggCols)+1)
+	provenance := make([]logical.AggCallProvenance, 0, len(aggCols)+1)
 	hasDistinct := false
 	if countStar {
 		calls = append(calls, logical.AggregateCall{Func: "COUNT", Operand: "*", Star: true})
-		callToAggCol = append(callToAggCol, -1) // synthesized: no parsed column
+		provenance = append(provenance, logical.AggCallProvenance{AggColIdx: -1, Operand: "*"})
 	}
 	for aggColIdx, ac := range aggCols {
 		if ac.aggFunc == "" {
 			continue
 		}
-		arg := ac.aggArg
-		if arg == "" && ac.aggExpr != nil {
-			arg = aggOperandCanonicalText(ac.aggExpr)
-		}
-		if arg == "" {
-			arg = "*"
-		}
+		// ONE derivation, shared with the consumer that validates against it
+		// (aggColOperandText). Duplicating it is what re-opens RFC-241: the
+		// two sides agreeing is the whole mechanism, and an asserted agreement
+		// between two copies is not enforced by anything.
+		arg := aggColOperandText(ac)
+		// Recorded BEFORE the strip. A consumer holding only aggCols can
+		// recompute this form and cannot reproduce strip, so this is the only
+		// text the two sides can compare on. See logical.AggCallProvenance.
+		preStrip := arg
 		arg = strip(arg)
 		call := logical.AggregateCall{
 			Func:       strings.ToUpper(ac.aggFunc),
@@ -98,9 +100,12 @@ func logicalAggregateCalls(
 		}
 		hasDistinct = hasDistinct || call.Distinct
 		calls = append(calls, call)
-		callToAggCol = append(callToAggCol, aggColIdx)
+		provenance = append(provenance, logical.AggCallProvenance{
+			AggColIdx: aggColIdx,
+			Operand:   preStrip,
+		})
 	}
-	return calls, callToAggCol, hasDistinct
+	return calls, provenance, hasDistinct
 }
 
 func aggregateProjectionItem(ac aggSelectCol, strip func(string) string) (name, alias string, expr antlrgen.IExpressionContext) {
@@ -112,14 +117,7 @@ func aggregateProjectionItem(ac aggSelectCol, strip func(string) string) (name, 
 			alias = ac.outName
 		}
 	case ac.aggFunc != "":
-		arg := ac.aggArg
-		if arg == "" && ac.aggExpr != nil {
-			arg = aggOperandCanonicalText(ac.aggExpr)
-		}
-		if arg == "" {
-			arg = "*"
-		}
-		name = ac.aggFunc + "(" + strip(arg) + ")"
+		name = ac.aggFunc + "(" + strip(aggColOperandText(ac)) + ")"
 		if ac.outName != "" && !strings.EqualFold(ac.outName, name) {
 			alias = ac.outName
 		}
@@ -653,12 +651,13 @@ func buildSelectShell(op logical.LogicalOperator, sq *selectQuery, stripPrefix s
 				keys[i] = stripGroupKeyLeadingSegment(keys[i], stripped)
 			}
 		}
-		aggCalls, callToAggCol, hasDistinct := logicalAggregateCalls(sq.aggCols, sq.countStar, strip)
+		aggCalls, aggProvenance, hasDistinct := logicalAggregateCalls(sq.aggCols, sq.countStar, strip)
 		outputAggCols := visibleAggregateOutputColumns(sq.aggCols, sq.countStar, sq.countStarAlias)
 		aggAliases := make([]string, len(aggCalls))
 		aggOp := logical.NewAggregate(op, keys, aggCalls, aggAliases, sq.havingExpr != nil)
-		aggOp.CallToAggCol = callToAggCol
-		aggOp.CallToAggColLen = len(sq.aggCols)
+		aggOp.CallProvenance = aggProvenance
+		aggOp.HasCallProvenance = true
+		aggOp.CallProvenanceCols = len(sq.aggCols)
 		aggOp.HasDistinctAggregate = hasDistinct
 		aggOp.OutputSlots = buildAggregateOutputSlots(keys, outputAggCols, strip)
 		op = aggOp

@@ -200,27 +200,52 @@ func TestFDB_AggregateOperandResolvesThroughADerivedTable(t *testing.T) {
 	exec(db, "INSERT INTO sales VALUES (2, 'US', 200, 2)")
 	exec(db, "INSERT INTO sales VALUES (3, 'EU', 300, 3)")
 
+	// THE AGGREGATE MUST SIT IN THE OUTER SELECT, over the derived table. An
+	// earlier version of this test put it in the INNER select — which reads the
+	// same to a human and exercises a different path: instrumented, all eleven
+	// buildSelectShell calls those arms produced had stripPrefix="", so the one
+	// test asserting the check does not false-fire ran where it could not fire
+	// at all. Vacuous, and vacuous in the specific way this file exists to catch.
+	//
+	// An EXPRESSION operand is what makes it bite. A bare `SUM(d.a)` renders and
+	// strips to the same text; `SUM(d.a + d.b)` renders `D.A+D.B` and stores
+	// `A+D.B`, so a check comparing the stored text against a recomputed one
+	// rejects a valid query. Both spellings are kept below.
 	for _, tc := range []struct {
 		name string
 		q    string
 		want string
 	}{
 		{
-			name: "qualified_operand_through_a_derived_table",
-			q:    `SELECT d.t FROM (SELECT SUM(s."Amount") AS t FROM sales s) d`,
+			name: "expression_operand_over_a_derived_table",
+			q:    `SELECT SUM(d.a + d.b) FROM (SELECT "Amount" AS a, plain AS b FROM sales) d`,
+			want: "606",
+		},
+		{
+			name: "aliased_expression_operand_over_a_derived_table",
+			q:    `SELECT SUM(d.amt + 1) FROM (SELECT "Amount" AS amt FROM sales) d`,
+			want: "603",
+		},
+		{
+			name: "arithmetic_operand_over_a_derived_table",
+			q:    `SELECT MAX(d.a * 2) FROM (SELECT "Amount" AS a FROM sales) d`,
 			want: "600",
 		},
 		{
-			name: "grouped_qualified_operand_through_a_derived_table",
-			q: `SELECT d.r, d.t FROM (SELECT s."Region" AS r, SUM(s."Amount") AS t ` +
-				`FROM sales s GROUP BY s."Region") d ORDER BY d.r`,
-			want: "EU/300 US/300",
+			name: "bare_operand_over_a_derived_table",
+			q:    `SELECT SUM(d.a) FROM (SELECT "Amount" AS a FROM sales) d`,
+			want: "600",
 		},
 		{
-			name: "qualified_operand_with_having",
-			q: `SELECT d.r FROM (SELECT s."Region" AS r, SUM(s."Amount") AS t ` +
-				`FROM sales s GROUP BY s."Region" HAVING SUM(s."Amount") > 250) d ORDER BY d.r`,
-			want: "EU US",
+			name: "grouped_expression_operand_over_a_derived_table",
+			q: `SELECT d.r, SUM(d.a + d.b) FROM (SELECT "Region" AS r, "Amount" AS a, plain AS b ` +
+				`FROM sales) d GROUP BY d.r ORDER BY d.r`,
+			want: "EU/303 US/303",
+		},
+		{
+			name: "aggregate_inside_the_derived_table_control",
+			q:    `SELECT d.t FROM (SELECT SUM(s."Amount") AS t FROM sales s) d`,
+			want: "600",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

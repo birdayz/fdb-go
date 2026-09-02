@@ -8554,6 +8554,77 @@ fk_chain_cardinality.go -- sit outside it by construction, and claiming
 otherwise would be the same over-claim one level up.
 
 
+### [ ] RFC-238 cites source by LINE NUMBER, and the census only catches the lucky half
+
+`rfcs/238-a-qualifier-is-structure-not-punctuation.md` anchors its argument to
+`file.go:NNNN`. Any edit above a cite silently retargets it, and RFC-241 broke
+the same two anchors TWICE in one change — once when a ~65-line net insertion
+into `logical_predicate.go` moved them, and again when folding review findings
+into that same file moved them further.
+
+**This repo already ruled on this class, for a different document.**
+`TestStatusPageCrossReferencesResolve` (`pkg/docscheck/status_page_crossref_test.go`)
+forbids line anchors on `road-to-prod.md` outright, and its comment states the
+reason: "a line anchor into it is wrong the moment anyone edits an earlier item,
+and it is wrong SILENTLY, still rendering as a precise-looking citation." Every
+word of that applies to RFC-238.
+
+**The existing census is a partial guard and its gap is measurable.**
+`TestRFC238WeakCitesAreTheOnesSection7dNames` catches a cite only when the line
+it lands on looks WEAK — blank, a brace, a comment. A cite that drifts onto
+another plausible statement stays green while pointing at the wrong code.
+Measured during RFC-241: the census flagged
+`logical_predicate.go:6796` (drifted onto a comment) and said nothing about
+`:6620`, which had drifted off `recordTypeCI` onto an unrelated line. One wrong
+citation was caught, one was not, and the difference was luck.
+
+THE WORK: convert RFC-238's source cites from `file.go:NNNN` to the stable form
+the status-page gate already requires — name the SYMBOL (`recordTypeCI`,
+`buildSelectScope`'s bare-alias call) — and then hold it with a gate that
+resolves each cited symbol, so a rename fails loudly instead of a renumber
+failing silently. The weak-cite census can then retire with the anchors it was
+compensating for, per the guard-shelf-life rule: it exists to watch a hazard that
+the conversion removes.
+
+Scope note: RFC-241 re-pointed the two anchors it broke rather than converting
+the document, because a citation-style change to a merged RFC is its own change
+with its own review. That is why this is booked rather than done there.
+
+
+### [ ] gazelle emits 181 duplicated `srcs` entries in one target, and that made a reviewer file a wrong fix
+
+`pkg/relational/core/embedded/BUILD.bazel`'s `embedded_test` target lists **181**
+source files twice in a single `srcs` list:
+
+```
+awk '/srcs = \[/{f=1} f&&/^        "/{n=$0; gsub(/[ ",]/,"",n); c[n]++} \
+     /^    \]/{f=0} END{d=0; for(k in c) if(c[k]>1) d++; print d}' \
+  pkg/relational/core/embedded/BUILD.bazel
+  -> 181
+```
+
+Bazel tolerates it and the target builds, so nothing fails — which is why it has
+accumulated. The list has an alphabetical head and a long unsorted tail, and
+gazelle appends to the tail while the head already carries the name.
+
+**The cost is not tidiness, it is that the file misleads readers.** During
+RFC-241 a reviewer saw two newly-added test files listed twice and reported it as
+a defect introduced by that change. The observation was correct and the implied
+fix was not: deleting the two lines made `just generate` regenerate them and the
+pre-commit hook rejected the commit with "generated files are out of date". The
+real condition is 90x larger than the one reported and belongs to gazelle's
+handling of this file, not to any one change.
+
+THE WORK: find why gazelle appends rather than merges for this target — most
+likely the unsorted tail defeats its sort-and-dedup — and either normalise the
+list so gazelle owns it cleanly, or record at the file head that duplicates are
+expected output so the next reader does not file the same finding. Then assert
+it: a docscheck arm counting duplicate `srcs` entries per target, floored at
+whatever the normalisation achieves, so the count cannot silently grow again.
+
+Do not "fix" this by hand-deleting entries. That is what fails the hook.
+
+
 ---
 
 

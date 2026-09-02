@@ -42,8 +42,9 @@ func aggProvCols() []aggSelectCol {
 func aggProvAggregate(cols []aggSelectCol) *logical.LogicalAggregate {
 	calls, callToAggCol, _ := logicalAggregateCalls(cols, false, func(s string) string { return s })
 	agg := logical.NewAggregate(nil, nil, calls, make([]string, len(calls)), false)
-	agg.CallToAggCol = callToAggCol
-	agg.CallToAggColLen = len(cols)
+	agg.CallProvenance = callToAggCol
+	agg.CallProvenanceCols = len(cols)
+	agg.HasCallProvenance = true
 	return agg
 }
 
@@ -60,11 +61,12 @@ func TestValidateAggCallProvenance(t *testing.T) {
 		// NON-VACUITY. A validator that checks nothing also returns nil, so the
 		// success arm has to assert it actually had indices to check. Three
 		// columns, no COUNT(*) prepend, so three calls each naming its column.
-		if len(agg.CallToAggCol) != 3 {
+		if len(agg.CallProvenance) != 3 {
 			t.Fatalf("expected 3 recorded indices, got %d — the success arm is "+
-				"passing without validating anything", len(agg.CallToAggCol))
+				"passing without validating anything", len(agg.CallProvenance))
 		}
-		for i, j := range agg.CallToAggCol {
+		for i, p := range agg.CallProvenance {
+			j := p.AggColIdx
 			if j != i {
 				t.Errorf("call %d should name column %d, got %d", i, i, j)
 			}
@@ -75,7 +77,7 @@ func TestValidateAggCallProvenance(t *testing.T) {
 		t.Parallel()
 		cols := aggProvCols()
 		agg := aggProvAggregate(cols)
-		agg.CallToAggCol = agg.CallToAggCol[:2]
+		agg.CallProvenance = agg.CallProvenance[:2]
 		assertProvenanceRefused(t, agg, cols, "entries for")
 	})
 
@@ -92,7 +94,7 @@ func TestValidateAggCallProvenance(t *testing.T) {
 		t.Parallel()
 		cols := aggProvCols()
 		agg := aggProvAggregate(cols)
-		agg.CallToAggCol[1] = len(cols)
+		agg.CallProvenance[1].AggColIdx = len(cols)
 		assertProvenanceRefused(t, agg, cols, "names parsed column")
 	})
 
@@ -113,7 +115,24 @@ func TestValidateAggCallProvenance(t *testing.T) {
 		// at still holds, and the operands are now bound the wrong way round.
 		// Only the operand text separates them.
 		cols[0], cols[1] = cols[1], cols[0]
-		assertProvenanceRefused(t, agg, cols, "is not a spelling of parsed column")
+		assertProvenanceRefused(t, agg, cols, "now renders")
+	})
+
+	t.Run("refuses a column that gained a qualifier", func(t *testing.T) {
+		t.Parallel()
+		cols := aggProvCols()
+		agg := aggProvAggregate(cols)
+		// A column recorded as `AMOUNT` that now renders `S.AMOUNT`. An earlier
+		// draft offered a second spelling — the argument with its leading segment
+		// dropped — inherited from the pre-RFC-241 matcher, where it existed to
+		// accommodate the producer's qualifier strip. Comparing the PRE-strip text
+		// gave that accommodation nothing to do, and it became a hole: the first
+		// spelling matches by construction, so the second could only ever match
+		// when the first did not, which is exactly when the column HAS changed.
+		// This shape validated clean.
+		cols[2].aggArg = "S.AMOUNT"
+		cols[2].aggArgSegs = []string{"S", "AMOUNT"}
+		assertProvenanceRefused(t, agg, cols, "now renders")
 	})
 
 	t.Run("absent table is not an error", func(t *testing.T) {
@@ -123,7 +142,8 @@ func TestValidateAggCallProvenance(t *testing.T) {
 		// The correlated scalar-subquery producer builds its calls itself and
 		// resolves its own operands, so it records nothing and never reaches
 		// the operand loop. That must stay legal rather than become a refusal.
-		agg.CallToAggCol = nil
+		agg.CallProvenance = nil
+		agg.HasCallProvenance = false
 		if err := validateAggCallProvenance(agg, cols); err != nil {
 			t.Fatalf("an absent provenance table means a producer that resolves "+
 				"its own operands, not a corrupt one: %v", err)
@@ -158,10 +178,42 @@ func TestLogicalAggregateCallsRecordsTheCountStarPrepend(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("expected the synthesized COUNT(*) plus one column call, got %d", len(calls))
 	}
-	if callToAggCol[0] != -1 {
-		t.Errorf("the synthesized COUNT(*) has no parsed column; want -1, got %d", callToAggCol[0])
+	if callToAggCol[0].AggColIdx != -1 {
+		t.Errorf("the synthesized COUNT(*) has no parsed column; want -1, got %d", callToAggCol[0].AggColIdx)
 	}
-	if callToAggCol[1] != 0 {
-		t.Errorf("the SUM call comes from column 0, got %d", callToAggCol[1])
+	if callToAggCol[1].AggColIdx != 0 {
+		t.Errorf("the SUM call comes from column 0, got %d", callToAggCol[1].AggColIdx)
+	}
+}
+
+// The duplicate-COUNT(*) skip is the one `continue` that fires AFTER a call has
+// been built, so it is where the two slices are most likely to drift: skip the
+// call append and not the provenance append and every later call is off by one.
+// Driven explicitly because the corpus reaches it rarely and a drift there is
+// silent.
+func TestLogicalAggregateCallsSkipsTheDuplicateCountStarInBothSlices(t *testing.T) {
+	t.Parallel()
+	cols := []aggSelectCol{
+		// The harvested duplicate of the synthesized COUNT(*).
+		{aggFunc: "COUNT", aggArg: "*", visible: true},
+		{aggFunc: "SUM", aggArg: "AMOUNT", aggArgBare: "AMOUNT", visible: true},
+	}
+	calls, prov, _ := logicalAggregateCalls(cols, true, func(s string) string { return s })
+	if len(calls) != len(prov) {
+		t.Fatalf("the duplicate-COUNT(*) skip must skip BOTH slices: %d calls, %d provenance",
+			len(calls), len(prov))
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected the synthesized COUNT(*) plus the SUM — the harvested duplicate is "+
+			"suppressed — got %d: %+v", len(calls), calls)
+	}
+	if prov[0].AggColIdx != -1 {
+		t.Errorf("call 0 is the synthesized COUNT(*); want -1, got %d", prov[0].AggColIdx)
+	}
+	// The SUM is aggCols[1]. If the skip dropped only the call, this reads 0 —
+	// the off-by-one that would bind the SUM's operand to the COUNT(*) column.
+	if prov[1].AggColIdx != 1 {
+		t.Errorf("call 1 is the SUM at column 1; want 1, got %d — the slices drifted "+
+			"across the duplicate-COUNT(*) skip", prov[1].AggColIdx)
 	}
 }
