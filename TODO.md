@@ -568,53 +568,38 @@ INSERT…SELECTs.
   `if` was written first.
 
 
-### An aggregate is bound to its output slot by a RENDERING that cannot tell two aggregates apart
+### [x] An aggregate is bound to its output slot by a RENDERING that cannot tell two aggregates apart — FIXED (RFC-241)
 
-**LIVE WRONG ANSWER, reproducer below, found while closing RFC-237 §10.** Not
-the same defect as the folded slot key that entry (d) above describes — that one
-is fixed. This is what was underneath it.
+`SELECT COUNT(CASE WHEN "Region"='us' …), COUNT(CASE WHEN "Region"='US' …)` returned
+`[2,2]`; it returns `[0,2]`. Pinned by
+`TestFDB_AggregateOperandDistinguishesLiteralCase` (10 arms including the
+REVERSAL — the pair and its reversal disagreed about which value both columns
+took, so one order alone could not express the defect) and
+`TestValidateAggCallProvenance` (7 arms). Mutation-verified: restoring the fold
+reproduces the exact original wrong values on all five defect arms and leaves
+both controls green.
 
-```sql
--- sales rows: ('US'), ('US'), ('EU')
-SELECT COUNT(CASE WHEN "Region" = 'us' THEN 1 END),
-       COUNT(CASE WHEN "Region" = 'US' THEN 1 END) FROM sales
--- returns [2, 2].  Correct is [0, 2].
-```
+**This entry's own diagnosis was wrong, which is why the fix is not where it
+said.** It blamed the post-aggregate ordinal bind and cited
+`aggregateValueOutputName` → `aggregateOrdinalFor` — a function that existed
+nowhere but in this prose (`git grep -n 'aggregateOrdinalFor' -- .` returned one
+hit, this entry; control `aggregateValueOutputName` returned 2 files). And
+`EXPLAIN` showed the projection already reading ordinals `#0`/`#1` under two
+correct distinct names, so that bind was never the defect.
 
-Each aggregate is CORRECT in isolation (`'us'` alone → 0, `'US'` alone → 2), and
-the plan is correct: two distinct `AggregateSpec`s, distinct operand pointers,
-distinct `OperandName`s, distinct projection ordinals `#0` and `#1`.
+The real cause was one layer earlier, in operand RESOLUTION:
+`upgradeAggregateOperands` matched a parsed aggregate column to its
+`agg.Calls` entry with `strings.EqualFold` over the operand's RENDERED TEXT,
+which carries identifiers and string literals alike. Each column matched BOTH
+calls and the second write clobbered the first — last-wins. The identical fold
+had already been removed from the naming key by RFC-237, whose comment describes
+this exact collision; the sibling site one file away was never touched.
 
-Two controls localise it, and both are pinned in
-`quoted_identifier_aggregate_labels.yaml` so the localisation cannot rot:
+The correspondence is now RECORDED by the producer (`callToAggCol`, returned by
+`logicalAggregateCalls`) and validated at use rather than reconstructed from a
+rendering. Follow-up in §4 books the end state — resolving the operand AT the
+producer, which deletes both the table and its validator.
 
-- **Not CASE, and not string comparison.** The same case-only pair OUTSIDE an
-  aggregate — `SELECT CASE WHEN "Region"='us' …, CASE WHEN "Region"='US' …` —
-  returns the right rows.
-- **Not "two aggregates".** A pair whose literals differ by more than case —
-  `'EU'` and `'US'` — returns `[1, 2]`.
-
-**Root cause, as far as it is traced.** The post-aggregate projection binds each
-reference to an aggregate ORDINAL by matching a rendered name
-(`aggregateValueOutputName` → `aggregateOrdinalFor`, cascades_translator.go).
-For a CASE operand that rendering is `COUNT(CASE(WHEN(predicate), [1]))` — the
-predicate renders OPAQUELY — so both aggregates produce the identical key and
-the match cannot separate them. Removing every fold from that path (done, both
-`normalizeAggOutputName` and `aggregateValueOutputName`) does not help, because
-the two keys were never distinguished by CASE in the first place; they are
-distinguished by nothing.
-
-This is precisely the failure `AggregateResultColumnName`'s own doc warns about
-— "two columns sharing a leaf name treated as one" — inside a naming authority.
-A NAME cannot be the identity here. The bind has to be structural: match the
-operand VALUE, which is already distinct and already carried on the spec.
-
-**Why it is booked rather than fixed in RFC-237's PR:** it is a different root
-cause in a different layer (the Cascades ordinal bind, not identifier
-normalization), the fix changes matching from name-based to value-based, and
-that needs its own RFC and the query-engine gate. Every artifact needed to start
-is here: the reproducer, both controls, the two functions, and the reason the
-obvious fold-removal is not the fix.
 
 ---
 
