@@ -575,6 +575,57 @@ type LogicalAggregate struct {
 	// boundary above ORDER BY, where this contract is materialized. Public
 	// labels live exclusively on that Project and are not producer identity.
 	OutputSlots []AggregateOutputSlot
+	// CallProvenance maps each Calls entry to the parsed aggregate column that
+	// produced it, and CallProvenanceCols records how many such columns the
+	// producer walked. HasCallProvenance says whether a producer recorded any —
+	// distinct from the slice being nil, which is also what CONSUMED looks like.
+	//
+	// It exists because the operand-resolution pass used to RECONSTRUCT this
+	// correspondence by case-folding the operand's rendered text. That text
+	// carries identifiers AND string literals, and a fold cannot tell them
+	// apart, so two aggregates differing only in a literal's case matched each
+	// other and the second write clobbered the first — a silent wrong answer
+	// (RFC-241). The producer already knew the correspondence; this carries it
+	// instead of having it guessed.
+	//
+	// PARSER PROVENANCE, NOT PLAN STRUCTURE. Two obligations follow, and both
+	// are load-bearing rather than tidiness:
+	//   - the operand-resolution pass NILS both on every exit, so nothing
+	//     downstream can read parse-time positions off a logical node;
+	//   - neither may reach memo identity, or two structurally identical
+	//     GroupByExpressions differing only in provenance would land in
+	//     different groups. That holds by construction today: this type never
+	//     enters the cascades package, it is translated into
+	//     expressions.GroupByExpression first.
+	CallProvenance     []AggCallProvenance
+	CallProvenanceCols int
+	HasCallProvenance  bool
+}
+
+// AggCallProvenance records which parsed aggregate column produced one
+// AggregateCall, and what that column's operand rendered to BEFORE the
+// producer's qualifier strip.
+//
+// The pre-strip text is the load-bearing part. The producer names a call's
+// operand as `strip(arg)` — the strip removes a same-source qualifier, and on
+// the derived-table path it is non-empty — while a consumer holding only
+// `aggCols` can recompute `arg` and has no way to reproduce `strip`. Comparing
+// the stripped text against a recomputed unstripped one rejects valid queries:
+// `SELECT SUM(d.a + d.b) FROM (SELECT a, b FROM sales) d` renders `D.A+D.B`,
+// stores `A+D.B`, and matches neither spelling.
+//
+// So the comparison happens on the pre-strip form, which both sides can produce
+// from the same renderer. That is not a paired assertion that moves together: it
+// is frozen here at production and recomputed at consumption from the live
+// columns, so a change to the renderer moves both and passes (correctly — a
+// re-rendering does not invalidate the correspondence), while a change to the
+// COLUMNS moves one side only, which is the event being watched.
+type AggCallProvenance struct {
+	// AggColIdx is the index of the producing column; -1 for the synthesized
+	// COUNT(*), which has no parsed column and no operand to resolve.
+	AggColIdx int
+	// Operand is that column's operand text as rendered BEFORE strip.
+	Operand string
 }
 
 // AggregateOutputSlot preserves one visible aggregate SELECT item after the
@@ -670,6 +721,22 @@ func NewAggregate(input LogicalOperator, groupKeys []GroupKey, calls []Aggregate
 		Aliases:   aliases,
 		HasHaving: hasHaving,
 	}
+}
+
+// CallsFromAggCol returns the indices of the Calls entries produced by the
+// parsed aggregate column at aggColIdx. Usually one; more than one only when
+// the same column feeds several calls. Empty when the provenance table is
+// absent, which is a producer that resolved its own operands.
+//
+// Callers must have validated the table first — this trusts it.
+func (a *LogicalAggregate) CallsFromAggCol(aggColIdx int) []int {
+	var out []int
+	for i, p := range a.CallProvenance {
+		if p.AggColIdx == aggColIdx {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 func (a *LogicalAggregate) Children() []LogicalOperator { return []LogicalOperator{a.Input} }

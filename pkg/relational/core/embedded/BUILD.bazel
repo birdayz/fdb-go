@@ -97,6 +97,8 @@ go_test(
     timeout = "long",
     srcs = [
         "agg_output_cols_nullability_test.go",
+        "aggregate_call_provenance_test.go",
+        "aggregate_distinct_latent_bind_test.go",
         "aggregate_group_key_accessor_name_test.go",
         "aggregate_group_key_call_site_guard_test.go",
         "aggregate_group_key_nested_path_test.go",
@@ -421,6 +423,8 @@ go_test(
         "qualifier_stripped_label_test.go",
         "index_onsource_escaped_table_test.go",
         "mixed_case_stored_name_probe_test.go",
+        "aggregate_call_provenance_test.go",
+        "aggregate_distinct_latent_bind_test.go",
     ],
     deps = [
         "//gen",
