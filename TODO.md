@@ -9216,48 +9216,59 @@ covered by the correctness suite and the golden plan diff, not by this table.
   (`proto: descriptor "__0type__2.ID" already declared`), `FinalizePlan` swallows that as it
   swallows every non-clash descriptor failure, and the constructor is left with no descriptor.
   What that costs is descriptor IDENTITY, not data, and it is USER-VISIBLE. A computed STRUCT
-  selected through such a plan comes back as a raw `map[string]any`, where the SAME statement
-  with only the repeated name removed (`FULL OUTER JOIN (SELECT id AS cid FROM c_md)`) returns
-  an `api.Struct` — measured over FDB: same values, wrong type, because there is no descriptor
-  to present it with. The control keeps the join deliberately, and the pinned trio is built so the
-  repeat is the only thing that varies: the CTE names its struct `RR` so it cannot also collide
-  with the stored column's `R`, leaving `ID` as the single repeated name for the control to
-  remove. The control must also WRAP `c_md` in a derived table, because the dialect cannot
-  rename a base column in place — so a third read keeps that wrapper and restores the repeat
-  (`SELECT id AS id` beside the control's `SELECT id AS cid`, differing in the alias and the
-  reference it forces, nothing else), and comes back the SAME raw map `{X:1 Y:10}` the witness
-  gives — asserted as a map with its values, not merely as not-a-struct, which is what shows the
-  wrapper inert rather than just harmless. Dropping the join, leaving
-  a second repeat in place, or omitting that third read could not tell which caused the raw
-  map. No DATA is lost: the emitting paths (executeProjection, the
-  flat-map cursor's record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows
-  the result set reads by ORDINAL, so both `ID` slots arrive with their own values (measured with
-  a predicate that keeps them different; with both equal the check cannot discriminate). The
-  scope is the constructors resolved AFTER the bad message, in walk order — not every computed
-  row: on the pinned query the root projection was resolved first and keeps its descriptor. A
-  STORED struct column read through the same poisoned plan is unaffected — it carries its own
-  stored descriptor, not a constructor's — so the damage is confined to COMPUTED rows, pinned
-  with the rest. (Two different axes, and they are not the same word: WITHIN a plan the failure
-  spreads across the whole repository, and ACROSS row kinds it stops at computed ones.) Pinned
-  in both directions by
-  `TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues` (the STRUCT comes back a map
-  through the duplicate and an `api.Struct` with only the name removed; the exact outer-join rows
-  arrive; a stored struct column through the same plan keeps its type), which reddens on the
-  computed-struct half when this closes. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…)
-  AS foo FROM
-  b_md) SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c
-  ON a.id + 1 = c.id` — the text both pins run, its predicate chosen so the two `ID` slots differ
-  — whose row is `RECORD<ID, S, BID, FOO, ID>`. WITHIN one plan the failure spreads across the whole
-  REPOSITORY, not just that row: compilation is per-repository and the bad message stays in it, so every type
-  asked for afterwards fails the same way — THREE of the FOUR constructors in that plan end up with no descriptor though only ONE repeats a name, and the
-  fourth — resolved before the bad message was appended — keeps its descriptor, so the damage is
-  walk-order dependent. The query answers today, and returns every field: the rows travel positionally
-  and are read by ordinal. Pinned as it stands: `TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped` (the query, with
-  a no-repeat control that must stamp) and `TestDuplicateFieldNameRowPoisonsTheWholeRepository`
-  (the mechanism and its order dependence). Java
-  refuses the row outright (`Type.Record.normalizeFields` disambiguates duplicate INDEXES, not
-  names; two `ID` fields throw in `computeFieldNameFieldMap`'s `ImmutableMap.toImmutableMap`), so
-  the silence is Go's divergence. Closure: give the ordinal row the name-addressability suffix
-  this port already uses elsewhere (`K`, `K_2`) at construction, so the descriptor validates and
-  the row is a struct with both values; the pin reddens then and must assert both survive.
+  selected through such a plan comes back as a raw `map[string]any`, where the same statement
+  with the repeated name removed returns an `api.Struct` carrying the same values — measured
+  over FDB: same values, wrong type, because there is no descriptor to present it with.
+  Removing the repeat is not a one-token edit, and the booking must not pretend it is: the
+  dialect cannot rename a base column in place, so the control ALSO wraps `c_md` in a derived
+  table to rename through (`FULL OUTER JOIN (SELECT id AS cid FROM c_md)`), and derived-table
+  projections are themselves descriptor-relevant. The attribution therefore rests on THREE
+  reads, and it is each adjacent PAIR that isolates one factor: the witness (repeat, no
+  wrapper) against the third read (repeat, wrapper) holds the repeat fixed and shows the
+  wrapper changes nothing; the third read against the control (no repeat, wrapper) holds the
+  wrapper fixed and shows the repeat is what flips map to struct. The SET varies both factors
+  deliberately — that is how it proves one of them inert, and saying it varies one would be the
+  two-read claim again. The third read is written `SELECT id AS id` beside the control's
+  `SELECT id AS cid`, differing in the alias and the `c.id`/`c.cid` reference it forces,
+  nothing else, and comes back the SAME raw map `{X:1 Y:10}` the witness gives — asserted as a
+  map of exactly that size with those values, not merely as not-a-struct, which is what shows
+  the wrapper inert rather than just harmless. The CTE also names its struct `RR` so it cannot
+  collide with the stored column's `R`, leaving `ID` as the single repeated name. Dropping the
+  join, leaving a second repeat in place, or omitting the third read could not tell which
+  caused the raw map.
+
+  No DATA is lost: the emitting paths (executeProjection, the flat-map cursor's
+  record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows the result set
+  reads by ORDINAL, so both `ID` slots arrive with their own values (measured with a predicate
+  that keeps them different; with both equal the check cannot discriminate). The scope is the
+  constructors resolved AFTER the bad message, in walk order — not every computed row: on the
+  pinned query the root projection was resolved first and keeps its descriptor. A STORED struct
+  column read through the same poisoned plan is unaffected — it carries its own stored
+  descriptor, not a constructor's — so the damage is confined to COMPUTED rows, pinned with the
+  rest. (Two different axes, and they are not the same word: WITHIN a plan the failure spreads
+  across the whole repository, and ACROSS row kinds it stops at computed ones.) Pinned in both
+  directions by `TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues` (the STRUCT comes
+  back a map through the duplicate, and an `api.Struct` once the repeat is removed — removed
+  through a derived-table rename, with the third read showing that wrapper inert; the exact
+  outer-join rows arrive; a stored struct column through the same plan keeps its type), which
+  reddens on the computed-struct half when this closes.
+
+  Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM b_md) SELECT a.id, c.id,
+  d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id` —
+  the text both pins run, its predicate chosen so the two `ID` slots differ — whose row is
+  `RECORD<ID, S, BID, FOO, ID>`. WITHIN one plan the failure spreads across the whole
+  REPOSITORY, not just that row: compilation is per-repository and the bad message stays in it,
+  so every type asked for afterwards fails the same way — THREE of the FOUR constructors in
+  that plan end up with no descriptor though only ONE repeats a name, and the fourth — resolved
+  before the bad message was appended — keeps its descriptor, so the damage is walk-order
+  dependent. The query answers today, and returns every field: the rows travel positionally and
+  are read by ordinal. Pinned as it stands:
+  `TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped` (the query, with a no-repeat control
+  that must stamp) and `TestDuplicateFieldNameRowPoisonsTheWholeRepository` (the mechanism and
+  its order dependence). Java refuses the row outright (`Type.Record.normalizeFields`
+  disambiguates duplicate INDEXES, not names; two `ID` fields throw in
+  `computeFieldNameFieldMap`'s `ImmutableMap.toImmutableMap`), so the silence is Go's
+  divergence. Closure: give the ordinal row the name-addressability suffix this port already
+  uses elsewhere (`K`, `K_2`) at construction, so the descriptor validates and the row is a
+  struct with both values; the pin reddens then and must assert both survive.
   Booked from RFC-242 r21 with the reproducer.

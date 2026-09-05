@@ -255,9 +255,10 @@ const duplicateNameJoinQuery = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FR
 // control keeps the join and changes the name — and, because the dialect cannot
 // rename a base column in place, it also wraps that leg in a derived table. A
 // third read keeps that wrapper WITH the repeat and still gives the raw map,
-// which is what makes the wrapper inert and leaves the repeat as the only thing
-// the set varies. So the raw map is attributable to the duplicate name, not to
-// joining and not to the wrapper.
+// which is what makes the wrapper inert. The set of three varies BOTH factors
+// deliberately — proving one inert is what the extra variation buys — and it is
+// each adjacent PAIR that isolates one. So the raw map is attributable to the
+// duplicate name, not to joining and not to the wrapper.
 //
 // What it does NOT cost is data: the emitting paths build dense positional rows
 // the result set reads by ORDINAL, so the whole outer-join result arrives, both
@@ -312,17 +313,18 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 		t.Fatalf("the computed STRUCT through the duplicate-name join = %T %v, want the raw map "+
 			"the missing descriptor forces", poisoned, poisoned)
 	}
-	if asMap["X"] != int64(1) || asMap["Y"] != int64(10) {
-		t.Fatalf("the raw map = %#v, want {X:1 Y:10}: the type is lost, the VALUES are not — "+
-			"a map with the wrong contents is a different (worse) defect", asMap)
+	if len(asMap) != 2 || asMap["X"] != int64(1) || asMap["Y"] != int64(10) {
+		t.Fatalf("the raw map = %#v, want exactly {X:1 Y:10}: the type is lost, the VALUES are not — "+
+			"a map with the wrong contents is a different (worse) defect, and one with an EXTRA "+
+			"field is a third, which two named lookups alone would not see", asMap)
 	}
 
 	clean, _ := computedAndStoredRow(t, db, ctx, controlWithoutRepeatedID)
 	cleanStruct, isStruct := clean.(api.Struct)
 	if !isStruct {
-		t.Fatalf("the control STRUCT (same join, no repeated name) = %T %v, want an api.Struct — "+
-			"without this the first half cannot attribute the raw map to the duplicate name "+
-			"rather than to joining at all", clean, clean)
+		t.Fatalf("the control STRUCT (same join, the repeat removed through a derived-table "+
+			"rename) = %T %v, want an api.Struct — without this the first half cannot attribute the "+
+			"raw map to the duplicate name rather than to joining at all", clean, clean)
 	}
 	for name, want := range map[string]any{"X": int64(1), "Y": int64(10)} {
 		got, err := cleanStruct.AttributeByName(name)
@@ -338,15 +340,16 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 	wrapped, _ := computedAndStoredRow(t, db, ctx, wrapperKeptRepeatedID)
 	if _, isStruct := wrapped.(api.Struct); isStruct {
 		t.Fatalf("with the derived-table wrapper kept and the repeated `ID` restored, the computed "+
-			"struct came back as %T — the wrapper, not the repeat, is what the control changes, so "+
-			"the pair no longer attributes the raw map to the duplicate name", wrapped)
+			"struct came back as %T — the wrapper, not the repeat, would then be what the control "+
+			"changes, and the set of three would no longer attribute the raw map to the duplicate "+
+			"name", wrapped)
 	}
 	wrappedMap, isMap := wrapped.(map[string]any)
-	if !isMap || wrappedMap["X"] != int64(1) || wrappedMap["Y"] != int64(10) {
-		t.Fatalf("with the wrapper kept and the repeat restored, the computed struct = %#v, want the "+
-			"same raw map {X:1 Y:10} the witness gives: asserting only that it is NOT a struct would "+
-			"pass for an empty map, a wrong-valued one or a raw protobuf, leaving the wrapper merely "+
-			"harmless where this read has to show it INERT", wrapped)
+	if !isMap || len(wrappedMap) != 2 || wrappedMap["X"] != int64(1) || wrappedMap["Y"] != int64(10) {
+		t.Fatalf("with the wrapper kept and the repeat restored, the computed struct = %#v, want "+
+			"exactly the raw map {X:1 Y:10} the witness gives: asserting only that it is NOT a struct "+
+			"would pass for an empty map, a wrong-valued one, one carrying an EXTRA field or a raw "+
+			"protobuf, leaving the wrapper merely harmless where this read has to show it INERT", wrapped)
 	}
 
 	// The STORED column from that same row keeps its type.
@@ -405,8 +408,10 @@ func nullBool(v sql.NullBool) string {
 // read as a SET OF THREE, because the first two differ in two things: whether
 // the join row repeats a field name, and whether that leg is wrapped in a
 // derived table. The wrapper is forced by the rename, not chosen, and the third
-// read is what shows it inert — so across the set the repeat is the only thing
-// that varies.
+// read is what shows it inert. Each adjacent PAIR isolates one factor: the
+// witness against wrapperKeptRepeatedID holds the repeat and varies the wrapper,
+// and wrapperKeptRepeatedID against the control holds the wrapper and varies the
+// repeat. The set varies both, which is exactly how it proves one of them inert.
 //
 // Both read a COMPUTED struct and a STORED struct column out of one row. The
 // CTE's struct is named `RR`, not `R`, deliberately: with both called `R` the
