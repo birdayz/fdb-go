@@ -9195,7 +9195,13 @@ covered by the correctness suite and the golden plan diff, not by this table.
   and both plan. Identical at RFC-242's merge-base `36b97f1e9`. Measured cause: the catalog
   publishes `e` as `RECORD` with no StructFields, `expr.structColumnType` turns a fieldless
   record into `UNKNOWN`, and the table's flowed row (`expr.SourceRowType`) then carries an
-  UNKNOWN field, after which no reference into that row resolves. Java's
+  UNKNOWN field, after which no reference into that row resolves. The catalog leaves
+  StructFields empty for a SECOND population — a self-referential message re-entered on the
+  descent path (`rlcatalog.columnForField`'s recursion stop, whose comment calls the column
+  "still resolvable, an ordinary miss"), so a recursive message column poisons its table the
+  same way (inferred from the code; not measured) — and a fieldless `values.RecordType` cannot
+  serve that arm: the two need a carrier that tells a genuinely empty message from a cut-off
+  recursion. Java's
   `Type.Record.fromDescriptor` is a record with zero fields, not an unknown; the closure is a
   fieldless `values.RecordType` for a fieldless message (with `semanticColumnFromExactType`'s
   fieldless decline and `retagInlineValuesRecordType` reconciled to it), and a pin over a

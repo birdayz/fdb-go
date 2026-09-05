@@ -480,19 +480,18 @@ func semanticColumnFromExactType(name string, typ values.Type) (semantic.Column,
 			return semantic.Column{}, false
 		}
 		// Type is the SQL kind, literally "RECORD", which is what takes the
-		// expr.structColumnType bridge; a nominal record (a declared STRUCT
-		// column's type, named by its descriptor) keeps its name in
-		// StructTypeName, the carrier that bridge reads first, so the round
-		// trip mints the same named values.RecordType. Declining every
+		// expr.structColumnType bridge; the record's NAME travels in
+		// StructTypeName, the carrier that bridge reads — a declared STRUCT
+		// column's descriptor name, or nothing for an anonymous record, which
+		// the bridge then rebuilds anonymous — so the round trip mints the same
+		// values.RecordType under the same name. The kind is never a name. Declining every
 		// nominal record here left a projected STRUCT-typed nested field
 		// (`SELECT x.child.v FROM (SELECT t.p.child FROM t) x`, child a
 		// declared STRUCT) with no exact row to publish: the whole derived
 		// source declined, and the read was refused as a projection slot
 		// with no resolved Value.
 		column.Type = "RECORD"
-		if typed.RecordName != "RECORD" {
-			column.StructTypeName = typed.RecordName
-		}
+		column.StructTypeName = typed.RecordName
 		column.StructFields = make([]semantic.Column, len(typed.Fields))
 		seen := make(map[string]struct{}, len(typed.Fields))
 		for i, field := range typed.Fields {

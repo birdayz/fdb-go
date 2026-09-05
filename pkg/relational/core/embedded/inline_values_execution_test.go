@@ -123,8 +123,8 @@ func TestInlineValuesNestedDefinitionsFinalizeAndExecute(t *testing.T) {
 		t.Fatalf("Explode element = %T %v, want exact B/C/W record", explode.GetElementType(), explode.GetElementType())
 	}
 	nested, ok := element.Fields[2].FieldType.(*values.RecordType)
-	if !ok || nested.RecordName != "RECORD" || len(nested.Fields) != 3 {
-		t.Fatalf("Explode W = %T %v, want RECORD<X,Y,Z>", element.Fields[2].FieldType, element.Fields[2].FieldType)
+	if !ok || nested.RecordName != "" || len(nested.Fields) != 3 {
+		t.Fatalf("Explode W = %T %v, want anonymous RECORD<X,Y,Z>", element.Fields[2].FieldType, element.Fields[2].FieldType)
 	}
 	if nested.Fields[1].FieldType.Code() != values.TypeCodeDouble {
 		t.Fatalf("Explode W.Y = %v, want promoted DOUBLE", nested.Fields[1].FieldType)

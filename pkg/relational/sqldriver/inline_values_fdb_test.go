@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -164,8 +165,14 @@ func TestFDB_InlineValuesExactExecution(t *testing.T) {
 		if !ok {
 			t.Fatalf("array element = %T, want api.Struct", array[0])
 		}
-		if record.MetaData().TypeName() != "RECORD" {
-			t.Fatalf("array element type name = %q, want RECORD", record.MetaData().TypeName())
+		// An anonymous record's public name is the synthesized one — Java's
+		// ProtoUtils.uniqueTypeName spelling, as a record constructor's row
+		// reports it. The inline-values retag once minted the SQL kind RECORD as
+		// the name instead, and every VALUES record then shared one descriptor
+		// name (two shapes in one row could not compile into a result
+		// descriptor and came back as raw maps).
+		if name := record.MetaData().TypeName(); !strings.HasPrefix(name, "__type__") {
+			t.Fatalf("array element type name = %q, want the synthesized anonymous name", name)
 		}
 		for ordinal, wantName := range []string{"X", "Y", "Z"} {
 			if gotName, err := record.MetaData().AttributeName(ordinal + 1); err != nil || gotName != wantName {

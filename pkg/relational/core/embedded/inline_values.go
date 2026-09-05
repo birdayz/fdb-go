@@ -120,7 +120,7 @@ func retagInlineValuesRecordType(
 	if record == nil {
 		return nil, fmt.Errorf("nested column definition targets a nil record type")
 	}
-	if record.RecordName != "" && record.RecordName != "RECORD" {
+	if record.RecordName != "" {
 		return nil, fmt.Errorf("nested column definition cannot replace nominal record type %q", record.RecordName)
 	}
 	if len(record.Fields) != len(definitions) {
@@ -142,8 +142,14 @@ func retagInlineValuesRecordType(
 			Ordinal:   i,
 		}
 	}
+	// The retagged row stays ANONYMOUS. Minting the SQL kind "RECORD" as its
+	// name made every VALUES record share one descriptor name, so two rows
+	// of different shapes (`VALUES ((3,4)) AS a(w(x,y)), VALUES ((5)) AS
+	// b(v(z))`) failed to compile into one result descriptor and the driver
+	// handed both back as raw maps; the proto repository mints a unique name
+	// per anonymous shape instead.
 	return &values.RecordType{
-		RecordName: "RECORD",
+		RecordName: "",
 		Nullable:   record.Nullable,
 		Fields:     fields,
 		Legs:       append([]values.RecordTypeLeg(nil), record.Legs...),

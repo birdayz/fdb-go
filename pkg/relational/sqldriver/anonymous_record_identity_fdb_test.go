@@ -45,6 +45,11 @@ func TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities(t *testing
 		// The top-level control: the same two shapes, never bridged.
 		`SELECT [s], [q] FROM (` + body + `) x`,
 		`SELECT [(1 AS lat, 2 AS lon)], [(3 AS z)] FROM t`,
+		// VALUES rows: the same two shapes minted by the inline-values retag,
+		// which once named every row by the kind RECORD, at top level and
+		// through a derived table.
+		`SELECT [a.w], [b.v] FROM VALUES ((3, 4)) AS a(w(x, y)), VALUES ((5)) AS b(v(z))`,
+		`SELECT [x.w], [x.v] FROM (SELECT a.w, b.v FROM VALUES ((3, 4)) AS a(w(x, y)), VALUES ((5)) AS b(v(z))) x`,
 	} {
 		rows, err := db.QueryContext(ctx, query)
 		if err != nil {
@@ -72,6 +77,64 @@ func TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities(t *testing
 			if n := s.AttributeCount(); n != 2-i {
 				t.Fatalf("%s: column %d struct has %d attributes, want %d", query, i, n, 2-i)
 			}
+		}
+	}
+}
+
+// TestFDB_ADeclaredRecordNameSurvivesTheBridge pins the other half of the same
+// rule: a struct literal DECLARED with a name — even the name RECORD, which is
+// also the SQL kind — keeps that name through a derived table, because the
+// bridge carries a record's name unconditionally; treating the name RECORD as
+// "anonymous" handed the literal back under a synthetic __type__ name after
+// the bridge while the same literal at top level kept RECORD.
+func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_namedrec")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_namedrec")
+	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE namedrec_tpl
+		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_namedrec/s1 WITH TEMPLATE namedrec_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_namedrec?cluster_file=%s&schema=s1", clusterFilePath))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
+
+	for _, query := range []string{
+		`SELECT [x.s] FROM (SELECT STRUCT RECORD (1 AS lat, 2 AS lon) AS s FROM t) x`,
+		`WITH x AS (SELECT STRUCT RECORD (1 AS lat, 2 AS lon) AS s FROM t) SELECT [x.s] FROM x`,
+		// The top-level control, never bridged.
+		`SELECT [STRUCT RECORD (1 AS lat, 2 AS lon)] FROM t`,
+	} {
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			t.Fatalf("%s: %v", query, err)
+		}
+		var col any
+		if !rows.Next() {
+			rows.Close()
+			t.Fatalf("%s: no row: %v", query, rows.Err())
+		}
+		if err := rows.Scan(&col); err != nil {
+			rows.Close()
+			t.Fatalf("%s: scan: %v", query, err)
+		}
+		rows.Close()
+		elems, ok := col.([]any)
+		if !ok || len(elems) != 1 {
+			t.Fatalf("%s: column = %T %v, want a one-element array", query, col, col)
+		}
+		s, isStruct := elems[0].(api.Struct)
+		if !isStruct {
+			t.Fatalf("%s: element = %T %v, want an api.Struct", query, elems[0], elems[0])
+		}
+		if name := s.MetaData().TypeName(); name != "RECORD" {
+			t.Fatalf("%s: struct type name = %q, want the declared name RECORD — the bridge dropped a declared record name", query, name)
 		}
 	}
 }

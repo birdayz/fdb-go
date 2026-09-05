@@ -1661,10 +1661,12 @@ func TestSemanticColumnFromExactTypeCarriesRecordName(t *testing.T) {
 	t.Parallel()
 	fields := []values.Field{{Name: "V", FieldType: values.NotNullLong}}
 
-	anonymous := values.NewRecordType("RECORD", false, fields)
-	column, ok := semanticColumnFromExactType("S", anonymous)
-	if !ok || column.Type != "RECORD" || column.StructTypeName != "" || len(column.StructFields) != 1 {
-		t.Fatalf("anonymous record = %+v, ok=%v, want Type RECORD with no StructTypeName", column, ok)
+	// A record whose NAME happens to be RECORD is a named record: the kind is
+	// never a name, so nothing mints this shape, and one that arrives keeps it.
+	namedRecord := values.NewRecordType("RECORD", false, fields)
+	column, ok := semanticColumnFromExactType("S", namedRecord)
+	if !ok || column.Type != "RECORD" || column.StructTypeName != "RECORD" || len(column.StructFields) != 1 {
+		t.Fatalf("record named RECORD = %+v, ok=%v, want Type RECORD carrying the name RECORD", column, ok)
 	}
 
 	// A nominal record (a declared STRUCT's type) is published with its name
