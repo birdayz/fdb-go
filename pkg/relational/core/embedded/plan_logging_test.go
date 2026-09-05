@@ -635,9 +635,14 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 	}
 }
 
-// TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap pins the third failure the
-// swallow arm covers, with the query that produces it and the data loss it
-// leaves behind.
+// TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped pins the third
+// failure the swallow arm covers, with the query that produces it and the
+// blast radius it leaves behind. It costs descriptor identity, not data, and
+// that cost is user-visible: TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues
+// runs THIS query text against a live cluster, shows a computed STRUCT coming
+// back as a raw map through this shape and as an api.Struct without it, and
+// reads both `ID` values back distinctly. The two query texts must stay
+// identical: this test's shape assertion is that test's precondition.
 //
 // A FULL OUTER JOIN over legs that both carry `ID` builds its ordinal row with
 // NewRawRecordConstructorValue, which keeps field names VERBATIM by design —
@@ -659,17 +664,16 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 // and pinned here; TODO.md's "A join row that names one field twice leaves its
 // plan's rows unstamped" carries the closure. When that lands, the rows get
 // their descriptors and this test reddens: assert that they are stamped then.
-func TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap(t *testing.T) {
+func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 	t.Parallel()
 	_, md := newLoggingGenerator(t,
 		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) "+
 			"CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
-	plan, _, err := PlanRecordQueryWithSubqueries(
-		"WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) "+
-			"SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id = c.id",
-		md, nil)
+	const duplicateNameJoinQuery = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) " +
+		"SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id"
+	plan, _, err := PlanRecordQueryWithSubqueries(duplicateNameJoinQuery, md, nil)
 	if err != nil || plan == nil {
 		t.Fatalf("plan the FULL OUTER JOIN: %v", err)
 	}

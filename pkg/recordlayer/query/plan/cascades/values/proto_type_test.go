@@ -451,8 +451,8 @@ func TestSyntheticTypeNamesAreUnreachableFromAnyIdentifier(t *testing.T) {
 }
 
 // TestDuplicateFieldNameRowPoisonsTheWholeRepository pins the MECHANISM behind
-// the join row that flows as a map, and its blast radius, which is wider than
-// that row.
+// the join row that loses its descriptor, and its blast radius, which is wider
+// than that row.
 //
 // A record whose row names one field twice has a message form — every field
 // type resolves — so defineRecordLocked emits a DescriptorProto with the name
@@ -461,11 +461,11 @@ func TestSyntheticTypeNamesAreUnreachableFromAnyIdentifier(t *testing.T) {
 // EVERY type the repository is asked for fails with the same error, whether or
 // not it names a field twice. A type resolved BEFORE the bad message was
 // appended keeps its cached descriptor, so the damage is order-dependent: it is
-// the constructors stamped after it, in walk order, that fall back to maps.
+// the constructors resolved after it, in walk order, that end up with none.
 //
-// TODO.md's "A join row that names one field twice is never stamped, and flows
-// as a map" carries the closure; this is what makes its blast radius the whole
-// plan rather than the one row.
+// TODO.md's "A join row that names one field twice leaves its plan's rows
+// unstamped" carries the closure; this is what makes its blast radius the whole
+// plan rather than the one row. What it costs is descriptor identity, not data.
 func TestDuplicateFieldNameRowPoisonsTheWholeRepository(t *testing.T) {
 	t.Parallel()
 	repo := NewTypeProtoRepository()

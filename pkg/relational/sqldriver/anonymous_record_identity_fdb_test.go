@@ -230,19 +230,39 @@ func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 	}
 }
 
-// TestFDB_ADuplicateNameJoinRowStillReturnsEveryField pins the NEGATIVE the
-// unstamped-rows booking rests on: a FULL OUTER JOIN over legs that both carry
-// `ID` leaves its plan's computed rows without descriptors (the duplicate name
-// makes the synthesised file unvalidatable, and the repository keeps the bad
-// message so later types fail too), and that costs descriptor IDENTITY only.
-// The emitting paths build dense positional rows and the result set reads them
-// by ORDINAL, so both `ID` values still arrive.
+// duplicateNameJoinQuery is the shape whose ordinal row names `ID` twice: a
+// FULL OUTER JOIN over legs that both carry it. The join predicate is
+// deliberately `a.id + 1 = c.id` over ids 1 and 2, so the two `ID` slots hold
+// DIFFERENT values (and null-extend on the outer sides) — with both slots equal
+// a test cannot tell a preserved pair from one slot read twice.
 //
-// Without this, TODO.md's "A join row that names one field twice leaves its
-// plan's rows unstamped" would read as a wrong-answer bug; it is not one. If a
-// row here ever comes back short, the descriptor gap has become data loss and
-// that entry is no longer latent.
-func TestFDB_ADuplicateNameJoinRowStillReturnsEveryField(t *testing.T) {
+// TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped plans this same text
+// and asserts the census that is this file's precondition: the two must stay
+// identical, or these tests silently stop describing one plan.
+const duplicateNameJoinQuery = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) " +
+	"SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id"
+
+// TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues pins what the
+// poisoned repository actually costs, in both directions.
+//
+// A row that names one field twice cannot be given a descriptor, and the
+// repository keeps the bad message, so constructors resolved after it lose
+// theirs too. That is USER-VISIBLE, not latent: a computed STRUCT selected
+// through such a plan comes back as a raw `map[string]any` where the same CTE
+// read without the duplicate-name join returns an `api.Struct`. Same values,
+// wrong type — the driver cannot present it as a struct because there is no
+// descriptor to present it with.
+//
+// What it does NOT cost is data. The emitting paths build dense positional
+// rows that the result set reads by ORDINAL, so both `ID` slots survive with
+// their own values. The two halves are asserted together here because each
+// bounds the other: without the second the entry would read as a wrong-answer
+// bug, and without the first it would read as harmless.
+//
+// TODO.md, "A join row that names one field twice leaves its plan's rows
+// unstamped", carries the closure. When it lands, the first half reddens: the
+// struct comes back as an api.Struct and this test must then assert that.
+func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
 		t.Skip("FDB not available (no Docker)")
@@ -260,27 +280,76 @@ func TestFDB_ADuplicateNameJoinRowStillReturnsEveryField(t *testing.T) {
 		t.Fatalf("sql.Open: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	mwjoMustExec(t, db, ctx, "INSERT INTO a_md VALUES (1, 'x')")
-	mwjoMustExec(t, db, ctx, "INSERT INTO b_md VALUES (1, 10)")
-	mwjoMustExec(t, db, ctx, "INSERT INTO c_md VALUES (1)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO a_md VALUES (1, 'x'), (2, 'y')")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b_md VALUES (1, 10), (2, 20)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c_md VALUES (1), (2)")
 
-	const query = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) " +
-		"SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id = c.id"
+	// Half one: the computed STRUCT loses its type through the poisoned plan,
+	// and keeps it through the same CTE read without that join.
+	const structThroughTheJoin = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS r FROM b_md) " +
+		"SELECT d.r FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id"
+	const structWithoutTheJoin = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS r FROM b_md) SELECT d.r FROM d"
+	poisoned := firstColumnOfFirstRow(t, db, ctx, structThroughTheJoin)
+	if _, isStruct := poisoned.(api.Struct); isStruct {
+		t.Fatalf("the STRUCT through the duplicate-name join came back as %T — it is an api.Struct now, "+
+			"so TODO.md's booking has closed: assert that here instead", poisoned)
+	}
+	if _, isMap := poisoned.(map[string]any); !isMap {
+		t.Fatalf("the STRUCT through the duplicate-name join = %T %v, want the raw map the missing "+
+			"descriptor forces", poisoned, poisoned)
+	}
+	clean := firstColumnOfFirstRow(t, db, ctx, structWithoutTheJoin)
+	if _, isStruct := clean.(api.Struct); !isStruct {
+		t.Fatalf("the control STRUCT (same CTE, no duplicate-name join) = %T %v, want an api.Struct — "+
+			"without this the first half proves nothing about the join", clean, clean)
+	}
+
+	// Half two: no data is lost. Both `ID` slots carry their own value, which
+	// is only visible because the predicate makes them differ.
+	rows, err := db.QueryContext(ctx, duplicateNameJoinQuery)
+	if err != nil {
+		t.Fatalf("%s: %v", duplicateNameJoinQuery, err)
+	}
+	defer rows.Close()
+	distinct := 0
+	total := 0
+	for rows.Next() {
+		var aID, cID sql.NullInt64
+		var foo sql.NullBool
+		if err := rows.Scan(&aID, &cID, &foo); err != nil {
+			t.Fatalf("scan: %v — every slot of an unstamped row must still arrive", err)
+		}
+		total++
+		if aID != cID {
+			distinct++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if total == 0 {
+		t.Fatal("the duplicate-name join returned no rows; the fixture no longer exercises the shape")
+	}
+	if distinct == 0 {
+		t.Fatalf("all %d rows carried the same value in both `ID` slots, so this cannot tell a "+
+			"preserved pair from one slot read twice — the predicate must keep them different", total)
+	}
+}
+
+// firstColumnOfFirstRow runs query and returns its first row's first column.
+func firstColumnOfFirstRow(t *testing.T, db *sql.DB, ctx context.Context, query string) any {
+	t.Helper()
 	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		t.Fatalf("%s: %v", query, err)
 	}
 	defer rows.Close()
 	if !rows.Next() {
-		t.Fatalf("no row: %v", rows.Err())
+		t.Fatalf("%s: no rows: %v", query, rows.Err())
 	}
-	var aID, cID int64
-	var foo bool
-	if err := rows.Scan(&aID, &cID, &foo); err != nil {
-		t.Fatalf("scan: %v — both ID slots must arrive; the row is positional, and a short row "+
-			"would mean the descriptor gap has become data loss", err)
+	var value any
+	if err := rows.Scan(&value); err != nil {
+		t.Fatalf("%s: scan: %v", query, err)
 	}
-	if aID != 1 || cID != 1 || !foo {
-		t.Fatalf("row = (%d, %d, %v), want (1, 1, true): every field of an unstamped row must still arrive", aID, cID, foo)
-	}
+	return value
 }

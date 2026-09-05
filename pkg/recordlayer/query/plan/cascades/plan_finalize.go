@@ -62,14 +62,14 @@ import (
 //     `ID`, `ID_2`), so its descriptor cannot validate. Compilation is
 //     per-REPOSITORY and the bad message stays in it, so the damage is NOT
 //     that row alone: every type asked for after it fails the same way. On
-//     the query below THREE of the four constructors end up maps though only
+//     the query below THREE of the four constructors end up with no descriptor though only
 //     ONE repeats a name, and the fourth keeps the descriptor it was given
 //     before the bad message was appended — so which rows survive is
 //     walk-order dependent. It costs descriptor IDENTITY rather than data —
 //     the emitting paths build dense positional rows the result set reads by
 //     ordinal, so every field still arrives. TODO.md's "A join row that names
 //     one field twice leaves its plan's rows unstamped" carries the closure;
-//     TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap pins the query and
+//     TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped pins the query and
 //     TestDuplicateFieldNameRowPoisonsTheWholeRepository the mechanism.
 //
 // Turning the third loud refuses a query that answers today, so it stays
