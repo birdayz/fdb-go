@@ -1,6 +1,7 @@
 package cascades
 
 import (
+	"errors"
 	"reflect"
 	"sort"
 	"testing"
@@ -789,7 +790,9 @@ func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 			}
 
 			// Behaviour half.
-			FinalizePlan(plan)
+			if err := FinalizePlan(plan); err != nil {
+				t.Fatalf("%s: FinalizePlan: %v", name, err)
+			}
 			for field, s := range planted {
 				stamped := s.MessageDescriptor() != nil
 				switch {
@@ -853,7 +856,9 @@ func TestFinalizePlanStampsCoveringIndexInnerScan(t *testing.T) {
 		covering, plans.UnableToTranslate, finalizeRowType("T"),
 		plans.FetchIndexRecordsPrimaryKey))
 
-	FinalizePlan(root)
+	if err := FinalizePlan(root); err != nil {
+		t.Fatalf("FinalizePlan: %v", err)
+	}
 
 	for label, s := range map[string]*values.RecordConstructorValue{
 		"scan comparand":     comparand,
@@ -961,5 +966,50 @@ func TestFinalizePlanCensusSeesTheCarriers(t *testing.T) {
 			t.Errorf("census classifies %s as value-bearing; that over-broadens the "+
 				"guard and will demand sentinels nothing can plant", label)
 		}
+	}
+}
+
+// TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm pins the
+// two error classes the walk meets, apart. Two record literals declared under
+// ONE name with TWO shapes would make two DescriptorProtos of one name, so the
+// second is refused at definition and that is a query failure FinalizePlan
+// returns (Java's TypeRepository.build throws); swallowing it let the driver
+// hand such a row back as raw maps with no error. A type with no message form
+// — an erased array, which no plan admits, so the walk is driven directly — is
+// not a failure: its constructor stays unstamped and keeps its map
+// representation, and the constructor beside it is stamped.
+func TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm(t *testing.T) {
+	t.Parallel()
+
+	one := values.NewRecordConstructorValue(values.RecordConstructorField{
+		Name: "P", Value: &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+	})
+	one.SetTypeName("FOO")
+	two := values.NewRecordConstructorValue(
+		values.RecordConstructorField{Name: "P", Value: &values.ConstantValue{Value: int64(2), Typ: values.NullableLong}},
+		values.RecordConstructorField{Name: "Q", Value: &values.ConstantValue{Value: int64(3), Typ: values.NullableLong}},
+	)
+	two.SetTypeName("FOO")
+	clash := mustFinalizeConstruct(plans.NewRecordQueryValuesPlan([]values.Value{one, two}))
+	err := FinalizePlan(clash)
+	var nameClash *values.DeclaredNameClashError
+	if !errors.As(err, &nameClash) || nameClash.Name != "FOO" {
+		t.Fatalf("FinalizePlan over one declared name with two shapes = %v, want a DeclaredNameClashError for FOO", err)
+	}
+
+	erased := values.NewRecordConstructorValue(values.RecordConstructorField{
+		Name: "A", Value: &values.ConstantValue{Value: nil, Typ: &values.ArrayType{Nullable: true}},
+	})
+	stamped := sentinel()
+	st := &planStamper{repo: values.NewTypeProtoRepository()}
+	stampValues([]values.Value{erased, stamped}, st)
+	if st.nameClash != nil {
+		t.Fatalf("stamping beside a type with no message form = %v, want nil: that constructor keeps its map", st.nameClash)
+	}
+	if erased.MessageDescriptor() != nil {
+		t.Fatal("a constructor over an erased array was stamped; it has no message form")
+	}
+	if stamped.MessageDescriptor() == nil {
+		t.Fatal("the constructor beside a no-message-form one was not stamped")
 	}
 }

@@ -15,7 +15,9 @@ import (
 
 func executeInlineValuesPlan(t testing.TB, plan plans.RecordQueryPlan) []executor.QueryResult {
 	t.Helper()
-	cascades.FinalizePlan(plan)
+	if err := cascades.FinalizePlan(plan); err != nil {
+		t.Fatalf("FinalizePlan: %v", err)
+	}
 	cursor, err := executor.ExecutePlan(context.Background(), plan, nil,
 		executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {
@@ -67,7 +69,9 @@ func TestInlineValuesPhysicalLeafEmitsItsExactPublishedRow(t *testing.T) {
 	// particular this stamps the inline row constructors with the plan's
 	// synthetic protobuf descriptors; the direct harness otherwise leaves them
 	// as name-keyed maps and would miss representation-only type drift.
-	cascades.FinalizePlan(plan)
+	if err := cascades.FinalizePlan(plan); err != nil {
+		t.Fatalf("FinalizePlan: %v", err)
+	}
 	cursor, err := executor.ExecutePlan(context.Background(), explode, nil,
 		executor.EmptyEvaluationContext(), nil, recordlayer.DefaultExecuteProperties())
 	if err != nil {

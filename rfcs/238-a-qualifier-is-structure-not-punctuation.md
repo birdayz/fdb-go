@@ -581,7 +581,7 @@ which is where its table-locality comes from — it has no drop-list and no
 per-type catch.
 
 BOTH LOOPS, NOT JUST THE PRIMARY ONE. `buildMatchCandidates` continues into
-`c.md.GetAllIndexes()` (`cascades_generator.go:2858`) — every index in the
+`c.md.GetAllIndexes()` (`cascades_generator.go:2862`) — every index in the
 SCHEMA — and each resulting `metadataIndexDef` derives its row type through the
 same `PositionalTypeForRecordLayout` (`:3433`, `:3462`). So a colliding table
 that owns ANY secondary index reproduces the panic for a query that never names
@@ -626,7 +626,7 @@ already holds one before it constructs the context:
 `cascades_generator.go:488` and `:1161`, and `scalar_subquery_planning.go:70`,
 each build `ref`/`subRef` first and pass it to `PlanWithContext` on the next
 line. That is Java's `planPartial` shape (`CascadesPlanner.java:378-388`). So
-`buildCascadesPlanContext` (`cascades_generator.go:2746`) takes the reference and
+`buildCascadesPlanContext` (`cascades_generator.go:2750`) takes the reference and
 narrows there; the `sync.Once` defers only the BUILDING, not the reference.
 
 An empty result then yields an empty candidate set, which is what Java does too
@@ -762,13 +762,13 @@ and reading what actually reddened:
 ```
 values.NewRecordType                      type.go:768   panics
 executor.PositionalTypeForRecordLayout    query_result.go:277
-embedded.buildMatchCandidates             cascades_generator.go:2827
-embedded.GetMatchCandidates               cascades_generator.go:2776
+embedded.buildMatchCandidates             cascades_generator.go:2831
+embedded.GetMatchCandidates               cascades_generator.go:2780
 cascades.MatchLeafRule.OnMatch            rule_match_leaf.go:59
 ```
 
 `buildMatchCandidates` walks every record type in the metadata. Two guards skip
-a type outright — no primary key (`cascades_generator.go:2805`) and no key
+a type outright — no primary key (`cascades_generator.go:2809`) and no key
 components (`:2809`) — and every type that survives both gets a positional type
 built from its descriptor. A third guard (`:2823`) does NOT skip: a type with no
 descriptor still gets a candidate, flowing `UnknownType`, so it is the only one
@@ -840,7 +840,7 @@ WithoutChildren` compares its record-type list element by element and has no
 metadata to resolve with — nor should it: it is structural equality on a memo
 expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
 `buildMatchCandidates` passes `[]string{rt.Name}` (stored,
-`cascades_generator.go:2842`) and `cascades_translator.go:2904` passes
+`cascades_generator.go:2846`) and `cascades_translator.go:2904` passes
 `[]string{s.Table}` (SQL).
 
 The visible cost, same query shape over one schema, one per table:
@@ -998,7 +998,7 @@ VALIDATION DIVERGENCE, and every other path already said so. Java rejects —
 UNDEFINED_TABLE / "Unknown table RESTAURANT"
 (`CaseSensitivityQueryTests.caseSensitiveConnectionTestCase3`). Go's SELECT path
 rejects. Go's `INSERT … VALUES` rejects, through `md.GetRecordType(insOp.Table)`
-(`cascades_generator.go:1074`). Only UPDATE and DELETE folded.
+(`cascades_generator.go:1076`). Only UPDATE and DELETE folded.
 
 So the DML target now resolves strictly, and the case arm leaves this section
 entirely. **Canonicalising it — which is what this section proposed one revision
@@ -1030,7 +1030,7 @@ correct response.
 
 
 **THE CANDIDATE SIDE MUST NOT MOVE.** `rt.Name` reaches candidates at four
-places (`cascades_generator.go:2842`, `:3471`, `:3695`, `:3770`) and those are
+places (`cascades_generator.go:2846`, `:3471`, `:3695`, `:3770`) and those are
 cross-compared in `rule_aggregate_data_access.go:84,299`; converting one
 silently disables aggregate matching. `queriedRecordTypes` flows into physical
 plans (`primary_scan_match_candidate.go:393,432`). Translating on the QUERY side
@@ -1132,7 +1132,7 @@ values. The classification split is asserted nowhere. In
 THIS revision the set has FIVE members. Three cite a doc comment on purpose:
 `positional_row.go:7`, `colref.go:95` and `full_unordered_scan.go:110-118`. Two
 are this section's own narrative naming cites it CORRECTED —
-`derived_unnest.go:250` and `cascades_generator.go:2826` — which read weak
+`derived_unnest.go:250` and `cascades_generator.go:2830` — which read weak
 precisely because they name lines that have since moved, the thing the sentences
 around them say.
 
@@ -1185,7 +1185,7 @@ number, because it reads as measured.
 
 What IS reproducible, and is all this section needs: it was never seven; the
 drift is dominated by whole-file shifts rather than moves between functions
-(`cascades_generator.go:2826` alone moved four further times, `:2840` → `:2839` →
+(`cascades_generator.go:2830` alone moved four further times, `:2840` → `:2839` →
 `:2848` → `:2858`, every one staying inside the same function); and the corpus
 figures above are printed by a committed test rather than quoted from memory. If
 a branch-wide count is ever wanted, ship the counter next to the claim — four
@@ -1252,7 +1252,7 @@ text — a different risk class.
 derives the plan's result-column types, and that lookup is NIL-TOLERANT. On a
 miss the descriptor stays nil and the types are invented: one derivation reports
 every GROUP BY column as `STRING` and an aggregate over a COLUMN as `BIGINT`
-(`cascades_generator.go:4189`), the other reports GROUP BY columns as `BIGINT`
+(`cascades_generator.go:4193`), the other reports GROUP BY columns as `BIGINT`
 (`:4256`) and reaches its miss only when EVERY child plan misses. `COUNT(*)` is
 `BIGINT` with or without the miss, so it is the one output not degraded.
 Plausible values, wrong types, no error — and which wrong type you get depends

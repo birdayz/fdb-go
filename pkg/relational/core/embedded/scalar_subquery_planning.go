@@ -92,7 +92,9 @@ func planScalarSubqueryPlans(
 		// the outer one, so it needs its own bake — the outer FinalizePlan
 		// walk cannot reach it (it hangs off the cascadesPlan, not off the
 		// outer plan's child edges).
-		cascades.FinalizePlan(subPlan)
+		if err := cascades.FinalizePlan(subPlan); err != nil {
+			return nil, api.NewError(api.ErrCodeInternalError, "scalar-subquery result descriptor: "+err.Error())
+		}
 		out = append(out, PlannedScalarSubquery{
 			Alias: ssq.Alias,
 			Plan:  subPlan,

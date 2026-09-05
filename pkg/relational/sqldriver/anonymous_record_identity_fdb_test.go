@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
@@ -120,6 +121,10 @@ func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
 		{`SELECT [a.w] FROM VALUES (STRUCT RECORD (3 AS p, 4 AS q)) AS a(w(x, y))`, "RECORD", []string{"X", "Y"}},
 		{`SELECT [a.w] FROM VALUES (STRUCT foo (3 AS p, 4 AS q)) AS a(w(x, y))`, "FOO", []string{"X", "Y"}},
 		{`SELECT [x.w] FROM (SELECT a.w FROM VALUES (STRUCT foo (3 AS p, 4 AS q)) AS a(w(x, y))) x`, "FOO", []string{"X", "Y"}},
+		// An ARRAY of named records under the definition takes the retag's
+		// shared array arm; measured, not inferred from the record arm.
+		{`SELECT a.w FROM VALUES ([STRUCT foo (3 AS p, 4 AS q)]) AS a(w(x, y))`, "FOO", []string{"X", "Y"}},
+		{`SELECT x.w FROM (SELECT a.w FROM VALUES ([STRUCT foo (3 AS p, 4 AS q)]) AS a(w(x, y))) x`, "FOO", []string{"X", "Y"}},
 	} {
 		query := tc.query
 		rows, err := db.QueryContext(ctx, query)
@@ -151,6 +156,76 @@ func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
 			if got, err := s.MetaData().AttributeName(i + 1); err != nil || got != want {
 				t.Fatalf("%s: attribute %d = %q (%v), want %q", query, i+1, got, err, want)
 			}
+		}
+	}
+}
+
+// TestFDB_OneDeclaredNameOverTwoShapesIsRefused pins that two record literals
+// declared under ONE name with TWO shapes in one row fail loudly — as Java's
+// TypeRepository.build does on the duplicate message name — instead of coming
+// back as raw maps with no error, which is what swallowing the synthesised
+// descriptor's compile failure produced. Two distinct declared names beside
+// them are structs.
+func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_samename")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_samename")
+	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE samename_tpl
+		CREATE TABLE t (id BIGINT, v BIGINT, PRIMARY KEY (id))`)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_samename/s1 WITH TEMPLATE samename_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_samename?cluster_file=%s&schema=s1", clusterFilePath))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
+
+	for _, query := range []string{
+		`SELECT [STRUCT foo (1 AS p)], [STRUCT foo (2 AS p, 3 AS q)] FROM t`,
+		`SELECT [a.w], [b.v] FROM VALUES (STRUCT foo (1 AS p)) AS a(w(x)), VALUES (STRUCT foo (2 AS p, 3 AS q)) AS b(v(y, z))`,
+		`SELECT [x.s], [x.q] FROM (SELECT STRUCT foo (1 AS p) AS s, STRUCT foo (2 AS p, 3 AS q) AS q FROM t) x`,
+	} {
+		rows, err := db.QueryContext(ctx, query)
+		if err == nil {
+			rows.Close()
+			t.Fatalf("%s: planned; one declared name over two shapes must be refused, never handed back as raw maps", query)
+		}
+		if !strings.Contains(err.Error(), "XX000") || !strings.Contains(err.Error(), "result descriptor") {
+			t.Fatalf("%s: failed for another reason than the descriptor compile: %v", query, err)
+		}
+	}
+
+	// The control: two distinct declared names are two structs.
+	const control = `SELECT [STRUCT foo (1 AS p)], [STRUCT bar (2 AS p, 3 AS q)] FROM t`
+	rows, err := db.QueryContext(ctx, control)
+	if err != nil {
+		t.Fatalf("%s: %v", control, err)
+	}
+	var a, b any
+	if !rows.Next() {
+		rows.Close()
+		t.Fatalf("%s: no row: %v", control, rows.Err())
+	}
+	if err := rows.Scan(&a, &b); err != nil {
+		rows.Close()
+		t.Fatalf("%s: scan: %v", control, err)
+	}
+	rows.Close()
+	for i, col := range []any{a, b} {
+		elems, ok := col.([]any)
+		if !ok || len(elems) != 1 {
+			t.Fatalf("%s: column %d = %T %v, want a one-element array", control, i, col, col)
+		}
+		s, isStruct := elems[0].(api.Struct)
+		if !isStruct {
+			t.Fatalf("%s: column %d element = %T, want an api.Struct", control, i, elems[0])
+		}
+		if want := []string{"FOO", "BAR"}[i]; s.MetaData().TypeName() != want {
+			t.Fatalf("%s: column %d struct name = %q, want %s", control, i, s.MetaData().TypeName(), want)
 		}
 	}
 }

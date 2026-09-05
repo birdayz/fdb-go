@@ -77,6 +77,28 @@ func (e *ProtoTypeError) Error() string {
 	return fmt.Sprintf("cannot synthesise a protobuf descriptor for %s: %s", e.TypeName, e.Reason)
 }
 
+// DeclaredNameClashError reports two record shapes DECLARED under one name in
+// one repository — `STRUCT foo (1 AS p)` beside `STRUCT foo (2 AS p, 3 AS q)`.
+// Each has a message form, but two DescriptorProtos of one name make a file
+// that does not validate; Java reaches that at TypeRepository.build and throws
+// (IllegalStateException wrapping the DescriptorValidationException). It is a
+// different failure from a ProtoTypeError, which is a type with NO message
+// form: a caller that keeps a map representation for the latter must not
+// swallow this one, so it is refused here, at definition, where the clash is
+// known exactly. Anonymous shapes never clash — each gets its own synthetic
+// name.
+type DeclaredNameClashError struct {
+	// Name is the declared record name both shapes claim.
+	Name string
+	// Existing is the shape already defined under Name; Incoming the second.
+	Existing Type
+	Incoming Type
+}
+
+func (e *DeclaredNameClashError) Error() string {
+	return fmt.Sprintf("record name %q is declared with two shapes: %v and %v", e.Name, e.Existing, e.Incoming)
+}
+
 // canonicalizeNullability is Java's TypeRepository.canonicalizeNullability
 // (TypeRepository.java:292-298): the descriptor cache is keyed on a form that
 // ignores the nullability of the type ITSELF, because a field's nullability
@@ -289,6 +311,14 @@ func (p *TypeProtoRepository) defineRecordLocked(rt *RecordType) error {
 			}
 		}
 		typeName = escaped
+		// A declared name is reached here only for a shape not yet defined
+		// (defineAndResolveLocked found no structural match), so an entry
+		// already holding this name is a DIFFERENT shape under it.
+		for _, e := range p.entries {
+			if e.name == typeName {
+				return &DeclaredNameClashError{Name: rt.RecordName, Existing: e.typ, Incoming: rt}
+			}
+		}
 	} else {
 		typeName = p.uniqueTypeNameLocked()
 	}

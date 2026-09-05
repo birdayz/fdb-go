@@ -516,7 +516,9 @@ func (g *cascadesGenerator) planSelectCascades(ctx context.Context, q antlrgen.I
 	// constructors. This is the plan-cache MISS path — the hit path above
 	// returns the same plan pointer to concurrent executions, so this is the
 	// only point at which stamping is not a data race.
-	cascades.FinalizePlan(physPlan)
+	if err := cascades.FinalizePlan(physPlan); err != nil {
+		return nil, api.NewError(api.ErrCodeInternalError, "result descriptor: "+err.Error())
+	}
 	// Plan scalar subqueries independently through the Cascades pipeline
 	// (planScalarSubqueryPlans — the one planning path, shared with the
 	// plan harness).
@@ -1184,7 +1186,9 @@ func (g *cascadesGenerator) planDML(ctx context.Context, dml antlrgen.IDmlStatem
 	if err := cascades.ValidatePlanInvariants(physPlan); err != nil {
 		return nil, api.NewError(api.ErrCodeInternalError, "malformed DML plan: "+err.Error())
 	}
-	cascades.FinalizePlan(physPlan)
+	if err := cascades.FinalizePlan(physPlan); err != nil {
+		return nil, api.NewError(api.ErrCodeInternalError, "result descriptor: "+err.Error())
+	}
 
 	// Plan the DML statement's scalar subqueries (`DELETE … WHERE v > (SELECT
 	// …)`) through the same shared pipeline as SELECT and carry them on the

@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"errors"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/predicates"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
@@ -45,13 +47,28 @@ import (
 // yields a *values.ProtoTypeError from MessageDescriptorFor. That is NOT a
 // query failure: the constructor simply stays unstamped and evaluates to its
 // name-keyed map, exactly as it did before the bake existed.
-func FinalizePlan(plan plans.RecordQueryPlan) {
+//
+// One declared name over two shapes — `STRUCT foo (1 AS p)` beside `STRUCT
+// foo (2 AS p, 3 AS q)` — is a query failure, and the one error this returns
+// (values.DeclaredNameClashError): each constructor has a message form, and
+// the two DescriptorProtos of one name make a file that does not validate.
+// Java throws there (TypeRepository.build); swallowing it here let the driver
+// hand such a row back as raw maps with no error.
+func FinalizePlan(plan plans.RecordQueryPlan) error {
 	if plan == nil {
-		return
+		return nil
 	}
-	repo := values.NewTypeProtoRepository()
+	st := &planStamper{repo: values.NewTypeProtoRepository()}
 	seenPlans := map[plans.RecordQueryPlan]struct{}{}
-	stampPlanNode(plan, repo, seenPlans)
+	stampPlanNode(plan, st, seenPlans)
+	return st.nameClash
+}
+
+// planStamper carries the one repository a plan's constructors are stamped
+// from, and the first declared-name clash the walk met.
+type planStamper struct {
+	repo      *values.TypeProtoRepository
+	nameClash error
 }
 
 // feedsAWrite reports whether this plan node and everything beneath it
@@ -102,7 +119,7 @@ func feedsAWrite(plan plans.RecordQueryPlan) bool {
 // stampPlanNode walks the plan DAG. Plans are DAGs, not trees — a shared
 // sub-plan is reachable by more than one edge — so the seen-set is required for
 // termination, exactly as validatePlanNode needs it.
-func stampPlanNode(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository, seen map[plans.RecordQueryPlan]struct{}) {
+func stampPlanNode(plan plans.RecordQueryPlan, st *planStamper, seen map[plans.RecordQueryPlan]struct{}) {
 	if plan == nil {
 		return
 	}
@@ -115,10 +132,10 @@ func stampPlanNode(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository,
 		return
 	}
 
-	stampNodeLocalValues(plan, repo)
+	stampNodeLocalValues(plan, st)
 
 	for _, c := range plan.GetChildren() {
-		stampPlanNode(c, repo, seen)
+		stampPlanNode(c, st, seen)
 	}
 }
 
@@ -145,29 +162,29 @@ func stampPlanNode(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository,
 // FinalizePlan. A plan that grows a new value-bearing field, or one whose
 // subtree stops being reachable, fails that test rather than silently going
 // unstamped.
-func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepository) {
-	stampValue(plan.GetResultValue(), repo)
+func stampNodeLocalValues(plan plans.RecordQueryPlan, st *planStamper) {
+	stampValue(plan.GetResultValue(), st)
 
 	switch p := plan.(type) {
 	case *plans.RecordQueryProjectionPlan:
-		stampValues(p.GetProjections(), repo)
+		stampValues(p.GetProjections(), st)
 	case *plans.RecordQueryPredicatesFilterPlan:
-		stampPredicates(p.GetPredicates(), repo)
+		stampPredicates(p.GetPredicates(), st)
 	case *plans.RecordQueryFilterPlan:
-		stampPredicates(p.GetPredicates(), repo)
+		stampPredicates(p.GetPredicates(), st)
 	case *plans.RecordQueryNestedLoopJoinPlan:
-		stampPredicates(p.GetPredicates(), repo)
+		stampPredicates(p.GetPredicates(), st)
 	case *plans.RecordQueryStreamingAggregationPlan:
-		stampValues(p.GetGroupingKeys(), repo)
+		stampValues(p.GetGroupingKeys(), st)
 		for _, a := range p.GetAggregates() {
-			stampValue(a.Operand, repo)
+			stampValue(a.Operand, st)
 		}
 	case *plans.RecordQueryScanPlan:
-		stampValues(p.GetPrimaryKeyValues(), repo)
-		stampScanComparisons(p.GetScanComparisons(), repo)
+		stampValues(p.GetPrimaryKeyValues(), st)
+		stampScanComparisons(p.GetScanComparisons(), st)
 	case *plans.RecordQueryIndexPlan:
-		stampValues(p.GetCommonPrimaryKeyValues(), repo)
-		stampScanComparisons(p.GetScanComparisons(), repo)
+		stampValues(p.GetCommonPrimaryKeyValues(), st)
+		stampScanComparisons(p.GetScanComparisons(), st)
 	case *plans.RecordQueryAggregateIndexPlan:
 		// The wrapped index scan is a STRUCTURAL field, not a child: this plan
 		// is Java's RecordQueryPlanWithNoChildren and GetChildren returns nil.
@@ -178,7 +195,7 @@ func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepo
 		// struct-literal test plans that bypass the constructor — a typed-nil
 		// pointer in an interface is not == nil, so it must be checked here.
 		if idx := p.GetIndexPlan(); idx != nil {
-			stampNodeLocalValues(idx, repo)
+			stampNodeLocalValues(idx, st)
 		}
 	case *plans.RecordQueryCoveringIndexPlan:
 		// The second plan of the same shape, and for the same reason: the
@@ -195,45 +212,45 @@ func stampNodeLocalValues(plan plans.RecordQueryPlan, repo *values.TypeProtoRepo
 		// field-number-keyed message. Recursion keeps the two in step by
 		// construction.
 		if idx := p.GetIndexPlan(); idx != nil {
-			stampNodeLocalValues(idx, repo)
+			stampNodeLocalValues(idx, st)
 		}
 	case *plans.RecordQueryVectorIndexPlan:
-		stampScanComparisons(p.GetPrefixComparisons(), repo)
-		stampValue(p.GetQueryVector(), repo)
-		stampValue(p.GetK(), repo)
+		stampScanComparisons(p.GetPrefixComparisons(), st)
+		stampValue(p.GetQueryVector(), st)
+		stampValue(p.GetK(), st)
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, sk := range p.GetSortKeys() {
-			stampValue(sk.ValueExpr, repo)
+			stampValue(sk.ValueExpr, st)
 		}
 	case *plans.RecordQueryMergeSortUnionPlan:
-		stampValues(p.GetComparisonKeys(), repo)
+		stampValues(p.GetComparisonKeys(), st)
 	case *plans.RecordQueryInUnionPlan:
-		stampValues(p.GetComparisonKeys(), repo)
+		stampValues(p.GetComparisonKeys(), st)
 	case *plans.RecordQueryIntersectionPlan:
-		stampValues(p.GetComparisonKeyValues(), repo)
+		stampValues(p.GetComparisonKeyValues(), st)
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
-		stampValues(p.GetComparisonKey(), repo)
+		stampValues(p.GetComparisonKey(), st)
 	case *plans.RecordQueryComparatorPlan:
-		stampValues(p.GetComparisonKeyValues(), repo)
+		stampValues(p.GetComparisonKeyValues(), st)
 	case *plans.RecordQueryExplodePlan:
-		stampValue(p.GetCollectionValue(), repo)
+		stampValue(p.GetCollectionValue(), st)
 	case *plans.RecordQueryValuesPlan:
-		stampValues(p.GetColumns(), repo)
+		stampValues(p.GetColumns(), st)
 	case *plans.RecordQueryTableFunctionPlan:
-		stampValue(p.GetStreamValue(), repo)
+		stampValue(p.GetStreamValue(), st)
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		stampValue(p.GetDefaultValue(), repo)
+		stampValue(p.GetDefaultValue(), st)
 	case *plans.RecordQueryDefaultOnEmptyPlan:
-		stampValue(p.GetDefaultValue(), repo)
+		stampValue(p.GetDefaultValue(), st)
 	case *plans.RecordQueryLimitPlan:
-		stampValue(p.GetLimitValue(), repo)
+		stampValue(p.GetLimitValue(), st)
 	}
 }
 
 // stampValues stamps each value in a slice.
-func stampValues(vs []values.Value, repo *values.TypeProtoRepository) {
+func stampValues(vs []values.Value, st *planStamper) {
 	for _, v := range vs {
-		stampValue(v, repo)
+		stampValue(v, st)
 	}
 }
 
@@ -241,21 +258,21 @@ func stampValues(vs []values.Value, repo *values.TypeProtoRepository) {
 // two walkers are disjoint — WalkPredicate does not descend into Values and
 // WalkValue does not descend into predicates — so a predicate's value operands
 // are only reachable by walking both.
-func stampPredicates(preds []predicates.QueryPredicate, repo *values.TypeProtoRepository) {
+func stampPredicates(preds []predicates.QueryPredicate, st *planStamper) {
 	for _, p := range preds {
 		predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {
 			switch q := node.(type) {
 			case *predicates.ComparisonPredicate:
-				stampValue(q.Operand, repo)
-				stampValue(q.Comparison.Operand, repo)
+				stampValue(q.Operand, st)
+				stampValue(q.Comparison.Operand, st)
 			case *predicates.ValuePredicate:
-				stampValue(q.Value, repo)
+				stampValue(q.Value, st)
 			case *predicates.ExistentialValuePredicate:
-				stampValue(q.Value, repo)
-				stampValue(q.Comparison.Operand, repo)
+				stampValue(q.Value, st)
+				stampValue(q.Comparison.Operand, st)
 			case *predicates.Placeholder:
-				stampValue(q.Value, repo)
-				stampComparisonRange(q.CompRange, repo)
+				stampValue(q.Value, st)
+				stampComparisonRange(q.CompRange, st)
 			}
 			return true
 		})
@@ -263,22 +280,22 @@ func stampPredicates(preds []predicates.QueryPredicate, repo *values.TypeProtoRe
 }
 
 // stampScanComparisons reaches the comparands baked into a scan's ranges.
-func stampScanComparisons(ranges []*predicates.ComparisonRange, repo *values.TypeProtoRepository) {
+func stampScanComparisons(ranges []*predicates.ComparisonRange, st *planStamper) {
 	for _, r := range ranges {
-		stampComparisonRange(r, repo)
+		stampComparisonRange(r, st)
 	}
 }
 
 // stampComparisonRange stamps every comparand of one range. GetComparisons()
 // enumerates equality and inequality comparisons uniformly, so a range shape
 // added later cannot slip past a hand-branched IsEquality/IsInequality test.
-func stampComparisonRange(r *predicates.ComparisonRange, repo *values.TypeProtoRepository) {
+func stampComparisonRange(r *predicates.ComparisonRange, st *planStamper) {
 	if r == nil {
 		return
 	}
 	for _, c := range r.GetComparisons() {
 		if c != nil {
-			stampValue(c.Operand, repo)
+			stampValue(c.Operand, st)
 		}
 	}
 }
@@ -289,7 +306,7 @@ func stampComparisonRange(r *predicates.ComparisonRange, repo *values.TypeProtoR
 // a constructor's children can hold further constructors (a nested record
 // literal), and those need their own descriptors — which, coming from the same
 // repository, are identical to the ones their parent's descriptor references.
-func stampValue(v values.Value, repo *values.TypeProtoRepository) {
+func stampValue(v values.Value, st *planStamper) {
 	if v == nil {
 		return
 	}
@@ -298,10 +315,16 @@ func stampValue(v values.Value, repo *values.TypeProtoRepository) {
 		if !ok {
 			return true
 		}
-		md, err := repo.MessageDescriptorFor(rc.Type())
+		md, err := st.repo.MessageDescriptorFor(rc.Type())
 		if err != nil {
-			// A type with no message form. Not a query failure — the
-			// constructor keeps its map representation.
+			var clash *values.DeclaredNameClashError
+			if errors.As(err, &clash) && st.nameClash == nil {
+				// One declared name over two shapes: a query failure, carried
+				// out of the walk (FinalizePlan).
+				st.nameClash = err
+			}
+			// Otherwise a type with no message form. Not a query failure —
+			// the constructor keeps its map representation.
 			return true
 		}
 		rc.SetMessageDescriptor(md)
