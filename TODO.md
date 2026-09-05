@@ -8998,3 +8998,33 @@ covered by the correctness suite and the golden plan diff, not by this table.
 ---
 
 
+
+- [ ] **CI: the self-hosted nightly runner loses its FDB container about 30 minutes into every
+  Docker-backed nightly, and three nets have been red or dead on that account (found 2026-09-05
+  while triaging the fuzz nightly for RFC-242).** Read off the run logs, not inferred:
+  - `Nightly RowDiff` — every run from 2026-08-24 to 2026-09-04 red or cancelled. The deep sweep
+    logs `WARN fdbgo: connection to server failed address=172.16.0.3:4500` ~30 min in, every
+    later seed reports `INFRA … open catalog store: failed to read store info: context deadline
+    exceeded`, and the job sits until the 4h test timeout (`panic: test timed out after 4h0m0s`,
+    run 33837050450) or is cancelled. Zero MISMATCH lines in the 09-01..09-04 runs: the red is
+    the container, not the engine.
+  - `Nightly Stress` — red since 2026-08-30. Run 33855529576: `TestFDB_Stress_1M` fails at
+    `bulkInsert: INSERT [674000..674500): XX000: open catalog store: … transaction_too_old (1007)`,
+    then `connection to server failed 172.16.0.4:4500`, and every later test fails in 60s with
+    `dial localhost:49951: connect: connection refused` — the mapped port is gone, so the
+    container (or dockerd) died, it is not a client reconnect defect.
+  - `Nightly Factory` growth lane — run 33848551268 killed with exit 137 (`Killed … bazelisk run
+    //cmd/factory-run`) followed by "The runner has received a shutdown signal"; the committed
+    corpus lane passed. Exit 137 is SIGKILL, consistent with the OOM killer on the runner host.
+  - `Nightly Coverage` — the "Race detector (SQL conformance corpora)" step is cancelled every
+    night since 2026-08-30 by the job's `timeout-minutes: 150`; Reconcile reports the coverage
+    net's last genuine run as 2026-08-08 (27 days). The lane has outgrown its timeout; the
+    factorycorpus race run alone was at 536s when cut.
+  - `Nightly Reconcile` fails on two counts: the stale coverage heartbeat above, and open PR #769
+    (`bot/frl-pin-bump`) carrying none of its 7 required checks — the bot-PR shape CLAUDE.md
+    already names (workflows do not fire for it).
+  What is NOT in this entry: the fuzz nightly, whose two real crashers RFC-242 and the
+  `FuzzRebaseValue_NoPanic` fixture fix close, and whose three `context deadline exceeded`
+  90-second failures `cmd/fuzzrun` already classifies and retries clean.
+  Needs host access to the runner (memory headroom / what is killing containers) — not
+  fixable from a checkout; the coverage timeout and the bot-PR check gap are workflow edits.
