@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/internal/queryfixtures"
 )
 
 // TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities pins that a
@@ -241,8 +242,10 @@ func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 // TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped plans this same text
 // and asserts the census that is this file's precondition: the two must stay
 // identical, or these tests silently stop describing one plan.
-const duplicateNameJoinQuery = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) " +
-	"SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id"
+// Shared with the census pin in package embedded rather than copied: that
+// census is this read's precondition, so the two must run the SAME text and a
+// comment saying so cannot enforce it.
+const duplicateNameJoinQuery = queryfixtures.DuplicateNameJoinQuery
 
 // TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues pins what the
 // poisoned repository costs, in both directions and with values, not shapes.
@@ -325,6 +328,12 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 		t.Fatalf("the control STRUCT (same join, the repeat removed through a derived-table "+
 			"rename) = %T %v, want an api.Struct — without this the first half cannot attribute the "+
 			"raw map to the duplicate name rather than to joining at all", clean, clean)
+	}
+	if got := cleanStruct.AttributeCount(); got != 2 {
+		t.Fatalf("the control struct carries %d attributes, want exactly 2 — {X:1 Y:10}: two named "+
+			"lookups pass for a struct carrying a THIRD, and this is the arm the attribution rests on "+
+			"POSITIVELY, so leaving it unsized is the same false green the two raw-map reads just "+
+			"closed", got)
 	}
 	for name, want := range map[string]any{"X": int64(1), "Y": int64(10)} {
 		got, err := cleanStruct.AttributeByName(name)

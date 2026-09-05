@@ -9,6 +9,7 @@ import (
 	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 	"fdb.dev/pkg/relational/api"
+	"fdb.dev/pkg/relational/internal/queryfixtures"
 
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 
@@ -640,15 +641,21 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 // blast radius it leaves behind. It costs descriptor identity, not data, and
 // that cost is user-visible: TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues
 // shows a computed STRUCT coming back as a raw map through this shape and as an
-// api.Struct with the repeated name removed.
+// api.Struct once the repeated name is removed — removed through a derived-table
+// rename, because the dialect cannot rename a base column in place, with a third
+// read there that keeps the wrapper AND the repeat to show the wrapper inert.
 //
 // The invariant this test carries for that one is narrower than the whole
-// test, and saying which half matters: the ID-half query text there must stay
-// IDENTICAL to duplicateNameJoinQuery below, because the census asserted here
-// is that half's precondition. The struct assertions run their own texts —
+// test, and saying which half matters: the census asserted here is a statement
+// about the query that produced the plan, so it is the ID-half's precondition
+// and worth nothing if the two texts drift. They cannot: both read the same
+// queryfixtures.DuplicateNameJoinQuery, so the compiler holds them together
+// where this comment used to ask the next editor to. The struct assertions run
+// their own texts —
 // one reading a computed and a stored struct out of the same poisoned row,
-// one the control with the repeated name removed — and carry their own
-// witnesses, so this census says nothing about them.
+// one the control with the repeat removed through a derived-table rename, and
+// one keeping that wrapper with the repeat to show it inert — and carry their
+// own witnesses, so this census says nothing about them.
 //
 // A FULL OUTER JOIN over legs that both carry `ID` builds its ordinal row with
 // NewRawRecordConstructorValue, which keeps field names VERBATIM by design —
@@ -677,8 +684,7 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 			"CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
 			"CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))",
 		&captureLogger{})
-	const duplicateNameJoinQuery = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) " +
-		"SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id"
+	const duplicateNameJoinQuery = queryfixtures.DuplicateNameJoinQuery
 	plan, _, err := PlanRecordQueryWithSubqueries(duplicateNameJoinQuery, md, nil)
 	if err != nil || plan == nil {
 		t.Fatalf("plan the FULL OUTER JOIN: %v", err)
