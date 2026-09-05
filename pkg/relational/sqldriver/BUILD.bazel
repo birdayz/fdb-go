@@ -522,6 +522,7 @@ go_test(
         "qualified_nested_accessor_fdb_test.go",
         "qualified_nested_accessor_matrix_fdb_test.go",
         "quality_probes_test.go",
+        "quoted_dot_nested_label_fdb_test.go",
         "quoted_machine_alias_fdb_test.go",
         "rawnan_pk_suffix_fdb_test.go",
         "rcte_crossjoin_probe_test.go",

@@ -935,6 +935,13 @@ func buildDerivedTableSourceFromTerm(
 				// bare name, as every projection labels it; naming the column by
 				// its display spelling published U.W, and `x.w` over
 				// `(SELECT u.w FROM (…) u) x` was 42703.
+				// A nested path into the inner derived row (`u.w.x`) is decided
+				// by its shape, before any lookup, as in the single-table arm.
+				if nestedProjectedPath(col, innerSQ.tableAlias) {
+					return buildExactVirtualScopeSourceForBody(
+						md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+					)
+				}
 				name := col.bare
 				if name == "" {
 					name = col.name
@@ -954,13 +961,6 @@ func buildDerivedTableSourceFromTerm(
 				// (x.h.city) and array typing work at all.
 				resolved, found := lookupSourceColumn(srcCols, col.bare, col.name)
 				if !found {
-					// A nested path into the inner derived row (`u.w.x`): the exact
-					// derivation resolves and types it, as in the single-table arm.
-					if len(col.segs) >= 2 {
-						return buildExactVirtualScopeSourceForBody(
-							md, alias, body, cteScopes, projectionOutputNames(innerSQ),
-						)
-					}
 					return semantic.ScopeSource{}, false
 				}
 				cols = append(cols, renameCarriedColumn(resolved, name))
@@ -1053,6 +1053,20 @@ func buildDerivedTableSourceFromTerm(
 			}
 			continue
 		}
+		// A NESTED path — the body source's qualifier stripped, two or more
+		// segments remain (`t1.w.x` is `w.x`: the struct column w's field x) —
+		// is decided by its SHAPE, before any lookup, and goes to the exact
+		// derivation, which resolves the path and types the slot. Deciding it
+		// after a lookup by the leaf name re-committed RFC-238's error: a leaf
+		// with a top-level homonym (`st2.p.sk` beside a STRING column sk) was
+		// typed as that column, and the read was refused. An unqualified
+		// `w.x` cannot be told from a qualifier here either, and takes the
+		// same door.
+		if nestedProjectedPath(col, bodySourceName) {
+			return buildExactVirtualScopeSourceForBody(
+				md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+			)
+		}
 		// Structured segments; a rebased/computed name is one opaque label.
 		bareName := col.bare
 		if bareName == "" {
@@ -1060,18 +1074,6 @@ func buildDerivedTableSourceFromTerm(
 		}
 		innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 		if !found {
-			// A reference whose bare leaf is not a column of the table but
-			// which has more than one segment is a NESTED path (`t1.w.x`, the
-			// struct column w's field x — or `w.x`, which this catalog walk
-			// cannot tell from a qualifier: RFC-238). The exact derivation
-			// resolves the path and types the slot; declining here dropped the
-			// whole resolver, and `x.x` over `(SELECT t1.w.x FROM t1) x` was
-			// refused as a projection slot with no resolved Value.
-			if len(col.segs) >= 2 {
-				return buildExactVirtualScopeSourceForBody(
-					md, alias, body, cteScopes, projectionOutputNames(innerSQ),
-				)
-			}
 			return semantic.ScopeSource{}, false
 		}
 		outName := bareName
@@ -2446,7 +2448,21 @@ func buildCTEColumnSource(
 		copy(columns, allCols)
 	} else {
 		columns = make([]semantic.Column, 0, len(innerSQ.projCols))
+		cteBodySource := innerSQ.tableAlias
+		if cteBodySource == "" {
+			segs := strings.Split(innerSQ.tableName, ".")
+			cteBodySource = segs[len(segs)-1]
+		}
 		for i, col := range innerSQ.projCols {
+			// A nested path (`st2.p.sk`) is decided by its shape before any
+			// lookup and typed by the exact derivation, as in the derived-table
+			// arms: looked up by its leaf it was typed as a top-level homonym.
+			if nestedProjectedPath(col, cteBodySource) {
+				src, ok := buildExactVirtualScopeSourceForBody(
+					md, cteName, body, priorCTEs, projectionOutputNames(innerSQ),
+				)
+				return src, ok, nil
+			}
 			bareName := col.bare
 			if bareName == "" {
 				bareName = col.name
@@ -13297,4 +13313,18 @@ func exactStarRowCarriesAnEphemeral(innerSQ *selectQuery, src semantic.ScopeSour
 		}
 	}
 	return false
+}
+
+// nestedProjectedPath reports whether a projected column reference reaches
+// INTO a column — `t.w.x`, or `w.x` — by its shape alone: with the body
+// source's own qualifier stripped, two or more segments remain. A reference
+// is not looked up by its leaf name to find this out; RFC-238's finding is
+// that which dot is the qualifier is structure, and a leaf that happens to
+// share a top-level column's name must not be mistaken for that column.
+func nestedProjectedPath(col projCol, bodySourceName string) bool {
+	segs := col.segs
+	if len(segs) > 1 && bodySourceName != "" && strings.EqualFold(segs[0], bodySourceName) {
+		segs = segs[1:]
+	}
+	return len(segs) >= 2
 }

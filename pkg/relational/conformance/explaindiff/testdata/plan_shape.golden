@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=371 queries=2760 dml=172 non_query=109 plan_errors=302 unexpected_errors=4
+# files=371 queries=2765 dml=172 non_query=109 plan_errors=302 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -4563,6 +4563,37 @@ shape:     RecordQueryScanPlan
 === cte_published_row_names.yaml#52
 sql:   WITH x AS (SELECT st.p.sk FROM st) SELECT x.sk FROM x
 plan:  Project([_current.P#1.SK#0], Scan(ST))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cte_published_row_names.yaml#53
+sql:   SELECT x.sk FROM (SELECT st2.p.sk FROM st2) x
+plan:  Project([_current.P#2.SK#0], Scan(ST2))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cte_published_row_names.yaml#54
+sql:   SELECT x.sk FROM (SELECT st2.p.sk FROM st2) x WHERE x.sk = 5
+plan:  Project([_current.SK#0], PredicatesFilter(Project([_current.P#2.SK#0], Scan(ST2)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#55
+sql:   SELECT x.sk FROM (SELECT u.p.sk FROM (SELECT st2.p FROM st2) u) x WHERE x.sk = 5
+plan:  Project([_current.SK#0], PredicatesFilter(Project([_current.P#2.SK#0], Scan(ST2)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#56
+sql:   WITH x AS (SELECT st2.p.sk FROM st2) SELECT x.sk FROM x WHERE x.sk = 5
+plan:  Project([_current.SK#0], PredicatesFilter(Project([_current.P#2.SK#0], Scan(ST2)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#57
+sql:   SELECT x.sk FROM (SELECT st2.sk FROM st2) x
+plan:  Project([_current.SK#1], Scan(ST2))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
 === cte_recursive_tree.yaml#0

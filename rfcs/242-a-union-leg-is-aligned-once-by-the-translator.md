@@ -1,6 +1,6 @@
 # RFC-242 — A union's legs are aligned once, by the translator
 
-**Status:** r12. r11 (head `27635cda7`): Graefe NAK and Torvalds NAK on one measurement — the "second gate" r11 read into the climb pin was a fixture artifact (a seed without the MaxMatchMap), and the pin as seeded could never go red; @claude ACK with a bookkeeping item (two fold bullets described a state the diff did not show); codex found no actionable regression. r12 re-seeds the pin as the planner does and shows it red under the mutation, restates the single gate, fixes the nested-field projection of a derived body Torvalds found pre-existing, and restates the two bullets. r11. r10 (head `bd8ec0c66`): Torvalds ACK with five non-blocking folds; Graefe NAK — the group-by rule's PRESERVE branch still stated its keys over its own inner quantifier, and the XX000 yaml pin r10 claimed to remove was still there (a codex run had reverted the working tree under the r10 edits; the removal was redone); @claude NAK on the same yaml fact; codex two P2 (the same preserve branch; a real column named `__ROW_VERSION` classified as the pseudo-column by its name alone). r11 folds all of those, fixes two pre-existing bugs Graefe's probes surfaced (a nested derived table's unaliased qualified output published under its display name; the real `__ROW_VERSION` column), and books the IN-over-aggregate-subquery gap. r10. r9 (head `e92bd661d`): Graefe ACK with one required fold to the BOOKING — the receiving side of the ordering-through-a-projection remainder is not missing ordering parts but a match that never climbs (`correlatedToEquals`), restated in all three homes and pinned; Torvalds NAK with two folds — the swap pin's data was monotone (moved to a fixture whose data discriminates) and an XX000 yaml pin was being credited as a correct rejection (pinned in Go instead) — plus non-blocking folds, all taken; the group-by push rule's synthesized ordering is rebased into its child's current-row space, found when the projection push rule went loud. r8 (head `56a3df6ed`): Graefe ACK with one required fold (the swapped-name body whose sort must stay — a wrong answer at the merge-base); Torvalds NAK on that shape plus six folds; @claude ACK with one residual (the row-versioned remainders unpinned as negatives). r7 (head `cd7bdc5ed`): Graefe ACK (one non-blocking booking: a redundant sort over a renamed grouping key, which r8 fixes as the third adjacent finding); Torvalds ACK with four folds; @claude NAK on coverage (the union-bodied derived table's fix had no regression pin, the added sort on golden #25 was unexplained, a fixture comment cited the wrong RFC-238 section); codex two runs, four P1 findings (a silent wrong answer for quoted case-distinct labels, star bodies bypassing the star-expansion visibility rules, an aliased expression reclassified into a grouping key losing its alias — reported twice). r8 folds all of those. Earlier rounds — r6 folded: 
+**Status:** r13. r12 (head `3315a141d`): Graefe ACK; @claude ACK; Torvalds NAK — the nested-path decision ran after a lookup by the leaf name, so a leaf with a top-level homonym was typed as that column; codex P2 — the newly admitted quoted-dot nested member labels as RFC-238's residual does. r13 decides the nested path by its shape in all three arms, pins the homonym in four spellings, and pins the label residual on the admitted shape. r12. r11 (head `27635cda7`): Graefe NAK and Torvalds NAK on one measurement — the "second gate" r11 read into the climb pin was a fixture artifact (a seed without the MaxMatchMap), and the pin as seeded could never go red; @claude ACK with a bookkeeping item (two fold bullets described a state the diff did not show); codex found no actionable regression. r12 re-seeds the pin as the planner does and shows it red under the mutation, restates the single gate, fixes the nested-field projection of a derived body Torvalds found pre-existing, and restates the two bullets. r11. r10 (head `bd8ec0c66`): Torvalds ACK with five non-blocking folds; Graefe NAK — the group-by rule's PRESERVE branch still stated its keys over its own inner quantifier, and the XX000 yaml pin r10 claimed to remove was still there (a codex run had reverted the working tree under the r10 edits; the removal was redone); @claude NAK on the same yaml fact; codex two P2 (the same preserve branch; a real column named `__ROW_VERSION` classified as the pseudo-column by its name alone). r11 folds all of those, fixes two pre-existing bugs Graefe's probes surfaced (a nested derived table's unaliased qualified output published under its display name; the real `__ROW_VERSION` column), and books the IN-over-aggregate-subquery gap. r10. r9 (head `e92bd661d`): Graefe ACK with one required fold to the BOOKING — the receiving side of the ordering-through-a-projection remainder is not missing ordering parts but a match that never climbs (`correlatedToEquals`), restated in all three homes and pinned; Torvalds NAK with two folds — the swap pin's data was monotone (moved to a fixture whose data discriminates) and an XX000 yaml pin was being credited as a correct rejection (pinned in Go instead) — plus non-blocking folds, all taken; the group-by push rule's synthesized ordering is rebased into its child's current-row space, found when the projection push rule went loud. r8 (head `56a3df6ed`): Graefe ACK with one required fold (the swapped-name body whose sort must stay — a wrong answer at the merge-base); Torvalds NAK on that shape plus six folds; @claude ACK with one residual (the row-versioned remainders unpinned as negatives). r7 (head `cd7bdc5ed`): Graefe ACK (one non-blocking booking: a redundant sort over a renamed grouping key, which r8 fixes as the third adjacent finding); Torvalds ACK with four folds; @claude NAK on coverage (the union-bodied derived table's fix had no regression pin, the added sort on golden #25 was unexplained, a fixture comment cited the wrong RFC-238 section); codex two runs, four P1 findings (a silent wrong answer for quoted case-distinct labels, star bodies bypassing the star-expansion visibility rules, an aliased expression reclassified into a grouping key losing its alias — reported twice). r8 folds all of those. Earlier rounds — r6 folded: 
 r5 (head `452479f68`): Torvalds ACK with three folds; Graefe NAK — the loud floor r5
 left was wider than stated and the fix is the ordinal-bound edge, not a wider pin (folded as
 the second adjacent finding's third and fourth layers); codex five findings, all folded; @claude
@@ -480,6 +480,9 @@ Every proof is committed; each names the dimension that was unprobed.
     control).
 18. **A nested-field projection in a derived body.** `cte_published_row_names.yaml` §10: the
     single-level body, the derived-over-derived body, the aliased control, the CTE spelling.
+19. **The nested leaf with a top-level homonym.** `cte_published_row_names.yaml` §11 (four
+    spellings, the top-level control) and `TestFDB_QuotedDotNestedMemberLabel` (the quoted-dot
+    member's value and RFC-238's label residual, both spellings, the aliased control).
 16. **Bodies the walk serves.** `cte_published_row_names.yaml` §7–§8: a WHERE over a star join
     and over a union of star joins, both spellings; the named-STRUCT join body, both spellings.
 
@@ -813,6 +816,26 @@ order-correct: the index stores (c, id), the residual filter preserves order.
   lost an indexing that could panic, not a `panic(`. The alias-provenance doc says "every
   non-aggregate SELECT-list item" (Torvalds).
 
+## Folds at r13
+
+- **The nested path is decided by its shape** (Torvalds, measured): r12 decided it after the
+  catalog walk had looked the leaf up as a column, so `SELECT x.sk FROM (SELECT st2.p.sk FROM
+  st2) x` over a table with a top-level STRING `sk` beside the struct column typed the slot as
+  that STRING (0AF00 "declared RECORD(SK:STRING?)", 42804 under a WHERE, a raw resolution error
+  under an expression — identical at the merge-base). `nestedProjectedPath` strips the body
+  source's qualifier and sends two or more remaining segments to the exact derivation before any
+  lookup, in the single-table arm, the derived-over-derived arm and the CTE arm; the post-lookup
+  branches are gone, so a mistyped column still declines without a body build
+  (`cte_published_row_names.yaml` §11: four spellings beside the top-level homonym).
+- **The quoted-dot nested member's label** (codex P2): `SELECT x."a.b" FROM (SELECT tq.s."a.b"
+  FROM tq) x` is admitted now and reads the member's value; its label is `b`, over the base
+  table and through the derived table alike — RFC-238 §2's declared residual
+  (`qualifierStrippedLabel`: a nested member is not a top-level field, so the dot in its name is
+  stripped as a qualifier). Pinned as that residual end to end
+  (`TestFDB_QuotedDotNestedMemberLabel`: value right, label `b`, red once the residual closes);
+  closing it is RFC-238's, not this RFC's.
+- The alias-provenance doc says "every SELECT-list item that is not a bare aggregate call".
+
 ## Rides alongside, not part of this RFC
 
 The engine fuzz nightly was red for a second, unrelated reason: `FuzzRebaseValue_NoPanic` built
@@ -853,6 +876,9 @@ mechanism depends on them.
   (`correlatedToEquals`), so the data-access rule has no matched ordering parts to satisfy it
   with. `TODO.md`, "Ordering through a projection reaches the
   child group but not the index", with the measurement and the Java mechanism that closes it.
+- A struct member declared with a dot in its name labels as `b`, not `a.b`, over the base table
+  and through a derived table alike: RFC-238 §2's `qualifierStrippedLabel` residual, pinned on
+  the derived shape this RFC admits (`TestFDB_QuotedDotNestedMemberLabel`).
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
   thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job
   cancelled from outside after 3–67 minutes with no timeout annotation) need host access; the
