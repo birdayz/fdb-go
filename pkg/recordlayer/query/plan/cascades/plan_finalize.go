@@ -43,10 +43,18 @@ import (
 // execution and each page rebuilds its cursor hierarchy from it concurrently,
 // so stamping at execution time would be a data race on values.
 //
-// A type with no message form (a bare scalar record field, an erased array)
-// yields a *values.ProtoTypeError from MessageDescriptorFor. That is NOT a
-// query failure: the constructor simply stays unstamped and evaluates to its
-// name-keyed map, exactly as it did before the bake existed.
+// Every OTHER descriptor failure leaves the constructor unstamped, evaluating
+// to its name-keyed map exactly as it did before the bake existed, and is not
+// a query failure. TWO failures reach that arm, so it cannot be described as
+// only the first: a type with no message form (a bare scalar record field, an
+// erased array) yields a *values.ProtoTypeError, which
+// TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm drives;
+// and a synthesised file that does not VALIDATE for a reason other than a name
+// clash returns from compileLocked through the same call. No shape is known to
+// reach that second one — a record constructor disambiguates a repeated field
+// name itself (`ID`, `ID_2`), and a probe over this package's whole suite
+// reports the arm entering zero times — so it is left swallowed rather than
+// made loud on a failure nobody can produce.
 //
 // One declared name over two shapes — `STRUCT foo (1 AS p)` beside `STRUCT
 // foo (2 AS p, 3 AS q)` — is a query failure, and the one error this returns
@@ -323,8 +331,9 @@ func stampValue(v values.Value, st *planStamper) {
 				// out of the walk (FinalizePlan).
 				st.nameClash = err
 			}
-			// Otherwise a type with no message form. Not a query failure —
-			// the constructor keeps its map representation.
+			// Otherwise a type with no message form, or a file that does not
+			// validate for another reason (see FinalizePlan's doc). Not a query
+			// failure — the constructor keeps its map representation.
 			return true
 		}
 		rc.SetMessageDescriptor(md)

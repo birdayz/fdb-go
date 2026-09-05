@@ -9208,18 +9208,3 @@ covered by the correctness suite and the golden plan diff, not by this table.
   descriptor-built table. Surfaced by RFC-242 r15 while probing an unrelated decline of the
   exact derivation beside a nested path (`@claude`'s r14 shape); out of that RFC's scope (the
   union-leg alignment and the CTE/derived row) and booked here with the reproducer.
-
-- [ ] **A join row that carries one field name twice is never stamped, and flows as a map.**
-  `FinalizePlan` bakes a synthesised protobuf descriptor into every record constructor a plan
-  flows to the driver; a constructor whose row carries one field name twice — the
-  null-extension row a nested FULL OUTER JOIN builds over two legs that both have `ID`
-  (`TestNestedFullOuter_AncestorNullExtensionReachesLeg`) — makes a DescriptorProto that does
-  not validate (`proto: descriptor "__type__2.ID" already declared`), the failure is swallowed as
-  "a type with no message form", and the constructor keeps its name-keyed map representation,
-  in which the second `ID` overwrites the first. The query answers today because nothing reads
-  that row as a struct; measured at RFC-242 r19 by making every descriptor failure loud, which
-  broke that test. Java's `Type.Record` disambiguates repeated names before it defines the
-  message (the name-addressability suffix a record constructor's row carries elsewhere in this
-  port: `K`, `K_2`); the closure is that suffixing at the null-extension row's construction, so
-  the descriptor validates and the row is a struct, and a pin that the two `ID` values both
-  survive. Out of RFC-242's scope; booked with the reproducer.

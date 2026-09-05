@@ -10,9 +10,13 @@ package values
 // match Java, so the shape is what is checked.
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/types/descriptorpb"
+
+	"fdb.dev/pkg/recordlayer/protoname"
 )
 
 // findMsg returns the emitted message with the given name.
@@ -57,13 +61,13 @@ func TestProtoType_AnonymousComputedRecord(t *testing.T) {
 		t.Fatalf("want 4 fields, got %d", md.Fields().Len())
 	}
 
-	// The synthetic name follows Java's "__type__" prefix format
-	// (ProtoUtils.uniqueTypeName), with a deterministic suffix.
-	if got := string(md.Name()); got != "__type__1" {
-		t.Errorf("synthetic type name = %q, want %q", got, "__type__1")
+	// The synthetic name is Java's "__type__" shape in the namespace no user
+	// identifier can reach (see the file header), with a deterministic suffix.
+	if got := string(md.Name()); got != "__0type__1" {
+		t.Errorf("synthetic type name = %q, want %q", got, "__0type__1")
 	}
 
-	msg := findMsg(t, p, "__type__1")
+	msg := findMsg(t, p, "__0type__1")
 	wantTypes := []descriptorpb.FieldDescriptorProto_Type{
 		descriptorpb.FieldDescriptorProto_TYPE_INT64,
 		descriptorpb.FieldDescriptorProto_TYPE_DOUBLE,
@@ -376,5 +380,69 @@ func TestProtoType_TypesWithNoProtoFormAreLoud(t *testing.T) {
 		{Name: "A", FieldType: &ArrayType{Nullable: true}, Ordinal: 0},
 	}}); err == nil {
 		t.Error("erased array: want an error")
+	}
+}
+
+// TestSyntheticTypeNamesAreUnreachableFromAnyIdentifier pins the property the
+// register-time guard rests on: a synthetic name can never be the escaped form
+// of a user identifier, so an entry already holding a name is always another
+// DECLARED shape and never an anonymous squatter.
+//
+// The witnesses are the collision that existed while the synthetic prefix was
+// `__type__`: `__type$` escapes to exactly `__type__1`, and with an anonymous
+// record minted first that query was refused as a name clash it is not (Java
+// names its anonymous types by random UUID and runs it), while with the
+// declared struct first the file failed to validate and EVERY record in the
+// plan fell back to a map.
+func TestSyntheticTypeNamesAreUnreachableFromAnyIdentifier(t *testing.T) {
+	t.Parallel()
+
+	// No accepted identifier escapes into the synthetic namespace...
+	for _, identifier := range []string{"__type$", "__type.", "__type$0", "__type__x", "_$", "a.b", "x$$"} {
+		escaped, err := protoname.ToProtoBufCompliantName(identifier)
+		if err != nil {
+			t.Fatalf("%q: escaping refused it: %v", identifier, err)
+		}
+		if strings.HasPrefix(escaped, syntheticTypeNamePrefix) {
+			t.Fatalf("%q escapes to %q, inside the synthetic namespace %q", identifier, escaped, syntheticTypeNamePrefix)
+		}
+	}
+	// ...because an identifier that would have to start with one is refused.
+	if _, err := protoname.ToProtoBufCompliantName(syntheticTypeNamePrefix + "1"); err == nil {
+		t.Fatalf("the identifier %q was accepted; the synthetic namespace is reachable after all", syntheticTypeNamePrefix+"1")
+	}
+
+	// The witness, both orders, in one repository: an anonymous record and a
+	// struct declared `__type$` both get a descriptor, under distinct names.
+	declared := NewRecordType("__type__1", false, []Field{{Name: "A", FieldType: NullableLong, Ordinal: 0}})
+	anonymous := NewRecordType("", false, []Field{{Name: "B", FieldType: NullableLong, Ordinal: 0}})
+	for _, order := range [][2]Type{{anonymous, declared}, {declared, anonymous}} {
+		repo := NewTypeProtoRepository()
+		first, err := repo.MessageDescriptorFor(order[0])
+		if err != nil {
+			t.Fatalf("first type %v: %v", order[0], err)
+		}
+		second, err := repo.MessageDescriptorFor(order[1])
+		if err != nil {
+			t.Fatalf("second type %v after %v: %v", order[1], order[0], err)
+		}
+		if first.Name() == second.Name() {
+			t.Fatalf("both types were named %q", first.Name())
+		}
+	}
+
+	// The genuine clash is still refused: one DECLARED name, two shapes.
+	repo := NewTypeProtoRepository()
+	one := NewRecordType("FOO", false, []Field{{Name: "P", FieldType: NullableLong, Ordinal: 0}})
+	two := NewRecordType("FOO", false, []Field{
+		{Name: "P", FieldType: NullableLong, Ordinal: 0},
+		{Name: "Q", FieldType: NullableLong, Ordinal: 1},
+	})
+	if _, err := repo.MessageDescriptorFor(one); err != nil {
+		t.Fatalf("first FOO: %v", err)
+	}
+	var clash *DeclaredNameClashError
+	if _, err := repo.MessageDescriptorFor(two); !errors.As(err, &clash) || clash.Name != "FOO" {
+		t.Fatalf("second FOO shape = %v, want a DeclaredNameClashError for FOO", err)
 	}
 }

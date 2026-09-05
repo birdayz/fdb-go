@@ -171,7 +171,7 @@ func TestFDB_InlineValuesExactExecution(t *testing.T) {
 		// the name instead, and every VALUES record then shared one descriptor
 		// name (two shapes in one row could not compile into a result
 		// descriptor and came back as raw maps).
-		if name := record.MetaData().TypeName(); !strings.HasPrefix(name, "__type__") {
+		if name := record.MetaData().TypeName(); !strings.HasPrefix(name, "__0type__") {
 			t.Fatalf("array element type name = %q, want the synthesized anonymous name", name)
 		}
 		for ordinal, wantName := range []string{"X", "Y", "Z"} {
