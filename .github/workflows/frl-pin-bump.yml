@@ -68,6 +68,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # `gh workflow run` (POST …/actions/workflows/{id}/dispatches) needs
+  # actions: write; an explicit permissions block sets every unlisted scope to
+  # none, so without this the dispatch step below would 403 and redden the
+  # bump job every night the pin moves.
+  actions: write
 
 defaults:
   run:

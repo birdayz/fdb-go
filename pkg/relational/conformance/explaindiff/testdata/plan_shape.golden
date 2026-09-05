@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=366 queries=2663 dml=172 non_query=109 plan_errors=288 unexpected_errors=4
+# files=366 queries=2665 dml=172 non_query=109 plan_errors=290 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -4059,6 +4059,12 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryStreamingAggregationPlan
 shape:         RecordQueryInMemorySortPlan
 shape:           RecordQueryScanPlan
+=== cte_expression_aggregate_join_leg.yaml#4 expect-error=42702
+sql:   WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT u.g FROM u, c WHERE u.g = c.id
+plan:  <PLAN-ERROR: 42702: Ambiguous reference U.G>
+=== cte_expression_aggregate_join_leg.yaml#5 expect-error=42702
+sql:   SELECT u.g FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE u.g = c.id
+plan:  <PLAN-ERROR: 42702: Ambiguous reference U.G>
 === cte_java_patterns.yaml#0
 sql:   WITH c1 AS (SELECT col1, col2 FROM t1) SELECT col1, col2 FROM c1 ORDER BY col2
 plan:  Project([_current.COL1#0, _current.COL2#1], InMemorySort([_current.COL2#1 ASC], Project([_current.COL1#1, _current.COL2#2], Scan(T1))))

@@ -9026,14 +9026,19 @@ covered by the correctness suite and the golden plan diff, not by this table.
   What is NOT in this entry: the fuzz nightly, whose two real crashers RFC-242 and the
   `FuzzRebaseValue_NoPanic` fixture fix close, and whose three `context deadline exceeded`
   90-second failures `cmd/fuzzrun` already classifies and retries clean.
-  **Fixed in the RFC-242 pull request (workflow edits, verified by the next nightly, not
-  locally):** the coverage lane's `timeout-minutes` is raised from 150 to 300 with the
-  measurement written into the comment; `frl-pin-bump.yml` now dispatches `ci.yml`,
-  `hosted-smoke.yml` and `nightly-libfdbc.yml` against its branch after opening or updating the
-  PR (a `workflow_dispatch` from `GITHUB_TOKEN` creates runs where a `pull_request` event from
-  it does not), and `ci.yml` gained the `workflow_dispatch` trigger. If tomorrow's Reconcile
-  still lists `#769` as ABSENT, the dispatched runs were held at `action_required` and a token
-  with a real actor is the remaining fix.
+  **Fixed in the RFC-242 pull request (a workflow edit, verified by the next nightly, not
+  locally):** `frl-pin-bump.yml` now dispatches `ci.yml`, `hosted-smoke.yml` and
+  `nightly-libfdbc.yml` against its branch after opening or updating the PR (a
+  `workflow_dispatch` from `GITHUB_TOKEN` creates runs where a `pull_request` event from it does
+  not; the job's permissions gained `actions: write`, which the dispatch call needs), and
+  `ci.yml` gained the `workflow_dispatch` trigger. If tomorrow's Reconcile still lists `#769` as
+  ABSENT, the dispatched runs were held at `action_required` and a token with a real actor is
+  the remaining fix.
+  **Corrected while reviewing:** a draft blamed the coverage lane's `timeout-minutes: 150` and
+  raised it; the six cancelled runs lasted 3, 55, 11, 67, 8 and 51 minutes with no
+  maximum-execution-time annotation, so the cap never fired and the cancellations are the
+  host class below. The cap stays at 150 and its comment now says so.
   **STOP — needs the owner, not a checkout:** the container deaths under Stress / RowDiff /
-  Factory are on the runner host (memory headroom, or what is killing containers thirty
-  minutes into a job); nothing in this repository can observe or change that.
+  Factory and the external cancellations of Coverage are on the runner host (memory headroom,
+  or what is killing containers and jobs thirty minutes into a run); nothing in this
+  repository can observe or change that.

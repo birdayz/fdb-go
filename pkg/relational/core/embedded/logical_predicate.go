@@ -2195,7 +2195,16 @@ func buildCTEColumnSource(
 		if bodyErr != nil {
 			return semantic.ScopeSource{}, false, bodyErr
 		}
-		if ok && scopeSourceNamesUnique(src) {
+		if ok {
+			// Published as the exact derivation states it, repeated output
+			// names included: a reader that names a repeated column meets the
+			// row's own ambiguity check and reports 42702, Java's
+			// AMBIGUOUS_COLUMN — measured, and the same answer the derived-table
+			// form of the body gives. Declining here instead would turn that
+			// into a registration refusal the reader can only report as an
+			// unplannable query. The parse-tree fallback below is reached only
+			// for a row the exact derivation could not carry, never for one it
+			// published.
 			return src, true, nil
 		}
 		src, ok = buildDerivedTableSourceFromAgg(cteName, innerSQ, md)

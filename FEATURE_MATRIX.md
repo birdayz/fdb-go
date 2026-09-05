@@ -23,12 +23,12 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**366 scenarios · 2944 query/assertion cases** across 18 feature areas — 2579 supported, 114 unsupported-feature pins, 251 error-path pins.
+**366 scenarios · 2946 query/assertion cases** across 18 feature areas — 2579 supported, 114 unsupported-feature pins, 253 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 53 | 345 | 312 | 19 | 14 |
-| Joins | 66 | 311 | 296 | 2 | 13 |
+| Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 35 | 298 | 261 | 11 | 26 |
-| **Total** | **366** | **2944** | **2579** | **114** | **251** |
+| **Total** | **366** | **2946** | **2579** | **114** | **253** |
 
 ## Aggregates & GROUP BY
 
@@ -116,7 +116,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `cross_join` | 17 | 15 | 0 | 2 | Every spelling of a JOIN that means "cartesian product" — `CROSS JOIN`, |
 | `cross_join_filter` | 3 | 3 | 0 | 0 | Cross join with various filter patterns |
 | `cross_join_no_predicate` | 2 | 2 | 0 | 0 | CROSS JOIN without predicates |
-| `cte_expression_aggregate_join_leg` | 4 | 4 | 0 | 0 | A non-recursive CTE whose body carries an EXPRESSION aggregate, used as a |
+| `cte_expression_aggregate_join_leg` | 6 | 4 | 0 | 2 | A non-recursive CTE whose body carries an EXPRESSION aggregate, used as a |
 | `cte_join` | 3 | 3 | 0 | 0 | CTE used in JOIN |
 | `derived_table_join` | 3 | 3 | 0 | 0 | Derived tables (subqueries in FROM) with joins |
 | `distinct_join` | 3 | 3 | 0 | 0 | SELECT DISTINCT on JOIN / comma-join results — dedup happens on |

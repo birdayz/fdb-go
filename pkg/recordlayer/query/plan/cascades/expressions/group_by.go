@@ -235,8 +235,8 @@ func numericAggregateType(typ values.Type) bool {
 }
 
 // AggregateKeyColumnName is the canonical output-column name for one grouping
-// key. THE single naming authority for a group key — the plan's OutputColumnNames,
-// the executor's aggregateCursor, and the translator's ordinal baking all read
+// key. THE single naming authority for a group key — the plan's stated output row
+// (OutputRecordType), the executor's aggregateCursor, and the translator's ordinal baking all read
 // the name from here so a baked ordinal and the emitted positional slot can never
 // disagree.
 //

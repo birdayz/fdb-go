@@ -9,8 +9,12 @@ swept (§ Fix E); the scratch probes are gone from the tree. r2 (implementation 
 `835d5a462`): Graefe ACK; Torvalds ACK after one residue; @claude review pass with two notes
 (folded: `FlowedTypesEqual` in the shared helper, a `TODO-production.md` reference); codex NAK on
 three points, all folded in r3 — the rule now declines non-for-each legs (§ Fix A), the adjacent
-CTE defect is fixed here (§ Fix F), and the repository-editable nightly causes are fixed with
-the host cause escalated. Awaiting r3 delta confirmation.
+CTE defect is fixed here (§ Fix F), and the repository-editable nightly cause is fixed with
+the host cause escalated. r3 delta: Graefe ACK conditional on the CTE arm's duplicate-name
+handling; Torvalds NAK — the coverage-timeout claim refuted by measurement (reverted), the
+dispatch step's missing `actions: write`, four stale comments, and the same duplicate-name
+hole, resolved on his measurement (the reader's `42702`) rather than by a decline. Awaiting r4
+delta confirmation.
 **Area:** Cascades implementation rule `ImplementUnorderedUnionRule` and the union executors
 (query-engine gate: Graefe + Torvalds).
 **Found by:** the engine fuzz nightly, red on `FuzzPlanner_WithBatchA_NoPanic` on 2026-08-30,
@@ -267,7 +271,18 @@ justification, all defending a premise no SQL query could reach.
 aggregate arm calls `buildExactScopeSourceOrBodyError` before `buildDerivedTableSourceFromAgg`,
 the order the derived-table path already had (see the adjacent-finding section for the
 mechanism). The parse-tree derivation stays as the fallback for a body whose exact row
-`semantic.Column` cannot carry, which is the documented reason that derivation exists.
+`semantic.Column` cannot carry (a catalog nested record the exact derivation refuses and the
+parse-tree one carries verbatim) — for a row the exact derivation could not publish, never for
+one it did. The first cut gated the exact row on `scopeSourceNamesUnique` and fell through to
+the parse-tree derivation when a name repeated; Graefe's r3 delta named that as a hole (the
+fallback performs no uniqueness check) and asked for a decline. Torvalds's r3 delta measured
+the actual behaviour: a published row with a repeated name is caught by the reader's own
+ambiguity check as `42702` — Java's `AMBIGUOUS_COLUMN`, and the same answer the derived-table
+form of the body gives — where a registration-time decline can only surface as an unplannable
+query (`0AF00`). So the arm publishes what the exact derivation states, repeated names
+included, and the reader reports the ambiguity; the fallback is unreachable for a published row
+by construction rather than by a gate. Pinned in both the CTE and the derived-table spelling as
+`42702`.
 
 **E. Stale references.** Every comment that described the rename `Map`, the position-remap, the
 buffered fallback or the walkers as live — `default_rules.go`, `streaming_cursors.go` (three
@@ -367,6 +382,9 @@ Every proof is committed; each names the dimension that was unprobed.
     golden `cteagg` scenario (SimFDB): the failing shape, the same body as a derived table, the
     bare-column control, and the aggregate read through the CTE without a join. The first
     fails at the merge-base with the column-order error and returns the rows after § Fix F.
+    The same scenario pins the duplicate-output-name body in both forms as the reader's
+    `42702`, so the CTE and derived-table spellings of one body cannot drift apart and the
+    parse-tree fallback is never what answers a published row.
 
 ## Adjacent finding, surfaced by the § Fix D probe — fixed here (§ Fix F)
 
@@ -414,7 +432,10 @@ mechanism depends on them.
   are identifier LOOKUPS against physical field names, the class RFC-237 §Scope permits, not
   presentations. Not touched.
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
-  thirty minutes into every Docker-backed job, the factory batch SIGKILLed) need host access;
-  the two repository-editable causes — the coverage lane's job timeout and the bot pin-bump PR
-  carrying no checks — are fixed in the same pull request as workflow edits, and the host cause
-  is escalated to the owner as a STOP, not filed. The `TODO.md` entry records which is which.
+  thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job
+  cancelled from outside after 3–67 minutes with no timeout annotation) need host access; the
+  one repository-editable cause — the bot pin-bump PR carrying no checks — is fixed in the same
+  pull request as a workflow edit, and the host cause is escalated to the owner as a STOP, not
+  filed. A draft of this RFC also blamed the coverage lane's job timeout; Torvalds's delta lap
+  measured the run durations and refuted it, and the cap is back at its value with the
+  measurement in its comment. The `TODO.md` entry records which is which.

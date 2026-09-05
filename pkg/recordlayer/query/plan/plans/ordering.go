@@ -1267,8 +1267,8 @@ func (p *RecordQueryAggregateIndexPlan) HintOrdering() properties.Ordering {
 		return properties.Ordering{IsKnown: false}
 	}
 	// Grouping column i IS slot i of the row this plan flows
-	// ([groupCols..., FUNC(col)] — aggregateIndexCursor's layout, named by
-	// OutputColumnNames), so the ordering key states that ordinal and the
+	// ([groupCols..., FUNC(col)] — aggregateIndexCursor's layout, the row the
+	// plan's result type states), so the ordering key states that ordinal and the
 	// layout it indexes. The streaming-aggregation provider states the same
 	// thing about its own output row; both must, because a requested ORDER BY
 	// key on an aggregate output is baked against that row and an ordinal with

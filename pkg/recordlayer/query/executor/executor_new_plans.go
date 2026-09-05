@@ -1866,7 +1866,7 @@ func executeInUnion(
 			return applySkipLimit(merged, props.Skip, props.ReturnedRowLimit), nil
 		}
 		// No comparison keys (order-free IN union): a resumable branch-tagged
-		// concat chain (concatFactories, shared with executeUnionStreaming)
+		// concat chain (concatFactories, shared with executeUnion)
 		// instead of the pre-A5 eager concat that discarded the continuation.
 		return applySkipLimit(concatFactories(factories, continuation), props.Skip, props.ReturnedRowLimit), nil
 	}
@@ -1877,7 +1877,7 @@ func executeInUnion(
 // concatFactories folds N cursor factories into a right-nested chain of binary
 // recordlayer.ConcatCursors (Java's ConcatCursor with the branch-tagged
 // ConcatContinuation proto), so the concat resumes the branch the continuation
-// names. The single concat fold — both executeUnionStreaming (UNION ALL) and
+// names. The single concat fold — both executeUnion (UNION ALL) and
 // executeInUnion's order-free arm delegate here.
 func concatFactories(factories []recordlayer.CursorFactory[QueryResult], continuation []byte) recordlayer.RecordCursor[QueryResult] {
 	if len(factories) == 1 {

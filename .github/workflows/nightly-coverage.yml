@@ -15,20 +15,20 @@ jobs:
   coverage:
     name: Coverage + Race + Bench
     runs-on: hetzner-fdb-vm
-    # 300, not 150 (and not 60 before that): this job took on the SQL conformance
-    # corpora under -race when ci.yml's race lane gave them up (they starved the
-    # PR lane on an 8 GB box). Measured, four cores: the corpus execution target
-    # alone is 1328s, and the corpora step runs one target at a time on purpose.
-    # A cap below the lane's real length cancels the job mid-race and reports it
-    # as infrastructure noise rather than as the coverage it is — which is what
-    # 150 did every night from 2026-08-30 to 2026-09-04: the job started ~150
-    # minutes after its cron (the runner was busy with earlier nightlies), ran
-    # coverage and the client/record-layer race lane, and was cancelled by this
-    # timeout ~9 minutes into the corpora race step, so Reconcile reported the
-    # coverage net's last genuine run as 2026-08-08. The measured lane length is
-    # now above 150 minutes on this runner; 300 leaves headroom for the corpora
-    # to grow and still ends a genuinely wedged run inside the night.
-    timeout-minutes: 300
+    # 150, not 60: this job took on the SQL conformance corpora under -race when
+    # ci.yml's race lane gave them up (they starved the PR lane on an 8 GB box).
+    # Measured, four cores: the corpus execution target alone is 1328s, and the
+    # corpora step runs one target at a time on purpose. A 60-minute cap would
+    # cancel the job mid-race and report it as infrastructure noise rather than
+    # as the coverage it is.
+    #
+    # NOT the cause of the 2026-08-30..09-04 cancellations, which a draft of
+    # RFC-242 blamed on this cap: those six runs lasted 3, 55, 11, 67, 8 and 51
+    # minutes and ended in "The operation was canceled." with no
+    # maximum-execution-time annotation, so nothing here fired; they were
+    # cancelled from outside, the same runner-host class that kills the FDB
+    # container under the other Docker-backed nightlies (TODO.md §8).
+    timeout-minutes: 150
 
     steps:
       - name: Check nightly window

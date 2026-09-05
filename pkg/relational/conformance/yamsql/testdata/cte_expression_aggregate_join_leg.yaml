@@ -51,3 +51,14 @@ tests:
     rows:
       - [18]
       - [24]
+  # A body whose exact row repeats an output name (`SUM(v) AS g` beside the
+  # group key g) is published as stated, and a reader that names the repeated
+  # column meets the row's own ambiguity check: 42702, Java's AMBIGUOUS_COLUMN,
+  # in the CTE form exactly as in the derived-table form. Pinned in both so the
+  # two spellings of one body cannot drift apart, and so the CTE arm's
+  # parse-tree fallback — which performs no uniqueness check — is never what
+  # answers here.
+  - query: WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT u.g FROM u, c WHERE u.g = c.id
+    error_code: "42702"
+  - query: SELECT u.g FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE u.g = c.id
+    error_code: "42702"
