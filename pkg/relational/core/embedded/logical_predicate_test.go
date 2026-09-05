@@ -12,6 +12,7 @@ import (
 	"fdb.dev/pkg/relational/api"
 	"fdb.dev/pkg/relational/core/parser"
 	antlrgen "fdb.dev/pkg/relational/core/parser/gen"
+	"fdb.dev/pkg/relational/core/query/expr"
 	"fdb.dev/pkg/relational/core/query/logical"
 	"fdb.dev/pkg/relational/core/query/semantic"
 )
@@ -1653,18 +1654,36 @@ func TestSemanticColumnFromExactTypeDeclinesUnrepresentableArrayElementNullabili
 	}
 }
 
-func TestSemanticColumnFromExactTypeDeclinesUnrepresentableRecordName(t *testing.T) {
+func TestSemanticColumnFromExactTypeCarriesRecordName(t *testing.T) {
 	t.Parallel()
 	fields := []values.Field{{Name: "V", FieldType: values.NotNullLong}}
 
-	representable := values.NewRecordType("RECORD", false, fields)
-	column, ok := semanticColumnFromExactType("S", representable)
-	if !ok || column.Type != "RECORD" || len(column.StructFields) != 1 {
-		t.Fatalf("representable record = %+v, ok=%v", column, ok)
+	anonymous := values.NewRecordType("RECORD", false, fields)
+	column, ok := semanticColumnFromExactType("S", anonymous)
+	if !ok || column.Type != "RECORD" || column.StructTypeName != "" || len(column.StructFields) != 1 {
+		t.Fatalf("anonymous record = %+v, ok=%v, want Type RECORD with no StructTypeName", column, ok)
 	}
 
+	// A nominal record (a declared STRUCT's type) is published with its name
+	// in StructTypeName, the carrier the forward bridge reads first, so the
+	// round trip mints a record of the same name. Declining it instead left a
+	// projected STRUCT-typed nested field with no exact row to publish.
 	named := values.NewRecordType("DECLARED_STRUCT", false, fields)
-	if column, ok := semanticColumnFromExactType("S", named); ok {
-		t.Fatalf("record name with no semantic carrier was published as exact: %+v", column)
+	column, ok = semanticColumnFromExactType("S", named)
+	if !ok || column.Type != "RECORD" || column.StructTypeName != "DECLARED_STRUCT" || len(column.StructFields) != 1 {
+		t.Fatalf("nominal record = %+v, ok=%v, want Type RECORD carrying DECLARED_STRUCT", column, ok)
+	}
+	row := expr.SourceRowType(semantic.ScopeSource{Table: &semantic.StaticTable{TableColumns: []semantic.Column{column}}})
+	if row == nil || len(row.Fields) != 1 {
+		t.Fatalf("row over the published column = %v, want one field", row)
+	}
+	rebuilt, isRecord := row.Fields[0].FieldType.(*values.RecordType)
+	if !isRecord || rebuilt.RecordName != "DECLARED_STRUCT" || !rebuilt.Equals(named) {
+		t.Fatalf("round trip of the nominal record = %v, want %v under the same name", row.Fields[0].FieldType, named)
+	}
+
+	fieldless := values.NewRecordType("DECLARED_STRUCT", false, nil)
+	if column, ok := semanticColumnFromExactType("S", fieldless); ok {
+		t.Fatalf("fieldless record was published as exact: %+v", column)
 	}
 }

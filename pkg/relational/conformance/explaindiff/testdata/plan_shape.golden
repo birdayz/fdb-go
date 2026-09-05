@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=371 queries=2765 dml=172 non_query=109 plan_errors=302 unexpected_errors=4
+# files=371 queries=2778 dml=172 non_query=109 plan_errors=302 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -4596,6 +4596,87 @@ sql:   SELECT x.sk FROM (SELECT st2.sk FROM st2) x
 plan:  Project([_current.SK#1], Scan(ST2))
 shape: RecordQueryProjectionPlan
 shape:   RecordQueryScanPlan
+=== cte_published_row_names.yaml#58
+sql:   SELECT p.co FROM st2 AS p
+plan:  Project([_current.P#2.CO#1], Scan(ST2))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cte_published_row_names.yaml#59
+sql:   SELECT x.co FROM (SELECT p.co FROM st2 AS p) x
+plan:  Project([_current.P#2.CO#1], Scan(ST2))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cte_published_row_names.yaml#60
+sql:   SELECT x.co FROM (SELECT p.co FROM st2 AS p) x WHERE x.co = 6
+plan:  Project([_current.CO#0], PredicatesFilter(Project([_current.P#2.CO#1], Scan(ST2)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#61
+sql:   SELECT x.co FROM (SELECT u.co FROM (SELECT p.co FROM st2 AS p) u) x
+plan:  Project([_current.CO#0], Project([_current.P#2.CO#1], Scan(ST2)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== cte_published_row_names.yaml#62
+sql:   WITH x AS (SELECT p.co FROM st2 AS p) SELECT x.co FROM x
+plan:  Project([_current.P#2.CO#1], Scan(ST2))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryScanPlan
+=== cte_published_row_names.yaml#63
+sql:   WITH x AS (SELECT p.co FROM st2 AS p) SELECT x.co FROM x WHERE x.co = 6
+plan:  Project([_current.CO#0], PredicatesFilter(Project([_current.P#2.CO#1], Scan(ST2)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#64
+sql:   SELECT x.child.v FROM (SELECT tn2.p.child FROM tn2) x
+plan:  Project([_current.CHILD#0.V#0], Project([_current.P#1.CHILD#0], Scan(TN2)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== cte_published_row_names.yaml#65
+sql:   SELECT x.child.v FROM (SELECT tn2.p.child FROM tn2) x WHERE x.child.v = 2
+plan:  Project([_current.CHILD#0.V#0], PredicatesFilter(Project([_current.P#1.CHILD#0], Scan(TN2)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#66
+sql:   WITH x AS (SELECT tn2.p.child FROM tn2) SELECT x.child.v FROM x WHERE x.child.v = 2
+plan:  Project([_current.CHILD#0.V#0], PredicatesFilter(Project([_current.P#1.CHILD#0], Scan(TN2)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#67
+sql:   SELECT x.child.v FROM (SELECT u.p.child FROM (SELECT tn2.p FROM tn2) u) x
+plan:  Project([_current.CHILD#0.V#0], Project([_current.P#1.CHILD#0], Scan(TN2)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== cte_published_row_names.yaml#68
+sql:   SELECT x.child.v FROM (SELECT tn3.p.child FROM tn3) x
+plan:  Project([_current.CHILD#0.V#0], Project([_current.P#2.CHILD#0], Scan(TN3)))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== cte_published_row_names.yaml#69
+sql:   SELECT x.child.v FROM (SELECT tn4.p.child FROM tn4) x WHERE x.child.v = 2
+plan:  Project([_current.CHILD#0.V#0], PredicatesFilter(Project([_current.P#2.CHILD#0], Scan(TN4)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#70
+sql:   SELECT x.child.v FROM (SELECT tn4.child FROM tn4) x WHERE x.child.v = 9
+plan:  Project([_current.CHILD#0.V#0], PredicatesFilter(Project([_current.CHILD#1], Scan(TN4)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 === cte_recursive_tree.yaml#0
 sql:   WITH RECURSIVE descendants AS ( SELECT id, name FROM tree WHERE parent_id = 1 UNION ALL SELECT t.id, t.name FROM tree t, descendants d WHERE t.parent_id = d.id ) SELECT name FROM descendants ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.NAME#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.NAME#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds]))))))

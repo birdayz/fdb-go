@@ -9149,3 +9149,24 @@ covered by the correctness suite and the golden plan diff, not by this table.
   (the IN subquery becomes a semi-join over the aggregate's result). Surfaced by Graefe's r9
   delta lap on PR #770 while probing derived-table group-bys; out of that RFC's scope (the
   union-leg alignment and the CTE/derived row) and booked here with the shapes.
+
+- [ ] **An array literal with a NULL element cannot be read through a CTE or derived table.**
+  `WITH c2 AS (SELECT [x.id, NULL] AS s, x.id AS a FROM ts AS x, t AS y WHERE x.id = y.id)
+  SELECT a + 1 AS b FROM c2 ORDER BY a` fails `0AF00: projection slot 0 has no resolved Value`,
+  and the plain read `SELECT a FROM c2` with it; identical at RFC-242's merge-base `36b97f1e9`
+  (schema `t(id, v)`, `ts(id, n nst)`). Java types the literal's element as
+  `maximumType(LONG, NULL)` = LONG NULLABLE (`AbstractArrayConstructorValue.resolveElementType`,
+  `Type.maximumType`'s NULL case), and Go's exact derivation agrees — but `semantic.Column`
+  carries the array CONTAINER's nullability only (`IsArray` + `Nullable`), its forward bridge
+  `expr.columnCascadesType` forces every element NOT NULL (Java's DDL rule for column arrays),
+  and so `semanticColumnFromExactType` declines a nullable element as unrepresentable and the
+  whole row with it — the join body then has no publisher, and every read of the CTE hits the
+  loud floor. That decline is what `TestOrderByExactMetadata_UnderivableCTEComputedKeyStaysLoud`
+  and `…ProjectionStaysLoud` use as their specimen (their fourth, after nominal records began
+  publishing under RFC-242 r14), so closing this moves the specimen again and those pins say
+  so. Two closures: an `ElementNullable` bit on `semantic.Column` set by the reverse bridge and
+  honoured by the forward one (small, one more field on a string-typed carrier), or carrying
+  the exact `values.Type` on the column so every round trip is lossless at once (nominal
+  records, nullable elements, nested arrays, enums) and the string kinds stay for the semantic
+  layer's own checks; the second is the long-term shape and is RFC-232's residual to close, not
+  RFC-242's. Booked from RFC-242 r14 with the reproducer.

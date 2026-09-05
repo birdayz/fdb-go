@@ -29,11 +29,19 @@ schema_template: |
   CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
   CREATE TABLE st (id BIGINT, p nst, PRIMARY KEY (id))
   CREATE TABLE st2 (id BIGINT, sk STRING, p nst, PRIMARY KEY (id))
+  CREATE TYPE AS STRUCT child_s (v BIGINT)
+  CREATE TYPE AS STRUCT par (child child_s)
+  CREATE TABLE tn2 (id BIGINT, p par, PRIMARY KEY (id))
+  CREATE TABLE tn3 (id BIGINT, child STRING, p par, PRIMARY KEY (id))
+  CREATE TABLE tn4 (id BIGINT, child child_s, p par, PRIMARY KEY (id))
 setup:
   - INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)
   - INSERT INTO c VALUES (100, 1), (200, 2)
   - INSERT INTO st VALUES (1, (5, 6))
   - INSERT INTO st2 VALUES (1, 'seven', (5, 6))
+  - INSERT INTO tn2 VALUES (1, ((2)))
+  - INSERT INTO tn3 VALUES (1, 'x', ((2)))
+  - INSERT INTO tn4 VALUES (1, (9), ((2)))
 tests:
   # (1) The repeated name, read through every path that once bound silently.
   - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT u.g FROM u, c AS c2 WHERE u.g = c2.id
@@ -365,7 +373,7 @@ tests:
   # lookup by the leaf name typed `st2.p.sk` as the top-level STRING column
   # sk that happens to share the leaf's name, and a read of the derived column
   # was refused (0AF00 "declared RECORD(SK:STRING?)", 42804 under a WHERE). The
-  # BIGINT field answers in three spellings beside the top-level homonym.
+  # BIGINT field answers in four spellings beside the top-level homonym.
   - query: SELECT x.sk FROM (SELECT st2.p.sk FROM st2) x
     columns: ["SK"]
     rows:
@@ -386,3 +394,77 @@ tests:
     columns: ["SK"]
     rows:
       - [seven]
+  # (12) The body source's alias equals a struct column's name (`st2 AS p`,
+  # column p): `p.co` is the STRUCT column's field co (Java's lookupNestedField
+  # resolves P.CO through the attribute P when the qualified form P.P fails),
+  # and the shape rule reads P as the source's qualifier and strips it, so the
+  # leaf lookup finds no top-level co. The post-lookup net catches it: a
+  # reference of two or more segments whose leaf is not a column goes to the
+  # exact derivation, in all three arms. The derived spellings were 0AF00 with
+  # the net deleted; the CTE arm never had it — its bare projection answered
+  # through a later fallback, and a WHERE on the published column failed to
+  # translate (0AF00) because that fallback publishes no typed row. Five
+  # spellings beside the top-level control.
+  - query: SELECT p.co FROM st2 AS p
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: SELECT x.co FROM (SELECT p.co FROM st2 AS p) x
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: SELECT x.co FROM (SELECT p.co FROM st2 AS p) x WHERE x.co = 6
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: SELECT x.co FROM (SELECT u.co FROM (SELECT p.co FROM st2 AS p) u) x
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: WITH x AS (SELECT p.co FROM st2 AS p) SELECT x.co FROM x
+    columns: ["CO"]
+    rows:
+      - [6]
+  - query: WITH x AS (SELECT p.co FROM st2 AS p) SELECT x.co FROM x WHERE x.co = 6
+    columns: ["CO"]
+    rows:
+      - [6]
+  # (13) A projected nested field whose type is a DECLARED STRUCT (`tn2.p.child`,
+  # child a child_s): the exact derivation declined every nominal record — its
+  # semantic column has a carrier for the record's name (StructTypeName), and
+  # the bridge back reads it — so the derived source had no exact row to
+  # publish and the read was refused as a projection slot with no resolved
+  # Value (0AF00, identical at the merge-base). With a top-level homonym of a
+  # DIFFERENT type (tn3: child STRING) the leaf lookup typed the slot as that
+  # STRING and `x.child.v` was refused as a column that does not exist (42703);
+  # with a homonym of the SAME type (tn4) the answer was right by coincidence,
+  # and deciding the path by its shape alone made that spelling 0AF00 too.
+  # Every spelling reads the field; the top-level control beside them.
+  - query: SELECT x.child.v FROM (SELECT tn2.p.child FROM tn2) x
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT tn2.p.child FROM tn2) x WHERE x.child.v = 2
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: WITH x AS (SELECT tn2.p.child FROM tn2) SELECT x.child.v FROM x WHERE x.child.v = 2
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT u.p.child FROM (SELECT tn2.p FROM tn2) u) x
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT tn3.p.child FROM tn3) x
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT tn4.p.child FROM tn4) x WHERE x.child.v = 2
+    columns: ["V"]
+    rows:
+      - [2]
+  - query: SELECT x.child.v FROM (SELECT tn4.child FROM tn4) x WHERE x.child.v = 9
+    columns: ["V"]
+    rows:
+      - [9]

@@ -330,22 +330,29 @@ func TestExactCTEProjection_QualifiedDirectJoinLegUsesBuiltResultType(t *testing
 }
 
 // underivableCTE is a CTE body that BUILDS but cannot be PUBLISHED: its row
-// carries a catalog STRUCT column, whose exact type is a NAMED record that
-// semantic.Column cannot carry losslessly (semanticColumnFromExactType admits
-// only the anonymous RECORD shape), so the exact derivation declines the whole
-// source — including the plain column `a` a reference actually reads.
+// carries an array literal with a NULL element, whose exact type has a NULLABLE
+// element that semantic.Column cannot carry losslessly (it has the container's
+// nullability and no nullable-element bit, and its reverse bridge forces every
+// element NOT NULL), so the exact derivation declines the whole source —
+// including the plain column `a` a reference actually reads.
 //
-// The specimen has moved twice, each time because the shape it used started
-// publishing. It was a nested-WITH comma-join body, underivable only because a
-// join-bodied CTE's schema was guessed from its FROM legs by name; then a body
-// that named `dup` twice, withheld by a uniqueness gate — which was itself the
-// silent bind it claimed to prevent, since the declined CTE fell to the ON-only
-// class and a read of `dup` bound one duplicate or the other. A repeated name is
-// published now and its reader reports 42702 (repeatedNameCTE below resolves).
-// What is left that genuinely cannot be advertised is a row the semantic
-// column model cannot state.
+// The specimen has moved three times, each time because the shape it used
+// started publishing. It was a nested-WITH comma-join body, underivable only
+// because a join-bodied CTE's schema was guessed from its FROM legs by name;
+// then a body that named `dup` twice, withheld by a uniqueness gate — which was
+// itself the silent bind it claimed to prevent, since the declined CTE fell to
+// the ON-only class and a read of `dup` bound one duplicate or the other (a
+// repeated name is published now and its reader reports 42702; repeatedNameCTE
+// below resolves); then a join body carrying a catalog STRUCT column, declined
+// only because the bridge refused every record not literally named RECORD while
+// semantic.Column had carried a record's name in StructTypeName all along (a
+// nominal record is published under its name now). What is left that genuinely
+// cannot be advertised is a row the semantic column model cannot state; the
+// element bit that would state this one is booked in TODO.md ("An array literal
+// with a NULL element cannot be read through a CTE or derived table"), and
+// closing it moves the specimen a fourth time.
 const underivableCTE = `WITH c2 AS (
-		SELECT x.n AS s, x.id AS a FROM ts AS x, t AS y WHERE x.id = y.id
+		SELECT [x.id, NULL] AS s, x.id AS a FROM ts AS x, t AS y WHERE x.id = y.id
 	) `
 
 // repeatedNameCTE is the body underivableCTE used to be: it names `dup` twice.

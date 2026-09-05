@@ -473,15 +473,26 @@ func semanticColumnFromExactType(name string, typ values.Type) (semantic.Column,
 		}
 		return column, true
 	case *values.RecordType:
-		if typed.RecordName != "RECORD" || len(typed.Fields) == 0 {
+		if len(typed.Fields) == 0 {
 			// expr.structColumnType deliberately treats a RECORD with no
-			// StructFields as unresolved, and semantic.Column has no separate
-			// record-name carrier: its Type must literally be "RECORD" to take
-			// that bridge. Publishing either shape would therefore change the
-			// exact record identity on the round trip.
+			// StructFields as unresolved, so a fieldless record has no
+			// representation that survives the round trip.
 			return semantic.Column{}, false
 		}
+		// Type is the SQL kind, literally "RECORD", which is what takes the
+		// expr.structColumnType bridge; a nominal record (a declared STRUCT
+		// column's type, named by its descriptor) keeps its name in
+		// StructTypeName, the carrier that bridge reads first, so the round
+		// trip mints the same named values.RecordType. Declining every
+		// nominal record here left a projected STRUCT-typed nested field
+		// (`SELECT x.child.v FROM (SELECT t.p.child FROM t) x`, child a
+		// declared STRUCT) with no exact row to publish: the whole derived
+		// source declined, and the read was refused as a projection slot
+		// with no resolved Value.
 		column.Type = "RECORD"
+		if typed.RecordName != "RECORD" {
+			column.StructTypeName = typed.RecordName
+		}
 		column.StructFields = make([]semantic.Column, len(typed.Fields))
 		seen := make(map[string]struct{}, len(typed.Fields))
 		for i, field := range typed.Fields {
@@ -938,9 +949,11 @@ func buildDerivedTableSourceFromTerm(
 				// A nested path into the inner derived row (`u.w.x`) is decided
 				// by its shape, before any lookup, as in the single-table arm.
 				if nestedProjectedPath(col, innerSQ.tableAlias) {
-					return buildExactVirtualScopeSourceForBody(
+					if src, ok := buildExactVirtualScopeSourceForBody(
 						md, alias, body, cteScopes, projectionOutputNames(innerSQ),
-					)
+					); ok {
+						return src, true
+					}
 				}
 				name := col.bare
 				if name == "" {
@@ -961,6 +974,13 @@ func buildDerivedTableSourceFromTerm(
 				// (x.h.city) and array typing work at all.
 				resolved, found := lookupSourceColumn(srcCols, col.bare, col.name)
 				if !found {
+					// The same net as the single-table arm: the alias that names a
+					// struct column of the inner derived row.
+					if len(col.segs) >= 2 {
+						return buildExactVirtualScopeSourceForBody(
+							md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+						)
+					}
 					return semantic.ScopeSource{}, false
 				}
 				cols = append(cols, renameCarriedColumn(resolved, name))
@@ -1062,10 +1082,16 @@ func buildDerivedTableSourceFromTerm(
 		// typed as that column, and the read was refused. An unqualified
 		// `w.x` cannot be told from a qualifier here either, and takes the
 		// same door.
+		// The exact derivation declines a body it cannot state — a slot whose
+		// type is a NAMED record (semanticColumnFromExactType) — and the walk
+		// below is then still the resolver, as it was: a decline here is not
+		// final.
 		if nestedProjectedPath(col, bodySourceName) {
-			return buildExactVirtualScopeSourceForBody(
+			if src, ok := buildExactVirtualScopeSourceForBody(
 				md, alias, body, cteScopes, projectionOutputNames(innerSQ),
-			)
+			); ok {
+				return src, true
+			}
 		}
 		// Structured segments; a rebased/computed name is one opaque label.
 		bareName := col.bare
@@ -1074,6 +1100,19 @@ func buildDerivedTableSourceFromTerm(
 		}
 		innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 		if !found {
+			// The net under the shape rule: a body source whose alias equals
+			// a struct column's name (`st2 AS p`, column p) makes `p.co` the
+			// struct's field — Java's lookupNestedField resolves P.CO through
+			// the attribute P when the qualified form P.P fails — while the
+			// shape rule read P as the qualifier and stripped it. A reference
+			// of two or more segments whose leaf is not a column goes to the
+			// exact derivation; a one-segment miss is a mistyped column and
+			// declines without a body build.
+			if len(col.segs) >= 2 {
+				return buildExactVirtualScopeSourceForBody(
+					md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+				)
+			}
 			return semantic.ScopeSource{}, false
 		}
 		outName := bareName
@@ -2458,10 +2497,11 @@ func buildCTEColumnSource(
 			// lookup and typed by the exact derivation, as in the derived-table
 			// arms: looked up by its leaf it was typed as a top-level homonym.
 			if nestedProjectedPath(col, cteBodySource) {
-				src, ok := buildExactVirtualScopeSourceForBody(
+				if src, ok := buildExactVirtualScopeSourceForBody(
 					md, cteName, body, priorCTEs, projectionOutputNames(innerSQ),
-				)
-				return src, ok, nil
+				); ok {
+					return src, true, nil
+				}
 			}
 			bareName := col.bare
 			if bareName == "" {
@@ -2473,6 +2513,17 @@ func buildCTEColumnSource(
 			}
 			innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 			if !found {
+				// The net under the shape rule, as in the derived-table arms: the
+				// alias that names a struct column (`st2 AS p`, `p.co`). Without it
+				// this arm declines and the bare projection still answers through a
+				// later fallback, but a WHERE on the published column fails to
+				// translate (0AF00) because that fallback publishes no typed row.
+				if len(col.segs) >= 2 {
+					src, ok := buildExactVirtualScopeSourceForBody(
+						md, cteName, body, priorCTEs, projectionOutputNames(innerSQ),
+					)
+					return src, ok, nil
+				}
 				return semantic.ScopeSource{}, false, nil
 			}
 			// The virtual column carries the OUTPUT name the CTE body

@@ -483,6 +483,14 @@ Every proof is committed; each names the dimension that was unprobed.
 19. **The nested leaf with a top-level homonym.** `cte_published_row_names.yaml` §11 (four
     spellings, the top-level control) and `TestFDB_QuotedDotNestedMemberLabel` (the quoted-dot
     member's value and RFC-238's label residual, both spellings, the aliased control).
+20. **The alias that names a struct column.** `cte_published_row_names.yaml` §12: five spellings
+    (the derived table bare and under a WHERE, the derived-over-derived body, the CTE bare and
+    under a WHERE) beside the top-level control.
+21. **The nested field of a declared STRUCT type.** `cte_published_row_names.yaml` §13: no
+    homonym (bare, under a WHERE, the CTE, the derived-over-derived body), a homonym of another
+    type, a homonym of the same type, the top-level control;
+    `TestSemanticColumnFromExactTypeCarriesRecordName` (the nominal record round-trips under its
+    name; the fieldless record still declines).
 16. **Bodies the walk serves.** `cte_published_row_names.yaml` §7–§8: a WHERE over a star join
     and over a union of star joins, both spellings; the named-STRUCT join body, both spellings.
 
@@ -809,8 +817,9 @@ order-correct: the index stores (c, id), the residual filter preserves order.
 - **A nested-field projection in a derived body** (pre-existing, Torvalds's probe): `SELECT x.x
   FROM (SELECT t1.w.x FROM t1) x` and the derived-over-derived spelling were refused as a
   projection slot with no resolved Value — the catalog walk looked the bare leaf up as a column,
-  failed, and declined the whole resolver. A multi-segment reference whose leaf is not a column
-  goes to the exact derivation, in both arms (`cte_published_row_names.yaml` §10).
+  failed, and declined the whole resolver. The nested path is decided by its shape before any
+  lookup, and a failed lookup of two or more segments goes to the exact derivation, in all three
+  arms (`cte_published_row_names.yaml` §10; the two rules as they stand at r14).
 - **Two r11 bullets restated as measured** (@claude): the "duplicate BUILD entry" is the test
   file's gazelle-generated `embedsrcs` entry beside its `srcs` entry; the climb pin's failure path
   lost an indexing that could panic, not a `panic(`. The alias-provenance doc says "every
@@ -824,8 +833,8 @@ order-correct: the index stores (c, id), the residual filter preserves order.
   that STRING (0AF00 "declared RECORD(SK:STRING?)", 42804 under a WHERE, a raw resolution error
   under an expression — identical at the merge-base). `nestedProjectedPath` strips the body
   source's qualifier and sends two or more remaining segments to the exact derivation before any
-  lookup, in the single-table arm, the derived-over-derived arm and the CTE arm; the post-lookup
-  branches are gone, so a mistyped column still declines without a body build
+  lookup, in the single-table arm, the derived-over-derived arm and the CTE arm; r13 deleted the
+  post-lookup branches, which r14 restores beside it (see Folds at r14)
   (`cte_published_row_names.yaml` §11: four spellings beside the top-level homonym).
 - **The quoted-dot nested member's label** (codex P2): `SELECT x."a.b" FROM (SELECT tq.s."a.b"
   FROM tq) x` is admitted now and reads the member's value; its label is `b`, over the base
@@ -835,6 +844,35 @@ order-correct: the index stores (c, id), the residual filter preserves order.
   (`TestFDB_QuotedDotNestedMemberLabel`: value right, label `b`, red once the residual closes);
   closing it is RFC-238's, not this RFC's.
 - The alias-provenance doc says "every SELECT-list item that is not a bare aggregate call".
+
+## Folds at r14
+
+- **The post-lookup net returns, in all three arms** (Torvalds, measured): the shape rule strips
+  the body source's qualifier, so with `FROM st2 AS p` and a struct column `p`, `p.co` lost its
+  qualifier, the leaf lookup found no top-level `co`, and the arm declined — 0AF00 in the derived
+  spellings where r12 answered `[6]`. Java's `lookupNestedField` resolves `P.CO` through the
+  attribute `P` when the qualified form `P.P` fails; the Go reading of that is the branch r12 had
+  and r13 deleted: after a failed lookup, a reference of two or more segments goes to the exact
+  derivation, and a one-segment miss still declines without a body build. Both rules now stand
+  in the single-table arm, the derived-over-derived arm and the CTE arm. The CTE arm never had
+  the net: its bare projection answered through a later fallback, and a WHERE on the published
+  column failed to translate (0AF00, identical at the merge-base) because that fallback publishes
+  no typed row. Five spellings pinned beside the top-level control
+  (`cte_published_row_names.yaml` §12).
+- **A nominal record is published by the exact derivation** (codex P2, chased to its cause): the
+  shape rule's unconditional return made a declared-STRUCT nested field (`tn.p.child`, `child` a
+  `child_s`) 0AF00 where the leaf lookup had answered — but only when the table happened to carry
+  a top-level homonym of the same type. With no homonym the read was 0AF00 at the merge-base too,
+  and with a homonym of another type it was refused as a column that does not exist (42703):
+  `semanticColumnFromExactType` declined every record not literally named `RECORD`, citing a
+  carrier `semantic.Column` does not have — it has one, `StructTypeName`, the field the forward
+  bridge (`expr.structColumnType`) reads first, added in the same commit as the gate. The exact
+  derivation now publishes a nominal record as `RECORD` carrying its name there, so the round trip
+  mints the same named `values.RecordType`; record identity is name-insensitive under both
+  equalities (`RecordType.Equals`, the exact canonical form) as Java's `Type.Record.equals` is.
+  The fieldless record still declines. Pinned in seven spellings (`cte_published_row_names.yaml`
+  §13) and at the bridge (`TestSemanticColumnFromExactTypeCarriesRecordName`).
+- The §11 fixture comment says four spellings, which is what it pins.
 
 ## Rides alongside, not part of this RFC
 
@@ -879,6 +917,14 @@ mechanism depends on them.
 - A struct member declared with a dot in its name labels as `b`, not `a.b`, over the base table
   and through a derived table alike: RFC-238 §2's `qualifierStrippedLabel` residual, pinned on
   the derived shape this RFC admits (`TestFDB_QuotedDotNestedMemberLabel`).
+- An array literal with a NULL element (`[x.id, NULL]`, Java's `maximumType(LONG, NULL)`: a
+  NULLABLE element) cannot be published by the exact derivation, because `semantic.Column`
+  carries the array container's nullability and no element bit; a join-bodied CTE projecting
+  one has no publisher and every read of it hits the loud floor (0AF00), identical at the
+  merge-base. It is the specimen the loud-floor pins use now that a nominal record publishes
+  (`TestOrderByExactMetadata_UnderivableCTEComputedProjectionStaysLoud`). RFC-232's bridge
+  residual; `TODO.md`, "An array literal with a NULL element cannot be read through a CTE or
+  derived table", with the two closures.
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
   thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job
   cancelled from outside after 3–67 minutes with no timeout annotation) need host access; the
