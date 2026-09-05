@@ -14,26 +14,29 @@ import (
 // candidate's select to the MatchableSortExpression, whose adjustment mints
 // the matched ordering parts an ordered full index scan is chosen by
 // (adjustMatchForMatchableSort, ComputeMatchedOrderingParts — both ported).
-// It does not climb, and TWO gates refuse it, in this order. First,
-// matchWithCandidate refuses at correlatedToEquals, Go's stand-in for Java's
+// It does not climb, and ONE gate refuses it: matchWithCandidate refuses at
+// correlatedToEquals, Go's stand-in for Java's
 // `candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo())`,
 // which demands ZERO node-local correlations on the candidate expression —
 // while the candidate's own select reports two: the placeholder's parameter
 // alias (Go's Placeholder.GetCorrelatedTo counts it; Java's
 // PredicateWithValueAndRanges.getCorrelatedTo is value ∪ ranges only) and its
 // own inner quantifier's alias (Java's getCorrelatedTo subtracts the aliases
-// the expression owns). Second — measured by admitting the first gate under
-// mutation: the climb then reaches the select's adjuster and stops there —
-// adjustMatchForSelect refuses the candidate's placeholder predicate as a
-// non-tautology, where Java's SelectExpression.adjustMatch admits an unbound
-// placeholder. So a zero-prefix match carries no ordering parts,
+// the expression owns). Admitting that gate under mutation, with the match
+// seeded as the planner seeds it (matchLeafWithCandidate, which builds the
+// MaxMatchMap every adjustment requires), the leaf match climbs through the
+// select to the MatchableSortExpression and carries an ordering part — so
+// this test goes RED under that mutation, which is what makes it a sentinel.
+// (A seed without the MaxMatchMap stops at the select's nil-map check instead,
+// which once read as a second gate; it is a fixture artifact, not a gate.)
+// So a zero-prefix match carries no ordering parts,
 // SatisfiesRequestedOrdering sees no order in any candidate, and an ordered
 // full index scan exists only where a sort sits DIRECTLY over a scan
 // (OrderedIndexScanRule, OrderedPrimaryScanRule). TODO.md, "Ordering through
 // a projection reaches the child group but not the index".
 //
-// When the climb works — both gates ported — this test turns red: re-pin it
-// to the adjusted twin and retire the two Go-only ordered-scan rules.
+// When the climb works — the gate ported — this test turns red: re-pin it to
+// the adjusted twin and retire the two Go-only ordered-scan rules.
 func TestAdjustMatches_LeafMatchDoesNotClimb(t *testing.T) {
 	t.Parallel()
 
@@ -71,8 +74,13 @@ func TestAdjustMatches_LeafMatchDoesNotClimb(t *testing.T) {
 
 	queryScan := referenceWinnerFullScan(t, "Order", "STATUS")
 	queryRef := expressions.InitialOf(queryScan)
-	seedMI := NewRegularMatchInfo(nil, EmptyAliasMap(), nil, nil, nil, EmptyGroupByMappings(), nil, nil)
-	seedPM := NewPartialMatch(EmptyAliasMap(), cand, queryRef, queryScan, leaf, seedMI)
+	// Seeded as MatchLeafRule seeds it — with the MaxMatchMap — so the only
+	// thing between this match and the climb is the gate under test.
+	seeds := matchLeafWithCandidate(queryScan, leaf.Get())
+	if len(seeds) != 1 {
+		t.Fatalf("matchLeafWithCandidate yielded %d seeds for the candidate's scan, want one", len(seeds))
+	}
+	seedPM := NewPartialMatch(seeds[0].boundAliasMap, cand, queryRef, queryScan, leaf, seeds[0].matchInfo)
 	if !AddPartialMatchForCandidate(queryRef, cand, seedPM) {
 		t.Fatal("seeding the leaf match was rejected")
 	}
@@ -80,7 +88,7 @@ func TestAdjustMatches_LeafMatchDoesNotClimb(t *testing.T) {
 
 	for _, pm := range GetPartialMatchesForCandidate(queryRef, cand) {
 		if pm.GetCandidateRef() != leaf {
-			t.Fatalf("the leaf match CLIMBED to candidate ref %p (%T): both gates now admit the candidate's select — re-pin this test to the climb, then retire OrderedIndexScanRule and OrderedPrimaryScanRule and close the TODO entry", pm.GetCandidateRef(), pm.GetCandidateRef().Get())
+			t.Fatalf("the leaf match CLIMBED to candidate ref %p (%T): correlatedToEquals now admits the candidate's select — re-pin this test to the climb, then retire OrderedIndexScanRule and OrderedPrimaryScanRule and close the TODO entry", pm.GetCandidateRef(), pm.GetCandidateRef().Get())
 		}
 		if len(pm.GetMatchInfo().GetMatchedOrderingParts()) != 0 {
 			t.Fatalf("the unadjusted leaf match carries %d matched ordering parts, want none", len(pm.GetMatchInfo().GetMatchedOrderingParts()))

@@ -9132,10 +9132,11 @@ covered by the correctness suite and the golden plan diff, not by this table.
   rules (`OrderedIndexScanRule`, `OrderedPrimaryScanRule`) retire. The refusal is pinned:
   `TestAdjustMatches_LeafMatchDoesNotClimb` (a value-index candidate, a scan-leaf
   match, no adjusted twin) — it turns red when the climb works, and is then re-pinned to the climb.
-  A second gate stands behind the first (measured at r11 by admitting `correlatedToEquals` under
-  mutation: the climb then reaches the candidate select's adjuster and stops): `adjustMatchForSelect`
-  refuses the candidate's placeholder predicate as a non-tautology, where Java's
-  `SelectExpression.adjustMatch` admits an unbound placeholder. The closure ports both.
+  That gate is the ONLY one: with the match seeded as `MatchLeafRule` seeds it (the MaxMatchMap
+  built) and `correlatedToEquals` admitted under mutation, the leaf match climbs through the
+  candidate's select to its `MatchableSortExpression` and carries an ordering part (measured at
+  r12; an r11 reading of a second gate at `adjustMatchForSelect` was a fixture artifact — a seed
+  without the MaxMatchMap stops at that adjuster's nil-map check, which the planner never builds).
 
 - [ ] **An IN subquery over an aggregate or DISTINCT body does not translate.**
   `SELECT c.id FROM c WHERE c.id IN (SELECT ga.g FROM ga GROUP BY ga.g)` fails

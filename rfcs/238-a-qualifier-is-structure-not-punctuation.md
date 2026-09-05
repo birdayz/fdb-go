@@ -895,7 +895,7 @@ and that is not one option of two. Java never couples them:
 `QueryVisitor.java:836` sets `targetRecordType` from `getStorageName()` at
 construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
-`logical_predicate.go:7027` where `buildSelectScope` takes the bare table name
+`logical_predicate.go:7046` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
 that divergence while working around it. INSERT has no such coupling: `executor.go:3962`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
@@ -983,7 +983,7 @@ FIRST: "escaped names only", from a SELECT-only measurement. Wrong as method —
 SELECT and DML did not resolve a table name the same way and nothing said so.
 
 SECOND: "two populations, and case is the larger one", after measuring DML.
-`recordTypeCI` (`logical_predicate.go:6819`) resolved a DML target
+`recordTypeCI` (`logical_predicate.go:6838`) resolved a DML target
 CASE-INSENSITIVELY, so an unquoted `DELETE FROM customer` against a table
 declared `"Customer"` VALIDATED and then planned
 `Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))` — a target
@@ -1212,7 +1212,7 @@ an exact `SemanticAnalyzer.getTable` before anything looks at a column.
 
 UPDATE IS ON BOTH SIDES, BY CLAUSE, and that is the shape to carry away rather
 than "UPDATE is fixed". Its SET-column check had its own `recordTypeCI` call
-(`logical_predicate.go:6918`) that folded case purely to find a descriptor, so
+(`logical_predicate.go:6937`) that folded case purely to find a descriptor, so
 making it strict leaves `rt` nil for an unresolvable target, the SET check
 declines, and the 42F01 answers. Its WHERE clause does not go through that
 check at all.

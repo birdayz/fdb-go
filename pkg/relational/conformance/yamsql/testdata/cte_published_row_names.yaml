@@ -336,3 +336,25 @@ tests:
     rows:
       - [1]
       - [2]
+  # (10) A NESTED-FIELD projection in a derived body (`st.p.sk`, the struct
+  # column p's field sk) is typed by the exact derivation: the catalog walk
+  # looked the bare leaf SK up as a column of the table, failed, and declined
+  # the whole resolver, so `x.sk` over it was refused as a projection slot
+  # with no resolved Value — through a derived table over a derived table
+  # too. The aliased control and the CTE spelling beside them.
+  - query: SELECT x.sk FROM (SELECT st.p.sk FROM st) x
+    columns: ["SK"]
+    rows:
+      - [5]
+  - query: SELECT x.sk FROM (SELECT u.p.sk FROM (SELECT st.p FROM st) u) x
+    columns: ["SK"]
+    rows:
+      - [5]
+  - query: SELECT x.q FROM (SELECT u.p.sk AS q FROM (SELECT st.p FROM st) u) x
+    columns: ["Q"]
+    rows:
+      - [5]
+  - query: WITH x AS (SELECT st.p.sk FROM st) SELECT x.sk FROM x
+    columns: ["SK"]
+    rows:
+      - [5]

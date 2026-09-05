@@ -954,6 +954,13 @@ func buildDerivedTableSourceFromTerm(
 				// (x.h.city) and array typing work at all.
 				resolved, found := lookupSourceColumn(srcCols, col.bare, col.name)
 				if !found {
+					// A nested path into the inner derived row (`u.w.x`): the exact
+					// derivation resolves and types it, as in the single-table arm.
+					if len(col.segs) >= 2 {
+						return buildExactVirtualScopeSourceForBody(
+							md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+						)
+					}
 					return semantic.ScopeSource{}, false
 				}
 				cols = append(cols, renameCarriedColumn(resolved, name))
@@ -1053,6 +1060,18 @@ func buildDerivedTableSourceFromTerm(
 		}
 		innerCol, found := semantic.LookupColumnRelaxed(innerTbl, semantic.FromNormalized(bareName))
 		if !found {
+			// A reference whose bare leaf is not a column of the table but
+			// which has more than one segment is a NESTED path (`t1.w.x`, the
+			// struct column w's field x — or `w.x`, which this catalog walk
+			// cannot tell from a qualifier: RFC-238). The exact derivation
+			// resolves the path and types the slot; declining here dropped the
+			// whole resolver, and `x.x` over `(SELECT t1.w.x FROM t1) x` was
+			// refused as a projection slot with no resolved Value.
+			if len(col.segs) >= 2 {
+				return buildExactVirtualScopeSourceForBody(
+					md, alias, body, cteScopes, projectionOutputNames(innerSQ),
+				)
+			}
 			return semantic.ScopeSource{}, false
 		}
 		outName := bareName
