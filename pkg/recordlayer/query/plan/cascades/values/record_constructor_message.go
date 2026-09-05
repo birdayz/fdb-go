@@ -166,14 +166,24 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // field can receive: a UUID (carried as a neutral [16]byte, matching
 // PromoteValue's representation) and a nested record.
 //
-// A nested record arrives as a proto.Message because the plan-time bake stamps
-// every constructor in the plan from ONE repository, so the child constructor
-// already built a message of exactly this field's descriptor. That is the
-// property that lets Java's deepCopyIfNeeded reconciliation
-// (RecordConstructorValue.java:165-216) have nothing to reconcile here; when
-// the descriptors disagree anyway the copy is still performed rather than
-// assumed away, so a mixed-provenance message cannot be set into a foreign
-// descriptor.
+// A nested record arrives as a proto.Message when the plan-time bake stamped
+// the child constructor: the bake works from ONE repository per plan, so a
+// stamped child has built a message of exactly this field's descriptor.
+//
+// "Stamped" is load-bearing there, not a formality. NOT every constructor is:
+// a plan whose row names one field twice poisons its repository, and the
+// constructors resolved after that point get no descriptor at all (TODO.md,
+// "A join row that names one field twice leaves its plan's rows unstamped"),
+// so their rows are maps rather than messages. This code is only on the stamped
+// path by construction — Evaluate calls buildRecordMessage only when its
+// descriptor is non-nil — which is why the sentence above holds here and would
+// be false stated over a whole plan.
+//
+// The stamped case is the property that lets Java's deepCopyIfNeeded
+// reconciliation (RecordConstructorValue.java:165-216) have nothing to
+// reconcile here; when the descriptors disagree anyway the copy is still
+// performed rather than assumed away, so a mixed-provenance message cannot be
+// set into a foreign descriptor.
 func rowMessageToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect.Value, error) {
 	md := fd.Message()
 	if md == nil {

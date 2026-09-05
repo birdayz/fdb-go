@@ -9261,7 +9261,10 @@ covered by the correctness suite and the golden plan diff, not by this table.
   so every type asked for afterwards fails the same way — THREE of the FOUR constructors in
   that plan end up with no descriptor though only ONE repeats a name, and the fourth — resolved
   before the bad message was appended — keeps its descriptor, so the damage is walk-order
-  dependent. The query answers today, and returns every field: the rows travel positionally and
+  dependent. That three-of-four is a MEASUREMENT, not an invariant, and six files quote it, so
+  the census pin asserts the exact shape beside its floors: if the specimen moves, it fails and
+  names all six to re-measure rather than letting the number rot behind a green floor. The query
+  answers today, and returns every field: the rows travel positionally and
   are read by ordinal. Pinned as it stands:
   `TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped` (the query, with a no-repeat control
   that must stamp) and `TestDuplicateFieldNameRowPoisonsTheWholeRepository` (the mechanism and

@@ -763,4 +763,20 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 		t.Fatal("no constructor in this plan is stamped, so the assertions above are vacuous: " +
 			"either FinalizePlan is not baking, or the damage is no longer order-dependent")
 	}
+	// The assertions above are floors, deliberately: they state the INVARIANT and
+	// survive a planner change that moves the specimen. "Three of the four" is a
+	// different kind of claim — a MEASUREMENT, quoted in five places as a fact
+	// about this plan — and a floor cannot keep a measurement true. A fifth
+	// constructor, or a fourth unstamped one, leaves every check above green
+	// while all five sentences go stale, which is exactly how a number with no
+	// expiry condition rots. This is that expiry condition.
+	if constructors != 4 || unstamped != 3 {
+		t.Fatalf("this plan has %d record constructors, %d of them unstamped — the measurement "+
+			"written as `three of four` no longer describes this specimen. Six files state it: "+
+			"this one, queryfixtures.go, plan_finalize.go, values.go (RecordConstructorValue's "+
+			"Evaluate doc), TODO.md's booking and RFC-242. Re-measure and restate it in all six; "+
+			"do not relax this guard, or the number goes on being quoted at a plan nobody has "+
+			"looked at. (proto_type_test.go states the walk-order claim without a number, so it "+
+			"does not go stale with the count.)", constructors, unstamped)
+	}
 }

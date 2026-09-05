@@ -15,19 +15,25 @@ package queryfixtures
 //
 // Such a row's synthesised descriptor cannot validate, and the repository keeps
 // the bad message, so every type asked for AFTER it fails the same way. The
-// scope is therefore walk order, not the whole plan: on this query THREE of the
-// FOUR record constructors end up unstamped, and the fourth — resolved before
-// the bad message was appended — keeps its descriptor. That survivor is not a
-// detail to round off; the census asserts it, and a run where nothing survived
-// would mean something other than this defect. A computed STRUCT read through
-// one of the unstamped constructors comes back as a raw map, while a STORED
-// struct column through the same plan is unaffected, carrying its own stored
-// descriptor rather than a constructor's.
+// scope is therefore walk order, not the whole plan: as measured on this query
+// THREE of the FOUR record constructors end up unstamped, and the fourth —
+// resolved before the bad message was appended — keeps its descriptor. That
+// survivor is not a detail to round off; a run where nothing survived would
+// mean something other than this defect, and the census fatals on it.
 //
-// Two packages pin that: one asserts the descriptor census over the baked plan,
-// the other reads the user-visible value out of a real store. The census is
-// the value read's precondition, which is why the text is shared rather than
-// copied.
+// What this text does NOT carry is the struct claim. It selects `a.id, c.id,
+// d.foo` and has no struct column, computed or stored, so nothing about raw
+// maps versus api.Struct can be read off it. That cost is measured by three
+// OTHER texts in the same FDB test, which are not shared and do not belong
+// here. Attaching the struct claim to this constant once made it describe a
+// plan that cannot exhibit it.
+//
+// Two packages pin what this text does carry: one asserts the descriptor census
+// over the baked plan, the other reads the whole outer-join result back out of
+// a real store and checks every row arrives with both `ID` slots. The census is
+// that row-arrival read's precondition — and only that read's; the census pin
+// says in as many words that it asserts nothing about the struct texts. Sharing
+// the constant is what keeps the two halves measuring one plan.
 //
 // The `a.id + 1 = c.id` predicate is load-bearing: it keeps the two `ID` slots
 // holding DIFFERENT values, so a read that took one slot twice would be caught.
