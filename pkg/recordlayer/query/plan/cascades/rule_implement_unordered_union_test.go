@@ -5,7 +5,6 @@ import (
 
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
-	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 	"fdb.dev/pkg/recordlayer/query/plan/plans"
 )
 
@@ -24,32 +23,6 @@ func TestImplementUnorderedUnionRule_MatchesLogicalUnionExpression(t *testing.T)
 	bindings := rule.Matcher().BindMatches(matching.NewBindings(), union)
 	if len(bindings) == 0 {
 		t.Fatal("ImplementUnorderedUnionRule should match LogicalUnionExpression")
-	}
-}
-
-// TestPhysicalPlanColumnNames_StreamingAggNotUnwrapped pins the RFC-080 fix:
-// physicalPlanColumnNames must NOT unwrap a RecordQueryStreamingAggregationPlan through
-// GetInner() to its pre-aggregation input column names. Those input names are NOT the
-// aggregate's output names, so a union-branch rename Map built from them would read
-// columns absent from the aggregate row → NULLs. It returns nil instead, deferring the
-// branch's column normalization to the executor's position-remap (which DOES report a
-// StreamingAgg's output schema, RFC-078).
-func TestPhysicalPlanColumnNames_StreamingAggNotUnwrapped(t *testing.T) {
-	t.Parallel()
-	// StreamingAgg over a Project whose output column is [P] — the pre-aggregation
-	// input name that must NOT leak out as the aggregate branch's column name.
-	scan := unionRulePlanScan("A")
-	root := mustUnionRuleQOV(scan.GetResultValue())
-	projected := mustUnionRuleConstruct(values.ResolveFieldOrdinals(root, []int{1}))
-	innerProj := mustUnionRuleConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{projected}, []string{"P"}, scan,
-	))
-	agg := mustUnionRuleConstruct(plans.NewRecordQueryStreamingAggregationPlan(
-		innerProj, nil,
-		[]expressions.AggregateSpec{{Function: expressions.AggCount, Alias: "X"}},
-	))
-	if got := physicalPlanColumnNames(agg); got != nil {
-		t.Fatalf("physicalPlanColumnNames(StreamingAgg) must NOT unwrap to inner names; got %v, want nil", got)
 	}
 }
 
@@ -270,49 +243,5 @@ func TestCrossProductPartitions_ThreeChildren(t *testing.T) {
 		if len(combo) != 3 {
 			t.Fatalf("each combination should have 3 partitions, got %d", len(combo))
 		}
-	}
-}
-
-// TestPhysicalPlanColumnNames_StopsAtProjection pins that this walker takes its
-// names from a PROJECTION and does not descend past one.
-//
-// It exists because RFC-226 rev 5 asserted the opposite — that this walker and
-// the executor's planColumnNamesWithMD both "descend past the projection via
-// GetInner() and are therefore unaffected", and that a don't-descend arm needed
-// adding to both. That was wrong about both walkers: each already has a
-// projection arm at the TOP of its loop, so neither ever reaches the GetInner()
-// descent for a projection. The claim has since been restated for this walker
-// specifically and was wrong again, so the behaviour is pinned here rather than
-// argued about a third time.
-//
-// The pin is also the reason the walkers are UNAFFECTED by a projection stating
-// a row: they never read GetResultType() for one. The tail RecordType read below
-// the loop is reached only for a non-projection terminal.
-//
-// Naming authority is the second half. This walker resolves a projected column's
-// name with values.OutputColumnName — the same function values.Projection-
-// ResultValue uses to name the fields of the row a projection now states. So the
-// executor-visible name and the stated row's field name come from ONE authority
-// by construction, not by two implementations agreeing.
-func TestPhysicalPlanColumnNames_StopsAtProjection(t *testing.T) {
-	t.Parallel()
-
-	innerRow := values.NewRecordType("", true, []values.Field{
-		{Name: "ID", FieldType: values.NotNullLong},
-		{Name: "A", FieldType: values.NotNullLong},
-	})
-	scan := mustUnionRuleConstruct(plans.NewRecordQueryScanPlan([]string{"T"}, innerRow, false))
-	root := mustUnionRuleQOV(scan.GetResultValue())
-	field := mustUnionRuleConstruct(values.ResolveFieldOrdinals(root, []int{1}))
-	proj := mustUnionRuleConstruct(plans.NewRecordQueryProjectionPlanWithAliases(
-		[]values.Value{field}, []string{"RENAMED"}, scan))
-
-	got := physicalPlanColumnNames(proj)
-	if len(got) != 1 || got[0] != "RENAMED" {
-		t.Fatalf("physicalPlanColumnNames(Projection) = %v, want [RENAMED].\n"+
-			"  A 2-name [ID A] result means the walker descended PAST the projection to "+
-			"its inner's row — the union rename would then be built from columns the "+
-			"projection does not output. A nil means the projection arm was removed and "+
-			"the walk fell through to the tail RecordType read.", got)
 	}
 }

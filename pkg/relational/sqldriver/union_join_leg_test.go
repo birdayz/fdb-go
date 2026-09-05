@@ -11,17 +11,15 @@ import (
 // TestFDB_UnionJoinLeg is the review regression (RFC-077 7.6): a CTE/derived-table
 // whose body is a UNION, used as a JOIN LEG, must derive its leg columns (the
 // retired opaque fallback masked this — derivedOutputColumns had no LogicalUnion
-// case, so the leg derived nil → untranslatable). It now anchors to the union's
-// output schema, but ONLY when all branches agree on names — the case the
-// executor's position-remap handles unambiguously.
+// case, so the leg derived nil → untranslatable). It anchors to the union's
+// output schema: the first branch's names, onto which the translator re-emits
+// every differing branch by ordinal (RFC-242 retired the gate that used to
+// refuse branch shapes the executor's since-deleted position-remap could not
+// re-key).
 //
 // This pins, end-to-end against real FDB, that (1) the common same-named union join
-// works, (2) a mismatched-alias PROJECTION union join remaps by position, and (3) a
-// mismatched-alias UNGROUPED-AGGREGATE union join now returns correct rows (RFC-080 —
-// the gate allows ungrouped aggregate branches because an ungrouped aggregate never
-// plans as AggregateIndex (groupingCount==0 → no candidate), so it is always
-// StreamingAgg, which flows every aggregate under its alias; grouped aggregate branches
-// stay gated).
+// works, (2) a mismatched-alias PROJECTION union join aligns by position, and (3) a
+// mismatched-alias UNGROUPED-AGGREGATE union join returns correct rows (RFC-080).
 func TestFDB_UnionJoinLeg(t *testing.T) {
 	t.Parallel()
 	if clusterFilePath == "" {
@@ -56,9 +54,9 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 		[]int64{100, 200, 300})
 
 	// (2) Mismatched-alias PROJECTION branches: the union exposes the FIRST branch's
-	// name `x`; the executor remaps the projection-topped second branch (SELECT v AS y)
-	// to it by POSITION, so u.x = {1,2,30}. Join c on u.x = c.id → matches {1,2} →
-	// w {100,200}. (Projection branches ARE remappable, so this must work, not error.)
+	// name `x`; the translator re-emits the second branch (SELECT v AS y) onto it
+	// by POSITION, so u.x = {1,2,30}. Join c on u.x = c.id → matches {1,2} →
+	// w {100,200}.
 	assertInt64Set(t, db, ctx,
 		"WITH u AS (SELECT id AS x FROM a UNION ALL SELECT v AS y FROM b) "+
 			"SELECT c.w FROM u, c WHERE u.x = c.id",
@@ -67,7 +65,7 @@ func TestFDB_UnionJoinLeg(t *testing.T) {
 	// (3) Mismatched-alias UNGROUPED-AGGREGATE branches as a JOIN LEG return
 	// correct rows. The universal aggregate-output Project supplies a stable
 	// positional schema regardless of the private physical aggregate spelling;
-	// the union remaps the second branch to it. count(a)={2}, count(b)={1} →
+	// the translator re-emits the second branch onto it. count(a)={2}, count(b)={1} →
 	// u.x={2,1}; join c on u.x=c.id → w {200,100}.
 	assertInt64Set(t, db, ctx,
 		"WITH u AS (SELECT COUNT(*) AS x FROM a UNION ALL SELECT COUNT(*) AS y FROM b) "+

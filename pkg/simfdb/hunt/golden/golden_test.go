@@ -194,7 +194,62 @@ func corpus() []Scenario {
 		},
 	}
 
-	return []Scenario{orders, joins, multikey, aggidx, setops, subquery}
+	// unionq: UNION ALL over a table declared with quoted lower-case column names. One leg plans as a
+	// bare scan and the other as a projection, which is the shape whose leg names the implementation
+	// rule and the union executors used to re-derive through a case fold on one path and exactly on
+	// the other (RFC-242). Every mixed shape here failed to plan before that; the baseline pins the
+	// plan (a scan leg beside a projection leg, no Map between) and the rows of each.
+	unionq := Scenario{
+		Name: "unionq",
+		Seed: 7,
+		Tables: []string{
+			`CREATE TABLE t ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))`,
+		},
+		Data: []string{
+			`INSERT INTO t ("id", "k") VALUES (1, 10)`,
+			`INSERT INTO t ("id", "k") VALUES (2, 20)`,
+			`INSERT INTO t ("id", "k") VALUES (3, 30)`,
+		},
+		Queries: []string{
+			`SELECT * FROM t UNION ALL SELECT "id", "k" FROM t`,
+			`SELECT "id", "k" FROM t UNION ALL SELECT * FROM t`,
+			`SELECT * FROM t WHERE "k" > 10 UNION ALL SELECT "id", "k" FROM t`,
+			`SELECT * FROM t UNION ALL SELECT "id", "k" FROM t WHERE "k" > 10`,
+			`SELECT * FROM t UNION ALL SELECT * FROM t`,
+			`SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t`,
+		},
+	}
+
+	// unionjoinleg: a UNION of grouped-aggregate branches as a JOIN LEG, over the operand forms a
+	// since-deleted translator gate refused as "not normalizable" (qualified operand, constant
+	// operand, group-only). The gate's premise was the executor's position-remap; RFC-242 deleted
+	// both. Pinned so the rows stay correct without either.
+	unionjoinleg := Scenario{
+		Name: "unionjoinleg",
+		Seed: 8,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX cnt_by_g AS SELECT COUNT(*) FROM ga GROUP BY g",
+			"CREATE INDEX sum_by_g AS SELECT SUM(v) FROM ga GROUP BY g",
+			"CREATE TABLE gb (id BIGINT, h BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE INDEX cnt_by_h AS SELECT COUNT(*) FROM gb GROUP BY h",
+			"CREATE INDEX sum_by_h AS SELECT SUM(v) FROM gb GROUP BY h",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO gb VALUES (10, 100, 1), (20, 300, 2)",
+			"INSERT INTO c VALUES (100, 1), (200, 2), (300, 3)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s",
+			"WITH u AS (SELECT g, COUNT(1) AS n FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) AS m FROM gb GROUP BY h) SELECT c.w, u.n FROM u, c WHERE u.g = c.id ORDER BY c.w, u.n",
+			"WITH u AS (SELECT g FROM ga GROUP BY g UNION ALL SELECT h FROM gb GROUP BY h) SELECT c.w FROM u, c WHERE u.g = c.id ORDER BY c.w",
+			"WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w, u.s",
+		},
+	}
+
+	return []Scenario{orders, joins, multikey, aggidx, setops, subquery, unionq, unionjoinleg}
 }
 
 // TestGolden captures each scenario over SimFDB and diffs it against the committed baseline in

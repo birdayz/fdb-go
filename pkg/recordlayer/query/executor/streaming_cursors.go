@@ -221,9 +221,9 @@ func aggregateInputIsFlatFrontier(input plans.RecordQueryPlan) bool {
 			*plans.RecordQueryVectorIndexPlan,
 			*plans.RecordQueryStreamingAggregationPlan,
 			// A UNION (ALL / recursive-CTE level) emits a FLAT positional
-			// row per leg, re-typed to the union's output column names
-			// (remapUnionColumnsByPosition), so an aggregate over it resolves its
-			// group key / operand against that row — the flat frontier.
+			// row per leg, and every leg flows the union's one exact row
+			// (RFC-242), so an aggregate over it resolves its group key /
+			// operand against that row — the flat frontier.
 			*plans.RecordQueryUnionPlan,
 			*plans.RecordQueryUnorderedUnionPlan,
 			*plans.RecordQueryRecursiveLevelUnionPlan:
@@ -885,7 +885,7 @@ func asFloat32(x any) (float32, bool) {
 func (c *aggregateCursor) finalizeGroup() QueryResult {
 	gs := c.current
 	// Build the OUTPUT ORDINAL ROW. Order + naming MUST match
-	// streamingAggOutputNames (the plan's authoritative output schema the planner
+	// expressions.GroupByOutputColumnNames (the plan's authoritative output schema the planner
 	// baked downstream ordinals against): grouping keys in order (aggKeyName), then
 	// aggregates in order (ALIAS-preferring, else aggResultName). A downstream ref
 	// baked to this schema reads by Get(ord) — position is the authority, matched
@@ -935,12 +935,12 @@ func (c *aggregateCursor) finalizeGroup() QueryResult {
 				val = nil
 			}
 		}
-		// Alias-preferring output name (matches streamingAggOutputNames), so a downstream ref
+		// Alias-preferring output name (matches expressions.GroupByOutputColumnNames), so a downstream ref
 		// over an ALIASED aggregate (SUM(a*b) AS foo, a derived-table projection) resolves.
 		//
-		// VERBATIM, because "matches streamingAggOutputNames" is a claim this
-		// line has to keep: that function delegates to
-		// GroupByOutputColumnNames, which publishes an alias unfolded. This is
+		// VERBATIM, because "matches GroupByOutputColumnNames" is a claim this
+		// line has to keep: that function
+		// publishes an alias unfolded. This is
 		// the second of two copies of one naming rule, and two copies that
 		// disagree is the shape that produced the recursive-UNION-DISTINCT
 		// wrong answer. Note honestly that no constructible query drives it —

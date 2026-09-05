@@ -108,15 +108,15 @@ func TestStreamingAggregationPlan_RelinkFreezesComputedKeyOutputSchema(t *testin
 		return NewRecordQueryStreamingAggregationPlanFromQuantifier(
 			oldQ, []values.Value{key}, []expressions.AggregateSpec{{Function: expressions.AggCount}})
 	})
-	wantNames := original.OutputColumnNames()
 	wantType := original.OutputRecordType()
+	wantNames := recordFieldNames(wantType)
 
 	relinkedExpr, err := original.WithQuantifiers([]expressions.Quantifier{newQ})
 	if err != nil {
 		t.Fatalf("WithQuantifiers: %v", err)
 	}
 	relinked := relinkedExpr.(*RecordQueryStreamingAggregationPlan)
-	if got := relinked.OutputColumnNames(); !slices.Equal(got, wantNames) {
+	if got := recordFieldNames(relinked.OutputRecordType()); !slices.Equal(got, wantNames) {
 		t.Fatalf("relinked output names = %v, want frozen %v", got, wantNames)
 	}
 	if !relinked.OutputRecordType().Equals(wantType) {
@@ -323,4 +323,17 @@ func requireStreamingAggregationRoot(
 	if count != 1 {
 		t.Fatalf("exact QOV root count = %d, want 1", count)
 	}
+}
+
+// recordFieldNames reads a stated row's column names in ordinal order — the
+// names the aggregate cursor keys its PositionalRow by.
+func recordFieldNames(rt *values.RecordType) []string {
+	if rt == nil {
+		return nil
+	}
+	names := make([]string, len(rt.Fields))
+	for i, f := range rt.Fields {
+		names[i] = f.Name
+	}
+	return names
 }

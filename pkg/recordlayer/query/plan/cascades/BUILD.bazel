@@ -564,6 +564,7 @@ go_test(
         "translate_value_function_ordinal_test.go",
         "translation_map_test.go",
         "traversal_test.go",
+        "union_leg_names_not_refolded_test.go",
         "union_rule_fixtures_test.go",
         "unique_zero_cardinality_test.go",
         "unordered_pk_distinct_properties_test.go",
@@ -1140,6 +1141,7 @@ go_test(
         "match_info_merge_ranges_test.go",
         "compensation_monoid_test.go",
         "alias_map_compose_test.go",
+        "union_leg_names_not_refolded_test.go",
     ],
     deps = [
         "//gen",

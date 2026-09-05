@@ -243,35 +243,6 @@ func scalarValueBytes(v any) int64 {
 	}
 }
 
-// chargeReleasingCursor wraps a cursor over materialized rows and returns
-// their accounted bytes to the statement budget when the cursor is closed —
-// the page-teardown release half of the live-bytes model. Every buffered
-// execution path (buffered union, recursive CTE) materializes
-// per page against the statement-wide ExecuteState; without the release each
-// page re-accumulates the same buffer and a compliant multi-page statement
-// trips the budget on page count alone.
-type chargeReleasingCursor struct {
-	recordlayer.RecordCursor[QueryResult]
-	st       *recordlayer.ExecuteState
-	charge   int64
-	released bool
-}
-
-func newChargeReleasingCursor(inner recordlayer.RecordCursor[QueryResult], st *recordlayer.ExecuteState, charge int64) recordlayer.RecordCursor[QueryResult] {
-	if charge <= 0 {
-		return inner
-	}
-	return &chargeReleasingCursor{RecordCursor: inner, st: st, charge: charge}
-}
-
-func (c *chargeReleasingCursor) Close() error {
-	if !c.released {
-		c.st.ReleaseMemory(c.charge)
-		c.released = true
-	}
-	return c.RecordCursor.Close()
-}
-
 // closeHookCursor runs a hook exactly once when the cursor is closed — the
 // teardown point for charge releases whose amount is only known at close time
 // (a temp table that grows while the cursor is drained, a recursion's working

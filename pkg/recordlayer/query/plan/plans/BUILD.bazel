@@ -137,6 +137,7 @@ go_test(
         "streaming_aggregation_relink_test.go",
         "table_function_test.go",
         "temp_table_scan_identity_test.go",
+        "unordered_union_leg_types_test.go",
         "unordered_union_test.go",
         "with_quantifiers_arity_test.go",
     ],
@@ -263,6 +264,7 @@ go_test(
         "aggregate_index_cost_test.go",
         "aggregate_index_identity_test.go",
         "plan_comparison_identity_drift_test.go",
+        "unordered_union_leg_types_test.go",
     ],
     deps = [
         "//pkg/fdbgo/fdb/tuple",

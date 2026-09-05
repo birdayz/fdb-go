@@ -232,7 +232,7 @@ func (e *MemoryLimitExceededError) Error() string {
 //
 //   - memUsed is a LIVE-OCCUPANCY gauge, not a running total. Every charge has a
 //     matching release on teardown (boundedBuffer.charged →
-//     ReleaseMemory, chargeReleasingCursor.Close), and the SQL layer's page
+//     ReleaseMemory, closeHookCursor's close-time hook), and the SQL layer's page
 //     closure closes its result set on the way out of a failed attempt as well
 //     as a successful one. A re-executed attempt therefore returns the gauge to
 //     its own entry value without help, and rolling it back HERE would be wrong

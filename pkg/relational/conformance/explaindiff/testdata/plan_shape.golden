@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=363 queries=2648 dml=172 non_query=109 plan_errors=288 unexpected_errors=4
+# files=365 queries=2659 dml=172 non_query=109 plan_errors=288 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -17107,6 +17107,122 @@ shape:   RecordQueryStreamingAggregationPlan
 shape:     RecordQueryUnorderedUnionPlan
 shape:       RecordQueryScanPlan
 shape:       RecordQueryScanPlan
+=== union_join_leg_aggregate_forms.yaml#0
+sql:   WITH u AS (SELECT g, SUM(ga.v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(gb.v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
+plan:  Project([_current.W#3, _current.S#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(GA.V)#1], Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0)))), Project([_current.H#0, _current.S2#1], Project([_current.H#0, _current.SUM(GB.V)#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0))))), inner=Scan(C, [=])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryUnorderedUnionPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryMultiIntersectionOnValuesPlan
+shape:               RecordQueryAggregateIndexPlan
+shape:               RecordQueryAggregateIndexPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryProjectionPlan
+shape:             RecordQueryMultiIntersectionOnValuesPlan
+shape:               RecordQueryAggregateIndexPlan
+shape:               RecordQueryAggregateIndexPlan
+shape:     RecordQueryScanPlan
+=== union_join_leg_aggregate_forms.yaml#1
+sql:   WITH u AS (SELECT g, COUNT(1) AS n FROM ga GROUP BY g UNION ALL SELECT h, COUNT(1) AS m FROM gb GROUP BY h) SELECT c.w, u.n FROM u, c WHERE u.g = c.id
+plan:  Project([_current.W#3, _current.N#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.COUNT(1)#1], Project([_current.G#0, _current.COUNT(*)#1], AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only))), Project([_current.H#0, _current.COUNT(1)#1], Project([_current.H#0, _current.COUNT(*)#1], AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only)))), inner=Scan(C, [=])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryUnorderedUnionPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryAggregateIndexPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryAggregateIndexPlan
+shape:     RecordQueryScanPlan
+=== union_join_leg_aggregate_forms.yaml#2
+sql:   WITH u AS (SELECT g FROM ga GROUP BY g UNION ALL SELECT h FROM gb GROUP BY h) SELECT c.w FROM u, c WHERE u.g = c.id
+plan:  Project([_current.W#2], FlatMap(outer=UnorderedUnion(Project([_current.G#0], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))), Project([_current.H#0], Project([_current.H#0], StreamingAgg(keys=[_current.H#1], InMemorySort([_current.H#1 ASC], Scan(GB)))))), inner=Scan(C, [=])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryUnorderedUnionPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryInMemorySortPlan
+shape:             RecordQueryScanPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryStreamingAggregationPlan
+shape:             RecordQueryInMemorySortPlan
+shape:               RecordQueryScanPlan
+shape:     RecordQueryScanPlan
+=== union_join_leg_aggregate_forms.yaml#3
+sql:   WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g UNION ALL SELECT h, SUM(v) AS s2 FROM gb GROUP BY h) SELECT c.w, u.s FROM u, c WHERE u.g = c.id
+plan:  Project([_current.W#3, _current.S#1], FlatMap(outer=UnorderedUnion(Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_G, [G], GA, live_groups_only), AggregateIndex(SUM, SUM_BY_G, [G], GA); keys=[G#0], driving=0))), Project([_current.H#0, _current.S2#1], Project([_current.H#0, _current.SUM(V)#1], GroupExistenceMerge(AggregateIndex(COUNT, CNT_BY_H, [H], GB, live_groups_only), AggregateIndex(SUM, SUM_BY_H, [H], GB); keys=[H#0], driving=0)))), inner=Scan(C, [=])))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryFlatMapPlan
+shape:     RecordQueryUnorderedUnionPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryMultiIntersectionOnValuesPlan
+shape:             RecordQueryAggregateIndexPlan
+shape:             RecordQueryAggregateIndexPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryProjectionPlan
+shape:           RecordQueryMultiIntersectionOnValuesPlan
+shape:             RecordQueryAggregateIndexPlan
+shape:             RecordQueryAggregateIndexPlan
+shape:     RecordQueryScanPlan
+=== union_quoted_identifiers.yaml#0
+sql:   SELECT * FROM t UNION ALL SELECT "id", "k" FROM t
+plan:  UnorderedUnion(Scan(T), Project([_current.id#0, _current.k#1], Scan(T)))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== union_quoted_identifiers.yaml#1
+sql:   SELECT "id", "k" FROM t UNION ALL SELECT * FROM t
+plan:  UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Scan(T))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+shape:   RecordQueryScanPlan
+=== union_quoted_identifiers.yaml#2
+sql:   SELECT * FROM t WHERE "k" > 10 UNION ALL SELECT "id", "k" FROM t
+plan:  UnorderedUnion(PredicatesFilter(Scan(T), [1 preds]), Project([_current.id#0, _current.k#1], Scan(T)))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== union_quoted_identifiers.yaml#3
+sql:   SELECT * FROM t UNION ALL SELECT "id", "k" FROM t WHERE "k" > 10
+plan:  UnorderedUnion(Scan(T), Project([_current.id#0, _current.k#1], PredicatesFilter(Scan(T), [1 preds])))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryPredicatesFilterPlan
+shape:       RecordQueryScanPlan
+=== union_quoted_identifiers.yaml#4
+sql:   SELECT * FROM t UNION ALL SELECT * FROM t
+plan:  UnorderedUnion(Scan(T), Scan(T))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryScanPlan
+=== union_quoted_identifiers.yaml#5
+sql:   SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t
+plan:  UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Project([_current.id#0, _current.k#1], Scan(T)))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
+=== union_quoted_identifiers.yaml#6
+sql:   SELECT * FROM u UNION ALL SELECT ID, K FROM u
+plan:  UnorderedUnion(Scan(U), Project([_current.ID#0, _current.K#1], Scan(U)))
+shape: RecordQueryUnorderedUnionPlan
+shape:   RecordQueryScanPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryScanPlan
 === union_star.yaml#0
 sql:   SELECT * FROM t1 UNION ALL SELECT * FROM t1
 plan:  UnorderedUnion(Scan(T1), Scan(T1))

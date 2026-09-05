@@ -23,15 +23,15 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**363 scenarios · 2929 query/assertion cases** across 18 feature areas — 2564 supported, 114 unsupported-feature pins, 251 error-path pins.
+**365 scenarios · 2940 query/assertion cases** across 18 feature areas — 2575 supported, 114 unsupported-feature pins, 251 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 53 | 345 | 312 | 19 | 14 |
-| Joins | 64 | 303 | 288 | 2 | 13 |
+| Joins | 65 | 307 | 292 | 2 | 13 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
 | CTEs | 13 | 108 | 77 | 7 | 24 |
-| Set operations (UNION / INTERSECT / EXCEPT) | 11 | 61 | 52 | 5 | 4 |
+| Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 4 | 32 |
 | Ordering & pagination | 16 | 122 | 118 | 0 | 4 |
 | Scalar functions & expressions | 34 | 381 | 328 | 21 | 32 |
@@ -45,7 +45,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
 | Other | 35 | 298 | 261 | 11 | 26 |
-| **Total** | **363** | **2929** | **2564** | **114** | **251** |
+| **Total** | **365** | **2940** | **2575** | **114** | **251** |
 
 ## Aggregates & GROUP BY
 
@@ -172,6 +172,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `select_star_join` | 2 | 2 | 0 | 0 | SELECT * in joins |
 | `self_join` | 6 | 5 | 0 | 1 | Self-joins — same table referenced twice in the FROM with distinct |
 | `self_join_advanced` | 3 | 3 | 0 | 0 | Advanced self-join patterns |
+| `union_join_leg_aggregate_forms` | 4 | 4 | 0 | 0 | A UNION of grouped-aggregate branches used as a JOIN LEG, over the aggregate |
 | `update_with_join` | 2 | 2 | 0 | 0 | UPDATE with subquery-based conditions |
 
 ## Subqueries (EXISTS / IN / scalar)
@@ -256,6 +257,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `union_columns` | 12 | 7 | 2 | 3 | UNION column-binding: SQL standard is positional, not name-based. |
 | `union_comprehensive` | 4 | 3 | 1 | 0 | Comprehensive UNION tests |
 | `union_empty_tables_java` | 9 | 9 | 0 | 0 | UNION ALL behavior on empty tables |
+| `union_quoted_identifiers` | 7 | 7 | 0 | 0 | A UNION ALL whose legs are aligned by the translator must not be re-aligned |
 | `union_star` | 5 | 5 | 0 | 0 | Java's union.yamsql tests UNION ALL with SELECT * on either side. |
 | `union_with_aggregate` | 2 | 2 | 0 | 0 | UNION combined with aggregates |
 

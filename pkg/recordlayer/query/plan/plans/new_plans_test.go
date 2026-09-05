@@ -55,9 +55,6 @@ func TestAggregateIndexPlan_OutputColumnNames(t *testing.T) {
 	if got := cnt.CanonicalAggColumnName(); got != "COUNT(*)" {
 		t.Fatalf("canonical = %q, want COUNT(*)", got)
 	}
-	if got := cnt.OutputColumnNames(); len(got) != 2 || got[0] != "G" || got[1] != "COUNT(*)" {
-		t.Fatalf("output names = %v, want [G COUNT(*)]", got)
-	}
 
 	// Grouped SUM(V): [G, SUM(V)].
 	sum := mustChecked(t, func() (*RecordQueryAggregateIndexPlan, error) {
@@ -68,9 +65,6 @@ func TestAggregateIndexPlan_OutputColumnNames(t *testing.T) {
 	}).WithGroupColumns([]string{"G"}, "V")
 	if got := sum.CanonicalAggColumnName(); got != "SUM(V)" {
 		t.Fatalf("canonical = %q, want SUM(V)", got)
-	}
-	if got := sum.OutputColumnNames(); len(got) != 2 || got[0] != "G" || got[1] != "SUM(V)" {
-		t.Fatalf("output names = %v, want [G SUM(V)]", got)
 	}
 }
 

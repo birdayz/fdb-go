@@ -1,0 +1,115 @@
+# union_quoted_identifiers.yaml
+#
+# A UNION ALL whose legs are aligned by the translator must not be re-aligned
+# by the implementation rule or the executor (RFC-242). The shape that broke:
+# one leg plans as a bare scan (a star projection over the whole row is an
+# identity and is eliminated) and the other as a projection. Two name
+# walkers used to read the scan leg's names through a case fold and the
+# projection leg's exactly, decide the legs differed, and insert a rename the
+# union then rejected — so every one of the four mixed shapes below failed to
+# plan whenever the DDL used quoted lower-case names. The upper-case table is
+# the control: the fold is a no-op there, which is why the suite was green.
+#
+# The pins are the ROWS (the union returns every leg's rows), the LABELS (the
+# quoted spelling survives — comparison is case-sensitive), and the PLAN SHAPE
+# (a bare scan leg beside a projection leg, with no Map between them: the
+# translator aligned the legs and nothing below re-derived their names).
+name: union_quoted_identifiers
+schema_template: |
+  CREATE TABLE t ("id" BIGINT, "k" BIGINT, PRIMARY KEY ("id"))
+  CREATE TABLE u (ID BIGINT, K BIGINT, PRIMARY KEY (ID))
+setup:
+  - INSERT INTO t ("id", "k") VALUES (1, 10), (2, 20), (3, 30)
+  - INSERT INTO u (ID, K) VALUES (1, 10), (2, 20), (3, 30)
+tests:
+  # Bare-scan leg first, projection leg second.
+  - query: SELECT * FROM t UNION ALL SELECT "id", "k" FROM t
+    columns: ["id", "k"]
+    plan_contains: "UnorderedUnion(Scan(T), Project([_current.id#0, _current.k#1], Scan(T)))"
+    unordered: true
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+  # Projection leg first, bare-scan leg second — the fold used to be read off
+  # the OTHER side, so the failure was symmetric and the pin is too.
+  - query: SELECT "id", "k" FROM t UNION ALL SELECT * FROM t
+    columns: ["id", "k"]
+    plan_contains: "UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Scan(T))"
+    unordered: true
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+  # A filter under the bare-scan leg: the walker descended through the filter
+  # to the scan, so the fold reached this shape too.
+  - query: SELECT * FROM t WHERE "k" > 10 UNION ALL SELECT "id", "k" FROM t
+    columns: ["id", "k"]
+    plan_contains: "UnorderedUnion(PredicatesFilter(Scan(T), [1 preds]), Project([_current.id#0, _current.k#1], Scan(T)))"
+    unordered: true
+    rows:
+      - [2, 20]
+      - [3, 30]
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+  # A filter under the projection leg.
+  - query: SELECT * FROM t UNION ALL SELECT "id", "k" FROM t WHERE "k" > 10
+    columns: ["id", "k"]
+    plan_contains: "UnorderedUnion(Scan(T), Project([_current.id#0, _current.k#1], PredicatesFilter(Scan(T), [1 preds])))"
+    unordered: true
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [2, 20]
+      - [3, 30]
+  # Both legs bare scans: both names came through the same fold, so this shape
+  # always planned. Pinned so the fix is measured against the shape that never
+  # failed as well as the ones that did.
+  - query: SELECT * FROM t UNION ALL SELECT * FROM t
+    columns: ["id", "k"]
+    plan_contains: "UnorderedUnion(Scan(T), Scan(T))"
+    unordered: true
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+  # Aliased leg: the translator normalizes BOTH legs onto the first leg's
+  # names, so no bare-scan leg survives and the labels are the aliases. This
+  # is the negative result — a union whose legs name their columns differently
+  # never reaches the rule with differing names, because the translator is the
+  # one place that aligns them.
+  - query: SELECT "id" AS w, "k" AS x FROM t UNION ALL SELECT * FROM t
+    columns: ["W", "X"]
+    plan_contains: "UnorderedUnion(Project([_current.id#0, _current.k#1], Scan(T)), Project([_current.id#0, _current.k#1], Scan(T)))"
+    unordered: true
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+  # Upper-case control: the same mixed shape over unquoted DDL, which folded
+  # to itself and so always planned.
+  - query: SELECT * FROM u UNION ALL SELECT ID, K FROM u
+    columns: ["ID", "K"]
+    plan_contains: "UnorderedUnion(Scan(U), Project([_current.ID#0, _current.K#1], Scan(U)))"
+    unordered: true
+    rows:
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]
+      - [1, 10]
+      - [2, 20]
+      - [3, 30]

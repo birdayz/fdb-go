@@ -4,7 +4,6 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
-	"slices"
 	"strconv"
 
 	"google.golang.org/protobuf/proto"
@@ -208,9 +207,8 @@ func executeAggregateIndexScan(
 		inner:     indexCursor,
 		groupCols: groupCols,
 		// Single source for the aggregate column key: the plan's
-		// CanonicalAggColumnName is also what planColumnNamesWithMD reports via
-		// OutputColumnNames, so the cursor's row key and the reported name can't
-		// drift (RFC-081).
+		// CanonicalAggColumnName names the slot the cursor writes, so the row
+		// key and the plan's stated name can't drift (RFC-081).
 		canonicalName: canonicalName,
 		posType:       posType,
 		// RFC-209 §5.3(a): the plan decides, the cursor obeys.
@@ -970,19 +968,11 @@ func executeUnorderedUnion(
 	if derr != nil {
 		return nil, derr
 	}
-	var md *recordlayer.RecordMetaData
-	if store != nil {
-		md = store.GetRecordMetaData()
-	}
-	// SQL exposes a UNION's column names from the FIRST branch; later branches union
-	// by POSITION. RecordQueryUnionPlan normalizes this (executeUnionStreaming), but
-	// the unordered concat did NOT — so a branch whose output columns are named
-	// differently from the first branch (e.g. mismatched aggregate aliases X vs Y)
-	// flowed its rows under its OWN keys, and a downstream by-name read of the union's
-	// (first-branch) column dropped them (TODO 7.6-union-remap / RFC-078). Remap each
-	// later branch's keys to the first branch's, position-wise, exactly as the sibling
-	// concat RecordQueryUnionPlan does. A no-op when names already agree (the common case).
-	firstBranchKeys := planColumnNamesWithMD(inners[0], md)
+	// Every leg flows the union's one exact row: the translator aligned the
+	// legs onto it and the plan's constructor asserted it, so a leg's rows
+	// carry the names every other leg's rows carry and nothing here re-types
+	// them (RFC-242). Java's UnorderedUnionCursor likewise concatenates the
+	// children's results unchanged.
 	childProps := props.ClearSkipAndLimit()
 	u := &unorderedUnionCursor{
 		children:  make([]recordlayer.RecordCursor[QueryResult], len(inners)),
@@ -1001,15 +991,6 @@ func executeUnorderedUnion(
 		if err != nil {
 			_ = u.Close()
 			return nil, err
-		}
-		if i > 0 && firstBranchKeys != nil {
-			srcKeys := planColumnNamesWithMD(inner, md)
-			if srcKeys != nil && !slices.Equal(srcKeys, firstBranchKeys) {
-				target := firstBranchKeys
-				c = recordlayer.MapCursor(c, func(qr QueryResult) QueryResult {
-					return remapUnionColumnsByPosition(qr, srcKeys, target)
-				})
-			}
 		}
 		u.children[i] = c
 		if len(resume[i].continuation) > 0 {
