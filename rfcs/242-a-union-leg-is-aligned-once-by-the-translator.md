@@ -1,6 +1,6 @@
 # RFC-242 — A union's legs are aligned once, by the translator
 
-**Status:** r15. r14 (head `ac5cf7ab3`): Torvalds ACK (one nit: a shape-true decline rebuilt the identical body through the net); Graefe NAK — the shape rule's decline must be final, a fallthrough to the leaf lookup re-legitimises the homonym mistyping; codex failed on model capacity (no verdict);  lap in flight. r15 returns the exact derivation's answer unconditionally in all three arms and pins, as a negative result, that no shape reaches that decline today. r14. r13 (head `5c80ef758`): Graefe ACK;  ACK; Torvalds NAK — the shape rule alone regressed the alias that names a struct column (`st2 AS p`, `p.co`), the post-lookup net r13 deleted must stand beside it in all three arms; codex two P2 — an alias match is not proof of qualification (the same shape), and a declared-STRUCT nested field must survive the exact route. r14 restores the net in all three arms and publishes nominal records through the exact derivation (a pre-existing 0AF00/42703 under codex's finding), pinned in twelve spellings. r13. r12 (head `3315a141d`): Graefe ACK; @claude ACK; Torvalds NAK — the nested-path decision ran after a lookup by the leaf name, so a leaf with a top-level homonym was typed as that column; codex P2 — the newly admitted quoted-dot nested member labels as RFC-238's residual does. r13 decides the nested path by its shape in all three arms, pins the homonym in four spellings, and pins the label residual on the admitted shape. r12. r11 (head `27635cda7`): Graefe NAK and Torvalds NAK on one measurement — the "second gate" r11 read into the climb pin was a fixture artifact (a seed without the MaxMatchMap), and the pin as seeded could never go red; @claude ACK with a bookkeeping item (two fold bullets described a state the diff did not show); codex found no actionable regression. r12 re-seeds the pin as the planner does and shows it red under the mutation, restates the single gate, fixes the nested-field projection of a derived body Torvalds found pre-existing, and restates the two bullets. r11. r10 (head `bd8ec0c66`): Torvalds ACK with five non-blocking folds; Graefe NAK — the group-by rule's PRESERVE branch still stated its keys over its own inner quantifier, and the XX000 yaml pin r10 claimed to remove was still there (a codex run had reverted the working tree under the r10 edits; the removal was redone); @claude NAK on the same yaml fact; codex two P2 (the same preserve branch; a real column named `__ROW_VERSION` classified as the pseudo-column by its name alone). r11 folds all of those, fixes two pre-existing bugs Graefe's probes surfaced (a nested derived table's unaliased qualified output published under its display name; the real `__ROW_VERSION` column), and books the IN-over-aggregate-subquery gap. r10. r9 (head `e92bd661d`): Graefe ACK with one required fold to the BOOKING — the receiving side of the ordering-through-a-projection remainder is not missing ordering parts but a match that never climbs (`correlatedToEquals`), restated in all three homes and pinned; Torvalds NAK with two folds — the swap pin's data was monotone (moved to a fixture whose data discriminates) and an XX000 yaml pin was being credited as a correct rejection (pinned in Go instead) — plus non-blocking folds, all taken; the group-by push rule's synthesized ordering is rebased into its child's current-row space, found when the projection push rule went loud. r8 (head `56a3df6ed`): Graefe ACK with one required fold (the swapped-name body whose sort must stay — a wrong answer at the merge-base); Torvalds NAK on that shape plus six folds; @claude ACK with one residual (the row-versioned remainders unpinned as negatives). r7 (head `cd7bdc5ed`): Graefe ACK (one non-blocking booking: a redundant sort over a renamed grouping key, which r8 fixes as the third adjacent finding); Torvalds ACK with four folds; @claude NAK on coverage (the union-bodied derived table's fix had no regression pin, the added sort on golden #25 was unexplained, a fixture comment cited the wrong RFC-238 section); codex two runs, four P1 findings (a silent wrong answer for quoted case-distinct labels, star bodies bypassing the star-expansion visibility rules, an aliased expression reclassified into a grouping key losing its alias — reported twice). r8 folds all of those. Earlier rounds — r6 folded: 
+**Status:** r16. r15 (head `00a5851d9`): Graefe ACK with one prose fold (the decline set is wider than the bridge's default arm and a NULL literal beside the path reaches it, non-discriminating; book the enum-as-STRING typing); Torvalds ACK with the same scope sentence, the status line's lost @claude mentions, and the same booking; codex P2 — the widened bridge admits an unnamed record and the bridge back named it RECORD, so two anonymous shapes in one derived row claimed one descriptor and their array elements came back as raw maps; @claude ACK. r16 folds the prose, restores the mentions, keeps an anonymous record anonymous through the bridge, and books the enum typing and a fieldless-message table found on the way. r15. r14 (head `ac5cf7ab3`): Torvalds ACK (one nit: a shape-true decline rebuilt the identical body through the net); Graefe NAK — the shape rule's decline must be final, a fallthrough to the leaf lookup re-legitimises the homonym mistyping; codex failed on model capacity (no verdict); @claude lap in flight. r15 returns the exact derivation's answer unconditionally in all three arms and pins, as a negative result, that no shape reaches that decline today. r14. r13 (head `5c80ef758`): Graefe ACK; @claude ACK; Torvalds NAK — the shape rule alone regressed the alias that names a struct column (`st2 AS p`, `p.co`), the post-lookup net r13 deleted must stand beside it in all three arms; codex two P2 — an alias match is not proof of qualification (the same shape), and a declared-STRUCT nested field must survive the exact route. r14 restores the net in all three arms and publishes nominal records through the exact derivation (a pre-existing 0AF00/42703 under codex's finding), pinned in twelve spellings. r13. r12 (head `3315a141d`): Graefe ACK; @claude ACK; Torvalds NAK — the nested-path decision ran after a lookup by the leaf name, so a leaf with a top-level homonym was typed as that column; codex P2 — the newly admitted quoted-dot nested member labels as RFC-238's residual does. r13 decides the nested path by its shape in all three arms, pins the homonym in four spellings, and pins the label residual on the admitted shape. r12. r11 (head `27635cda7`): Graefe NAK and Torvalds NAK on one measurement — the "second gate" r11 read into the climb pin was a fixture artifact (a seed without the MaxMatchMap), and the pin as seeded could never go red; @claude ACK with a bookkeeping item (two fold bullets described a state the diff did not show); codex found no actionable regression. r12 re-seeds the pin as the planner does and shows it red under the mutation, restates the single gate, fixes the nested-field projection of a derived body Torvalds found pre-existing, and restates the two bullets. r11. r10 (head `bd8ec0c66`): Torvalds ACK with five non-blocking folds; Graefe NAK — the group-by rule's PRESERVE branch still stated its keys over its own inner quantifier, and the XX000 yaml pin r10 claimed to remove was still there (a codex run had reverted the working tree under the r10 edits; the removal was redone); @claude NAK on the same yaml fact; codex two P2 (the same preserve branch; a real column named `__ROW_VERSION` classified as the pseudo-column by its name alone). r11 folds all of those, fixes two pre-existing bugs Graefe's probes surfaced (a nested derived table's unaliased qualified output published under its display name; the real `__ROW_VERSION` column), and books the IN-over-aggregate-subquery gap. r10. r9 (head `e92bd661d`): Graefe ACK with one required fold to the BOOKING — the receiving side of the ordering-through-a-projection remainder is not missing ordering parts but a match that never climbs (`correlatedToEquals`), restated in all three homes and pinned; Torvalds NAK with two folds — the swap pin's data was monotone (moved to a fixture whose data discriminates) and an XX000 yaml pin was being credited as a correct rejection (pinned in Go instead) — plus non-blocking folds, all taken; the group-by push rule's synthesized ordering is rebased into its child's current-row space, found when the projection push rule went loud. r8 (head `56a3df6ed`): Graefe ACK with one required fold (the swapped-name body whose sort must stay — a wrong answer at the merge-base); Torvalds NAK on that shape plus six folds; @claude ACK with one residual (the row-versioned remainders unpinned as negatives). r7 (head `cd7bdc5ed`): Graefe ACK (one non-blocking booking: a redundant sort over a renamed grouping key, which r8 fixes as the third adjacent finding); Torvalds ACK with four folds; @claude NAK on coverage (the union-bodied derived table's fix had no regression pin, the added sort on golden #25 was unexplained, a fixture comment cited the wrong RFC-238 section); codex two runs, four P1 findings (a silent wrong answer for quoted case-distinct labels, star bodies bypassing the star-expansion visibility rules, an aliased expression reclassified into a grouping key losing its alias — reported twice). r8 folds all of those. Earlier rounds — r6 folded: 
 r5 (head `452479f68`): Torvalds ACK with three folds; Graefe NAK — the loud floor r5
 left was wider than stated and the fix is the ordinal-bound edge, not a wider pin (folded as
 the second adjacent finding's third and fourth layers); codex five findings, all folded; @claude
@@ -491,11 +491,16 @@ Every proof is committed; each names the dimension that was unprobed.
     type, a homonym of the same type, the top-level control;
     `TestSemanticColumnFromExactTypeCarriesRecordName` (the nominal record round-trips under its
     name; the fieldless record still declines).
-22. **The shape rule's decline is final, and reached by no shape.**
+22. **The shape rule's decline is final, and no shape reaches a decline the walk would answer differently.**
     `TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines` (Java-authored metadata:
     an enum field beside its STRING homonym plans through the derived table and the CTE, the
     exact row is the one STRING column; red once the exact derivation carries enums) and
     `TestSemanticColumnFromExactTypeDeclinesEnum` (the bridge's own contract).
+23. **An anonymous record through a derived row.**
+    `TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities` (two anonymous shapes in
+    one derived row, the CTE and derived-over-derived spellings, two top-level controls: every
+    array element an `api.Struct`) and the anonymous arm of
+    `TestSemanticColumnFromExactTypeCarriesRecordName` (round-trips with no record name).
 16. **Bodies the walk serves.** `cte_published_row_names.yaml` §7–§8: a WHERE over a star join
     and over a union of star joins, both spellings; the named-STRUCT join body, both spellings.
 
@@ -892,7 +897,7 @@ order-correct: the index stores (c, id), the residual filter preserves order.
   alone covers it), and the one leaf Graefe named as still declining — an enum-typed field,
   reachable from Java-authored metadata only — does not: the exact logical derivation types
   an enum field as STRING (the catalog kind `ENUM` bridges forward to STRING) before the
-  bridge sees it, so the decline is reached by no shape today. That is the negative result
+  bridge sees it, so no shape reaches a decline the walk would answer differently (the decline set is wider than the bridge's arm and a NULL literal beside the path reaches it; see Folds at r16). That is the negative result
   pinned on a descriptor-built table with a STRING `color` beside the enum `p.color`
   (`TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines`: the derived and CTE
   spellings plan, the exact row is the one STRING column; it goes red when the exact
@@ -900,6 +905,41 @@ order-correct: the index stores (c, id), the residual filter preserves order.
   decline), and at the bridge (`TestSemanticColumnFromExactTypeDeclinesEnum`: an enum has no
   lossless semantic carrier). This also removes Torvalds's r14 nit — a shape-true decline no
   longer rebuilds the identical body through the net.
+## Folds at r16
+
+- **The decline set stated as it is** (Graefe, measured): r15's comment and test-plan title said
+  the exact derivation's decline is "reached by no shape today". The set is wider than the
+  bridge's default arm — `exactVirtualScopeSource` declines on any inexact result type, a width
+  disagreement or a label failure — and a shape reaches it: `SELECT x.sk FROM (SELECT t.p.sk,
+  NULL AS n FROM t) x` declines (`placeholder type is not exact`). It does not discriminate r14
+  from r15 — the NULL slot declines the walk arm too, and the translator refuses `SELECT NULL AS
+  n FROM t` at top level with the same 0AF00 — so finality decides no outcome there; the enum is
+  the only leaf where it would, and the enum arrives typed STRING. The comment at the arm, the
+  pin's comment and test plan 22 now say so.
+- **An anonymous record stays anonymous through the bridge** (codex P2, reproduced over FDB):
+  r14 admitted a record constructor's row through the exact derivation, and the bridge back
+  (`expr.structColumnType`) named every record with no `StructTypeName` by the SQL kind
+  `RECORD` — so `SELECT [x.s], [x.q] FROM (SELECT (1 AS lat, 2 AS lon) AS s, (3 AS z) AS q FROM t)
+  x` put two different shapes under one descriptor name, the synthesized result descriptor did
+  not compile, and the driver handed both array elements back as raw maps where the same two
+  shapes at top level, never bridged, are structs. `Type` is the SQL kind, never a name: an empty
+  `StructTypeName` now rebuilds an anonymous record, and the proto repository mints a unique
+  message name per anonymous shape (Java's `ProtoUtils.uniqueTypeName`, deterministic here).
+  The public struct name is unchanged (`publicOrdinalTypeName` renders an anonymous record as
+  `RECORD`). Pinned over FDB in three bridged spellings beside two top-level controls
+  (`TestFDB_AnonymousRecordsThroughADerivedRowKeepDistinctIdentities`, red under the old
+  fallback name) and at the bridge (the anonymous arm of
+  `TestSemanticColumnFromExactTypeCarriesRecordName`).
+- **The enum-as-STRING typing is booked on its own** (Graefe): `sqlTypeToCascadesType("ENUM")`
+  is `TypeString`, so the exact derivation is inexact one layer before RFC-232's carrier gap;
+  `TODO.md`, "The exact derivation types an enum field as STRING", pointing at the pin that
+  goes red when it closes and at the nullable-element entry beside it.
+- **A table with a fieldless nested-message column is unqueryable** (found while measuring
+  \@claude's r14 shape — an exact-derivation decline for a reason unrelated to the nested
+  path): `expr.structColumnType` turns a fieldless record into UNKNOWN and the flowed row then
+  resolves nothing, `SELECT t.sk FROM t` included; Java-authored metadata only, identical at
+  the merge-base. `TODO.md`, "A table with a fieldless nested-message column cannot be queried
+  at all", with the reproducer and the closure.
 ## Rides alongside, not part of this RFC
 
 The engine fuzz nightly was red for a second, unrelated reason: `FuzzRebaseValue_NoPanic` built
@@ -951,6 +991,16 @@ mechanism depends on them.
   (`TestOrderByExactMetadata_UnderivableCTEComputedProjectionStaysLoud`). RFC-232's bridge
   residual; `TODO.md`, "An array literal with a NULL element cannot be read through a CTE or
   derived table", with the two closures.
+- A table with a fieldless nested-message column (Java-authored metadata; this DDL cannot
+  declare one) cannot be queried at all — `SELECT t.sk FROM t` is 42703 with the column `e`
+  present and plans without it — because `expr.structColumnType` turns a fieldless record into
+  UNKNOWN and the flowed row then resolves nothing. Identical at the merge-base; surfaced by the
+  r15 measurement of an exact-derivation decline beside a nested path. `TODO.md`, "A table with
+  a fieldless nested-message column cannot be queried at all", with the reproducer and the
+  closure.
+- An enum field is typed STRING by the exact derivation (`sqlTypeToCascadesType("ENUM")`), one
+  layer before RFC-232's carrier gap; `TODO.md`, "The exact derivation types an enum field as
+  STRING", pointing at the pin that goes red when it closes.
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
   thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job
   cancelled from outside after 3–67 minutes with no timeout annotation) need host access; the

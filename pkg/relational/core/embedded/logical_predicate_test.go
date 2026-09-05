@@ -1689,6 +1689,20 @@ func TestSemanticColumnFromExactTypeCarriesRecordName(t *testing.T) {
 	if column, ok := semanticColumnFromExactType("S", fieldless); ok {
 		t.Fatalf("fieldless record was published as exact: %+v", column)
 	}
+
+	// An anonymous record — a record constructor's row — stays anonymous on the
+	// round trip, so two different anonymous shapes in one row get two synthetic
+	// descriptor names instead of both claiming the literal "RECORD".
+	unnamed := values.NewRecordType("", false, fields)
+	column, ok = semanticColumnFromExactType("S", unnamed)
+	if !ok || column.Type != "RECORD" || column.StructTypeName != "" {
+		t.Fatalf("anonymous record = %+v, ok=%v, want Type RECORD with no StructTypeName", column, ok)
+	}
+	row = expr.SourceRowType(semantic.ScopeSource{Table: &semantic.StaticTable{TableColumns: []semantic.Column{column}}})
+	rebuilt, isRecord = row.Fields[0].FieldType.(*values.RecordType)
+	if !isRecord || rebuilt.RecordName != "" || !rebuilt.Equals(unnamed) {
+		t.Fatalf("round trip of the anonymous record = %v, want it anonymous (no record name)", row.Fields[0].FieldType)
+	}
 }
 
 func TestSemanticColumnFromExactTypeDeclinesEnum(t *testing.T) {
@@ -1766,10 +1780,13 @@ func TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines(t *testi
 	// A NEGATIVE result, pinned: the shape rule's decline is final in every arm
 	// (a declined exact route is never re-resolved by the leaf lookup, which
 	// would type the slot as the top-level homonym), and today no shape reaches
-	// that decline — the exact logical derivation types an enum field as STRING
-	// (the catalog kind ENUM bridges to STRING), so the one unrepresentable
-	// leaf Java-authored metadata can put under a nested path arrives already
-	// representable, and the nested path publishes beside the STRING homonym.
+	// a decline the walk would answer differently: a NULL literal beside the
+	// path declines the exact route ("placeholder type is not exact") and the
+	// walk alike, and the one unrepresentable leaf Java-authored metadata can
+	// put under a nested path — an enum — arrives already typed STRING (the
+	// catalog kind ENUM bridges to STRING; TODO.md, "The exact derivation types
+	// an enum field as STRING"), so the nested path publishes beside the STRING
+	// homonym.
 	// When the exact derivation starts carrying enums, this goes red: the
 	// decline is then reachable, and this shape (a STRING `color` beside the
 	// enum `p.color`) is the one to pin as a loud decline, never as the homonym.

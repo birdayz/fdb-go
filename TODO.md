@@ -9170,3 +9170,35 @@ covered by the correctness suite and the golden plan diff, not by this table.
   records, nullable elements, nested arrays, enums) and the string kinds stay for the semantic
   layer's own checks; the second is the long-term shape and is RFC-232's residual to close, not
   RFC-242's. Booked from RFC-242 r14 with the reproducer.
+
+- [ ] **The exact derivation types an enum field as STRING.**
+  `SELECT t.p.color FROM t` over Java-authored metadata whose `Paint.color` is a proto enum
+  (this DDL declares no enum) derives the exact result row `RECORD<COLOR STRING NULL>`: the
+  catalog kind `ENUM` bridges forward to `values.TypeString` (`expr.sqlTypeToCascadesType`,
+  the `"STRING", "ENUM"` arm), so every resolved reference to an enum field is a STRING while
+  the scan row the executor flows carries the `values.EnumType` `enumTypeForProto` mints — one
+  layer before the carrier gap booked as "An array literal with a NULL element cannot be read
+  through a CTE or derived table" (RFC-232's residual), and distinct from it. Java's
+  `Type.Enum` flows end to end. Pinned as the reason a shape-decided nested path never meets
+  the bridge's enum decline (`TestDerivedNestedEnumFieldTypesAsStringSoTheShapeRuleNeverDeclines`,
+  red once this closes: that pin then names the homonym shape to hold as a loud decline). The
+  closure is an exact enum in the resolver's flowed type, with the comparison and promotion
+  gates taught the enum lane; surfaced by RFC-242 r15's measurement and out of that RFC's
+  scope.
+
+- [ ] **A table with a fieldless nested-message column cannot be queried at all.**
+  Java-authored metadata only (this DDL cannot declare an empty STRUCT: 42601). A record type
+  `T { id INT64; sk STRING; p Paint { sk INT64 }; e Empty {} }` built from a descriptor
+  (`protodesc.NewFile`, the pattern `key_component_types_test.go` uses) resolves as a table, but
+  `SELECT t.sk FROM t` fails `42703: column "T.SK" does not exist` and `SELECT t.p.sk FROM t`
+  fails `42703: column reference with qualifier "T.P" cannot be resolved`; drop the column `e`
+  and both plan. Identical at RFC-242's merge-base `36b97f1e9`. Measured cause: the catalog
+  publishes `e` as `RECORD` with no StructFields, `expr.structColumnType` turns a fieldless
+  record into `UNKNOWN`, and the table's flowed row (`expr.SourceRowType`) then carries an
+  UNKNOWN field, after which no reference into that row resolves. Java's
+  `Type.Record.fromDescriptor` is a record with zero fields, not an unknown; the closure is a
+  fieldless `values.RecordType` for a fieldless message (with `semanticColumnFromExactType`'s
+  fieldless decline and `retagInlineValuesRecordType` reconciled to it), and a pin over a
+  descriptor-built table. Surfaced by RFC-242 r15 while probing an unrelated decline of the
+  exact derivation beside a nested path (`@claude`'s r14 shape); out of that RFC's scope (the
+  union-leg alignment and the CTE/derived row) and booked here with the reproducer.

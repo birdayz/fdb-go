@@ -1080,12 +1080,18 @@ func buildDerivedTableSourceFromTerm(
 		// typed as that column, and the read was refused. An unqualified
 		// `w.x` cannot be told from a qualifier here either, and takes the
 		// same door.
-		// A decline here is FINAL. The exact derivation declines only a slot
-		// the semantic column model cannot state (semanticColumnFromExactType —
-		// reached by no shape today: a nominal record publishes under its name
-		// and an enum field arrives already typed STRING), and handing such a
-		// path to the walk below would look its leaf up by name and type it as
-		// a top-level homonym — the error the shape rule exists to prevent. The
+		// A decline here is FINAL. The exact derivation declines a body whose
+		// row it cannot state exactly: a slot the semantic column model has no
+		// carrier for (semanticColumnFromExactType), a result type that is not
+		// exact (a NULL literal beside the path: "placeholder type is not
+		// exact"), a width or label disagreement. Handing such a path to the
+		// walk below would look its leaf up by name — LookupColumnRelaxed matches
+		// names, never struct fields, so a post-decline HIT is always a top-level
+		// homonym — and type it as that column: the error the shape rule exists
+		// to prevent. Today no decline here is one the walk would answer
+		// differently (the NULL slot declines the walk too; a nominal record
+		// publishes under its name; an enum field arrives already typed STRING),
+		// so finality decides no outcome yet: it is the rule, not a fix. The
 		// whole source declining is the honest answer; every reader of it then
 		// reports the unresolved slot.
 		if nestedProjectedPath(col, bodySourceName) {

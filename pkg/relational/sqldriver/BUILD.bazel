@@ -111,6 +111,7 @@ go_test(
         "ambiguous_column_probe_test.go",
         "ambiguous_column_ref_rejected_fdb_test.go",
         "ambiguous_column_star_test.go",
+        "anonymous_record_identity_fdb_test.go",
         "arith_overflow_predicate_fdb_test.go",
         "arith_precedence_probe_test.go",
         "arithmetic_edge_probe_test.go",

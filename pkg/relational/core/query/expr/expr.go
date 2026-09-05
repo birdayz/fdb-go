@@ -2117,15 +2117,14 @@ func structColumnType(col semantic.Column) values.Type {
 			FieldType: columnCascadesType(f),
 		})
 	}
-	name := col.StructTypeName
-	if name == "" {
-		// Synthetic semantic catalogs predate nominal STRUCT identity and use
-		// Type="RECORD" as both kind and fixture name. Keep those fixtures
-		// usable while production rlcatalog columns carry the descriptor's exact
-		// full name in StructTypeName.
-		name = col.Type
-	}
-	return values.NewRecordType(name, col.Nullable, fields)
+	// An empty StructTypeName is an ANONYMOUS record — a record constructor's
+	// row published through a derived table or CTE, a synthetic fixture's
+	// struct — and it stays anonymous: the proto repository mints a unique
+	// message name for every anonymous shape (Java's ProtoUtils.uniqueTypeName),
+	// whereas the literal kind "RECORD" used as a name made two different
+	// anonymous shapes in one row claim one descriptor, and the driver handed
+	// their array elements back as raw maps. Type is the SQL kind, never a name.
+	return values.NewRecordType(col.StructTypeName, col.Nullable, fields)
 }
 
 // columnCascadesType maps a resolved semantic.Column to its cascades
