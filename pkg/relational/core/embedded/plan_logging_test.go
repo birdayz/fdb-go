@@ -639,10 +639,14 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 // failure the swallow arm covers, with the query that produces it and the
 // blast radius it leaves behind. It costs descriptor identity, not data, and
 // that cost is user-visible: TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues
-// runs THIS query text against a live cluster, shows a computed STRUCT coming
-// back as a raw map through this shape and as an api.Struct without it, and
-// reads both `ID` values back distinctly. The two query texts must stay
-// identical: this test's shape assertion is that test's precondition.
+// shows a computed STRUCT coming back as a raw map through this shape and as an
+// api.Struct with the repeated name removed.
+//
+// The invariant this test carries for that one is narrower than the whole
+// test, and saying which half matters: the ID-half query text there must stay
+// IDENTICAL to duplicateNameJoinQuery below, because the census asserted here
+// is that half's precondition. The struct half runs a different text (it
+// selects a STRUCT instead of the two IDs) and carries its own control.
 //
 // A FULL OUTER JOIN over legs that both carry `ID` builds its ordinal row with
 // NewRawRecordConstructorValue, which keeps field names VERBATIM by design —

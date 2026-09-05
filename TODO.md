@@ -9224,12 +9224,16 @@ covered by the correctness suite and the golden plan diff, not by this table.
   the result set reads by ORDINAL, so both `ID` slots arrive with their own values (measured with
   a predicate that keeps them different; with both equal the check cannot discriminate). The
   scope is the constructors resolved AFTER the bad message, in walk order — not every computed
-  row: on the pinned query the root projection was resolved first and keeps its descriptor. Pinned in both directions by
+  row: on the pinned query the root projection was resolved first and keeps its descriptor. A
+  STORED struct column read through the same poisoned plan is unaffected — it carries its own
+  stored descriptor, not a constructor's — so the blast radius is COMPUTED rows only, pinned
+  with the rest. Pinned in both directions by
   `TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues` (the STRUCT comes back a map
   through the join and an `api.Struct` without it; both `ID` slots arrive with distinct values),
   which reddens on the struct half when this closes. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM
-  b_md) SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id =
-  c.id`, whose row is `RECORD<ID, S, BID, FOO, ID>`. The blast radius is the whole REPOSITORY,
+  b_md) SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c
+  ON a.id + 1 = c.id` — the text both pins run, its predicate chosen so the two `ID` slots differ
+  — whose row is `RECORD<ID, S, BID, FOO, ID>`. The blast radius is the whole REPOSITORY,
   not that row: compilation is per-repository and the bad message stays in it, so every type
   asked for afterwards fails the same way — THREE of the FOUR constructors in that plan end up with no descriptor though only ONE repeats a name, and the
   fourth — resolved before the bad message was appended — keeps its descriptor, so the damage is
