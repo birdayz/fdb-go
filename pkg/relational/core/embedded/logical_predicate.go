@@ -949,11 +949,9 @@ func buildDerivedTableSourceFromTerm(
 				// A nested path into the inner derived row (`u.w.x`) is decided
 				// by its shape, before any lookup, as in the single-table arm.
 				if nestedProjectedPath(col, innerSQ.tableAlias) {
-					if src, ok := buildExactVirtualScopeSourceForBody(
+					return buildExactVirtualScopeSourceForBody(
 						md, alias, body, cteScopes, projectionOutputNames(innerSQ),
-					); ok {
-						return src, true
-					}
+					)
 				}
 				name := col.bare
 				if name == "" {
@@ -1082,16 +1080,18 @@ func buildDerivedTableSourceFromTerm(
 		// typed as that column, and the read was refused. An unqualified
 		// `w.x` cannot be told from a qualifier here either, and takes the
 		// same door.
-		// The exact derivation declines a body it cannot state — a slot whose
-		// type is a NAMED record (semanticColumnFromExactType) — and the walk
-		// below is then still the resolver, as it was: a decline here is not
-		// final.
+		// A decline here is FINAL. The exact derivation declines only a slot
+		// the semantic column model cannot state (semanticColumnFromExactType —
+		// reached by no shape today: a nominal record publishes under its name
+		// and an enum field arrives already typed STRING), and handing such a
+		// path to the walk below would look its leaf up by name and type it as
+		// a top-level homonym — the error the shape rule exists to prevent. The
+		// whole source declining is the honest answer; every reader of it then
+		// reports the unresolved slot.
 		if nestedProjectedPath(col, bodySourceName) {
-			if src, ok := buildExactVirtualScopeSourceForBody(
+			return buildExactVirtualScopeSourceForBody(
 				md, alias, body, cteScopes, projectionOutputNames(innerSQ),
-			); ok {
-				return src, true
-			}
+			)
 		}
 		// Structured segments; a rebased/computed name is one opaque label.
 		bareName := col.bare
@@ -2497,11 +2497,10 @@ func buildCTEColumnSource(
 			// lookup and typed by the exact derivation, as in the derived-table
 			// arms: looked up by its leaf it was typed as a top-level homonym.
 			if nestedProjectedPath(col, cteBodySource) {
-				if src, ok := buildExactVirtualScopeSourceForBody(
+				src, ok := buildExactVirtualScopeSourceForBody(
 					md, cteName, body, priorCTEs, projectionOutputNames(innerSQ),
-				); ok {
-					return src, true, nil
-				}
+				)
+				return src, ok, nil
 			}
 			bareName := col.bare
 			if bareName == "" {
