@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=371 queries=2750 dml=172 non_query=109 plan_errors=304 unexpected_errors=4
+# files=371 queries=2756 dml=172 non_query=109 plan_errors=302 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -4512,6 +4512,37 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryNestedLoopJoinPlan
 shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
+=== cte_published_row_names.yaml#45
+sql:   SELECT x.w FROM (SELECT u.w FROM (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) u) x ORDER BY x.w
+plan:  Project([_current.W#0], InMemorySort([_current.W#0 ASC], Project([_current.W#1], Project([_current.G#1, _current.W#4], FlatMap(outer=Scan(GA), inner=Scan(C, [=]))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryFlatMapPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
+=== cte_published_row_names.yaml#46
+sql:   SELECT x.w FROM (SELECT u.w FROM (SELECT c.w FROM c) u) x ORDER BY x.w
+plan:  Project([_current.W#0], InMemorySort([_current.W#0 ASC], Project([_current.W#1], Scan(C))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#47
+sql:   WITH x AS (SELECT u.w FROM (SELECT c.w FROM c) u) SELECT x.w FROM x ORDER BY x.w
+plan:  Project([_current.W#0], InMemorySort([_current.W#0 ASC], Project([_current.W#1], Scan(C))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
+=== cte_published_row_names.yaml#48
+sql:   SELECT x.q FROM (SELECT u.w AS q FROM (SELECT c.w FROM c) u) x ORDER BY x.q
+plan:  Project([_current.Q#0], InMemorySort([_current.Q#0 ASC], Project([_current.W#1], Scan(C))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryScanPlan
 === cte_recursive_tree.yaml#0
 sql:   WITH RECURSIVE descendants AS ( SELECT id, name FROM tree WHERE parent_id = 1 UNION ALL SELECT t.id, t.name FROM tree t, descendants d WHERE t.parent_id = d.id ) SELECT name FROM descendants ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.NAME#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.NAME#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds]))))))
@@ -5090,12 +5121,6 @@ shape:         RecordQueryScanPlan
 === derived_star_row_versions.yaml#3 expect-error=0AF00
 sql:   SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d
 plan:  <PLAN-ERROR: 0AF00: derived projection input slot 0 cannot adopt its physical output names: resolution error 33 at projection-input.target: projection declaration and target differ beyond top-level field names: declared RECORD(ID:LONG?,ARR:ARRAY<LONG›?,X:LONG), target RECORD(ID:LONG?,THINGS.X:LONG?,ARR:ARRAY<L…>
-=== derived_star_row_versions.yaml#4 expect-error=XX000
-sql:   WITH d AS (SELECT * FROM things, things.arr AS x) SELECT d.x FROM d
-plan:  <PLAN-ERROR: planning failed: resolution error 64 at memo.member[1].resultType: member RELATION result type RELATION<RECORD<X ARRAY<LONG NOT NULL› NULL› NOT NULL› disagrees with its Reference type RELATION<RECORD<X LONG NOT NULL› NOT NULL›>
-=== derived_star_row_versions.yaml#5 expect-error=0AF00
-sql:   SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d
-plan:  <PLAN-ERROR: 0AF00: derived projection input slot 0 cannot adopt its physical output names: resolution error 33 at projection-input.target: projection declaration and target differ beyond top-level field names: declared RECORD(ID:LONG?,ARR:ARRAY<LONG›?,X:LONG), target RECORD(ID:LONG?,THINGS.X:LONG?,ARR:ARRAY<L…>
 === derived_star_visibility.yaml#0
 sql:   SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d
 plan:  Project([_current.X#2], Project([_current.ID#0, _current.ARR#2, _current.X#3], FlatMap(outer=Scan(THINGS), inner=Explode(field))))
@@ -5160,6 +5185,39 @@ shape:     RecordQueryProjectionPlan
 shape:       RecordQueryStreamingAggregationPlan
 shape:         RecordQueryInMemorySortPlan
 shape:           RecordQueryScanPlan
+=== derived_star_visibility.yaml#9
+sql:   WITH d AS (SELECT * FROM rv, rw) SELECT d.v FROM d WHERE d."__ROW_VERSION" = 'a'
+plan:  Project([_current.V#2], PredicatesFilter(NestedLoopJoin(INNER, Scan(RV), Scan(RW)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== derived_star_visibility.yaml#10
+sql:   SELECT d.v FROM (SELECT * FROM rv, rw) d WHERE d."__ROW_VERSION" = 'a'
+plan:  Project([_current.V#2], PredicatesFilter(NestedLoopJoin(INNER, Scan(RV), Scan(RW)), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
+=== derived_star_visibility.yaml#11
+sql:   WITH d AS (SELECT * FROM rv, rw) SELECT d."__ROW_VERSION", COUNT(*) FROM d GROUP BY d."__ROW_VERSION"
+plan:  Project([_current.__ROW_VERSION#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.__ROW_VERSION#1], InMemorySort([_current.__ROW_VERSION#1 ASC], NestedLoopJoin(INNER, Scan(RV), Scan(RW)))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== derived_star_visibility.yaml#12
+sql:   WITH d AS (SELECT * FROM rv, rw) SELECT d.v FROM d ORDER BY d.v
+plan:  Project([_current.V#2], InMemorySort([_current.V#2 ASC], NestedLoopJoin(INNER, Scan(RW), Scan(RV))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryNestedLoopJoinPlan
+shape:       RecordQueryScanPlan
+shape:       RecordQueryScanPlan
 === derived_table.yaml#0
 sql:   SELECT id FROM (SELECT id, v FROM t WHERE v >= 30) AS x ORDER BY id
 plan:  Project([_current.ID#0], Project([_current.ID#0, _current.V#2], PredicatesFilter(Scan(T), [1 preds])))

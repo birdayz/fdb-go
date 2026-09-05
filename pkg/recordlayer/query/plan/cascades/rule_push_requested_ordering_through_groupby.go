@@ -93,7 +93,17 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 						SortOrder: properties.RequestedSortOrderAny,
 					}
 				}
-				synthesized = append(synthesized, properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false))
+				// The same rebase the concrete branch below crosses: these keys
+				// are spelled over the group-by's inner quantifier, and the
+				// child reads its constraint in its own current-row space.
+				rebased, err := requestedOrderingAtInnerCurrent(
+					properties.NewRequestedOrdering(parts, properties.DistinctnessPreserveDistinctness, false),
+					gb.GetInner())
+				if err != nil {
+					call.Fail(err)
+					return
+				}
+				synthesized = append(synthesized, rebased)
 			}
 			continue
 		}

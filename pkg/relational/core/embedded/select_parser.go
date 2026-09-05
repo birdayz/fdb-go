@@ -353,10 +353,11 @@ type aggSelectCol struct {
 	// reclassification turns into one when their text matches a GROUP BY entry
 	// (`v / 10 AS bucket` … `GROUP BY v / 10`) — a flag set only on the former
 	// left the latter unaliased, and `u.bucket` over that body was 42703 in
-	// both the CTE and the derived-table spelling. The aggregate-carrying items
-	// (`COUNT(*) AS n`, the expression items promoted beside a harvested
-	// aggregate, the items harvested from HAVING and ORDER BY) never name a
-	// grouping key, and no reader consults the flag on them.
+	// both the CTE and the derived-table spelling. It is set on every SELECT-list-born
+	// item for uniformity — the constant-only and aggregate-carrying expression
+	// items included — and not on the items harvested from HAVING and ORDER BY;
+	// none of those ever names a grouping key, and no reader consults the flag
+	// on them.
 	groupColAliased bool
 	// groupColBare: the structural bare name of groupCol (parse-tree/derived
 	// at set time) — consumers never dot-split groupCol.

@@ -70,10 +70,13 @@ func (r *PushRequestedOrderingThroughProjectionRule) OnMatch(call *Implementatio
 		// every pusher that reshapes a request rebases it through
 		// requestedOrderingAtInnerCurrent before storing it, and a pass-through
 		// pusher hands on what it received — so a request rooted anywhere else
-		// is a defect of whoever pushed it, and it is LOUD: silently skipping it
-		// would drop the ordering the way an un-rebased sort key once did (see
-		// requestedOrderingAtInnerCurrent), and pushing it would ask the child
-		// for a foreign order — a same-shaped sibling's output is one such root.
+		// cannot be this projection's output, and it is LOUD: silently skipping
+		// it would drop the ordering the way an un-rebased sort key once did
+		// (see requestedOrderingAtInnerCurrent), and pushing it would ask the
+		// child for a foreign order — a same-shaped sibling's output is one such
+		// root. The message states the fact, not a diagnosis: a select pusher
+		// passes a non-local (outer) key through untranslated, so an outer
+		// root can arrive here without any pusher having erred.
 		root, ok := requestedOrderingRoot(reqOrd)
 		if !ok {
 			// No single row to push through — a part with no correlation (a
@@ -82,7 +85,7 @@ func (r *PushRequestedOrderingThroughProjectionRule) OnMatch(call *Implementatio
 			continue
 		}
 		if root != values.CurrentCorrelation() {
-			call.Fail(fmt.Errorf("requested ordering on a projection is rooted at %v, not at the projection's current row; the pusher did not rebase it", root))
+			call.Fail(fmt.Errorf("requested ordering on a projection is rooted at %v, not at the projection's current row", root))
 			return
 		}
 		// A part the result value cannot express drops the whole request:

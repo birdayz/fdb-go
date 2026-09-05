@@ -23,14 +23,14 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**371 scenarios · 3031 query/assertion cases** across 18 feature areas — 2650 supported, 116 unsupported-feature pins, 265 error-path pins.
+**371 scenarios · 3037 query/assertion cases** across 18 feature areas — 2658 supported, 115 unsupported-feature pins, 264 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 53 | 345 | 312 | 19 | 14 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
-| CTEs | 14 | 153 | 111 | 7 | 35 |
+| CTEs | 14 | 157 | 115 | 7 | 35 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 4 | 32 |
 | Ordering & pagination | 17 | 133 | 129 | 0 | 4 |
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 38 | 327 | 287 | 13 | 27 |
-| **Total** | **371** | **3031** | **2650** | **116** | **265** |
+| Other | 38 | 329 | 291 | 12 | 26 |
+| **Total** | **371** | **3037** | **2658** | **115** | **264** |
 
 ## Aggregates & GROUP BY
 
@@ -236,7 +236,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `cte_error_codes` | 6 | 2 | 0 | 4 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | 6 | 0 | 2 | CTE patterns from Java's cte.yamsql. |
 | `cte_multi_reference` | 2 | 2 | 0 | 0 | CTE referenced multiple times |
-| `cte_published_row_names` | 45 | 34 | 0 | 11 | The row a CTE body publishes to its enclosing query is the row the body |
+| `cte_published_row_names` | 49 | 38 | 0 | 11 | The row a CTE body publishes to its enclosing query is the row the body |
 | `cte_recursive_tree` | 3 | 3 | 0 | 0 | Recursive CTE tree traversal |
 | `cte_star_column_aliases` | 3 | 2 | 0 | 1 | a CTE column-alias list over a STAR body. |
 | `cte_with_insert` | 2 | 1 | 0 | 1 | CTE used in INSERT ... |
@@ -477,8 +477,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `comparison_promotion_gate` | 14 | 10 | 0 | 4 | unpromotable comparisons reject at |
 | `computed_column_names` | 6 | 6 | 0 | 0 | Verifies that unnamed computed expressions in SELECT projections |
 | `datetime_edge_pins` | 9 | 6 | 0 | 3 | DATE/TIMESTAMP extension edge coverage |
-| `derived_star_row_versions` | 6 | 3 | 2 | 1 | A projection-less star over row-versioned tables hides both legs' |
-| `derived_star_visibility` | 9 | 9 | 0 | 0 | A derived table or CTE whose body is a projection-less star over a join |
+| `derived_star_row_versions` | 4 | 3 | 1 | 0 | A projection-less star over row-versioned tables hides both legs' |
+| `derived_star_visibility` | 13 | 13 | 0 | 0 | A derived table or CTE whose body is a projection-less star over a join |
 | `empty_result_edge_cases_java` | 11 | 11 | 0 | 0 | Empty result handling in various |
 | `empty_table_operations` | 9 | 9 | 0 | 0 | Operations on empty tables |
 | `float_column` | 10 | 10 | 0 | 0 | FLOAT (32-bit) column type. |

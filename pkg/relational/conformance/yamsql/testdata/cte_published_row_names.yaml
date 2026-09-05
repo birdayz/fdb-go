@@ -310,3 +310,29 @@ tests:
     columns: ["W"]
     rows:
       - [2]
+  # (9) A derived table over a derived table whose inner body projects an
+  # unaliased QUALIFIED reference (`u.w`) publishes that column under its
+  # bare name, as every projection labels it. Named by its display spelling
+  # it was published as U.W, and `x.w` over it was 42703 — with a join body
+  # and with a single-table body alike; the aliased control beside them.
+  - query: SELECT x.w FROM (SELECT u.w FROM (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) u) x ORDER BY x.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [2]
+  - query: SELECT x.w FROM (SELECT u.w FROM (SELECT c.w FROM c) u) x ORDER BY x.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH x AS (SELECT u.w FROM (SELECT c.w FROM c) u) SELECT x.w FROM x ORDER BY x.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT x.q FROM (SELECT u.w AS q FROM (SELECT c.w FROM c) u) x ORDER BY x.q
+    columns: ["Q"]
+    rows:
+      - [1]
+      - [2]

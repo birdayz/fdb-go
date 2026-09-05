@@ -6,32 +6,35 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 )
 
-// TestAdjustMatches_LeafMatchNeverClimbsPastCorrelatedToEquals pins a
-// REFUSAL, with the message naming what re-arms.
+// TestAdjustMatches_LeafMatchDoesNotClimb pins a REFUSAL, with the message
+// naming what re-arms.
 //
 // A scan group's partial match against a value-index candidate is seeded at
 // the candidate's LEAF (its scan). Adjustment should climb it through the
 // candidate's select to the MatchableSortExpression, whose adjustment mints
 // the matched ordering parts an ordered full index scan is chosen by
 // (adjustMatchForMatchableSort, ComputeMatchedOrderingParts — both ported).
-// It never climbs: matchWithCandidate refuses at correlatedToEquals, Go's
-// stand-in for Java's `candidateExpression.getCorrelatedTo().equals(
-// otherRangesOver.getCorrelatedTo())`, which demands ZERO node-local
-// correlations on the candidate expression — while the candidate's own
-// select reports two: the placeholder's parameter alias (Go's
-// Placeholder.GetCorrelatedTo counts it; Java's
-// PredicateWithValueAndRanges.getCorrelatedTo is value ∪ ranges only) and
-// its own inner quantifier's alias (Java's getCorrelatedTo subtracts the
-// aliases the expression owns). So a zero-prefix match carries no ordering
-// parts, SatisfiesRequestedOrdering sees no order in any candidate, and an
-// ordered full index scan exists only where a sort sits DIRECTLY over a scan
+// It does not climb, and TWO gates refuse it, in this order. First,
+// matchWithCandidate refuses at correlatedToEquals, Go's stand-in for Java's
+// `candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo())`,
+// which demands ZERO node-local correlations on the candidate expression —
+// while the candidate's own select reports two: the placeholder's parameter
+// alias (Go's Placeholder.GetCorrelatedTo counts it; Java's
+// PredicateWithValueAndRanges.getCorrelatedTo is value ∪ ranges only) and its
+// own inner quantifier's alias (Java's getCorrelatedTo subtracts the aliases
+// the expression owns). Second — measured by admitting the first gate under
+// mutation: the climb then reaches the select's adjuster and stops there —
+// adjustMatchForSelect refuses the candidate's placeholder predicate as a
+// non-tautology, where Java's SelectExpression.adjustMatch admits an unbound
+// placeholder. So a zero-prefix match carries no ordering parts,
+// SatisfiesRequestedOrdering sees no order in any candidate, and an ordered
+// full index scan exists only where a sort sits DIRECTLY over a scan
 // (OrderedIndexScanRule, OrderedPrimaryScanRule). TODO.md, "Ordering through
 // a projection reaches the child group but not the index".
 //
-// When the climb works — Java's set equality with those two exclusions — this
-// test turns red: re-pin it to the adjusted twin and retire the two Go-only
-// ordered-scan rules.
-func TestAdjustMatches_LeafMatchNeverClimbsPastCorrelatedToEquals(t *testing.T) {
+// When the climb works — both gates ported — this test turns red: re-pin it
+// to the adjusted twin and retire the two Go-only ordered-scan rules.
+func TestAdjustMatches_LeafMatchDoesNotClimb(t *testing.T) {
 	t.Parallel()
 
 	rowType := referenceWinnerRowType("Order", "STATUS")
@@ -62,7 +65,7 @@ func TestAdjustMatches_LeafMatchNeverClimbsPastCorrelatedToEquals(t *testing.T) 
 			}
 		}
 		if !ownsOne {
-			t.Fatalf("the candidate's %T no longer counts its own quantifier alias %v among its node-local correlations %v; the refusal has moved", parent.expr, parent.expr.GetQuantifiers()[0].GetAlias(), nodeCorrs)
+			t.Fatalf("the candidate's %T no longer counts its own quantifier aliases among its node-local correlations %v; the refusal has moved", parent.expr, nodeCorrs)
 		}
 	}
 
@@ -77,7 +80,7 @@ func TestAdjustMatches_LeafMatchNeverClimbsPastCorrelatedToEquals(t *testing.T) 
 
 	for _, pm := range GetPartialMatchesForCandidate(queryRef, cand) {
 		if pm.GetCandidateRef() != leaf {
-			t.Fatalf("the leaf match CLIMBED to candidate ref %p (%T): correlatedToEquals now admits the candidate's select, so a zero-prefix match carries ordering parts — re-pin this test to the climb, then retire OrderedIndexScanRule and OrderedPrimaryScanRule and close the TODO entry", pm.GetCandidateRef(), pm.GetCandidateRef().Get())
+			t.Fatalf("the leaf match CLIMBED to candidate ref %p (%T): both gates now admit the candidate's select — re-pin this test to the climb, then retire OrderedIndexScanRule and OrderedPrimaryScanRule and close the TODO entry", pm.GetCandidateRef(), pm.GetCandidateRef().Get())
 		}
 		if len(pm.GetMatchInfo().GetMatchedOrderingParts()) != 0 {
 			t.Fatalf("the unadjusted leaf match carries %d matched ordering parts, want none", len(pm.GetMatchInfo().GetMatchedOrderingParts()))

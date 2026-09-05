@@ -298,3 +298,35 @@ func atQuantifierCurrent(t *testing.T, q expressions.Quantifier, v values.Value)
 	}
 	return rebased.GetParts()[0].Value
 }
+
+// A PRESERVE request over a group-by with keys pushes the keys under ANY —
+// and pushes them in the CHILD's current-row space, like the concrete branch:
+// spelled over the group-by's inner quantifier they reached a projection
+// below as a foreign root, which that rule refuses loudly.
+func TestPushRequestedOrderingThroughGroupBy_PreserveWithKeysPushesCurrentRootedKeys(t *testing.T) {
+	t.Parallel()
+
+	groupBy, _, groupingKeys := requestedOrderingGroupByFixture(
+		[]string{"A", "B"}, expressions.AggSum, "V")
+	groupByRef := expressions.InitialOf(groupBy)
+	constraints := NewConstraintMap()
+	Set(constraints, groupByRef, RequestedOrderingConstraintKey, []*properties.RequestedOrdering{
+		properties.PreserveOrdering(),
+	})
+	runRequestedOrderingGroupBy(t, groupBy, groupByRef, constraints, true)
+
+	pushed, ok := Get(constraints, groupBy.GetInner().GetRangesOver(), RequestedOrderingConstraintKey)
+	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != len(groupingKeys) {
+		t.Fatalf("pushed orderings = %v ok=%v, want the %d grouping keys under ANY", pushed, ok, len(groupingKeys))
+	}
+	for i, part := range pushed[0].GetParts() {
+		if part.SortOrder != properties.RequestedSortOrderAny {
+			t.Fatalf("part %d sort order = %v, want ANY", i, part.SortOrder)
+		}
+		roots := values.GetCorrelatedToOfValue(part.Value)
+		if _, current := roots[values.CurrentCorrelation()]; len(roots) != 1 || !current {
+			t.Fatalf("part %d roots = %v, want the child's current correlation only", i, roots)
+		}
+		assertRequestedOrderingField(t, part.Value, atQuantifierCurrent(t, groupBy.GetInner(), groupingKeys[i]))
+	}
+}

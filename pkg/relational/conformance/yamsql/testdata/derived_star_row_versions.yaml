@@ -31,21 +31,6 @@ tests:
     rows:
       - [10, 3]
       - [20, 3]
-  # NEGATIVE pins of the two row-versioned shapes booked in TODO.md ("Exact
-  # quantifier binding over a CTE or derived body"): a star over a lateral
-  # unnest in a row-versioned table does not plan in either spelling — the
-  # row-version rewrite carries the outer X beside the element X while the
-  # derived unnest scope shadows it — and its answer over a table without row
-  # versions is [7],[8] (derived_star_visibility.yaml). A WHERE over the
-  # derived star join fails at execution with a raw resolution error the
-  # driver does not code (`edge lookup D: read as RECORD(ID,Y,ID,Z), declared
-  # RECORD(AA.ID,Y,BB.ID,Z)`), so it is pinned in Go
-  # (TestFDB_DerivedStarRowVersionsWhere). When these plan, the pins
-  # turn red and are re-pinned to the rows.
-  - query: SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d
-    error_code: "0AF00"
-  - query: WITH d AS (SELECT * FROM things, things.arr AS x) SELECT d.x FROM d
-    error_code: "XX000"
   # A NEGATIVE pin of a row-versioned shape booked in TODO.md ("Exact
   # quantifier binding over a CTE or derived body"): a star over a lateral
   # unnest in a row-versioned table does not plan — the row-version rewrite

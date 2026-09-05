@@ -13,8 +13,12 @@ schema_template: |
   CREATE TABLE things (id BIGINT, x BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
   CREATE TABLE ql (id BIGINT, foo BIGINT, bar BIGINT, PRIMARY KEY (id))
   CREATE TABLE tv (id BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE rv (id BIGINT, "__ROW_VERSION" STRING, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE rw (id BIGINT, w BIGINT, PRIMARY KEY (id))
 setup:
   - INSERT INTO things VALUES (1, 5, [7, 8])
+  - INSERT INTO rv VALUES (1, 'a', 10), (2, 'b', 20)
+  - INSERT INTO rw VALUES (1, 5)
   - INSERT INTO ql VALUES (1, 1, 10)
   - INSERT INTO tv VALUES (1, 15), (2, 25), (3, 17)
 tests:
@@ -66,3 +70,28 @@ tests:
     rows:
       - [1, 2]
       - [2, 1]
+  # (5) A REAL column named "__ROW_VERSION" (real-column-wins: a STRING the
+  # table declares, no row-version storage) is star-visible and is not the
+  # ephemeral pseudo-column: the star body publishes it, and a WHERE, a GROUP
+  # BY and a plain read bind it in both spellings. Classifying the pseudo-
+  # column by its name alone declined this body's row and the CTE spelling
+  # did not plan.
+  - query: WITH d AS (SELECT * FROM rv, rw) SELECT d.v FROM d WHERE d."__ROW_VERSION" = 'a'
+    columns: ["V"]
+    rows:
+      - [10]
+  - query: SELECT d.v FROM (SELECT * FROM rv, rw) d WHERE d."__ROW_VERSION" = 'a'
+    columns: ["V"]
+    rows:
+      - [10]
+  - query: WITH d AS (SELECT * FROM rv, rw) SELECT d."__ROW_VERSION", COUNT(*) FROM d GROUP BY d."__ROW_VERSION"
+    columns: ["__ROW_VERSION", "COUNT(*)"]
+    unordered: true
+    rows:
+      - [a, 1]
+      - [b, 1]
+  - query: WITH d AS (SELECT * FROM rv, rw) SELECT d.v FROM d ORDER BY d.v
+    columns: ["V"]
+    rows:
+      - [10]
+      - [20]

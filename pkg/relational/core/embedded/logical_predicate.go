@@ -931,7 +931,14 @@ func buildDerivedTableSourceFromTerm(
 		if innerSQ.projCols != nil {
 			cols = make([]semantic.Column, 0, len(innerSQ.projCols))
 			for i, col := range innerSQ.projCols {
-				name := col.name
+				// An unaliased QUALIFIED reference (`u.w`) is output under its
+				// bare name, as every projection labels it; naming the column by
+				// its display spelling published U.W, and `x.w` over
+				// `(SELECT u.w FROM (…) u) x` was 42703.
+				name := col.bare
+				if name == "" {
+					name = col.name
+				}
 				if i < len(innerSQ.projAliases) && innerSQ.projAliases[i] != "" {
 					name = innerSQ.projAliases[i]
 				}
@@ -13249,17 +13256,24 @@ func operatorContains(root, target logical.LogicalOperator) bool {
 // that no runtime binding declares, and the derived spelling could not adopt
 // its physical output names. A body that spells its projection names every
 // column it emits and is never declined here.
+//
+// The pseudo-column is the one of VERSION type: a REAL column a table declares
+// under that name (real-column-wins; `"__ROW_VERSION" STRING`) is star-visible
+// and is not it, so the name alone does not decide.
 func exactStarRowCarriesAnEphemeral(innerSQ *selectQuery, src semantic.ScopeSource) bool {
 	if innerSQ == nil || projectionOutputNames(innerSQ) != nil || src.Table == nil {
 		return false
 	}
+	isPseudo := func(c semantic.Column) bool {
+		return c.Id.Name() == values.PseudoFieldRowVersion && c.Type == "VERSION"
+	}
 	for _, c := range src.Table.Columns() {
-		if c.Id.Name() == values.PseudoFieldRowVersion {
+		if isPseudo(c) {
 			return true
 		}
 	}
 	for _, c := range src.FlowedColumns {
-		if c.Id.Name() == values.PseudoFieldRowVersion {
+		if isPseudo(c) {
 			return true
 		}
 	}

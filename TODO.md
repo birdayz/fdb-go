@@ -9130,5 +9130,21 @@ covered by the correctness suite and the golden plan diff, not by this table.
   in `matchWithCandidate` with those two exclusions; after it the leaf match climbs, the
   zero-prefix skip's ordering exemption keeps the ordered full scan, and both Go-only ordered-scan
   rules (`OrderedIndexScanRule`, `OrderedPrimaryScanRule`) retire. The refusal is pinned:
-  `TestAdjustMatches_LeafMatchNeverClimbsPastCorrelatedToEquals` (a value-index candidate, a scan-leaf
+  `TestAdjustMatches_LeafMatchDoesNotClimb` (a value-index candidate, a scan-leaf
   match, no adjusted twin) — it turns red when the climb works, and is then re-pinned to the climb.
+  A second gate stands behind the first (measured at r11 by admitting `correlatedToEquals` under
+  mutation: the climb then reaches the candidate select's adjuster and stops): `adjustMatchForSelect`
+  refuses the candidate's placeholder predicate as a non-tautology, where Java's
+  `SelectExpression.adjustMatch` admits an unbound placeholder. The closure ports both.
+
+- [ ] **An IN subquery over an aggregate or DISTINCT body does not translate.**
+  `SELECT c.id FROM c WHERE c.id IN (SELECT ga.g FROM ga GROUP BY ga.g)` fails
+  `0AF00: Cascades translation failed`, and so do the same subquery with a `HAVING COUNT(*) > 1`,
+  with a `WHERE ga.v > 6` before the GROUP BY, and `IN (SELECT DISTINCT ga.g FROM ga)` — four
+  shapes, measured on the explain-differ dump at RFC-242 r11 and identical at the merge-base
+  `36b97f1e9` (schema `ga(id, g, v)`, `c(id, w)`). A correlated `EXISTS` over a GROUP BY /
+  HAVING subquery is refused by design with its own message. The IN translator handles a plain
+  projecting subquery and not one whose body aggregates or de-duplicates; Java plans all four
+  (the IN subquery becomes a semi-join over the aggregate's result). Surfaced by Graefe's r9
+  delta lap on PR #770 while probing derived-table group-bys; out of that RFC's scope (the
+  union-leg alignment and the CTE/derived row) and booked here with the shapes.

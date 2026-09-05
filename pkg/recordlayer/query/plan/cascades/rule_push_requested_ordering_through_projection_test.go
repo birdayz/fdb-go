@@ -338,3 +338,29 @@ func projectionRuleCall(t *testing.T, projection *expressions.LogicalProjectionE
 	rule.OnMatch(call)
 	return call
 }
+
+// A request with no single row to push through — here a part with no
+// correlation at all, a literal — is not a pusher's defect: the rule declines
+// silently (nothing pushed, no failure), unlike a request rooted at a named
+// foreign quantifier, which is loud.
+func TestPushRequestedOrderingThroughProjection_NoRootDeclinesSilently(t *testing.T) {
+	t.Parallel()
+
+	input := requestedOrderingQuantifier("T", "projection_input")
+	projection := mustRequestedOrderingConstruct(expressions.NewLogicalProjectionExpressionWithAliases(
+		[]values.Value{requestedOrderingField(input, "A")}, []string{"a"}, input))
+	projectionRef := expressions.InitialOf(projection)
+	constraints := NewConstraintMap()
+	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
+		Value:     &values.ConstantValue{Value: int64(1), Typ: values.NullableLong},
+		SortOrder: properties.RequestedSortOrderAscending,
+	}})
+	call := projectionRuleCall(t, projection, projectionRef, constraints)
+	if err := call.Err(); err != nil {
+		t.Fatalf("a request with no root must decline silently, not fail: %v", err)
+	}
+	call.applyPendingConstraints()
+	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
+		t.Fatal("a request with no root must push nothing")
+	}
+}
