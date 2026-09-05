@@ -105,12 +105,23 @@ func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	mwjoMustExec(t, db, ctx, "INSERT INTO t VALUES (1, 1)")
 
-	for _, query := range []string{
-		`SELECT [x.s] FROM (SELECT STRUCT RECORD (1 AS lat, 2 AS lon) AS s FROM t) x`,
-		`WITH x AS (SELECT STRUCT RECORD (1 AS lat, 2 AS lon) AS s FROM t) SELECT [x.s] FROM x`,
+	for _, tc := range []struct {
+		query      string
+		wantName   string
+		wantFields []string
+	}{
+		{`SELECT [x.s] FROM (SELECT STRUCT RECORD (1 AS lat, 2 AS lon) AS s FROM t) x`, "RECORD", []string{"LAT", "LON"}},
+		{`WITH x AS (SELECT STRUCT RECORD (1 AS lat, 2 AS lon) AS s FROM t) SELECT [x.s] FROM x`, "RECORD", []string{"LAT", "LON"}},
 		// The top-level control, never bridged.
-		`SELECT [STRUCT RECORD (1 AS lat, 2 AS lon)] FROM t`,
+		{`SELECT [STRUCT RECORD (1 AS lat, 2 AS lon)] FROM t`, "RECORD", []string{"LAT", "LON"}},
+		// A named literal under a VALUES nested column definition: the
+		// definition renames the fields and keeps the name (Java's
+		// TypeUtils.setFieldNames); the retag once refused a named source.
+		{`SELECT [a.w] FROM VALUES (STRUCT RECORD (3 AS p, 4 AS q)) AS a(w(x, y))`, "RECORD", []string{"X", "Y"}},
+		{`SELECT [a.w] FROM VALUES (STRUCT foo (3 AS p, 4 AS q)) AS a(w(x, y))`, "FOO", []string{"X", "Y"}},
+		{`SELECT [x.w] FROM (SELECT a.w FROM VALUES (STRUCT foo (3 AS p, 4 AS q)) AS a(w(x, y))) x`, "FOO", []string{"X", "Y"}},
 	} {
+		query := tc.query
 		rows, err := db.QueryContext(ctx, query)
 		if err != nil {
 			t.Fatalf("%s: %v", query, err)
@@ -133,8 +144,13 @@ func TestFDB_ADeclaredRecordNameSurvivesTheBridge(t *testing.T) {
 		if !isStruct {
 			t.Fatalf("%s: element = %T %v, want an api.Struct", query, elems[0], elems[0])
 		}
-		if name := s.MetaData().TypeName(); name != "RECORD" {
-			t.Fatalf("%s: struct type name = %q, want the declared name RECORD — the bridge dropped a declared record name", query, name)
+		if name := s.MetaData().TypeName(); name != tc.wantName {
+			t.Fatalf("%s: struct type name = %q, want the declared name %s — a declared record name was dropped", query, name, tc.wantName)
+		}
+		for i, want := range tc.wantFields {
+			if got, err := s.MetaData().AttributeName(i + 1); err != nil || got != want {
+				t.Fatalf("%s: attribute %d = %q (%v), want %q", query, i+1, got, err, want)
+			}
 		}
 	}
 }

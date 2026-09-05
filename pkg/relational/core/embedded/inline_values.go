@@ -120,9 +120,6 @@ func retagInlineValuesRecordType(
 	if record == nil {
 		return nil, fmt.Errorf("nested column definition targets a nil record type")
 	}
-	if record.RecordName != "" {
-		return nil, fmt.Errorf("nested column definition cannot replace nominal record type %q", record.RecordName)
-	}
 	if len(record.Fields) != len(definitions) {
 		return nil, fmt.Errorf("nested column definition declares %d fields for record width %d",
 			len(definitions), len(record.Fields))
@@ -142,14 +139,18 @@ func retagInlineValuesRecordType(
 			Ordinal:   i,
 		}
 	}
-	// The retagged row stays ANONYMOUS. Minting the SQL kind "RECORD" as its
-	// name made every VALUES record share one descriptor name, so two rows
-	// of different shapes (`VALUES ((3,4)) AS a(w(x,y)), VALUES ((5)) AS
-	// b(v(z))`) failed to compile into one result descriptor and the driver
-	// handed both back as raw maps; the proto repository mints a unique name
-	// per anonymous shape instead.
+	// The definition renames the FIELDS and keeps the record's NAME, as Java's
+	// TypeUtils.setFieldNames does (fromFieldsWithName when the record is
+	// named, fromFields when it is not): a `STRUCT RECORD (3 AS p, 4 AS q)`
+	// under `a(w(x, y))` is still a record named RECORD, with fields X and Y,
+	// and an anonymous row stays anonymous. Minting the SQL kind "RECORD" as
+	// every row's name made all VALUES records share one descriptor name, so
+	// two rows of different shapes (`VALUES ((3,4)) AS a(w(x,y)), VALUES ((5))
+	// AS b(v(z))`) failed to compile into one result descriptor and the
+	// driver handed both back as raw maps; rejecting a named source instead
+	// refused what Java accepts.
 	return &values.RecordType{
-		RecordName: "",
+		RecordName: record.RecordName,
 		Nullable:   record.Nullable,
 		Fields:     fields,
 		Legs:       append([]values.RecordTypeLeg(nil), record.Legs...),

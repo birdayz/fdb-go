@@ -258,7 +258,7 @@ func TestBuildInlineValuesLogicalRejectsInvalidNestedDefinitions(t *testing.T) {
 	}
 }
 
-func TestRetagInlineValuesRecordTypeIsCopyOnWriteAndRejectsForeignIdentity(t *testing.T) {
+func TestRetagInlineValuesRecordTypeIsCopyOnWriteAndKeepsANamedSourcesName(t *testing.T) {
 	t.Parallel()
 	fields := []values.Field{
 		{Name: "_0", FieldType: values.NotNullInt, Ordinal: 0},
@@ -281,10 +281,12 @@ func TestRetagInlineValuesRecordTypeIsCopyOnWriteAndRejectsForeignIdentity(t *te
 		t.Fatalf("retagged type is not exact: %v", err)
 	}
 
-	foreign := values.NewRecordType("FOREIGN", false, fields)
-	if _, err := retagInlineValuesRecordType(foreign, definitions); err == nil ||
-		!strings.Contains(err.Error(), "nominal record type") {
-		t.Fatalf("foreign nominal record retag error = %v, want loud nominal-identity rejection", err)
+	// A named source is renamed field by field and KEEPS its name, as Java's
+	// TypeUtils.setFieldNames does; rejecting it refused what Java accepts.
+	named := values.NewRecordType("FOREIGN", false, fields)
+	renamed, err := retagInlineValuesRecordType(named, definitions)
+	if err != nil || renamed.RecordName != "FOREIGN" || renamed.Fields[0].Name != "X" || renamed.Fields[1].Name != "Y" {
+		t.Fatalf("named record retag = %#v, err %v; want FOREIGN RECORD<X,Y>", renamed, err)
 	}
 	malformed := &values.RecordType{Fields: []values.Field{{Name: "_0", FieldType: values.NotNullInt, Ordinal: 1}}}
 	if _, err := retagInlineValuesRecordType(malformed, definitions[:1]); err == nil ||
