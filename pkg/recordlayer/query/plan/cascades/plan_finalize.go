@@ -45,16 +45,28 @@ import (
 //
 // Every OTHER descriptor failure leaves the constructor unstamped, evaluating
 // to its name-keyed map exactly as it did before the bake existed, and is not
-// a query failure. TWO failures reach that arm, so it cannot be described as
-// only the first: a type with no message form (a bare scalar record field, an
-// erased array) yields a *values.ProtoTypeError, which
-// TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm drives;
-// and a synthesised file that does not VALIDATE for a reason other than a name
-// clash returns from compileLocked through the same call. No shape is known to
-// reach that second one — a record constructor disambiguates a repeated field
-// name itself (`ID`, `ID_2`), and a probe over this package's whole suite
-// reports the arm entering zero times — so it is left swallowed rather than
-// made loud on a failure nobody can produce.
+// a query failure. The failures that reach it, enumerated rather than
+// characterised — a COUNT is the same over-claim one layer up:
+//
+//   - a type with no message form (a bare scalar record field, an erased
+//     array), a *values.ProtoTypeError, which
+//     TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm drives;
+//   - a record or field name protoname cannot ESCAPE (`$lead`, `a-b`, a name
+//     starting `__0`), also a *values.ProtoTypeError but NOT a missing message
+//     form — defineRecordLocked refuses it before a message is built;
+//   - a synthesised file that does not VALIDATE for a reason other than a
+//     declared-name clash, returned by compileLocked through the same call.
+//     A FULL OUTER JOIN over legs that both carry `ID` reaches it: the
+//     ordinal row is built by NewRawRecordConstructorValue, which keeps field
+//     names VERBATIM by design (NewRecordConstructorValue suffixes instead —
+//     `ID`, `ID_2`), so its descriptor cannot validate and the row stays a map
+//     in which the SECOND field wins. TODO.md's "A join row that names one
+//     field twice is never stamped, and flows as a map" carries the closure,
+//     and TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap pins it as it
+//     stands.
+//
+// Turning the third loud refuses a query that answers today, so it stays
+// swallowed and pinned instead.
 //
 // One declared name over two shapes — `STRUCT foo (1 AS p)` beside `STRUCT
 // foo (2 AS p, 3 AS q)` — is a query failure, and the one error this returns

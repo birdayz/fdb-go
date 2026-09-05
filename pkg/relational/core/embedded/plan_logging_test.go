@@ -633,3 +633,86 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 		t.Fatalf("Y is unique and inside a FULL join's inner — found=%v ns=%v", found, ns)
 	}
 }
+
+// TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap pins the third failure the
+// swallow arm covers, with the query that produces it and the data loss it
+// leaves behind.
+//
+// A FULL OUTER JOIN over legs that both carry `ID` builds its ordinal row with
+// NewRawRecordConstructorValue, which keeps field names VERBATIM by design —
+// positional access makes the duplicate unambiguous, and the ordinal-identity
+// pins are unconstructible without it. The synthesised descriptor for that row
+// cannot validate (`descriptor "…​.ID" already declared`), so every constructor
+// in the plan stays unstamped and each evaluates to a name-keyed map in which
+// the SECOND `ID` overwrites the first. The query answers today because
+// nothing reads that row by name.
+//
+// Turning the failure loud refuses this working query, so it stays swallowed
+// and pinned here; TODO.md's "A join row that names one field twice is never
+// stamped, and flows as a map" carries the closure. When that lands, the row
+// becomes a struct and this test reddens: assert BOTH `ID` values survive then.
+func TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap(t *testing.T) {
+	t.Parallel()
+	_, md := newLoggingGenerator(t,
+		"CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id)) "+
+			"CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id)) "+
+			"CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))",
+		&captureLogger{})
+	plan, _, err := PlanRecordQueryWithSubqueries(
+		"WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) "+
+			"SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id = c.id",
+		md, nil)
+	if err != nil || plan == nil {
+		t.Fatalf("plan the FULL OUTER JOIN: %v", err)
+	}
+
+	var duplicates, unstamped int
+	var walk func(plans.RecordQueryPlan)
+	seen := map[plans.RecordQueryPlan]struct{}{}
+	walk = func(p plans.RecordQueryPlan) {
+		if p == nil {
+			return
+		}
+		if _, done := seen[p]; done {
+			return
+		}
+		seen[p] = struct{}{}
+		cascadesvalues.WalkValue(p.GetResultValue(), func(node cascadesvalues.Value) bool {
+			rc, isRecord := node.(*cascadesvalues.RecordConstructorValue)
+			if !isRecord {
+				return true
+			}
+			row, isRow := rc.Type().(*cascadesvalues.RecordType)
+			if !isRow {
+				return true
+			}
+			names := map[string]int{}
+			for _, f := range row.Fields {
+				names[f.Name]++
+			}
+			for _, n := range names {
+				if n > 1 {
+					duplicates++
+					if rc.MessageDescriptor() == nil {
+						unstamped++
+					}
+					break
+				}
+			}
+			return true
+		})
+		for _, c := range p.GetChildren() {
+			walk(c)
+		}
+	}
+	walk(plan)
+
+	if duplicates == 0 {
+		t.Fatal("no row in this plan names a field twice any more — the ordinal join row is " +
+			"disambiguated now, so TODO.md's booking has closed: assert both ID values survive instead")
+	}
+	if unstamped != duplicates {
+		t.Fatalf("%d of %d duplicate-name rows were stamped; a descriptor with a repeated field "+
+			"name cannot validate, so every one of them must stay a map", duplicates-unstamped, duplicates)
+	}
+}

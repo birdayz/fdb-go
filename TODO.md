@@ -9208,3 +9208,22 @@ covered by the correctness suite and the golden plan diff, not by this table.
   descriptor-built table. Surfaced by RFC-242 r15 while probing an unrelated decline of the
   exact derivation beside a nested path (`@claude`'s r14 shape); out of that RFC's scope (the
   union-leg alignment and the CTE/derived row) and booked here with the reproducer.
+
+- [ ] **A join row that names one field twice is never stamped, and flows as a map.**
+  `NewRawRecordConstructorValue` keeps field names VERBATIM — by design, for ordinal-join seeds,
+  where the two legs of `SELECT * FROM a JOIN b` legitimately both carry `ID` and positional
+  access makes the duplicate unambiguous. Such a row's synthesised descriptor cannot validate
+  (`proto: descriptor "__0type__2.ID" already declared`), `FinalizePlan` swallows that as it
+  swallows every non-clash descriptor failure, and the constructor keeps its name-keyed map — in
+  which the SECOND `ID` overwrites the first, so one leg's value is lost the moment anything
+  reads the row by name. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM
+  b_md) SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id =
+  c.id`, whose row is `RECORD<ID, S, BID, FOO, ID>` and which leaves THREE constructors
+  unstamped; the query answers today because nothing reads that row by name. Pinned as it stands
+  (`TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap`). Java
+  refuses the row outright (`Type.Record.normalizeFields` disambiguates duplicate INDEXES, not
+  names; two `ID` fields throw in `computeFieldNameFieldMap`'s `ImmutableMap.toImmutableMap`), so
+  the silence is Go's divergence. Closure: give the ordinal row the name-addressability suffix
+  this port already uses elsewhere (`K`, `K_2`) at construction, so the descriptor validates and
+  the row is a struct with both values; the pin reddens then and must assert both survive.
+  Booked from RFC-242 r21 with the reproducer.

@@ -414,7 +414,10 @@ func TestSyntheticTypeNamesAreUnreachableFromAnyIdentifier(t *testing.T) {
 
 	// The witness, both orders, in one repository: an anonymous record and a
 	// struct declared `__type$` both get a descriptor, under distinct names.
-	declared := NewRecordType("__type__1", false, []Field{{Name: "A", FieldType: NullableLong, Ordinal: 0}})
+	// `__type$` is the witness: it ESCAPES to `__type__1`, the name the counter
+	// minted under the old prefix. A record declared `__type__1` escapes to
+	// `__type__01` and never collided, so it would make this arm vacuous.
+	declared := NewRecordType("__type$", false, []Field{{Name: "A", FieldType: NullableLong, Ordinal: 0}})
 	anonymous := NewRecordType("", false, []Field{{Name: "B", FieldType: NullableLong, Ordinal: 0}})
 	for _, order := range [][2]Type{{anonymous, declared}, {declared, anonymous}} {
 		repo := NewTypeProtoRepository()

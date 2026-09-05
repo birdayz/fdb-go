@@ -103,7 +103,10 @@ func (e *ProtoTypeError) Error() string {
 // shapes never take part — their namespace is unreachable from any identifier
 // (see the file header).
 type DeclaredNameClashError struct {
-	// Name is the declared record name both shapes claim.
+	// Name is the protobuf MESSAGE name both shapes claim — the declared
+	// record name after escaping (`a.b` is reported as `a__2b`), because that
+	// is what collides and what Java's guard compares
+	// (registerTypeToTypeNameMapping's inverse lookup is over proto names).
 	Name string
 	// Existing is the shape already defined under Name; Incoming the second.
 	Existing Type
