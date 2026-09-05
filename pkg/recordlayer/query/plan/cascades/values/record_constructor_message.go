@@ -170,14 +170,27 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // the child constructor: the bake works from ONE repository per plan, so a
 // stamped child has built a message of exactly this field's descriptor.
 //
-// "Stamped" is load-bearing there, not a formality. NOT every constructor is:
-// a plan whose row names one field twice poisons its repository, and the
-// constructors resolved after that point get no descriptor at all (TODO.md,
-// "A join row that names one field twice leaves its plan's rows unstamped"),
-// so their rows are maps rather than messages. This code is only on the stamped
-// path by construction — Evaluate calls buildRecordMessage only when its
-// descriptor is non-nil — which is why the sentence above holds here and would
-// be false stated over a whole plan.
+// "Stamped" is load-bearing there, not a formality, and it is the CHILD's
+// stampedness that the sentence needs. NOT every constructor is stamped: a plan
+// whose row names one field twice poisons its repository, and the constructors
+// resolved after that point get no descriptor at all (TODO.md, "A join row that
+// names one field twice leaves its plan's rows unstamped").
+//
+// What an unstamped constructor then PRODUCES is not one thing, and "its row is
+// a map" is too broad: on that plan the join and flat-map result constructors
+// never run Evaluate at all — the emitting paths build dense positional rows the
+// result set reads by ordinal — so only a constructor whose Evaluate fallback
+// actually runs, a computed STRUCT among them, hands back a name-keyed map.
+//
+// Reaching this code only proves the PARENT was stamped — Evaluate calls
+// buildRecordMessage when its own descriptor is non-nil — and the plan walk is
+// pre-order, so a parent is stamped before the subtrees under it are visited. A
+// stamped parent over an unstamped child is therefore a real shape, and it does
+// NOT degrade the way the rest of that booking describes: the map reaches the
+// final arm below and is refused, so the query fails rather than answering in a
+// weaker type. TestAStampedParentWithAnUnstampedChildFailsTheQuery pins that.
+// Whether a SQL query can build the shape is open and booked; the consequence
+// is measured either way.
 //
 // The stamped case is the property that lets Java's deepCopyIfNeeded
 // reconciliation (RecordConstructorValue.java:165-216) have nothing to

@@ -9253,6 +9253,20 @@ covered by the correctness suite and the golden plan diff, not by this table.
   outer-join rows arrive; a stored struct column through the same plan keeps its type), which
   reddens on the computed-struct half when this closes.
 
+  "Identity, not data" holds for every shape measured so far and is NOT known to hold for one:
+  a STAMPED parent constructor over an UNSTAMPED record-typed child. The two are independent —
+  a parent's descriptor is synthesised from its own inferred type, which already carries the
+  child's shape — and the plan walk is pre-order, so a parent is stamped before the subtrees
+  under it are visited and a poisoning in between leaves exactly that pair. A stamped parent has
+  no map fallback: it builds a message, the child hands it a map, and the map cannot be stored
+  in a message field, so the query FAILS instead of answering in a weaker type.
+  `TestAStampedParentWithAnUnstampedChildFailsTheQuery` pins that consequence over the values
+  API. What is OPEN is whether SQL can build the pair: the shape is constructible directly and
+  no query is known to produce it. Settle that before this item is closed — if it is reachable,
+  the cost is a query failure and the closure below is what fixes it; if it is not, pin the
+  reason, because the pre-order argument says it should be and an unexplained gap there is the
+  same defect waiting on a planner change.
+
   Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM b_md) SELECT a.id, c.id,
   d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id` —
   the text both pins run, its predicate chosen so the two `ID` slots differ — whose row is

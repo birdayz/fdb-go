@@ -159,14 +159,14 @@ func stampPlanNode(plan plans.RecordQueryPlan, st *planStamper, seen map[plans.R
 		return
 	}
 
-	stampNodeLocalValues(plan, st)
+	forEachNodeLocalValue(plan, func(v values.Value) { stampValue(v, st) })
 
 	for _, c := range plan.GetChildren() {
 		stampPlanNode(c, st, seen)
 	}
 }
 
-// stampNodeLocalValues reaches every value tree hanging off THIS plan node.
+// forEachNodeLocalValue reaches every value tree hanging off THIS plan node.
 //
 // GetResultValue() alone is not enough. Many plans flow their inner's value
 // through GetResultValue and keep the computed tree in a node-local field
@@ -189,40 +189,40 @@ func stampPlanNode(plan plans.RecordQueryPlan, st *planStamper, seen map[plans.R
 // FinalizePlan. A plan that grows a new value-bearing field, or one whose
 // subtree stops being reachable, fails that test rather than silently going
 // unstamped.
-func stampNodeLocalValues(plan plans.RecordQueryPlan, st *planStamper) {
-	stampValue(plan.GetResultValue(), st)
+func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) {
+	emit(plan.GetResultValue())
 
 	switch p := plan.(type) {
 	case *plans.RecordQueryProjectionPlan:
-		stampValues(p.GetProjections(), st)
+		forEachValue(p.GetProjections(), emit)
 	case *plans.RecordQueryPredicatesFilterPlan:
-		stampPredicates(p.GetPredicates(), st)
+		forEachPredicateValue(p.GetPredicates(), emit)
 	case *plans.RecordQueryFilterPlan:
-		stampPredicates(p.GetPredicates(), st)
+		forEachPredicateValue(p.GetPredicates(), emit)
 	case *plans.RecordQueryNestedLoopJoinPlan:
-		stampPredicates(p.GetPredicates(), st)
+		forEachPredicateValue(p.GetPredicates(), emit)
 	case *plans.RecordQueryStreamingAggregationPlan:
-		stampValues(p.GetGroupingKeys(), st)
+		forEachValue(p.GetGroupingKeys(), emit)
 		for _, a := range p.GetAggregates() {
-			stampValue(a.Operand, st)
+			emit(a.Operand)
 		}
 	case *plans.RecordQueryScanPlan:
-		stampValues(p.GetPrimaryKeyValues(), st)
-		stampScanComparisons(p.GetScanComparisons(), st)
+		forEachValue(p.GetPrimaryKeyValues(), emit)
+		forEachScanComparisonValue(p.GetScanComparisons(), emit)
 	case *plans.RecordQueryIndexPlan:
-		stampValues(p.GetCommonPrimaryKeyValues(), st)
-		stampScanComparisons(p.GetScanComparisons(), st)
+		forEachValue(p.GetCommonPrimaryKeyValues(), emit)
+		forEachScanComparisonValue(p.GetScanComparisons(), emit)
 	case *plans.RecordQueryAggregateIndexPlan:
 		// The wrapped index scan is a STRUCTURAL field, not a child: this plan
 		// is Java's RecordQueryPlanWithNoChildren and GetChildren returns nil.
 		// So the plan walk never descends into it and only this arm reaches its
 		// comparands and common primary key. Recursing through
-		// stampNodeLocalValues rather than repeating the index-plan field list
+		// forEachNodeLocalValue rather than repeating the index-plan field list
 		// keeps the two in step by construction. The nil guard is for the
 		// struct-literal test plans that bypass the constructor — a typed-nil
 		// pointer in an interface is not == nil, so it must be checked here.
 		if idx := p.GetIndexPlan(); idx != nil {
-			stampNodeLocalValues(idx, st)
+			forEachNodeLocalValue(idx, emit)
 		}
 	case *plans.RecordQueryCoveringIndexPlan:
 		// The second plan of the same shape, and for the same reason: the
@@ -230,7 +230,7 @@ func stampNodeLocalValues(plan plans.RecordQueryPlan, st *planStamper) {
 		// likewise implements RecordQueryPlanWithNoChildren), GetChildren
 		// returns nil, so the plan walk never descends into it.
 		//
-		// Recursing through stampNodeLocalValues rather than reading this
+		// Recursing through forEachNodeLocalValue rather than reading this
 		// plan's own delegating GetScanComparisons/GetCommonPrimaryKeyValues is
 		// deliberate: the delegates would have to be re-enumerated here every
 		// time the index-plan arm above grows a field, and the day they drift
@@ -239,90 +239,135 @@ func stampNodeLocalValues(plan plans.RecordQueryPlan, st *planStamper) {
 		// field-number-keyed message. Recursion keeps the two in step by
 		// construction.
 		if idx := p.GetIndexPlan(); idx != nil {
-			stampNodeLocalValues(idx, st)
+			forEachNodeLocalValue(idx, emit)
 		}
 	case *plans.RecordQueryVectorIndexPlan:
-		stampScanComparisons(p.GetPrefixComparisons(), st)
-		stampValue(p.GetQueryVector(), st)
-		stampValue(p.GetK(), st)
+		forEachScanComparisonValue(p.GetPrefixComparisons(), emit)
+		emit(p.GetQueryVector())
+		emit(p.GetK())
 	case *plans.RecordQueryInMemorySortPlan:
 		for _, sk := range p.GetSortKeys() {
-			stampValue(sk.ValueExpr, st)
+			emit(sk.ValueExpr)
 		}
 	case *plans.RecordQueryMergeSortUnionPlan:
-		stampValues(p.GetComparisonKeys(), st)
+		forEachValue(p.GetComparisonKeys(), emit)
 	case *plans.RecordQueryInUnionPlan:
-		stampValues(p.GetComparisonKeys(), st)
+		forEachValue(p.GetComparisonKeys(), emit)
 	case *plans.RecordQueryIntersectionPlan:
-		stampValues(p.GetComparisonKeyValues(), st)
+		forEachValue(p.GetComparisonKeyValues(), emit)
 	case *plans.RecordQueryMultiIntersectionOnValuesPlan:
-		stampValues(p.GetComparisonKey(), st)
+		forEachValue(p.GetComparisonKey(), emit)
 	case *plans.RecordQueryComparatorPlan:
-		stampValues(p.GetComparisonKeyValues(), st)
+		forEachValue(p.GetComparisonKeyValues(), emit)
 	case *plans.RecordQueryExplodePlan:
-		stampValue(p.GetCollectionValue(), st)
+		emit(p.GetCollectionValue())
 	case *plans.RecordQueryValuesPlan:
-		stampValues(p.GetColumns(), st)
+		forEachValue(p.GetColumns(), emit)
 	case *plans.RecordQueryTableFunctionPlan:
-		stampValue(p.GetStreamValue(), st)
+		emit(p.GetStreamValue())
 	case *plans.RecordQueryFirstOrDefaultPlan:
-		stampValue(p.GetDefaultValue(), st)
+		emit(p.GetDefaultValue())
 	case *plans.RecordQueryDefaultOnEmptyPlan:
-		stampValue(p.GetDefaultValue(), st)
+		emit(p.GetDefaultValue())
 	case *plans.RecordQueryLimitPlan:
-		stampValue(p.GetLimitValue(), st)
+		emit(p.GetLimitValue())
 	}
 }
 
-// stampValues stamps each value in a slice.
-func stampValues(vs []values.Value, st *planStamper) {
+// ForEachPlanRecordConstructor visits every RecordConstructorValue that
+// FinalizePlan would stamp, over the SAME traversal the stamper uses, and in
+// the same order.
+//
+// It exists so a census taken over a plan cannot count a different population
+// than the bake did. A census that walks only result values and child edges
+// misses every constructor reached through a projection list, a predicate, a
+// grouping key, a scan comparand, a default value or a structural plan field —
+// and it misses them SILENTLY, reporting a smaller population that still looks
+// like a measurement. Sharing forEachNodeLocalValue rather than re-deriving the
+// shape list keeps the two in step by construction, which is the same reason
+// the aggregate-index and covering-index arms above recurse instead of
+// re-listing their wrapped plan's fields.
+//
+// visit is called once per constructor occurrence, so a value reachable by two
+// routes is visited twice; plan NODES are visited once each.
+func ForEachPlanRecordConstructor(plan plans.RecordQueryPlan, visit func(*values.RecordConstructorValue)) {
+	seen := map[plans.RecordQueryPlan]struct{}{}
+	var walk func(plans.RecordQueryPlan)
+	walk = func(p plans.RecordQueryPlan) {
+		if p == nil {
+			return
+		}
+		if _, done := seen[p]; done {
+			return
+		}
+		seen[p] = struct{}{}
+		forEachNodeLocalValue(p, func(v values.Value) {
+			if v == nil {
+				return
+			}
+			values.WalkValue(v, func(node values.Value) bool {
+				if rc, ok := node.(*values.RecordConstructorValue); ok {
+					visit(rc)
+				}
+				return true
+			})
+		})
+		for _, c := range p.GetChildren() {
+			walk(c)
+		}
+	}
+	walk(plan)
+}
+
+// forEachValue emits each value in a slice.
+func forEachValue(vs []values.Value, emit func(values.Value)) {
 	for _, v := range vs {
-		stampValue(v, st)
+		emit(v)
 	}
 }
 
-// stampPredicates crosses from the predicate spine into the value spine. The
+// forEachPredicateValue crosses from the predicate spine into the value spine. The
 // two walkers are disjoint — WalkPredicate does not descend into Values and
 // WalkValue does not descend into predicates — so a predicate's value operands
 // are only reachable by walking both.
-func stampPredicates(preds []predicates.QueryPredicate, st *planStamper) {
+func forEachPredicateValue(preds []predicates.QueryPredicate, emit func(values.Value)) {
 	for _, p := range preds {
 		predicates.WalkPredicate(p, func(node predicates.QueryPredicate) bool {
 			switch q := node.(type) {
 			case *predicates.ComparisonPredicate:
-				stampValue(q.Operand, st)
-				stampValue(q.Comparison.Operand, st)
+				emit(q.Operand)
+				emit(q.Comparison.Operand)
 			case *predicates.ValuePredicate:
-				stampValue(q.Value, st)
+				emit(q.Value)
 			case *predicates.ExistentialValuePredicate:
-				stampValue(q.Value, st)
-				stampValue(q.Comparison.Operand, st)
+				emit(q.Value)
+				emit(q.Comparison.Operand)
 			case *predicates.Placeholder:
-				stampValue(q.Value, st)
-				stampComparisonRange(q.CompRange, st)
+				emit(q.Value)
+				forEachComparisonRangeValue(q.CompRange, emit)
 			}
 			return true
 		})
 	}
 }
 
-// stampScanComparisons reaches the comparands baked into a scan's ranges.
-func stampScanComparisons(ranges []*predicates.ComparisonRange, st *planStamper) {
+// forEachScanComparisonValue reaches the comparands baked into a scan's ranges.
+func forEachScanComparisonValue(ranges []*predicates.ComparisonRange, emit func(values.Value)) {
 	for _, r := range ranges {
-		stampComparisonRange(r, st)
+		forEachComparisonRangeValue(r, emit)
 	}
 }
 
-// stampComparisonRange stamps every comparand of one range. GetComparisons()
+// forEachComparisonRangeValue stamps every comparand of one range. GetComparisons()
 // enumerates equality and inequality comparisons uniformly, so a range shape
 // added later cannot slip past a hand-branched IsEquality/IsInequality test.
-func stampComparisonRange(r *predicates.ComparisonRange, st *planStamper) {
+func forEachComparisonRangeValue(r *predicates.ComparisonRange, emit func(values.Value)) {
 	if r == nil {
 		return
 	}
 	for _, c := range r.GetComparisons() {
 		if c != nil {
-			stampValue(c.Operand, st)
+			emit(c.Operand)
 		}
 	}
 }

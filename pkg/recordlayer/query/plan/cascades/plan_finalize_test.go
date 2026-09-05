@@ -17,7 +17,7 @@ import (
 // hanging off a plan is reached by the walk. Two ways a tree escapes:
 //
 //	(A) a plan type grows a value-bearing FIELD with no arm in
-//	    stampNodeLocalValues; or
+//	    forEachNodeLocalValue; or
 //	(B) a plan's SUBTREE is unreachable because GetChildren() does not return
 //	    it — the shape that let RecordQueryAggregateIndexPlan's embedded index
 //	    plan go unstamped (GetChildren returns nil by design, the index plan is
@@ -136,19 +136,19 @@ type specimen struct {
 // resultValueIsMinted is the allowlist reason shared by every plan whose
 // resultValue field is minted inside its constructor (a QuantifiedObjectValue
 // standing for the rows the leaf emits, RFC-184 W2) and is therefore not
-// settable from a test. stampNodeLocalValues stamps plan.GetResultValue()
+// settable from a test. forEachNodeLocalValue stamps plan.GetResultValue()
 // unconditionally as its first act, and the four plans that DO accept a
 // caller-supplied resultValue (Map, FlatMap, NestedLoopJoin,
 // MultiIntersectionOnValues) plant a real sentinel there — so the mechanism is
 // proven behaviourally where it can be, and asserted only where the field
 // cannot be reached from outside the package.
-const resultValueIsMinted = "constructor-minted QuantifiedObjectValue, returned by GetResultValue() which stampNodeLocalValues stamps first"
+const resultValueIsMinted = "constructor-minted QuantifiedObjectValue, returned by GetResultValue() which forEachNodeLocalValue stamps first"
 
 // RFC-232 made PlanExprBase own the exact, constructor-minted result QOV for
 // every physical plan. Reflection therefore sees the embedded base itself as a
 // value carrier. Callers cannot plant a sentinel inside it, but its only value
-// is the same GetResultValue() contract stampNodeLocalValues visits first.
-const planExprBaseResultIsMinted = "embedded base owns the constructor-minted exact result QOV returned by GetResultValue(), which stampNodeLocalValues stamps first"
+// is the same GetResultValue() contract forEachNodeLocalValue visits first.
+const planExprBaseResultIsMinted = "embedded base owns the constructor-minted exact result QOV returned by GetResultValue(), which forEachNodeLocalValue stamps first"
 
 func globallyProvenStampableField(field string) string {
 	if field == "PlanExprBase" {
@@ -726,7 +726,7 @@ var specimens = map[string]specimen{
 //
 // It went red on RecordQueryAggregateIndexPlan.indexPlan — a plan-typed field
 // that GetChildren() deliberately does not return and that had no arm in
-// stampNodeLocalValues, so the embedded index scan's comparands were never
+// forEachNodeLocalValue, so the embedded index scan's comparands were never
 // baked.
 func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 	t.Parallel()
@@ -771,7 +771,7 @@ func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 				if !isPlanted && reason == "" {
 					t.Errorf("%s.%s carries values FinalizePlan must stamp, and nothing "+
 						"proves the walk reaches it. Either add an arm to "+
-						"stampNodeLocalValues (or make GetChildren return the edge) and "+
+						"forEachNodeLocalValue (or make GetChildren return the edge) and "+
 						"plant a sentinel for %[2]q in this specimen, or allowlist %[2]q "+
 						"with the reason the walk already reaches it.", name, f)
 				}
@@ -804,7 +804,7 @@ func TestFinalizePlanCoversStructuralKey(t *testing.T) {
 				case !spec.writeFed && !stamped:
 					t.Errorf("%s.%s: sentinel RecordConstructorValue was NOT stamped — "+
 						"FinalizePlan never reached it. Add an arm for %[1]s in "+
-						"stampNodeLocalValues that walks this field (or return the edge "+
+						"forEachNodeLocalValue that walks this field (or return the edge "+
 						"from GetChildren).", name, field)
 				}
 			}
@@ -868,7 +868,7 @@ func TestFinalizePlanStampsCoveringIndexInnerScan(t *testing.T) {
 			t.Errorf("covering index scan's %s RecordConstructorValue was NOT stamped: "+
 				"FinalizePlan never reached the wrapped index plan. It is a structural "+
 				"FIELD, not a child, so GetChildren does not return it and only a "+
-				"dedicated arm in stampNodeLocalValues can reach it. Unstamped, the "+
+				"dedicated arm in forEachNodeLocalValue can reach it. Unstamped, the "+
 				"constructor evaluates to its name-keyed map instead of the "+
 				"field-number-keyed message.", label)
 		}
@@ -1002,7 +1002,7 @@ func TestFinalizePlanReturnsTheNameClashAndKeepsTheMapForNoMessageForm(t *testin
 	})
 	stamped := sentinel()
 	st := &planStamper{repo: values.NewTypeProtoRepository()}
-	stampValues([]values.Value{erased, stamped}, st)
+	forEachValue([]values.Value{erased, stamped}, func(v values.Value) { stampValue(v, st) })
 	if st.nameClash != nil {
 		t.Fatalf("stamping beside a type with no message form = %v, want nil: that constructor keeps its map", st.nameClash)
 	}

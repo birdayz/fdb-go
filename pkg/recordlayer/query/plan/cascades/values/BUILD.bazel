@@ -226,6 +226,7 @@ go_test(
         "type_test.go",
         "unbound_eval_context_test.go",
         "unresolved_reference_test.go",
+        "unstamped_child_of_stamped_parent_test.go",
         "uuid_descent_test.go",
         "value_andor_test.go",
         "value_array_constructor_test.go",

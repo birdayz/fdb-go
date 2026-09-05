@@ -697,47 +697,33 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 		t.Fatalf("FinalizePlan over the FULL OUTER JOIN: %v", bakeErr)
 	}
 
+	// Counted over the STAMPER's own traversal, not a second one written here. A
+	// census that walks only result values and child edges misses every
+	// constructor FinalizePlan reaches through a projection list, a predicate, a
+	// grouping key, a scan comparand or a default value — silently, reporting a
+	// smaller population that still reads like a measurement. That is how the
+	// exact-shape guard at the end of this function would fail OPEN.
 	var constructors, duplicates, unstamped int
-	var walk func(plans.RecordQueryPlan)
-	seen := map[plans.RecordQueryPlan]struct{}{}
-	walk = func(p plans.RecordQueryPlan) {
-		if p == nil {
+	cascades.ForEachPlanRecordConstructor(plan, func(rc *cascadesvalues.RecordConstructorValue) {
+		row, isRow := rc.Type().(*cascadesvalues.RecordType)
+		if !isRow {
 			return
 		}
-		if _, done := seen[p]; done {
-			return
+		names := map[string]int{}
+		for _, f := range row.Fields {
+			names[f.Name]++
 		}
-		seen[p] = struct{}{}
-		cascadesvalues.WalkValue(p.GetResultValue(), func(node cascadesvalues.Value) bool {
-			rc, isRecord := node.(*cascadesvalues.RecordConstructorValue)
-			if !isRecord {
-				return true
+		constructors++
+		for _, n := range names {
+			if n > 1 {
+				duplicates++
+				break
 			}
-			row, isRow := rc.Type().(*cascadesvalues.RecordType)
-			if !isRow {
-				return true
-			}
-			names := map[string]int{}
-			for _, f := range row.Fields {
-				names[f.Name]++
-			}
-			constructors++
-			for _, n := range names {
-				if n > 1 {
-					duplicates++
-					break
-				}
-			}
-			if rc.MessageDescriptor() == nil {
-				unstamped++
-			}
-			return true
-		})
-		for _, c := range p.GetChildren() {
-			walk(c)
 		}
-	}
-	walk(plan)
+		if rc.MessageDescriptor() == nil {
+			unstamped++
+		}
+	})
 
 	if duplicates == 0 {
 		t.Fatal("no row in this plan names a field twice any more — the ordinal join row is " +
@@ -765,18 +751,21 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 	}
 	// The assertions above are floors, deliberately: they state the INVARIANT and
 	// survive a planner change that moves the specimen. "Three of the four" is a
-	// different kind of claim — a MEASUREMENT, quoted in five places as a fact
-	// about this plan — and a floor cannot keep a measurement true. A fifth
-	// constructor, or a fourth unstamped one, leaves every check above green
-	// while all five sentences go stale, which is exactly how a number with no
-	// expiry condition rots. This is that expiry condition.
+	// different kind of claim — a MEASUREMENT, quoted in SIX files as a fact
+	// about this plan, one of them this one — and a floor cannot keep a
+	// measurement true. A fifth constructor, or a fourth unstamped one, leaves
+	// every check above green while all six sentences go stale, which is exactly
+	// how a number with no expiry condition rots. This is that expiry condition,
+	// and the fatal below names the six so the count and the list cannot drift
+	// apart the way this comment's own count once did.
 	if constructors != 4 || unstamped != 3 {
 		t.Fatalf("this plan has %d record constructors, %d of them unstamped — the measurement "+
 			"written as `three of four` no longer describes this specimen. Six files state it: "+
 			"this one, queryfixtures.go, plan_finalize.go, values.go (RecordConstructorValue's "+
 			"Evaluate doc), TODO.md's booking and RFC-242. Re-measure and restate it in all six; "+
 			"do not relax this guard, or the number goes on being quoted at a plan nobody has "+
-			"looked at. (proto_type_test.go states the walk-order claim without a number, so it "+
-			"does not go stale with the count.)", constructors, unstamped)
+			"looked at. TWO further files state the walk-order half WITHOUT a number — "+
+			"proto_type_test.go and record_constructor_message.go — so they do not go stale with "+
+			"the count and are deliberately not in the six.", constructors, unstamped)
 	}
 }

@@ -14,7 +14,7 @@ Outstanding against the implementation (three independent review passes):
   the bypassing plan because it is the cheaper one.
 - Coveringness becoming a plan TYPE left `*RecordQueryIndexPlan` type-switches
   blind, because `plans.Walk` does not descend into the wrapped scan. At least
-  two are correctness (`stampNodeLocalValues` never reaching a covering plan's
+  two are correctness (`forEachNodeLocalValue` never reaching a covering plan's
   comparands; `probeOuterBakedType` returning nil).
 - Three alternatives stopped being CONSTRUCTED with no golden movement at all —
   this RFC's own thesis ("not a losing plan, a plan the memo never saw")
