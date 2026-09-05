@@ -9224,9 +9224,12 @@ covered by the correctness suite and the golden plan diff, not by this table.
   with the stored column's `R`, leaving `ID` as the single repeated name for the control to
   remove. The control must also WRAP `c_md` in a derived table, because the dialect cannot
   rename a base column in place — so a third read keeps that wrapper and restores the repeat
-  (`SELECT id AS id` beside the control's `SELECT id AS cid`), and still comes back a map,
-  which is what shows the wrapper inert and the repeat load-bearing. Dropping the join, leaving
-  a second repeat in place, or omitting that third read could not tell which caused the raw map. No DATA is lost: the emitting paths (executeProjection, the
+  (`SELECT id AS id` beside the control's `SELECT id AS cid`, differing in the alias and the
+  reference it forces, nothing else), and comes back the SAME raw map `{X:1 Y:10}` the witness
+  gives — asserted as a map with its values, not merely as not-a-struct, which is what shows the
+  wrapper inert rather than just harmless. Dropping the join, leaving
+  a second repeat in place, or omitting that third read could not tell which caused the raw
+  map. No DATA is lost: the emitting paths (executeProjection, the
   flat-map cursor's record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows
   the result set reads by ORDINAL, so both `ID` slots arrive with their own values (measured with
   a predicate that keeps them different; with both equal the check cannot discriminate). The
@@ -9235,11 +9238,13 @@ covered by the correctness suite and the golden plan diff, not by this table.
   STORED struct column read through the same poisoned plan is unaffected — it carries its own
   stored descriptor, not a constructor's — so the damage is confined to COMPUTED rows, pinned
   with the rest. (Two different axes, and they are not the same word: WITHIN a plan the failure
-  spreads across the whole repository, and ACROSS row kinds it stops at computed ones.) Pinned in both directions by
+  spreads across the whole repository, and ACROSS row kinds it stops at computed ones.) Pinned
+  in both directions by
   `TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues` (the STRUCT comes back a map
   through the duplicate and an `api.Struct` with only the name removed; the exact outer-join rows
   arrive; a stored struct column through the same plan keeps its type), which reddens on the
-  computed-struct half when this closes. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM
+  computed-struct half when this closes. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…)
+  AS foo FROM
   b_md) SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c
   ON a.id + 1 = c.id` — the text both pins run, its predicate chosen so the two `ID` slots differ
   — whose row is `RECORD<ID, S, BID, FOO, ID>`. WITHIN one plan the failure spreads across the whole

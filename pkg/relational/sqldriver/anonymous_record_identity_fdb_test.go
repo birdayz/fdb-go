@@ -252,8 +252,12 @@ const duplicateNameJoinQuery = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FR
 // theirs too. That is USER-VISIBLE: a COMPUTED struct selected through such a
 // plan comes back as a raw `map[string]any`, where the SAME join with the
 // repeated name removed returns an `api.Struct` carrying the same values. The
-// control changes only the name — it keeps the join — so the raw map is
-// attributable to the duplicate rather than to joining at all.
+// control keeps the join and changes the name — and, because the dialect cannot
+// rename a base column in place, it also wraps that leg in a derived table. A
+// third read keeps that wrapper WITH the repeat and still gives the raw map,
+// which is what makes the wrapper inert and leaves the repeat as the only thing
+// the set varies. So the raw map is attributable to the duplicate name, not to
+// joining and not to the wrapper.
 //
 // What it does NOT cost is data: the emitting paths build dense positional rows
 // the result set reads by ORDINAL, so the whole outer-join result arrives, both
@@ -337,6 +341,13 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 			"struct came back as %T — the wrapper, not the repeat, is what the control changes, so "+
 			"the pair no longer attributes the raw map to the duplicate name", wrapped)
 	}
+	wrappedMap, isMap := wrapped.(map[string]any)
+	if !isMap || wrappedMap["X"] != int64(1) || wrappedMap["Y"] != int64(10) {
+		t.Fatalf("with the wrapper kept and the repeat restored, the computed struct = %#v, want the "+
+			"same raw map {X:1 Y:10} the witness gives: asserting only that it is NOT a struct would "+
+			"pass for an empty map, a wrong-valued one or a raw protobuf, leaving the wrapper merely "+
+			"harmless where this read has to show it INERT", wrapped)
+	}
 
 	// The STORED column from that same row keeps its type.
 	storedStruct, isStruct := stored.(api.Struct)
@@ -390,8 +401,12 @@ func nullBool(v sql.NullBool) string {
 	return fmt.Sprintf("%v", v.Bool)
 }
 
-// witnessWithRepeatedID and controlWithoutRepeatedID differ in exactly one
-// thing: whether the join row repeats a field name.
+// witnessWithRepeatedID, controlWithoutRepeatedID and wrapperKeptRepeatedID are
+// read as a SET OF THREE, because the first two differ in two things: whether
+// the join row repeats a field name, and whether that leg is wrapped in a
+// derived table. The wrapper is forced by the rename, not chosen, and the third
+// read is what shows it inert — so across the set the repeat is the only thing
+// that varies.
 //
 // Both read a COMPUTED struct and a STORED struct column out of one row. The
 // CTE's struct is named `RR`, not `R`, deliberately: with both called `R` the
@@ -415,10 +430,12 @@ const controlWithoutRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS
 // FORCED: the dialect cannot rename a base table's column in place, so removing
 // the repeat requires a derived table to rename through. Reading this shape
 // shows the wrapper is inert: with the repeat back, the computed struct is a raw
-// map again. Written `id AS id` so the only textual difference from the control
-// is the alias. Without this read, a change in how derived tables are planned
-// could make the control return a struct for the wrapper's sake, and the pairing
-// would keep reading as proof while proving nothing — derived-table projections
+// map again. Written `id AS id` so it differs from the control in the alias
+// alone — and in the `c.cid`/`c.id` reference the alias forces, which is not a
+// second variable but a consequence of the first. Without this read, a change
+// in how derived tables are planned could make the control return a struct for
+// the wrapper's sake, and the pairing would keep reading as proof while proving
+// nothing — derived-table projections
 // are descriptor-relevant, which is exactly what the tests above this one pin.
 const wrapperKeptRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
 	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS id FROM c_md) AS c ON s.id + 1 = c.id"
