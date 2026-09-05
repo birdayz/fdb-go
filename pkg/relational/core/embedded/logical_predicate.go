@@ -349,10 +349,15 @@ func exactVirtualScopeSource(
 	// names the plan flows are the names this source's quantified object must
 	// state, or the scope and the plan disagree about one row. A projection
 	// over a join names a repeated bare leaf by its qualified datum key
-	// (GA.G beside G), a record constructor names a repeated output by the
-	// name-addressability suffix (K, K_2), and a raw positional merge keeps
-	// every leg name verbatim (K, K); the exact derivation mirrors each of
-	// them because it IS the plan's type authority. Publishing the SQL labels
+	// (GA.G beside G) and a record constructor names a repeated output by the
+	// name-addressability suffix (K, K_2); the exact derivation of a
+	// PROJECTION or an AGGREGATE mirrors the record constructor the body
+	// flows, and only there is it stated as the layout. A projection-less
+	// join's exact type names its fields by the leg-qualified datum keys of
+	// the retired row map (A.AID), which is not the row the executor's
+	// positional merge flows, so such a body keeps the SQL labels as its only
+	// row — the behaviour every read of it had before — rather than a layout
+	// no binding declares. Publishing the SQL labels
 	// as the layout instead made every read bound to the quantified object —
 	// a WHERE, a sort key, an aggregate key or operand over a unique column of
 	// such a body — refused at execution as `edge lookup U: read as
@@ -362,7 +367,10 @@ func exactVirtualScopeSource(
 	// repeated name is ambiguous (42702) and a unique name resolves to its
 	// position; a column whose label and flowed name differ is, by that same
 	// rule, never resolved by name.
-	flowed := make([]semantic.Column, len(record.Fields))
+	var flowed []semantic.Column
+	if bodyFlowsARecordConstructor(op) {
+		flowed = make([]semantic.Column, len(record.Fields))
+	}
 	for i, field := range record.Fields {
 		name := field.Name
 		if len(labels) > 0 {
@@ -373,20 +381,58 @@ func exactVirtualScopeSource(
 			return semantic.ScopeSource{}, false
 		}
 		columns[i] = column
-		flowed[i] = column
-		flowed[i].Id = semantic.FromNormalized(field.Name)
+		if flowed != nil {
+			flowed[i] = column
+			flowed[i].Id = semantic.FromNormalized(field.Name)
+		}
 	}
 	aliasID := semantic.FromNormalized(alias)
-	return semantic.ScopeSource{
+	source := semantic.ScopeSource{
 		Table: &semantic.StaticTable{
 			TableName:    semantic.FromSegments([]string{alias}, false),
 			TableColumns: columns,
 		},
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
-		FlowedColumns:   flowed,
-		FlowedNullable:  record.Nullable,
-	}, true
+	}
+	if flowed != nil {
+		source.FlowedColumns = flowed
+		source.FlowedNullable = record.Nullable
+	}
+	return source, true
+}
+
+// bodyFlowsARecordConstructor reports whether a body's row is a record
+// constructor's — a projection or an aggregate at the top, under the
+// row-preserving wrappers (filter, sort, limit, distinct) — so that the exact
+// type's field names are the names the executor emits and may be stated as the
+// source's flowed layout. A join, a scan or a set operation at the top flows a
+// row the exact type does not name the same way.
+func bodyFlowsARecordConstructor(op logical.LogicalOperator) bool {
+	for {
+		switch typed := op.(type) {
+		case *logical.LogicalFilter:
+			op = typed.Input
+		case *logical.LogicalSort:
+			op = typed.Input
+		case *logical.LogicalLimit:
+			op = typed.Input
+		case *logical.LogicalDistinct:
+			op = typed.Input
+		case *logical.LogicalUnion:
+			// A union flows its FIRST leg's row: the translator aligns every
+			// other leg onto it (RFC-242), so the first leg's constructor is
+			// the row the union emits.
+			if len(typed.Inputs) == 0 {
+				return false
+			}
+			op = typed.Inputs[0]
+		case *logical.LogicalProject, *logical.LogicalAggregate:
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 // semanticColumnFromExactType is the lossless subset of the rich cascades type
@@ -626,6 +672,20 @@ func buildDerivedTableSourceWithCTEs(
 		return buildDerivedTableSourceFromTerm(md, alias, body, cteScopes)
 	case *antlrgen.SetQueryContext:
 		if source, ok := buildDerivedTableSourceFromUnion(md, alias, body, cteScopes); ok {
+			// The structural fold states the SQL names and the folded types; the
+			// exact body, under those names, adds the FLOWED layout — the first
+			// leg's constructor row, which is what the union emits — so a read
+			// bound to the source's quantified object over a leg that repeats a
+			// bare leaf binds the row the plan declares (`SELECT u.w FROM (SELECT
+			// ga.g, c.id AS g, c.w FROM ga, c UNION ALL …) u WHERE u.w = 1` was
+			// refused as an edge-layout mismatch while its CTE spelling answered).
+			names := make([]string, len(source.Table.Columns()))
+			for i, column := range source.Table.Columns() {
+				names[i] = column.Id.Name()
+			}
+			if exact, exactOK := buildExactVirtualScopeSourceForBody(md, alias, body, cteScopes, names); exactOK {
+				return exact, true
+			}
 			return source, true
 		}
 		// The structural fold above types the union one BRANCH at a time, and a
@@ -1059,11 +1119,13 @@ func buildDerivedTableSourceFromJoinBody(
 	// plan declares as [GA.G G W], and every read bound to it — a WHERE, a sort
 	// key, an aggregate key — was refused at execution as an edge-layout
 	// mismatch while the CTE spelling of the same body answered. The walk
-	// remains the fallback for a row the exact derivation cannot state.
-	if len(innerSQ.aggCols) == 0 && !innerSQ.countStar {
-		if src, ok := buildExactVirtualScopeSourceForSelect(md, alias, innerSQ, nil, projectionOutputNames(innerSQ)); ok {
-			return src, true
-		}
+	// remains the fallback for a row the exact derivation cannot state, and it
+	// is the ONLY fallback: a walk that cannot describe a leg has nothing
+	// further to try, because the exact derivation already declined. An
+	// aggregate body never reaches this builder (buildDerivedTableSourceFromTerm
+	// takes its aggregate arm first).
+	if src, ok := buildExactVirtualScopeSourceForSelect(md, alias, innerSQ, nil, projectionOutputNames(innerSQ)); ok {
+		return src, true
 	}
 	// A projection-less lateral-unnest body has a complete positional schema
 	// even though its FROM list is syntactically a join. Derive that narrow
@@ -1071,13 +1133,6 @@ func buildDerivedTableSourceFromJoinBody(
 	// correlated sources).
 	if src, ok := buildDerivedUnnestScopeSource(md, alias, innerSQ); ok {
 		return src, true
-	}
-	for _, e := range innerSQ.projExprs {
-		if e != nil {
-			return buildExactVirtualScopeSourceForSelect(
-				md, alias, innerSQ, nil, projectionOutputNames(innerSQ),
-			)
-		}
 	}
 	cat := rlcatalog.Wrap(md)
 	analyzer := semantic.NewAnalyzer(cat, false)
@@ -1111,28 +1166,21 @@ func buildDerivedTableSourceFromJoinBody(
 	}
 	// A leg this catalog walk cannot describe — a LATERAL ARRAY UNNEST
 	// (`C."ARR" AS "X"`, which resolveLeg declines as a dotted source), a
-	// derived leg, a USING leg — is not a reason to have no scope at all. The
-	// body still has one exact row, and the exact derivation (the same one the
-	// translator runs) can state it. Before RFC-232 the decline landed on a
-	// text-resolved column and the query still planned; now it lands on nothing,
-	// and an outer `SELECT t.ak` over such a body failed with `projection slot 0
-	// has no resolved Value`.
-	exactFallback := func() (semantic.ScopeSource, bool) {
-		return buildExactVirtualScopeSourceForSelect(
-			md, alias, innerSQ, nil, projectionOutputNames(innerSQ))
-	}
+	// derived leg, a USING leg — is a decline: the exact derivation above has
+	// already had the body, and this walk is what remains for a row it could
+	// not state.
 	primary, ok := resolveLeg(innerSQ.tableName, innerSQ.tableAlias, innerSQ.sourceSegments)
 	if !ok {
-		return exactFallback()
+		return semantic.ScopeSource{}, false
 	}
 	legs := []bodyLeg{primary}
 	for _, j := range innerSQ.joins {
 		if j.derivedQuery != nil || len(j.usingHiddenCols) > 0 || j.usingUids != nil {
-			return exactFallback()
+			return semantic.ScopeSource{}, false
 		}
 		leg, legOK := resolveLeg(j.tableName, j.alias, j.segments)
 		if !legOK {
-			return exactFallback()
+			return semantic.ScopeSource{}, false
 		}
 		legs = append(legs, leg)
 	}
@@ -3063,9 +3111,7 @@ func buildWherePredicateForJoinsWithCTEScopes(
 		if src, found := cteScopes[strings.ToUpper(tableName)]; found && src.Table != nil {
 			// found-with-nil-Table is a TOMBSTONE (declared CTE, schema
 			// underivable) — decline instead of AddSource(nil) nil-deref.
-			src.Alias = aliasID
-			src.CorrelationName = binding
-			return scope.AddSource(src) == nil
+			return scope.AddSource(cteSourceAs(src, aliasID, binding)) == nil
 		}
 		return false
 	}
@@ -6591,10 +6637,9 @@ func buildProjectionResolverWithCTEScopes(sq *selectQuery, md *recordlayer.Recor
 		// present, else the alias.
 		binding := bindingOrAlias(bindingID, aliasID)
 		if src, ok := cteScopes[strings.ToUpper(tableName)]; ok {
-			src.Alias = aliasID
-			src.CorrelationName = binding
-			src.HiddenColumns = hiddenColumnSet(hidden)
-			return scope.AddSource(nullSupplyingSource(src, paddedAt(padded, position))) == nil
+			cteSrc := cteSourceAs(src, aliasID, binding)
+			cteSrc.HiddenColumns = hiddenColumnSet(hidden)
+			return scope.AddSource(nullSupplyingSource(cteSrc, paddedAt(padded, position))) == nil
 		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
 		if err != nil {
@@ -10063,9 +10108,7 @@ func buildOuterScopeSources(sq *selectQuery, md *recordlayer.RecordMetaData, sch
 			if src.Table == nil {
 				return
 			}
-			src.Alias = a
-			src.CorrelationName = bindingOrAlias(bindingID, a)
-			sources = append(sources, src)
+			sources = append(sources, cteSourceAs(src, a, bindingOrAlias(bindingID, a)))
 			return
 		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))

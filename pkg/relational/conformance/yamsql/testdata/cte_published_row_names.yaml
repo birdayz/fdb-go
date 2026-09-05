@@ -161,3 +161,17 @@ tests:
     rows:
       - [100]
       - [200]
+  # The aliased grouping key keeps its alias as the body's COLUMN LABEL too:
+  # both consumers of a grouping key's alias (the body's projection and the
+  # published schema) read the parser's fact, never an inference from the
+  # spelling. Inferring it labelled this column G. The star reads the body's
+  # own labels; an outer `SELECT u."GA.G"` is labelled by the reader's
+  # qualifier-stripping rule, which cannot tell a quoted dotted column whose
+  # halves name a table and its column from a qualified reference — RFC-238
+  # §7d's open shape, not this row's.
+  - query: WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT * FROM u
+    columns: ["GA.G", "S"]
+    unordered: true
+    rows:
+      - [100, 12]
+      - [200, 9]

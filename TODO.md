@@ -9052,15 +9052,21 @@ covered by the correctness suite and the golden plan diff, not by this table.
   CTE source whole into every reading scope (`cteSourceAs`), and let the resolver take a
   column's ordinal from its SQL position while naming the read by the flowed slot — so a
   WHERE, a sort key, an aggregate key or operand over a unique column of a body that repeats
-  a bare leaf or an alias answers in both spellings. One shape remains, pre-existing at the
-  merge-base in a different loud form: an aggregate over a `SELECT *` DERIVED TABLE whose body
-  is a gathered multi-source unnest cluster (`SELECT d.aid, COUNT(*) FROM (SELECT * FROM a, b,
-  a.arr AS x WHERE EXISTS (…)) d GROUP BY d.aid`) fails to plan — `column "AID" resolves
-  against source "D", which declares no column order to bind a plan-time ordinal`. The CTE
-  spelling of that body stays out of the global scope by shape and answers through the
+  a bare leaf or an alias answers in both spellings, as does the union-bodied derived table.
+  Two reads of a gathered multi-source unnest star body remain, both pre-existing at the
+  merge-base in the same form (measured on SimFDB over `a(aid, k, arr)`, `b(bid, k)`, `ee(ck)`
+  with one row each, at the merge-base `36b97f1e9` and at this head):
+  - an aggregate over the DERIVED spelling — `SELECT d.aid, COUNT(*) FROM (SELECT * FROM a,
+    b, a.arr AS x) d GROUP BY d.aid` — is refused at execution: `exact QOV "D" (…) has no
+    declared runtime binding`; a projection or a WHERE over the same derived table answers;
+  - a WHERE over the CTE spelling — `WITH d AS (SELECT * FROM a, b, a.arr AS x) SELECT d.aid
+    FROM d WHERE d.aid = 1` — does not plan (`0AF00: Cascades planner could not plan query`);
+    a projection or an aggregate over the same CTE answers (`TestFDB_UnnestExistsGather`,
+    `agg_cte_*`).
+  The CTE spelling stays out of the global scope by shape and its aggregate binds through the
   translator's seed bake (`exactGatheredCTEGroupKeyValue`); the derived spelling has no such
   arm, and `translateAggregate`'s positional-gather comment already books the
   projected-output-layout ordinalization it needs (Java answers GROUP BY over a projecting
-  derived source, GroupByQueryTests:699). Measured on SimFDB over `a(aid, k, arr)`, `b(bid,
-  k)`, `ee(ck)` with one row each; the CTE twin of every derived shape here is pinned in
-  `TestFDB_UnnestExistsGather` (`agg_cte_*`).
+  derived source, GroupByQueryTests:699). One boundary for both is what closes them: a
+  projection-less body's quantifier declared at execution, or the body normalized to the
+  explicit projection Java's expandStar always produces.

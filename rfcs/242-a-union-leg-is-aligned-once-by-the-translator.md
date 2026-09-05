@@ -531,7 +531,14 @@ runtime names, or the SQL name, stand where the other belonged:
    SQL-named list and names the read by the flowed slot (`sourceColumnOrdinal`,
    `resolvedSourceColumnRef`), and every site that installs a registered CTE into a reading scope
    carries the source WHOLE (`cteSourceAs`) instead of rebuilding it from its `Table`. The
-   derived-table join body publishes its exact row first, as the aggregate and CTE arms do,
+   layout is stated only for a body whose row IS a record constructor's — a projection or an
+   aggregate at the top, or a union, which flows its first leg's — because the exact type of a
+   projection-less join names its fields by the leg-qualified datum keys of the retired row map,
+   not by the row the executor's merge flows; a first cut stated it for every body and a WHERE
+   over a gathered-unnest star derived table regressed (Graefe, r6). The derived-table join body
+   and the union-bodied derived table publish their exact row first, as the aggregate and CTE
+   arms do (the union-derived spelling of the repeated-leaf body was refused as the same
+   edge-layout mismatch while its CTE spelling answered),
    and the exact type's projection arm applies the constructor's dedup so the two agree on a
    repeated alias (`[G G_2 N]`) — while the label derivation, which is what a source publishes
    for RESOLUTION, keeps the SQL names repeated: one per-slot naming rule
@@ -570,15 +577,16 @@ mechanism depends on them.
 - The two `EqualFold` lookups in `rule_implement_in_union.go:130` and `physical_key_types.go:295`
   are identifier LOOKUPS against physical field names, the class RFC-237 §Scope permits, not
   presentations. Not touched.
-- An aggregate over a `SELECT *` DERIVED TABLE whose body is a gathered multi-source unnest
-  cluster (`FROM (SELECT * FROM a, b, a.arr AS x …) d … GROUP BY d.aid`) fails to plan —
-  `column "AID" resolves against source "D", which declares no column order to bind a plan-time
-  ordinal` — pre-existing at the merge-base, where it failed as an undeclared binding. The CTE
-  spelling of that body stays out of the global scope by shape (§ Fix F) and answers through
-  the translator's seed bake; the derived spelling has no such arm, and the translator already
-  books the projected-output-layout ordinalization it needs (`translateAggregate`, the
-  positional-gather comment). Recorded in `TODO.md` ("Exact quantifier binding over a CTE or
-  derived body") with the measurement.
+- Two reads of a gathered multi-source unnest star body (`SELECT * FROM a, b, a.arr AS x`),
+  both pre-existing at the merge-base in the same form: an aggregate over the DERIVED spelling
+  (`… FROM (…) d GROUP BY d.aid`) is refused at execution as an undeclared binding of `D`, and
+  a WHERE over the CTE spelling (`WITH d AS (…) SELECT d.aid FROM d WHERE d.aid = 1`) does not
+  plan. The CTE spelling stays out of the global scope by shape (§ Fix F) and an aggregate over
+  it answers through the translator's seed bake; the derived spelling has no such arm, and the
+  translator already books the projected-output-layout ordinalization it needs
+  (`translateAggregate`, the positional-gather comment). A projection or a WHERE over the
+  derived spelling answers, as before. Recorded in `TODO.md` ("Exact quantifier binding over a
+  CTE or derived body") with the measurements.
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
   thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job
   cancelled from outside after 3–67 minutes with no timeout annotation) need host access; the

@@ -520,16 +520,22 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, *values.R
 	// the flowed layout, parallel to it by construction, is what the ordinal
 	// indexes. Looking the SQL name up in the flowed layout instead missed
 	// every column whose two names differ.
-	if src.Table != nil && len(src.FlowedColumns) > 0 {
-		labels := src.Table.Columns()
-		if len(labels) == len(rowType.Fields) {
-			for i, c := range labels {
-				if strings.EqualFold(c.Id.Name(), field) {
-					return i, rowType, true
-				}
+	if labels := src.Table.Columns(); len(src.FlowedColumns) > 0 && len(labels) == len(rowType.Fields) {
+		// PARALLEL lists: a source that states a flowed layout the same width
+		// as its SQL columns (an exact derived source) is resolved by position.
+		for i, c := range labels {
+			if strings.EqualFold(c.Id.Name(), field) {
+				return i, rowType, true
 			}
 		}
+		return 0, nil, false
 	}
+	// The layout IS the SQL list (an ordinary table), or it is deliberately
+	// WIDER than it: an AT-only WITH ORDINALITY source exposes the ordinal
+	// alias alone while its row still carries the unexposed element in slot 0
+	// (unnestVirtualScopeSource), and the exposed name is looked up in that
+	// row. Those are the two shapes this branch serves; a flowed layout that
+	// is NARROWER than the SQL list is not a shape any source states.
 	for i, f := range rowType.Fields {
 		if strings.EqualFold(f.Name, field) {
 			return i, rowType, true

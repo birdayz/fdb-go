@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=368 queries=2705 dml=172 non_query=109 plan_errors=300 unexpected_errors=4
+# files=368 queries=2706 dml=172 non_query=109 plan_errors=300 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -4329,12 +4329,20 @@ shape:         RecordQueryScanPlan
 shape:         RecordQueryScanPlan
 === cte_published_row_names.yaml#25
 sql:   WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u."GA.G" AS z FROM u ORDER BY z
-plan:  Project([_current.G#0], Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))))
+plan:  Project([_current.GA.G#0], InMemorySort([_current.GA.G#0 ASC], Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))))
 shape: RecordQueryProjectionPlan
-shape:   RecordQueryProjectionPlan
-shape:     RecordQueryStreamingAggregationPlan
-shape:       RecordQueryInMemorySortPlan
-shape:         RecordQueryScanPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryInMemorySortPlan
+shape:           RecordQueryScanPlan
+=== cte_published_row_names.yaml#26
+sql:   WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT * FROM u
+plan:  Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryScanPlan
 === cte_recursive_tree.yaml#0
 sql:   WITH RECURSIVE descendants AS ( SELECT id, name FROM tree WHERE parent_id = 1 UNION ALL SELECT t.id, t.name FROM tree t, descendants d WHERE t.parent_id = d.id ) SELECT name FROM descendants ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.NAME#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.NAME#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds]))))))
