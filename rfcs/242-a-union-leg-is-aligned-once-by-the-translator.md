@@ -267,22 +267,61 @@ aggregate arm was reachable only from directly constructed trees, and deleting i
 SQL-visible behaviour. That is the finding: a live gate, eight unit tests, and a paragraph of
 justification, all defending a premise no SQL query could reach.
 
-**F. The CTE aggregate body publishes its exact row.** `buildCTEColumnSource`'s single-table
-aggregate arm calls `buildExactScopeSourceOrBodyError` before `buildDerivedTableSourceFromAgg`,
-the order the derived-table path already had (see the adjacent-finding section for the
-mechanism). The parse-tree derivation stays as the fallback for a body whose exact row
-`semantic.Column` cannot carry (a catalog nested record the exact derivation refuses and the
-parse-tree one carries verbatim) — for a row the exact derivation could not publish, never for
-one it did. The first cut gated the exact row on `scopeSourceNamesUnique` and fell through to
-the parse-tree derivation when a name repeated; Graefe's r3 delta named that as a hole (the
-fallback performs no uniqueness check) and asked for a decline. Torvalds's r3 delta measured
-the actual behaviour: a published row with a repeated name is caught by the reader's own
-ambiguity check as `42702` — Java's `AMBIGUOUS_COLUMN`, and the same answer the derived-table
-form of the body gives — where a registration-time decline can only surface as an unplannable
-query (`0AF00`). So the arm publishes what the exact derivation states, repeated names
-included, and the reader reports the ambiguity; the fallback is unreachable for a published row
-by construction rather than by a gate. Pinned in both the CTE and the derived-table spelling as
-`42702`.
+**F. A CTE body publishes its exact row under its SQL names, repeated names included.**
+`buildCTEColumnSource` has two arms that build the body and publish its exact row — the
+join/derived-bodied arm, and (since this RFC) the single-table aggregate arm, which calls
+`buildExactScopeSourceOrBodyError` before `buildDerivedTableSourceFromAgg`, the order the
+derived-table path already had (see the first adjacent-finding section for the mechanism). The
+parse-tree derivation stays as the aggregate arm's fallback for a row `semantic.Column` cannot
+carry — a catalog nested record the exact derivation refuses and the parse-tree one carries
+verbatim — never for a row the exact derivation published. Three things about those arms were
+wrong, each measured at the merge-base and each in the CTE spelling only, where the
+derived-table spelling of the same body already answered as Java does:
+
+- *The join-bodied arm declined a repeated output name.* `scopeSourceNamesUnique` withheld the
+  whole source when the row named a column twice, on the theory that a published duplicate
+  would bind silently. The decline was the silent bind: the CTE fell to the ON-only class, and
+  `u.g` over `WITH u AS (SELECT ga.g, c.id AS g FROM ga, c)` then bound one duplicate in SELECT
+  and the other in ORDER BY, in seven read paths, while the derived-table spelling reported
+  `42702`. The gate is deleted. A repeated name is published as stated, and every read of it —
+  bare or qualified, in SELECT, WHERE, ON, ORDER BY, GROUP BY, HAVING, EXISTS and a scalar
+  subquery, Graefe's r4 delta measured all of them — meets the semantic scope's own
+  per-source ambiguity check and reports `42702`, Java's `AMBIGUOUS_COLUMN`, byte-identical to
+  the derived-table spelling. The first cut of the aggregate arm had the same gate and fell to
+  the parse-tree derivation on a repeat; Torvalds's r3 delta measured the reader loud without
+  it, and Torvalds's r4 delta measured the join arm silent with it.
+- *The join-bodied arm took its names from the exact derivation.* The derivation labels a
+  qualified reference by its datum key — `ga.g` is `GA.G` there — so, with the gate gone, the
+  row `SELECT ga.g, c.id AS g` carried `GA.G` and `G`: two distinct names for what SQL calls `G`
+  twice, and `u.g` bound the second without ever meeting the ambiguity check. Both arms now
+  pass the SQL output-name authority the derived-table path passes — `projectionOutputNames`
+  for a spelled projection, `aggOutputCols` for an aggregate body — so the two spellings of one
+  body publish one row by construction. A star body spells no projection and keeps the
+  derivation's labels, as before.
+- *`aggOutputCols` named an unaliased grouping key by its qualified spelling.* The parser
+  mints a grouping item's `outName` from the reference's display text, so `GROUP BY ga.g`
+  published `GA.G` — a name no reader can write — and `u.g` over
+  `(SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) u` was `42703` in both spellings. The
+  body's own projection labels that slot `G` (`aggregateProjectionItem` treats an `outName`
+  equal to the reference as no alias and labels the stripped reference); `aggOutputCols` now
+  applies the same rule and publishes the bare name.
+
+One shape stays out of the global scope on purpose, keyed on its SHAPE and never on its
+names: a `SELECT *` body over a lateral unnest that the narrow single-source admission does
+not take — a second base table beside the unnest, or an EXISTS in its WHERE — is the gathered
+multi-source unnest cluster. The translator flows that cluster as its raw per-leg positional
+seed and binds an aggregate's keys and operands over the CTE to the seed by ordinal
+(`exactGatheredCTEGroupKeyValue`, which admits only a CTE absent from the scope); a
+published exact row minted a read over the CTE's own quantified object instead, which nothing
+declares at execution. At the merge-base the uniqueness gate happened to withhold the
+repeated-name body of that shape (`A.K` beside `B.K`) and the unique-name body was published
+and failed as an undeclared binding; the decline now covers both, and both answer.
+
+Pinned in both spellings: the repeated name through every read path that bound silently
+(`cte_published_row_names.yaml`), the qualified grouping key over a single-table and a joined
+body, and the unique-name control beside each. The gathered-unnest CTE aggregates are the
+sqldriver `TestFDB_UnnestExistsGather` pins (`agg_cte_*`), which the first cut of this round
+reddened.
 
 **E. Stale references.** Every comment that described the rename `Map`, the position-remap, the
 buffered fallback or the walkers as live — `default_rules.go`, `streaming_cursors.go` (three
@@ -385,6 +424,31 @@ Every proof is committed; each names the dimension that was unprobed.
     The same scenario pins the duplicate-output-name body in both forms as the reader's
     `42702`, so the CTE and derived-table spellings of one body cannot drift apart and the
     parse-tree fallback is never what answers a published row.
+11. **The published CTE row.** `cte_published_row_names.yaml` (real FDB): the join-bodied
+    repeated name through the ten read paths that bound silently at the merge-base, in the CTE
+    and the derived-table spelling, each `42702`; the qualified grouping key over a single-table
+    and a joined body, both spellings, rows and labels; the unique-name join-bodied control. The
+    ORDER BY metadata pins move with the rule they pin: the repeated-name body that was the
+    "underivable" specimen now resolves a computed key and a computed projection
+    (`TestOrderByExactMetadata_Computed*OverRepeatedNameCTEResolves`), and the stays-loud pair
+    keeps a specimen that is genuinely underivable — a row with a catalog struct column the
+    semantic column model cannot state. The SimFDB golden `ctenames` pins the plans and rows
+    of the planning shapes. The sqldriver probe suite's Q53–Q56, which pinned
+    complete-schema-or-decline (`0AF00` for any repeated name), are re-pinned to Java's
+    answers — `42702` for a read that spells the repeated name, rows for a read of a unique
+    column beside it — and Q57 pins the loud floor of § What this does not close beside the
+    aliased control that answers; `TestFDB_UnnestExistsGather`'s `agg_cte_*` pins hold the
+    gathered-unnest decline.
+12. **Repeated output names.** `repeated_output_names.yaml` (real FDB) and the SimFDB golden
+    `repnames`: the labels of
+    `SELECT g AS a, g AS a`, `SELECT id, g AS id` and a star over a body that repeats a name,
+    and the values of `SELECT *` over such a body beside another table — the repeated-name leg
+    first and second, the CTE and the derived-table spelling, an aggregate body and a plain one,
+    the unique-name control beside each. Unit pins: `frozenSchemaRenamesSlot` on the six
+    rename-versus-dedup shapes; `mergedRVSequenceDiverges` tolerating a repeated display name
+    and still rejecting a different name and a reordering; `derivedOutputColumns` naming a
+    repeated output exactly as `values.DedupFieldNames` does, at one, two and three
+    repetitions.
 
 ## Adjacent finding, surfaced by the § Fix D probe — fixed here (§ Fix F)
 
@@ -414,6 +478,48 @@ to the parse-tree derivation only when the exact one has nothing to publish. The
 arm now takes that order. A body that does not build raises its own error, as the join arm's
 does.
 
+## Second adjacent finding, surfaced by Graefe's r4 delta — fixed here
+
+Measuring every read path of a published repeated name, Graefe found the one that was loud and
+wrong: `SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c` died `XX000` at the
+result set's alignment guard, in both spellings, while the unique-name control answered four
+columns. Pre-existing at the merge-base; Java answers `[G G ID W]`.
+
+**Mechanism, in two layers.** Go keeps a projection's record type name-addressable by suffixing
+a later occurrence of a repeated output name (`values.NewRecordConstructorValue`: `G`, `G_2`).
+Java has no such suffix — `Type.Record` keeps repeated field names and binds every read by
+ordinal (`Expressions.java:91`, `LogicalOperator.java:367`) — so the suffix is a property of
+the Go type and nothing user-visible may carry it, which the result set's alignment guard
+already assumed ("the user-visible labels stay `[X X]`"). Two consumers did not hold to that:
+
+1. *The label followed the frozen output schema for an aliased item.*
+   `deriveColumnsFromProjection` took the frozen name unconditionally when the item carried a
+   user alias, so `SELECT g AS a, g AS a` reported `[A A_2]` and `SELECT id, g AS id` reported
+   `[ID ID_2]`; for an unaliased reference it took the frozen name unless the same label had
+   appeared at an earlier slot — a heuristic that reads a column-list rename of a repeated
+   alias as a dedup. Both arms now ask the structural question: the NATURAL schema (the same
+   Value program and aliases, deduplicated by the same rule) names the slot, and only a frozen
+   name the natural schema does not produce is a rename (`frozenSchemaRenamesSlot`). The
+   heuristic is deleted with its test. Through a join, the leg's second `G` then carries label
+   `G` over datum key `U.G_2`, and the alignment guard's repeated-display rule aligns it by
+   ordinal — which is where the second layer showed.
+2. *The derived leg's ordinal layout stated the names verbatim.* With the label fixed, the same
+   query answered `[100 100 100 1]`: the grouping key in both `G` columns, silently. The join
+   seed builds each leg's baked positional reads over the leg type `derivedOutputColumns`
+   states — `[G G]`, the projection's names verbatim — while the row the projection emits is
+   typed by its record constructor, `[G G_2]`. `OrdinalIn` requires the read's domain to equal
+   the row's, so the baked read of slot 1 declined its ordinal and fell back to a by-name read,
+   which answered the first `G`. `derivedOutputColumns` now applies `values.DedupFieldNames`,
+   the rule extracted from the constructor so both sites state one layout, and
+   `mergedRVSequenceDiverges` — the metadata twin of the alignment guard — tolerates a repeated
+   display name the way the guard does instead of routing every duplicate-name leg through the
+   fallback that publishes the suffix.
+
+Both layers are pinned in `repeated_output_names.yaml` (§ Test plan 12). The suffix itself
+stays: it is what keeps Go's record types name-addressable, it is now purely internal, and the
+two consumers that must agree with it are pinned against the rule rather than against each
+other.
+
 ## Rides alongside, not part of this RFC
 
 The engine fuzz nightly was red for a second, unrelated reason: `FuzzRebaseValue_NoPanic` built
@@ -431,6 +537,22 @@ mechanism depends on them.
 - The two `EqualFold` lookups in `rule_implement_in_union.go:130` and `physical_key_types.go:295`
   are identifier LOOKUPS against physical field names, the class RFC-237 §Scope permits, not
   presentations. Not touched.
+- An aggregate or a sort over a UNIQUE column of a join body that repeats a bare leaf
+  (`WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY
+  u.w`) is refused at execution — an undeclared binding, or `edge lookup … read as
+  RECORD(G,G,W), declared RECORD(GA.G,G,W)` — in the CTE and the derived-table spelling. The
+  derived spelling has failed so since before this RFC; the CTE spelling was served by the
+  name model while its body was declined and fails loudly now that the body is published. The
+  cause is not this RFC's and is wider than it: the engine names runtime slots by three rules
+  (the constructor's suffix, the qualified datum key a join projection mints for a repeated
+  bare leaf, the verbatim names of a raw positional merge) while the declared type and the
+  scope carry one, so a read bound to the CTE's quantified object finds a row of a different
+  name. Java binds every such read by ordinal. It is pinned as a loud floor in
+  `cte_published_row_names.yaml` beside the aliased control that answers, and booked in
+  `TODO.md` ("Exact quantifier binding over a CTE or derived body") with the measurements and
+  the fix it needs; a first cut of this round tried a projection boundary and a deduplicated
+  flowed layout for it and reverted both — they moved the mismatch between the three rules
+  rather than removing it.
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
   thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job
   cancelled from outside after 3–67 minutes with no timeout annotation) need host access; the

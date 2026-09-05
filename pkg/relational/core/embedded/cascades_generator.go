@@ -4517,21 +4517,23 @@ func (r legRead) nullExtended(fv values.FieldValue) bool {
 	return ok && ic.Nullable == api.ColumnNullable
 }
 
-// projectionLabelAlreadyUsed reports whether an earlier projected slot already
-// publishes this display label. A repeated label is legal and expected
-// (`SELECT c.id, o.id`); it is also the signal that the output SCHEMA — which
-// must stay name-addressable — carries a deduplicating suffix the user never
-// wrote.
-func projectionLabelAlreadyUsed(earlier []executor.ColumnDef, label string) bool {
-	if label == "" {
-		return false
+// frozenSchemaRenamesSlot reports whether a projection's frozen output schema
+// gives slot i a name the projection's own Value program and aliases would not
+// derive — an EXTERNAL rename, such as a CTE column list (`WITH r(n) AS …`)
+// renaming the leg's output — as opposed to the schema's own deduplicating
+// suffix. The output schema must stay name-addressable, so a repeated name is
+// deduplicated there (`A`, `A_2`) by the same rule the natural derivation
+// applies; when the two agree, the frozen name adds nothing the user wrote and
+// the user-visible label keeps the SQL spelling — `SELECT g AS a, g AS a`
+// reports [A A], as Java does (Type.Record keeps repeated field names and the
+// JDBC label is the field name), never [A A_2]. natural is nil when the
+// natural schema could not be derived; a frozen name then stands as the
+// authority it is everywhere else.
+func frozenSchemaRenamesSlot(natural []string, i int, frozen string) bool {
+	if i >= len(natural) {
+		return true
 	}
-	for _, c := range earlier {
-		if strings.EqualFold(columnDefDisplayName(c), label) {
-			return true
-		}
-	}
-	return false
+	return natural[i] != frozen
 }
 
 func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *recordlayer.RecordMetaData) []executor.ColumnDef {
@@ -4605,6 +4607,25 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 			innerByName[strings.ToUpper(ic.Name)] = ic
 		}
 	}
+	// The natural schema: what the freeze site names each slot
+	// (values.ProjectionSlotName), deduplicated exactly as the frozen schema was
+	// (values.DedupFieldNames). Comparing the two per slot is what tells an
+	// external rename from the schema's own suffix.
+	var natural []string
+	if len(outputNames) > 0 {
+		natural = make([]string, len(projections))
+		for i, v := range projections {
+			alias := ""
+			if i < len(aliases) {
+				alias = aliases[i]
+			}
+			natural[i] = values.ProjectionSlotName(v, alias)
+			if natural[i] == "" {
+				natural[i] = values.OrdinalFieldName(i)
+			}
+		}
+		natural = values.DedupFieldNames(natural)
+	}
 	cols := make([]executor.ColumnDef, len(projections))
 	for i, v := range projections {
 		alias := ""
@@ -4630,7 +4651,7 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 				if values.QuantifierFlowsAScalarRow(v) {
 					cd.Label = outputNames[i]
 				} else if _, isReference := values.AsFieldValue(v); isReference &&
-					!projectionLabelAlreadyUsed(cols[:i], cd.Label) {
+					frozenSchemaRenamesSlot(natural, i, outputNames[i]) {
 					// A plain column REFERENCE can be RENAMED by the projection's
 					// frozen output schema with no SELECT alias attached: a CTE
 					// column list (`WITH r(n) AS …`) renames the leg's output and
@@ -4642,13 +4663,16 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// the positional read refuses to align — every column of the
 					// result then goes loud.
 					//
-					// NOT when the derived label already occurs at an earlier
-					// slot. The output schema is name-addressable, so a repeated
-					// label is DEDUPLICATED there (`X`, `X_2`) while the
+					// NOT when the frozen name is the schema's own deduplication of
+					// a repeated label. The output schema is name-addressable, so a
+					// repeated label is DEDUPLICATED there (`X`, `X_2`) while the
 					// user-visible labels stay `[X X]` — Java's layout, and what
 					// the alignment check already tolerates by ordinal. Following
 					// the schema there would publish the machinery's suffix as a
-					// column name.
+					// column name. frozenSchemaRenamesSlot draws the line
+					// structurally: the natural schema deduplicates by the same
+					// rule, so only a name the natural schema does NOT produce is
+					// a rename.
 					//
 					// Bare leaf, VERBATIM: an output name over a gated ordinal
 					// join is qualified (`C.NAME`) while the label is bare, so
@@ -4679,7 +4703,15 @@ func deriveColumnsFromProjection(proj *plans.RecordQueryProjectionPlan, md *reco
 					// still get wrong, and the answers that preceded them.
 					cd.Label = qualifierStrippedLabel(outputNames[i], descs)
 				}
-			} else if !aliasMinted {
+			} else if !aliasMinted && frozenSchemaRenamesSlot(natural, i, outputNames[i]) {
+				// A USER alias renamed again by the frozen schema (a CTE column
+				// list over an aliased item) follows the schema; a user alias the
+				// schema merely deduplicated keeps its spelling. This arm took the
+				// frozen name unconditionally, and `SELECT g AS a, g AS a` reported
+				// [A A_2]; worse, a derived table whose body repeated an alias
+				// (`SELECT g, SUM(v) AS g … GROUP BY g`) published G_2 as a leg
+				// label, the join's positional row carried G, and every read of
+				// `SELECT *` over that leg beside another table refused to align.
 				cd.Label = outputNames[i]
 			}
 		}
@@ -5244,7 +5276,24 @@ func mergedRVSequenceDiverges(rc *values.RecordConstructorValue, merged []execut
 		return true
 	}
 	for i, f := range rc.Fields {
-		if !strings.EqualFold(parseColRef(f.Name).bare(), columnDefDisplayName(merged[i])) {
+		disp := columnDefDisplayName(merged[i])
+		// A display name already published at an earlier ordinal is not a
+		// discriminator, exactly as positionalAligned treats it: the RC names
+		// the repeated slot by its name-addressability suffix (G_2) while the
+		// user-visible label stays G. Comparing the two here would read every
+		// duplicate-name leg as a reordering and route its metadata through
+		// the RC-derived fallback, which publishes the suffix as a label.
+		duplicateDisplay := false
+		for j := 0; j < i; j++ {
+			if strings.EqualFold(columnDefDisplayName(merged[j]), disp) {
+				duplicateDisplay = true
+				break
+			}
+		}
+		if duplicateDisplay {
+			continue
+		}
+		if !strings.EqualFold(parseColRef(f.Name).bare(), disp) {
 			return true
 		}
 	}

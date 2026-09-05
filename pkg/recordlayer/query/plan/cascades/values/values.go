@@ -1719,6 +1719,27 @@ func OutputColumnName(v Value, alias string) string {
 	return ProjectionColumnName(v)
 }
 
+// ProjectionSlotName is the name a projection's frozen output schema gives a
+// slot BEFORE deduplication — the alias when the item carries one, the display
+// name (qualifier stripped) for a column reference, and OutputColumnName's
+// rendering for everything else. It is the rule exactProjectionForLogicalProject
+// freezes with, and the rule a consumer must re-derive the natural schema by
+// when it asks whether a frozen name is that schema's own deduplication
+// suffix or an external rename (deriveColumnsFromProjection). Two copies of
+// the rule have disagreed before: the natural schema was once re-derived by
+// OutputColumnName alone, which names a nested reference by its dotted path
+// (`N.SK`) where the freeze names it `SK`, so `SELECT sk, n.sk` read the
+// frozen `SK_2` as a rename and published the suffix as a label.
+func ProjectionSlotName(v Value, alias string) string {
+	name := OutputColumnName(v, alias)
+	if alias == "" {
+		if _, isReference := AsFieldValue(v); isReference {
+			name = DisplayColumnName(v, "")
+		}
+	}
+	return name
+}
+
 // DisplayColumnName is the USER-VISIBLE label for a projected column: the
 // alias when the column carries one, else its own name with the QUALIFIER
 // removed — Java's Identifier.withoutQualifier, applied by the top-level
@@ -4691,24 +4712,46 @@ func (r *RecordConstructorValue) MessageDescriptor() protoreflect.MessageDescrip
 	return r.desc
 }
 
-// NewRecordConstructorValue constructs a RecordConstructorValue.
-// Duplicate field names are deduplicated by appending a numeric
-// suffix (_2, _3, ...) to later occurrences, matching SQL semantics
-// where `SELECT a, a FROM T` produces columns a, a_2.
+// DedupFieldNames is THE rule that keeps a name-addressed record type
+// name-addressable when a projection repeats an output name: a later
+// occurrence takes a numeric suffix (`A`, `A_2`, `A_3`). It is a property of the
+// TYPE, never of the SQL: Java has no such suffix — Type.Record keeps repeated
+// field names and every read is bound by ordinal — so nothing user-visible may
+// carry it. The result-set label of `SELECT a, a FROM T` is [A A].
+//
+// Exported so that every layout that must equal a projection's runtime row
+// (the ordinal seed's leg type, derived from the logical projection) applies
+// the same rule instead of restating the names verbatim: a leg type that said
+// [G G] over a row the projection emits as [G G_2] is a different ordinal
+// domain, and the baked positional read of the second slot then declined and
+// fell back to a by-name read that answered the FIRST G.
+func DedupFieldNames(names []string) []string {
+	seen := make(map[string]int, len(names))
+	out := make([]string, len(names))
+	for i, name := range names {
+		count := seen[name]
+		seen[name] = count + 1
+		if count > 0 {
+			out[i] = fmt.Sprintf("%s_%d", name, count+1)
+		} else {
+			out[i] = name
+		}
+	}
+	return out
+}
+
+// NewRecordConstructorValue constructs a RecordConstructorValue. Duplicate
+// field names are deduplicated by DedupFieldNames so the record type stays
+// name-addressable; see there for why the suffix is internal.
 func NewRecordConstructorValue(fields ...RecordConstructorField) *RecordConstructorValue {
-	seen := make(map[string]int, len(fields))
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.Name
+	}
+	names = DedupFieldNames(names)
 	out := make([]RecordConstructorField, len(fields))
 	for i, f := range fields {
-		count := seen[f.Name]
-		seen[f.Name] = count + 1
-		if count > 0 {
-			out[i] = RecordConstructorField{
-				Name:  fmt.Sprintf("%s_%d", f.Name, count+1),
-				Value: f.Value,
-			}
-		} else {
-			out[i] = f
-		}
+		out[i] = RecordConstructorField{Name: names[i], Value: f.Value}
 	}
 	return &RecordConstructorValue{Fields: out}
 }

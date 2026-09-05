@@ -9022,18 +9022,20 @@ covered by the correctness suite and the golden plan diff, not by this table.
     factorycorpus race run alone was at 536s when cut.
   - `Nightly Reconcile` fails on two counts: the stale coverage heartbeat above, and open PR #769
     (`bot/frl-pin-bump`) carrying none of its 7 required checks — the bot-PR shape CLAUDE.md
-    already names (workflows do not fire for it).
+    already names (its pull_request runs are created and held at `action_required`, and a
+    held run surfaces no check).
   What is NOT in this entry: the fuzz nightly, whose two real crashers RFC-242 and the
   `FuzzRebaseValue_NoPanic` fixture fix close, and whose three `context deadline exceeded`
   90-second failures `cmd/fuzzrun` already classifies and retries clean.
   **Fixed in the RFC-242 pull request (a workflow edit, verified by the next nightly, not
   locally):** `frl-pin-bump.yml` now dispatches `ci.yml`, `hosted-smoke.yml` and
-  `nightly-libfdbc.yml` against its branch after opening or updating the PR (a
-  `workflow_dispatch` from `GITHUB_TOKEN` creates runs where a `pull_request` event from it does
-  not; the job's permissions gained `actions: write`, which the dispatch call needs), and
-  `ci.yml` gained the `workflow_dispatch` trigger. If tomorrow's Reconcile still lists `#769` as
-  ABSENT, the dispatched runs were held at `action_required` and a token with a real actor is
-  the remaining fix.
+  `nightly-libfdbc.yml` against its branch after opening or updating the PR (the `pull_request`
+  runs the bot PR raises are created and held at `action_required` — every bot push since the
+  PR existed, measured in `frl-pin-bump.yml`'s header; the hold has only been observed on
+  `pull_request` runs, and a `workflow_dispatch` run is not one; the job's permissions gained
+  `actions: write`, which the dispatch call needs), and `ci.yml` gained the `workflow_dispatch`
+  trigger. If tomorrow's Reconcile still lists `#769` as ABSENT, the dispatched runs were held
+  too and a token with a real actor is the remaining fix.
   **Corrected while reviewing:** a draft blamed the coverage lane's `timeout-minutes: 150` and
   raised it; the six cancelled runs lasted 3, 55, 11, 67, 8 and 51 minutes with no
   maximum-execution-time annotation, so the cap never fired and the cancellations are the
@@ -9042,3 +9044,33 @@ covered by the correctness suite and the golden plan diff, not by this table.
   Factory and the external cancellations of Coverage are on the runner host (memory headroom,
   or what is killing containers and jobs thirty minutes into a run); nothing in this
   repository can observe or change that.
+
+- [ ] **Exact quantifier binding over a CTE or derived body: one runtime naming rule.** A read
+  addressed to a CTE's or derived table's own quantified object (`QOV(U).W`) is bound at
+  execution against the row the body flows, and the plan's declared type for that row does not
+  agree with the row for three shapes of body, because the engine names runtime slots by
+  three rules: a projection's record constructor names a repeated output by the
+  name-addressability suffix (`K`, `K_2`); a projection over a join names a repeated bare leaf
+  by its QUALIFIED datum key (`GA.G` beside `G`); a raw positional merge (the gathered
+  multi-source unnest cluster, a join consumed without a projection) keeps every leg name
+  verbatim (`K`, `K`). The scope publishes the SQL names. Measured, both spellings unless
+  stated:
+  - an aggregate or a sort over a UNIQUE column of a join body that repeats a bare leaf —
+    `WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY
+    u.w` — fails `edge lookup … read as RECORD(G,G,W), declared RECORD(GA.G,G,W)` or as an
+    undeclared binding; the derived spelling since before RFC-242, the CTE spelling since
+    RFC-242 published the body (it was served by the name model while declined). The
+    projection over the same body is rebased and answers. Pinned as a loud floor in
+    `cte_published_row_names.yaml`.
+  - an aggregate over a `SELECT *` derived table whose body is a gathered multi-source unnest
+    (`FROM (SELECT * FROM a, b, a.arr AS x …) d … GROUP BY d.aid`) — undeclared binding,
+    pre-existing. The CTE spelling of that body stays out of the global scope by shape
+    (`buildCTEColumnSource`, RFC-242 § Fix F) and is bound to the seed by the translator's
+    `exactGatheredCTEGroupKeyValue`; before RFC-242 a unique-name body of that shape was
+    published and failed the same way.
+  The fix is Java's model, not a fourth rule: every read of a derived source's column is
+  bound by ORDINAL (`FieldValue.ofOrdinalNumber`, `Expressions.java:91`,
+  `LogicalOperator.java:367`), the declared type and the row are compared positionally, and a
+  name is a label. Until then `values.DedupFieldNames` is the one rule the projection
+  constructor and the derived leg layout share (RFC-242, second adjacent finding), and the
+  qualified-key mint (`mintQualifiedDatumKey`) and the raw merge are the two that remain.

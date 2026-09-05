@@ -1,0 +1,55 @@
+# scenario: repnames (seed 11)
+#   CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+#   CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+
+=== SELECT g AS a, g AS a FROM ga ORDER BY id
+PLAN: Project([_current.G#1, _current.G#1], Scan(GA))
+ROWS(3) cols=[A, A]:
+  [100, 100]
+  [100, 100]
+  [200, 200]
+
+=== SELECT id, g AS id FROM ga ORDER BY v
+PLAN: Project([_current.ID#0, _current.G#1], InMemorySort([_current.V#2 ASC], Scan(GA)))
+ROWS(3) cols=[ID, ID]:
+  [1, 100]
+  [2, 100]
+  [3, 200]
+
+=== SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u
+PLAN: Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))
+ROWS(2) cols=[G, G]:
+  [100, 12]
+  [200, 9]
+
+=== SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE c.id = 100
+PLAN: NestedLoopJoin(INNER, Scan(C, [=]), Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))))
+ROWS(2) cols=[G, G, ID, W]:
+  [100, 12, 100, 1]
+  [200, 9, 100, 1]
+
+=== WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT * FROM u, c WHERE c.id = 100
+PLAN: NestedLoopJoin(INNER, Scan(C, [=]), Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))))
+ROWS(2) cols=[G, G, ID, W]:
+  [100, 12, 100, 1]
+  [200, 9, 100, 1]
+
+=== SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100
+PLAN: NestedLoopJoin(INNER, Scan(C, [=]), Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))))
+ROWS(2) cols=[ID, W, G, G]:
+  [100, 1, 100, 12]
+  [100, 1, 200, 9]
+
+=== SELECT * FROM (SELECT g, v AS g FROM ga) u, c WHERE c.id = 100
+PLAN: NestedLoopJoin(INNER, Project([_current.G#1, _current.V#2], Scan(GA)), Scan(C, [=]))
+ROWS(3) cols=[G, G, ID, W]:
+  [100, 5, 100, 1]
+  [100, 7, 100, 1]
+  [200, 9, 100, 1]
+
+=== SELECT * FROM (SELECT g, SUM(v) AS s FROM ga GROUP BY g) u, c WHERE c.id = 100
+PLAN: NestedLoopJoin(INNER, Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))), Scan(C, [=]))
+ROWS(2) cols=[G, S, ID, W]:
+  [100, 12, 100, 1]
+  [200, 9, 100, 1]
+

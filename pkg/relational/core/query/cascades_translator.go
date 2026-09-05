@@ -386,7 +386,10 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 		if i < len(p.Aliases) {
 			alias = p.Aliases[i]
 		}
-		name := values.OutputColumnName(projectedValue, alias)
+		// values.ProjectionSlotName is this rule; it is named there so the
+		// consumer that re-derives the natural schema (deriveColumnsFromProjection)
+		// cannot drift from it.
+		name := values.ProjectionSlotName(projectedValue, alias)
 		if alias == "" {
 			// A COLUMN REFERENCE takes the DISPLAY name. The dotted rendering
 			// (`A.W.X`) is an internal slot key that disambiguates two members of
@@ -409,9 +412,6 @@ func exactLogicalProjectionOutputNames(p *logical.LogicalProject, projected []va
 			// This is the same rule extractOutputProjectionNames applies to a
 			// recursive CTE's output columns, for the same reason and after the
 			// same symptom.
-			if _, isReference := values.AsFieldValue(projectedValue); isReference {
-				name = values.DisplayColumnName(projectedValue, "")
-			}
 			// An exact scalar leg is represented by its whole QOV. Its Value
 			// display name identifies the leg (VAL/ARR1), not necessarily the
 			// SQL item projected from it (UNNEST AT "AT"). Only the captured
@@ -943,6 +943,20 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 				fieldType = o.ProjectedValues[i].Type()
 			}
 			fields[i] = values.Field{Name: name, FieldType: fieldType, Ordinal: i}
+		}
+		// The runtime row this layout describes is the projection's own
+		// RecordConstructorValue, whose repeated names carry the
+		// name-addressability suffix (values.DedupFieldNames). A layout stated
+		// verbatim — [G G] for `SELECT g, SUM(v) AS g` — is a different ordinal
+		// domain from the row the executor binds ([G G_2]); the seed's baked
+		// read of slot 1 then declined the ordinal and fell back to a by-name
+		// read, which answered the FIRST G. Same rule, same names, one domain.
+		names := make([]string, len(fields))
+		for i := range fields {
+			names[i] = fields[i].Name
+		}
+		for i, name := range values.DedupFieldNames(names) {
+			fields[i].Name = name
 		}
 		return fields
 	case *logical.LogicalAggregate:

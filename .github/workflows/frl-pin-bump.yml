@@ -158,15 +158,21 @@ jobs:
           fi
 
       - name: Dispatch the pull request's checks
-        # A pull request opened or updated with the repository's GITHUB_TOKEN
-        # raises no pull_request workflow run — events from that token never
-        # create runs — so the bot PR carried none of its required checks and
-        # Reconcile's audit flagged it every night (the class CLAUDE.md records:
-        # three bot PRs ran zero checks, one merged that way). workflow_dispatch
-        # is the documented exception: a dispatch from the same token DOES
-        # create a run, and its check runs attach to the branch's head commit,
-        # which is the PR's head. Every workflow that carries one of the seven
-        # required check names is dispatched here against the bot branch.
+        # The pull_request runs this PR raises are created and then HELD at
+        # action_required (the header of this file: attempt=1, actor and
+        # triggering_actor both github-actions[bot], 0s duration, every bot
+        # push since the PR existed), so the bot PR carried none of its
+        # required checks and Reconcile's audit flagged it every night (the
+        # class CLAUDE.md records: three bot PRs ran zero checks, one merged
+        # that way). The hold has only ever been observed on pull_request
+        # runs. A workflow_dispatch run is not one: it is created by the same
+        # token, its check runs attach to the branch's head commit — the PR's
+        # head — and whether it executes rather than joining the hold is what
+        # the next nightly measures (TODO.md, the nightly entry: if Reconcile
+        # still lists the bot PR ABSENT, the dispatched runs were held too and
+        # a token with a real actor is the remaining fix). Every workflow that
+        # carries one of the seven required check names is dispatched here
+        # against the bot branch.
         if: steps.bump.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}

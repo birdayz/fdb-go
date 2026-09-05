@@ -67,13 +67,13 @@ Anything later found to mint a key joins it rather than being argued out of it.
 | `clustered_outer_scalar.go:509` | `leg.binding + "." + leg.typ.Fields[i].Name` | GONE |
 | `clustered_outer_scalar.go:537` | `ToUpper(innerAlias) + "." + scalarCol` | GONE |
 | `qualifyAndMergeColumns` (two sites) | `alias + "." + ToUpper(c.Name)` | GONE |
-| `cascades_translator.go:4055` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
+| `cascades_translator.go:4069` (unnest leg mint) | `leg + "." + ToUpper(rootName)` | GONE |
 
 The `clustered_outer_scalar` and `scalar_subquery_seed` sites already disagree
 among THEMSELVES on the case question — `:509` keeps the leg's own slot name
 verbatim while `:143` and `:537` fold the alias.
 
-`cascades_translator.go:4055` is not bookkeeping and the previous draft filed it
+`cascades_translator.go:4069` is not bookkeeping and the previous draft filed it
 that way: it mints `LEG.COL`, resolves it through `mergedType.FieldIndexUnique`,
 and BAKES the resulting ordinal into a predicate, across five merged and chained
 UNNEST paths. It is a producer and a consumer in one place, so leaving it out
@@ -311,7 +311,7 @@ than at the end.
 1. Add the structured qualifier alongside the rendered name. No behaviour
    change; golden byte-identical.
 2. Move label derivation off the split, onto the structured qualifier.
-3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `cascades_translator.go:4055`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
+3. Collapse ALL EIGHT renderers, not the first two — including `qualifyAndMergeColumns` (two sites) and the UNNEST leg mint at `cascades_translator.go:4069`, which the table marks GONE and an earlier step list silently left standing: `legColumns`' join arm defers
    to `logicalLegFields`, and `scalar_subquery_seed.go:143`,
    `clustered_outer_scalar.go:509` and `:537` defer to the same boundary, where
    the descriptor-name decision also moves. Collapsing a subset leaves live
@@ -641,7 +641,7 @@ CREATE TABLE innocent (id BIGINT, v BIGINT, PRIMARY KEY (id))
 ```
 
 `SELECT id FROM innocent` must ANSWER, matching Java, and `SELECT id FROM coll`
-must still FAIL, also matching Java — at `cascades_translator.go:2882`, which
+must still FAIL, also matching Java — at `cascades_translator.go:2896`, which
 builds the scan leaf's row type from the one table the query names and is
 already table-local. `DecodedNameCollisionJavaProbe` asserts both directions on
 both engines. The criterion is met when its Go INNOCENT arm flips to
@@ -778,7 +778,7 @@ because the CONSTRUCTION is schema-wide, not because the failure mode is a
 panic.
 
 Note where COLL itself fails, because it is NOT here: the scan leaf's row type
-is built at `cascades_translator.go:2867`, from `t.tableColumns(s.Table)` — the
+is built at `cascades_translator.go:2881`, from `t.tableColumns(s.Table)` — the
 one table the query names. That path is already table-local and already the
 right place for the colliding table to fail. Only the candidate loop is
 schema-wide.
@@ -840,7 +840,7 @@ WithoutChildren` compares its record-type list element by element and has no
 metadata to resolve with — nor should it: it is structural equality on a memo
 expression. So the two sides have to AGREE BY CONSTRUCTION. Today they cannot:
 `buildMatchCandidates` passes `[]string{rt.Name}` (stored,
-`cascades_generator.go:2842`) and `cascades_translator.go:2883` passes
+`cascades_generator.go:2842`) and `cascades_translator.go:2897` passes
 `[]string{s.Table}` (SQL).
 
 The visible cost, same query shape over one schema, one per table:
@@ -869,7 +869,7 @@ as unrelated drift.
 
 **THE DECISION: the plan tree carries STORAGE names, translated AT EVERY POINT
 A TABLE NAME ENTERS IT.** In Go that is four sites, not the one an earlier draft
-named: the scan leaf (`cascades_translator.go:2883`, `s.Table`) and the three
+named: the scan leaf (`cascades_translator.go:2897`, `s.Table`) and the three
 DML targets — INSERT `:10750` (`ins.Table`), UPDATE `:10792` (`upd.Target`),
 DELETE `:10814` (`del.Target`). Candidates keep `rt.Name`;
 `EqualsWithoutChildren` then compares like with like and never learns about
@@ -895,7 +895,7 @@ and that is not one option of two. Java never couples them:
 `QueryVisitor.java:836` sets `targetRecordType` from `getStorageName()` at
 construction, and `UpdateExpression.java:100-105` correlates the transforms to
 the SOURCE quantifier only. Go's coupling is its own, originating at
-`logical_predicate.go:6863` where `buildSelectScope` takes the bare table name
+`logical_predicate.go:6901` where `buildSelectScope` takes the bare table name
 as the alias. "Rebase the transforms onto the new identifier" would preserve
 that divergence while working around it. INSERT has no such coupling: `executor.go:3962`
 resolves ITS target through the tolerant `GetRecordType` -- an INSERT-only
@@ -983,7 +983,7 @@ FIRST: "escaped names only", from a SELECT-only measurement. Wrong as method —
 SELECT and DML did not resolve a table name the same way and nothing said so.
 
 SECOND: "two populations, and case is the larger one", after measuring DML.
-`recordTypeCI` (`logical_predicate.go:6655`) resolved a DML target
+`recordTypeCI` (`logical_predicate.go:6693`) resolved a DML target
 CASE-INSENSITIVELY, so an unquoted `DELETE FROM customer` against a table
 declared `"Customer"` VALIDATED and then planned
 `Delete(CUSTOMER, PredicatesFilter(Scan(CUSTOMER), [1 preds]))` — a target
@@ -1212,7 +1212,7 @@ an exact `SemanticAnalyzer.getTable` before anything looks at a column.
 
 UPDATE IS ON BOTH SIDES, BY CLAUSE, and that is the shape to carry away rather
 than "UPDATE is fixed". Its SET-column check had its own `recordTypeCI` call
-(`logical_predicate.go:6754`) that folded case purely to find a descriptor, so
+(`logical_predicate.go:6792`) that folded case purely to find a descriptor, so
 making it strict leaves `rt` nil for an unresolvable target, the SET check
 declines, and the 42F01 answers. Its WHERE clause does not go through that
 check at all.

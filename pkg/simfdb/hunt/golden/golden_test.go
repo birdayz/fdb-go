@@ -272,7 +272,61 @@ func corpus() []Scenario {
 		},
 	}
 
-	return []Scenario{orders, joins, multikey, aggidx, setops, subquery, unionq, unionjoinleg, cteagg}
+	// ctenames: the row a CTE publishes to its enclosing query is the row its body emits under
+	// its SQL names — the same row the derived-table spelling publishes. A grouping key spelled
+	// with its table qualifier is output under its bare name, and a join-bodied CTE reads
+	// exactly as its derived-table twin (RFC-242 § Fix F). Baseline pins plans and rows for both
+	// forms; the repeated-name reads that answer 42702 are pinned on real FDB
+	// (cte_published_row_names.yaml) — a golden query must plan.
+	ctenames := Scenario{
+		Name: "ctenames",
+		Seed: 10,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) SELECT u.g, u.w FROM u ORDER BY u.g",
+			"WITH u AS (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u.g, u.s FROM u ORDER BY u.g",
+			"SELECT u.g, u.s FROM (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) u ORDER BY u.g",
+			"WITH u AS (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) SELECT u.g, u.w, u.s FROM u ORDER BY u.g",
+		},
+	}
+
+	// repnames: a repeated output name is reported as spelled, once per column, and every slot
+	// carries its own value. The result-set label followed the frozen output schema's
+	// name-addressability suffix ([A A_2]), and a derived leg's ordinal layout stated its names
+	// verbatim while the emitted row carried the suffix, so `SELECT *` over such a leg beside
+	// another table read the first G twice (RFC-242, second adjacent finding). Baseline pins
+	// labels, plans and rows, the repeated-name leg first and second, both spellings.
+	repnames := Scenario{
+		Name: "repnames",
+		Seed: 11,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"SELECT g AS a, g AS a FROM ga ORDER BY id",
+			"SELECT id, g AS id FROM ga ORDER BY v",
+			"SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u",
+			"SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE c.id = 100",
+			"WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT * FROM u, c WHERE c.id = 100",
+			"SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100",
+			"SELECT * FROM (SELECT g, v AS g FROM ga) u, c WHERE c.id = 100",
+			"SELECT * FROM (SELECT g, SUM(v) AS s FROM ga GROUP BY g) u, c WHERE c.id = 100",
+		},
+	}
+
+	return []Scenario{orders, joins, multikey, aggidx, setops, subquery, unionq, unionjoinleg, cteagg, ctenames, repnames}
 }
 
 // TestGolden captures each scenario over SimFDB and diffs it against the committed baseline in

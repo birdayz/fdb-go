@@ -1,0 +1,101 @@
+# cte_published_row_names.yaml
+#
+# The row a CTE body publishes to its enclosing query is the row the body
+# emits, under the names SQL gives its columns — the same row and the same
+# names the derived-table spelling of that body publishes. Two ways that was
+# not so, both pinned in both spellings so they cannot drift apart again:
+#
+# 1. A join-bodied CTE whose select list repeats an output name (`ga.g`
+#    beside `c.id AS g`). Registration declined the body, the CTE fell to the
+#    ON-only class, and a reader of the repeated name bound SILENTLY — `u.g`
+#    took one duplicate in SELECT and the other in ORDER BY — while the
+#    derived-table spelling reported 42702. Then, with the decline gone, the
+#    exact derivation still labelled `ga.g` by its datum key GA.G, so the row
+#    carried two distinct names for what SQL calls G twice and the ambiguity
+#    check never ran. The parsed projection is now the name authority in the
+#    CTE arm exactly as in the derived-table arm, and every read path answers
+#    42702 (Java's AMBIGUOUS_COLUMN) in both spellings.
+#
+# 2. A grouping key spelled with its table qualifier (`GROUP BY ga.g`). The
+#    aggregate name authority published it as GA.G, a name no reader can
+#    write: `u.g` was 42703 in both spellings. It is output under its bare
+#    name, G, the label the body's own projection gives it.
+#
+# ga groups g={100,200}: SUM(v) = 12, 9. c maps 100→1, 200→2.
+name: cte_published_row_names
+schema_template: |
+  CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)
+  - INSERT INTO c VALUES (100, 1), (200, 2)
+tests:
+  # (1) The repeated name, read through every path that once bound silently.
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT u.g FROM u, c AS c2 WHERE u.g = c2.id
+    error_code: "42702"
+  - query: SELECT u.g FROM (SELECT ga.g, c.id AS g FROM ga, c) u, c AS c2 WHERE u.g = c2.id
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT g FROM u
+    error_code: "42702"
+  - query: SELECT g FROM (SELECT ga.g, c.id AS g FROM ga, c) u
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT u.g FROM u
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT * FROM u ORDER BY u.g
+    error_code: "42702"
+  - query: SELECT * FROM (SELECT ga.g, c.id AS g FROM ga, c) u ORDER BY u.g
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT * FROM u WHERE u.g = 100
+    error_code: "42702"
+  - query: SELECT * FROM (SELECT ga.g, c.id AS g FROM ga, c) u WHERE u.g = 100
+    error_code: "42702"
+  - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT c2.w FROM u, c AS c2 WHERE u.g = c2.id
+    error_code: "42702"
+  # The unique-name control: the same join body, no repeated name, reads
+  # through the CTE exactly as through the derived table.
+  - query: WITH u AS (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) SELECT u.g, u.w FROM u ORDER BY u.g
+    columns: ["G", "W"]
+    rows:
+      - [100, 1]
+      - [100, 1]
+      - [200, 2]
+  - query: SELECT u.g, u.w FROM (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) u ORDER BY u.g
+    columns: ["G", "W"]
+    rows:
+      - [100, 1]
+      - [100, 1]
+      - [200, 2]
+  # (2) The qualified grouping key, single-table and joined bodies.
+  - query: WITH u AS (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u.g, u.s FROM u ORDER BY u.g
+    columns: ["G", "S"]
+    rows:
+      - [100, 12]
+      - [200, 9]
+  - query: SELECT u.g, u.s FROM (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) u ORDER BY u.g
+    columns: ["G", "S"]
+    rows:
+      - [100, 12]
+      - [200, 9]
+  - query: WITH u AS (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) SELECT u.g, u.w, u.s FROM u ORDER BY u.g
+    columns: ["G", "W", "S"]
+    rows:
+      - [100, 1, 12]
+      - [200, 2, 9]
+  - query: SELECT u.g, u.w, u.s FROM (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) u ORDER BY u.g
+    columns: ["G", "W", "S"]
+    rows:
+      - [100, 1, 12]
+      - [200, 2, 9]
+  # An aggregate over a UNIQUE column of a join body that repeats a bare leaf
+  # (`ga.g` beside `c.id AS g`) is refused at execution in both spellings —
+  # a loud floor pinned in the sqldriver probe suite
+  # (TestFDB_CTEBoxUnnestOnResolutionProbe2, Q57), because the refusal is not
+  # an api.Error this runner can name; TODO.md ("Exact quantifier binding over
+  # a CTE or derived body") has the cause. The same shape with the leaf
+  # disambiguated by an alias answers, which is what proves the floor is about
+  # the repeated leaf and nothing else.
+  - query: WITH u AS (SELECT ga.g AS g1, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 3]
+      - [2, 3]

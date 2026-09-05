@@ -1540,12 +1540,21 @@ func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData) []aggOutputC
 			continue
 		}
 		name := ac.outName
-		if name == "" {
-			if ac.groupCol != "" {
+		if ac.groupCol != "" && (name == "" || strings.EqualFold(name, ac.groupCol)) {
+			// An UNALIASED grouping key: the parser mints outName from the
+			// reference's display spelling, so outName == groupCol is the
+			// no-alias case — the same rule aggregateProjectionItem applies when
+			// it labels the body's projection, where the slot is named by the
+			// stripped reference, G for `ga.g`. Publish that name, the one the
+			// row really carries. Publishing GA.G advertised a name no reader
+			// could write: `u.g` over `(SELECT ga.g, SUM(v) AS s FROM ga GROUP
+			// BY ga.g) u` was 42703 in both the derived-table and the CTE form.
+			name = ac.groupColBare
+			if name == "" {
 				name = ac.groupCol
-			} else {
-				continue
 			}
+		} else if name == "" {
+			continue
 		}
 		if ac.aggFunc == "" {
 			// A GROUPING KEY, not an aggregate: the output column IS the source
@@ -2055,34 +2064,19 @@ func buildWherePredicateFromCTEScope(
 	return pred, true
 }
 
-// buildCTEColumnSource derives a ScopeSource from a CTE body's query
-// context. Extracts the projected column names and their types from the
-// underlying real table's metadata. Declines on complex shapes (SELECT *,
-// aggregates, computed expressions, derived tables, JOINs) — same
-// restrictions as buildDerivedTableSource.
-// scopeSourceNamesUnique reports whether a derived source advertises each of
-// its column names exactly once. A published row with two same-named columns is
-// AMBIGUOUS by construction: the resolver decides a reference by which sources
-// carry the name, so one of the two would be picked arbitrarily and, worse, a
-// bare reference the enclosing scope should call ambiguous would bind silently.
-// Complete-schema-or-decline: a body with any duplicate output name publishes
-// nothing, and its reader goes loud.
-func scopeSourceNamesUnique(src semantic.ScopeSource) bool {
-	if src.Table == nil {
-		return false
-	}
-	columns := src.Table.Columns()
-	seen := make(map[string]struct{}, len(columns))
-	for _, column := range columns {
-		name := column.Id.Name()
-		if _, duplicate := seen[name]; duplicate {
-			return false
-		}
-		seen[name] = struct{}{}
-	}
-	return true
-}
-
+// buildCTEColumnSource derives the ScopeSource a CTE body publishes to the
+// enclosing query: the row the body really emits, name for name, ordinal for
+// ordinal. A single-table body is read from the catalog; a body with a JOIN, a
+// derived table, or an aggregate is BUILT and publishes its exact result row,
+// the same order the derived-table path takes, so the two spellings of one
+// body resolve identically. A repeated output name is published as stated:
+// the semantic scope counts every same-named column of one source as a
+// separate candidate, so a reader that names it reports 42702 in every read
+// path (measured across SELECT, WHERE, ON, ORDER BY, GROUP BY, HAVING, EXISTS
+// and a scalar subquery, byte-identical to the derived-table form). Declining
+// the registration instead never made the reader loud: the CTE fell to the
+// ON-only class and a reference to the repeated name bound whichever
+// duplicate that class happened to find first.
 func buildCTEColumnSource(
 	md *recordlayer.RecordMetaData,
 	cteName string,
@@ -2156,6 +2150,27 @@ func buildCTEColumnSource(
 		if src, ok := buildDerivedUnnestScopeSource(md, cteName, innerSQ); ok {
 			return src, true, nil
 		}
+		// A star body over MORE than that — a second base table beside the
+		// unnest, an EXISTS in its WHERE — is the gathered multi-source unnest
+		// cluster, and it stays out of the global scope on purpose. The
+		// translator flows that cluster as its raw per-leg positional seed and
+		// binds an aggregate's keys and operands over the CTE to that seed by
+		// ordinal (exactGatheredCTEGroupKeyValue, which admits only a CTE absent
+		// from cteScopes). A published exact row minted a read over the CTE's
+		// own quantified object instead, and nothing declares that object at
+		// execution: `WITH d AS (SELECT * FROM a, b, a.arr AS x …) SELECT d.aid,
+		// COUNT(*) FROM d GROUP BY d.aid` failed as an undeclared binding —
+		// with a unique-name body at the merge-base already, and with a
+		// repeated-name body once the uniqueness gate below it was gone. The
+		// decline is keyed on the SHAPE (a lateral-unnest leg the narrow
+		// admission above did not take), never on the names.
+		resolvesToTable := newUnnestTableResolver(md, defaultEmbeddedSchema)
+		for i, j := range innerSQ.joins {
+			visible := visibleFromAliases(innerSQ.tableName, innerSQ.tableAlias, innerSQ.joins[:i], resolvesToTable)
+			if isLateralUnnestJoin(j, visible, resolvesToTable) {
+				return semantic.ScopeSource{}, false, nil
+			}
+		}
 	}
 	if innerSQ.derivedQuery != nil ||
 		len(innerSQ.joins) > 0 ||
@@ -2166,17 +2181,31 @@ func buildCTEColumnSource(
 		// bind. Build the body instead and publish its EXACT result type — the
 		// same row execution flows, so every admitted name binds the ordinal
 		// the body really emits and there is no partial schema to mis-bind
-		// against. A body whose row has a shape semantic.Column cannot carry
-		// losslessly declines: the enclosing join's ON clause then reads the
-		// separate cteOnScopes marker (registerCTEOnOnlyScope) and goes LOUD on
-		// drop risk, never a silent ON drop. A body that does not BUILD raises
-		// its OWN error instead — the mistake is inside the CTE, and reporting
-		// it as the reader's generic drop-risk names the wrong query.
-		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, nil)
+		// against. Repeated output names included: a row with two columns
+		// named G is published with both, and the reader's own ambiguity
+		// check answers 42702 for either spelling of the body. The uniqueness
+		// gate this arm once had was the silent bind it claimed to prevent:
+		// the declined CTE fell to the ON-only class, and u.g then bound one
+		// duplicate in SELECT and the other in ORDER BY. A body whose row has
+		// a shape semantic.Column cannot carry losslessly declines: the
+		// enclosing join's ON clause then reads the separate cteOnScopes marker
+		// (registerCTEOnOnlyScope) and goes LOUD on drop risk, never a silent
+		// ON drop. A body that does not BUILD raises its OWN error instead —
+		// the mistake is inside the CTE, and reporting it as the reader's
+		// generic drop-risk names the wrong query.
+		//
+		// The parsed projection is the output-NAME authority, exactly as it is
+		// for the derived-table spelling of the same body: the exact derivation
+		// labels a qualified reference by its datum key (`ga.g` is GA.G there),
+		// and under that label the row `SELECT ga.g, c.id AS g` carried GA.G and
+		// G — two distinct names for what SQL calls G twice, so u.g bound the
+		// second and never met the ambiguity check. A star body spells no
+		// projection and keeps the derivation's labels.
+		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, projectionOutputNames(innerSQ))
 		if bodyErr != nil {
 			return semantic.ScopeSource{}, false, bodyErr
 		}
-		if !ok || !scopeSourceNamesUnique(src) {
+		if !ok {
 			return semantic.ScopeSource{}, false, nil
 		}
 		return src, true, nil
@@ -2191,7 +2220,15 @@ func buildCTEColumnSource(
 		// source that could not state its row — a CTE that failed as a join leg
 		// while the identical body worked as a derived table. A body that does
 		// not build raises its own error, exactly as the join-bodied arm above.
-		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, nil)
+		// aggOutputCols is the output-name authority, as it is for the
+		// derived-table spelling (buildDerivedTableSourceFromTerm), so a
+		// grouping key spelled `ga.g` is published as G in both forms.
+		aggColumns := aggOutputCols(innerSQ, md)
+		aggNames := make([]string, len(aggColumns))
+		for i, column := range aggColumns {
+			aggNames[i] = column.name
+		}
+		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, aggNames)
 		if bodyErr != nil {
 			return semantic.ScopeSource{}, false, bodyErr
 		}
@@ -2200,10 +2237,11 @@ func buildCTEColumnSource(
 			// names included: a reader that names a repeated column meets the
 			// row's own ambiguity check and reports 42702, Java's
 			// AMBIGUOUS_COLUMN — measured, and the same answer the derived-table
-			// form of the body gives. Declining here instead would turn that
-			// into a registration refusal the reader can only report as an
-			// unplannable query. The parse-tree fallback below is reached only
-			// for a row the exact derivation could not carry, never for one it
+			// form of the body gives. A registration-time decline never made the
+			// reader loud: measured on the join-bodied arm before it published
+			// its row, the declined CTE bound one duplicate in SELECT and the
+			// other in ORDER BY. The parse-tree fallback below is reached only for
+			// a row the exact derivation could not carry, never for one it
 			// published.
 			return src, true, nil
 		}

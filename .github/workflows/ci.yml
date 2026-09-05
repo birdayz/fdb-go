@@ -5,11 +5,13 @@ on:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
-  # Dispatched by frl-pin-bump.yml against its bot branch: a pull request
-  # opened with the repository's GITHUB_TOKEN raises no pull_request run (events
-  # from that token never create workflow runs), but a workflow_dispatch from
-  # the same token does. The check runs attach to the branch's head commit, so
-  # the bot PR carries the same named checks a human PR does.
+  # Dispatched by frl-pin-bump.yml against its bot branch: the pull_request
+  # runs a PR opened with the repository's GITHUB_TOKEN raises are created and
+  # then held at action_required (measured in frl-pin-bump.yml's header), and
+  # a held run surfaces no check. A dispatched run attaches its check runs to
+  # the branch's head commit, so the bot PR carries the same named checks a
+  # human PR does — provided the dispatch is not held the same way, which the
+  # first nightly after this trigger landed is what measures.
   workflow_dispatch:
 
 permissions:

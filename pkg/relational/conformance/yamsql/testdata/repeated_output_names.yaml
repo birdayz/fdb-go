@@ -1,0 +1,95 @@
+# repeated_output_names.yaml
+#
+# A repeated output name is reported as the user spelled it, once per column,
+# and every slot carries its own value. Java keeps repeated field names in the
+# record type (Type.Record) and binds every read by ordinal, so the JDBC label
+# of `SELECT g AS a, g AS a` is [A A]. Go keeps its record types
+# name-addressable by suffixing the LATER occurrence internally (`A_2`,
+# values.DedupFieldNames); that suffix is a property of the type and must never
+# reach a label or decide a read. Two ways it did, both pinned here:
+#
+# 1. The result-set label followed the frozen output schema for an aliased
+#    item, so `SELECT g AS a, g AS a` reported [A A_2] and `SELECT id, g AS
+#    id` reported [ID ID_2].
+# 2. A derived leg's ordinal layout stated the names verbatim ([G G]) while
+#    the row the projection emits carries the suffix ([G G_2]). The two are
+#    different ordinal domains, so the join seed's baked read of the second
+#    slot declined and fell back to a by-name read that answered the FIRST G:
+#    `SELECT *` over `(SELECT g, SUM(v) AS g … GROUP BY g) u, c` returned the
+#    grouping key in both G columns (once the label said G; while it said G_2
+#    the read refused outright with XX000).
+#
+# ga groups g={100,200}: SUM(v) = 12, 9. c maps 100→1, 200→2.
+name: repeated_output_names
+schema_template: |
+  CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+setup:
+  - INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)
+  - INSERT INTO c VALUES (100, 1), (200, 2)
+tests:
+  # (1) Labels.
+  - query: SELECT g AS a, g AS a FROM ga WHERE id = 1
+    columns: ["A", "A"]
+    rows:
+      - [100, 100]
+  - query: SELECT id, g AS id FROM ga WHERE id = 1
+    columns: ["ID", "ID"]
+    rows:
+      - [1, 100]
+  - query: SELECT g, g FROM ga WHERE id = 1
+    columns: ["G", "G"]
+    rows:
+      - [100, 100]
+  - query: SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u
+    columns: ["G", "G"]
+    unordered: true
+    rows:
+      - [100, 12]
+      - [200, 9]
+  - query: WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT * FROM u
+    columns: ["G", "G"]
+    unordered: true
+    rows:
+      - [100, 12]
+      - [200, 9]
+  # (2) Values through a join, the repeated-name leg first and second, the
+  # derived-table and the CTE spelling, an aggregate body and a plain one.
+  - query: SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c WHERE c.id = 100
+    columns: ["G", "G", "ID", "W"]
+    unordered: true
+    rows:
+      - [100, 12, 100, 1]
+      - [200, 9, 100, 1]
+  - query: WITH u AS (SELECT g, SUM(v) AS g FROM ga GROUP BY g) SELECT * FROM u, c WHERE c.id = 100
+    columns: ["G", "G", "ID", "W"]
+    unordered: true
+    rows:
+      - [100, 12, 100, 1]
+      - [200, 9, 100, 1]
+  - query: SELECT * FROM c, (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u WHERE c.id = 100
+    columns: ["ID", "W", "G", "G"]
+    unordered: true
+    rows:
+      - [100, 1, 100, 12]
+      - [100, 1, 200, 9]
+  - query: SELECT * FROM (SELECT g AS a, SUM(v) AS a FROM ga GROUP BY g) u, c WHERE c.id = 100
+    columns: ["A", "A", "ID", "W"]
+    unordered: true
+    rows:
+      - [100, 12, 100, 1]
+      - [200, 9, 100, 1]
+  - query: SELECT * FROM (SELECT g, v AS g FROM ga) u, c WHERE c.id = 100
+    columns: ["G", "G", "ID", "W"]
+    unordered: true
+    rows:
+      - [100, 5, 100, 1]
+      - [100, 7, 100, 1]
+      - [200, 9, 100, 1]
+  # The unique-name control beside every shape above.
+  - query: SELECT * FROM (SELECT g, SUM(v) AS s FROM ga GROUP BY g) u, c WHERE c.id = 100
+    columns: ["G", "S", "ID", "W"]
+    unordered: true
+    rows:
+      - [100, 12, 100, 1]
+      - [200, 9, 100, 1]

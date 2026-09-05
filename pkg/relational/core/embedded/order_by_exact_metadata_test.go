@@ -16,6 +16,8 @@ const orderByExactMetadataDDL = `
 	CREATE TABLE emp (id BIGINT, name STRING, dept_id BIGINT, salary BIGINT, PRIMARY KEY (id))
 	CREATE TABLE dept (id BIGINT, name STRING, PRIMARY KEY (id))
 	CREATE TABLE scores (id BIGINT, player STRING, game STRING, score BIGINT, PRIMARY KEY (id))
+	CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT)
+	CREATE TABLE ts (id BIGINT, n nst, PRIMARY KEY (id))
 `
 
 func logicalSorts(op logical.LogicalOperator) []*logical.LogicalSort {
@@ -328,16 +330,29 @@ func TestExactCTEProjection_QualifiedDirectJoinLegUsesBuiltResultType(t *testing
 }
 
 // underivableCTE is a CTE body that BUILDS but cannot be PUBLISHED: its row
-// carries the name `dup` twice, which is ambiguous by construction, so
-// complete-schema-or-decline withholds the whole source — including the
-// unambiguous column `a` a reference actually reads.
+// carries a catalog STRUCT column, whose exact type is a NAMED record that
+// semantic.Column cannot carry losslessly (semanticColumnFromExactType admits
+// only the anonymous RECORD shape), so the exact derivation declines the whole
+// source — including the plain column `a` a reference actually reads.
 //
-// The specimen used to be a nested-WITH comma-join body, which was underivable
-// only because a join-bodied CTE's schema was guessed from its FROM legs by
-// name. That guess is retired (the row now comes from the built body), so the
-// shape publishes and resolves — a duplicate output name is what is left that
-// genuinely cannot be advertised.
+// The specimen has moved twice, each time because the shape it used started
+// publishing. It was a nested-WITH comma-join body, underivable only because a
+// join-bodied CTE's schema was guessed from its FROM legs by name; then a body
+// that named `dup` twice, withheld by a uniqueness gate — which was itself the
+// silent bind it claimed to prevent, since the declined CTE fell to the ON-only
+// class and a read of `dup` bound one duplicate or the other. A repeated name is
+// published now and its reader reports 42702 (repeatedNameCTE below resolves).
+// What is left that genuinely cannot be advertised is a row the semantic
+// column model cannot state.
 const underivableCTE = `WITH c2 AS (
+		SELECT x.n AS s, x.id AS a FROM ts AS x, t AS y WHERE x.id = y.id
+	) `
+
+// repeatedNameCTE is the body underivableCTE used to be: it names `dup` twice.
+// It publishes as stated, so a computed key or projection over its unambiguous
+// column `a` resolves exactly as over any other join-bodied CTE, and only a
+// read that spells `dup` meets the ambiguity check.
+const repeatedNameCTE = `WITH c2 AS (
 		SELECT x.v AS dup, y.v AS dup, x.id AS a FROM t AS x, t AS y WHERE x.id = y.id
 	) `
 
@@ -370,6 +385,57 @@ func TestOrderByExactMetadata_ComputedKeyOverDerivableCTEResolves(t *testing.T) 
 		}
 	}
 	t.Fatal("computed ORDER BY key not found")
+}
+
+// The pair below is the other half of the two StaysLoud pins that follow: the
+// repeated-name body that used to be their specimen now publishes, so a
+// computed key and a computed projection over its unambiguous column resolve.
+// Without these, retiring the uniqueness gate would be pinned only from the
+// "still declines" side.
+func TestOrderByExactMetadata_ComputedKeyOverRepeatedNameCTEResolves(t *testing.T) {
+	t.Parallel()
+	_, md := newLoggingGenerator(t, orderByExactMetadataDDL, &captureLogger{})
+	op, err := NewPlanVisitor(md).VisitQuery(parseQuery(t,
+		repeatedNameCTE+`SELECT a FROM c2 ORDER BY a + 1`))
+	if err != nil {
+		t.Fatalf("VisitQuery: %v", err)
+	}
+	for _, sort := range logicalSorts(op) {
+		if len(sort.Keys) == 1 && sort.Keys[0].Expr == "a + 1" {
+			if sort.Keys[0].Value == nil {
+				t.Fatal("computed key over a repeated-name CTE has no resolved Value; " +
+					"the body publishes its row, repeated name included, and `a` is unambiguous")
+			}
+			return
+		}
+	}
+	t.Fatal("computed ORDER BY key not found")
+}
+
+func TestOrderByExactMetadata_ComputedProjectionOverRepeatedNameCTEResolves(t *testing.T) {
+	t.Parallel()
+	_, md := newLoggingGenerator(t, orderByExactMetadataDDL, &captureLogger{})
+	op, err := NewPlanVisitor(md).VisitQuery(parseQuery(t,
+		repeatedNameCTE+`SELECT a + 1 AS b FROM c2 ORDER BY a`))
+	if err != nil {
+		t.Fatalf("VisitQuery: %v", err)
+	}
+	found := false
+	for _, project := range logicalProjects(op) {
+		if len(project.IsComputed) != 1 || !project.IsComputed[0] {
+			continue
+		}
+		found = true
+		if len(project.ProjectedValues) == 0 || project.ProjectedValues[0] == nil {
+			t.Fatal("computed projection over a repeated-name CTE has no resolved Value")
+		}
+	}
+	if !found {
+		t.Fatal("computed CTE projection not found")
+	}
+	if ref, _, translateErr := query.TranslateToCascadesWithError(op, md); ref == nil || translateErr != nil {
+		t.Fatalf("computed projection translation = ref %v, err %v; want a translated reference", ref, translateErr)
+	}
 }
 
 func TestOrderByExactMetadata_UnderivableCTEComputedKeyStaysLoud(t *testing.T) {

@@ -1,0 +1,29 @@
+# scenario: ctenames (seed 10)
+#   CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+#   CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+
+=== WITH u AS (SELECT ga.g, c.w FROM ga, c WHERE ga.g = c.id) SELECT u.g, u.w FROM u ORDER BY u.g
+PLAN: Project([_current.G#0, _current.W#1], InMemorySort([_current.G#0 ASC], Project([_current.G#1, _current.W#4], FlatMap(outer=Scan(GA), inner=Scan(C, [=])))))
+ROWS(3) cols=[G, W]:
+  [100, 1]
+  [100, 1]
+  [200, 2]
+
+=== WITH u AS (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u.g, u.s FROM u ORDER BY u.g
+PLAN: Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))))
+ROWS(2) cols=[G, S]:
+  [100, 12]
+  [200, 9]
+
+=== SELECT u.g, u.s FROM (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) u ORDER BY u.g
+PLAN: Project([_current.G#0, _current.S#1], Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))))
+ROWS(2) cols=[G, S]:
+  [100, 12]
+  [200, 9]
+
+=== WITH u AS (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) SELECT u.g, u.w, u.s FROM u ORDER BY u.g
+PLAN: Project([_current.G#0, _current.W#1, _current.S#2], Project([_current.G#0, _current.W#1, _current.SUM(V)#2], StreamingAgg(keys=[_current.G#1, _current.W#4], InMemorySort([_current.G#1 ASC, _current.W#4 ASC], FlatMap(outer=Scan(C), inner=PredicatesFilter(Scan(GA), [1 preds]))))))
+ROWS(2) cols=[G, W, S]:
+  [100, 1, 12]
+  [200, 2, 9]
+

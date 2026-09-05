@@ -23,14 +23,14 @@ rejection is never read as working support:
 
 The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide percentages.
 
-**366 scenarios · 2946 query/assertion cases** across 18 feature areas — 2579 supported, 114 unsupported-feature pins, 253 error-path pins.
+**368 scenarios · 2974 query/assertion cases** across 18 feature areas — 2597 supported, 114 unsupported-feature pins, 263 error-path pins.
 
 | Feature area | Scenarios | Cases | Supported | Unsupported | Error-path |
 |---|--:|--:|--:|--:|--:|
 | Aggregates & GROUP BY | 53 | 345 | 312 | 19 | 14 |
 | Joins | 66 | 313 | 296 | 2 | 15 |
 | Subqueries (EXISTS / IN / scalar) | 46 | 313 | 258 | 35 | 20 |
-| CTEs | 13 | 108 | 77 | 7 | 24 |
+| CTEs | 14 | 125 | 84 | 7 | 34 |
 | Set operations (UNION / INTERSECT / EXCEPT) | 12 | 68 | 59 | 5 | 4 |
 | DML (INSERT / UPDATE / DELETE) | 26 | 238 | 202 | 4 | 32 |
 | Ordering & pagination | 16 | 122 | 118 | 0 | 4 |
@@ -44,8 +44,8 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | Keys & primary keys | 5 | 133 | 128 | 0 | 5 |
 | Error codes & validation | 4 | 39 | 10 | 3 | 26 |
 | End-to-end scenarios | 3 | 20 | 20 | 0 | 0 |
-| Other | 35 | 298 | 261 | 11 | 26 |
-| **Total** | **366** | **2946** | **2579** | **114** | **253** |
+| Other | 36 | 309 | 272 | 11 | 26 |
+| **Total** | **368** | **2974** | **2597** | **114** | **263** |
 
 ## Aggregates & GROUP BY
 
@@ -236,6 +236,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `cte_error_codes` | 6 | 2 | 0 | 4 | Java's cte.yamsql error tests: CTE-specific validation errors. |
 | `cte_java_patterns` | 8 | 6 | 0 | 2 | CTE patterns from Java's cte.yamsql. |
 | `cte_multi_reference` | 2 | 2 | 0 | 0 | CTE referenced multiple times |
+| `cte_published_row_names` | 17 | 7 | 0 | 10 | The row a CTE body publishes to its enclosing query is the row the body |
 | `cte_recursive_tree` | 3 | 3 | 0 | 0 | Recursive CTE tree traversal |
 | `cte_star_column_aliases` | 3 | 2 | 0 | 1 | a CTE column-alias list over a STAR body. |
 | `cte_with_insert` | 2 | 1 | 0 | 1 | CTE used in INSERT ... |
@@ -497,6 +498,7 @@ The same classifier drives `SQL_COVERAGE.md`, which reports the corpus-wide perc
 | `quoted_identifier_columns` | 6 | 5 | 0 | 1 | A QUOTED identifier keeps its case; an unquoted one folds to upper. |
 | `quoted_identifier_labels` | 40 | 37 | 1 | 2 | THE RESULT-SET LABEL IS WHERE THE USER SEES THE NAME, so it is the one |
 | `quoted_identifier_pins` | 4 | 4 | 0 | 0 | quoted-identifier shapes that must keep |
+| `repeated_output_names` | 11 | 11 | 0 | 0 | A repeated output name is reported as the user spelled it, once per column, |
 | `select_no_from` | 6 | 0 | 6 | 0 | FROM-less SELECT — fdb-relational 4.11.1.0's QueryVisitor.visitSimpleTable |
 | `select_star_single_table` | 4 | 4 | 0 | 0 | SELECT * from single table |
 | `set_op_fetch_pushdown` | 2 | 2 | 0 | 0 | set operations push below the fetch |
