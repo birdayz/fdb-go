@@ -9216,12 +9216,14 @@ covered by the correctness suite and the golden plan diff, not by this table.
   (`proto: descriptor "__0type__2.ID" already declared`), `FinalizePlan` swallows that as it
   swallows every non-clash descriptor failure, and the constructor is left with no descriptor.
   What that costs is descriptor IDENTITY, not data, and it is USER-VISIBLE. A computed STRUCT
-  selected through such a plan comes back as a raw `map[string]any`, where the SAME join with
-  only the repeated name removed (`FULL OUTER JOIN (SELECT id AS cid FROM c_md)`) returns an
-  `api.Struct` — measured over FDB with `STRUCT foo (id AS x, v AS y) AS r` in the CTE: same
-  values, wrong type, because there is no descriptor to present it with. The control keeps the
-  join deliberately: dropping the join AND the name together could not tell which caused the
-  raw map. No DATA is lost: the emitting paths (executeProjection, the
+  selected through such a plan comes back as a raw `map[string]any`, where the SAME statement
+  with only the repeated name removed (`FULL OUTER JOIN (SELECT id AS cid FROM c_md)`) returns
+  an `api.Struct` — measured over FDB: same values, wrong type, because there is no descriptor
+  to present it with. The control keeps the join deliberately, and the pinned pair is built so
+  the two texts differ in NOTHING else: the CTE names its struct `RR` so it cannot also collide
+  with the stored column's `R`, leaving `ID` as the single repeated name for the control to
+  remove. Dropping the join, or leaving a second repeat in place, could not tell which caused
+  the raw map. No DATA is lost: the emitting paths (executeProjection, the
   flat-map cursor's record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows
   the result set reads by ORDINAL, so both `ID` slots arrive with their own values (measured with
   a predicate that keeps them different; with both equal the check cannot discriminate). The
