@@ -328,6 +328,16 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 		}
 	}
 
+	// The wrapper is inert: keep it, put the repeat back, and the computed value
+	// is a raw map again — so the control's struct is owed to the removed repeat
+	// and not to the derived table it was removed with.
+	wrapped, _ := computedAndStoredRow(t, db, ctx, wrapperKeptRepeatedID)
+	if _, isStruct := wrapped.(api.Struct); isStruct {
+		t.Fatalf("with the derived-table wrapper kept and the repeated `ID` restored, the computed "+
+			"struct came back as %T — the wrapper, not the repeat, is what the control changes, so "+
+			"the pair no longer attributes the raw map to the duplicate name", wrapped)
+	}
+
 	// The STORED column from that same row keeps its type.
 	storedStruct, isStruct := stored.(api.Struct)
 	if !isStruct {
@@ -395,6 +405,23 @@ const witnessWithRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x,
 
 const controlWithoutRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
 	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS cid FROM c_md) AS c ON s.id + 1 = c.cid"
+
+// wrapperKeptRepeatedID is the control with its derived-table wrapper INTACT and
+// the repeat restored: `c_md`'s column is projected under its own name again, so
+// the join row carries `ID` twice as the witness does.
+//
+// It exists because the control introduces two differences at once — a wrapper
+// AND a rename — and only the rename is supposed to matter. The wrapper is
+// FORCED: the dialect cannot rename a base table's column in place, so removing
+// the repeat requires a derived table to rename through. Reading this shape
+// shows the wrapper is inert: with the repeat back, the computed struct is a raw
+// map again. Written `id AS id` so the only textual difference from the control
+// is the alias. Without this read, a change in how derived tables are planned
+// could make the control return a struct for the wrapper's sake, and the pairing
+// would keep reading as proof while proving nothing — derived-table projections
+// are descriptor-relevant, which is exactly what the tests above this one pin.
+const wrapperKeptRepeatedID = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS rr FROM b_md) " +
+	"SELECT d.rr, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN (SELECT id AS id FROM c_md) AS c ON s.id + 1 = c.id"
 
 // computedAndStoredRow returns the computed struct and the stored struct column
 // of the one row that carries both.

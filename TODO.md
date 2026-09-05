@@ -9219,11 +9219,14 @@ covered by the correctness suite and the golden plan diff, not by this table.
   selected through such a plan comes back as a raw `map[string]any`, where the SAME statement
   with only the repeated name removed (`FULL OUTER JOIN (SELECT id AS cid FROM c_md)`) returns
   an `api.Struct` — measured over FDB: same values, wrong type, because there is no descriptor
-  to present it with. The control keeps the join deliberately, and the pinned pair is built so
-  the two texts differ in NOTHING else: the CTE names its struct `RR` so it cannot also collide
+  to present it with. The control keeps the join deliberately, and the pinned trio is built so the
+  repeat is the only thing that varies: the CTE names its struct `RR` so it cannot also collide
   with the stored column's `R`, leaving `ID` as the single repeated name for the control to
-  remove. Dropping the join, or leaving a second repeat in place, could not tell which caused
-  the raw map. No DATA is lost: the emitting paths (executeProjection, the
+  remove. The control must also WRAP `c_md` in a derived table, because the dialect cannot
+  rename a base column in place — so a third read keeps that wrapper and restores the repeat
+  (`SELECT id AS id` beside the control's `SELECT id AS cid`), and still comes back a map,
+  which is what shows the wrapper inert and the repeat load-bearing. Dropping the join, leaving
+  a second repeat in place, or omitting that third read could not tell which caused the raw map. No DATA is lost: the emitting paths (executeProjection, the
   flat-map cursor's record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows
   the result set reads by ORDINAL, so both `ID` slots arrive with their own values (measured with
   a predicate that keeps them different; with both equal the check cannot discriminate). The
