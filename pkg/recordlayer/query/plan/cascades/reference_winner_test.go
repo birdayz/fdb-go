@@ -338,7 +338,7 @@ func TestSortElimination_CounterflowNullsNotElidedAtExtraction(t *testing.T) {
 
 	// The natural-ASC index scan does NOT satisfy ASC NULLS LAST: the
 	// elision hook must decline.
-	if w := p.OrderedChildWinner(sort, scanRef); w != nil {
+	if w := p.OrderedChildWinnerForSort(sort, scanRef); w != nil {
 		t.Fatalf("ASC NULLS LAST must not elide against a natural-ASC index scan; got %T", w)
 	}
 }
@@ -477,7 +477,7 @@ func TestSortElimination_DeclinesWhenSpineUnpinnable(t *testing.T) {
 		filterQ,
 	))
 	p := NewPlanner(DefaultExpressionRules(), nil)
-	if w := p.OrderedChildWinner(sort, filterRef); w != nil {
+	if w := p.OrderedChildWinnerForSort(sort, filterRef); w != nil {
 		t.Fatalf("a delegating wrapper over an orderless group must not satisfy; got %T", w)
 	}
 }

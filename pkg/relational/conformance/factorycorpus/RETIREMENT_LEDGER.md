@@ -317,3 +317,80 @@ recipe, verifies every other determinism invariant rather than rewriting it,
 refuses to run if any of those drifted, regenerates `census_baseline.json`, and
 emits the machine ledger carrying both census endpoints, both corpus-tree
 fingerprints and a per-file disposition. No digest was hand-edited.
+
+## A sort is judged through its source group — PLAN CHANGE, an elision Java makes
+
+**Re-blessed: 42 scenarios — 14 candidates × 3 projections — across 10 family
+files, all `single|and(…)|none`. Result rows: UNCHANGED.** Machine half:
+`retirements/2026-09-05-rfc242-a-sort-is-judged-through-its-source-group.json`,
+base commit `36b97f1e91b5c88658e8d759668b981ffebfcb7d` (master's tip, which the
+branch's corpus equalled byte for byte before this transition).
+
+### What moved
+
+Every one of the 42 is the same shape, counted over the two `factory-plan-census`
+dumps (8060 lines each, both processes exit 0):
+
+```
+InMemorySort([K DIR, ID DIR], PredicatesFilter(IndexScan(IDX_K, [=]), [n preds]))
+```
+
+became
+
+```
+PredicatesFilter(IndexScan(IDX_K, [=]), [n preds])
+```
+
+with the same projection above it where the candidate projects. The query is
+`… WHERE k = <literal> AND … ORDER BY k <dir> [NULLS …], id`: the index probe
+binds `k` by equality, and within one bound value the index stores entries in
+primary-key order, so the requested order is already delivered and the sort is
+redundant. This is Java's `RemoveSortRule` equality-bound arm (its
+`equalityBoundKeys` loop), answering here for the first time on these shapes.
+
+### Why it moved now, and why it is sound
+
+RFC-242's third adjacent finding changed how a sort over an order-PRESERVING
+wrapper is judged. `ImplementSortRule` compared the request against the
+wrapper's own derived ordering, which inherits its source's PLAIN ordering — and
+a plain ordering drops equality-bound coordinates, so a `PredicatesFilter` over
+an equality probe on `IDX_K` advertised `[ID]` alone and `ORDER BY k, id` was
+never satisfied. The rule now judges such a wrapper through its source group
+(`memberSatisfiesOrdering`, the `orderingDelegator` walk), which sees the index
+scan's RICH ordering: `K` bound, `ID` ascending under it. A bound `DOUBLE` key
+is included only where the existing ordering-claim predicate already admits it
+(`EqualityBoundCoordinateClaimsOwnOrder`; a zero-capable float equality does not
+pin and the claim is truncated there as before), so this re-bless changes no
+float-ordering verdict the earlier entry in this ledger retired.
+
+The elision is order-correct because both plans read the same probe with the
+same residual filter and differ only in the sort; the probe's entries are
+`(k, pk)`-ordered by construction. The frozen rows are unchanged, and the full
+committed corpus was executed against real FDB on the re-blessed planner in the
+same pre-commit run that surfaced the drift
+(`//pkg/relational/conformance/factorycorpus/full:full_test`).
+
+Classification over the transition:
+
+```
+scenarios compared: 8060
+plans moved:        42
+
+  lost an EQUALITY index probe:   0
+  lost ALL index access:          0
+  gained an UNBOUNDED full scan:  0
+  newly unplannable:              0
+
+no regression class present; the movement is representation-only
+EXIT=0
+```
+
+### How the re-bless was done
+
+`go run ./cmd/factory-rebless-plan-shapes -corpus … -census …`, then the same
+command with `-ledger`, `-before` (the corpus as master committed it, exported
+with `git archive`), `-base-commit`, `-rfc RFC-242`, `-date 2026-09-05` and the
+reason above. The tool re-derived the two header lines from each scenario's
+committed reproduction recipe, verified the feature vector, the four renderings,
+the schema and the setup unchanged, regenerated `census_baseline.json`, and
+emitted the machine ledger. No digest was hand-edited.

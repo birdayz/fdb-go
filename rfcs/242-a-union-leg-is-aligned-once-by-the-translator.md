@@ -1,6 +1,7 @@
 # RFC-242 — A union's legs are aligned once, by the translator
 
-**Status:** r6. r5 (head `452479f68`): Torvalds ACK with three folds; Graefe NAK — the loud floor r5
+**Status:** r8. r7 (head `cd7bdc5ed`): Graefe ACK (one non-blocking booking: a redundant sort over a renamed grouping key, which r8 fixes as the third adjacent finding); Torvalds ACK with four folds; @claude NAK on coverage (the union-bodied derived table's fix had no regression pin, the added sort on golden #25 was unexplained, a fixture comment cited the wrong RFC-238 section); codex two runs, four P1 findings (a silent wrong answer for quoted case-distinct labels, star bodies bypassing the star-expansion visibility rules, an aliased expression reclassified into a grouping key losing its alias — reported twice). r8 folds all of those. r6. 
+r5 (head `452479f68`): Torvalds ACK with three folds; Graefe NAK — the loud floor r5
 left was wider than stated and the fix is the ordinal-bound edge, not a wider pin (folded as
 the second adjacent finding's third and fourth layers); codex five findings, all folded; @claude
 ACK with one stale comment, restated. r6 folds all of those. Earlier rounds — r3. r1: Graefe ACK with one non-blocking condition (assert leg alignment at the
@@ -455,6 +456,18 @@ Every proof is committed; each names the dimension that was unprobed.
     and still rejecting a different name and a reordering; `derivedOutputColumns` naming a
     repeated output exactly as `values.DedupFieldNames` does, at one, two and three
     repetitions.
+13. **Sort elision across a renaming projection.** `TestSortElisionCrossesARenamingProjection`
+    (the rule-time winner and extraction both elide `ORDER BY h` over `(SELECT status AS h)`
+    whose source is STATUS-sorted; fails with the translation removed) and
+    `TestSortElisionDeclinesAComputedSlot`; `cte_published_row_names.yaml` §6 pins
+    `plan_not_contains: InMemorySort` over a renamed primary key in both spellings with the
+    DESC twins; `plan_shape.golden` records the 13 corpus plans that lose their sort.
+14. **Star-body visibility.** `derived_star_visibility.yaml`: the unnest alias shadowing the
+    outer column (three reads, both spellings), quoted case-distinct labels (four reads), the
+    reclassified alias (both spellings); `derived_star_row_versions.yaml`: the star over
+    row-versioned tables in both spellings and a two-column read.
+15. **Bodies the walk serves.** `cte_published_row_names.yaml` §7–§8: a WHERE over a star join
+    and over a union of star joins, both spellings; the named-STRUCT join body, both spellings.
 
 ## Adjacent finding, surfaced by the § Fix D probe — fixed here (§ Fix F)
 
@@ -560,6 +573,90 @@ comparison — `ga.g AS "GA.G"` is aliased.
 All four layers are pinned in `repeated_output_names.yaml` and `cte_published_row_names.yaml`
 (§ Test plan 11–12) and as Q57 of the sqldriver probe suite, in both spellings.
 
+## Third adjacent finding, surfaced by @claude's r7 delta — fixed here
+
+@claude asked why golden #25 (`SELECT u."GA.G" AS z FROM u ORDER BY z` over an aliased
+grouping key) gained an `InMemorySort` at r7 when r6's plan had none. r6's plan had none because
+r6 had LOST the alias (codex's r6 finding): the outer read resolved to the bare `G`, the name
+coincided with the grouping key the streaming aggregate already orders by, and the sort was
+elided on that coincidence. r7 kept the alias, and the same sort was then kept over an input
+already in that order. Graefe measured the same redundant sort on a plain alias (`g AS h`) at
+the merge-base: it is pre-existing, and it is every renamed column, not one query.
+
+**Mechanism.** Java derives a map plan's ordering by pulling its child's ordering up through
+the map's result value (`OrderingProperty.visitMapPlan` → `Ordering.pullUp`), so `RemoveSortRule`
+compares `ORDER BY h` against an ordering that already says `H`. Go resolves ordering
+satisfaction the other way round: an order-PRESERVING wrapper (`orderingDelegator`) answers
+through its source group, and the request walks down the delegator chain to the member that
+provides the order. That walk carried the request UNTRANSLATED through a projection or a map, so
+`H` was matched against the source's key `ID` and satisfied only when the two spellings happened
+to coincide. The dual of Java's pull-up is a push-down at each reshaping delegator:
+`requestedOrderingBelow` restates the request through the wrapper's result value
+(`RequestedOrdering.PushDownThroughValue`, the translation
+`PushRequestedOrderingThroughProjectionRule` already uses for the constraint) and rebases the
+pushed parts from the wrapper's child edge into the source group's current-row space
+(`requestedOrderingAtInnerCurrent`). The push-down's upper alias is the root the request's parts
+name — the group's current carrier for the constraint the sort rule pushed, the sort's own inner
+quantifier for the keys as spelled — because both reach the walk. A part the result value cannot
+express (a computed slot) drops, and a request that lost a part is not satisfiable below the
+wrapper: the sort stays.
+
+**Where it applies.** All three delegator walks: `memberSatisfiesOrderingDepth` (satisfaction),
+`pinOrderedSpineDepth` (the rule-time pin) and extraction's `rebuildOrderedSpine`, which now
+carries the translated request level by level instead of re-deriving it from the sort at every
+level. `ImplementSortRule` judges an order-preserving member through the walk
+(`memberSatisfiesOrdering`) rather than through the member's own derived ordering, which inherits
+the source's keys untranslated. `SortElisionSelector.OrderedChildWinner` takes the requested
+ordering; `Planner.OrderedChildWinnerForSort` is the sort-expression entry.
+
+**Measured.** Over the yamsql corpus (`plan_shape.golden`, 2736 queries at this head), 13 plans
+lose an in-memory sort and none gains one; the recursive-CTE and FlatMap shapes that keep theirs
+keep them. A sort over a projection's computed slot still declines
+(`TestSortElisionDeclinesAComputedSlot`). The RFC-201 factory corpus moves too: 42 of 8150
+committed scenarios across 10 `single|and(…)` family files change plan shape (re-blessed with
+`factory-rebless-plan-shapes`, which verifies the renderings, schema, setup and frozen rows are
+unchanged; machine ledger `retirements/2026-09-05-rfc242-a-sort-is-judged-through-its-source-group.json`
+over base commit `36b97f1e9`, prose entry in `RETIREMENT_LEDGER.md`, drift classified by
+`factory-plan-census` with no regression class present). Those are not renamed columns: `SELECT * FROM t_rd WHERE c = 1 AND id < 3 ORDER BY c
+NULLS LAST, id` now plans as `Fetch(PredicatesFilter(IndexScan(IDX_C, [=])))` with no sort, where
+the merge-base sorted a filtered scan. The fetch is an order-preserving wrapper, and judging it
+through its source group (the walk) sees the index scan's RICH ordering — C equality-bound, ID
+ascending under it — where the wrapper's own inherited plain ordering had lost the bound key.
+That is Java's `RemoveSortRule` equality-bound arm answering through the delegator, and it is
+order-correct: the index stores (c, id), the residual filter preserves order.
+
+## Folds at r8
+
+- **Quoted, case-distinct labels answered the first column twice** (codex r7 P1, a silent wrong
+  answer where the merge-base refused): the resolver took a reference's ordinal by a folded first
+  match over the source's labels, so `c."x"` and `c."X"` over `(SELECT foo AS "x", bar AS "X")`
+  both read slot 0. `sourceColumnOrdinal` matches the exact spelling first and falls back to a
+  folded match only when it is unique, in both of its layouts (`derived_star_visibility.yaml`
+  §3).
+- **A star body bypassed the star-expansion visibility rules** (codex r7 P1): r7's exact-first
+  derivation labelled a projection-less star body by the exact row, which neither shadows an
+  outer column under an unnest AS/AT alias nor hides the ephemeral `__ROW_VERSION` pseudo-column
+  (Java's `nonEphemeralVisible`). The derived join-body builder takes the same order the CTE arm
+  takes — the unnest builder first for a star body, then the exact row unless it carries the
+  pseudo-column (`exactStarRowCarriesAnEphemeral`), then the catalog walk — and the CTE join arm
+  applies the same pseudo-column decline. The uniqueness gate r7 deleted had declined the
+  row-versioned star join by accident (both legs carry `__ROW_VERSION`); this declines it by
+  rule (`derived_star_visibility.yaml` §1, `derived_star_row_versions.yaml`).
+- **An aliased expression reclassified into a grouping key lost its alias** (codex r7 P1,
+  reported by both runs): `v / 10 AS bucket … GROUP BY v / 10` is classified as an expression
+  item and turned into a grouping key after GROUP BY parsing, and r7's alias-provenance flag was
+  set only on items born as grouping keys. It is set on every item now
+  (`derived_star_visibility.yaml` §4).
+- **The eighth CTE-install site** (Torvalds): `buildWherePredicateFromCTEScope` installed a CTE
+  source without `cteSourceAs`; routed. The named-STRUCT join body, the one class the exact
+  derivation declines and the walk still serves, is pinned in both spellings
+  (`cte_published_row_names.yaml` §8).
+- **Coverage** (@claude, Graefe): the union-bodied derived table's motivating shape (a WHERE and
+  a GROUP BY, both spellings, plus the repeated-name read) and the star-union shapes Graefe found
+  answering at r7 are pinned (`cte_published_row_names.yaml` §5, §7); the DESC twins pin that the
+  order is real (§6); the fixture comment cites RFC-238 §2's `qualifierStrippedLabel` residual
+  rather than §7d.
+
 ## Rides alongside, not part of this RFC
 
 The engine fuzz nightly was red for a second, unrelated reason: `FuzzRebaseValue_NoPanic` built
@@ -586,7 +683,14 @@ mechanism depends on them.
   translator already books the projected-output-layout ordinalization it needs
   (`translateAggregate`, the positional-gather comment). A projection or a WHERE over the
   derived spelling answers, as before. Recorded in `TODO.md` ("Exact quantifier binding over a
-  CTE or derived body") with the measurements.
+  CTE or derived body") with the measurements. Two more of the same class, over row-versioned
+  tables and pre-existing at the merge-base in the same form: a WHERE over the derived star
+  join (`edge lookup D: read as RECORD(ID,Y,ID,Z), declared RECORD(AA.ID,Y,BB.ID,Z)` — the
+  row-version rewrite has already produced Java's explicit projection, and that projection
+  names its slots by the leg-qualified datum key while the scope's walk publishes bare names),
+  and a star over a lateral unnest (the rewritten projection carries the outer column beside
+  the element, as the top-level star does, while the derived unnest scope shadows it). Both
+  are in the same `TODO.md` entry with their measurements.
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
   thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job
   cancelled from outside after 3–67 minutes with no timeout annotation) need host access; the

@@ -9063,6 +9063,23 @@ covered by the correctness suite and the golden plan diff, not by this table.
     FROM d WHERE d.aid = 1` — does not plan (`0AF00: Cascades planner could not plan query`);
     a projection or an aggregate over the same CTE answers (`TestFDB_UnnestExistsGather`,
     `agg_cte_*`).
+  Two more, of the same class, over ROW-VERSIONED tables (a schema template ending in
+  `WITH OPTIONS(store_row_versions=true)`; measured on SimFDB at the same two commits over
+  `aa(id, y)`, `bb(id, z)` and `things3(id, x, arr)`, one row each):
+  - a WHERE over the derived star join — `SELECT d.y FROM (SELECT * FROM aa, bb) d WHERE d.y
+    = 10` — is refused at execution as `edge lookup D: read as RECORD(ID,Y,ID,Z), declared
+    RECORD(AA.ID,Y,BB.ID,Z)`; the same read without row versions answers, and an ORDER BY over
+    the same derived table answers in both spellings (`derived_star_row_versions.yaml`).
+    `expandBareStarForRowVersion` has already rewritten this body into the explicit
+    projection, and that projection declares its slots by the leg-qualified datum key while
+    the derived scope's catalog walk publishes the bare names;
+  - a star over a lateral unnest — `SELECT d.x FROM (SELECT * FROM things3, things3.arr AS x)
+    d` — does not plan (`0AF00: derived projection input slot 0 cannot adopt its physical
+    output names`), and its CTE spelling fails as `XX000: unclassified planner failure`; the
+    same body over a table without row versions answers [7],[8] in both spellings
+    (`derived_star_visibility.yaml`). The rewritten projection carries the outer X beside the
+    element X (four slots, as the top-level `SELECT *` over the same FROM list returns), while
+    the derived unnest scope shadows the outer column and states three.
   The CTE spelling stays out of the global scope by shape and its aggregate binds through the
   translator's seed bake (`exactGatheredCTEGroupKeyValue`); the derived spelling has no such
   arm, and `translateAggregate`'s positional-gather comment already books the

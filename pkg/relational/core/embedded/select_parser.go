@@ -342,12 +342,18 @@ type aggSelectCol struct {
 	// Exactly one of groupCol / aggFunc / outExpr is set (non-visible entries
 	// harvested from HAVING/ORDER BY always have aggFunc set).
 	groupCol string // plain group-by column reference
-	// groupColAliased records whether the SELECT item that names this grouping
-	// key carried an explicit `AS`. outName is minted from the reference's
-	// display spelling when it did not, so the two consumers that label the
-	// output (aggregateProjectionItem, aggOutputCols) once inferred "no alias"
-	// from outName equalling groupCol — a string comparison standing in for a
-	// fact the parser had in hand.
+	// groupColAliased records whether the SELECT item carried an explicit
+	// `AS`. It is read once the item names a grouping key: outName is minted
+	// from the reference's display spelling when there was no alias, so the
+	// two consumers that label the output (aggregateProjectionItem,
+	// aggOutputCols) once inferred "no alias" from outName equalling
+	// groupCol — a string comparison standing in for a fact the parser had in
+	// hand. It is set on EVERY item, an outExpr included, because the
+	// post-GROUP-BY reclassification turns an expression item whose text
+	// matches a GROUP BY entry (`v / 10 AS bucket` … `GROUP BY v / 10`) into a
+	// grouping key after the fact; a flag set only on the items born as
+	// grouping keys left that one unaliased, and `u.bucket` over the body was
+	// 42703 in both the CTE and the derived-table spelling.
 	groupColAliased bool
 	// groupColBare: the structural bare name of groupCol (parse-tree/derived
 	// at set time) — consumers never dot-split groupCol.
@@ -988,9 +994,9 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 								aggCols = append(aggCols, h)
 								existingNames[h.outName] = struct{}{}
 							}
-							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, groupColAliased: alias != "", visible: true})
 						case expr != nil && !exprReferencesColumn(expr):
-							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, groupColAliased: alias != "", visible: true})
 						case expr != nil:
 							// Expression references columns but contains no
 							// aggregates. Java permits this when the columns
@@ -1003,7 +1009,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 							// the rowMap lookup errors at emit time with
 							// "column not in row" — close to SQL standard's
 							// 42803 grouping_error.
-							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, outExpr: expr, groupColAliased: alias != "", visible: true})
 						default:
 							gcBare, gcQual, gcQualified, gcSegs := splitColumnRef(e.Expression())
 							if gcBare == "" {
@@ -1132,7 +1138,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				}
 				switch {
 				case slotExpr != nil && !exprReferencesColumn(slotExpr):
-					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
+					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, groupColAliased: projAliases[i] != "", visible: true}
 				case slotExpr != nil:
 					// Expression on group-by columns (no aggregates, no
 					// constants-only). Java permits this when all referenced
@@ -1140,7 +1146,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					// post-aggregation against the rowMap holding group-by
 					// values. Symmetric with the in-SELECT-loop case at the
 					// mixed-agg classification site above.
-					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
+					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, groupColAliased: projAliases[i] != "", visible: true}
 				default:
 					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, groupColAliased: projAliases[i] != "", visible: true}
 				}
@@ -1546,7 +1552,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				// Constant or column-referencing expression — both route
 				// to outExpr and are evaluated post-aggregation against
 				// the rowMap (which carries group-by column values).
-				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
+				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, groupColAliased: projAliases[i] != "", visible: true}
 			default:
 				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, groupColAliased: projAliases[i] != "", visible: true}
 			}

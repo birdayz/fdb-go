@@ -1124,14 +1124,25 @@ func buildDerivedTableSourceFromJoinBody(
 	// further to try, because the exact derivation already declined. An
 	// aggregate body never reaches this builder (buildDerivedTableSourceFromTerm
 	// takes its aggregate arm first).
-	if src, ok := buildExactVirtualScopeSourceForSelect(md, alias, innerSQ, nil, projectionOutputNames(innerSQ)); ok {
-		return src, true
+	//
+	//
+	// A STAR body's SQL columns are derived by the star-expansion rules, which
+	// the exact labels do not apply: an unnest AS/AT alias shadows a same-named
+	// outer column, and the ephemeral __ROW_VERSION pseudo-column stays hidden
+	// (Java's nonEphemeralVisible). So the same order the CTE arm takes: the
+	// unnest builder, which knows the shadowing rule, answers the star over a
+	// base table and its lateral unnests first (exact-first made `d.x` over
+	// `(SELECT * FROM things, things.arr AS x)` ambiguous), and an exact row
+	// that carries the pseudo-column is declined in favour of the catalog walk
+	// below, which hides it (exact-first made a star over row-versioned tables
+	// state two hidden slots the reader's row does not carry).
+	names := projectionOutputNames(innerSQ)
+	if names == nil {
+		if src, ok := buildDerivedUnnestScopeSource(md, alias, innerSQ); ok {
+			return src, true
+		}
 	}
-	// A projection-less lateral-unnest body has a complete positional schema
-	// even though its FROM list is syntactically a join. Derive that narrow
-	// shape before the generic join-body path (which correctly declines dotted
-	// correlated sources).
-	if src, ok := buildDerivedUnnestScopeSource(md, alias, innerSQ); ok {
+	if src, ok := buildExactVirtualScopeSourceForSelect(md, alias, innerSQ, nil, names); ok && !exactStarRowCarriesAnEphemeral(innerSQ, src) {
 		return src, true
 	}
 	cat := rlcatalog.Wrap(md)
@@ -2141,8 +2152,7 @@ func buildWherePredicateFromCTEScope(
 	analyzer := semantic.NewAnalyzer(cat, false)
 	scope := semantic.NewScope(nil)
 	if tableAlias != "" {
-		src.Alias = semantic.FromNormalized(tableAlias)
-		src.CorrelationName = tableAlias
+		src = cteSourceAs(src, semantic.FromNormalized(tableAlias), tableAlias)
 	}
 	if err := scope.AddSource(src); err != nil {
 		return nil, false
@@ -2260,6 +2270,7 @@ func buildCTEColumnSource(
 		// reclassified into aggCols — and that body flows a projected row the
 		// aggregate arm below publishes exactly; only the genuine star body is
 		// the raw cluster.
+		//
 		if len(innerSQ.aggCols) == 0 && !innerSQ.countStar {
 			resolvesToTable := newUnnestTableResolver(md, defaultEmbeddedSchema)
 			for i, j := range innerSQ.joins {
@@ -2303,7 +2314,7 @@ func buildCTEColumnSource(
 		if bodyErr != nil {
 			return semantic.ScopeSource{}, false, bodyErr
 		}
-		if !ok {
+		if !ok || exactStarRowCarriesAnEphemeral(innerSQ, src) {
 			return semantic.ScopeSource{}, false, nil
 		}
 		return src, true, nil
@@ -13223,6 +13234,32 @@ func operatorContains(root, target logical.LogicalOperator) bool {
 	}
 	for _, ch := range root.Children() {
 		if operatorContains(ch, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// exactStarRowCarriesAnEphemeral reports whether the exact row derived for a
+// STAR body states the ephemeral __ROW_VERSION pseudo-column. A star hides it
+// (Java's SemanticAnalyzer.expandStar → nonEphemeralVisible), so a row that
+// carries it is not the row the star's reader sees: published, `WITH d AS
+// (SELECT * FROM aa, bb) SELECT d.y FROM d ORDER BY d.y` over row-versioned
+// tables minted a read over a six-column row with two hidden version slots
+// that no runtime binding declares, and the derived spelling could not adopt
+// its physical output names. A body that spells its projection names every
+// column it emits and is never declined here.
+func exactStarRowCarriesAnEphemeral(innerSQ *selectQuery, src semantic.ScopeSource) bool {
+	if innerSQ == nil || projectionOutputNames(innerSQ) != nil || src.Table == nil {
+		return false
+	}
+	for _, c := range src.Table.Columns() {
+		if c.Id.Name() == values.PseudoFieldRowVersion {
+			return true
+		}
+	}
+	for _, c := range src.FlowedColumns {
+		if c.Id.Name() == values.PseudoFieldRowVersion {
 			return true
 		}
 	}

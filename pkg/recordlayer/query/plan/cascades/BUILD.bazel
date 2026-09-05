@@ -555,6 +555,7 @@ go_test(
         "simple_select_passthrough_test.go",
         "simplifier_test.go",
         "single_matched_access_test.go",
+        "sort_elision_renamed_slot_test.go",
         "sort_key_nil_value_contract_test.go",
         "sparse_candidate_expansion_test.go",
         "temp_table_test.go",
@@ -1142,6 +1143,7 @@ go_test(
         "compensation_monoid_test.go",
         "alias_map_compose_test.go",
         "union_leg_names_not_refolded_test.go",
+        "sort_elision_renamed_slot_test.go",
     ],
     deps = [
         "//gen",

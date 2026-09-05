@@ -1,0 +1,31 @@
+name: derived_star_row_versions
+# A projection-less star over row-versioned tables hides both legs'
+# ephemeral __ROW_VERSION slots (Java's SemanticAnalyzer.expandStar →
+# nonEphemeralVisible): the row a derived table or CTE publishes is the four
+# visible columns. Published under the exact labels of the built body, the
+# CTE spelling minted a read over a six-column row with two hidden version
+# slots that no runtime binding declares, and the derived spelling could not
+# adopt its physical output names.
+schema_template: |
+  CREATE TABLE aa (id BIGINT, y BIGINT, PRIMARY KEY (id))
+  CREATE TABLE bb (id BIGINT, z BIGINT, PRIMARY KEY (id))
+  WITH OPTIONS(store_row_versions=true)
+setup:
+  - INSERT INTO aa VALUES (1, 20), (2, 10)
+  - INSERT INTO bb VALUES (1, 3)
+tests:
+  - query: SELECT d.y FROM (SELECT * FROM aa, bb) d ORDER BY d.y
+    columns: ["Y"]
+    rows:
+      - [10]
+      - [20]
+  - query: WITH d AS (SELECT * FROM aa, bb) SELECT d.y FROM d ORDER BY d.y
+    columns: ["Y"]
+    rows:
+      - [10]
+      - [20]
+  - query: SELECT d.y, d.z FROM (SELECT * FROM aa, bb) d ORDER BY d.y
+    columns: ["Y", "Z"]
+    rows:
+      - [10, 3]
+      - [20, 3]

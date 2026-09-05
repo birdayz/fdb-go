@@ -89,8 +89,16 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			if !ok {
 				continue
 			}
+			// Satisfaction resolves through the SOURCE group for an
+			// order-preserving wrapper (memberSatisfiesOrdering, see
+			// orderingDelegator): a projection or map on that spine restates
+			// the request through its result value on the way down, so
+			// `ORDER BY u.h` over `(SELECT id AS h FROM t) u` reaches the scan
+			// as ID. The wrapper's own derived ordering inherits the source's
+			// keys untranslated, and judging the request against those matched
+			// a renamed slot on its output name — never.
 			ordering := computeWrapperRichOrdering(ph)
-			if ordering == nil || !ordering.Satisfies(preserveDistinctReq) {
+			if ordering == nil || !memberSatisfiesOrdering(ph, preserveDistinctReq) {
 				// A FlatMap's Java ordering cases depend on the concrete pair
 				// of child plans. Its initial implementation is built before
 				// child data-access re-exploration has produced requested-order

@@ -24,11 +24,14 @@
 # ga groups g={100,200}: SUM(v) = 12, 9. c maps 100→1, 200→2.
 name: cte_published_row_names
 schema_template: |
+  CREATE TYPE AS STRUCT nst (sk BIGINT, co BIGINT)
   CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
   CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))
+  CREATE TABLE st (id BIGINT, p nst, PRIMARY KEY (id))
 setup:
   - INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)
   - INSERT INTO c VALUES (100, 1), (200, 2)
+  - INSERT INTO st VALUES (1, (5, 6))
 tests:
   # (1) The repeated name, read through every path that once bound silently.
   - query: WITH u AS (SELECT ga.g, c.id AS g FROM ga, c) SELECT u.g FROM u, c AS c2 WHERE u.g = c2.id
@@ -166,12 +169,144 @@ tests:
   # published schema) read the parser's fact, never an inference from the
   # spelling. Inferring it labelled this column G. The star reads the body's
   # own labels; an outer `SELECT u."GA.G"` is labelled by the reader's
-  # qualifier-stripping rule, which cannot tell a quoted dotted column whose
-  # halves name a table and its column from a qualified reference — RFC-238
-  # §7d's open shape, not this row's.
+  # qualifier-stripping rule (`qualifierStrippedLabel`), which cannot tell a
+  # quoted dotted column whose halves name a table and its column from a
+  # qualified reference — the residual RFC-238 §2 leaves open, not this row's.
   - query: WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT * FROM u
     columns: ["GA.G", "S"]
     unordered: true
     rows:
       - [100, 12]
       - [200, 9]
+  # (5) The UNION-bodied derived table publishes its exact row first, under
+  # the structural fold's SQL names, so it carries the flowed layout of the
+  # row the union emits — its first leg's constructor row. A read bound to its
+  # quantified object over the unique column of a leg that repeats a bare leaf
+  # was refused at execution as `edge lookup U: read as RECORD(G,G,W),
+  # declared RECORD(GA.G,G,W)` while the CTE spelling of the same body, which
+  # derives its row from the seed branch, answered. Both spellings, a WHERE
+  # and an aggregate key; ga × c is six rows per leg, so w=1 twelve times.
+  - query: SELECT u.w FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) u WHERE u.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+  - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+      - [1]
+  - query: SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 6]
+      - [2, 6]
+  - query: WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 6]
+      - [2, 6]
+  # A read that spells the repeated name is ambiguous through the union
+  # spelling exactly as through the plain one.
+  - query: SELECT u.g FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c UNION ALL SELECT ga.g, c.id AS g, c.w FROM ga, c) u WHERE u.w = 1
+    error_code: "42702"
+  # (6) A sort over a CTE's or derived table's RENAMED column is satisfied by
+  # a source already in that order. The request crosses the projection by
+  # its result value (`u.h` is ID below it), so no in-memory sort is added
+  # over a primary-key scan; the DESC twins pin that the order is real and
+  # not the insertion order.
+  - query: SELECT u.h FROM (SELECT id AS h FROM ga) u ORDER BY u.h
+    columns: ["H"]
+    plan_not_contains: InMemorySort
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: WITH u AS (SELECT id AS h FROM ga) SELECT u.h FROM u ORDER BY u.h
+    columns: ["H"]
+    plan_not_contains: InMemorySort
+    rows:
+      - [1]
+      - [2]
+      - [3]
+  - query: SELECT u.h FROM (SELECT id AS h FROM ga) u ORDER BY u.h DESC
+    columns: ["H"]
+    rows:
+      - [3]
+      - [2]
+      - [1]
+  - query: WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u."GA.G" AS z FROM u ORDER BY z DESC
+    columns: ["Z"]
+    rows:
+      - [200]
+      - [100]
+  - query: WITH u AS (SELECT g AS h, SUM(v) AS s FROM ga GROUP BY g) SELECT u.h FROM u ORDER BY u.h DESC
+    columns: ["H"]
+    rows:
+      - [200]
+      - [100]
+  # (7) A star body over a join is published by the builders that know the
+  # star-expansion rules (derived_star_visibility.yaml has the rules); a WHERE
+  # and an aggregate over it answer in both spellings, and through a UNION
+  # of two such bodies. ga × c is six rows per leg, w=1 three times per leg.
+  - query: SELECT d.w FROM (SELECT * FROM ga, c) d WHERE d.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  - query: WITH d AS (SELECT * FROM ga, c) SELECT d.w FROM d WHERE d.w = 1
+    columns: ["W"]
+    rows:
+      - [1]
+      - [1]
+      - [1]
+  - query: SELECT d.w, COUNT(*) FROM (SELECT * FROM ga, c UNION ALL SELECT * FROM ga, c) d GROUP BY d.w ORDER BY d.w
+    columns: ["W", "COUNT(*)"]
+    rows:
+      - [1, 6]
+      - [2, 6]
+  - query: SELECT d.g FROM (SELECT * FROM ga, c UNION ALL SELECT * FROM ga, c) d WHERE d.w = 1 ORDER BY d.g
+    columns: ["G"]
+    rows:
+      - [100]
+      - [100]
+      - [100]
+      - [100]
+      - [200]
+      - [200]
+  - query: WITH d AS (SELECT * FROM ga, c UNION ALL SELECT * FROM ga, c) SELECT d.g FROM d WHERE d.w = 1 ORDER BY d.g
+    columns: ["G"]
+    rows:
+      - [100]
+      - [100]
+      - [100]
+      - [100]
+      - [200]
+      - [200]
+  # (8) A join body with a named-STRUCT column is the one class the exact
+  # derivation declines (its shape has no lossless semantic column), so the
+  # catalog walk still serves it: a read of the plain column beside the
+  # struct answers in both spellings.
+  - query: SELECT d.w FROM (SELECT st.p, c.w FROM st, c) d ORDER BY d.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+  - query: WITH d AS (SELECT st.p, c.w FROM st, c) SELECT d.w FROM d ORDER BY d.w
+    columns: ["W"]
+    rows:
+      - [1]
+      - [2]
+  - query: SELECT d.w FROM (SELECT st.p, c.w FROM st, c) d WHERE d.w = 2
+    columns: ["W"]
+    rows:
+      - [2]
