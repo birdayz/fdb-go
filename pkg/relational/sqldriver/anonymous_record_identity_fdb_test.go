@@ -293,14 +293,18 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 	mwjoMustExec(t, db, ctx, "INSERT INTO c_md VALUES (1), (2)")
 	mwjoMustExec(t, db, ctx, "INSERT INTO s_md VALUES (1, (7))")
 
-	// Half one: a COMPUTED struct loses its type, keeping its values. The two
-	// queries differ only in whether a leg repeats `ID`.
+	// Half one: a COMPUTED struct loses its type, keeping its values, while a
+	// STORED struct column in the SAME statement keeps both. Reading them
+	// together is what witnesses the poisoning for the stored assertion: if the
+	// shape ever stops being poisoned, `d.r` becomes a struct and this fails
+	// rather than passing as a bound on the damage. The control below differs
+	// from the poisoned query only in whether a leg repeats `ID`.
 	const computedThroughTheDuplicate = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS r FROM b_md) " +
 		"SELECT d.r FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id"
 	const computedWithoutTheDuplicate = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS r FROM b_md) " +
 		"SELECT d.r FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN (SELECT id AS cid FROM c_md) AS c ON a.id + 1 = c.cid"
 
-	poisoned := firstNonNilColumn(t, db, ctx, computedThroughTheDuplicate)
+	poisoned, stored := computedAndStoredThroughTheDuplicate(t, db, ctx)
 	if _, isStruct := poisoned.(api.Struct); isStruct {
 		t.Fatalf("the computed STRUCT through the duplicate-name join came back as %T — it is an "+
 			"api.Struct now, so TODO.md's booking has closed: assert that here instead", poisoned)
@@ -330,10 +334,7 @@ func TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues(t *testing.T) {
 		}
 	}
 
-	// A STORED struct column through the same poisoned join keeps its type.
-	const storedThroughTheDuplicate = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) " +
-		"SELECT s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN c_md AS c ON s.id + 1 = c.id"
-	stored := firstNonNilColumn(t, db, ctx, storedThroughTheDuplicate)
+	// The STORED column from that same row keeps its type.
 	storedStruct, isStruct := stored.(api.Struct)
 	if !isStruct {
 		t.Fatalf("a STORED struct column through the poisoned join = %T %v, want an api.Struct: it "+
@@ -405,4 +406,35 @@ func firstNonNilColumn(t *testing.T, db *sql.DB, ctx context.Context, query stri
 	}
 	t.Fatalf("%s: no row with a non-NULL first column: %v", query, rows.Err())
 	return nil
+}
+
+// computedAndStoredThroughTheDuplicate reads a COMPUTED struct and a STORED
+// struct column out of ONE row of the duplicate-name join, and returns them in
+// that order.
+//
+// One statement rather than two, because the stored assertion needs a witness
+// that its own plan is poisoned: the computed value beside it is that witness.
+// Read separately, "a stored column keeps its api.Struct" would stay green the
+// day the shape stops being poisoned and would still read as a bound on the
+// damage.
+func computedAndStoredThroughTheDuplicate(t *testing.T, db *sql.DB, ctx context.Context) (computed, stored any) {
+	t.Helper()
+	const query = "WITH d AS (SELECT id AS bid, STRUCT foo (id AS x, v AS y) AS r FROM b_md) " +
+		"SELECT d.r, s.r FROM s_md AS s JOIN d ON s.id = d.bid FULL OUTER JOIN c_md AS c ON s.id + 1 = c.id"
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var computedValue, storedValue any
+		if err := rows.Scan(&computedValue, &storedValue); err != nil {
+			t.Fatalf("%s: scan: %v", query, err)
+		}
+		if computedValue != nil && storedValue != nil {
+			return computedValue, storedValue
+		}
+	}
+	t.Fatalf("%s: no row carried both a computed and a stored struct: %v", query, rows.Err())
+	return nil, nil
 }

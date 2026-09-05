@@ -9216,25 +9216,29 @@ covered by the correctness suite and the golden plan diff, not by this table.
   (`proto: descriptor "__0type__2.ID" already declared`), `FinalizePlan` swallows that as it
   swallows every non-clash descriptor failure, and the constructor is left with no descriptor.
   What that costs is descriptor IDENTITY, not data, and it is USER-VISIBLE. A computed STRUCT
-  selected through such a plan comes back as a raw `map[string]any` where the same CTE read
-  without the duplicate-name join returns an `api.Struct` — measured over FDB with
-  `STRUCT foo (id AS x, v AS y) AS r` in the CTE: same values, wrong type, because there is no
-  descriptor to present it with. No DATA is lost: the emitting paths (executeProjection, the
+  selected through such a plan comes back as a raw `map[string]any`, where the SAME join with
+  only the repeated name removed (`FULL OUTER JOIN (SELECT id AS cid FROM c_md)`) returns an
+  `api.Struct` — measured over FDB with `STRUCT foo (id AS x, v AS y) AS r` in the CTE: same
+  values, wrong type, because there is no descriptor to present it with. The control keeps the
+  join deliberately: dropping the join AND the name together could not tell which caused the
+  raw map. No DATA is lost: the emitting paths (executeProjection, the
   flat-map cursor's record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows
   the result set reads by ORDINAL, so both `ID` slots arrive with their own values (measured with
   a predicate that keeps them different; with both equal the check cannot discriminate). The
   scope is the constructors resolved AFTER the bad message, in walk order — not every computed
   row: on the pinned query the root projection was resolved first and keeps its descriptor. A
   STORED struct column read through the same poisoned plan is unaffected — it carries its own
-  stored descriptor, not a constructor's — so the blast radius is COMPUTED rows only, pinned
-  with the rest. Pinned in both directions by
+  stored descriptor, not a constructor's — so the damage is confined to COMPUTED rows, pinned
+  with the rest. (Two different axes, and they are not the same word: WITHIN a plan the failure
+  spreads across the whole repository, and ACROSS row kinds it stops at computed ones.) Pinned in both directions by
   `TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues` (the STRUCT comes back a map
-  through the join and an `api.Struct` without it; both `ID` slots arrive with distinct values),
-  which reddens on the struct half when this closes. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM
+  through the duplicate and an `api.Struct` with only the name removed; the exact outer-join rows
+  arrive; a stored struct column through the same plan keeps its type), which reddens on the
+  computed-struct half when this closes. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM
   b_md) SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c
   ON a.id + 1 = c.id` — the text both pins run, its predicate chosen so the two `ID` slots differ
-  — whose row is `RECORD<ID, S, BID, FOO, ID>`. The blast radius is the whole REPOSITORY,
-  not that row: compilation is per-repository and the bad message stays in it, so every type
+  — whose row is `RECORD<ID, S, BID, FOO, ID>`. WITHIN one plan the failure spreads across the whole
+  REPOSITORY, not just that row: compilation is per-repository and the bad message stays in it, so every type
   asked for afterwards fails the same way — THREE of the FOUR constructors in that plan end up with no descriptor though only ONE repeats a name, and the
   fourth — resolved before the bad message was appended — keeps its descriptor, so the damage is
   walk-order dependent. The query answers today, and returns every field: the rows travel positionally

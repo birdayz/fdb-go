@@ -645,8 +645,10 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 // The invariant this test carries for that one is narrower than the whole
 // test, and saying which half matters: the ID-half query text there must stay
 // IDENTICAL to duplicateNameJoinQuery below, because the census asserted here
-// is that half's precondition. The struct half runs a different text (it
-// selects a STRUCT instead of the two IDs) and carries its own control.
+// is that half's precondition. The struct assertions run their own texts —
+// one reading a computed and a stored struct out of the same poisoned row,
+// one the control with the repeated name removed — and carry their own
+// witnesses, so this census says nothing about them.
 //
 // A FULL OUTER JOIN over legs that both carry `ID` builds its ordinal row with
 // NewRawRecordConstructorValue, which keeps field names VERBATIM by design —
