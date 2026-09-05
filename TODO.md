@@ -9218,9 +9218,14 @@ covered by the correctness suite and the golden plan diff, not by this table.
   which the SECOND `ID` overwrites the first, so one leg's value is lost the moment anything
   reads the row by name. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM
   b_md) SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id =
-  c.id`, whose row is `RECORD<ID, S, BID, FOO, ID>` and which leaves THREE constructors
-  unstamped; the query answers today because nothing reads that row by name. Pinned as it stands
-  (`TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap`). Java
+  c.id`, whose row is `RECORD<ID, S, BID, FOO, ID>`. The blast radius is the whole REPOSITORY,
+  not that row: compilation is per-repository and the bad message stays in it, so every type
+  asked for afterwards fails the same way — THREE of the FOUR constructors in that plan end up maps though only ONE repeats a name, and the
+  fourth — resolved before the bad message was appended — keeps its descriptor, so the damage is
+  walk-order dependent. The query answers today because nothing reads those rows by
+  name. Pinned as it stands: `TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap` (the query, with
+  a no-repeat control that must stamp) and `TestDuplicateFieldNameRowPoisonsTheWholeRepository`
+  (the mechanism and its order dependence). Java
   refuses the row outright (`Type.Record.normalizeFields` disambiguates duplicate INDEXES, not
   names; two `ID` fields throw in `computeFieldNameFieldMap`'s `ImmutableMap.toImmutableMap`), so
   the silence is Go's divergence. Closure: give the ordinal row the name-addressability suffix

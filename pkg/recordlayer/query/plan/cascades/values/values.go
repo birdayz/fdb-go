@@ -5034,14 +5034,20 @@ func (*RecordConstructorValue) Name() string { return "record" }
 // can reach the driver as an api.Struct, because a bare map carries no
 // declared field ORDER and no type identity.
 //
-// UNSTAMPED: the name-keyed map. This is not a fallback for plan values — every
-// constructor in a plan is stamped by FinalizePlan before the plan is cached.
-// It is the representation for constructors that never went through a plan
-// walk at all: constant folding evaluates a constructor at build time (before
-// any plan exists to walk), and unit tests hand-build constructors directly.
-// Neither has a repository to bake against, and neither reaches the driver.
-// A type with no message form (MessageDescriptorFor returns *ProtoTypeError)
-// also stays here rather than failing the query.
+// UNSTAMPED: the name-keyed map. It is the representation for constructors
+// that never went through a plan walk at all — constant folding evaluates a
+// constructor at build time (before any plan exists to walk), and unit tests
+// hand-build constructors directly; neither has a repository to bake against,
+// and neither reaches the driver.
+//
+// A constructor IN a plan is usually stamped, but NOT always, and the
+// exceptions do reach the driver, so they are listed rather than characterised
+// (FinalizePlan's doc owns the enumeration): a type with no message form, a
+// record or field name protoname cannot escape, and a row whose descriptor
+// cannot VALIDATE. The last poisons its whole repository — a FULL OUTER JOIN
+// over legs that both carry `ID` leaves every constructor in that plan a map,
+// not just the repeating one (TODO.md, "A join row that names one field twice
+// is never stamped, and flows as a map"). None of the three fails the query.
 func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 	if r.desc != nil {
 		return buildRecordMessage(r.desc, r.Fields, evalCtx)

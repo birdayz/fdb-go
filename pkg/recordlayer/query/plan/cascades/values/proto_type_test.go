@@ -449,3 +449,57 @@ func TestSyntheticTypeNamesAreUnreachableFromAnyIdentifier(t *testing.T) {
 		t.Fatalf("second FOO shape = %v, want a DeclaredNameClashError for FOO", err)
 	}
 }
+
+// TestDuplicateFieldNameRowPoisonsTheWholeRepository pins the MECHANISM behind
+// the join row that flows as a map, and its blast radius, which is wider than
+// that row.
+//
+// A record whose row names one field twice has a message form — every field
+// type resolves — so defineRecordLocked emits a DescriptorProto with the name
+// repeated, and the failure surfaces only when the FILE is compiled. Compilation
+// is per-REPOSITORY and the bad message stays in it, so from that point on
+// EVERY type the repository is asked for fails with the same error, whether or
+// not it names a field twice. A type resolved BEFORE the bad message was
+// appended keeps its cached descriptor, so the damage is order-dependent: it is
+// the constructors stamped after it, in walk order, that fall back to maps.
+//
+// TODO.md's "A join row that names one field twice is never stamped, and flows
+// as a map" carries the closure; this is what makes its blast radius the whole
+// plan rather than the one row.
+func TestDuplicateFieldNameRowPoisonsTheWholeRepository(t *testing.T) {
+	t.Parallel()
+	repo := NewTypeProtoRepository()
+
+	// Resolved BEFORE the bad message: keeps its descriptor for good.
+	early := NewRecordType("", false, []Field{{Name: "A", FieldType: NullableLong, Ordinal: 0}})
+	earlyDesc, err := repo.MessageDescriptorFor(early)
+	if err != nil || earlyDesc == nil {
+		t.Fatalf("a well-formed record before the clash: %v", err)
+	}
+
+	// The row that names one field twice. NewRecordType would panic on it, so
+	// build it directly — which is what a raw ordinal-join constructor's Type()
+	// produces (NewRawRecordConstructorValue keeps duplicate names verbatim).
+	twice := &RecordType{Fields: []Field{
+		{Name: "ID", FieldType: NullableLong, Ordinal: 0},
+		{Name: "ID", FieldType: NullableLong, Ordinal: 1},
+	}}
+	if _, err := repo.MessageDescriptorFor(twice); err == nil {
+		t.Fatal("a row naming one field twice was given a descriptor; its file cannot validate")
+	}
+
+	// AFTER it: an unrelated, well-formed record fails with the same error.
+	late := NewRecordType("", false, []Field{{Name: "B", FieldType: NullableString, Ordinal: 0}})
+	if _, err := repo.MessageDescriptorFor(late); err == nil {
+		t.Fatal("an unrelated record after the bad message was stamped; the failure is " +
+			"per-repository, so everything asked for after it must fail too — if this now " +
+			"passes, the bad message is isolated and TODO.md's blast radius has narrowed")
+	}
+
+	// The early one keeps what it already had: the damage is order-dependent.
+	againDesc, err := repo.MessageDescriptorFor(early)
+	if err != nil || againDesc != earlyDesc {
+		t.Fatalf("the record resolved before the clash lost its descriptor (%v, err %v); "+
+			"the damage must fall only on types resolved after it", againDesc, err)
+	}
+}

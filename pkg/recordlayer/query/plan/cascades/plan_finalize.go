@@ -59,11 +59,17 @@ import (
 //     A FULL OUTER JOIN over legs that both carry `ID` reaches it: the
 //     ordinal row is built by NewRawRecordConstructorValue, which keeps field
 //     names VERBATIM by design (NewRecordConstructorValue suffixes instead —
-//     `ID`, `ID_2`), so its descriptor cannot validate and the row stays a map
-//     in which the SECOND field wins. TODO.md's "A join row that names one
-//     field twice is never stamped, and flows as a map" carries the closure,
-//     and TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap pins it as it
-//     stands.
+//     `ID`, `ID_2`), so its descriptor cannot validate. Compilation is
+//     per-REPOSITORY and the bad message stays in it, so the damage is NOT
+//     that row alone: every type asked for after it fails the same way. On
+//     the query below THREE of the four constructors end up maps though only
+//     ONE repeats a name, and the fourth keeps the descriptor it was given
+//     before the bad message was appended — so which rows survive is
+//     walk-order dependent. TODO.md's
+//     "A join row that names one field twice is never stamped, and flows as a
+//     map" carries the closure;
+//     TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap pins the query and
+//     TestDuplicateFieldNameRowPoisonsTheWholeRepository the mechanism.
 //
 // Turning the third loud refuses a query that answers today, so it stays
 // swallowed and pinned instead.

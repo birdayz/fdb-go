@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"fdb.dev/pkg/recordlayer/query/plan/cascades"
 	cascadesvalues "fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 
 	"fdb.dev/pkg/relational/api"
@@ -665,8 +666,15 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap(t *testing.T) {
 	if err != nil || plan == nil {
 		t.Fatalf("plan the FULL OUTER JOIN: %v", err)
 	}
+	// The harness returns the plan UNBAKED — only the generator's own paths call
+	// FinalizePlan — so without this every constructor is trivially unstamped
+	// and the assertions below would hold for any plan at all. The survivor
+	// asserted at the end is what proves the bake actually ran.
+	if bakeErr := cascades.FinalizePlan(plan); bakeErr != nil {
+		t.Fatalf("FinalizePlan over the FULL OUTER JOIN: %v", bakeErr)
+	}
 
-	var duplicates, unstamped int
+	var constructors, duplicates, unstamped int
 	var walk func(plans.RecordQueryPlan)
 	seen := map[plans.RecordQueryPlan]struct{}{}
 	walk = func(p plans.RecordQueryPlan) {
@@ -690,14 +698,15 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap(t *testing.T) {
 			for _, f := range row.Fields {
 				names[f.Name]++
 			}
+			constructors++
 			for _, n := range names {
 				if n > 1 {
 					duplicates++
-					if rc.MessageDescriptor() == nil {
-						unstamped++
-					}
 					break
 				}
+			}
+			if rc.MessageDescriptor() == nil {
+				unstamped++
 			}
 			return true
 		})
@@ -711,8 +720,24 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap(t *testing.T) {
 		t.Fatal("no row in this plan names a field twice any more — the ordinal join row is " +
 			"disambiguated now, so TODO.md's booking has closed: assert both ID values survive instead")
 	}
-	if unstamped != duplicates {
-		t.Fatalf("%d of %d duplicate-name rows were stamped; a descriptor with a repeated field "+
-			"name cannot validate, so every one of them must stay a map", duplicates-unstamped, duplicates)
+	// The blast radius is the whole repository, not the repeating row: the bad
+	// message stays in the file, so every type asked for AFTER it fails too,
+	// while one resolved BEFORE keeps its descriptor. Asserting only "duplicate
+	// rows are unstamped" would be a tautology — such a row can never be
+	// stamped — so what is asserted is the COLLATERAL (a row that repeats no
+	// name and lost its descriptor anyway) and the survivor beside it, which is
+	// also what proves the bake ran at all.
+	if constructors < 4 {
+		t.Fatalf("%d record constructors in this plan, want at least 4 — the specimen has moved "+
+			"and this test no longer measures the shape it names", constructors)
+	}
+	if unstamped <= duplicates {
+		t.Fatalf("%d unstamped of %d constructors, %d of which repeat a name: no COLLATERAL row "+
+			"lost its descriptor, so the failure is contained to the repeating row now and "+
+			"TODO.md's blast radius has narrowed — say so there", unstamped, constructors, duplicates)
+	}
+	if stamped := constructors - unstamped; stamped == 0 {
+		t.Fatal("no constructor in this plan is stamped, so the assertions above are vacuous: " +
+			"either FinalizePlan is not baking, or the damage is no longer order-dependent")
 	}
 }
