@@ -67,7 +67,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -489,9 +488,12 @@ func sourceRowType(src semantic.ScopeSource) *values.RecordType {
 // either way. Only what the quantifier FLOWS is in question here.
 // sourceColumnOrdinal returns the 0-based position of field within the
 // resolved source's declared column order — the LOGICAL ordinal of the
-// column in the row the source flows. Matching is case-insensitive first-match
-// over ONE source's declared columns — see the caller for why first-match is
-// sound on that list and is not the rule for a merged layout.
+// column in the row the source flows. Matching is by EXACT spelling over ONE
+// source's declared columns: the reference was resolved against those columns
+// (or against the SQL labels a flowed layout stands beside) and arrives
+// carrying the column's own spelling, so a folded match here could only pair
+// it with a DIFFERENT column that folds the same — which is how `c."x"` and
+// `c."X"` over one body once both read slot 0.
 //
 // It also returns the FLOWED TYPE a reference's quantifier object may state for
 // this source (flowedTypeFor) and the DOMAIN token for the layout the ordinal
@@ -529,27 +531,12 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, *values.R
 		// columns — and the position is looked up the same way. A folded
 		// first match mapped both spellings to the first slot, and
 		// `SELECT c."x", c."X"` over that body answered the first column
-		// twice. The folded walk remains for a label whose spelling the
-		// resolver folded on the way here, and it answers only when it is
-		// unique: two labels that fold together are two columns, and a
-		// reference that matches neither exactly names neither.
+		// twice. There is no folded fallback: the reference arrives with the
+		// label's own spelling, so a miss here names no column of this source.
 		for i, c := range labels {
 			if c.Id.Name() == field {
 				return i, rowType, true
 			}
-		}
-		folded := -1
-		for i, c := range labels {
-			if !strings.EqualFold(c.Id.Name(), field) {
-				continue
-			}
-			if folded >= 0 {
-				return 0, nil, false
-			}
-			folded = i
-		}
-		if folded >= 0 {
-			return folded, rowType, true
 		}
 		return 0, nil, false
 	}
@@ -559,26 +546,16 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, *values.R
 	// (unnestVirtualScopeSource), and the exposed name is looked up in that
 	// row. Those are the two shapes this branch serves; a flowed layout that
 	// is NARROWER than the SQL list is not a shape any source states.
-	// Exact spelling first here too: a derived body that labels two columns
+	// Exact spelling here too: a derived body that labels two columns
 	// `AS "x"` and `AS "X"` states both in its row, and a folded first match
-	// read the first for either reference.
+	// read the first for either reference. The row's field names are the
+	// column spellings the reference was resolved against (a descriptor's
+	// stored spelling reaches both), so a folded fallback had nothing to
+	// match that an exact match does not.
 	for i, f := range rowType.Fields {
 		if f.Name == field {
 			return i, rowType, true
 		}
-	}
-	folded := -1
-	for i, f := range rowType.Fields {
-		if !strings.EqualFold(f.Name, field) {
-			continue
-		}
-		if folded >= 0 {
-			return 0, nil, false
-		}
-		folded = i
-	}
-	if folded >= 0 {
-		return folded, rowType, true
 	}
 	return 0, nil, false
 }

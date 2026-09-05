@@ -243,6 +243,34 @@ tests:
       - [3]
       - [2]
       - [1]
+  # Swapped names: the body labels V as ID and ID as V. A sort on u.id is a
+  # sort on V, which nothing provides, so the sort STAYS; the merge-base
+  # matched the output name ID against the scan's primary key by spelling,
+  # elided the sort, and answered [1],[2],[3]'s v-values in ID order —
+  # [5],[7],[9] is the sorted answer and the test would pass either way
+  # here, so the plan pin is the load-bearing half. The sort on u.v is a
+  # sort on ID and is elided.
+  - query: SELECT u.id FROM (SELECT v AS id, id AS v FROM ga) u ORDER BY u.id
+    columns: ["ID"]
+    plan_contains: InMemorySort
+    rows:
+      - [5]
+      - [7]
+      - [9]
+  - query: WITH u AS (SELECT v AS id, id AS v FROM ga) SELECT u.id FROM u ORDER BY u.id
+    columns: ["ID"]
+    plan_contains: InMemorySort
+    rows:
+      - [5]
+      - [7]
+      - [9]
+  - query: SELECT u.v FROM (SELECT v AS id, id AS v FROM ga) u ORDER BY u.v
+    columns: ["V"]
+    plan_not_contains: InMemorySort
+    rows:
+      - [1]
+      - [2]
+      - [3]
   - query: WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u."GA.G" AS z FROM u ORDER BY z DESC
     columns: ["Z"]
     rows:

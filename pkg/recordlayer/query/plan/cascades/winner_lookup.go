@@ -380,6 +380,12 @@ func requestedOrderingBelow(
 		resultValue, innerQ = p.GetResultValue(), p.GetInnerQuantifier()
 	case *plans.RecordQueryMapPlan:
 		resultValue, innerQ = p.GetResultValue(), p.GetInnerQuantifier()
+	case *expressions.LogicalProjectionExpression:
+		// The logical projection takes the same crossing when its
+		// requested-ordering CONSTRAINT is pushed to its child group
+		// (PushRequestedOrderingThroughProjectionRule): one translation for
+		// the constraint going down and for the satisfaction walk.
+		resultValue, innerQ = p.GetResultValue(), p.GetInner()
 	default:
 		return requested, true
 	}

@@ -329,7 +329,9 @@ branch's corpus equalled byte for byte before this transition).
 ### What moved
 
 Every one of the 42 is the same shape, counted over the two `factory-plan-census`
-dumps (8060 lines each, both processes exit 0):
+dumps (8060 lines each, both processes exit 0 — the corpus holds 8150 scenarios with a
+`plan-shape` header, and the dump omits the candidates with fewer than two TLP renderings,
+which is where the two populations differ):
 
 ```
 InMemorySort([K DIR, ID DIR], PredicatesFilter(IndexScan(IDX_K, [=]), [n preds]))

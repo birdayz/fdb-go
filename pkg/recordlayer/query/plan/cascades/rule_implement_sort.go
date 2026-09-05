@@ -96,7 +96,21 @@ func (r *ImplementSortRule) OnMatch(call *ImplementationRuleCall) {
 			// `ORDER BY u.h` over `(SELECT id AS h FROM t) u` reaches the scan
 			// as ID. The wrapper's own derived ordering inherits the source's
 			// keys untranslated, and judging the request against those matched
-			// a renamed slot on its output name — never.
+			// a renamed slot on its output name — never — and matched a SWAPPED
+			// name on the coincidence: `ORDER BY u.id` over `(SELECT v AS id,
+			// id AS v FROM t) u` met the scan's primary key ID by spelling,
+			// dropped the sort, and answered rows in ID order for a sort on V.
+			//
+			// The equality-bound and distinct-coverage bookkeeping below still
+			// reads `ordering` — this member's derived ordering, in its SOURCE's
+			// space — against request parts in the sort's space. Across a
+			// renaming wrapper the two do not meet, and the arms are then
+			// CONSERVATIVE: a key they fail to pair leaves the yield unmarked
+			// as strictly sorted or falls through to the plain pinned yield,
+			// and neither elides anything the walk did not admit. Java reads
+			// one pulled-up ordering for all four consumers; the two spaces
+			// here are inert today because indexScanUnderOrderPreservingWrappers
+			// never descends through a projection.
 			ordering := computeWrapperRichOrdering(ph)
 			if ordering == nil || !memberSatisfiesOrdering(ph, preserveDistinctReq) {
 				// A FlatMap's Java ordering cases depend on the concrete pair

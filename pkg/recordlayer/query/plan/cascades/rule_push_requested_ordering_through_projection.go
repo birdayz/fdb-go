@@ -4,6 +4,7 @@ import (
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
+	"fdb.dev/pkg/recordlayer/query/plan/cascades/values"
 )
 
 // PushRequestedOrderingThroughProjectionRule is a PLANNING-phase
@@ -56,6 +57,16 @@ func (r *PushRequestedOrderingThroughProjectionRule) OnMatch(call *Implementatio
 	}
 
 	// The projection's OWN result value, not a second construction of it.
+	// The crossing itself is requestedOrderingBelow — the translation the
+	// satisfaction walk uses over the PHYSICAL projection — so the constraint
+	// pushed to the child and the request judged against the child's members
+	// are the same value. This rule used to push through the projection's
+	// result value with the INNER quantifier's alias as the upper alias and
+	// without the rebase into the child's current-row space; a constraint
+	// rooted at the projection's current (which is how every constraint
+	// arrives) then failed the push-down's root check and nothing was pushed,
+	// so `ORDER BY u.g` over `(SELECT g FROM t) u` never reached the index on
+	// g and `ORDER BY u.id DESC` never produced a reverse scan.
 	//
 	// This rule used to rebuild the RecordConstructorValue from the projected
 	// values and aliases, with its own naming rule — upper-folded, and
@@ -66,21 +77,21 @@ func (r *PushRequestedOrderingThroughProjectionRule) OnMatch(call *Implementatio
 	// match the ones the reference names. It dropped and the ordering was
 	// never pushed. Asking the expression for the row it produces is the
 	// only construction that cannot drift from it.
-	resultValue := proj.GetResultValue()
-
-	// The alias is the quantifier alias between the projection and its
-	// parent — the projection's inner quantifier.
-	alias := proj.GetInner().GetAlias()
-
-	// Translate each ordering through the result value.
 	var translated []*properties.RequestedOrdering
 	for _, reqOrd := range orderings {
-		pushed := reqOrd.PushDownThroughValue(resultValue, alias)
-		// PushDownThroughValue drops parts it cannot translate. If any
-		// were dropped (or the result is a preserve ordering with no
-		// parts), the push failed for this ordering.
-		if !pushed.IsPreserve() && pushed.Size() == reqOrd.Size() {
-			translated = append(translated, pushed)
+		// A constraint on this Reference is stated in its current-row space —
+		// every pusher rebases through requestedOrderingAtInnerCurrent before
+		// storing it — so a request rooted anywhere else is not this group's
+		// constraint and fails closed: a same-shaped sibling's output is one
+		// such root, and pushing it would ask the child for a foreign order.
+		if root, ok := requestedOrderingRoot(reqOrd); !ok || root != values.CurrentCorrelation() {
+			continue
+		}
+		// A part the result value cannot express drops the whole request:
+		// a partial constraint would ask the child for an order the
+		// projection cannot restate.
+		if below, ok := requestedOrderingBelow(proj, reqOrd); ok && !below.IsPreserve() {
+			translated = append(translated, below)
 		}
 	}
 

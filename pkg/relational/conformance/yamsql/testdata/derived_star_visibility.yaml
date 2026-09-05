@@ -1,4 +1,3 @@
-name: derived_star_visibility
 # A derived table or CTE whose body is a projection-less star over a join
 # takes its SQL columns from the star-expansion rules — an unnest AS/AT alias
 # shadows a same-named outer column, and the ephemeral __ROW_VERSION
@@ -9,6 +8,7 @@ name: derived_star_visibility
 # columns, and a reference resolves to its slot by exact spelling; and a
 # SELECT expression carrying an `AS` that the post-GROUP-BY reclassification
 # turns into a grouping key keeps its alias.
+name: derived_star_visibility
 schema_template: |
   CREATE TABLE things (id BIGINT, x BIGINT, arr BIGINT ARRAY, PRIMARY KEY (id))
   CREATE TABLE ql (id BIGINT, foo BIGINT, bar BIGINT, PRIMARY KEY (id))

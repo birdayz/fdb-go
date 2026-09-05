@@ -348,12 +348,15 @@ type aggSelectCol struct {
 	// two consumers that label the output (aggregateProjectionItem,
 	// aggOutputCols) once inferred "no alias" from outName equalling
 	// groupCol — a string comparison standing in for a fact the parser had in
-	// hand. It is set on EVERY item, an outExpr included, because the
-	// post-GROUP-BY reclassification turns an expression item whose text
-	// matches a GROUP BY entry (`v / 10 AS bucket` … `GROUP BY v / 10`) into a
-	// grouping key after the fact; a flag set only on the items born as
-	// grouping keys left that one unaliased, and `u.bucket` over the body was
-	// 42703 in both the CTE and the derived-table spelling.
+	// hand. It is set on every item built from a SELECT-list item, an outExpr
+	// included, because the post-GROUP-BY reclassification turns an expression
+	// item whose text matches a GROUP BY entry (`v / 10 AS bucket` … `GROUP BY
+	// v / 10`) into a grouping key after the fact; a flag set only on the items
+	// born as grouping keys left that one unaliased, and `u.bucket` over the
+	// body was 42703 in both the CTE and the derived-table spelling. The one
+	// item not built from a SELECT-list item — an aggregate harvested from
+	// ORDER BY under an internal `__ob_agg_N__` name — carries no `AS` by
+	// construction and is never reclassified.
 	groupColAliased bool
 	// groupColBare: the structural bare name of groupCol (parse-tree/derived
 	// at set time) — consumers never dot-split groupCol.
@@ -1091,10 +1094,11 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					outName = col.name
 				}
 				promoted = append(promoted, aggSelectCol{
-					outName:       outName,
-					selectOrdinal: col.selectOrdinal,
-					outExpr:       projExprs[i],
-					visible:       true,
+					outName:         outName,
+					selectOrdinal:   col.selectOrdinal,
+					outExpr:         projExprs[i],
+					groupColAliased: projAliases[i] != "",
+					visible:         true,
 				})
 			}
 			if len(promoted) > 0 {

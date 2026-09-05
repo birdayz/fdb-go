@@ -54,8 +54,7 @@ func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *test
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderAscending,
 	}})
 	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
@@ -65,7 +64,10 @@ func TestPushRequestedOrderingThroughProjection_PushesTranslatedOrdering(t *test
 		t.Fatalf("pushed orderings = %v ok=%v, want one part", pushed, ok)
 	}
 	part := pushed[0].GetParts()[0]
-	assertRequestedOrderingField(t, part.Value, a)
+	// The pushed part is stated in the CHILD group's current-row space, as
+	// the child's members answer ordering questions there; the expectation
+	// crosses the same rebase.
+	assertRequestedOrderingField(t, part.Value, requestedOrderingAtChildCurrent(t, projection, a))
 	if part.SortOrder != properties.RequestedSortOrderAscending {
 		t.Fatalf("pushed direction = %v, want ASC", part.SortOrder)
 	}
@@ -86,8 +88,7 @@ func TestPushRequestedOrderingThroughProjection_ComputedSlot(t *testing.T) {
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderAscending,
 	}})
 	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
@@ -96,9 +97,10 @@ func TestPushRequestedOrderingThroughProjection_ComputedSlot(t *testing.T) {
 	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != 1 {
 		t.Fatalf("pushed orderings = %v ok=%v, want one computed key", pushed, ok)
 	}
-	if !values.ValuesStructurallyEqual(pushed[0].GetParts()[0].Value, add) {
+	want := requestedOrderingAtChildCurrent(t, projection, add)
+	if !values.ValuesStructurallyEqual(pushed[0].GetParts()[0].Value, want) {
 		t.Fatalf("pushed key = %s, want computed key %s",
-			values.ExplainValue(pushed[0].GetParts()[0].Value), values.ExplainValue(add))
+			values.ExplainValue(pushed[0].GetParts()[0].Value), values.ExplainValue(want))
 	}
 }
 
@@ -135,8 +137,7 @@ func TestPushRequestedOrderingThroughProjection_DescPreserved(t *testing.T) {
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderDescending,
 	}})
 	runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
@@ -146,7 +147,7 @@ func TestPushRequestedOrderingThroughProjection_DescPreserved(t *testing.T) {
 		t.Fatalf("pushed orderings = %v ok=%v, want one part", pushed, ok)
 	}
 	part := pushed[0].GetParts()[0]
-	assertRequestedOrderingField(t, part.Value, a)
+	assertRequestedOrderingField(t, part.Value, requestedOrderingAtChildCurrent(t, projection, a))
 	if part.SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("pushed direction = %v, want DESC", part.SortOrder)
 	}
@@ -165,13 +166,11 @@ func TestPushRequestedOrderingThroughProjection_MultipleSortKeys(t *testing.T) {
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{
 		{
-			Value: requestedOrderingOutputField(
-				projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+			Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 			SortOrder: properties.RequestedSortOrderAscending,
 		},
 		{
-			Value: requestedOrderingOutputField(
-				projection.GetInner().GetAlias(), projection.GetResultValue(), 1),
+			Value:     projectionCurrentRequest(t, projectionRef, projection, 1),
 			SortOrder: properties.RequestedSortOrderDescending,
 		},
 	})
@@ -182,8 +181,8 @@ func TestPushRequestedOrderingThroughProjection_MultipleSortKeys(t *testing.T) {
 		t.Fatalf("pushed orderings = %v ok=%v, want two parts", pushed, ok)
 	}
 	parts := pushed[0].GetParts()
-	assertRequestedOrderingField(t, parts[0].Value, x)
-	assertRequestedOrderingField(t, parts[1].Value, y)
+	assertRequestedOrderingField(t, parts[0].Value, requestedOrderingAtChildCurrent(t, projection, x))
+	assertRequestedOrderingField(t, parts[1].Value, requestedOrderingAtChildCurrent(t, projection, y))
 	if parts[0].SortOrder != properties.RequestedSortOrderAscending ||
 		parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("pushed directions = [%v, %v], want [ASC, DESC]",
@@ -200,8 +199,7 @@ func TestPushRequestedOrderingThroughProjection_NotConstraintOnlyDoesNotPush(t *
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderAscending,
 	}})
 	runRequestedOrderingProjection(t, projection, projectionRef, constraints, false)
@@ -233,8 +231,7 @@ func TestPushRequestedOrderingThroughProjection_NoYield(t *testing.T) {
 	projectionRef := expressions.InitialOf(projection)
 	constraints := NewConstraintMap()
 	setProjectionRequestedOrdering(constraints, projectionRef, []properties.RequestedOrderingPart{{
-		Value: requestedOrderingOutputField(
-			projection.GetInner().GetAlias(), projection.GetResultValue(), 0),
+		Value:     projectionCurrentRequest(t, projectionRef, projection, 0),
 		SortOrder: properties.RequestedSortOrderAscending,
 	}})
 	call := runRequestedOrderingProjection(t, projection, projectionRef, constraints, true)
@@ -265,4 +262,36 @@ func TestPushRequestedOrderingThroughProjection_LazyRequestDoesNotPush(t *testin
 	if _, ok := Get(constraints, projection.GetInner().GetRangesOver(), RequestedOrderingConstraintKey); ok {
 		t.Fatal("ordering rooted at a foreign projection alias must fail closed")
 	}
+}
+
+// requestedOrderingAtChildCurrent restates a value the projection's input
+// quantifier names in that quantifier's current-row space — where the
+// projection push rule states the constraint it pushes.
+func requestedOrderingAtChildCurrent(t *testing.T, projection *expressions.LogicalProjectionExpression, v values.Value) values.Value {
+	t.Helper()
+	rebased, err := requestedOrderingAtInnerCurrent(properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: v, SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false), projection.GetInner())
+	if err != nil {
+		t.Fatalf("rebase into the child's current-row space: %v", err)
+	}
+	return rebased.GetParts()[0].Value
+}
+
+// projectionCurrentRequest states output slot `ordinal` of the projection the
+// way a constraint on its Reference is stated in production: over a quantifier
+// ranging over that Reference, rebased into the Reference's current-row space
+// (requestedOrderingAtInnerCurrent, which every pusher applies before storing
+// the constraint).
+func projectionCurrentRequest(t *testing.T, projectionRef *expressions.Reference, projection *expressions.LogicalProjectionExpression, ordinal int) values.Value {
+	t.Helper()
+	over := expressions.ForEachQuantifier(projectionRef)
+	spelled := requestedOrderingOutputField(over.GetAlias(), projection.GetResultValue(), ordinal)
+	rebased, err := requestedOrderingAtInnerCurrent(properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: spelled, SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false), over)
+	if err != nil {
+		t.Fatalf("rebase into the projection's current-row space: %v", err)
+	}
+	return rebased.GetParts()[0].Value
 }

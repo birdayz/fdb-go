@@ -1,0 +1,88 @@
+# A requested ordering crosses a projection by the projection's result value,
+# on the way DOWN as a constraint (PushRequestedOrderingThroughProjectionRule)
+# and on the way UP as a satisfaction check (requestedOrderingBelow). The
+# constraint reaches the child group now — it once failed the push-down's
+# root check at the projection and never left it — but the child cannot yet
+# act on it: a zero-prefix index match carries no matched ordering parts, so
+# the data-access rule cannot see the index's order, and the ordered index
+# scan and the reverse scan are produced only by the rules that match a sort
+# DIRECTLY over a scan. So through a derived table or a CTE the sort stays,
+# over a forward scan, while the same ORDER BY over the base table takes the
+# index or the reverse scan. The derived cases below are NEGATIVE pins of
+# that remainder (TODO.md, "Ordering through a projection reaches the child
+# group but not the index"); when the index scan appears under the
+# projection, they turn red and are re-pinned to it.
+name: ordering_through_a_projection
+schema_template: |
+  CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
+  CREATE INDEX ga_g ON ga (g)
+setup:
+  - INSERT INTO ga VALUES (1, 200, 5), (2, 100, 7), (3, 300, 9)
+tests:
+  # The base table: the index answers the sort, the reverse scan the DESC.
+  - query: SELECT g FROM ga ORDER BY g
+    columns: ["G"]
+    plan_contains: IndexScan(GA_G
+    plan_not_contains: InMemorySort
+    rows:
+      - [100]
+      - [200]
+      - [300]
+  - query: SELECT id FROM ga ORDER BY id DESC
+    columns: ["ID"]
+    plan_contains: REVERSE
+    plan_not_contains: InMemorySort
+    rows:
+      - [3]
+      - [2]
+      - [1]
+  # Through a derived table and a CTE, unrenamed and renamed: the rows are
+  # right and the sort is still in memory over a forward scan.
+  - query: SELECT u.g FROM (SELECT g FROM ga) u ORDER BY u.g
+    columns: ["G"]
+    plan_contains: InMemorySort
+    plan_not_contains: IndexScan
+    rows:
+      - [100]
+      - [200]
+      - [300]
+  - query: SELECT u.h FROM (SELECT g AS h FROM ga) u ORDER BY u.h
+    columns: ["H"]
+    plan_contains: InMemorySort
+    plan_not_contains: IndexScan
+    rows:
+      - [100]
+      - [200]
+      - [300]
+  - query: WITH u AS (SELECT g AS h FROM ga) SELECT u.h FROM u ORDER BY u.h
+    columns: ["H"]
+    plan_contains: InMemorySort
+    plan_not_contains: IndexScan
+    rows:
+      - [100]
+      - [200]
+      - [300]
+  - query: SELECT u.h FROM (SELECT id AS h FROM ga) u ORDER BY u.h DESC
+    columns: ["H"]
+    plan_contains: InMemorySort
+    plan_not_contains: REVERSE
+    rows:
+      - [3]
+      - [2]
+      - [1]
+  - query: WITH u AS (SELECT id AS h FROM ga) SELECT u.h FROM u ORDER BY u.h DESC
+    columns: ["H"]
+    plan_contains: InMemorySort
+    plan_not_contains: REVERSE
+    rows:
+      - [3]
+      - [2]
+      - [1]
+  # A computed slot has no order the child can provide: the sort stays.
+  - query: SELECT u.h FROM (SELECT g + 1 AS h FROM ga) u ORDER BY u.h
+    columns: ["H"]
+    plan_contains: InMemorySort
+    rows:
+      - [101]
+      - [201]
+      - [301]

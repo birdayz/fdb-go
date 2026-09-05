@@ -9087,3 +9087,30 @@ covered by the correctness suite and the golden plan diff, not by this table.
   derived source, GroupByQueryTests:699). One boundary for both is what closes them: a
   projection-less body's quantifier declared at execution, or the body normalized to the
   explicit projection Java's expandStar always produces.
+
+- [ ] **Ordering through a projection reaches the child group but not the index.**
+  `SELECT u.g FROM (SELECT g FROM ga) u ORDER BY u.g` over `CREATE INDEX ga_g ON ga (g)` plans
+  `Project(InMemorySort(Project(Scan(GA))))` while `SELECT g FROM ga ORDER BY g` plans
+  `Project(IndexScan(GA_G, [*]))`; `… ORDER BY u.h DESC` over `id AS h` sorts in memory while
+  `SELECT id FROM ga ORDER BY id DESC` takes `Scan(GA) REVERSE` (measured on the explain-differ
+  dump at RFC-242 r9, `ordering_through_a_projection.yaml` pins both halves). Two mechanisms,
+  one now fixed: `PushRequestedOrderingThroughProjectionRule` pushed the constraint through the
+  projection's result value with the INNER quantifier's alias as the upper alias and without the
+  rebase into the child's current-row space, so a constraint rooted at the projection's current
+  — how every constraint arrives — failed the push-down's root check and nothing was pushed;
+  RFC-242 r9 routes it through `requestedOrderingBelow`, and the constraint now reaches the scan
+  group as `_current.G#1` (`TestPushRequestedOrderingThroughProjection_*`). What remains is on
+  the receiving side: a zero-prefix index match carries NO matched ordering parts
+  (`MatchInfo.GetMatchedOrderingParts()` is empty for a match over a `FullUnorderedScan`, so
+  `SatisfiesRequestedOrdering` in `abstract_data_access_rule.go` returns nil for every candidate
+  — for the base query too; instrumented at r9), and the ordered full index scan / reverse scan
+  are produced only by `OrderedIndexScanRule`, whose matcher is a `LogicalSort` DIRECTLY over a
+  `FullUnorderedScan`, and by the sort-over-scan reverse arm. Java has neither gap:
+  `MatchInfo.getMatchedOrderingParts` is computed from the candidate's ordering key parts for
+  every match, bound or not (`AbstractDataAccessRule.satisfiesRequestedOrdering` consumes them),
+  which is what makes an ordering-driven index scan appear under any expression the constraint
+  crosses. Closing it is a port of that: matched ordering parts for the zero-prefix match, so the
+  data-access rule keeps the ordered full index scan (the zero-prefix skip already exempts a
+  scan that satisfies a requested ordering) and the reverse direction, and the Go-only
+  `OrderedIndexScanRule` retires. Until then a sort over a derived table's or CTE's column is
+  never answered by an index, and a DESC over its primary key never by a reverse scan.
