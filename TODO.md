@@ -9045,32 +9045,22 @@ covered by the correctness suite and the golden plan diff, not by this table.
   or what is killing containers and jobs thirty minutes into a run); nothing in this
   repository can observe or change that.
 
-- [ ] **Exact quantifier binding over a CTE or derived body: one runtime naming rule.** A read
-  addressed to a CTE's or derived table's own quantified object (`QOV(U).W`) is bound at
-  execution against the row the body flows, and the plan's declared type for that row does not
-  agree with the row for three shapes of body, because the engine names runtime slots by
-  three rules: a projection's record constructor names a repeated output by the
-  name-addressability suffix (`K`, `K_2`); a projection over a join names a repeated bare leaf
-  by its QUALIFIED datum key (`GA.G` beside `G`); a raw positional merge (the gathered
-  multi-source unnest cluster, a join consumed without a projection) keeps every leg name
-  verbatim (`K`, `K`). The scope publishes the SQL names. Measured, both spellings unless
-  stated:
-  - an aggregate or a sort over a UNIQUE column of a join body that repeats a bare leaf —
-    `WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY
-    u.w` — fails `edge lookup … read as RECORD(G,G,W), declared RECORD(GA.G,G,W)` or as an
-    undeclared binding; the derived spelling since before RFC-242, the CTE spelling since
-    RFC-242 published the body (it was served by the name model while declined). The
-    projection over the same body is rebased and answers. Pinned as a loud floor in
-    `cte_published_row_names.yaml`.
-  - an aggregate over a `SELECT *` derived table whose body is a gathered multi-source unnest
-    (`FROM (SELECT * FROM a, b, a.arr AS x …) d … GROUP BY d.aid`) — undeclared binding,
-    pre-existing. The CTE spelling of that body stays out of the global scope by shape
-    (`buildCTEColumnSource`, RFC-242 § Fix F) and is bound to the seed by the translator's
-    `exactGatheredCTEGroupKeyValue`; before RFC-242 a unique-name body of that shape was
-    published and failed the same way.
-  The fix is Java's model, not a fourth rule: every read of a derived source's column is
-  bound by ORDINAL (`FieldValue.ofOrdinalNumber`, `Expressions.java:91`,
-  `LogicalOperator.java:367`), the declared type and the row are compared positionally, and a
-  name is a label. Until then `values.DedupFieldNames` is the one rule the projection
-  constructor and the derived leg layout share (RFC-242, second adjacent finding), and the
-  qualified-key mint (`mintQualifiedDatumKey`) and the raw merge are the two that remain.
+- [ ] **Exact quantifier binding over a CTE or derived body: the derived gathered-unnest star.**
+  A read addressed to a CTE's or derived table's own quantified object is bound at execution
+  against the row the body flows. RFC-242's second adjacent finding made the scope state that
+  row as its flowed layout (`exactVirtualScopeSource`, `FlowedColumns`), carried a registered
+  CTE source whole into every reading scope (`cteSourceAs`), and let the resolver take a
+  column's ordinal from its SQL position while naming the read by the flowed slot — so a
+  WHERE, a sort key, an aggregate key or operand over a unique column of a body that repeats
+  a bare leaf or an alias answers in both spellings. One shape remains, pre-existing at the
+  merge-base in a different loud form: an aggregate over a `SELECT *` DERIVED TABLE whose body
+  is a gathered multi-source unnest cluster (`SELECT d.aid, COUNT(*) FROM (SELECT * FROM a, b,
+  a.arr AS x WHERE EXISTS (…)) d GROUP BY d.aid`) fails to plan — `column "AID" resolves
+  against source "D", which declares no column order to bind a plan-time ordinal`. The CTE
+  spelling of that body stays out of the global scope by shape and answers through the
+  translator's seed bake (`exactGatheredCTEGroupKeyValue`); the derived spelling has no such
+  arm, and `translateAggregate`'s positional-gather comment already books the
+  projected-output-layout ordinalization it needs (Java answers GROUP BY over a projecting
+  derived source, GroupByQueryTests:699). Measured on SimFDB over `a(aid, k, arr)`, `b(bid,
+  k)`, `ee(ck)` with one row each; the CTE twin of every derived shape here is pinned in
+  `TestFDB_UnnestExistsGather` (`agg_cte_*`).

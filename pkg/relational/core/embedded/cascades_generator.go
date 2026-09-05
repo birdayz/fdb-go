@@ -4526,9 +4526,10 @@ func (r legRead) nullExtended(fv values.FieldValue) bool {
 // applies; when the two agree, the frozen name adds nothing the user wrote and
 // the user-visible label keeps the SQL spelling — `SELECT g AS a, g AS a`
 // reports [A A], as Java does (Type.Record keeps repeated field names and the
-// JDBC label is the field name), never [A A_2]. natural is nil when the
-// natural schema could not be derived; a frozen name then stands as the
-// authority it is everywhere else.
+// JDBC label is the field name), never [A A_2]. The caller sizes natural to
+// the projections, so a slot past it is not reached from there; the bounds
+// guard keeps such a slot on the frozen name, the authority it is everywhere
+// else, rather than indexing past the schema.
 func frozenSchemaRenamesSlot(natural []string, i int, frozen string) bool {
 	if i >= len(natural) {
 		return true
@@ -5275,25 +5276,20 @@ func mergedRVSequenceDiverges(rc *values.RecordConstructorValue, merged []execut
 	if len(rc.Fields) != len(merged) {
 		return true
 	}
-	for i, f := range rc.Fields {
-		disp := columnDefDisplayName(merged[i])
-		// A display name already published at an earlier ordinal is not a
-		// discriminator, exactly as positionalAligned treats it: the RC names
-		// the repeated slot by its name-addressability suffix (G_2) while the
-		// user-visible label stays G. Comparing the two here would read every
-		// duplicate-name leg as a reordering and route its metadata through
-		// the RC-derived fallback, which publishes the suffix as a label.
-		duplicateDisplay := false
-		for j := 0; j < i; j++ {
-			if strings.EqualFold(columnDefDisplayName(merged[j]), disp) {
-				duplicateDisplay = true
-				break
-			}
-		}
-		if duplicateDisplay {
-			continue
-		}
-		if !strings.EqualFold(parseColRef(f.Name).bare(), disp) {
+	// The RC names a repeated slot by its name-addressability suffix (G_2)
+	// while the user-visible label stays G, so the merged display sequence is
+	// compared under the same rule the RC applied (values.DedupFieldNames):
+	// exactly, slot for slot. Skipping a repeated display instead would have
+	// accepted any RC name at a repeated position; comparing the raw display
+	// would have read every duplicate-name leg as a reordering and routed its
+	// metadata through the RC-derived fallback, which publishes the suffix as
+	// a label.
+	displays := make([]string, len(merged))
+	for i, c := range merged {
+		displays[i] = strings.ToUpper(columnDefDisplayName(c))
+	}
+	for i, name := range values.DedupFieldNames(displays) {
+		if !strings.EqualFold(parseColRef(rc.Fields[i].Name).bare(), name) {
 			return true
 		}
 	}

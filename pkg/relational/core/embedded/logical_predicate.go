@@ -345,6 +345,24 @@ func exactVirtualScopeSource(
 		labels = derived
 	}
 	columns := make([]semantic.Column, len(record.Fields))
+	// The FLOWED layout is the exact row itself, field names included: the
+	// names the plan flows are the names this source's quantified object must
+	// state, or the scope and the plan disagree about one row. A projection
+	// over a join names a repeated bare leaf by its qualified datum key
+	// (GA.G beside G), a record constructor names a repeated output by the
+	// name-addressability suffix (K, K_2), and a raw positional merge keeps
+	// every leg name verbatim (K, K); the exact derivation mirrors each of
+	// them because it IS the plan's type authority. Publishing the SQL labels
+	// as the layout instead made every read bound to the quantified object —
+	// a WHERE, a sort key, an aggregate key or operand over a unique column of
+	// such a body — refused at execution as `edge lookup U: read as
+	// RECORD(G,G,W), declared RECORD(GA.G,G,W)` or as an undeclared binding,
+	// where the projection the translator inlines answered. The SQL labels
+	// stay the columns exposed for resolution, so a read that spells a
+	// repeated name is ambiguous (42702) and a unique name resolves to its
+	// position; a column whose label and flowed name differ is, by that same
+	// rule, never resolved by name.
+	flowed := make([]semantic.Column, len(record.Fields))
 	for i, field := range record.Fields {
 		name := field.Name
 		if len(labels) > 0 {
@@ -355,6 +373,8 @@ func exactVirtualScopeSource(
 			return semantic.ScopeSource{}, false
 		}
 		columns[i] = column
+		flowed[i] = column
+		flowed[i].Id = semantic.FromNormalized(field.Name)
 	}
 	aliasID := semantic.FromNormalized(alias)
 	return semantic.ScopeSource{
@@ -364,6 +384,8 @@ func exactVirtualScopeSource(
 		},
 		Alias:           aliasID,
 		CorrelationName: aliasID.Name(),
+		FlowedColumns:   flowed,
+		FlowedNullable:  record.Nullable,
 	}, true
 }
 
@@ -459,6 +481,15 @@ func semanticColumnFromExactType(name string, typ values.Type) (semantic.Column,
 func projectionOutputNames(sq *selectQuery) []string {
 	if sq == nil || sq.projCols == nil {
 		return nil
+	}
+	// A `<qualifier>.*` item is ONE sentinel slot here and EVERY column of that
+	// source in the built body, so a name list drawn from these slots has the
+	// wrong width for a mixed star (`SELECT a.*, b.y`) and the exact derivation
+	// declines it. The body's own labels are the authority for such a list.
+	for _, qualifier := range sq.projStarQualifiers {
+		if qualifier != "" {
+			return nil
+		}
 	}
 	names := make([]string, len(sq.projCols))
 	for i, column := range sq.projCols {
@@ -1020,6 +1051,20 @@ func buildDerivedTableSourceFromJoinBody(
 	if innerSQ.tableName == "" {
 		return semantic.ScopeSource{}, false
 	}
+	// The body's EXACT row first — the same order the aggregate arm and the CTE
+	// arms take — so the source carries the flowed layout the plan flows
+	// (exactVirtualScopeSource) beside the SQL names. The catalog walk below
+	// states SQL names only; a body that repeats a bare leaf (`ga.g` beside
+	// `c.id AS g`) then minted a quantified object over [G G W] for a row the
+	// plan declares as [GA.G G W], and every read bound to it — a WHERE, a sort
+	// key, an aggregate key — was refused at execution as an edge-layout
+	// mismatch while the CTE spelling of the same body answered. The walk
+	// remains the fallback for a row the exact derivation cannot state.
+	if len(innerSQ.aggCols) == 0 && !innerSQ.countStar {
+		if src, ok := buildExactVirtualScopeSourceForSelect(md, alias, innerSQ, nil, projectionOutputNames(innerSQ)); ok {
+			return src, true
+		}
+	}
 	// A projection-less lateral-unnest body has a complete positional schema
 	// even though its FROM list is syntactically a join. Derive that narrow
 	// shape before the generic join-body path (which correctly declines dotted
@@ -1540,13 +1585,12 @@ func aggOutputCols(sq *selectQuery, md *recordlayer.RecordMetaData) []aggOutputC
 			continue
 		}
 		name := ac.outName
-		if ac.groupCol != "" && (name == "" || strings.EqualFold(name, ac.groupCol)) {
-			// An UNALIASED grouping key: the parser mints outName from the
-			// reference's display spelling, so outName == groupCol is the
-			// no-alias case — the same rule aggregateProjectionItem applies when
-			// it labels the body's projection, where the slot is named by the
-			// stripped reference, G for `ga.g`. Publish that name, the one the
-			// row really carries. Publishing GA.G advertised a name no reader
+		if ac.groupCol != "" && !ac.groupColAliased {
+			// An UNALIASED grouping key is output under its bare name — the same
+			// rule aggregateProjectionItem applies when it labels the body's
+			// projection, where the slot is named by the stripped reference, G
+			// for `ga.g`. The parser mints outName from the reference's display
+			// spelling, and publishing that (GA.G) advertised a name no reader
 			// could write: `u.g` over `(SELECT ga.g, SUM(v) AS s FROM ga GROUP
 			// BY ga.g) u` was 42703 in both the derived-table and the CTE form.
 			name = ac.groupColBare
@@ -2164,11 +2208,17 @@ func buildCTEColumnSource(
 		// repeated-name body once the uniqueness gate below it was gone. The
 		// decline is keyed on the SHAPE (a lateral-unnest leg the narrow
 		// admission above did not take), never on the names.
-		resolvesToTable := newUnnestTableResolver(md, defaultEmbeddedSchema)
-		for i, j := range innerSQ.joins {
-			visible := visibleFromAliases(innerSQ.tableName, innerSQ.tableAlias, innerSQ.joins[:i], resolvesToTable)
-			if isLateralUnnestJoin(j, visible, resolvesToTable) {
-				return semantic.ScopeSource{}, false, nil
+		// A nil projCols is also what an AGGREGATE body has — its items were
+		// reclassified into aggCols — and that body flows a projected row the
+		// aggregate arm below publishes exactly; only the genuine star body is
+		// the raw cluster.
+		if len(innerSQ.aggCols) == 0 && !innerSQ.countStar {
+			resolvesToTable := newUnnestTableResolver(md, defaultEmbeddedSchema)
+			for i, j := range innerSQ.joins {
+				visible := visibleFromAliases(innerSQ.tableName, innerSQ.tableAlias, innerSQ.joins[:i], resolvesToTable)
+				if isLateralUnnestJoin(j, visible, resolvesToTable) {
+					return semantic.ScopeSource{}, false, nil
+				}
 			}
 		}
 	}
@@ -4266,13 +4316,10 @@ func buildSelectScope(
 				if alias == "" {
 					aliasID = semantic.FromNormalized(tableName)
 				}
-				return scope.AddSource(nullSupplyingSource(semantic.ScopeSource{
-					Table:                src.Table,
-					Alias:                aliasID,
-					CorrelationName:      bindingOrAlias(bindingID, aliasID),
-					AdditionalQualifiers: additionalTableQualifiers(tableName, alias),
-					HiddenColumns:        hiddenColumnSet(hidden),
-				}, paddedAt(padded, position))) == nil
+				cteSrc := cteSourceAs(src, aliasID, bindingOrAlias(bindingID, aliasID))
+				cteSrc.AdditionalQualifiers = additionalTableQualifiers(tableName, alias)
+				cteSrc.HiddenColumns = hiddenColumnSet(hidden)
+				return scope.AddSource(nullSupplyingSource(cteSrc, paddedAt(padded, position))) == nil
 			}
 		}
 		tbl, err := analyzer.ResolveTable(semantic.FromSegments(strings.Split(tableName, "."), false))
@@ -4369,6 +4416,22 @@ func nullSupplyingSource(src semantic.ScopeSource, nullSupplying bool) semantic.
 		return src
 	}
 	src.Table = nullSupplyingTable{Table: src.Table}
+	return src
+}
+
+// cteSourceAs re-aliases a registered CTE source for the query block that
+// reads it, carrying the source WHOLE — its flowed layout, hidden columns and
+// shadowing state included — under the block's alias and runtime binding.
+// Rebuilding the source from its Table alone dropped the flowed layout, so the
+// quantified object a read of the CTE minted stated the SQL labels rather than
+// the row the body flows, and the read was refused at execution as `edge
+// lookup U: read as RECORD(G,G,W), declared RECORD(GA.G,G,W)` for every body
+// whose runtime names differ from its SQL names — a join projection that
+// repeats a bare leaf, a projection that repeats an alias. Every site that
+// installs a CTE source into a reading scope goes through here.
+func cteSourceAs(src semantic.ScopeSource, alias semantic.Identifier, binding string) semantic.ScopeSource {
+	src.Alias = alias
+	src.CorrelationName = binding
 	return src
 }
 
@@ -10654,17 +10717,23 @@ func (p *existsSubqueryPlanner) addCorrelatedJoinScopeSource(innerScope *semanti
 		jAlias = j.tableName
 	}
 	jTbl, jErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(j.tableName, "."), false))
+	var jCTE semantic.ScopeSource
 	if jErr != nil {
 		// CTE-aware fallback (mirrors the primary source): a CTE join leg resolves
-		// via the enclosing query's CTE registry, not the catalog.
-		if src, found := p.cteScopes[strings.ToUpper(j.tableName)]; found {
-			jTbl, jErr = src.Table, nil
+		// via the enclosing query's CTE registry, not the catalog, and is carried
+		// whole (cteSourceAs).
+		if src, found := p.cteScopes[strings.ToUpper(j.tableName)]; found && src.Table != nil {
+			jCTE, jErr = src, nil
 		}
 	}
 	if jErr != nil {
 		return jErr
 	}
 	jAliasID := semantic.FromNormalized(jAlias)
+	if jCTE.Table != nil {
+		_ = innerScope.AddSource(cteSourceAs(jCTE, jAliasID, jAliasID.Name()))
+		return nil
+	}
 	_ = innerScope.AddSource(semantic.ScopeSource{
 		Table: jTbl, Alias: jAliasID, CorrelationName: jAliasID.Name(),
 	})
@@ -10798,6 +10867,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 
 	innerScope := semantic.NewScope(outerScope)
 	viaCTE := false
+	var cteSrc semantic.ScopeSource
 	tbl, tblErr := analyzer.ResolveTable(semantic.FromSegments(strings.Split(sq.tableName, "."), false))
 	if tblErr != nil {
 		// CTE-aware fallback: a CTE inner source (`WITH c AS (…) … EXISTS (SELECT …
@@ -10808,7 +10878,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 		// columns walks correctly instead of failing "table not found". (A derived
 		// `(SELECT …) AS d` inner is not WITH-registered and stays a clean error.)
 		if src, found := p.cteScopes[strings.ToUpper(sq.tableName)]; found {
-			tbl, tblErr, viaCTE = src.Table, nil, true
+			tbl, tblErr, viaCTE, cteSrc = src.Table, nil, true, src
 		}
 	}
 	if tblErr != nil {
@@ -10868,9 +10938,13 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	if mintedInnerCorr != "" {
 		innerCorrName = mintedInnerCorr
 	}
-	_ = innerScope.AddSource(semantic.ScopeSource{
-		Table: tbl, Alias: aliasID, CorrelationName: innerCorrName,
-	})
+	innerSource := semantic.ScopeSource{Table: tbl, Alias: aliasID, CorrelationName: innerCorrName}
+	if viaCTE {
+		// Carried whole (cteSourceAs): the flowed layout is what the inner
+		// reads bind against.
+		innerSource = cteSourceAs(cteSrc, aliasID, innerCorrName)
+	}
+	_ = innerScope.AddSource(innerSource)
 
 	// Join sources are added to the inner scope INCREMENTALLY in the join loop
 	// below — each leg registered right BEFORE its own ON is walked — so an ON at
@@ -10904,9 +10978,7 @@ func (p *existsSubqueryPlanner) buildCorrelatedExists(q antlrgen.IQueryContext) 
 	// nested EXISTS's reference to THIS level's source emits the identity
 	// the runtime actually binds — the minted scan alias — not the SQL name
 	// (which may be an outer leg's).
-	nestedOuterScopes = append(nestedOuterScopes, semantic.ScopeSource{
-		Table: tbl, Alias: aliasID, CorrelationName: innerCorrName,
-	})
+	nestedOuterScopes = append(nestedOuterScopes, innerSource)
 	nestedPlanner := &existsSubqueryPlanner{
 		md:          p.md,
 		schemaName:  p.schemaName,

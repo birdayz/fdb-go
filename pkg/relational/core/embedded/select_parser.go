@@ -342,6 +342,13 @@ type aggSelectCol struct {
 	// Exactly one of groupCol / aggFunc / outExpr is set (non-visible entries
 	// harvested from HAVING/ORDER BY always have aggFunc set).
 	groupCol string // plain group-by column reference
+	// groupColAliased records whether the SELECT item that names this grouping
+	// key carried an explicit `AS`. outName is minted from the reference's
+	// display spelling when it did not, so the two consumers that label the
+	// output (aggregateProjectionItem, aggOutputCols) once inferred "no alias"
+	// from outName equalling groupCol — a string comparison standing in for a
+	// fact the parser had in hand.
+	groupColAliased bool
 	// groupColBare: the structural bare name of groupCol (parse-tree/derived
 	// at set time) — consumers never dot-split groupCol.
 	groupColBare string
@@ -1002,7 +1009,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 							if gcBare == "" {
 								gcBare = colName
 							}
-							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, groupCol: colName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, visible: true})
+							aggCols = append(aggCols, aggSelectCol{outName: outName, selectOrdinal: selectOrdinal, groupCol: colName, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, groupColAliased: alias != "", visible: true})
 						}
 					} else {
 						pc := projCol{name: colName, selectOrdinal: selectOrdinal}
@@ -1135,7 +1142,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 					// mixed-agg classification site above.
 					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
 				default:
-					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, visible: true}
+					extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, groupColAliased: projAliases[i] != "", visible: true}
 				}
 			}
 			aggCols = append(extra, aggCols...)
@@ -1541,7 +1548,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 				// the rowMap (which carries group-by column values).
 				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, outExpr: slotExpr, visible: true}
 			default:
-				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, visible: true}
+				extra[i] = aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: c.name, groupColBare: colBareOrName(c), groupColQualifier: c.qualifier, groupColQualified: c.qualified, groupColSegs: c.segs, groupColAliased: projAliases[i] != "", visible: true}
 			}
 		}
 		cls.aggCols = extra
@@ -1796,7 +1803,7 @@ func classifySelectElements(simpleTable *antlrgen.SimpleTableContext, expandStar
 							}
 						}
 					}
-					prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: gc, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, visible: true})
+					prepended = append(prepended, aggSelectCol{outName: out, selectOrdinal: c.selectOrdinal, groupCol: gc, groupColBare: gcBare, groupColQualifier: gcQual, groupColQualified: gcQualified, groupColSegs: gcSegs, groupColAliased: projAliases[i] != "", visible: true})
 				}
 				cls.aggCols = append(prepended, cls.aggCols...)
 				cls.projCols = nil

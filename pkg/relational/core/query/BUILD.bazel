@@ -74,6 +74,7 @@ go_test(
         "leg_ref_nested_admission_test.go",
         "name_resolves_in_columns_test.go",
         "plan_test.go",
+        "projection_labels_versus_type_test.go",
         "projection_segments_test.go",
         "proto_field_lookup_test.go",
         "qualifier_recovery_wiring_test.go",

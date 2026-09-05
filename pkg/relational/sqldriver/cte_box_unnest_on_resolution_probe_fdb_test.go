@@ -1123,8 +1123,9 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	//   - QUALIFIED read (V."X") resolves too, rather than a silent NULL;
 	//   - a 2+-extra-leg shadow read whose correlation cannot ordinalize is
 	//     still LOUD — the arm below is the pin against the panic returning;
-	//   - a DUPLICATE-name body declines the WHOLE source, so even a read of a
-	//     unique column in it is loud (complete-schema-or-decline; see Q55 (d)).
+	//   - a DUPLICATE-name body is published whole: a read of a unique column
+	//     in it answers, and only a read that spells the repeated name is
+	//     ambiguous (42702; see Q55 (b) and (d)).
 	t.Run("Q54_shadow_read_reach_boundary", func(t *testing.T) {
 		// The QUALIFIED read `V.X` over the inner V=[X] RESOLVES (a
 		// single-namespace derived source, unique leaf `X` — GetByName
@@ -1243,35 +1244,27 @@ func TestFDB_CTEBoxUnnestOnResolutionProbe2(t *testing.T) {
 	// and returned rows, and a duplicate aggregate alias silent-first-matched —
 	// both now decline the whole source (0AF00), while a clean aggregate alias
 	// still resolves.
-	// Q57 — CORRECT-OR-LOUD FLOOR, not a contract. An aggregate or a sort over
-	// a UNIQUE column of a join body that repeats a BARE leaf (`LA."K"` beside
-	// `LB."K"`, no alias) binds the CTE's quantified object at execution, and
-	// the row the projection declares — the repeated leaf under its qualified
-	// datum key, LA.K / LB.K — is not the row the merged input carries (K, K):
-	// the read is refused as a layout mismatch or an undeclared binding, in the
-	// CTE and the derived-table spelling alike. The derived spelling has failed
-	// so since before RFC-242; the CTE spelling was served by the name model
-	// while its body was declined, and fails loudly now that the body is
-	// published (RFC-242 § Fix F). The same body with the leaf disambiguated by
-	// an alias answers, which is what makes the floor about the repeated leaf
-	// and nothing else. Cause and the fix it needs: TODO.md, "Exact quantifier
-	// binding over a CTE or derived body". A silent answer, or a different
-	// failure, is what this arm makes visible.
-	t.Run("Q57_aggregate_over_unique_column_of_repeated_bare_leaf_body_stays_loud", func(t *testing.T) {
-		mustLoudBinding := func(t *testing.T, sql string) {
-			t.Helper()
-			rows, err := run(t, sql)
-			if err == nil {
-				t.Fatalf("expected the loud binding refusal, got rows=%v\n  %s", rows, sql)
-			}
-			if !strings.Contains(err.Error(), "declared RECORD") && !strings.Contains(err.Error(), "no declared runtime binding") {
-				t.Fatalf("expected the layout mismatch or the undeclared binding, got a different failure: %v\n  %s", err, sql)
-			}
-		}
-		mustLoudBinding(t, `WITH "C" AS (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", COUNT(*) FROM "C" GROUP BY "C"."Y"`)
-		mustLoudBinding(t, `SELECT "C"."Y", COUNT(*) FROM (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") "C" GROUP BY "C"."Y"`)
-		mustLoudBinding(t, `WITH "C" AS (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y" FROM "C" ORDER BY "C"."Y"`)
-		// The aliased twin answers: LA JOIN LB on AID=BID is the single row AID=1.
+	// Q57 — a read bound to the CTE's quantified object over a join body that
+	// repeats a BARE leaf (`LA."K"` beside `LB."K"`, no alias): an aggregate
+	// key, a sort key, a WHERE. The projection declares the repeated leaf under
+	// its qualified datum key (LA.K / LB.K) while the SQL names are K, K; the
+	// scope states the SQL names for resolution and the plan's row as the
+	// FLOWED layout, and the source is carried whole into every reading scope
+	// (cteSourceAs), so the object the read binds is the row the plan flows.
+	// Before that the read was refused at execution as an edge-layout mismatch
+	// or an undeclared binding — the derived spelling since before RFC-242, the
+	// CTE spelling once its body was published rather than served by the name
+	// model. Both spellings answer now; LA JOIN LB on AID=BID is the single row
+	// AID=1, and the aliased twin beside them is the control that never failed.
+	t.Run("Q57_reads_bound_to_a_repeated_bare_leaf_body_answer", func(t *testing.T) {
+		check(t, `WITH "C" AS (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", COUNT(*) FROM "C" GROUP BY "C"."Y"`,
+			"1|1")
+		check(t, `SELECT "C"."Y", COUNT(*) FROM (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") "C" GROUP BY "C"."Y"`,
+			"1|1")
+		check(t, `WITH "C" AS (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y" FROM "C" ORDER BY "C"."Y"`,
+			"1")
+		check(t, `SELECT "C"."Y" FROM (SELECT LA."K", LB."K", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") "C" WHERE "C"."Y" = 1`,
+			"1")
 		check(t, `WITH "C" AS (SELECT LA."K" AS "KA", LB."K" AS "KB", LA."AID" AS "Y" FROM LA JOIN LB ON LA."AID" = LB."BID") SELECT "C"."Y", COUNT(*) FROM "C" GROUP BY "C"."Y"`,
 			"1|1")
 	})

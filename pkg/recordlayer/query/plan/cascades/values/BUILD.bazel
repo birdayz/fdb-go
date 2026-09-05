@@ -144,6 +144,7 @@ go_test(
         "correlation_test.go",
         "current_forgery_case_test.go",
         "datum_binding_descent_test.go",
+        "dedup_field_names_test.go",
         "derived_column_name_escape_test.go",
         "dotted_leg_qualifier_census_test.go",
         "dotted_row_type_producer_census_test.go",

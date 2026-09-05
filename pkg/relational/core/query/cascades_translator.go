@@ -920,7 +920,14 @@ func (t *cascadesTranslator) derivedOutputColumns(op logical.LogicalOperator) []
 		fields := make([]values.Field, len(o.Projections))
 		for i := range o.Projections {
 			name := o.Projections[i]
-			if i < len(o.Aliases) && o.Aliases[i] != "" {
+			if len(exactFields) == len(o.Projections) {
+				// The exact type's names ARE the runtime row: the record
+				// constructor's name for every slot, qualified datum key and
+				// name-addressability suffix included. The rules below derive
+				// a name only for a projection the exact derivation could not
+				// type.
+				name = exactFields[i].Name
+			} else if i < len(o.Aliases) && o.Aliases[i] != "" {
 				name = o.Aliases[i]
 			} else if dot := strings.LastIndexByte(name, '.'); dot >= 0 {
 				// A qualified-but-unaliased passthrough (`SELECT t.arr FROM t`)

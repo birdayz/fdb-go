@@ -512,6 +512,24 @@ func sourceColumnOrdinal(src semantic.ScopeSource, field string) (int, *values.R
 	if rowType == nil {
 		return 0, nil, false
 	}
+	// A source that states a FLOWED layout beside its SQL columns names its
+	// slots as the plan flows them — a repeated bare leaf under its qualified
+	// datum key, a repeated output under the name-addressability suffix — and
+	// those are not names a reference spells. The reference was resolved
+	// against the SQL columns, so the ordinal is its POSITION in that list, and
+	// the flowed layout, parallel to it by construction, is what the ordinal
+	// indexes. Looking the SQL name up in the flowed layout instead missed
+	// every column whose two names differ.
+	if src.Table != nil && len(src.FlowedColumns) > 0 {
+		labels := src.Table.Columns()
+		if len(labels) == len(rowType.Fields) {
+			for i, c := range labels {
+				if strings.EqualFold(c.Id.Name(), field) {
+					return i, rowType, true
+				}
+			}
+		}
+	}
 	for i, f := range rowType.Fields {
 		if strings.EqualFold(f.Name, field) {
 			return i, rowType, true
@@ -558,7 +576,16 @@ func resolvedSourceColumnRef(col semantic.Column, src semantic.ScopeSource, acce
 
 	path := make([]values.FieldRequest, 0, 1+len(accessors))
 	if !wholeShadowingObject {
-		root, requestErr := values.FieldByNameAndOrdinal(field, ordinal)
+		// The request names the slot as the FLOWED layout names it — the name
+		// the row beneath the quantified object carries — which for a column
+		// whose SQL name and runtime name differ is the runtime one. The
+		// reference was resolved by its SQL name above; the read is by ordinal,
+		// and the name on it is what the ordinal read verifies against.
+		slotName := field
+		if ordinal < len(rowType.Fields) && rowType.Fields[ordinal].Name != "" {
+			slotName = rowType.Fields[ordinal].Name
+		}
+		root, requestErr := values.FieldByNameAndOrdinal(slotName, ordinal)
 		if requestErr != nil {
 			return nil, requestErr
 		}

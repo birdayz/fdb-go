@@ -1,5 +1,5 @@
 # explain-baseline/v2
-# files=368 queries=2693 dml=172 non_query=109 plan_errors=300 unexpected_errors=4
+# files=368 queries=2705 dml=172 non_query=109 plan_errors=300 unexpected_errors=4
 #
 # Source: pkg/relational/conformance/yamsql/testdata/*.yaml, planned through
 # embedded.PlanPhysicalForTest (SELECT) and PlanPhysicalDMLForTest
@@ -4243,6 +4243,72 @@ shape:           RecordQueryScanPlan
 shape:           RecordQueryPredicatesFilterPlan
 shape:             RecordQueryScanPlan
 === cte_published_row_names.yaml#16
+sql:   WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1
+plan:  Project([_current.W#2], PredicatesFilter(Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C))), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== cte_published_row_names.yaml#17
+sql:   SELECT u.w FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u WHERE u.w = 1
+plan:  Project([_current.W#2], PredicatesFilter(Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C))), [1 preds]))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryPredicatesFilterPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== cte_published_row_names.yaml#18
+sql:   WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
+plan:  Project([_current.W#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryNestedLoopJoinPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
+=== cte_published_row_names.yaml#19
+sql:   SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w
+plan:  Project([_current.W#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryNestedLoopJoinPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
+=== cte_published_row_names.yaml#20
+sql:   WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u ORDER BY u.w
+plan:  Project([_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(C), Scan(GA)))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== cte_published_row_names.yaml#21
+sql:   WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT SUM(u.w) FROM u
+plan:  Project([_current.SUM(W)#0], StreamingAgg(keys=[], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C)))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryNestedLoopJoinPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== cte_published_row_names.yaml#22
+sql:   WITH u AS (SELECT ga.id, c.id, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
+plan:  Project([_current.W#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.ID#0, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryNestedLoopJoinPlan
+shape:           RecordQueryScanPlan
+shape:           RecordQueryScanPlan
+=== cte_published_row_names.yaml#23
 sql:   WITH u AS (SELECT ga.g AS g1, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY u.w ORDER BY u.w
 plan:  Project([_current.W#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.W#2], InMemorySort([_current.W#2 ASC], Project([_current.G#1, _current.ID#3, _current.W#4], NestedLoopJoin(INNER, Scan(GA), Scan(C))))))
 shape: RecordQueryProjectionPlan
@@ -4252,6 +4318,23 @@ shape:       RecordQueryProjectionPlan
 shape:         RecordQueryNestedLoopJoinPlan
 shape:           RecordQueryScanPlan
 shape:           RecordQueryScanPlan
+=== cte_published_row_names.yaml#24
+sql:   WITH u AS (SELECT ga.*, c.w FROM ga, c WHERE ga.g = c.id) SELECT u.v + u.w AS t FROM u ORDER BY u.v
+plan:  Project([(_current.V#2 + _current.W#3)], InMemorySort([_current.V#2 ASC], Project([_current.ID#0, _current.G#1, _current.V#2, _current.W#4], FlatMap(outer=Scan(GA), inner=Scan(C, [=])))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryFlatMapPlan
+shape:         RecordQueryScanPlan
+shape:         RecordQueryScanPlan
+=== cte_published_row_names.yaml#25
+sql:   WITH u AS (SELECT ga.g AS "GA.G", SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u."GA.G" AS z FROM u ORDER BY z
+plan:  Project([_current.G#0], Project([_current.G#0, _current.SUM(V)#1], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryProjectionPlan
+shape:     RecordQueryStreamingAggregationPlan
+shape:       RecordQueryInMemorySortPlan
+shape:         RecordQueryScanPlan
 === cte_recursive_tree.yaml#0
 sql:   WITH RECURSIVE descendants AS ( SELECT id, name FROM tree WHERE parent_id = 1 UNION ALL SELECT t.id, t.name FROM tree t, descendants d WHERE t.parent_id = d.id ) SELECT name FROM descendants ORDER BY name
 plan:  Project([_current.NAME#1], InMemorySort([_current.NAME#1 ASC], RecursiveDfsJoin(PREORDER, Project([_current.ID#0, _current.NAME#2], PredicatesFilter(Scan(TREE), [1 preds])), Project([_current.ID#0, _current.NAME#2], FlatMap(outer=Scan(TREE), inner=PredicatesFilter(TempTableScan(DESCENDANTSforScan), [1 preds]))))))
@@ -15220,6 +15303,34 @@ shape:     RecordQueryStreamingAggregationPlan
 shape:       RecordQueryInMemorySortPlan
 shape:         RecordQueryScanPlan
 shape:   RecordQueryScanPlan
+=== repeated_output_names.yaml#11
+sql:   WITH u AS (SELECT g, SUM(v) AS g, COUNT(*) AS n FROM ga GROUP BY g) SELECT u.n, COUNT(*) FROM u GROUP BY u.n ORDER BY u.n
+plan:  Project([_current.N#0, _current.COUNT(*)#1], StreamingAgg(keys=[_current.N#2], InMemorySort([_current.N#2 ASC], Project([_current.G#0, _current.SUM(V)#1, _current.COUNT(*)#2], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA)))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryStreamingAggregationPlan
+shape:     RecordQueryInMemorySortPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryStreamingAggregationPlan
+shape:           RecordQueryInMemorySortPlan
+shape:             RecordQueryScanPlan
+=== repeated_output_names.yaml#12
+sql:   WITH u AS (SELECT g, SUM(v) AS g, COUNT(*) AS n FROM ga GROUP BY g) SELECT u.n FROM u ORDER BY u.n
+plan:  Project([_current.N#2], InMemorySort([_current.N#2 ASC], Project([_current.G#0, _current.SUM(V)#1, _current.COUNT(*)#2], StreamingAgg(keys=[_current.G#1], InMemorySort([_current.G#1 ASC], Scan(GA))))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryProjectionPlan
+shape:       RecordQueryStreamingAggregationPlan
+shape:         RecordQueryInMemorySortPlan
+shape:           RecordQueryScanPlan
+=== repeated_output_names.yaml#13
+sql:   SELECT e FROM (SELECT id AS x, id AS x, arr AS x_2 FROM t) d, d.x_2 AS e ORDER BY e
+plan:  Project([_current.E#3], InMemorySort([_current.E#3 ASC], FlatMap(outer=Project([_current.ID#0, _current.ID#0, _current.ARR#1], Scan(T)), inner=Explode(field))))
+shape: RecordQueryProjectionPlan
+shape:   RecordQueryInMemorySortPlan
+shape:     RecordQueryFlatMapPlan
+shape:       RecordQueryProjectionPlan
+shape:         RecordQueryScanPlan
+shape:       RecordQueryExplodePlan
 === rfc202_generated_index_plans.yaml#0
 sql:   SELECT a, b, c FROM t_cover WHERE a = 5
 plan:  Project([_current.A#1, _current.B#2, _current.C#3], IndexScan(COVER_IDX, [=] COVERING))

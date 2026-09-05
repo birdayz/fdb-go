@@ -391,6 +391,12 @@ func TestMergedRVSequenceDivergesToleratesARepeatedDisplayName(t *testing.T) {
 			"X is not G_2 under any reading",
 		},
 		{
+			"a repeated display over a slot the RC names otherwise",
+			[]executor.ColumnDef{col("U.G", "G"), col("U.G", "G"), col("C.G", "G"), col("C.W", "W")},
+			true,
+			"the third G deduplicates to G_3 and the RC names that slot ID; skipping repeated displays would have accepted it",
+		},
+		{
 			"reordered legs",
 			[]executor.ColumnDef{col("C.ID", "ID"), col("C.W", "W"), col("U.G", "G"), col("U.G_2", "G")},
 			true,

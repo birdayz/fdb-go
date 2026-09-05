@@ -4726,15 +4726,33 @@ func (r *RecordConstructorValue) MessageDescriptor() protoreflect.MessageDescrip
 // domain, and the baked positional read of the second slot then declined and
 // fell back to a by-name read that answered the FIRST G.
 func DedupFieldNames(names []string) []string {
+	// Every AUTHORED name is reserved before a suffix is minted, and a minted
+	// name is reserved once minted, so the result never holds one name twice:
+	// [X X X_2] is [X X_3 X_2], never [X X_2 X_2]. Counting occurrences alone
+	// collided with an authored `X_2`, and a derived outer's ordinal type then
+	// held a genuinely repeated name the lateral unnest over it could not
+	// address.
+	reserved := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		reserved[name] = struct{}{}
+	}
 	seen := make(map[string]int, len(names))
 	out := make([]string, len(names))
 	for i, name := range names {
 		count := seen[name]
 		seen[name] = count + 1
-		if count > 0 {
-			out[i] = fmt.Sprintf("%s_%d", name, count+1)
-		} else {
+		if count == 0 {
 			out[i] = name
+			continue
+		}
+		for k := count + 1; ; k++ {
+			candidate := fmt.Sprintf("%s_%d", name, k)
+			if _, taken := reserved[candidate]; taken {
+				continue
+			}
+			reserved[candidate] = struct{}{}
+			out[i] = candidate
+			break
 		}
 	}
 	return out

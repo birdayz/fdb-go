@@ -294,6 +294,14 @@ func corpus() []Scenario {
 			"WITH u AS (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) SELECT u.g, u.s FROM u ORDER BY u.g",
 			"SELECT u.g, u.s FROM (SELECT ga.g, SUM(v) AS s FROM ga GROUP BY ga.g) u ORDER BY u.g",
 			"WITH u AS (SELECT ga.g, c.w, SUM(v) AS s FROM ga, c WHERE ga.g = c.id GROUP BY ga.g, c.w) SELECT u.g, u.w, u.s FROM u ORDER BY u.g",
+			// Reads bound to the CTE's quantified object over a body that repeats
+			// a bare leaf: the scope states the row the plan flows as its flowed
+			// layout, so a WHERE, an aggregate key and a sort key over the unique
+			// column answer in both spellings.
+			"WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u WHERE u.w = 1",
+			"SELECT u.w, COUNT(*) FROM (SELECT ga.g, c.id AS g, c.w FROM ga, c) u GROUP BY u.w ORDER BY u.w",
+			"WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w FROM u ORDER BY u.w",
+			"WITH u AS (SELECT g, SUM(v) AS g, COUNT(*) AS n FROM ga GROUP BY g) SELECT u.n, COUNT(*) FROM u GROUP BY u.n ORDER BY u.n",
 		},
 	}
 

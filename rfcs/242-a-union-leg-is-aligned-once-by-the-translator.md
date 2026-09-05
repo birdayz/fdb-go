@@ -1,6 +1,9 @@
 # RFC-242 — A union's legs are aligned once, by the translator
 
-**Status:** r3. r1: Graefe ACK with one non-blocking condition (assert leg alignment at the
+**Status:** r6. r5 (head `452479f68`): Torvalds ACK with three folds; Graefe NAK — the loud floor r5
+left was wider than stated and the fix is the ordinal-bound edge, not a wider pin (folded as
+the second adjacent finding's third and fourth layers); codex five findings, all folded; @claude
+ACK with one stale comment, restated. r6 folds all of those. Earlier rounds — r3. r1: Graefe ACK with one non-blocking condition (assert leg alignment at the
 logical constructor too — folded as § Fix C); Torvalds NAK with five findings, all folded: a pin
 that passed with the defect present now asserts no leg is a `Map` (test plan 2); the translator's
 join-leg gate built on the deleted remap premise is deleted too (§ Fix D); two census figures
@@ -436,9 +439,12 @@ Every proof is committed; each names the dimension that was unprobed.
     of the planning shapes. The sqldriver probe suite's Q53–Q56, which pinned
     complete-schema-or-decline (`0AF00` for any repeated name), are re-pinned to Java's
     answers — `42702` for a read that spells the repeated name, rows for a read of a unique
-    column beside it — and Q57 pins the loud floor of § What this does not close beside the
-    aliased control that answers; `TestFDB_UnnestExistsGather`'s `agg_cte_*` pins hold the
-    gathered-unnest decline.
+    column beside it — and Q57 pins the reads bound to the quantified object of a body that
+    repeats a bare leaf (an aggregate key, a sort key, a WHERE, both spellings) beside the
+    aliased control; `TestFDB_UnnestExistsGather`'s `agg_cte_*` pins hold the gathered-unnest
+    decline, with a unique-name twin beside the repeated-K pins so the arm tells the shape
+    from the names, and an aggregate-bodied CTE over that shape so the decline is known to
+    stop at star bodies.
 12. **Repeated output names.** `repeated_output_names.yaml` (real FDB) and the SimFDB golden
     `repnames`: the labels of
     `SELECT g AS a, g AS a`, `SELECT id, g AS id` and a star over a body that repeats a name,
@@ -483,42 +489,69 @@ does.
 Measuring every read path of a published repeated name, Graefe found the one that was loud and
 wrong: `SELECT * FROM (SELECT g, SUM(v) AS g FROM ga GROUP BY g) u, c` died `XX000` at the
 result set's alignment guard, in both spellings, while the unique-name control answered four
-columns. Pre-existing at the merge-base; Java answers `[G G ID W]`.
+columns. His r5 delta then measured the loud floor r5 had left — an aggregate, a sort, and (as
+he found) a WHERE over a unique column of a join body that repeats a bare leaf — and named the
+fix: bind the CTE or derived quantifier's edge by the row the plan flows, not by the SQL
+labels. Java answers every one of these; all were pre-existing at the merge-base in the
+derived-table spelling, and the CTE spelling met them once its body was published rather than
+served by the name model.
 
-**Mechanism, in two layers.** Go keeps a projection's record type name-addressable by suffixing
-a later occurrence of a repeated output name (`values.NewRecordConstructorValue`: `G`, `G_2`).
-Java has no such suffix — `Type.Record` keeps repeated field names and binds every read by
-ordinal (`Expressions.java:91`, `LogicalOperator.java:367`) — so the suffix is a property of
-the Go type and nothing user-visible may carry it, which the result set's alignment guard
-already assumed ("the user-visible labels stay `[X X]`"). Two consumers did not hold to that:
+**Mechanism.** The engine names runtime slots by three rules — a record constructor names a
+repeated output by the name-addressability suffix (`G`, `G_2`; Java has no such suffix,
+`Type.Record` keeps repeated names and binds every read by ordinal, `Expressions.java:91`,
+`LogicalOperator.java:367`); a projection over a join names a repeated bare leaf by its
+qualified datum key (`GA.G` beside `G`); a raw positional merge keeps every leg name verbatim —
+while the SQL names a reference spells are none of those. Four consumers had let one of the
+runtime names, or the SQL name, stand where the other belonged:
 
-1. *The label followed the frozen output schema for an aliased item.*
+1. *The result-set label followed the frozen output schema for an aliased item.*
    `deriveColumnsFromProjection` took the frozen name unconditionally when the item carried a
-   user alias, so `SELECT g AS a, g AS a` reported `[A A_2]` and `SELECT id, g AS id` reported
-   `[ID ID_2]`; for an unaliased reference it took the frozen name unless the same label had
-   appeared at an earlier slot — a heuristic that reads a column-list rename of a repeated
-   alias as a dedup. Both arms now ask the structural question: the NATURAL schema (the same
-   Value program and aliases, deduplicated by the same rule) names the slot, and only a frozen
-   name the natural schema does not produce is a rename (`frozenSchemaRenamesSlot`). The
-   heuristic is deleted with its test. Through a join, the leg's second `G` then carries label
-   `G` over datum key `U.G_2`, and the alignment guard's repeated-display rule aligns it by
-   ordinal — which is where the second layer showed.
-2. *The derived leg's ordinal layout stated the names verbatim.* With the label fixed, the same
-   query answered `[100 100 100 1]`: the grouping key in both `G` columns, silently. The join
-   seed builds each leg's baked positional reads over the leg type `derivedOutputColumns`
-   states — `[G G]`, the projection's names verbatim — while the row the projection emits is
-   typed by its record constructor, `[G G_2]`. `OrdinalIn` requires the read's domain to equal
-   the row's, so the baked read of slot 1 declined its ordinal and fell back to a by-name read,
-   which answered the first `G`. `derivedOutputColumns` now applies `values.DedupFieldNames`,
-   the rule extracted from the constructor so both sites state one layout, and
-   `mergedRVSequenceDiverges` — the metadata twin of the alignment guard — tolerates a repeated
-   display name the way the guard does instead of routing every duplicate-name leg through the
-   fallback that publishes the suffix.
+   user alias, so `SELECT g AS a, g AS a` reported `[A A_2]`; for an unaliased reference it took
+   the frozen name unless the same label had appeared at an earlier slot — a heuristic that
+   reads a column-list rename of a repeated alias as a dedup. Both arms now ask the structural
+   question: the NATURAL schema — the freeze site's own naming rule, `values.ProjectionSlotName`,
+   deduplicated by `values.DedupFieldNames` — names the slot, and only a frozen name the natural
+   schema does not produce is a rename (`frozenSchemaRenamesSlot`). The heuristic is deleted
+   with its test.
+2. *The derived leg's ordinal layout stated names the row does not carry.* `derivedOutputColumns`
+   re-derived a projection's names by a third rule; with the label fixed, `SELECT *` over the
+   repeated-name leg answered `[100 100 100 1]` — the grouping key in both `G` columns — because
+   the join seed's baked read of slot 1 declined its ordinal domain (`OrdinalIn`) against a
+   layout named `[G G]` for a row typed `[G G_2]`, and fell back to a by-name read of the first
+   `G`. The layout takes the exact type's names when it has them — the record constructor's
+   names for every slot — and applies `values.DedupFieldNames` otherwise; `mergedRVSequenceDiverges`
+   compares the merged display sequence under the same rule, exactly, slot for slot.
+3. *The scope stated the SQL labels as the row.* A read bound to the CTE's or derived table's
+   quantified object — a WHERE, a sort key, an aggregate key or operand over a unique column —
+   minted that object from the scope's columns, and the executor's edge check refused the row
+   the plan declared (`edge lookup U: read as RECORD(G,G,W), declared RECORD(GA.G,G,W)`) or found
+   no binding at all. The scope source already has the carrier for a row that differs from the
+   columns exposed for resolution, `FlowedColumns`; `exactVirtualScopeSource` fills it with the
+   exact row's own field names, the resolver takes a column's ordinal from its POSITION in the
+   SQL-named list and names the read by the flowed slot (`sourceColumnOrdinal`,
+   `resolvedSourceColumnRef`), and every site that installs a registered CTE into a reading scope
+   carries the source WHOLE (`cteSourceAs`) instead of rebuilding it from its `Table`. The
+   derived-table join body publishes its exact row first, as the aggregate and CTE arms do,
+   and the exact type's projection arm applies the constructor's dedup so the two agree on a
+   repeated alias (`[G G_2 N]`) — while the label derivation, which is what a source publishes
+   for RESOLUTION, keeps the SQL names repeated: one per-slot naming rule
+   (`projectionSlotSQLName`) feeds both, and only the type deduplicates. The first cut of the
+   dedup let it reach the labels too, and `C."X"` over a body that repeats an aggregate alias
+   resolved to one column instead of `42702` (Q56).
+4. *The dedup could mint an authored name.* `DedupFieldNames` counted occurrences, so
+   `[X X X_2]` became `[X X_2 X_2]` and a lateral unnest over the authored `x_2` could not
+   address one column (codex, r5). Every authored name is reserved before a suffix is minted.
 
-Both layers are pinned in `repeated_output_names.yaml` (§ Test plan 12). The suffix itself
-stays: it is what keeps Go's record types name-addressable, it is now purely internal, and the
-two consumers that must agree with it are pinned against the rule rather than against each
-other.
+Two shapes a first cut of this round broke, both answering before it, are pinned with the
+rest (codex, r5): a mixed qualified star in a CTE body, whose parsed name list has the wrong
+width for the exact row (`projectionOutputNames` yields nothing for it, and the body's own
+labels stand), and an aggregate body over the gathered-unnest shape, which the shape-keyed
+decline must not catch (its items live in `aggCols`, `projCols` nil). A grouping key's alias
+presence is now recorded by the parser (`groupColAliased`) rather than inferred from a string
+comparison — `ga.g AS "GA.G"` is aliased.
+
+All four layers are pinned in `repeated_output_names.yaml` and `cte_published_row_names.yaml`
+(§ Test plan 11–12) and as Q57 of the sqldriver probe suite, in both spellings.
 
 ## Rides alongside, not part of this RFC
 
@@ -537,22 +570,15 @@ mechanism depends on them.
 - The two `EqualFold` lookups in `rule_implement_in_union.go:130` and `physical_key_types.go:295`
   are identifier LOOKUPS against physical field names, the class RFC-237 §Scope permits, not
   presentations. Not touched.
-- An aggregate or a sort over a UNIQUE column of a join body that repeats a bare leaf
-  (`WITH u AS (SELECT ga.g, c.id AS g, c.w FROM ga, c) SELECT u.w, COUNT(*) FROM u GROUP BY
-  u.w`) is refused at execution — an undeclared binding, or `edge lookup … read as
-  RECORD(G,G,W), declared RECORD(GA.G,G,W)` — in the CTE and the derived-table spelling. The
-  derived spelling has failed so since before this RFC; the CTE spelling was served by the
-  name model while its body was declined and fails loudly now that the body is published. The
-  cause is not this RFC's and is wider than it: the engine names runtime slots by three rules
-  (the constructor's suffix, the qualified datum key a join projection mints for a repeated
-  bare leaf, the verbatim names of a raw positional merge) while the declared type and the
-  scope carry one, so a read bound to the CTE's quantified object finds a row of a different
-  name. Java binds every such read by ordinal. It is pinned as a loud floor in
-  `cte_published_row_names.yaml` beside the aliased control that answers, and booked in
-  `TODO.md` ("Exact quantifier binding over a CTE or derived body") with the measurements and
-  the fix it needs; a first cut of this round tried a projection boundary and a deduplicated
-  flowed layout for it and reverted both — they moved the mismatch between the three rules
-  rather than removing it.
+- An aggregate over a `SELECT *` DERIVED TABLE whose body is a gathered multi-source unnest
+  cluster (`FROM (SELECT * FROM a, b, a.arr AS x …) d … GROUP BY d.aid`) fails to plan —
+  `column "AID" resolves against source "D", which declares no column order to bind a plan-time
+  ordinal` — pre-existing at the merge-base, where it failed as an undeclared binding. The CTE
+  spelling of that body stays out of the global scope by shape (§ Fix F) and answers through
+  the translator's seed bake; the derived spelling has no such arm, and the translator already
+  books the projected-output-layout ordinalization it needs (`translateAggregate`, the
+  positional-gather comment). Recorded in `TODO.md` ("Exact quantifier binding over a CTE or
+  derived body") with the measurement.
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
   thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job
   cancelled from outside after 3–67 minutes with no timeout annotation) need host access; the
