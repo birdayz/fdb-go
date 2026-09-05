@@ -106,9 +106,21 @@ func (r *PushRequestedOrderingThroughGroupByRule) OnMatch(call *ImplementationRu
 		}
 
 		result := synthesizeGroupByOrdering(reqOrd, groupingKeys)
-		if result != nil {
-			synthesized = append(synthesized, result)
+		if result == nil {
+			continue
 		}
+		// The grouping keys are stated over the group-by's INNER quantifier;
+		// a constraint on the child Reference is read in the child's own
+		// current-row space, so the synthesized ordering crosses the same
+		// rebase the sort and select pushes cross. Left rooted at the
+		// quantifier, it reached the projection below a `GROUP BY u.w ORDER BY
+		// u.w` as a foreign root that no child could act on.
+		rebased, err := requestedOrderingAtInnerCurrent(result, gb.GetInner())
+		if err != nil {
+			call.Fail(err)
+			return
+		}
+		synthesized = append(synthesized, rebased)
 	}
 
 	if len(synthesized) > 0 {

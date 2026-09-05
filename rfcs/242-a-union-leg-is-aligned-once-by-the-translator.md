@@ -1,6 +1,6 @@
 # RFC-242 — A union's legs are aligned once, by the translator
 
-**Status:** r9. r8 (head `56a3df6ed`): Graefe ACK with one required fold (the swapped-name body whose sort must stay — a wrong answer at the merge-base); Torvalds NAK on that shape plus six folds; @claude ACK with one residual (the row-versioned remainders unpinned as negatives); codex delta run pending at writing. r9 folds all of those and half of Torvalds's booking (the constraint now crosses the projection; the receiving side is booked). r8. r7 (head `cd7bdc5ed`): Graefe ACK (one non-blocking booking: a redundant sort over a renamed grouping key, which r8 fixes as the third adjacent finding); Torvalds ACK with four folds; @claude NAK on coverage (the union-bodied derived table's fix had no regression pin, the added sort on golden #25 was unexplained, a fixture comment cited the wrong RFC-238 section); codex two runs, four P1 findings (a silent wrong answer for quoted case-distinct labels, star bodies bypassing the star-expansion visibility rules, an aliased expression reclassified into a grouping key losing its alias — reported twice). r8 folds all of those. Earlier rounds — r6 folded: 
+**Status:** r10. r9 (head `e92bd661d`): Graefe ACK with one required fold to the BOOKING — the receiving side of the ordering-through-a-projection remainder is not missing ordering parts but a match that never climbs (`correlatedToEquals`), restated in all three homes and pinned; Torvalds NAK with two folds — the swap pin's data was monotone (moved to a fixture whose data discriminates) and an XX000 yaml pin was being credited as a correct rejection (pinned in Go instead) — plus non-blocking folds, all taken; the group-by push rule's synthesized ordering is rebased into its child's current-row space, found when the projection push rule went loud. r8 (head `56a3df6ed`): Graefe ACK with one required fold (the swapped-name body whose sort must stay — a wrong answer at the merge-base); Torvalds NAK on that shape plus six folds; @claude ACK with one residual (the row-versioned remainders unpinned as negatives). r7 (head `cd7bdc5ed`): Graefe ACK (one non-blocking booking: a redundant sort over a renamed grouping key, which r8 fixes as the third adjacent finding); Torvalds ACK with four folds; @claude NAK on coverage (the union-bodied derived table's fix had no regression pin, the added sort on golden #25 was unexplained, a fixture comment cited the wrong RFC-238 section); codex two runs, four P1 findings (a silent wrong answer for quoted case-distinct labels, star bodies bypassing the star-expansion visibility rules, an aliased expression reclassified into a grouping key losing its alias — reported twice). r8 folds all of those. Earlier rounds — r6 folded: 
 r5 (head `452479f68`): Torvalds ACK with three folds; Graefe NAK — the loud floor r5
 left was wider than stated and the fix is the ordinal-bound edge, not a wider pin (folded as
 the second adjacent finding's third and fourth layers); codex five findings, all folded; @claude
@@ -461,20 +461,20 @@ Every proof is committed; each names the dimension that was unprobed.
     whose source is STATUS-sorted; fails with the translation removed) and
     `TestSortElisionDeclinesAComputedSlot`; `cte_published_row_names.yaml` §6 pins
     `plan_not_contains: InMemorySort` over a renamed primary key in both spellings with the
-    DESC twins; `plan_shape.golden` records the 16 corpus entries that lose their sort, and §6 pins the
-    swapped-name body (`v AS id, id AS v`) whose sort must STAY, in both spellings, beside the
-    elided twin.
+    DESC twins; `plan_shape.golden` records the 16 corpus queries that lose their sort, and
+    `ordering_through_a_projection.yaml` pins the swapped-name body (`g AS id, id AS g` over
+    non-monotone g) whose sort must STAY, in both spellings, beside the elided twin.
 14. **Star-body visibility.** `derived_star_visibility.yaml`: the unnest alias shadowing the
     outer column (three reads, both spellings), quoted case-distinct labels (four reads), the
     reclassified alias (both spellings); `derived_star_row_versions.yaml`: the star over
     row-versioned tables in both spellings and a two-column read.
-16. **Ordering through a projection.** `ordering_through_a_projection.yaml`: the base table
+15. **Ordering through a projection.** `ordering_through_a_projection.yaml`: the base table
     takes the index on `g` and the reverse primary-key scan; through a derived table and a CTE,
     unrenamed and renamed, the rows are right and the sort is pinned as still in memory (the
     booked receiving-side remainder), a computed slot keeps its sort.
     `TestPushRequestedOrderingThroughProjection_*` expect the pushed constraint in the child's
     current-row space.
-15. **Bodies the walk serves.** `cte_published_row_names.yaml` §7–§8: a WHERE over a star join
+16. **Bodies the walk serves.** `cte_published_row_names.yaml` §7–§8: a WHERE over a star join
     and over a union of star joins, both spellings; the named-STRUCT join body, both spellings.
 
 ## Adjacent finding, surfaced by the § Fix D probe — fixed here (§ Fix F)
@@ -615,7 +615,9 @@ by spelling, dropped the sort, and answered the rows in ID order for a sort on V
 SimFDB at the merge-base `36b97f1e9` and at `cd7bdc5ed`, `[30],[10],[20]` over rows (1,30),(2,10),
 (3,20), in both spellings. With the request pushed through the projection it is a sort on V,
 which nothing provides, and the sort stays. Pinned in both spellings with `plan_contains:
-InMemorySort` beside the elided twin on `u.v` (`cte_published_row_names.yaml` §6).
+InMemorySort` and rows that DISCRIMINATE — `g AS id, id AS g` over g = (200, 100, 300), not
+monotone in id, so ID order and G order differ — beside the elided twin on the other column
+(`ordering_through_a_projection.yaml`).
 
 **The constraint never crossed either.** The same root mismatch sat in
 `PushRequestedOrderingThroughProjectionRule`: it pushed the constraint through the projection's
@@ -628,13 +630,25 @@ every sort through a derived table or CTE was an in-memory sort over a forward s
 now crosses through `requestedOrderingBelow` too — one translation for the constraint going down
 and for the satisfaction walk — and the constraint reaches the scan group
 (`TestPushRequestedOrderingThroughProjection_*` expect it in the child's current-row space).
-The child cannot act on it yet: a zero-prefix index match carries no matched ordering parts, so
-`SatisfiesRequestedOrdering` sees no order in any candidate (for the base query too — the
-ordered full index scan there comes from `OrderedIndexScanRule`, whose matcher is a sort
-DIRECTLY over a scan). That receiving half is Java's `MatchInfo.getMatchedOrderingParts` for
-every match, a port of its own, booked in `TODO.md` ("Ordering through a projection reaches the
-child group but not the index") with `ordering_through_a_projection.yaml` pinning both halves —
-the base table taking the index and the reverse scan, the derived table and CTE still sorting.
+The child cannot act on it yet: `SatisfiesRequestedOrdering` sees no order in any candidate
+(for the base query too — the ordered full index scan there comes from `OrderedIndexScanRule`,
+whose matcher is a sort DIRECTLY over a scan), because the scan group's one partial match is the
+unadjusted LEAF and never climbs to the candidate's `MatchableSortExpression`, whose adjustment
+would mint the matched ordering parts (that machinery is ported): `matchWithCandidate` refuses
+at `correlatedToEquals`, Go's stand-in for Java's correlation-set equality, which demands zero
+node-local correlations on the candidate expression while the candidate's own select reports
+the placeholder's parameter alias and its own inner alias — two aliases Java's
+`getCorrelatedTo` does not count (measured by Graefe's r9 delta, with both Go-only ordered-scan
+rules filtered out). The closure is that set equality with those exclusions, after which both
+Go-only ordered-scan rules retire. Booked in `TODO.md` ("Ordering through a projection reaches
+the child group but not the index"), the refusal pinned by
+`TestAdjustMatches_LeafMatchNeverClimbsPastCorrelatedToEquals`, and
+`ordering_through_a_projection.yaml` pinning both halves — the base table taking the index and
+the reverse scan, the derived table and CTE still sorting. Making the projection rule loud on a
+foreign-rooted constraint found the one pusher that stated its ordering over its own inner
+quantifier rather than the child's current row — the group-by rule's synthesized ordering, which
+reached the projection under `GROUP BY u.w ORDER BY u.w` as a root no child could act on; it
+crosses the same rebase the sort and select pushes cross now.
 
 **Where it applies.** All three delegator walks: `memberSatisfiesOrderingDepth` (satisfaction),
 `pinOrderedSpineDepth` (the rule-time pin) and extraction's `rebuildOrderedSpine`, which now
@@ -644,10 +658,11 @@ level. `ImplementSortRule` judges an order-preserving member through the walk
 the source's keys untranslated. `SortElisionSelector.OrderedChildWinner` takes the requested
 ordering; `Planner.OrderedChildWinnerForSort` is the sort-expression entry.
 
-**Measured.** Over the yamsql corpus (`plan_shape.golden`), 16 entries lose an in-memory sort
-and none gains one — counted per golden entry (`=== file#index`, the `InMemorySort` occurrences
-in its `plan:` line) between `cd7bdc5ed` and this head, `#25` among them; the recursive-CTE and
-FlatMap shapes that keep theirs keep them. A sort over a projection's computed slot still declines
+**Measured.** Over the yamsql corpus (`plan_shape.golden`), 16 queries lose an in-memory sort
+and none gains one — counted between `cd7bdc5ed` and `56a3df6ed` keyed by fixture file AND SQL
+text (`InMemorySort` occurrences in the plan line; an entry index is not a key, a fixture's own
+additions renumber it), `#25` among them; the recursive-CTE and FlatMap shapes that keep theirs
+keep them. A sort over a projection's computed slot still declines
 (`TestSortElisionDeclinesAComputedSlot`). The RFC-201 factory corpus moves too: 42 of 8150
 committed scenarios (8150 carry a plan-shape header; the plan census dumps 8060, omitting
 candidates with fewer than two TLP renderings) across 10 `single|and(…)` family files change
@@ -702,7 +717,7 @@ order-correct: the index stores (c, id), the residual filter preserves order.
   "A wrong answer under it"; `cte_published_row_names.yaml` §6).
 - **The constraint crosses the projection** (Torvalds's booking, half): the projection push rule
   translates through `requestedOrderingBelow` and accepts only a current-rooted constraint; the
-  receiving side — matched ordering parts for a zero-prefix index match — is booked (§ Third
+  receiving side — the leaf match that never climbs past `correlatedToEquals` — is booked (§ Third
   adjacent finding, "The constraint never crossed either"; `ordering_through_a_projection.yaml`).
 - **No folded fallback in `sourceColumnOrdinal`** (Torvalds): a panic before both fallback loops
   over the explaindiff corpus (2736 queries) and the SimFDB probes never fired; the loops are
@@ -716,6 +731,28 @@ order-correct: the index stores (c, id), the residual filter preserves order.
 - The two new fixtures carry their description above `name:` so `FEATURE_MATRIX.md` shows it;
   the status line's dangling round marker is gone; the sort rule's comment records the
   two-space coverage arms.
+
+## Folds at r10
+
+- **The receiving-side booking, restated** (Graefe, measured): not missing ordering parts but a
+  leaf match that never climbs past `correlatedToEquals` (§ Third adjacent finding, "The
+  constraint never crossed either"; `TODO.md`; the fixture header). The refusal is pinned by
+  `TestAdjustMatches_LeafMatchNeverClimbsPastCorrelatedToEquals`: a value-index candidate, a
+  scan-leaf match, no adjusted twin, and the candidate's select reporting the node-local
+  correlations the stand-in refuses on.
+- **The swap pin discriminates** (Torvalds): moved to `ordering_through_a_projection.yaml`, whose
+  `g` is not monotone in `id`, so the rows differ between the two orders.
+- **XX000 pinned where it cannot be credited** (Torvalds): the coverage classifier counts any
+  non-0A SQLSTATE as a correct rejection, so the CTE spelling of the row-versioned unnest star is
+  pinned in Go (`TestFDB_DerivedStarRowVersionsUnnestCTE`); the yaml keeps the 0AF00 half.
+- **A foreign-rooted constraint is loud** at the projection push rule (`call.Fail`), as at the
+  select push rule; the rule's history comments are cut to the why; its tests expect the failure
+  and assert the pushed root and column without the shared rebase helper. Going loud found the
+  group-by push rule stating its synthesized ordering over its own inner quantifier; it is
+  rebased into the child's current-row space now (its tests expect that space).
+- The alias-provenance doc names its two readers and the items they consult; the lost-sort count
+  is keyed by fixture file and SQL text; the fixture header separates the negative pins from the
+  permanent positives; the status line is one list; the test plan is numbered in order.
 
 ## Rides alongside, not part of this RFC
 
@@ -753,8 +790,9 @@ mechanism depends on them.
   are in the same `TODO.md` entry with their measurements.
 - A sort over a derived table's or CTE's column is still never answered by an index, nor a DESC
   over its primary key by a reverse scan: the constraint now crosses the projection (§ Third
-  adjacent finding) but a zero-prefix index match carries no matched ordering parts for the
-  data-access rule to satisfy it with. `TODO.md`, "Ordering through a projection reaches the
+  adjacent finding) but the scan group's leaf match never climbs to the candidate's sort
+  (`correlatedToEquals`), so the data-access rule has no matched ordering parts to satisfy it
+  with. `TODO.md`, "Ordering through a projection reaches the
   child group but not the index", with the measurement and the Java mechanism that closes it.
 - The nightlies that are red for a runner-host reason (the FDB container disappearing about
   thirty minutes into every Docker-backed job, the factory batch SIGKILLed, the coverage job

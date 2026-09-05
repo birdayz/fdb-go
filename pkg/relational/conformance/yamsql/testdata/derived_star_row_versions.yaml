@@ -46,3 +46,17 @@ tests:
     error_code: "0AF00"
   - query: WITH d AS (SELECT * FROM things, things.arr AS x) SELECT d.x FROM d
     error_code: "XX000"
+  # A NEGATIVE pin of a row-versioned shape booked in TODO.md ("Exact
+  # quantifier binding over a CTE or derived body"): a star over a lateral
+  # unnest in a row-versioned table does not plan — the row-version rewrite
+  # carries the outer X beside the element X while the derived unnest scope
+  # shadows it — and its answer over a table without row versions is [7],[8]
+  # (derived_star_visibility.yaml). Its CTE spelling fails as an XX000
+  # planner failure, and a WHERE over the derived star join is refused at
+  # execution with a raw resolution error (`edge lookup D`); neither is a
+  # SQLSTATE this corpus may credit as a correct rejection, so both are
+  # pinned in Go beside the answering ORDER BY
+  # (TestFDB_DerivedStarRowVersionsWhere, TestFDB_DerivedStarRowVersionsUnnestCTE).
+  # When this plans, the pin turns red and is re-pinned to the rows.
+  - query: SELECT d.x FROM (SELECT * FROM things, things.arr AS x) d
+    error_code: "0AF00"

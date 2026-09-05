@@ -88,8 +88,8 @@ func TestPushRequestedOrderingThroughGroupBy_AllKeysMatch(t *testing.T) {
 		t.Fatalf("pushed orderings = %v ok=%v, want one two-part ordering", pushed, ok)
 	}
 	parts := pushed[0].GetParts()
-	assertRequestedOrderingField(t, parts[0].Value, groupingKeys[0])
-	assertRequestedOrderingField(t, parts[1].Value, groupingKeys[1])
+	assertRequestedOrderingField(t, parts[0].Value, atQuantifierCurrent(t, groupBy.GetInner(), groupingKeys[0]))
+	assertRequestedOrderingField(t, parts[1].Value, atQuantifierCurrent(t, groupBy.GetInner(), groupingKeys[1]))
 	if parts[0].SortOrder != properties.RequestedSortOrderAscending ||
 		parts[1].SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("pushed directions = [%v, %v], want [ASC, DESC]",
@@ -115,9 +115,9 @@ func TestPushRequestedOrderingThroughGroupBy_PartialMatchAppendsRemaining(t *tes
 		t.Fatalf("pushed orderings = %v ok=%v, want one three-part ordering", pushed, ok)
 	}
 	parts := pushed[0].GetParts()
-	assertRequestedOrderingField(t, parts[0].Value, groupingKeys[1])
-	assertRequestedOrderingField(t, parts[1].Value, groupingKeys[0])
-	assertRequestedOrderingField(t, parts[2].Value, groupingKeys[2])
+	assertRequestedOrderingField(t, parts[0].Value, atQuantifierCurrent(t, groupBy.GetInner(), groupingKeys[1]))
+	assertRequestedOrderingField(t, parts[1].Value, atQuantifierCurrent(t, groupBy.GetInner(), groupingKeys[0]))
+	assertRequestedOrderingField(t, parts[2].Value, atQuantifierCurrent(t, groupBy.GetInner(), groupingKeys[2]))
 	if parts[0].SortOrder != properties.RequestedSortOrderAscending ||
 		parts[1].SortOrder != properties.RequestedSortOrderAny ||
 		parts[2].SortOrder != properties.RequestedSortOrderAny {
@@ -205,7 +205,7 @@ func TestPushRequestedOrderingThroughGroupBy_CaseInsensitiveMatch(t *testing.T) 
 	if !ok || len(pushed) != 1 || len(pushed[0].GetParts()) != 1 {
 		t.Fatalf("pushed orderings = %v ok=%v, want one case-insensitively matched ordering", pushed, ok)
 	}
-	assertRequestedOrderingField(t, pushed[0].GetParts()[0].Value, groupingKey)
+	assertRequestedOrderingField(t, pushed[0].GetParts()[0].Value, atQuantifierCurrent(t, groupBy.GetInner(), groupingKey))
 }
 
 func TestPushRequestedOrderingThroughGroupBy_EmptyGroupKeysPreserves(t *testing.T) {
@@ -279,8 +279,22 @@ func TestPushRequestedOrderingThroughGroupBy_PushesTheGroupingKeyNotTheRequest(t
 		t.Fatalf("pushed orderings = %v ok=%v, want one part", pushed, ok)
 	}
 	part := pushed[0].GetParts()[0]
-	assertRequestedOrderingField(t, part.Value, groupingKey)
+	assertRequestedOrderingField(t, part.Value, atQuantifierCurrent(t, groupBy.GetInner(), groupingKey))
 	if part.SortOrder != properties.RequestedSortOrderDescending {
 		t.Fatalf("pushed direction = %v, want DESC", part.SortOrder)
 	}
+}
+
+// atQuantifierCurrent restates a value spelled over quantifier q in q's
+// current-row space — the space a constraint on q's Reference is stored in,
+// and the space the group-by rule rebases its synthesized ordering into.
+func atQuantifierCurrent(t *testing.T, q expressions.Quantifier, v values.Value) values.Value {
+	t.Helper()
+	rebased, err := requestedOrderingAtInnerCurrent(properties.NewRequestedOrdering(
+		[]properties.RequestedOrderingPart{{Value: v, SortOrder: properties.RequestedSortOrderAscending}},
+		properties.DistinctnessPreserveDistinctness, false), q)
+	if err != nil {
+		t.Fatalf("rebase into the quantifier's current-row space: %v", err)
+	}
+	return rebased.GetParts()[0].Value
 }

@@ -9114,3 +9114,21 @@ covered by the correctness suite and the golden plan diff, not by this table.
   scan that satisfies a requested ordering) and the reverse direction, and the Go-only
   `OrderedIndexScanRule` retires. Until then a sort over a derived table's or CTE's column is
   never answered by an index, and a DESC over its primary key never by a reverse scan.
+  **That closure was misdiagnosed** (Graefe, r9 delta, measured): the ordering-parts machinery
+  IS ported — `adjustMatchForMatchableSort` and `ValueIndexScanMatchCandidate.ComputeMatchedOrderingParts`
+  emit unbound columns — and the zero-prefix match carries none because the scan group's ONE
+  partial match is the unadjusted leaf (candidateRef = the candidate's scan) and it never climbs to
+  the candidate's `MatchableSortExpression`: `matchWithCandidate` refuses at `correlatedToEquals`
+  (`rule_adjust_match.go`), Go's stand-in for Java's
+  `candidateExpression.getCorrelatedTo().equals(otherRangesOver.getCorrelatedTo())`, which requires
+  ZERO node-local correlations on the candidate expression — and the candidate's own
+  `SelectExpression` reports two: the placeholder's parameter alias (Go's
+  `Placeholder.GetCorrelatedTo` counts it; Java's `PredicateWithValueAndRanges.getCorrelatedTo` is
+  value ∪ ranges only) and its own inner quantifier's alias (Java's `getCorrelatedTo` subtracts
+  the aliases the expression owns). The stand-in's comment defers to the `Quantifier.GetCorrelatedTo`
+  divergence, which `DIVERGENCES.md` marks CLOSED (RFC-189 A4). The closure is Java's set equality
+  in `matchWithCandidate` with those two exclusions; after it the leaf match climbs, the
+  zero-prefix skip's ordering exemption keeps the ordered full scan, and both Go-only ordered-scan
+  rules (`OrderedIndexScanRule`, `OrderedPrimaryScanRule`) retire. The refusal is pinned:
+  `TestAdjustMatches_LeafMatchNeverClimbsPastCorrelatedToEquals` (a value-index candidate, a scan-leaf
+  match, no adjusted twin) — it turns red when the climb works, and is then re-pinned to the climb.

@@ -1,6 +1,8 @@
 package cascades
 
 import (
+	"fmt"
+
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/expressions"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/matching"
 	"fdb.dev/pkg/recordlayer/query/plan/cascades/properties"
@@ -56,36 +58,32 @@ func (r *PushRequestedOrderingThroughProjectionRule) OnMatch(call *Implementatio
 		return
 	}
 
-	// The projection's OWN result value, not a second construction of it.
-	// The crossing itself is requestedOrderingBelow — the translation the
-	// satisfaction walk uses over the PHYSICAL projection — so the constraint
-	// pushed to the child and the request judged against the child's members
-	// are the same value. This rule used to push through the projection's
-	// result value with the INNER quantifier's alias as the upper alias and
-	// without the rebase into the child's current-row space; a constraint
-	// rooted at the projection's current (which is how every constraint
-	// arrives) then failed the push-down's root check and nothing was pushed,
-	// so `ORDER BY u.g` over `(SELECT g FROM t) u` never reached the index on
-	// g and `ORDER BY u.id DESC` never produced a reverse scan.
-	//
-	// This rule used to rebuild the RecordConstructorValue from the projected
-	// values and aliases, with its own naming rule — upper-folded, and
-	// ExplainValue for an unaliased slot. Both halves disagreed with the
-	// projection's actual naming authority (OutputColumnName, which folds
-	// nothing and renders an unaliased slot ordinal-free), so the requested
-	// ordering was translated through a record whose field names did not
-	// match the ones the reference names. It dropped and the ordering was
-	// never pushed. Asking the expression for the row it produces is the
-	// only construction that cannot drift from it.
+	// The crossing is requestedOrderingBelow — the translation the
+	// satisfaction walk uses over the PHYSICAL projection, through the
+	// projection's OWN result value (the only row description that cannot
+	// drift from what it emits) — so the constraint pushed to the child and
+	// the request judged against the child's members are the same value, in
+	// the child's current-row space.
 	var translated []*properties.RequestedOrdering
 	for _, reqOrd := range orderings {
 		// A constraint on this Reference is stated in its current-row space —
-		// every pusher rebases through requestedOrderingAtInnerCurrent before
-		// storing it — so a request rooted anywhere else is not this group's
-		// constraint and fails closed: a same-shaped sibling's output is one
-		// such root, and pushing it would ask the child for a foreign order.
-		if root, ok := requestedOrderingRoot(reqOrd); !ok || root != values.CurrentCorrelation() {
+		// every pusher that reshapes a request rebases it through
+		// requestedOrderingAtInnerCurrent before storing it, and a pass-through
+		// pusher hands on what it received — so a request rooted anywhere else
+		// is a defect of whoever pushed it, and it is LOUD: silently skipping it
+		// would drop the ordering the way an un-rebased sort key once did (see
+		// requestedOrderingAtInnerCurrent), and pushing it would ask the child
+		// for a foreign order — a same-shaped sibling's output is one such root.
+		root, ok := requestedOrderingRoot(reqOrd)
+		if !ok {
+			// No single row to push through — a part with no correlation (a
+			// literal, a parameter) or parts over two roots. Not a pusher's
+			// defect; the request is not expressible below this projection.
 			continue
+		}
+		if root != values.CurrentCorrelation() {
+			call.Fail(fmt.Errorf("requested ordering on a projection is rooted at %v, not at the projection's current row; the pusher did not rebase it", root))
+			return
 		}
 		// A part the result value cannot express drops the whole request:
 		// a partial constraint would ask the child for an order the

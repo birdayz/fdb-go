@@ -3,15 +3,19 @@
 # and on the way UP as a satisfaction check (requestedOrderingBelow). The
 # constraint reaches the child group now — it once failed the push-down's
 # root check at the projection and never left it — but the child cannot yet
-# act on it: a zero-prefix index match carries no matched ordering parts, so
-# the data-access rule cannot see the index's order, and the ordered index
-# scan and the reverse scan are produced only by the rules that match a sort
-# DIRECTLY over a scan. So through a derived table or a CTE the sort stays,
+# act on it: the scan group's one partial match is the unadjusted leaf, and it
+# never climbs to the candidate's sort (matchWithCandidate refuses at
+# correlatedToEquals, Go's stand-in for Java's correlation-set equality), so
+# it carries no matched ordering parts for the data-access rule to satisfy
+# the request with; the ordered index scan and the reverse scan are produced
+# only by the rules that match a sort DIRECTLY over a scan. So through a derived table or a CTE the sort stays,
 # over a forward scan, while the same ORDER BY over the base table takes the
-# index or the reverse scan. The derived cases below are NEGATIVE pins of
-# that remainder (TODO.md, "Ordering through a projection reaches the child
-# group but not the index"); when the index scan appears under the
-# projection, they turn red and are re-pinned to it.
+# index or the reverse scan. The derived cases that pin an InMemorySort over a
+# renamed index column or primary key are NEGATIVE pins of that remainder
+# (TODO.md, "Ordering through a projection reaches the child group but not
+# the index"); when the index scan appears under the projection, they turn
+# red and are re-pinned to it. The computed-slot case and the swapped-name
+# cases pin sorts that must stay for good.
 name: ordering_through_a_projection
 schema_template: |
   CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))
@@ -86,3 +90,30 @@ tests:
       - [101]
       - [201]
       - [301]
+  # Swapped names: the body labels G as ID and ID as G, and g is NOT monotone
+  # in id (200, 100, 300), so a sort on u.id is a sort on G and the rows come
+  # out [100],[200],[300] — in ID order they would be [200],[100],[300]. The
+  # sort must STAY: the merge-base matched the output name ID against the
+  # scan's primary key by spelling, dropped the sort, and answered ID order.
+  # The twin on u.g is a sort on ID, which the scan provides, and is elided.
+  - query: SELECT u.id FROM (SELECT g AS id, id AS g FROM ga) u ORDER BY u.id
+    columns: ["ID"]
+    plan_contains: InMemorySort
+    rows:
+      - [100]
+      - [200]
+      - [300]
+  - query: WITH u AS (SELECT g AS id, id AS g FROM ga) SELECT u.id FROM u ORDER BY u.id
+    columns: ["ID"]
+    plan_contains: InMemorySort
+    rows:
+      - [100]
+      - [200]
+      - [300]
+  - query: SELECT u.g FROM (SELECT g AS id, id AS g FROM ga) u ORDER BY u.g
+    columns: ["G"]
+    plan_not_contains: InMemorySort
+    rows:
+      - [1]
+      - [2]
+      - [3]

@@ -225,6 +225,7 @@ go_test(
     srcs = [
         "absorption_tiebreak_test.go",
         "abstract_data_access_rule_test.go",
+        "adjust_match_leaf_climb_test.go",
         "aggregate_column_identity_test.go",
         "aggregate_group_existence_test.go",
         "aggregate_index_shortcut_gate_test.go",
@@ -1144,6 +1145,7 @@ go_test(
         "alias_map_compose_test.go",
         "union_leg_names_not_refolded_test.go",
         "sort_elision_renamed_slot_test.go",
+        "adjust_match_leaf_climb_test.go",
     ],
     deps = [
         "//gen",

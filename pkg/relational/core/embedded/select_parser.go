@@ -343,20 +343,20 @@ type aggSelectCol struct {
 	// harvested from HAVING/ORDER BY always have aggFunc set).
 	groupCol string // plain group-by column reference
 	// groupColAliased records whether the SELECT item carried an explicit
-	// `AS`. It is read once the item names a grouping key: outName is minted
-	// from the reference's display spelling when there was no alias, so the
-	// two consumers that label the output (aggregateProjectionItem,
-	// aggOutputCols) once inferred "no alias" from outName equalling
-	// groupCol — a string comparison standing in for a fact the parser had in
-	// hand. It is set on every item built from a SELECT-list item, an outExpr
-	// included, because the post-GROUP-BY reclassification turns an expression
-	// item whose text matches a GROUP BY entry (`v / 10 AS bucket` … `GROUP BY
-	// v / 10`) into a grouping key after the fact; a flag set only on the items
-	// born as grouping keys left that one unaliased, and `u.bucket` over the
-	// body was 42703 in both the CTE and the derived-table spelling. The one
-	// item not built from a SELECT-list item — an aggregate harvested from
-	// ORDER BY under an internal `__ob_agg_N__` name — carries no `AS` by
-	// construction and is never reclassified.
+	// `AS`. Its two readers (aggregateProjectionItem, aggOutputCols) consult
+	// it only on an item that names a GROUPING KEY: outName is minted from the
+	// reference's display spelling when there was no alias, and they once
+	// inferred "no alias" from outName equalling groupCol — a string comparison
+	// standing in for a fact the parser had in hand. It is therefore set on
+	// every item that names or can come to name a grouping key: the items born
+	// as grouping keys, and the column-only expression items the post-GROUP-BY
+	// reclassification turns into one when their text matches a GROUP BY entry
+	// (`v / 10 AS bucket` … `GROUP BY v / 10`) — a flag set only on the former
+	// left the latter unaliased, and `u.bucket` over that body was 42703 in
+	// both the CTE and the derived-table spelling. The aggregate-carrying items
+	// (`COUNT(*) AS n`, the expression items promoted beside a harvested
+	// aggregate, the items harvested from HAVING and ORDER BY) never name a
+	// grouping key, and no reader consults the flag on them.
 	groupColAliased bool
 	// groupColBare: the structural bare name of groupCol (parse-tree/derived
 	// at set time) — consumers never dot-split groupCol.
