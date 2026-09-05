@@ -240,11 +240,10 @@ func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 // test cannot tell a preserved pair from one slot read twice.
 //
 // TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped plans this same text
-// and asserts the census that is this file's precondition: the two must stay
-// identical, or these tests silently stop describing one plan.
-// Shared with the census pin in package embedded rather than copied: that
-// census is this read's precondition, so the two must run the SAME text and a
-// comment saying so cannot enforce it.
+// and asserts the census that is this file's precondition. The two must run the
+// SAME text or these tests silently stop describing one plan — so they read one
+// shared constant and the compiler holds them together. This records why the
+// text is shared; it no longer asks anyone to keep two copies in step.
 const duplicateNameJoinQuery = queryfixtures.DuplicateNameJoinQuery
 
 // TestFDB_ADuplicateNameJoinRowLosesItsStructTypeNotItsValues pins what the

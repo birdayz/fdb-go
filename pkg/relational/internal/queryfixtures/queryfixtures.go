@@ -13,12 +13,21 @@ package queryfixtures
 // DuplicateNameJoinQuery is a FULL OUTER JOIN whose ordinal row names `ID`
 // twice, once from each id leg.
 //
-// Such a row's synthesised descriptor cannot validate, so the plan's record
-// constructors are left unstamped and a computed STRUCT read through the plan
-// comes back as a raw map. Two packages pin that: one asserts the descriptor
-// census over the baked plan, the other reads the user-visible value out of a
-// real store. The census is the value read's precondition, which is why the
-// text is shared rather than copied.
+// Such a row's synthesised descriptor cannot validate, and the repository keeps
+// the bad message, so every type asked for AFTER it fails the same way. The
+// scope is therefore walk order, not the whole plan: on this query THREE of the
+// FOUR record constructors end up unstamped, and the fourth — resolved before
+// the bad message was appended — keeps its descriptor. That survivor is not a
+// detail to round off; the census asserts it, and a run where nothing survived
+// would mean something other than this defect. A computed STRUCT read through
+// one of the unstamped constructors comes back as a raw map, while a STORED
+// struct column through the same plan is unaffected, carrying its own stored
+// descriptor rather than a constructor's.
+//
+// Two packages pin that: one asserts the descriptor census over the baked plan,
+// the other reads the user-visible value out of a real store. The census is
+// the value read's precondition, which is why the text is shared rather than
+// copied.
 //
 // The `a.id + 1 = c.id` predicate is load-bearing: it keeps the two `ID` slots
 // holding DIFFERENT values, so a read that took one slot twice would be caught.

@@ -2,6 +2,11 @@ load("@rules_go//go:def.bzl", "go_library")
 
 go_library(
     name = "queryfixtures",
+    # keep: the package exists only so two test files in different packages can
+    # share one SQL text. testonly makes that a BUILD-enforced invariant instead
+    # of a directory name and a doc comment, so a future production target
+    # cannot quietly ship a test fixture into a real binary.
+    testonly = True,
     srcs = ["queryfixtures.go"],
     importpath = "fdb.dev/pkg/relational/internal/queryfixtures",
     visibility = ["//pkg/relational:__subpackages__"],
