@@ -5,6 +5,12 @@ on:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
+  # Dispatched by frl-pin-bump.yml against its bot branch: a pull request
+  # opened with the repository's GITHUB_TOKEN raises no pull_request run (events
+  # from that token never create workflow runs), but a workflow_dispatch from
+  # the same token does. The check runs attach to the branch's head commit, so
+  # the bot PR carries the same named checks a human PR does.
+  workflow_dispatch:
 
 permissions:
   contents: read

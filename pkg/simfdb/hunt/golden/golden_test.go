@@ -249,7 +249,30 @@ func corpus() []Scenario {
 		},
 	}
 
-	return []Scenario{orders, joins, multikey, aggidx, setops, subquery, unionq, unionjoinleg}
+	// cteagg: a non-recursive CTE whose body carries an EXPRESSION aggregate, read as a join leg and
+	// on its own. The CTE column-source builder used to type the aggregate from its argument's
+	// catalog column and publish UNKNOWN for an expression argument, so the join-leg read found no
+	// column order; it now publishes the body's exact row first, as the derived-table path always
+	// did (RFC-242, adjacent finding). Baseline pins plan and rows for both forms.
+	cteagg := Scenario{
+		Name: "cteagg",
+		Seed: 9,
+		Tables: []string{
+			"CREATE TABLE ga (id BIGINT, g BIGINT, v BIGINT, PRIMARY KEY (id))",
+			"CREATE TABLE c (id BIGINT, w BIGINT, PRIMARY KEY (id))",
+		},
+		Data: []string{
+			"INSERT INTO ga VALUES (1, 100, 5), (2, 100, 7), (3, 200, 9)",
+			"INSERT INTO c VALUES (100, 1), (200, 2)",
+		},
+		Queries: []string{
+			"WITH u AS (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w",
+			"SELECT c.w, u.s FROM (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g) u, c WHERE u.g = c.id ORDER BY c.w",
+			"WITH u AS (SELECT g, SUM(v) AS s FROM ga GROUP BY g) SELECT c.w, u.s FROM u, c WHERE u.g = c.id ORDER BY c.w",
+		},
+	}
+
+	return []Scenario{orders, joins, multikey, aggidx, setops, subquery, unionq, unionjoinleg, cteagg}
 }
 
 // TestGolden captures each scenario over SimFDB and diffs it against the committed baseline in

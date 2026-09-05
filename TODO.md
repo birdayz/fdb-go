@@ -9026,5 +9026,14 @@ covered by the correctness suite and the golden plan diff, not by this table.
   What is NOT in this entry: the fuzz nightly, whose two real crashers RFC-242 and the
   `FuzzRebaseValue_NoPanic` fixture fix close, and whose three `context deadline exceeded`
   90-second failures `cmd/fuzzrun` already classifies and retries clean.
-  Needs host access to the runner (memory headroom / what is killing containers) — not
-  fixable from a checkout; the coverage timeout and the bot-PR check gap are workflow edits.
+  **Fixed in the RFC-242 pull request (workflow edits, verified by the next nightly, not
+  locally):** the coverage lane's `timeout-minutes` is raised from 150 to 300 with the
+  measurement written into the comment; `frl-pin-bump.yml` now dispatches `ci.yml`,
+  `hosted-smoke.yml` and `nightly-libfdbc.yml` against its branch after opening or updating the
+  PR (a `workflow_dispatch` from `GITHUB_TOKEN` creates runs where a `pull_request` event from
+  it does not), and `ci.yml` gained the `workflow_dispatch` trigger. If tomorrow's Reconcile
+  still lists `#769` as ABSENT, the dispatched runs were held at `action_required` and a token
+  with a real actor is the remaining fix.
+  **STOP — needs the owner, not a checkout:** the container deaths under Stress / RowDiff /
+  Factory are on the runner host (memory headroom, or what is killing containers thirty
+  minutes into a job); nothing in this repository can observe or change that.

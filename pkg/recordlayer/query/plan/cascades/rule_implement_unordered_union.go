@@ -39,6 +39,13 @@ func (r *ImplementUnorderedUnionRule) OnMatch(call *ImplementationRuleCall) {
 
 	childPartitions := make([][]*PlanPartition, len(quantifiers))
 	for i, q := range quantifiers {
+		// Java's matcher is all(forEachQuantifierOverRef(...)): a union whose
+		// legs are not all for-each quantifiers is not this rule's to implement.
+		// A concatenating union over an existential leg would emit that leg's
+		// rows, which is not what an existential quantifier flows.
+		if q.Kind() != expressions.QuantifierForEach {
+			return
+		}
 		ref := q.GetRangesOver()
 		if ref == nil {
 			return

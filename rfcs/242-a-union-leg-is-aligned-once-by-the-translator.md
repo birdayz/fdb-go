@@ -1,12 +1,16 @@
 # RFC-242 — A union's legs are aligned once, by the translator
 
-**Status:** DRAFT r2. r1: Graefe ACK with one non-blocking condition (assert leg alignment at
-the logical constructor too — folded as § Fix C); Torvalds NAK with five findings, all folded:
-a pin that passed with the defect present now asserts no leg is a `Map` (test plan 2); the
-translator's join-leg gate built on the deleted remap premise is deleted too (§ Fix D); two
-census figures were overstated and are restated with the commands that produce them; the
-stale references are swept (§ Fix E); the scratch probes are gone from the tree. Awaiting r2
-confirmation from both.
+**Status:** r3. r1: Graefe ACK with one non-blocking condition (assert leg alignment at the
+logical constructor too — folded as § Fix C); Torvalds NAK with five findings, all folded: a pin
+that passed with the defect present now asserts no leg is a `Map` (test plan 2); the translator's
+join-leg gate built on the deleted remap premise is deleted too (§ Fix D); two census figures
+were overstated and are restated with the commands that produce them; the stale references are
+swept (§ Fix E); the scratch probes are gone from the tree. r2 (implementation lap, head
+`835d5a462`): Graefe ACK; Torvalds ACK after one residue; @claude review pass with two notes
+(folded: `FlowedTypesEqual` in the shared helper, a `TODO-production.md` reference); codex NAK on
+three points, all folded in r3 — the rule now declines non-for-each legs (§ Fix A), the adjacent
+CTE defect is fixed here (§ Fix F), and the repository-editable nightly causes are fixed with
+the host cause escalated. Awaiting r3 delta confirmation.
 **Area:** Cascades implementation rule `ImplementUnorderedUnionRule` and the union executors
 (query-engine gate: Graefe + Torvalds).
 **Found by:** the engine fuzz nightly, red on `FuzzPlanner_WithBatchA_NoPanic` on 2026-08-30,
@@ -209,7 +213,12 @@ nothing below re-derives names.
 partitions, decline a combination with an empty leg (the Go partition representation can produce
 one, Java's matcher cannot), memoize each leg's plans into a physical quantifier, and yield
 `NewRecordQueryUnorderedUnionPlanFromQuantifiers`. The constructor's exact-type check is the
-asserted bridge; a leg that disagrees fails the call loudly, as today.
+asserted bridge; a leg that disagrees fails the call loudly, as today. The rule also declines a
+union with a leg that is not a for-each quantifier: Java's matcher is
+`all(forEachQuantifierOverRef(…))` (`ImplementUnorderedUnionRule.java:63-64`), and a
+concatenating union over an existential leg would emit that leg's rows. The r2 text listed this
+as unreachable and left as found; codex's review held that "does no more than Java" has to be
+true of the rule itself, not only of what SQL reaches, and the guard is one line.
 
 **B. The union executors stop re-typing rows.** Delete `remapUnionColumnsByPosition`,
 `planColumnNames`, `planColumnNamesWithMD`, `streamingAggOutputNames` (its only caller) and the
@@ -232,8 +241,9 @@ in front of it) entered the memo and died later, from a rule body, as `XX000 unc
 planner failure` — a group with no realizable implementation. It now requires every flowing leg
 to state a row `Equals` to leg 0's. The recursive union had refused disagreeing states through
 its own `FlowedTypesEqual` check — the same contract in a second implementation — and now
-asserts through the same helper (`requireSetOperationResults`), which is literally Java's
-`mergeValues(ImmutableList.of(initial, recursive))`. The physical constructor's check stays as
+asserts through the same helper (`requireSetOperationResults`) over the same leg list as
+Java's `mergeValues(ImmutableList.of(initial, recursive))` — with the equality assertion Go
+keeps and Java's `mergeValues` does not make (Rejected, third bullet). The physical constructor's check stays as
 the re-check at the plan boundary. Also here: the
 result-value comment at `logical_union.go:60` cited `TestSetOperationResultValueStatesChildZerosRow`,
 which does not exist in the tree; the pin is `TestSetOperationsStoreFirstNonExistentialExactQOV`.
@@ -252,6 +262,12 @@ merge-base and after the deletion — every SQL-built branch is a `LogicalProjec
 aggregate arm was reachable only from directly constructed trees, and deleting it changes no
 SQL-visible behaviour. That is the finding: a live gate, eight unit tests, and a paragraph of
 justification, all defending a premise no SQL query could reach.
+
+**F. The CTE aggregate body publishes its exact row.** `buildCTEColumnSource`'s single-table
+aggregate arm calls `buildExactScopeSourceOrBodyError` before `buildDerivedTableSourceFromAgg`,
+the order the derived-table path already had (see the adjacent-finding section for the
+mechanism). The parse-tree derivation stays as the fallback for a body whose exact row
+`semantic.Column` cannot carry, which is the documented reason that derivation exists.
 
 **E. Stale references.** Every comment that described the rename `Map`, the position-remap, the
 buffered fallback or the walkers as live — `default_rules.go`, `streaming_cursors.go` (three
@@ -344,11 +360,18 @@ Every proof is committed; each names the dimension that was unprobed.
    qualified, constant, group-only — as union join legs, plus the bare-column control, and
    assert rows. They pass at the merge-base and after the deletion, which is the measurement
    § Fix D rests on: the gate's aggregate arm was never reached from SQL.
+9. **The rule's matcher.** `TestImplementUnorderedUnionRule_DeclinesANonForEachLeg` fires the
+   rule over a union with an existential leg and asserts it yields no union plan, with the same
+   two references as for-each legs as the control that does implement.
+10. **The CTE aggregate body.** `cte_expression_aggregate_join_leg.yaml` (real FDB) and the
+    golden `cteagg` scenario (SimFDB): the failing shape, the same body as a derived table, the
+    bare-column control, and the aggregate read through the CTE without a join. The first
+    fails at the merge-base with the column-order error and returns the rows after § Fix F.
 
-## Adjacent finding, surfaced by the § Fix D probe — not this RFC's mechanism
+## Adjacent finding, surfaced by the § Fix D probe — fixed here (§ Fix F)
 
-Probing the gate's operand forms turned up a shape that fails identically at the merge-base and
-after this change, with no union in it:
+Probing the gate's operand forms turned up a shape that failed identically at the merge-base,
+with no union in it:
 
 ```sql
 WITH u AS (SELECT g, SUM(v * 2) AS s FROM ga GROUP BY g)
@@ -356,13 +379,22 @@ SELECT c.w, u.s FROM u, c WHERE u.g = c.id
 -- column "S" resolves against source "U", which declares no column order to bind a plan-time ordinal
 ```
 
-The same body as a derived table (`FROM (SELECT g, SUM(v * 2) AS s …) u, c`) returns the correct
-rows, and the same CTE with a bare-column operand (`SUM(v) AS s`) works. So a non-recursive
-CTE whose body carries an **expression** aggregate cannot be a join leg: the CTE-scan arm of
-the leg-column derivation loses the aliased column where the derived-table arm keeps it. It is a
-translator column-derivation defect independent of union alignment, and it is chased next as
-its own change rather than folded into this one, so that this RFC's review covers one
-mechanism.
+The same body as a derived table (`FROM (SELECT g, SUM(v * 2) AS s …) u, c`) returned the
+correct rows, and the same CTE with a bare-column operand (`SUM(v) AS s`) worked. The r2 text
+named this as a separate change; codex's review held it to the DFS rule — a defect surfaced by
+a fix is fixed in the same change — and that is right, so it is § Fix F below.
+
+**Mechanism.** A CTE's scope source is built by `buildCTEColumnSource`
+(`embedded/logical_predicate.go`). For a single-table body with aggregates it went straight to
+the parse-tree derivation `buildDerivedTableSourceFromAgg`, which types each aggregate from its
+argument's *catalog* column; an expression argument has no catalog column, so `S` was published
+as `UNKNOWN`, and the enclosing query's ordinal bind — which refuses a row it cannot type —
+declined the source. The derived-table path (`buildDerivedTableSourceWithCTEs`) had the right
+order all along: build the body and publish its **exact** row first
+(`buildExactScopeSourceOrBodyError`, the same call the join-bodied CTE arm makes), and fall back
+to the parse-tree derivation only when the exact one has nothing to publish. The CTE aggregate
+arm now takes that order. A body that does not build raises its own error, as the join arm's
+does.
 
 ## Rides alongside, not part of this RFC
 
@@ -381,7 +413,8 @@ mechanism depends on them.
 - The two `EqualFold` lookups in `rule_implement_in_union.go:130` and `physical_key_types.go:295`
   are identifier LOOKUPS against physical field names, the class RFC-237 §Scope permits, not
   presentations. Not touched.
-- Java's rule matches `all(forEachQuantifierOverRef(…))` (`ImplementUnorderedUnionRule.java:64-66`);
-  Go's rule takes the union's quantifiers whatever their kind. A logical union with a
-  non-for-each leg is not constructible from SQL, so the residual is unreachable today; it is a
-  matcher-fidelity item, not an alignment one, and is left as found.
+- The nightlies that are red for a runner-host reason (the FDB container disappearing about
+  thirty minutes into every Docker-backed job, the factory batch SIGKILLed) need host access;
+  the two repository-editable causes — the coverage lane's job timeout and the bot pin-bump PR
+  carrying no checks — are fixed in the same pull request as workflow edits, and the host cause
+  is escalated to the owner as a STOP, not filed. The `TODO.md` entry records which is which.

@@ -733,7 +733,7 @@ Tenants remain the declared v1 non-goal (the only acknowledged libfdb_c scope bo
   skips qualified-operand sources.
 - **0-row coercion** (TODO.md ~1040, RFC-083 follow-up) — residual cases rely on the runtime converter.
 - **bare GROUP BY INSERT…SELECT** (TODO.md ~1041, RFC-083 follow-up) — `LogicalAggregate` source guard defers.
-- **divergent-named aggregate union NULL** (TODO.md ~1046) — gated via `aggregateNamesStableForUnion`.
+- **divergent-named aggregate union NULL** (TODO.md ~1046) — the gate (`aggregateNamesStableForUnion`) was deleted by RFC-242 with the executor remap it reasoned about; the translator re-emits every differing branch onto the union's row by ordinal, and the shapes the gate refused are pinned by `union_join_leg_aggregate_forms.yaml`.
 - **`GetIndexTypeName` MIN/MAX_EVER** (TODO.md ~1042) — `values.go:2653-2656` still hardcodes
   `MIN_EVER_LONG`/`MAX_EVER_LONG`; needs a `_TUPLE` arm.
 

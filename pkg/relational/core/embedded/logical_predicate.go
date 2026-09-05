@@ -2182,7 +2182,23 @@ func buildCTEColumnSource(
 		return src, true, nil
 	}
 	if len(innerSQ.aggCols) > 0 || innerSQ.countStar {
-		src, ok := buildDerivedTableSourceFromAgg(cteName, innerSQ, md)
+		// Same order as the derived-table path (buildDerivedTableSourceWithCTEs):
+		// build the body and publish its EXACT row first, and only fall back to
+		// the parse-tree derivation when the exact one has nothing to publish.
+		// The parse-tree derivation types an aggregate from its argument's
+		// CATALOG column, so an expression argument (`SUM(v * 2) AS s`) came out
+		// UNKNOWN, and a reader binding `u.s` by plan-time ordinal then found a
+		// source that could not state its row — a CTE that failed as a join leg
+		// while the identical body worked as a derived table. A body that does
+		// not build raises its own error, exactly as the join-bodied arm above.
+		src, ok, bodyErr := buildExactScopeSourceOrBodyError(md, cteName, innerSQ, priorCTEs, nil)
+		if bodyErr != nil {
+			return semantic.ScopeSource{}, false, bodyErr
+		}
+		if ok && scopeSourceNamesUnique(src) {
+			return src, true, nil
+		}
+		src, ok = buildDerivedTableSourceFromAgg(cteName, innerSQ, md)
 		if !ok {
 			return semantic.ScopeSource{}, false, nil
 		}

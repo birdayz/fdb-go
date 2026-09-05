@@ -245,3 +245,48 @@ func TestCrossProductPartitions_ThreeChildren(t *testing.T) {
 		}
 	}
 }
+
+// TestImplementUnorderedUnionRule_DeclinesANonForEachLeg pins the rule to Java's
+// matcher, all(forEachQuantifierOverRef(...)): a logical union with an
+// existential leg is not this rule's to implement. Without the guard the rule
+// memoized every leg as a physical quantifier and yielded a concatenating
+// union that emitted the existential leg's rows.
+func TestImplementUnorderedUnionRule_DeclinesANonForEachLeg(t *testing.T) {
+	t.Parallel()
+	scanA := unionRulePlanScan("A")
+	scanB := unionRulePlanScan("B")
+	refA := expressions.InitialOf(scanA)
+	pmA := NewPlanPropertiesMap()
+	pmA.Add(scanA)
+	refA.SetPlanProperties(pmA)
+	refB := expressions.InitialOf(scanB)
+	pmB := NewPlanPropertiesMap()
+	pmB.Add(scanB)
+	refB.SetPlanProperties(pmB)
+
+	union := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(refA),
+		expressions.ExistentialQuantifier(refB),
+	}))
+	results := fireUnionImplementationRule(t, NewImplementUnorderedUnionRule(), expressions.InitialOf(union))
+	for _, r := range results {
+		if uup, ok := r.(*plans.RecordQueryUnorderedUnionPlan); ok {
+			t.Fatalf("rule yielded %T over an existential leg; Java's matcher accepts only for-each legs", uup)
+		}
+	}
+
+	// Control: the same two references as for-each legs implement.
+	forEach := mustUnionRuleConstruct(expressions.NewLogicalUnionExpression([]expressions.Quantifier{
+		expressions.ForEachQuantifier(refA),
+		expressions.ForEachQuantifier(refB),
+	}))
+	found := false
+	for _, r := range fireUnionImplementationRule(t, NewImplementUnorderedUnionRule(), expressions.InitialOf(forEach)) {
+		if _, ok := r.(*plans.RecordQueryUnorderedUnionPlan); ok {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("control: a union of two for-each legs must implement")
+	}
+}

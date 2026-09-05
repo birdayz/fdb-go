@@ -49,7 +49,7 @@ func requireSetOperationResults(operator string, quantifiers []Quantifier) ([]va
 			firstFlowing = i
 			continue
 		}
-		if !results[0].Type().Equals(flowed.Type()) {
+		if !values.FlowedTypesEqual(results[0], flowed) {
 			return nil, fmt.Errorf(
 				"%s result: input quantifier %d type %s disagrees with input quantifier %d type %s",
 				operator, firstFlowing, results[0].Type(), i, flowed.Type())
