@@ -229,3 +229,58 @@ func TestFDB_OneDeclaredNameOverTwoShapesIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestFDB_ADuplicateNameJoinRowStillReturnsEveryField pins the NEGATIVE the
+// unstamped-rows booking rests on: a FULL OUTER JOIN over legs that both carry
+// `ID` leaves its plan's computed rows without descriptors (the duplicate name
+// makes the synthesised file unvalidatable, and the repository keeps the bad
+// message so later types fail too), and that costs descriptor IDENTITY only.
+// The emitting paths build dense positional rows and the result set reads them
+// by ORDINAL, so both `ID` values still arrive.
+//
+// Without this, TODO.md's "A join row that names one field twice leaves its
+// plan's rows unstamped" would read as a wrong-answer bug; it is not one. If a
+// row here ever comes back short, the descriptor gap has become data loss and
+// that entry is no longer latent.
+func TestFDB_ADuplicateNameJoinRowStillReturnsEveryField(t *testing.T) {
+	t.Parallel()
+	if clusterFilePath == "" {
+		t.Skip("FDB not available (no Docker)")
+	}
+	ctx := context.Background()
+	setup := openTestDB(t, "/testdb_dupjoin")
+	mwjoMustExec(t, setup, ctx, "CREATE DATABASE /testdb_dupjoin")
+	mwjoMustExec(t, setup, ctx, `CREATE SCHEMA TEMPLATE dupjoin_tpl
+		CREATE TABLE a_md (id BIGINT, s STRING, PRIMARY KEY (id))
+		CREATE TABLE b_md (id BIGINT, v BIGINT, PRIMARY KEY (id))
+		CREATE TABLE c_md (id BIGINT, PRIMARY KEY (id))`)
+	mwjoMustExec(t, setup, ctx, "CREATE SCHEMA /testdb_dupjoin/s1 WITH TEMPLATE dupjoin_tpl")
+	db, err := sql.Open("fdbsql", fmt.Sprintf("fdbsql:///testdb_dupjoin?cluster_file=%s&schema=s1", clusterFilePath))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	mwjoMustExec(t, db, ctx, "INSERT INTO a_md VALUES (1, 'x')")
+	mwjoMustExec(t, db, ctx, "INSERT INTO b_md VALUES (1, 10)")
+	mwjoMustExec(t, db, ctx, "INSERT INTO c_md VALUES (1)")
+
+	const query = "WITH d AS (SELECT id AS bid, EXISTS (SELECT 1 FROM b_md AS x WHERE x.id = b_md.id) AS foo FROM b_md) " +
+		"SELECT a.id, c.id, d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id = c.id"
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		t.Fatalf("no row: %v", rows.Err())
+	}
+	var aID, cID int64
+	var foo bool
+	if err := rows.Scan(&aID, &cID, &foo); err != nil {
+		t.Fatalf("scan: %v — both ID slots must arrive; the row is positional, and a short row "+
+			"would mean the descriptor gap has become data loss", err)
+	}
+	if aID != 1 || cID != 1 || !foo {
+		t.Fatalf("row = (%d, %d, %v), want (1, 1, true): every field of an unstamped row must still arrive", aID, cID, foo)
+	}
+}

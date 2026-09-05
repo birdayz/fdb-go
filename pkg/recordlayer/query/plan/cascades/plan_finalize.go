@@ -65,9 +65,10 @@ import (
 //     the query below THREE of the four constructors end up maps though only
 //     ONE repeats a name, and the fourth keeps the descriptor it was given
 //     before the bad message was appended — so which rows survive is
-//     walk-order dependent. TODO.md's
-//     "A join row that names one field twice is never stamped, and flows as a
-//     map" carries the closure;
+//     walk-order dependent. It costs descriptor IDENTITY rather than data —
+//     the emitting paths build dense positional rows the result set reads by
+//     ordinal, so every field still arrives. TODO.md's "A join row that names
+//     one field twice leaves its plan's rows unstamped" carries the closure;
 //     TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap pins the query and
 //     TestDuplicateFieldNameRowPoisonsTheWholeRepository the mechanism.
 //

@@ -9209,14 +9209,20 @@ covered by the correctness suite and the golden plan diff, not by this table.
   exact derivation beside a nested path (`@claude`'s r14 shape); out of that RFC's scope (the
   union-leg alignment and the CTE/derived row) and booked here with the reproducer.
 
-- [ ] **A join row that names one field twice is never stamped, and flows as a map.**
+- [ ] **A join row that names one field twice leaves its plan's rows unstamped.**
   `NewRawRecordConstructorValue` keeps field names VERBATIM — by design, for ordinal-join seeds,
   where the two legs of `SELECT * FROM a JOIN b` legitimately both carry `ID` and positional
   access makes the duplicate unambiguous. Such a row's synthesised descriptor cannot validate
   (`proto: descriptor "__0type__2.ID" already declared`), `FinalizePlan` swallows that as it
-  swallows every non-clash descriptor failure, and the constructor keeps its name-keyed map — in
-  which the SECOND `ID` overwrites the first, so one leg's value is lost the moment anything
-  reads the row by name. Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM
+  swallows every non-clash descriptor failure, and the constructor is left with no descriptor.
+  What that costs is descriptor IDENTITY, not data: the emitting paths (executeProjection, the
+  flat-map cursor's record-constructor arm, evaluateOrdinalJoinRow) build dense positional rows
+  and the result set reads them by ORDINAL, so `SELECT a.id, c.id, d.foo` over this shape still
+  returns BOTH `ID` values — measured over FDB. The defect is therefore latent: a row that must
+  be handed out with a descriptor (an `api.Struct`) cannot be, and every computed row in the same
+  plan inherits that. Pinned as the negative it now is
+  (`TestFDB_ADuplicateNameJoinRowStillReturnsEveryField`: both `ID` values arrive over FDB; if a
+  row ever comes back short, the descriptor gap has become data loss and this stops being latent). Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM
   b_md) SELECT d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id =
   c.id`, whose row is `RECORD<ID, S, BID, FOO, ID>`. The blast radius is the whole REPOSITORY,
   not that row: compilation is per-repository and the bad message stays in it, so every type

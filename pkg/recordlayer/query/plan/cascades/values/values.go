@@ -5040,14 +5040,20 @@ func (*RecordConstructorValue) Name() string { return "record" }
 // hand-build constructors directly; neither has a repository to bake against,
 // and neither reaches the driver.
 //
-// A constructor IN a plan is usually stamped, but NOT always, and the
-// exceptions do reach the driver, so they are listed rather than characterised
-// (FinalizePlan's doc owns the enumeration): a type with no message form, a
-// record or field name protoname cannot escape, and a row whose descriptor
-// cannot VALIDATE. The last poisons its whole repository — a FULL OUTER JOIN
-// over legs that both carry `ID` leaves every constructor in that plan a map,
-// not just the repeating one (TODO.md, "A join row that names one field twice
-// is never stamped, and flows as a map"). None of the three fails the query.
+// A constructor IN a plan is usually stamped, but NOT always. FinalizePlan's
+// doc owns the enumeration of when it is not: a type with no message form; a
+// record or field name protoname cannot escape; and a row whose descriptor
+// cannot VALIDATE for a reason other than a declared-name clash. None of the
+// three fails the query.
+//
+// An unstamped constructor does not imply this branch runs for it. The plan
+// paths that emit a row — executeProjection, the record-constructor arm of the
+// flat-map cursor, evaluateOrdinalJoinRow — build a dense PositionalRow field
+// by field, and the result set reads those slots by ORDINAL, so an unstamped
+// row still delivers every field. Measured on the FULL OUTER JOIN of TODO.md's
+// "A join row that names one field twice leaves its plan's rows unstamped":
+// three of that plan's four constructors have no descriptor, and
+// `SELECT a.id, c.id, d.foo` still returns both `ID` values.
 func (r *RecordConstructorValue) Evaluate(evalCtx any) (any, error) {
 	if r.desc != nil {
 		return buildRecordMessage(r.desc, r.Fields, evalCtx)

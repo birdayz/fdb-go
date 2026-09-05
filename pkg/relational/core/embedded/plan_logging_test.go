@@ -643,15 +643,22 @@ func TestLegWalk_DuplicateAliasDeclines(t *testing.T) {
 // NewRawRecordConstructorValue, which keeps field names VERBATIM by design —
 // positional access makes the duplicate unambiguous, and the ordinal-identity
 // pins are unconstructible without it. The synthesised descriptor for that row
-// cannot validate (`descriptor "…​.ID" already declared`), so every constructor
-// in the plan stays unstamped and each evaluates to a name-keyed map in which
-// the SECOND `ID` overwrites the first. The query answers today because
-// nothing reads that row by name.
+// cannot validate (`descriptor "…​.ID" already declared`). The damage reaches
+// past that row: the repository keeps the bad message, so every type asked for
+// after it fails the same way, while one resolved BEFORE it keeps its
+// descriptor — on this query three of the four constructors end up with no
+// descriptor and the fourth is stamped.
+//
+// What that costs is descriptor IDENTITY, not data: the plan paths emit dense
+// positional rows and the result set reads them by ordinal, so
+// `SELECT a.id, c.id, d.foo` over this shape still returns both `ID` values
+// (measured). This pin is therefore about the repository, not about a wrong
+// answer — there is no wrong answer here to pin.
 //
 // Turning the failure loud refuses this working query, so it stays swallowed
-// and pinned here; TODO.md's "A join row that names one field twice is never
-// stamped, and flows as a map" carries the closure. When that lands, the row
-// becomes a struct and this test reddens: assert BOTH `ID` values survive then.
+// and pinned here; TODO.md's "A join row that names one field twice leaves its
+// plan's rows unstamped" carries the closure. When that lands, the rows get
+// their descriptors and this test reddens: assert that they are stamped then.
 func TestFinalizePlanLeavesTheDuplicateNameJoinRowAMap(t *testing.T) {
 	t.Parallel()
 	_, md := newLoggingGenerator(t,
