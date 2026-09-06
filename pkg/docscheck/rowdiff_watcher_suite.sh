@@ -128,9 +128,14 @@ SCRIPT=$(mktemp); BIN=$(mktemp -d); WORK=$(mktemp -d); STATE=$(mktemp -d)
 # created. With an isolated TMPDIR that leaked the stub and its log on every run.
 # A trap that is rewritten as the file grows is a trap that forgets whatever was
 # added before the rewrite.
-TMPKEEP=""
-keep() { TMPKEEP="$TMPKEEP $*"; }
-trap 'rm -rf $TMPKEEP' EXIT
+# An ARRAY, expanded QUOTED. A string joined with `$*` and expanded unquoted
+# splits on whitespace and globs: with a $TMPDIR containing a space,
+# `/tmp/a b/tmp.X` reaches `rm -rf` as `/tmp/a` and `b/tmp.X` — deleting
+# something unrelated while leaking the real tree. Measured. `rm -rf` is the one
+# command in this file where a quoting slip is destructive rather than wrong.
+TMPKEEP=()
+keep() { TMPKEEP+=("$@"); }
+trap '[ ${#TMPKEEP[@]} -gt 0 ] && rm -rf -- "${TMPKEEP[@]}"' EXIT
 keep "$SCRIPT" "$BIN" "$WORK" "$STATE"
 
 # Extract the heredoc body the workflow writes as fdb-watch.sh.
@@ -173,9 +178,14 @@ fail=0
 # suite was invoked. Scoped deliberately: a bare listing would also catch another
 # agent working in the same checkout.
 suite_artifacts() {
-  find . -maxdepth 1 \( -name 'fdb-watch.log' -o -name 'fdb-logs-*' \
-    -o -name '.fdb-logs-*' -o -name 'fdb-df-*' -o -name 'fdb-container-*' \
-    -o -name 'fdb-last-inspect-*' -o -name 'fdb-forensics.txt' \) 2>/dev/null | sort
+  # RECURSIVE, and with sizes. A list of top-level NAMES cannot see an APPEND to
+  # a file that already exists, a new file inside an existing generation
+  # directory, or `fdb-watch.pid` — which the watcher writes before it polls, so
+  # a wrong-CWD fragment creating only that left the digest unchanged and this
+  # gate green. `du -ab` walks into directories and reports bytes, so a content
+  # change moves the hash and not just the file list.
+  find . -maxdepth 1 -name 'fdb-*' -o -maxdepth 1 -name '.fdb-*' 2>/dev/null \
+    | sort | xargs -r du -ab 2>/dev/null | sort
 }
 CWD_BEFORE=$(suite_artifacts | md5sum)
 ok() { printf '  ok   %s\n' "$1"; }
@@ -211,6 +221,21 @@ case "$1" in
     # exported by each caller, so a case can blip ONE poller. Without that aim
     # the knob hit whichever polled first — all three callers issue the same
     # command — and an arm could pass having blipped a poller it was not about.
+    # A COUNT, not a deadline, wherever an arm needs the outage OBSERVED. A
+    # nominal two-second window against a cycle of `sleep 1` plus command
+    # overhead can close before any call lands in it, so the sentinel arm went
+    # red for a timing accident rather than a defect — a flake in the gate added
+    # to stop a vacuous pass. A countdown is consumed BY the call, so the
+    # observation holds by construction. The deadline form stays for the backstop
+    # case, which needs elapsed SECONDS rather than a hit.
+    if [ -s "$WATCHTEST_STATE/outage-calls" ] &&
+       { [ ! -f "$WATCHTEST_STATE/outage-poller" ] ||
+         [ "$(cat "$WATCHTEST_STATE/outage-poller")" = "${POLLER:-}" ]; }; then
+      n=$(cat "$WATCHTEST_STATE/outage-calls"); n=$((n - 1))
+      if [ "$n" -le 0 ]; then rm -f "$WATCHTEST_STATE/outage-calls"; else echo "$n" > "$WATCHTEST_STATE/outage-calls"; fi
+      echo "${POLLER:-?}" >> "$WATCHTEST_STATE/outage-hits"
+      exit 1
+    fi
     if [ -f "$WATCHTEST_STATE/outage-until" ] &&
        [ "$(date +%s)" -lt "$(cat "$WATCHTEST_STATE/outage-until")" ] &&
        { [ ! -f "$WATCHTEST_STATE/outage-poller" ] ||
@@ -283,8 +308,15 @@ case "$1" in
     # SKIP signal undrivable — without the skip the body runs, and against a
     # still-working `cp` it succeeds, so nothing distinguishes skipping from
     # not skipping.
-    if [ -f "$WATCHTEST_STATE/outage-until" ] &&
-       [ "$(date +%s)" -lt "$(cat "$WATCHTEST_STATE/outage-until")" ]; then
+    # A daemon outage is GLOBAL: if `docker ps` cannot reach it, neither can
+    # `docker cp`. Honour BOTH knobs and consume NEITHER — the count belongs to
+    # the `ps` arm, which is what the sentinel measures. Modelling the outage in
+    # only one arm made the copier's SKIP signal undrivable again when the knob
+    # moved from a deadline to a count: with `cp` still answering, skipping and
+    # not-skipping are the same observable.
+    if { [ -f "$WATCHTEST_STATE/outage-until" ] &&
+         [ "$(date +%s)" -lt "$(cat "$WATCHTEST_STATE/outage-until")" ]; } ||
+       [ -s "$WATCHTEST_STATE/outage-calls" ]; then
       exit 1
     fi
     # A slow copy, so the stop signal is GUARANTEED to land inside it rather
@@ -557,10 +589,10 @@ if start_watcher 1; then
 else
   bad "the watcher never recorded a pid (cpfail case)"
 fi
-rm -f "$STATE/cpfail" "$STATE/outage-until" "$STATE/outage-poller"
+rm -f "$STATE/cpfail" "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller"
 # Hand the container back GONE. The sections below are written against an
 # absent container, and a case that leaves one running silently retargets them.
-rm -f "$STATE/outage-until" "$STATE/outage-poller"
+rm -f "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller"
 echo gone > "$STATE/phase"
 
 # `mv -T` DRIVEN, not asserted. An earlier version of this file recorded `-T` in
@@ -591,7 +623,7 @@ if start_watcher 3600; then
 else
   bad "the watcher never recorded a pid (occupied-exit case)"
 fi
-rm -f "$STATE/outage-until" "$STATE/outage-poller"
+rm -f "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller"
 echo gone > "$STATE/phase"
 
 # THE RETIRE RENAME, DRIVEN. `rm -rf` is interruptible, so a generation is
@@ -609,7 +641,7 @@ if start_watcher 1; then
   sleep 2
   stop_watcher
   rm -f "$STATE/slowrm"
-  rm -f "$STATE/outage-until" "$STATE/outage-poller"
+  rm -f "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller"
   gens=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | wc -l)
   # `= 1`, not `-le 1`: zero means the copier published NOTHING, which is the
   # empty-set false green this whole file is built around — and it was sitting
@@ -622,7 +654,7 @@ if start_watcher 1; then
 else
   bad "the watcher never recorded a pid (slow-rm case)"
 fi
-rm -f "$STATE/outage-until" "$STATE/outage-poller"
+rm -f "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller"
 echo gone > "$STATE/phase"
 
 # EXHAUSTING THE BACKSTOP IS STILL NOT A REMOVAL. The two ways `still_there`
@@ -643,7 +675,7 @@ if start_watcher 1 2; then
   echo $(( $(date +%s) + 6 )) > "$STATE/outage-until"
   echo $(( $(date +%s) + 6 )) > "$STATE/inspect-outage-until"
   sleep 8
-  rm -f "$STATE/outage-until" "$STATE/outage-poller" "$STATE/inspect-outage-until"
+  rm -f "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller" "$STATE/inspect-outage-until"
   stop_watcher
   nb=$(grep -c 'NOT a removal' "$WORK/fdb-watch.log" 2>/dev/null)
   ng=$(grep -c 'GONE (removed' "$WORK/fdb-watch.log" 2>/dev/null)
@@ -655,7 +687,7 @@ if start_watcher 1 2; then
 else
   bad "the watcher never recorded a pid (backstop case)"
 fi
-rm -f "$STATE/outage-until" "$STATE/outage-poller" "$STATE/inspect-outage-until"
+rm -f "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller" "$STATE/inspect-outage-until"
 echo gone > "$STATE/phase"
 
 # A DAEMON OUTAGE MUST NOT BE LOGGED AS A REMOVAL. The main loop's `GONE` line is
@@ -715,7 +747,7 @@ if start_watcher 1; then
   before=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | sort | tail -1)
   rm -f "$STATE/outage-hits"
   echo copier > "$STATE/outage-poller"
-  echo $(( $(date +%s) + 2 )) > "$STATE/outage-until"
+  echo 2 > "$STATE/outage-calls"
   sleep 5
   after=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | sort | tail -1)
   nfail=$(grep -c 'periodic copy FAILING' "$WORK/fdb-watch.log" 2>/dev/null)
@@ -758,7 +790,7 @@ if start_watcher 1; then
   #
   # Removal is now decided by `docker ps -aq --filter id=` returning EMPTY with
   # rc 0, so it is immediate rather than waiting out a miss budget.
-  rm -f "$STATE/outage-until" "$STATE/outage-poller"
+  rm -f "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller"
   echo gone > "$STATE/phase"
   sleep 4
   nend=$(grep -c 'is gone; ending periodic copy' "$WORK/fdb-watch.log" 2>/dev/null)
@@ -771,7 +803,7 @@ if start_watcher 1; then
 else
   bad "the watcher never recorded a pid (blip case)"
 fi
-rm -f "$STATE/outage-until" "$STATE/outage-poller"
+rm -f "$STATE/outage-until" "$STATE/outage-calls" "$STATE/outage-poller"
 echo gone > "$STATE/phase"
 
 # TWO COPIERS FOR ONE CONTAINER, which is what makes the generation name need a

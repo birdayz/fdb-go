@@ -9652,8 +9652,17 @@ covered by the correctness suite and the golden plan diff, not by this table.
   job`) with the review body beneath. Every status summary read the header and never fetched the
   body, so for the length of the branch that gate was not a gate — it was a log nobody tailed.
 
-  Measured when it finally surfaced: **51 comments, 33 ACKs and 12 NAKs**, every NAK followed by
-  that same gate's ACK on a later head. So the findings were real and the gate was doing its job.
+  Measured when it finally surfaced, and the command is given because the first figure reported
+  here did not reproduce for a reviewer who checked it:
+
+      gh api --paginate 'repos/birdayz/fdb-go/issues/770/comments' \
+        | jq -s '[.[]|.[]] | map(select(.user.login|test("claude")))'
+
+  → **65 claude-authored comments**, carrying **33** occurrences of `**ACK for head` and **12** of
+  `**NAK for head`; the remaining 20 carry no verdict token. The "51" first written here was
+  `grep -c 'Claude finished'` — comments containing one particular header line, a NARROWER set
+  than "comments by that author", reported as though it were the population. Every NAK is followed
+  by that same gate's ACK on a later head. So the findings were real and the gate was doing its job.
   Two of its NAKs were closed only because a different reviewer independently found the same
   defect — convergence, not process.
 
