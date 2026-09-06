@@ -36,6 +36,11 @@
 #     in-container reads are unpinned.
 #   - the watcher's deadline and its process-group teardown, which the workflow
 #     comments describe and which were driven by hand against real processes.
+#   - the container log stream the watcher backgrounds with `docker logs -f`,
+#     which the dump tails and the upload ships. The watcher cases DO create the
+#     file as a side effect, and no case reads it or asserts on it: the stub's
+#     `logs` arm sleeps without emitting a byte, so what it holds here is the
+#     stub's silence rather than anything a container said.
 #   - anything about a REAL fdbserver: every trace here is a fixture, so this
 #     pins the plumbing and not the format it carries.
 #
@@ -79,10 +84,18 @@ case "$1" in
       echo 'exit=1 oom=false running=false err= started=x finished=y'
     fi
     ;;
-  logs) sleep 3600 ;;
+  logs)
+    # `-f` FOLLOWS (the watcher's stream); `--tail` RETURNS (the dump's read).
+    # Sleeping for BOTH wedges the dump's live-container loop the moment a case
+    # leaves a container running, which is how this arm was found to be wrong.
+    case " $* " in *" -f "*) sleep 3600 ;; *) echo "(stub container stdout)" ;; esac
+    ;;
   exec) exit 1 ;;   # df sampling is not what these cases are about
   cp)
     # `docker cp c1:/var/fdb/logs/. dest/`
+    # The container can vanish BETWEEN the loop's inspect and its copy; this
+    # knob is that window, which no phase can express on its own.
+    [ -f "$WATCHTEST_STATE/cpfail" ] && exit 1
     [ "$phase" = gone ] && exit 1
     dest=$3
     mkdir -p "$dest"
@@ -183,6 +196,47 @@ else
   bad "the watcher never recorded a pid (exit-copy case)"
 fi
 
+# A COPY THAT FAILS must publish nothing. `mkdir` before `docker cp`, with the
+# copy's failure swallowed, exposes `fdb-logs-$c` either way — and the dump then
+# reads an empty directory, which it cannot tell from a healthy cluster that
+# wrote no fatal trace. Worse than a missing directory, because the alarm below
+# accepts a last-inspect as evidence and the trace section stays blank while
+# LOOKING like it was read. The container vanishing between the loop's inspect
+# and its copy is that window, and it is what the `cpfail` knob is.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"
+echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
+echo running > "$STATE/phase"; touch "$STATE/cpfail"
+if start_watcher 1; then
+  sleep 4
+  if ls -d "$WORK"/fdb-logs-* >/dev/null 2>&1; then
+    bad "a failed copy publishes no trace directory (found $(ls -d "$WORK"/fdb-logs-* | tr '\n' ' '))"
+  else
+    ok "a failed copy publishes no trace directory"
+  fi
+  # And the staging directory must not be left behind either — a dot-prefixed
+  # leftover is invisible to the dump's glob but still litters the workspace the
+  # upload globs.
+  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
+    bad "a failed copy leaves no staging directory"
+  else
+    ok "a failed copy leaves no staging directory"
+  fi
+  # The same copy SUCCEEDING then publishes, so the case above is about the
+  # failure and not about the watcher never getting that far.
+  rm -f "$STATE/cpfail"
+  sleep 4
+  grep -rq 'Severity="40"' "$WORK"/fdb-logs-*/ 2>/dev/null \
+    && ok "the copy publishes once it succeeds" \
+    || bad "the copy publishes once it succeeds"
+  stop_watcher
+else
+  bad "the watcher never recorded a pid (cpfail case)"
+fi
+rm -f "$STATE/cpfail"
+# Hand the container back GONE. The sections below are written against an
+# absent container, and a case that leaves one running silently retargets them.
+echo gone > "$STATE/phase"
+
 # The DUMP block, which is a different piece of the same instrument and was not
 # covered until it broke. A refactor emptied `[ -d "$d" ]` to `[ -d "" ]` in the
 # loop that reads the watcher's copied trace directories: always false, so the
@@ -231,6 +285,25 @@ else
   bad "the dump reads the per-container last inspect"
 fi
 
+# The NO-DIRECTORY run, which is the other half of the same instrument and was
+# the r58 defect one loop over. `|| echo` hung on the `for` cannot fire when the
+# glob matches nothing: the name stays literal, `[ -d ]` is false, `continue` is
+# the last command and the loop exits 0. So a night where the copier never made
+# a directory printed NEITHER a directory NOR the fallback — the trace section
+# was simply absent, which reads as "nothing fatal" rather than "nothing looked".
+# The sibling `fdb-df-*` loop fired its fallback from the identical shape only
+# because `[ -e ] &&` leaves a non-zero status, so the two shapes had to be
+# driven separately or the working one would vouch for the broken one.
+rm -rf "$DWORK"; mkdir -p "$DWORK"
+( cd "$DWORK" && PATH="$BIN:$PATH" WATCHTEST_STATE="$STATE" bash "$DUMP" >/dev/null 2>&1 )
+for want in "(no fdb-logs-* directories)" "(no fdb-df-*.txt)" "(no fdb-container-*.log)"; do
+  if grep -qF "$want" "$DWORK/fdb-forensics.txt" 2>/dev/null; then
+    ok "an empty capture says \"$want\""
+  else
+    bad "an empty capture says \"$want\""
+  fi
+done
+
 # The empty-capture ALARM, which sits below the dump and decides whether a night
 # that captured nothing is reported as a defect or as a quiet night. It is pinned
 # here because it has already been wrong once in a way nothing noticed: it wrote
@@ -266,6 +339,56 @@ alarm_case "empty capture + both sweeps green stays green" '=== host ===' '' suc
 # Evidence present, from either source, is not an empty capture.
 alarm_case "a live container in the dump is evidence" '=== inspect c1 ===' '' failure success 0
 alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure success 0
+
+# The TAG GUARD, which sits ABOVE the body each of these steps runs and so falls
+# outside every block extracted for them. It exists because the forensics step
+# once hardcoded `:7.3.77` in its container filter — a stale ancestor filter
+# emptying a loop, which is the exact failure that step exists to report on — so
+# a missing pin has to be loud rather than silently matching nothing. That makes
+# it the arm here whose absence would reinstate a SHIPPED bug.
+#
+# There are TWO copies, one per step, and covering one is how a suite reports the
+# guard as covered while the other stays free to be deleted. Measured on this
+# file at 18 arms: deleting the forensics copy reddens exactly one arm, and
+# deleting the WATCHER copy reddened NONE until the cases below were driven over
+# both. So the extraction takes the step.
+GUARD=$(mktemp); GWORK=$(mktemp -d)
+trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK" "$ALARM" "$AWORK" "$GUARD" "$GWORK"' EXIT
+mkdir -p "$GWORK"
+
+# $1 step name, $2 the literal line FOLLOWING the guard in that step. Terminating
+# on a structural line after the guard rather than on the guard's own text is
+# what lets a DELETED guard fail a CASE instead of failing the extraction — the
+# same reason the sanity check below reads the pin and not the guard.
+guard_cases() {
+  awk -v step="      - name: $1" -v term="$2" '
+    $0 == step { armed = 1 }
+    armed && /^          ver="/ { inb = 1 }
+    inb && $0 == term { exit }
+    inb { print substr($0, 11) }
+  ' .github/workflows/nightly-rowdiff.yml > "$GUARD"
+  [ -s "$GUARD" ] || { echo "FATAL: extracted an empty tag guard for '$1'"; exit 1; }
+  grep -q 'FDB_VERSION=' "$GUARD" || { echo "FATAL: tag-guard extraction for '$1' has no pin read"; exit 1; }
+
+  printf 'test --test_env=FDB_VERSION=7.3.77\n' > "$GWORK/.bazelrc"
+  if ( cd "$GWORK" && bash "$GUARD" >/dev/null 2>&1 ); then
+    ok "$1: a pinned .bazelrc passes the tag guard"
+  else
+    bad "$1: a pinned .bazelrc passes the tag guard"
+  fi
+
+  printf 'test --test_output=errors\n' > "$GWORK/.bazelrc"
+  ( cd "$GWORK" && bash "$GUARD" > "$GWORK/out" 2>&1 )
+  rc=$?
+  if [ "$rc" != 0 ] && grep -q 'no FDB_VERSION' "$GWORK/out"; then
+    ok "$1: an unpinned .bazelrc fails the tag guard loudly"
+  else
+    bad "$1: an unpinned .bazelrc fails the tag guard loudly (rc=$rc)"
+  fi
+}
+
+guard_cases "Capture FDB container forensics" "          {"
+guard_cases "Watch the FDB container while it is alive" '          echo "watching image foundationdb/foundationdb:$ver"'
 
 if [ "$fail" -ne 0 ]; then
   echo "FAILURES"

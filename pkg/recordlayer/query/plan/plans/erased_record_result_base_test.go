@@ -147,6 +147,25 @@ func TestResultBaseForAQuantifierOverAnErasedChildKeepsTheFlowedValue(t *testing
 			"supposed to hand back the quantifier's own flowed value untouched, which is what "+
 			"makes it satisfy the invariant trivially", got, got, erased, erased)
 	}
+	// The type check above cannot tell this route from the fallback one function
+	// down: `newPlanExprBaseForType` over the SAME erased type also yields a
+	// carrierless base of that exact type, so every assertion here and the
+	// concrete control stay green if this route is replaced by it. What differs
+	// is WHOSE value comes back — that fallback mints a fresh
+	// `UniqueCorrelationIdentifier`, while this route is defined by handing the
+	// quantifier's own flowed value straight through. So the identity is the
+	// assertion, and the type is only its shape.
+	qov, isQOV := values.AsQuantifiedObjectValue(base.resultValue)
+	if !isQOV {
+		t.Fatalf("the dynamic-carrier route published %T, want a QuantifiedObjectValue: this "+
+			"route returns the quantifier's flowed value, which is one by construction",
+			base.resultValue)
+	}
+	if got, want := qov.Correlation(), q.GetAlias(); got != want {
+		t.Fatalf("the dynamic-carrier route published correlation %v, want the quantifier's own "+
+			"%v: a FRESH correlation here means the newPlanExprBaseForType fallback ran instead, "+
+			"which this test cannot distinguish by type alone", got, want)
+	}
 	if base.ordinalPhysicalProperties != nil {
 		t.Fatal("the dynamic-carrier route published ordinal properties — it is defined by " +
 			"returning before any layout is built")

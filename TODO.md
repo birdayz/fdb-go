@@ -8235,14 +8235,21 @@ work; unrelated to any wire/query change.
   match-by-image-name fix (`6819cfbcb`, 2026-06-01) kept writing the version that
   matched nothing, which is why this only began when a new pool was provisioned.
 
-  FIXED at the source in the same change that records this: the removal arm now
-  skips while a job is in flight (`pgrep -x Runner.Worker`, the apphost this fleet's
-  tarball ships), which is the rule the
-  retired scaler's own sweeper already had and this copy was written without.
-  Orphans are still swept — the timer runs every five minutes and the box is idle
-  between jobs. All three arms driven by hand before shipping: worker present +
-  old container → survives; no worker + old container → removed; same container
-  once the worker exits → removed. `pgrep -x` and not `-f` deliberately: `-f`
+  FIXED at the source in the same change that records this. The first repair was a
+  blanket "skip everything while a job runs", and that traded one leak for another:
+  an orphan left by a previous cancelled job is exempt too, and with a five-minute
+  timer against a four-hour lane the box need never be idle for a tick. What ships
+  compares START TIMES — the removal arm reads the running `Runner.Worker`'s age
+  (`pgrep -x`, then `ps -o etimes=`; the apphost this fleet's tarball ships), and a
+  container that started AFTER the worker is that job's own and survives while an
+  older one is swept even mid-job. An unreadable worker age fails CLOSED and says
+  "sweep disarmed", because a permanently disarmed sweep that says nothing looks
+  exactly like a healthy one.
+
+  The arms are a committed suite, `infra/orphan_fdb_sweep_test.sh`, which extracts
+  the script from `cloud-init.yaml` and runs it against stubbed `docker`/`ps`/`pgrep`
+  — not the three-arm hand test an earlier version of this entry described, which
+  left nothing anyone could re-run. `pgrep -x` and not `-f` deliberately: `-f`
   matches any command line CONTAINING the string, and the first version of the
   test proved the guard "worked" while actually reporting a phantom worker, because
   the test harness's own argv contained the pattern.

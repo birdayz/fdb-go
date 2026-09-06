@@ -160,8 +160,14 @@ jobs:
         # (infra/cloud-init.yaml, enabled on every provisioned box) ran every five
         # minutes and `docker rm -fv`'d any FoundationDB container older than 1800s,
         # on the premise that "no per-test container lives that long". Three nightly
-        # lanes do. That is fixed at the source — the sweep now skips while a job is
-        # in flight — and this watcher is what will show whether the fix took: with
+        # lanes do. That is fixed at the source, and NOT by the blanket "skip while
+        # any job runs" that first repair used — that one exempted an orphan left by
+        # a previous cancelled job for the whole lane, and with a five-minute timer
+        # against a four-hour lane the box need never be idle for a tick. The sweep
+        # compares START TIMES instead: a container younger than the running
+        # `Runner.Worker` is that job's own and survives, an older one is an orphan
+        # and is removed even mid-job. `infra/orphan_fdb_sweep_test.sh` drives the
+        # arms. This watcher is what will show whether the fix took: with
         # the sweeper gone the container should live to the end of the sweep, and if
         # something still kills it, `exit`, `oom` and the container's own stdout say
         # which of the three outcomes it was.
@@ -231,8 +237,23 @@ jobs:
               # the exit-transition copy below cuts it to nothing on every path
               # where the container STOPS rather than being removed outright.
               ( while docker inspect "$c" >/dev/null 2>&1; do
-                  mkdir -p "fdb-logs-$c"
-                  docker cp "$c:/var/fdb/logs/." "fdb-logs-$c/" >/dev/null 2>&1 || true
+                  # Promote only on success — the shape the `df` sampler below
+                  # already uses, for the same reason. `mkdir` before the copy
+                  # PUBLISHES `fdb-logs-$c` whether or not the copy worked, and the
+                  # failure is swallowed, so a container removed between the inspect
+                  # and the cp leaves an EMPTY directory the dump cannot tell from a
+                  # healthy cluster that wrote no fatal trace. Staging also keeps the
+                  # last GOOD snapshot instead of replacing it with a blank one. The
+                  # staging name is dot-prefixed so the dump's `fdb-logs-*` glob
+                  # cannot pick it up mid-copy.
+                  rm -rf ".fdb-logs-$c.new"
+                  if mkdir -p ".fdb-logs-$c.new" &&
+                     docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.new/" >/dev/null 2>&1; then
+                    rm -rf "fdb-logs-$c"
+                    mv -f ".fdb-logs-$c.new" "fdb-logs-$c"
+                  else
+                    rm -rf ".fdb-logs-$c.new"
+                  fi
                   sleep 60
                 done ) &
               # The data filesystem still has to be sampled — there is no stream for a
@@ -276,10 +297,18 @@ jobs:
                       # succeeds on a stopped container, so the periodic loop is
                       # still running and still copying when this fires, and two
                       # `docker cp` calls writing the same paths can interleave.
-                      mkdir -p "fdb-logs-$seen-exit"
-                      docker cp "$seen:/var/fdb/logs/." "fdb-logs-$seen-exit/" >/dev/null 2>&1 \
-                        && echo "$(date -u +%FT%TZ) $seen logs copied complete at exit" >> fdb-watch.log \
-                        || echo "$(date -u +%FT%TZ) $seen logs NOT copied at exit (already removed?); only the periodic copy remains" >> fdb-watch.log
+                      # Promoted on success too, so an EXISTING directory always
+                      # means a copy that worked and an empty one always means a
+                      # cluster that wrote nothing.
+                      rm -rf ".fdb-logs-$seen-exit.new"
+                      if mkdir -p ".fdb-logs-$seen-exit.new" &&
+                         docker cp "$seen:/var/fdb/logs/." ".fdb-logs-$seen-exit.new/" >/dev/null 2>&1 &&
+                         mv -f ".fdb-logs-$seen-exit.new" "fdb-logs-$seen-exit"; then
+                        echo "$(date -u +%FT%TZ) $seen logs copied complete at exit" >> fdb-watch.log
+                      else
+                        rm -rf ".fdb-logs-$seen-exit.new"
+                        echo "$(date -u +%FT%TZ) $seen logs NOT copied at exit (already removed?); only the periodic copy remains" >> fdb-watch.log
+                      fi
                     fi
                     ;;
                 esac
@@ -586,13 +615,27 @@ jobs:
             # outcomes this dump separates — so print the header either way rather
             # than only on a match, and print the file list so an EMPTY directory is
             # distinguishable from a directory of traces with nothing fatal in them.
+            # `|| echo` attached to the `for` does NOT reach a no-match run: the glob
+            # stays literal, `[ -d ]` is false, `continue` is the last command and the
+            # loop exits 0. Measured in a bare directory — the section then prints
+            # NOTHING, neither a directory nor the fallback, which is blank-reads-as-
+            # clean inside the block whose whole job is telling those apart. The
+            # sibling loop below DID fire its fallback, but only because `[ -e ] &&`
+            # leaves a non-zero status: correct by accident of the last command rather
+            # than by design, and one edit away from going quiet the same way. Both
+            # count what they visited.
+            seen_logs=0
             for d in fdb-logs-*; do
               [ -d "$d" ] || continue
+              seen_logs=1
               echo "--- $d (files)"; ls -la "$d" | tail -n +2
               echo "--- $d (Severity=40)"; grep -rho 'Severity="40"[^>]*' "$d" | tail -40
-            done 2>/dev/null || echo "(no fdb-logs-* directories)"
+            done 2>/dev/null
+            [ "$seen_logs" = 1 ] || echo "(no fdb-logs-* directories)"
             echo "=== watcher: /var/fdb/data usage, taken while alive ==="
-            for d in fdb-df-*.txt; do [ -e "$d" ] && { echo "--- $d"; cat "$d"; }; done 2>/dev/null || echo "(no fdb-df-*.txt)"
+            seen_df=0
+            for d in fdb-df-*.txt; do [ -e "$d" ] || continue; seen_df=1; echo "--- $d"; cat "$d"; done 2>/dev/null
+            [ "$seen_df" = 1 ] || echo "(no fdb-df-*.txt)"
             echo "=== watcher: container stdout (tail) ==="
             tail -n 120 fdb-container-*.log 2>/dev/null || echo "(no fdb-container-*.log)"
           } > fdb-forensics.txt 2>&1 || true
