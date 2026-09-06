@@ -183,14 +183,21 @@ func rowScalarToProtoValue(fd protoreflect.FieldDescriptor, v any) (protoreflect
 // actually runs, a computed STRUCT among them, hands back a name-keyed map.
 //
 // Reaching this code only proves the PARENT was stamped — Evaluate calls
-// buildRecordMessage when its own descriptor is non-nil — and the plan walk is
-// pre-order, so a parent is stamped before the subtrees under it are visited. A
-// stamped parent over an unstamped child is therefore a real shape, and it does
-// NOT degrade the way the rest of that booking describes: the map reaches the
-// final arm below and is refused, so the query fails rather than answering in a
-// weaker type. TestAStampedParentWithAnUnstampedChildFailsTheQuery pins that.
-// Whether a SQL query can build the shape is open and booked; the consequence
-// is measured either way.
+// buildRecordMessage when its own descriptor is non-nil — and parent and child
+// stampedness are different facts. The pair where they differ does NOT degrade
+// the way the rest of that booking describes: a stamped parent builds a message,
+// an unstamped child hands it a map, the map reaches the final arm below and is
+// refused, so the query FAILS rather than answering in a weaker type.
+// TestAStampedParentWithAnUnstampedChildFailsTheQuery pins that consequence.
+//
+// The bake cannot produce that pair, and the reason is worth stating because it
+// is the only thing keeping the failure unreachable: WalkValue visits a parent
+// IMMEDIATELY before its children, so nothing touches the repository in between,
+// and the parent's descriptor is synthesised from its own type, which CONTAINS
+// the child's — so a parent that stamped means the child's message was already
+// compiled. Together, parent stamped implies child stamped.
+// TestTheBakeStampsAParentAndItsChildTogetherOrNeither pins both directions. If
+// that goes red the failure above is armed.
 //
 // The stamped case is the property that lets Java's deepCopyIfNeeded
 // reconciliation (RecordConstructorValue.java:165-216) have nothing to

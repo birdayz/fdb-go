@@ -51,7 +51,7 @@ func TestAStampedParentWithAnUnstampedChildFailsTheQuery(t *testing.T) {
 			"mixed shape now answers, so the failure this pins is gone and the homes that say the "+
 			"cost is descriptor identity rather than data are right without qualification", got)
 	}
-	if !strings.Contains(err.Error(), "cannot store") {
+	if !strings.Contains(err.Error(), "in message field") {
 		t.Fatalf("a stamped parent over an unstamped child failed with %v, want the "+
 			"cannot-store-in-message-field refusal: a different error means the mixed shape is "+
 			"refused somewhere else now and this pin no longer describes where", err)

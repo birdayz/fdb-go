@@ -86,8 +86,9 @@ func FinalizePlan(plan plans.RecordQueryPlan) error {
 		return nil
 	}
 	st := &planStamper{repo: values.NewTypeProtoRepository()}
-	seenPlans := map[plans.RecordQueryPlan]struct{}{}
-	stampPlanNode(plan, st, seenPlans)
+	ForEachPlanRecordConstructor(plan, func(rc *values.RecordConstructorValue) {
+		stampRecordConstructor(rc, st)
+	})
 	return st.nameClash
 }
 
@@ -146,26 +147,6 @@ func feedsAWrite(plan plans.RecordQueryPlan) bool {
 // stampPlanNode walks the plan DAG. Plans are DAGs, not trees — a shared
 // sub-plan is reachable by more than one edge — so the seen-set is required for
 // termination, exactly as validatePlanNode needs it.
-func stampPlanNode(plan plans.RecordQueryPlan, st *planStamper, seen map[plans.RecordQueryPlan]struct{}) {
-	if plan == nil {
-		return
-	}
-	if _, ok := seen[plan]; ok {
-		return
-	}
-	seen[plan] = struct{}{}
-
-	if feedsAWrite(plan) {
-		return
-	}
-
-	forEachNodeLocalValue(plan, func(v values.Value) { stampValue(v, st) })
-
-	for _, c := range plan.GetChildren() {
-		stampPlanNode(c, st, seen)
-	}
-}
-
 // forEachNodeLocalValue reaches every value tree hanging off THIS plan node.
 //
 // GetResultValue() alone is not enough. Many plans flow their inner's value
@@ -274,19 +255,29 @@ func forEachNodeLocalValue(plan plans.RecordQueryPlan, emit func(values.Value)) 
 	}
 }
 
-// ForEachPlanRecordConstructor visits every RecordConstructorValue that
-// FinalizePlan would stamp, over the SAME traversal the stamper uses, and in
-// the same order.
+// ForEachPlanRecordConstructor visits every RecordConstructorValue the plan-time
+// bake considers, in the bake's own order. FinalizePlan IS this walk — it calls
+// this function and stamps what it is handed — so the two are not "kept in
+// step", they are the same code, and a census taken here counts exactly the
+// population the bake did.
 //
-// It exists so a census taken over a plan cannot count a different population
-// than the bake did. A census that walks only result values and child edges
-// misses every constructor reached through a projection list, a predicate, a
-// grouping key, a scan comparand, a default value or a structural plan field —
-// and it misses them SILENTLY, reporting a smaller population that still looks
-// like a measurement. Sharing forEachNodeLocalValue rather than re-deriving the
-// shape list keeps the two in step by construction, which is the same reason
-// the aggregate-index and covering-index arms above recurse instead of
-// re-listing their wrapped plan's fields.
+// That identity is the point. A census that walks only result values and child
+// edges misses every constructor reached through a projection list, a predicate,
+// a grouping key, a scan comparand, a default value or a structural plan field,
+// and it misses them SILENTLY — a smaller population that still reads like a
+// measurement. A census that walks MORE than the bake fails the other way, and
+// this function shipped that bug once: it descended into write-fed subtrees the
+// bake prunes, so it reported constructors FinalizePlan never stamps and would
+// have inflated any DML census. Both directions are why the walk is shared
+// rather than described.
+//
+// Write-fed subtrees are excluded, node and descendants, because the bake
+// excludes them: a plan feeding an INSERT, UPDATE, DELETE or temp-table insert
+// has its row shape fixed by the TARGET's declared descriptor, not by the
+// constructor's own inferred type, so stamping there would bake the wrong
+// descriptor. TestFinalizePlanCoversStructuralKey asserts that exclusion is
+// deliberate, and TestTheCensusWalkPrunesWriteFedSubtreesAsTheBakeDoes pins that
+// this walk and the bake agree about it.
 //
 // visit is called once per constructor occurrence, so a value reachable by two
 // routes is visited twice; plan NODES are visited once each.
@@ -301,6 +292,9 @@ func ForEachPlanRecordConstructor(plan plans.RecordQueryPlan, visit func(*values
 			return
 		}
 		seen[p] = struct{}{}
+		if feedsAWrite(p) {
+			return
+		}
 		forEachNodeLocalValue(p, func(v values.Value) {
 			if v == nil {
 				return
@@ -358,7 +352,7 @@ func forEachScanComparisonValue(ranges []*predicates.ComparisonRange, emit func(
 	}
 }
 
-// forEachComparisonRangeValue stamps every comparand of one range. GetComparisons()
+// forEachComparisonRangeValue emits every comparand of one range. GetComparisons()
 // enumerates equality and inequality comparisons uniformly, so a range shape
 // added later cannot slip past a hand-branched IsEquality/IsInequality test.
 func forEachComparisonRangeValue(r *predicates.ComparisonRange, emit func(values.Value)) {
@@ -378,29 +372,21 @@ func forEachComparisonRangeValue(r *predicates.ComparisonRange, emit func(values
 // a constructor's children can hold further constructors (a nested record
 // literal), and those need their own descriptors — which, coming from the same
 // repository, are identical to the ones their parent's descriptor references.
-func stampValue(v values.Value, st *planStamper) {
-	if v == nil {
+// stampRecordConstructor is the whole of the bake, per constructor. Everything
+// else in this file is the traversal that decides WHICH constructors reach it.
+func stampRecordConstructor(rc *values.RecordConstructorValue, st *planStamper) {
+	md, err := st.repo.MessageDescriptorFor(rc.Type())
+	if err != nil {
+		var clash *values.DeclaredNameClashError
+		if errors.As(err, &clash) && st.nameClash == nil {
+			// One declared name over two shapes: a query failure, carried out of
+			// the walk (FinalizePlan).
+			st.nameClash = err
+		}
+		// Otherwise a type with no message form, or a file that does not
+		// validate for another reason (see FinalizePlan's doc). Not a query
+		// failure — the constructor keeps its map representation.
 		return
 	}
-	values.WalkValue(v, func(node values.Value) bool {
-		rc, ok := node.(*values.RecordConstructorValue)
-		if !ok {
-			return true
-		}
-		md, err := st.repo.MessageDescriptorFor(rc.Type())
-		if err != nil {
-			var clash *values.DeclaredNameClashError
-			if errors.As(err, &clash) && st.nameClash == nil {
-				// One declared name over two shapes: a query failure, carried
-				// out of the walk (FinalizePlan).
-				st.nameClash = err
-			}
-			// Otherwise a type with no message form, or a file that does not
-			// validate for another reason (see FinalizePlan's doc). Not a query
-			// failure — the constructor keeps its map representation.
-			return true
-		}
-		rc.SetMessageDescriptor(md)
-		return true
-	})
+	rc.SetMessageDescriptor(md)
 }

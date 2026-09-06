@@ -764,8 +764,9 @@ func TestFinalizePlanLeavesTheDuplicateNameJoinRowUnstamped(t *testing.T) {
 			"this one, queryfixtures.go, plan_finalize.go, values.go (RecordConstructorValue's "+
 			"Evaluate doc), TODO.md's booking and RFC-242. Re-measure and restate it in all six; "+
 			"do not relax this guard, or the number goes on being quoted at a plan nobody has "+
-			"looked at. TWO further files state the walk-order half WITHOUT a number — "+
-			"proto_type_test.go and record_constructor_message.go — so they do not go stale with "+
-			"the count and are deliberately not in the six.", constructors, unstamped)
+			"looked at. The six are the files quoting the NUMBER; others describe the walk-order"+
+			" half without one and cannot go stale with it, so they are deliberately not counted "+
+			"here — a second population tracked in a message about the first is how the last two "+
+			"of these counts went wrong.", constructors, unstamped)
 	}
 }

@@ -9254,18 +9254,18 @@ covered by the correctness suite and the golden plan diff, not by this table.
   reddens on the computed-struct half when this closes.
 
   "Identity, not data" holds for every shape measured so far and is NOT known to hold for one:
-  a STAMPED parent constructor over an UNSTAMPED record-typed child. The two are independent —
-  a parent's descriptor is synthesised from its own inferred type, which already carries the
-  child's shape — and the plan walk is pre-order, so a parent is stamped before the subtrees
-  under it are visited and a poisoning in between leaves exactly that pair. A stamped parent has
-  no map fallback: it builds a message, the child hands it a map, and the map cannot be stored
+  a STAMPED parent constructor over an UNSTAMPED record-typed child. That pair has no map
+  fallback: the parent builds a message, the child hands it a map, and the map cannot be stored
   in a message field, so the query FAILS instead of answering in a weaker type.
   `TestAStampedParentWithAnUnstampedChildFailsTheQuery` pins that consequence over the values
-  API. What is OPEN is whether SQL can build the pair: the shape is constructible directly and
-  no query is known to produce it. Settle that before this item is closed — if it is reachable,
-  the cost is a query failure and the closure below is what fixes it; if it is not, pin the
-  reason, because the pre-order argument says it should be and an unexplained gap there is the
-  same defect waiting on a planner change.
+  API. The bake cannot PRODUCE the pair, and that is now a pinned property rather than an
+  absence of witnesses: `WalkValue` visits a parent immediately before its children, so nothing
+  touches the repository in between, and the parent's descriptor is synthesised from its own
+  type, which contains the child's — so a stamped parent means the child's message was already
+  compiled. `TestTheBakeStampsAParentAndItsChildTogetherOrNeither` drives both directions, over
+  a clean repository and a poisoned one. The search behind "no route" is that argument plus the
+  two pins, not a survey of queries: if either premise stops holding, the failure is armed, and
+  the pin says so in its message rather than leaving a reader to re-derive it.
 
   Reproduced by `WITH d AS (SELECT id AS bid, EXISTS (…) AS foo FROM b_md) SELECT a.id, c.id,
   d.foo FROM a_md AS a JOIN d ON a.id = d.bid FULL OUTER JOIN c_md AS c ON a.id + 1 = c.id` —
