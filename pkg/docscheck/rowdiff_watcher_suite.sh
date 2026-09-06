@@ -1167,7 +1167,7 @@ guard_cases "Watch the FDB container while it is alive" '          echo "watchin
 # a scratch run that would have evaporated with the shell it ran in; they are
 # cases now, which is the only form in which they keep holding.
 #
-# All six share ONE directory and run in ORDER, deliberately: an append has to
+# All NINE share ONE directory and run in ORDER, deliberately: an append has to
 # follow the file it appends to, and an equal-length rewrite has to follow the
 # length it is matching. They are therefore order-dependent, and inserting a case
 # between two of them can change what a later one measures. What the shared
@@ -1235,8 +1235,10 @@ digest_case "a new watcher log registers"             moved 'echo one > fdb-watc
 digest_case "an append to an existing log moves it"   moved 'echo two >> fdb-watch.log'
 # The same-size rewrite. `du -ab` compares apparent SIZE, so `12345` becoming
 # `67890` was invisible to it while the comment above claimed contents. This is
-# the arm that measures the `md5sum` correction, and it is the one that goes red
-# against the `du -ab` form.
+# one of the two arms that measure the `md5sum` correction; the other is the
+# nested equal-length rewrite below, and BOTH go red against the `du -ab` form.
+# It was the only one when it was written, which is why this sentence said "the
+# one" until a nested case was added underneath it.
 digest_case "a pid file registers"                    moved 'echo 12345 > fdb-watch.pid'
 digest_case "a same-size pid rewrite moves it"        moved 'echo 67890 > fdb-watch.pid'
 # An EMPTY generation directory. Hashing files alone renders it identical to a

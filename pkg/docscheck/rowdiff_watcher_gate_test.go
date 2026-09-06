@@ -1,6 +1,7 @@
 package docscheck
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,22 +154,98 @@ func TestRowdiffWatcherBehaviour(t *testing.T) {
 			"reporting is the empty-set green this repository keeps finding")
 	}
 
-	// A FLOOR ON THE ARM COUNT, because "ALL OK" is also what a suite that stopped
-	// early prints nothing of, and what one whose arms silently did not run would
-	// print. That has happened here: an arm asked `git rev-parse --git-dir`, which
-	// a Bazel runfiles tree does not have, so the suite reported 53 arms locally
-	// and 52 under the runner that gates merges, and the missing arm was the one
-	// added to catch a neighbouring silence. Deleting a case is then invisible to
-	// this gate, while three comments in the suite quote arm counts as measurements.
-	//
-	// The alarm is COLLAPSE, not growth: adding arms is the normal direction of
-	// travel and must not fail the build, so this is a floor rather than equality.
-	// If arms are ever deliberately retired, lower the floor in the same commit and
-	// say why — do not delete it, or the silence comes back unwatched.
-	const armFloor = 63
-	arms := strings.Count(string(out), "\n  ok   ")
-	if arms < armFloor {
-		t.Fatalf("rowdiff_watcher_suite.sh reported %d passing arms, want at least %d — "+
-			"arms disappeared rather than failed, which reports as green", arms, armFloor)
+	if err := checkArms(string(out), wantArms); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// THE ARM POPULATION IS PINNED, NOT FLOORED. `ALL OK` is also what a suite whose
+// arms stopped RUNNING prints, and this file already carries that failure: an arm
+// asked `git rev-parse --git-dir`, which a Bazel runfiles tree does not have, so
+// the suite reported 53 arms locally and 52 under the runner that gates merges —
+// and the arm that vanished was the one added to catch a neighbouring silence.
+//
+// A floor (`got >= want`) does not close that. Add an arm and silently skip it
+// and the total is unchanged, which is the 53-vs-52 case exactly; add one while
+// another is deleted and the two cancel. Only equality forces the population to
+// be RESTATED whenever it moves, which is the same discipline this repository
+// applies to every measurement recorded as prose — write the population into the
+// claim, so it cannot go stale without something failing.
+//
+// So both directions are alarms, and they mean different things. FEWER: arms
+// disappeared rather than failed, which reports as green. MORE: arms were added
+// without updating the pin, and three comments in the suite quote arm counts as
+// measurements that are now stale. Neither is a reason to relax this to a floor.
+const wantArms = 63
+
+// armCount counts the arms a run reported. Split out from the process globals so
+// every branch of the decision below can be driven from a unit test rather than
+// only by whatever the corpus happens to produce.
+func armCount(out string) int { return strings.Count(out, "\n  ok   ") }
+
+func checkArms(out string, want int) error {
+	switch got := armCount(out); {
+	case got == 0:
+		return fmt.Errorf("rowdiff_watcher_suite.sh reported NO passing arms (want %d) — "+
+			"the suite did not run, which is not the same as passing", want)
+	case got < want:
+		return fmt.Errorf("rowdiff_watcher_suite.sh reported %d passing arms, want exactly %d — "+
+			"arms disappeared rather than failed, which reports as green", got, want)
+	case got > want:
+		return fmt.Errorf("rowdiff_watcher_suite.sh reported %d passing arms, want exactly %d — "+
+			"arms were added without updating wantArms; bump it and re-check every comment "+
+			"in the suite that quotes an arm count as a measurement", got, want)
+	}
+	return nil
+}
+
+// The census above decides from suite OUTPUT, so a full run exercises only the
+// branch that run happens to take — which is the equal branch on every green
+// day, leaving the two that matter untested until the day they fire. That is the
+// shape this repository has been caught by three times: an arm whose first real
+// firing is read as a finding rather than as an untested branch. Each branch is
+// driven here from explicit state instead.
+func TestRowdiffWatcherArmCensus(t *testing.T) {
+	t.Parallel()
+
+	arm := func(n int) string {
+		var b strings.Builder
+		for i := 0; i < n; i++ {
+			b.WriteString("\n  ok   some arm\n")
+		}
+		return b.String()
+	}
+
+	for _, tc := range []struct {
+		name    string
+		out     string
+		want    int
+		wantErr string
+	}{
+		// The empty-set reading, and the reason this gate exists: a suite that
+		// produced nothing must not be indistinguishable from one that passed.
+		{"no output at all", "", 3, "reported NO passing arms"},
+		{"output but no arms", "\nALL OK\n", 3, "reported NO passing arms"},
+		{"an arm disappeared", arm(2), 3, "arms disappeared rather than failed"},
+		{"an arm was added", arm(4), 3, "without updating wantArms"},
+		{"exactly the pinned population", arm(3), 3, ""},
+		// `ok` in prose is not an arm. The count keys on the suite's own two-space
+		// prefix and three-space gap, so a line merely containing "ok" cannot
+		// inflate the census into passing.
+		{"prose mentioning ok is not an arm", arm(3) + "\nlooks ok to me\n  ok but not an arm\n", 3, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := checkArms(tc.out, tc.want)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("checkArms(%d arms, want %d) = %v, want nil", armCount(tc.out), tc.want, err)
+			case tc.wantErr != "" && err == nil:
+				t.Fatalf("checkArms(%d arms, want %d) = nil, want error containing %q",
+					armCount(tc.out), tc.want, tc.wantErr)
+			case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
+				t.Fatalf("checkArms error = %q, want it to contain %q", err, tc.wantErr)
+			}
+		})
 	}
 }
