@@ -9656,13 +9656,18 @@ covered by the correctness suite and the golden plan diff, not by this table.
   here did not reproduce for a reviewer who checked it:
 
       gh api --paginate 'repos/birdayz/fdb-go/issues/770/comments' \
-        | jq -s '[.[]|.[]] | map(select(.user.login|test("claude")))'
+        | jq -s '[.[]|.[]] | map(select(.user.login|test("claude")) | select(.id <= 5561694850))'
 
-  → **65 claude-authored comments**, carrying **33** occurrences of `**ACK for head` and **12** of
-  `**NAK for head`; the remaining 20 carry no verdict token. The "51" first written here was
-  `grep -c 'Claude finished'` — comments containing one particular header line, a NARROWER set
-  than "comments by that author", reported as though it were the population. Every NAK is followed
-  by that same gate's ACK on a later head. So the findings were real and the gate was doing its job.
+  → **66 claude-authored comments**, carrying **35** occurrences of `**ACK for head` and **13** of
+  `**NAK for head`. Every NAK is followed by that same gate's ACK on a later head.
+
+  The upper BOUND on the comment id is load-bearing and was added third. Without it the query
+  answers about a corpus that grows while the review continues: the unbounded form returned 65 when
+  first written here and 66 an hour later, so the figure was stale before anyone could check it.
+  Two earlier versions of this paragraph were also wrong — "51" was `grep -c 'Claude finished'`,
+  comments containing one header line rather than comments by that author; and a reviewer
+  reproduced the API call and got a different total, which is how the header-string error surfaced.
+  A census of a live thread needs a bound in the same way a ratio needs both SHAs. So the findings were real and the gate was doing its job.
   Two of its NAKs were closed only because a different reviewer independently found the same
   defect — convergence, not process.
 

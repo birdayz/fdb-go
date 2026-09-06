@@ -2137,9 +2137,11 @@ r74 folds codex's four and records a process failure that is worse than any of t
 And the one that is not about this code at all. **A review gate was running into a void for the
 whole branch.** One of the four gates posts its verdict as a comment whose first line is a header
 and whose body is beneath it; every status summary here read the header and never fetched the body.
-For the length of this PR that gate was not a gate — it was a log nobody tailed. It had posted **65 comments** carrying **33** `**ACK for head` and **12** `**NAK for head`
-(`gh api --paginate .../issues/770/comments`, filtered on author — the "51" first written here was
-`grep -c 'Claude finished'`, a narrower set reported as the population, and a reviewer caught it); two of those NAKs were closed only because another reviewer
+For the length of this PR that gate was not a gate — it was a log nobody tailed. It had posted **66 comments** carrying **35** `**ACK for head` and **13** `**NAK for head`, counted
+with an explicit upper bound on the comment id because the thread is still growing —
+`gh api --paginate .../issues/770/comments | jq 'select(.user.login|test("claude")) | select(.id
+<= 5561694850)'`. Two earlier figures here were wrong: "51" counted a header string rather than an
+author, and the unbounded replacement was stale within the hour; two of those NAKs were closed only because another reviewer
 independently found the same defect. The first correction of this was itself unscoped — "two NAKs"
 read off the tail of a list rather than counted — which is an unscoped count reported as evidence,
 inside the correction of a reporting failure. Booked in `TODO.md` with the mechanism, because it is

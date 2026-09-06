@@ -178,23 +178,27 @@ fail=0
 # suite was invoked. Scoped deliberately: a bare listing would also catch another
 # agent working in the same checkout.
 suite_artifacts() {
-  # RECURSIVE, and with sizes. A list of top-level NAMES cannot see an APPEND to
-  # a file that already exists, a new file inside an existing generation
-  # directory, or `fdb-watch.pid` — which the watcher writes before it polls, so
-  # a wrong-CWD fragment creating only that left the digest unchanged and this
-  # gate green. `du -ab` walks into directories and reports bytes, so a content
-  # change moves the hash and not just the file list.
-  # NAMED, not `fdb-*`. Broadening the glob to catch `fdb-watch.pid` also caught
-  # `./fdb-record-layer/` — the gitignored Java reference checkout, 11,443
-  # entries — so `du -ab` walked it and ANY concurrent agent touching that tree
-  # moved the digest. That is the exact failure the `find` form was chosen over
-  # `git status` to avoid, reintroduced by the fix for a different blind spot,
-  # three lines under a comment still claiming the scoping. `fdb-watch.*` covers
-  # both `.log` and `.pid`, which is all the broadening was for.
+  # NAMED, and hashing CONTENTS. Two corrections live here, both measured.
+  #
+  # Named, not `fdb-*`: broadening the glob to catch `fdb-watch.pid` also caught
+  # `./fdb-record-layer/`, the gitignored Java reference checkout — 11,443
+  # entries including its own `.git` and build outputs — so a concurrent Java
+  # build moved the digest and the arm blamed this suite for it. That is the
+  # failure the `find` form was chosen over `git status` to avoid, reintroduced
+  # by the fix for a different blind spot. `fdb-watch.*` covers `.log` and
+  # `.pid`, which is all the broadening was for.
+  #
+  # And CONTENTS, not `du`: `du -ab` reports apparent SIZE and path, so a stale
+  # `fdb-watch.pid` holding `12345` replaced by `67890` is byte-identical in
+  # length and the digest never moves — the comment claimed content while the
+  # command compared size. Files are hashed; directories are listed so an empty
+  # one still registers.
   find . -maxdepth 1 \( -name 'fdb-watch.*' -o -name 'fdb-logs-*' \
     -o -name '.fdb-logs-*' -o -name 'fdb-df-*' -o -name 'fdb-container-*' \
-    -o -name 'fdb-last-inspect-*' -o -name 'fdb-forensics.txt' \) 2>/dev/null \
-    | sort | xargs -r du -ab 2>/dev/null | sort
+    -o -name 'fdb-last-inspect-*' -o -name 'fdb-forensics.txt' \) \
+    -exec find {} \; 2>/dev/null | sort | while IFS= read -r p; do
+      if [ -f "$p" ]; then md5sum "$p" 2>/dev/null; else printf 'dir %s\n' "$p"; fi
+    done
 }
 CWD_BEFORE=$(suite_artifacts | md5sum)
 ok() { printf '  ok   %s\n' "$1"; }
