@@ -53,22 +53,42 @@
 #     staging outlives the copier.
 #   - the TERM arm of the watcher's trap. It makes the exit prompt and explicit,
 #     and it is NOT what makes the EXIT trap reachable: removing it reddens
-#     nothing, and measured directly, a group SIGTERM with an EXIT trap set and
-#     no TERM trap still ran that trap 5 times out of 5 on bash 5.3.15. An
-#     earlier version of this entry justified the arm from documented behaviour
-#     nobody here had run, which is the substitution this file exists to catch.
+#     nothing, and measured on the platform that matters — bash 5.2.21 in
+#     `ubuntu:24.04`, which `infra/main.tf` pins for this fleet — a group SIGTERM
+#     with an EXIT trap set and NO TERM trap still ran that trap 5 times out of 5
+#     (and 5 of 5 on the dev box's 5.3.15). An earlier version of this entry
+#     justified the arm from documented behaviour nobody here had run, which is
+#     the substitution this file exists to catch; the version after that measured
+#     it only on the laptop, which is the same substitution one step smaller.
 #   - the trash DELETION, as distinct from the retire rename. Dropping the rename
 #     is driven — a deletion cut short then leaves a published generation behind,
 #     which the slow-`rm` shim makes deterministic. Dropping the DELETION reddens
 #     nothing, because the trap removes every dot-prefixed leftover on the way
 #     out. It is kept anyway: a trap only runs at exit, and a four-hour lane
 #     should not accumulate a retired generation per cycle until then.
-#   - TWO copiers for one container. `$c` is `docker ps -aq … | head -1`, so with
-#     two containers in a lane the older one can be re-selected after the newer
-#     goes and get a SECOND copier while its first is still looping. Generation
-#     names are scoped by a parent-shell launch counter so the two cannot collide,
-#     but no case here starts a second container at all — the stub serves exactly
-#     one. The scoping is reasoned, not driven.
+#   - the ORPHAN-RETIRE log line. When `mv -T` on a predecessor fails, the old
+#     generation stays published while `prevgen` advances past it, so nothing
+#     points at it again — the line says so instead of leaving it silent.
+#     Mutating it reddens nothing: the fixtures cannot make that rename fail
+#     (the destination is dot-prefixed and unique, and the source is a directory
+#     this loop just created). It is drivable with an `mv` shim that refuses a
+#     `.trash` destination, the same trick as the `rm` shim, and that is the next
+#     arm to write rather than a reason it cannot be written.
+#   - a counter CROSSING between two copiers, and so the NESTING that `mv -T`
+#     refuses on the periodic path. This is now doubly unreachable and the reason
+#     changed: a launch-site guard means a re-selected container gets no second
+#     copier at all, so there is nothing to cross. Before that guard it was still
+#     unreachable, because both copiers sleep the same interval and the second
+#     starts later, so the first leads by a fixed margin forever — crossing needs
+#     asymmetric cycle times, which the stub cannot make without telling the two
+#     apart. What IS driven is the guard: exactly one launch id among a
+#     re-selected container's generations, with a companion arm proving the case
+#     actually re-selected it. Measured, and it is why an obvious-looking arm was
+#     deleted rather than kept: `mv -T` -> `mv` on the periodic publish reddens
+#     NOTHING, so a "no nested directory" assertion there is green with the bug
+#     fully present. On the EXIT path the destination is a fixed name, a
+#     collision IS reachable, and the nesting is driven — that asymmetry is why
+#     one path has the arm and the other has this entry.
 #   - anything about a REAL fdbserver: every trace here is a fixture, so this
 #     pins the plumbing and not the format it carries.
 #
@@ -93,6 +113,13 @@ grep -q 'fdb-watch.pid' "$SCRIPT" || { echo "FATAL: extraction has no pid handsh
 # `rm` shim. Slow ONLY for the names the retire path deletes, so a case can put
 # the stop signal inside a deletion deterministically. Everything else delegates
 # straight through, so the shim cannot perturb the rest of the run.
+#
+# Two limits, both deliberate and both silent if they stop holding: it delegates
+# to `/usr/bin/rm` by absolute path (there is no other `rm` on the image the
+# runner uses), and it matches RELATIVE `fdb-logs-*` arguments only, because the
+# watcher cd-s into the workspace and names them relatively. If the watcher ever
+# passed absolute paths the shim would go inert rather than fail, and the arm it
+# feeds would pass for the wrong reason.
 cat > "$BIN/rm" <<'STUB'
 #!/bin/bash
 if [ -f "$WATCHTEST_STATE/slowrm" ]; then
@@ -115,14 +142,33 @@ bad() { printf '  FAIL %s\n' "$1"; fail=1; }
 # directory `cp` copies out.
 cat > "$BIN/docker" <<'STUB'
 #!/bin/bash
-phase=$(cat "$WATCHTEST_STATE/phase" 2>/dev/null || echo gone)
+# Per-container phase, falling back to the shared one. A second container is what
+# makes TWO copiers for ONE container reachable, and no single global phase can
+# express it: the older container has to stay RUNNING while the newer one is
+# removed.
+cphase() {
+  if [ -n "$1" ] && [ -f "$WATCHTEST_STATE/phase-$1" ]; then
+    cat "$WATCHTEST_STATE/phase-$1"
+  else
+    cat "$WATCHTEST_STATE/phase" 2>/dev/null || echo gone
+  fi
+}
+phase=$(cphase "")
 case "$1" in
   ps)
-    [ "$phase" = gone ] || echo c1
+    # `docker ps -aq` lists NEWEST FIRST, which is what makes `head -1` flip
+    # between containers as they come and go — the whole mechanism under test.
+    if [ -f "$WATCHTEST_STATE/second" ] && [ "$(cphase c2)" != gone ]; then
+      echo c2
+    fi
+    [ "$(cphase c1)" = gone ] || echo c1
     ;;
   inspect)
-    [ "$phase" = gone ] && exit 1
-    if [ "$phase" = running ]; then
+    # `docker inspect -f '<fmt>' <id>` — the id is the LAST argument.
+    id="${@: -1}"
+    p=$(cphase "$id")
+    [ "$p" = gone ] && exit 1
+    if [ "$p" = running ]; then
       echo 'exit=0 oom=false running=true err= started=x finished=y'
     else
       echo 'exit=1 oom=false running=false err= started=x finished=y'
@@ -141,11 +187,12 @@ case "$1" in
     # arms pass because the window is narrow, not because it is closed — which
     # is what a review measured by widening exactly this call.
     [ -f "$WATCHTEST_STATE/slowcp" ] && sleep 3
-    # `docker cp c1:/var/fdb/logs/. dest/`
+    # `docker cp <id>:/var/fdb/logs/. dest/`
     # The container can vanish BETWEEN the loop's inspect and its copy; this
     # knob is that window, which no phase can express on its own.
     [ -f "$WATCHTEST_STATE/cpfail" ] && exit 1
-    [ "$phase" = gone ] && exit 1
+    src=${2%%:*}
+    [ "$(cphase "$src")" = gone ] && exit 1
     dest=$3
     mkdir -p "$dest"
     cp -r "$WATCHTEST_STATE/logs/." "$dest/" 2>/dev/null
@@ -331,6 +378,19 @@ if start_watcher 1; then
   # a flake and not a finding. Stop first, then read.
   sleep 3
 
+  # THE COPY-FAILURE LOG IS A TRANSITION, NOT A LINE. The copier logs once when
+  # it starts failing and once when it recovers; logging every cycle would bury
+  # the line that matters under hundreds, which is the trap the exit-transition
+  # log is written around. So assert the COUNTS: exactly one of each after a
+  # failing stretch that recovered. Dropping the `[ -z "$copyfail" ]` guard gives
+  # five, which is the mutation that a presence check would not have caught.
+  nf=$(grep -c 'periodic copy FAILING' "$WORK/fdb-watch.log" 2>/dev/null || echo 0)
+  nr=$(grep -c 'periodic copy recovered' "$WORK/fdb-watch.log" 2>/dev/null || echo 0)
+  [ "$nf" = 1 ] && ok "a failing copy stretch is logged exactly once" \
+                || bad "a failing copy stretch is logged exactly once (got $nf)"
+  [ "$nr" = 1 ] && ok "the recovery is logged exactly once" \
+                || bad "the recovery is logged exactly once (got $nr)"
+
   # END ON A FAILING CYCLE. Without this the last cycle SUCCEEDS, and a
   # successful publish consumes its staging directory by renaming it — so the
   # periodic failure branch's `rm -rf` could be deleted and the staging arm below
@@ -366,15 +426,6 @@ if start_watcher 1; then
     ok "the surviving generation still holds its traces"
   else
     bad "the surviving generation still holds its traces"
-  fi
-  # The published generation must hold the traces DIRECTLY. A publish that nested
-  # instead of replacing leaves them one level down, where the dump's `grep -r`
-  # still finds them but the file list the dump prints does not — and the
-  # generation count above still reads 1, so nesting is invisible to it.
-  if find "$WORK"/fdb-logs-c1.* -mindepth 1 -type d 2>/dev/null | grep -q .; then
-    bad "the published generation holds no nested directory ($(find "$WORK"/fdb-logs-c1.* -mindepth 1 -type d | tr '\n' ' '))"
-  else
-    ok "the published generation holds no nested directory"
   fi
   # And nothing dot-prefixed is left behind by THIS loop. The glob covers the
   # periodic loop's whole namespace — its staging AND its `.trash`, which is
@@ -441,7 +492,10 @@ if start_watcher 1; then
   stop_watcher
   rm -f "$STATE/slowrm"
   gens=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | wc -l)
-  if [ "$gens" -le 1 ]; then
+  # `= 1`, not `-le 1`: zero means the copier published NOTHING, which is the
+  # empty-set false green this whole file is built around — and it was sitting
+  # inside the arm added to close a real defect.
+  if [ "$gens" = 1 ]; then
     ok "a deletion cut short leaves no published generation behind"
   else
     bad "a deletion cut short leaves no published generation behind (found $gens: $(ls -d "$WORK"/fdb-logs-c1.* | tr '\n' ' '))"
@@ -450,6 +504,59 @@ else
   bad "the watcher never recorded a pid (slow-rm case)"
 fi
 echo gone > "$STATE/phase"
+
+# TWO COPIERS FOR ONE CONTAINER, which is what makes the generation name need a
+# LAUNCH scope and not only a cycle scope.
+#
+# `$c` is `docker ps -aq … | head -1` and a copier is launched whenever `$c`
+# differs from `$seen`, so the sequence below puts two of them on c1:
+#
+#   1. only c1 exists          -> head -1 = c1, copier #1 for c1
+#   2. c2 appears (newer)      -> head -1 = c2, copier for c2; c1's is STILL LOOPING
+#   3. c2 is removed           -> head -1 = c1 again, and c1 != seen (=c2),
+#                                 so a SECOND copier starts for c1
+#
+# With a per-loop counter alone both copiers mint `fdb-logs-c1.1`, `…2`, `…3` and
+# race on the same names: `mv -T` refuses, so copies are dropped rather than
+# silently nested, but the evidence is lost either way. The launch counter lives
+# in the PARENT shell, so the second copier cannot reuse the first's numbers.
+rm -rf "$STATE/logs"; mkdir -p "$STATE/logs"
+echo '<Event Severity="40" Type="SharedTLogFailed"/>' > "$STATE/logs/trace.001.xml"
+rm -f "$STATE/second" "$STATE/phase-c1" "$STATE/phase-c2"
+echo running > "$STATE/phase"
+if start_watcher 1; then
+  sleep 3
+  # c2 appears and takes over `head -1`; c1 stays alive with its copier running.
+  echo running > "$STATE/phase-c2"; touch "$STATE/second"
+  sleep 3
+  # c2 goes; `head -1` reverts to c1, which gets its SECOND copier.
+  echo gone > "$STATE/phase-c2"
+  sleep 4
+  stop_watcher
+  # ONE set of background jobs, not two. The launch-site guard is the fix; the
+  # launch-scoped NAME is defence in depth behind it. So what this asserts is the
+  # guard — exactly one launch id among c1's published generations — and an
+  # earlier version of this arm asserting TWO was asserting the mitigation while
+  # the cause was still there.
+  launchids=$(ls -d "$WORK"/fdb-logs-c1.* 2>/dev/null | sed 's/.*fdb-logs-c1\.\([0-9]*\)-.*/\1/' | sort -u | tr '\n' ' ')
+  nl=$(echo "$launchids" | wc -w)
+  if [ "$nl" = 1 ]; then
+    ok "a re-selected container gets no second copier (launch ids: $launchids)"
+  else
+    bad "a re-selected container gets no second copier (launch ids seen: '$launchids')"
+  fi
+  # And the follower and sampler are launched once too — the other two halves of
+  # the same defect, which a generation-name check cannot see at all.
+  nlog=$(grep -c "watching c1" "$WORK/fdb-watch.log" 2>/dev/null || echo 0)
+  if [ "$nlog" -ge 2 ]; then
+    ok "c1 was re-selected, so the guard was actually exercised ($nlog selections)"
+  else
+    bad "c1 was re-selected, so the guard was actually exercised (only $nlog selections — the case did not reach the path it tests)"
+  fi
+else
+  bad "the watcher never recorded a pid (two-copier case)"
+fi
+rm -f "$STATE/second" "$STATE/phase-c1" "$STATE/phase-c2"; echo gone > "$STATE/phase"
 
 # The DUMP block, which is a different piece of the same instrument and was not
 # covered until it broke. A refactor emptied `[ -d "$d" ]` to `[ -d "" ]` in the
@@ -568,7 +675,7 @@ alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file as committed, at 33 arms: deleting the forensics copy reddens exactly one
+# file as committed, at 36 arms: deleting the forensics copy reddens exactly one
 # arm, and deleting the WATCHER copy reddens exactly one — the other one — where
 # before the extraction named a step and deleting the watcher's reddened NONE.
 # (An earlier version of this sentence said "at 18 arms", which was the count of

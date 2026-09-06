@@ -209,11 +209,12 @@ jobs:
           # The TERM arm makes the exit PROMPT and explicit. It does not make the
           # EXIT trap reachable — an earlier version of this comment said an
           # untrapped SIGTERM kills the shell without running EXIT at all, which is
-          # documented behaviour that was never run here and is false on this
-          # bash: with an EXIT trap set and no TERM trap, a group SIGTERM still
-          # ran it 5 times out of 5. Keep the arm; do not justify it from a manual
-          # page instead of a measurement, which is the substitution this whole
-          # change is a record of.
+          # documented behaviour that was never run here and is false where it
+          # matters: with an EXIT trap set and no TERM trap, a group SIGTERM ran
+          # it 5 times out of 5 on bash 5.2.21 in `ubuntu:24.04` — the image
+          # `infra/main.tf` pins for this fleet — and 5 of 5 on the dev box's
+          # 5.3.15. Keep the arm; do not justify it from a manual page instead of
+          # a measurement, and measure on the PLATFORM, not on the laptop.
           trap 'rm -rf .fdb-logs-*' EXIT
           trap 'exit' TERM INT
           img="foundationdb/foundationdb:$FDB_IMAGE_TAG"
@@ -235,164 +236,189 @@ jobs:
           # Every copier launch gets a number the NEXT launch cannot reuse. See the
           # generation-name comment in the copy loop for why a per-loop counter
           # alone is not enough.
-          launches=0
+          launches=0; launched=""
           while [ "$(date +%s)" -lt "$deadline" ]; do
             c="$(docker ps -aq --filter "ancestor=$img" 2>/dev/null | head -1)"
             if [ -n "$c" ] && [ "$c" != "$seen" ]; then
               seen="$c"; exited=""
               echo "$(date -u +%FT%TZ) watching $c" >> fdb-watch.log
-              docker logs -f "$c" >> "fdb-container-$c.log" 2>&1 &
-              # The fdbserver trace XML says WHICH i/o failure; stdout only says that
-              # there was one. It cannot be read after removal, so take it now and
-              # keep taking it — the last copy before the container goes is the one
-              # that matters.
-              # COPY the trace directory periodically; do not grep it and do not
-              # stream it. Both of those were tried and both were measured to lose
-              # the event this exists for:
+              # LAUNCH THE BACKGROUND JOBS AT MOST ONCE PER CONTAINER.
               #
-              #   - a 30s `docker exec grep` cannot run after the container stops,
-              #     and fdbserver's death IS the container stopping, so the last
-              #     snapshot promoted is the PRE-crash one.
-              #   - `tail -F` on a glob is worse in two further ways that only show
-              #     up when you run it: the glob expands ONCE at exec time, so if no
-              #     `.xml` exists yet the capture is empty PERMANENTLY (the exec
-              #     fires once, under the new-container branch), and a file created
-              #     after the attach — which is what trace ROTATION does — is never
-              #     followed. Measured: 0 bytes for a file created 1s after attach;
-              #     a second file created after attach not followed; and the fatal
-              #     line lost anyway, 8 of 9 captured, because the exec's pipe is
-              #     torn down with the container.
+              # This branch fires whenever `$c` differs from `$seen`, and `$c` is
+              # `docker ps -aq … | head -1`. With two containers in a lane the
+              # older is re-selected once the newer disappears — while still alive,
+              # and while its own jobs are still running — so without this guard it
+              # gets a SECOND set. THREE things double, not one:
               #
-              # Copying the whole directory has none of those: it re-globs every
-              # cycle, so rotation and a late first file are handled by
-              # construction. Its one weakness is staleness — up to one cycle — and
-              # the exit-transition copy below cuts it to nothing on every path
-              # where the container STOPS rather than being removed outright.
-              launches=$((launches + 1))
-              ( launch=$launches; gen=0; prevgen=""; copyfail=""
-                while docker inspect "$c" >/dev/null 2>&1; do
-                  # PUBLISH BY ATOMIC RENAME ONTO A NAME THAT DOES NOT EXIST.
+              #   - two copiers sharing a staging path, each `rm -rf`ing and
+              #     filling it, so one can publish what the other half-wrote;
+              #   - two `docker logs -f` followers appending one stream to one file
+              #     with no `--since`, replaying the log on top of itself;
+              #   - two `df` samplers doing `> "fdb-df-$c.txt.new"` on one path —
+              #     two O_TRUNC writers, and each failure branch `rm -f`s the
+              #     other's file between its write and its rename.
+              #
+              # Scoping the generation NAME by launch addresses only the first, and
+              # only its naming half. An id list at the launch site closes all three
+              # at the cause and leaves `$launch` as defence in depth.
+              case " $launched " in
+                *" $c "*) : ;;
+                *)
+                  launched="$launched $c"
+                  docker logs -f "$c" >> "fdb-container-$c.log" 2>&1 &
+                  # The fdbserver trace XML says WHICH i/o failure; stdout only says that
+                  # there was one. It cannot be read after removal, so take it now and
+                  # keep taking it — the last copy before the container goes is the one
+                  # that matters.
+                  # COPY the trace directory periodically; do not grep it and do not
+                  # stream it. Both of those were tried and both were measured to lose
+                  # the event this exists for:
                   #
-                  # Three shapes were tried here and the first two each traded the
-                  # defect for the same defect one step over, which is why this one
-                  # is written out at length.
+                  #   - a 30s `docker exec grep` cannot run after the container stops,
+                  #     and fdbserver's death IS the container stopping, so the last
+                  #     snapshot promoted is the PRE-crash one.
+                  #   - `tail -F` on a glob is worse in two further ways that only show
+                  #     up when you run it: the glob expands ONCE at exec time, so if no
+                  #     `.xml` exists yet the capture is empty PERMANENTLY (the exec
+                  #     fires once, under the new-container branch), and a file created
+                  #     after the attach — which is what trace ROTATION does — is never
+                  #     followed. Measured: 0 bytes for a file created 1s after attach;
+                  #     a second file created after attach not followed; and the fatal
+                  #     line lost anyway, 8 of 9 captured, because the exec's pipe is
+                  #     torn down with the container.
                   #
-                  # `mkdir -p "fdb-logs-$c"` then `docker cp … || true` publishes the
-                  # directory whether or not the copy worked, so a container removed
-                  # between the loop's inspect and its cp leaves an EMPTY directory
-                  # the dump cannot tell from a healthy cluster that wrote no fatal
-                  # trace.
-                  #
-                  # Staging plus `rm -rf` + `mv` fixes that and opens an instant in
-                  # which NEITHER directory exists; the stop step signals this loop's
-                  # process group at an arbitrary point, so landing there destroys the
-                  # last good snapshot.
-                  #
-                  # Staging plus `cp -a` into the published directory closes that and
-                  # opens a third: a host copy interrupted mid-file — SIGTERM, or the
-                  # runner's disk filling — leaves a TRUNCATED file published, and the
-                  # complete staging copy is then removed. Every published byte would
-                  # be a byte no reader can trust.
-                  #
-                  # A rename onto a fresh name has none of them. `rename(2)` on one
-                  # THE GENERATION NAME IS `$launch-$gen`, AND BOTH HALVES ARE
-                  # LOAD-BEARING. This is the fourth naming scheme here; the first
-                  # three each fixed the previous one's collision and introduced
-                  # their own, so the reasoning is written out.
-                  #
-                  # `$(date +%s)` alone is not unique. Two cycles inside one second
-                  # hand `mv` a target that already EXISTS, and `mv` of a directory
-                  # onto an existing directory does not fail — it moves the source
-                  # INSIDE it and returns 0. The copy then sits one level below
-                  # where the dump reads while the exit status says success and a
-                  # "how many generations" check still sees exactly one. Silent,
-                  # and green.
-                  #
-                  # A per-loop COUNTER alone is not unique either, and that is
-                  # subtler: it is unique within one copier and this script can run
-                  # TWO for the same container. `$c` is `docker ps -aq … | head -1`,
-                  # and a copier is launched whenever `$c` differs from `$seen`. With
-                  # two containers in a lane, `head -1` names the newer; when that
-                  # one goes, `head -1` reverts to the older, which is still alive
-                  # and still has its first copier looping — and a second one starts
-                  # with `gen=0`. Both then mint the same names. `$launch` is a
-                  # counter in the PARENT shell, so a relaunch cannot reuse it, and
-                  # `$gen` is per loop, so a cycle cannot. Composed, not traded.
-                  #
-                  # `mv -T` is the third guard and the only structural one: whatever
-                  # a naming bug does, `-T` refuses to nest rather than returning 0.
-                  #
-                  # The predecessor is REMEMBERED, not re-derived by listing:
-                  # `ls | sort | head -n -1` orders lexicographically, so it is
-                  # correct only while every name has the same width — `.9` sorts
-                  # after `.10`. Remembering removes the ordering question instead of
-                  # answering it, and removes parsing `ls` with it.
-                  gen=$((gen + 1))
-                  rm -rf ".fdb-logs-$c.new"
-                  if mkdir -p ".fdb-logs-$c.new" &&
-                     docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.new/" >/dev/null 2>&1 &&
-                     mv -T ".fdb-logs-$c.new" "fdb-logs-$c.$launch-$gen"; then
-                    # RETIRE BY RENAME, THEN DELETE. `rm -rf` is interruptible,
-                    # and the stop signal reaches this group at an arbitrary
-                    # point: a deletion cut in half leaves a partially dismantled
-                    # `fdb-logs-*` directory, which the dump lists and the upload
-                    # ships as though it were a published snapshot. Measured on a
-                    # deep tree — an interrupted `rm -rf` left 6170 of 8000 files
-                    # and the directory still matching the glob. The rename is
-                    # atomic, so the moment it returns the old generation is
-                    # invisible to that glob no matter when the signal lands, and
-                    # what an interrupted delete leaves behind is dot-prefixed
-                    # litter the trap at the top of this script removes.
-                    #
-                    # Order matters: this runs only AFTER the new generation is in
-                    # place, so the glob never sees zero.
-                    if [ -n "$prevgen" ]; then
-                      # A FAILED retire must be loud. `&&` correctly skips the
-                      # delete, and the old generation then stays published while
-                      # `prevgen` is reassigned below — so nothing ever points at it
-                      # again and it is orphaned PERMANENTLY, silently, with the
-                      # error swallowed by `2>/dev/null`. Once is harmless; a
-                      # persistent failure leaks one generation per cycle, about 290
-                      # over a lane, on the box whose disk pressure is what this
-                      # whole watcher exists to explain.
-                      if mv -T "$prevgen" ".$prevgen.trash" 2>/dev/null; then
-                        rm -rf ".$prevgen.trash"
+                  # Copying the whole directory has none of those: it re-globs every
+                  # cycle, so rotation and a late first file are handled by
+                  # construction. Its one weakness is staleness — up to one cycle — and
+                  # the exit-transition copy below cuts it to nothing on every path
+                  # where the container STOPS rather than being removed outright.
+                  launches=$((launches + 1))
+                  ( launch=$launches; gen=0; prevgen=""; copyfail=""
+                    while docker inspect "$c" >/dev/null 2>&1; do
+                      # PUBLISH BY ATOMIC RENAME ONTO A NAME THAT DOES NOT EXIST.
+                      #
+                      # Three shapes were tried here and the first two each traded the
+                      # defect for the same defect one step over, which is why this one
+                      # is written out at length.
+                      #
+                      # `mkdir -p "fdb-logs-$c"` then `docker cp … || true` publishes the
+                      # directory whether or not the copy worked, so a container removed
+                      # between the loop's inspect and its cp leaves an EMPTY directory
+                      # the dump cannot tell from a healthy cluster that wrote no fatal
+                      # trace.
+                      #
+                      # Staging plus `rm -rf` + `mv` fixes that and opens an instant in
+                      # which NEITHER directory exists; the stop step signals this loop's
+                      # process group at an arbitrary point, so landing there destroys the
+                      # last good snapshot.
+                      #
+                      # Staging plus `cp -a` into the published directory closes that and
+                      # opens a third: a host copy interrupted mid-file — SIGTERM, or the
+                      # runner's disk filling — leaves a TRUNCATED file published, and the
+                      # complete staging copy is then removed. Every published byte would
+                      # be a byte no reader can trust.
+                      #
+                      # A rename onto a fresh name has none of them. `rename(2)` on one
+                      # THE GENERATION NAME IS `$launch-$gen`, AND BOTH HALVES ARE
+                      # LOAD-BEARING. This is the fourth naming scheme here; the first
+                      # three each fixed the previous one's collision and introduced
+                      # their own, so the reasoning is written out.
+                      #
+                      # `$(date +%s)` alone is not unique. Two cycles inside one second
+                      # hand `mv` a target that already EXISTS, and `mv` of a directory
+                      # onto an existing directory does not fail — it moves the source
+                      # INSIDE it and returns 0. The copy then sits one level below
+                      # where the dump reads while the exit status says success and a
+                      # "how many generations" check still sees exactly one. Silent,
+                      # and green.
+                      #
+                      # A per-loop COUNTER alone is not unique either, and that is
+                      # subtler: it is unique within one copier and this script can run
+                      # TWO for the same container. `$c` is `docker ps -aq … | head -1`,
+                      # and a copier is launched whenever `$c` differs from `$seen`. With
+                      # two containers in a lane, `head -1` names the newer; when that
+                      # one goes, `head -1` reverts to the older, which is still alive
+                      # and still has its first copier looping — and a second one starts
+                      # with `gen=0`. Both then mint the same names. `$launch` is a
+                      # counter in the PARENT shell, so a relaunch cannot reuse it, and
+                      # `$gen` is per loop, so a cycle cannot. Composed, not traded.
+                      #
+                      # `mv -T` is the third guard and the only structural one: whatever
+                      # a naming bug does, `-T` refuses to nest rather than returning 0.
+                      #
+                      # The predecessor is REMEMBERED, not re-derived by listing:
+                      # `ls | sort | head -n -1` orders lexicographically, so it is
+                      # correct only while every name has the same width — `.9` sorts
+                      # after `.10`. Remembering removes the ordering question instead of
+                      # answering it, and removes parsing `ls` with it.
+                      gen=$((gen + 1))
+                      rm -rf ".fdb-logs-$c.$launch.new"
+                      if mkdir -p ".fdb-logs-$c.$launch.new" &&
+                         docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.$launch.new/" >/dev/null 2>&1 &&
+                         mv -T ".fdb-logs-$c.$launch.new" "fdb-logs-$c.$launch-$gen"; then
+                        # RETIRE BY RENAME, THEN DELETE. `rm -rf` is interruptible,
+                        # and the stop signal reaches this group at an arbitrary
+                        # point: a deletion cut in half leaves a partially dismantled
+                        # `fdb-logs-*` directory, which the dump lists and the upload
+                        # ships as though it were a published snapshot. Measured on a
+                        # deep tree — an interrupted `rm -rf` left 6170 of 8000 files
+                        # and the directory still matching the glob. The rename is
+                        # atomic, so the moment it returns the old generation is
+                        # invisible to that glob no matter when the signal lands, and
+                        # what an interrupted delete leaves behind is dot-prefixed
+                        # litter the trap at the top of this script removes.
+                        #
+                        # Order matters: this runs only AFTER the new generation is in
+                        # place, so the glob never sees zero.
+                        if [ -n "$prevgen" ]; then
+                          # A FAILED retire must be loud. `&&` correctly skips the
+                          # delete, and the old generation then stays published while
+                          # `prevgen` is reassigned below — so nothing ever points at it
+                          # again and it is orphaned PERMANENTLY, silently, with the
+                          # error swallowed by `2>/dev/null`. Once is harmless; a
+                          # persistent failure leaks one generation per cycle, about 290
+                          # over a lane, on the box whose disk pressure is what this
+                          # whole watcher exists to explain.
+                          if mv -T "$prevgen" ".$prevgen.trash" 2>/dev/null; then
+                            rm -rf ".$prevgen.trash"
+                          else
+                            echo "$(date -u +%FT%TZ) could not retire $prevgen; it is orphaned and will not be swept" >> fdb-watch.log
+                          fi
+                        fi
+                        prevgen="fdb-logs-$c.$launch-$gen"
+                        [ -n "$copyfail" ] &&
+                          echo "$(date -u +%FT%TZ) $c periodic copy recovered" >> fdb-watch.log
+                        copyfail=""
                       else
-                        echo "$(date -u +%FT%TZ) could not retire $prevgen; it is orphaned and will not be swept" >> fdb-watch.log
+                        # SAY SO, once per run of failures. The exit branch logs its
+                        # failure and this one did not, so a copier that could inspect
+                        # but never copy produced a lane with no traces and nothing
+                        # saying why. Logging every cycle would bury the line that
+                        # matters under hundreds, which is the trap the exit-transition
+                        # log one section down is written around, so this logs the
+                        # TRANSITION into failing and the transition back out.
+                        [ -z "$copyfail" ] &&
+                          echo "$(date -u +%FT%TZ) $c periodic copy FAILING (inspect still succeeds)" >> fdb-watch.log
+                        copyfail=1
+                        rm -rf ".fdb-logs-$c.$launch.new"
                       fi
-                    fi
-                    prevgen="fdb-logs-$c.$launch-$gen"
-                    [ -n "$copyfail" ] &&
-                      echo "$(date -u +%FT%TZ) $c periodic copy recovered" >> fdb-watch.log
-                    copyfail=""
-                  else
-                    # SAY SO, once per run of failures. The exit branch logs its
-                    # failure and this one did not, so a copier that could inspect
-                    # but never copy produced a lane with no traces and nothing
-                    # saying why. Logging every cycle would bury the line that
-                    # matters under hundreds, which is the trap the exit-transition
-                    # log one section down is written around, so this logs the
-                    # TRANSITION into failing and the transition back out.
-                    [ -z "$copyfail" ] &&
-                      echo "$(date -u +%FT%TZ) $c periodic copy FAILING (inspect still succeeds)" >> fdb-watch.log
-                    copyfail=1
-                    rm -rf ".fdb-logs-$c.new"
-                  fi
-                  sleep 60
-                done ) &
-              # The data filesystem still has to be sampled — there is no stream for a
-              # `df` — so it keeps the promote-only-on-success shape. A plain `>`
-              # creates the file even when the exec fails, so the failure branch has to
-              # remove it or every poll leaves litter (measured: `.new` files left
-              # behind when the exec could not run).
-              ( while docker inspect "$c" >/dev/null 2>&1; do
-                  if docker exec "$c" df -h /var/fdb/data > "fdb-df-$c.txt.new" 2>/dev/null; then
-                    mv -f "fdb-df-$c.txt.new" "fdb-df-$c.txt"
-                  else
-                    rm -f "fdb-df-$c.txt.new"
-                  fi
-                  sleep 30
-                done ) &
+                      sleep 60
+                    done ) &
+                  # The data filesystem still has to be sampled — there is no stream for a
+                  # `df` — so it keeps the promote-only-on-success shape. A plain `>`
+                  # creates the file even when the exec fails, so the failure branch has to
+                  # remove it or every poll leaves litter (measured: `.new` files left
+                  # behind when the exec could not run).
+                  ( while docker inspect "$c" >/dev/null 2>&1; do
+                      if docker exec "$c" df -h /var/fdb/data > "fdb-df-$c.txt.new" 2>/dev/null; then
+                        mv -f "fdb-df-$c.txt.new" "fdb-df-$c.txt"
+                      else
+                        rm -f "fdb-df-$c.txt.new"
+                      fi
+                      sleep 30
+                    done ) &
+                  ;;
+              esac
             fi
             if [ -n "$seen" ]; then
               if inspect="$(docker inspect "$seen" --format 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} running={{.State.Running}} err={{.State.Error}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' 2>/dev/null)"; then
