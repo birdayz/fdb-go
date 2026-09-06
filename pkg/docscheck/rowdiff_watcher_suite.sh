@@ -41,6 +41,14 @@
 #     file as a side effect, and no case reads it or asserts on it: the stub's
 #     `logs` arm sleeps without emitting a byte, so what it holds here is the
 #     stub's silence rather than anything a container said.
+#   - the PROMOTE WINDOW itself. The publish merges rather than doing `rm -rf`
+#     then `mv` because that pair leaves an instant with neither directory
+#     present, and the stop step signals the copy loop's process group at an
+#     arbitrary point. That instant is a timing race and no arm here observes
+#     it; what is driven is the behaviour that distinguishes the two shapes, a
+#     rotated-away file surviving the next publish. Restoring `rm -rf` + `mv`
+#     reddens that arm, so the shapes are told apart — but the race is closed by
+#     construction, not by a test that has seen it happen.
 #   - anything about a REAL fdbserver: every trace here is a fixture, so this
 #     pins the plumbing and not the format it carries.
 #
@@ -228,6 +236,34 @@ if start_watcher 1; then
   grep -rq 'Severity="40"' "$WORK"/fdb-logs-*/ 2>/dev/null \
     && ok "the copy publishes once it succeeds" \
     || bad "the copy publishes once it succeeds"
+  # And the SUCCESS path cleans its staging too. The publish merges into the
+  # published directory rather than replacing it — `rm -rf` then `mv` leaves a
+  # window with neither, and the stop step signals this loop's process group at
+  # an arbitrary point — so the staging removal is a separate statement that a
+  # later edit could drop while everything above stayed green.
+  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
+    bad "a successful copy leaves no staging directory"
+  else
+    ok "a successful copy leaves no staging directory"
+  fi
+  # MERGE, not replace. The publish is `mkdir -p` + `cp -a` into the existing
+  # directory rather than `rm -rf` + `mv`, because that pair leaves a window in
+  # which NEITHER exists and the stop step signals this loop's process group at
+  # an arbitrary point. The window itself is not observable from here — it is a
+  # timing race — so what is driven is the behaviour that distinguishes the two
+  # shapes: a file the cluster has since ROTATED AWAY stays in the published
+  # snapshot under a merge and vanishes under a replace. That is also the
+  # behaviour wanted on its own terms, since the dump lists the directory and a
+  # stale name is visible rather than silent.
+  rm -f "$STATE/logs/trace.001.xml"
+  echo '<Event Severity="10" file="second"/>' > "$STATE/logs/trace.002.xml"
+  sleep 4
+  if grep -rq 'SharedTLogFailed' "$WORK"/fdb-logs-*/ 2>/dev/null &&
+     grep -rq 'file="second"' "$WORK"/fdb-logs-*/ 2>/dev/null; then
+    ok "a rotated-away trace file survives the next publish"
+  else
+    bad "a rotated-away trace file survives the next publish"
+  fi
   stop_watcher
 else
   bad "the watcher never recorded a pid (cpfail case)"

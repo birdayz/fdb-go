@@ -249,8 +249,19 @@ jobs:
                   rm -rf ".fdb-logs-$c.new"
                   if mkdir -p ".fdb-logs-$c.new" &&
                      docker cp "$c:/var/fdb/logs/." ".fdb-logs-$c.new/" >/dev/null 2>&1; then
-                    rm -rf "fdb-logs-$c"
-                    mv -f ".fdb-logs-$c.new" "fdb-logs-$c"
+                    # Merge INTO the published directory rather than replacing it.
+                    # `rm -rf` followed by `mv` leaves a window where neither exists,
+                    # and the stop step SIGTERMs this loop's process group at an
+                    # arbitrary point — landing in that window would delete a good
+                    # snapshot and leave the dump reporting no directory at all,
+                    # which is the failure this staging was added to prevent, one
+                    # step further along. Trace files are append-and-rotate, so
+                    # copying over them by name is the same content, and a file the
+                    # cluster has since rotated away is harmless: the dump lists the
+                    # directory, so a stale name is visible rather than silent.
+                    mkdir -p "fdb-logs-$c"
+                    cp -a ".fdb-logs-$c.new/." "fdb-logs-$c/" 2>/dev/null || true
+                    rm -rf ".fdb-logs-$c.new"
                   else
                     rm -rf ".fdb-logs-$c.new"
                   fi
