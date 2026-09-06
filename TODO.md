@@ -9226,11 +9226,19 @@ covered by the correctness suite and the golden plan diff, not by this table.
 
   **Also one short:** this entry calls the bot pin-bump PR "the one repository-editable cause"
   of Reconcile's red. `gh pr list --state open` gives a second: #745 (`factory/batch`, also
-  bot-authored) is **DIRTY**, conflicted since 2026-08-12, so GitHub cannot compute
-  `refs/pull/745/merge` and its `pull_request` workflows never fire at all — the DIRTY face
-  `CLAUDE.md` records, distinct from #769's held-runs face. Its newest checks are from that
-  date and `Build, Lint & Test` FAILS among them. Merging the base fires every workflow within
-  seconds; until someone does, Reconcile stays red even with #769 fixed.
+  bot-authored) is **DIRTY**, so GitHub cannot compute `refs/pull/745/merge` and its
+  `pull_request` workflows cannot fire — the DIRTY face `CLAUDE.md` records, distinct from
+  #769's held-runs face. Merging the base fires every workflow within seconds; until someone
+  does, Reconcile stays red even with #769 fixed.
+
+  Measured 2026-09-06, because an earlier version of this paragraph got the dates wrong in a
+  way worth keeping as a warning. It said "conflicted since 2026-08-12" and "its newest checks
+  are from that date". 2026-08-12 is the PR's `createdAt` — not a conflict onset, which the
+  GitHub API does not expose at all. The head branch's last commit is 2026-08-24, and six
+  checks DID run, on 2026-08-29, with `Build, Lint & Test` FAILING among them. So "never fire
+  at all" was false as written: they fired, and have not fired since. What is verifiable is the
+  state now and the date it was read, which is what this paragraph says instead of inferring an
+  onset from whichever timestamp was nearest to hand.
 
 - [ ] **Exact quantifier binding over a CTE or derived body: the derived gathered-unnest star.**
   A read addressed to a CTE's or derived table's own quantified object is bound at execution

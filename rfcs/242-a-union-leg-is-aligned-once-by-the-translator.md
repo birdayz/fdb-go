@@ -2752,8 +2752,10 @@ mechanism depends on them.
     refuted it, and the cap is back at its value with the measurement in its comment. This is
     the same claim measured one step further.)
   - "The ONE repository-editable cause" is one short. Besides the bot pin-bump PR's held runs,
-    #745 (`factory/batch`, also bot-authored) is DIRTY and has been since 2026-08-12, so
-    GitHub cannot compute its merge ref and its `pull_request` workflows never fire at all —
+    #745 (`factory/batch`, also bot-authored) is DIRTY as read on 2026-09-06, so GitHub cannot
+    compute its merge ref and its `pull_request` workflows cannot fire while it stays that way
+    (an earlier draft said "since 2026-08-12" and "never fire at all"; 2026-08-12 is the PR's
+    createdAt, and six checks did run on 2026-08-29 with `Build, Lint & Test` failing) —
     a different face from #769's, and Reconcile stays red on it even after the dispatch fix
     here lands.
 
