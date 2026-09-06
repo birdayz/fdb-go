@@ -199,6 +199,13 @@ if start_watcher 3600; then
   grep -rq 'Severity="40"' "$WORK"/fdb-logs-*-exit/ 2>/dev/null \
     && ok "the exit-transition copy alone captures the terminal line" \
     || bad "the exit-transition copy alone captures the terminal line"
+  # The EXIT path stages too, and its cleanup had no arm — the periodic path's
+  # cleanup was covered and vouched for a sibling that was not.
+  if ls -d "$WORK"/.fdb-logs-* >/dev/null 2>&1; then
+    bad "the exit-transition copy leaves no staging directory"
+  else
+    ok "the exit-transition copy leaves no staging directory"
+  fi
   stop_watcher
 else
   bad "the watcher never recorded a pid (exit-copy case)"
@@ -385,9 +392,12 @@ alarm_case "a watcher inspect is evidence" '=== host ===' 'ts c1 exit=1' failure
 #
 # There are TWO copies, one per step, and covering one is how a suite reports the
 # guard as covered while the other stays free to be deleted. Measured on this
-# file at 18 arms: deleting the forensics copy reddens exactly one arm, and
-# deleting the WATCHER copy reddened NONE until the cases below were driven over
-# both. So the extraction takes the step.
+# file as committed, at 27 arms: deleting the forensics copy reddens exactly one
+# arm, and deleting the WATCHER copy reddens exactly one — the other one — where
+# before the extraction named a step and deleting the watcher's reddened NONE.
+# (An earlier version of this sentence said "at 18 arms", which was the count of
+# an uncommitted intermediate. A population no committed revision ever had is
+# worse than no population at all: it cannot be seen to go stale.)
 GUARD=$(mktemp); GWORK=$(mktemp -d)
 trap 'rm -rf "$SCRIPT" "$BIN" "$WORK" "$STATE" "$DUMP" "$DWORK" "$ALARM" "$AWORK" "$GUARD" "$GWORK"' EXIT
 mkdir -p "$GWORK"

@@ -311,10 +311,18 @@ jobs:
                       # Promoted on success too, so an EXISTING directory always
                       # means a copy that worked and an empty one always means a
                       # cluster that wrote nothing.
+                      # Same merge shape as the periodic copy above, and for one
+                      # more reason besides consistency: `mv -f` of a directory
+                      # ONTO an existing directory does not replace it, it nests
+                      # the source INSIDE it — and returns 0, so the success line
+                      # below would be written for a copy that landed one level
+                      # too deep. Merging cannot express that outcome.
                       rm -rf ".fdb-logs-$seen-exit.new"
                       if mkdir -p ".fdb-logs-$seen-exit.new" &&
-                         docker cp "$seen:/var/fdb/logs/." ".fdb-logs-$seen-exit.new/" >/dev/null 2>&1 &&
-                         mv -f ".fdb-logs-$seen-exit.new" "fdb-logs-$seen-exit"; then
+                         docker cp "$seen:/var/fdb/logs/." ".fdb-logs-$seen-exit.new/" >/dev/null 2>&1; then
+                        mkdir -p "fdb-logs-$seen-exit"
+                        cp -a ".fdb-logs-$seen-exit.new/." "fdb-logs-$seen-exit/" 2>/dev/null || true
+                        rm -rf ".fdb-logs-$seen-exit.new"
                         echo "$(date -u +%FT%TZ) $seen logs copied complete at exit" >> fdb-watch.log
                       else
                         rm -rf ".fdb-logs-$seen-exit.new"
