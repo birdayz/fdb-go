@@ -271,6 +271,10 @@ write_files:
       # whole sweep a silent exit-0 no-op for weeks.
       set -uo pipefail
       now=$(date -u +%s)
+      # Job in flight? LOAD-BEARING; without it the age arm below removed LIVE test
+      # containers (infra/README.md). -x: process name, not argv.
+      job_running=0
+      pgrep -x Runner.Worker >/dev/null 2>&1 && job_running=1
       docker ps --format '{{.ID}} {{.Image}}' 2>/dev/null | while read -r id image; do
         case "$image" in
           testcontainers/ryuk*)
@@ -281,8 +285,10 @@ write_files:
             fi
             ;;
           foundationdb/foundationdb*)
-            # Kill FDB containers running > 30 min — no per-test container lives
-            # that long, so these are orphans.
+            # Age means nothing while a job runs; the box goes idle and this fires
+            # again in 5 min.
+            [ "$job_running" = 1 ] && continue
+            # >30 min old on an IDLE box: no container outlives its job, so orphan.
             started=$(docker inspect -f '{{.State.StartedAt}}' "$id" 2>/dev/null || true)
             [ -z "$${started:-}" ] && continue
             age=$(( now - $(date -u -d "$started" +%s 2>/dev/null || echo "$now") ))

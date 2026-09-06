@@ -284,6 +284,62 @@ Incident narrative goes here instead. Two things worth knowing about the budget:
   installed, forever — measured `NRestarts` across the pool: 1143, 94, 4115 and 2141,
   against a unit reporting `disabled` the whole time, which is what made it easy to miss.
 
+## The orphan FDB sweep removed live test containers for five weeks
+
+`orphan-fdb-sweep.timer` runs `orphan-fdb-sweep.sh` every five minutes, and its FDB arm used
+to `docker rm -fv` any `foundationdb/foundationdb*` container older than 1800 seconds, under
+the comment *"no per-test container lives that long, so these are orphans"*. Three nightly
+lanes do exactly that: rowdiff, stress and factory each hold ONE container for hours. So the
+sweep was not sweeping orphans — it was force-removing the live container of every
+long-running test on this fleet, at 1800s plus up to the timer's five-minute phase.
+
+That is the measured band. The lanes died 30m48s, 33m13s and 33m47s into their runs, against
+a booked eight-night range of 31m31s..34m00s (mean 1959s, sigma ~55s). It also explains every
+observation that two carefully-refuted memory hypotheses could not:
+
+| observation | why |
+|---|---|
+| container found GONE, not exited | `docker rm -fv` removes it |
+| `OOMKilled=false`, nothing in the kernel log | nothing was OOM-killed |
+| a fresh dial BLACKHOLES rather than being refused | no container left to refuse |
+| tracks elapsed time, not work done | the trigger is literally an age |
+| 2.8% spread across five hosts | every box runs the same timer |
+| never reproduced on the dev box | the dev box has no such timer |
+
+The last row was read for weeks as *"the dev box has more RAM"*. It was *"the dev box has no
+sweeper"*.
+
+Corroborated by a boundary nobody had looked for: the rowdiff nightly was **green for its
+first eleven nights** (2026-07-20..07-31) and has failed **every night since 2026-08-01** —
+the day this pool was stood up. `cloud-init` is `PER_INSTANCE`, so a box provisioned before
+the sweep's match-by-image-name fix (`6819cfbcb`, 2026-06-01) kept writing the version that
+matched nothing and swept nothing; the working version only reached boxes provisioned after
+it.
+
+**The fix** is a `pgrep -x Runner.Worker` guard: while a job is in flight, a long-lived FDB
+container is that job's, so age says nothing about whether it is abandoned. Orphans are still
+swept — the timer fires every five minutes and the box is idle between jobs. This is the rule
+the retired scaler's own sweeper already had (*"runs only when no runner is active on that
+box, so a dead test's leaked FDB container is an orphan and removing it cannot disturb a
+concurrent job"*); the cloud-init copy was written without it. Two sweepers with one job, one
+guarded and one not — and the guarded one is the one that does not run.
+
+`pgrep -x`, matching the process NAME, and not `-f`, which matches any command line
+*containing* the string. That is not a stylistic preference: the first version of the guard
+used `-f`, and the test written to prove it worked reported the guard FIRING with no runner
+on the box at all, because the test harness's own shell had the pattern in its argv. A guard
+that fires spuriously does not fail safe here — it silently retires the sweep. All three arms
+were driven before shipping: worker present + old container → survives; no worker + old
+container → removed; the same container once the worker exits → removed.
+
+**Deployment, and it is the remaining owner action:** `cloud-init` is `PER_INSTANCE`, so this
+fixes boxes provisioned from here on. The live fleet keeps the old script until re-provisioned
+or until the file is edited in place.
+
+**Budget note:** landing this guard left **13 bytes** of `user_data` headroom. The next comment
+added to `cloud-init.yaml` will fail `//infra:infra_test`, which is the gate working as
+designed — but it means the next person to touch that file is trimming, not adding.
+
 ## Ephemeral runner (opt-in)
 
 `-var runner_ephemeral=true` configures the runner with `--ephemeral` (one job per process,

@@ -56,8 +56,8 @@ import (
 // version of this paragraph named the first two and said there were TWO kinds,
 // which was written by describing the two examples in hand rather than by asking
 // the question of every row. The third was found by asking it, and asking it once
-// more turned up the rest. Apply the question. Insert a row and re-read what sits
-// either side of it, not just the row you added.
+// more turned up the others below. Apply the question. Insert a row and re-read
+// what sits either side of it, not just the row you added.
 //
 // A control is built by removing what you BELIEVE is the cause, so it inherits
 // whatever the belief got wrong and passes either way; a table has no belief in

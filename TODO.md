@@ -8201,7 +8201,60 @@ work; unrelated to any wire/query change.
   bridge IP blackholes, which is why the CI stack sits in `net.(*netFD).connect`
   instead of taking an RST. A live container with a dead process would refuse the
   connection. The false OOM flag is why this has looked inexplicable.
-  **NO MECHANISM IS ESTABLISHED.** That is a positive statement, not an
+  **THE MECHANISM IS NOW ESTABLISHED, AND IT IS OURS. Everything from here to the
+  end of this item is the record of not finding it; read this paragraph first.**
+  `/usr/local/bin/orphan-fdb-sweep.sh`, written by `infra/cloud-init.yaml` and
+  enabled on every provisioned box (`systemctl enable --now
+  orphan-fdb-sweep.timer`), runs every five minutes and does, for every
+  `foundationdb/foundationdb*` container it can see:
+
+      if [ "$age" -gt 1800 ]; then docker rm -fv "$id"; fi
+
+  under the comment "Kill FDB containers running > 30 min — no per-test container
+  lives that long, so these are orphans". Three nightly lanes do exactly that:
+  rowdiff, stress and factory each hold ONE container for hours. So the sweep was
+  not sweeping orphans, it was force-removing the live container of every
+  long-running test on this fleet, at 1800s plus up to the timer's 5-minute phase
+  — which IS the measured band, 30m48s / 33m13s / 33m47s and the booked
+  31m31s..34m00s.
+
+  It accounts for every observation above that the two memory hypotheses could
+  not. The container is found GONE rather than exited, because `docker rm -fv`
+  removes it; `OOMKilled=false` and no kernel OOM line, because nothing was
+  OOM-killed; the bridge IP blackholes instead of refusing, because there is no
+  container left to refuse; it tracks ELAPSED TIME rather than work done, because
+  the trigger is literally an age; it holds 2.8% across five hosts, because every
+  box runs the same timer; and it never reproduced on the dev box, which has no
+  such timer — the one piece of evidence that was read as "the dev box has more
+  RAM" and was really "the dev box has no sweeper".
+
+  Corroborated by a boundary nobody had looked for: this nightly ran GREEN for its
+  first eleven nights, 2026-07-20..07-31, and has failed every night from
+  2026-08-01 — the day `infra/README.md` records the drain pool being stood up.
+  cloud-init is PER_INSTANCE, so a box provisioned before the sweeper's
+  match-by-image-name fix (`6819cfbcb`, 2026-06-01) kept writing the version that
+  matched nothing, which is why this only began when a new pool was provisioned.
+
+  FIXED at the source in the same change that records this: the removal arm now
+  skips while a job is in flight (`pgrep -x Runner.Worker`), which is the rule the
+  retired scaler's own sweeper already had and this copy was written without.
+  Orphans are still swept — the timer runs every five minutes and the box is idle
+  between jobs. All three arms driven by hand before shipping: worker present +
+  old container → survives; no worker + old container → removed; same container
+  once the worker exits → removed. `pgrep -x` and not `-f` deliberately: `-f`
+  matches any command line CONTAINING the string, and the first version of the
+  test proved the guard "worked" while actually reporting a phantom worker, because
+  the test harness's own argv contained the pattern.
+
+  CAVEAT, and it is the remaining owner action: cloud-init is PER_INSTANCE, so this
+  fixes boxes provisioned from here on. The live fleet keeps the old script until
+  re-provisioned or until the file is edited in place. That is a concrete, one-file
+  deployment step rather than the diagnosis this item has been stuck on for weeks.
+
+  **NO MECHANISM WAS ESTABLISHED FOR WEEKS, and the record of that is kept below
+  rather than deleted, because two refuted hypotheses and the reasons they were
+  refuted are exactly what a later reader needs to not re-propose them.** That is a
+  positive statement, not an
   omission: the two memory hypotheses that fit the signature were each pursued
   and each REFUTED by measurement, and nothing has replaced them. Recorded in
   full because a refuted hypothesis is a result, and because both are the kind
@@ -8255,11 +8308,19 @@ work; unrelated to any wire/query change.
   zero times — no inspect, no logs, no `Severity="40"` events, no `df` — and the
   step exited 0 and uploaded the artifact anyway. Not a mismatched filter:
   `.bazelrc:44` sets `FDB_VERSION=7.3.77` and `pkg/testcontainers/foundationdb`
-  builds that exact tag. `sweepOrphanFDB` is ruled out too — it runs only when no
-  runner is active on the box. The container is removed by the sweep binary's own
-  testcontainers cleanup when that process exits, which is before any later step
-  can run, so the step's premise — "before any cleanup, so the exited container is
-  still inspectable" — was never true.
+  builds that exact tag. Either way the step's premise — "before any cleanup, so
+  the exited container is still inspectable" — was never true, and the fix is the
+  same: take the evidence while the container is alive.
+
+  WHAT removed it was got wrong here first, and the wrong answer is kept because it
+  is the one a reader will reach for. This paragraph said "the sweep binary's own
+  testcontainers cleanup when that process exits", and ruled out the scaler's
+  `sweepOrphanFDB` on the grounds that it "runs only when no runner is active on the
+  box" — which is true of the SCALER's copy and false of the cloud-init copy that is
+  actually deployed. The remover is `orphan-fdb-sweep.sh`, mid-test, and it is also
+  what killed the cluster in the first place; see the mechanism paragraph at the top
+  of this item. Two sweepers with the same job, one guarded and one not, and the
+  guarded one is the one that does not run.
 
   FIXED in the same change that records this, because a dump that cannot tell
   "nothing happened" from "the corpse was already removed" is worse than no dump:
@@ -9101,10 +9162,19 @@ covered by the correctness suite and the golden plan diff, not by this table.
   raised it; the six cancelled runs lasted 3, 55, 11, 67, 8 and 51 minutes with no
   maximum-execution-time annotation, so the cap never fired and the cancellations are the
   host class below. The cap stays at 150 and its comment now says so.
-  **STOP — needs the owner, not a checkout:** the container deaths under Stress / RowDiff /
-  Factory are on the runner host (memory headroom, or what is killing containers thirty
-  minutes into a run); nothing in this repository can observe or change that. Re-measured
-  2026-09-05/06 and still true of the container deaths, now on three lanes in one band:
+  **THE STOP IS WITHDRAWN for the container deaths.** It read: "the container deaths under
+  Stress / RowDiff / Factory are on the runner host (memory headroom, or what is killing
+  containers thirty minutes into a run); nothing in this repository can observe or change
+  that." The killer is `/usr/local/bin/orphan-fdb-sweep.sh`, which this repository writes
+  (`infra/cloud-init.yaml`) and which force-removes any FDB container older than 1800s with no
+  check for a job in flight. It is fixed there. What remains is not a diagnosis but a
+  deployment: cloud-init is PER_INSTANCE, so the live fleet keeps the old script until
+  re-provisioned. The mechanism paragraph at the top of the container-death item carries the
+  evidence, including the green-then-red boundary at the 2026-08-01 pool provision.
+
+  A STOP is the right instrument and this one was reached honestly — but it was reached
+  without reading `infra/`, which is in the repository it said could change nothing. The
+  measurements below stand and are what the fix was checked against:
   RowDiff run 34011921618 at T+30m48s, Stress run 33955095551 at T+33m13s, Factory's growth
   lane at T+33m47s, each first announced by `WARN fdbgo: connection to server failed`.
   The three are not the same measurement and the difference is stated rather than averaged
@@ -9125,19 +9195,26 @@ covered by the correctness suite and the golden plan diff, not by this table.
 
   and every later step `skipped`. That is the RUNNER being stopped, not the job being
   cancelled and not a container dying — a different mechanism from the three lanes above, and
-  an eight-fold spread in elapsed time rules out a timeout on its own. It matters because runner lifetime is
-  owned by `tools/bazelscaleset`, which IS in this repository, so "nothing here can change
-  that" is not established for this half. Two of its kill paths look innocent and are recorded
-  so they are not re-proposed: `watchJobStart` (scaler.go:449) re-checks `r.busy` under the
-  same lock `HandleJobStarted` sets it under, and `watchTerminal` (scaler.go:528) fires only
-  after GitHub reports the job terminal — and neither would produce this message anyway, since
-  both `SIGKILL` while the runner logs "received a shutdown signal" on a GRACEFUL stop. The
-  untested candidates are scale-DOWN in `HandleDesiredRunnerCount`, `shutdown()`, and remote
-  slot teardown powering off a box under a live job. None of them is measured; do not write
-  any of them down as the cause.
-  DONE = the sender of that signal identified from the scaler's own log at one of those six
-  timestamps, the path fixed so a busy runner drains instead of stopping, and a pin that reds
-  when a coverage run is killed with steps still pending.
+  an eight-fold spread in elapsed time rules out a timeout on its own.
+
+  **A first draft of this entry blamed `tools/bazelscaleset` and it is WITHDRAWN, because that
+  package is not deployed.** The reasoning had reached one function — `Scaler.shutdown()` is
+  the only path that sends SIGTERM rather than SIGKILL, it signals every runner in `s.running`
+  with no busy check, and its grace flag's own help says "before SIGKILLing **in-flight**
+  runners" — and it fit the signature exactly. It is still undeployed code: `infra/main.tf`
+  sets `runner_mode` to `classic` and records the supervisor as retired, `infra/cloud-init.yaml`
+  disables, deletes and MASKS `bazelscaleset.service` on every box, and `infra/README.md` states
+  zero scaler units fleet-wide, verified. A whole analysis was written from the source without
+  ever asking whether the source runs. `infra/README.md` warns, on the line above, that this
+  fleet's naming "has already cost one investigation an evening"; this is the same mistake with
+  a different label. Read the deployment before reading the code.
+
+  What IS on those boxes is the classic `actions.runner.*` service, so the sender is that
+  service's own stop path, systemd, or the host. None of it is measured. Do not write any
+  candidate down as the cause.
+  DONE = the sender of that signal identified from the box (the runner's `_diag` logs and the
+  journal at one of those six timestamps), the path fixed so a busy runner drains instead of
+  stopping, and a pin that reds when a coverage run is killed with steps still pending.
 
   **Also one short:** this entry calls the bot pin-bump PR "the one repository-editable cause"
   of Reconcile's red. `gh pr list --state open` gives a second: #745 (`factory/batch`, also
